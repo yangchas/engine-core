@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "engine-core"
+version = "0.3.1.dev0"
+description = "Independent deterministic market-state calculation core"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7.1"]
+live = ["redis>=5.0", "taospy>=2.7"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+
+[tool.setuptools.packages.find]
+where = ["src"]

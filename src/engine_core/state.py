@@ -1,0 +1,152 @@
+"""Current market state and its deterministic reducer."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict, Mapping, Optional
+
+from .contracts import EngineSnapshot, canonical_hash
+from .q2 import Q2ProjectionSnapshot
+from .windows import WindowManager
+
+
+class CurrentMarketState:
+    """Mutable reducer-owned state containing observations only.
+
+    Strategy conclusions, segment comparisons, EV and risk decisions are
+    intentionally absent from this object.
+    """
+
+    def __init__(self) -> None:
+        self.revision = 0
+        self.logical_time_ms = 0
+        self.session_id = ""
+        self.phase = "UNKNOWN"
+        self.symbol_states: Dict[str, Mapping[str, Any]] = {}
+        self.raw_market_cross_section: Dict[str, Any] = {}
+        self.raw_theme_cross_section: Dict[str, Any] = {}
+        self.source_observation_metadata: Dict[str, Any] = {}
+        self.coverage = 0.0
+        self.completeness = "MISSING"
+        self.last_envelope_id = ""
+
+
+class MarketStateReducer:
+    """Apply one projection snapshot at a time to CurrentMarketState."""
+
+    def __init__(self, state: Optional[CurrentMarketState] = None) -> None:
+        self.state = state or CurrentMarketState()
+
+    def apply_snapshot(
+        self,
+        projection: Q2ProjectionSnapshot,
+        *,
+        logical_time_ms: Optional[int] = None,
+        session_id: str = "",
+        phase: str = "UNKNOWN",
+    ) -> CurrentMarketState:
+        """Apply a Q2 projection without producing a strategy conclusion."""
+
+        self.state.revision += 1
+        self.state.logical_time_ms = (
+            projection.envelope.effective_time_ms
+            if logical_time_ms is None
+            else logical_time_ms
+        )
+        self.state.session_id = session_id
+        self.state.phase = phase
+        self.state.symbol_states = {
+            symbol: quote.to_mapping()
+            for symbol, quote in sorted(projection.quotes.items())
+        }
+        self.state.raw_market_cross_section = _market_cross_section(
+            self.state.symbol_states
+        )
+        self.state.raw_theme_cross_section = {}
+        self.state.source_observation_metadata = {
+            "source_id": projection.envelope.source_id,
+            "source_schema": projection.envelope.provenance.source_schema,
+            "envelope_id": projection.envelope.envelope_id,
+            "observation_time_ms": projection.envelope.observed_time_ms,
+            "effective_time_ms": projection.envelope.effective_time_ms,
+            "generation": projection.envelope.generation,
+            "generation_kind": projection.envelope.generation_kind,
+            "consistency_status": projection.consistency_status,
+            "missing_symbols": projection.missing_symbols,
+            "stale_symbols": projection.stale_symbols,
+            "content_hash": projection.content_hash,
+        }
+        self.state.coverage = projection.coverage
+        self.state.completeness = projection.status.value
+        self.state.last_envelope_id = projection.envelope.envelope_id
+        return self.state
+
+    def build_snapshot(
+        self,
+        trigger_id: str,
+        *,
+        logical_time_ms: Optional[int] = None,
+        windows: Optional[WindowManager] = None,
+    ) -> EngineSnapshot:
+        """Freeze the current state into an immutable-by-convention snapshot."""
+
+        logical = self.state.logical_time_ms if logical_time_ms is None else logical_time_ms
+        window_views = windows.views() if windows is not None else {}
+        payload = {
+            "trigger_id": trigger_id,
+            "logical_time_ms": logical,
+            "session_id": self.state.session_id,
+            "phase": self.state.phase,
+            "revision": self.state.revision,
+            "source": self.state.source_observation_metadata,
+            "symbols": self.state.symbol_states,
+            "market": self.state.raw_market_cross_section,
+            "themes": self.state.raw_theme_cross_section,
+            "windows": window_views,
+            "coverage": self.state.coverage,
+            "completeness": self.state.completeness,
+        }
+        return EngineSnapshot(
+            snapshot_id=canonical_hash(payload),
+            trigger_id=trigger_id,
+            logical_time_ms=logical,
+            session_id=self.state.session_id,
+            phase=self.state.phase,
+            market_state_revision=self.state.revision,
+            source_observation_metadata=dict(self.state.source_observation_metadata),
+            symbol_states={
+                symbol: dict(values)
+                for symbol, values in self.state.symbol_states.items()
+            },
+            raw_market_cross_section=dict(self.state.raw_market_cross_section),
+            raw_theme_cross_section=dict(self.state.raw_theme_cross_section),
+            windows=window_views,
+            coverage=self.state.coverage,
+            completeness=self.state.completeness,
+            content_hash=canonical_hash(payload),
+            evidence_refs=(
+                str(self.state.source_observation_metadata.get("envelope_id", "")),
+            ),
+        )
+
+
+def _market_cross_section(symbol_states: Mapping[str, Mapping[str, Any]]) -> Dict[str, Any]:
+    up = down = flat = unknown = 0
+    for values in symbol_states.values():
+        price = values.get("price_milli")
+        pre_close = values.get("pre_close_milli")
+        if price is None or pre_close is None:
+            unknown += 1
+        elif price > pre_close:
+            up += 1
+        elif price < pre_close:
+            down += 1
+        else:
+            flat += 1
+    return {
+        "observed_symbol_count": len(symbol_states),
+        "up_count": up,
+        "down_count": down,
+        "flat_count": flat,
+        "unknown_count": unknown,
+    }
