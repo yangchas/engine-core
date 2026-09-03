@@ -13,7 +13,7 @@ engine_core 是独立的行情驱动确定性计算内核。
     -> ProbeStrategy
     -> stdout/trace
 
-现有 RabbitMQ -> t1_v2 -> TD/Redis -> ACK 生产链路保持在本项目之外。首期只通过 Adapter 读取 Q2 projection，支持 Q2Frame、TD event-time 和 fixture 回放。
+现有 RabbitMQ -> t1_v2 -> TD/Redis -> ACK 生产链路保持在本项目之外。当前已实现 Q2 projection Adapter、fixture vertical slice 和事实切片；Q2Frame、TD event-time replay Adapter 按后续步骤接入，不把尚未验证的能力当成当前完成项。
 
 ## 开发
 
