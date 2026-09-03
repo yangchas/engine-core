@@ -226,6 +226,7 @@ class FrozenDataBundle:
     results_by_function: Mapping[str, DataResult]
     completeness: float
     content_hash: str
+    function_order: Tuple[str, ...] = ()
 
     @classmethod
     def empty(cls, evaluation_id: str, knowledge_as_of_ms: int) -> "FrozenDataBundle":
@@ -240,6 +241,65 @@ class FrozenDataBundle:
             results_by_function={},
             completeness=1.0,
             content_hash=canonical_hash(content),
+            function_order=(),
+        )
+
+    @classmethod
+    def from_results(
+        cls,
+        evaluation_id: str,
+        knowledge_as_of_ms: int,
+        function_order: Tuple[str, ...],
+        results_by_function: Mapping[str, DataResult],
+    ) -> "FrozenDataBundle":
+        """Build a bundle in declared function order, not completion order."""
+
+        if len(function_order) != len(set(function_order)):
+            raise ValueError("function_order must not contain duplicates")
+        missing = [
+            function_id
+            for function_id in function_order
+            if function_id not in results_by_function
+        ]
+        if missing:
+            raise ValueError("missing DataResult values: %s" % ", ".join(missing))
+        ordered = {
+            function_id: results_by_function[function_id]
+            for function_id in function_order
+        }
+        extra = sorted(set(results_by_function).difference(function_order))
+        for function_id in extra:
+            ordered[function_id] = results_by_function[function_id]
+        completeness = min(
+            (result.completeness for result in ordered.values()),
+            default=1.0,
+        )
+        content = {
+            "evaluation_id": evaluation_id,
+            "knowledge_as_of_ms": knowledge_as_of_ms,
+            "function_order": function_order,
+            "results": [
+                {
+                    "function_id": function_id,
+                    "result": ordered[function_id],
+                }
+                for function_id in function_order
+            ],
+            "extra_results": [
+                {
+                    "function_id": function_id,
+                    "result": ordered[function_id],
+                }
+                for function_id in extra
+            ],
+        }
+        return cls(
+            evaluation_id=evaluation_id,
+            knowledge_as_of_ms=knowledge_as_of_ms,
+            results_by_function=ordered,
+            completeness=completeness,
+            content_hash=canonical_hash(content),
+            function_order=function_order,
         )
 
 
