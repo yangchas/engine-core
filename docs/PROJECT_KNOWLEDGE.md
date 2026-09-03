@@ -26,6 +26,9 @@
 - [VERIFIED] Redis Q2 是运行时投影，不是历史事实权威。
 - [UNKNOWN] TD 生产版本、重复写语义和历史输入排序能力待 Gate K 验证。
 - [VERIFIED] CurrentMarketState 只保存当前可观测数据、轻量 projection 和窗口原始累计状态。
+- [VERIFIED] 首个 SegmentFrame 事实切片仅支持 SYMBOL 范围；其他范围显式返回 UNAVAILABLE，不伪装成聚合结果。
+- [VERIFIED] SegmentFrame 的 Price/Volume/OrderBook/Breadth/Theme 各自维护状态；未知累计量语义不计算 delta，返回 UNAVAILABLE。
+- [VERIFIED] directional_pressure 仅是 Q2 盘口字段差值代理，不得命名为真实资金净流入。
 
 ## 5. Replay Capabilities
 
@@ -68,5 +71,14 @@
 正确做法：
 - EVENT_SLICE 只是 transport/scheduling batch，保留逐条 Tick 和稳定顺序。
 
+### PITFALL: 端点快照冒充完整时间段路径
+
+问题：
+- 只有时间段起止快照时，无法证明段内最高/最低或 first-touch 路径。
+
+正确做法：
+- SegmentFrame 仅输出起止可观察事实；high/low、段内路径等字段保持 None，等待逐条事件输入。
+
 Evidence：
-- docs/evidence/ 后续保存 Gate K、Vertical Slice 和 Gate B 证据。
+- tests/test_facts.py、examples/run_fact_vertical_slice.py
+- docs/evidence/ 后续保存 Gate K、Vertical Slice 和 Gate B 原始报告。

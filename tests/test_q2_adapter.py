@@ -72,3 +72,18 @@ def test_q2_adapter_marks_out_of_range_timestamp_as_field_error():
     assert result.status is DataStatus.PARTIAL
     assert result.quotes["000001"].source_timestamp_ms is None
     assert "ts" in result.quotes["000001"].field_errors
+
+
+def test_q2_adapter_rejects_non_finite_numeric_fields_as_missing_with_error():
+    redis = FakeRedis(
+        {"q2:active:2026-09-04": {"000001"}},
+        {"q2:000001": {"px": "NaN", "pc": "990", "amt": "Infinity"}},
+    )
+    result = RedisQ2ProjectionAdapter(redis).read(
+        "2026-09-04",
+        datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc),
+    )
+    quote = result.quotes["000001"]
+    assert quote.price_milli is None
+    assert quote.amount_native is None
+    assert set(quote.field_errors) == {"amt", "px"}

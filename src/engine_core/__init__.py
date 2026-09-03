@@ -12,6 +12,7 @@ from .contracts import (
     PayloadKind,
     SignalKind,
     canonical_hash,
+    canonical_json,
 )
 from .data import (
     DataContext,
@@ -22,12 +23,28 @@ from .data import (
     freeze_data_results,
 )
 from .engine import DeterministicEngine
+from .facts import (
+    BreadthFacts,
+    DataQuality,
+    FactResult,
+    FactStatus,
+    OrderBookFacts,
+    PriceFacts,
+    SegmentComparison,
+    SegmentFrameFactFunction,
+    SegmentFrame,
+    ThemeFacts,
+    VolumeFacts,
+    build_segment_frame,
+    compare_segments,
+)
 from .probe import ProbeStrategy
 from .q2 import Q2ProjectionSnapshot, RedisQ2ProjectionAdapter
 from .state import CurrentMarketState, MarketStateReducer
 from .windows import WindowManager, WindowSnapshot, WindowSpec
 
 __all__ = [
+    "BreadthFacts",
     "CurrentMarketState",
     "DataContext",
     "DataFunction",
@@ -35,27 +52,40 @@ __all__ = [
     "DataRequest",
     "DataResult",
     "DataStatus",
+    "DataQuality",
     "DeterministicEngine",
     "EngineSignal",
     "EngineSnapshot",
     "FrozenDataBundle",
+    "FactResult",
+    "FactStatus",
     "FixturePreviousDayStatsProvider",
     "MarketDataEnvelope",
     "MarketStateReducer",
     "MonotonicClock",
+    "OrderBookFacts",
     "PayloadKind",
+    "PriceFacts",
     "PreviousDayStatsFunction",
     "ProbeStrategy",
     "Q2ProjectionSnapshot",
     "RedisQ2ProjectionAdapter",
     "SignalKind",
+    "SegmentComparison",
+    "SegmentFrame",
+    "SegmentFrameFactFunction",
     "SystemMonotonicClock",
     "SystemWallClock",
+    "ThemeFacts",
     "VirtualClock",
+    "VolumeFacts",
     "WallClock",
     "WindowManager",
     "WindowSnapshot",
     "WindowSpec",
+    "build_segment_frame",
     "canonical_hash",
+    "canonical_json",
+    "compare_segments",
     "freeze_data_results",
 ]

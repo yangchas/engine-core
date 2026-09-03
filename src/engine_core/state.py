@@ -106,6 +106,7 @@ class MarketStateReducer:
             "coverage": self.state.coverage,
             "completeness": self.state.completeness,
         }
+        envelope_id = str(self.state.source_observation_metadata.get("envelope_id", ""))
         return EngineSnapshot(
             snapshot_id=canonical_hash(payload),
             trigger_id=trigger_id,
@@ -124,9 +125,7 @@ class MarketStateReducer:
             coverage=self.state.coverage,
             completeness=self.state.completeness,
             content_hash=canonical_hash(payload),
-            evidence_refs=(
-                str(self.state.source_observation_metadata.get("envelope_id", "")),
-            ),
+            evidence_refs=(envelope_id,) if envelope_id else (),
         )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, Optional, Protocol, Sequence, Tuple
@@ -56,7 +57,8 @@ def _to_float(value: Any) -> Optional[float]:
     if value is None or value == "":
         return None
     try:
-        return float(str(value))
+        result = float(str(value))
+        return result if math.isfinite(result) else None
     except (TypeError, ValueError):
         return None
 
