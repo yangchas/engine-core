@@ -27,8 +27,10 @@
 - [VERIFIED] 所有窗口使用半开区间 [start_inclusive, end_exclusive)。
 - [VERIFIED] Timer 与行情输入分离。
 - [VERIFIED] 重启跨过节点时使用 RECOVERY_CATCHUP，不伪装为正常准时执行。
-- [VERIFIED] `DeterministicEngine` 在入队时冻结 signal payload；相同 `signal_id` 的相同内容幂等，冲突内容拒绝。MARKET_UPDATE/PULSE/TIMER 不得倒退 market frontier，旧 evaluation 的 `DATA_READY` 仍可使用原冻结 Snapshot 完成评估。
+- [VERIFIED] `DeterministicEngine` 在入队时冻结 signal payload；相同 `signal_id` 的相同内容在有界内存幂等窗口内幂等，冲突内容拒绝。MARKET_UPDATE/PULSE/TIMER 不得倒退 market frontier，旧 evaluation 的 `DATA_READY` 仍可使用原冻结 Snapshot 完成评估；持久化幂等留待 journal/checkpoint 阶段。
 - [VERIFIED] `RECOVERY_CATCHUP` 关闭窗口时保留 `origin=RECOVERY_CATCHUP`，窗口 `finality` 仍为 FINAL。
+- [VERIFIED] Engine Integration correctness gates passed: same-time ordering, DATA_READY order determinism, PARTIAL propagation, old-evaluation isolation, bounded long-drain state, and duplicate/conflicting signal handling.
+- [VERIFIED] Foundation 600519 Segment A/B/Comparison hashes remain identical when composed through Engine; current Engine is only an orchestration boundary and does not alter fact-wheel semantics.
 
 ## 4. System Capabilities & Fact Authority
 
@@ -47,6 +49,7 @@
 - [VERIFIED] 当前基础轮子可在 cobra-ion 的 Python 3.12.3 server venv 临时验证副本中运行；这不是生产部署。
 - [VERIFIED] `normalize_previous_day_stats_rows` 是旧日线访问结果的薄纯边界：严格校验六位代码、保留显式零值、拒绝缺失核心字段/重复代码，并输出稳定排序的昨日统计映射；空结果经 Provider 包装后为 MISSING。
 - [VERIFIED] cobra-ion 上 `TDPreviousDayStatsProvider` 已通过既有 taos 只读路径取得 2026-09-03 的 3 行 `daily_kline`；因没有历史 `available_at` 证据，`PreviousDayStatsFunction` 按规则返回 UNAVAILABLE，而不是把查询时刻冒充可用时刻。
+- [VERIFIED] 2026-09-04 cobra-ion live Q2 + TD shadow path completed without writes: Q2 5217/5217 coverage with 10 stale symbols, TD previous-day result UNAVAILABLE due unknown availability, FrozenDataBundle completeness 0.0, SegmentFrame PARTIAL with price/pressure READY, and Probe trace preserved PARTIAL.
 
 ## 5. Replay Capabilities
 
