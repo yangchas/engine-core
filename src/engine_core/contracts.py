@@ -197,7 +197,7 @@ class MarketDataEnvelope:
     payload_kind: PayloadKind
     source_id: str
     schema_version: int
-    effective_time_ms: int
+    effective_time_ms: Optional[int]
     observed_time_ms: int
     generation: Optional[str]
     generation_kind: str

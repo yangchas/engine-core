@@ -3,7 +3,13 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from engine_core.contracts import DataStatus, PayloadKind
-from engine_core.q2 import RedisQ2ProjectionAdapter, normalize_symbol
+from engine_core.q2 import (
+    FreshnessPolicy,
+    RedisQ2ProjectionAdapter,
+    classify_equity,
+    normalize_q2,
+    normalize_symbol,
+)
 
 
 class FakeRedis:
@@ -86,4 +92,38 @@ def test_q2_adapter_rejects_non_finite_numeric_fields_as_missing_with_error():
     quote = result.quotes["000001"]
     assert quote.price_milli is None
     assert quote.amount_native is None
-    assert set(quote.field_errors) == {"amt", "px"}
+    assert set(quote.field_errors) == {"amt", "px", "ts"}
+
+
+def test_q2_adapter_marks_missing_core_fields_and_stale_projection():
+    redis = FakeRedis(
+        {"q2:active:2026-09-04": {"000001", "000002"}},
+        {
+            "q2:000001": {"pc": "990", "ts": "1788484799000"},
+            "q2:000002": {"px": "1000", "pc": "990", "ts": "1788480000000"},
+        },
+    )
+    observed = datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc)
+    result = RedisQ2ProjectionAdapter(redis).read(
+        "2026-09-04",
+        observed,
+        freshness_policy=FreshnessPolicy(stale_after_ms=10_000),
+    )
+    assert result.status is DataStatus.PARTIAL
+    assert "px" in result.quotes["000001"].field_errors
+    assert result.stale_symbols == ("000002",)
+
+
+def test_q2_contract_keeps_unknown_fields_for_evidence_but_not_business_mapping():
+    quote = normalize_q2(
+        "000001",
+        {"px": "1000", "pc": "990", "ts": "1788484799000", "future_field": "x"},
+    )
+    assert "future_field" in quote.raw_fields
+    assert "future_field" not in quote.to_mapping()
+
+
+def test_classify_equity_uses_legacy_market_and_symbol_rules():
+    assert classify_equity("000001", {"mk": "sz", "px": "1000"}) is True
+    assert classify_equity("399001", {"mk": "sz", "px": "1000"}) is False
+    assert classify_equity("688001", {"mk": "kc", "px": "1000"}) is True

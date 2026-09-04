@@ -43,7 +43,16 @@ from .facts import (
     compare_segments,
 )
 from .probe import ProbeStrategy
-from .q2 import Q2ProjectionSnapshot, RedisQ2ProjectionAdapter
+from .q2 import (
+    FreshnessPolicy,
+    Q2FieldSpec,
+    Q2ProjectionSnapshot,
+    RedisQ2ProjectionAdapter,
+    build_q2_projection,
+    classify_equity,
+    normalize_q2,
+    validate_q2,
+)
 from .state import CurrentMarketState, MarketStateReducer
 from .windows import WindowManager, WindowSnapshot, WindowSpec
 
@@ -74,6 +83,12 @@ __all__ = [
     "ProbeStrategy",
     "Q2ProjectionSnapshot",
     "RedisQ2ProjectionAdapter",
+    "FreshnessPolicy",
+    "Q2FieldSpec",
+    "build_q2_projection",
+    "classify_equity",
+    "normalize_q2",
+    "validate_q2",
     "SignalKind",
     "SegmentComparison",
     "SegmentFrame",

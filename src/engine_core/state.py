@@ -48,6 +48,10 @@ class MarketStateReducer:
         """Apply a Q2 projection without producing a strategy conclusion."""
 
         self.state.revision += 1
+        if logical_time_ms is None and projection.envelope.effective_time_ms is None:
+            raise ValueError(
+                "logical_time_ms is required when source effective time is unavailable"
+            )
         self.state.logical_time_ms = (
             projection.envelope.effective_time_ms
             if logical_time_ms is None
