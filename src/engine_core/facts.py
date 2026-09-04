@@ -589,6 +589,12 @@ def _delta(
 ) -> Tuple[Optional[Number], FactStatus]:
     if semantics == "UNKNOWN":
         return None, FactStatus.UNAVAILABLE
+    if semantics == "OBSERVED_STATE":
+        if start is None or end is None:
+            return None, FactStatus.MISSING
+        # Point-in-time state fields (for example auction matched amount) are
+        # differenced without claiming that the source is a cumulative counter.
+        return end - start, FactStatus.READY
     if semantics == "INCREMENTAL":
         return None, FactStatus.UNAVAILABLE
     if semantics != "CUMULATIVE":

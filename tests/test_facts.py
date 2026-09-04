@@ -201,6 +201,20 @@ def test_unknown_counter_semantics_does_not_create_fake_delta():
     assert "volume" in frame.quality.unavailable_groups
 
 
+def test_observed_state_delta_does_not_claim_cumulative_counter_semantics():
+    start = _snapshot(1000, 100, 20, 10, "09:19:00", "START")
+    end = _snapshot(1020, 80, 30, 10, "09:20:00", "END")
+    frame = build_segment_frame(
+        "observed-state",
+        start,
+        end,
+        scope_type="SYMBOL",
+        scope_id="000001",
+        amount_semantics="OBSERVED_STATE",
+    )
+    assert frame.volume.amount_delta_yuan == -20.0
+
+
 def test_non_symbol_scope_is_explicitly_unavailable():
     start = _snapshot(1000, 100, 20, 10, "09:19:00", "START")
     end = _snapshot(1020, 200, 30, 10, "09:20:00", "END")
