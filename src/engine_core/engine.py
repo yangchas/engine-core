@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import heapq
+from collections import OrderedDict, deque
 from dataclasses import dataclass
-from typing import List, Mapping, Optional, Protocol, Tuple
+from typing import Deque, List, Mapping, Optional, Protocol, Tuple
 
 from .contracts import (
     EngineSignal,
@@ -36,7 +37,13 @@ class EngineRunResult:
 
 
 class DeterministicEngine:
-    """Single-threaded reducer that is unaware of the input mode."""
+    """Single-threaded reducer that is unaware of the input mode.
+
+    ``result_history_limit`` bounds only retained observable output.  The
+    cumulative processed count is still reported.  ``signal_id_cache_limit``
+    bounds this in-memory idempotency horizon; durable duplicate protection is
+    intentionally deferred with journal/checkpoint integration.
+    """
 
     def __init__(
         self,
@@ -46,17 +53,29 @@ class DeterministicEngine:
         *,
         session_id: str = "",
         phase: str = "UNKNOWN",
+        result_history_limit: int = 256,
+        signal_id_cache_limit: int = 4096,
     ) -> None:
+        if result_history_limit <= 0:
+            raise ValueError("result_history_limit must be positive")
+        if signal_id_cache_limit <= 0:
+            raise ValueError("signal_id_cache_limit must be positive")
         self._reducer = reducer
         self._windows = windows
         self._strategy = strategy
         self._session_id = session_id
         self._phase = phase
         self._queue: List[Tuple[Tuple[int, int, int, str], EngineSignal]] = []
-        self._submitted_signatures: dict[str, str] = {}
+        # This is intentionally an in-memory bounded idempotency horizon.  A
+        # durable dedupe cursor belongs to the deferred journal/checkpoint
+        # layer, not this first Engine integration slice.
+        self._signal_id_cache_limit = signal_id_cache_limit
+        self._submitted_signatures: OrderedDict[str, str] = OrderedDict()
         self._market_frontier: Optional[int] = None
-        self._snapshots: List[EngineSnapshot] = []
-        self._strategy_results: List[StrategyResult] = []
+        # Keep only recent observable output so a long drain does not retain
+        # every snapshot/result forever.  processed_signals remains cumulative.
+        self._snapshots: Deque[EngineSnapshot] = deque(maxlen=result_history_limit)
+        self._strategy_results: Deque[StrategyResult] = deque(maxlen=result_history_limit)
         self._processed = 0
 
     def submit(self, signal: EngineSignal) -> None:
@@ -84,8 +103,11 @@ class DeterministicEngine:
         if previous is not None:
             if previous != signature:
                 raise ValueError("signal_id was submitted with conflicting content")
+            self._submitted_signatures.move_to_end(signal.signal_id)
             return
         self._submitted_signatures[signal.signal_id] = signature
+        while len(self._submitted_signatures) > self._signal_id_cache_limit:
+            self._submitted_signatures.popitem(last=False)
         heapq.heappush(self._queue, (queued_signal.sort_key, queued_signal))
 
     def run_until_empty(self) -> EngineRunResult:

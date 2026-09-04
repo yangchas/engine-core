@@ -96,6 +96,109 @@ def test_q2_vertical_slice_reaches_probe_with_window_snapshot():
     assert result.strategy_results[0].state == "OBSERVE"
 
 
+def test_same_logical_time_signals_follow_stable_sequence_order():
+    trade_date = "2026-09-04"
+    logical_time = local_time_ms(trade_date, "09:20:00")
+    engine = DeterministicEngine(
+        MarketStateReducer(),
+        WindowManager((WindowSpec("wide", 0, 10**15),)),
+        ProbeStrategy(),
+        session_id=trade_date,
+        phase="AUCTION",
+    )
+    # Submit in reverse order; the queue must use signal_seq as the stable
+    # order for equal logical times, independently of submission order.
+    for signal_id, signal_seq, trigger_id in (
+        ("signal-3", 3, "THIRD"),
+        ("signal-1", 1, "FIRST"),
+        ("signal-2", 2, "SECOND"),
+    ):
+        engine.submit(
+            EngineSignal(
+                signal_id,
+                logical_time,
+                signal_seq,
+                SignalKind.TIMER,
+                {"trigger_id": trigger_id},
+            )
+        )
+    result = engine.run_until_empty()
+    assert [snapshot.trigger_id for snapshot in result.snapshots] == [
+        "FIRST",
+        "SECOND",
+        "THIRD",
+    ]
+
+
+def test_data_ready_submission_order_does_not_change_results():
+    source = _run_once().snapshots[0]
+    bundle_a = FrozenDataBundle.empty("eval-a", source.logical_time_ms)
+    bundle_b = FrozenDataBundle.empty("eval-b", source.logical_time_ms)
+
+    def run(order):
+        engine = DeterministicEngine(
+            MarketStateReducer(),
+            WindowManager((WindowSpec("wide", 0, 10**15),)),
+            ProbeStrategy(),
+        )
+        signals = {
+            "a": EngineSignal(
+                "data-a", source.logical_time_ms, 1, SignalKind.DATA_READY,
+                {"snapshot": source, "bundle": bundle_a},
+            ),
+            "b": EngineSignal(
+                "data-b", source.logical_time_ms, 2, SignalKind.DATA_READY,
+                {"snapshot": source, "bundle": bundle_b},
+            ),
+        }
+        for key in order:
+            engine.submit(signals[key])
+        result = engine.run_until_empty()
+        return tuple(
+            (item.evaluation_id, item.content_hash)
+            for item in result.strategy_results
+        )
+
+    assert run(("b", "a")) == run(("a", "b"))
+    assert run(("b", "a"))[0][0] == "eval-a"
+
+
+def test_partial_q2_reaches_snapshot_without_being_promoted_to_ready():
+    redis = FakeRedis()
+    del redis.hashes["q2:000002"]["px"]
+    observed_at = datetime(2026, 9, 4, 9, 20, tzinfo=timezone(timedelta(hours=8)))
+    projection = RedisQ2ProjectionAdapter(redis).read("2026-09-04", observed_at)
+    assert projection.status.value == "PARTIAL"
+    engine = DeterministicEngine(
+        MarketStateReducer(),
+        WindowManager((WindowSpec(
+            "auction_trial",
+            local_time_ms("2026-09-04", "09:15:00"),
+            local_time_ms("2026-09-04", "09:20:00"),
+        ),)),
+        ProbeStrategy(),
+        session_id="2026-09-04",
+        phase="AUCTION_TRIAL",
+    )
+    engine.submit(EngineSignal(
+        "partial-market",
+        projection.envelope.effective_time_ms,
+        1,
+        SignalKind.MARKET_UPDATE,
+        projection,
+    ))
+    engine.submit(EngineSignal(
+        "partial-timer",
+        local_time_ms("2026-09-04", "09:20:00"),
+        2,
+        SignalKind.TIMER,
+        {"trigger_id": "PARTIAL_0920", "close_windows": ("auction_trial",)},
+    ))
+    result = engine.run_until_empty()
+    assert result.snapshots[0].completeness == "PARTIAL"
+    assert result.strategy_results[0].trace["completeness"] == "PARTIAL"
+
+
 def test_same_input_produces_same_semantic_result():
     left = _run_once().strategy_results[0]
     right = _run_once().strategy_results[0]
@@ -136,6 +239,10 @@ def test_duplicate_signal_id_is_idempotent_and_conflicting_content_is_rejected()
     )
     signal = EngineSignal("same-id", local_time_ms(trade_date, "09:19:59"), 1, SignalKind.MARKET_UPDATE, projection)
     engine.submit(signal)
+    engine.submit(signal)
+    with pytest.raises(ValueError):
+        engine.submit(EngineSignal("same-id", signal.logical_time_ms, 2, SignalKind.MARKET_UPDATE, projection))
+    assert engine.run_until_empty().processed_signals == 1
     engine.submit(signal)
     with pytest.raises(ValueError):
         engine.submit(EngineSignal("same-id", signal.logical_time_ms, 2, SignalKind.MARKET_UPDATE, projection))
@@ -188,6 +295,8 @@ def test_old_data_ready_completes_frozen_evaluation_without_rewinding_market_sta
     projection = RedisQ2ProjectionAdapter(FakeRedis()).read(trade_date, observed_at)
     reducer = MarketStateReducer()
     reducer.apply_snapshot(projection, logical_time_ms=local_time_ms(trade_date, "09:19:59"), session_id=trade_date, phase="AUCTION_TRIAL")
+    original_revision = reducer.state.revision
+    original_logical_time = reducer.state.logical_time_ms
     original_snapshot = reducer.build_snapshot("EVALUATION_ORIGIN", logical_time_ms=local_time_ms(trade_date, "09:19:59"))
     engine = DeterministicEngine(reducer, WindowManager((WindowSpec("auction_trial", local_time_ms(trade_date, "09:15:00"), local_time_ms(trade_date, "09:20:00")),)), ProbeStrategy(), session_id=trade_date, phase="AUCTION_TRIAL")
     engine.submit(EngineSignal("timer-newer", local_time_ms(trade_date, "09:20:00"), 1, SignalKind.TIMER, {"trigger_id": "AUCTION_0920", "close_windows": ("auction_trial",)}))
@@ -197,6 +306,32 @@ def test_old_data_ready_completes_frozen_evaluation_without_rewinding_market_sta
     second = engine.run_until_empty()
     assert [item.trigger_id for item in second.snapshots] == ["AUCTION_0920", "EVALUATION_ORIGIN"]
     assert second.strategy_results[-1].evaluation_id == "eval-old"
+    assert reducer.state.revision == original_revision
+    assert reducer.state.logical_time_ms == original_logical_time
+
+
+def test_long_drain_retains_bounded_history_and_idempotency_cache():
+    engine = DeterministicEngine(
+        MarketStateReducer(),
+        WindowManager((WindowSpec("wide", 0, 10**15),)),
+        ProbeStrategy(),
+        result_history_limit=8,
+        signal_id_cache_limit=16,
+    )
+    for index in range(1000):
+        engine.submit(EngineSignal(
+            "pulse-%04d" % index,
+            index + 1,
+            index,
+            SignalKind.PULSE,
+            {"trigger_id": "PULSE_%04d" % index},
+        ))
+    result = engine.run_until_empty()
+    assert result.processed_signals == 1000
+    assert len(result.snapshots) == 8
+    assert len(result.strategy_results) == 8
+    assert len(engine._submitted_signatures) == 16
+    assert not engine._queue
 
 
 def test_recovery_catchup_marks_closed_window_origin():
