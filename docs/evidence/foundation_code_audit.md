@@ -8,9 +8,10 @@ Branch: `codex/fix-foundation-wheels`
 - `python -m pytest -q`: 45 passed on local Python 3.9.13 compatibility smoke.
 - `python -m compileall -q src tests examples`: passed.
 - `git diff --check`: passed.
-- Formal server runtime interpreter exists on `cobra-ion`: Python 3.12.3. The new
-  project has not been deployed or executed remotely yet; remote verification so
-  far is limited to read-only Redis/TD probes through the existing legacy venv.
+- Formal server runtime interpreter on `cobra-ion` is Python 3.12.3. The current
+  `src`/`tests` were copied to the explicit temporary validation directory
+  `/home/exedev/tmp/engine_core_validation_20260904` and passed with
+  `PYTHONPATH=src`: 45 tests passed. No production process or data was changed.
 - No source file imports the legacy `engine_next` project, Redis client, TD
   client, RabbitMQ client, or network library.
 
