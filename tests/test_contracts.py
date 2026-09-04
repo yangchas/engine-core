@@ -88,3 +88,33 @@ def test_frozen_bundle_rejects_results_outside_declared_order():
     )
     with pytest.raises(ValueError, match="unexpected DataResult"):
         FrozenDataBundle.from_results("eval", 1, (), {"extra": result})
+
+
+def test_frozen_bundle_semantic_hash_excludes_provider_evidence():
+    from dataclasses import replace
+    from engine_core.contracts import DataResult, DataStatus, FrozenDataBundle, Provenance
+
+    base = DataResult(
+        request_id="r",
+        function_id="previous_day_stats",
+        status=DataStatus.READY,
+        data={"previous_trade_date": "2026-09-03", "close": 1159},
+        actual_source="td",
+        requested_trade_date="2026-09-04",
+        actual_trade_date="2026-09-03",
+        effective_at_ms=1,
+        available_at_ms=1,
+        observed_at_ms=1,
+        schema_version=1,
+        completeness=1.0,
+        provenance=(Provenance("td", "td", "v1", "2026-09-03", 1, 1, "e1"),),
+    )
+    alternate_evidence = replace(
+        base,
+        actual_source="qmt",
+        observed_at_ms=2,
+        provenance=(Provenance("qmt", "http", "v2", "2026-09-03", 1, 2, "e2"),),
+    )
+    left = FrozenDataBundle.from_results("eval", 1, ("previous_day_stats",), {"previous_day_stats": base})
+    right = FrozenDataBundle.from_results("eval", 1, ("previous_day_stats",), {"previous_day_stats": alternate_evidence})
+    assert left.content_hash == right.content_hash

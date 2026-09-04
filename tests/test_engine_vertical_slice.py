@@ -118,3 +118,22 @@ def test_market_cross_section_excludes_non_equity_symbols():
     snapshot = reducer.build_snapshot("AUCTION_0920")
     assert snapshot.raw_market_cross_section["observed_symbol_count"] == 2
     assert snapshot.raw_market_cross_section["excluded_non_equity_count"] == 1
+
+
+def test_failed_apply_without_logical_time_does_not_mutate_revision():
+    reducer = MarketStateReducer()
+    redis = FakeRedis()
+    for values in redis.hashes.values():
+        values["ts"] = "0"
+    projection = RedisQ2ProjectionAdapter(redis).read(
+        "2026-09-04",
+        datetime(2026, 9, 4, 9, 20, tzinfo=timezone(timedelta(hours=8))),
+    )
+    assert projection.envelope.effective_time_ms is None
+    try:
+        reducer.apply_snapshot(projection)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("missing logical time should be rejected")
+    assert reducer.state.revision == 0

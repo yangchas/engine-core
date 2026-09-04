@@ -393,7 +393,7 @@ class FrozenDataBundle:
             "results": [
                 {
                     "function_id": function_id,
-                    "result": ordered[function_id],
+                    "result": _data_result_semantic_value(ordered[function_id]),
                 }
                 for function_id in function_order
             ],
@@ -407,6 +407,24 @@ class FrozenDataBundle:
             content_hash=semantic_hash(content),
             function_order=tuple(function_order),
         )
+
+
+def _data_result_semantic_value(result: DataResult) -> Mapping[str, Any]:
+    """Select business/temporal result fields and exclude evidence lineage."""
+
+    return {
+        "function_id": result.function_id,
+        "status": result.status,
+        "data": result.data,
+        "requested_trade_date": result.requested_trade_date,
+        "actual_trade_date": result.actual_trade_date,
+        "effective_at_ms": result.effective_at_ms,
+        "available_at_ms": result.available_at_ms,
+        "schema_version": result.schema_version,
+        "completeness": result.completeness,
+        "missing_fields": result.missing_fields,
+        "missing_symbols": result.missing_symbols,
+    }
 
 
 @dataclass(frozen=True)
