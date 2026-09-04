@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import math
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, Mapping, Optional, Protocol, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
@@ -449,7 +449,7 @@ class RedisQ2ProjectionAdapter:
             raise ValueError("pass freshness_policy or stale_after_ms, not both")
         policy = freshness_policy or FreshnessPolicy(stale_after_ms=stale_after_ms)
 
-        raw_symbols = self._client.smembers(self._active_prefix + trade_date)
+        raw_symbols = self._read_active_symbols(trade_date)
         expected = tuple(sorted({normalize_symbol(item) for item in raw_symbols}))
         raw_hashes = {}
         for symbol in expected:
@@ -464,3 +464,15 @@ class RedisQ2ProjectionAdapter:
             freshness_policy=policy,
             source_id=self._source_id,
         )
+
+    def _read_active_symbols(self, trade_date: str) -> Sequence[Any]:
+        """Use the legacy compact date key, with ISO fixture compatibility."""
+
+        try:
+            compact = date.fromisoformat(trade_date).strftime("%Y%m%d")
+        except ValueError as exc:
+            raise ValueError("trade_date must be YYYY-MM-DD") from exc
+        compact_values = self._client.smembers(self._active_prefix + compact)
+        if compact_values:
+            return compact_values
+        return self._client.smembers(self._active_prefix + trade_date)

@@ -57,6 +57,25 @@ def test_q2_adapter_reports_projection_cohort_and_missing_symbol():
     assert result.quotes["000001"].price_milli == 1000
 
 
+def test_q2_adapter_prefers_legacy_compact_active_date_key():
+    redis = FakeRedis(
+        {"q2:active:20260904": {"000001"}},
+        {
+            "q2:000001": {
+                "px": "1000",
+                "pc": "990",
+                "amt": "1",
+                "ts": "1788484799000",
+            }
+        },
+    )
+    result = RedisQ2ProjectionAdapter(redis).read(
+        "2026-09-04",
+        datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc),
+    )
+    assert result.expected_symbols == ("000001",)
+
+
 def test_q2_adapter_rejects_invalid_symbol_and_naive_observation():
     with pytest.raises(ValueError):
         normalize_symbol("not-a-symbol")
