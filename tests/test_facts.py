@@ -62,8 +62,8 @@ def test_segment_frame_keeps_fact_groups_independently_statused():
     )
     assert frame.price.status.value == "READY"
     assert frame.price.return_bp == 200
-    assert frame.volume.amount_delta_native == 100.0
-    assert frame.order_book.directional_pressure_native == 20.0
+    assert frame.volume.amount_delta_yuan == 100.0
+    assert frame.order_book.directional_pressure_yuan == 20.0
     assert frame.breadth.status.value == "UNAVAILABLE"
     assert frame.theme.status.value == "UNAVAILABLE"
     assert frame.quality.unavailable_groups == ("breadth", "theme")
@@ -152,8 +152,8 @@ def test_minimal_0920_to_0924_case_is_engine_independent_and_repeatable():
     comparison = compare_adjacent_segments(first, second)
     assert first.price.return_bp == 101
     assert second.price.return_bp == 150
-    assert second.volume.amount_delta_native == 180
-    assert second.order_book.directional_pressure_native == 20
+    assert second.volume.amount_delta_yuan == 180
+    assert second.order_book.directional_pressure_yuan == 20
     assert comparison.price_change == "PRICE_STRONGER"
     assert comparison.volume_change == "VOLUME_EXPANDING"
     assert comparison.order_book_change == "PRESSURE_IMPROVING"
@@ -182,7 +182,7 @@ def test_missing_symbol_does_not_become_zero_facts():
     )
     assert frame.quality.status.value == "MISSING"
     assert frame.price.start_price_milli is None
-    assert frame.volume.amount_delta_native is None
+    assert frame.volume.amount_delta_yuan is None
 
 
 def test_unknown_counter_semantics_does_not_create_fake_delta():
@@ -196,7 +196,7 @@ def test_unknown_counter_semantics_does_not_create_fake_delta():
         scope_id="000001",
     )
     assert frame.volume.status.value == "UNAVAILABLE"
-    assert frame.volume.amount_delta_native is None
+    assert frame.volume.amount_delta_yuan is None
     assert "volume" in frame.quality.unavailable_groups
 
 

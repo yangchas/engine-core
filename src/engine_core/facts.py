@@ -37,8 +37,8 @@ class PriceFacts:
 @dataclass(frozen=True)
 class VolumeFacts:
     status: FactStatus
-    amount_delta_native: Optional[Number]
-    volume_delta_native: Optional[Number]
+    amount_delta_yuan: Optional[Number]
+    volume_delta_shares: Optional[Number]
     field_lineage: Mapping[str, Tuple[str, ...]]
 
     def __post_init__(self) -> None:
@@ -48,7 +48,7 @@ class VolumeFacts:
 @dataclass(frozen=True)
 class OrderBookFacts:
     status: FactStatus
-    directional_pressure_native: Optional[Number]
+    directional_pressure_yuan: Optional[Number]
     field_lineage: Mapping[str, Tuple[str, ...]]
 
     def __post_init__(self) -> None:
@@ -239,10 +239,10 @@ def build_segment_frame(
         {"start_price_milli": (start_ref,), "end_price_milli": (end_ref,)},
     )
 
-    amount_start = _as_number(start_values.get("amount_native"))
-    amount_end = _as_number(end_values.get("amount_native"))
-    volume_start = _as_number(start_values.get("volume_native"))
-    volume_end = _as_number(end_values.get("volume_native"))
+    amount_start = _as_number(start_values.get("amount_yuan"))
+    amount_end = _as_number(end_values.get("amount_yuan"))
+    volume_start = _as_number(start_values.get("volume_shares"))
+    volume_end = _as_number(end_values.get("volume_shares"))
     amount_delta, amount_status = _delta(
         amount_start,
         amount_end,
@@ -258,13 +258,13 @@ def build_segment_frame(
         volume_status,
         amount_delta,
         volume_delta,
-        {"amount_native": (start_ref, end_ref), "volume_native": (start_ref, end_ref)},
+        {"amount_yuan": (start_ref, end_ref), "volume_shares": (start_ref, end_ref)},
     )
 
-    bid_start = _as_number(start_values.get("auction_bid_amount_native"))
-    ask_start = _as_number(start_values.get("auction_ask_amount_native"))
-    bid_end = _as_number(end_values.get("auction_bid_amount_native"))
-    ask_end = _as_number(end_values.get("auction_ask_amount_native"))
+    bid_start = _as_number(start_values.get("auction_bid_amount_yuan"))
+    ask_start = _as_number(start_values.get("auction_ask_amount_yuan"))
+    bid_end = _as_number(end_values.get("auction_bid_amount_yuan"))
+    ask_end = _as_number(end_values.get("auction_ask_amount_yuan"))
     pressure_start = compute_resting_order_pressure(bid_start, ask_start)
     pressure_end = compute_resting_order_pressure(bid_end, ask_end)
     pressure = pressure_end
@@ -341,23 +341,23 @@ def compare_adjacent_segments(
     if price_change != "PRICE_UNKNOWN":
         reasons.append("price.return_bp")
     volume_change = _compare(
-        previous.volume.amount_delta_native,
-        current.volume.amount_delta_native,
+        previous.volume.amount_delta_yuan,
+        current.volume.amount_delta_yuan,
         "VOLUME_EXPANDING",
         "VOLUME_CONTRACTING",
         "VOLUME_UNKNOWN",
     )
     if volume_change != "VOLUME_UNKNOWN":
-        reasons.append("volume.amount_delta_native")
+        reasons.append("volume.amount_delta_yuan")
     order_change = _compare(
-        previous.order_book.directional_pressure_native,
-        current.order_book.directional_pressure_native,
+        previous.order_book.directional_pressure_yuan,
+        current.order_book.directional_pressure_yuan,
         "PRESSURE_IMPROVING",
         "PRESSURE_WEAKENING",
         "PRESSURE_UNKNOWN",
     )
     if order_change != "PRESSURE_UNKNOWN":
-        reasons.append("order_book.directional_pressure_native")
+        reasons.append("order_book.directional_pressure_yuan")
     comparison = {
         "previous_segment_id": previous.segment_id,
         "current_segment_id": current.segment_id,
@@ -423,12 +423,12 @@ def _frame(
         },
         "volume": {
             "status": volume.status,
-            "amount_delta_native": volume.amount_delta_native,
-            "volume_delta_native": volume.volume_delta_native,
+            "amount_delta_yuan": volume.amount_delta_yuan,
+            "volume_delta_shares": volume.volume_delta_shares,
         },
         "order_book": {
             "status": order_book.status,
-            "directional_pressure_native": order_book.directional_pressure_native,
+            "directional_pressure_yuan": order_book.directional_pressure_yuan,
         },
         "breadth": {
             "status": breadth.status,

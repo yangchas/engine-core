@@ -46,12 +46,12 @@ class Q2FieldSpec:
 Q2_FIELD_CONTRACT: Tuple[Q2FieldSpec, ...] = (
     Q2FieldSpec("px", "price_milli", "int", "milli_price", "current price", True),
     Q2FieldSpec("pc", "pre_close_milli", "int", "milli_price", "previous close", True),
-    Q2FieldSpec("amt", "amount_native", "int", "yuan", "cumulative trading amount", True),
-    Q2FieldSpec("vol", "volume_native", "int", "shares", "cumulative share volume", False),
+    Q2FieldSpec("amt", "amount_yuan", "int", "yuan", "cumulative trading amount", True),
+    Q2FieldSpec("vol", "volume_shares", "int", "shares", "cumulative share volume", False),
     Q2FieldSpec("ts", "source_timestamp_ms", "epoch_ms", "epoch_ms", "source update time", True),
     Q2FieldSpec("ph", "phase", "int", "code", "market phase", False),
-    Q2FieldSpec("br", "auction_bid_amount_native", "int", "yuan", "derived level-2 resting bid amount", False),
-    Q2FieldSpec("ar", "auction_ask_amount_native", "int", "yuan", "derived level-2 resting ask amount", False),
+    Q2FieldSpec("br", "auction_bid_amount_yuan", "int", "yuan", "derived level-2 resting bid amount", False),
+    Q2FieldSpec("ar", "auction_ask_amount_yuan", "int", "yuan", "derived level-2 resting ask amount", False),
     Q2FieldSpec("mk", "market", "str", "code", "market code", False),
 )
 
@@ -118,15 +118,15 @@ class Q2Quote:
     name: Optional[str]
     price_milli: Optional[int]
     pre_close_milli: Optional[int]
-    amount_native: Optional[int]
-    volume_native: Optional[int]
+    amount_yuan: Optional[int]
+    volume_shares: Optional[int]
     source_timestamp_ms: Optional[int]
     phase: Optional[int]
     limit_state: Optional[int]
-    auction_amount_native: Optional[int]
-    auction_bid_amount_native: Optional[int]
-    auction_ask_amount_native: Optional[int]
-    amount_2m_native: Optional[int]
+    auction_amount_yuan: Optional[int]
+    auction_bid_amount_yuan: Optional[int]
+    auction_ask_amount_yuan: Optional[int]
+    amount_2m_yuan: Optional[int]
     speed_1m_bp: Optional[int]
     raw_fields: Mapping[str, Any]
     field_errors: Tuple[str, ...] = ()
@@ -142,15 +142,15 @@ class Q2Quote:
             "name": self.name,
             "price_milli": self.price_milli,
             "pre_close_milli": self.pre_close_milli,
-            "amount_native": self.amount_native,
-            "volume_native": self.volume_native,
+            "amount_yuan": self.amount_yuan,
+            "volume_shares": self.volume_shares,
             "source_timestamp_ms": self.source_timestamp_ms,
             "phase": self.phase,
             "limit_state": self.limit_state,
-            "auction_amount_native": self.auction_amount_native,
-            "auction_bid_amount_native": self.auction_bid_amount_native,
-            "auction_ask_amount_native": self.auction_ask_amount_native,
-            "amount_2m_native": self.amount_2m_native,
+            "auction_amount_yuan": self.auction_amount_yuan,
+            "auction_bid_amount_yuan": self.auction_bid_amount_yuan,
+            "auction_ask_amount_yuan": self.auction_ask_amount_yuan,
+            "amount_2m_yuan": self.amount_2m_yuan,
             "speed_1m_bp": self.speed_1m_bp,
             "field_errors": self.field_errors,
         }
@@ -184,15 +184,15 @@ def normalize_q2(symbol: str, raw_hash: Mapping[Any, Any]) -> Q2Quote:
         name=str(raw["name"]) if raw.get("name") is not None else None,
         price_milli=int_field("px"),
         pre_close_milli=int_field("pc"),
-        amount_native=int_field("amt"),
-        volume_native=int_field("vol"),
+        amount_yuan=int_field("amt"),
+        volume_shares=int_field("vol"),
         source_timestamp_ms=timestamp_ms,
         phase=int_field("ph"),
         limit_state=int_field("ls"),
-        auction_amount_native=int_field("am"),
-        auction_bid_amount_native=int_field("br"),
-        auction_ask_amount_native=int_field("ar"),
-        amount_2m_native=int_field("amt2m"),
+        auction_amount_yuan=int_field("am"),
+        auction_bid_amount_yuan=int_field("br"),
+        auction_ask_amount_yuan=int_field("ar"),
+        amount_2m_yuan=int_field("amt2m"),
         speed_1m_bp=int_field("spd1m"),
         raw_fields=raw,
         field_errors=tuple(sorted(set(errors))),
@@ -245,7 +245,7 @@ def validate_q2(
         errors.append("pc")
     elif quote.pre_close_milli <= 0:
         errors.append("pc_non_positive")
-    if quote.amount_native is None:
+    if quote.amount_yuan is None:
         errors.append("amt")
     if quote.source_timestamp_ms is None:
         errors.append("ts")

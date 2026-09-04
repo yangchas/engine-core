@@ -63,7 +63,7 @@ def test_q2_adapter_reports_projection_cohort_and_missing_symbol():
     assert result.envelope.payload_kind is PayloadKind.L2_PROJECTION_SNAPSHOT
     assert result.envelope.generation is None
     assert result.envelope.generation_kind == "OBSERVATION_COHORT"
-    assert result.quotes["000001"].amount_native == 0.0
+    assert result.quotes["000001"].amount_yuan == 0.0
     assert result.quotes["000001"].price_milli == 1000
 
 
@@ -122,7 +122,7 @@ def test_q2_adapter_rejects_non_finite_numeric_fields_as_missing_with_error():
     )
     quote = result.quotes["000001"]
     assert quote.price_milli is None
-    assert quote.amount_native is None
+    assert quote.amount_yuan is None
     assert set(quote.field_errors) == {"amt", "px", "ts"}
 
 
@@ -190,7 +190,7 @@ def test_production_ground_truth_fixture_normalizes_without_raw_field_coupling()
     ).read("2026-08-26", observed)
     assert result.status is DataStatus.READY
     assert result.quotes["000001"].price_milli == 11540
-    assert result.quotes["000001"].amount_native == 10196700
+    assert result.quotes["000001"].amount_yuan == 10196700
     assert "raw_fields" not in result.quotes["000001"].to_mapping()
 
 

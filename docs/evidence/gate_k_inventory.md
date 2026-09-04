@@ -25,7 +25,7 @@
 | ph | phase | 已观察为 phase code |
 | ls | limit_state | 已观察为 limit state code |
 | am/br/ar | auction amount fields | 元金额；br/ar 为二档盘口换算，producer evidence 已确认 |
-| amt2m | amount_2m_native | 累计金额差（元），producer evidence 已确认 |
+| amt2m | amount_2m_yuan | 累计金额差（元），producer evidence 已确认 |
 | spd1m | speed_1m_bp | 已观察为 bp-scaled integer |
 
 ## 当前 UNKNOWN
