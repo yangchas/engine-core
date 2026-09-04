@@ -10,6 +10,7 @@ from engine_core import (
     compare_segments,
     compute_resting_order_pressure,
 )
+from engine_core.contracts import semantic_hash
 
 
 class FakeRedis:
@@ -122,6 +123,51 @@ def test_resting_order_pressure_is_a_missing_safe_pure_function():
     assert compute_resting_order_pressure(30, 10) == 20
     assert compute_resting_order_pressure(0, 0) == 0
     assert compute_resting_order_pressure(None, 10) is None
+
+
+def test_minimal_0920_to_0924_case_is_engine_independent_and_repeatable():
+    # The legacy producer fires the A20/A24 anchors at 09:20:03 and 09:24:10;
+    # the test keeps those observed times distinct from requested wall labels.
+    base = _snapshot(990, 40, 18, 12, "09:19:59", "AUCTION_START")
+    start = _snapshot(1000, 100, 20, 10, "09:20:03", "AUCTION_TRIAL_END")
+    end = _snapshot(1015, 280, 32, 12, "09:24:10", "AUCTION_REPRICE_END")
+    first = build_segment_frame(
+        "auction_trial",
+        base,
+        start,
+        scope_type="SYMBOL",
+        scope_id="000001",
+        amount_semantics="CUMULATIVE",
+        volume_semantics="CUMULATIVE",
+    )
+    second = build_segment_frame(
+        "auction_reprice",
+        start,
+        end,
+        scope_type="SYMBOL",
+        scope_id="000001",
+        amount_semantics="CUMULATIVE",
+        volume_semantics="CUMULATIVE",
+    )
+    comparison = compare_adjacent_segments(first, second)
+    assert first.price.return_bp == 101
+    assert second.price.return_bp == 150
+    assert second.volume.amount_delta_native == 180
+    assert second.order_book.directional_pressure_native == 20
+    assert comparison.price_change == "PRICE_STRONGER"
+    assert comparison.volume_change == "VOLUME_EXPANDING"
+    assert comparison.order_book_change == "PRESSURE_IMPROVING"
+    assert semantic_hash(first) == semantic_hash(
+        build_segment_frame(
+            "auction_trial",
+            base,
+            start,
+            scope_type="SYMBOL",
+            scope_id="000001",
+            amount_semantics="CUMULATIVE",
+            volume_semantics="CUMULATIVE",
+        )
+    )
 
 
 def test_missing_symbol_does_not_become_zero_facts():
