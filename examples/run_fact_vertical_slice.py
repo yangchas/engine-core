@@ -12,7 +12,7 @@ from engine_core import (  # noqa: E402
     MarketStateReducer,
     RedisQ2ProjectionAdapter,
     build_segment_frame,
-    compare_segments,
+    compare_adjacent_segments,
 )
 from engine_core.contracts import canonical_json  # noqa: E402
 from engine_core.windows import local_time_ms  # noqa: E402
@@ -81,7 +81,7 @@ def main() -> None:
         amount_semantics="CUMULATIVE",
         volume_semantics="CUMULATIVE",
     )
-    comparison = compare_segments(trial, reprice)
+    comparison = compare_adjacent_segments(trial, reprice)
     print(canonical_json({"trial": trial, "reprice": reprice, "comparison": comparison}))
 
 

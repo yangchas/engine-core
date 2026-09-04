@@ -2,8 +2,10 @@ from engine_core import (
     DataContext,
     DataRequest,
     DataStatus,
+    CallablePreviousDayStatsProvider,
     FixturePreviousDayStatsProvider,
     PreviousDayStatsFunction,
+    ProviderResult,
     TemporalDataGuard,
     freeze_data_results,
 )
@@ -141,3 +143,35 @@ def test_previous_day_function_never_promotes_temporally_unavailable_result():
         _request(),
     )
     assert result.status is DataStatus.UNAVAILABLE
+
+
+def test_callable_provider_wraps_existing_access_without_reimplementing_connection():
+    def legacy_access(request):
+        assert request.trade_date == "2026-09-04"
+        return ProviderResult(
+            raw_data={
+                "previous_trade_date": "2026-09-03",
+                "close_by_symbol": {"000001": 1159},
+            },
+            source_id="tdengine_daily_kline",
+            source_schema="legacy_daily_kline",
+            effective_at_ms=1788393600000,
+            available_at_ms=1788480000000,
+            observed_at_ms=1788484800000,
+            availability_status="VERIFIED",
+            evidence_ref="probe/td/daily_kline",
+        )
+
+    provider = CallablePreviousDayStatsProvider(legacy_access)
+    result = PreviousDayStatsFunction(provider).execute(
+        DataContext(
+            "eval-1",
+            "AUCTION",
+            1788484800000,
+            expected_previous_trade_date="2026-09-03",
+        ),
+        _request(),
+    )
+    assert result.status is DataStatus.READY
+    assert result.actual_source == "tdengine_daily_kline"
+    assert result.provenance[0].evidence_ref == "probe/td/daily_kline"

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, Mapping, Optional, Protocol, Tuple
+from typing import Any, Callable, Mapping, Optional, Protocol, Tuple
 
 from .contracts import (
     DataRequest,
@@ -12,6 +12,7 @@ from .contracts import (
     FrozenDataBundle,
     Provenance,
     canonical_hash,
+    semantic_hash,
 )
 
 
@@ -28,6 +29,88 @@ class DataProvider(Protocol):
 
     def fetch(self, request: DataRequest) -> DataResult:
         ...
+
+
+@dataclass(frozen=True)
+class ProviderResult:
+    """Minimal result emitted by an existing physical access path."""
+
+    raw_data: Any
+    source_id: str
+    source_schema: str
+    effective_at_ms: Optional[int]
+    available_at_ms: Optional[int]
+    observed_at_ms: int
+    availability_status: str = "UNKNOWN"
+    evidence_ref: Optional[str] = None
+    error: Optional[str] = None
+
+
+class CallablePreviousDayStatsProvider:
+    """Thin wrapper around a verified legacy TD/Redis access callable.
+
+    The callable owns connection, authentication, query shape, timeout and
+    retry behavior.  This class only maps its result to the engine contract.
+    """
+
+    def __init__(
+        self,
+        fetcher: Callable[[DataRequest], ProviderResult],
+    ) -> None:
+        self._fetcher = fetcher
+
+    def fetch(self, request: DataRequest) -> DataResult:
+        physical = self._fetcher(request)
+        if physical.error:
+            status = DataStatus.ERROR
+        elif not isinstance(physical.raw_data, Mapping):
+            status = DataStatus.INVALID
+        else:
+            status = DataStatus.READY
+        payload = physical.raw_data
+        actual_trade_date = (
+            payload.get("previous_trade_date")
+            if isinstance(payload, Mapping)
+            else None
+        )
+        if status is DataStatus.READY and not isinstance(actual_trade_date, str):
+            status = DataStatus.INVALID
+        content = {
+            "function_id": request.function_id,
+            "requested_trade_date": request.trade_date,
+            "actual_trade_date": actual_trade_date,
+            "data": payload,
+            "source_id": physical.source_id,
+            "source_schema": physical.source_schema,
+        }
+        return DataResult(
+            request_id=request.request_id,
+            function_id=request.function_id,
+            status=status,
+            data=payload,
+            actual_source=physical.source_id,
+            requested_trade_date=request.trade_date,
+            actual_trade_date=actual_trade_date,
+            effective_at_ms=physical.effective_at_ms,
+            available_at_ms=physical.available_at_ms,
+            observed_at_ms=physical.observed_at_ms,
+            schema_version=1,
+            completeness=1.0 if status is DataStatus.READY else 0.0,
+            content_hash=semantic_hash(content),
+            missing_fields=("error",) if physical.error else (),
+            provenance=(
+                Provenance(
+                    source_id=physical.source_id,
+                    source_kind="legacy_provider",
+                    source_schema=physical.source_schema,
+                    source_trade_date=actual_trade_date,
+                    effective_at_ms=physical.effective_at_ms,
+                    observed_at_ms=physical.observed_at_ms,
+                    evidence_ref=physical.evidence_ref,
+                    notes=("availability=" + physical.availability_status,),
+                ),
+            ),
+        )
 
 
 class DataFunction(Protocol):
