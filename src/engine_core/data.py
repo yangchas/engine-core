@@ -13,7 +13,6 @@ from .contracts import (
     DataStatus,
     FrozenDataBundle,
     Provenance,
-    canonical_hash,
     semantic_hash,
 )
 
@@ -26,16 +25,14 @@ class DataContext:
     expected_previous_trade_date: Optional[str] = None
 
 
-class DataProvider(Protocol):
-    """Physical source boundary; a provider never defines business semantics."""
-
-    def fetch(self, request: DataRequest) -> DataResult:
-        ...
-
-
 @dataclass(frozen=True)
 class ProviderResult:
-    """Minimal result emitted by an existing physical access path."""
+    """Raw result emitted by a physical access path.
+
+    ``available_at_ms`` is only populated when the source provides historical
+    availability evidence.  A successful query by itself only establishes
+    ``observed_at_ms``.
+    """
 
     raw_data: Any
     source_id: str
@@ -46,6 +43,18 @@ class ProviderResult:
     availability_status: str = "UNKNOWN"
     evidence_ref: Optional[str] = None
     error: Optional[str] = None
+
+
+class DataProvider(Protocol):
+    """Physical source boundary; providers do not create ``DataResult``."""
+
+    def fetch(
+        self,
+        request: DataRequest,
+        *,
+        previous_trade_date: str,
+    ) -> ProviderResult:
+        ...
 
 
 def normalize_previous_day_stats_rows(
@@ -134,83 +143,136 @@ def _finite_number(value: Any) -> bool:
     return math.isfinite(float(value))
 
 
-class CallablePreviousDayStatsProvider:
-    """Thin wrapper around a verified legacy TD/Redis access callable.
+class PreviousDayStatsProvider(DataProvider, Protocol):
+    """Specialized raw provider contract for previous-session statistics."""
 
-    The callable owns connection, authentication, query shape, timeout and
-    retry behavior.  This class only maps its result to the engine contract.
+
+def _data_result_from_provider(
+    request: DataRequest,
+    physical: ProviderResult,
+) -> DataResult:
+    """Translate one physical result into the business DataResult boundary."""
+
+    if physical.error:
+        status = DataStatus.ERROR
+    elif not isinstance(physical.raw_data, Mapping):
+        status = DataStatus.MISSING
+    else:
+        status = DataStatus.READY
+    payload = physical.raw_data
+    if (
+        status is DataStatus.READY
+        and isinstance(payload.get("row_count"), int)
+        and payload["row_count"] == 0
+    ):
+        status = DataStatus.MISSING
+    actual_trade_date = (
+        payload.get("previous_trade_date")
+        if isinstance(payload, Mapping)
+        else None
+    )
+    if status is DataStatus.READY and not isinstance(actual_trade_date, str):
+        status = DataStatus.INVALID
+    availability_status = str(physical.availability_status or "UNKNOWN").upper()
+    available_at_ms = (
+        physical.available_at_ms
+        if availability_status == "VERIFIED"
+        else None
+    )
+    semantic_content = {
+        "function_id": request.function_id,
+        "requested_trade_date": request.trade_date,
+        "actual_trade_date": actual_trade_date,
+        "data": payload,
+        "effective_at_ms": physical.effective_at_ms,
+        "available_at_ms": available_at_ms,
+        "status": status,
+    }
+    return DataResult(
+        request_id=request.request_id,
+        function_id=request.function_id,
+        status=status,
+        data=payload,
+        actual_source=physical.source_id,
+        requested_trade_date=request.trade_date,
+        actual_trade_date=actual_trade_date,
+        effective_at_ms=physical.effective_at_ms,
+        available_at_ms=available_at_ms,
+        observed_at_ms=physical.observed_at_ms,
+        schema_version=1,
+        completeness=1.0 if status is DataStatus.READY else 0.0,
+        content_hash=semantic_hash(semantic_content),
+        missing_fields=("error",) if physical.error else (),
+        provenance=(
+            Provenance(
+                source_id=physical.source_id,
+                source_kind="legacy_provider",
+                source_schema=physical.source_schema,
+                source_trade_date=actual_trade_date,
+                effective_at_ms=physical.effective_at_ms,
+                observed_at_ms=physical.observed_at_ms,
+                evidence_ref=physical.evidence_ref,
+                notes=("availability=" + availability_status,),
+            ),
+        ),
+    )
+
+
+class TDPreviousDayStatsProvider:
+    """Thin TD provider around an already verified read-only access callable.
+
+    ``fetch_rows`` owns the existing TD connection, authentication, query,
+    timeout and retry behavior.  This class only supplies the target date and
+    maps rows into ``ProviderResult``.  It never initializes or mutates TD.
     """
 
     def __init__(
         self,
-        fetcher: Callable[[DataRequest], ProviderResult],
+        fetch_rows: Callable[[str, Tuple[str, ...]], Iterable[Mapping[str, Any]]],
+        *,
+        observed_at_ms: Callable[[], int],
+        source_id: str = "tdengine_daily_kline",
+        source_schema: str = "daily_kline",
+        evidence_ref: Optional[str] = None,
     ) -> None:
-        self._fetcher = fetcher
+        self._fetch_rows = fetch_rows
+        self._observed_at_ms = observed_at_ms
+        self._source_id = source_id
+        self._source_schema = source_schema
+        self._evidence_ref = evidence_ref
 
-    def fetch(self, request: DataRequest) -> DataResult:
-        physical = self._fetcher(request)
-        if physical.error:
-            status = DataStatus.ERROR
-        elif not isinstance(physical.raw_data, Mapping):
-            status = DataStatus.INVALID
-        else:
-            status = DataStatus.READY
-        payload = physical.raw_data
-        if (
-            status is DataStatus.READY
-            and isinstance(payload.get("row_count"), int)
-            and payload["row_count"] == 0
-        ):
-            status = DataStatus.MISSING
-        actual_trade_date = (
-            payload.get("previous_trade_date")
-            if isinstance(payload, Mapping)
-            else None
-        )
-        if status is DataStatus.READY and not isinstance(actual_trade_date, str):
-            status = DataStatus.INVALID
-        availability_status = str(physical.availability_status or "UNKNOWN").upper()
-        available_at_ms = (
-            physical.available_at_ms
-            if availability_status == "VERIFIED"
-            else None
-        )
-        content = {
-            "function_id": request.function_id,
-            "requested_trade_date": request.trade_date,
-            "actual_trade_date": actual_trade_date,
-            "data": payload,
-            "source_id": physical.source_id,
-            "source_schema": physical.source_schema,
-        }
-        return DataResult(
-            request_id=request.request_id,
-            function_id=request.function_id,
-            status=status,
-            data=payload,
-            actual_source=physical.source_id,
-            requested_trade_date=request.trade_date,
-            actual_trade_date=actual_trade_date,
-            effective_at_ms=physical.effective_at_ms,
-            available_at_ms=available_at_ms,
-            observed_at_ms=physical.observed_at_ms,
-            schema_version=1,
-            completeness=1.0 if status is DataStatus.READY else 0.0,
-            content_hash=semantic_hash(content),
-            missing_fields=("error",) if physical.error else (),
-            provenance=(
-                Provenance(
-                    source_id=physical.source_id,
-                    source_kind="legacy_provider",
-                    source_schema=physical.source_schema,
-                    source_trade_date=actual_trade_date,
-                    effective_at_ms=physical.effective_at_ms,
-                    observed_at_ms=physical.observed_at_ms,
-                    evidence_ref=physical.evidence_ref,
-                    notes=("availability=" + physical.availability_status,),
-                ),
-            ),
-        )
+    def fetch(
+        self,
+        request: DataRequest,
+        *,
+        previous_trade_date: str,
+    ) -> ProviderResult:
+        observed = self._observed_at_ms()
+        try:
+            rows = self._fetch_rows(previous_trade_date, tuple(request.symbols))
+            return provider_result_from_previous_day_rows(
+                rows,
+                actual_trade_date=previous_trade_date,
+                source_id=self._source_id,
+                source_schema=self._source_schema,
+                effective_at_ms=None,
+                available_at_ms=None,
+                observed_at_ms=observed,
+                availability_status="OBSERVED",
+                evidence_ref=self._evidence_ref,
+            )
+        except Exception as exc:
+            return ProviderResult(
+                raw_data=None,
+                source_id=self._source_id,
+                source_schema=self._source_schema,
+                effective_at_ms=None,
+                available_at_ms=None,
+                observed_at_ms=observed,
+                availability_status="OBSERVED",
+                evidence_ref=self._evidence_ref,
+                error=type(exc).__name__ + ": " + str(exc),
+            )
 
 
 class DataFunction(Protocol):
@@ -257,7 +319,7 @@ class PreviousDayStatsFunction:
 
     function_id = "previous_day_stats"
 
-    def __init__(self, provider: DataProvider) -> None:
+    def __init__(self, provider: PreviousDayStatsProvider) -> None:
         self._provider = provider
 
     def execute(self, context: DataContext, request: DataRequest) -> DataResult:
@@ -265,9 +327,28 @@ class PreviousDayStatsFunction:
             raise ValueError(
                 "request function_id must be %s" % self.function_id
             )
-        result = self._provider.fetch(request)
-        if result.function_id != self.function_id:
-            raise ValueError("provider returned an unexpected function_id")
+        expected = context.expected_previous_trade_date
+        if expected is None:
+            return DataResult(
+                request_id=request.request_id,
+                function_id=request.function_id,
+                status=DataStatus.INVALID,
+                data=None,
+                actual_source=None,
+                requested_trade_date=request.trade_date,
+                actual_trade_date=None,
+                effective_at_ms=None,
+                available_at_ms=None,
+                observed_at_ms=context.observed_at_ms,
+                schema_version=1,
+                completeness=0.0,
+                missing_fields=("expected_previous_trade_date",),
+            )
+        physical = self._provider.fetch(
+            request,
+            previous_trade_date=expected,
+        )
+        result = _data_result_from_provider(request, physical)
         result = TemporalDataGuard.check(result, request)
         if result.status in (
             DataStatus.MISSING,
@@ -278,8 +359,7 @@ class PreviousDayStatsFunction:
             return result
         if result.actual_trade_date is None:
             return replace(result, status=DataStatus.INVALID)
-        expected = context.expected_previous_trade_date
-        if expected is not None and result.actual_trade_date != expected:
+        if result.actual_trade_date != expected:
             return replace(result, status=DataStatus.STALE)
         if not isinstance(result.data, Mapping):
             return replace(result, status=DataStatus.INVALID)
@@ -294,72 +374,38 @@ class FixturePreviousDayStatsProvider:
     def __init__(self, values_by_trade_date: Mapping[str, Mapping[str, Any]]) -> None:
         self._values_by_trade_date = values_by_trade_date
 
-    def fetch(self, request: DataRequest) -> DataResult:
-        values = self._values_by_trade_date.get(request.trade_date)
+    def fetch(
+        self,
+        request: DataRequest,
+        *,
+        previous_trade_date: str,
+    ) -> ProviderResult:
+        values = self._values_by_trade_date.get(previous_trade_date)
         if values is None:
-            return DataResult(
-                request_id=request.request_id,
-                function_id=request.function_id,
-                status=DataStatus.MISSING,
-                data=None,
-                actual_source="fixture",
-                requested_trade_date=request.trade_date,
-                actual_trade_date=None,
+            return ProviderResult(
+                raw_data=None,
+                source_id="fixture",
+                source_schema="PreviousDayStatsV1",
                 effective_at_ms=None,
                 available_at_ms=None,
                 observed_at_ms=request.effective_as_of_ms,
-                schema_version=1,
-                completeness=0.0,
-                content_hash=canonical_hash(
-                    {
-                        "function_id": request.function_id,
-                        "trade_date": request.trade_date,
-                        "status": DataStatus.MISSING,
-                    }
-                ),
+                availability_status="UNKNOWN",
             )
         payload = dict(values)
-        actual_trade_date = payload.get("previous_trade_date")
-        status = (
-            DataStatus.READY
-            if isinstance(actual_trade_date, str)
-            else DataStatus.INVALID
-        )
-        content = {
-            "function_id": request.function_id,
-            "requested_trade_date": request.trade_date,
-            "actual_trade_date": actual_trade_date,
-            "data": payload,
-        }
         observed = request.effective_as_of_ms
-        return DataResult(
-            request_id=request.request_id,
-            function_id=request.function_id,
-            status=status,
-            data=payload,
-            actual_source="fixture",
-            requested_trade_date=request.trade_date,
-            actual_trade_date=actual_trade_date,
+        return ProviderResult(
+            raw_data=payload,
+            source_id="fixture",
+            source_schema="PreviousDayStatsV1",
             effective_at_ms=observed,
             available_at_ms=observed,
             observed_at_ms=observed,
-            schema_version=1,
-            completeness=1.0 if status is DataStatus.READY else 0.0,
-            content_hash=canonical_hash(content),
-            provenance=(
-                Provenance(
-                    source_id="fixture_previous_day_stats",
-                    source_kind="fixture",
-                    source_schema="PreviousDayStatsV1",
-                    source_trade_date=actual_trade_date,
-                    effective_at_ms=observed,
-                    observed_at_ms=observed,
-                ),
-            ),
+            availability_status="VERIFIED",
+            evidence_ref="fixture/previous_day_stats",
         )
 
 
-def freeze_data_results(
+def build_frozen_bundle(
     evaluation_id: str,
     knowledge_as_of_ms: int,
     function_order: Tuple[str, ...],

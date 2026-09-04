@@ -7,16 +7,24 @@ from engine_core import (
     DataContext,
     DataRequest,
     DataStatus,
-    CallablePreviousDayStatsProvider,
     FixturePreviousDayStatsProvider,
     PreviousDayStatsFunction,
     ProviderResult,
+    TDPreviousDayStatsProvider,
     TemporalDataGuard,
-    freeze_data_results,
+    build_frozen_bundle,
     normalize_previous_day_stats_rows,
     provider_result_from_previous_day_rows,
 )
 from engine_core.contracts import DataResult
+
+
+class StaticProvider:
+    def __init__(self, physical):
+        self.physical = physical
+
+    def fetch(self, request, *, previous_trade_date):
+        return self.physical
 
 
 def _request(function_id="previous_day_stats"):
@@ -32,7 +40,7 @@ def _request(function_id="previous_day_stats"):
 def test_previous_day_function_preserves_business_date_semantics():
     provider = FixturePreviousDayStatsProvider(
         {
-            "2026-09-04": {
+            "2026-09-03": {
                 "previous_trade_date": "2026-09-03",
                 "close_by_symbol": {"000001": 1000},
             }
@@ -53,7 +61,7 @@ def test_previous_day_function_preserves_business_date_semantics():
 
 def test_previous_day_wrong_date_is_stale_not_ready():
     provider = FixturePreviousDayStatsProvider(
-        {"2026-09-04": {"previous_trade_date": "2026-09-02"}}
+        {"2026-09-03": {"previous_trade_date": "2026-09-02"}}
     )
     result = PreviousDayStatsFunction(provider).execute(
         DataContext(
@@ -70,7 +78,7 @@ def test_previous_day_wrong_date_is_stale_not_ready():
 
 def test_frozen_bundle_hash_does_not_depend_on_async_completion_order():
     provider = FixturePreviousDayStatsProvider(
-        {"2026-09-04": {"previous_trade_date": "2026-09-03"}}
+        {"2026-09-03": {"previous_trade_date": "2026-09-03"}}
     )
     function = PreviousDayStatsFunction(provider)
     result_a = function.execute(
@@ -81,13 +89,13 @@ def test_frozen_bundle_hash_does_not_depend_on_async_completion_order():
         DataContext("eval-1", "AUCTION", 1788484800000),
         _request(),
     )
-    left = freeze_data_results(
+    left = build_frozen_bundle(
         "eval-1",
         1788484800000,
         ("previous_day_stats",),
         {"previous_day_stats": result_a},
     )
-    right = freeze_data_results(
+    right = build_frozen_bundle(
         "eval-1",
         1788484800000,
         ("previous_day_stats",),
@@ -139,37 +147,35 @@ def test_temporal_guard_rejects_unknown_availability_for_runtime_data():
 
 def test_previous_day_function_never_promotes_temporally_unavailable_result():
     class FutureProvider:
-        def fetch(self, request):
-            return _ready_result(
+        def fetch(self, request, *, previous_trade_date):
+            return ProviderResult(
+                raw_data={"previous_trade_date": "2026-09-03"},
+                source_id="fixture",
+                source_schema="PreviousDayStatsV1",
                 effective_at_ms=request.effective_as_of_ms,
                 available_at_ms=request.knowledge_as_of_ms + 1,
+                observed_at_ms=request.knowledge_as_of_ms,
+                availability_status="VERIFIED",
             )
 
     result = PreviousDayStatsFunction(FutureProvider()).execute(
-        DataContext("eval-1", "AUCTION", 1788484800000),
+        DataContext("eval-1", "AUCTION", 1788484800000, expected_previous_trade_date="2026-09-03"),
         _request(),
     )
     assert result.status is DataStatus.UNAVAILABLE
 
 
-def test_callable_provider_wraps_existing_access_without_reimplementing_connection():
-    def legacy_access(request):
-        assert request.trade_date == "2026-09-04"
-        return ProviderResult(
-            raw_data={
-                "previous_trade_date": "2026-09-03",
-                "close_by_symbol": {"000001": 1159},
-            },
-            source_id="tdengine_daily_kline",
-            source_schema="legacy_daily_kline",
-            effective_at_ms=1788393600000,
-            available_at_ms=1788480000000,
-            observed_at_ms=1788484800000,
-            availability_status="VERIFIED",
-            evidence_ref="probe/td/daily_kline",
-        )
+def test_td_provider_wraps_existing_access_without_reimplementing_connection():
+    def legacy_rows(previous_trade_date, symbols):
+        assert previous_trade_date == "2026-09-03"
+        assert symbols == ()
+        return [{"symbol": "000001", "close": 11.59, "amount": 100}]
 
-    provider = CallablePreviousDayStatsProvider(legacy_access)
+    provider = TDPreviousDayStatsProvider(
+        legacy_rows,
+        observed_at_ms=lambda: 1788484800000,
+        evidence_ref="probe/td/daily_kline",
+    )
     result = PreviousDayStatsFunction(provider).execute(
         DataContext(
             "eval-1",
@@ -179,30 +185,61 @@ def test_callable_provider_wraps_existing_access_without_reimplementing_connecti
         ),
         _request(),
     )
-    assert result.status is DataStatus.READY
+    assert result.status is DataStatus.UNAVAILABLE
     assert result.actual_source == "tdengine_daily_kline"
     assert result.provenance[0].evidence_ref == "probe/td/daily_kline"
+    assert "available_at_unknown" in result.missing_fields
 
 
-def test_callable_provider_does_not_promote_observed_availability_to_runtime():
-    def observed_access(request):
-        return ProviderResult(
-            raw_data={"previous_trade_date": "2026-09-03"},
-            source_id="network_oracle",
-            source_schema="historical_result",
-            effective_at_ms=request.effective_as_of_ms,
-            available_at_ms=request.knowledge_as_of_ms,
-            observed_at_ms=request.knowledge_as_of_ms,
-            availability_status="OBSERVED",
-        )
+def test_observed_provider_does_not_promote_availability_to_runtime():
+    def observed_rows(previous_trade_date, symbols):
+        return [{"symbol": "000001", "close": 11.59, "amount": 100}]
 
     result = PreviousDayStatsFunction(
-        CallablePreviousDayStatsProvider(observed_access)
+        TDPreviousDayStatsProvider(
+            observed_rows,
+            observed_at_ms=lambda: 1788484800000,
+            source_id="network_oracle",
+            source_schema="historical_result",
+        )
     ).execute(
-        DataContext("eval-1", "AUCTION", 1788484800000),
+        DataContext("eval-1", "AUCTION", 1788484800000, expected_previous_trade_date="2026-09-03"),
         _request(),
     )
     assert result.status is DataStatus.UNAVAILABLE
+
+
+def test_data_result_semantic_hash_excludes_provider_identity():
+    physical = provider_result_from_previous_day_rows(
+        [{"symbol": "000001", "close": 11.59, "amount": 100}],
+        actual_trade_date="2026-09-03",
+        source_id="source-a",
+        source_schema="schema-a",
+        effective_at_ms=1788393600000,
+        available_at_ms=1788480000000,
+        observed_at_ms=1788484800000,
+        availability_status="VERIFIED",
+    )
+    other = provider_result_from_previous_day_rows(
+        [{"symbol": "000001", "close": 11.59, "amount": 100}],
+        actual_trade_date="2026-09-03",
+        source_id="source-b",
+        source_schema="schema-b",
+        effective_at_ms=1788393600000,
+        available_at_ms=1788480000000,
+        observed_at_ms=1788484801000,
+        availability_status="VERIFIED",
+    )
+    left = PreviousDayStatsFunction(StaticProvider(physical)).execute(
+        DataContext("eval-identity", "AUCTION", 1788484800000, expected_previous_trade_date="2026-09-03"),
+        _request(),
+    )
+    right = PreviousDayStatsFunction(StaticProvider(other)).execute(
+        DataContext("eval-identity", "AUCTION", 1788484800000, expected_previous_trade_date="2026-09-03"),
+        _request(),
+    )
+    assert left.content_hash == right.content_hash
+    assert left.actual_source != right.actual_source
 
 
 def test_captured_td_previous_day_fixture_runs_through_data_function():
@@ -212,7 +249,7 @@ def test_captured_td_previous_day_fixture_runs_through_data_function():
         )
     )
     provider = FixturePreviousDayStatsProvider({
-        fixture["requested_trade_date"]: {
+        fixture["previous_trade_date"]: {
             "previous_trade_date": fixture["previous_trade_date"],
             "close_by_symbol": {
                 symbol: row["close"] for symbol, row in fixture["rows"].items()
@@ -278,7 +315,7 @@ def test_provider_result_from_legacy_rows_preserves_temporal_metadata():
         evidence_ref="probe/td/daily_kline",
     )
     result = PreviousDayStatsFunction(
-        CallablePreviousDayStatsProvider(lambda request: physical)
+        StaticProvider(physical)
     ).execute(
         DataContext(
             "eval-rows",
@@ -306,7 +343,7 @@ def test_empty_legacy_daily_rows_are_missing_not_ready():
         availability_status="VERIFIED",
     )
     result = PreviousDayStatsFunction(
-        CallablePreviousDayStatsProvider(lambda request: physical)
+        StaticProvider(physical)
     ).execute(
         DataContext(
             "eval-empty-rows",
