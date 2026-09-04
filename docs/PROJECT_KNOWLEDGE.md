@@ -5,6 +5,8 @@
 - [UNKNOWN] Q2 generation 是否是旧生产链真实提供的全局一致版本，待 Gate K 证实。
 - [OBSERVED] 旧 Q2 读取使用 q2:active:{trade_date} 与 q2:{symbol}；px/pc 为 milli 价格字段，其余数量单位必须继续审计。
 - [INFERRED] Q2 是 Redis 中各股票最近状态的投影集合，不应默认解释为同一市场时刻的全市场快照。
+- [VERIFIED] 2026-09-04 对 cobra-ion 的只读 Probe 可通过既有 server venv 访问 Redis Q2；当时最新可用 cohort 为 `q2:active:20260903`，共 5217 个 symbol。
+- [OBSERVED] Q2 producer 写入字段包括 `px/pc/amt/vol/iv/ia/ln/ts/ph/ls/mx/mn/spd1m/amt2m/amt5m/vec3m/vec5m` 以及竞价字段 `a20/a24/a25/am/br/ar` 和 `mk`；只有当前 Wheel 使用的核心字段才冻结到 canonical model。
 
 ## 2. Data Contracts
 
@@ -12,6 +14,7 @@
 - [VERIFIED] 历史日线、昨日数据、主题成分、历史 Tick 和参考价格属于查询型数据。
 - [VERIFIED] Missing != Zero。
 - [VERIFIED] fallback source != fallback semantic。
+- [VERIFIED] 已验证连接方式优先复用；当前 engine_core 只抽取薄边界，不重新建设 Redis/TD/网络访问层级。
 
 ## 3. Runtime Timeline
 
@@ -26,6 +29,8 @@
 - [VERIFIED] 旧 RabbitMQ -> t1_v2 -> TD/Redis -> ACK 链路属于外部成熟生产链，engine_core 首期不接管。
 - [VERIFIED] Redis Q2 是运行时投影，不是历史事实权威。
 - [UNKNOWN] TD 生产版本、重复写语义和历史输入排序能力待 Gate K 验证。
+- [VERIFIED] cobra-ion 上 TD `market_data1.stock_tick_v2` 可由既有 taos 客户端只读访问；2026-09-03 09:20-09:24 查询返回 82183 行，查询排序为事件时间/代码顺序，不代表 Rabbit arrival order。
+- [UNKNOWN] cobra-ion `daily_kline.volume` 的零值语义；Probe 样本为 0，不能直接当作 verified zero。
 - [VERIFIED] CurrentMarketState 只保存当前可观测数据、轻量 projection 和窗口原始累计状态。
 - [VERIFIED] 首个 SegmentFrame 事实切片仅支持 SYMBOL 范围；其他范围显式返回 UNAVAILABLE，不伪装成聚合结果。
 - [VERIFIED] SegmentFrame 的 Price/Volume/OrderBook/Breadth/Theme 各自维护状态；未知累计量语义不计算 delta，返回 UNAVAILABLE。
@@ -37,6 +42,7 @@
 - [UNKNOWN] Q2Frame sequence replay、TD event-time replay 的输入保真度和适配器尚待实现验证。
 - [VERIFIED] 不同信息粒度使用 EXACT_EQUIVALENCE 或 SHARED_FACT_EQUIVALENCE。
 - [VERIFIED] replay 默认 deny-all effect，并通过 knowledge_as_of 防止未来数据穿越。
+- [VERIFIED] Real Data Probe 只作为字段/连接证据和 fixture capture；当前能查到历史数据不等于历史 `available_at` 已早于 replay 的 `knowledge_as_of`。
 
 ## 6. Known Pitfalls
 
@@ -83,3 +89,31 @@
 Evidence：
 - tests/test_facts.py、examples/run_fact_vertical_slice.py
 - docs/evidence/ 后续保存 Gate K、Vertical Slice 和 Gate B 原始报告。
+
+### PITFALL: 把已能查询的数据当作历史时点可知
+
+问题：
+- 今天的网络或 TD 查询可能返回历史最终值，但不证明交易时点已经可见。
+
+正确做法：
+- Runtime/Replay 统一经过 `TemporalDataGuard`；无法证明 `available_at <= knowledge_as_of` 的数据只用于 oracle、Contract 验证或 fixture capture。
+
+不要：
+- 从当前网络查询结果反灌历史 replay runtime。
+
+Evidence：
+- `docs/evidence/real_data_probe/20260904T082940+0800/provider_summary.md`
+
+### PITFALL: 重新发明已验证的连接方式
+
+问题：
+- 新 Provider 若绕过旧系统的 host、key、session、查询和错误处理，会得到与生产链不同的数据能力。
+
+正确做法：
+- 先做 Legacy Connectivity Inventory，只对当前 Wheel 需要的源采用 KEEP/EXTRACT/WRAP；Provider 保持薄边界。
+
+不要：
+- 第一阶段建设通用 `RedisAccess/TDAccess/NetworkAccess` 层级。
+
+Evidence：
+- `docs/evidence/foundation_audit.md`

@@ -1,0 +1,31 @@
+{
+  "captured_at": "2026-09-04T08:29:23+08:00",
+  "host_alias": "cobra-ion",
+  "mode": "read_only",
+  "sources": [
+    {
+      "provider": "redis_q2_projection",
+      "connection": "server venv redis client to 127.0.0.1:6379/db0",
+      "ping": true,
+      "active_key_count": 2,
+      "active_keys": ["q2:active:20260902", "q2:active:20260903"],
+      "latest_active_key": "q2:active:20260903",
+      "latest_active_symbol_count": 5217,
+      "q2_key_count": 5219,
+      "sample_symbol": "000001",
+      "sample_field_names": ["a20", "a24", "a25", "am", "amt", "amt2m", "amt5m", "ar", "br", "ia", "iv", "ln", "ls", "mk", "mn", "mx", "pc", "ph", "px", "spd1m", "ts", "vec3m", "vec5m", "vol"],
+      "sample_core_fields": {"a20": "0", "a24": "0", "a25": "0", "ar": "0", "br": "0", "mk": "sz", "pc": "11910", "ph": "0", "px": "11880", "ts": "1788418800000", "amt": "1324230272", "vol": "1105134"}
+    },
+    {
+      "provider": "tdengine",
+      "connection": "server venv taos client to 127.0.0.1:6030/market_data1",
+      "connected": true,
+      "stock_tick_v2_schema": "ts TIMESTAMP; px_milli/pc_milli INT; amt_yuan/vol_units BIGINT; five-level prices INT; five-level volumes BIGINT; inst/large fields BIGINT; symbol VARCHAR TAG",
+      "stock_tick_20260903_0920_0924_rows": 82183,
+      "stock_tick_sample": {"ts": "2026-09-03 09:20:00+08:00", "symbol": "000002", "px_milli": 3080, "pc_milli": 3080, "amt_yuan": 0, "vol_units": 0, "ap1_milli": 3080, "bp1_milli": 3080, "av1": 1097, "bv1": 1097},
+      "daily_kline_sample": {"ts": "2026-09-03 00:00:00+08:00", "symbol": "000903", "close": 1.940000057220459, "volume": 0, "amount": 50486688.0},
+      "notes": ["TD query used existing half-open date/time predicates", "MIN/MAX aggregate probe was unsupported by the client for this stable and is not treated as a data conclusion", "daily_kline volume zero requires semantic audit"]
+    }
+  ],
+  "secrets": "excluded"
+}
