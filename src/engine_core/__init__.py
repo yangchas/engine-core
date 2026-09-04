@@ -50,6 +50,7 @@ from .facts import (
     compute_resting_order_pressure,
 )
 from .probe import ProbeStrategy
+from .replay import Q2FrameReplaySource, Q2FrameV1, replay_q2frames
 from .q2 import (
     FreshnessPolicy,
     Q2FieldSpec,
@@ -94,6 +95,8 @@ __all__ = [
     "normalize_previous_day_stats_rows",
     "provider_result_from_previous_day_rows",
     "ProbeStrategy",
+    "Q2FrameReplaySource",
+    "Q2FrameV1",
     "Q2ProjectionSnapshot",
     "RedisQ2ProjectionAdapter",
     "FreshnessPolicy",
@@ -125,4 +128,5 @@ __all__ = [
     "compare_segments",
     "compute_resting_order_pressure",
     "build_frozen_bundle",
+    "replay_q2frames",
 ]
