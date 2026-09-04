@@ -283,7 +283,14 @@ class DataFunction(Protocol):
 
 
 class TemporalDataGuard:
-    """Reject data that was not available at the evaluation knowledge cut-off."""
+    """Reject data that was not observed by the evaluation knowledge cut-off.
+
+    A provider query proves when this process observed a result, not when the
+    upstream source first published it.  When historical ``available_at_ms``
+    evidence is absent, an explicitly pre-observed result is still usable for
+    a later node because ``observed_at_ms`` is the strongest available runtime
+    evidence.  It must never be used to infer or populate ``available_at_ms``.
+    """
 
     @staticmethod
     def check(result: DataResult, request: DataRequest) -> DataResult:
@@ -300,9 +307,12 @@ class TemporalDataGuard:
             and result.effective_at_ms > request.effective_as_of_ms
         ):
             reasons.append("effective_at_after_cutoff")
-        if result.available_at_ms is None:
-            reasons.append("available_at_unknown")
-        elif result.available_at_ms > request.knowledge_as_of_ms:
+        if result.observed_at_ms > request.knowledge_as_of_ms:
+            reasons.append("observed_at_after_knowledge_cutoff")
+        if (
+            result.available_at_ms is not None
+            and result.available_at_ms > request.knowledge_as_of_ms
+        ):
             reasons.append("available_at_after_knowledge_cutoff")
         if not reasons:
             return result
@@ -366,6 +376,96 @@ class PreviousDayStatsFunction:
         if "previous_trade_date" not in result.data:
             return replace(result, status=DataStatus.INVALID)
         return result
+
+
+class ReadyDataStore:
+    """Small in-memory store for data observed before an evaluation node.
+
+    This is intentionally a dictionary-shaped readiness cache, not a catalog,
+    registry or durable checkpoint.  Entries are keyed by business function,
+    requested date, exact symbol scope and semantic content hash.  A caller
+    must re-run :class:`TemporalDataGuard` on retrieval because a cached result
+    can be valid for one knowledge cut-off and invalid for an earlier one.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[
+            tuple[str, str, tuple[str, ...], str], DataResult
+        ] = {}
+
+    @staticmethod
+    def _scope(request: DataRequest) -> tuple[str, ...]:
+        return tuple(sorted(request.symbols))
+
+    @classmethod
+    def _key(
+        cls,
+        request: DataRequest,
+        result: DataResult,
+    ) -> tuple[str, str, tuple[str, ...], str]:
+        if not result.content_hash:
+            raise ValueError("ready data requires a semantic content_hash")
+        return (
+            request.function_id,
+            request.trade_date,
+            cls._scope(request),
+            result.content_hash,
+        )
+
+    def put(self, request: DataRequest, result: DataResult) -> None:
+        """Store only an already-guarded, complete result for its request."""
+
+        if result.function_id != request.function_id:
+            raise ValueError("result function_id does not match request")
+        guarded = TemporalDataGuard.check(result, request)
+        if guarded.status is not DataStatus.READY:
+            reason = ",".join(guarded.missing_fields) or guarded.status.value
+            raise ValueError("result is not ready for request: " + reason)
+        self._entries[self._key(request, guarded)] = guarded
+
+    def get(self, request: DataRequest) -> Optional[DataResult]:
+        """Return the newest temporally valid result for an exact scope."""
+
+        candidates = []
+        scope = self._scope(request)
+        for (
+            function_id,
+            trade_date,
+            entry_scope,
+            _,
+        ), result in self._entries.items():
+            if (
+                function_id != request.function_id
+                or trade_date != request.trade_date
+                or entry_scope != scope
+            ):
+                continue
+            guarded = TemporalDataGuard.check(result, request)
+            if guarded.status is DataStatus.READY:
+                candidates.append(guarded)
+        if not candidates:
+            return None
+        return max(
+            candidates,
+            key=lambda item: (item.observed_at_ms, item.content_hash),
+        )
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+
+def prefetch_ready_data(
+    function: DataFunction,
+    context: DataContext,
+    request: DataRequest,
+    store: ReadyDataStore,
+) -> DataResult:
+    """Execute and cache a result observed before a later evaluation node."""
+
+    result = TemporalDataGuard.check(function.execute(context, request), request)
+    if result.status is DataStatus.READY:
+        store.put(request, result)
+    return result
 
 
 class FixturePreviousDayStatsProvider:

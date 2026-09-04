@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -10,10 +11,12 @@ from engine_core import (
     FixturePreviousDayStatsProvider,
     PreviousDayStatsFunction,
     ProviderResult,
+    ReadyDataStore,
     TDPreviousDayStatsProvider,
     TemporalDataGuard,
     build_frozen_bundle,
     normalize_previous_day_stats_rows,
+    prefetch_ready_data,
     provider_result_from_previous_day_rows,
 )
 from engine_core.contracts import DataResult
@@ -105,7 +108,7 @@ def test_frozen_bundle_hash_does_not_depend_on_async_completion_order():
     assert left.content_hash == right.content_hash
 
 
-def _ready_result(*, effective_at_ms=None, available_at_ms=None):
+def _ready_result(*, effective_at_ms=None, available_at_ms=None, observed_at_ms=None):
     return DataResult(
         request_id="r",
         function_id="previous_day_stats",
@@ -116,7 +119,9 @@ def _ready_result(*, effective_at_ms=None, available_at_ms=None):
         actual_trade_date="2026-09-03",
         effective_at_ms=effective_at_ms,
         available_at_ms=available_at_ms,
-        observed_at_ms=1788484800000,
+        observed_at_ms=(
+            1788484800000 if observed_at_ms is None else observed_at_ms
+        ),
         schema_version=1,
         completeness=1.0,
     )
@@ -136,13 +141,27 @@ def test_temporal_guard_rejects_future_effective_and_availability_times():
     }
 
 
-def test_temporal_guard_rejects_unknown_availability_for_runtime_data():
+def test_temporal_guard_accepts_preobserved_data_without_availability_claim():
     result = TemporalDataGuard.check(
         _ready_result(effective_at_ms=None, available_at_ms=None),
         _request(),
     )
+    assert result.status is DataStatus.READY
+    assert result.available_at_ms is None
+
+
+def test_temporal_guard_rejects_observation_after_knowledge_cutoff():
+    request = _request()
+    result = TemporalDataGuard.check(
+        _ready_result(
+            effective_at_ms=None,
+            available_at_ms=None,
+            observed_at_ms=request.knowledge_as_of_ms + 1,
+        ),
+        request,
+    )
     assert result.status is DataStatus.UNAVAILABLE
-    assert "available_at_unknown" in result.missing_fields
+    assert "observed_at_after_knowledge_cutoff" in result.missing_fields
 
 
 def test_previous_day_function_never_promotes_temporally_unavailable_result():
@@ -185,13 +204,13 @@ def test_td_provider_wraps_existing_access_without_reimplementing_connection():
         ),
         _request(),
     )
-    assert result.status is DataStatus.UNAVAILABLE
+    assert result.status is DataStatus.READY
     assert result.actual_source == "tdengine_daily_kline"
     assert result.provenance[0].evidence_ref == "probe/td/daily_kline"
-    assert "available_at_unknown" in result.missing_fields
+    assert result.available_at_ms is None
 
 
-def test_observed_provider_does_not_promote_availability_to_runtime():
+def test_observed_provider_does_not_promote_availability_to_source_claim():
     def observed_rows(previous_trade_date, symbols):
         return [{"symbol": "000001", "close": 11.59, "amount": 100}]
 
@@ -206,7 +225,124 @@ def test_observed_provider_does_not_promote_availability_to_runtime():
         DataContext("eval-1", "AUCTION", 1788484800000, expected_previous_trade_date="2026-09-03"),
         _request(),
     )
-    assert result.status is DataStatus.UNAVAILABLE
+    assert result.status is DataStatus.READY
+    assert result.available_at_ms is None
+
+
+def test_prefetch_ready_data_reuses_preobserved_result_at_later_node():
+    prefetch_time = 1788484740000
+    node_time = 1788484800000
+
+    def observed_rows(previous_trade_date, symbols):
+        assert previous_trade_date == "2026-09-03"
+        assert symbols == ("000001",)
+        return [{"symbol": "000001", "close": 11.59, "amount": 100}]
+
+    function = PreviousDayStatsFunction(
+        TDPreviousDayStatsProvider(
+            observed_rows,
+            observed_at_ms=lambda: prefetch_time,
+            source_id="td-prefetch-fixture",
+        )
+    )
+    prefetch_request = DataRequest(
+        request_id="prefetch-request",
+        function_id="previous_day_stats",
+        trade_date="2026-09-04",
+        effective_as_of_ms=node_time,
+        knowledge_as_of_ms=prefetch_time,
+        symbols=("000001",),
+    )
+    context = DataContext(
+        "eval-prefetch",
+        "AUCTION",
+        prefetch_time,
+        expected_previous_trade_date="2026-09-03",
+    )
+    store = ReadyDataStore()
+    result = prefetch_ready_data(function, context, prefetch_request, store)
+
+    assert result.status is DataStatus.READY
+    assert result.observed_at_ms == prefetch_time
+    assert result.available_at_ms is None
+    assert len(store) == 1
+
+    node_request = DataRequest(
+        request_id="node-request",
+        function_id="previous_day_stats",
+        trade_date="2026-09-04",
+        effective_as_of_ms=node_time,
+        knowledge_as_of_ms=node_time,
+        symbols=("000001",),
+    )
+    cached = store.get(node_request)
+    assert cached is not None
+    assert cached.status is DataStatus.READY
+    assert cached.available_at_ms is None
+    bundle = build_frozen_bundle(
+        "eval-prefetch",
+        node_time,
+        ("previous_day_stats",),
+        {"previous_day_stats": cached},
+    )
+    assert bundle.completeness == 1.0
+
+
+def test_ready_data_store_rejects_request_before_observation():
+    prefetch_time = 1788484740000
+    request = DataRequest(
+        request_id="prefetch-request",
+        function_id="previous_day_stats",
+        trade_date="2026-09-04",
+        effective_as_of_ms=1788484800000,
+        knowledge_as_of_ms=prefetch_time,
+        symbols=("000001",),
+    )
+    result = DataResult(
+        request_id="prefetch-request",
+        function_id="previous_day_stats",
+        status=DataStatus.READY,
+        data={"previous_trade_date": "2026-09-03"},
+        actual_source="fixture",
+        requested_trade_date="2026-09-04",
+        actual_trade_date="2026-09-03",
+        effective_at_ms=None,
+        available_at_ms=None,
+        observed_at_ms=prefetch_time,
+        schema_version=1,
+        completeness=1.0,
+        content_hash="prefetch-result",
+    )
+    store = ReadyDataStore()
+    store.put(request, result)
+    too_early = DataRequest(
+        request_id="early-request",
+        function_id="previous_day_stats",
+        trade_date="2026-09-04",
+        effective_as_of_ms=1788484800000,
+        knowledge_as_of_ms=prefetch_time - 1,
+        symbols=("000001",),
+    )
+    assert store.get(too_early) is None
+
+
+def test_ready_data_store_rejects_unobserved_put():
+    request = DataRequest(
+        request_id="late-request",
+        function_id="previous_day_stats",
+        trade_date="2026-09-04",
+        effective_as_of_ms=1788484800000,
+        knowledge_as_of_ms=1788484800000,
+        symbols=("000001",),
+    )
+    late = _ready_result(
+        effective_at_ms=None,
+        available_at_ms=None,
+        observed_at_ms=request.knowledge_as_of_ms + 1,
+    )
+    late = replace(late, content_hash="late-result")
+    with pytest.raises(ValueError, match="observed_at_after_knowledge_cutoff"):
+        ReadyDataStore().put(request, late)
 
 
 def test_data_result_semantic_hash_excludes_provider_identity():

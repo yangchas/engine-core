@@ -19,6 +19,8 @@
 - [VERIFIED] Missing != Zero。
 - [VERIFIED] fallback source != fallback semantic。
 - [VERIFIED] 已验证连接方式优先复用；当前 engine_core 只抽取薄边界，不重新建设 Redis/TD/网络访问层级。
+- [VERIFIED] `TemporalDataGuard` 不会把未知的源发布时间伪造成 `available_at`；若 `observed_at_ms <= knowledge_as_of_ms`，结果可以作为节点前已观察数据进入运行时。
+- [VERIFIED] `ReadyDataStore` 是最小进程内 readiness 字典，按 function/date/symbol scope/content hash 保存 READY `DataResult`，读取时重新经过 `TemporalDataGuard`；它不是 DataCatalog、Registry 或持久化 checkpoint。
 
 ## 3. Runtime Timeline
 
@@ -49,6 +51,7 @@
 - [VERIFIED] 当前基础轮子可在 cobra-ion 的 Python 3.12.3 server venv 临时验证副本中运行；这不是生产部署。
 - [VERIFIED] `normalize_previous_day_stats_rows` 是旧日线访问结果的薄纯边界：严格校验六位代码、保留显式零值、拒绝缺失核心字段/重复代码，并输出稳定排序的昨日统计映射；空结果经 Provider 包装后为 MISSING。
 - [VERIFIED] cobra-ion 上 `TDPreviousDayStatsProvider` 已通过既有 taos 只读路径取得 2026-09-03 的 3 行 `daily_kline`；因没有历史 `available_at` 证据，`PreviousDayStatsFunction` 按规则返回 UNAVAILABLE，而不是把查询时刻冒充可用时刻。
+- [VERIFIED] 直接在节点时刻首次查询、且 `observed_at_ms > knowledge_as_of_ms` 的 TD 昨日数据仍返回 UNAVAILABLE；节点前预取并冻结后，可在后续节点按 `observed_at_ms <= knowledge_as_of_ms` 复用，`available_at_ms` 保持 None。
 - [VERIFIED] 2026-09-04 cobra-ion live Q2 + TD shadow path completed without writes: Q2 5217/5217 coverage with 10 stale symbols, TD previous-day result UNAVAILABLE due unknown availability, FrozenDataBundle completeness 0.0, SegmentFrame PARTIAL with price/pressure READY, and Probe trace preserved PARTIAL.
 
 ## 5. Replay Capabilities
@@ -119,6 +122,20 @@ Evidence：
 
 Evidence：
 - `docs/evidence/real_data_probe/20260904T082940+0800/provider_summary.md`
+
+### PITFALL: 节点时刻临时查询参考数据
+
+问题：
+- 节点触发时才查询昨日/参考数据，查询观察时间可能已经晚于节点的 `knowledge_as_of`，即使数据业务日期属于昨日也不能安全进入该评估。
+
+正确做法：
+- 在节点前通过同一 `DataFunction` 只读预取，经过 `TemporalDataGuard` 后放入最小 `ReadyDataStore`；节点只读取已冻结结果。
+
+不要：
+- 为了让 Replay READY 而填写猜测的 `available_at`，或把当天查询时间反推成历史首次发布时间。
+
+Evidence：
+- `docs/evidence/reference_data_readiness_20260904.md`
 
 ### PITFALL: 重新发明已验证的连接方式
 
