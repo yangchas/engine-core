@@ -47,17 +47,18 @@ Q2_FIELD_CONTRACT: Tuple[Q2FieldSpec, ...] = (
     Q2FieldSpec("px", "price_milli", "int", "milli_price", "current price", True),
     Q2FieldSpec("pc", "pre_close_milli", "int", "milli_price", "previous close", True),
     Q2FieldSpec("amt", "amount_yuan", "int", "yuan", "cumulative trading amount", True),
-    Q2FieldSpec("vol", "volume_shares", "int", "shares", "cumulative share volume", False),
-    Q2FieldSpec("ts", "source_timestamp_ms", "epoch_ms", "epoch_ms", "source update time", True),
+    Q2FieldSpec("vol", "volume_lots", "int", "lots", "cumulative board-lot volume", False),
+    Q2FieldSpec("ts", "source_record_time_ms", "epoch_ms", "epoch_ms", "upstream record or batch snapshot time", True),
     Q2FieldSpec("ph", "phase", "int", "code", "market phase", False),
     Q2FieldSpec("br", "auction_bid_amount_yuan", "int", "yuan", "derived level-2 resting bid amount", False),
     Q2FieldSpec("ar", "auction_ask_amount_yuan", "int", "yuan", "derived level-2 resting ask amount", False),
+    Q2FieldSpec("am", "auction_amount_yuan", "int", "yuan", "current auction matched amount", False),
     Q2FieldSpec("mk", "market", "str", "code", "market code", False),
 )
 
 Q2_OBSERVED_OPTIONAL_FIELDS: Tuple[str, ...] = (
     "iv", "ia", "ln", "ls", "mx", "mn", "spd1m", "amt2m", "amt5m",
-    "vec3m", "vec5m", "a20", "a24", "a25", "am",
+    "vec3m", "vec5m", "a20", "a24", "a25",
 )
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -119,8 +120,8 @@ class Q2Quote:
     price_milli: Optional[int]
     pre_close_milli: Optional[int]
     amount_yuan: Optional[int]
-    volume_shares: Optional[int]
-    source_timestamp_ms: Optional[int]
+    volume_lots: Optional[int]
+    source_record_time_ms: Optional[int]
     phase: Optional[int]
     limit_state: Optional[int]
     auction_amount_yuan: Optional[int]
@@ -143,8 +144,8 @@ class Q2Quote:
             "price_milli": self.price_milli,
             "pre_close_milli": self.pre_close_milli,
             "amount_yuan": self.amount_yuan,
-            "volume_shares": self.volume_shares,
-            "source_timestamp_ms": self.source_timestamp_ms,
+            "volume_lots": self.volume_lots,
+            "source_record_time_ms": self.source_record_time_ms,
             "phase": self.phase,
             "limit_state": self.limit_state,
             "auction_amount_yuan": self.auction_amount_yuan,
@@ -185,8 +186,8 @@ def normalize_q2(symbol: str, raw_hash: Mapping[Any, Any]) -> Q2Quote:
         price_milli=int_field("px"),
         pre_close_milli=int_field("pc"),
         amount_yuan=int_field("amt"),
-        volume_shares=int_field("vol"),
-        source_timestamp_ms=timestamp_ms,
+        volume_lots=int_field("vol"),
+        source_record_time_ms=timestamp_ms,
         phase=int_field("ph"),
         limit_state=int_field("ls"),
         auction_amount_yuan=int_field("am"),
@@ -247,18 +248,18 @@ def validate_q2(
         errors.append("pc_non_positive")
     if quote.amount_yuan is None:
         errors.append("amt")
-    if quote.source_timestamp_ms is None:
+    if quote.source_record_time_ms is None:
         errors.append("ts")
     else:
-        if quote.source_timestamp_ms > observed_at_ms + freshness_policy.max_future_skew_ms:
+        if quote.source_record_time_ms > observed_at_ms + freshness_policy.max_future_skew_ms:
             errors.append("future_ts")
         if freshness_policy.stale_after_ms is not None and (
-            observed_at_ms - quote.source_timestamp_ms > freshness_policy.stale_after_ms
+            observed_at_ms - quote.source_record_time_ms > freshness_policy.stale_after_ms
         ):
             errors.append("stale")
         if trade_date is not None:
             source_date = datetime.fromtimestamp(
-                quote.source_timestamp_ms / 1000.0,
+                quote.source_record_time_ms / 1000.0,
                 tz=timezone.utc,
             ).astimezone(SHANGHAI).date().isoformat()
             if source_date != trade_date:
@@ -325,9 +326,9 @@ def build_q2_projection(
         quotes[symbol] = quote
 
     source_times = [
-        quote.source_timestamp_ms
+        quote.source_record_time_ms
         for quote in quotes.values()
-        if quote.source_timestamp_ms is not None
+        if quote.source_record_time_ms is not None
     ]
     oldest = min(source_times) if source_times else None
     newest = max(source_times) if source_times else None

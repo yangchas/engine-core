@@ -34,7 +34,9 @@ def test_q2_contract_keeps_verified_legacy_units_explicit():
     specs = {spec.raw_name: spec for spec in Q2_FIELD_CONTRACT}
     assert specs["amt"].unit == "yuan"
     assert specs["amt"].semantic == "cumulative trading amount"
-    assert specs["vol"].unit == "shares"
+    assert specs["vol"].unit == "lots"
+    assert specs["am"].canonical_name == "auction_amount_yuan"
+    assert specs["am"].semantic == "current auction matched amount"
     assert specs["br"].unit == "yuan"
     assert specs["ar"].unit == "yuan"
 
@@ -107,7 +109,7 @@ def test_q2_adapter_marks_out_of_range_timestamp_as_field_error():
         datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc),
     )
     assert result.status is DataStatus.PARTIAL
-    assert result.quotes["000001"].source_timestamp_ms is None
+    assert result.quotes["000001"].source_record_time_ms is None
     assert "ts" in result.quotes["000001"].field_errors
 
 
