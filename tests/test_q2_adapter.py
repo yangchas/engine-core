@@ -127,3 +127,4 @@ def test_classify_equity_uses_legacy_market_and_symbol_rules():
     assert classify_equity("000001", {"mk": "sz", "px": "1000"}) is True
     assert classify_equity("399001", {"mk": "sz", "px": "1000"}) is False
     assert classify_equity("688001", {"mk": "kc", "px": "1000"}) is True
+    assert classify_equity("SH.600000", {"mk": "sh", "px": "1000"}) is True

@@ -380,8 +380,8 @@ class FrozenDataBundle:
             for function_id in function_order
         }
         extra = sorted(set(results_by_function).difference(function_order))
-        for function_id in extra:
-            ordered[function_id] = results_by_function[function_id]
+        if extra:
+            raise ValueError("unexpected DataResult values: %s" % ", ".join(extra))
         completeness = min(
             (result.completeness for result in ordered.values()),
             default=1.0,
@@ -396,13 +396,6 @@ class FrozenDataBundle:
                     "result": ordered[function_id],
                 }
                 for function_id in function_order
-            ],
-            "extra_results": [
-                {
-                    "function_id": function_id,
-                    "result": ordered[function_id],
-                }
-                for function_id in extra
             ],
         }
         frozen_ordered = deep_freeze(ordered)

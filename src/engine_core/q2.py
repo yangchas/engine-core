@@ -204,6 +204,7 @@ def classify_equity(symbol: str, quote: Q2Quote | Mapping[str, Any]) -> bool:
     """Apply the existing stock/universe filter, excluding index-like rows."""
 
     normalized = normalize_symbol(symbol)
+    code = normalized.split(".")[-1]
     market = (
         quote.market
         if isinstance(quote, Q2Quote)
@@ -211,17 +212,17 @@ def classify_equity(symbol: str, quote: Q2Quote | Mapping[str, Any]) -> bool:
     )
     market_code = str(market or "").strip().lower()
     if market_code == "sz":
-        return normalized.startswith(("000", "001", "002", "003", "300", "301"))
+        return code.startswith(("000", "001", "002", "003", "300", "301"))
     if market_code == "kc":
-        return normalized.startswith(("688", "689"))
+        return code.startswith(("688", "689"))
     if market_code == "sh":
-        return normalized.startswith(("600", "601", "603", "605", "688", "689"))
+        return code.startswith(("600", "601", "603", "605", "688", "689"))
     price_milli = (
         quote.price_milli
         if isinstance(quote, Q2Quote)
         else _to_int(quote.get("price_milli", quote.get("px")))
     )
-    if normalized.startswith(("000", "001", "002", "003", "300", "301")) and (price_milli or 0) >= 1_000_000:
+    if code.startswith(("000", "001", "002", "003", "300", "301")) and (price_milli or 0) >= 1_000_000:
         return False
     return True
 

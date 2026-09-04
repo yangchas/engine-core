@@ -59,3 +59,24 @@ def test_trunc_div_matches_c_toward_zero_for_signed_values():
     assert trunc_div(-100, -3) == 33
     with pytest.raises(ZeroDivisionError):
         trunc_div(1, 0)
+
+
+def test_frozen_bundle_rejects_results_outside_declared_order():
+    from engine_core.contracts import DataResult, DataStatus, FrozenDataBundle
+
+    result = DataResult(
+        request_id="r",
+        function_id="extra",
+        status=DataStatus.READY,
+        data={"value": 1},
+        actual_source="fixture",
+        requested_trade_date="2026-09-04",
+        actual_trade_date="2026-09-03",
+        effective_at_ms=1,
+        available_at_ms=1,
+        observed_at_ms=1,
+        schema_version=1,
+        completeness=1.0,
+    )
+    with pytest.raises(ValueError, match="unexpected DataResult"):
+        FrozenDataBundle.from_results("eval", 1, (), {"extra": result})
