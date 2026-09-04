@@ -11,13 +11,16 @@ from engine_core import (
     ProbeStrategy,
     Q2FrameReplaySource,
     SignalKind,
+    TDEventTimeReplaySource,
     VirtualClock,
     WindowManager,
     WindowSpec,
     build_q2_projection,
     replay_q2frames,
+    replay_td_event_time,
 )
 from engine_core.replay import Q2FrameV1
+from engine_core.windows import local_time_ms
 
 
 FIXTURE = Path(__file__).parent / "fixtures/replay/q2frame_600519_20260903.jsonl"
@@ -167,3 +170,176 @@ def test_q2frame_parser_rejects_qualified_symbol_and_non_list_updates():
             "logical_ts_ms": 1,
             "q2_updates": [{"symbol": "600519.SH"}],
         })
+
+
+def _td_rows():
+    return [
+        {
+            "ts": "2026-09-03 09:20:01",
+            "px_milli": 1299600,
+            "pc_milli": 1297500,
+            "amt_yuan": 100,
+            "vol_units": 2,
+            "symbol": "600519",
+        },
+        {
+            "ts": "2026-09-03 09:20:00",
+            "px_milli": 1299500,
+            "pc_milli": 1297500,
+            "amt_yuan": 50,
+            "vol_units": 1,
+            "symbol": "600519",
+        },
+        {
+            "ts": "2026-09-03 09:20:03",
+            "px_milli": 1299700,
+            "pc_milli": 1297500,
+            "amt_yuan": 150,
+            "vol_units": 3,
+            "symbol": "600519",
+        },
+    ]
+
+
+def _td_source():
+    anchor = local_time_ms("2026-09-03", "09:20:00")
+    clock = VirtualClock(
+        datetime.fromtimestamp((anchor - 1000) / 1000, timezone.utc)
+    )
+    return TDEventTimeReplaySource(
+        "2026-09-03",
+        ("600519",),
+        clock,
+        slice_anchor_ms=anchor,
+    ), clock, anchor
+
+
+def test_td_event_replay_slices_preserve_events_and_stable_order():
+    source, _, anchor = _td_source()
+    left = source.event_slices(_td_rows())
+    right_source, _, _ = _td_source()
+    right = right_source.event_slices(list(reversed(_td_rows())))
+
+    assert [item.content_hash for item in left] == [item.content_hash for item in right]
+    assert [(item.start_ms, item.end_exclusive_ms) for item in left] == [
+        (anchor, anchor + 3000),
+        (anchor + 3000, anchor + 6000),
+    ]
+    assert [len(item.events) for item in left] == [2, 1]
+    assert [event.event_time_ms for event in left[0].events] == [anchor, anchor + 1000]
+    assert sum(len(item.events) for item in left) == 3
+
+
+def test_td_event_replay_tie_break_includes_preserved_raw_fields():
+    source, _, anchor = _td_source()
+    common = {
+        "ts": "2026-09-03 09:20:00",
+        "px_milli": 1299500,
+        "pc_milli": 1297500,
+        "amt_yuan": 50,
+        "symbol": "600519",
+    }
+    left = source.event_slices(
+        [
+            {**common, "bp1_milli": 1299400},
+            {**common, "bp1_milli": 1299300},
+        ]
+    )
+    right_source, _, _ = _td_source()
+    right = right_source.event_slices(
+        [
+            {**common, "bp1_milli": 1299300},
+            {**common, "bp1_milli": 1299400},
+        ]
+    )
+    assert [event.content_hash for event in left[0].events] == [
+        event.content_hash for event in right[0].events
+    ]
+    assert left[0].events[0].raw_fields["bp1_milli"] == 1299300
+    assert left[0].start_ms == anchor
+
+
+def test_td_event_replay_feeds_same_engine_without_preaggregation():
+    source, clock, _ = _td_source()
+    engine = DeterministicEngine(
+        MarketStateReducer(),
+        WindowManager((WindowSpec("wide", 0, 10**15),)),
+        ProbeStrategy(),
+        session_id="2026-09-03",
+        phase="REPLAY",
+    )
+    replay_td_event_time(_td_rows(), source, engine)
+    result = engine.run_until_empty()
+
+    assert result.processed_signals == 3
+    assert engine._reducer.state.revision == 3
+    assert engine._reducer.state.symbol_states["600519"]["price_milli"] == 1299700
+    assert clock.now_ns() == (1000 + 3000) * 1_000_000
+
+
+def test_td_event_replay_signals_are_repeatable_and_virtual_clock_driven():
+    source, clock, _ = _td_source()
+    left = source.signals_for(_td_rows())
+    right_source, right_clock, _ = _td_source()
+    right = right_source.signals_for(_td_rows())
+
+    assert [signal.signal_id for signal in left] == [signal.signal_id for signal in right]
+    assert [signal.logical_time_ms for signal in left] == [
+        signal.logical_time_ms for signal in right
+    ]
+    assert [signal.payload.content_hash for signal in left] == [
+        signal.payload.content_hash for signal in right
+    ]
+    assert clock.now_utc() == right_clock.now_utc()
+
+
+def test_td_event_replay_rejects_missing_fields_and_pre_anchor_rows():
+    source, _, anchor = _td_source()
+    with pytest.raises(ValueError, match="px_milli"):
+        source.event_slices(
+            [
+                {
+                    "ts": "2026-09-03 09:20:00",
+                    "pc_milli": 1297500,
+                    "amt_yuan": 50,
+                    "symbol": "600519",
+                }
+            ]
+        )
+    with pytest.raises(ValueError, match="precedes"):
+        source.event_slices(
+            [
+                {
+                    "ts": "2026-09-03 09:19:59",
+                    "px_milli": 1299500,
+                    "pc_milli": 1297500,
+                    "amt_yuan": 50,
+                    "symbol": "600519",
+                }
+            ]
+        )
+    with pytest.raises(ValueError, match="outside expected"):
+        source.event_slices(
+            [
+                {
+                    "ts": "2026-09-03 09:20:00",
+                    "px_milli": 1299500,
+                    "pc_milli": 1297500,
+                    "amt_yuan": 50,
+                    "symbol": "000001",
+                }
+            ]
+        )
+    with pytest.raises(ValueError, match="event date"):
+        source.event_slices(
+            [
+                {
+                    "ts": "2026-09-04 09:20:00",
+                    "px_milli": 1299500,
+                    "pc_milli": 1297500,
+                    "amt_yuan": 50,
+                    "symbol": "600519",
+                }
+            ]
+        )
+    assert anchor > 0

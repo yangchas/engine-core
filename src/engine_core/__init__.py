@@ -52,7 +52,15 @@ from .facts import (
     compute_resting_order_pressure,
 )
 from .probe import ProbeStrategy
-from .replay import Q2FrameReplaySource, Q2FrameV1, replay_q2frames
+from .replay import (
+    Q2FrameReplaySource,
+    Q2FrameV1,
+    TDEventSlice,
+    TDEventTimeReplaySource,
+    TDEventV1,
+    replay_q2frames,
+    replay_td_event_time,
+)
 from .q2 import (
     FreshnessPolicy,
     Q2FieldSpec,
@@ -101,6 +109,9 @@ __all__ = [
     "ProbeStrategy",
     "Q2FrameReplaySource",
     "Q2FrameV1",
+    "TDEventSlice",
+    "TDEventTimeReplaySource",
+    "TDEventV1",
     "Q2ProjectionSnapshot",
     "RedisQ2ProjectionAdapter",
     "FreshnessPolicy",
@@ -133,4 +144,5 @@ __all__ = [
     "compute_resting_order_pressure",
     "build_frozen_bundle",
     "replay_q2frames",
+    "replay_td_event_time",
 ]

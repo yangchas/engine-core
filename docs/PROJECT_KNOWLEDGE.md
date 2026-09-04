@@ -33,6 +33,7 @@
 - [VERIFIED] `RECOVERY_CATCHUP` 关闭窗口时保留 `origin=RECOVERY_CATCHUP`，窗口 `finality` 仍为 FINAL。
 - [VERIFIED] Engine Integration correctness gates passed: same-time ordering, DATA_READY order determinism, PARTIAL propagation, old-evaluation isolation, bounded long-drain state, and duplicate/conflicting signal handling.
 - [VERIFIED] Foundation 600519 Segment A/B/Comparison hashes remain identical when composed through Engine; current Engine is only an orchestration boundary and does not alter fact-wheel semantics.
+- [VERIFIED] TD Event-Time Replay 最小适配器按事件时间、代码和保留原始字段内容 hash 稳定排序，按三秒半开 `EVENT_SLICE` 保留逐条 tick，并逐事件提交同一个 Engine；缺少 symbol 时保持 PARTIAL。
 
 ## 4. System Capabilities & Fact Authority
 
@@ -57,8 +58,8 @@
 ## 5. Replay Capabilities
 
 - [VERIFIED] 当前只完成 Q2 projection fixture/live slice；不支持 REPLAY_RECORDED，也不宣称 Rabbit arrival/batch 等价。
-- [VERIFIED] Q2Frame replay 与同一规范化 Q2 fixture 进入同一 Engine 的 semantic snapshot/Probe 结果 EXACT_EQUIVALENCE 已通过；该结论仅覆盖 Q2Frame 的 logical timestamp/逐帧 projection，不代表 Rabbit arrival/batch 或 TD event-time 等价。
-- [UNKNOWN] TD event-time replay 的输入保真度和适配器尚待实现验证。
+- [VERIFIED] Q2Frame replay 与同一规范化 Q2 fixture 进入同一 Engine 的 semantic snapshot/Probe 结果 EXACT_EQUIVALENCE 已通过；该结论仅覆盖 Q2Frame 的 logical timestamp/逐帧 projection，不代表 Rabbit arrival/batch 等价。
+- [VERIFIED] TD Event-Time Replay 已通过本地与 cobra-ion 只读验证；当前能力是 `DETERMINISTIC_EVENT_TIME_ONLY`，不恢复 Rabbit arrival/batch，不做 watermark 或 late correction。
 - [VERIFIED] 不同信息粒度使用 EXACT_EQUIVALENCE 或 SHARED_FACT_EQUIVALENCE。
 - [VERIFIED] replay 默认 deny-all effect，并通过 knowledge_as_of 防止未来数据穿越。
 - [VERIFIED] Real Data Probe 只作为字段/连接证据和 fixture capture；当前能查到历史数据不等于历史 `available_at` 已早于 replay 的 `knowledge_as_of`。
