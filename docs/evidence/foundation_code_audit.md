@@ -17,13 +17,13 @@ Branch: `codex/fix-foundation-wheels`
 
 ## Findings
 
-### P1: Q2 amount/volume semantics are not yet verified
+### Q2 amount/volume semantics are verified at the legacy producer boundary
 
-`normalize_q2` preserves integer source-native values and the fact layer
-requires explicit `CUMULATIVE` semantics before computing deltas. The producer
-writes integer yuan/unit fields, but the exact meaning of `amt`, `vol`, `am`,
-`br`, `ar` remains UNKNOWN. Do not change the fact call sites to infer units or
-fallback to zero until a producer/consumer differential fixture verifies them.
+`C/t1_v2` converts source amount to rounded integer yuan, carries volume as
+shares, and computes rolling amount deltas from cumulative amount. Its auction
+calculator writes `am`, `br` and `ar` as integer-yuan values; `br/ar` are
+level-2 price/quantity proxies. The Python fact layer still requires callers
+to pass explicit `CUMULATIVE` semantics, so no unverified field is inferred.
 
 ### P1: TD daily-kline volume semantics are not yet verified
 

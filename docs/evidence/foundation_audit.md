@@ -37,11 +37,13 @@ the independent `engine_core` project; it is not a runtime import boundary.
 | snapshot triggers have vendor settling delays | `C/t1_v2/snapshot_trigger.cpp:13-27` | A20 `09:20:03`, A24 `09:24:10`, A25 `09:25:06` | Window/trigger fixtures | distinguish requested wall time from observed fired time | MATCH (verified) | C++ source | pending |
 | TD replay is timestamp/symbol ordered, not Rabbit arrival replay | `C/t1_v2/td_replay_query.cpp:24-57` | `ORDER BY ts ASC, symbol ASC` | future replay adapter | do not label deterministic event-time ordering as production arrival order | MATCH (verified) | C++ source | pending |
 | daily kline volume is a legacy field with observed zero values | `web/services/tdengine_service.py`; live probe | `daily_kline.volume` | `PreviousDayStatsFunction` | do not infer missing/zero semantics until source behavior is verified | UNKNOWN | live probe shows zero in sampled rows | pending |
+| Q2 cumulative amount and volume units | `C/t1_v2/raw_tick_converter.cpp:85-86`; `C/t1_v2/quote_state.h:25-27`; `C/t1_v2/quote_calculator.cpp:65-77` | `amt`, `vol`, `amt2m`, `amt5m` | Q2 Field Contract / SegmentFrame | amount is integer yuan and cumulative; volume is shares and cumulative; deltas require explicit cumulative semantics | MATCH (verified) | producer source and C++ self-test | captured TD/Q2 fixtures |
+| Q2 auction amount proxy units | `C/t1_v2/auction_calculator.cpp:11,80-105`; `C/t1_v2/redis_v2_writer.cpp:83-88` | `am`, `br`, `ar` | Q2 Field Contract / resting pressure | values are integer yuan; `br/ar` use level-2 price and shares; proxy is not authoritative net inflow | MATCH (verified) | producer source and C++ self-test | Q2 fixture |
 
 ## Probe conclusions
 
 - Redis and TD are reachable on `cobra-ion` through the existing server runtime environment.
-- Redis latest available Q2 cohort is 2026-09-03 at probe time; no 2026-09-04 active cohort was observed.
+- Redis `q2:active:20260904` was readable with full coverage in the later read-only check; the older 20260903 cohort was found to contain cross-day source timestamps and is not an immutable historical snapshot.
 - Q2 hash contains `px, pc, amt, vol, iv, ia, ln, ts, ph, ls, mx, mn, spd1m, amt2m, amt5m, vec3m, vec5m, a20, a24, a25, am, br, ar, mk` in the sampled cohort. Only fields needed by the current wheel are candidates for the canonical model.
 - TD `stock_tick_v2` has the expected integer/milli schema and returned 82,183 rows for 2026-09-03 09:20-09:24 in the read-only probe.
 - TD `daily_kline` is readable, but sampled `volume=0` values are not yet a verified semantic zero; this remains UNKNOWN.

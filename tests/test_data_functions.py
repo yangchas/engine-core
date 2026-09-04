@@ -10,6 +10,8 @@ from engine_core import (
     freeze_data_results,
 )
 from engine_core.contracts import DataResult
+import json
+from pathlib import Path
 
 
 def _request(function_id="previous_day_stats"):
@@ -196,3 +198,37 @@ def test_callable_provider_does_not_promote_observed_availability_to_runtime():
         _request(),
     )
     assert result.status is DataStatus.UNAVAILABLE
+
+
+def test_captured_td_previous_day_fixture_runs_through_data_function():
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/data/previous_day_stats_20260903.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    provider = FixturePreviousDayStatsProvider({
+        fixture["requested_trade_date"]: {
+            "previous_trade_date": fixture["previous_trade_date"],
+            "close_by_symbol": {
+                symbol: row["close"] for symbol, row in fixture["rows"].items()
+            },
+            "amount_by_symbol": {
+                symbol: row["amount"] for symbol, row in fixture["rows"].items()
+            },
+            "volume_by_symbol": {
+                symbol: row["volume"] for symbol, row in fixture["rows"].items()
+            },
+        }
+    })
+    result = PreviousDayStatsFunction(provider).execute(
+        DataContext(
+            "eval-real-fixture",
+            "AUCTION",
+            1788484800000,
+            expected_previous_trade_date="2026-09-03",
+        ),
+        _request(),
+    )
+    assert result.status is DataStatus.READY
+    assert result.data["close_by_symbol"]["000001"] == 11.880000114440918
+    assert result.data["amount_by_symbol"]["000001"] == 1324230272.0

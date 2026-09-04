@@ -8,6 +8,8 @@
 - [VERIFIED] 2026-09-04 对 cobra-ion 的只读 Probe 可通过既有 server venv 访问 Redis Q2；当时最新可用 cohort 为 `q2:active:20260903`，共 5217 个 symbol。
 - [OBSERVED] 2026-09-04 读取 `q2:active:20260904` 时覆盖完整；较早的 `q2:active:20260903` 中大多数记录的 source `ts` 已跨到 2026-09-04，active cohort 不能视为不可变历史快照。
 - [UNKNOWN] Q2 `ts` 的精确定义及跨交易日更新顺序仍未由 producer/consumer 证据确认；当前 live check 观察到新 cohort 的 source timestamp 可能统一落在当日午夜。
+- [VERIFIED] `C/t1_v2` producer 维护 `amt` 为累计元、`vol` 为累计股数，`amt2m/amt5m` 为累计金额差；Redis/TD 写入保持这些整数单位。
+- [VERIFIED] `C/t1_v2` 竞价计算将 `br/ar` 定义为二档价格×二档股数换算的元金额，`am` 为竞价成交金额；它们是派生盘口/成交代理，不是真实净流入。
 - [OBSERVED] Q2 producer 写入字段包括 `px/pc/amt/vol/iv/ia/ln/ts/ph/ls/mx/mn/spd1m/amt2m/amt5m/vec3m/vec5m` 以及竞价字段 `a20/a24/a25/am/br/ar` 和 `mk`；只有当前 Wheel 使用的核心字段才冻结到 canonical model。
 
 ## 2. Data Contracts

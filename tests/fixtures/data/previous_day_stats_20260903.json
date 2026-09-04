@@ -1,0 +1,27 @@
+{
+  "requested_trade_date": "2026-09-04",
+  "previous_trade_date": "2026-09-03",
+  "source": "tdengine_daily_kline",
+  "source_schema": "daily_kline",
+  "rows": {
+    "000001": {
+      "close": 11.880000114440918,
+      "amount": 1324230272.0,
+      "volume": 0
+    },
+    "000002": {
+      "close": 3.140000104904175,
+      "amount": 619277248.0,
+      "volume": 0
+    },
+    "600000": {
+      "close": 9.270000457763672,
+      "amount": 841972864.0,
+      "volume": 0
+    }
+  },
+  "capture_notes": [
+    "Read-only query on cobra-ion market_data1.daily_kline.",
+    "volume=0 is retained as observed evidence; its semantic zero/missing meaning remains UNKNOWN."
+  ]
+}

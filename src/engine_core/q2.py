@@ -46,12 +46,12 @@ class Q2FieldSpec:
 Q2_FIELD_CONTRACT: Tuple[Q2FieldSpec, ...] = (
     Q2FieldSpec("px", "price_milli", "int", "milli_price", "current price", True),
     Q2FieldSpec("pc", "pre_close_milli", "int", "milli_price", "previous close", True),
-    Q2FieldSpec("amt", "amount_native", "int", "source_native", "cumulative amount", True),
-    Q2FieldSpec("vol", "volume_native", "int", "source_native", "cumulative volume", False),
+    Q2FieldSpec("amt", "amount_native", "int", "yuan", "cumulative trading amount", True),
+    Q2FieldSpec("vol", "volume_native", "int", "shares", "cumulative share volume", False),
     Q2FieldSpec("ts", "source_timestamp_ms", "epoch_ms", "epoch_ms", "source update time", True),
     Q2FieldSpec("ph", "phase", "int", "code", "market phase", False),
-    Q2FieldSpec("br", "auction_bid_amount_native", "int", "source_native", "resting bid amount", False),
-    Q2FieldSpec("ar", "auction_ask_amount_native", "int", "source_native", "resting ask amount", False),
+    Q2FieldSpec("br", "auction_bid_amount_native", "int", "yuan", "derived level-2 resting bid amount", False),
+    Q2FieldSpec("ar", "auction_ask_amount_native", "int", "yuan", "derived level-2 resting ask amount", False),
     Q2FieldSpec("mk", "market", "str", "code", "market code", False),
 )
 

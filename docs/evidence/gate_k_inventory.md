@@ -19,19 +19,19 @@
 | --- | --- | --- |
 | px | price_milli | 已观察为 milli price |
 | pc | pre_close_milli | 已观察为 milli price |
-| amt | amount_native | source-native，待确认 |
-| vol | volume_native | source-native，待确认 |
+| amt | amount_native | 累计元，producer evidence 已确认 |
+| vol | volume_native | 累计股数，producer evidence 已确认 |
 | ts | source_timestamp_ms | 仅接受合法 epoch 秒/毫秒 |
 | ph | phase | 已观察为 phase code |
 | ls | limit_state | 已观察为 limit state code |
-| am/br/ar | auction amount fields | source-native，待确认 |
-| amt2m | amount_2m_native | source-native，待确认 |
+| am/br/ar | auction amount fields | 元金额；br/ar 为二档盘口换算，producer evidence 已确认 |
+| amt2m | amount_2m_native | 累计金额差（元），producer evidence 已确认 |
 | spd1m | speed_1m_bp | 已观察为 bp-scaled integer |
 
 ## 当前 UNKNOWN
 
 - Q2 是否真实提供全局 generation。
-- amt、vol、am、br、ar、amt2m 的精确单位。
+- Q2 `ts` 的精确定义和 active cohort 的跨日更新顺序。
 - Q2 hash 是否由同一时刻 atomic cohort 写入。
 - active symbol 集合与 q2 hash 的更新先后。
 - TD replay 是否保留生产 arrival order。

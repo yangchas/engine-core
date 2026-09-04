@@ -1,0 +1,19 @@
+{
+  "captured_at": "2026-09-04T10:27:07+08:00",
+  "host_alias": "cobra-ion",
+  "mode": "read_only",
+  "provider": "tdengine_daily_kline",
+  "database": "market_data1",
+  "query": "SELECT LAST(close), LAST(amount), LAST(volume), symbol FROM daily_kline WHERE ts = '2026-09-03 00:00:00' AND symbol IN ('000001','000002','600000') GROUP BY symbol",
+  "rows": [
+    {"symbol": "000001", "close": 11.880000114440918, "amount": 1324230272.0, "volume": 0},
+    {"symbol": "000002", "close": 3.140000104904175, "amount": 619277248.0, "volume": 0},
+    {"symbol": "600000", "close": 9.270000457763672, "amount": 841972864.0, "volume": 0}
+  ],
+  "notes": [
+    "Connection and query path reused the existing server runtime taos capability.",
+    "The result is a captured fixture/oracle; runtime use remains subject to TemporalDataGuard.",
+    "daily_kline.volume=0 remains UNKNOWN semantic, not an inferred zero."
+  ],
+  "secrets": "excluded"
+}
