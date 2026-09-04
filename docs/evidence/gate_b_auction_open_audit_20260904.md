@@ -45,7 +45,7 @@ source_sha256:
 | 09:24 预览 | 当前 t1-v2 在 `hms >= 92410 && hms < 92500` 首次发出 A24；writer 写 `...:0924` 和 `latest` | `business_anchor=AUCTION_0924`、`business_anchor_time=09:24:00`、`source_record_time` 单独保留 | VERIFIED |
 | 09:25 settling | 当前 t1-v2 在 `09:25:00` 到 `09:25:05` 不冻结 A25；`hms >= 92506` 才发出 A25 | 09:25 不是精确零秒快照；必须等待明确 settling barrier | VERIFIED |
 | Python formal gate | `engine_next/app_main.py` 的 `AUCTION_FINALIZE_EARLIEST = 09:25:10`；controller 在此之前输出 waiting | 需区分“源快照可发出”和“Python 正式消费门禁” | OBSERVED |
-| 旧实现冲突 | `C/t1.cpp` 旧路径在 `09:25:10` 后才写 0925；当前 t1-v2 在 `09:25:06` 可写 0925 | 不得在新 Engine 中自行选一个时间覆盖两个生产实现 | UNKNOWN / 待收口 |
+| 旧实现时间边界 | 当前 t1-v2 在 `09:25:06` 通过 settling barrier 发出源 A25；同一发布包的 Python runtime 在 `09:25:10` 前保持 `auction_anchor_settling`，之后才发出正式消费事件 | 源快照形成时间与旧 Python 正式消费门禁是两层边界；新 Engine 尚不选择统一策略 | VERIFIED（边界已澄清，Engine policy DEFER） |
 | 09:26 follow-up | Python `execute_auction_followup_0926` 重拉昨日涨停池和热点；仅当 anchor 缺失时恢复竞价 anchor | 作为恢复/补齐节点，不是新的正常 0920/0924 事实 | VERIFIED（旧运行时） |
 | 开盘 cutoff | 当前 t1-v2 `SnapshotTrigger` 明确有 `09:32:10` opening cutoff；不属于本轮 09:20→09:25 最小案例 | 后续开盘审计单独处理 | VERIFIED（源代码） |
 
@@ -197,7 +197,23 @@ A → B comparison:
 
 它可以由已冻结的 `SegmentFrame` + `compare_adjacent_segments` 直接产生，并用 600519 真实 fixture 做 differential。第一条真正带“转强/转弱”结论的 `AuctionShadowStrategy` 暂不宣称 VERIFIED，必须等 Gate B 的规则行具备明确 legacy consumer、阈值、状态生命周期和 fixture 后再实现。
 
-## 9. Gate B 当前结论与下一步
+## 9. 09:25 双门禁语义
+
+当前发布包的两层时间语义已经核对清楚：
+
+```text
+SourceSnapshotGate:
+  first accepted auction source tick at/after 09:25:06
+  → t1-v2 emits A25 and writes the source snapshot path
+
+LegacyConsumerGate:
+  Python runtime before 09:25:10
+  → waiting / no formal auction finalize event
+  at/after 09:25:10
+  → emits auction_anchor_finalize
+```
+
+这不是同一个时钟上的冲突，而是“生产源快照已形成”与“旧运行时允许正式消费”两个边界。`engine_core` 本轮不把任一边界偷偷改成统一新策略；未来 Engine Integration 需要显式选择或同时保留两者。
 
 本轮事实级 Rule Matrix 与独立 oracle 差异测试见：
 `docs/evidence/gate_b_rule_matrix_600519_20260904.md`、
@@ -207,7 +223,7 @@ A → B comparison:
 Gate B 业务考古（09:20/09:24/09:25）  PASS（第一轮）
 Q2 / M / RB / RA / pressure 事实边界     PASS
 真实 600519 A/B/Compare                  PASS
-09:25 单一正式时间语义                    UNKNOWN（06s vs 10s）
+09:25 双层时间边界                        VERIFIED（Engine policy DEFER）
 竞价转强/转弱正式策略 parity               NOT YET VERIFIED
 开盘 09:30/09:32 行为审计                 DEFER
 ```
@@ -217,6 +233,6 @@ Q2 / M / RB / RA / pressure 事实边界     PASS
 1. 选择一条有明确旧 consumer 的最小规则，补齐 Rule Matrix 和 fixture。
 2. 用现有 `SegmentFrame` / `SegmentComparison` 先做事实级 Shadow，不修改 Foundation。
 3. 现场捕获一次节点前参考数据 prefetch 的 `observed_at` 证据；不放宽 TemporalDataGuard。
-4. 解决 09:25:06 源触发与 09:25:10 Python 消费门禁的协调语义后，再进入第一条策略 Shadow。
+4. 后续 Engine Integration 显式保留 source snapshot gate 与 legacy consumer gate；不在事实层合并二者。
 
 仍然延期：Checkpoint、REPLAY_RECORDED、Rabbit direct ingestion、watermark、late correction、通用 fallback/workflow、正式 effect。
