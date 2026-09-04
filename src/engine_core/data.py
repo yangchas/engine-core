@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Mapping, Optional, Protocol, Tuple
+import math
+import re
+from typing import Any, Callable, Iterable, Mapping, Optional, Protocol, Tuple
 
 from .contracts import (
     DataRequest,
@@ -46,6 +48,92 @@ class ProviderResult:
     error: Optional[str] = None
 
 
+def normalize_previous_day_stats_rows(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    actual_trade_date: str,
+) -> Mapping[str, Any]:
+    """Map verified legacy daily-kline rows to the canonical payload.
+
+    The caller owns the existing TD/Redis access path.  This function only
+    validates the row shape and preserves explicit numeric zero values.  It
+    deliberately rejects market-qualified symbols and missing required
+    ``close``/``amount`` fields instead of silently repairing them.
+    """
+
+    if not isinstance(actual_trade_date, str) or not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}", actual_trade_date
+    ):
+        raise ValueError("actual_trade_date must be YYYY-MM-DD")
+    close_by_symbol = {}
+    amount_by_symbol = {}
+    volume_by_symbol = {}
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            raise TypeError("daily-kline row %d must be a mapping" % index)
+        symbol = row.get("symbol")
+        if not isinstance(symbol, str) or not re.fullmatch(r"\d{6}", symbol):
+            raise ValueError("daily-kline row %d has invalid symbol" % index)
+        if symbol in close_by_symbol:
+            raise ValueError("duplicate daily-kline symbol: %s" % symbol)
+        for field in ("close", "amount"):
+            if field not in row or not _finite_number(row[field]):
+                raise ValueError(
+                    "daily-kline row %d has invalid %s" % (index, field)
+                )
+        close_by_symbol[symbol] = row["close"]
+        amount_by_symbol[symbol] = row["amount"]
+        if "volume" in row and row["volume"] is not None:
+            if not _finite_number(row["volume"]):
+                raise ValueError(
+                    "daily-kline row %d has invalid volume" % index
+                )
+            volume_by_symbol[symbol] = row["volume"]
+    return {
+        "previous_trade_date": actual_trade_date,
+        "close_by_symbol": dict(sorted(close_by_symbol.items())),
+        "amount_by_symbol": dict(sorted(amount_by_symbol.items())),
+        "volume_by_symbol": dict(sorted(volume_by_symbol.items())),
+        "row_count": len(close_by_symbol),
+    }
+
+
+def provider_result_from_previous_day_rows(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    actual_trade_date: str,
+    source_id: str,
+    source_schema: str,
+    effective_at_ms: Optional[int],
+    available_at_ms: Optional[int],
+    observed_at_ms: int,
+    availability_status: str = "UNKNOWN",
+    evidence_ref: Optional[str] = None,
+) -> ProviderResult:
+    """Build a thin ``ProviderResult`` around normalized legacy rows."""
+
+    payload = normalize_previous_day_stats_rows(
+        rows,
+        actual_trade_date=actual_trade_date,
+    )
+    return ProviderResult(
+        raw_data=payload,
+        source_id=source_id,
+        source_schema=source_schema,
+        effective_at_ms=effective_at_ms,
+        available_at_ms=available_at_ms,
+        observed_at_ms=observed_at_ms,
+        availability_status=availability_status,
+        evidence_ref=evidence_ref,
+    )
+
+
+def _finite_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(float(value))
+
+
 class CallablePreviousDayStatsProvider:
     """Thin wrapper around a verified legacy TD/Redis access callable.
 
@@ -68,6 +156,12 @@ class CallablePreviousDayStatsProvider:
         else:
             status = DataStatus.READY
         payload = physical.raw_data
+        if (
+            status is DataStatus.READY
+            and isinstance(payload.get("row_count"), int)
+            and payload["row_count"] == 0
+        ):
+            status = DataStatus.MISSING
         actual_trade_date = (
             payload.get("previous_trade_date")
             if isinstance(payload, Mapping)

@@ -1,3 +1,8 @@
+import json
+from pathlib import Path
+
+import pytest
+
 from engine_core import (
     DataContext,
     DataRequest,
@@ -8,10 +13,10 @@ from engine_core import (
     ProviderResult,
     TemporalDataGuard,
     freeze_data_results,
+    normalize_previous_day_stats_rows,
+    provider_result_from_previous_day_rows,
 )
 from engine_core.contracts import DataResult
-import json
-from pathlib import Path
 
 
 def _request(function_id="previous_day_stats"):
@@ -232,3 +237,84 @@ def test_captured_td_previous_day_fixture_runs_through_data_function():
     assert result.status is DataStatus.READY
     assert result.data["close_by_symbol"]["000001"] == 11.880000114440918
     assert result.data["amount_by_symbol"]["000001"] == 1324230272.0
+
+
+def test_legacy_daily_rows_normalize_without_symbol_or_zero_repair():
+    payload = normalize_previous_day_stats_rows(
+        [
+            {"symbol": "600000", "close": 9.27, "amount": 0, "volume": 0},
+            {"symbol": "000001", "close": 11.88, "amount": 10, "volume": 2},
+        ],
+        actual_trade_date="2026-09-03",
+    )
+    assert tuple(payload["close_by_symbol"]) == ("000001", "600000")
+    assert payload["amount_by_symbol"]["600000"] == 0
+    assert payload["volume_by_symbol"]["600000"] == 0
+
+
+def test_legacy_daily_rows_fail_closed_on_qualified_or_incomplete_symbol():
+    with pytest.raises(ValueError):
+        normalize_previous_day_stats_rows(
+            [{"symbol": "600000.SH", "close": 1, "amount": 1}],
+            actual_trade_date="2026-09-03",
+        )
+    with pytest.raises(ValueError):
+        normalize_previous_day_stats_rows(
+            [{"symbol": "600000", "close": 1}],
+            actual_trade_date="2026-09-03",
+        )
+
+
+def test_provider_result_from_legacy_rows_preserves_temporal_metadata():
+    physical = provider_result_from_previous_day_rows(
+        [{"symbol": "000001", "close": 11.88, "amount": 100}],
+        actual_trade_date="2026-09-03",
+        source_id="tdengine_daily_kline",
+        source_schema="daily_kline",
+        effective_at_ms=1788393600000,
+        available_at_ms=1788480000000,
+        observed_at_ms=1788484800000,
+        availability_status="VERIFIED",
+        evidence_ref="probe/td/daily_kline",
+    )
+    result = PreviousDayStatsFunction(
+        CallablePreviousDayStatsProvider(lambda request: physical)
+    ).execute(
+        DataContext(
+            "eval-rows",
+            "AUCTION",
+            1788484800000,
+            expected_previous_trade_date="2026-09-03",
+        ),
+        _request(),
+    )
+    assert result.status is DataStatus.READY
+    assert result.actual_source == "tdengine_daily_kline"
+    assert result.data["close_by_symbol"]["000001"] == 11.88
+    assert result.provenance[0].evidence_ref == "probe/td/daily_kline"
+
+
+def test_empty_legacy_daily_rows_are_missing_not_ready():
+    physical = provider_result_from_previous_day_rows(
+        [],
+        actual_trade_date="2026-09-03",
+        source_id="tdengine_daily_kline",
+        source_schema="daily_kline",
+        effective_at_ms=1788393600000,
+        available_at_ms=1788480000000,
+        observed_at_ms=1788484800000,
+        availability_status="VERIFIED",
+    )
+    result = PreviousDayStatsFunction(
+        CallablePreviousDayStatsProvider(lambda request: physical)
+    ).execute(
+        DataContext(
+            "eval-empty-rows",
+            "AUCTION",
+            1788484800000,
+            expected_previous_trade_date="2026-09-03",
+        ),
+        _request(),
+    )
+    assert result.status is DataStatus.MISSING
+    assert result.completeness == 0.0

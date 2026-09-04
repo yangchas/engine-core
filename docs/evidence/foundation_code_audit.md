@@ -5,13 +5,13 @@ Branch: `codex/fix-foundation-wheels`
 
 ## Verification performed
 
-- `python -m pytest -q`: 50 passed on local Python 3.9.13 compatibility smoke.
+- `python -m pytest -q`: 54 passed on local Python 3.9.13 compatibility smoke.
 - `python -m compileall -q src tests examples`: passed.
 - `git diff --check`: passed.
 - Formal server runtime interpreter on `cobra-ion` is Python 3.12.3. The current
   `src`/`tests` were copied to the explicit temporary validation directory
   `/home/exedev/tmp/engine_core_validation_20260904` and passed with
-  `PYTHONPATH=src`: 50 tests passed. No production process or data was changed.
+  `PYTHONPATH=src`: 54 tests passed. No production process or data was changed.
 - No source file imports the legacy `engine_next` project, Redis client, TD
   client, RabbitMQ client, or network library.
 
@@ -24,6 +24,14 @@ shares, and computes rolling amount deltas from cumulative amount. Its auction
 calculator writes `am`, `br` and `ar` as integer-yuan values; `br/ar` are
 level-2 price/quantity proxies. The Python fact layer still requires callers
 to pass explicit `CUMULATIVE` semantics, so no unverified field is inferred.
+
+### Previous-day row boundary is thin and fail-closed
+
+`normalize_previous_day_stats_rows` adapts verified legacy daily-kline rows
+without reimplementing the connection/query path. It requires a six-digit
+symbol plus finite `close` and `amount`, preserves explicit zero values,
+rejects duplicates and qualified symbols, and emits stable symbol ordering.
+An empty normalized row set is treated as `MISSING` by the provider wrapper.
 
 ### P1: TD daily-kline volume semantics are not yet verified
 

@@ -28,6 +28,8 @@ from .data import (
     ProviderResult,
     TemporalDataGuard,
     freeze_data_results,
+    normalize_previous_day_stats_rows,
+    provider_result_from_previous_day_rows,
 )
 from .engine import DeterministicEngine
 from .facts import (
@@ -87,6 +89,8 @@ __all__ = [
     "PreviousDayStatsFunction",
     "ProviderResult",
     "TemporalDataGuard",
+    "normalize_previous_day_stats_rows",
+    "provider_result_from_previous_day_rows",
     "ProbeStrategy",
     "Q2ProjectionSnapshot",
     "RedisQ2ProjectionAdapter",
