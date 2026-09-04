@@ -29,12 +29,17 @@ local Python: 61 passed
 cobra-ion Python 3.12.3: 61 passed
 local compileall: passed
 remote compileall: passed
+remote read-only live-Q2 smoke: 64 symbols -> 1 snapshot -> 1 Probe result
 ```
 
 Remote validation used the non-production temporary copy:
 `/home/exedev/tmp/engine_core_validation_20260904_1244`.
 No production process, Redis/TD row, RabbitMQ delivery or external effect was
 changed.
+
+The live-Q2 smoke used an explicit temporary freshness policy and observed one
+stale quote (`projection_status=PARTIAL`, `coverage=1.0`). Details are in
+`docs/evidence/engine_integration_live_q2_smoke_20260904.md`.
 
 ## Residual boundaries
 
