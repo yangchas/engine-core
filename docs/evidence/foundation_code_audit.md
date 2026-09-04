@@ -5,13 +5,13 @@ Branch: `codex/fix-foundation-wheels`
 
 ## Verification performed
 
-- `python -m pytest -q`: 45 passed on local Python 3.9.13 compatibility smoke.
+- `python -m pytest -q`: 48 passed on local Python 3.9.13 compatibility smoke.
 - `python -m compileall -q src tests examples`: passed.
 - `git diff --check`: passed.
 - Formal server runtime interpreter on `cobra-ion` is Python 3.12.3. The current
   `src`/`tests` were copied to the explicit temporary validation directory
   `/home/exedev/tmp/engine_core_validation_20260904` and passed with
-  `PYTHONPATH=src`: 45 tests passed. No production process or data was changed.
+  `PYTHONPATH=src`: 48 tests passed. No production process or data was changed.
 - No source file imports the legacy `engine_next` project, Redis client, TD
   client, RabbitMQ client, or network library.
 
@@ -31,6 +31,15 @@ The live probe read `daily_kline` successfully but sampled rows had
 `volume=0`. This is recorded as evidence only; it is not treated as a semantic
 zero or a missing value. The first real TD provider must keep this field
 explicitly unresolved until the legacy writer/consumer path is traced.
+
+### P1: Redis Q2 active cohort is not an immutable historical snapshot
+
+The corrected Adapter reads the legacy compact key and gets full coverage for
+`q2:active:20260904`. Reading `q2:active:20260903` later found 5,216 of 5,217
+hashes with a source timestamp on 2026-09-04, so the strict date check reports
+`PARTIAL`. This is why the Adapter does not silently accept a stale active set
+as a historical replay frame. The source timestamp meaning and cross-day update
+order remain UNKNOWN.
 
 ### P2: The real 09:20 -> 09:24 Q2 case is not available yet
 

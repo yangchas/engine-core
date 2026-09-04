@@ -1,0 +1,34 @@
+{
+  "captured_at": "2026-09-04T08:31:00+08:00",
+  "host_alias": "cobra-ion",
+  "mode": "read_only",
+  "adapter": "engine_core.q2.RedisQ2ProjectionAdapter",
+  "policy": {"stale_after_ms": 86400000, "max_future_skew_ms": 2000},
+  "cohorts": {
+    "2026-09-04": {
+      "status": "READY",
+      "expected": 5216,
+      "quotes": 5216,
+      "missing": 0,
+      "stale": 0,
+      "oldest_source_time_ms": 1788451200000,
+      "newest_source_time_ms": 1788451200000
+    },
+    "2026-09-03": {
+      "status": "PARTIAL",
+      "expected": 5217,
+      "quotes": 5217,
+      "missing": 0,
+      "stale": 0,
+      "field_error_counts": {"trade_date": 5216},
+      "oldest_source_time_ms": 1788418800000,
+      "newest_source_time_ms": 1788451200000
+    }
+  },
+  "notes": [
+    "Compact YYYYMMDD active-key lookup matches the legacy C++ writer.",
+    "The 20260903 active set is not a historical immutable snapshot: most hashes now carry a later source date.",
+    "The source timestamp meaning and cross-day update ordering remain UNKNOWN; strict validation is retained."
+  ],
+  "secrets": "excluded"
+}

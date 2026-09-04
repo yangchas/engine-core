@@ -6,6 +6,8 @@
 - [OBSERVED] 旧 Q2 读取使用 q2:active:{trade_date} 与 q2:{symbol}；px/pc 为 milli 价格字段，其余数量单位必须继续审计。
 - [INFERRED] Q2 是 Redis 中各股票最近状态的投影集合，不应默认解释为同一市场时刻的全市场快照。
 - [VERIFIED] 2026-09-04 对 cobra-ion 的只读 Probe 可通过既有 server venv 访问 Redis Q2；当时最新可用 cohort 为 `q2:active:20260903`，共 5217 个 symbol。
+- [OBSERVED] 2026-09-04 读取 `q2:active:20260904` 时覆盖完整；较早的 `q2:active:20260903` 中大多数记录的 source `ts` 已跨到 2026-09-04，active cohort 不能视为不可变历史快照。
+- [UNKNOWN] Q2 `ts` 的精确定义及跨交易日更新顺序仍未由 producer/consumer 证据确认；当前 live check 观察到新 cohort 的 source timestamp 可能统一落在当日午夜。
 - [OBSERVED] Q2 producer 写入字段包括 `px/pc/amt/vol/iv/ia/ln/ts/ph/ls/mx/mn/spd1m/amt2m/amt5m/vec3m/vec5m` 以及竞价字段 `a20/a24/a25/am/br/ar` 和 `mk`；只有当前 Wheel 使用的核心字段才冻结到 canonical model。
 
 ## 2. Data Contracts
@@ -36,7 +38,7 @@
 - [VERIFIED] SegmentFrame 的 Price/Volume/OrderBook/Breadth/Theme 各自维护状态；未知累计量语义不计算 delta，返回 UNAVAILABLE。
 - [VERIFIED] directional_pressure 仅是 Q2 盘口字段差值代理，不得命名为真实资金净流入。
 - [VERIFIED] 基础轮子可脱离 Engine 单独运行：Contract、Q2、Window、TemporalDataGuard、SegmentFrame 与相邻段比较均有单项测试。
-- [VERIFIED] 当前基础轮子在 cobra-ion 的 Python 3.12.3 server venv 中以临时验证副本运行通过（45 tests passed）；这不是生产部署。
+- [VERIFIED] 当前基础轮子在 cobra-ion 的 Python 3.12.3 server venv 中以临时验证副本运行通过（48 tests passed）；这不是生产部署。
 
 ## 5. Replay Capabilities
 
