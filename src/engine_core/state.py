@@ -51,13 +51,12 @@ class MarketStateReducer:
             raise ValueError(
                 "logical_time_ms is required when source effective time is unavailable"
             )
-        next_logical_time_ms = (
+        self.state.revision += 1
+        self.state.logical_time_ms = (
             projection.envelope.effective_time_ms
             if logical_time_ms is None
             else logical_time_ms
         )
-        self.state.revision += 1
-        self.state.logical_time_ms = next_logical_time_ms
         self.state.session_id = session_id
         self.state.phase = phase
         self.state.symbol_states = {
