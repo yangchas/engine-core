@@ -305,6 +305,10 @@ def build_segment_frame(
         unavailable_groups.append("order_book")
     if volume.status is FactStatus.UNAVAILABLE:
         unavailable_groups.append("volume")
+    if missing_groups:
+        quality_status = FactStatus.PARTIAL
+    elif unavailable_groups:
+        quality_status = FactStatus.PARTIAL
     quality = DataQuality(
         quality_status,
         tuple(missing_groups),

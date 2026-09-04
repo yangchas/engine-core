@@ -88,6 +88,7 @@ def test_real_auction_pair_builds_repeatable_engine_independent_facts():
     assert segment_a.volume.amount_delta_yuan == 2209938
     assert segment_a.order_book.directional_pressure_yuan == -129960
     assert segment_a.volume.volume_delta_lots is None
+    assert segment_a.quality.status.value == "PARTIAL"
     assert segment_a.price.field_lineage["end_price_milli"] == (at_0920.snapshot_id,)
     assert at_0920.evidence_refs == tuple(fixture["evidence_refs"])
     assert segment_b.price.return_bp == -15

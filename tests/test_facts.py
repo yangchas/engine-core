@@ -67,6 +67,7 @@ def test_segment_frame_keeps_fact_groups_independently_statused():
     assert frame.order_book.directional_pressure_yuan == 20.0
     assert frame.breadth.status.value == "UNAVAILABLE"
     assert frame.theme.status.value == "UNAVAILABLE"
+    assert frame.quality.status.value == "PARTIAL"
     assert frame.quality.unavailable_groups == ("breadth", "theme")
     assert frame.price.field_lineage["end_price_milli"] == (end.snapshot_id,)
 
