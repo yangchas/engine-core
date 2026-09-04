@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from engine_core import (
     DeterministicEngine,
     EngineSignal,
@@ -10,6 +12,7 @@ from engine_core import (
     WindowManager,
     WindowSpec,
 )
+from engine_core.contracts import FrozenDataBundle
 from engine_core.windows import local_time_ms
 
 
@@ -119,3 +122,60 @@ def test_market_cross_section_excludes_non_equity_symbols():
     assert snapshot.raw_market_cross_section["observed_symbol_count"] == 2
     assert snapshot.raw_market_cross_section["excluded_non_equity_count"] == 1
 
+
+def test_duplicate_signal_id_is_idempotent_and_conflicting_content_is_rejected():
+    trade_date = "2026-09-04"
+    observed_at = datetime(2026, 9, 4, 9, 20, tzinfo=timezone(timedelta(hours=8)))
+    projection = RedisQ2ProjectionAdapter(FakeRedis()).read(trade_date, observed_at)
+    engine = DeterministicEngine(
+        MarketStateReducer(),
+        WindowManager((WindowSpec("auction_trial", local_time_ms(trade_date, "09:15:00"), local_time_ms(trade_date, "09:20:00")),)),
+        ProbeStrategy(),
+        session_id=trade_date,
+        phase="AUCTION_TRIAL",
+    )
+    signal = EngineSignal("same-id", local_time_ms(trade_date, "09:19:59"), 1, SignalKind.MARKET_UPDATE, projection)
+    engine.submit(signal)
+    engine.submit(signal)
+    with pytest.raises(ValueError):
+        engine.submit(EngineSignal("same-id", signal.logical_time_ms, 2, SignalKind.MARKET_UPDATE, projection))
+    assert engine.run_until_empty().processed_signals == 1
+
+
+def test_old_market_signal_cannot_move_frontier_backwards():
+    # Recreate the engine so the test can submit after the first drain.
+    trade_date = "2026-09-04"
+    observed_at = datetime(2026, 9, 4, 9, 20, tzinfo=timezone(timedelta(hours=8)))
+    projection = RedisQ2ProjectionAdapter(FakeRedis()).read(trade_date, observed_at)
+    engine = DeterministicEngine(
+        MarketStateReducer(),
+        WindowManager((WindowSpec("auction_trial", local_time_ms(trade_date, "09:15:00"), local_time_ms(trade_date, "09:20:00")),)),
+        ProbeStrategy(),
+        session_id=trade_date,
+        phase="AUCTION_TRIAL",
+    )
+    engine.submit(EngineSignal("newer", local_time_ms(trade_date, "09:19:59"), 1, SignalKind.MARKET_UPDATE, projection))
+    engine.submit(EngineSignal("timer", local_time_ms(trade_date, "09:20:00"), 2, SignalKind.TIMER, {"trigger_id": "AUCTION_0920", "close_windows": ("auction_trial",)}))
+    first = engine.run_until_empty()
+    assert len(first.snapshots) == 1
+    engine.submit(EngineSignal("older", local_time_ms(trade_date, "09:19:00"), 3, SignalKind.MARKET_UPDATE, projection))
+    second = engine.run_until_empty()
+    assert len(second.snapshots) == 1
+    assert second.snapshots[0].market_state_revision == first.snapshots[0].market_state_revision
+
+
+def test_old_data_ready_completes_frozen_evaluation_without_rewinding_market_state():
+    trade_date = "2026-09-04"
+    observed_at = datetime(2026, 9, 4, 9, 20, tzinfo=timezone(timedelta(hours=8)))
+    projection = RedisQ2ProjectionAdapter(FakeRedis()).read(trade_date, observed_at)
+    reducer = MarketStateReducer()
+    reducer.apply_snapshot(projection, logical_time_ms=local_time_ms(trade_date, "09:19:59"), session_id=trade_date, phase="AUCTION_TRIAL")
+    original_snapshot = reducer.build_snapshot("EVALUATION_ORIGIN", logical_time_ms=local_time_ms(trade_date, "09:19:59"))
+    engine = DeterministicEngine(reducer, WindowManager((WindowSpec("auction_trial", local_time_ms(trade_date, "09:15:00"), local_time_ms(trade_date, "09:20:00")),)), ProbeStrategy(), session_id=trade_date, phase="AUCTION_TRIAL")
+    engine.submit(EngineSignal("timer-newer", local_time_ms(trade_date, "09:20:00"), 1, SignalKind.TIMER, {"trigger_id": "AUCTION_0920", "close_windows": ("auction_trial",)}))
+    first = engine.run_until_empty()
+    assert [item.trigger_id for item in first.snapshots] == ["AUCTION_0920"]
+    engine.submit(EngineSignal("data-old", local_time_ms(trade_date, "09:19:59"), 2, SignalKind.DATA_READY, {"snapshot": original_snapshot, "bundle": FrozenDataBundle.empty("eval-old", local_time_ms(trade_date, "09:19:59"))}))
+    second = engine.run_until_empty()
+    assert [item.trigger_id for item in second.snapshots] == ["AUCTION_0920", "EVALUATION_ORIGIN"]
+    assert second.strategy_results[-1].evaluation_id == "eval-old"

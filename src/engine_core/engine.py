@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import heapq
-from dataclasses import dataclass, field
-from typing import Any, List, Optional, Protocol, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Protocol, Tuple
 
 from .contracts import (
     EngineSignal,
@@ -12,6 +12,7 @@ from .contracts import (
     FrozenDataBundle,
     SignalKind,
     StrategyResult,
+    canonical_hash,
 )
 from .state import MarketStateReducer
 from .windows import WindowManager
@@ -51,6 +52,8 @@ class DeterministicEngine:
         self._session_id = session_id
         self._phase = phase
         self._queue: List[Tuple[Tuple[int, int, int, str], EngineSignal]] = []
+        self._submitted_signatures: dict[str, str] = {}
+        self._market_frontier: Optional[int] = None
         self._snapshots: List[EngineSnapshot] = []
         self._strategy_results: List[StrategyResult] = []
         self._processed = 0
@@ -58,6 +61,22 @@ class DeterministicEngine:
     def submit(self, signal: EngineSignal) -> None:
         """Submit a signal; reducer execution remains single-threaded."""
 
+        if not signal.signal_id:
+            raise ValueError("signal_id is required")
+        signature = canonical_hash(
+            {
+                "logical_time_ms": signal.logical_time_ms,
+                "signal_seq": signal.signal_seq,
+                "signal_kind": signal.signal_kind,
+                "payload": signal.payload,
+            }
+        )
+        previous = self._submitted_signatures.get(signal.signal_id)
+        if previous is not None:
+            if previous != signature:
+                raise ValueError("signal_id was submitted with conflicting content")
+            return
+        self._submitted_signatures[signal.signal_id] = signature
         heapq.heappush(self._queue, (signal.sort_key, signal))
 
     def run_until_empty(self) -> EngineRunResult:
@@ -75,6 +94,8 @@ class DeterministicEngine:
 
     def _handle(self, signal: EngineSignal) -> None:
         if signal.signal_kind == SignalKind.MARKET_UPDATE:
+            if self._is_before_market_frontier(signal):
+                return
             projection = signal.payload
             self._reducer.apply_snapshot(
                 projection,
@@ -89,10 +110,15 @@ class DeterministicEngine:
                 completeness=projection.status.value,
                 content_hash=projection.content_hash,
             )
+            self._advance_market_frontier(signal.logical_time_ms)
             return
 
         if signal.signal_kind == SignalKind.DATA_READY:
             payload = signal.payload
+            if not isinstance(payload, dict):
+                raise ValueError("DATA_READY payload must be a mapping")
+            if "snapshot" not in payload or "bundle" not in payload:
+                raise ValueError("DATA_READY payload requires snapshot and bundle")
             snapshot = payload["snapshot"]
             bundle = payload["bundle"]
             self._evaluate(signal, snapshot, bundle)
@@ -103,6 +129,8 @@ class DeterministicEngine:
             SignalKind.TIMER,
             SignalKind.RECOVERY_CATCHUP,
         ):
+            if self._is_before_market_frontier(signal):
+                return
             payload = signal.payload if isinstance(signal.payload, dict) else {}
             for window_id in payload.get("close_windows", ()):
                 self._windows.close(window_id, signal.logical_time_ms)
@@ -116,9 +144,22 @@ class DeterministicEngine:
                 evaluation_id=signal.signal_id,
                 knowledge_as_of_ms=signal.logical_time_ms,
             ))
+            self._advance_market_frontier(signal.logical_time_ms)
             return
 
         raise ValueError("unsupported signal kind: %s" % signal.signal_kind)
+
+    def _is_before_market_frontier(self, signal: EngineSignal) -> bool:
+        """Reject old market/timer signals without rejecting old DATA_READY."""
+
+        return (
+            self._market_frontier is not None
+            and signal.logical_time_ms < self._market_frontier
+        )
+
+    def _advance_market_frontier(self, logical_time_ms: int) -> None:
+        if self._market_frontier is None or logical_time_ms > self._market_frontier:
+            self._market_frontier = logical_time_ms
 
     def _evaluate(
         self,
