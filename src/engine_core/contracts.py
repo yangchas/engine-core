@@ -64,7 +64,7 @@ def deep_freeze(value: T) -> T:
     are rejected instead of receiving an invented business order.
     """
 
-    if value is None or isinstance(value, (str, bool, int, float, bytes)):
+    if value is None or isinstance(value, (str, bool, int, float, bytes, datetime, Enum)):
         return value
     if isinstance(value, (set, frozenset)):
         raise TypeError("unordered sets are not allowed in frozen data")
@@ -82,7 +82,7 @@ def deep_freeze(value: T) -> T:
             for item in fields(value)
         }
         return type(value)(**frozen_fields)  # type: ignore[return-value,call-arg]
-    return value
+    raise TypeError("unsupported value for deep_freeze: %s" % type(value).__name__)
 
 
 def _canonical_value(value: Any) -> Any:

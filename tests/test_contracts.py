@@ -46,6 +46,14 @@ def test_deep_freeze_rejects_unordered_sets_instead_of_inventing_order():
         deep_freeze({"symbols": {"000001", "000002"}})
 
 
+def test_deep_freeze_fails_closed_for_unknown_mutable_objects():
+    class MutablePayload:
+        pass
+
+    with pytest.raises(TypeError, match="unsupported value"):
+        deep_freeze(MutablePayload())
+
+
 def test_hash_kinds_are_distinct_and_versioned():
     value = {"a": 1}
     assert semantic_hash(value) != evidence_hash(value)
