@@ -37,6 +37,38 @@ class DataFunction(Protocol):
         ...
 
 
+class TemporalDataGuard:
+    """Reject data that was not available at the evaluation knowledge cut-off."""
+
+    @staticmethod
+    def check(result: DataResult, request: DataRequest) -> DataResult:
+        if result.status in (
+            DataStatus.MISSING,
+            DataStatus.ERROR,
+            DataStatus.INVALID,
+            DataStatus.UNAVAILABLE,
+        ):
+            return result
+        reasons = []
+        if (
+            result.effective_at_ms is not None
+            and result.effective_at_ms > request.effective_as_of_ms
+        ):
+            reasons.append("effective_at_after_cutoff")
+        if result.available_at_ms is None:
+            reasons.append("available_at_unknown")
+        elif result.available_at_ms > request.knowledge_as_of_ms:
+            reasons.append("available_at_after_knowledge_cutoff")
+        if not reasons:
+            return result
+        return replace(
+            result,
+            status=DataStatus.UNAVAILABLE,
+            completeness=0.0,
+            missing_fields=tuple(sorted(set(result.missing_fields + tuple(reasons)))),
+        )
+
+
 class PreviousDayStatsFunction:
     """Fetch previous-session statistics without silently changing the date."""
 
@@ -53,10 +85,12 @@ class PreviousDayStatsFunction:
         result = self._provider.fetch(request)
         if result.function_id != self.function_id:
             raise ValueError("provider returned an unexpected function_id")
+        result = TemporalDataGuard.check(result, request)
         if result.status in (
             DataStatus.MISSING,
             DataStatus.ERROR,
             DataStatus.INVALID,
+            DataStatus.UNAVAILABLE,
         ):
             return result
         if result.actual_trade_date is None:

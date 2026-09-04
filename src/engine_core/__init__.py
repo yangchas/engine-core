@@ -24,6 +24,7 @@ from .data import (
     DataProvider,
     FixturePreviousDayStatsProvider,
     PreviousDayStatsFunction,
+    TemporalDataGuard,
     freeze_data_results,
 )
 from .engine import DeterministicEngine
@@ -80,6 +81,7 @@ __all__ = [
     "PayloadKind",
     "PriceFacts",
     "PreviousDayStatsFunction",
+    "TemporalDataGuard",
     "ProbeStrategy",
     "Q2ProjectionSnapshot",
     "RedisQ2ProjectionAdapter",

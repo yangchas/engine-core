@@ -48,6 +48,7 @@ class DataStatus(str, Enum):
     MISSING = "MISSING"
     INVALID = "INVALID"
     ERROR = "ERROR"
+    UNAVAILABLE = "UNAVAILABLE"
 
 
 T = TypeVar("T")

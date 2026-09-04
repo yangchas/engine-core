@@ -4,8 +4,10 @@ from engine_core import (
     DataStatus,
     FixturePreviousDayStatsProvider,
     PreviousDayStatsFunction,
+    TemporalDataGuard,
     freeze_data_results,
 )
+from engine_core.contracts import DataResult
 
 
 def _request(function_id="previous_day_stats"):
@@ -84,3 +86,58 @@ def test_frozen_bundle_hash_does_not_depend_on_async_completion_order():
     )
     assert left.function_order == ("previous_day_stats",)
     assert left.content_hash == right.content_hash
+
+
+def _ready_result(*, effective_at_ms=None, available_at_ms=None):
+    return DataResult(
+        request_id="r",
+        function_id="previous_day_stats",
+        status=DataStatus.READY,
+        data={"previous_trade_date": "2026-09-03"},
+        actual_source="fixture",
+        requested_trade_date="2026-09-04",
+        actual_trade_date="2026-09-03",
+        effective_at_ms=effective_at_ms,
+        available_at_ms=available_at_ms,
+        observed_at_ms=1788484800000,
+        schema_version=1,
+        completeness=1.0,
+    )
+
+
+def test_temporal_guard_rejects_future_effective_and_availability_times():
+    request = _request()
+    future = _ready_result(
+        effective_at_ms=request.effective_as_of_ms + 1,
+        available_at_ms=request.knowledge_as_of_ms + 1,
+    )
+    guarded = TemporalDataGuard.check(future, request)
+    assert guarded.status is DataStatus.UNAVAILABLE
+    assert set(guarded.missing_fields) == {
+        "effective_at_after_cutoff",
+        "available_at_after_knowledge_cutoff",
+    }
+
+
+def test_temporal_guard_rejects_unknown_availability_for_runtime_data():
+    result = TemporalDataGuard.check(
+        _ready_result(effective_at_ms=None, available_at_ms=None),
+        _request(),
+    )
+    assert result.status is DataStatus.UNAVAILABLE
+    assert "available_at_unknown" in result.missing_fields
+
+
+def test_previous_day_function_never_promotes_temporally_unavailable_result():
+    class FutureProvider:
+        def fetch(self, request):
+            return _ready_result(
+                effective_at_ms=request.effective_as_of_ms,
+                available_at_ms=request.knowledge_as_of_ms + 1,
+            )
+
+    result = PreviousDayStatsFunction(FutureProvider()).execute(
+        DataContext("eval-1", "AUCTION", 1788484800000),
+        _request(),
+    )
+    assert result.status is DataStatus.UNAVAILABLE
