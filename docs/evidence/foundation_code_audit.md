@@ -39,6 +39,10 @@ without reimplementing the connection/query path. It requires a six-digit
 symbol plus finite `close` and `amount`, preserves explicit zero values,
 rejects duplicates and qualified symbols, and emits stable symbol ordering.
 An empty normalized row set is treated as `MISSING` by the provider wrapper.
+The server-side Provider contract check returned three real rows through the
+existing taos path; the business result stayed `UNAVAILABLE` because the
+query only proves `observed_at`, not historical `available_at`.
+Evidence: `docs/evidence/real_data_probe/20260904T124403+0800/previous_day_provider_contract.json`.
 
 ### P1: TD daily-kline volume semantics are not yet verified
 

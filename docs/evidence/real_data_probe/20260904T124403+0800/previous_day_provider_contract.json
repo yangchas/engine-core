@@ -1,0 +1,20 @@
+{
+  "captured_at": "2026-09-04T12:44:03+08:00",
+  "host_alias": "cobra-ion",
+  "mode": "read_only",
+  "provider": "TDPreviousDayStatsProvider",
+  "source": "tdengine_daily_kline",
+  "requested_trade_date": "2026-09-04",
+  "previous_trade_date": "2026-09-03",
+  "raw_row_count": 3,
+  "raw_availability_status": "OBSERVED",
+  "function_status": "UNAVAILABLE",
+  "available_at_ms": null,
+  "missing_fields": ["available_at_unknown"],
+  "evidence_ref": "probe/td/daily_kline/20260904",
+  "notes": [
+    "The provider used the existing server taos connection settings and a read-only daily_kline query.",
+    "The raw rows were returned and normalized; runtime use is rejected because historical availability time is not evidenced.",
+    "No TDengine or Redis writes and no RabbitMQ consumption occurred."
+  ]
+}
