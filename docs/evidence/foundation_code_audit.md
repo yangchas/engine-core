@@ -28,7 +28,9 @@ are level-2 price/quantity proxies. On cobra-ion, Q2 `ts` aligns with the
 corresponding `stock_tick_v2.ts` for the sampled symbols. The canonical name is
 `source_record_time_ms`; its upstream vendor meaning and Rabbit arrival meaning
 remain UNKNOWN. The Python fact layer requires callers to pass explicit
-semantics, so no unverified field is inferred.
+semantics, so no unverified field is inferred. Auction matched amount uses an
+`OBSERVED_STATE` point difference rather than being mislabeled as a cumulative
+counter.
 
 ### Previous-day row boundary is thin and fail-closed
 
