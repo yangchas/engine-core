@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "trade_date": "2026-09-03",
+  "symbol": "600519",
+  "business_intervals": {
+    "segment_a": {
+      "start_ms": 1788398100000,
+      "end_exclusive_ms": 1788398400000,
+      "coverage_status": "PARTIAL",
+      "observed_start_ms": 1788398108000,
+      "observed_end_ms": 1788398403000
+    },
+    "segment_b": {
+      "start_ms": 1788398400000,
+      "end_exclusive_ms": 1788398640000,
+      "coverage_status": "READY",
+      "observed_start_ms": 1788398403000,
+      "observed_end_ms": 1788398650000
+    }
+  },
+  "snapshots": {
+    "pre_auction_0915": {
+      "snapshot_id": "600519:20260903:PRE_AUCTION_0915",
+      "trigger_id": "PRE_AUCTION_0915",
+      "business_anchor_time_ms": 1788398100000,
+      "source_record_time_ms": 1788398108000,
+      "source_table": "market_data1.stock_tick_v2",
+      "state": {
+        "price_milli": 1297540,
+        "pre_close_milli": 1297500,
+        "amount_yuan": 0,
+        "volume_lots": 0,
+        "auction_amount_yuan": 389262,
+        "auction_bid_amount_yuan": 0,
+        "auction_ask_amount_yuan": 0
+      },
+      "derivation": "auction_amount_yuan=min(price_milli*bid1_lots*100/1000, price_milli*ask1_lots*100/1000) from stock_tick_v2 level-1 at 09:15:08"
+    },
+    "auction_0920": {
+      "snapshot_id": "600519:20260903:AUCTION_0920",
+      "trigger_id": "AUCTION_0920",
+      "business_anchor_time_ms": 1788398400000,
+      "source_record_time_ms": 1788398403000,
+      "source_table": "market_data1.auction_snapshot_v2",
+      "state": {
+        "price_milli": 1299600,
+        "pre_close_milli": 1297500,
+        "amount_yuan": null,
+        "volume_lots": null,
+        "auction_amount_yuan": 2599200,
+        "auction_bid_amount_yuan": 0,
+        "auction_ask_amount_yuan": 129960
+      }
+    },
+    "auction_0924": {
+      "snapshot_id": "600519:20260903:AUCTION_0924",
+      "trigger_id": "AUCTION_0924",
+      "business_anchor_time_ms": 1788398640000,
+      "source_record_time_ms": 1788398650000,
+      "source_table": "market_data1.auction_snapshot_v2",
+      "state": {
+        "price_milli": 1297540,
+        "pre_close_milli": 1297500,
+        "amount_yuan": null,
+        "volume_lots": null,
+        "auction_amount_yuan": 7006716,
+        "auction_bid_amount_yuan": 648770,
+        "auction_ask_amount_yuan": 0
+      }
+    }
+  },
+  "evidence_refs": [
+    "docs/evidence/real_data_probe/20260904T124403+0800/auction_segment_600519_20260903.json"
+  ]
+}

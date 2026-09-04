@@ -21,6 +21,7 @@ class FakeRedis:
                 "px": str(price),
                 "pc": "990",
                 "amt": str(amount),
+                "am": str(amount),
                 "vol": "100",
                 "br": str(bid),
                 "ar": str(ask),

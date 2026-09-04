@@ -38,7 +38,7 @@ class PriceFacts:
 class VolumeFacts:
     status: FactStatus
     amount_delta_yuan: Optional[Number]
-    volume_delta_shares: Optional[Number]
+    volume_delta_lots: Optional[Number]
     field_lineage: Mapping[str, Tuple[str, ...]]
 
     def __post_init__(self) -> None:
@@ -103,6 +103,9 @@ class SegmentFrame:
     theme: ThemeFacts
     quality: DataQuality
     content_hash: str
+    coverage_status: str = "UNKNOWN"
+    observed_start_time_ms: Optional[int] = None
+    observed_end_time_ms: Optional[int] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "price", deep_freeze(self.price))
@@ -156,6 +159,9 @@ def build_segment_frame(
     scope_id: str,
     amount_semantics: str = "UNKNOWN",
     volume_semantics: str = "UNKNOWN",
+    coverage_status: str = "UNKNOWN",
+    observed_start_time_ms: Optional[int] = None,
+    observed_end_time_ms: Optional[int] = None,
 ) -> SegmentFrame:
     """Build facts for one symbol segment without strategy interpretation.
 
@@ -171,6 +177,9 @@ def build_segment_frame(
             scope_id,
             start_snapshot,
             end_snapshot,
+            coverage_status=coverage_status,
+            observed_start_time_ms=observed_start_time_ms,
+            observed_end_time_ms=observed_end_time_ms,
         )
 
     start_values = start_snapshot.symbol_states.get(scope_id)
@@ -216,6 +225,9 @@ def build_segment_frame(
             _unavailable_breadth(start_ref, end_ref),
             _unavailable_theme(start_ref, end_ref),
             quality,
+            coverage_status=coverage_status,
+            observed_start_time_ms=observed_start_time_ms,
+            observed_end_time_ms=observed_end_time_ms,
         )
 
     price_start = _as_int(start_values.get("price_milli"))
@@ -239,10 +251,13 @@ def build_segment_frame(
         {"start_price_milli": (start_ref,), "end_price_milli": (end_ref,)},
     )
 
-    amount_start = _as_number(start_values.get("amount_yuan"))
-    amount_end = _as_number(end_values.get("amount_yuan"))
-    volume_start = _as_number(start_values.get("volume_shares"))
-    volume_end = _as_number(end_values.get("volume_shares"))
+    # Auction segments use the matched auction amount, not the intraday
+    # cumulative trading amount.  There is deliberately no fallback here:
+    # ``amount_yuan`` and ``auction_amount_yuan`` have different semantics.
+    amount_start = _as_number(start_values.get("auction_amount_yuan"))
+    amount_end = _as_number(end_values.get("auction_amount_yuan"))
+    volume_start = _as_number(start_values.get("volume_lots"))
+    volume_end = _as_number(end_values.get("volume_lots"))
     amount_delta, amount_status = _delta(
         amount_start,
         amount_end,
@@ -258,7 +273,7 @@ def build_segment_frame(
         volume_status,
         amount_delta,
         volume_delta,
-        {"amount_yuan": (start_ref, end_ref), "volume_shares": (start_ref, end_ref)},
+        {"auction_amount_yuan": (start_ref, end_ref), "volume_lots": (start_ref, end_ref)},
     )
 
     bid_start = _as_number(start_values.get("auction_bid_amount_yuan"))
@@ -307,6 +322,9 @@ def build_segment_frame(
         breadth,
         theme,
         quality,
+        coverage_status=coverage_status,
+        observed_start_time_ms=observed_start_time_ms,
+        observed_end_time_ms=observed_end_time_ms,
     )
 
 
@@ -406,6 +424,10 @@ def _frame(
     breadth: BreadthFacts,
     theme: ThemeFacts,
     quality: DataQuality,
+    *,
+    coverage_status: str = "UNKNOWN",
+    observed_start_time_ms: Optional[int] = None,
+    observed_end_time_ms: Optional[int] = None,
 ) -> SegmentFrame:
     semantic_content = {
         "segment_id": segment_id,
@@ -424,7 +446,7 @@ def _frame(
         "volume": {
             "status": volume.status,
             "amount_delta_yuan": volume.amount_delta_yuan,
-            "volume_delta_shares": volume.volume_delta_shares,
+            "volume_delta_lots": volume.volume_delta_lots,
         },
         "order_book": {
             "status": order_book.status,
@@ -440,6 +462,9 @@ def _frame(
             "participation_ratio": theme.participation_ratio,
         },
         "quality": quality,
+        "coverage_status": coverage_status,
+        "observed_start_time_ms": observed_start_time_ms,
+        "observed_end_time_ms": observed_end_time_ms,
     }
     return SegmentFrame(
         segment_id=segment_id,
@@ -456,6 +481,9 @@ def _frame(
         theme=theme,
         quality=quality,
         content_hash=semantic_hash(semantic_content),
+        coverage_status=coverage_status,
+        observed_start_time_ms=observed_start_time_ms,
+        observed_end_time_ms=observed_end_time_ms,
     )
 
 
@@ -465,6 +493,10 @@ def _unavailable_frame(
     scope_id: str,
     start_snapshot: EngineSnapshot,
     end_snapshot: EngineSnapshot,
+    *,
+    coverage_status: str = "UNKNOWN",
+    observed_start_time_ms: Optional[int] = None,
+    observed_end_time_ms: Optional[int] = None,
 ) -> SegmentFrame:
     start_ref = start_snapshot.snapshot_id
     end_ref = end_snapshot.snapshot_id
@@ -489,6 +521,9 @@ def _unavailable_frame(
         _unavailable_breadth(start_ref, end_ref),
         _unavailable_theme(start_ref, end_ref),
         quality,
+        coverage_status=coverage_status,
+        observed_start_time_ms=observed_start_time_ms,
+        observed_end_time_ms=observed_end_time_ms,
     )
 
 
