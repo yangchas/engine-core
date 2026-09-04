@@ -7,6 +7,7 @@ import pytest
 from engine_core.contracts import DataStatus, PayloadKind
 from engine_core.q2 import (
     FreshnessPolicy,
+    Q2_FIELD_CONTRACT,
     RedisQ2ProjectionAdapter,
     classify_equity,
     normalize_q2,
@@ -27,6 +28,15 @@ class FakeRedis:
     def hgetall(self, key):
         self.read_keys.append(key)
         return self.hashes.get(key, {})
+
+
+def test_q2_contract_keeps_verified_legacy_units_explicit():
+    specs = {spec.raw_name: spec for spec in Q2_FIELD_CONTRACT}
+    assert specs["amt"].unit == "yuan"
+    assert specs["amt"].semantic == "cumulative trading amount"
+    assert specs["vol"].unit == "shares"
+    assert specs["br"].unit == "yuan"
+    assert specs["ar"].unit == "yuan"
 
 
 def test_q2_adapter_reports_projection_cohort_and_missing_symbol():

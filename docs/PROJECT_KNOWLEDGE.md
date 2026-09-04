@@ -40,7 +40,7 @@
 - [VERIFIED] SegmentFrame 的 Price/Volume/OrderBook/Breadth/Theme 各自维护状态；未知累计量语义不计算 delta，返回 UNAVAILABLE。
 - [VERIFIED] directional_pressure 仅是 Q2 盘口字段差值代理，不得命名为真实资金净流入。
 - [VERIFIED] 基础轮子可脱离 Engine 单独运行：Contract、Q2、Window、TemporalDataGuard、SegmentFrame 与相邻段比较均有单项测试。
-- [VERIFIED] 当前基础轮子在 cobra-ion 的 Python 3.12.3 server venv 中以临时验证副本运行通过（48 tests passed）；这不是生产部署。
+- [VERIFIED] 当前基础轮子在 cobra-ion 的 Python 3.12.3 server venv 中以临时验证副本运行通过（50 tests passed）；这不是生产部署。
 
 ## 5. Replay Capabilities
 
