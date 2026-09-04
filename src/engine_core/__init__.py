@@ -36,12 +36,13 @@ from .facts import (
     OrderBookFacts,
     PriceFacts,
     SegmentComparison,
-    SegmentFrameFactFunction,
     SegmentFrame,
     ThemeFacts,
     VolumeFacts,
     build_segment_frame,
+    compare_adjacent_segments,
     compare_segments,
+    compute_resting_order_pressure,
 )
 from .probe import ProbeStrategy
 from .q2 import (
@@ -94,7 +95,6 @@ __all__ = [
     "SignalKind",
     "SegmentComparison",
     "SegmentFrame",
-    "SegmentFrameFactFunction",
     "SystemMonotonicClock",
     "SystemWallClock",
     "ThemeFacts",
@@ -105,6 +105,7 @@ __all__ = [
     "WindowSnapshot",
     "WindowSpec",
     "build_segment_frame",
+    "compare_adjacent_segments",
     "canonical_hash",
     "canonical_json",
     "deep_freeze",
@@ -112,5 +113,6 @@ __all__ = [
     "semantic_hash",
     "trunc_div",
     "compare_segments",
+    "compute_resting_order_pressure",
     "freeze_data_results",
 ]

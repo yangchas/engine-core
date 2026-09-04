@@ -1,10 +1,14 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from engine_core import (
     MarketStateReducer,
     RedisQ2ProjectionAdapter,
     build_segment_frame,
+    compare_adjacent_segments,
     compare_segments,
+    compute_resting_order_pressure,
 )
 
 
@@ -94,6 +98,30 @@ def test_segment_comparison_is_dimensioned_not_a_total_strength_score():
     assert comparison.breadth_change == "BREADTH_UNAVAILABLE"
     assert comparison.theme_change == "THEME_UNAVAILABLE"
     assert "price.return_bp" in comparison.reason_codes
+
+
+def test_adjacent_comparison_rejects_non_contiguous_segments():
+    first_start = _snapshot(1000, 100, 20, 10, "09:19:00", "START1")
+    first_end = _snapshot(1020, 200, 30, 10, "09:20:00", "END1")
+    second_end = _snapshot(1010, 350, 25, 20, "09:24:00", "END2")
+    first = build_segment_frame(
+        "first", first_start, first_end,
+        scope_type="SYMBOL", scope_id="000001",
+        amount_semantics="CUMULATIVE", volume_semantics="CUMULATIVE",
+    )
+    non_adjacent = build_segment_frame(
+        "non_adjacent", first_start, second_end,
+        scope_type="SYMBOL", scope_id="000001",
+        amount_semantics="CUMULATIVE", volume_semantics="CUMULATIVE",
+    )
+    with pytest.raises(ValueError):
+        compare_adjacent_segments(first, non_adjacent)
+
+
+def test_resting_order_pressure_is_a_missing_safe_pure_function():
+    assert compute_resting_order_pressure(30, 10) == 20
+    assert compute_resting_order_pressure(0, 0) == 0
+    assert compute_resting_order_pressure(None, 10) is None
 
 
 def test_missing_symbol_does_not_become_zero_facts():

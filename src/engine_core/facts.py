@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import math
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
-from .contracts import EngineSnapshot, FrozenDataBundle, canonical_hash
+from .contracts import EngineSnapshot, canonical_hash, trunc_div
+
+Number = Union[int, float]
 
 
 class FactStatus(str, Enum):
@@ -32,15 +34,15 @@ class PriceFacts:
 @dataclass(frozen=True)
 class VolumeFacts:
     status: FactStatus
-    amount_delta_native: Optional[float]
-    volume_delta_native: Optional[float]
+    amount_delta_native: Optional[Number]
+    volume_delta_native: Optional[Number]
     field_lineage: Mapping[str, Tuple[str, ...]]
 
 
 @dataclass(frozen=True)
 class OrderBookFacts:
     status: FactStatus
-    directional_pressure_native: Optional[float]
+    directional_pressure_native: Optional[Number]
     field_lineage: Mapping[str, Tuple[str, ...]]
 
 
@@ -73,6 +75,8 @@ class SegmentFrame:
     scope_id: str
     start_snapshot_id: str
     end_snapshot_id: str
+    start_time_ms: int
+    end_time_ms: int
     price: PriceFacts
     volume: VolumeFacts
     order_book: OrderBookFacts
@@ -92,57 +96,6 @@ class FactResult:
     evidence_refs: Tuple[str, ...]
     reason_codes: Tuple[str, ...]
     content_hash: str
-
-
-class SegmentFrameFactFunction:
-    """Adapt the pure segment builder to the FactFunction contract."""
-
-    function_id = "segment_frame"
-
-    def __init__(
-        self,
-        segment_id: str,
-        start_snapshot: EngineSnapshot,
-        *,
-        scope_type: str,
-        scope_id: str,
-        amount_semantics: str = "UNKNOWN",
-        volume_semantics: str = "UNKNOWN",
-    ) -> None:
-        self.segment_id = segment_id
-        self.start_snapshot = start_snapshot
-        self.scope_type = scope_type
-        self.scope_id = scope_id
-        self.amount_semantics = amount_semantics
-        self.volume_semantics = volume_semantics
-
-    def evaluate(
-        self,
-        snapshot: EngineSnapshot,
-        bundle: FrozenDataBundle,
-    ) -> FactResult:
-        frame = build_segment_frame(
-            self.segment_id,
-            self.start_snapshot,
-            snapshot,
-            scope_type=self.scope_type,
-            scope_id=self.scope_id,
-            amount_semantics=self.amount_semantics,
-            volume_semantics=self.volume_semantics,
-        )
-        return FactResult(
-            fact_id=self.segment_id,
-            status=frame.quality.status,
-            facts=frame,
-            snapshot_hash=snapshot.content_hash,
-            bundle_hash=bundle.content_hash,
-            evidence_refs=(
-                self.start_snapshot.snapshot_id,
-                snapshot.snapshot_id,
-            ),
-            reason_codes=frame.quality.missing_fields,
-            content_hash=frame.content_hash,
-        )
 
 
 @dataclass(frozen=True)
@@ -240,7 +193,7 @@ def build_segment_frame(
         return_bp = None
     else:
         price_status = FactStatus.READY
-        return_bp = ((price_end - price_start) * 10_000) // price_start
+        return_bp = trunc_div((price_end - price_start) * 10_000, price_start)
     price = PriceFacts(
         price_status,
         price_start,
@@ -251,10 +204,10 @@ def build_segment_frame(
         {"start_price_milli": (start_ref,), "end_price_milli": (end_ref,)},
     )
 
-    amount_start = _as_float(start_values.get("amount_native"))
-    amount_end = _as_float(end_values.get("amount_native"))
-    volume_start = _as_float(start_values.get("volume_native"))
-    volume_end = _as_float(end_values.get("volume_native"))
+    amount_start = _as_number(start_values.get("amount_native"))
+    amount_end = _as_number(end_values.get("amount_native"))
+    volume_start = _as_number(start_values.get("volume_native"))
+    volume_end = _as_number(end_values.get("volume_native"))
     amount_delta, amount_status = _delta(
         amount_start,
         amount_end,
@@ -273,20 +226,12 @@ def build_segment_frame(
         {"amount_native": (start_ref, end_ref), "volume_native": (start_ref, end_ref)},
     )
 
-    bid_start = _as_float(start_values.get("auction_bid_amount_native"))
-    ask_start = _as_float(start_values.get("auction_ask_amount_native"))
-    bid_end = _as_float(end_values.get("auction_bid_amount_native"))
-    ask_end = _as_float(end_values.get("auction_ask_amount_native"))
-    pressure_start = (
-        bid_start - ask_start
-        if bid_start is not None and ask_start is not None
-        else None
-    )
-    pressure_end = (
-        bid_end - ask_end
-        if bid_end is not None and ask_end is not None
-        else None
-    )
+    bid_start = _as_number(start_values.get("auction_bid_amount_native"))
+    ask_start = _as_number(start_values.get("auction_ask_amount_native"))
+    bid_end = _as_number(end_values.get("auction_bid_amount_native"))
+    ask_end = _as_number(end_values.get("auction_ask_amount_native"))
+    pressure_start = compute_resting_order_pressure(bid_start, ask_start)
+    pressure_end = compute_resting_order_pressure(bid_end, ask_end)
     pressure = pressure_end
     order_status = (
         FactStatus.READY if pressure is not None else FactStatus.UNAVAILABLE
@@ -334,7 +279,21 @@ def compare_segments(
     previous: SegmentFrame,
     current: SegmentFrame,
 ) -> SegmentComparison:
-    """Compare two segment fact frames without choosing a strategy state."""
+    """Backward-compatible alias for adjacent segment comparison."""
+
+    return compare_adjacent_segments(previous, current)
+
+
+def compare_adjacent_segments(
+    previous: SegmentFrame,
+    current: SegmentFrame,
+) -> SegmentComparison:
+    """Compare two adjacent, non-overlapping fact frames."""
+
+    if previous.scope_type != current.scope_type or previous.scope_id != current.scope_id:
+        raise ValueError("adjacent segments must have the same scope")
+    if previous.end_time_ms != current.start_time_ms:
+        raise ValueError("adjacent segments must share the previous end/current start")
 
     reasons = []
     price_change = _compare(
@@ -367,6 +326,8 @@ def compare_segments(
     comparison = {
         "previous_segment_id": previous.segment_id,
         "current_segment_id": current.segment_id,
+        "previous_end_time_ms": previous.end_time_ms,
+        "current_start_time_ms": current.start_time_ms,
         "price_change": price_change,
         "volume_change": volume_change,
         "order_book_change": order_change,
@@ -411,6 +372,8 @@ def _frame(
         "scope_id": scope_id,
         "start_snapshot_id": start_snapshot.snapshot_id,
         "end_snapshot_id": end_snapshot.snapshot_id,
+        "start_time_ms": start_snapshot.logical_time_ms,
+        "end_time_ms": end_snapshot.logical_time_ms,
         "price": price,
         "volume": volume,
         "order_book": order_book,
@@ -424,6 +387,8 @@ def _frame(
         scope_id=scope_id,
         start_snapshot_id=start_snapshot.snapshot_id,
         end_snapshot_id=end_snapshot.snapshot_id,
+        start_time_ms=start_snapshot.logical_time_ms,
+        end_time_ms=end_snapshot.logical_time_ms,
         price=price,
         volume=volume,
         order_book=order_book,
@@ -493,9 +458,11 @@ def _as_int(value: Any) -> Optional[int]:
         return None
 
 
-def _as_float(value: Any) -> Optional[float]:
-    if value is None:
+def _as_number(value: Any) -> Optional[Number]:
+    if value is None or isinstance(value, bool):
         return None
+    if isinstance(value, int):
+        return value
     try:
         result = float(value)
     except (TypeError, ValueError):
@@ -503,11 +470,28 @@ def _as_float(value: Any) -> Optional[float]:
     return result if math.isfinite(result) else None
 
 
+def compute_resting_order_pressure(
+    resting_bid_yuan: Optional[Number],
+    resting_ask_yuan: Optional[Number],
+) -> Optional[Number]:
+    """Compute the resting-order pressure proxy ``bid - ask``.
+
+    The result is an order-book proxy, not authoritative net capital inflow.
+    Missing inputs stay missing; an observed zero remains zero.
+    """
+
+    bid = _as_number(resting_bid_yuan)
+    ask = _as_number(resting_ask_yuan)
+    if bid is None or ask is None:
+        return None
+    return bid - ask
+
+
 def _delta(
-    start: Optional[float],
-    end: Optional[float],
+    start: Optional[Number],
+    end: Optional[Number],
     semantics: str,
-) -> Tuple[Optional[float], FactStatus]:
+) -> Tuple[Optional[Number], FactStatus]:
     if semantics == "UNKNOWN":
         return None, FactStatus.UNAVAILABLE
     if semantics == "INCREMENTAL":
