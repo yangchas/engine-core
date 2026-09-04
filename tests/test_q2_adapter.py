@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
 
 import pytest
 
@@ -128,3 +130,23 @@ def test_classify_equity_uses_legacy_market_and_symbol_rules():
     assert classify_equity("399001", {"mk": "sz", "px": "1000"}) is False
     assert classify_equity("688001", {"mk": "kc", "px": "1000"}) is True
     assert classify_equity("SH.600000", {"mk": "sh", "px": "1000"}) is True
+
+
+def test_production_ground_truth_fixture_normalizes_without_raw_field_coupling():
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/q2/production_ground_truth_20260826_0930.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    first = fixture["snapshots"][0]
+    observed = datetime.fromisoformat(first["observed_at"])
+    result = RedisQ2ProjectionAdapter(
+        FakeRedis(
+            {"q2:active:2026-08-26": set(first["fields"])},
+            {"q2:" + symbol: fields for symbol, fields in first["fields"].items()},
+        )
+    ).read("2026-08-26", observed)
+    assert result.status is DataStatus.READY
+    assert result.quotes["000001"].price_milli == 11540
+    assert result.quotes["000001"].amount_native == 10196700
+    assert "raw_fields" not in result.quotes["000001"].to_mapping()
