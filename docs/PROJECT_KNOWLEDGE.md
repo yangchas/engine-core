@@ -49,6 +49,10 @@
 - [VERIFIED] SegmentFrame 的 Price/Volume/OrderBook/Breadth/Theme 各自维护状态；未知累计量语义不计算 delta，返回 UNAVAILABLE。
 - [VERIFIED] directional_pressure 仅是 Q2 盘口字段差值代理，不得命名为真实资金净流入。
 - [VERIFIED] 基础轮子可脱离 Engine 单独运行：Contract、Q2、Window、TemporalDataGuard、SegmentFrame、相邻段比较、昨日数据行归一化和真实 600519 竞价段 fixture 均有单项测试。
+- [VERIFIED] Gate B 第一轮确认：当前 cobra-ion t1-v2 生产源在 09:20:03、09:24:10 形成 A20/A24；09:25 源快照最早 09:25:06 通过 settling barrier，Python 旧运行时正式消费门禁为 09:25:10，二者暂未统一。
+- [VERIFIED] 当前真实 600519 竞价事实只纳入 `price_milli`、`auction_amount_yuan`、`auction_bid_amount_yuan`、`auction_ask_amount_yuan`；Segment A `[09:15,09:20)` 为 PARTIAL，Segment B `[09:20,09:24)` 为 READY，主题/市场宽度不进入该最小案例。
+- [VERIFIED] 竞价事实比较的最小可迁移对象是 `P/M/RB/RA` 的段间变化；它属于 Fact，不等同于 `turn_strong`、`BUY` 或其他策略结论。
+- [UNKNOWN] 旧系统中分散出现的 `bid_amount > ask_amount * 1.5`、撤单和波动阈值尚未完成当前生产路径、单位、consumer 和状态生命周期的闭环验证，不得直接迁移为正式策略。
 - [VERIFIED] 当前基础轮子可在 cobra-ion 的 Python 3.12.3 server venv 临时验证副本中运行；这不是生产部署。
 - [VERIFIED] `normalize_previous_day_stats_rows` 是旧日线访问结果的薄纯边界：严格校验六位代码、保留显式零值、拒绝缺失核心字段/重复代码，并输出稳定排序的昨日统计映射；空结果经 Provider 包装后为 MISSING。
 - [VERIFIED] cobra-ion 上 `TDPreviousDayStatsProvider` 已通过既有 taos 只读路径取得 2026-09-03 的 3 行 `daily_kline`；因没有历史 `available_at` 证据，`PreviousDayStatsFunction` 按规则返回 UNAVAILABLE，而不是把查询时刻冒充可用时刻。
@@ -60,6 +64,7 @@
 - [VERIFIED] 当前只完成 Q2 projection fixture/live slice；不支持 REPLAY_RECORDED，也不宣称 Rabbit arrival/batch 等价。
 - [VERIFIED] Q2Frame replay 与同一规范化 Q2 fixture 进入同一 Engine 的 semantic snapshot/Probe 结果 EXACT_EQUIVALENCE 已通过；该结论仅覆盖 Q2Frame 的 logical timestamp/逐帧 projection，不代表 Rabbit arrival/batch 等价。
 - [VERIFIED] TD Event-Time Replay 已通过本地与 cobra-ion 只读验证；当前能力是 `DETERMINISTIC_EVENT_TIME_ONLY`，不恢复 Rabbit arrival/batch，不做 watermark 或 late correction。
+- [VERIFIED] TD Event-Time Replay 在同一 `event_time + symbol` 且缺少真实 source ordering key 时，使用原始字段内容 hash 作为 deterministic synthetic tie-break；该 hash 不代表生产真实先后。
 - [VERIFIED] 不同信息粒度使用 EXACT_EQUIVALENCE 或 SHARED_FACT_EQUIVALENCE。
 - [VERIFIED] replay 默认 deny-all effect，并通过 knowledge_as_of 防止未来数据穿越。
 - [VERIFIED] Real Data Probe 只作为字段/连接证据和 fixture capture；当前能查到历史数据不等于历史 `available_at` 已早于 replay 的 `knowledge_as_of`。
@@ -151,3 +156,22 @@ Evidence：
 
 Evidence：
 - `docs/evidence/foundation_audit.md`
+
+### PITFALL: 合成 Tie-break 被误称为生产到达顺序
+
+问题：
+- TD Event-Time Replay 可能遇到同一 `event_time`、同一 symbol 且没有 source sequence 的多行事件。
+
+原因：
+- 为了让回放可重复，当前实现使用保留原始字段内容 hash 做最后排序键；TD 未保存 RabbitMQ arrival/batch 顺序。
+
+正确做法：
+- 将该 hash 明确标为 deterministic synthetic ordering；只用于稳定回放，不用于解释生产先后。
+- 未来只有找到真实 row/source sequence 才能替换排序键。
+
+不要：
+- 把 TD 查询顺序或 raw hash tie-break 当作生产 arrival order。
+
+Evidence：
+- `docs/evidence/td_event_time_replay_20260904.md`
+- `docs/evidence/gate_b_auction_open_audit_20260904.md`
