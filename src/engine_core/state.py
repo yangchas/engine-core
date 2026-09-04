@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional
 
 from .contracts import EngineSnapshot, canonical_hash
-from .q2 import Q2ProjectionSnapshot
+from .q2 import Q2ProjectionSnapshot, classify_equity
 from .windows import WindowManager
 
 
@@ -135,7 +135,13 @@ class MarketStateReducer:
 
 def _market_cross_section(symbol_states: Mapping[str, Mapping[str, Any]]) -> Dict[str, Any]:
     up = down = flat = unknown = 0
-    for values in symbol_states.values():
+    observed = 0
+    excluded = 0
+    for symbol, values in symbol_states.items():
+        if not classify_equity(symbol, values):
+            excluded += 1
+            continue
+        observed += 1
         price = values.get("price_milli")
         pre_close = values.get("pre_close_milli")
         if price is None or pre_close is None:
@@ -147,9 +153,10 @@ def _market_cross_section(symbol_states: Mapping[str, Mapping[str, Any]]) -> Dic
         else:
             flat += 1
     return {
-        "observed_symbol_count": len(symbol_states),
+        "observed_symbol_count": observed,
         "up_count": up,
         "down_count": down,
         "flat_count": flat,
         "unknown_count": unknown,
+        "excluded_non_equity_count": excluded,
     }

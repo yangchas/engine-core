@@ -98,3 +98,23 @@ def test_same_input_produces_same_semantic_result():
     right = _run_once().strategy_results[0]
     assert left.content_hash == right.content_hash
     assert left.trace["snapshot_hash"] == right.trace["snapshot_hash"]
+
+
+def test_market_cross_section_excludes_non_equity_symbols():
+    redis = FakeRedis()
+    redis.active["q2:active:2026-09-04"].add("399001")
+    redis.hashes["q2:399001"] = {
+        "mk": "SZ",
+        "px": "1000",
+        "pc": "990",
+        "amt": "999999",
+        "vol": "1",
+        "ts": str(local_time_ms("2026-09-04", "09:19:59")),
+    }
+    observed_at = datetime(2026, 9, 4, 9, 20, tzinfo=timezone(timedelta(hours=8)))
+    projection = RedisQ2ProjectionAdapter(redis).read("2026-09-04", observed_at)
+    reducer = MarketStateReducer()
+    reducer.apply_snapshot(projection, logical_time_ms=projection.envelope.effective_time_ms)
+    snapshot = reducer.build_snapshot("AUCTION_0920")
+    assert snapshot.raw_market_cross_section["observed_symbol_count"] == 2
+    assert snapshot.raw_market_cross_section["excluded_non_equity_count"] == 1
