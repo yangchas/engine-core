@@ -199,6 +199,10 @@ A → B comparison:
 
 ## 9. Gate B 当前结论与下一步
 
+本轮事实级 Rule Matrix 与独立 oracle 差异测试见：
+`docs/evidence/gate_b_rule_matrix_600519_20260904.md`、
+`tests/test_gate_b_fact_differential.py`。
+
 ```text
 Gate B 业务考古（09:20/09:24/09:25）  PASS（第一轮）
 Q2 / M / RB / RA / pressure 事实边界     PASS
