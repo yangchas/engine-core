@@ -150,3 +150,15 @@ def test_production_ground_truth_fixture_normalizes_without_raw_field_coupling()
     assert result.quotes["000001"].price_milli == 11540
     assert result.quotes["000001"].amount_native == 10196700
     assert "raw_fields" not in result.quotes["000001"].to_mapping()
+
+
+def test_q2_cohort_identity_includes_observation_time_but_semantic_content_does_not():
+    raw = {"px": "1000", "pc": "990", "ts": "1788484799000"}
+    first = RedisQ2ProjectionAdapter(
+        FakeRedis({"q2:active:2026-09-04": {"000001"}}, {"q2:000001": raw})
+    ).read("2026-09-04", datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc))
+    second = RedisQ2ProjectionAdapter(
+        FakeRedis({"q2:active:2026-09-04": {"000001"}}, {"q2:000001": raw})
+    ).read("2026-09-04", datetime(2026, 9, 4, 1, 20, 1, tzinfo=timezone.utc))
+    assert first.content_hash == second.content_hash
+    assert first.envelope.envelope_id != second.envelope.envelope_id

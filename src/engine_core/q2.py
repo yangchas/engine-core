@@ -377,6 +377,7 @@ def build_q2_projection(
                 "source_id": source_id,
                 "trade_date": trade_date,
                 "effective_ms": newest,
+                "observed_ms": observed_ms,
                 "content_hash": content_digest,
             },
             schema_version=1,
