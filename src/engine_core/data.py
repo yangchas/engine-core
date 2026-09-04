@@ -75,6 +75,12 @@ class CallablePreviousDayStatsProvider:
         )
         if status is DataStatus.READY and not isinstance(actual_trade_date, str):
             status = DataStatus.INVALID
+        availability_status = str(physical.availability_status or "UNKNOWN").upper()
+        available_at_ms = (
+            physical.available_at_ms
+            if availability_status == "VERIFIED"
+            else None
+        )
         content = {
             "function_id": request.function_id,
             "requested_trade_date": request.trade_date,
@@ -92,7 +98,7 @@ class CallablePreviousDayStatsProvider:
             requested_trade_date=request.trade_date,
             actual_trade_date=actual_trade_date,
             effective_at_ms=physical.effective_at_ms,
-            available_at_ms=physical.available_at_ms,
+            available_at_ms=available_at_ms,
             observed_at_ms=physical.observed_at_ms,
             schema_version=1,
             completeness=1.0 if status is DataStatus.READY else 0.0,

@@ -175,3 +175,24 @@ def test_callable_provider_wraps_existing_access_without_reimplementing_connecti
     assert result.status is DataStatus.READY
     assert result.actual_source == "tdengine_daily_kline"
     assert result.provenance[0].evidence_ref == "probe/td/daily_kline"
+
+
+def test_callable_provider_does_not_promote_observed_availability_to_runtime():
+    def observed_access(request):
+        return ProviderResult(
+            raw_data={"previous_trade_date": "2026-09-03"},
+            source_id="network_oracle",
+            source_schema="historical_result",
+            effective_at_ms=request.effective_as_of_ms,
+            available_at_ms=request.knowledge_as_of_ms,
+            observed_at_ms=request.knowledge_as_of_ms,
+            availability_status="OBSERVED",
+        )
+
+    result = PreviousDayStatsFunction(
+        CallablePreviousDayStatsProvider(observed_access)
+    ).execute(
+        DataContext("eval-1", "AUCTION", 1788484800000),
+        _request(),
+    )
+    assert result.status is DataStatus.UNAVAILABLE
