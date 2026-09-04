@@ -13,7 +13,8 @@ import math
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from types import MappingProxyType
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, TypeVar
 
 
 class PayloadKind(str, Enum):
@@ -47,6 +48,40 @@ class DataStatus(str, Enum):
     MISSING = "MISSING"
     INVALID = "INVALID"
     ERROR = "ERROR"
+
+
+T = TypeVar("T")
+SERIALIZER_VERSION = 1
+
+
+def deep_freeze(value: T) -> T:
+    """Freeze containers without changing business values.
+
+    Normalization, validation, unit conversion and sorting deliberately do not
+    happen here.  Lists become tuples, mappings become read-only mappings and
+    dataclasses are rebuilt with recursively frozen fields.  Unordered sets
+    are rejected instead of receiving an invented business order.
+    """
+
+    if value is None or isinstance(value, (str, bool, int, float, bytes)):
+        return value
+    if isinstance(value, (set, frozenset)):
+        raise TypeError("unordered sets are not allowed in frozen data")
+    if isinstance(value, Mapping):
+        frozen = {
+            key: deep_freeze(item)
+            for key, item in value.items()
+        }
+        return MappingProxyType(frozen)  # type: ignore[return-value]
+    if isinstance(value, (list, tuple)):
+        return tuple(deep_freeze(item) for item in value)  # type: ignore[return-value]
+    if is_dataclass(value):
+        frozen_fields = {
+            item.name: deep_freeze(getattr(value, item.name))
+            for item in fields(value)
+        }
+        return type(value)(**frozen_fields)  # type: ignore[return-value,call-arg]
+    return value
 
 
 def _canonical_value(value: Any) -> Any:
@@ -108,6 +143,42 @@ def canonical_hash(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _versioned_hash(value: Any, *, kind: str, schema_version: int) -> str:
+    if schema_version <= 0:
+        raise ValueError("schema_version must be positive")
+    return canonical_hash(
+        {
+            "hash_kind": kind,
+            "schema_version": schema_version,
+            "serializer_version": SERIALIZER_VERSION,
+            "value": value,
+        }
+    )
+
+
+def semantic_hash(value: Any, *, schema_version: int = 1) -> str:
+    """Hash only canonical business input/output, not evidence lineage."""
+
+    return _versioned_hash(value, kind="semantic", schema_version=schema_version)
+
+
+def evidence_hash(value: Any, *, schema_version: int = 1) -> str:
+    """Hash provenance/evidence separately from semantic business content."""
+
+    return _versioned_hash(value, kind="evidence", schema_version=schema_version)
+
+
+def trunc_div(numerator: int, denominator: int) -> int:
+    """Integer division truncated toward zero (C/C++ compatible)."""
+
+    if not isinstance(numerator, int) or not isinstance(denominator, int):
+        raise TypeError("trunc_div requires integer operands")
+    if denominator == 0:
+        raise ZeroDivisionError("division by zero")
+    quotient = abs(numerator) // abs(denominator)
+    return -quotient if (numerator < 0) != (denominator < 0) else quotient
+
+
 @dataclass(frozen=True)
 class Provenance:
     source_id: str
@@ -132,6 +203,10 @@ class MarketDataEnvelope:
     generation_kind: str
     payload: Any
     provenance: Provenance
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", deep_freeze(self.payload))
+        object.__setattr__(self, "provenance", deep_freeze(self.provenance))
 
 
 @dataclass(frozen=True)
@@ -184,6 +259,26 @@ class EngineSnapshot:
     content_hash: str
     evidence_refs: Tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "source_observation_metadata",
+            deep_freeze(self.source_observation_metadata),
+        )
+        object.__setattr__(self, "symbol_states", deep_freeze(self.symbol_states))
+        object.__setattr__(
+            self,
+            "raw_market_cross_section",
+            deep_freeze(self.raw_market_cross_section),
+        )
+        object.__setattr__(
+            self,
+            "raw_theme_cross_section",
+            deep_freeze(self.raw_theme_cross_section),
+        )
+        object.__setattr__(self, "windows", deep_freeze(self.windows))
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
+
 
 @dataclass(frozen=True)
 class DataRequest:
@@ -218,6 +313,12 @@ class DataResult:
     content_hash: str = ""
     provenance: Tuple[Provenance, ...] = ()
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "data", deep_freeze(self.data))
+        object.__setattr__(self, "missing_fields", tuple(self.missing_fields))
+        object.__setattr__(self, "missing_symbols", tuple(self.missing_symbols))
+        object.__setattr__(self, "provenance", deep_freeze(self.provenance))
+
 
 @dataclass(frozen=True)
 class FrozenDataBundle:
@@ -227,6 +328,14 @@ class FrozenDataBundle:
     completeness: float
     content_hash: str
     function_order: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "results_by_function",
+            deep_freeze(self.results_by_function),
+        )
+        object.__setattr__(self, "function_order", tuple(self.function_order))
 
     @classmethod
     def empty(cls, evaluation_id: str, knowledge_as_of_ms: int) -> "FrozenDataBundle":
@@ -238,9 +347,9 @@ class FrozenDataBundle:
         return cls(
             evaluation_id=evaluation_id,
             knowledge_as_of_ms=knowledge_as_of_ms,
-            results_by_function={},
+            results_by_function=MappingProxyType({}),
             completeness=1.0,
-            content_hash=canonical_hash(content),
+            content_hash=semantic_hash(content),
             function_order=(),
         )
 
@@ -293,13 +402,14 @@ class FrozenDataBundle:
                 for function_id in extra
             ],
         }
+        frozen_ordered = deep_freeze(ordered)
         return cls(
             evaluation_id=evaluation_id,
             knowledge_as_of_ms=knowledge_as_of_ms,
-            results_by_function=ordered,
+            results_by_function=frozen_ordered,
             completeness=completeness,
-            content_hash=canonical_hash(content),
-            function_order=function_order,
+            content_hash=semantic_hash(content),
+            function_order=tuple(function_order),
         )
 
 
@@ -311,3 +421,7 @@ class StrategyResult:
     trace: Mapping[str, Any]
     evidence_refs: Tuple[str, ...]
     content_hash: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "trace", deep_freeze(self.trace))
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))

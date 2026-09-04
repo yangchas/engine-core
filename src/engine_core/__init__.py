@@ -13,6 +13,10 @@ from .contracts import (
     SignalKind,
     canonical_hash,
     canonical_json,
+    deep_freeze,
+    evidence_hash,
+    semantic_hash,
+    trunc_div,
 )
 from .data import (
     DataContext,
@@ -86,6 +90,10 @@ __all__ = [
     "build_segment_frame",
     "canonical_hash",
     "canonical_json",
+    "deep_freeze",
+    "evidence_hash",
+    "semantic_hash",
+    "trunc_div",
     "compare_segments",
     "freeze_data_results",
 ]
