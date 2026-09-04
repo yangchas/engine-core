@@ -179,3 +179,27 @@ def test_old_data_ready_completes_frozen_evaluation_without_rewinding_market_sta
     second = engine.run_until_empty()
     assert [item.trigger_id for item in second.snapshots] == ["AUCTION_0920", "EVALUATION_ORIGIN"]
     assert second.strategy_results[-1].evaluation_id == "eval-old"
+
+
+def test_recovery_catchup_marks_closed_window_origin():
+    trade_date = "2026-09-04"
+    end = local_time_ms(trade_date, "09:20:00")
+    engine = DeterministicEngine(
+        MarketStateReducer(),
+        WindowManager((WindowSpec("auction_trial", local_time_ms(trade_date, "09:15:00"), end),)),
+        ProbeStrategy(),
+        session_id=trade_date,
+        phase="AUCTION_TRIAL",
+    )
+    engine.submit(
+        EngineSignal(
+            "recovery-0920",
+            end,
+            1,
+            SignalKind.RECOVERY_CATCHUP,
+            {"trigger_id": "AUCTION_0920_RECOVERY", "close_windows": ("auction_trial",)},
+        )
+    )
+    result = engine.run_until_empty()
+    assert result.snapshots[0].windows["auction_trial"].finality == "FINAL"
+    assert result.snapshots[0].windows["auction_trial"].origin == "RECOVERY_CATCHUP"

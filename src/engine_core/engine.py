@@ -132,8 +132,17 @@ class DeterministicEngine:
             if self._is_before_market_frontier(signal):
                 return
             payload = signal.payload if isinstance(signal.payload, dict) else {}
+            origin = (
+                "RECOVERY_CATCHUP"
+                if signal.signal_kind is SignalKind.RECOVERY_CATCHUP
+                else "NORMAL"
+            )
             for window_id in payload.get("close_windows", ()):
-                self._windows.close(window_id, signal.logical_time_ms)
+                self._windows.close(
+                    window_id,
+                    signal.logical_time_ms,
+                    origin=origin,
+                )
             trigger_id = payload.get("trigger_id", signal.signal_kind.value)
             snapshot = self._reducer.build_snapshot(
                 trigger_id,
