@@ -23,7 +23,7 @@
 ## 3. Runtime Timeline
 
 - [VERIFIED] 当前已验证的输入是 Q2 projection snapshot fixture/live adapter 和 fixture fact slice。
-- [UNKNOWN] Q2Frame、TD event-time replay adapter 尚未实现，接入后再记录其可证明的排序和等价能力。
+- [VERIFIED] 最小 Q2Frame + VirtualClock replay 已实现：严格校验 `Q2FrameV1` 版本、连续 `seq_no` 和不倒退 `logical_ts_ms`，逐帧生成已有 `MARKET_UPDATE`，不接管 Rabbit 或外部写入。
 - [VERIFIED] 所有窗口使用半开区间 [start_inclusive, end_exclusive)。
 - [VERIFIED] Timer 与行情输入分离。
 - [VERIFIED] 重启跨过节点时使用 RECOVERY_CATCHUP，不伪装为正常准时执行。
@@ -54,7 +54,8 @@
 ## 5. Replay Capabilities
 
 - [VERIFIED] 当前只完成 Q2 projection fixture/live slice；不支持 REPLAY_RECORDED，也不宣称 Rabbit arrival/batch 等价。
-- [UNKNOWN] Q2Frame sequence replay、TD event-time replay 的输入保真度和适配器尚待实现验证。
+- [VERIFIED] Q2Frame replay 与同一规范化 Q2 fixture 进入同一 Engine 的 semantic snapshot/Probe 结果 EXACT_EQUIVALENCE 已通过；该结论仅覆盖 Q2Frame 的 logical timestamp/逐帧 projection，不代表 Rabbit arrival/batch 或 TD event-time 等价。
+- [UNKNOWN] TD event-time replay 的输入保真度和适配器尚待实现验证。
 - [VERIFIED] 不同信息粒度使用 EXACT_EQUIVALENCE 或 SHARED_FACT_EQUIVALENCE。
 - [VERIFIED] replay 默认 deny-all effect，并通过 knowledge_as_of 防止未来数据穿越。
 - [VERIFIED] Real Data Probe 只作为字段/连接证据和 fixture capture；当前能查到历史数据不等于历史 `available_at` 已早于 replay 的 `knowledge_as_of`。
