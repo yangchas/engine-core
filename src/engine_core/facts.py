@@ -7,7 +7,7 @@ from enum import Enum
 import math
 from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
-from .contracts import EngineSnapshot, canonical_hash, trunc_div
+from .contracts import EngineSnapshot, deep_freeze, semantic_hash, trunc_div
 
 Number = Union[int, float]
 
@@ -30,6 +30,9 @@ class PriceFacts:
     return_bp: Optional[int]
     field_lineage: Mapping[str, Tuple[str, ...]]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "field_lineage", deep_freeze(self.field_lineage))
+
 
 @dataclass(frozen=True)
 class VolumeFacts:
@@ -38,12 +41,18 @@ class VolumeFacts:
     volume_delta_native: Optional[Number]
     field_lineage: Mapping[str, Tuple[str, ...]]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "field_lineage", deep_freeze(self.field_lineage))
+
 
 @dataclass(frozen=True)
 class OrderBookFacts:
     status: FactStatus
     directional_pressure_native: Optional[Number]
     field_lineage: Mapping[str, Tuple[str, ...]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "field_lineage", deep_freeze(self.field_lineage))
 
 
 @dataclass(frozen=True)
@@ -53,6 +62,9 @@ class BreadthFacts:
     down_count: Optional[int]
     field_lineage: Mapping[str, Tuple[str, ...]]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "field_lineage", deep_freeze(self.field_lineage))
+
 
 @dataclass(frozen=True)
 class ThemeFacts:
@@ -60,12 +72,19 @@ class ThemeFacts:
     participation_ratio: Optional[int]
     field_lineage: Mapping[str, Tuple[str, ...]]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "field_lineage", deep_freeze(self.field_lineage))
+
 
 @dataclass(frozen=True)
 class DataQuality:
     status: FactStatus
     missing_fields: Tuple[str, ...]
     unavailable_groups: Tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "missing_fields", tuple(self.missing_fields))
+        object.__setattr__(self, "unavailable_groups", tuple(self.unavailable_groups))
 
 
 @dataclass(frozen=True)
@@ -85,6 +104,13 @@ class SegmentFrame:
     quality: DataQuality
     content_hash: str
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "price", deep_freeze(self.price))
+        object.__setattr__(self, "volume", deep_freeze(self.volume))
+        object.__setattr__(self, "order_book", deep_freeze(self.order_book))
+        object.__setattr__(self, "breadth", deep_freeze(self.breadth))
+        object.__setattr__(self, "theme", deep_freeze(self.theme))
+
 
 @dataclass(frozen=True)
 class FactResult:
@@ -96,6 +122,11 @@ class FactResult:
     evidence_refs: Tuple[str, ...]
     reason_codes: Tuple[str, ...]
     content_hash: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "facts", deep_freeze(self.facts))
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
+        object.__setattr__(self, "reason_codes", tuple(self.reason_codes))
 
 
 @dataclass(frozen=True)
@@ -110,6 +141,10 @@ class SegmentComparison:
     reason_codes: Tuple[str, ...]
     evidence_refs: Tuple[str, ...]
     content_hash: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "reason_codes", tuple(self.reason_codes))
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
 
 
 def build_segment_frame(
@@ -349,7 +384,13 @@ def compare_adjacent_segments(
         theme_change="THEME_UNAVAILABLE",
         reason_codes=tuple(reasons),
         evidence_refs=(previous.content_hash, current.content_hash),
-        content_hash=canonical_hash(comparison),
+        content_hash=semantic_hash(
+            {
+                key: value
+                for key, value in comparison.items()
+                if key != "evidence_refs"
+            }
+        ),
     )
 
 
@@ -366,19 +407,38 @@ def _frame(
     theme: ThemeFacts,
     quality: DataQuality,
 ) -> SegmentFrame:
-    content = {
+    semantic_content = {
         "segment_id": segment_id,
         "scope_type": scope_type,
         "scope_id": scope_id,
-        "start_snapshot_id": start_snapshot.snapshot_id,
-        "end_snapshot_id": end_snapshot.snapshot_id,
         "start_time_ms": start_snapshot.logical_time_ms,
         "end_time_ms": end_snapshot.logical_time_ms,
-        "price": price,
-        "volume": volume,
-        "order_book": order_book,
-        "breadth": breadth,
-        "theme": theme,
+        "price": {
+            "status": price.status,
+            "start_price_milli": price.start_price_milli,
+            "end_price_milli": price.end_price_milli,
+            "high_price_milli": price.high_price_milli,
+            "low_price_milli": price.low_price_milli,
+            "return_bp": price.return_bp,
+        },
+        "volume": {
+            "status": volume.status,
+            "amount_delta_native": volume.amount_delta_native,
+            "volume_delta_native": volume.volume_delta_native,
+        },
+        "order_book": {
+            "status": order_book.status,
+            "directional_pressure_native": order_book.directional_pressure_native,
+        },
+        "breadth": {
+            "status": breadth.status,
+            "up_count": breadth.up_count,
+            "down_count": breadth.down_count,
+        },
+        "theme": {
+            "status": theme.status,
+            "participation_ratio": theme.participation_ratio,
+        },
         "quality": quality,
     }
     return SegmentFrame(
@@ -395,7 +455,7 @@ def _frame(
         breadth=breadth,
         theme=theme,
         quality=quality,
-        content_hash=canonical_hash(content),
+        content_hash=semantic_hash(semantic_content),
     )
 
 
