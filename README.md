@@ -25,7 +25,9 @@ engine_core 是独立的行情驱动确定性计算内核。
 - Data：`PreviousDayStatsFunction`、薄 `ProviderResult` 包装、`TemporalDataGuard`。
 - Facts：纯盘口压力、`SegmentFrame`、相邻段比较；不包含策略结论。
 
-这些轮子均可不启动 Engine、不连接 Redis/TD 单独测试。Real Data Probe 证据见
+这些轮子均可不启动 Engine、不连接 Redis/TD 单独测试。Engine 集成目前只提供
+内存确定性队列、signal 幂等/冻结、frontier 防倒退和 Probe 调用；不包含持久化
+恢复或 Rabbit 接管。Real Data Probe 证据见
 `docs/evidence/real_data_probe/`；当前仍不宣称 Rabbit arrival/batch replay 或完整策略迁移。
 
 ## 开发

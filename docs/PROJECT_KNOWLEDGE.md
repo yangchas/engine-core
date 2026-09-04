@@ -27,6 +27,8 @@
 - [VERIFIED] 所有窗口使用半开区间 [start_inclusive, end_exclusive)。
 - [VERIFIED] Timer 与行情输入分离。
 - [VERIFIED] 重启跨过节点时使用 RECOVERY_CATCHUP，不伪装为正常准时执行。
+- [VERIFIED] `DeterministicEngine` 在入队时冻结 signal payload；相同 `signal_id` 的相同内容幂等，冲突内容拒绝。MARKET_UPDATE/PULSE/TIMER 不得倒退 market frontier，旧 evaluation 的 `DATA_READY` 仍可使用原冻结 Snapshot 完成评估。
+- [VERIFIED] `RECOVERY_CATCHUP` 关闭窗口时保留 `origin=RECOVERY_CATCHUP`，窗口 `finality` 仍为 FINAL。
 
 ## 4. System Capabilities & Fact Authority
 

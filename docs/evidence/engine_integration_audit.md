@@ -1,0 +1,46 @@
+# Engine integration audit
+
+Audit date: 2026-09-04 (Asia/Shanghai)
+Branch: `codex/feature-engine-integration`
+
+## Scope
+
+This stage only composes the already-tested Q2, state, window, bundle and Probe
+contracts. It does not add a scheduler, workflow engine, replay adapter,
+checkpoint store, RabbitMQ consumer or external effect.
+
+## Implemented boundaries
+
+- Signal payloads are recursively frozen before queueing; later caller mutation
+  cannot change queued business input.
+- `signal_id` is an idempotency key. Repeated identical submissions are ignored;
+  a conflicting logical time, sequence, kind or payload is rejected.
+- MARKET_UPDATE, PULSE, TIMER and RECOVERY_CATCHUP cannot move the market
+  frontier backwards. DATA_READY is deliberately exempt because it completes
+  its original frozen evaluation and does not mutate CurrentMarketState.
+- RECOVERY_CATCHUP carries its origin into closed WindowView objects.
+- DATA_READY validates the required `snapshot` and `bundle` envelope before
+  invoking Strategy.
+
+## Verification
+
+```text
+local Python: 61 passed
+cobra-ion Python 3.12.3: 61 passed
+local compileall: passed
+remote compileall: passed
+```
+
+Remote validation used the non-production temporary copy:
+`/home/exedev/tmp/engine_core_validation_20260904_1244`.
+No production process, Redis/TD row, RabbitMQ delivery or external effect was
+changed.
+
+## Residual boundaries
+
+- Signal ordering is deterministic within this in-memory queue; it is not a
+  durable journal or Rabbit arrival-order replay.
+- DataFunction execution, EvaluationPlan, asynchronous collection and
+  checkpoint/restart remain deferred.
+- The engine does not claim production batch equivalence or recovery equivalence
+  across an unobserved outage.
