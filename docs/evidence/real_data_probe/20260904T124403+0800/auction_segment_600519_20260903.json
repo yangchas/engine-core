@@ -1,0 +1,93 @@
+{
+  "captured_at": "2026-09-04T12:44:03+08:00",
+  "host_alias": "cobra-ion",
+  "mode": "read_only",
+  "trade_date": "2026-09-03",
+  "symbol": "600519",
+  "business_intervals": {
+    "segment_a": {
+      "start_ms": 1788398100000,
+      "end_exclusive_ms": 1788398400000,
+      "coverage_status": "PARTIAL",
+      "observed_start_ms": 1788398108000
+    },
+    "segment_b": {
+      "start_ms": 1788398400000,
+      "end_exclusive_ms": 1788398640000,
+      "coverage_status": "READY",
+      "observed_start_ms": 1788398403000,
+      "observed_end_ms": 1788398650000
+    }
+  },
+  "anchors": [
+    {
+      "anchor_id": "PRE_AUCTION_0915",
+      "business_anchor_time_ms": 1788398100000,
+      "source_record_time_ms": 1788398108000,
+      "source_table": "market_data1.stock_tick_v2",
+      "row": {
+        "ts": "2026-09-03 09:15:08",
+        "px_milli": 1297540,
+        "pc_milli": 1297500,
+        "amt_yuan": 0,
+        "vol_units": 0,
+        "ap1_milli": 1297540,
+        "ap2_milli": 0,
+        "av1": 3,
+        "av2": 0,
+        "bp1_milli": 1297540,
+        "bp2_milli": 0,
+        "bv1": 3,
+        "bv2": 4
+      },
+      "derived_fields": {
+        "auction_amount_yuan": 389262,
+        "auction_bid_amount_yuan": 0,
+        "auction_ask_amount_yuan": 0,
+        "formula": "min(price_milli * bid1_lots * 100 / 1000, price_milli * ask1_lots * 100 / 1000)"
+      }
+    },
+    {
+      "anchor_id": "AUCTION_0920",
+      "business_anchor_time_ms": 1788398400000,
+      "source_record_time_ms": 1788398403000,
+      "source_table": "market_data1.auction_snapshot_v2",
+      "auction_tag": "0920",
+      "row": {
+        "ts": "2026-09-03 09:20:03",
+        "px_milli": 1299600,
+        "chg_bp": 16,
+        "match_amt_yuan": 2599200,
+        "rest_bid_amt_yuan": 0,
+        "rest_ask_amt_yuan": 129960,
+        "symbol": "600519",
+        "trade_date": "20260903",
+        "auction_tag": "0920"
+      }
+    },
+    {
+      "anchor_id": "AUCTION_0924",
+      "business_anchor_time_ms": 1788398640000,
+      "source_record_time_ms": 1788398650000,
+      "source_table": "market_data1.auction_snapshot_v2",
+      "auction_tag": "0924",
+      "row": {
+        "ts": "2026-09-03 09:24:10",
+        "px_milli": 1297540,
+        "chg_bp": 0,
+        "match_amt_yuan": 7006716,
+        "rest_bid_amt_yuan": 648770,
+        "rest_ask_amt_yuan": 0,
+        "symbol": "600519",
+        "trade_date": "20260903",
+        "auction_tag": "0924"
+      }
+    }
+  ],
+  "semantic_scope": [
+    "Only price, auction match amount and resting bid/ask amount are admitted to the first real fact case.",
+    "Business anchor time is distinct from source record time.",
+    "The 09:15:00-09:20:00 segment is PARTIAL because the first observed source row is 09:15:08.",
+    "The stock_tick_v2 derived 09:15 auction amount uses the verified legacy board-lot formula and is not intraday cumulative amount."
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "captured_at": "2026-09-04T12:44:03+08:00",
+  "host_alias": "cobra-ion",
+  "mode": "read_only",
+  "runtime": "/home/exedev/services/engine-next/shared/venv/bin/python",
+  "datasets": [
+    "Redis q2:<symbol>",
+    "TD market_data1.stock_tick_v2",
+    "TD market_data1.auction_snapshot_v2"
+  ],
+  "side_effects": "none"
+}

@@ -7,8 +7,8 @@
 - [INFERRED] Q2 是 Redis 中各股票最近状态的投影集合，不应默认解释为同一市场时刻的全市场快照。
 - [VERIFIED] 2026-09-04 对 cobra-ion 的只读 Probe 可通过既有 server venv 访问 Redis Q2；当时最新可用 cohort 为 `q2:active:20260903`，共 5217 个 symbol。
 - [OBSERVED] 2026-09-04 读取 `q2:active:20260904` 时覆盖完整；较早的 `q2:active:20260903` 中大多数记录的 source `ts` 已跨到 2026-09-04，active cohort 不能视为不可变历史快照。
-- [UNKNOWN] Q2 `ts` 的精确定义及跨交易日更新顺序仍未由 producer/consumer 证据确认；当前 live check 观察到新 cohort 的 source timestamp 可能统一落在当日午夜。
-- [VERIFIED] `C/t1_v2` producer 维护 `amt` 为累计元、`vol` 为累计股数，`amt2m/amt5m` 为累计金额差；Redis/TD 写入保持这些整数单位。
+- [OBSERVED] Q2 `ts` 与 cobra-ion 上同一时段 `stock_tick_v2.ts` 对齐，当前 canonical 名称为 `source_record_time_ms`；可以用于 freshness 和 trade-date sanity，但不能宣称为交易所逐笔时间或 Rabbit arrival time。上游供应商对该时间的更细定义仍 UNKNOWN。
+- [VERIFIED] `C/t1_v2` producer 维护 `amt` 为累计元、`vol` 为累计手（board lots），`amt2m/amt5m` 为累计金额差；Redis/TD 写入保持这些整数单位。旧注释中的 shares 表述不作为新契约依据。
 - [VERIFIED] `C/t1_v2` 竞价计算将 `br/ar` 定义为二档价格×二档股数换算的元金额，`am` 为竞价成交金额；它们是派生盘口/成交代理，不是真实净流入。
 - [OBSERVED] Q2 producer 写入字段包括 `px/pc/amt/vol/iv/ia/ln/ts/ph/ls/mx/mn/spd1m/amt2m/amt5m/vec3m/vec5m` 以及竞价字段 `a20/a24/a25/am/br/ar` 和 `mk`；只有当前 Wheel 使用的核心字段才冻结到 canonical model。
 
@@ -34,13 +34,14 @@
 - [VERIFIED] Redis Q2 是运行时投影，不是历史事实权威。
 - [UNKNOWN] TD 生产版本、重复写语义和历史输入排序能力待 Gate K 验证。
 - [VERIFIED] cobra-ion 上 TD `market_data1.stock_tick_v2` 可由既有 taos 客户端只读访问；2026-09-03 09:20-09:24 查询返回 82183 行，查询排序为事件时间/代码顺序，不代表 Rabbit arrival order。
+- [VERIFIED] cobra-ion 上 `auction_snapshot_v2` 存在 2026-09-03 的 09:20:03 与 09:24:10 真实快照；600519 的匹配金额、resting bid/ask 与价格已固化为只读证据，可用于第一条 Segment A/B Golden fixture。
 - [UNKNOWN] cobra-ion `daily_kline.volume` 的零值语义；Probe 样本为 0，不能直接当作 verified zero。
 - [VERIFIED] CurrentMarketState 只保存当前可观测数据、轻量 projection 和窗口原始累计状态。
 - [VERIFIED] 首个 SegmentFrame 事实切片仅支持 SYMBOL 范围；其他范围显式返回 UNAVAILABLE，不伪装成聚合结果。
 - [VERIFIED] SegmentFrame 的 Price/Volume/OrderBook/Breadth/Theme 各自维护状态；未知累计量语义不计算 delta，返回 UNAVAILABLE。
 - [VERIFIED] directional_pressure 仅是 Q2 盘口字段差值代理，不得命名为真实资金净流入。
-- [VERIFIED] 基础轮子可脱离 Engine 单独运行：Contract、Q2、Window、TemporalDataGuard、SegmentFrame、相邻段比较和昨日数据行归一化均有单项测试。
-- [VERIFIED] 当前基础轮子在 cobra-ion 的 Python 3.12.3 server venv 中以临时验证副本运行通过（54 tests passed）；这不是生产部署。
+- [VERIFIED] 基础轮子可脱离 Engine 单独运行：Contract、Q2、Window、TemporalDataGuard、SegmentFrame、相邻段比较、昨日数据行归一化和真实 600519 竞价段 fixture 均有单项测试。
+- [VERIFIED] 当前基础轮子可在 cobra-ion 的 Python 3.12.3 server venv 临时验证副本中运行；这不是生产部署。
 - [VERIFIED] `normalize_previous_day_stats_rows` 是旧日线访问结果的薄纯边界：严格校验六位代码、保留显式零值、拒绝缺失核心字段/重复代码，并输出稳定排序的昨日统计映射；空结果经 Provider 包装后为 MISSING。
 
 ## 5. Replay Capabilities

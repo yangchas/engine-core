@@ -1,0 +1,24 @@
+{
+  "captured_at": "2026-09-04T12:44:03+08:00",
+  "host_alias": "cobra-ion",
+  "mode": "read_only",
+  "symbols": {
+    "000001": {
+      "q2": {"ts": "1788492600000", "amt": "595954816", "vol": "500073"},
+      "td_latest": {"ts": "2026-09-04 11:30:00", "amt_yuan": 595954816, "vol_units": 500073}
+    },
+    "600519": {
+      "q2": {"ts": "1788492597000", "amt": "4187905024", "vol": "31625"},
+      "td_latest": {"ts": "2026-09-04 11:29:57", "amt_yuan": 4187905024, "vol_units": 31625}
+    },
+    "300750": {
+      "q2": {"ts": "1788492600000", "amt": "4795440640", "vol": "135859"},
+      "td_latest": {"ts": "2026-09-04 11:30:00", "amt_yuan": 4795440640, "vol_units": 135859}
+    }
+  },
+  "interpretation": [
+    "Q2 ts aligns with the TD stock_tick_v2 record timestamp for these observations.",
+    "This does not establish exchange tick-time or RabbitMQ arrival ordering.",
+    "Q2 vol is retained as board lots in the canonical contract."
+  ]
+}

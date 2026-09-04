@@ -5,25 +5,30 @@ Branch: `codex/fix-foundation-wheels`
 
 ## Verification performed
 
-- `python -m pytest -q`: 54 passed on local Python 3.9.13 compatibility smoke.
+- `python -m pytest -q`: 55 passed locally, including the real 600519 auction
+  fixture and semantic-hash regression tests.
 - `python -m compileall -q src tests examples`: passed.
 - `git diff --check`: passed.
 - Formal server runtime interpreter on `cobra-ion` is Python 3.12.3. The current
   `src`/`tests` were copied to the explicit temporary validation directory
-  `/home/exedev/tmp/engine_core_validation_20260904` and passed with
-  `PYTHONPATH=src`: 54 tests passed. No production process or data was changed.
+  `/home/exedev/tmp/engine_core_validation_20260904_1244` and passed with
+  `PYTHONPATH=src`: 55 tests passed, plus `compileall`. No production process
+  or data was changed.
 - No source file imports the legacy `engine_next` project, Redis client, TD
   client, RabbitMQ client, or network library.
 
 ## Findings
 
-### Q2 amount/volume semantics are verified at the legacy producer boundary
+### Q2 amount/volume/time semantics
 
 `C/t1_v2` converts source amount to rounded integer yuan, carries volume as
-shares, and computes rolling amount deltas from cumulative amount. Its auction
-calculator writes `am`, `br` and `ar` as integer-yuan values; `br/ar` are
-level-2 price/quantity proxies. The Python fact layer still requires callers
-to pass explicit `CUMULATIVE` semantics, so no unverified field is inferred.
+board lots, and computes rolling amount deltas from cumulative amount. Its
+auction calculator writes `am`, `br` and `ar` as integer-yuan values; `br/ar`
+are level-2 price/quantity proxies. On cobra-ion, Q2 `ts` aligns with the
+corresponding `stock_tick_v2.ts` for the sampled symbols. The canonical name is
+`source_record_time_ms`; its upstream vendor meaning and Rabbit arrival meaning
+remain UNKNOWN. The Python fact layer requires callers to pass explicit
+semantics, so no unverified field is inferred.
 
 ### Previous-day row boundary is thin and fail-closed
 
@@ -49,13 +54,14 @@ hashes with a source timestamp on 2026-09-04, so the strict date check reports
 as a historical replay frame. The source timestamp meaning and cross-day update
 order remain UNKNOWN.
 
-### P2: The real 09:20 -> 09:24 Q2 case is not available yet
+### Real 09:20 -> 09:24 auction evidence
 
-The server currently exposes a Redis cohort for 2026-09-03 and archived Q2
-ground-truth files around 09:30 on 2026-08-26, but no paired real Q2 snapshots
-at the legacy 09:20:03 and 09:24:10 firing anchors were found. The current
-09:20 -> 09:24 fact test is therefore a deterministic fixture case, while the
-captured production fixture is used for Q2 normalization only.
+The server has real `auction_snapshot_v2` rows at the legacy 09:20:03 and
+09:24:10 firing anchors. The 600519 pair, plus the first observed 09:15:08
+`stock_tick_v2` row, is captured in
+`docs/evidence/real_data_probe/20260904T124403+0800/auction_segment_600519_20260903.json`.
+The business intervals remain `[09:15:00,09:20:00)` and `[09:20:00,09:24:00)`;
+source record times are separate and Segment A is explicitly PARTIAL.
 
 ### P2: Checkpoint, Engine ordering and replay adapters remain intentionally deferred
 
@@ -66,7 +72,7 @@ Those are deferred by design and must not be inferred from the current tests.
 ## Audit conclusion
 
 No P0 correctness issue was found in the implemented foundation wheels after
-the fixes recorded in this branch. The remaining P1/P2 items are explicit data
-semantic and integration gates, not hidden defaults. Proceed next with a
-server-side, read-only TD/Redis contract test and only then capture the paired
-real segment fixtures.
+the fixes recorded in this branch. Remaining UNKNOWNs are limited to upstream
+timestamp definition and `daily_kline.volume` semantics; neither is used to
+make a stronger inference. Proceed with the real fixture differential test,
+then stop Foundation without adding Engine/Replay/Checkpoint mechanisms.
