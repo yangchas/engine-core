@@ -116,6 +116,19 @@ def test_q2_adapter_marks_missing_core_fields_and_stale_projection():
     assert result.stale_symbols == ("000002",)
 
 
+def test_q2_adapter_does_not_mark_missing_amount_ready():
+    redis = FakeRedis(
+        {"q2:active:2026-09-04": {"000001"}},
+        {"q2:000001": {"px": "1000", "pc": "990", "ts": "1788484799000"}},
+    )
+    result = RedisQ2ProjectionAdapter(redis).read(
+        "2026-09-04",
+        datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc),
+    )
+    assert result.status is DataStatus.PARTIAL
+    assert "amt" in result.quotes["000001"].field_errors
+
+
 def test_q2_contract_keeps_unknown_fields_for_evidence_but_not_business_mapping():
     quote = normalize_q2(
         "000001",

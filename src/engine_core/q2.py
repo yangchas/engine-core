@@ -46,7 +46,7 @@ class Q2FieldSpec:
 Q2_FIELD_CONTRACT: Tuple[Q2FieldSpec, ...] = (
     Q2FieldSpec("px", "price_milli", "int", "milli_price", "current price", True),
     Q2FieldSpec("pc", "pre_close_milli", "int", "milli_price", "previous close", True),
-    Q2FieldSpec("amt", "amount_native", "int", "source_native", "cumulative amount", False),
+    Q2FieldSpec("amt", "amount_native", "int", "source_native", "cumulative amount", True),
     Q2FieldSpec("vol", "volume_native", "int", "source_native", "cumulative volume", False),
     Q2FieldSpec("ts", "source_timestamp_ms", "epoch_ms", "epoch_ms", "source update time", True),
     Q2FieldSpec("ph", "phase", "int", "code", "market phase", False),
@@ -245,6 +245,8 @@ def validate_q2(
         errors.append("pc")
     elif quote.pre_close_milli <= 0:
         errors.append("pc_non_positive")
+    if quote.amount_native is None:
+        errors.append("amt")
     if quote.source_timestamp_ms is None:
         errors.append("ts")
     else:
