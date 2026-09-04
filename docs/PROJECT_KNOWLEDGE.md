@@ -115,7 +115,7 @@ Evidence：
 - 今天的网络或 TD 查询可能返回历史最终值，但不证明交易时点已经可见。
 
 正确做法：
-- Runtime/Replay 统一经过 `TemporalDataGuard`；无法证明 `available_at <= knowledge_as_of` 的数据只用于 oracle、Contract 验证或 fixture capture。
+- Runtime/Replay 统一经过 `TemporalDataGuard`；若没有历史 `available_at` 证据，只有在本进程已于 cutoff 前明确观察到的数据才可运行时使用，否则只用于 oracle、Contract 验证或 fixture capture。
 
 不要：
 - 从当前网络查询结果反灌历史 replay runtime。
