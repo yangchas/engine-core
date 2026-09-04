@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import heapq
 from dataclasses import dataclass
-from typing import List, Optional, Protocol, Tuple
+from typing import List, Mapping, Optional, Protocol, Tuple
 
 from .contracts import (
     EngineSignal,
@@ -13,6 +13,7 @@ from .contracts import (
     SignalKind,
     StrategyResult,
     canonical_hash,
+    deep_freeze,
 )
 from .state import MarketStateReducer
 from .windows import WindowManager
@@ -63,12 +64,20 @@ class DeterministicEngine:
 
         if not signal.signal_id:
             raise ValueError("signal_id is required")
+        frozen_payload = deep_freeze(signal.payload)
+        queued_signal = EngineSignal(
+            signal_id=signal.signal_id,
+            logical_time_ms=signal.logical_time_ms,
+            signal_seq=signal.signal_seq,
+            signal_kind=signal.signal_kind,
+            payload=frozen_payload,
+        )
         signature = canonical_hash(
             {
-                "logical_time_ms": signal.logical_time_ms,
-                "signal_seq": signal.signal_seq,
-                "signal_kind": signal.signal_kind,
-                "payload": signal.payload,
+                "logical_time_ms": queued_signal.logical_time_ms,
+                "signal_seq": queued_signal.signal_seq,
+                "signal_kind": queued_signal.signal_kind,
+                "payload": queued_signal.payload,
             }
         )
         previous = self._submitted_signatures.get(signal.signal_id)
@@ -77,7 +86,7 @@ class DeterministicEngine:
                 raise ValueError("signal_id was submitted with conflicting content")
             return
         self._submitted_signatures[signal.signal_id] = signature
-        heapq.heappush(self._queue, (signal.sort_key, signal))
+        heapq.heappush(self._queue, (queued_signal.sort_key, queued_signal))
 
     def run_until_empty(self) -> EngineRunResult:
         """Drain signals in deterministic order."""
@@ -115,7 +124,7 @@ class DeterministicEngine:
 
         if signal.signal_kind == SignalKind.DATA_READY:
             payload = signal.payload
-            if not isinstance(payload, dict):
+            if not isinstance(payload, Mapping):
                 raise ValueError("DATA_READY payload must be a mapping")
             if "snapshot" not in payload or "bundle" not in payload:
                 raise ValueError("DATA_READY payload requires snapshot and bundle")
@@ -131,7 +140,7 @@ class DeterministicEngine:
         ):
             if self._is_before_market_frontier(signal):
                 return
-            payload = signal.payload if isinstance(signal.payload, dict) else {}
+            payload = signal.payload if isinstance(signal.payload, Mapping) else {}
             origin = (
                 "RECOVERY_CATCHUP"
                 if signal.signal_kind is SignalKind.RECOVERY_CATCHUP

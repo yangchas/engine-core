@@ -142,6 +142,24 @@ def test_duplicate_signal_id_is_idempotent_and_conflicting_content_is_rejected()
     assert engine.run_until_empty().processed_signals == 1
 
 
+def test_submitted_signal_payload_is_frozen_before_queueing():
+    trade_date = "2026-09-04"
+    end = local_time_ms(trade_date, "09:20:00")
+    timer_payload = {"trigger_id": "AUCTION_0920", "close_windows": ["auction_trial"]}
+    engine = DeterministicEngine(
+        MarketStateReducer(),
+        WindowManager((WindowSpec("auction_trial", local_time_ms(trade_date, "09:15:00"), end),)),
+        ProbeStrategy(),
+        session_id=trade_date,
+        phase="AUCTION_TRIAL",
+    )
+    engine.submit(EngineSignal("timer-frozen", end, 1, SignalKind.TIMER, timer_payload))
+    timer_payload["trigger_id"] = "MUTATED"
+    result = engine.run_until_empty()
+    assert result.snapshots[0].trigger_id == "AUCTION_0920"
+    assert result.snapshots[0].windows["auction_trial"].finality == "FINAL"
+
+
 def test_old_market_signal_cannot_move_frontier_backwards():
     # Recreate the engine so the test can submit after the first drain.
     trade_date = "2026-09-04"
