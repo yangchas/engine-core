@@ -239,6 +239,8 @@ class WindowView:
     coverage: float
     completeness: str
     content_hash: str
+    finality: str = "OPEN"
+    origin: str = "NORMAL"
 
 
 @dataclass(frozen=True)

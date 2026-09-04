@@ -7,7 +7,7 @@ from datetime import date, datetime, time, timezone
 from typing import Dict, Mapping, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from .contracts import WindowView, canonical_hash
+from .contracts import WindowView, canonical_hash, deep_freeze
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -51,11 +51,12 @@ class _WindowAccumulator:
     observation_count: int = 0
     first_source_time_ms: Optional[int] = None
     last_source_time_ms: Optional[int] = None
-    min_coverage: float = 1.0
-    min_completeness: str = "READY"
+    min_coverage: float = 0.0
+    min_completeness: str = "MISSING"
     last_content_hash: str = ""
     revision: int = 0
     closed: bool = False
+    origin: str = "NORMAL"
 
 
 class WindowManager:
@@ -88,12 +89,18 @@ class WindowManager:
             if accumulator.closed or not accumulator.spec.contains(logical_time_ms):
                 continue
             accumulator.observation_count += 1
-            accumulator.min_coverage = min(accumulator.min_coverage, coverage)
-            accumulator.min_completeness = _worst_status(
-                accumulator.min_completeness,
-                completeness,
+            accumulator.min_coverage = (
+                coverage
+                if accumulator.observation_count == 1
+                else min(accumulator.min_coverage, coverage)
+            )
+            accumulator.min_completeness = (
+                completeness
+                if accumulator.observation_count == 1
+                else _worst_status(accumulator.min_completeness, completeness)
             )
             accumulator.last_content_hash = content_hash
+            accumulator.revision += 1
             if source_time_ms is not None:
                 if accumulator.first_source_time_ms is None:
                     accumulator.first_source_time_ms = source_time_ms
@@ -101,24 +108,33 @@ class WindowManager:
             touched.append(accumulator.spec.window_id)
         return tuple(sorted(touched))
 
-    def close(self, window_id: str, at_ms: int) -> WindowView:
+    def close(
+        self,
+        window_id: str,
+        at_ms: int,
+        *,
+        origin: str = "NORMAL",
+    ) -> WindowView:
         """Close a window and return its immutable raw fact view."""
 
+        if origin not in {"NORMAL", "RECOVERY_CATCHUP"}:
+            raise ValueError("origin must be NORMAL or RECOVERY_CATCHUP")
         accumulator = self._windows[window_id]
         if at_ms < accumulator.spec.end_exclusive_ms:
             raise ValueError("window cannot close before end_exclusive_ms")
         if not accumulator.closed:
             accumulator.closed = True
+            accumulator.origin = origin
             accumulator.revision += 1
         return self._view(accumulator)
 
     def views(self) -> Mapping[str, WindowView]:
         """Return immutable-by-convention views for all configured windows."""
 
-        return {
+        return deep_freeze({
             key: self._view(value)
             for key, value in sorted(self._windows.items())
-        }
+        })
 
     def _view(self, accumulator: _WindowAccumulator) -> WindowView:
         payload = {
@@ -133,6 +149,8 @@ class WindowManager:
             "completeness": accumulator.min_completeness,
             "last_content_hash": accumulator.last_content_hash,
             "closed": accumulator.closed,
+            "finality": "FINAL" if accumulator.closed else "OPEN",
+            "origin": accumulator.origin,
         }
         return WindowView(
             window_id=accumulator.spec.window_id,
@@ -145,6 +163,8 @@ class WindowManager:
             coverage=accumulator.min_coverage,
             completeness=accumulator.min_completeness,
             content_hash=canonical_hash(payload),
+            finality="FINAL" if accumulator.closed else "OPEN",
+            origin=accumulator.origin,
         )
 
 
