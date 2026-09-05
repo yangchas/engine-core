@@ -146,7 +146,7 @@ A → B comparison:
 | 竞价逐 Tick 累计 | 09:15–09:25 | RawTick 的价、一级/二级盘口、成交量/额 | `QuoteState.auction` 可变状态 | 当前 P/M/RB/RA | VERIFIED |
 | 09:20 试盘快照 | 09:20:03 起 | A20 触发、股票过滤 | `emitted_a20` 一次性标记 | `auction_snapshot_v2` / Redis 0920 | VERIFIED |
 | 09:24 接近结束快照 | 09:24:10 起 | A24 触发 | `emitted_a24` 一次性标记 | `auction_snapshot_v2` / Redis 0924 | VERIFIED |
-| 09:25 正式快照 | 09:25:06（源）或 09:25:10（旧 Python/旧 C++ 门禁） | settling barrier、完整 auction state | `emitted_a25` / anchor | `auction_snapshot_v2` / Redis 0925/anchor | UNKNOWN（时间冲突） |
+| 09:25 正式快照 | 09:25:06（源快照门禁）；09:25:10（旧 Python 消费门禁） | settling barrier、完整 auction state | `emitted_a25` / anchor | `auction_snapshot_v2` / Redis 0925/anchor | VERIFIED（双层边界） |
 | 09:20 后累积形态分析 | 09:20 后 | 价、买卖金额、昨收 | `post_20_data_` | `analyzeAccumulationPattern` 结果 | OBSERVED，未迁移 |
 | 撤单/订单流分析 | 每个 Auction Tick | 盘口、变化、金额 | `StockAuctionMetrics` 历史队列 | `analyzeOrderFlow` 结果 | OBSERVED，定义未闭环 |
 | 竞价波动分析 | 约每秒 | `StockAuctionMetrics` | `last_analysis_time`、波动分数 | volatility/volatile pool | OBSERVED，未迁移 |
@@ -163,7 +163,7 @@ A → B comparison:
 | 竞价方向压力 | `C/t1_v2/auction_calculator.cpp` | `compute_resting_order_pressure` | `RB - RA`，缺一侧为 UNAVAILABLE | MATCH | 远端 calculator、`tests/test_real_auction_fixture.py` |
 | 半开业务窗口 | 旧源以 delayed anchor 写快照 | `WindowSpec` / `SegmentFrame` | `[start,end)` 与 `source_record_time` 分离 | INTENTIONAL_CHANGE | 真实 fixture；避免延迟改变业务区间 |
 | `ts` 强语义 | 旧链只提供 source timestamp | `source_record_time_ms` | 只承诺可用于 freshness/sanity，不承诺 exchange/Rabbit order | INTENTIONAL_CHANGE | Q2/TD alignment evidence |
-| 09:25 正式门禁 | t1-v2 09:25:06 vs Python 09:25:10 | Session/Engine integration | 未统一前禁止宣称单一正式时刻 | UNKNOWN | 远端 snapshot trigger、旧 app_main |
+| 09:25 正式门禁 | t1-v2 09:25:06 vs Python 09:25:10 | Session/Engine integration | 分别记录 source snapshot gate 与 legacy consumer gate；Engine policy 延后 | VERIFIED（边界） | 远端 snapshot trigger、旧 app_main |
 | 竞价“转强/转弱”阈值 | `C/t1.cpp`、旧 Python 多处分散 | 暂无新 Strategy | 必须先按能力/规则核对，不能由事实标签直接升级 | UNKNOWN | 未发现已闭环 differential oracle |
 
 说明：`INTENTIONAL_CHANGE` 不是复刻旧 bug；它表示新内核更精确地隔离业务区间、源观测时间和时间能力边界。

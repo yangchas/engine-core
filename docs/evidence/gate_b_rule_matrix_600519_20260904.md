@@ -6,26 +6,27 @@
 
 ## 证据边界
 
-旧系统行为只按能力对照，不按旧函数一比一搬运。当前差异测试的 oracle 来自 cobra-ion 当前 `t1-v2` 发布源和同次只读捕获的真实 600519 行；它不导入或运行旧项目代码。
+旧系统行为只按能力对照，不按旧函数一比一搬运。当前差异测试的 source-formula oracle 来自 cobra-ion 当前 `t1-v2` 发布源和同次只读捕获的真实 600519 原始行；它不导入或运行旧项目代码。
 
 远端发布：`/home/exedev/services/t1-v2/current`，release commit `6fb3164baab00d840886da5f056587ec32f3d86a`。
 
 Fixture：`tests/fixtures/facts/auction_600519_20260903.json`
 原始证据：`docs/evidence/real_data_probe/20260904T124403+0800/auction_segment_600519_20260903.json`
+修正说明：`docs/evidence/gate_b_formula_correction_600519_20260905.md`
 
 ## 局部 Rule Matrix
 
 | legacy_capability | legacy_location | new_wheel / fact | behavior_contract | parity_status | evidence | fixture |
 |---|---|---|---|---|---|---|
 | 竞价匹配金额在锚点间的观察值变化 | `auction_calculator.cpp` / `auction_snapshot_v2.match_amt_yuan` | `SegmentFrame.volume.amount_delta_yuan` | `M_current - M_previous`；字段缺失保持缺失；不回退到盘中累计 `amount_yuan` | MATCH | 当前发布源 + 600519 源行 | 600519 0920/0924 |
-| 一级剩余买卖盘金额的锚点变化 | `auction_snapshot_v2.rest_bid_amt_yuan/rest_ask_amt_yuan` | `SegmentFrame.order_book` + comparison | 分别比较 `RB_current - RB_previous`、`RA_current - RA_previous`；不把缺失当零 | MATCH | 当前发布 writer + 600519 源行 | 600519 0920/0924 |
+| 一级剩余买卖盘金额的锚点输入 | `auction_snapshot_v2.rest_bid_amt_yuan/rest_ask_amt_yuan` | Q2/auction snapshot contract + `compute_resting_order_pressure` | 保留 `RB`/`RA` 原值；公共 SegmentFrame 当前只输出 `RB - RA` 压力，不把缺失当零 | MATCH | 当前发布 writer + 600519 源行 | 600519 0920/0924 |
 | 方向压力代理 | `auction_calculator.cpp` 的 `RB - RA` 语义 | `compute_resting_order_pressure` | `pressure = RB - RA`；只称盘口方向压力代理，不称净流入 | MATCH | 当前发布 calculator | 600519 0920/0924 |
 | 相邻竞价段比较 | 旧系统分段输出与当前事实契约 | `compare_adjacent_segments` | 同 scope 且 `previous.end == current.start`；输出价格、成交、压力变化标签，不输出交易结论 | MATCH | Segment contract + local tests | 600519 A/B |
 | 竞价“买盘强” | `C/analysis.cpp` `bid_amount > ask_amount * 1.5` | 暂无 Strategy | 需要确认当前生产 consumer、单位、状态生命周期和正式输出含义后才能迁移 | UNKNOWN | 旧日志分支，未形成闭环 oracle | 不适用 |
 
-## 600519 独立 oracle
+## 600519 source-formula oracle
 
-只对已验证字段执行最小差异比较。oracle 使用真实源行中的 canonical 数值，不使用新事实函数计算期望值：
+只对已验证字段执行最小差异比较。oracle 直接读取原始捕获行，并按当前发布包的公式生成期望值；不使用新事实函数计算期望值。09:15 原始行的旧派生字段与当前公式不一致，已由修正证据单独记录。
 
 ```text
 M(0920) = 2,599,200

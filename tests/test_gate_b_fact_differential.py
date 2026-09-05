@@ -1,9 +1,8 @@
 """Differential checks for the smallest Gate B auction fact slice.
 
-The expected values below are an independent oracle from the captured source
-rows and the verified current t1-v2 field contract.  This test deliberately
-does not import the legacy project: old code is evidence, not a runtime
-dependency of engine_core.
+The expected values are derived from the captured raw source rows and the
+verified current t1-v2 formulas.  This test deliberately does not import the
+legacy project: old code is evidence, not a runtime dependency of engine_core.
 """
 
 from __future__ import annotations
@@ -20,6 +19,11 @@ from engine_core import (
 
 
 FIXTURE = Path(__file__).parent / "fixtures/facts/auction_600519_20260903.json"
+RAW_EVIDENCE = (
+    Path(__file__).parents[1]
+    / "docs/evidence/real_data_probe/20260904T124403+0800/"
+    / "auction_segment_600519_20260903.json"
+)
 
 
 def _snapshot(fixture: dict, name: str) -> EngineSnapshot:
@@ -56,11 +60,43 @@ def _snapshot(fixture: dict, name: str) -> EngineSnapshot:
     )
 
 
-def _legacy_oracle(fixture: dict) -> dict[str, int]:
-    """Compute expected anchor differences without using engine_core facts."""
+def _source_state(raw_anchor: dict) -> dict[str, int]:
+    """Map one captured source row using the current t1-v2 formulas."""
 
-    previous = fixture["snapshots"]["auction_0920"]["state"]
-    current = fixture["snapshots"]["auction_0924"]["state"]
+    row = raw_anchor["row"]
+    if "match_amt_yuan" in row:
+        return {
+            "price_milli": row["px_milli"],
+            "auction_amount_yuan": row["match_amt_yuan"],
+            "auction_bid_amount_yuan": row["rest_bid_amt_yuan"],
+            "auction_ask_amount_yuan": row["rest_ask_amt_yuan"],
+        }
+
+    price_milli = row["bp1_milli"]
+    return {
+        "price_milli": row["px_milli"],
+        "auction_amount_yuan": min(
+            price_milli * row["bv1"] * 100 // 1000,
+            price_milli * row["av1"] * 100 // 1000,
+        ),
+        "auction_bid_amount_yuan": price_milli * row["bv2"] * 100 // 1000,
+        "auction_ask_amount_yuan": row["ap1_milli"] * row["av2"] * 100 // 1000,
+    }
+
+
+def _source_states(raw_fixture: dict) -> dict[str, dict[str, int]]:
+    return {
+        anchor["anchor_id"]: _source_state(anchor)
+        for anchor in raw_fixture["anchors"]
+    }
+
+
+def _source_formula_oracle(raw_fixture: dict) -> dict[str, int]:
+    """Compute expected differences from raw captured rows."""
+
+    states = _source_states(raw_fixture)
+    previous = states["AUCTION_0920"]
+    current = states["AUCTION_0924"]
     pressure_previous = (
         previous["auction_bid_amount_yuan"]
         - previous["auction_ask_amount_yuan"]
@@ -88,12 +124,30 @@ def _legacy_oracle(fixture: dict) -> dict[str, int]:
     }
 
 
-def test_600519_adjacent_facts_match_independent_legacy_oracle():
+def test_600519_fixture_mapping_and_adjacent_facts_match_source_formula():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    raw_fixture = json.loads(RAW_EVIDENCE.read_text(encoding="utf-8"))
     base = _snapshot(fixture, "pre_auction_0915")
     at_0920 = _snapshot(fixture, "auction_0920")
     at_0924 = _snapshot(fixture, "auction_0924")
-    oracle = _legacy_oracle(fixture)
+    source_states = _source_states(raw_fixture)
+    oracle = _source_formula_oracle(raw_fixture)
+
+    fixture_anchor_names = {
+        "PRE_AUCTION_0915": "pre_auction_0915",
+        "AUCTION_0920": "auction_0920",
+        "AUCTION_0924": "auction_0924",
+    }
+    for anchor_id, fixture_name in fixture_anchor_names.items():
+        state = fixture["snapshots"][fixture_name]["state"]
+        expected = source_states[anchor_id]
+        for field in (
+            "price_milli",
+            "auction_amount_yuan",
+            "auction_bid_amount_yuan",
+            "auction_ask_amount_yuan",
+        ):
+            assert state[field] == expected[field]
 
     segment_a = build_segment_frame(
         "auction_trial_600519",
@@ -128,6 +182,7 @@ def test_600519_adjacent_facts_match_independent_legacy_oracle():
     assert segment_b.order_book.directional_pressure_yuan == oracle["pressure_current_yuan"]
     assert segment_a.order_book.directional_pressure_yuan == oracle["pressure_previous_yuan"]
     assert oracle["pressure_delta_yuan"] == 778730
+    assert segment_b.order_book.directional_pressure_yuan - segment_a.order_book.directional_pressure_yuan == oracle["pressure_delta_yuan"]
     assert comparison.price_change == "PRICE_WEAKER"
     assert comparison.volume_change == "VOLUME_EXPANDING"
     assert comparison.order_book_change == "PRESSURE_IMPROVING"

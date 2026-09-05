@@ -31,10 +31,10 @@
         "amount_yuan": 0,
         "volume_lots": 0,
         "auction_amount_yuan": 389262,
-        "auction_bid_amount_yuan": 0,
+        "auction_bid_amount_yuan": 519016,
         "auction_ask_amount_yuan": 0
       },
-      "derivation": "auction_amount_yuan=min(price_milli*bid1_lots*100/1000, price_milli*ask1_lots*100/1000) from stock_tick_v2 level-1 at 09:15:08"
+      "derivation": "auction_amount_yuan=min(price_milli*bid1_lots*100/1000, price_milli*ask1_lots*100/1000); auction_bid_amount_yuan=bp1_milli*bv2*100/1000; auction_ask_amount_yuan=ap1_milli*av2*100/1000 from stock_tick_v2 at 09:15:08"
     },
     "auction_0920": {
       "snapshot_id": "600519:20260903:AUCTION_0920",
@@ -70,6 +70,7 @@
     }
   },
   "evidence_refs": [
-    "docs/evidence/real_data_probe/20260904T124403+0800/auction_segment_600519_20260903.json"
+    "docs/evidence/real_data_probe/20260904T124403+0800/auction_segment_600519_20260903.json",
+    "docs/evidence/gate_b_formula_correction_600519_20260905.md"
   ]
 }

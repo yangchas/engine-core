@@ -9,7 +9,7 @@
 - [OBSERVED] 2026-09-04 读取 `q2:active:20260904` 时覆盖完整；较早的 `q2:active:20260903` 中大多数记录的 source `ts` 已跨到 2026-09-04，active cohort 不能视为不可变历史快照。
 - [OBSERVED] Q2 `ts` 与 cobra-ion 上同一时段 `stock_tick_v2.ts` 对齐，当前 canonical 名称为 `source_record_time_ms`；可以用于 freshness 和 trade-date sanity，但不能宣称为交易所逐笔时间或 Rabbit arrival time。上游供应商对该时间的更细定义仍 UNKNOWN。
 - [VERIFIED] `C/t1_v2` producer 维护 `amt` 为累计元、`vol` 为累计手（board lots），`amt2m/amt5m` 为累计金额差；Redis/TD 写入保持这些整数单位。旧注释中的 shares 表述不作为新契约依据。
-- [VERIFIED] `C/t1_v2` 竞价计算将 `br/ar` 定义为二档价格×二档股数换算的元金额，`am` 为竞价成交金额；它们是派生盘口/成交代理，不是真实净流入。
+- [VERIFIED] cobra-ion 当前 `C/t1_v2` 竞价计算将 `br/ar` 定义为一级价格×二档手数换算的元金额，`am` 为竞价成交金额；它们是派生盘口/成交代理，不是真实净流入。
 - [OBSERVED] Q2 producer 写入字段包括 `px/pc/amt/vol/iv/ia/ln/ts/ph/ls/mx/mn/spd1m/amt2m/amt5m/vec3m/vec5m` 以及竞价字段 `a20/a24/a25/am/br/ar` 和 `mk`；只有当前 Wheel 使用的核心字段才冻结到 canonical model。
 
 ## 2. Data Contracts
@@ -52,7 +52,7 @@
 - [VERIFIED] Gate B 已澄清 09:25 的两层边界：cobra-ion t1-v2 在 `09:25:06` 通过 settling barrier 形成源 A25；同一发布包 Python runtime 在 `09:25:10` 前保持等待、之后才发出正式消费事件。二者分别是 source snapshot gate 与 legacy consumer gate；engine_core 不在本阶段自行合并。
 - [VERIFIED] 当前真实 600519 竞价事实只纳入 `price_milli`、`auction_amount_yuan`、`auction_bid_amount_yuan`、`auction_ask_amount_yuan`；Segment A `[09:15,09:20)` 为 PARTIAL，Segment B `[09:20,09:24)` 为 READY，主题/市场宽度不进入该最小案例。
 - [VERIFIED] 竞价事实比较的最小可迁移对象是 `P/M/RB/RA` 的段间变化；它属于 Fact，不等同于 `turn_strong`、`BUY` 或其他策略结论。
-- [VERIFIED] 600519 的 09:20→09:24 相邻竞价事实已通过独立 legacy oracle 差异测试：`P_delta=-2,060` milli、`M_delta=4,407,516` yuan、压力由 `-129,960` 变为 `648,770`（压力差 `778,730`）；该测试只验证事实轮子，不验证策略阈值。
+- [VERIFIED] 600519 的 09:20→09:24 相邻竞价事实已通过独立 source-formula 差异测试：`P_delta=-2,060` milli、`M_delta=4,407,516` yuan、压力由 `-129,960` 变为 `648,770`（压力差 `778,730`）；该测试只验证事实轮子，不验证策略阈值。
 - [UNKNOWN] 旧系统中分散出现的 `bid_amount > ask_amount * 1.5`、撤单和波动阈值尚未完成当前生产路径、单位、consumer 和状态生命周期的闭环验证，不得直接迁移为正式策略。
 - [VERIFIED] 当前基础轮子可在 cobra-ion 的 Python 3.12.3 server venv 临时验证副本中运行；这不是生产部署。
 - [VERIFIED] `normalize_previous_day_stats_rows` 是旧日线访问结果的薄纯边界：严格校验六位代码、保留显式零值、拒绝缺失核心字段/重复代码，并输出稳定排序的昨日统计映射；空结果经 Provider 包装后为 MISSING。
@@ -176,3 +176,17 @@ Evidence：
 Evidence：
 - `docs/evidence/td_event_time_replay_20260904.md`
 - `docs/evidence/gate_b_auction_open_audit_20260904.md`
+
+### PITFALL: 旧版盘口金额公式与当前发布包不一致
+
+问题：
+- 本地旧版 `C/t1_v2` 曾按二档价格×二档手数计算 `br/ar`，cobra-ion 当前发布包已按一级价格×二档手数计算。
+
+正确做法：
+- 以当前运行环境的发布源和真实原始行复算 Golden fixture；保留公式修正证据，不把旧派生值直接当作当前契约。
+
+不要：
+- 只复用旧 fixture 的派生字段，跳过当前 producer/consumer parity。
+
+Evidence：
+- `docs/evidence/gate_b_formula_correction_600519_20260905.md`
