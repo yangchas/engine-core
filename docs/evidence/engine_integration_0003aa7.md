@@ -2,7 +2,9 @@
 
 ## Scope
 
-This record covers code commit `0003aa7` (`fix(engine): close contract integrity gates`).
+This record covers the verified code state at commit `04f0375`
+(`fix(integrity): preserve causal drain and fact evidence`), including the
+contract changes from `0003aa7`.
 It does not change or access the production RabbitMQ/t1_v2/TD/Redis chain.
 
 ## Local check
@@ -12,7 +14,7 @@ Environment:
 ```text
 Python: 3.9.13 (Windows edit/light-check environment)
 formal runtime: Linux Python 3.12
-pyproject SHA256: 13702DC97EC1BDCD5A50ED709597CD018B88F9EA4C927D7EFF881D229F9E4C9A
+dependency lock: none; dependency contract is recorded in `pyproject.toml`
 ```
 
 Results:
@@ -37,7 +39,7 @@ the existing read-only Python environment at
 
 ```text
 Python: 3.12.3
-pytest: 87 passed in 0.74s
+pytest: 87 passed in 0.77s
 compileall: PASS
 TZ: CST
 LC_CTYPE: POSIX
