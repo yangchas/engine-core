@@ -56,6 +56,7 @@ from .facts import (
     compute_resting_order_pressure,
 )
 from .probe import ProbeStrategy
+from .auction_shadow import AuctionFactShadow, build_auction_fact_shadow
 from .replay import (
     Q2FrameReplaySource,
     Q2FrameV1,
@@ -111,6 +112,8 @@ __all__ = [
     "prefetch_ready_data",
     "provider_result_from_previous_day_rows",
     "ProbeStrategy",
+    "AuctionFactShadow",
+    "build_auction_fact_shadow",
     "Q2FrameReplaySource",
     "Q2FrameV1",
     "TDEventSlice",

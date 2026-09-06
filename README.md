@@ -30,6 +30,11 @@ engine_core 是独立的行情驱动确定性计算内核。
 drain 和 Probe 调用；不包含持久化恢复或 Rabbit 接管。Real Data Probe 证据见
 `docs/evidence/real_data_probe/`；当前仍不宣称 Rabbit arrival/batch replay 或完整策略迁移。
 
+当前第一条 Auction Shadow 仍停在事实层：`AuctionFactShadow` 复用相邻
+`SegmentFrame`/`SegmentComparison` 输出可追溯的 P/M/RB/RA/pressure 变化，固定为
+`FACT_ONLY/OBSERVE`。旧系统的正式买盘阈值和转强/转弱规则仍待 legacy consumer
+parity 闭环，不能从事实标签直接升级为交易策略。
+
 ## 开发
 
     python -m pytest -q
