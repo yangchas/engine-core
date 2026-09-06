@@ -13,7 +13,6 @@ from .contracts import (
     DataStatus,
     FrozenDataBundle,
     Provenance,
-    semantic_hash,
 )
 
 
@@ -179,15 +178,6 @@ def _data_result_from_provider(
         if availability_status == "VERIFIED"
         else None
     )
-    semantic_content = {
-        "function_id": request.function_id,
-        "requested_trade_date": request.trade_date,
-        "actual_trade_date": actual_trade_date,
-        "data": payload,
-        "effective_at_ms": physical.effective_at_ms,
-        "available_at_ms": available_at_ms,
-        "status": status,
-    }
     return DataResult(
         request_id=request.request_id,
         function_id=request.function_id,
@@ -201,7 +191,6 @@ def _data_result_from_provider(
         observed_at_ms=physical.observed_at_ms,
         schema_version=1,
         completeness=1.0 if status is DataStatus.READY else 0.0,
-        content_hash=semantic_hash(semantic_content),
         missing_fields=("error",) if physical.error else (),
         provenance=(
             Provenance(
@@ -231,12 +220,14 @@ class TDPreviousDayStatsProvider:
         fetch_rows: Callable[[str, Tuple[str, ...]], Iterable[Mapping[str, Any]]],
         *,
         observed_at_ms: Callable[[], int],
+        available_at_ms: Optional[Callable[[], Optional[int]]] = None,
         source_id: str = "tdengine_daily_kline",
         source_schema: str = "daily_kline",
         evidence_ref: Optional[str] = None,
     ) -> None:
         self._fetch_rows = fetch_rows
         self._observed_at_ms = observed_at_ms
+        self._available_at_ms = available_at_ms
         self._source_id = source_id
         self._source_schema = source_schema
         self._evidence_ref = evidence_ref
@@ -248,6 +239,8 @@ class TDPreviousDayStatsProvider:
         previous_trade_date: str,
     ) -> ProviderResult:
         observed = self._observed_at_ms()
+        available = self._available_at_ms() if self._available_at_ms else None
+        availability_status = "VERIFIED" if available is not None else "OBSERVED"
         try:
             rows = self._fetch_rows(previous_trade_date, tuple(request.symbols))
             return provider_result_from_previous_day_rows(
@@ -256,9 +249,9 @@ class TDPreviousDayStatsProvider:
                 source_id=self._source_id,
                 source_schema=self._source_schema,
                 effective_at_ms=None,
-                available_at_ms=None,
+                available_at_ms=available,
                 observed_at_ms=observed,
-                availability_status="OBSERVED",
+                availability_status=availability_status,
                 evidence_ref=self._evidence_ref,
             )
         except Exception as exc:
@@ -267,9 +260,9 @@ class TDPreviousDayStatsProvider:
                 source_id=self._source_id,
                 source_schema=self._source_schema,
                 effective_at_ms=None,
-                available_at_ms=None,
+                available_at_ms=available,
                 observed_at_ms=observed,
-                availability_status="OBSERVED",
+                availability_status=availability_status,
                 evidence_ref=self._evidence_ref,
                 error=type(exc).__name__ + ": " + str(exc),
             )
@@ -283,13 +276,13 @@ class DataFunction(Protocol):
 
 
 class TemporalDataGuard:
-    """Reject data that was not observed by the evaluation knowledge cut-off.
+    """Reject data whose historical availability is not cutoff-safe.
 
-    A provider query proves when this process observed a result, not when the
-    upstream source first published it.  When historical ``available_at_ms``
-    evidence is absent, an explicitly pre-observed result is still usable for
-    a later node because ``observed_at_ms`` is the strongest available runtime
-    evidence.  It must never be used to infer or populate ``available_at_ms``.
+    ``available_at_ms`` is the only runtime knowledge-cutoff gate.  A provider
+    observation proves when this process acquired a result, but it does not
+    prove when the upstream source first made the result knowable.  Therefore
+    ``observed_at_ms`` is audit/provenance data only and can never substitute
+    for a missing ``available_at_ms``.
     """
 
     @staticmethod
@@ -307,12 +300,9 @@ class TemporalDataGuard:
             and result.effective_at_ms > request.effective_as_of_ms
         ):
             reasons.append("effective_at_after_cutoff")
-        if result.observed_at_ms > request.knowledge_as_of_ms:
-            reasons.append("observed_at_after_knowledge_cutoff")
-        if (
-            result.available_at_ms is not None
-            and result.available_at_ms > request.knowledge_as_of_ms
-        ):
+        if result.available_at_ms is None:
+            reasons.append("available_at_unknown")
+        elif result.available_at_ms > request.knowledge_as_of_ms:
             reasons.append("available_at_after_knowledge_cutoff")
         if not reasons:
             return result
@@ -328,6 +318,15 @@ class PreviousDayStatsFunction:
     """Fetch previous-session statistics without silently changing the date."""
 
     function_id = "previous_day_stats"
+    _core_fields = frozenset(
+        {
+            "previous_trade_date",
+            "close_by_symbol",
+            "amount_by_symbol",
+            "row_count",
+        }
+    )
+    _optional_fields = frozenset({"volume_by_symbol"})
 
     def __init__(self, provider: PreviousDayStatsProvider) -> None:
         self._provider = provider
@@ -359,6 +358,33 @@ class PreviousDayStatsFunction:
             previous_trade_date=expected,
         )
         result = _data_result_from_provider(request, physical)
+        allowed_fields = self._core_fields | self._optional_fields
+        required_fields = set(request.required_fields) or set(self._core_fields)
+        unknown_required = sorted(required_fields - allowed_fields)
+        if unknown_required:
+            return replace(
+                result,
+                status=DataStatus.INVALID,
+                completeness=0.0,
+                missing_fields=tuple(
+                    sorted(set(result.missing_fields) | {
+                        "unknown_required_field:" + field
+                        for field in unknown_required
+                    })
+                ),
+            )
+        if not isinstance(result.data, Mapping):
+            return replace(result, status=DataStatus.MISSING, completeness=0.0)
+        missing_fields = sorted(
+            field for field in required_fields if field not in result.data
+        )
+        if missing_fields:
+            return replace(
+                result,
+                status=DataStatus.INVALID,
+                completeness=0.0,
+                missing_fields=tuple(sorted(set(result.missing_fields) | set(missing_fields))),
+            )
         result = TemporalDataGuard.check(result, request)
         if result.status in (
             DataStatus.MISSING,
@@ -373,8 +399,38 @@ class PreviousDayStatsFunction:
             return replace(result, status=DataStatus.STALE)
         if not isinstance(result.data, Mapping):
             return replace(result, status=DataStatus.INVALID)
-        if "previous_trade_date" not in result.data:
-            return replace(result, status=DataStatus.INVALID)
+        close_by_symbol = result.data.get("close_by_symbol")
+        amount_by_symbol = result.data.get("amount_by_symbol")
+        if not isinstance(close_by_symbol, Mapping) or not isinstance(
+            amount_by_symbol, Mapping
+        ):
+            return replace(
+                result,
+                status=DataStatus.INVALID,
+                completeness=0.0,
+                missing_fields=("close_by_symbol", "amount_by_symbol"),
+            )
+        requested_symbols = tuple(sorted(set(request.symbols)))
+        if requested_symbols:
+            missing_symbols = tuple(
+                symbol
+                for symbol in requested_symbols
+                if symbol not in close_by_symbol or symbol not in amount_by_symbol
+            )
+            present_count = len(requested_symbols) - len(missing_symbols)
+            completeness = present_count / float(len(requested_symbols))
+            if present_count == 0:
+                status = DataStatus.MISSING
+            elif missing_symbols:
+                status = DataStatus.PARTIAL
+            else:
+                status = DataStatus.READY
+            result = replace(
+                result,
+                status=status,
+                completeness=completeness,
+                missing_symbols=missing_symbols,
+            )
         return result
 
 
@@ -471,8 +527,22 @@ def prefetch_ready_data(
 class FixturePreviousDayStatsProvider:
     """Deterministic provider used by unit tests and local replay fixtures."""
 
-    def __init__(self, values_by_trade_date: Mapping[str, Mapping[str, Any]]) -> None:
+    def __init__(
+        self,
+        values_by_trade_date: Mapping[str, Mapping[str, Any]],
+        *,
+        observed_at_ms: int,
+        available_at_ms: Optional[int] = None,
+        effective_at_ms: Optional[int] = None,
+        evidence_ref: str = "fixture://previous_day_stats",
+    ) -> None:
+        if observed_at_ms <= 0:
+            raise ValueError("observed_at_ms must be positive")
         self._values_by_trade_date = values_by_trade_date
+        self._observed_at_ms = observed_at_ms
+        self._available_at_ms = available_at_ms
+        self._effective_at_ms = effective_at_ms
+        self._evidence_ref = evidence_ref
 
     def fetch(
         self,
@@ -488,20 +558,23 @@ class FixturePreviousDayStatsProvider:
                 source_schema="PreviousDayStatsV1",
                 effective_at_ms=None,
                 available_at_ms=None,
-                observed_at_ms=request.effective_as_of_ms,
+                observed_at_ms=self._observed_at_ms,
                 availability_status="UNKNOWN",
+                evidence_ref=self._evidence_ref,
             )
         payload = dict(values)
-        observed = request.effective_as_of_ms
+        availability_status = (
+            "VERIFIED" if self._available_at_ms is not None else "OBSERVED"
+        )
         return ProviderResult(
             raw_data=payload,
             source_id="fixture",
             source_schema="PreviousDayStatsV1",
-            effective_at_ms=observed,
-            available_at_ms=observed,
-            observed_at_ms=observed,
-            availability_status="VERIFIED",
-            evidence_ref="fixture/previous_day_stats",
+            effective_at_ms=self._effective_at_ms,
+            available_at_ms=self._available_at_ms,
+            observed_at_ms=self._observed_at_ms,
+            availability_status=availability_status,
+            evidence_ref=self._evidence_ref,
         )
 
 

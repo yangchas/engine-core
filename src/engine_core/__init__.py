@@ -15,7 +15,11 @@ from .contracts import (
     canonical_json,
     deep_freeze,
     evidence_hash,
+    EVIDENCE_HASH_CONTRACT_VERSION,
+    SEMANTIC_HASH_CONTRACT_VERSION,
+    SUBMISSION_HASH_CONTRACT_VERSION,
     semantic_hash,
+    submission_hash,
     trunc_div,
 )
 from .data import (
@@ -138,7 +142,11 @@ __all__ = [
     "canonical_json",
     "deep_freeze",
     "evidence_hash",
+    "EVIDENCE_HASH_CONTRACT_VERSION",
+    "SEMANTIC_HASH_CONTRACT_VERSION",
+    "SUBMISSION_HASH_CONTRACT_VERSION",
     "semantic_hash",
+    "submission_hash",
     "trunc_div",
     "compare_segments",
     "compute_resting_order_pressure",

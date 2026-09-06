@@ -7,7 +7,13 @@ from enum import Enum
 import math
 from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
-from .contracts import EngineSnapshot, deep_freeze, semantic_hash, trunc_div
+from .contracts import (
+    EngineSnapshot,
+    deep_freeze,
+    evidence_hash as build_evidence_hash,
+    semantic_hash,
+    trunc_div,
+)
 
 Number = Union[int, float]
 
@@ -50,6 +56,11 @@ class OrderBookFacts:
     status: FactStatus
     directional_pressure_yuan: Optional[Number]
     field_lineage: Mapping[str, Tuple[str, ...]]
+    resting_bid_start_yuan: Optional[Number] = None
+    resting_ask_start_yuan: Optional[Number] = None
+    resting_bid_end_yuan: Optional[Number] = None
+    resting_ask_end_yuan: Optional[Number] = None
+    pressure_delta_yuan: Optional[Number] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "field_lineage", deep_freeze(self.field_lineage))
@@ -106,6 +117,8 @@ class SegmentFrame:
     coverage_status: str = "UNKNOWN"
     observed_start_time_ms: Optional[int] = None
     observed_end_time_ms: Optional[int] = None
+    evidence_refs: Tuple[str, ...] = ()
+    evidence_hash: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "price", deep_freeze(self.price))
@@ -113,6 +126,7 @@ class SegmentFrame:
         object.__setattr__(self, "order_book", deep_freeze(self.order_book))
         object.__setattr__(self, "breadth", deep_freeze(self.breadth))
         object.__setattr__(self, "theme", deep_freeze(self.theme))
+        object.__setattr__(self, "evidence_refs", tuple(sorted(set(self.evidence_refs))))
 
 
 @dataclass(frozen=True)
@@ -144,6 +158,7 @@ class SegmentComparison:
     reason_codes: Tuple[str, ...]
     evidence_refs: Tuple[str, ...]
     content_hash: str
+    evidence_hash: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "reason_codes", tuple(self.reason_codes))
@@ -290,6 +305,15 @@ def build_segment_frame(
         order_status,
         pressure,
         {"auction_bid/ask": (start_ref, end_ref)},
+        resting_bid_start_yuan=bid_start,
+        resting_ask_start_yuan=ask_start,
+        resting_bid_end_yuan=bid_end,
+        resting_ask_end_yuan=ask_end,
+        pressure_delta_yuan=(
+            None
+            if pressure_start is None or pressure_end is None
+            else pressure_end - pressure_start
+        ),
     )
 
     breadth = _unavailable_breadth(start_ref, end_ref)
@@ -391,11 +415,9 @@ def compare_adjacent_segments(
         "breadth_change": "BREADTH_UNAVAILABLE",
         "theme_change": "THEME_UNAVAILABLE",
         "reason_codes": tuple(reasons),
-        "evidence_refs": (
-            previous.content_hash,
-            current.content_hash,
-        ),
+        "evidence_refs": tuple(sorted(set(previous.evidence_refs + current.evidence_refs))),
     }
+    comparison_evidence_refs = tuple(sorted(set(previous.evidence_refs + current.evidence_refs)))
     return SegmentComparison(
         previous_segment_id=previous.segment_id,
         current_segment_id=current.segment_id,
@@ -405,12 +427,23 @@ def compare_adjacent_segments(
         breadth_change="BREADTH_UNAVAILABLE",
         theme_change="THEME_UNAVAILABLE",
         reason_codes=tuple(reasons),
-        evidence_refs=(previous.content_hash, current.content_hash),
+        evidence_refs=comparison_evidence_refs,
         content_hash=semantic_hash(
             {
                 key: value
                 for key, value in comparison.items()
                 if key != "evidence_refs"
+            }
+        ),
+        evidence_hash=build_evidence_hash(
+            {
+                "previous_segment_id": previous.segment_id,
+                "current_segment_id": current.segment_id,
+                "evidence_refs": comparison_evidence_refs,
+                "field_lineage": {
+                    "previous": previous.evidence_refs,
+                    "current": current.evidence_refs,
+                },
             }
         ),
     )
@@ -455,6 +488,11 @@ def _frame(
         "order_book": {
             "status": order_book.status,
             "directional_pressure_yuan": order_book.directional_pressure_yuan,
+            "pressure_delta_yuan": order_book.pressure_delta_yuan,
+            "resting_bid_start_yuan": order_book.resting_bid_start_yuan,
+            "resting_ask_start_yuan": order_book.resting_ask_start_yuan,
+            "resting_bid_end_yuan": order_book.resting_bid_end_yuan,
+            "resting_ask_end_yuan": order_book.resting_ask_end_yuan,
         },
         "breadth": {
             "status": breadth.status,
@@ -467,6 +505,27 @@ def _frame(
         },
         "quality": quality,
         "coverage_status": coverage_status,
+    }
+    evidence_refs = tuple(
+        sorted(
+            set(
+                (start_snapshot.snapshot_id, end_snapshot.snapshot_id)
+                + tuple(start_snapshot.evidence_refs)
+                + tuple(end_snapshot.evidence_refs)
+            )
+        )
+    )
+    evidence_payload = {
+        "segment_id": segment_id,
+        "snapshot_ids": (start_snapshot.snapshot_id, end_snapshot.snapshot_id),
+        "evidence_refs": evidence_refs,
+        "field_lineage": {
+            "price": price.field_lineage,
+            "volume": volume.field_lineage,
+            "order_book": order_book.field_lineage,
+            "breadth": breadth.field_lineage,
+            "theme": theme.field_lineage,
+        },
         "observed_start_time_ms": observed_start_time_ms,
         "observed_end_time_ms": observed_end_time_ms,
     }
@@ -488,6 +547,8 @@ def _frame(
         coverage_status=coverage_status,
         observed_start_time_ms=observed_start_time_ms,
         observed_end_time_ms=observed_end_time_ms,
+        evidence_refs=evidence_refs,
+        evidence_hash=build_evidence_hash(evidence_payload),
     )
 
 

@@ -118,3 +118,32 @@ def test_frozen_bundle_semantic_hash_excludes_provider_evidence():
     left = FrozenDataBundle.from_results("eval", 1, ("previous_day_stats",), {"previous_day_stats": base})
     right = FrozenDataBundle.from_results("eval", 1, ("previous_day_stats",), {"previous_day_stats": alternate_evidence})
     assert left.content_hash == right.content_hash
+    assert left.submission_hash != right.submission_hash
+
+
+def test_data_result_hash_is_derived_from_immutable_semantics():
+    from dataclasses import replace
+    from engine_core.contracts import DataResult, DataStatus
+
+    payload = {"previous_trade_date": "2026-09-03", "value": 1}
+    result = DataResult(
+        request_id="r",
+        function_id="f",
+        status=DataStatus.READY,
+        data=payload,
+        actual_source="fixture",
+        requested_trade_date="2026-09-04",
+        actual_trade_date="2026-09-03",
+        effective_at_ms=1,
+        available_at_ms=1,
+        observed_at_ms=1,
+        schema_version=1,
+        completeness=1.0,
+    )
+    original_hash = result.content_hash
+    payload["value"] = 9
+    assert result.data["value"] == 1
+    with pytest.raises(TypeError):
+        result.data["value"] = 2
+    unavailable = replace(result, status=DataStatus.UNAVAILABLE)
+    assert unavailable.content_hash != original_hash

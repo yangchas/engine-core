@@ -158,18 +158,24 @@ def test_engine_composition_preserves_foundation_wheel_hashes():
         "AUCTION_0920": FrozenDataBundle.empty("eval-0920", at_0920.logical_time_ms),
         "AUCTION_0924": FrozenDataBundle.empty("eval-0924", at_0924.logical_time_ms),
     }
+    for evaluation_id, snapshot in (
+        ("eval-start", start),
+        ("eval-0920", at_0920),
+        ("eval-0924", at_0924),
+    ):
+        engine._register_evaluation(evaluation_id, snapshot, ())
     # Deliberately submit out of order. The engine queue orders by logical time.
     for sequence, snapshot in enumerate((at_0924, start, at_0920), start=1):
         engine.submit(
             EngineSignal(
                 "parity-" + snapshot.trigger_id,
-                snapshot.logical_time_ms,
-                sequence,
-                SignalKind.DATA_READY,
-                {
-                    "snapshot": snapshot,
-                    "bundle": empty_bundles[snapshot.trigger_id],
-                },
+                    snapshot.logical_time_ms,
+                    sequence,
+                    SignalKind.DATA_READY,
+                    {
+                        "evaluation_id": empty_bundles[snapshot.trigger_id].evaluation_id,
+                        "bundle": empty_bundles[snapshot.trigger_id],
+                    },
             )
         )
     result = engine.run_until_empty()

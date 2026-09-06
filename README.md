@@ -13,7 +13,7 @@ engine_core 是独立的行情驱动确定性计算内核。
     -> ProbeStrategy
     -> stdout/trace
 
-现有 RabbitMQ -> t1_v2 -> TD/Redis -> ACK 生产链路保持在本项目之外。当前已实现 Q2 projection Adapter、fixture vertical slice、事实切片和最小 Q2Frame + VirtualClock replay；TD event-time replay 仍延期，不把尚未验证的能力当成当前完成项。
+现有 RabbitMQ -> t1_v2 -> TD/Redis -> ACK 生产链路保持在本项目之外。当前已实现 Q2 projection Adapter、fixture vertical slice、事实切片、Q2Frame replay 和 TD event-time replay；后者只保证 deterministic event-time，不恢复 Rabbit arrival/batch，不做 watermark 或 late correction。
 
 ## 当前实施状态
 
@@ -25,9 +25,9 @@ engine_core 是独立的行情驱动确定性计算内核。
 - Data：`PreviousDayStatsFunction`、薄 `ProviderResult` 包装、`TemporalDataGuard`。
 - Facts：纯盘口压力、`SegmentFrame`、相邻段比较；不包含策略结论。
 
-这些轮子均可不启动 Engine、不连接 Redis/TD 单独测试。Engine 集成目前只提供
-内存确定性队列、signal 幂等/冻结、frontier 防倒退和 Probe 调用；不包含持久化
-恢复或 Rabbit 接管。Real Data Probe 证据见
+这些轮子均可不启动 Engine、不连接 Redis/TD 单独测试。Engine 集成目前提供
+内存确定性队列、signal 幂等/冻结、evaluation ownership、frontier 防倒退、同刻因果
+drain 和 Probe 调用；不包含持久化恢复或 Rabbit 接管。Real Data Probe 证据见
 `docs/evidence/real_data_probe/`；当前仍不宣称 Rabbit arrival/batch replay 或完整策略迁移。
 
 ## 开发

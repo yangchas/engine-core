@@ -12,7 +12,7 @@ from engine_core import (
     WindowManager,
     WindowSpec,
 )
-from engine_core.contracts import FrozenDataBundle
+from engine_core.contracts import DataResult, DataStatus, FrozenDataBundle
 from engine_core.windows import local_time_ms
 
 
@@ -141,14 +141,16 @@ def test_data_ready_submission_order_does_not_change_results():
             WindowManager((WindowSpec("wide", 0, 10**15),)),
             ProbeStrategy(),
         )
+        engine._register_evaluation("eval-a", source, ())
+        engine._register_evaluation("eval-b", source, ())
         signals = {
             "a": EngineSignal(
                 "data-a", source.logical_time_ms, 1, SignalKind.DATA_READY,
-                {"snapshot": source, "bundle": bundle_a},
+                {"evaluation_id": "eval-a", "bundle": bundle_a},
             ),
             "b": EngineSignal(
                 "data-b", source.logical_time_ms, 2, SignalKind.DATA_READY,
-                {"snapshot": source, "bundle": bundle_b},
+                {"evaluation_id": "eval-b", "bundle": bundle_b},
             ),
         }
         for key in order:
@@ -297,15 +299,53 @@ def test_old_data_ready_completes_frozen_evaluation_without_rewinding_market_sta
     reducer.apply_snapshot(projection, logical_time_ms=local_time_ms(trade_date, "09:19:59"), session_id=trade_date, phase="AUCTION_TRIAL")
     original_revision = reducer.state.revision
     original_logical_time = reducer.state.logical_time_ms
-    original_snapshot = reducer.build_snapshot("EVALUATION_ORIGIN", logical_time_ms=local_time_ms(trade_date, "09:19:59"))
     engine = DeterministicEngine(reducer, WindowManager((WindowSpec("auction_trial", local_time_ms(trade_date, "09:15:00"), local_time_ms(trade_date, "09:20:00")),)), ProbeStrategy(), session_id=trade_date, phase="AUCTION_TRIAL")
+    old_time = local_time_ms(trade_date, "09:19:59")
+    engine.submit(EngineSignal(
+        "timer-old",
+        old_time,
+        0,
+        SignalKind.TIMER,
+        {"trigger_id": "EVALUATION_ORIGIN", "data_requirements": ("previous_day_stats",)},
+    ))
     engine.submit(EngineSignal("timer-newer", local_time_ms(trade_date, "09:20:00"), 1, SignalKind.TIMER, {"trigger_id": "AUCTION_0920", "close_windows": ("auction_trial",)}))
     first = engine.run_until_empty()
     assert [item.trigger_id for item in first.snapshots] == ["AUCTION_0920"]
-    engine.submit(EngineSignal("data-old", local_time_ms(trade_date, "09:19:59"), 2, SignalKind.DATA_READY, {"snapshot": original_snapshot, "bundle": FrozenDataBundle.empty("eval-old", local_time_ms(trade_date, "09:19:59"))}))
+    old_evaluation_id = next(iter(engine._pending_evaluations))
+    old_bundle = FrozenDataBundle.from_results(
+        old_evaluation_id,
+        old_time,
+        ("previous_day_stats",),
+        {
+            "previous_day_stats": DataResult(
+                request_id="old-data",
+                function_id="previous_day_stats",
+                status=DataStatus.UNAVAILABLE,
+                data=None,
+                actual_source=None,
+                requested_trade_date=trade_date,
+                actual_trade_date=None,
+                effective_at_ms=None,
+                available_at_ms=None,
+                observed_at_ms=old_time,
+                schema_version=1,
+                completeness=0.0,
+            )
+        },
+    )
+    engine.submit(EngineSignal(
+        "data-old",
+        old_time,
+        2,
+        SignalKind.DATA_READY,
+        {
+            "evaluation_id": old_evaluation_id,
+            "bundle": old_bundle,
+        },
+    ))
     second = engine.run_until_empty()
     assert [item.trigger_id for item in second.snapshots] == ["AUCTION_0920", "EVALUATION_ORIGIN"]
-    assert second.strategy_results[-1].evaluation_id == "eval-old"
+    assert second.strategy_results[-1].evaluation_id == old_evaluation_id
     assert reducer.state.revision == original_revision
     assert reducer.state.logical_time_ms == original_logical_time
 

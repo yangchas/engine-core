@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from types import MappingProxyType
@@ -53,6 +53,9 @@ class DataStatus(str, Enum):
 
 T = TypeVar("T")
 SERIALIZER_VERSION = 1
+SEMANTIC_HASH_CONTRACT_VERSION = "SemanticHashV1"
+EVIDENCE_HASH_CONTRACT_VERSION = "EvidenceHashV1"
+SUBMISSION_HASH_CONTRACT_VERSION = "SubmissionHashV1"
 
 
 def deep_freeze(value: T) -> T:
@@ -77,6 +80,11 @@ def deep_freeze(value: T) -> T:
     if isinstance(value, (list, tuple)):
         return tuple(deep_freeze(item) for item in value)  # type: ignore[return-value]
     if is_dataclass(value):
+        # Dataclasses with derived ``init=False`` fields have already frozen
+        # their semantic payload in ``__post_init__``.  Reconstructing them
+        # would attempt to pass the derived hash back into ``__init__``.
+        if any(not item.init for item in fields(value)):
+            return value
         frozen_fields = {
             item.name: deep_freeze(getattr(value, item.name))
             for item in fields(value)
@@ -144,12 +152,19 @@ def canonical_hash(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
-def _versioned_hash(value: Any, *, kind: str, schema_version: int) -> str:
+def _versioned_hash(
+    value: Any,
+    *,
+    kind: str,
+    schema_version: int,
+    contract_version: str,
+) -> str:
     if schema_version <= 0:
         raise ValueError("schema_version must be positive")
     return canonical_hash(
         {
             "hash_kind": kind,
+            "hash_contract_version": contract_version,
             "schema_version": schema_version,
             "serializer_version": SERIALIZER_VERSION,
             "value": value,
@@ -160,13 +175,34 @@ def _versioned_hash(value: Any, *, kind: str, schema_version: int) -> str:
 def semantic_hash(value: Any, *, schema_version: int = 1) -> str:
     """Hash only canonical business input/output, not evidence lineage."""
 
-    return _versioned_hash(value, kind="semantic", schema_version=schema_version)
+    return _versioned_hash(
+        value,
+        kind="semantic",
+        schema_version=schema_version,
+        contract_version=SEMANTIC_HASH_CONTRACT_VERSION,
+    )
 
 
 def evidence_hash(value: Any, *, schema_version: int = 1) -> str:
     """Hash provenance/evidence separately from semantic business content."""
 
-    return _versioned_hash(value, kind="evidence", schema_version=schema_version)
+    return _versioned_hash(
+        value,
+        kind="evidence",
+        schema_version=schema_version,
+        contract_version=EVIDENCE_HASH_CONTRACT_VERSION,
+    )
+
+
+def submission_hash(value: Any, *, schema_version: int = 1) -> str:
+    """Hash the submission context of a frozen evaluation bundle."""
+
+    return _versioned_hash(
+        value,
+        kind="submission",
+        schema_version=schema_version,
+        contract_version=SUBMISSION_HASH_CONTRACT_VERSION,
+    )
 
 
 def trunc_div(numerator: int, denominator: int) -> int:
@@ -313,7 +349,7 @@ class DataResult:
     completeness: float
     missing_fields: Tuple[str, ...] = ()
     missing_symbols: Tuple[str, ...] = ()
-    content_hash: str = ""
+    content_hash: str = field(init=False)
     provenance: Tuple[Provenance, ...] = ()
 
     def __post_init__(self) -> None:
@@ -321,6 +357,11 @@ class DataResult:
         object.__setattr__(self, "missing_fields", tuple(self.missing_fields))
         object.__setattr__(self, "missing_symbols", tuple(self.missing_symbols))
         object.__setattr__(self, "provenance", deep_freeze(self.provenance))
+        object.__setattr__(
+            self,
+            "content_hash",
+            semantic_hash(_data_result_semantic_value(self)),
+        )
 
 
 @dataclass(frozen=True)
@@ -329,7 +370,8 @@ class FrozenDataBundle:
     knowledge_as_of_ms: int
     results_by_function: Mapping[str, DataResult]
     completeness: float
-    content_hash: str
+    content_hash: str = field(init=False)
+    submission_hash: str = field(init=False)
     function_order: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -339,20 +381,46 @@ class FrozenDataBundle:
             deep_freeze(self.results_by_function),
         )
         object.__setattr__(self, "function_order", tuple(self.function_order))
+        ordered_results = [
+            {
+                "function_id": function_id,
+                "result": _data_result_semantic_value(
+                    self.results_by_function[function_id]
+                ),
+            }
+            for function_id in self.function_order
+        ]
+        semantic_content = {
+            "evaluation_id": self.evaluation_id,
+            "knowledge_as_of_ms": self.knowledge_as_of_ms,
+            "function_order": self.function_order,
+            "results": ordered_results,
+        }
+        submission_content = {
+            "evaluation_id": self.evaluation_id,
+            "knowledge_as_of_ms": self.knowledge_as_of_ms,
+            "function_order": self.function_order,
+            "results": [
+                {
+                    "function_id": function_id,
+                    "content_hash": self.results_by_function[function_id].content_hash,
+                    "status": self.results_by_function[function_id].status,
+                    "observed_at_ms": self.results_by_function[function_id].observed_at_ms,
+                    "available_at_ms": self.results_by_function[function_id].available_at_ms,
+                }
+                for function_id in self.function_order
+            ],
+        }
+        object.__setattr__(self, "content_hash", semantic_hash(semantic_content))
+        object.__setattr__(self, "submission_hash", submission_hash(submission_content))
 
     @classmethod
     def empty(cls, evaluation_id: str, knowledge_as_of_ms: int) -> "FrozenDataBundle":
-        content = {
-            "evaluation_id": evaluation_id,
-            "knowledge_as_of_ms": knowledge_as_of_ms,
-            "results_by_function": {},
-        }
         return cls(
             evaluation_id=evaluation_id,
             knowledge_as_of_ms=knowledge_as_of_ms,
             results_by_function=MappingProxyType({}),
             completeness=1.0,
-            content_hash=semantic_hash(content),
             function_order=(),
         )
 
@@ -386,25 +454,12 @@ class FrozenDataBundle:
             (result.completeness for result in ordered.values()),
             default=1.0,
         )
-        content = {
-            "evaluation_id": evaluation_id,
-            "knowledge_as_of_ms": knowledge_as_of_ms,
-            "function_order": function_order,
-            "results": [
-                {
-                    "function_id": function_id,
-                    "result": _data_result_semantic_value(ordered[function_id]),
-                }
-                for function_id in function_order
-            ],
-        }
         frozen_ordered = deep_freeze(ordered)
         return cls(
             evaluation_id=evaluation_id,
             knowledge_as_of_ms=knowledge_as_of_ms,
             results_by_function=frozen_ordered,
             completeness=completeness,
-            content_hash=semantic_hash(content),
             function_order=tuple(function_order),
         )
 

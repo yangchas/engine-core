@@ -5,16 +5,18 @@ from __future__ import annotations
 import heapq
 from collections import OrderedDict, deque
 from dataclasses import dataclass
-from typing import Deque, List, Mapping, Optional, Protocol, Tuple
+from typing import Any, Deque, Dict, List, Mapping, Optional, Protocol, Tuple
 
 from .contracts import (
     EngineSignal,
     EngineSnapshot,
     FrozenDataBundle,
+    DataStatus,
     SignalKind,
     StrategyResult,
     canonical_hash,
     deep_freeze,
+    semantic_hash,
 )
 from .state import MarketStateReducer
 from .windows import WindowManager
@@ -36,6 +38,20 @@ class EngineRunResult:
     strategy_results: Tuple[StrategyResult, ...]
 
 
+@dataclass(frozen=True)
+class _PendingEvaluation:
+    evaluation_id: str
+    snapshot: EngineSnapshot
+    function_order: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _TerminalEvaluation:
+    evaluation_id: str
+    submission_hash: str
+    completed_logical_time_ms: int
+
+
 class DeterministicEngine:
     """Single-threaded reducer that is unaware of the input mode.
 
@@ -55,16 +71,23 @@ class DeterministicEngine:
         phase: str = "UNKNOWN",
         result_history_limit: int = 256,
         signal_id_cache_limit: int = 4096,
+        evaluation_registration_limit: int = 4096,
+        terminal_evaluation_limit: int = 4096,
     ) -> None:
         if result_history_limit <= 0:
             raise ValueError("result_history_limit must be positive")
         if signal_id_cache_limit <= 0:
             raise ValueError("signal_id_cache_limit must be positive")
+        if evaluation_registration_limit <= 0:
+            raise ValueError("evaluation_registration_limit must be positive")
+        if terminal_evaluation_limit <= 0:
+            raise ValueError("terminal_evaluation_limit must be positive")
         self._reducer = reducer
         self._windows = windows
         self._strategy = strategy
         self._session_id = session_id
         self._phase = phase
+        self._trace_id = session_id or "engine-trace"
         self._queue: List[Tuple[Tuple[int, int, int, str], EngineSignal]] = []
         # This is intentionally an in-memory bounded idempotency horizon.  A
         # durable dedupe cursor belongs to the deferred journal/checkpoint
@@ -77,12 +100,23 @@ class DeterministicEngine:
         self._snapshots: Deque[EngineSnapshot] = deque(maxlen=result_history_limit)
         self._strategy_results: Deque[StrategyResult] = deque(maxlen=result_history_limit)
         self._processed = 0
+        self._active_logical_time: Optional[int] = None
+        self._pending_evaluations: Dict[str, _PendingEvaluation] = {}
+        self._registered_evaluation_ids: set[str] = set()
+        self._evaluation_registration_limit = evaluation_registration_limit
+        self._terminal_evaluations: OrderedDict[str, _TerminalEvaluation] = OrderedDict()
+        self._terminal_evaluation_limit = terminal_evaluation_limit
 
     def submit(self, signal: EngineSignal) -> None:
         """Submit a signal; reducer execution remains single-threaded."""
 
         if not signal.signal_id:
             raise ValueError("signal_id is required")
+        if (
+            self._active_logical_time is not None
+            and signal.logical_time_ms < self._active_logical_time
+        ):
+            raise ValueError("signal logical time moved backwards during drain")
         frozen_payload = deep_freeze(signal.payload)
         queued_signal = EngineSignal(
             signal_id=signal.signal_id,
@@ -111,12 +145,26 @@ class DeterministicEngine:
         heapq.heappush(self._queue, (queued_signal.sort_key, queued_signal))
 
     def run_until_empty(self) -> EngineRunResult:
-        """Drain signals in deterministic order."""
+        """Drain signals in deterministic time groups and causal generations."""
 
         while self._queue:
-            _, signal = heapq.heappop(self._queue)
-            self._processed += 1
-            self._handle(signal)
+            _, first = heapq.heappop(self._queue)
+            logical_time = first.logical_time_ms
+            generation = [first]
+            while self._queue and self._queue[0][1].logical_time_ms == logical_time:
+                _, same_time = heapq.heappop(self._queue)
+                generation.append(same_time)
+            while generation:
+                self._active_logical_time = logical_time
+                for signal in sorted(generation, key=lambda item: item.sort_key):
+                    self._processed += 1
+                    self._handle(signal)
+                self._active_logical_time = None
+                generation = []
+                while self._queue and self._queue[0][1].logical_time_ms == logical_time:
+                    _, child = heapq.heappop(self._queue)
+                    generation.append(child)
+            self._active_logical_time = None
         return EngineRunResult(
             processed_signals=self._processed,
             snapshots=tuple(self._snapshots),
@@ -148,11 +196,17 @@ class DeterministicEngine:
             payload = signal.payload
             if not isinstance(payload, Mapping):
                 raise ValueError("DATA_READY payload must be a mapping")
-            if "snapshot" not in payload or "bundle" not in payload:
-                raise ValueError("DATA_READY payload requires snapshot and bundle")
-            snapshot = payload["snapshot"]
+            if "evaluation_id" not in payload or "bundle" not in payload:
+                raise ValueError("DATA_READY payload requires evaluation_id and bundle")
+            if "snapshot" in payload:
+                raise ValueError("DATA_READY must not provide a replacement snapshot")
+            evaluation_id = payload["evaluation_id"]
             bundle = payload["bundle"]
-            self._evaluate(signal, snapshot, bundle)
+            if not isinstance(evaluation_id, str) or not evaluation_id:
+                raise ValueError("DATA_READY evaluation_id must be non-empty")
+            if not isinstance(bundle, FrozenDataBundle):
+                raise ValueError("DATA_READY bundle must be FrozenDataBundle")
+            self._complete_evaluation(evaluation_id, bundle, signal.logical_time_ms)
             return
 
         if signal.signal_kind in (
@@ -180,10 +234,27 @@ class DeterministicEngine:
                 logical_time_ms=signal.logical_time_ms,
                 windows=self._windows,
             )
-            self._evaluate(signal, snapshot, FrozenDataBundle.empty(
-                evaluation_id=signal.signal_id,
-                knowledge_as_of_ms=signal.logical_time_ms,
-            ))
+            requirements = payload.get("data_requirements", ())
+            if requirements is None:
+                requirements = ()
+            if not isinstance(requirements, (tuple, list)) or any(
+                not isinstance(item, str) or not item for item in requirements
+            ):
+                raise ValueError("data_requirements must be a sequence of non-empty strings")
+            function_order = tuple(requirements)
+            if len(function_order) != len(set(function_order)):
+                raise ValueError("data_requirements must not contain duplicates")
+            evaluation_id = self._make_evaluation_id(signal, snapshot)
+            self._register_evaluation(evaluation_id, snapshot, function_order)
+            if not function_order:
+                self._complete_evaluation(
+                    evaluation_id,
+                    FrozenDataBundle.empty(
+                        evaluation_id=evaluation_id,
+                        knowledge_as_of_ms=snapshot.logical_time_ms,
+                    ),
+                    signal.logical_time_ms,
+                )
             self._advance_market_frontier(signal.logical_time_ms)
             return
 
@@ -203,10 +274,95 @@ class DeterministicEngine:
 
     def _evaluate(
         self,
-        signal: EngineSignal,
         snapshot: EngineSnapshot,
         bundle: FrozenDataBundle,
     ) -> None:
         self._snapshots.append(snapshot)
         result = self._strategy.evaluate(snapshot, bundle)
         self._strategy_results.append(result)
+
+    def _make_evaluation_id(
+        self,
+        signal: EngineSignal,
+        snapshot: EngineSnapshot,
+    ) -> str:
+        """Create a deterministic id unique within this engine trace."""
+
+        digest = semantic_hash(
+            {
+                "trace_id": self._trace_id,
+                "session_id": self._session_id,
+                "phase": self._phase,
+                "signal_id": signal.signal_id,
+                "signal_kind": signal.signal_kind,
+                "logical_time_ms": signal.logical_time_ms,
+                "signal_seq": signal.signal_seq,
+                "snapshot_hash": snapshot.content_hash,
+            }
+        )
+        return "evaluation:" + digest
+
+    def _register_evaluation(
+        self,
+        evaluation_id: str,
+        snapshot: EngineSnapshot,
+        function_order: Tuple[str, ...],
+    ) -> None:
+        if evaluation_id in self._registered_evaluation_ids:
+            raise ValueError("evaluation_id was already registered")
+        if len(self._registered_evaluation_ids) >= self._evaluation_registration_limit:
+            raise RuntimeError("evaluation registration capacity exhausted")
+        self._registered_evaluation_ids.add(evaluation_id)
+        self._pending_evaluations[evaluation_id] = _PendingEvaluation(
+            evaluation_id=evaluation_id,
+            snapshot=snapshot,
+            function_order=tuple(function_order),
+        )
+
+    def _complete_evaluation(
+        self,
+        evaluation_id: str,
+        bundle: FrozenDataBundle,
+        completed_logical_time_ms: int,
+    ) -> None:
+        pending = self._pending_evaluations.get(evaluation_id)
+        if pending is None:
+            terminal = self._terminal_evaluations.get(evaluation_id)
+            if terminal is not None:
+                if terminal.submission_hash == bundle.submission_hash:
+                    raise ValueError("duplicate evaluation completion")
+                raise ValueError("conflicting evaluation completion")
+            if evaluation_id in self._registered_evaluation_ids:
+                raise ValueError("unknown terminal evaluation")
+            raise ValueError("unknown evaluation_id")
+        self._validate_bundle(pending, bundle)
+        self._pending_evaluations.pop(evaluation_id)
+        terminal = _TerminalEvaluation(
+            evaluation_id=evaluation_id,
+            submission_hash=bundle.submission_hash,
+            completed_logical_time_ms=completed_logical_time_ms,
+        )
+        self._terminal_evaluations[evaluation_id] = terminal
+        self._terminal_evaluations.move_to_end(evaluation_id)
+        while len(self._terminal_evaluations) > self._terminal_evaluation_limit:
+            self._terminal_evaluations.popitem(last=False)
+        self._evaluate(pending.snapshot, bundle)
+
+    @staticmethod
+    def _validate_bundle(
+        pending: _PendingEvaluation,
+        bundle: FrozenDataBundle,
+    ) -> None:
+        if bundle.evaluation_id != pending.evaluation_id:
+            raise ValueError("bundle evaluation_id does not match registered evaluation")
+        if bundle.knowledge_as_of_ms != pending.snapshot.logical_time_ms:
+            raise ValueError("bundle knowledge cutoff does not match frozen snapshot")
+        if tuple(bundle.function_order) != tuple(pending.function_order):
+            raise ValueError("bundle function order does not match evaluation")
+        for function_id in bundle.function_order:
+            result = bundle.results_by_function[function_id]
+            if result.status in (DataStatus.READY, DataStatus.PARTIAL):
+                if result.available_at_ms is None:
+                    raise ValueError("runtime data has unknown available_at")
+                if result.available_at_ms > bundle.knowledge_as_of_ms:
+                    raise ValueError("runtime data is after knowledge cutoff")

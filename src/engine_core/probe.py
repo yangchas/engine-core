@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from .contracts import EngineSnapshot, FrozenDataBundle, StrategyResult, canonical_hash
+from .contracts import (
+    EVIDENCE_HASH_CONTRACT_VERSION,
+    SEMANTIC_HASH_CONTRACT_VERSION,
+    SUBMISSION_HASH_CONTRACT_VERSION,
+    EngineSnapshot,
+    FrozenDataBundle,
+    StrategyResult,
+    semantic_hash,
+)
 
 
 class ProbeStrategy:
@@ -22,6 +30,12 @@ class ProbeStrategy:
             "snapshot_id": snapshot.snapshot_id,
             "snapshot_hash": snapshot.content_hash,
             "bundle_hash": bundle.content_hash,
+            "submission_hash": bundle.submission_hash,
+            "hash_contract_versions": {
+                "semantic": SEMANTIC_HASH_CONTRACT_VERSION,
+                "evidence": EVIDENCE_HASH_CONTRACT_VERSION,
+                "submission": SUBMISSION_HASH_CONTRACT_VERSION,
+            },
             "trigger_id": snapshot.trigger_id,
             "logical_time_ms": snapshot.logical_time_ms,
             "phase": snapshot.phase,
@@ -42,5 +56,5 @@ class ProbeStrategy:
             state="OBSERVE",
             trace=trace,
             evidence_refs=snapshot.evidence_refs,
-            content_hash=canonical_hash(trace),
+            content_hash=semantic_hash(trace),
         )

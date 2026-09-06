@@ -73,7 +73,9 @@ class Q2FrameReplaySource:
     The source keeps only the latest raw hash per symbol, matching the
     existing Q2 projection shape. It has no Redis/TD/network access and does
     not infer Rabbit arrival order. ``VirtualClock`` advances to each frame's
-    logical time before normalization.
+    logical time before normalization.  Signal construction is side-effect free
+    for the shared clock; replay helpers advance the clock immediately before
+    the Engine consumes a signal.
     """
 
     def __init__(
@@ -106,14 +108,20 @@ class Q2FrameReplaySource:
     def last_logical_ts_ms(self) -> int:
         return self._last_logical_ts_ms
 
-    def apply(self, raw_frame: Mapping[str, Any] | Q2FrameV1) -> Q2ProjectionSnapshot:
+    def _apply_frame(
+        self,
+        raw_frame: Mapping[str, Any] | Q2FrameV1,
+        *,
+        advance_clock: bool,
+    ) -> Q2ProjectionSnapshot:
         frame = raw_frame if isinstance(raw_frame, Q2FrameV1) else Q2FrameV1.from_mapping(raw_frame)
         if frame.seq_no != self._last_seq_no + 1:
             raise ValueError("Q2Frame seq_no is not continuous")
         if frame.logical_ts_ms < self._last_logical_ts_ms:
             raise ValueError("Q2Frame logical_ts_ms moved backwards")
         target = datetime.fromtimestamp(frame.logical_ts_ms / 1000.0, tz=timezone.utc)
-        self._clock.advance_to(target)
+        if advance_clock:
+            self._clock.advance_to(target)
         for update in frame.q2_updates:
             symbol = str(update["symbol"])
             values = {
@@ -124,14 +132,20 @@ class Q2FrameReplaySource:
             self._raw_hashes.setdefault(symbol, {}).update(values)
         self._last_seq_no = frame.seq_no
         self._last_logical_ts_ms = frame.logical_ts_ms
+        observed_at = self._clock.now_utc() if advance_clock else target
         return build_q2_projection(
             self._trade_date,
-            self._clock.now_utc(),
+            observed_at,
             self._expected_symbols,
             self._raw_hashes,
             freshness_policy=self._freshness_policy,
             source_id=self._source_id,
         )
+
+    def apply(self, raw_frame: Mapping[str, Any] | Q2FrameV1) -> Q2ProjectionSnapshot:
+        """Apply a frame and advance the clock for direct wheel tests."""
+
+        return self._apply_frame(raw_frame, advance_clock=True)
 
     def signal_for(
         self,
@@ -140,7 +154,7 @@ class Q2FrameReplaySource:
         signal_prefix: str = "q2frame",
     ) -> EngineSignal:
         frame = raw_frame if isinstance(raw_frame, Q2FrameV1) else Q2FrameV1.from_mapping(raw_frame)
-        projection = self.apply(frame)
+        projection = self._apply_frame(frame, advance_clock=False)
         return EngineSignal(
             signal_id=f"{signal_prefix}:{frame.seq_no}",
             logical_time_ms=frame.logical_ts_ms,
@@ -148,6 +162,12 @@ class Q2FrameReplaySource:
             signal_kind=SignalKind.MARKET_UPDATE,
             payload=projection,
         )
+
+    def advance_before_consume(self, signal: EngineSignal) -> None:
+        """Advance virtual time at the Engine-consumption boundary."""
+
+        target = datetime.fromtimestamp(signal.logical_time_ms / 1000.0, tz=timezone.utc)
+        self._clock.advance_to(target)
 
 
 def replay_q2frames(
@@ -159,8 +179,15 @@ def replay_q2frames(
 ) -> None:
     """Submit frame-derived updates to an existing Engine, in frame order."""
 
-    for frame in frames:
-        engine.submit(source.signal_for(frame, signal_prefix=signal_prefix))
+    signals = [source.signal_for(frame, signal_prefix=signal_prefix) for frame in frames]
+    index = 0
+    while index < len(signals):
+        logical_time = signals[index].logical_time_ms
+        source.advance_before_consume(signals[index])
+        while index < len(signals) and signals[index].logical_time_ms == logical_time:
+            engine.submit(signals[index])
+            index += 1
+        engine.run_until_empty()
 
 
 def _td_timestamp_ms(value: Any, *, source_timezone: tzinfo) -> int:
@@ -420,15 +447,13 @@ class TDEventTimeReplaySource:
         signal_seq = 0
         for event_slice in self.event_slices(rows):
             for event_index, event in enumerate(event_slice.events):
-                target = datetime.fromtimestamp(
-                    event.event_time_ms / 1000.0,
-                    tz=timezone.utc,
-                )
-                self._clock.advance_to(target)
                 latest_raw[event.symbol] = event.to_q2_raw()
                 projection = build_q2_projection(
                     self._trade_date,
-                    self._clock.now_utc(),
+                    datetime.fromtimestamp(
+                        event.event_time_ms / 1000.0,
+                        tz=timezone.utc,
+                    ),
                     self._expected_symbols or tuple(sorted(latest_raw)),
                     latest_raw,
                     freshness_policy=self._freshness_policy,
@@ -449,6 +474,12 @@ class TDEventTimeReplaySource:
                 )
         return tuple(signals)
 
+    def advance_before_consume(self, signal: EngineSignal) -> None:
+        """Advance virtual time at the Engine-consumption boundary."""
+
+        target = datetime.fromtimestamp(signal.logical_time_ms / 1000.0, tz=timezone.utc)
+        self._clock.advance_to(target)
+
 
 def replay_td_event_time(
     rows: Iterable[Mapping[str, Any] | TDEventV1],
@@ -459,5 +490,12 @@ def replay_td_event_time(
 ) -> None:
     """Submit TD event-time signals to the existing Engine queue."""
 
-    for signal in source.signals_for(rows, signal_prefix=signal_prefix):
-        engine.submit(signal)
+    signals = source.signals_for(rows, signal_prefix=signal_prefix)
+    index = 0
+    while index < len(signals):
+        logical_time = signals[index].logical_time_ms
+        source.advance_before_consume(signals[index])
+        while index < len(signals) and signals[index].logical_time_ms == logical_time:
+            engine.submit(signals[index])
+            index += 1
+        engine.run_until_empty()

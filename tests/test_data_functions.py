@@ -46,8 +46,12 @@ def test_previous_day_function_preserves_business_date_semantics():
             "2026-09-03": {
                 "previous_trade_date": "2026-09-03",
                 "close_by_symbol": {"000001": 1000},
+                "amount_by_symbol": {"000001": 100},
+                "row_count": 1,
             }
-        }
+        },
+        observed_at_ms=1788484800000,
+        available_at_ms=1788480000000,
     )
     result = PreviousDayStatsFunction(provider).execute(
         DataContext(
@@ -64,7 +68,9 @@ def test_previous_day_function_preserves_business_date_semantics():
 
 def test_previous_day_wrong_date_is_stale_not_ready():
     provider = FixturePreviousDayStatsProvider(
-        {"2026-09-03": {"previous_trade_date": "2026-09-02"}}
+        {"2026-09-03": {"previous_trade_date": "2026-09-02", "close_by_symbol": {"000001": 1}, "amount_by_symbol": {"000001": 1}, "row_count": 1}},
+        observed_at_ms=1788484800000,
+        available_at_ms=1788480000000,
     )
     result = PreviousDayStatsFunction(provider).execute(
         DataContext(
@@ -81,7 +87,9 @@ def test_previous_day_wrong_date_is_stale_not_ready():
 
 def test_frozen_bundle_hash_does_not_depend_on_async_completion_order():
     provider = FixturePreviousDayStatsProvider(
-        {"2026-09-03": {"previous_trade_date": "2026-09-03"}}
+        {"2026-09-03": {"previous_trade_date": "2026-09-03", "close_by_symbol": {"000001": 1}, "amount_by_symbol": {"000001": 1}, "row_count": 1}},
+        observed_at_ms=1788484800000,
+        available_at_ms=1788480000000,
     )
     function = PreviousDayStatsFunction(provider)
     result_a = function.execute(
@@ -141,13 +149,13 @@ def test_temporal_guard_rejects_future_effective_and_availability_times():
     }
 
 
-def test_temporal_guard_accepts_preobserved_data_without_availability_claim():
+def test_temporal_guard_rejects_unknown_availability_even_when_preobserved():
     result = TemporalDataGuard.check(
         _ready_result(effective_at_ms=None, available_at_ms=None),
         _request(),
     )
-    assert result.status is DataStatus.READY
-    assert result.available_at_ms is None
+    assert result.status is DataStatus.UNAVAILABLE
+    assert "available_at_unknown" in result.missing_fields
 
 
 def test_temporal_guard_rejects_observation_after_knowledge_cutoff():
@@ -155,20 +163,20 @@ def test_temporal_guard_rejects_observation_after_knowledge_cutoff():
     result = TemporalDataGuard.check(
         _ready_result(
             effective_at_ms=None,
-            available_at_ms=None,
+            available_at_ms=request.knowledge_as_of_ms,
             observed_at_ms=request.knowledge_as_of_ms + 1,
         ),
         request,
     )
-    assert result.status is DataStatus.UNAVAILABLE
-    assert "observed_at_after_knowledge_cutoff" in result.missing_fields
+    assert result.status is DataStatus.READY
+    assert "observed_at_after_knowledge_cutoff" not in result.missing_fields
 
 
 def test_previous_day_function_never_promotes_temporally_unavailable_result():
     class FutureProvider:
         def fetch(self, request, *, previous_trade_date):
             return ProviderResult(
-                raw_data={"previous_trade_date": "2026-09-03"},
+                raw_data={"previous_trade_date": "2026-09-03", "close_by_symbol": {"000001": 1}, "amount_by_symbol": {"000001": 1}, "row_count": 1},
                 source_id="fixture",
                 source_schema="PreviousDayStatsV1",
                 effective_at_ms=request.effective_as_of_ms,
@@ -193,6 +201,7 @@ def test_td_provider_wraps_existing_access_without_reimplementing_connection():
     provider = TDPreviousDayStatsProvider(
         legacy_rows,
         observed_at_ms=lambda: 1788484800000,
+        available_at_ms=lambda: 1788480000000,
         evidence_ref="probe/td/daily_kline",
     )
     result = PreviousDayStatsFunction(provider).execute(
@@ -207,7 +216,7 @@ def test_td_provider_wraps_existing_access_without_reimplementing_connection():
     assert result.status is DataStatus.READY
     assert result.actual_source == "tdengine_daily_kline"
     assert result.provenance[0].evidence_ref == "probe/td/daily_kline"
-    assert result.available_at_ms is None
+    assert result.available_at_ms == 1788480000000
 
 
 def test_observed_provider_does_not_promote_availability_to_source_claim():
@@ -225,7 +234,7 @@ def test_observed_provider_does_not_promote_availability_to_source_claim():
         DataContext("eval-1", "AUCTION", 1788484800000, expected_previous_trade_date="2026-09-03"),
         _request(),
     )
-    assert result.status is DataStatus.READY
+    assert result.status is DataStatus.UNAVAILABLE
     assert result.available_at_ms is None
 
 
@@ -242,6 +251,7 @@ def test_prefetch_ready_data_reuses_preobserved_result_at_later_node():
         TDPreviousDayStatsProvider(
             observed_rows,
             observed_at_ms=lambda: prefetch_time,
+            available_at_ms=lambda: prefetch_time,
             source_id="td-prefetch-fixture",
         )
     )
@@ -264,7 +274,7 @@ def test_prefetch_ready_data_reuses_preobserved_result_at_later_node():
 
     assert result.status is DataStatus.READY
     assert result.observed_at_ms == prefetch_time
-    assert result.available_at_ms is None
+    assert result.available_at_ms == prefetch_time
     assert len(store) == 1
 
     node_request = DataRequest(
@@ -278,7 +288,7 @@ def test_prefetch_ready_data_reuses_preobserved_result_at_later_node():
     cached = store.get(node_request)
     assert cached is not None
     assert cached.status is DataStatus.READY
-    assert cached.available_at_ms is None
+    assert cached.available_at_ms == prefetch_time
     bundle = build_frozen_bundle(
         "eval-prefetch",
         node_time,
@@ -307,11 +317,10 @@ def test_ready_data_store_rejects_request_before_observation():
         requested_trade_date="2026-09-04",
         actual_trade_date="2026-09-03",
         effective_at_ms=None,
-        available_at_ms=None,
+        available_at_ms=prefetch_time,
         observed_at_ms=prefetch_time,
         schema_version=1,
         completeness=1.0,
-        content_hash="prefetch-result",
     )
     store = ReadyDataStore()
     store.put(request, result)
@@ -340,8 +349,7 @@ def test_ready_data_store_rejects_unobserved_put():
         available_at_ms=None,
         observed_at_ms=request.knowledge_as_of_ms + 1,
     )
-    late = replace(late, content_hash="late-result")
-    with pytest.raises(ValueError, match="observed_at_after_knowledge_cutoff"):
+    with pytest.raises(ValueError, match="available_at_unknown"):
         ReadyDataStore().put(request, late)
 
 
@@ -396,8 +404,9 @@ def test_captured_td_previous_day_fixture_runs_through_data_function():
             "volume_by_symbol": {
                 symbol: row["volume"] for symbol, row in fixture["rows"].items()
             },
+            "row_count": len(fixture["rows"]),
         }
-    })
+    }, observed_at_ms=1788484800000, available_at_ms=1788480000000)
     result = PreviousDayStatsFunction(provider).execute(
         DataContext(
             "eval-real-fixture",

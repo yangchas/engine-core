@@ -73,6 +73,8 @@ class MarketStateReducer:
             "envelope_id": projection.envelope.envelope_id,
             "observation_time_ms": projection.envelope.observed_time_ms,
             "effective_time_ms": projection.envelope.effective_time_ms,
+            "oldest_source_time_ms": projection.oldest_source_time_ms,
+            "newest_source_time_ms": projection.newest_source_time_ms,
             "generation": projection.envelope.generation,
             "generation_kind": projection.envelope.generation_kind,
             "consistency_status": projection.consistency_status,

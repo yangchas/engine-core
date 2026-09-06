@@ -255,7 +255,15 @@ def test_td_event_replay_tie_break_includes_preserved_raw_fields():
     assert [event.content_hash for event in left[0].events] == [
         event.content_hash for event in right[0].events
     ]
-    assert left[0].events[0].raw_fields["bp1_milli"] == 1299300
+    assert [
+        event.raw_fields["bp1_milli"] for event in left[0].events
+    ] == [
+        event.raw_fields["bp1_milli"] for event in right[0].events
+    ]
+    assert set(event.raw_fields["bp1_milli"] for event in left[0].events) == {
+        1299300,
+        1299400,
+    }
     assert left[0].start_ms == anchor
 
 
@@ -279,7 +287,9 @@ def test_td_event_replay_feeds_same_engine_without_preaggregation():
 
 def test_td_event_replay_signals_are_repeatable_and_virtual_clock_driven():
     source, clock, _ = _td_source()
+    initial = clock.now_utc()
     left = source.signals_for(_td_rows())
+    assert clock.now_utc() == initial
     right_source, right_clock, _ = _td_source()
     right = right_source.signals_for(_td_rows())
 
