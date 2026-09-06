@@ -65,6 +65,12 @@ def test_segment_frame_keeps_fact_groups_independently_statused():
     assert frame.price.return_bp == 200
     assert frame.volume.amount_delta_yuan == 100.0
     assert frame.order_book.directional_pressure_yuan == 20.0
+    assert frame.order_book.resting_bid_start_yuan == 20.0
+    assert frame.order_book.resting_ask_start_yuan == 10.0
+    assert frame.order_book.resting_bid_end_yuan == 30.0
+    assert frame.order_book.resting_ask_end_yuan == 10.0
+    assert frame.order_book.pressure_delta_yuan == 10.0
+    assert frame.evidence_hash
     assert frame.breadth.status.value == "UNAVAILABLE"
     assert frame.theme.status.value == "UNAVAILABLE"
     assert frame.quality.status.value == "PARTIAL"
@@ -98,6 +104,7 @@ def test_segment_comparison_is_dimensioned_not_a_total_strength_score():
     assert comparison.price_change == "PRICE_WEAKER"
     assert comparison.volume_change == "VOLUME_EXPANDING"
     assert comparison.order_book_change == "PRESSURE_WEAKENING"
+    assert comparison.evidence_hash
     assert comparison.breadth_change == "BREADTH_UNAVAILABLE"
     assert comparison.theme_change == "THEME_UNAVAILABLE"
     assert "price.return_bp" in comparison.reason_codes

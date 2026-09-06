@@ -147,23 +147,25 @@ class DeterministicEngine:
     def run_until_empty(self) -> EngineRunResult:
         """Drain signals in deterministic time groups and causal generations."""
 
-        while self._queue:
-            _, first = heapq.heappop(self._queue)
-            logical_time = first.logical_time_ms
-            generation = [first]
-            while self._queue and self._queue[0][1].logical_time_ms == logical_time:
-                _, same_time = heapq.heappop(self._queue)
-                generation.append(same_time)
-            while generation:
-                self._active_logical_time = logical_time
-                for signal in sorted(generation, key=lambda item: item.sort_key):
-                    self._processed += 1
-                    self._handle(signal)
-                self._active_logical_time = None
-                generation = []
+        try:
+            while self._queue:
+                _, first = heapq.heappop(self._queue)
+                logical_time = first.logical_time_ms
+                generation = [first]
                 while self._queue and self._queue[0][1].logical_time_ms == logical_time:
-                    _, child = heapq.heappop(self._queue)
-                    generation.append(child)
+                    _, same_time = heapq.heappop(self._queue)
+                    generation.append(same_time)
+                while generation:
+                    self._active_logical_time = logical_time
+                    for signal in sorted(generation, key=lambda item: item.sort_key):
+                        self._processed += 1
+                        self._handle(signal)
+                    self._active_logical_time = None
+                    generation = []
+                    while self._queue and self._queue[0][1].logical_time_ms == logical_time:
+                        _, child = heapq.heappop(self._queue)
+                        generation.append(child)
+        finally:
             self._active_logical_time = None
         return EngineRunResult(
             processed_signals=self._processed,

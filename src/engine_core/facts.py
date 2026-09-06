@@ -441,8 +441,20 @@ def compare_adjacent_segments(
                 "current_segment_id": current.segment_id,
                 "evidence_refs": comparison_evidence_refs,
                 "field_lineage": {
-                    "previous": previous.evidence_refs,
-                    "current": current.evidence_refs,
+                    "previous": {
+                        "price": previous.price.field_lineage,
+                        "volume": previous.volume.field_lineage,
+                        "order_book": previous.order_book.field_lineage,
+                        "breadth": previous.breadth.field_lineage,
+                        "theme": previous.theme.field_lineage,
+                    },
+                    "current": {
+                        "price": current.price.field_lineage,
+                        "volume": current.volume.field_lineage,
+                        "order_book": current.order_book.field_lineage,
+                        "breadth": current.breadth.field_lineage,
+                        "theme": current.theme.field_lineage,
+                    },
                 },
             }
         ),
