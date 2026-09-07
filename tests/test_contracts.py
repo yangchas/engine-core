@@ -121,6 +121,44 @@ def test_frozen_bundle_semantic_hash_excludes_provider_evidence():
     assert left.submission_hash != right.submission_hash
 
 
+def test_frozen_bundle_semantic_hash_contains_function_identity_and_derives_completeness():
+    from engine_core.contracts import DataResult, DataStatus, FrozenDataBundle
+
+    def result(function_id, completeness):
+        return DataResult(
+            request_id="r-" + function_id,
+            function_id=function_id,
+            status=DataStatus.READY,
+            data={"value": function_id},
+            actual_source="fixture",
+            requested_trade_date="2026-09-04",
+            actual_trade_date="2026-09-03",
+            effective_at_ms=1,
+            available_at_ms=1,
+            observed_at_ms=1,
+            schema_version=1,
+            completeness=completeness,
+        )
+
+    first = result("a", 1.0)
+    second = result("b", 0.25)
+    bundle = FrozenDataBundle.from_results(
+        "eval", 1, ("a", "b"), {"a": first, "b": second}
+    )
+    assert bundle.completeness == 0.25
+    reordered = FrozenDataBundle.from_results(
+        "eval", 1, ("b", "a"), {"a": first, "b": second}
+    )
+    assert bundle.content_hash != reordered.content_hash
+    with pytest.raises(ValueError, match="bundle function keys"):
+        FrozenDataBundle(
+            evaluation_id="eval",
+            knowledge_as_of_ms=1,
+            results_by_function={"a": first},
+            function_order=(),
+        )
+
+
 def test_data_result_hash_is_derived_from_immutable_semantics():
     from dataclasses import replace
     from engine_core.contracts import DataResult, DataStatus

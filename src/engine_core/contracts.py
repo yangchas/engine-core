@@ -271,13 +271,25 @@ class WindowView:
     start_ms: int
     end_exclusive_ms: int
     observation_count: int
-    first_source_time_ms: Optional[int]
-    last_source_time_ms: Optional[int]
+    oldest_source_time_ms: Optional[int]
+    newest_source_time_ms: Optional[int]
     coverage: float
     completeness: str
     content_hash: str
     finality: str = "OPEN"
     origin: str = "NORMAL"
+
+    @property
+    def first_source_time_ms(self) -> Optional[int]:
+        """Compatibility alias; the value is the true minimum source time."""
+
+        return self.oldest_source_time_ms
+
+    @property
+    def last_source_time_ms(self) -> Optional[int]:
+        """Compatibility alias; the value is the true maximum source time."""
+
+        return self.newest_source_time_ms
 
 
 @dataclass(frozen=True)
@@ -357,6 +369,8 @@ class DataResult:
         object.__setattr__(self, "missing_fields", tuple(self.missing_fields))
         object.__setattr__(self, "missing_symbols", tuple(self.missing_symbols))
         object.__setattr__(self, "provenance", deep_freeze(self.provenance))
+        if not math.isfinite(self.completeness) or not 0.0 <= self.completeness <= 1.0:
+            raise ValueError("completeness must be finite and between 0 and 1")
         object.__setattr__(
             self,
             "content_hash",
@@ -369,7 +383,7 @@ class FrozenDataBundle:
     evaluation_id: str
     knowledge_as_of_ms: int
     results_by_function: Mapping[str, DataResult]
-    completeness: float
+    completeness: float = field(init=False)
     content_hash: str = field(init=False)
     submission_hash: str = field(init=False)
     function_order: Tuple[str, ...] = ()
@@ -381,22 +395,43 @@ class FrozenDataBundle:
             deep_freeze(self.results_by_function),
         )
         object.__setattr__(self, "function_order", tuple(self.function_order))
-        ordered_results = [
-            {
-                "function_id": function_id,
-                "result": _data_result_semantic_value(
-                    self.results_by_function[function_id]
-                ),
-            }
-            for function_id in self.function_order
-        ]
+        if len(self.function_order) != len(set(self.function_order)):
+            raise ValueError("function_order must not contain duplicates")
+        result_keys = set(self.results_by_function)
+        declared_keys = set(self.function_order)
+        if result_keys != declared_keys:
+            missing = sorted(declared_keys - result_keys)
+            extra = sorted(result_keys - declared_keys)
+            details = []
+            if missing:
+                details.append("missing=" + ",".join(missing))
+            if extra:
+                details.append("unexpected=" + ",".join(extra))
+            raise ValueError("bundle function keys do not match order: " + "; ".join(details))
+        ordered_results = []
+        for function_id in self.function_order:
+            result = self.results_by_function[function_id]
+            if result.function_id != function_id:
+                raise ValueError("DataResult function_id does not match bundle key")
+            ordered_results.append(
+                {
+                    "function_id": function_id,
+                    "content_hash": result.content_hash,
+                }
+            )
+        completeness = min(
+            (self.results_by_function[function_id].completeness for function_id in self.function_order),
+            default=1.0,
+        )
+        object.__setattr__(self, "completeness", completeness)
         semantic_content = {
-            "evaluation_id": self.evaluation_id,
-            "knowledge_as_of_ms": self.knowledge_as_of_ms,
+            "hash_contract_version": SEMANTIC_HASH_CONTRACT_VERSION,
             "function_order": self.function_order,
             "results": ordered_results,
+            "completeness_lower_bound": completeness,
         }
         submission_content = {
+            "hash_contract_version": SUBMISSION_HASH_CONTRACT_VERSION,
             "evaluation_id": self.evaluation_id,
             "knowledge_as_of_ms": self.knowledge_as_of_ms,
             "function_order": self.function_order,
@@ -420,7 +455,6 @@ class FrozenDataBundle:
             evaluation_id=evaluation_id,
             knowledge_as_of_ms=knowledge_as_of_ms,
             results_by_function=MappingProxyType({}),
-            completeness=1.0,
             function_order=(),
         )
 
@@ -450,16 +484,11 @@ class FrozenDataBundle:
         extra = sorted(set(results_by_function).difference(function_order))
         if extra:
             raise ValueError("unexpected DataResult values: %s" % ", ".join(extra))
-        completeness = min(
-            (result.completeness for result in ordered.values()),
-            default=1.0,
-        )
         frozen_ordered = deep_freeze(ordered)
         return cls(
             evaluation_id=evaluation_id,
             knowledge_as_of_ms=knowledge_as_of_ms,
             results_by_function=frozen_ordered,
-            completeness=completeness,
             function_order=tuple(function_order),
         )
 
