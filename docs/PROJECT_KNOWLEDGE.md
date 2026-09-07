@@ -22,6 +22,8 @@
 - [VERIFIED] `TemporalDataGuard` 只使用 `available_at_ms` 判断 knowledge cutoff；`available_at_ms` 未知或晚于 cutoff 的 READY/PARTIAL 数据一律 UNAVAILABLE。`observed_at_ms` 仅用于审计、provenance 和 submission identity，不能替代 available_at。
 - [VERIFIED] `DataResult.content_hash` 在语义 payload deep-freeze 后派生，调用方不能手填；`FrozenDataBundle` 同时提供排除提交上下文的 semantic `content_hash` 和包含 evaluation/cutoff/status/observed/available 的 `submission_hash`。
 - [VERIFIED] 正式 hash 合同固定为 `SemanticHashV1`、`EvidenceHashV1`、`SubmissionHashV1`；Probe trace 和验证证据必须记录合同版本。
+- [VERIFIED] `TradingCalendarSnapshotV1` 是当前日期 authority：BaoStock 只读探查生成离线快照，运行时不联网；declared coverage 与 source guard coverage 分离，快照 semantic hash 与 evidence hash 分离。
+- [VERIFIED] `PreviousDayStatsFunction` 只接受交易日请求，并由版本化 CalendarSnapshot 唯一派生 `previous_trade_date`；调用方不能通过 DataContext 注入日期。
 - [VERIFIED] `ReadyDataStore` 是最小进程内 readiness 字典，按 function/date/symbol scope/content hash 保存 READY `DataResult`，读取时重新经过 `TemporalDataGuard`；它不是 DataCatalog、Registry 或持久化 checkpoint。
 
 ## 3. Runtime Timeline
@@ -60,6 +62,7 @@
 - [UNKNOWN] 旧系统中分散出现的 `bid_amount > ask_amount * 1.5`、撤单和波动阈值尚未完成当前生产路径、单位、consumer 和状态生命周期的闭环验证，不得直接迁移为正式策略。
 - [VERIFIED] 当前基础轮子可在 cobra-ion 的 Python 3.12.3 server venv 临时验证副本中运行；这不是生产部署。
 - [VERIFIED] `normalize_previous_day_stats_rows` 是旧日线访问结果的薄纯边界：严格校验六位代码、保留显式零值、拒绝缺失核心字段/重复代码，并输出稳定排序的昨日统计映射；空结果经 Provider 包装后为 MISSING。
+- [VERIFIED] Calendar snapshot 的 `completion_cutoff_time` 是调用侧数据完成策略，不是日历 source fact；naive datetime、非交易日请求和超出覆盖范围均 fail closed。
 - [VERIFIED] cobra-ion 上 `TDPreviousDayStatsProvider` 已通过既有 taos 只读路径取得 2026-09-03 的 3 行 `daily_kline`；因没有历史 `available_at` 证据，`PreviousDayStatsFunction` 按规则返回 UNAVAILABLE，而不是把查询时刻冒充可用时刻。
 - [VERIFIED] TD 昨日数据没有历史 `available_at_ms` 证据时，无论首次查询时刻还是节点前预取，Runtime/Replay 均按 UNKNOWN availability 返回 UNAVAILABLE；只有具备 verified `available_at_ms <= knowledge_as_of_ms` 的结果才可进入 FrozenDataBundle。`observed_at_ms` 仅保留为审计和 submission identity。
 - [VERIFIED] cobra-ion live Q2 + TD shadow path completed without writes: Q2 5217/5217 coverage with 10 stale symbols, TD previous-day result UNAVAILABLE due unknown availability, FrozenDataBundle completeness 0.0, SegmentFrame PARTIAL with price/pressure READY, and Probe trace preserved PARTIAL.
