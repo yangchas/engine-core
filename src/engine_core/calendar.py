@@ -248,4 +248,3 @@ def build_calendar_snapshot(
         observed_at_ms=observed_at_ms,
         evidence_ref=evidence_ref,
     )
-
