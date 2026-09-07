@@ -223,7 +223,10 @@ class Provenance:
     source_schema: str
     source_trade_date: Optional[str]
     effective_at_ms: Optional[int]
-    observed_at_ms: int
+    # ``None`` is intentional when the source snapshot has no trustworthy
+    # observation timestamp. A caller must not replace that unknown with the
+    # evaluation timestamp merely to satisfy the shape of the record.
+    observed_at_ms: Optional[int]
     evidence_ref: Optional[str] = None
     notes: Tuple[str, ...] = ()
 

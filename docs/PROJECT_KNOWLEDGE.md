@@ -22,7 +22,7 @@
 - [VERIFIED] `TemporalDataGuard` 只使用 `available_at_ms` 判断 knowledge cutoff；`available_at_ms` 未知或晚于 cutoff 的 READY/PARTIAL 数据一律 UNAVAILABLE。`observed_at_ms` 仅用于审计、provenance 和 submission identity，不能替代 available_at。
 - [VERIFIED] `DataResult.content_hash` 在语义 payload deep-freeze 后派生，调用方不能手填；`FrozenDataBundle` 同时提供排除提交上下文的 semantic `content_hash` 和包含 evaluation/cutoff/status/observed/available 的 `submission_hash`。
 - [VERIFIED] 正式 hash 合同固定为 `SemanticHashV1`、`EvidenceHashV1`、`SubmissionHashV1`；Probe trace 和验证证据必须记录合同版本。
-- [VERIFIED] `TradingCalendarSnapshotV1` 是当前日期 authority：BaoStock 只读探查生成离线快照，运行时不联网；declared coverage 与 source guard coverage 分离，快照 semantic hash 与 evidence hash 分离。
+- [VERIFIED] `TradingCalendarSnapshotV1` 是当前日期 authority：BaoStock 只读探查生成离线快照，运行时不联网；declared coverage 与 source guard coverage 分离，快照 semantic hash 与 evidence hash 分离。当前真实 BaoStock fixture 在 2026-12-31 右边界没有 2027 successor guard，`next_trade_day` 对该边界 fail closed，不能用合成日期补齐。
 - [VERIFIED] `PreviousDayStatsFunction` 只接受交易日请求，并由版本化 CalendarSnapshot 唯一派生 `previous_trade_date`；调用方不能通过 DataContext 注入日期。
 - [VERIFIED] `ReadyDataStore` 是最小进程内 readiness 字典，按 function/date/symbol scope/content hash 保存 READY `DataResult`，读取时重新经过 `TemporalDataGuard`；它不是 DataCatalog、Registry 或持久化 checkpoint。
 
@@ -130,7 +130,7 @@ Evidence：
 - 今天的网络或 TD 查询可能返回历史最终值，但不证明交易时点已经可见。
 
 正确做法：
-- Runtime/Replay 统一经过 `TemporalDataGuard`；若没有历史 `available_at` 证据，只有在本进程已于 cutoff 前明确观察到的数据才可运行时使用，否则只用于 oracle、Contract 验证或 fixture capture。
+- Runtime/Replay 统一经过 `TemporalDataGuard`；若没有历史 `available_at` 证据，数据一律不能作为该 cutoff 的 runtime input，只能用于 oracle、Contract 验证或 fixture capture。`observed_at` 仅记录实际观察时间，不得替代或推导 `available_at`。
 
 不要：
 - 从当前网络查询结果反灌历史 replay runtime。

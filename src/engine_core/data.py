@@ -390,7 +390,7 @@ class PreviousDayStatsFunction:
                         source_schema="TradingCalendarSnapshotV1",
                         source_trade_date=request.trade_date,
                         effective_at_ms=None,
-                        observed_at_ms=context.observed_at_ms,
+                        observed_at_ms=self._calendar.observed_at_ms,
                         evidence_ref=self._calendar.evidence_ref,
                         notes=("invalid_request: " + str(exc),),
                     ),
@@ -411,7 +411,7 @@ class PreviousDayStatsFunction:
                     source_schema="TradingCalendarSnapshotV1",
                     source_trade_date=expected,
                     effective_at_ms=None,
-                    observed_at_ms=context.observed_at_ms,
+                    observed_at_ms=self._calendar.observed_at_ms,
                     evidence_ref=self._calendar.evidence_ref,
                     notes=(
                         "calendar_version=" + self._calendar.version,

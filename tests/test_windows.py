@@ -67,3 +67,26 @@ def test_window_source_range_uses_true_minimum_and_maximum_for_out_of_order_obse
     assert view.newest_source_time_ms == 310
     assert view.first_source_time_ms == 100
     assert view.last_source_time_ms == 310
+
+
+def test_window_rejects_inverted_source_time_range():
+    start = local_time_ms("2026-09-04", "09:20:00")
+    end = local_time_ms("2026-09-04", "09:24:00")
+    manager = WindowManager((WindowSpec("auction", start, end),))
+    with pytest.raises(ValueError, match="oldest_source_time_ms"):
+        manager.observe(
+            start,
+            200,
+            1.0,
+            "READY",
+            "a",
+            oldest_source_time_ms=300,
+            newest_source_time_ms=100,
+        )
+
+
+def test_local_time_ms_requires_strict_hhmmss():
+    with pytest.raises(ValueError, match="strict HH:MM:SS"):
+        local_time_ms("2026-09-04", "9:20:00")
+    with pytest.raises(ValueError, match="strict HH:MM:SS"):
+        local_time_ms("2026-09-04", "09:2:00")

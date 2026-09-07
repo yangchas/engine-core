@@ -124,3 +124,5 @@ def test_baostock_calendar_fixture_loads_as_canonical_snapshot():
     assert snapshot.source_guard_valid_to == "2026-12-31"
     assert snapshot.semantic_hash == "58b658ce0e47e224ce98e9202e23255f43d411e93427981cec36c82f54677d44"
     assert snapshot.evidence_hash == "9c10961fa048436cbacbddad2892a690b40ebd3c987423e1e4519817ec96ca7a"
+    with pytest.raises(CalendarCoverageError):
+        snapshot.next_trade_day("2026-12-31")

@@ -18,9 +18,11 @@ def local_time_ms(trade_date: str, hhmmss: str, tz: ZoneInfo = SHANGHAI) -> int:
     """Convert YYYY-MM-DD and HH:MM:SS to UTC epoch milliseconds."""
 
     day = date.fromisoformat(trade_date)
+    if len(hhmmss) != 8 or hhmmss[2] != ":" or hhmmss[5] != ":":
+        raise ValueError("hhmmss must be strict HH:MM:SS")
     parts = hhmmss.split(":")
-    if len(parts) != 3:
-        raise ValueError("hhmmss must be HH:MM:SS")
+    if any(len(part) != 2 or not part.isdigit() for part in parts):
+        raise ValueError("hhmmss must be strict HH:MM:SS")
     value = datetime.combine(
         day,
         time(int(parts[0]), int(parts[1]), int(parts[2])),
@@ -87,6 +89,12 @@ class WindowManager:
 
         if not 0.0 <= coverage <= 1.0:
             raise ValueError("coverage must be between 0 and 1")
+        if (
+            oldest_source_time_ms is not None
+            and newest_source_time_ms is not None
+            and oldest_source_time_ms > newest_source_time_ms
+        ):
+            raise ValueError("oldest_source_time_ms cannot exceed newest_source_time_ms")
         touched = []
         for accumulator in self._windows.values():
             if accumulator.closed or not accumulator.spec.contains(logical_time_ms):

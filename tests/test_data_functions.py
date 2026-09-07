@@ -81,6 +81,38 @@ def test_previous_day_function_preserves_business_date_semantics():
     )
 
 
+def test_calendar_provenance_uses_snapshot_observation_time():
+    calendar = build_calendar_snapshot(
+        ["2026-09-03", "2026-09-04"],
+        version="observed-calendar-v1",
+        declared_valid_from="2026-01-01",
+        declared_valid_to="2026-12-31",
+        source_guard_valid_from="2025-12-01",
+        source_guard_valid_to="2027-01-31",
+        observed_at_ms=1234,
+        evidence_ref="calendar://observed",
+    )
+    provider = FixturePreviousDayStatsProvider(
+        {
+            "2026-09-03": {
+                "previous_trade_date": "2026-09-03",
+                "close_by_symbol": {"000001": 1000},
+                "amount_by_symbol": {"000001": 100},
+                "row_count": 1,
+            }
+        },
+        observed_at_ms=1788484800000,
+        available_at_ms=1788480000000,
+    )
+    result = PreviousDayStatsFunction(provider, calendar).execute(
+        DataContext("eval-calendar-proof", "AUCTION", 1788484800000),
+        _request(),
+    )
+    calendar_provenance = [item for item in result.provenance if item.source_kind == "calendar"]
+    assert len(calendar_provenance) == 1
+    assert calendar_provenance[0].observed_at_ms == 1234
+
+
 def test_previous_day_wrong_date_is_stale_not_ready():
     provider = FixturePreviousDayStatsProvider(
         {"2026-09-03": {"previous_trade_date": "2026-09-02", "close_by_symbol": {"000001": 1}, "amount_by_symbol": {"000001": 1}, "row_count": 1}},

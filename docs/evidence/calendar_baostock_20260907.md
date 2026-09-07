@@ -25,7 +25,11 @@
 ## Runtime contract
 
 The fixture declares formal decision coverage `2024-01-01..2026-12-31` and the
-observed source guard coverage `2023-12-01..2026-12-31`. The missing 2027 guard
-range is an explicit source-coverage limitation, not a fallback opportunity.
+observed source guard coverage `2023-12-01..2026-12-31`. Previous-day lookup at
+the left declared edge is supported by the 2023 guard dates. A next-day lookup
+at the right edge is intentionally unavailable because the source returned no
+2027 guard dates; it fails closed rather than fabricating a successor. The
+missing 2027 guard range is an explicit source-coverage limitation, not a
+fallback opportunity.
 The snapshot semantic hash excludes source/session/evidence details; those are
 recorded separately in the evidence hash.
