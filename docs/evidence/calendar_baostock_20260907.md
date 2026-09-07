@@ -19,6 +19,8 @@
 - requested 2027 guard dates were not returned by the source and were not fabricated
 - fixture: `tests/fixtures/calendar/baostock_cn_a_share_20260907.json`
 - fixture SHA-256: `0FE13FFD22710F43C2D7EB758CE9795F21DFA5CD113989C01129E132248F87EF`
+- snapshot semantic hash: `58b658ce0e47e224ce98e9202e23255f43d411e93427981cec36c82f54677d44`
+- snapshot evidence hash: `9c10961fa048436cbacbddad2892a690b40ebd3c987423e1e4519817ec96ca7a`
 
 ## Runtime contract
 
