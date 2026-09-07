@@ -49,8 +49,8 @@ class WindowSpec:
 class _WindowAccumulator:
     spec: WindowSpec
     observation_count: int = 0
-    first_source_time_ms: Optional[int] = None
-    last_source_time_ms: Optional[int] = None
+    oldest_source_time_ms: Optional[int] = None
+    newest_source_time_ms: Optional[int] = None
     min_coverage: float = 0.0
     min_completeness: str = "MISSING"
     last_content_hash: str = ""
@@ -79,6 +79,9 @@ class WindowManager:
         coverage: float,
         completeness: str,
         content_hash: str,
+        *,
+        oldest_source_time_ms: Optional[int] = None,
+        newest_source_time_ms: Optional[int] = None,
     ) -> Tuple[str, ...]:
         """Record one raw observation in every containing window."""
 
@@ -101,10 +104,20 @@ class WindowManager:
             )
             accumulator.last_content_hash = content_hash
             accumulator.revision += 1
-            if source_time_ms is not None:
-                if accumulator.first_source_time_ms is None:
-                    accumulator.first_source_time_ms = source_time_ms
-                accumulator.last_source_time_ms = source_time_ms
+            oldest = source_time_ms if oldest_source_time_ms is None else oldest_source_time_ms
+            newest = source_time_ms if newest_source_time_ms is None else newest_source_time_ms
+            if oldest is not None:
+                accumulator.oldest_source_time_ms = (
+                    oldest
+                    if accumulator.oldest_source_time_ms is None
+                    else min(accumulator.oldest_source_time_ms, oldest)
+                )
+            if newest is not None:
+                accumulator.newest_source_time_ms = (
+                    newest
+                    if accumulator.newest_source_time_ms is None
+                    else max(accumulator.newest_source_time_ms, newest)
+                )
             touched.append(accumulator.spec.window_id)
         return tuple(sorted(touched))
 
@@ -143,8 +156,8 @@ class WindowManager:
             "start_ms": accumulator.spec.start_ms,
             "end_exclusive_ms": accumulator.spec.end_exclusive_ms,
             "observation_count": accumulator.observation_count,
-            "first_source_time_ms": accumulator.first_source_time_ms,
-            "last_source_time_ms": accumulator.last_source_time_ms,
+            "oldest_source_time_ms": accumulator.oldest_source_time_ms,
+            "newest_source_time_ms": accumulator.newest_source_time_ms,
             "coverage": accumulator.min_coverage,
             "completeness": accumulator.min_completeness,
             "last_content_hash": accumulator.last_content_hash,
@@ -158,8 +171,8 @@ class WindowManager:
             start_ms=accumulator.spec.start_ms,
             end_exclusive_ms=accumulator.spec.end_exclusive_ms,
             observation_count=accumulator.observation_count,
-            first_source_time_ms=accumulator.first_source_time_ms,
-            last_source_time_ms=accumulator.last_source_time_ms,
+            oldest_source_time_ms=accumulator.oldest_source_time_ms,
+            newest_source_time_ms=accumulator.newest_source_time_ms,
             coverage=accumulator.min_coverage,
             completeness=accumulator.min_completeness,
             content_hash=canonical_hash(payload),

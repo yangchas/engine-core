@@ -187,6 +187,8 @@ class DeterministicEngine:
             self._windows.observe(
                 logical_time_ms=signal.logical_time_ms,
                 source_time_ms=projection.newest_source_time_ms,
+                oldest_source_time_ms=projection.oldest_source_time_ms,
+                newest_source_time_ms=projection.newest_source_time_ms,
                 coverage=projection.coverage,
                 completeness=projection.status.value,
                 content_hash=projection.content_hash,

@@ -54,3 +54,16 @@ def test_window_observation_uses_first_coverage_and_minimum_afterwards():
     manager.observe(start, start, 0.9, "READY", "a")
     manager.observe(start + 1, start + 1, 1.0, "READY", "b")
     assert manager.views()["auction"].coverage == 0.9
+
+
+def test_window_source_range_uses_true_minimum_and_maximum_for_out_of_order_observations():
+    start = local_time_ms("2026-09-04", "09:20:00")
+    end = local_time_ms("2026-09-04", "09:24:00")
+    manager = WindowManager((WindowSpec("auction", start, end),))
+    manager.observe(start, 300, 1.0, "READY", "a", oldest_source_time_ms=300, newest_source_time_ms=310)
+    manager.observe(start + 1, 100, 1.0, "READY", "b", oldest_source_time_ms=100, newest_source_time_ms=120)
+    view = manager.views()["auction"]
+    assert view.oldest_source_time_ms == 100
+    assert view.newest_source_time_ms == 310
+    assert view.first_source_time_ms == 100
+    assert view.last_source_time_ms == 310
