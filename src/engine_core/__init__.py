@@ -1,6 +1,15 @@
 """Independent deterministic market-state calculation core."""
 
 from .clock import MonotonicClock, SystemMonotonicClock, SystemWallClock, VirtualClock, WallClock
+from .calendar import (
+    CALENDAR_CONTRACT_VERSION,
+    CalendarCoverageError,
+    CalendarSnapshotError,
+    TradingCalendarSnapshot,
+    build_calendar_snapshot,
+    parse_trade_date,
+    validate_calendar_version_identity,
+)
 from .contracts import (
     DataRequest,
     DataResult,
@@ -81,6 +90,9 @@ from .windows import WindowManager, WindowSnapshot, WindowSpec
 
 __all__ = [
     "BreadthFacts",
+    "CALENDAR_CONTRACT_VERSION",
+    "CalendarCoverageError",
+    "CalendarSnapshotError",
     "CurrentMarketState",
     "DataContext",
     "DataFunction",
@@ -139,6 +151,10 @@ __all__ = [
     "WindowManager",
     "WindowSnapshot",
     "WindowSpec",
+    "TradingCalendarSnapshot",
+    "build_calendar_snapshot",
+    "parse_trade_date",
+    "validate_calendar_version_identity",
     "build_segment_frame",
     "compare_adjacent_segments",
     "canonical_hash",
