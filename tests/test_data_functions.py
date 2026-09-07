@@ -14,12 +14,23 @@ from engine_core import (
     ReadyDataStore,
     TDPreviousDayStatsProvider,
     TemporalDataGuard,
+    build_calendar_snapshot,
     build_frozen_bundle,
     normalize_previous_day_stats_rows,
     prefetch_ready_data,
     provider_result_from_previous_day_rows,
 )
 from engine_core.contracts import DataResult
+
+
+TEST_CALENDAR = build_calendar_snapshot(
+    ["2026-09-02", "2026-09-03", "2026-09-04"],
+    version="test-calendar-v1",
+    declared_valid_from="2026-01-01",
+    declared_valid_to="2026-12-31",
+    source_guard_valid_from="2025-12-01",
+    source_guard_valid_to="2027-01-31",
+)
 
 
 class StaticProvider:
@@ -53,17 +64,21 @@ def test_previous_day_function_preserves_business_date_semantics():
         observed_at_ms=1788484800000,
         available_at_ms=1788480000000,
     )
-    result = PreviousDayStatsFunction(provider).execute(
+    result = PreviousDayStatsFunction(provider, TEST_CALENDAR).execute(
         DataContext(
             evaluation_id="eval-1",
             phase="AUCTION",
             observed_at_ms=1788484800000,
-            expected_previous_trade_date="2026-09-03",
         ),
         _request(),
     )
     assert result.status is DataStatus.READY
     assert result.actual_trade_date == "2026-09-03"
+    assert any(
+        "derived_previous_trade_date=2026-09-03" in note
+        for item in result.provenance
+        for note in item.notes
+    )
 
 
 def test_previous_day_wrong_date_is_stale_not_ready():
@@ -72,17 +87,57 @@ def test_previous_day_wrong_date_is_stale_not_ready():
         observed_at_ms=1788484800000,
         available_at_ms=1788480000000,
     )
-    result = PreviousDayStatsFunction(provider).execute(
+    result = PreviousDayStatsFunction(provider, TEST_CALENDAR).execute(
         DataContext(
             evaluation_id="eval-1",
             phase="AUCTION",
             observed_at_ms=1788484800000,
-            expected_previous_trade_date="2026-09-03",
         ),
         _request(),
     )
     assert result.status is DataStatus.STALE
     assert result.actual_trade_date == "2026-09-02"
+
+
+def test_previous_day_derives_date_from_calendar_and_rejects_non_trading_request():
+    calls = []
+
+    class CountingProvider:
+        def fetch(self, request, *, previous_trade_date):
+            calls.append(previous_trade_date)
+            return ProviderResult(
+                raw_data={
+                    "previous_trade_date": previous_trade_date,
+                    "close_by_symbol": {"000001": 1},
+                    "amount_by_symbol": {"000001": 1},
+                    "row_count": 1,
+                },
+                source_id="fixture",
+                source_schema="PreviousDayStatsV1",
+                effective_at_ms=None,
+                available_at_ms=1,
+                observed_at_ms=1,
+                availability_status="VERIFIED",
+            )
+
+    request = DataRequest(
+        request_id="holiday-request",
+        function_id="previous_day_stats",
+        trade_date="2026-09-05",
+        effective_as_of_ms=1788484800000,
+        knowledge_as_of_ms=1788484800000,
+    )
+    result = PreviousDayStatsFunction(
+        CountingProvider(), TEST_CALENDAR
+    ).execute(DataContext("eval-holiday", "AUCTION", 1), request)
+    assert result.status is DataStatus.INVALID
+    assert calls == []
+
+    valid = PreviousDayStatsFunction(
+        CountingProvider(), TEST_CALENDAR
+    ).execute(DataContext("eval-valid", "AUCTION", 1), _request())
+    assert valid.status is DataStatus.READY
+    assert calls == ["2026-09-03"]
 
 
 def test_frozen_bundle_hash_does_not_depend_on_async_completion_order():
@@ -91,7 +146,7 @@ def test_frozen_bundle_hash_does_not_depend_on_async_completion_order():
         observed_at_ms=1788484800000,
         available_at_ms=1788480000000,
     )
-    function = PreviousDayStatsFunction(provider)
+    function = PreviousDayStatsFunction(provider, TEST_CALENDAR)
     result_a = function.execute(
         DataContext("eval-1", "AUCTION", 1788484800000),
         _request(),
@@ -185,8 +240,8 @@ def test_previous_day_function_never_promotes_temporally_unavailable_result():
                 availability_status="VERIFIED",
             )
 
-    result = PreviousDayStatsFunction(FutureProvider()).execute(
-        DataContext("eval-1", "AUCTION", 1788484800000, expected_previous_trade_date="2026-09-03"),
+    result = PreviousDayStatsFunction(FutureProvider(), TEST_CALENDAR).execute(
+        DataContext("eval-1", "AUCTION", 1788484800000),
         _request(),
     )
     assert result.status is DataStatus.UNAVAILABLE
@@ -204,12 +259,11 @@ def test_td_provider_wraps_existing_access_without_reimplementing_connection():
         available_at_ms=lambda: 1788480000000,
         evidence_ref="probe/td/daily_kline",
     )
-    result = PreviousDayStatsFunction(provider).execute(
+    result = PreviousDayStatsFunction(provider, TEST_CALENDAR).execute(
         DataContext(
             "eval-1",
             "AUCTION",
             1788484800000,
-            expected_previous_trade_date="2026-09-03",
         ),
         _request(),
     )
@@ -229,9 +283,10 @@ def test_observed_provider_does_not_promote_availability_to_source_claim():
             observed_at_ms=lambda: 1788484800000,
             source_id="network_oracle",
             source_schema="historical_result",
-        )
+        ),
+        TEST_CALENDAR,
     ).execute(
-        DataContext("eval-1", "AUCTION", 1788484800000, expected_previous_trade_date="2026-09-03"),
+        DataContext("eval-1", "AUCTION", 1788484800000),
         _request(),
     )
     assert result.status is DataStatus.UNAVAILABLE
@@ -253,7 +308,8 @@ def test_prefetch_ready_data_reuses_preobserved_result_at_later_node():
             observed_at_ms=lambda: prefetch_time,
             available_at_ms=lambda: prefetch_time,
             source_id="td-prefetch-fixture",
-        )
+        ),
+        TEST_CALENDAR,
     )
     prefetch_request = DataRequest(
         request_id="prefetch-request",
@@ -267,7 +323,6 @@ def test_prefetch_ready_data_reuses_preobserved_result_at_later_node():
         "eval-prefetch",
         "AUCTION",
         prefetch_time,
-        expected_previous_trade_date="2026-09-03",
     )
     store = ReadyDataStore()
     result = prefetch_ready_data(function, context, prefetch_request, store)
@@ -374,12 +429,12 @@ def test_data_result_semantic_hash_excludes_provider_identity():
         observed_at_ms=1788484801000,
         availability_status="VERIFIED",
     )
-    left = PreviousDayStatsFunction(StaticProvider(physical)).execute(
-        DataContext("eval-identity", "AUCTION", 1788484800000, expected_previous_trade_date="2026-09-03"),
+    left = PreviousDayStatsFunction(StaticProvider(physical), TEST_CALENDAR).execute(
+        DataContext("eval-identity", "AUCTION", 1788484800000),
         _request(),
     )
-    right = PreviousDayStatsFunction(StaticProvider(other)).execute(
-        DataContext("eval-identity", "AUCTION", 1788484800000, expected_previous_trade_date="2026-09-03"),
+    right = PreviousDayStatsFunction(StaticProvider(other), TEST_CALENDAR).execute(
+        DataContext("eval-identity", "AUCTION", 1788484800000),
         _request(),
     )
     assert left.content_hash == right.content_hash
@@ -407,18 +462,38 @@ def test_captured_td_previous_day_fixture_runs_through_data_function():
             "row_count": len(fixture["rows"]),
         }
     }, observed_at_ms=1788484800000, available_at_ms=1788480000000)
-    result = PreviousDayStatsFunction(provider).execute(
+    result = PreviousDayStatsFunction(provider, TEST_CALENDAR).execute(
         DataContext(
             "eval-real-fixture",
             "AUCTION",
             1788484800000,
-            expected_previous_trade_date="2026-09-03",
         ),
         _request(),
     )
     assert result.status is DataStatus.READY
     assert result.data["close_by_symbol"]["000001"] == 11.880000114440918
     assert result.data["amount_by_symbol"]["000001"] == 1324230272.0
+
+
+def test_fixture_provider_deep_freezes_constructor_input():
+    values = {
+        "2026-09-03": {
+            "previous_trade_date": "2026-09-03",
+            "close_by_symbol": {"000001": 1},
+            "amount_by_symbol": {"000001": 2},
+            "row_count": 1,
+        }
+    }
+    provider = FixturePreviousDayStatsProvider(
+        values,
+        observed_at_ms=1788484800000,
+        available_at_ms=1788480000000,
+    )
+    values["2026-09-03"]["close_by_symbol"]["000001"] = 99
+    result = PreviousDayStatsFunction(provider, TEST_CALENDAR).execute(
+        DataContext("eval-frozen", "AUCTION", 1788484800000), _request()
+    )
+    assert result.data["close_by_symbol"]["000001"] == 1
 
 
 def test_legacy_daily_rows_normalize_without_symbol_or_zero_repair():
@@ -460,13 +535,13 @@ def test_provider_result_from_legacy_rows_preserves_temporal_metadata():
         evidence_ref="probe/td/daily_kline",
     )
     result = PreviousDayStatsFunction(
-        StaticProvider(physical)
+        StaticProvider(physical),
+        TEST_CALENDAR,
     ).execute(
         DataContext(
             "eval-rows",
             "AUCTION",
             1788484800000,
-            expected_previous_trade_date="2026-09-03",
         ),
         _request(),
     )
@@ -488,13 +563,13 @@ def test_empty_legacy_daily_rows_are_missing_not_ready():
         availability_status="VERIFIED",
     )
     result = PreviousDayStatsFunction(
-        StaticProvider(physical)
+        StaticProvider(physical),
+        TEST_CALENDAR,
     ).execute(
         DataContext(
             "eval-empty-rows",
             "AUCTION",
             1788484800000,
-            expected_previous_trade_date="2026-09-03",
         ),
         _request(),
     )

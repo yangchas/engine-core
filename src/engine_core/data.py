@@ -7,12 +7,14 @@ import math
 import re
 from typing import Any, Callable, Iterable, Mapping, Optional, Protocol, Tuple
 
+from .calendar import CalendarCoverageError, TradingCalendarSnapshot, parse_trade_date
 from .contracts import (
     DataRequest,
     DataResult,
     DataStatus,
     FrozenDataBundle,
     Provenance,
+    deep_freeze,
 )
 
 
@@ -21,7 +23,6 @@ class DataContext:
     evaluation_id: str
     phase: str
     observed_at_ms: int
-    expected_previous_trade_date: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -328,16 +329,23 @@ class PreviousDayStatsFunction:
     )
     _optional_fields = frozenset({"volume_by_symbol"})
 
-    def __init__(self, provider: PreviousDayStatsProvider) -> None:
+    def __init__(
+        self,
+        provider: PreviousDayStatsProvider,
+        calendar: TradingCalendarSnapshot,
+    ) -> None:
         self._provider = provider
+        self._calendar = calendar
 
     def execute(self, context: DataContext, request: DataRequest) -> DataResult:
         if request.function_id != self.function_id:
             raise ValueError(
                 "request function_id must be %s" % self.function_id
             )
-        expected = context.expected_previous_trade_date
-        if expected is None:
+        allowed_fields = self._core_fields | self._optional_fields
+        required_fields = set(request.required_fields) or set(self._core_fields)
+        unknown_required = sorted(required_fields - allowed_fields)
+        if unknown_required:
             return DataResult(
                 request_id=request.request_id,
                 function_id=request.function_id,
@@ -351,28 +359,68 @@ class PreviousDayStatsFunction:
                 observed_at_ms=context.observed_at_ms,
                 schema_version=1,
                 completeness=0.0,
-                missing_fields=("expected_previous_trade_date",),
+                missing_fields=tuple(
+                    "unknown_required_field:" + field for field in unknown_required
+                ),
+            )
+        try:
+            requested_date = parse_trade_date(request.trade_date)
+            if not self._calendar.is_trading_day(requested_date):
+                raise ValueError("request trade_date is not a trading day")
+            expected = self._calendar.previous_trade_day(requested_date).isoformat()
+        except (TypeError, ValueError, CalendarCoverageError) as exc:
+            return DataResult(
+                request_id=request.request_id,
+                function_id=request.function_id,
+                status=DataStatus.INVALID,
+                data=None,
+                actual_source=None,
+                requested_trade_date=request.trade_date,
+                actual_trade_date=None,
+                effective_at_ms=None,
+                available_at_ms=None,
+                observed_at_ms=context.observed_at_ms,
+                schema_version=1,
+                completeness=0.0,
+                missing_fields=("trade_date",),
+                provenance=(
+                    Provenance(
+                        source_id=self._calendar.calendar_id,
+                        source_kind="calendar",
+                        source_schema="TradingCalendarSnapshotV1",
+                        source_trade_date=request.trade_date,
+                        effective_at_ms=None,
+                        observed_at_ms=context.observed_at_ms,
+                        evidence_ref=self._calendar.evidence_ref,
+                        notes=("invalid_request: " + str(exc),),
+                    ),
+                ),
             )
         physical = self._provider.fetch(
             request,
             previous_trade_date=expected,
         )
         result = _data_result_from_provider(request, physical)
-        allowed_fields = self._core_fields | self._optional_fields
-        required_fields = set(request.required_fields) or set(self._core_fields)
-        unknown_required = sorted(required_fields - allowed_fields)
-        if unknown_required:
-            return replace(
-                result,
-                status=DataStatus.INVALID,
-                completeness=0.0,
-                missing_fields=tuple(
-                    sorted(set(result.missing_fields) | {
-                        "unknown_required_field:" + field
-                        for field in unknown_required
-                    })
+        result = replace(
+            result,
+            provenance=result.provenance
+            + (
+                Provenance(
+                    source_id=self._calendar.calendar_id,
+                    source_kind="calendar",
+                    source_schema="TradingCalendarSnapshotV1",
+                    source_trade_date=expected,
+                    effective_at_ms=None,
+                    observed_at_ms=context.observed_at_ms,
+                    evidence_ref=self._calendar.evidence_ref,
+                    notes=(
+                        "calendar_version=" + self._calendar.version,
+                        "calendar_semantic_hash=" + self._calendar.semantic_hash,
+                        "derived_previous_trade_date=" + expected,
+                    ),
                 ),
-            )
+            ),
+        )
         if not isinstance(result.data, Mapping):
             return replace(result, status=DataStatus.MISSING, completeness=0.0)
         missing_fields = sorted(
@@ -538,7 +586,7 @@ class FixturePreviousDayStatsProvider:
     ) -> None:
         if observed_at_ms <= 0:
             raise ValueError("observed_at_ms must be positive")
-        self._values_by_trade_date = values_by_trade_date
+        self._values_by_trade_date = deep_freeze(values_by_trade_date)
         self._observed_at_ms = observed_at_ms
         self._available_at_ms = available_at_ms
         self._effective_at_ms = effective_at_ms
@@ -562,7 +610,7 @@ class FixturePreviousDayStatsProvider:
                 availability_status="UNKNOWN",
                 evidence_ref=self._evidence_ref,
             )
-        payload = dict(values)
+        payload = deep_freeze(values)
         availability_status = (
             "VERIFIED" if self._available_at_ms is not None else "OBSERVED"
         )
