@@ -87,6 +87,12 @@ from .q2 import (
 )
 from .state import CurrentMarketState, MarketStateReducer
 from .windows import WindowManager, WindowSnapshot, WindowSpec
+from .time_windows import (
+    MinuteObservation,
+    MinuteWindowMetrics,
+    MinuteWindowTracker,
+    minute_key_from_timestamp_ms,
+)
 
 __all__ = [
     "BreadthFacts",
@@ -151,6 +157,10 @@ __all__ = [
     "WindowManager",
     "WindowSnapshot",
     "WindowSpec",
+    "MinuteObservation",
+    "MinuteWindowMetrics",
+    "MinuteWindowTracker",
+    "minute_key_from_timestamp_ms",
     "TradingCalendarSnapshot",
     "build_calendar_snapshot",
     "parse_trade_date",
