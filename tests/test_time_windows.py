@@ -51,6 +51,64 @@ def test_tracker_duplicate_timestamp_is_idempotent_but_conflict_rejected():
         tracker.observe("600519", price_milli=1001, amount_yuan=100, source_time_ms=timestamp)
 
 
+def test_tracker_keeps_latest_observation_but_max_amount_as_future_reference():
+    tracker = MinuteWindowTracker()
+    tracker.observe(
+        "600519",
+        price_milli=1000,
+        amount_yuan=200,
+        source_time_ms=_ms("2026-09-04T01:20:01+00:00"),
+    )
+    current = tracker.observe(
+        "600519",
+        price_milli=1010,
+        amount_yuan=150,
+        source_time_ms=_ms("2026-09-04T01:20:30+00:00"),
+    )
+    assert current.price_milli == 1010
+    assert current.amount_yuan == 150
+
+    following = tracker.observe(
+        "600519",
+        price_milli=1020,
+        amount_yuan=250,
+        source_time_ms=_ms("2026-09-04T01:21:01+00:00"),
+    )
+    assert following.amount_2m_yuan == 50
+    assert following.amount_2m_reason == "READY"
+
+
+def test_tracker_older_same_minute_input_only_updates_max_amount_reference():
+    tracker = MinuteWindowTracker()
+    before = tracker.observe(
+        "600519",
+        price_milli=1010,
+        amount_yuan=150,
+        source_time_ms=_ms("2026-09-04T01:20:30+00:00"),
+    )
+    after_older = tracker.observe(
+        "600519",
+        price_milli=990,
+        amount_yuan=300,
+        source_time_ms=_ms("2026-09-04T01:20:01+00:00"),
+    )
+    assert after_older.price_milli == 1010
+    assert after_older.amount_yuan == 150
+    assert after_older.minute_max_amount_yuan == 300
+    assert after_older.minute_max_amount_source_time_ms == _ms(
+        "2026-09-04T01:20:01+00:00"
+    )
+    assert after_older.content_hash != before.content_hash
+
+    following = tracker.observe(
+        "600519",
+        price_milli=1020,
+        amount_yuan=350,
+        source_time_ms=_ms("2026-09-04T01:21:01+00:00"),
+    )
+    assert following.amount_2m_yuan == 50
+
+
 def test_tracker_has_no_wall_clock_fallback_and_keeps_days_separate():
     tracker = MinuteWindowTracker(keep_minutes=2)
     with pytest.raises(ValueError):

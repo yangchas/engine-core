@@ -8,7 +8,7 @@ machine clock, strips qualified symbols, or applies strategy thresholds.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Dict, Mapping, Optional
@@ -55,7 +55,14 @@ def minute_key_from_timestamp_ms(
 
 @dataclass(frozen=True)
 class MinuteObservation:
-    """One canonical cumulative observation retained in a minute bucket."""
+    """One canonical observation and its future amount reference.
+
+    ``amount_yuan`` belongs to the latest source-time observation in the
+    minute. ``reference_amount_yuan`` is the greatest cumulative amount seen
+    in that minute and is used only when a later minute looks back.  This
+    mirrors the production minute-ring contract without pretending a counter
+    decrease never happened on the latest observation.
+    """
 
     trade_date: str
     minute_index: int
@@ -63,6 +70,8 @@ class MinuteObservation:
     symbol: str
     price_milli: int
     amount_yuan: int
+    reference_amount_yuan: int
+    reference_amount_source_time_ms: int
 
 
 @dataclass(frozen=True)
@@ -75,6 +84,8 @@ class MinuteWindowMetrics:
     source_time_ms: int
     price_milli: int
     amount_yuan: int
+    minute_max_amount_yuan: int
+    minute_max_amount_source_time_ms: int
     price_change_bp: Optional[int]
     price_change_reason: str
     amount_2m_yuan: Optional[int]
@@ -90,6 +101,8 @@ class MinuteWindowMetrics:
                 "source_time_ms": self.source_time_ms,
                 "price_milli": self.price_milli,
                 "amount_yuan": self.amount_yuan,
+                "minute_max_amount_yuan": self.minute_max_amount_yuan,
+                "minute_max_amount_source_time_ms": self.minute_max_amount_source_time_ms,
                 "price_change_bp": self.price_change_bp,
                 "price_change_reason": self.price_change_reason,
                 "amount_2m_yuan": self.amount_2m_yuan,
@@ -145,6 +158,45 @@ class MinuteWindowTracker:
             source_time_ms,
             timezone_name=self.timezone_name,
         )
+        by_date = self._history.setdefault(trade_date, {})
+        by_minute = by_date.setdefault(normalized_symbol, {})
+        existing = by_minute.get(minute_index)
+        if existing is not None and source_time_ms == existing.source_time_ms:
+            if price_milli != existing.price_milli or amount_yuan != existing.amount_yuan:
+                raise ValueError("same source timestamp has conflicting observations")
+            return self._metrics_after_observe(
+                normalized_symbol,
+                trade_date=trade_date,
+                minute_index=minute_index,
+            )
+
+        reference_amount_yuan = amount_yuan
+        reference_amount_source_time_ms = source_time_ms
+        if existing is not None:
+            if existing.reference_amount_yuan > reference_amount_yuan:
+                reference_amount_yuan = existing.reference_amount_yuan
+                reference_amount_source_time_ms = existing.reference_amount_source_time_ms
+            elif existing.reference_amount_yuan == reference_amount_yuan:
+                reference_amount_source_time_ms = min(
+                    existing.reference_amount_source_time_ms,
+                    source_time_ms,
+                )
+            if source_time_ms < existing.source_time_ms:
+                if (
+                    reference_amount_yuan != existing.reference_amount_yuan
+                    or reference_amount_source_time_ms
+                    != existing.reference_amount_source_time_ms
+                ):
+                    by_minute[minute_index] = replace(
+                        existing,
+                        reference_amount_yuan=reference_amount_yuan,
+                        reference_amount_source_time_ms=reference_amount_source_time_ms,
+                    )
+                return self._metrics_after_observe(
+                    normalized_symbol,
+                    trade_date=trade_date,
+                    minute_index=minute_index,
+                )
         observation = MinuteObservation(
             trade_date=trade_date,
             minute_index=minute_index,
@@ -152,25 +204,9 @@ class MinuteWindowTracker:
             symbol=normalized_symbol,
             price_milli=price_milli,
             amount_yuan=amount_yuan,
+            reference_amount_yuan=reference_amount_yuan,
+            reference_amount_source_time_ms=reference_amount_source_time_ms,
         )
-        by_date = self._history.setdefault(trade_date, {})
-        by_minute = by_date.setdefault(normalized_symbol, {})
-        existing = by_minute.get(minute_index)
-        if existing is not None:
-            if source_time_ms < existing.source_time_ms:
-                return self._metrics_after_observe(
-                    normalized_symbol,
-                    trade_date=trade_date,
-                    minute_index=minute_index,
-                )
-            if source_time_ms == existing.source_time_ms:
-                if observation != existing:
-                    raise ValueError("same source timestamp has conflicting observations")
-                return self._metrics_after_observe(
-                    normalized_symbol,
-                    trade_date=trade_date,
-                    minute_index=minute_index,
-                )
         by_minute[minute_index] = observation
         self._trim(by_minute)
         return self._metrics_after_observe(
@@ -236,11 +272,11 @@ class MinuteWindowTracker:
         if two_minute_reference is None:
             amount_2m_yuan = None
             amount_2m_reason = "MISSING_REFERENCE"
-        elif current.amount_yuan < two_minute_reference.amount_yuan:
+        elif current.amount_yuan < two_minute_reference.reference_amount_yuan:
             amount_2m_yuan = None
             amount_2m_reason = "COUNTER_RESET"
         else:
-            amount_2m_yuan = current.amount_yuan - two_minute_reference.amount_yuan
+            amount_2m_yuan = current.amount_yuan - two_minute_reference.reference_amount_yuan
             amount_2m_reason = "READY"
         return MinuteWindowMetrics(
             trade_date=trade_date,
@@ -249,6 +285,8 @@ class MinuteWindowTracker:
             source_time_ms=current.source_time_ms,
             price_milli=current.price_milli,
             amount_yuan=current.amount_yuan,
+            minute_max_amount_yuan=current.reference_amount_yuan,
+            minute_max_amount_source_time_ms=current.reference_amount_source_time_ms,
             price_change_bp=price_change_bp,
             price_change_reason=price_change_reason,
             amount_2m_yuan=amount_2m_yuan,
