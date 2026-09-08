@@ -62,3 +62,12 @@
 - Verification: focused Engine/Session tests 22 passed; full local suite 142 passed; compileall and diff-check passed; byte-identical files passed the same 142-test suite and compileall in the cobra-ion Python 3.12 temporary verification directory.
 - Residual risk: CurrentMarketState retains the phase of its latest market observation until another market update; this is intentional, while trigger-time phase belongs to EngineSnapshot. SessionPlan still does not decide source publication/finalization gates.
 - Next candidate: audit the smallest possible EvaluationPlan-to-Engine boundary using one existing trigger, without adding registries, dynamic dispatch, retry, fallback or a generic plugin platform.
+
+## 2026-09-08 06:40 - Connect only executable EvaluationPlan semantics
+
+- Scope: optional `EvaluationPlanV1` consumption by `DeterministicEngine`, focused ownership tests and explicit boundary evidence.
+- Why: Engine trigger payloads still carried ad-hoc data requirements, but directly accepting every plan field would falsely imply FactFunction and multi-strategy execution that the Engine does not implement.
+- Change: made a configured plan the sole ordered requirement authority for exact triggers; rejected payload overrides, unknown triggers, non-empty fact declarations and mismatched strategy identities before window mutation; bound plan/node hashes into planned evaluation identity. The legacy no-plan payload path remains compatible.
+- Verification: focused Evaluation/Engine tests 28 passed; the full local suite passed 148 tests; byte-identical files passed the same 148-test suite and compileall in the cobra-ion Python 3.12 temporary verification directory; diff-check and UTF-8 scan passed locally.
+- Residual risk: FactFunction execution and multiple strategy dispatch remain intentionally absent. The Engine currently exposes pending evaluations only through its internal integration surface; no Collector or asynchronous workflow API was added.
+- Next candidate: audit whether the real auction 09:20/09:24 trigger definitions can be expressed as TimerSpec + EvaluationPlan data without implementing FactFunction dispatch or a workflow layer.

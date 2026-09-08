@@ -19,6 +19,7 @@ from .contracts import (
     semantic_hash,
 )
 from .state import MarketStateReducer
+from .evaluation import EvaluationNode, EvaluationPlan
 from .session import SessionPlan
 from .windows import WindowManager
 
@@ -71,6 +72,7 @@ class DeterministicEngine:
         session_id: str = "",
         phase: str = "UNKNOWN",
         session_plan: Optional[SessionPlan] = None,
+        evaluation_plan: Optional[EvaluationPlan] = None,
         result_history_limit: int = 256,
         signal_id_cache_limit: int = 4096,
         evaluation_registration_limit: int = 4096,
@@ -84,14 +86,34 @@ class DeterministicEngine:
             raise ValueError("evaluation_registration_limit must be positive")
         if terminal_evaluation_limit <= 0:
             raise ValueError("terminal_evaluation_limit must be positive")
+        if session_plan is not None and not isinstance(session_plan, SessionPlan):
+            raise TypeError("session_plan must be a SessionPlan")
+        if evaluation_plan is not None and not isinstance(
+            evaluation_plan, EvaluationPlan
+        ):
+            raise TypeError("evaluation_plan must be an EvaluationPlan")
         if session_plan is not None and phase != "UNKNOWN":
             raise ValueError("session_plan and explicit phase are mutually exclusive")
+        if evaluation_plan is not None:
+            strategy_id = getattr(strategy, "strategy_id", None)
+            if not isinstance(strategy_id, str) or not strategy_id:
+                raise ValueError("planned strategy must expose a non-empty strategy_id")
+            for node in evaluation_plan.nodes:
+                if node.fact_functions:
+                    raise ValueError(
+                        "Engine does not execute planned fact_functions yet"
+                    )
+                if node.strategies != (strategy_id,):
+                    raise ValueError(
+                        "evaluation node strategies must match the bound strategy"
+                    )
         self._reducer = reducer
         self._windows = windows
         self._strategy = strategy
         self._session_id = session_id
         self._phase = phase
         self._session_plan = session_plan
+        self._evaluation_plan = evaluation_plan
         self._trace_id = session_id or "engine-trace"
         self._queue: List[Tuple[Tuple[int, int, int, str], EngineSignal]] = []
         # This is intentionally an in-memory bounded idempotency horizon.  A
@@ -235,30 +257,21 @@ class DeterministicEngine:
                 if signal.signal_kind is SignalKind.RECOVERY_CATCHUP
                 else "NORMAL"
             )
+            trigger_id = payload.get("trigger_id", signal.signal_kind.value)
+            node, function_order = self._resolve_evaluation(trigger_id, payload)
             for window_id in payload.get("close_windows", ()):
                 self._windows.close(
                     window_id,
                     signal.logical_time_ms,
                     origin=origin,
                 )
-            trigger_id = payload.get("trigger_id", signal.signal_kind.value)
             snapshot = self._reducer.build_snapshot(
                 trigger_id,
                 logical_time_ms=signal.logical_time_ms,
                 windows=self._windows,
                 phase=trigger_phase,
             )
-            requirements = payload.get("data_requirements", ())
-            if requirements is None:
-                requirements = ()
-            if not isinstance(requirements, (tuple, list)) or any(
-                not isinstance(item, str) or not item for item in requirements
-            ):
-                raise ValueError("data_requirements must be a sequence of non-empty strings")
-            function_order = tuple(requirements)
-            if len(function_order) != len(set(function_order)):
-                raise ValueError("data_requirements must not contain duplicates")
-            evaluation_id = self._make_evaluation_id(signal, snapshot)
+            evaluation_id = self._make_evaluation_id(signal, snapshot, node=node)
             self._register_evaluation(evaluation_id, snapshot, function_order)
             if not function_order:
                 self._complete_evaluation(
@@ -299,21 +312,25 @@ class DeterministicEngine:
         self,
         signal: EngineSignal,
         snapshot: EngineSnapshot,
+        *,
+        node: Optional[EvaluationNode] = None,
     ) -> str:
         """Create a deterministic id unique within this engine trace."""
 
-        digest = semantic_hash(
-            {
-                "trace_id": self._trace_id,
-                "session_id": self._session_id,
-                "phase": snapshot.phase,
-                "signal_id": signal.signal_id,
-                "signal_kind": signal.signal_kind,
-                "logical_time_ms": signal.logical_time_ms,
-                "signal_seq": signal.signal_seq,
-                "snapshot_hash": snapshot.content_hash,
-            }
-        )
+        identity = {
+            "trace_id": self._trace_id,
+            "session_id": self._session_id,
+            "phase": snapshot.phase,
+            "signal_id": signal.signal_id,
+            "signal_kind": signal.signal_kind,
+            "logical_time_ms": signal.logical_time_ms,
+            "signal_seq": signal.signal_seq,
+            "snapshot_hash": snapshot.content_hash,
+        }
+        if node is not None:
+            identity["evaluation_plan_hash"] = self._evaluation_plan.content_hash
+            identity["evaluation_node_hash"] = node.content_hash
+        digest = semantic_hash(identity)
         return "evaluation:" + digest
 
     def _phase_at(self, logical_time_ms: int) -> str:
@@ -322,6 +339,35 @@ class DeterministicEngine:
         if self._session_plan is not None:
             return self._session_plan.phase_at_ms(logical_time_ms)
         return self._phase
+
+    def _resolve_evaluation(
+        self,
+        trigger_id: str,
+        payload: Mapping[str, Any],
+    ) -> Tuple[Optional[EvaluationNode], Tuple[str, ...]]:
+        """Resolve the one supported plan boundary before Engine mutation."""
+
+        if not isinstance(trigger_id, str) or not trigger_id:
+            raise ValueError("trigger_id must be a non-empty string")
+        if self._evaluation_plan is not None:
+            if "data_requirements" in payload:
+                raise ValueError(
+                    "data_requirements must come from the configured EvaluationPlan"
+                )
+            node = self._evaluation_plan.node_for_trigger(trigger_id)
+            return node, node.data_requirements
+
+        requirements = payload.get("data_requirements", ())
+        if requirements is None:
+            requirements = ()
+        if not isinstance(requirements, (tuple, list)) or any(
+            not isinstance(item, str) or not item for item in requirements
+        ):
+            raise ValueError("data_requirements must be a sequence of non-empty strings")
+        function_order = tuple(requirements)
+        if len(function_order) != len(set(function_order)):
+            raise ValueError("data_requirements must not contain duplicates")
+        return None, function_order
 
     def _register_evaluation(
         self,

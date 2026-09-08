@@ -56,6 +56,8 @@ def _engine(*, phase="UNKNOWN", session_plan=None):
 
 
 def test_session_plan_is_the_only_phase_authority_when_configured():
+    with pytest.raises(TypeError, match="must be a SessionPlan"):
+        _engine(session_plan=object())
     with pytest.raises(ValueError, match="mutually exclusive"):
         _engine(phase="AUCTION", session_plan=_plan())
 
