@@ -64,6 +64,7 @@
 - [VERIFIED] `normalize_previous_day_stats_rows` 是旧日线访问结果的薄纯边界：严格校验六位代码、保留显式零值、拒绝缺失核心字段/重复代码，并输出稳定排序的昨日统计映射；空结果经 Provider 包装后为 MISSING。
 - [VERIFIED] Calendar snapshot 的 `completion_cutoff_time` 是调用侧数据完成策略，不是日历 source fact；naive datetime、非交易日请求和超出覆盖范围均 fail closed。
 - [VERIFIED] `MinuteWindowTracker` 是独立的分钟窗口轮子：按显式 source epoch 时间和 Asia/Shanghai 分钟桶保存有界累计价格/金额点，1 分钟价格变化要求相邻分钟，2 分钟金额沿旧实现使用前两分钟内最早可用参考点；缺参考或累计值回退不伪造增量，不使用系统当前时间。
+- [VERIFIED] `SessionPlanV1` 将“是否交易日”和“交易日内属于哪个阶段”分开：`TradingCalendarSnapshot` 先确认指定日期可交易，计划再用显式 Asia/Shanghai 时区和全天连续半开区间分类；周末/节假日不再因墙钟时刻被误判为 AUCTION/INTRADAY，15:00 明确属于 POSTMARKET。
 - [VERIFIED] Q2 rolling fields `spd1m/amt2m/amt5m/vec3m/vec5m` 已进入显式 canonical contract：速度/向量为整数 basis points，金额窗口为整数 yuan；当前生产 `C/t1_v2` 负责计算，`engine_next` opening consumer 实际读取这些字段。它们是窗口事实，不是强弱或资金流结论。
 - [VERIFIED] cobra-ion 上 `TDPreviousDayStatsProvider` 已通过既有 taos 只读路径取得 2026-09-03 的 3 行 `daily_kline`；因没有历史 `available_at` 证据，`PreviousDayStatsFunction` 按规则返回 UNAVAILABLE，而不是把查询时刻冒充可用时刻。
 - [VERIFIED] TD 昨日数据没有历史 `available_at_ms` 证据时，无论首次查询时刻还是节点前预取，Runtime/Replay 均按 UNKNOWN availability 返回 UNAVAILABLE；只有具备 verified `available_at_ms <= knowledge_as_of_ms` 的结果才可进入 FrozenDataBundle。`observed_at_ms` 仅保留为审计和 submission identity。

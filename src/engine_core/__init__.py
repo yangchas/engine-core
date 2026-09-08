@@ -93,6 +93,12 @@ from .time_windows import (
     MinuteWindowTracker,
     minute_key_from_timestamp_ms,
 )
+from .session import (
+    SESSION_PLAN_CONTRACT_VERSION,
+    SessionInterval,
+    SessionPlan,
+    build_a_share_session_plan,
+)
 
 __all__ = [
     "BreadthFacts",
@@ -161,6 +167,10 @@ __all__ = [
     "MinuteWindowMetrics",
     "MinuteWindowTracker",
     "minute_key_from_timestamp_ms",
+    "SESSION_PLAN_CONTRACT_VERSION",
+    "SessionInterval",
+    "SessionPlan",
+    "build_a_share_session_plan",
     "TradingCalendarSnapshot",
     "build_calendar_snapshot",
     "parse_trade_date",

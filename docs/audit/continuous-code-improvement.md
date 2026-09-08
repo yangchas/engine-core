@@ -17,3 +17,12 @@
 - Verification: focused time/Q2 tests 22 passed; full suite 116 passed; compileall, diff-check and UTF-8/mojibake scan passed locally; byte-identical files passed 116 tests and compileall in the cobra-ion Python 3.12 temporary directory.
 - Residual risk: same-timestamp rows have no source sequence. Conflicts at the retained latest timestamp fail closed; older same-millisecond cohorts remain without a claimed causal order because this bounded wheel is not an arrival journal.
 - Next candidate: audit whether the new wheel should calculate five-minute/vector fields or only preserve producer-computed Q2 values.
+
+## 2026-09-08 04:10 - Separate trading-day authority from session phase
+
+- Scope: new pure `SessionPlanV1` wheel, boundary tests and wheel-local legacy parity evidence.
+- Why: legacy `infer_run_phase()` classifies weekends as live market phases, mixes one right-closed 15:00 boundary into otherwise half-open windows, and exposes a contradictory one-second NIGHT phase.
+- Change: required the frozen trading calendar to authorize the explicit trade date, then classified aware instants through contiguous half-open Asia/Shanghai intervals; kept producer snapshot gates outside the phase wheel.
+- Verification: focused clock/calendar/window/session tests 33 passed; full suite 124 passed; compileall, diff-check and UTF-8 scan passed locally; byte-identical implementation and fixtures passed 124 tests and compileall in the cobra-ion Python 3.12 temporary directory.
+- Residual risk: this wheel deliberately does not decide 09:20/09:24/09:25 source finalization or schedule timers; those remain separate evidence-backed contracts.
+- Next candidate: audit the remaining local-time conversion helpers and auction anchor specifications before adding any scheduler integration.
