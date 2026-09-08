@@ -3,32 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
 from typing import Dict, Mapping, Optional, Tuple
-from zoneinfo import ZoneInfo
 
+from .clock import local_datetime_ms
 from .contracts import WindowView, canonical_hash, deep_freeze
 
 
-SHANGHAI = ZoneInfo("Asia/Shanghai")
 WindowSnapshot = WindowView
 
 
-def local_time_ms(trade_date: str, hhmmss: str, tz: ZoneInfo = SHANGHAI) -> int:
-    """Convert YYYY-MM-DD and HH:MM:SS to UTC epoch milliseconds."""
+def local_time_ms(trade_date: str, hhmmss: str) -> int:
+    """Compatibility name for the shared Asia/Shanghai conversion wheel."""
 
-    day = date.fromisoformat(trade_date)
-    if len(hhmmss) != 8 or hhmmss[2] != ":" or hhmmss[5] != ":":
-        raise ValueError("hhmmss must be strict HH:MM:SS")
-    parts = hhmmss.split(":")
-    if any(len(part) != 2 or not part.isdigit() for part in parts):
-        raise ValueError("hhmmss must be strict HH:MM:SS")
-    value = datetime.combine(
-        day,
-        time(int(parts[0]), int(parts[1]), int(parts[2])),
-        tzinfo=tz,
-    )
-    return int(value.astimezone(timezone.utc).timestamp() * 1000)
+    return local_datetime_ms(trade_date, hhmmss)
 
 
 @dataclass(frozen=True)

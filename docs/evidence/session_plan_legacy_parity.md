@@ -23,5 +23,7 @@ Rules:
 - All phase intervals cover one local day without gaps or overlap.
 - Aware datetime and epoch-millisecond entry points share the same timezone
   and boundary contract.
+- Window anchors and session intervals share `parse_clock_time_ms`; only an
+  exclusive interval endpoint may use `24:00:00`.
 - The plan has no machine-clock access and is usable unchanged by LIVE,
   replay, and unit tests.

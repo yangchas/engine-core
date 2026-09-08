@@ -13,31 +13,11 @@ from typing import Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .calendar import CalendarCoverageError, TradingCalendarSnapshot, parse_trade_date
+from .clock import MILLISECONDS_PER_DAY, parse_clock_time_ms
 from .contracts import semantic_hash
 
 
 SESSION_PLAN_CONTRACT_VERSION = "SessionPlanV1"
-MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000
-
-
-def _parse_clock_ms(value: str, *, allow_day_end: bool = False) -> int:
-    """Parse strict ``HH:MM:SS`` into milliseconds since local midnight."""
-
-    if not isinstance(value, str):
-        raise TypeError("session clock value must be strict HH:MM:SS text")
-    if len(value) != 8 or value[2] != ":" or value[5] != ":":
-        raise ValueError("session clock value must be strict HH:MM:SS")
-    parts = value.split(":")
-    if any(len(part) != 2 or not part.isdigit() for part in parts):
-        raise ValueError("session clock value must be strict HH:MM:SS")
-    hour, minute, second = (int(part) for part in parts)
-    if allow_day_end and (hour, minute, second) == (24, 0, 0):
-        return MILLISECONDS_PER_DAY
-    if not 0 <= hour <= 23 or not 0 <= minute <= 59 or not 0 <= second <= 59:
-        raise ValueError("session clock value is outside one day")
-    return ((hour * 60 + minute) * 60 + second) * 1000
-
-
 @dataclass(frozen=True)
 class SessionInterval:
     """One named half-open local-time interval."""
@@ -51,8 +31,8 @@ class SessionInterval:
     def __post_init__(self) -> None:
         if not isinstance(self.phase, str) or not self.phase.strip():
             raise ValueError("session phase is required")
-        start = _parse_clock_ms(self.start_time)
-        end = _parse_clock_ms(self.end_exclusive_time, allow_day_end=True)
+        start = parse_clock_time_ms(self.start_time)
+        end = parse_clock_time_ms(self.end_exclusive_time, allow_day_end=True)
         if start >= end:
             raise ValueError("session interval must be non-empty and half-open")
         object.__setattr__(self, "phase", self.phase.strip().upper())

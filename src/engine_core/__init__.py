@@ -1,6 +1,15 @@
 """Independent deterministic market-state calculation core."""
 
-from .clock import MonotonicClock, SystemMonotonicClock, SystemWallClock, VirtualClock, WallClock
+from .clock import (
+    MILLISECONDS_PER_DAY,
+    MonotonicClock,
+    SystemMonotonicClock,
+    SystemWallClock,
+    VirtualClock,
+    WallClock,
+    local_datetime_ms,
+    parse_clock_time_ms,
+)
 from .calendar import (
     CALENDAR_CONTRACT_VERSION,
     CalendarCoverageError,
@@ -167,6 +176,9 @@ __all__ = [
     "MinuteWindowMetrics",
     "MinuteWindowTracker",
     "minute_key_from_timestamp_ms",
+    "MILLISECONDS_PER_DAY",
+    "local_datetime_ms",
+    "parse_clock_time_ms",
     "SESSION_PLAN_CONTRACT_VERSION",
     "SessionInterval",
     "SessionPlan",

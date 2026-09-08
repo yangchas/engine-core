@@ -26,3 +26,12 @@
 - Verification: focused clock/calendar/window/session tests 33 passed; full suite 124 passed; compileall, diff-check and UTF-8 scan passed locally; byte-identical implementation and fixtures passed 124 tests and compileall in the cobra-ion Python 3.12 temporary directory.
 - Residual risk: this wheel deliberately does not decide 09:20/09:24/09:25 source finalization or schedule timers; those remain separate evidence-backed contracts.
 - Next candidate: audit the remaining local-time conversion helpers and auction anchor specifications before adding any scheduler integration.
+
+## 2026-09-08 04:35 - Unify strict local clock conversion
+
+- Scope: `clock.py`, Window compatibility helper, Session intervals and clock tests.
+- Why: Window and Session parsed `HH:MM:SS` independently, creating two authorities for strict formatting, day-end handling and timezone conversion.
+- Change: centralized strict clock parsing and Asia/Shanghai local datetime conversion in pure clock functions; Window and Session now delegate to the same implementation.
+- Verification: focused clock/window/session tests 29 passed; full suite 126 passed; compileall, diff-check and UTF-8 scan passed locally; byte-identical implementation passed 126 tests and compileall in the cobra-ion Python 3.12 temporary directory.
+- Residual risk: source timestamps still carry upstream semantics documented separately; these functions only convert explicit civil-time anchors.
+- Next candidate: audit and implement the minimal once-only catch-up timer wheel without importing t1-v2 source freeze gates.
