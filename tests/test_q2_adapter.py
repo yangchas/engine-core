@@ -39,6 +39,36 @@ def test_q2_contract_keeps_verified_legacy_units_explicit():
     assert specs["am"].semantic == "current auction matched amount"
     assert specs["br"].unit == "yuan"
     assert specs["ar"].unit == "yuan"
+    assert specs["spd1m"].canonical_name == "speed_1m_bp"
+    assert specs["spd1m"].unit == "basis_point"
+    assert specs["amt2m"].canonical_name == "amount_2m_yuan"
+    assert specs["amt5m"].canonical_name == "amount_5m_yuan"
+    assert specs["vec3m"].canonical_name == "vector_3m_bp"
+    assert specs["vec5m"].canonical_name == "vector_5m_bp"
+
+
+def test_q2_adapter_preserves_verified_rolling_metrics():
+    quote = normalize_q2(
+        "000001",
+        {
+            "px": "1000",
+            "pc": "990",
+            "amt": "100000000",
+            "ts": "1788484799000",
+            "spd1m": "125",
+            "amt2m": "18000000",
+            "amt5m": "28000000",
+            "vec3m": "250",
+            "vec5m": "-120",
+        },
+    )
+    assert quote.speed_1m_bp == 125
+    assert quote.amount_2m_yuan == 18_000_000
+    assert quote.amount_5m_yuan == 28_000_000
+    assert quote.vector_3m_bp == 250
+    assert quote.vector_5m_bp == -120
+    assert quote.to_mapping()["amount_5m_yuan"] == 28_000_000
+    assert quote.to_mapping()["vector_5m_bp"] == -120
 
 
 def test_q2_adapter_reports_projection_cohort_and_missing_symbol():

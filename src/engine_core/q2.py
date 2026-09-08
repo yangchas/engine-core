@@ -53,12 +53,16 @@ Q2_FIELD_CONTRACT: Tuple[Q2FieldSpec, ...] = (
     Q2FieldSpec("br", "auction_bid_amount_yuan", "int", "yuan", "derived level-2 resting bid amount", False),
     Q2FieldSpec("ar", "auction_ask_amount_yuan", "int", "yuan", "derived level-2 resting ask amount", False),
     Q2FieldSpec("am", "auction_amount_yuan", "int", "yuan", "current auction matched amount", False),
+    Q2FieldSpec("spd1m", "speed_1m_bp", "int", "basis_point", "exact one-minute price change", False),
+    Q2FieldSpec("amt2m", "amount_2m_yuan", "int", "yuan", "cumulative amount delta within two minutes", False),
+    Q2FieldSpec("amt5m", "amount_5m_yuan", "int", "yuan", "cumulative amount delta within five minutes", False),
+    Q2FieldSpec("vec3m", "vector_3m_bp", "int", "basis_point", "exact three-minute price change", False),
+    Q2FieldSpec("vec5m", "vector_5m_bp", "int", "basis_point", "exact five-minute price change", False),
     Q2FieldSpec("mk", "market", "str", "code", "market code", False),
 )
 
 Q2_OBSERVED_OPTIONAL_FIELDS: Tuple[str, ...] = (
-    "iv", "ia", "ln", "ls", "mx", "mn", "spd1m", "amt2m", "amt5m",
-    "vec3m", "vec5m", "a20", "a24", "a25",
+    "iv", "ia", "ln", "ls", "mx", "mn", "a20", "a24", "a25",
 )
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -128,7 +132,10 @@ class Q2Quote:
     auction_bid_amount_yuan: Optional[int]
     auction_ask_amount_yuan: Optional[int]
     amount_2m_yuan: Optional[int]
+    amount_5m_yuan: Optional[int]
     speed_1m_bp: Optional[int]
+    vector_3m_bp: Optional[int]
+    vector_5m_bp: Optional[int]
     raw_fields: Mapping[str, Any]
     field_errors: Tuple[str, ...] = ()
 
@@ -152,7 +159,10 @@ class Q2Quote:
             "auction_bid_amount_yuan": self.auction_bid_amount_yuan,
             "auction_ask_amount_yuan": self.auction_ask_amount_yuan,
             "amount_2m_yuan": self.amount_2m_yuan,
+            "amount_5m_yuan": self.amount_5m_yuan,
             "speed_1m_bp": self.speed_1m_bp,
+            "vector_3m_bp": self.vector_3m_bp,
+            "vector_5m_bp": self.vector_5m_bp,
             "field_errors": self.field_errors,
         }
 
@@ -194,7 +204,10 @@ def normalize_q2(symbol: str, raw_hash: Mapping[Any, Any]) -> Q2Quote:
         auction_bid_amount_yuan=int_field("br"),
         auction_ask_amount_yuan=int_field("ar"),
         amount_2m_yuan=int_field("amt2m"),
+        amount_5m_yuan=int_field("amt5m"),
         speed_1m_bp=int_field("spd1m"),
+        vector_3m_bp=int_field("vec3m"),
+        vector_5m_bp=int_field("vec5m"),
         raw_fields=raw,
         field_errors=tuple(sorted(set(errors))),
     )
