@@ -93,16 +93,22 @@ class MarketStateReducer:
         *,
         logical_time_ms: Optional[int] = None,
         windows: Optional[WindowManager] = None,
+        phase: Optional[str] = None,
     ) -> EngineSnapshot:
-        """Freeze the current state into an immutable-by-convention snapshot."""
+        """Freeze current observations with an optional trigger-time phase.
+
+        A supplied phase describes the snapshot's logical instant.  It does
+        not rewrite the phase attached to the most recent market observation.
+        """
 
         logical = self.state.logical_time_ms if logical_time_ms is None else logical_time_ms
+        snapshot_phase = self.state.phase if phase is None else phase
         window_views = windows.views() if windows is not None else {}
         payload = {
             "trigger_id": trigger_id,
             "logical_time_ms": logical,
             "session_id": self.state.session_id,
-            "phase": self.state.phase,
+            "phase": snapshot_phase,
             "revision": self.state.revision,
             "source": self.state.source_observation_metadata,
             "symbols": self.state.symbol_states,
@@ -118,7 +124,7 @@ class MarketStateReducer:
             trigger_id=trigger_id,
             logical_time_ms=logical,
             session_id=self.state.session_id,
-            phase=self.state.phase,
+            phase=snapshot_phase,
             market_state_revision=self.state.revision,
             source_observation_metadata=dict(self.state.source_observation_metadata),
             symbol_states={

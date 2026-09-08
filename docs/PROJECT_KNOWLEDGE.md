@@ -65,6 +65,7 @@
 - [VERIFIED] Calendar snapshot 的 `completion_cutoff_time` 是调用侧数据完成策略，不是日历 source fact；naive datetime、非交易日请求和超出覆盖范围均 fail closed。
 - [VERIFIED] `MinuteWindowTracker` 是独立的分钟窗口轮子：按显式 source epoch 时间和 Asia/Shanghai 分钟桶保存有界累计价格/金额点，1 分钟价格变化要求相邻分钟，2 分钟金额沿旧实现使用前两分钟内最早可用参考点；缺参考或累计值回退不伪造增量，不使用系统当前时间。
 - [VERIFIED] `SessionPlanV1` 将“是否交易日”和“交易日内属于哪个阶段”分开：`TradingCalendarSnapshot` 先确认指定日期可交易，计划再用显式 Asia/Shanghai 时区和全天连续半开区间分类；周末/节假日不再因墙钟时刻被误判为 AUCTION/INTRADAY，15:00 明确属于 POSTMARKET。
+- [VERIFIED] Engine 可选择 `SessionPlanV1` 作为唯一 phase authority：MARKET_UPDATE 按自身 logical time 记录观察阶段，TIMER/PULSE/RECOVERY 按触发 logical time 冻结阶段；09:24 行情后即使没有新行情，09:30 Timer 仍产生 INTRADAY Snapshot，且不会篡改上一行情观察的 AUCTION phase。配置 SessionPlan 时禁止同时注入非 UNKNOWN 静态 phase，跨计划交易日的信号 fail closed。
 - [VERIFIED] `SessionTimerV1` 是无时钟、无持久化的到期计算轮子：显式区分 business scheduled time 与 actual fired time，通过调用方提供的 fired identity 保证一次性，并用 NORMAL/RECOVERY_CATCHUP 标记正常跨越与重启补发；t1-v2 的 09:20:03/09:24:10/09:25:06 source freeze gate 不属于该 Timer 合同。
 - [VERIFIED] `EvaluationPlanV1` 只以普通不可变数据描述 trigger 对应的 DataFunction、FactFunction 和 Strategy 名称及固定顺序；它不执行 callable、不包含条件跳转、DAG、retry、fallback 或并发编排。
 - [VERIFIED] Q2 rolling fields `spd1m/amt2m/amt5m/vec3m/vec5m` 已进入显式 canonical contract：速度/向量为整数 basis points，金额窗口为整数 yuan；当前生产 `C/t1_v2` 负责计算，`engine_next` opening consumer 实际读取这些字段。它们是窗口事实，不是强弱或资金流结论。

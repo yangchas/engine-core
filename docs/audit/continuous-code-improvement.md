@@ -53,3 +53,12 @@
 - Verification: focused Evaluation/Timer/Session tests 19 passed; full suite 137 passed; compileall, diff-check and UTF-8 scan passed locally; byte-identical implementation passed 137 tests and compileall in the cobra-ion Python 3.12 temporary directory.
 - Residual risk: Engine does not consume EvaluationPlan yet; integration should happen only after a real node can preserve existing Wheel/Engine parity.
 - Next candidate: audit minimal Engine composition for one plan node without adding a generic fact/strategy plugin platform.
+
+## 2026-09-08 06:10 - Bind Engine phase to SessionPlan logical time
+
+- Scope: optional `SessionPlanV1` phase authority in `DeterministicEngine`, trigger-time snapshot phase override, focused boundary tests and legacy comparison evidence.
+- Why: Engine previously stored one constructor phase forever, so a 09:30 Timer following the last 09:24 market update could incorrectly freeze another auction-phase snapshot.
+- Change: made SessionPlan and an explicit static phase mutually exclusive; derived market-observation and trigger-snapshot phases from each signal logical time; validated trigger phase before any window closure; bound evaluation identity to the frozen snapshot phase; preserved the static phase compatibility path without connecting EvaluationPlan or adding scheduler behavior.
+- Verification: focused Engine/Session tests 22 passed; full local suite 142 passed; compileall and diff-check passed; byte-identical files passed the same 142-test suite and compileall in the cobra-ion Python 3.12 temporary verification directory.
+- Residual risk: CurrentMarketState retains the phase of its latest market observation until another market update; this is intentional, while trigger-time phase belongs to EngineSnapshot. SessionPlan still does not decide source publication/finalization gates.
+- Next candidate: audit the smallest possible EvaluationPlan-to-Engine boundary using one existing trigger, without adding registries, dynamic dispatch, retry, fallback or a generic plugin platform.

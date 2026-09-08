@@ -19,6 +19,7 @@ from .contracts import (
     semantic_hash,
 )
 from .state import MarketStateReducer
+from .session import SessionPlan
 from .windows import WindowManager
 
 
@@ -69,6 +70,7 @@ class DeterministicEngine:
         *,
         session_id: str = "",
         phase: str = "UNKNOWN",
+        session_plan: Optional[SessionPlan] = None,
         result_history_limit: int = 256,
         signal_id_cache_limit: int = 4096,
         evaluation_registration_limit: int = 4096,
@@ -82,11 +84,14 @@ class DeterministicEngine:
             raise ValueError("evaluation_registration_limit must be positive")
         if terminal_evaluation_limit <= 0:
             raise ValueError("terminal_evaluation_limit must be positive")
+        if session_plan is not None and phase != "UNKNOWN":
+            raise ValueError("session_plan and explicit phase are mutually exclusive")
         self._reducer = reducer
         self._windows = windows
         self._strategy = strategy
         self._session_id = session_id
         self._phase = phase
+        self._session_plan = session_plan
         self._trace_id = session_id or "engine-trace"
         self._queue: List[Tuple[Tuple[int, int, int, str], EngineSignal]] = []
         # This is intentionally an in-memory bounded idempotency horizon.  A
@@ -182,7 +187,7 @@ class DeterministicEngine:
                 projection,
                 logical_time_ms=signal.logical_time_ms,
                 session_id=self._session_id,
-                phase=self._phase,
+                phase=self._phase_at(signal.logical_time_ms),
             )
             self._windows.observe(
                 logical_time_ms=signal.logical_time_ms,
@@ -220,6 +225,10 @@ class DeterministicEngine:
         ):
             if self._is_before_market_frontier(signal):
                 return
+            # Resolve and validate the trigger phase before closing windows or
+            # mutating any other Engine-owned state.  A cross-date SessionPlan
+            # failure must be fail-closed, not fail-after-partial-application.
+            trigger_phase = self._phase_at(signal.logical_time_ms)
             payload = signal.payload if isinstance(signal.payload, Mapping) else {}
             origin = (
                 "RECOVERY_CATCHUP"
@@ -237,6 +246,7 @@ class DeterministicEngine:
                 trigger_id,
                 logical_time_ms=signal.logical_time_ms,
                 windows=self._windows,
+                phase=trigger_phase,
             )
             requirements = payload.get("data_requirements", ())
             if requirements is None:
@@ -296,7 +306,7 @@ class DeterministicEngine:
             {
                 "trace_id": self._trace_id,
                 "session_id": self._session_id,
-                "phase": self._phase,
+                "phase": snapshot.phase,
                 "signal_id": signal.signal_id,
                 "signal_kind": signal.signal_kind,
                 "logical_time_ms": signal.logical_time_ms,
@@ -305,6 +315,13 @@ class DeterministicEngine:
             }
         )
         return "evaluation:" + digest
+
+    def _phase_at(self, logical_time_ms: int) -> str:
+        """Resolve one signal's phase from the configured single authority."""
+
+        if self._session_plan is not None:
+            return self._session_plan.phase_at_ms(logical_time_ms)
+        return self._phase
 
     def _register_evaluation(
         self,
