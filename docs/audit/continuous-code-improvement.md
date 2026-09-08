@@ -35,3 +35,12 @@
 - Verification: focused clock/window/session tests 29 passed; full suite 126 passed; compileall, diff-check and UTF-8 scan passed locally; byte-identical implementation passed 126 tests and compileall in the cobra-ion Python 3.12 temporary directory.
 - Residual risk: source timestamps still carry upstream semantics documented separately; these functions only convert explicit civil-time anchors.
 - Next candidate: audit and implement the minimal once-only catch-up timer wheel without importing t1-v2 source freeze gates.
+
+## 2026-09-08 05:00 - Add pure once-only catch-up timer calculations
+
+- Scope: `SessionTimerV1`, timer boundary tests and wheel-local legacy parity evidence.
+- Why: legacy scheduled events only match the current minute and remember the immediately previous token, so missed nodes and restart duplicates have no general deterministic contract.
+- Change: separated scheduled/fired time, accepted an explicit fired-id set, made the lower frontier inclusive for crash safety and required callers to label recovery catch-up; kept C++ source-publication gates outside the Engine timer model.
+- Verification: focused timer/session/clock tests 18 passed; full suite 132 passed; compileall, diff-check and UTF-8 scan passed locally; byte-identical implementation passed 132 tests and compileall in the cobra-ion Python 3.12 temporary directory.
+- Residual risk: without a future checkpoint the caller cannot durably preserve fired identities; this pure wheel intentionally makes no persistence claim.
+- Next candidate: audit whether the first EvaluationPlan can now be expressed as plain data over verified Session/Timer/Data/Fact wheels without adding workflow behavior.
