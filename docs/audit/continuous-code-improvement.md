@@ -44,3 +44,12 @@
 - Verification: focused timer/session/clock tests 18 passed; full suite 132 passed; compileall, diff-check and UTF-8 scan passed locally; byte-identical implementation passed 132 tests and compileall in the cobra-ion Python 3.12 temporary directory.
 - Residual risk: without a future checkpoint the caller cannot durably preserve fired identities; this pure wheel intentionally makes no persistence claim.
 - Next candidate: audit whether the first EvaluationPlan can now be expressed as plain data over verified Session/Timer/Data/Fact wheels without adding workflow behavior.
+
+## 2026-09-08 05:25 - Freeze EvaluationPlan as plain data
+
+- Scope: immutable `EvaluationPlanV1`, contract tests and boundary evidence.
+- Why: trigger payloads currently carry ad-hoc data requirement names while the frozen architecture requires one explicit place to state what a node evaluates.
+- Change: added exact trigger lookup plus ordered Data/Fact/Strategy identities and versioned semantic hashes; explicitly omitted execution, conditions, DAGs, retries, fallback and callable registration.
+- Verification: focused Evaluation/Timer/Session tests 19 passed; full suite 137 passed; compileall, diff-check and UTF-8 scan passed locally; byte-identical implementation passed 137 tests and compileall in the cobra-ion Python 3.12 temporary directory.
+- Residual risk: Engine does not consume EvaluationPlan yet; integration should happen only after a real node can preserve existing Wheel/Engine parity.
+- Next candidate: audit minimal Engine composition for one plan node without adding a generic fact/strategy plugin platform.

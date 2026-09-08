@@ -114,6 +114,11 @@ from .timers import (
     TimerSpec,
     due_timer_firings,
 )
+from .evaluation import (
+    EVALUATION_PLAN_CONTRACT_VERSION,
+    EvaluationNode,
+    EvaluationPlan,
+)
 
 __all__ = [
     "BreadthFacts",
@@ -193,6 +198,9 @@ __all__ = [
     "TimerFiring",
     "TimerSpec",
     "due_timer_firings",
+    "EVALUATION_PLAN_CONTRACT_VERSION",
+    "EvaluationNode",
+    "EvaluationPlan",
     "TradingCalendarSnapshot",
     "build_calendar_snapshot",
     "parse_trade_date",
