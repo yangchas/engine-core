@@ -67,6 +67,10 @@ def observe(client, trade_date, observed_at, stale_after_ms):
                            for field in tracked_fields}
     market_counts = dict(sorted(Counter(str(row.get("mk", "")) for row in raw_hashes).items()))
     phase_counts = dict(sorted(Counter(str(row.get("ph", "")) for row in raw_hashes).items()))
+    value_counts = {
+        field: dict(sorted(Counter(str(row.get(field, "")) for row in raw_hashes).items()))
+        for field in ("ls", "ph", "mk")
+    }
     error_counts = Counter(error for errors in (q.field_errors for q in projection.quotes.values())
                            for error in errors)
     source_lag_seconds = None
@@ -99,6 +103,7 @@ def observe(client, trade_date, observed_at, stale_after_ms):
         "raw_field_explicit_zero_counts": field_explicit_zero,
         "raw_market_counts": market_counts,
         "raw_phase_counts": phase_counts,
+        "raw_value_counts": value_counts,
         "limitations": ["non-atomic Redis observation", "volume unit not independently verified",
                         "not historical replay or live deployment acceptance"],
         "side_effect_proof": "only smembers/hgetall exposed; TD/claim/notification/SMTP not assembled",

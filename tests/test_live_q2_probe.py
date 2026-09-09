@@ -43,6 +43,7 @@ def test_real_zero_preserved_and_required_missing_reported():
     assert projection.quotes["000001"].amount_yuan == 0
     assert result["raw_field_presence_counts"]["amt"] == 1
     assert result["raw_field_explicit_zero_counts"]["amt"] == 1
+    assert result["raw_value_counts"]["ls"] == {"": 1}
     assert result["same_observation_engine_deterministic"]
     assert capture.reads[-1]["value"]["amt"] == "0"
     del row["amt"]
