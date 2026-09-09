@@ -75,6 +75,7 @@ from .facts import (
 )
 from .probe import ProbeStrategy
 from .auction_shadow import AuctionFactShadow, build_auction_fact_shadow
+from .auction import normalize_auction_change_ratio
 from .replay import (
     Q2FrameReplaySource,
     Q2FrameV1,
@@ -158,6 +159,7 @@ __all__ = [
     "ProbeStrategy",
     "AuctionFactShadow",
     "build_auction_fact_shadow",
+    "normalize_auction_change_ratio",
     "Q2FrameReplaySource",
     "Q2FrameV1",
     "TDEventSlice",

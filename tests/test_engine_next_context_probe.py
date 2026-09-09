@@ -7,6 +7,7 @@ from examples.run_engine_next_context_probe import (
     _parse_now,
     _strict_symbols,
 )
+from engine_core import normalize_auction_change_ratio
 
 
 def test_context_probe_normalizes_and_sorts_symbols():
@@ -104,3 +105,16 @@ def test_guard_redis_rejects_unclassified_client_method():
     guarded = GuardRedis(FakeRedis())
     with pytest.raises(RuntimeError, match="unclassified Redis method"):
         guarded.custom_mutation()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    ((0.0997, 0.0997), (9.97, 0.0997), (997, 0.0997), (-9.97, -0.0997)),
+)
+def test_auction_ratio_wheel_preserves_legacy_formula_for_valid_values(raw, expected):
+    assert normalize_auction_change_ratio(raw) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("raw", (None, "", "bad", True, float("nan"), float("inf")))
+def test_auction_ratio_wheel_keeps_missing_or_invalid_as_unknown(raw):
+    assert normalize_auction_change_ratio(raw) is None
