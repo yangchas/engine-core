@@ -30,9 +30,9 @@ class FakeRedis:
 def _redis_client():
     hashes = {}
     for tag, ts, amount, bid, ask in (
-        ("0920", 1000, 100, 10, 20),
-        ("0924", 2000, 200, 30, 40),
-        ("0925", 3000, 300, 50, 60),
+        ("0920", 1788916800000, 100, 10, 20),
+        ("0924", 1788917040000, 200, 30, 40),
+        ("0925", 1788917100000, 300, 50, 60),
     ):
         hashes[f"market:auction:20260909:{tag}"] = {
             "meta": json.dumps({"tag": tag, "ts": ts, "n": 1}),
@@ -80,6 +80,7 @@ def test_real_projection_compares_shared_fields_and_marks_missing_fields():
         "partial_comparable": 1,
         "not_comparable": 0,
         "mismatch": 0,
+        "timestamp_mismatch": 0,
     }
     by_tag = {item["tag"]: item for item in result["comparisons"]}
     assert by_tag["0920"]["status"] == "MATCH"

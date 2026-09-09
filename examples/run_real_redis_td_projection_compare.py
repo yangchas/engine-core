@@ -15,6 +15,7 @@ import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from engine_core import canonical_hash
 
@@ -39,6 +40,17 @@ def _strict_symbol(value: str) -> str:
 
 def _compact_date(value: str) -> str:
     return _strict_date(value).replace("-", "")
+
+
+def _epoch_ms(value: Any) -> int | None:
+    if isinstance(value, datetime):
+        aware = value if value.tzinfo is not None and value.utcoffset() is not None else value.replace(
+            tzinfo=ZoneInfo("Asia/Shanghai")
+        )
+        return int(aware.astimezone(timezone.utc).timestamp() * 1000)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value)
+    return None
 
 
 def _parse_json(value: Any, *, field: str) -> Any:
@@ -105,6 +117,7 @@ def _td_map(rows: Sequence[Sequence[Any]]) -> dict[tuple[str, str], dict[str, An
             raise ValueError(f"duplicate TD row for {key[0]} {key[1]}")
         result[key] = {
             "source_record_time": str(ts),
+            "source_record_time_ms": _epoch_ms(ts),
             "px_milli": px,
             "match_amt_yuan": amount,
             "rest_bid_amt_yuan": bid,
@@ -143,7 +156,12 @@ def compare_projections(
             td_row = td.get((symbol, tag))
             top_row = top.get((symbol, tag))
             if td_row is None:
-                comparisons.append({"symbol": symbol, "tag": tag, "status": "TD_MISSING"})
+                comparisons.append({
+                    "symbol": symbol,
+                    "tag": tag,
+                    "status": "TD_MISSING",
+                    "timestamp_status": "NOT_COMPARABLE",
+                })
                 continue
             redis_row: Mapping[str, Any] | None
             redis_source: str
@@ -167,6 +185,14 @@ def compare_projections(
                 redis_row = None
                 redis_source = "unavailable"
                 redis_fields = {}
+            redis_meta = redis_data["snapshots"].get(tag, {}).get("meta")
+            redis_meta_ts = redis_meta.get("ts") if isinstance(redis_meta, Mapping) else None
+            td_time_ms = td_row.get("source_record_time_ms")
+            redis_time_ms = _epoch_ms(redis_meta_ts)
+            if redis_time_ms is None or td_time_ms is None:
+                timestamp_status = "NOT_COMPARABLE"
+            else:
+                timestamp_status = "MATCH" if redis_time_ms == td_time_ms else "MISMATCH"
             fields: dict[str, Any] = {}
             for field, td_field in (
                 ("match_amt_yuan", "match_amt_yuan"),
@@ -184,7 +210,7 @@ def compare_projections(
                         "td": td_value,
                     }
             statuses = [item["status"] for item in fields.values()]
-            if "MISMATCH" in statuses:
+            if timestamp_status == "MISMATCH" or "MISMATCH" in statuses:
                 status = "MISMATCH"
             elif "MATCH" not in statuses:
                 status = "NOT_COMPARABLE"
@@ -198,6 +224,9 @@ def compare_projections(
                 "redis_source": redis_source,
                 "td_source": "td:market_data1.auction_snapshot_v2",
                 "td_source_record_time": td_row["source_record_time"],
+                "redis_snapshot_time_ms": redis_time_ms,
+                "td_source_record_time_ms": td_time_ms,
+                "timestamp_status": timestamp_status,
                 "redis_row": redis_row,
                 "td_row": td_row,
                 "fields": fields,
@@ -208,6 +237,7 @@ def compare_projections(
         "partial_comparable": sum(item["status"] == "PARTIAL_COMPARABLE" for item in comparisons),
         "not_comparable": sum(item["status"] in {"NOT_COMPARABLE", "TD_MISSING"} for item in comparisons),
         "mismatch": sum(item["status"] == "MISMATCH" for item in comparisons),
+        "timestamp_mismatch": sum(item["timestamp_status"] == "MISMATCH" for item in comparisons),
     }
     payload = {
         "comparison_contract": "RedisTDSharedAuctionFieldsV1",
