@@ -42,3 +42,26 @@ def test_guard_redis_blocks_mutation_without_touching_reads():
     with pytest.raises(RuntimeError):
         guarded.set("k", "v")
     assert guarded.writes == ["set"]
+
+
+def test_guard_redis_blocks_pipeline_mutation():
+    class FakePipeline:
+        def get(self, key):
+            return self
+
+        def execute(self):
+            return ["value"]
+
+        def set(self, *args, **kwargs):  # pragma: no cover - must be blocked
+            raise AssertionError("underlying pipeline write must not run")
+
+    class FakeRedis:
+        def pipeline(self, *args, **kwargs):
+            return FakePipeline()
+
+    guarded = GuardRedis(FakeRedis())
+    pipeline = guarded.pipeline()
+    assert pipeline.get("k").execute() == ["value"]
+    with pytest.raises(RuntimeError):
+        pipeline.set("k", "v")
+    assert guarded.writes == ["pipeline.set"]

@@ -42,16 +42,51 @@ WRITE_METHODS = frozenset(
         "publish",
     }
 )
+PIPELINE_WRITE_COMMANDS = frozenset(item.upper() for item in WRITE_METHODS)
+
+
+class GuardPipeline:
+    """Guard a redis-py pipeline, including low-level execute_command calls."""
+
+    def __init__(self, inner: Any, parent: "GuardRedis") -> None:
+        self._inner = inner
+        self._parent = parent
+
+    def __getattr__(self, name: str) -> Any:
+        if name in WRITE_METHODS:
+            return self._blocked(name)
+        if name == "execute_command":
+            return self._execute_command
+        return getattr(self._inner, name)
+
+    def _blocked(self, name: str):
+        def blocked(*args: Any, **kwargs: Any) -> None:
+            self._parent.writes.append("pipeline." + name)
+            raise RuntimeError("read-only probe blocked Redis pipeline write: " + name)
+
+        return blocked
+
+    def _execute_command(self, command: Any, *args: Any, **kwargs: Any) -> Any:
+        command_name = str(command.decode() if isinstance(command, bytes) else command).upper()
+        if command_name in PIPELINE_WRITE_COMMANDS:
+            self._parent.writes.append("pipeline." + command_name.lower())
+            raise RuntimeError("read-only probe blocked Redis pipeline write: " + command_name)
+        return self._inner.execute_command(command, *args, **kwargs)
 
 
 class GuardRedis:
-    """Proxy a real Redis client and fail closed on mutation methods."""
+    """Proxy a real Redis client and fail closed on direct and pipeline writes."""
 
     def __init__(self, inner: Any) -> None:
         self._inner = inner
         self.writes: list[str] = []
 
     def __getattr__(self, name: str) -> Any:
+        if name == "pipeline":
+            def pipeline(*args: Any, **kwargs: Any) -> GuardPipeline:
+                return GuardPipeline(self._inner.pipeline(*args, **kwargs), self)
+
+            return pipeline
         if name in WRITE_METHODS:
             def blocked(*args: Any, **kwargs: Any) -> None:
                 self.writes.append(name)
