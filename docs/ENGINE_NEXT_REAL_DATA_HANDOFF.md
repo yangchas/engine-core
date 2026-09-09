@@ -19,7 +19,7 @@
 
 独立仓库当前分支：`codex/feature-session-engine-integration`。
 
-当前已验证 commit：`3fc07bd77d2a361bbd269978b4ee45040497b308`，已完成 EvaluationPlan 与 deterministic engine 集成、真实数据探针的时间权威分级，共有 154 项默认离线测试通过。该 commit 已部署到 cobra-ion 的隔离验证目录 `/home/exedev/validation/engine-core-3fc07bd` 并以 Python 3.12.3 运行同一套 154 项测试；它没有部署为生产服务，也不接管 Rabbit、t1-v2、TD/Redis 写入或正式 effect。
+当前已验证 commit：`db2cd56b20a37ec120c6a5ee3f639275f082af54`。在既有 Engine/Data/Replay 合同之上，已明确默认测试与在线探针边界，并补充 SystemClock 及真实 BaoStock calendar fixture 的当日、上一交易日和节假日行为测试，共有 156 项默认离线测试通过。该 commit 已部署到 cobra-ion 隔离目录 `/home/exedev/validation/engine-core-db2cd56`，以 Python 3.12.3 运行同一套 156 项测试；它没有部署为生产服务，也不接管 Rabbit、t1-v2、TD/Redis 写入或正式 effect。
 
 证据：
 

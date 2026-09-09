@@ -12,6 +12,14 @@ All server actions were read-only or isolated validation actions. No Rabbit cons
 - production t1-v2 commit: `6fb3164baab00d840886da5f056587ec32f3d86a`
 - Linux runtime: Python 3.12.3
 
+Post-audit verification addendum:
+
+- final audited engine_core commit: `db2cd56b20a37ec120c6a5ee3f639275f082af54`
+- final tracked archive SHA-256: `aee473ba8aa7f95d0368576c7621ef874524e25b1a0cc97ea6052a48c4dd0104`
+- isolated Linux path: `/home/exedev/validation/engine-core-db2cd56`
+- identical local/Linux default suite: 156 passed
+- the two added tests cover production clock adapters and real BaoStock calendar-fixture answers; they do not add online-provider claims
+
 ## What the 154 engine_core tests really are
 
 The default suite is an offline deterministic contract suite. It contains pure unit tests, state-machine tests, and tests driven by captured production fixtures. It does not open live Redis, TD, Rabbit, BaoStock, Kaipan, Wencai, or THS connections.
