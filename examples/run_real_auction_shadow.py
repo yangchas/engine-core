@@ -301,7 +301,7 @@ def main() -> int:
     result["side_effect_boundary"] = "TD SELECT only; no Redis/TD write, Rabbit, repair, notification or strategy effect"
     with args.output.open("x", encoding="utf-8") as output:
         json.dump(result, output, ensure_ascii=False, sort_keys=True, indent=2, default=str)
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True, default=str))
     return 0
 
 
