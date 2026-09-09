@@ -115,16 +115,8 @@ trigger 与 writer 的同批因果
 
 这些保持 `UNKNOWN`，不使用 TD 或 Redis projection 反推。
 
-## Core verification identity
+## 验证方式
 
-本证据随 engine_core commit `57f25293cf74c90cbb20cb4593ca00e8bfedc89b` 固化。
-
-```text
-archive SHA-256 = b889f80c4c79bff26966c53a16130c2c3dd9fd9564d587ee74298e798c669536
-remote isolated path = /home/exedev/validation/engine-core-57f2529
-server Python = 3.12
-pytest = 168 passed in 1.02s
-compileall = PASS
-```
-
-远端验证使用归档副本，不覆盖旧验证目录，不触碰生产服务或生产数据。
+每个候选 commit 均以不可变归档复制到 cobra-ion 的独立验证目录，再使用
+服务器 Python 3.12 执行完整 pytest 和 compileall。归档 SHA、commit、测试结果
+和验证目录由执行记录保留；验证副本不覆盖旧目录，不触碰生产服务或生产数据。
