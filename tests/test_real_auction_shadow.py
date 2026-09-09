@@ -62,3 +62,23 @@ def test_real_td_rows_reject_mismatched_symbol_and_date():
     rows[0] = (*rows[0][:8], "20260908", rows[0][9])
     with pytest.raises(ValueError, match="trade_date"):
         MODULE.build_shadow_from_rows(rows, trade_date="2026-09-09", symbol="600519")
+
+
+def test_shadow_source_metadata_and_refs_are_explicit_not_assumed_td():
+    result = MODULE.build_shadow_from_rows(
+        _rows(),
+        trade_date="2026-09-09",
+        symbol="600519",
+        source_table="redis:market:auction",
+        source_semantics="Redis top projection; no full-universe authority",
+        evidence_ref_prefix="redis://market:auction",
+    )
+
+    assert result["source_table"] == "redis:market:auction"
+    assert result["source_semantics"].startswith("Redis top projection")
+    assert all(
+        ref.startswith("redis://market:auction/")
+        for ref in result["shadow"]["evidence_refs"]
+        if ref.startswith("redis://")
+    )
+    assert not any(ref.startswith("td://") for ref in result["shadow"]["evidence_refs"])

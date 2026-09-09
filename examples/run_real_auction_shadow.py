@@ -99,6 +99,9 @@ def build_shadow_from_rows(
     trade_date: str,
     symbol: str,
     timezone_name: str = "Asia/Shanghai",
+    source_table: str = "market_data1.auction_snapshot_v2",
+    source_semantics: str = "TD projection rows; no Rabbit arrival or batch ordering",
+    evidence_ref_prefix: str = "td://market_data1/auction_snapshot_v2",
 ) -> dict[str, Any]:
     """Build adjacent 0920→0924 and 0924→0925 facts from TD projection rows.
 
@@ -153,7 +156,7 @@ def build_shadow_from_rows(
             phase="AUCTION",
             market_state_revision=1,
             source_observation_metadata={
-                "source_table": "market_data1.auction_snapshot_v2",
+                "source_table": source_table,
                 "business_anchor": content["trigger_id"],
                 "business_anchor_time_ms": business_anchor_time_ms,
                 "source_record_time_ms": source_record_time_ms,
@@ -167,7 +170,7 @@ def build_shadow_from_rows(
             completeness="READY",
             content_hash=semantic_hash(content),
             evidence_refs=(
-                f"td://market_data1/auction_snapshot_v2/{trade_date}/{symbol}/{tag}",
+                f"{evidence_ref_prefix}/{trade_date}/{symbol}/{tag}",
             ),
         )
 
@@ -201,8 +204,8 @@ def build_shadow_from_rows(
     return {
         "trade_date": trade_date,
         "symbol": symbol,
-        "source_table": "market_data1.auction_snapshot_v2",
-        "source_semantics": "TD projection rows; no Rabbit arrival or batch ordering",
+        "source_table": source_table,
+        "source_semantics": source_semantics,
         "anchors": {
             tag: {
                 "business_anchor": f"AUCTION_{tag}",
