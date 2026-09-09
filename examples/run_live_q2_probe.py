@@ -1,9 +1,11 @@
 """Single read-only Q2 observation; not a historical cutoff reconstruction."""
 
 import argparse
+import hashlib
 import json
 import os
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -53,6 +55,9 @@ def observe(client, trade_date, observed_at, stale_after_ms):
         trade_date, observed_at, freshness_policy=FreshnessPolicy(stale_after_ms=stale_after_ms))
     now = int(observed_at.timestamp() * 1000)
     first, second = run_engine(projection, now), run_engine(projection, now)
+    input_bytes = json.dumps(capture.reads, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":")).encode("utf-8")
+    read_counts = Counter(item["operation"] for item in capture.reads)
     return {
         "trade_date": trade_date, "observed_at": observed_at.isoformat(),
         "status": projection.status.value, "consistency": projection.consistency_status,
@@ -65,7 +70,9 @@ def observe(client, trade_date, observed_at, stale_after_ms):
         "projection_hash": projection.content_hash,
         "engine_run1": first, "engine_run2": second,
         "same_observation_engine_deterministic": first == second,
-        "read_operations": capture.reads,
+        "input_canonical_sha256": hashlib.sha256(input_bytes).hexdigest(),
+        "read_operation_counts": dict(sorted(read_counts.items())),
+        "read_only_key_count": len(capture.reads),
         "limitations": ["non-atomic Redis observation", "volume unit not independently verified",
                         "not historical replay or live deployment acceptance"],
         "side_effect_proof": "only smembers/hgetall exposed; TD/claim/notification/SMTP not assembled",
@@ -92,7 +99,7 @@ def main():
         result["read_completed_at"] = datetime.now(timezone.utc).isoformat()
         with args.output.open("x", encoding="utf-8") as output:
             json.dump(result, output, ensure_ascii=False, sort_keys=True, indent=2)
-        print(json.dumps({k: v for k, v in result.items() if k != "read_operations"}, ensure_ascii=False))
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     finally:
         client.close()
 

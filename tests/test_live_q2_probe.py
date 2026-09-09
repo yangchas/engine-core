@@ -29,15 +29,19 @@ def test_empty_universe_is_not_live_coverage_pass():
     assert result["row_coverage"] == 0
     assert result["oldest_source_time_ms"] is None
     assert result["same_observation_engine_deterministic"]
-    assert {r["operation"] for r in result["read_operations"]} == {"smembers"}
+    assert result["read_operation_counts"] == {"smembers": 2}
 
 
 def test_real_zero_preserved_and_required_missing_reported():
     row = {"px": "1000", "pc": "1000", "amt": "0", "ts": str(int(NOW.timestamp()*1000))}
+    capture = probe.ReadOnlyCapture(ReadClient(("000001",), row))
+    projection = probe.RedisQ2ProjectionAdapter(capture).read("2026-09-09", NOW,
+        freshness_policy=probe.FreshnessPolicy(stale_after_ms=60000))
     result = probe.observe(ReadClient(("000001",), row), "2026-09-09", NOW, 60000)
     assert not result["field_errors"]
+    assert projection.quotes["000001"].amount_yuan == 0
     assert result["same_observation_engine_deterministic"]
-    assert result["read_operations"][-1]["value"]["amt"] == "0"
+    assert capture.reads[-1]["value"]["amt"] == "0"
     del row["amt"]
     missing = probe.observe(ReadClient(("000001",), row), "2026-09-09", NOW, 60000)
     assert missing["field_errors"]["000001"]
