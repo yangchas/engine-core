@@ -9,6 +9,7 @@
 - [OBSERVED] 2026-09-04 读取 `q2:active:20260904` 时覆盖完整；较早的 `q2:active:20260903` 中大多数记录的 source `ts` 已跨到 2026-09-04，active cohort 不能视为不可变历史快照。
 - [OBSERVED] Q2 `ts` 与 cobra-ion 上同一时段 `stock_tick_v2.ts` 对齐，当前 canonical 名称为 `source_record_time_ms`；可以用于 freshness 和 trade-date sanity，但不能宣称为交易所逐笔时间或 Rabbit arrival time。上游供应商对该时间的更细定义仍 UNKNOWN。
 - [VERIFIED] `C/t1_v2` producer 维护 `amt` 为累计元、`vol` 为累计手（board lots），`amt2m/amt5m` 为累计金额差；Redis/TD 写入保持这些整数单位。旧注释中的 shares 表述不作为新契约依据。
+- [VERIFIED] 2026-09-09 真实 Q2 量纲交叉验证进一步关闭 `vol` 单位：`000001/300750/600519` 的 `amt/(vol*100)` 与当前价格比约为 `1.0015/1.0005/1.0036`，若按 shares 解释则约为当前价格 100 倍。该结论不自动扩展到未进入当前 Wheel 的 `iv`。
 - [VERIFIED] cobra-ion 当前 `C/t1_v2` 竞价计算将 `br/ar` 定义为一级价格×二档手数换算的元金额，`am` 为竞价成交金额；它们是派生盘口/成交代理，不是真实净流入。
 - [OBSERVED] Q2 producer 写入字段包括 `px/pc/amt/vol/iv/ia/ln/ts/ph/ls/mx/mn/spd1m/amt2m/amt5m/vec3m/vec5m` 以及竞价字段 `a20/a24/a25/am/br/ar` 和 `mk`；只有当前 Wheel 使用的核心字段才冻结到 canonical model。
 
@@ -73,6 +74,14 @@
 - [VERIFIED] cobra-ion 上 `TDPreviousDayStatsProvider` 已通过既有 taos 只读路径取得 2026-09-03 的 3 行 `daily_kline`；因没有历史 `available_at` 证据，`PreviousDayStatsFunction` 按规则返回 UNAVAILABLE，而不是把查询时刻冒充可用时刻。
 - [VERIFIED] TD 昨日数据没有历史 `available_at_ms` 证据时，无论首次查询时刻还是节点前预取，Runtime/Replay 均按 UNKNOWN availability 返回 UNAVAILABLE；只有具备 verified `available_at_ms <= knowledge_as_of_ms` 的结果才可进入 FrozenDataBundle。`observed_at_ms` 仅保留为审计和 submission identity。
 - [VERIFIED] cobra-ion live Q2 + TD shadow path completed without writes: Q2 5217/5217 coverage with 10 stale symbols, TD previous-day result UNAVAILABLE due unknown availability, FrozenDataBundle completeness 0.0, SegmentFrame PARTIAL with price/pressure READY, and Probe trace preserved PARTIAL.
+- [OBSERVED] 2026-09-09 对生产 Redis Q2 的多次只读探针均返回 5218/5218 coverage，但 newest source lag 从约 193 秒扩大到 471 秒，全部记录在显式 120s/300s freshness policy 下为 STALE；生产 engine_next 同时记录 `live_quote_ready=False`。coverage 不能替代 freshness。
+- [VERIFIED] 2026-09-09 cobra-ion 真实连接探针确认 BaoStock、开盘啦三类接口、问财和 THS 均可连接；只有 BaoStock 日线同时闭合请求日期与响应日期。其他源当前只获得 connectivity/observed 证据，不能作为历史 replay `available_at` authority。
+- [VERIFIED] 2026-09-09 生产只读 TD 查询取得 `auction_snapshot_v2` 的 0925 数据 5217 行；`daily_kline` schema 不包含发布时间或入库时间，因此它本身不能证明 historical `available_at`。
+- [OBSERVED] 生产 t1-v2 与 Rabbit/Redis/TD TCP 均已连接且内置 `--self-test` 通过，但 `logging.file_path/enable_file_log` 当前未接入长期运行日志，正常运行时无法读取 batch/decode/ACK/commit counters。该可观测性缺口阻止定位 Q2 延迟首次发生的层级。
+- [VERIFIED] 已在独立分支 `codex/fix-t1-live-observability` 提交 `9fd4a42b3f3944235da89e1ae2278ea93cff193c`，仅增加周期 batch/source/ACK/Redis/TD 计数、pipeline/commit/ACK 耗时和 wall lag；cobra-ion 完整生产依赖候选构建及 self-test 通过。该候选尚未替换生产二进制，不能作为生产根因证据。
+- [VERIFIED] 2026-09-09 14:13 的 cross-source 只读对齐显示 TD 最新 Tick 为 14:01:15、Redis Q2 最新为 14:01:39，两者共同落后墙钟约 12 分钟；AMQP passive declare 同时显示单 consumer、队列 backlog `2457 -> 2469`。因此当前 freshness first divergence 在 Redis/TD writer 分叉之前，且 Rabbit 消费吞吐未追上生产。
+- [OBSERVED] 2026-09-09 的 Redis 0920/0924/0925 仅为 `meta/summary/top_amount` 投影；Anchor 有 5183 个 symbol，但逐股只有 `change_pct/amount/bid_amount/tag/source`，不含完整 P/M/RB/RA。它不能冒充 TD `auction_snapshot_v2` 的全字段 authority，只能比较 shared fields。
+- [OBSERVED] 生产 engine_next commit 自带测试显式运行结果为 289 PASS / 32 FAIL；release 文件与 commit 在 CRLF 归一化后相同，失败源于 commit 内测试/实现漂移、漏打 fixture 和乱码断言，不能作为全绿发布门禁。
 
 ## 5. Replay Capabilities
 

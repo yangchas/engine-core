@@ -44,6 +44,16 @@ parity 闭环，不能从事实标签直接升级为交易策略。
 
 正式 Linux 运行使用 Python 3.12。Windows 仅用于开发、单元测试和回放。
 
+默认 `pytest` 是离线合同测试：它不会连接 Redis、TD、Rabbit 或第三方网络源。
+其中部分 Golden fixture 来自真实生产数据，但仍是冻结文件。服务器在线验证必须显式运行
+`examples/run_live_q2_probe.py` 和 `examples/run_real_reference_probe.py`，并把结果作为独立
+evidence；探针自己的 pytest 文件只使用 fake client 验证探针合同，不能冒充在线连接测试。
+
+当前真实验证范围和未迁移能力见：
+
+- `docs/evidence/real_data_probe/20260909-real-integration-audit.md`
+- `docs/ENGINE_NEXT_REAL_DATA_HANDOFF.md`
+
 ## Git 约定
 
 - main：可发布基线。
