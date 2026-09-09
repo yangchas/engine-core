@@ -245,7 +245,7 @@ def test_temporal_guard_rejects_unknown_availability_even_when_preobserved():
     assert "available_at_unknown" in result.missing_fields
 
 
-def test_temporal_guard_rejects_observation_after_knowledge_cutoff():
+def test_temporal_guard_does_not_use_observed_at_as_knowledge_cutoff():
     request = _request()
     result = TemporalDataGuard.check(
         _ready_result(

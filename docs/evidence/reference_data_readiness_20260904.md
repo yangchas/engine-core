@@ -1,5 +1,12 @@
 # Reference Data Readiness Smoke — 2026-09-04
 
+> **SUPERSEDED CONTRACT:** 本文件保留 2026-09-04 当时的实验记录，不再代表当前
+> Runtime/Replay 时间门禁。当前合同只允许已知且满足
+> `available_at_ms <= knowledge_as_of_ms` 的 READY/PARTIAL 数据进入 Bundle；
+> `observed_at_ms` 仅用于审计和 submission identity，不能替代或推导
+> `available_at_ms`。因此下文以 `observed_at_ms` 证明 READY 的 smoke 现在应判为
+> `UNAVAILABLE`。
+
 ## Scope
 
 验证最小节点前参考数据闭环，不接管生产链路：
@@ -19,7 +26,7 @@ TD read-only query
 - `python -m compileall -q src tests`: **PASS**
 - `git diff --check`: **PASS**
 
-覆盖的行为：
+当时覆盖的行为（已被上述严格合同取代）：
 
 - `available_at_ms=None` 不再被自动解释为不可用；
 - `observed_at_ms <= knowledge_as_of_ms` 的预观察结果可以 READY；

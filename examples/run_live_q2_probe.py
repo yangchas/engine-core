@@ -143,7 +143,8 @@ def observe(client, trade_date, observed_at, stale_after_ms, diagnostic_symbols=
         "raw_value_counts": value_counts,
         "volume_unit_diagnostics": build_volume_unit_diagnostics(
             capture.reads, diagnostic_symbols),
-        "limitations": ["non-atomic Redis observation", "volume unit not independently verified",
+        "limitations": ["non-atomic Redis observation",
+                        "volume diagnostics do not infer the separate iv field contract",
                         "not historical replay or live deployment acceptance"],
         "side_effect_proof": "only smembers/hgetall exposed; TD/claim/notification/SMTP not assembled",
     }
