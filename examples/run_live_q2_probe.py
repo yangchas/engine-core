@@ -58,15 +58,28 @@ def observe(client, trade_date, observed_at, stale_after_ms):
     input_bytes = json.dumps(capture.reads, ensure_ascii=False, sort_keys=True,
                              separators=(",", ":")).encode("utf-8")
     read_counts = Counter(item["operation"] for item in capture.reads)
+    error_counts = Counter(error for errors in (q.field_errors for q in projection.quotes.values())
+                           for error in errors)
+    source_lag_seconds = None
+    if projection.newest_source_time_ms is not None:
+        source_lag_seconds = max(
+            int(observed_at.timestamp()) - projection.newest_source_time_ms // 1000, 0)
     return {
         "trade_date": trade_date, "observed_at": observed_at.isoformat(),
         "status": projection.status.value, "consistency": projection.consistency_status,
         "requested_count": len(projection.expected_symbols), "quote_count": len(projection.quotes),
-        "missing_symbols": list(projection.missing_symbols), "stale_symbols": list(projection.stale_symbols),
-        "field_errors": {s: list(q.field_errors) for s, q in projection.quotes.items() if q.field_errors},
+        "missing_symbol_count": len(projection.missing_symbols),
+        "missing_symbol_samples": list(projection.missing_symbols[:20]),
+        "stale_symbol_count": len(projection.stale_symbols),
+        "stale_symbol_samples": list(projection.stale_symbols[:20]),
+        "field_error_counts": dict(sorted(error_counts.items())),
+        "field_error_samples": dict(list(
+            (s, list(q.field_errors)) for s, q in projection.quotes.items() if q.field_errors
+        )[:20]),
         "row_coverage": projection.coverage, "universe_authority": "NOT_PROVEN_BY_ACTIVE_SET",
         "oldest_source_time_ms": projection.oldest_source_time_ms,
         "newest_source_time_ms": projection.newest_source_time_ms,
+        "newest_source_lag_seconds": source_lag_seconds,
         "projection_hash": projection.content_hash,
         "engine_run1": first, "engine_run2": second,
         "same_observation_engine_deterministic": first == second,

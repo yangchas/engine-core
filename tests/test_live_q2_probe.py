@@ -38,19 +38,19 @@ def test_real_zero_preserved_and_required_missing_reported():
     projection = probe.RedisQ2ProjectionAdapter(capture).read("2026-09-09", NOW,
         freshness_policy=probe.FreshnessPolicy(stale_after_ms=60000))
     result = probe.observe(ReadClient(("000001",), row), "2026-09-09", NOW, 60000)
-    assert not result["field_errors"]
+    assert not result["field_error_counts"]
     assert projection.quotes["000001"].amount_yuan == 0
     assert result["same_observation_engine_deterministic"]
     assert capture.reads[-1]["value"]["amt"] == "0"
     del row["amt"]
     missing = probe.observe(ReadClient(("000001",), row), "2026-09-09", NOW, 60000)
-    assert missing["field_errors"]["000001"]
+    assert missing["field_error_counts"]["amt"] == 1
     assert missing["status"] == "PARTIAL"
 
 
 def test_old_quote_not_promoted_to_today():
     row = {"px": "1000", "pc": "1000", "amt": "0", "ts": str(int(NOW.timestamp()*1000)-86400000)}
     result = probe.observe(ReadClient(("000001",), row), "2026-09-09", NOW, 60000)
-    assert result["field_errors"]["000001"]
+    assert result["field_error_counts"]["stale"] == 1
     assert result["status"] != "READY"
     assert result["universe_authority"] == "NOT_PROVEN_BY_ACTIVE_SET"
