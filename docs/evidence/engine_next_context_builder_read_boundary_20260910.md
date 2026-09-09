@@ -22,6 +22,10 @@ effect。为保证审计路径不产生副作用，已对已知写入点和网�
 设置 loopback guard；这证明本次调用没有写入，不证明旧 builder 原生实现本身
 是 side-effect-free。
 
+本次探针已固化为 `examples/run_engine_next_context_probe.py`；它只在显式提供
+`--legacy-root` 时导入指定的旧 release，engine_core 包本身不反向依赖
+`engine_next`。
+
 ## 真实结果
 
 ```text
