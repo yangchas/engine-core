@@ -20,13 +20,36 @@ Post-audit verification addendum:
 - identical local/Linux default suite: 156 passed
 - the two added tests cover production clock adapters and real BaoStock calendar-fixture answers; they do not add online-provider claims
 
-## What the 154 engine_core tests really are
+Final audit addendum:
+
+- audited wrapper commit before the trace test: `fa73f65850f0da97a4dad3022c0938ea1f4ecce5`
+- exact tracked archive SHA-256: `97e1c9d2f031618902a81d39da87d92d2e0c8942ae0a740bed4e11314e44320f`
+- isolated Linux path: `/home/exedev/validation/engine-core-fa73f65`
+- identical local/Linux default suite at that commit: 156 passed
+- `417812a` then added the previously missing direct `JsonTraceSink` contract tests;
+  final local/Linux identity is recorded after the concluding deployment
+
+## What the engine_core tests really are
 
 The default suite is an offline deterministic contract suite. It contains pure unit tests, state-machine tests, and tests driven by captured production fixtures. It does not open live Redis, TD, Rabbit, BaoStock, Kaipan, Wencai, or THS connections.
 
 The files named `test_live_q2_probe.py` and `test_real_reference_probe.py` test the probe logic with fake clients. They do not constitute online integration evidence. Captured fixture tests such as the 600519 auction pair are real-data-derived but remain offline and immutable.
 
 Local Windows and isolated Linux both passed the exact 154-test suite. This proves cross-platform deterministic behavior for the tested contracts, not end-to-end production readiness.
+
+The evidence classes must not be conflated:
+
+| Test/evidence class | Examples | Opens a real connection during pytest | What it proves |
+|---|---|---:|---|
+| pure contract/state test | hash, clocks, windows, timers, evaluation ownership | no | deterministic behavior of supplied values |
+| synthetic fixture test | boundary, missing, conflict and adversarial cases | no | fail-closed/error semantics |
+| captured production fixture test | BaoStock calendar, TD daily rows, 600519 auction anchors | no | repeatable behavior for an immutable real-data sample |
+| fake probe test | `test_live_q2_probe.py`, `test_real_reference_probe.py` | no | probe logic only |
+| cobra-ion online probe | Redis Q2, TD reads, BaoStock/Kaipan/Wencai/THS | yes, outside pytest | current connectivity/schema/observed data only |
+| production runtime observation | systemd, logs, Rabbit passive declare | yes, read-only | actual running-chain state within the observable boundary |
+
+No default pytest test currently proves live Rabbit delivery/ACK, online provider availability,
+startup repair, persistence, email delivery, or a full production lifecycle.
 
 ## Real connections executed on cobra-ion
 
@@ -53,6 +76,12 @@ At 14:13 the latest TD tick was 14:01:15 and the latest Redis Q2 source time was
 ### Rabbit/t1-v2 boundary
 
 An AMQP passive queue declaration (no consume, no delivery, no ACK) reported one consumer and a backlog increasing from 2,457 to 2,469 messages. The t1-v2 process had established Rabbit, Redis, and TD TCP connections. Combined with the Redis/TD timestamp alignment, this is direct evidence that the live consumer is not keeping up with the producer at the audit time.
+
+At 15:19 Asia/Shanghai the same passive declaration reported 2,602 messages and one consumer.
+The backlog was lower than the 15:03 observation but remained non-zero after the close. The
+actual production unit is `t1-v2-live.service`; both it and `engine-next.service` were active with
+zero restarts. A query against the nonexistent shorthand unit `t1-v2.service` must not be used
+as production status evidence.
 
 The current defaults process one Rabbit message per loop with a 10ms configured delay. This observation does not yet prove whether decode, TD insertion, Redis command volume, or another per-message step is the dominant cost, because per-stage live counters are not exposed.
 
@@ -83,6 +112,18 @@ The raw evidence files on cobra-ion are:
 - `reference-sources-20260909-3fc07bd.json`, SHA-256 `b9c664b034ee2bf69a690032910817d2c20375261232bd0475247497de5a37f8`
 - `live-q2-20260909-3fc07bd.json`, SHA-256 `1befa207ad5abd725292abbc7c596c175764cc5253c1dce987b163de493e1524`
 
+A bounded second online run at `2026-09-09T07:24:50Z`, using the unchanged production
+connector release, again passed all six connection calls. BaoStock alone closed the explicit
+request/response date contract; Kaipan, Wencai and THS remained observation-only for historical
+use. Evidence: `/home/exedev/validation/engine-core-fa73f65/reference-sources-20260909-1519-fa73f65.json`,
+SHA-256 `c035f640ff772703d0b7f7ea44ce4cee00d959b8fb45644fee48e119ad9db977`.
+
+A second production Redis observation at `2026-09-09T07:25:24Z` read all 5,218 active
+symbols with no missing row, but every symbol was stale under the explicit 300-second policy.
+The newest source record lag was 1,725 seconds and two Engine instances still produced the same
+semantic result. Evidence: `/home/exedev/validation/engine-core-fa73f65/live-q2-20260909-1525-fa73f65.json`,
+SHA-256 `337e0c309418db599abeb8342554ae84b1c63c61ec69b59d53dea87633154957`.
+
 ## Production runtime observations
 
 - `engine-next.service` and `t1-v2-live.service` remained active with zero systemd restarts.
@@ -90,6 +131,7 @@ The raw evidence files on cobra-ion are:
 - 09:25 finalize and 09:26 follow-up executed in the real production log.
 - email delivery was logged at 09:26 and 09:32.
 - engine_next later logged `live_quote_ready=False`, matching the independent Q2 stale probe.
+- At 09:56 the production log emitted `intraday stale gate | readiness=observe_runtime | live_quote_ready=False` while downstream hypothesis/context code still calculated `market=attack_confirmed`, candidates and profit-center rows.  This is a legacy readiness-ownership defect, not behavior to preserve as parity: the new path must downgrade before facts/strategy and must not rely on the presentation controller to hide stale conclusions.
 - t1-v2 production binary `--self-test` passed, but that path uses internal fake sources/executors and is not evidence of actual Rabbit delivery or ACK counts.
 
 The production t1-v2 config declares a file log path, but current C++ runtime code never wires `logging.file_path` or `enable_file_log` to a file sink. The long-running process only exposes summaries on exit and transient errors. Consequently Rabbit batch membership, decode counts, ACK counts, and per-batch Redis/TD commit counts remain unobservable during normal operation.
@@ -118,6 +160,33 @@ Running all packaged production engine_next tests explicitly (`pytest engine_nex
 | opening validation and state lifecycle | not migrated | old production only |
 | report/email/effect | not implemented | ProbeStrategy only; old production sends email |
 | full replay to the same report/strategy result | not implemented | market-input replay only |
+
+## Deep legacy-to-core capability comparison
+
+The comparison is by behavior, not by legacy file or class identity.
+
+| Legacy capability and semantics | Main parameters / result | engine_core equivalent | Status |
+|---|---|---|---|
+| trading-day decision and previous/next day | legacy accepts loose inputs and may fall back after a bounded search | immutable BaoStock-derived `TradingCalendarSnapshot`; strict date; fail closed | `INTENTIONAL_CHANGE`, implemented and tested |
+| latest completed data day | current time plus caller completion cutoff (15:30 in the legacy path) | `latest_completed_trade_day(as_of, completion_cutoff_time)` | implemented; cutoff is readiness policy |
+| runtime phase inference | wall time to PREMARKET/AUCTION/INTRADAY/LUNCH/POSTMARKET/NIGHT | versioned `SessionPlan` with aware instants and half-open intervals | implemented and tested |
+| scheduled lifecycle actions | 09:25 finalize, 09:26 follow-up, 15:05 close, 17:40 settlement; duplicate-minute token | `TimerSpec`/`due_timer_firings` only | scheduling primitive implemented; actions not migrated |
+| startup readiness audit | dataset watermarks, caches, missing/structural/dead-symbol gaps, phase-specific action/readiness | none | not migrated |
+| phase-aware gap repair | heavy sync before 09:00/postmarket, bounded repair near open, fast Kaipan/cache repairs | only PreviousDayStats fetch/guard | not migrated |
+| late-start auction recovery | once per process/day, 09:30-15:00, 0926 replay, possible Redis writeback | none | not migrated; legacy retry-on-failure needs audit |
+| current Redis Q2 cohort | active set + per-symbol hashes; cohort freshness and source-time range | `RedisQ2ProjectionAdapter` | implemented read-only; real path verified but upstream stale |
+| minute price/amount windows | legacy strips symbols, may use wall clock, converts missing references to zero | explicit source epoch, strict symbol/unit, Missing and COUNTER_RESET reasons | `INTENTIONAL_CHANGE`, implemented and tested |
+| auction facts | legacy full runtime paths and reports | adjacent P/M/RB/RA facts + fact-only shadow | minimal slice only |
+| opening/intraday context | Q2 freshness, market breadth, themes, battle status, candidates, hypotheses | raw market state and minimal probe | not migrated |
+| theme/leader/large-cap/extreme/yesterday-limit/style | multiple caches/connectors and strategy layers | no corresponding facts/data functions | not migrated |
+| Redis/TD persistence and cache refresh | auction anchor, kline/factors/chip/DDE, session facts and reports | no writer/checkpoint | intentionally absent |
+| notification/report | rendered console/HTML plus deduplicated SMTP/webhook | canonical JSON trace only | production report/effect not migrated |
+| replay | historical request and Q2Frame fixture with selected effects skipped | Q2Frame and deterministic TD event-time input replay | market input only; no full lifecycle/report parity |
+
+The current `engine_core` calendar is not a holiday-only helper. It is the single authority for
+`is_trading_day`, `previous_trade_day`, `next_trade_day` and the date passed to a date-sensitive
+DataFunction. This corrects the legacy `holidays.CN()` approximation and its silent fallback
+dates; it does not yet schedule or execute startup synchronization.
 
 ## Decision
 

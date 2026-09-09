@@ -19,7 +19,7 @@
 
 独立仓库当前分支：`codex/feature-session-engine-integration`。
 
-当前已验证 commit：`db2cd56b20a37ec120c6a5ee3f639275f082af54`。在既有 Engine/Data/Replay 合同之上，已明确默认测试与在线探针边界，并补充 SystemClock 及真实 BaoStock calendar fixture 的当日、上一交易日和节假日行为测试，共有 156 项默认离线测试通过。该 commit 已部署到 cobra-ion 隔离目录 `/home/exedev/validation/engine-core-db2cd56`，以 Python 3.12.3 运行同一套 156 项测试；它没有部署为生产服务，也不接管 Rabbit、t1-v2、TD/Redis 写入或正式 effect。
+已验证基线 commit：`fa73f65850f0da97a4dad3022c0938ea1f4ecce5`。在既有 Engine/Data/Replay 合同之上，已明确默认测试与在线探针边界，并补充 SystemClock 及真实 BaoStock calendar fixture 的当日、上一交易日和节假日行为测试，共有 156 项默认离线测试通过。该 commit 已部署到 cobra-ion 隔离目录 `/home/exedev/validation/engine-core-fa73f65`，以 Python 3.12.3 运行同一套 156 项测试。后续 `417812a` 补齐了 `JsonTraceSink` 的 canonical 单行输出、flush 和运行时 stdout 绑定测试，本地总数为 158；最终整包 Linux 验证随本次审计收口执行。所有这些验证均为隔离运行，没有部署成生产服务，也不接管 Rabbit、t1-v2、TD/Redis 写入或正式 effect。
 
 证据：
 
@@ -133,6 +133,11 @@ a25: logical time >= 09:25:06 and < 09:30
 - SMTP/Webhook：`NotificationService`。
 - 通知去重：内存 digest + Redis digest，TTL 2 天；历史 replay 和非实时交易日请求被拒绝。
 
+2026-09-09 生产日志存在必须作为 `INTENTIONAL_CHANGE` 修正的 readiness 缺口：
+`intraday stale gate` 已记录 `live_quote_ready=False` 时，下游仍继续计算
+`market=attack_confirmed`、候选和 profit-center，再由展示控制器折叠。新内核不得把该旧行为
+作为 MATCH；行情不新鲜必须在冻结 Snapshot/Fact 前统一降级，而不是等展示层补救。
+
 ## Replay 现状
 
 `engine_next` 已有历史请求识别、Q2Frame fixture 注入，并跳过历史 replay 的收盘/结算外部动作。
@@ -152,6 +157,14 @@ a25: logical time >= 09:25:06 and < 09:30
 没有 watermark、late correction、checkpoint、effect
 TD 同 timestamp/symbol 的 hash tie-break 只是 synthetic ordering
 ```
+
+## 测试真实性边界
+
+- 默认 `pytest` 不连接 Redis、TD、Rabbit、BaoStock、开盘啦、问财或 THS。
+- BaoStock 日历、上一交易日日线和 600519 竞价 fixture 来自真实服务器捕获，但测试时是冻结文件。
+- `test_live_q2_probe.py` 与 `test_real_reference_probe.py` 使用 fake client，只验证 probe 合同。
+- 真实在线连接证据来自 cobra-ion 单独的只读 probe，不计入默认单测数量。
+- 因此测试通过证明当前轮子对给定输入的确定性和边界正确，不证明启动补齐、持久化、邮件或完整实盘生命周期已经迁移。
 
 ## 最小真实接入建议
 
