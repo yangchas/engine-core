@@ -48,6 +48,8 @@
 - [UNKNOWN] TD 生产版本、重复写语义和历史输入排序能力待 Gate K 验证。
 - [VERIFIED] cobra-ion 上 TD `market_data1.stock_tick_v2` 可由既有 taos 客户端只读访问；2026-09-03 09:20-09:24 查询返回 82183 行，查询排序为事件时间/代码顺序，不代表 Rabbit arrival order。
 - [VERIFIED] cobra-ion 上 `auction_snapshot_v2` 存在 2026-09-03 的 09:20:03 与 09:24:10 真实快照；600519 的匹配金额、resting bid/ask 与价格已固化为只读证据，可用于第一条 Segment A/B Golden fixture。
+- [VERIFIED] 2026-09-10 在 cobra-ion 通过既有 `taos` 客户端对 2026-09-09/600519 的 0920/0924/0925 `auction_snapshot_v2` 执行只读事实旁路；业务锚点与 source record time 分离，Segment/Comparison 输出保持 `FACT_ONLY/PARTIAL`，不产生策略结论或外部副作用。
+- [VERIFIED] 2026-09-10 对 `000001/000002/600519` 的 Redis auction projection 与 TD `auction_snapshot_v2` 进行了字段受限交叉验真：可比较的 amount/match 与 bid/rest_bid 全部 MATCH，快照 `meta.ts` 与 TD `ts` 精确对齐；Redis ask 字段当前不可比时保持 `NOT_COMPARABLE`。
 - [UNKNOWN] cobra-ion `daily_kline.volume` 的零值语义；Probe 样本为 0，不能直接当作 verified zero。
 - [VERIFIED] CurrentMarketState 只保存当前可观测数据、轻量 projection 和窗口原始累计状态。
 - [VERIFIED] 2026-09-04 在 cobra-ion 只读 Redis Q2 子集（64 symbols）已通过当前内存 Engine 完成 `MARKET_UPDATE -> TIMER -> EngineSnapshot -> ProbeStrategy`；该次显式 freshness policy 下 1 条记录 stale，因此 projection 为 PARTIAL，不代表生产默认 freshness。
@@ -81,6 +83,7 @@
 - [VERIFIED] 已在独立分支 `codex/fix-t1-live-observability` 提交 `9fd4a42b3f3944235da89e1ae2278ea93cff193c`，仅增加周期 batch/source/ACK/Redis/TD 计数、pipeline/commit/ACK 耗时和 wall lag；cobra-ion 完整生产依赖候选构建及 self-test 通过。该候选尚未替换生产二进制，不能作为生产根因证据。
 - [VERIFIED] 2026-09-09 14:13 的 cross-source 只读对齐显示 TD 最新 Tick 为 14:01:15、Redis Q2 最新为 14:01:39，两者共同落后墙钟约 12 分钟；AMQP passive declare 同时显示单 consumer、队列 backlog `2457 -> 2469`。因此当前 freshness first divergence 在 Redis/TD writer 分叉之前，且 Rabbit 消费吞吐未追上生产。
 - [OBSERVED] 2026-09-09 的 Redis 0920/0924/0925 仅为 `meta/summary/top_amount` 投影；Anchor 有 5183 个 symbol，但逐股只有 `change_pct/amount/bid_amount/tag/source`，不含完整 P/M/RB/RA。它不能冒充 TD `auction_snapshot_v2` 的全字段 authority，只能比较 shared fields。
+- [OBSERVED] 生产 `engine_next.runtime.intraday_data_hub.load_auction_snapshots()` 只读取三个 Redis Top-200 投影并返回约 600 行；其 `IntradayFetchResult.redis_keys_written` 字段会列出读取过的 key，实际本次调用无写入。`recover_auction_anchor()` 是另一条可能执行 Redis 回写的路径，engine_core 旁路不得调用。
 - [OBSERVED] 生产 engine_next commit 自带测试显式运行结果为 289 PASS / 32 FAIL；release 文件与 commit 在 CRLF 归一化后相同，失败源于 commit 内测试/实现漂移、漏打 fixture 和乱码断言，不能作为全绿发布门禁。
 
 ## 5. Replay Capabilities
