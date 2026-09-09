@@ -117,11 +117,11 @@ trigger 与 writer 的同批因果
 
 ## Core verification identity
 
-本证据随 engine_core commit `24aef250cf9974bd2dac7c8d62344945fca4ec17` 固化。
+本证据随 engine_core commit `57f25293cf74c90cbb20cb4593ca00e8bfedc89b` 固化。
 
 ```text
-archive SHA-256 = 61402a106db0f4f3d33fc5e66727aaddf3d8180176fc7726efa886f80f43041a
-remote isolated path = /home/exedev/validation/engine-core-24aef25
+archive SHA-256 = b889f80c4c79bff26966c53a16130c2c3dd9fd9564d587ee74298e798c669536
+remote isolated path = /home/exedev/validation/engine-core-57f2529
 server Python = 3.12
 pytest = 168 passed in 1.02s
 compileall = PASS
