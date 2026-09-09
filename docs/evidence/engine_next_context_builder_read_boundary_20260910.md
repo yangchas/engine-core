@@ -114,3 +114,17 @@ trigger 与 writer 的同批因果
 ```
 
 这些保持 `UNKNOWN`，不使用 TD 或 Redis projection 反推。
+
+## Core verification identity
+
+本证据随 engine_core commit `24aef250cf9974bd2dac7c8d62344945fca4ec17` 固化。
+
+```text
+archive SHA-256 = 61402a106db0f4f3d33fc5e66727aaddf3d8180176fc7726efa886f80f43041a
+remote isolated path = /home/exedev/validation/engine-core-24aef25
+server Python = 3.12
+pytest = 168 passed in 1.02s
+compileall = PASS
+```
+
+远端验证使用归档副本，不覆盖旧验证目录，不触碰生产服务或生产数据。
