@@ -184,7 +184,10 @@ t1-v2 虽与 Rabbit、Redis、TD 均保持 ESTABLISHED，但当前运行时没�
 针对上述可观测缺口，已从生产精确基线 `6fb3164...` 建立独立分支
 `codex/fix-t1-live-observability`，提交 `9fd4a42b3f3944235da89e1ae2278ea93cff193c`。
 它仅记录累计 batch/source/decode/ACK/Redis/TD 指标、最近一批 pipeline/commit/ACK
-耗时及 wall lag；cobra-ion 隔离候选二进制已用完整生产依赖编译并通过 self-test。
-该提交尚未部署到生产，当前仍不能据此判断 decode、TD、Redis 或 ACK 哪一步最慢。
+耗时及 wall lag；cobra-ion 隔离候选二进制已用完整生产依赖编译并通过 self-test。Rabbit
+积压于 2026-09-09 盘后清零后，该版本以不可变 release `20260909_9fd4a42` 切换并重启
+`t1-v2-live.service`；服务 active、零重启，Rabbit/Redis/TD 连接均建立，队列仍为 0。
+因为切换后尚无新的行情消息，具体 decode、TD、Redis 或 ACK 哪一步最慢仍需下一交易日
+真实消息流的周期 counters 才能判定。
 
 安全边界：不接管 Rabbit、不改 ACK、不新增 consumer、不写 Redis/TD、不在 replay 中启用 SMTP、下单或其他 effect。

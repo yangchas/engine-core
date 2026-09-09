@@ -29,6 +29,15 @@ Final audit addendum:
 - `417812a` then added the previously missing direct `JsonTraceSink` contract tests;
   final local/Linux identity is recorded after the concluding deployment
 
+Concluding isolated verification:
+
+- verification payload commit: `bb3c636` (full hash recorded by Git evidence)
+- exact tracked archive SHA-256: `1527ff23a69abcff417e826b16d7de951d81fd631526e9e0e55444d520d24b74`
+- isolated Linux path: `/home/exedev/validation/engine-core-bb3c636`
+- runtime: Python 3.12.3
+- identical local/Linux suite: 158 passed
+- compileall: PASS
+
 ## What the engine_core tests really are
 
 The default suite is an offline deterministic contract suite. It contains pure unit tests, state-machine tests, and tests driven by captured production fixtures. It does not open live Redis, TD, Rabbit, BaoStock, Kaipan, Wencai, or THS connections.
@@ -95,6 +104,15 @@ cobra-ion full-dependency candidate binary SHA-256 is
 `0698b4172b58248bb1eaf4b3efa6d18a8c1fac78334a250455fdff9a3ed84563`.
 Its built-in self-test passed.  It was not installed or started as production,
 so it closes build/test feasibility only, not the live bottleneck diagnosis.
+
+Deployment addendum: after the market, the Rabbit backlog reached zero. The exact candidate was
+packaged as immutable release `/home/exedev/services/t1-v2/releases/20260909_9fd4a42`, with
+`RELEASE_COMMIT=9fd4a42b3f3944235da89e1ae2278ea93cff193c`, and switched through the existing
+`current` symlink. `t1-v2-live.service` restarted successfully at 22:31 Asia/Shanghai with PID
+2878024, zero systemd restarts, and established Rabbit/Redis/TD connections. The post-restart
+passive queue check reported zero messages and one consumer. `engine-next.service` was not
+restarted. Because no new market messages arrived after deployment, the new periodic live-stage
+counters still require the next real message flow before they can diagnose the throughput stage.
 
 ### External providers
 
