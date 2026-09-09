@@ -22,27 +22,116 @@ from zoneinfo import ZoneInfo
 WRITE_METHODS = frozenset(
     {
         "set",
+        "setnx",
         "setex",
         "psetex",
+        "mset",
+        "msetnx",
         "hset",
         "hmset",
         "hdel",
         "expire",
+        "expireat",
         "pexpire",
+        "pexpireat",
+        "persist",
         "delete",
         "unlink",
+        "rename",
+        "renamenx",
+        "copy",
+        "move",
+        "restore",
         "zadd",
         "zrem",
+        "zremrangebyscore",
         "lpush",
         "rpush",
+        "lpop",
+        "rpop",
         "sadd",
         "srem",
         "incr",
         "incrby",
+        "incrbyfloat",
+        "decr",
+        "decrby",
+        "pfadd",
+        "xadd",
+        "xtrim",
+        "flushdb",
+        "flushall",
         "publish",
     }
 )
-PIPELINE_WRITE_COMMANDS = frozenset(item.upper() for item in WRITE_METHODS)
+READ_METHODS = frozenset(
+    {
+        "get",
+        "hget",
+        "hgetall",
+        "hmget",
+        "hexists",
+        "smembers",
+        "sismember",
+        "scard",
+        "exists",
+        "mget",
+        "keys",
+        "scan",
+        "scan_iter",
+        "zrange",
+        "zrevrange",
+        "zrangebyscore",
+        "zrevrangebyscore",
+        "zcard",
+        "lrange",
+        "llen",
+        "type",
+        "ttl",
+        "pttl",
+        "strlen",
+        "getrange",
+        "object",
+        "info",
+        "ping",
+        "dbsize",
+        "time",
+        "close",
+    }
+)
+READ_COMMANDS = frozenset(
+    {
+        "GET",
+        "HGET",
+        "HGETALL",
+        "HMGET",
+        "HEXISTS",
+        "SMEMBERS",
+        "SISMEMBER",
+        "SCARD",
+        "EXISTS",
+        "MGET",
+        "KEYS",
+        "SCAN",
+        "ZRANGE",
+        "ZREVRANGE",
+        "ZRANGEBYSCORE",
+        "ZREVRANGEBYSCORE",
+        "ZCARD",
+        "LRANGE",
+        "LLEN",
+        "TYPE",
+        "TTL",
+        "PTTL",
+        "STRLEN",
+        "GETRANGE",
+        "OBJECT",
+        "INFO",
+        "PING",
+        "DBSIZE",
+        "TIME",
+    }
+)
 
 
 class GuardPipeline:
@@ -57,7 +146,17 @@ class GuardPipeline:
             return self._blocked(name)
         if name == "execute_command":
             return self._execute_command
-        return getattr(self._inner, name)
+        attr = getattr(self._inner, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            result = attr(*args, **kwargs)
+            # redis-py queues commands by returning the pipeline itself.  Keep
+            # the guard wrapper in the chain so a later write cannot escape.
+            return self if result is self._inner else result
+
+        return call
 
     def _blocked(self, name: str):
         def blocked(*args: Any, **kwargs: Any) -> None:
@@ -68,7 +167,7 @@ class GuardPipeline:
 
     def _execute_command(self, command: Any, *args: Any, **kwargs: Any) -> Any:
         command_name = str(command.decode() if isinstance(command, bytes) else command).upper()
-        if command_name in PIPELINE_WRITE_COMMANDS:
+        if command_name not in READ_COMMANDS:
             self._parent.writes.append("pipeline." + command_name.lower())
             raise RuntimeError("read-only probe blocked Redis pipeline write: " + command_name)
         return self._inner.execute_command(command, *args, **kwargs)
@@ -93,6 +192,23 @@ class GuardRedis:
                 raise RuntimeError("read-only probe blocked Redis write: " + name)
 
             return blocked
+        if name == "execute_command":
+            def execute_command(command: Any, *args: Any, **kwargs: Any) -> Any:
+                command_name = str(command.decode() if isinstance(command, bytes) else command).upper()
+                if command_name not in READ_COMMANDS:
+                    self.writes.append("command." + command_name.lower())
+                    raise RuntimeError("read-only probe blocked Redis command: " + command_name)
+                return self._inner.execute_command(command, *args, **kwargs)
+
+            return execute_command
+        if name in {"eval", "evalsha", "register_script", "transaction", "multi_exec"}:
+            def blocked_special(*args: Any, **kwargs: Any) -> None:
+                self.writes.append(name)
+                raise RuntimeError("read-only probe blocked Redis special command: " + name)
+
+            return blocked_special
+        if name not in READ_METHODS:
+            raise RuntimeError("read-only probe rejected unclassified Redis method: " + name)
         return getattr(self._inner, name)
 
 
@@ -175,6 +291,9 @@ def probe(
         )
         context = builder.build(request)
         stats = legacy["build_auction_plate_bucket_stats"](context, top_n=10)
+        now_ms = int(now.timestamp() * 1000)
+        latest_source_ms = int(context.latest_quote_timestamp_ms or 0)
+        future_source = latest_source_ms > now_ms
         return {
             "contract_version": "EngineNextContextProbeV1",
             "trade_date": trade_date,
@@ -182,8 +301,15 @@ def probe(
             "symbols": symbols,
             "snapshot_count": len(context.stock_snapshots),
             "quote_health": {
+                "probe_now_ms": now_ms,
                 "latest_quote_timestamp_ms": context.latest_quote_timestamp_ms,
                 "latest_quote_age_seconds": context.latest_quote_age_seconds,
+                "future_source_timestamp": future_source,
+                "legacy_future_timestamp_handling": (
+                    "CLAMPED_TO_ZERO_AGE"
+                    if future_source and context.latest_quote_age_seconds == 0
+                    else "NOT_OBSERVED"
+                ),
             },
             "context_rows": [
                 {

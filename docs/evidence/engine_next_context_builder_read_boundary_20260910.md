@@ -40,21 +40,24 @@ names                = 空（本次禁用 F10 fallback）
 抽样结果保留了旧读取链的真实字段：
 
 ```text
-600519  plate=国有企业  auction_amount=33408300  current_pct=-0.014
-000001  plate=银行      auction_amount=2187400   current_pct=-0.014
-000002  plate=地产链    auction_amount=2702900   current_pct=-0.014
+600519  plate=国有企业  auction_amount=33408300  current_pct=-0.0141
+000001  plate=银行      auction_amount=2187400   current_pct=-0.0068
+000002  plate=地产链    auction_amount=2702900   current_pct=-0.0245
 ```
 
 ## 发现 1：旧 freshness 路径会把未来 source timestamp 当作新鲜
 
-审计时墙钟约为当日 `09:26`，但生产 Q2 quote 的 source timestamp 为
-`15:00:03`。旧 `_summarize_quote_freshness()` 使用：
+探针实际执行于 `2026-09-10 01:29`（Asia/Shanghai），请求中的 `now` 是为了
+复现历史边界而显式注入的 `2026-09-09 09:26`，不是现场墙钟。生产 Q2 quote
+的 source timestamp 为 `2026-09-09 15:00:03`。旧
+`_summarize_quote_freshness()` 使用：
 
 ```python
 age_ms = max(now_ms - quote_ts_ms, 0)
 ```
 
-因此未来 source timestamp 被静默截成 `age_ms=0`，结果显示：
+因此在这个可重复的时间安全测试中，未来 source timestamp 被静默截成
+`age_ms=0`，结果显示：
 
 ```text
 latest_quote_age_seconds = 0
