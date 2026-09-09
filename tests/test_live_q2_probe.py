@@ -30,6 +30,7 @@ def test_empty_universe_is_not_live_coverage_pass():
     assert result["oldest_source_time_ms"] is None
     assert result["same_observation_engine_deterministic"]
     assert result["read_operation_counts"] == {"smembers": 2}
+    assert result["raw_field_presence_counts"]["px"] == 0
 
 
 def test_real_zero_preserved_and_required_missing_reported():
@@ -40,6 +41,8 @@ def test_real_zero_preserved_and_required_missing_reported():
     result = probe.observe(ReadClient(("000001",), row), "2026-09-09", NOW, 60000)
     assert not result["field_error_counts"]
     assert projection.quotes["000001"].amount_yuan == 0
+    assert result["raw_field_presence_counts"]["amt"] == 1
+    assert result["raw_field_explicit_zero_counts"]["amt"] == 1
     assert result["same_observation_engine_deterministic"]
     assert capture.reads[-1]["value"]["amt"] == "0"
     del row["amt"]

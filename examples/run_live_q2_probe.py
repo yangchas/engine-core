@@ -58,6 +58,15 @@ def observe(client, trade_date, observed_at, stale_after_ms):
     input_bytes = json.dumps(capture.reads, ensure_ascii=False, sort_keys=True,
                              separators=(",", ":")).encode("utf-8")
     read_counts = Counter(item["operation"] for item in capture.reads)
+    raw_hashes = [item["value"] for item in capture.reads if item["operation"] == "hgetall"]
+    tracked_fields = ("ts", "px", "pc", "amt", "vol", "amt2m", "amt5m", "a20", "a24", "a25",
+                      "am", "br", "ar", "ls", "ph", "mk")
+    field_presence = {field: sum(field in row and row.get(field) not in (None, "") for row in raw_hashes)
+                      for field in tracked_fields}
+    field_explicit_zero = {field: sum(str(row.get(field)) == "0" for row in raw_hashes if field in row)
+                           for field in tracked_fields}
+    market_counts = dict(sorted(Counter(str(row.get("mk", "")) for row in raw_hashes).items()))
+    phase_counts = dict(sorted(Counter(str(row.get("ph", "")) for row in raw_hashes).items()))
     error_counts = Counter(error for errors in (q.field_errors for q in projection.quotes.values())
                            for error in errors)
     source_lag_seconds = None
@@ -86,6 +95,10 @@ def observe(client, trade_date, observed_at, stale_after_ms):
         "input_canonical_sha256": hashlib.sha256(input_bytes).hexdigest(),
         "read_operation_counts": dict(sorted(read_counts.items())),
         "read_only_key_count": len(capture.reads),
+        "raw_field_presence_counts": field_presence,
+        "raw_field_explicit_zero_counts": field_explicit_zero,
+        "raw_market_counts": market_counts,
+        "raw_phase_counts": phase_counts,
         "limitations": ["non-atomic Redis observation", "volume unit not independently verified",
                         "not historical replay or live deployment acceptance"],
         "side_effect_proof": "only smembers/hgetall exposed; TD/claim/notification/SMTP not assembled",
