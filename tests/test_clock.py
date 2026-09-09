@@ -4,11 +4,23 @@ import pytest
 
 from engine_core.clock import (
     MILLISECONDS_PER_DAY,
+    SystemMonotonicClock,
+    SystemWallClock,
     VirtualClock,
     local_datetime_ms,
     parse_clock_time_ms,
     require_aware_utc,
 )
+
+
+def test_production_clocks_expose_aware_utc_and_monotonic_time():
+    wall_now = SystemWallClock().now_utc()
+    assert wall_now.tzinfo is timezone.utc
+    monotonic = SystemMonotonicClock()
+    first = monotonic.now_ns()
+    second = monotonic.now_ns()
+    assert first > 0
+    assert second >= first
 
 
 def test_virtual_clock_advances_wall_and_monotonic_together():

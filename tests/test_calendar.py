@@ -126,3 +126,29 @@ def test_baostock_calendar_fixture_loads_as_canonical_snapshot():
     assert snapshot.evidence_hash == "9c10961fa048436cbacbddad2892a690b40ebd3c987423e1e4519817ec96ca7a"
     with pytest.raises(CalendarCoverageError):
         snapshot.next_trade_day("2026-12-31")
+
+
+def test_baostock_calendar_fixture_answers_current_and_holiday_date_questions():
+    payload = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures/calendar/baostock_cn_a_share_20260907.json"
+        ).read_text(encoding="utf-8")
+    )
+    snapshot = TradingCalendarSnapshot(
+        calendar_id=payload["calendar_id"],
+        version=payload["version"],
+        timezone_name=payload["timezone"],
+        declared_valid_from=payload["declared_valid_from"],
+        declared_valid_to=payload["declared_valid_to"],
+        source_guard_valid_from=payload["source_guard_valid_from"],
+        source_guard_valid_to=payload["source_guard_valid_to"],
+        trading_dates=tuple(payload["trading_dates"]),
+        source_id=payload["source_id"],
+        observed_at_ms=payload["observed_at_ms"],
+        evidence_ref=payload["evidence_ref"],
+    )
+    assert snapshot.is_trading_day("2026-09-09") is True
+    assert snapshot.previous_trade_day("2026-09-09") == date(2026, 9, 8)
+    assert snapshot.is_trading_day("2026-10-01") is False
+    assert snapshot.previous_trade_day("2026-10-01") == date(2026, 9, 30)
