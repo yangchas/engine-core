@@ -49,7 +49,44 @@ def run_engine(projection, now):
             "probe_hashes": [item.content_hash for item in result.strategy_results]}
 
 
-def observe(client, trade_date, observed_at, stale_after_ms):
+def build_volume_unit_diagnostics(reads, symbols):
+    """Expose dimensional evidence without promoting either unit to truth."""
+
+    requested = {str(symbol).strip()[-6:] for symbol in symbols if str(symbol).strip()}
+    diagnostics = []
+    for item in reads:
+        key = str(item.get("key", ""))
+        if item.get("operation") != "hgetall" or not key.startswith("q2:"):
+            continue
+        symbol = key.rsplit(":", 1)[-1]
+        if requested and symbol not in requested:
+            continue
+        row = item.get("value") or {}
+        try:
+            price_yuan = int(row["px"]) / 1000.0
+            amount_yuan = int(row["amt"])
+            raw_volume = int(row["vol"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if price_yuan <= 0 or amount_yuan < 0 or raw_volume <= 0:
+            continue
+        implied_lots = amount_yuan / (raw_volume * 100.0)
+        implied_shares = amount_yuan / raw_volume
+        diagnostics.append({
+            "symbol": symbol,
+            "source_record_time_ms": int(row["ts"]) if str(row.get("ts", "")).isdigit() else None,
+            "current_price_yuan": price_yuan,
+            "cumulative_amount_yuan": amount_yuan,
+            "raw_volume": raw_volume,
+            "implied_average_price_yuan_if_lots": implied_lots,
+            "implied_average_price_yuan_if_shares": implied_shares,
+            "lots_to_current_price_ratio": implied_lots / price_yuan,
+            "shares_to_current_price_ratio": implied_shares / price_yuan,
+        })
+    return sorted(diagnostics, key=lambda item: item["symbol"])
+
+
+def observe(client, trade_date, observed_at, stale_after_ms, diagnostic_symbols=()):
     capture = ReadOnlyCapture(client)
     projection = RedisQ2ProjectionAdapter(capture).read(
         trade_date, observed_at, freshness_policy=FreshnessPolicy(stale_after_ms=stale_after_ms))
@@ -104,6 +141,8 @@ def observe(client, trade_date, observed_at, stale_after_ms):
         "raw_market_counts": market_counts,
         "raw_phase_counts": phase_counts,
         "raw_value_counts": value_counts,
+        "volume_unit_diagnostics": build_volume_unit_diagnostics(
+            capture.reads, diagnostic_symbols),
         "limitations": ["non-atomic Redis observation", "volume unit not independently verified",
                         "not historical replay or live deployment acceptance"],
         "side_effect_proof": "only smembers/hgetall exposed; TD/claim/notification/SMTP not assembled",
@@ -115,6 +154,11 @@ def main():
     parser.add_argument("--trade-date", required=True)
     parser.add_argument("--stale-after-ms", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--diagnostic-symbols",
+        default="000001,300750,600519",
+        help="bounded comma-separated symbols for audit-only volume dimensional evidence",
+    )
     args = parser.parse_args()
     datetime.strptime(args.trade_date, "%Y-%m-%d")
     if args.stale_after_ms < 0:
@@ -126,7 +170,16 @@ def main():
                          password=os.environ.get("REDIS_PASSWORD"),
                          decode_responses=True, socket_timeout=5, socket_connect_timeout=5)
     try:
-        result = observe(client, args.trade_date, datetime.now(timezone.utc), args.stale_after_ms)
+        diagnostic_symbols = tuple(
+            symbol.strip() for symbol in args.diagnostic_symbols.split(",") if symbol.strip()
+        )
+        result = observe(
+            client,
+            args.trade_date,
+            datetime.now(timezone.utc),
+            args.stale_after_ms,
+            diagnostic_symbols,
+        )
         result["read_completed_at"] = datetime.now(timezone.utc).isoformat()
         with args.output.open("x", encoding="utf-8") as output:
             json.dump(result, output, ensure_ascii=False, sort_keys=True, indent=2)

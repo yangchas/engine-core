@@ -58,3 +58,25 @@ def test_old_quote_not_promoted_to_today():
     assert result["field_error_counts"]["stale"] == 1
     assert result["status"] != "READY"
     assert result["universe_authority"] == "NOT_PROVEN_BY_ACTIVE_SET"
+
+
+def test_volume_unit_diagnostic_exposes_both_hypotheses_without_deciding_contract():
+    row = {
+        "px": "12000",
+        "pc": "11900",
+        "amt": "60000000",
+        "vol": "50000",
+        "ts": str(int(NOW.timestamp() * 1000)),
+    }
+    result = probe.observe(
+        ReadClient(("000001",), row),
+        "2026-09-09",
+        NOW,
+        60000,
+        ("000001",),
+    )
+    diagnostic = result["volume_unit_diagnostics"][0]
+    assert diagnostic["current_price_yuan"] == 12.0
+    assert diagnostic["implied_average_price_yuan_if_lots"] == 12.0
+    assert diagnostic["implied_average_price_yuan_if_shares"] == 1200.0
+    assert "volume_unit" not in diagnostic
