@@ -14,6 +14,8 @@ data, send notifications, or run a strategy.
 |---|---|
 | Host | `cobra-ion` |
 | Runtime | `/home/exedev/services/engine-next/shared/venv/bin/python` |
+| Core commit | `67822fddc762cc82e75e0be6fded1bd7d49f6bfa` |
+| Verification archive SHA-256 | `14a251796a2c43c8cf7ec3581427307197e94bcf26ac769037e1c3ebdd1f8956` |
 | Trade date | `2026-09-10` |
 | Symbols | `000001`, `300750`, `600519` |
 | Q2 projection status | `READY` |
@@ -50,4 +52,3 @@ The pure functions mirror the deployed release's `engine_next/runtime/open_confi
 This validates the extraction and real Redis path. It does not claim that the
 full `engine_next` Opening report has been replaced; loader selection,
 auction-to-opening assembly, and strategy/report migration remain later work.
-
