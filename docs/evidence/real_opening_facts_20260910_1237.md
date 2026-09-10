@@ -14,8 +14,8 @@ data, send notifications, or run a strategy.
 |---|---|
 | Host | `cobra-ion` |
 | Runtime | `/home/exedev/services/engine-next/shared/venv/bin/python` |
-| Core commit | `67822fddc762cc82e75e0be6fded1bd7d49f6bfa` |
-| Verification archive SHA-256 | `14a251796a2c43c8cf7ec3581427307197e94bcf26ac769037e1c3ebdd1f8956` |
+| Core commit | `f3b443050bbb652742fdd9763eb77ce888b37dba` |
+| Verification archive SHA-256 | `e34c801886967f30079049cc9055e92d4273388497703c874e451c926a7f12f1` |
 | Trade date | `2026-09-10` |
 | Symbols | `000001`, `300750`, `600519` |
 | Q2 projection status | `READY` |
@@ -24,7 +24,7 @@ data, send notifications, or run a strategy.
 | Q2 source timestamp | `1789011000000` (same for the bounded symbols) |
 | Core semantic hash | `2a8f6c2af072e2d7d3da665b1e292e7219cd9dd414985f7f1b08fbf9a4b1e97b` |
 | Read boundary | `SMEMBERS/HGETALL` only |
-| Result file SHA-256 | `a374100e8f5873f29bb5b0e920e186ee2ed49591ac9a5f4fd41c380e47cd1544` |
+| Result file SHA-256 | `63d3abab618d9c15b02d958049bdb5cffa209d9a9c16967ce6c6a2be37d894c7` |
 
 ## Observed facts
 
@@ -36,7 +36,7 @@ data, send notifications, or run a strategy.
 
 The result is stored locally as:
 
-`D:\work\Go\tmp\core-real-opening-20260910-123706.json`
+`D:\work\Go\tmp\core-real-opening-20260910-123951-f3b.json`
 
 ## Parity boundary
 
