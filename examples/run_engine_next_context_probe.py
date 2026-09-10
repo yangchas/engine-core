@@ -226,6 +226,12 @@ def _parse_now(value: str, *, timezone_name: str) -> datetime:
     return parsed.replace(tzinfo=ZoneInfo(timezone_name))
 
 
+def _phase_for_request(legacy: Mapping[str, Any], now: datetime) -> Any:
+    """Delegate phase selection to the audited legacy phase authority."""
+
+    return legacy["infer_run_phase"](now)
+
+
 def _load_legacy(legacy_root: Path) -> Mapping[str, Any]:
     resolved = legacy_root.resolve()
     if not (resolved / "engine_next" / "runtime").is_dir():
@@ -239,6 +245,9 @@ def _load_legacy(legacy_root: Path) -> Mapping[str, Any]:
     from engine_next.runtime.intraday_data_hub import (  # type: ignore[import-not-found]
         IntradayDataHub,
     )
+    from engine_next.runtime.startup_self_check import (  # type: ignore[import-not-found]
+        infer_run_phase,
+    )
     from engine_next.strategy_skill_layer.auction_plate_buckets import (  # type: ignore[import-not-found]
         build_auction_plate_bucket_stats,
     )
@@ -247,6 +256,7 @@ def _load_legacy(legacy_root: Path) -> Mapping[str, Any]:
         "IntradayContextBuilder": IntradayContextBuilder,
         "IntradayContextRequest": IntradayContextRequest,
         "IntradayDataHub": IntradayDataHub,
+        "infer_run_phase": infer_run_phase,
         "build_auction_plate_bucket_stats": build_auction_plate_bucket_stats,
     }
 
@@ -282,8 +292,12 @@ def probe(
         builder._write_cached_session_facts = lambda **kwargs: None
         builder._load_fallback_stock_names = lambda requested: {}
         builder._sector_flow_tracker.update_and_evaluate = lambda *args, **kwargs: {}
+        # Use engine_next's own phase authority.  A diagnostic probe must not
+        # label an opening-time read as POSTMARKET merely because the old
+        # context request constructor accepts an explicit phase.
+        phase = _phase_for_request(legacy, now)
         request = legacy["IntradayContextRequest"](
-            phase=legacy["RunPhase"].POSTMARKET,
+            phase=phase,
             trade_date=trade_date,
             previous_trade_date=previous_trade_date,
             symbols=symbols,
@@ -299,6 +313,7 @@ def probe(
             "trade_date": trade_date,
             "previous_trade_date": previous_trade_date,
             "symbols": symbols,
+            "phase": phase.value,
             "snapshot_count": len(context.stock_snapshots),
             "quote_health": {
                 "probe_now_ms": now_ms,

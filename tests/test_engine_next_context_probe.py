@@ -5,6 +5,7 @@ import pytest
 from examples.run_engine_next_context_probe import (
     GuardRedis,
     _parse_now,
+    _phase_for_request,
     _strict_symbols,
 )
 from engine_core import normalize_auction_change_ratio
@@ -28,6 +29,15 @@ def test_context_probe_attaches_explicit_shanghai_timezone_to_local_time():
 def test_context_probe_preserves_aware_timestamp():
     parsed = _parse_now("2026-09-10T01:26:00+00:00", timezone_name="Asia/Shanghai")
     assert parsed == datetime.fromisoformat("2026-09-10T01:26:00+00:00")
+
+
+def test_context_probe_delegates_phase_to_legacy_authority():
+    expected = object()
+    legacy = {"infer_run_phase": lambda now: expected}
+    assert _phase_for_request(
+        legacy,
+        _parse_now("2026-09-10T09:35:00", timezone_name="Asia/Shanghai"),
+    ) is expected
 
 
 def test_guard_redis_blocks_mutation_without_touching_reads():
