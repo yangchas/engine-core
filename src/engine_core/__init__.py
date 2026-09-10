@@ -81,6 +81,7 @@ from .opening import (
     build_open_fact,
     classify_delta,
     classify_sign_state,
+    compute_change_delta_bp,
     compute_delta,
     compute_open_change_pct,
 )
@@ -172,6 +173,7 @@ __all__ = [
     "build_open_fact",
     "classify_delta",
     "classify_sign_state",
+    "compute_change_delta_bp",
     "compute_delta",
     "compute_open_change_pct",
     "Q2FrameReplaySource",

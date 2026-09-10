@@ -7,6 +7,7 @@ from engine_core import (
     build_open_fact,
     classify_delta,
     classify_sign_state,
+    compute_change_delta_bp,
     compute_delta,
     compute_open_change_pct,
 )
@@ -33,6 +34,16 @@ def test_delta_and_sign_state_zero_is_not_reversal():
     assert classify_sign_state(0, 1) == "expanded"
     assert classify_sign_state(-1, 1) == "reversed"
     assert classify_sign_state(None, 1) == "unavailable"
+
+
+@pytest.mark.parametrize(
+    ("opening", "auction", "expected"),
+    [(5.0, 2.0, 300), (1.234, 1.0, 23), (None, 1.0, None)],
+)
+def test_change_delta_bp_matches_legacy_percent_to_bp_conversion(
+    opening, auction, expected
+):
+    assert compute_change_delta_bp(opening, auction) == expected
 
 
 def test_build_open_fact_keeps_independent_statuses_and_units():
@@ -75,4 +86,3 @@ def test_build_open_fact_does_not_infer_limit_state_from_change():
     assert result["status"] == "available"
     assert result["limit_state"] == "unknown"
     assert result["limit_state_status"] == "invalid"
-

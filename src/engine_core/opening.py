@@ -55,6 +55,22 @@ def compute_delta(after: Any, before: Any) -> Optional[float]:
     return after_number - before_number
 
 
+def compute_change_delta_bp(
+    opening_change_pct: Any,
+    auction_change_pct: Any,
+) -> Optional[int]:
+    """Convert an opening-minus-auction percentage delta to basis points.
+
+    Both inputs use the deployed reader's percentage-point unit (``5.0`` is
+    five percent).  The explicit ``* 100`` conversion therefore yields basis
+    points, matching ``engine_next._change_bp``.  Missing or malformed values
+    remain unavailable.
+    """
+
+    delta = compute_delta(opening_change_pct, auction_change_pct)
+    return round(delta * 100.0) if delta is not None else None
+
+
 def classify_delta(delta: Any) -> str:
     """Classify a numeric delta without applying a strategy threshold."""
 
@@ -136,4 +152,3 @@ def build_open_fact(row: Mapping[str, Any]) -> dict[str, Any]:
         "speed_1m": _number(row.get("speed_1m")),
         "status": "available" if valid else "unavailable",
     }
-
