@@ -45,6 +45,12 @@ TD_FIELDS = (
 )
 ANCHOR_CLOCKS = {"0920": "09:20:00", "0924": "09:24:00", "0925": "09:25:00"}
 ANCHOR_ORDER = ("0920", "0924", "0925")
+AUCTION_REQUIRED_FIELDS = (
+    "price_milli",
+    "auction_amount_yuan",
+    "auction_bid_amount_yuan",
+    "auction_ask_amount_yuan",
+)
 
 
 def _strict_date(value: str) -> str:
@@ -91,6 +97,31 @@ def _tagged_rows(rows: Iterable[Sequence[Any] | Mapping[str, Any]]) -> dict[str,
                 raise ValueError("duplicate auction anchor row for tag %s" % tag)
             result[tag] = item
     return result
+
+
+def _state_quality(state: Mapping[str, Any]) -> tuple[float, str]:
+    """Derive snapshot quality from the fields actually used by the facts.
+
+    A projection row can exist while one or more semantic auction fields are
+    absent.  Do not label that row READY merely because the TD row itself was
+    present; coverage and completeness describe the required business state.
+    """
+
+    present = sum(state.get(field) is not None for field in AUCTION_REQUIRED_FIELDS)
+    if present == len(AUCTION_REQUIRED_FIELDS):
+        return 1.0, "READY"
+    if present == 0:
+        return 0.0, "MISSING"
+    return present / float(len(AUCTION_REQUIRED_FIELDS)), "PARTIAL"
+
+
+def _segment_quality(previous: EngineSnapshot, current: EngineSnapshot) -> str:
+    statuses = {previous.completeness, current.completeness}
+    if statuses == {"READY"}:
+        return "READY"
+    if statuses == {"MISSING"}:
+        return "MISSING"
+    return "PARTIAL"
 
 
 def build_shadow_from_rows(
@@ -141,6 +172,7 @@ def build_shadow_from_rows(
             "auction_bid_amount_yuan": row.get("rest_bid_amt_yuan"),
             "auction_ask_amount_yuan": row.get("rest_ask_amt_yuan"),
         }
+        coverage, completeness = _state_quality(state)
         content = {
             "snapshot_id": f"{symbol}:{trade_date}:AUCTION_{tag}",
             "trigger_id": f"AUCTION_{tag}",
@@ -166,8 +198,8 @@ def build_shadow_from_rows(
             raw_market_cross_section={},
             raw_theme_cross_section={},
             windows={},
-            coverage=1.0,
-            completeness="READY",
+            coverage=coverage,
+            completeness=completeness,
             content_hash=semantic_hash(content),
             evidence_refs=(
                 f"{evidence_ref_prefix}/{trade_date}/{symbol}/{tag}",
@@ -183,7 +215,7 @@ def build_shadow_from_rows(
             scope_id=symbol,
             amount_semantics="OBSERVED_STATE",
             volume_semantics="UNKNOWN",
-            coverage_status="READY",
+            coverage_status=_segment_quality(snapshots["0920"], snapshots["0924"]),
             observed_start_time_ms=snapshots["0920"].source_observation_metadata["source_record_time_ms"],
             observed_end_time_ms=snapshots["0924"].source_observation_metadata["source_record_time_ms"],
         ),
@@ -195,7 +227,7 @@ def build_shadow_from_rows(
             scope_id=symbol,
             amount_semantics="OBSERVED_STATE",
             volume_semantics="UNKNOWN",
-            coverage_status="READY",
+            coverage_status=_segment_quality(snapshots["0924"], snapshots["0925"]),
             observed_start_time_ms=snapshots["0924"].source_observation_metadata["source_record_time_ms"],
             observed_end_time_ms=snapshots["0925"].source_observation_metadata["source_record_time_ms"],
         ),

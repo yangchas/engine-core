@@ -55,6 +55,18 @@ def test_real_td_rows_require_all_three_auction_anchors():
         )
 
 
+def test_missing_required_anchor_field_propagates_partial_quality():
+    rows = _rows()
+    rows[0] = (rows[0][0], None, *rows[0][2:])
+    result = MODULE.build_shadow_from_rows(
+        rows, trade_date="2026-09-09", symbol="600519"
+    )
+    assert [item["coverage_status"] for item in result["segments"]] == [
+        "PARTIAL",
+        "READY",
+    ]
+
+
 def test_real_td_rows_reject_mismatched_symbol_and_date():
     rows = _rows()
     with pytest.raises(ValueError, match="symbol"):
