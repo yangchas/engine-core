@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from engine_core import semantic_hash
+
 
 SPEC = importlib.util.spec_from_file_location(
     "real_redis_td_projection_compare",
@@ -87,6 +89,8 @@ def test_real_projection_compares_shared_fields_and_marks_missing_fields():
     assert by_tag["0925"]["status"] == "PARTIAL_COMPARABLE"
     assert by_tag["0925"]["fields"]["rest_ask_amt_yuan"]["status"] == "NOT_COMPARABLE"
     assert len(result["semantic_hash"]) == 64
+    payload = {key: value for key, value in result.items() if key != "semantic_hash"}
+    assert result["semantic_hash"] == semantic_hash(payload)
 
 
 def test_real_projection_does_not_call_absent_top_rows_equal():

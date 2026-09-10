@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
-from engine_core import canonical_hash
+from engine_core import semantic_hash
 
 
 TAGS = ("0920", "0924", "0925")
@@ -246,7 +246,7 @@ def compare_projections(
         "comparisons": comparisons,
         "summary": summary,
     }
-    payload["semantic_hash"] = canonical_hash(payload)
+    payload["semantic_hash"] = semantic_hash(payload)
     return payload
 
 

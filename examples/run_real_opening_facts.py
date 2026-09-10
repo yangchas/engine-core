@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from engine_core import RedisQ2ProjectionAdapter, build_open_fact, canonical_hash
+from engine_core import RedisQ2ProjectionAdapter, build_open_fact, semantic_hash
 
 
 def _symbols(value: str) -> tuple[str, ...]:
@@ -100,7 +100,7 @@ def build_real_opening_facts(
         "projection_hash": projection.content_hash,
         "facts": facts,
         "source_meta": source_meta,
-        "semantic_hash": canonical_hash(semantic_payload),
+        "semantic_hash": semantic_hash(semantic_payload),
         "read_only": True,
         "side_effect_boundary": "Redis SMEMBERS/HGETALL only; no TD/Rabbit/write/repair/notification",
     }
