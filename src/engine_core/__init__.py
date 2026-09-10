@@ -76,6 +76,14 @@ from .facts import (
 from .probe import ProbeStrategy
 from .auction_shadow import AuctionFactShadow, build_auction_fact_shadow
 from .auction import normalize_auction_change_ratio
+from .opening import (
+    OPENING_FACT_CONTRACT_VERSION,
+    build_open_fact,
+    classify_delta,
+    classify_sign_state,
+    compute_delta,
+    compute_open_change_pct,
+)
 from .replay import (
     Q2FrameReplaySource,
     Q2FrameV1,
@@ -160,6 +168,12 @@ __all__ = [
     "AuctionFactShadow",
     "build_auction_fact_shadow",
     "normalize_auction_change_ratio",
+    "OPENING_FACT_CONTRACT_VERSION",
+    "build_open_fact",
+    "classify_delta",
+    "classify_sign_state",
+    "compute_delta",
+    "compute_open_change_pct",
     "Q2FrameReplaySource",
     "Q2FrameV1",
     "TDEventSlice",

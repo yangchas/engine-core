@@ -24,6 +24,8 @@ engine_core 是独立的行情驱动确定性计算内核。
 - Window：半开区间、空窗口质量、单一 revision、`finality/origin`。
 - Data：`PreviousDayStatsFunction`、薄 `ProviderResult` 包装、`TemporalDataGuard`。
 - Facts：纯盘口压力、`SegmentFrame`、相邻段比较；不包含策略结论。
+- Opening：从已部署 `engine_next` 提取的单股开盘涨幅、delta、符号状态和独立
+  limit-state 事实；仍不包含策略阈值或外部 I/O。
 
 这些轮子均可不启动 Engine、不连接 Redis/TD 单独测试。当前版本新增版本化交易日快照：
 运行时只读取离线生成的快照，`PreviousDayStatsFunction` 从请求交易日通过唯一日历
@@ -36,6 +38,10 @@ drain 和 Probe 调用；不包含持久化恢复或 Rabbit 接管。Real Data P
 `SegmentFrame`/`SegmentComparison` 输出可追溯的 P/M/RB/RA/pressure 变化，固定为
 `FACT_ONLY/OBSERVE`。旧系统的正式买盘阈值和转强/转弱规则仍待 legacy consumer
 parity 闭环，不能从事实标签直接升级为交易策略。
+
+Opening 迁移从同一原则开始：`build_open_fact` 只计算可复核的单股事实；`change_pct`
+使用百分数单位，`limit_state` 保持独立状态，不由涨幅推断。真实 Redis Q2 旁路验证脚本
+为 `examples/run_real_opening_facts.py`，仅执行 `SMEMBERS/HGETALL`，不写生产数据。
 
 ## 开发
 
