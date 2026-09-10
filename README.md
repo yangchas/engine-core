@@ -52,6 +52,7 @@ evidence；探针自己的 pytest 文件只使用 fake client 验证探针合同
 当前真实验证范围和未迁移能力见：
 
 - `docs/evidence/real_data_probe/20260909-real-integration-audit.md`
+- `docs/evidence/real_data_probe/20260910-preopen-readonly.md`
 - `docs/ENGINE_NEXT_REAL_DATA_HANDOFF.md`
 
 ## Git 约定
