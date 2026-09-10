@@ -55,6 +55,15 @@ def test_guard_redis_blocks_mutation_without_touching_reads():
     assert guarded.writes == ["set"]
 
 
+def test_guard_redis_allows_hash_length_read_used_by_intraday_context():
+    class FakeRedis:
+        def hlen(self, key):
+            return 3
+
+    guarded = GuardRedis(FakeRedis())
+    assert guarded.hlen("hot-rank") == 3
+
+
 def test_guard_redis_blocks_pipeline_mutation():
     class FakePipeline:
         def get(self, key):
