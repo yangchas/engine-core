@@ -240,7 +240,10 @@ class TDPreviousDayStatsProvider:
         previous_trade_date: str,
     ) -> ProviderResult:
         try:
-            rows = self._fetch_rows(previous_trade_date, tuple(request.symbols))
+            # Materialize the iterable before sampling observation time.  The
+            # legacy access path may return a generator whose actual fetch or
+            # decode work happens during iteration, not at call return.
+            rows = tuple(self._fetch_rows(previous_trade_date, tuple(request.symbols)))
             # Observation time means when this process obtained the result,
             # not when the request started.  Sampling after the legacy access
             # callable returns keeps provenance truthful for slow/blocked IO.

@@ -325,6 +325,25 @@ def test_td_provider_samples_observed_time_after_legacy_fetch_returns():
     assert result.observed_at_ms == 200
 
 
+def test_td_provider_samples_observed_time_after_lazy_rows_are_consumed():
+    clock = [100]
+
+    def lazy_rows(previous_trade_date, symbols):
+        yield {"symbol": "000001", "close": 11.59, "amount": 100}
+        clock[0] = 300
+
+    provider = TDPreviousDayStatsProvider(
+        lazy_rows,
+        observed_at_ms=lambda: clock[0],
+        source_id="td-lazy-observation-order",
+    )
+    result = PreviousDayStatsFunction(provider, TEST_CALENDAR).execute(
+        DataContext("eval-lazy-observation-order", "AUCTION", 300),
+        _request(),
+    )
+    assert result.observed_at_ms == 300
+
+
 def test_td_provider_access_error_remains_error_not_missing():
     def failing_rows(previous_trade_date, symbols):
         raise TimeoutError("legacy TD timeout")
