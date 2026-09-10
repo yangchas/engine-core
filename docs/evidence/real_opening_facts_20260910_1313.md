@@ -2,6 +2,10 @@
 
 ## Result
 
+> Historical note: this run predates commit `130ba28`, which corrected the
+> probe's `semantic_hash` field to use the versioned `SemanticHashV1` contract.
+> Use `real_opening_facts_20260910_1320.md` for the current hash contract.
+
 The latest `engine_core` commit was executed on `cobra-ion` with the shared
 Python 3.12 runtime against the production Redis Q2 projection.  The probe
 was read-only and completed successfully for the bounded symbols
