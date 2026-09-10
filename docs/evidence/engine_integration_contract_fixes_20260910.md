@@ -4,8 +4,8 @@
 
 ```text
 branch: codex/feature-session-engine-integration
-commit: 291d64d511c05fc9140765819fb837e817c7846d
-archive_sha256: 28edba4037fef4293d51e2fa66a942a6267fc88a48e02a90b131e2f645b43203
+commit: 28030149acf15906c594eb39225113ab3e404bef
+archive_sha256: 0f1986707417a64aabeb48d855854e8cd4f1bfca82f0e07e87e7170bcd973bdf
 ```
 
 The archive was extracted to a new temporary directory on `cobra-ion`; no
@@ -14,8 +14,8 @@ production checkout or service was modified.
 ## Local and cobra-ion verification
 
 ```text
-local Python tests:       191 passed
-cobra-ion Python 3.12:    191 passed
+local Python tests:       192 passed
+cobra-ion Python 3.12:    192 passed
 compileall:               PASS (both environments)
 git diff --check:          PASS
 ```
