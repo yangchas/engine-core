@@ -239,11 +239,14 @@ class TDPreviousDayStatsProvider:
         *,
         previous_trade_date: str,
     ) -> ProviderResult:
-        observed = self._observed_at_ms()
-        available = self._available_at_ms() if self._available_at_ms else None
-        availability_status = "VERIFIED" if available is not None else "OBSERVED"
         try:
             rows = self._fetch_rows(previous_trade_date, tuple(request.symbols))
+            # Observation time means when this process obtained the result,
+            # not when the request started.  Sampling after the legacy access
+            # callable returns keeps provenance truthful for slow/blocked IO.
+            observed = self._observed_at_ms()
+            available = self._available_at_ms() if self._available_at_ms else None
+            availability_status = "VERIFIED" if available is not None else "OBSERVED"
             return provider_result_from_previous_day_rows(
                 rows,
                 actual_trade_date=previous_trade_date,
@@ -256,6 +259,11 @@ class TDPreviousDayStatsProvider:
                 evidence_ref=self._evidence_ref,
             )
         except Exception as exc:
+            # An access failure is an ERROR, not an empty dataset.  Keep the
+            # error distinguishable from a successful query with zero rows.
+            observed = self._observed_at_ms()
+            available = None
+            availability_status = "UNKNOWN"
             return ProviderResult(
                 raw_data=None,
                 source_id=self._source_id,
@@ -421,6 +429,14 @@ class PreviousDayStatsFunction:
                 ),
             ),
         )
+        # Preserve physical access/contract failures.  Only a successful
+        # provider result with a non-mapping payload is classified as MISSING.
+        if result.status in (
+            DataStatus.ERROR,
+            DataStatus.INVALID,
+            DataStatus.UNAVAILABLE,
+        ):
+            return result
         if not isinstance(result.data, Mapping):
             return replace(result, status=DataStatus.MISSING, completeness=0.0)
         missing_fields = sorted(

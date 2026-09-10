@@ -305,6 +305,43 @@ def test_td_provider_wraps_existing_access_without_reimplementing_connection():
     assert result.available_at_ms == 1788480000000
 
 
+def test_td_provider_samples_observed_time_after_legacy_fetch_returns():
+    clock = [100]
+
+    def legacy_rows(previous_trade_date, symbols):
+        assert previous_trade_date == "2026-09-03"
+        clock[0] = 200
+        return [{"symbol": "000001", "close": 11.59, "amount": 100}]
+
+    provider = TDPreviousDayStatsProvider(
+        legacy_rows,
+        observed_at_ms=lambda: clock[0],
+        source_id="td-observation-order",
+    )
+    result = PreviousDayStatsFunction(provider, TEST_CALENDAR).execute(
+        DataContext("eval-observation-order", "AUCTION", 200),
+        _request(),
+    )
+    assert result.observed_at_ms == 200
+
+
+def test_td_provider_access_error_remains_error_not_missing():
+    def failing_rows(previous_trade_date, symbols):
+        raise TimeoutError("legacy TD timeout")
+
+    provider = TDPreviousDayStatsProvider(
+        failing_rows,
+        observed_at_ms=lambda: 1788484800000,
+        source_id="td-timeout",
+    )
+    result = PreviousDayStatsFunction(provider, TEST_CALENDAR).execute(
+        DataContext("eval-timeout", "AUCTION", 1788484800000),
+        _request(),
+    )
+    assert result.status is DataStatus.ERROR
+    assert "error" in result.missing_fields
+
+
 def test_observed_provider_does_not_promote_availability_to_source_claim():
     def observed_rows(previous_trade_date, symbols):
         return [{"symbol": "000001", "close": 11.59, "amount": 100}]
