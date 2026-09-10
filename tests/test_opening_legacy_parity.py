@@ -11,6 +11,7 @@ import pytest
 
 from engine_core import (
     build_open_fact,
+    build_opening_transition_fact,
     classify_delta,
     classify_sign_state,
     compute_change_delta_bp,
@@ -139,3 +140,16 @@ def test_delta_and_sign_functions_match_deployed_legacy_vectors(
 )
 def test_change_delta_bp_matches_deployed_legacy_conversion(opening, auction, expected):
     assert compute_change_delta_bp(opening, auction) == expected
+
+
+def test_nonzero_transition_vector_matches_deployed_legacy_delta():
+    result = build_opening_transition_fact(
+        10.09,
+        {
+            "symbol": "000523",
+            "price_milli": 11000,
+            "previous_close_milli": 9901,
+        },
+    )
+    assert result["opening_change_pct"] == pytest.approx(11.0998889, rel=1e-6)
+    assert result["delta_change_bp"] == 101

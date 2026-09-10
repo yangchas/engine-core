@@ -78,7 +78,9 @@ from .auction_shadow import AuctionFactShadow, build_auction_fact_shadow
 from .auction import normalize_auction_change_ratio
 from .opening import (
     OPENING_FACT_CONTRACT_VERSION,
+    OPENING_TRANSITION_FACT_CONTRACT_VERSION,
     build_open_fact,
+    build_opening_transition_fact,
     classify_delta,
     classify_sign_state,
     compute_change_delta_bp,
@@ -170,7 +172,9 @@ __all__ = [
     "build_auction_fact_shadow",
     "normalize_auction_change_ratio",
     "OPENING_FACT_CONTRACT_VERSION",
+    "OPENING_TRANSITION_FACT_CONTRACT_VERSION",
     "build_open_fact",
+    "build_opening_transition_fact",
     "classify_delta",
     "classify_sign_state",
     "compute_change_delta_bp",

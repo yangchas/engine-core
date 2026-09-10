@@ -12,6 +12,7 @@ from typing import Any, Mapping, Optional
 
 
 OPENING_FACT_CONTRACT_VERSION = "OpeningFactV1"
+OPENING_TRANSITION_FACT_CONTRACT_VERSION = "OpeningTransitionFactV1"
 _VALID_LIMIT_STATES = {-1, 0, 1}
 
 
@@ -151,4 +152,33 @@ def build_open_fact(row: Mapping[str, Any]) -> dict[str, Any]:
         "name": str(row.get("name") or ""),
         "speed_1m": _number(row.get("speed_1m")),
         "status": "available" if valid else "unavailable",
+    }
+
+
+def build_opening_transition_fact(
+    auction_change_pct: Any,
+    opening_row: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Compare a normalized auction change with one opening observation.
+
+    ``auction_change_pct`` must already be in percentage-point units.  The
+    function intentionally does not interpret raw ``chg_bp`` or apply a
+    strategy threshold; source-specific unit conversion belongs in the
+    provider/adapter boundary.  Missing either side leaves the delta facts
+    unavailable rather than manufacturing zero.
+    """
+
+    opening = build_open_fact(opening_row)
+    auction = _number(auction_change_pct)
+    opening_change = opening["change_pct"]
+    delta_pct = compute_delta(opening_change, auction)
+    return {
+        "symbol": opening["symbol"],
+        "auction_change_pct": auction,
+        "opening_change_pct": opening_change,
+        "delta_change_pct": delta_pct,
+        "delta_change_bp": compute_change_delta_bp(opening_change, auction),
+        "delta_state": classify_delta(delta_pct),
+        "sign_state": classify_sign_state(auction, opening_change),
+        "status": "available" if delta_pct is not None else "unavailable",
     }

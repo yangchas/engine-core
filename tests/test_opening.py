@@ -4,7 +4,9 @@ import pytest
 
 from engine_core import (
     OPENING_FACT_CONTRACT_VERSION,
+    OPENING_TRANSITION_FACT_CONTRACT_VERSION,
     build_open_fact,
+    build_opening_transition_fact,
     classify_delta,
     classify_sign_state,
     compute_change_delta_bp,
@@ -86,3 +88,40 @@ def test_build_open_fact_does_not_infer_limit_state_from_change():
     assert result["status"] == "available"
     assert result["limit_state"] == "unknown"
     assert result["limit_state_status"] == "invalid"
+
+
+def test_build_opening_transition_fact_is_fact_only_and_unit_explicit():
+    result = build_opening_transition_fact(
+        0.0,
+        {
+            "symbol": "600519",
+            "price_milli": 1292000,
+            "previous_close_milli": 1290880,
+        },
+    )
+    assert result["auction_change_pct"] == 0.0
+    assert result["opening_change_pct"] == pytest.approx(0.08676251859196515)
+    assert result["delta_change_pct"] == pytest.approx(0.08676251859196515)
+    assert result["delta_change_bp"] == 9
+    assert result["delta_state"] == "expanded"
+    assert result["sign_state"] == "expanded"
+    assert result["status"] == "available"
+    assert OPENING_TRANSITION_FACT_CONTRACT_VERSION == "OpeningTransitionFactV1"
+
+
+@pytest.mark.parametrize(
+    ("auction_change_pct", "opening_row"),
+    [
+        (None, {"symbol": "600519", "price_milli": 1292000, "previous_close_milli": 1290880}),
+        (0.0, {"symbol": "600519", "price_milli": 0, "previous_close_milli": 1290880}),
+    ],
+)
+def test_build_opening_transition_fact_does_not_fill_missing_delta(
+    auction_change_pct, opening_row
+):
+    result = build_opening_transition_fact(auction_change_pct, opening_row)
+    assert result["delta_change_pct"] is None
+    assert result["delta_change_bp"] is None
+    assert result["delta_state"] == "unavailable"
+    assert result["sign_state"] == "unavailable"
+    assert result["status"] == "unavailable"
