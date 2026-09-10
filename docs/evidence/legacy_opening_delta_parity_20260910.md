@@ -43,6 +43,15 @@ The comparison covered:
 Remote direct differential result: all fields and labels matched.  Local
 pytest and remote pytest both pass with the same fixture vectors.
 
+## Real Redis sample
+
+On the same server runtime, the legacy helper and the new wheel were also
+called on the live Redis Q2 projection for `2026-09-10` and symbols
+`000001`, `300750`, and `600519`.  All three rows returned `MATCH`, including
+the source timestamp, opening percentage-point change, 2-minute amount,
+independent limit-state status, speed value, and overall availability status.
+The read path used `SMEMBERS/HGETALL` only; no production state was changed.
+
 ## Boundary statement
 
 `OpeningFactV1` remains a fact-only contract.  No legacy threshold,
