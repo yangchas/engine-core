@@ -54,6 +54,7 @@ def _fetch_td_rows(
 ) -> list[dict[str, Any]]:
     """Use the legacy TD query shape without importing its mutating service."""
 
+    previous_trade_date = _date(previous_trade_date)
     if not symbols:
         raise ValueError("a bounded symbol set is required for the live probe")
     import taos  # type: ignore[import-not-found]
