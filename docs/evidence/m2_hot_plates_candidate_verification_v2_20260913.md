@@ -99,6 +99,11 @@ service remained active with `MainPID=3181295`, `NRestarts=0`; its
 `cache:hot_plates_meta:2026-09-10` still lacks the v2 fields, confirming that
 no candidate was deployed.
 
+The controlled-audit bridge was rechecked after this run: liveness returned
+`{"status":"ok"}`, but readiness returned HTTP 500. The absence of a live
+auditor process together with that readiness failure confirms an infrastructure
+block rather than a completed audit verdict.
+
 ## Decision
 
 ```text
