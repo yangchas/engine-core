@@ -51,6 +51,7 @@
 - [VERIFIED] 2026-09-10 在 cobra-ion 通过既有 `taos` 客户端对 2026-09-09/600519 的 0920/0924/0925 `auction_snapshot_v2` 执行只读事实旁路；业务锚点与 source record time 分离，Segment/Comparison 输出保持 `FACT_ONLY/PARTIAL`，不产生策略结论或外部副作用。
 - [VERIFIED] 2026-09-10 对 `000001/000002/600519` 的 Redis auction projection 与 TD `auction_snapshot_v2` 进行了字段受限交叉验真：可比较的 amount/match 与 bid/rest_bid 全部 MATCH，快照 `meta.ts` 与 TD `ts` 精确对齐；Redis ask 字段当前不可比时保持 `NOT_COMPARABLE`。
 - [VERIFIED] 2026-09-10 真实 Redis `market:auction:{date}:{0920,0924,0925}` Top-200 投影可直接经 source-specific normalization 进入 `engine_core` Segment/Comparison；600519 的价格、竞价金额和买方金额变化稳定复现，Redis 缺失的 ask 字段保持 `None/UNAVAILABLE`，结果固定为 `FACT_ONLY/PARTIAL`。
+- [VERIFIED] 2026-09-13 以 Cobra 生产审计目录中真实捕获的 `2026-09-07` Redis 0920/0925 文件重跑旧窄读取器：两标签各 200 行、600519/300308/688825 六行选中样本、重复 `(tag,symbol)=0`、Guard 写入 `0`。该证据证明非空 captured projection 可安全只读读取；由于没有 0924 且每标签仅 Top-200，不宣称相邻段、全市场快照或 live Redis 保留能力。详见 `docs/evidence/engine_next_auction_loader_real_capture_20260907.md`。
 - [UNKNOWN] cobra-ion `daily_kline.volume` 的零值语义；Probe 样本为 0，不能直接当作 verified zero。
 - [VERIFIED] CurrentMarketState 只保存当前可观测数据、轻量 projection 和窗口原始累计状态。
 - [VERIFIED] 2026-09-04 在 cobra-ion 只读 Redis Q2 子集（64 symbols）已通过当前内存 Engine 完成 `MARKET_UPDATE -> TIMER -> EngineSnapshot -> ProbeStrategy`；该次显式 freshness policy 下 1 条记录 stale，因此 projection 为 PARTIAL，不代表生产默认 freshness。
