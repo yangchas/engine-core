@@ -368,7 +368,7 @@ class DataRequest:
 def _freeze_request_sequence(value: Any, field_name: str) -> Tuple[Any, ...]:
     """Copy an ordered request sequence without inventing set order."""
 
-    if isinstance(value, (str, bytes, bytearray, set, frozenset)):
+    if isinstance(value, (str, bytes, bytearray, set, frozenset, Mapping)):
         raise TypeError("%s must be an ordered iterable" % field_name)
     try:
         return tuple(value)

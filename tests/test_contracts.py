@@ -226,6 +226,15 @@ def test_data_request_copies_mutable_sequences_at_the_contract_boundary():
             knowledge_as_of_ms=1,
             symbols={"600519"},
         )
+    with pytest.raises(TypeError, match="ordered iterable"):
+        DataRequest(
+            request_id="r",
+            function_id="f",
+            trade_date="2026-09-04",
+            effective_as_of_ms=1,
+            knowledge_as_of_ms=1,
+            symbols={"600519": "SH"},
+        )
 
 
 @pytest.mark.parametrize(
