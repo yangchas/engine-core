@@ -4,7 +4,8 @@
 
 - 仓库：`engine_core`
 - 分支：`codex/feature-session-engine-integration`
-- 验证 commit：`30c7c12`（完整 SHA 以 Git 为准）
+- 验证代码 commit：`30c7c12`（`30c7c120b65f98e6f39f5a6dc23136c6e42bd124`）
+- 当前文档/归档 HEAD：`8a89eda`
 - 代码基线：父提交 `3f8982c` 的请求序列契约修复；本次新增 Replay 公开时间/投影边界测试，未修改生产链、Engine 运行逻辑或数据源。
 - 工作树：验证开始前干净。
 
@@ -26,8 +27,8 @@ PASS
 使用当前仓库归档上传到 Cobra-ion 独立 `/tmp` 目录，在生产共享 Python 3.12.3 环境执行；未安装包、未修改 release、未触碰生产数据。
 
 ```text
-archive sha256 = E610476756EA6E571411B92DCA89045F5A6C95E1FB2813B15718230215341C17
-pytest         = 313 passed in 1.62s
+archive sha256 = 800E40EEBA979316BEE5EC69052737C16C0F17A7424ACC22EC55803BF0F34275
+pytest         = 313 passed in 1.76s
 compileall     = PASS
 verify_rc      = 0 (pytest/compileall; archive is intentionally outside a Git worktree)
 ```
