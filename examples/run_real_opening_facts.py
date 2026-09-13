@@ -18,7 +18,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from engine_core import RedisQ2ProjectionAdapter, build_open_fact, semantic_hash
+from engine_core import DataStatus, RedisQ2ProjectionAdapter, build_open_fact, semantic_hash
 
 
 def _date_text(value: str) -> str:
@@ -59,6 +59,18 @@ def build_real_opening_facts(
         observed_at,
         stale_after_ms=stale_after_ms,
     )
+    if projection.status is DataStatus.MISSING:
+        freshness_status = "MISSING"
+    elif projection.status is DataStatus.INVALID:
+        freshness_status = "INVALID"
+    elif projection.status in {DataStatus.ERROR, DataStatus.UNAVAILABLE}:
+        freshness_status = projection.status.value
+    elif projection.status is DataStatus.STALE or projection.stale_symbols:
+        freshness_status = "STALE_OR_MIXED"
+    elif projection.status is DataStatus.PARTIAL:
+        freshness_status = "PARTIAL"
+    else:
+        freshness_status = "FRESH"
     facts: dict[str, dict[str, Any]] = {}
     source_meta: dict[str, dict[str, Any]] = {}
     for symbol in symbols:
@@ -105,9 +117,7 @@ def build_real_opening_facts(
         "projection_status": projection.status,
         "projection_consistency": projection.consistency_status,
         "coverage": projection.coverage,
-        "freshness_status": (
-            "FRESH" if not projection.stale_symbols else "STALE_OR_MIXED"
-        ),
+        "freshness_status": freshness_status,
         "freshness_policy_stale_after_ms": stale_after_ms,
         "expected_symbol_count": len(projection.expected_symbols),
         "quote_count": len(projection.quotes),

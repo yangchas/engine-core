@@ -62,6 +62,24 @@ def test_missing_q2_symbol_is_unavailable_not_zero_filled():
     assert result["facts"]["000001"]["reason"] == "symbol_not_in_q2_cohort"
 
 
+def test_empty_q2_cohort_is_not_reported_as_fresh():
+    class EmptyRedis(FakeRedis):
+        def smembers(self, key):
+            self.reads.append(("smembers", key))
+            return set()
+
+    result = build_real_opening_facts(
+        EmptyRedis(),
+        trade_date="2026-09-04",
+        symbols=("600519",),
+        observed_at=datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc),
+        stale_after_ms=300_000,
+    )
+    assert result["projection_status"] == "MISSING"
+    assert result["coverage"] == 0.0
+    assert result["freshness_status"] == "MISSING"
+
+
 def test_opening_runner_requires_strict_trade_date():
     with pytest.raises(ValueError, match="strict"):
         _date_text("2026-9-4")
