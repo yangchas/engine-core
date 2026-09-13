@@ -4,7 +4,7 @@
 
 ```text
 repository branch = codex/feature-session-engine-integration
-commit            = 4e1615063a66bd0a5b2d09c05429b87c14976d52
+commit            = e4be8a0b7202bbfc93bf6666528dfbb8557ebfd7
 remote host       = cobra-ion
 python            = 3.12.3 (/home/exedev/services/engine-next/shared/venv/bin/python)
 timezone          = Asia/Shanghai
