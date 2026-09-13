@@ -38,3 +38,14 @@
 ## 下一步停止线
 
 不新增 Provider、Replay 框架或 Engine 能力。下一个有效动作是获得一个真实交易日的 Redis Q2/auction 0920、0924、0925 只读捕获，或明确记录不可获得；随后再决定第一条 Auction Shadow 规则是否具备 legacy consumer oracle。
+
+## 新增 Engine Integration 审计发现
+
+当前 Engine 为保证同一 session 内 `evaluation_id` 只能注册一次，使用永久增长的
+`_registered_evaluation_ids` 集合，并以 `evaluation_registration_limit=4096` 作为
+硬上限。一个合成的 4097 次无数据 `PULSE` drain 已复现：第 4097 个评估触发
+`RuntimeError: evaluation registration capacity exhausted`。这不是当前轮子测试的
+失败，也没有在本次文档提交中擅自改变 ownership 语义；但它意味着当前内存 Engine
+不能直接承诺覆盖完整长交易日的高频评估。进入正式替代前必须由 Engine Integration
+阶段明确安全方案（例如按 session 生命周期分片或持久化去重游标），并补充长时段
+容量测试；在此之前不得宣称 production replacement ready。
