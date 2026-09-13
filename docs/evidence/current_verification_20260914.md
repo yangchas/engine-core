@@ -4,15 +4,15 @@
 
 - 仓库：`engine_core`
 - 分支：`codex/feature-session-engine-integration`
-- 验证 commit：`800487427f28eb58ad7e8f30a2256ed95d7c3dee`
-- 本次代码变更：`DataRequest` 在契约边界复制并冻结 `symbols`、`required_fields`，拒绝无序集合；未修改生产链、Engine 运行逻辑或数据源。
+- 验证 commit：`e0946f6a4b06311c1a63fa7073383a59b950d215`
+- 代码基线：父提交 `8004874` 的 `DataRequest` 契约修复；本次新增 signal、日历、Q2 freshness、Session/Window 半开区间边界测试，未修改生产链、Engine 运行逻辑或数据源。
 - 工作树：验证开始前干净。
 
 ## 本地验证
 
 ```text
 python -m pytest -q -p no:cacheprovider
-307 passed in 1.13s
+311 passed in 1.11s
 
 python -m compileall -q src tests
 PASS
@@ -26,8 +26,8 @@ PASS
 使用当前仓库归档上传到 Cobra-ion 独立 `/tmp` 目录，在生产共享 Python 3.12.3 环境执行；未安装包、未修改 release、未触碰生产数据。
 
 ```text
-archive sha256 = A954460455E09203C327DD65C68BE24E70158861C1617FD3D15D0A3EEBC886F1
-pytest         = 307 passed in 1.65s
+archive sha256 = AB76D8420A9C18FDA95FC90B5A5B8A7BDEE823F2651A07554ABEA1C61130DFE3
+pytest         = 311 passed in 1.75s
 compileall     = PASS
 verify_rc      = 0
 ```

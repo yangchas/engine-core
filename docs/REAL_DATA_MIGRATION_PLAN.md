@@ -4,7 +4,7 @@
 
 ### 2026-09-14 当前验证覆盖
 
-- 当前代码身份为 `800487427f28eb58ad7e8f30a2256ed95d7c3dee`，本地与 Cobra-ion 同提交离线套件均为 `307 passed`，`compileall` 通过。此前本节中的 `306 passed`、`6275853`、`ed3547c` 是历史证据，不能覆盖当前提交；最新证据见 `docs/evidence/current_verification_20260914.md`。
+- 当前代码身份为 `e0946f6a4b06311c1a63fa7073383a59b950d215`，本地与 Cobra-ion 同提交离线套件均为 `311 passed`，`compileall` 通过。此前本节中的 `306/307 passed`、`6275853`、`ed3547c`、`8004874` 是历史证据，不能覆盖当前提交；最新证据见 `docs/evidence/current_verification_20260914.md`。
 - 2026-09-14 开盘前对 Cobra-ion Redis 执行真实只读 Q2 探针，目标日期 active cohort 为空，返回 `MISSING/EMPTY_UNIVERSE`，不是 live coverage 通过。ground-truth capture 进程已运行但尚未到交易时段采样点。
 - 当前仍不具备 `engine_next` 替代条件：缺真实当日 0920/0924/0925 成对证据、完整 source/runtime batch membership、正式报告 owner 和长会话幂等/内存边界。不得因 `307 passed` 或真实连接成功打正式替代标签。
 

@@ -4,7 +4,7 @@
 
 ### 2026-09-14 current verification override
 
-- [VERIFIED] 当前可执行 commit 已更新为 `800487427f28eb58ad7e8f30a2256ed95d7c3dee`；本地与 cobra-ion 生产共享 Python 3.12.3 临时归档均执行 `307 passed`，`compileall` 通过。最新验证证据见 `docs/evidence/current_verification_20260914.md`。此前文档中的 `306 passed`、`ed3547c` 和 `6275853` 均为历史记录，不代表当前代码身份。
+- [VERIFIED] 当前可执行 commit 已更新为 `e0946f6a4b06311c1a63fa7073383a59b950d215`；本地与 cobra-ion 生产共享 Python 3.12.3 临时归档均执行 `311 passed`，`compileall` 通过。最新验证证据见 `docs/evidence/current_verification_20260914.md`。此前文档中的 `306/307 passed`、`ed3547c`、`8004874` 和 `6275853` 均为历史记录，不代表当前代码身份。
 - [VERIFIED] Cobra-ion 2026-09-14 开盘前真实 Redis 只读探针连接成功，但 `q2:active:20260914` 为空，结果为 `MISSING/EMPTY_UNIVERSE`、coverage `0.0`；两次同一观察 Engine hash 一致。该结果只证明真实连接和 fail-closed，不证明 live Q2 正向覆盖。
 - [OBSERVED] 2026-09-14 ground-truth capture 进程 `PID=4014185` 已启动并等待 09:20/09:24/09:25 采集点，当前尚无交易时段 artifact。`engine-next` 与 `t1-v2-live` 保持 active，Cobra 根分区约 83% 使用率、约 3.1GB 可用。
 - [BLOCKER] `DeterministicEngine._registered_evaluation_ids` 在一个 session 内无界增长，`signal_id` 去重只有有限内存窗口；当前只读影子可接受，但在正式替代 `engine_next` 前必须明确 session 生命周期或持久化幂等方案。
