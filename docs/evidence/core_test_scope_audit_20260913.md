@@ -2,7 +2,13 @@
 
 ## 结论
 
-当前分支 `codex/feature-session-engine-integration` 的代码验证对象为 `6275853072b4686deb3ccbe78764f0a452208adb`；其后仅有证据文档提交，未修改 `src/` 或 `tests/`。该代码对象在本地通过 `305 passed`、`compileall` 和 `git diff --check`。这些测试主要是纯函数、注入式 Provider、冻结 fixture 和确定性 replay；它们不是每次运行都连接生产数据。
+当前分支 `codex/feature-session-engine-integration` 的可执行代码对象为
+`e21bf00caf8a2a278dc7b233c04e0be3d8ed0250`。相对于此前审计对象
+`6275853072b4686deb3ccbe78764f0a452208adb`，唯一代码树变化是新增
+`tests/conftest.py`，用于从仓库根目录和工作区根目录稳定收集测试；`src/`
+未变。当前对象在本地通过 `305 passed`、`compileall` 和 `git diff --check`。
+这些测试主要是纯函数、注入式 Provider、冻结 fixture 和确定性 replay；它们
+不是每次运行都连接生产数据。
 
 本次在 `cobra-ion` 使用当前提交的临时副本执行了真实只读探针：
 

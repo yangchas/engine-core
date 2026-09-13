@@ -4,7 +4,7 @@
 
 ### 2026-09-13 当前继续执行状态
 
-- 当前 `engine_core` 代码验证对象为 `6275853072b4686deb3ccbe78764f0a452208adb`；其后仅有证据文档提交，未修改 `src/` 或 `tests/`。本地与 `cobra-ion` 对该代码对象均为 `305 passed`、`compileall` PASS，工作树干净。远端复验使用 Python 3.12.3、`TZ=Asia/Shanghai`、`PYTHONHASHSEED=0`。
+- 当前可执行代码对象为 `e21bf00caf8a2a278dc7b233c04e0be3d8ed0250`。相对于此前的 `6275853`，唯一代码树变化是新增 `tests/conftest.py`，用于保证从仓库根目录和工作区根目录收集测试时都能稳定导入 `examples`；`src/` 未变。该对象在本地仓库根目录、工作区根目录和 `cobra-ion` Python 3.12.3 临时副本均为 `305 passed`、`compileall` PASS；远端复验使用 `TZ=Asia/Shanghai`、`PYTHONHASHSEED=0`。其后提交仅为证据文档，不改变可执行代码。
 - 已用当前 commit 在 Cobra 生产共享 Python 3.12 环境重跑真实参考源探针：6/6 connector connection PASS；仅 BaoStock 日线同时闭合请求/返回交易日，其余来源仍为 OBSERVED，不能直接进入历史 runtime/replay。
 - 已用 Cobra 生产审计目录中的真实 Redis 捕获文件重跑旧窄读取器：2026-09-07 的 0920/0925 各 200 行、无重复、无写入；该证据不是 live retention、完整市场快照或 0920→0924 相邻段证明，0924 当前仍 UNAVAILABLE。
 - 当前不打 `v0.3.1-engine-integration.1`：仍缺真实 0924 相邻捕获、Rabbit/runtime batch membership、Redis/TD writer projection 的上游一致性证据及旧正式 consumer oracle。下一步优先补证据，不新增 Provider/Replay/Engine 框架。
