@@ -44,6 +44,18 @@ the `2026-09-11` snapshot keys had expired by probe time.
    non-empty historical pair. A future real trading-day capture or TD
    projection remains necessary for the first non-empty migration fixture.
 
+## Extract-before-rewrite constraints
+
+The legacy method reads `market:auction:{yyyymmdd}:{tag}` hashes, taking
+`summary` and `top_amount`. It uses `summary.ts` as the row timestamp and
+derives marginal deltas in memory. It does not expose a Rabbit batch id,
+source sequence, per-row source timestamp, or ask-side amount. Malformed or
+missing JSON is converted to an empty result, and the legacy normalizer
+zero-fills absent numeric values. Those behaviors are useful observations for
+parity, but are **not** frozen as the new core semantic contract: a future
+Provider extraction must preserve missing/unknown values explicitly and must
+not claim event ordering or full-market coverage from this top-N projection.
+
 ## Status
 
 `LEGACY_AUCTION_SNAPSHOT_READ_BOUNDARY = OBSERVED`.
