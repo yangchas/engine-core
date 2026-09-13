@@ -2,7 +2,7 @@
 
 ## Result
 
-The default suite currently has **313 tests**. It is a deterministic offline
+The default suite currently has **315 tests**. It is a deterministic offline
 contract/fixture suite. All tests pass locally and in a Cobra-ion Python 3.12
 isolated archive.
 
@@ -16,9 +16,9 @@ are reachable at test time.
 
 | Scope | Collected tests | Meaning |
 |---|---:|---|
-| Core/offline contract, wheel, engine and replay tests | 270 | repeatable behavior against fixtures and in-memory doubles |
+| Core/offline contract, wheel, engine and replay tests | 272 | repeatable behavior against fixtures and in-memory doubles |
 | `test_real_*` contract/runner tests | 43 | deterministic tests of real-data command boundaries; fake/override inputs |
-| Total | 313 | no implicit external I/O |
+| Total | 315 | no implicit external I/O |
 
 The `test_real_*` count includes real-named tests such as cache inventory,
 reference probes, Redis/TD comparison, opening facts, and auction shadow. The

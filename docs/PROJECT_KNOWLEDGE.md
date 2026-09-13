@@ -4,7 +4,7 @@
 
 ### 2026-09-14 current verification override
 
-- [VERIFIED] 当前可执行 commit 已更新为 `30c7c12`；本地与 cobra-ion 生产共享 Python 3.12.3 临时归档均执行 `313 passed`，`compileall` 通过。最新验证证据见 `docs/evidence/current_verification_20260914.md`。此前文档中的 `306/307/311 passed`、`3f8982c`、`ed3547c`、`8004874`、`e0946f6` 和 `6275853` 均为历史记录，不代表当前代码身份。
+- [VERIFIED] 当前可执行 commit 已更新为 `0b6021c`；本地与 cobra-ion 生产共享 Python 3.12.3 临时归档均执行 `315 passed`，`compileall` 通过。最新验证证据见 `docs/evidence/current_verification_20260914.md`。此前文档中的 `306/307/311/313 passed`、`30c7c12`、`3f8982c`、`ed3547c`、`8004874`、`e0946f6` 和 `6275853` 均为历史记录，不代表当前代码身份。
 - [VERIFIED] Cobra-ion 2026-09-14 开盘前真实 Redis 只读探针连接成功，但 `q2:active:20260914` 为空，结果为 `MISSING/EMPTY_UNIVERSE`、coverage `0.0`；两次同一观察 Engine hash 一致。该结果只证明真实连接和 fail-closed，不证明 live Q2 正向覆盖。
 - [OBSERVED] 2026-09-14 ground-truth capture 进程 `PID=4014185` 已启动并等待 09:20/09:24/09:25 采集点，当前尚无交易时段 artifact。`engine-next` 与 `t1-v2-live` 保持 active，Cobra 根分区约 83% 使用率、约 3.1GB 可用。
 - [OBSERVED] Cobra-ion 既有 `t1_v2.log` 在 2026-09-11 09:19–09:25 持续记录 batches/source_in/ack/ticks/last_ts_ms，证明运行计数连续；日志没有 batch_id、`emit_a25` 或 writer 顺序，因此 `FINAL_TICK_BATCH_MEMBERSHIP` 仍 UNKNOWN。详见 `docs/evidence/t1_runtime_progress_20260911.md`。
