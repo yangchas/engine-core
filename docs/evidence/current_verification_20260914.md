@@ -4,8 +4,8 @@
 
 - 仓库：`engine_core`
 - 分支：`codex/feature-session-engine-integration`
-- 验证 commit：`e0946f6a4b06311c1a63fa7073383a59b950d215`
-- 代码基线：父提交 `8004874` 的 `DataRequest` 契约修复；本次新增 signal、日历、Q2 freshness、Session/Window 半开区间边界测试，未修改生产链、Engine 运行逻辑或数据源。
+- 验证 commit：`3f8982ca4481e54b8b7f468c492b66a7f34cf6c9`
+- 代码基线：父提交 `8004874` 的 `DataRequest` 契约修复；本次新增 signal、日历、Q2 freshness、Session/Window 半开区间边界测试，并拒绝 mapping 作为请求序列，未修改生产链、Engine 运行逻辑或数据源。
 - 工作树：验证开始前干净。
 
 ## 本地验证
@@ -26,7 +26,7 @@ PASS
 使用当前仓库归档上传到 Cobra-ion 独立 `/tmp` 目录，在生产共享 Python 3.12.3 环境执行；未安装包、未修改 release、未触碰生产数据。
 
 ```text
-archive sha256 = AB76D8420A9C18FDA95FC90B5A5B8A7BDEE823F2651A07554ABEA1C61130DFE3
+archive sha256 = 6B2BAB9E6318818B5956F4BE57A7E7C58D6A226486AF0B6E5D10FDF24612C978
 pytest         = 311 passed in 1.75s
 compileall     = PASS
 verify_rc      = 0
