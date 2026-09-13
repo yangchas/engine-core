@@ -62,6 +62,7 @@
 - [VERIFIED] 当前真实 600519 竞价事实只纳入 `price_milli`、`auction_amount_yuan`、`auction_bid_amount_yuan`、`auction_ask_amount_yuan`；Segment A `[09:15,09:20)` 为 PARTIAL，Segment B `[09:20,09:24)` 为 READY，主题/市场宽度不进入该最小案例。
 - [VERIFIED] 竞价事实比较的最小可迁移对象是 `P/M/RB/RA` 的段间变化；它属于 Fact，不等同于 `turn_strong`、`BUY` 或其他策略结论。
 - [VERIFIED] `AuctionFactShadow` 只对同一标的相邻 Segment 输出 P/M/RB/RA/pressure 端点变化和事实比较标签，固定为 `FACT_ONLY/OBSERVE`；它不迁移旧系统的买盘阈值、转强/转弱、撤单或波动策略。
+- [VERIFIED] 2026-09-13 Gate B 在 cobra-ion 对真实 TD `600519` 的 0920/0924/0925 三锚点执行两次只读 shadow：Segment、Comparison、semantic/evidence hash 完全一致，结果保持 `PARTIAL/FACT_ONLY/OBSERVE`；运行只发出 TD `SELECT`，不涉及 Redis/TD 写入、Rabbit、repair、通知或策略 effect。详见 `docs/evidence/gate_b_fact_shadow_20260913.md`。
 - [VERIFIED] 600519 的 09:20→09:24 相邻竞价事实已通过独立 source-formula 差异测试：`P_delta=-2,060` milli、`M_delta=4,407,516` yuan、压力由 `-129,960` 变为 `648,770`（压力差 `778,730`）；该测试只验证事实轮子，不验证策略阈值。
 - [UNKNOWN] 旧系统中分散出现的 `bid_amount > ask_amount * 1.5`、撤单和波动阈值尚未完成当前生产路径、单位、consumer 和状态生命周期的闭环验证，不得直接迁移为正式策略。
 - [OBSERVED] 2026-09-10 生产 `t1-v2-live.service` 实际入口为 `C/t1_v2/main.cpp → RuntimeLoop`；旧 `C/analysis.cpp`/`C/t1.cpp` 中的 `bid_amount > ask_amount * 1.5` 不在已确认的活动 t1_v2 入口内，不能充当当前 live strategy oracle。
