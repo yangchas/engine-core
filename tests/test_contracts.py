@@ -56,6 +56,66 @@ def test_deep_freeze_fails_closed_for_unknown_mutable_objects():
         deep_freeze(MutablePayload())
 
 
+def test_market_data_envelope_freezes_nested_payload_and_provenance():
+    from engine_core.contracts import MarketDataEnvelope, PayloadKind, Provenance
+
+    payload = {"quotes": [{"symbol": "600519", "px": 1297540}]}
+    provenance = Provenance(
+        source_id="fixture",
+        source_kind="fixture",
+        source_schema="Q2FrameV1",
+        source_trade_date="2026-09-03",
+        effective_at_ms=1,
+        observed_at_ms=2,
+        evidence_ref="fixture://q2/600519",
+    )
+    envelope = MarketDataEnvelope(
+        envelope_id="env-1",
+        payload_kind=PayloadKind.L2_PROJECTION_SNAPSHOT,
+        source_id="fixture",
+        schema_version=1,
+        effective_time_ms=1,
+        observed_time_ms=2,
+        generation=None,
+        generation_kind="OBSERVATION_COHORT",
+        payload=payload,
+        provenance=provenance,
+    )
+    payload["quotes"].append({"symbol": "000001", "px": 1000})
+    assert len(envelope.payload["quotes"]) == 1
+    with pytest.raises(TypeError):
+        envelope.payload["quotes"] = ()
+
+
+def test_engine_snapshot_freezes_all_projection_mappings():
+    from engine_core.contracts import EngineSnapshot
+
+    symbols = {"600519": {"price_milli": 1297540}}
+    metadata = {"oldest_source_time_ms": 1, "newest_source_time_ms": 2}
+    snapshot = EngineSnapshot(
+        snapshot_id="snap-1",
+        trigger_id="TEST",
+        logical_time_ms=2,
+        session_id="2026-09-03",
+        phase="AUCTION",
+        market_state_revision=1,
+        source_observation_metadata=metadata,
+        symbol_states=symbols,
+        raw_market_cross_section={"observed_symbol_count": 1},
+        raw_theme_cross_section={},
+        windows={},
+        coverage=1.0,
+        completeness="READY",
+        content_hash="hash",
+    )
+    symbols["600519"]["price_milli"] = 0
+    metadata["newest_source_time_ms"] = 99
+    assert snapshot.symbol_states["600519"]["price_milli"] == 1297540
+    assert snapshot.source_observation_metadata["newest_source_time_ms"] == 2
+    with pytest.raises(TypeError):
+        snapshot.symbol_states["600519"] = {}
+
+
 def test_hash_kinds_are_distinct_and_versioned():
     value = {"a": 1}
     assert semantic_hash(value) != evidence_hash(value)
