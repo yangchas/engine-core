@@ -187,6 +187,38 @@ def test_data_result_hash_is_derived_from_immutable_semantics():
     assert unavailable.content_hash != original_hash
 
 
+def test_data_request_copies_mutable_sequences_at_the_contract_boundary():
+    from dataclasses import FrozenInstanceError
+    from engine_core.contracts import DataRequest
+
+    symbols = ["600519"]
+    required_fields = ["close_by_symbol"]
+    request = DataRequest(
+        request_id="r",
+        function_id="previous_day_stats",
+        trade_date="2026-09-04",
+        effective_as_of_ms=1,
+        knowledge_as_of_ms=1,
+        symbols=symbols,
+        required_fields=required_fields,
+    )
+    symbols.append("000001")
+    required_fields.append("amount_by_symbol")
+    assert request.symbols == ("600519",)
+    assert request.required_fields == ("close_by_symbol",)
+    with pytest.raises(FrozenInstanceError):
+        request.symbols += ("000001",)
+    with pytest.raises(TypeError, match="ordered iterable"):
+        DataRequest(
+            request_id="r",
+            function_id="f",
+            trade_date="2026-09-04",
+            effective_as_of_ms=1,
+            knowledge_as_of_ms=1,
+            symbols={"600519"},
+        )
+
+
 @pytest.mark.parametrize(
     ("field_name", "value"),
     (

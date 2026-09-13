@@ -347,6 +347,34 @@ class DataRequest:
     catalog_version: Optional[str] = None
     purpose: str = ""
 
+    def __post_init__(self) -> None:
+        """Freeze caller-provided request sequences at the contract boundary.
+
+        ``frozen=True`` protects attribute reassignment but does not protect a
+        list supplied to a tuple-annotated field.  Requests participate in
+        deterministic provider calls, so retain the declared order while
+        copying both sequences to immutable tuples.
+        """
+
+        symbols = _freeze_request_sequence(self.symbols, "symbols")
+        required_fields = _freeze_request_sequence(
+            self.required_fields,
+            "required_fields",
+        )
+        object.__setattr__(self, "symbols", symbols)
+        object.__setattr__(self, "required_fields", required_fields)
+
+
+def _freeze_request_sequence(value: Any, field_name: str) -> Tuple[Any, ...]:
+    """Copy an ordered request sequence without inventing set order."""
+
+    if isinstance(value, (str, bytes, bytearray, set, frozenset)):
+        raise TypeError("%s must be an ordered iterable" % field_name)
+    try:
+        return tuple(value)
+    except TypeError as exc:
+        raise TypeError("%s must be an ordered iterable" % field_name) from exc
+
 
 @dataclass(frozen=True)
 class DataResult:
