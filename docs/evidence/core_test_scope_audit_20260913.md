@@ -3,10 +3,11 @@
 ## 结论
 
 当前分支 `codex/feature-session-engine-integration` 的可执行代码对象为
-`e21bf00caf8a2a278dc7b233c04e0be3d8ed0250`。相对于此前审计对象
-`6275853072b4686deb3ccbe78764f0a452208adb`，唯一代码树变化是新增
-`tests/conftest.py`，用于从仓库根目录和工作区根目录稳定收集测试；`src/`
-未变。当前对象在本地通过 `305 passed`、`compileall` 和 `git diff --check`。
+`340b5234a3d92869c315cf1205bf4569e14cf516`。相对于此前审计对象
+`e21bf00caf8a2a278dc7b233c04e0be3d8ed0250`，仅修正 7 个真实 Core 探针的
+独立运行路径，使其从仓库目录直接执行时能导入本地 `src/engine_core`；业务
+源码和测试语义未变。当前对象在本地通过 `305 passed`、`compileall` 和
+`git diff --check`，各真实 Core 探针的 `--help` 入口也通过。
 这些测试主要是纯函数、注入式 Provider、冻结 fixture 和确定性 replay；它们
 不是每次运行都连接生产数据。
 

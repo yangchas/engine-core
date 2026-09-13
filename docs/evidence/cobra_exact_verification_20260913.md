@@ -4,7 +4,7 @@
 
 ```text
 repository branch = codex/feature-session-engine-integration
-commit            = e21bf00caf8a2a278dc7b233c04e0be3d8ed0250
+commit            = 340b5234a3d92869c315cf1205bf4569e14cf516
 remote host       = cobra-ion
 python            = 3.12.3 (/home/exedev/services/engine-next/shared/venv/bin/python)
 timezone          = Asia/Shanghai
@@ -19,11 +19,11 @@ TDengine table, Rabbit consumer/ACK path or notification path was changed.
 ## Commands and result
 
 ```text
-python -m pytest -q       = 305 passed in 1.67s
+python -m pytest -q       = 305 passed in 1.76s
 python -m compileall -q src tests = PASS
 ```
 
-The local run on the same commit also produced `305 passed in 1.04s`,
+The local run on the same commit also produced `305 passed in 1.06s`,
 `compileall` PASS and `git diff --check` PASS. Test count is evidence for the
 same deterministic suite only; it is not evidence that every test connects to
 production data. Real TD/Redis/provider probes remain separate read-only

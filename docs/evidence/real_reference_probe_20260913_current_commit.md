@@ -2,7 +2,7 @@
 
 ## Identity
 
-- Core archive tested: `e21bf00caf8a2a278dc7b233c04e0be3d8ed0250`
+- Core archive tested: `340b5234a3d92869c315cf1205bf4569e14cf516`
 - Legacy runtime: `engine-next` release `e272842c8f490f55a1b017badb71e71904ce008e`
 - Server: `cobra-ion`
 - Python: `3.12.3` (`/home/exedev/services/engine-next/shared/venv/bin/python`)
