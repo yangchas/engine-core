@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -55,10 +56,15 @@ def _summarize(
     rows = list(getattr(result, "rows", ()) or ())
     selected = _select_rows(rows, symbols)
     counts: dict[str, int] = {tag: 0 for tag in tags}
+    row_keys: list[tuple[str, str]] = []
     for row in rows:
         tag = str(row.get("tag") or "")
         if tag in counts:
             counts[tag] += 1
+        row_keys.append((tag, str(row.get("symbol") or "")))
+    duplicate_keys = sorted(
+        key for key, count in Counter(row_keys).items() if count > 1 and key[0] and key[1]
+    )
     # The legacy result field is unfortunately named ``redis_keys_written``
     # even though this read method populates it with keys it read. Preserve the
     # evidence without repeating that name as a new write claim.
@@ -71,6 +77,7 @@ def _summarize(
         "requested_symbols": symbols,
         "row_count": len(rows),
         "row_count_by_tag": counts,
+        "duplicate_row_keys": duplicate_keys,
         "selected_rows": selected,
         "source": str(getattr(result, "source", "") or ""),
         "notes": tuple(str(item) for item in (getattr(result, "notes", ()) or ())),

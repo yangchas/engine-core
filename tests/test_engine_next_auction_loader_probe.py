@@ -52,3 +52,23 @@ def test_loader_probe_preserves_legacy_key_evidence_without_claiming_writes():
     assert result["legacy_keys_reported"] == ("market:auction:20260911:0925",)
     assert result["guard_writes"] == ()
     assert result["row_count_by_tag"] == {"0920": 0, "0924": 0, "0925": 1}
+    assert result["duplicate_row_keys"] == []
+
+
+def test_loader_probe_surfaces_duplicate_tag_symbol_rows():
+    result = _summarize(
+        SimpleNamespace(
+            rows=[
+                {"tag": "0925", "symbol": "600519"},
+                {"tag": "0925", "symbol": "600519"},
+            ],
+            source="redis_snapshots",
+            notes=(),
+            redis_keys_written=(),
+        ),
+        trade_date="2026-09-13",
+        tags=("0925",),
+        symbols=("600519",),
+        writes=(),
+    )
+    assert result["duplicate_row_keys"] == [("0925", "600519")]
