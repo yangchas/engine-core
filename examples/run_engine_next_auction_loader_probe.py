@@ -110,7 +110,14 @@ def probe(
 
     # Importing the guard from the context probe keeps the write command list
     # identical across both migration probes without importing any legacy code.
-    from run_engine_next_context_probe import GuardRedis
+    try:
+        from run_engine_next_context_probe import GuardRedis
+    except ModuleNotFoundError:
+        # ``python examples/script.py`` puts the examples directory itself on
+        # sys.path, while ``python -m examples.script`` resolves it as a
+        # namespace package. Support both invocation forms without importing
+        # any legacy runtime module here.
+        from examples.run_engine_next_context_probe import GuardRedis
 
     inner = redis.Redis(
         host=os.environ.get("REDIS_HOST", "127.0.0.1"),
