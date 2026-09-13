@@ -2,7 +2,7 @@
 
 ## 结论
 
-当前分支 `codex/feature-session-engine-integration` 的提交 `a11ffa8` 在本地通过 `299 passed`、`compileall` 和 `git diff --check`。这些测试主要是纯函数、注入式 Provider、冻结 fixture 和确定性 replay；它们不是每次运行都连接生产数据。
+当前分支 `codex/feature-session-engine-integration` 的提交 `eb39f5e` 在本地通过 `299 passed`、`compileall` 和 `git diff --check`。这些测试主要是纯函数、注入式 Provider、冻结 fixture 和确定性 replay；它们不是每次运行都连接生产数据。
 
 本次在 `cobra-ion` 使用当前提交的临时副本执行了真实只读探针：
 
