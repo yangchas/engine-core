@@ -89,6 +89,7 @@
 - [OBSERVED] 生产 `engine_next.runtime.intraday_data_hub.load_auction_snapshots()` 只读取三个 Redis Top-200 投影并返回约 600 行；其 `IntradayFetchResult.redis_keys_written` 字段会列出读取过的 key，实际本次调用无写入。`recover_auction_anchor()` 是另一条可能执行 Redis 回写的路径，engine_core 旁路不得调用。
 - [OBSERVED] 生产 engine_next commit 自带测试显式运行结果为 289 PASS / 32 FAIL；release 文件与 commit 在 CRLF 归一化后相同，失败源于 commit 内测试/实现漂移、漏打 fixture 和乱码断言，不能作为全绿发布门禁。
 - [OBSERVED] 2026-09-10 在 cobra-ion 对生产 `engine_next` 的 `IntradayContextBuilder` 执行少量标的只读 guard 审计：snapshot/auction/session-fact 读取成功且本次无 Redis/TD/网络写入；但 builder 默认路径包含 hot-rank 缓存、session-fact 写入、SectorFlowTracker 写入、F10 fallback 和 auction anchor recovery 等潜在副作用，不能直接当作 engine_core 的只读 Provider。
+- [VERIFIED] 2026-09-13 对当前 Cobra release `e272842c8f490f55a1b017badb71e71904ce008e` 完成 provider→writer→reader 只读审计：KaipanConnector 复用 `StockAnalyzer`/pykaipan，IntradayDataHub 负责 hot_plates/hot_rank/yest_limit_pool/limit_truth Redis 写入，app_main/prior_limit_cache_contract 负责读取与 payload-hash 校验；实测日期分区均为 hash 且有界扫描 HLEN 一致，但当前元数据仍缺 verified `schema_version`/`available_at_ms`/field_units，因此 core 对 hot plates/昨日涨停池返回 UNAVAILABLE 属于正确 fail-closed，M2 继续 BLOCKED，未改生产。
 - [OBSERVED] 同次审计通过显式注入 `now=2026-09-09 09:26` 复现旧 freshness 逻辑对未来 Q2 source timestamp（约 15:00:03）使用 `max(now - source_ts, 0)` 并报告 age=0/fresh；这不是现场 09:26 墙钟证据，而是可重复的时间安全测试。该旧读取路径时间安全结论为 FAIL；engine_core 继续以 `max_future_skew_ms` 失败关闭为目标，本分支不修改生产代码。
 
 ## 5. Replay Capabilities
