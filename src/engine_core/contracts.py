@@ -368,6 +368,9 @@ class DataResult:
     provenance: Tuple[Provenance, ...] = ()
 
     def __post_init__(self) -> None:
+        _validate_epoch_ms("observed_at_ms", self.observed_at_ms, required=True)
+        _validate_epoch_ms("effective_at_ms", self.effective_at_ms)
+        _validate_epoch_ms("available_at_ms", self.available_at_ms)
         object.__setattr__(self, "data", deep_freeze(self.data))
         object.__setattr__(self, "missing_fields", tuple(self.missing_fields))
         object.__setattr__(self, "missing_symbols", tuple(self.missing_symbols))
@@ -379,6 +382,22 @@ class DataResult:
             "content_hash",
             semantic_hash(_data_result_semantic_value(self)),
         )
+
+
+def _validate_epoch_ms(
+    field_name: str,
+    value: Optional[int],
+    *,
+    required: bool = False,
+) -> None:
+    """Reject sentinel/ambiguous timestamps at the immutable data boundary."""
+
+    if value is None:
+        if required:
+            raise ValueError("%s is required" % field_name)
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("%s must be a positive epoch-millisecond integer" % field_name)
 
 
 @dataclass(frozen=True)

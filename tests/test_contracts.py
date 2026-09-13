@@ -185,3 +185,35 @@ def test_data_result_hash_is_derived_from_immutable_semantics():
         result.data["value"] = 2
     unavailable = replace(result, status=DataStatus.UNAVAILABLE)
     assert unavailable.content_hash != original_hash
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("observed_at_ms", 0),
+        ("observed_at_ms", -1),
+        ("observed_at_ms", True),
+        ("effective_at_ms", 0),
+        ("available_at_ms", -1),
+    ),
+)
+def test_data_result_rejects_invalid_epoch_millisecond_contract(field_name, value):
+    from engine_core.contracts import DataResult, DataStatus
+
+    values = {
+        "request_id": "r",
+        "function_id": "f",
+        "status": DataStatus.READY,
+        "data": {"value": 1},
+        "actual_source": "fixture",
+        "requested_trade_date": "2026-09-04",
+        "actual_trade_date": "2026-09-03",
+        "effective_at_ms": 1,
+        "available_at_ms": 1,
+        "observed_at_ms": 1,
+        "schema_version": 1,
+        "completeness": 1.0,
+    }
+    values[field_name] = value
+    with pytest.raises(ValueError, match=field_name):
+        DataResult(**values)
