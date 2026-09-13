@@ -106,19 +106,28 @@ def run_real_hot_plates(
     redis_kwargs: dict[str, Any],
     fetch_rows_override: Any = None,
     redis_summary_override: dict[str, Any] | None = None,
+    calendar_trading_dates: Iterable[str] | None = None,
+    calendar_source_id: str = "explicit_probe_calendar",
+    calendar_evidence_ref: str | None = None,
 ) -> dict[str, Any]:
     trade_date = _date(trade_date)
     observed_at_ms = int(observed_at.timestamp() * 1000)
+    calendar_dates = tuple(
+        _date(value) for value in (calendar_trading_dates or (trade_date,))
+    )
+    if trade_date not in calendar_dates:
+        raise ValueError("trade date is absent from supplied calendar")
+    calendar_bounds = tuple(sorted(set(calendar_dates)))
     calendar = build_calendar_snapshot(
-        [trade_date],
+        calendar_bounds,
         version="real-hot-plates-probe-" + trade_date,
-        declared_valid_from=trade_date,
-        declared_valid_to=trade_date,
-        source_guard_valid_from=trade_date,
-        source_guard_valid_to=trade_date,
-        source_id="explicit_probe_calendar",
+        declared_valid_from=calendar_bounds[0],
+        declared_valid_to=calendar_bounds[-1],
+        source_guard_valid_from=calendar_bounds[0],
+        source_guard_valid_to=calendar_bounds[-1],
+        source_id=calendar_source_id,
         observed_at_ms=observed_at_ms,
-        evidence_ref="probe://explicit-hot-plate-trade-date",
+        evidence_ref=calendar_evidence_ref or "probe://explicit-hot-plate-trade-date",
     )
     redis_summary: dict[str, Any] = redis_summary_override or {}
 
