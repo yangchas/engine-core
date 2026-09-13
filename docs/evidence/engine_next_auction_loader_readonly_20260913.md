@@ -9,7 +9,9 @@ call recovery/fallback paths, access TDengine or network connectors, consume
 RabbitMQ, or write Redis/TDengine.
 
 The probe source is `examples/run_engine_next_auction_loader_probe.py` and was
-run from commit `aa10253` (`codex/feature-session-engine-integration`).
+run from commit `ad68f4e` (`codex/feature-session-engine-integration`). The
+probe also reports duplicate `(tag, symbol)` rows instead of silently hiding
+that input anomaly.
 
 ## Cobra-ion verification
 
