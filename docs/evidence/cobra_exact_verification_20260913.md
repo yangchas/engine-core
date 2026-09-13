@@ -37,4 +37,3 @@ same_test_suite          = PASS
 production_mutation      = 0
 formal_milestone_tag     = not created
 ```
-
