@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from examples.run_real_opening_facts import build_real_opening_facts
+from examples.run_real_opening_facts import _date_text
 
 
 class FakeRedis:
@@ -57,3 +58,8 @@ def test_missing_q2_symbol_is_unavailable_not_zero_filled():
     )
     assert result["facts"]["000001"]["status"] == "unavailable"
     assert result["facts"]["000001"]["reason"] == "symbol_not_in_q2_cohort"
+
+
+def test_opening_runner_requires_strict_trade_date():
+    with pytest.raises(ValueError, match="strict"):
+        _date_text("2026-9-4")

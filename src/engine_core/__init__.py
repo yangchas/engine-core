@@ -56,6 +56,20 @@ from .data import (
     prefetch_ready_data,
     provider_result_from_previous_day_rows,
 )
+from .previous_day_limit_pool import (
+    PREVIOUS_DAY_LIMIT_POOL_CONTRACT_VERSION,
+    PreviousDayLimitPoolFunction,
+    PreviousDayLimitPoolProvider,
+    RedisPreviousDayLimitPoolProvider,
+    normalize_previous_day_limit_pool_rows,
+)
+from .hot_plates import (
+    HOT_PLATES_CONTRACT_VERSION,
+    HotPlatesFunction,
+    HotPlatesProvider,
+    RedisHotPlatesProvider,
+    normalize_hot_plates_rows,
+)
 from .engine import DeterministicEngine
 from .facts import (
     BreadthFacts,
@@ -167,6 +181,16 @@ __all__ = [
     "normalize_previous_day_stats_rows",
     "prefetch_ready_data",
     "provider_result_from_previous_day_rows",
+    "PREVIOUS_DAY_LIMIT_POOL_CONTRACT_VERSION",
+    "PreviousDayLimitPoolFunction",
+    "PreviousDayLimitPoolProvider",
+    "RedisPreviousDayLimitPoolProvider",
+    "normalize_previous_day_limit_pool_rows",
+    "HOT_PLATES_CONTRACT_VERSION",
+    "HotPlatesFunction",
+    "HotPlatesProvider",
+    "RedisHotPlatesProvider",
+    "normalize_hot_plates_rows",
     "ProbeStrategy",
     "AuctionFactShadow",
     "build_auction_fact_shadow",

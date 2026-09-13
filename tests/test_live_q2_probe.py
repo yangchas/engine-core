@@ -2,6 +2,8 @@ import importlib.util
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 spec = importlib.util.spec_from_file_location(
     "live_probe", Path(__file__).parents[1] / "examples" / "run_live_q2_probe.py")
 probe = importlib.util.module_from_spec(spec)
@@ -31,6 +33,11 @@ def test_empty_universe_is_not_live_coverage_pass():
     assert result["same_observation_engine_deterministic"]
     assert result["read_operation_counts"] == {"smembers": 2}
     assert result["raw_field_presence_counts"]["px"] == 0
+
+
+def test_live_probe_requires_strict_trade_date():
+    with pytest.raises(ValueError, match="strict"):
+        probe._date_text("2026-9-9")
 
 
 def test_real_zero_preserved_and_required_missing_reported():

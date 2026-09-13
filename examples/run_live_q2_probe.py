@@ -17,6 +17,13 @@ from engine_core import (
 )
 
 
+def _date_text(value):
+    parsed = datetime.strptime(value, "%Y-%m-%d").date()
+    if parsed.isoformat() != value:
+        raise ValueError("trade date must be strict YYYY-MM-DD")
+    return value
+
+
 class ReadOnlyCapture:
     """Expose only adapter read operations and retain the exact returned input."""
 
@@ -161,7 +168,7 @@ def main():
         help="bounded comma-separated symbols for audit-only volume dimensional evidence",
     )
     args = parser.parse_args()
-    datetime.strptime(args.trade_date, "%Y-%m-%d")
+    trade_date = _date_text(args.trade_date)
     if args.stale_after_ms < 0:
         parser.error("stale-after-ms must be nonnegative")
     import redis  # Linux runtime dependency only; no connection during imports/tests.
@@ -176,14 +183,18 @@ def main():
         )
         result = observe(
             client,
-            args.trade_date,
+            trade_date,
             datetime.now(timezone.utc),
             args.stale_after_ms,
             diagnostic_symbols,
         )
         result["read_completed_at"] = datetime.now(timezone.utc).isoformat()
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        content = json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
         with args.output.open("x", encoding="utf-8") as output:
-            json.dump(result, output, ensure_ascii=False, sort_keys=True, indent=2)
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     finally:
         client.close()

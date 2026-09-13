@@ -18,6 +18,13 @@ from typing import Any
 from engine_core import RedisQ2ProjectionAdapter, build_open_fact, semantic_hash
 
 
+def _date_text(value: str) -> str:
+    parsed = datetime.strptime(value, "%Y-%m-%d").date()
+    if parsed.isoformat() != value:
+        raise ValueError("trade date must be strict YYYY-MM-DD")
+    return value
+
+
 def _symbols(value: str) -> tuple[str, ...]:
     result = tuple(sorted({item.strip() for item in value.split(",") if item.strip()}))
     if not result:
@@ -113,6 +120,7 @@ def main() -> int:
     parser.add_argument("--stale-after-ms", type=int, default=None)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    trade_date = _date_text(args.trade_date)
     observed_at = datetime.now(timezone.utc)
     import redis  # type: ignore[import-not-found]
 
@@ -128,14 +136,18 @@ def main() -> int:
     try:
         result = build_real_opening_facts(
             client,
-            trade_date=args.trade_date,
+            trade_date=trade_date,
             symbols=_symbols(args.symbols),
             observed_at=observed_at,
             stale_after_ms=args.stale_after_ms,
         )
         result["completed_at"] = datetime.now(timezone.utc).isoformat()
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        content = json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
         with args.output.open("x", encoding="utf-8") as output:
-            json.dump(result, output, ensure_ascii=False, sort_keys=True, indent=2)
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     finally:
         client.close()

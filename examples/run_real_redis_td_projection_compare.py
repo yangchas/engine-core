@@ -50,6 +50,22 @@ def _epoch_ms(value: Any) -> int | None:
         return int(aware.astimezone(timezone.utc).timestamp() * 1000)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(float(text))
+        except ValueError:
+            pass
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        aware = parsed if parsed.tzinfo is not None and parsed.utcoffset() is not None else parsed.replace(
+            tzinfo=ZoneInfo("Asia/Shanghai")
+        )
+        return int(aware.astimezone(timezone.utc).timestamp() * 1000)
     return None
 
 
@@ -74,6 +90,7 @@ def _read_redis(client: Any, trade_date: str, symbols: Sequence[str]) -> dict[st
             "summary": _parse_json(raw["summary"], field=f"{key}.summary") if raw.get("summary") else None,
             "top_amount": _parse_json(raw["top_amount"], field=f"{key}.top_amount") if raw.get("top_amount") else [],
         }
+        snapshots[tag]["top_amount_count"] = len(snapshots[tag]["top_amount"])
     anchor_key = f"market:auction:anchor:{date_tag}"
     anchor_raw = client.get(anchor_key)
     anchor = _parse_json(anchor_raw, field=anchor_key) if anchor_raw else {}
@@ -165,9 +182,11 @@ def compare_projections(
                 continue
             redis_row: Mapping[str, Any] | None
             redis_source: str
+            comparability_reason: str
             if tag == ANCHOR_TAG and isinstance(anchor, Mapping):
                 redis_row = anchor
                 redis_source = "redis_anchor"
+                comparability_reason = ""
                 redis_fields = {
                     "match_amt_yuan": redis_row.get("amount"),
                     "rest_bid_amt_yuan": redis_row.get("bid_amount"),
@@ -176,6 +195,7 @@ def compare_projections(
             elif isinstance(top_row, Mapping):
                 redis_row = top_row
                 redis_source = "redis_top_amount"
+                comparability_reason = ""
                 redis_fields = {
                     "match_amt_yuan": redis_row.get("auction_amount_yuan"),
                     "rest_bid_amt_yuan": redis_row.get("bid_amount_yuan"),
@@ -184,6 +204,14 @@ def compare_projections(
             else:
                 redis_row = None
                 redis_source = "unavailable"
+                snapshot = redis_data["snapshots"].get(tag, {})
+                top_rows = snapshot.get("top_amount", []) if isinstance(snapshot, Mapping) else []
+                top_count = snapshot.get("top_amount_count", len(top_rows)) if isinstance(snapshot, Mapping) else 0
+                comparability_reason = (
+                    "symbol_outside_redis_top_amount_window"
+                    if top_count
+                    else "redis_top_amount_unavailable"
+                )
                 redis_fields = {}
             redis_meta = redis_data["snapshots"].get(tag, {}).get("meta")
             redis_meta_ts = redis_meta.get("ts") if isinstance(redis_meta, Mapping) else None
@@ -202,7 +230,14 @@ def compare_projections(
                 redis_value = redis_fields.get(field)
                 td_value = td_row.get(td_field)
                 if redis_value is None:
+                    if redis_row is None:
+                        field_reason = comparability_reason
+                    elif redis_source == "redis_anchor":
+                        field_reason = "redis_anchor_field_absent"
+                    else:
+                        field_reason = "redis_top_amount_field_absent"
                     fields[field] = {"status": "NOT_COMPARABLE", "redis": None, "td": td_value}
+                    fields[field]["reason"] = field_reason
                 else:
                     fields[field] = {
                         "status": "MATCH" if redis_value == td_value else "MISMATCH",
@@ -222,6 +257,7 @@ def compare_projections(
                 "symbol": symbol,
                 "tag": tag,
                 "redis_source": redis_source,
+                "comparability_reason": comparability_reason,
                 "td_source": "td:market_data1.auction_snapshot_v2",
                 "td_source_record_time": td_row["source_record_time"],
                 "redis_snapshot_time_ms": redis_time_ms,

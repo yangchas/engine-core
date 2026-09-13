@@ -88,6 +88,7 @@ def test_real_projection_compares_shared_fields_and_marks_missing_fields():
     assert by_tag["0920"]["status"] == "MATCH"
     assert by_tag["0925"]["status"] == "PARTIAL_COMPARABLE"
     assert by_tag["0925"]["fields"]["rest_ask_amt_yuan"]["status"] == "NOT_COMPARABLE"
+    assert by_tag["0925"]["fields"]["rest_ask_amt_yuan"]["reason"] == "redis_anchor_field_absent"
     assert len(result["semantic_hash"]) == 64
     payload = {key: value for key, value in result.items() if key != "semantic_hash"}
     assert result["semantic_hash"] == semantic_hash(payload)
@@ -101,6 +102,32 @@ def test_real_projection_does_not_call_absent_top_rows_equal():
     assert result["summary"]["not_comparable"] == 3
     assert result["summary"]["mismatch"] == 0
     assert all(item["status"] == "NOT_COMPARABLE" for item in result["comparisons"])
+    assert all(
+        item["comparability_reason"] == "symbol_outside_redis_top_amount_window"
+        for item in result["comparisons"]
+    )
+
+
+def test_real_projection_uses_declared_top_amount_count_after_selected_capture():
+    redis_data = {
+        "trade_date": "2026-09-09",
+        "symbols": ("000001",),
+        "snapshots": {
+            tag: {
+                "meta": {"ts": ts},
+                "top_amount": [{"symbol": "600519"}],
+                "top_amount_count": 1,
+            }
+            for tag, ts in (("0920", 1788916800000), ("0924", 1788917040000), ("0925", 1788917100000))
+        },
+        "anchor": {"rows": {}},
+    }
+    rows = [(*row[:5], "000001", *row[6:]) for row in _td_rows()]
+    result = MODULE.compare_projections(redis_data, rows)
+    assert all(
+        item["comparability_reason"] == "symbol_outside_redis_top_amount_window"
+        for item in result["comparisons"]
+    )
 
 
 def test_real_projection_reports_shared_field_mismatch():
@@ -110,6 +137,11 @@ def test_real_projection_reports_shared_field_mismatch():
 
     assert result["summary"]["mismatch"] == 1
     assert {item["tag"] for item in result["comparisons"] if item["status"] == "MISMATCH"} == {"0925"}
+
+
+def test_real_projection_parses_driver_timestamp_strings_after_json_capture():
+    assert MODULE._epoch_ms("2026-09-09 09:20:00+08:00") == 1788916800000
+    assert MODULE._epoch_ms("2026-09-09T01:20:00+00:00") == 1788916800000
 
 
 @pytest.mark.parametrize("value", ["20260909", "2026-9-09", "2026-09-9"])
