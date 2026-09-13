@@ -90,3 +90,10 @@ def test_local_time_ms_requires_strict_hhmmss():
         local_time_ms("2026-09-04", "9:20:00")
     with pytest.raises(ValueError, match="strict HH:MM:SS"):
         local_time_ms("2026-09-04", "09:2:00")
+
+
+def test_window_spec_contains_is_half_open():
+    spec = WindowSpec("w", 10, 20)
+    assert spec.contains(10)
+    assert spec.contains(19)
+    assert not spec.contains(20)

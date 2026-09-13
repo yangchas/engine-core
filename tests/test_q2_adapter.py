@@ -12,6 +12,7 @@ from engine_core.q2 import (
     classify_equity,
     normalize_q2,
     normalize_symbol,
+    validate_q2,
 )
 
 
@@ -69,6 +70,27 @@ def test_q2_adapter_preserves_verified_rolling_metrics():
     assert quote.vector_5m_bp == -120
     assert quote.to_mapping()["amount_5m_yuan"] == 28_000_000
     assert quote.to_mapping()["vector_5m_bp"] == -120
+
+
+def test_validate_q2_exposes_stale_and_future_issues_directly():
+    quote = normalize_q2(
+        "000001",
+        {"mk": "sz", "px": "1000", "pc": "990", "amt": "1", "ts": "1788484800000"},
+    )
+    errors = validate_q2(
+        quote,
+        observed_at_ms=1788484800002,
+        trade_date="2026-09-04",
+        freshness_policy=FreshnessPolicy(stale_after_ms=1, max_future_skew_ms=0),
+    )
+    assert errors == ("stale",)
+    future_errors = validate_q2(
+        quote,
+        observed_at_ms=1788484799000,
+        trade_date="2026-09-04",
+        freshness_policy=FreshnessPolicy(stale_after_ms=None, max_future_skew_ms=0),
+    )
+    assert "future_ts" in future_errors
 
 
 def test_q2_adapter_reports_projection_cohort_and_missing_symbol():

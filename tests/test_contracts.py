@@ -7,6 +7,8 @@ from engine_core.contracts import (
     canonical_json,
     deep_freeze,
     evidence_hash,
+    EngineSignal,
+    SignalKind,
     semantic_hash,
     trunc_div,
 )
@@ -58,6 +60,13 @@ def test_hash_kinds_are_distinct_and_versioned():
     value = {"a": 1}
     assert semantic_hash(value) != evidence_hash(value)
     assert semantic_hash(value, schema_version=1) != semantic_hash(value, schema_version=2)
+
+
+def test_signal_priority_and_sort_key_are_explicit_contracts():
+    assert SignalKind.MARKET_UPDATE.priority < SignalKind.DATA_READY.priority
+    assert SignalKind.DATA_READY.priority < SignalKind.TIMER.priority
+    signal = EngineSignal("s", 100, 7, SignalKind.TIMER, {})
+    assert signal.sort_key == (100, SignalKind.TIMER.priority, 7, "s")
 
 
 def test_trunc_div_matches_c_toward_zero_for_signed_values():

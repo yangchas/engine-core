@@ -118,3 +118,10 @@ def test_clock_parser_rejects_loose_or_invalid_boundaries():
         SessionInterval("AUCTION", "09:15:00", "25:00:00")
     with pytest.raises(ValueError, match="non-empty"):
         SessionInterval("AUCTION", "09:15:00", "09:15:00")
+
+
+def test_session_interval_contains_is_half_open():
+    interval = SessionInterval("AUCTION", "09:15:00", "09:30:00")
+    assert interval.contains_ms_of_day(interval.start_ms_of_day)
+    assert interval.contains_ms_of_day(interval.end_exclusive_ms_of_day - 1)
+    assert not interval.contains_ms_of_day(interval.end_exclusive_ms_of_day)

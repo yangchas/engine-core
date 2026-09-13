@@ -39,6 +39,10 @@ def test_parse_trade_date_rejects_datetime_and_loose_strings():
 
 def test_previous_and_next_trade_days_use_guard_dates_at_declared_edges():
     calendar = _calendar()
+    assert calendar.declared_from == date(2024, 1, 1)
+    assert calendar.declared_to == date(2026, 12, 31)
+    assert calendar.guard_from == date(2023, 12, 1)
+    assert calendar.guard_to == date(2027, 1, 31)
     assert calendar.previous_trade_day("2024-01-02") == date(2023, 12, 29)
     assert calendar.next_trade_day("2026-12-31") == date(2027, 1, 4)
     assert calendar.is_trading_day("2024-01-01") is False
