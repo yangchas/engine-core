@@ -2,20 +2,20 @@
 
 ## 结论
 
-当前分支 `codex/feature-session-engine-integration` 的代码验证对象为 `c9aeb65be0496c82fda561de291865d2e1830aed`；其后仅有证据文档提交，未修改 `src/` 或 `tests/`。该代码对象在本地通过 `300 passed`、`compileall` 和 `git diff --check`。这些测试主要是纯函数、注入式 Provider、冻结 fixture 和确定性 replay；它们不是每次运行都连接生产数据。
+当前分支 `codex/feature-session-engine-integration` 的代码验证对象为 `6275853072b4686deb3ccbe78764f0a452208adb`；其后仅有证据文档提交，未修改 `src/` 或 `tests/`。该代码对象在本地通过 `305 passed`、`compileall` 和 `git diff --check`。这些测试主要是纯函数、注入式 Provider、冻结 fixture 和确定性 replay；它们不是每次运行都连接生产数据。
 
 本次在 `cobra-ion` 使用当前提交的临时副本执行了真实只读探针：
 
 - `daily_kline`：真实 TD SELECT 返回 2026-09-10 的 600519、000001 两行；日期和字段归一化成功，但因没有历史 `available_at` 证据，结果按合同为 `UNAVAILABLE`，不是 Provider 失败。
 - `auction_snapshot_v2`：真实 TD SELECT 返回 2026-09-10/600519 的 0920、0924、0925 三个投影行。0920→0924 为 `PARTIAL`（价格缺失），0924→0925 为 `READY`；P/M/RB/RA 与 pressure 事实可重复，状态保持 `FACT_ONLY/OBSERVE`。
 - Redis Q2：当前为周日，`q2:active:*` 为空；真实 adapter 正确返回 `MISSING/EMPTY_UNIVERSE`，两次 Engine 运行 hash 相同。不能把空 cohort 当作 live coverage 通过。
-- Cobra 同一提交重复上述三项：`300 passed`；TD 竞价 shadow hash 为 `abb13e59f6c087d20cd0fae9b92b29476db9e1cb0e1d0fd48222495b1a23fb32`，昨日数据仍为 `UNAVAILABLE/available_at_unknown`，Q2 仍为 `MISSING/EMPTY_UNIVERSE`。
+- Cobra 同一提交重复上述三项：`305 passed`；TD 竞价 shadow hash 为 `abb13e59f6c087d20cd0fae9b92b29476db9e1cb0e1d0fd48222495b1a23fb32`，昨日数据仍为 `UNAVAILABLE/available_at_unknown`，Q2 仍为 `MISSING/EMPTY_UNIVERSE`。
 
 ## 测试真实性分层
 
 | 层级 | 范围 | 证据 |
 | --- | --- | --- |
-| Unit | Contract、Clock/Calendar、Q2、Window、Data、Facts、Engine、Replay | 本地 pytest 300 passed |
+| Unit | Contract、Clock/Calendar、Q2、Window、Data、Facts、Engine、Replay | 本地 pytest 305 passed |
 | Fixture composition | 真实捕获/冻结 JSON、Q2Frame、TD 行结构 | `tests/fixtures` 与 `test_real_*` 中的 override/fake |
 | Real read-only | TD `daily_kline`、TD `auction_snapshot_v2`、Redis Q2、既有第三方 connector probe | Cobra 临时副本；无 Redis/TD 写入、无 Rabbit ACK、无通知 |
 | Production chain | Rabbit 原始 batch membership、t1-v2 decode/trigger/writer 同批关系 | 当前无新增 consumer/tap；仍为 `UNKNOWN`，不能由 TD 反推 |
