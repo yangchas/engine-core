@@ -310,6 +310,14 @@ def probe(
         now_ms = int(now.timestamp() * 1000)
         latest_source_ms = int(context.latest_quote_timestamp_ms or 0)
         future_source = latest_source_ms > now_ms
+        blocked_writes = tuple(guarded.writes)
+        side_effect_boundary = (
+            "guarded legacy reads; blocked write attempts: "
+            + ",".join(blocked_writes)
+            if blocked_writes
+            else "real Redis reads plus legacy pure fact call; known cache, network, "
+            "recovery, writer, notification and effect hooks disabled"
+        )
         return {
             "contract_version": "EngineNextContextProbeV1",
             "trade_date": trade_date,
@@ -347,12 +355,9 @@ def probe(
                 }
                 for row in stats
             ],
-            "guard_writes": tuple(guarded.writes),
-            "read_only": not guarded.writes,
-            "side_effect_boundary": (
-                "real Redis reads plus legacy pure fact call; known cache, network, "
-                "recovery, writer, notification and effect hooks disabled"
-            ),
+            "guard_writes": blocked_writes,
+            "read_only": not blocked_writes,
+            "side_effect_boundary": side_effect_boundary,
         }
     finally:
         inner.close()
