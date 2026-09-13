@@ -17,10 +17,13 @@ import argparse
 import json
 import os
 import re
+import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core import (
     EngineSnapshot,

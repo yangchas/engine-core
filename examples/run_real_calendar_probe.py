@@ -12,9 +12,12 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core import build_calendar_snapshot, canonical_json
 
