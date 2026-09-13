@@ -5,7 +5,7 @@
 ```text
 repository       = engine_core
 branch           = codex/feature-session-engine-integration
-commit           = 3ba2c3d (20fbe95 code baseline plus evidence only)
+commit           = 12045dd (20fbe95 code baseline plus evidence only)
 host             = cobra-ion
 python           = /home/exedev/services/engine-next/shared/venv/bin/python (3.12.3)
 timezone         = Asia/Shanghai
@@ -23,7 +23,7 @@ changed.
 local  python -m pytest -q -p no:cacheprovider       PASS (306 passed, 1.12s)
 local  python -m compileall -q src tests examples    PASS
 local  git diff --check                              PASS
-remote python -m pytest -q -p no:cacheprovider       PASS (306 passed, 1.73s)
+remote python -m pytest -q -p no:cacheprovider       PASS (306 passed, 1.68s)
 remote python -m compileall -q src tests examples    PASS
 ```
 
