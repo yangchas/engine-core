@@ -2,7 +2,7 @@
 
 ## 结论
 
-当前分支 `codex/feature-session-engine-integration` 的提交 `eb39f5e` 在本地通过 `299 passed`、`compileall` 和 `git diff --check`。这些测试主要是纯函数、注入式 Provider、冻结 fixture 和确定性 replay；它们不是每次运行都连接生产数据。
+当前分支 `codex/feature-session-engine-integration` 的提交 `4e16150` 在本地通过 `300 passed`、`compileall` 和 `git diff --check`。这些测试主要是纯函数、注入式 Provider、冻结 fixture 和确定性 replay；它们不是每次运行都连接生产数据。
 
 本次在 `cobra-ion` 使用当前提交的临时副本执行了真实只读探针：
 
@@ -41,11 +41,9 @@
 
 ## 新增 Engine Integration 审计发现
 
-当前 Engine 为保证同一 session 内 `evaluation_id` 只能注册一次，使用永久增长的
-`_registered_evaluation_ids` 集合，并以 `evaluation_registration_limit=4096` 作为
-硬上限。一个合成的 4097 次无数据 `PULSE` drain 已复现：第 4097 个评估触发
-`RuntimeError: evaluation registration capacity exhausted`。这不是当前轮子测试的
-失败，也没有在本次文档提交中擅自改变 ownership 语义；但它意味着当前内存 Engine
-不能直接承诺覆盖完整长交易日的高频评估。进入正式替代前必须由 Engine Integration
-阶段明确安全方案（例如按 session 生命周期分片或持久化去重游标），并补充长时段
-容量测试；在此之前不得宣称 production replacement ready。
+此前 Engine 的 `evaluation_registration_limit=4096` 会在第 4097 个评估触发
+`RuntimeError: evaluation registration capacity exhausted`；提交 `4e16150` 已移除
+这个人工硬失败，并新增 4097 次长会话注册/完成测试。当前仍保留 session 生命周期的
+`_registered_evaluation_ids` identity ledger，终态 tombstone 继续有界；这意味着长期
+跨 session 的持久化/轮换仍不属于当前内存 Engine，正式替代前仍需补齐相应生命周期
+边界和长时段容量证据。
