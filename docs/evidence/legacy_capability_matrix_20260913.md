@@ -112,3 +112,16 @@ legacy differential oracle
 - TD 行顺序不代表 Rabbit arrival/batch 顺序；同毫秒同标的缺少 source sequence 时不推断因果。
 - Redis 0920/0924/0925 当前只证明 TopN/summary 投影能力，不证明完整全市场历史快照。
 - 本文不把旧实现的阈值、报告文案或历史 bug 复制成新合同。
+
+## 审计源码身份（Cobra SHA-256）
+
+```text
+runtime/intraday_data_hub.py                         645ab676d921c6437b28efce3535b4ee32cac8483334610c5dc30e532f634c5b
+runtime/controllers/auction_runtime_controller.py   c7793bbc1b2f5dafc5c7303de72aa8411e9122d60468dbfa9912edaad23802a5
+runtime/production_fact_assembly.py                  3b145d6225031aacedf3a83f79bff139f51854b45809e469600cf6581180a2c8
+strategy_skill_layer/auction_plate_buckets.py        c530b41b10643204eb89ce3b73b720e01caade4936643aa215948f686ab90af0
+strategy_skill_layer/opening_validation_hub.py       1d6cc9c7fdb6fa4b554be24aeb80e89782a209b909cf7212344e334355812be8
+runtime/reporting_lifecycle.py                       73b41002333a7563c156e10c620dbd80fb0a1d873f403f2d1cd5f6ff301c011a
+```
+
+上述文件均来自同一 release 目录；源码 SHA 仅用于绑定审计对象，不代表其中所有规则已经通过业务 oracle 验证。
