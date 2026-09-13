@@ -7,7 +7,7 @@
 - 当前可执行代码对象为 `ed3547c5799e6b72dcdcc79f1f13d500616ac0fa`。相对于此前的 `340b523`，仅修正真实 Redis opening probe 在空 `q2:active` 时的状态映射：`MISSING/EMPTY_UNIVERSE` 不再报告为 `FRESH`；并新增对应边界测试。该对象在本地仓库根目录和 `cobra-ion` Python 3.12.3 临时副本均为 `306 passed`、`compileall` PASS，真实探针 `--help` 入口也通过；远端复验使用 `TZ=Asia/Shanghai`、`PYTHONHASHSEED=0`。其后提交仅为证据文档，不改变可执行代码。
 - 已用当前 commit 在 Cobra 生产共享 Python 3.12 环境重跑真实参考源探针：6/6 connector connection PASS；仅 BaoStock 日线同时闭合请求/返回交易日，其余来源仍为 OBSERVED，不能直接进入历史 runtime/replay。
 - 已用 Cobra 生产审计目录中的真实 Redis 捕获文件重跑旧窄读取器：2026-09-07 的 0920/0925 各 200 行、无重复、无写入；该证据不是 live retention、完整市场快照或 0920→0924 相邻段证明，0924 当前仍 UNAVAILABLE。
-- 当前不打 `v0.3.1-engine-integration.1`：仍缺真实 0924 相邻捕获、Rabbit/runtime batch membership、Redis/TD writer projection 的上游一致性证据及旧正式 consumer oracle。下一步优先补证据，不新增 Provider/Replay/Engine 框架。
+- 历史仓库中已存在 `v0.3.1-engine-integration.1/.2` 标签；它们指向早期验证文档提交，不移动、不删除，也不把它们解释为当前生产链验收。当前可执行对象 `ed3547c` 尚未创建新的正式验收标签：仍缺真实 0924 相邻捕获、Rabbit/runtime batch membership、Redis/TD writer projection 的上游一致性证据及旧正式 consumer oracle。下一步优先补证据，不新增 Provider/Replay/Engine 框架。
 - 2026-09-13 同提交真实只读复核：TD `daily_kline` 返回 2026-09-10 的 600519/000001 两行，但 `available_at` 未知，结果按合同为 `UNAVAILABLE`；TD `auction_snapshot_v2` 的 600519 三锚点可重建 `PARTIAL/FACT_ONLY` 事实；周日 Redis Q2 为空，adapter 返回 `MISSING/EMPTY_UNIVERSE`，不视为 live coverage 通过。
 
 - 新内核代码基线：663743cbebac5eafd9532c7fc3967b7df7307ea5。
