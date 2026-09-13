@@ -35,6 +35,14 @@ authority 派生上一交易日，不接受调用方注入的 expected date。En
 drain 和 Probe 调用；不包含持久化恢复或 Rabbit 接管。Real Data Probe 证据见
 `docs/evidence/real_data_probe/`；当前仍不宣称 Rabbit arrival/batch replay 或完整策略迁移。
 
+旧 `engine_next` 的窄竞价快照读取路径可用
+`examples/run_engine_next_auction_loader_probe.py` 在 Redis 写保护下单独审计；
+它只调用 `IntradayDataHub.load_auction_snapshots()`，不构造旧
+`IntradayContextBuilder`。截至 2026-09-13，Cobra-ion 真实 Redis 验证无写入，
+但历史 `0920/0924/0925` 结果为空（快照已过期或 `top_amount` 为空），因此这只是
+读取边界证据，不是非空历史快照可用性证明。旧 context builder 仍有被阻止的写尝试，
+不能直接作为 engine_core 的只读 Provider。
+
 当前第一条 Auction Shadow 仍停在事实层：`AuctionFactShadow` 复用相邻
 `SegmentFrame`/`SegmentComparison` 输出可追溯的 P/M/RB/RA/pressure 变化，固定为
 `FACT_ONLY/OBSERVE`。旧系统的正式买盘阈值和转强/转弱规则仍待 legacy consumer
