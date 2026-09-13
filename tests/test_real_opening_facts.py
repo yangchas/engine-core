@@ -92,7 +92,7 @@ def test_opening_fact_builder_rejects_missing_or_negative_freshness_policy():
         "symbols": ("600519",),
         "observed_at": datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc),
     }
-    with pytest.raises((TypeError, ValueError)):
+    with pytest.raises(ValueError, match="nonnegative"):
         build_real_opening_facts(client, **common, stale_after_ms=None)
     with pytest.raises(ValueError, match="nonnegative"):
         build_real_opening_facts(client, **common, stale_after_ms=-1)

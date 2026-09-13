@@ -44,7 +44,11 @@ def build_real_opening_facts(
 ) -> dict[str, Any]:
     """Read one real Q2 projection and normalize selected opening facts."""
 
-    if isinstance(stale_after_ms, bool) or stale_after_ms < 0:
+    if (
+        isinstance(stale_after_ms, bool)
+        or not isinstance(stale_after_ms, int)
+        or stale_after_ms < 0
+    ):
         raise ValueError("stale_after_ms must be a nonnegative integer")
 
     projection = RedisQ2ProjectionAdapter(client).read(
