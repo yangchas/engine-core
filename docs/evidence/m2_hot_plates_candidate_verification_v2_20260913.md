@@ -72,6 +72,33 @@ This is an infrastructure block, not a code verdict. The candidate therefore
 remains `IN_DOUBT` for independent audit and is not eligible for integration
 or production deployment.
 
+## Cobra-ion Core verification
+
+The exact tracked Core commit containing this evidence was exported without
+the local uncommitted M2 files and executed in an isolated remote directory:
+
+```text
+commit: 52a57db
+tracked-commit pytest: 227 passed
+```
+
+To verify the current local 271-test working-tree suite as well, a separate
+tar snapshot (SHA-256
+`94bac82c778f3c2d231f4681a3c79cd42243fec639947353523a63e44abdedee`) was
+extracted under `/tmp/engine-core-worktree-20260913` on cobra-ion. The server
+Python 3.12.3 environment ran:
+
+```text
+pytest: 271 passed in 1.38s
+compileall (src/tests/examples): PASS
+```
+
+This is explicitly a working-tree verification, not a claim that the
+uncommitted files are part of commit `52a57db`. The production `engine-next`
+service remained active with `MainPID=3181295`, `NRestarts=0`; its
+`cache:hot_plates_meta:2026-09-10` still lacks the v2 fields, confirming that
+no candidate was deployed.
+
 ## Decision
 
 ```text
