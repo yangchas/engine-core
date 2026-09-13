@@ -79,6 +79,23 @@ producer_runtime_not_deployed
 No producer metadata patch is deployed and no Redis/TD data was modified by
 this audit.
 
+## Auction finalize side-effect boundary
+
+The current release's `AuctionRuntimeController.execute_auction_finalize_0925`
+is **not** a read-only provider path.  It calls the `IntradayDataHub` fetchers
+for yesterday's limit pool and today's hot plates, invokes
+`recover_auction_anchor`, and forces a market-runtime-summary rebuild.  The
+09:26 follow-up has the same fetch behavior and may also recover a missing
+anchor.  These methods therefore remain outside the engine_core read boundary;
+the core shadow must consume already materialized Redis/TD facts and must not
+call them.
+
+The pure `production_fact_assembly` path is a separate consumer: it reads the
+provided mapping snapshot, Redis auction summary and a caller-supplied TD
+query, and does not itself perform network recovery.  Its caller still has to
+prove that the injected mapping/TD functions are side-effect free before it is
+used as an audit source.
+
 ## Next action
 
 Do not add another provider hierarchy or repeat this inventory.  Continue the
