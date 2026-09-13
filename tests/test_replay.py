@@ -19,7 +19,7 @@ from engine_core import (
     replay_q2frames,
     replay_td_event_time,
 )
-from engine_core.replay import Q2FrameV1
+from engine_core.replay import Q2FrameV1, TDEventV1
 from engine_core.windows import local_time_ms
 
 
@@ -53,6 +53,23 @@ def test_q2frame_replay_is_virtual_clock_driven_and_repeatable():
     assert source.last_logical_ts_ms == 1788398650000
     assert clock.now_ns() == (1788398650000 - 1788398108000) * 1_000_000
     assert all(projection.status.value == "READY" for projection in projections)
+
+
+def test_q2frame_signal_construction_is_side_effect_free_until_consumption():
+    source, clock = _source()
+    initial = clock.now_utc()
+    signal = source.signal_for(_frames()[0])
+
+    assert signal.signal_id == "q2frame:1"
+    assert signal.logical_time_ms == _frames()[0]["logical_ts_ms"]
+    assert signal.signal_kind is SignalKind.MARKET_UPDATE
+    assert clock.now_utc() == initial
+
+    source.advance_before_consume(signal)
+    assert clock.now_utc() == datetime.fromtimestamp(
+        signal.logical_time_ms / 1000.0,
+        timezone.utc,
+    )
 
 
 def test_q2frame_replay_feeds_the_same_engine_queue():
@@ -265,6 +282,21 @@ def test_td_event_replay_tie_break_includes_preserved_raw_fields():
         1299400,
     }
     assert left[0].start_ms == anchor
+
+
+def test_td_event_public_projection_contract_keeps_units_and_slice_size():
+    source, _, anchor = _td_source()
+    event = TDEventV1.from_mapping(_td_rows()[0])
+
+    assert source.slice_ms == 3_000
+    assert event.to_q2_raw() == {
+        "px": event.price_milli,
+        "pc": event.pre_close_milli,
+        "amt": event.amount_yuan,
+        "ts": event.event_time_ms,
+    }
+    assert "vol" not in event.to_q2_raw()
+    assert event.event_time_ms >= anchor
 
 
 def test_td_event_replay_feeds_same_engine_without_preaggregation():
