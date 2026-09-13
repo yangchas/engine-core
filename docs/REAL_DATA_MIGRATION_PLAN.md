@@ -4,7 +4,7 @@
 
 ### 2026-09-13 当前继续执行状态
 
-- 当前可执行代码对象为 `340b5234a3d92869c315cf1205bf4569e14cf516`。相对于此前的 `e21bf00`，仅修正 7 个真实 Core 探针的独立运行路径，使其从仓库目录直接执行时能导入本地 `src/engine_core`；业务源码和测试语义未变。该对象在本地仓库根目录和 `cobra-ion` Python 3.12.3 临时副本均为 `305 passed`、`compileall` PASS，真实探针 `--help` 入口也通过；远端复验使用 `TZ=Asia/Shanghai`、`PYTHONHASHSEED=0`。其后提交仅为证据文档，不改变可执行代码。
+- 当前可执行代码对象为 `ed3547c5799e6b72dcdcc79f1f13d500616ac0fa`。相对于此前的 `340b523`，仅修正真实 Redis opening probe 在空 `q2:active` 时的状态映射：`MISSING/EMPTY_UNIVERSE` 不再报告为 `FRESH`；并新增对应边界测试。该对象在本地仓库根目录和 `cobra-ion` Python 3.12.3 临时副本均为 `306 passed`、`compileall` PASS，真实探针 `--help` 入口也通过；远端复验使用 `TZ=Asia/Shanghai`、`PYTHONHASHSEED=0`。其后提交仅为证据文档，不改变可执行代码。
 - 已用当前 commit 在 Cobra 生产共享 Python 3.12 环境重跑真实参考源探针：6/6 connector connection PASS；仅 BaoStock 日线同时闭合请求/返回交易日，其余来源仍为 OBSERVED，不能直接进入历史 runtime/replay。
 - 已用 Cobra 生产审计目录中的真实 Redis 捕获文件重跑旧窄读取器：2026-09-07 的 0920/0925 各 200 行、无重复、无写入；该证据不是 live retention、完整市场快照或 0920→0924 相邻段证明，0924 当前仍 UNAVAILABLE。
 - 当前不打 `v0.3.1-engine-integration.1`：仍缺真实 0924 相邻捕获、Rabbit/runtime batch membership、Redis/TD writer projection 的上游一致性证据及旧正式 consumer oracle。下一步优先补证据，不新增 Provider/Replay/Engine 框架。
