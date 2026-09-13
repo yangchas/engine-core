@@ -98,6 +98,7 @@ def build_real_opening_facts(
         "freshness_status": (
             "FRESH" if not projection.stale_symbols else "STALE_OR_MIXED"
         ),
+        "freshness_policy_stale_after_ms": stale_after_ms,
         "expected_symbol_count": len(projection.expected_symbols),
         "quote_count": len(projection.quotes),
         "missing_symbols": list(projection.missing_symbols),
@@ -117,10 +118,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trade-date", required=True)
     parser.add_argument("--symbols", default="600519,000001,300750")
-    parser.add_argument("--stale-after-ms", type=int, default=None)
+    parser.add_argument(
+        "--stale-after-ms",
+        type=int,
+        required=True,
+        help="explicit production validation freshness budget in milliseconds",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     trade_date = _date_text(args.trade_date)
+    if args.stale_after_ms < 0:
+        parser.error("stale-after-ms must be nonnegative")
     observed_at = datetime.now(timezone.utc)
     import redis  # type: ignore[import-not-found]
 

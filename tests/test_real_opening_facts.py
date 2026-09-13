@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import sys
 
 import pytest
 
 from examples.run_real_opening_facts import build_real_opening_facts
 from examples.run_real_opening_facts import _date_text
+from examples.run_real_opening_facts import main
 
 
 class FakeRedis:
@@ -63,3 +65,21 @@ def test_missing_q2_symbol_is_unavailable_not_zero_filled():
 def test_opening_runner_requires_strict_trade_date():
     with pytest.raises(ValueError, match="strict"):
         _date_text("2026-9-4")
+
+
+def test_opening_runner_requires_nonnegative_explicit_freshness_policy(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_real_opening_facts.py",
+            "--trade-date",
+            "2026-09-04",
+            "--output",
+            "unused.json",
+            "--stale-after-ms",
+            "-1",
+        ],
+    )
+    with pytest.raises(SystemExit):
+        main()
