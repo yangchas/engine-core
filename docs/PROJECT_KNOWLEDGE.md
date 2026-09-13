@@ -3,6 +3,7 @@
 ## 0. Current execution status (2026-09-13)
 
 - [VERIFIED] 可执行 Core 代码对象为 `ed3547c5799e6b72dcdcc79f1f13d500616ac0fa`；本地 Windows 与 cobra-ion Python 3.12.3 临时归档均通过 `306 passed`、`compileall`。当前分支后续提交仅补充审计/证据文档，未改变 `src/` 或测试语义。
+- [VERIFIED] 2026-09-13 对当前提交 `bc2b2c10c77a5ae0e1719a5b083d7bc426f401d6` 在 cobra-ion Python 3.12.3 临时目录重跑完整套件：`306 passed`、`compileall` PASS；同次只读真实 TD 竞价/昨日数据和既有第三方连接探针均执行成功，证据见 `docs/evidence/real_provider_cross_source_audit_20260913.md`。周日 Redis 没有 `q2:active:*`，不宣称 live Q2 可用。
 - [VERIFIED] 真实只读 TD 竞价影子已重建 600519 的 0920/0924/0925 三锚点：0920→0924 为 `PARTIAL`、0924→0925 为 `READY`，输出保持 `FACT_ONLY/OBSERVE`；Redis 同日期投影无可比较行，因此不得宣称 Redis/TD 等价。
 - [VERIFIED] 真实只读 Redis opening probe 在空 `q2:active:20260910` 时输出 `MISSING/EMPTY_UNIVERSE`、coverage `0.0`、freshness `MISSING`；这证明缺失状态不再被误报为 `FRESH`，不证明历史 live coverage。
 - [VERIFIED] 真实只读 TD `daily_kline` 为日历派生的 2026-09-09 返回 3 行，但因历史 `available_at` 未知，`PreviousDayStatsFunction` 正确输出 `UNAVAILABLE`；查询时刻仅作 `observed_at` 审计。
