@@ -12,6 +12,7 @@ from engine_core import (
     build_segment_frame,
     semantic_hash,
 )
+from engine_core.auction_shadow import build_auction_fact_shadow_from_snapshots
 from engine_core.facts import FactStatus
 
 
@@ -196,3 +197,80 @@ def test_fact_shadow_rejects_non_adjacent_segments():
     non_adjacent = replace(second, start_time_ms=second.start_time_ms + 1)
     with pytest.raises(ValueError):
         build_auction_fact_shadow(first, non_adjacent)
+
+
+def test_engine_boundary_adapter_composes_three_snapshots_without_new_formula():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    start = _snapshot(fixture, "pre_auction_0915")
+    middle = _snapshot(fixture, "auction_0920")
+    end = _snapshot(fixture, "auction_0924")
+
+    direct_first, direct_second = _segments()
+    direct = build_auction_fact_shadow(direct_first, direct_second)
+    composed = build_auction_fact_shadow_from_snapshots(
+        start,
+        middle,
+        end,
+        scope_type="SYMBOL",
+        scope_id=fixture["symbol"],
+        previous_segment_id="auction_trial_600519",
+        current_segment_id="auction_reprice_600519",
+        amount_semantics="OBSERVED_STATE",
+        volume_semantics="UNKNOWN",
+        previous_coverage_status="PARTIAL",
+        current_coverage_status="READY",
+        previous_observed_start_time_ms=1788398108000,
+        previous_observed_end_time_ms=1788398403000,
+        current_observed_start_time_ms=1788398403000,
+        current_observed_end_time_ms=1788398650000,
+    )
+
+    assert composed.content_hash == direct.content_hash
+    assert composed.evidence_hash == direct.evidence_hash
+    assert composed.as_trace()["decision_status"] == "FACT_ONLY"
+
+
+def test_engine_boundary_adapter_rejects_cross_session_or_non_monotonic_snapshots():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    start = _snapshot(fixture, "pre_auction_0915")
+    middle = _snapshot(fixture, "auction_0920")
+    end = _snapshot(fixture, "auction_0924")
+
+    with pytest.raises(ValueError, match="strictly increasing"):
+        build_auction_fact_shadow_from_snapshots(
+            middle,
+            start,
+            end,
+            scope_type="SYMBOL",
+            scope_id=fixture["symbol"],
+            previous_segment_id="a",
+            current_segment_id="b",
+        )
+
+    other_session = EngineSnapshot(
+        snapshot_id=end.snapshot_id,
+        trigger_id=end.trigger_id,
+        logical_time_ms=end.logical_time_ms,
+        session_id="2026-09-04",
+        phase=end.phase,
+        market_state_revision=end.market_state_revision,
+        source_observation_metadata=end.source_observation_metadata,
+        symbol_states=end.symbol_states,
+        raw_market_cross_section=end.raw_market_cross_section,
+        raw_theme_cross_section=end.raw_theme_cross_section,
+        windows=end.windows,
+        coverage=end.coverage,
+        completeness=end.completeness,
+        content_hash=end.content_hash,
+        evidence_refs=end.evidence_refs,
+    )
+    with pytest.raises(ValueError, match="share a session"):
+        build_auction_fact_shadow_from_snapshots(
+            start,
+            middle,
+            other_session,
+            scope_type="SYMBOL",
+            scope_id=fixture["symbol"],
+            previous_segment_id="a",
+            current_segment_id="b",
+        )

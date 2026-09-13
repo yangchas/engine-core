@@ -15,11 +15,17 @@ from typing import Any, Mapping, Optional, Tuple, Union
 from .contracts import (
     EVIDENCE_HASH_CONTRACT_VERSION,
     SEMANTIC_HASH_CONTRACT_VERSION,
+    EngineSnapshot,
     deep_freeze,
     evidence_hash,
     semantic_hash,
 )
-from .facts import FactStatus, SegmentFrame, compare_adjacent_segments
+from .facts import (
+    FactStatus,
+    SegmentFrame,
+    build_segment_frame,
+    compare_adjacent_segments,
+)
 
 Number = Union[int, float]
 
@@ -188,6 +194,79 @@ def build_auction_fact_shadow(
         content_hash=semantic_hash(semantic_content),
         evidence_hash=evidence_hash(evidence_content),
     )
+
+
+def build_auction_fact_shadow_from_snapshots(
+    start_snapshot: EngineSnapshot,
+    middle_snapshot: EngineSnapshot,
+    end_snapshot: EngineSnapshot,
+    *,
+    scope_type: str,
+    scope_id: str,
+    previous_segment_id: str,
+    current_segment_id: str,
+    amount_semantics: str = "OBSERVED_STATE",
+    volume_semantics: str = "UNKNOWN",
+    previous_coverage_status: str = "UNKNOWN",
+    current_coverage_status: str = "UNKNOWN",
+    previous_observed_start_time_ms: Optional[int] = None,
+    previous_observed_end_time_ms: Optional[int] = None,
+    current_observed_start_time_ms: Optional[int] = None,
+    current_observed_end_time_ms: Optional[int] = None,
+) -> AuctionFactShadow:
+    """Compose the fact-only shadow from three Engine snapshots.
+
+    This is intentionally a small adapter at the Engine observation boundary,
+    not a second strategy executor.  The snapshots represent the business
+    anchors ``start -> middle -> end``; source observation ranges are supplied
+    separately so a delayed Q2 cohort cannot be mistaken for the business
+    interval.  All calculation remains in ``build_segment_frame`` and
+    ``build_auction_fact_shadow``.
+    """
+
+    snapshots = (start_snapshot, middle_snapshot, end_snapshot)
+    if any(not isinstance(item, EngineSnapshot) for item in snapshots):
+        raise TypeError("auction shadow snapshots must be EngineSnapshot values")
+    if not previous_segment_id or not current_segment_id:
+        raise ValueError("segment ids are required")
+    if previous_segment_id == current_segment_id:
+        raise ValueError("segment ids must be distinct")
+    if start_snapshot.session_id != middle_snapshot.session_id:
+        raise ValueError("auction shadow snapshots must share a session")
+    if middle_snapshot.session_id != end_snapshot.session_id:
+        raise ValueError("auction shadow snapshots must share a session")
+    if not (
+        start_snapshot.logical_time_ms
+        < middle_snapshot.logical_time_ms
+        < end_snapshot.logical_time_ms
+    ):
+        raise ValueError("auction shadow snapshot times must be strictly increasing")
+
+    previous = build_segment_frame(
+        previous_segment_id,
+        start_snapshot,
+        middle_snapshot,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        amount_semantics=amount_semantics,
+        volume_semantics=volume_semantics,
+        coverage_status=previous_coverage_status,
+        observed_start_time_ms=previous_observed_start_time_ms,
+        observed_end_time_ms=previous_observed_end_time_ms,
+    )
+    current = build_segment_frame(
+        current_segment_id,
+        middle_snapshot,
+        end_snapshot,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        amount_semantics=amount_semantics,
+        volume_semantics=volume_semantics,
+        coverage_status=current_coverage_status,
+        observed_start_time_ms=current_observed_start_time_ms,
+        observed_end_time_ms=current_observed_end_time_ms,
+    )
+    return build_auction_fact_shadow(previous, current)
 
 
 def _subtract(current: Optional[Number], previous: Optional[Number]) -> Optional[Number]:
