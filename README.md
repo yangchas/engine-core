@@ -17,7 +17,8 @@ engine_core 是独立的行情驱动确定性计算内核。
 
 ## 当前实施状态
 
-`codex/fix-foundation-wheels` 已完成第一批独立轮子：
+`codex/fix-foundation-wheels` 已完成第一批独立轮子；当前集成分支为
+`codex/feature-session-engine-integration`，在不改生产链的前提下继续验证旧读取边界：
 
 - Contract：`deep_freeze`、严格 canonical JSON、semantic/evidence hash、C 兼容 `trunc_div`。
 - Q2：Field Contract、纯 `normalize_q2`/`validate_q2`、`classify_equity`、投影构造和 freshness 门禁。
