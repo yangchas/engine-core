@@ -54,8 +54,11 @@ Opening 迁移从同一原则开始：`build_open_fact` 只计算可复核的单
 
 默认 `pytest` 是离线合同测试：它不会连接 Redis、TD、Rabbit 或第三方网络源。
 其中部分 Golden fixture 来自真实生产数据，但仍是冻结文件。服务器在线验证必须显式运行
-`examples/run_live_q2_probe.py` 和 `examples/run_real_reference_probe.py`，并把结果作为独立
-evidence；探针自己的 pytest 文件只使用 fake client 验证探针合同，不能冒充在线连接测试。
+`examples/run_live_q2_probe.py`（显式传入 freshness budget）和
+`examples/run_real_reference_probe.py`，并把结果作为独立 evidence；真实 opening probe
+`examples/run_real_opening_facts.py` 同样必须显式传入 `--stale-after-ms`，避免周末或停牌时
+把旧 Q2 误报为 fresh。探针自己的 pytest 文件只使用 fake client 验证探针合同，不能冒充在线
+连接测试。
 
 当前真实验证范围和未迁移能力见：
 
