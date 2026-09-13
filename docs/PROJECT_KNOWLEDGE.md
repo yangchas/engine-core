@@ -38,6 +38,7 @@
 - [VERIFIED] `RECOVERY_CATCHUP` 关闭窗口时保留 `origin=RECOVERY_CATCHUP`，窗口 `finality` 仍为 FINAL。
 - [VERIFIED] Engine Integration correctness gates passed: same-time ordering, DATA_READY ownership/isolation, PARTIAL propagation, old-evaluation isolation, bounded long-drain state, duplicate/conflicting signal handling and same-time causal generation ordering.
 - [VERIFIED] 一个 Engine session 内 evaluation_id 只能注册一次；终态不会重新进入 pending。tombstone 仅保留有界近期分类，驱逐后仍 fail-closed 为 UNKNOWN。
+- [VERIFIED] 提交 `4e16150` 移除了旧的 `evaluation_registration_limit=4096` 人工硬失败，并以 4097 次长会话注册/完成测试验证；session identity ledger 仍按 Engine 生命周期保留，跨 session 持久化/轮换尚未实现，因此不能宣称无限期生产运行。
 - [VERIFIED] Foundation 600519 Segment A/B/Comparison hashes remain identical when composed through Engine; current Engine is only an orchestration boundary and does not alter fact-wheel semantics.
 - [VERIFIED] TD Event-Time Replay 最小适配器按事件时间、代码和保留原始字段内容 hash 稳定排序，按三秒半开 `EVENT_SLICE` 保留逐条 tick，并逐事件提交同一个 Engine；缺少 symbol 时保持 PARTIAL。
 
