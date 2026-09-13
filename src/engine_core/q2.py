@@ -67,6 +67,20 @@ Q2_OBSERVED_OPTIONAL_FIELDS: Tuple[str, ...] = (
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
+def _strict_trade_date(value: str) -> str:
+    """Validate the date authority before reading a Q2 cohort."""
+
+    if not isinstance(value, str):
+        raise TypeError("trade_date must be strict YYYY-MM-DD text")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("trade_date must be strict valid YYYY-MM-DD") from exc
+    if parsed.isoformat() != value:
+        raise ValueError("trade_date must be strict valid YYYY-MM-DD")
+    return value
+
+
 class Q2RedisClient(Protocol):
     def smembers(self, key: str) -> Sequence[Any]:
         ...
@@ -313,6 +327,7 @@ def build_q2_projection(
 ) -> Q2ProjectionSnapshot:
     """Build a projection from already-read hashes; no Redis access occurs."""
 
+    trade_date = _strict_trade_date(trade_date)
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("observed_at must be timezone-aware")
     observed_ms = int(observed_at.astimezone(timezone.utc).timestamp() * 1000)
@@ -461,6 +476,7 @@ class RedisQ2ProjectionAdapter:
             raise ValueError("observed_at must be timezone-aware")
         if freshness_policy is not None and stale_after_ms is not None:
             raise ValueError("pass freshness_policy or stale_after_ms, not both")
+        trade_date = _strict_trade_date(trade_date)
         policy = freshness_policy or FreshnessPolicy(stale_after_ms=stale_after_ms)
 
         raw_symbols = self._read_active_symbols(trade_date)

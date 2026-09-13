@@ -129,6 +129,16 @@ def test_q2_adapter_rejects_invalid_symbol_and_naive_observation():
         )
 
 
+@pytest.mark.parametrize("trade_date", ["2026-9-4", "2026-09-4", "bad"])
+def test_q2_projection_rejects_non_strict_trade_date_before_classifying_data(trade_date):
+    redis = FakeRedis({"q2:active:" + trade_date: set()}, {})
+    with pytest.raises(ValueError, match="strict valid YYYY-MM-DD"):
+        RedisQ2ProjectionAdapter(redis).read(
+            trade_date,
+            datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc),
+        )
+
+
 def test_q2_adapter_marks_out_of_range_timestamp_as_field_error():
     redis = FakeRedis(
         {"q2:active:2026-09-04": {"000001"}},
