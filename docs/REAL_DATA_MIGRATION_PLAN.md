@@ -4,10 +4,11 @@
 
 ### 2026-09-13 当前继续执行状态
 
-- 当前 `engine_core` 集成分支为 `codex/feature-session-engine-integration`，commit `76d5cb0`；本地与 `cobra-ion` 固定归档均为 `280 passed`、`compileall` PASS，工作树干净。
+- 当前 `engine_core` 集成分支为 `codex/feature-session-engine-integration`，commit `f4bbca9`；本地与 `cobra-ion` 同提交均为 `299 passed`、`compileall` PASS，工作树干净。
 - 已用当前 commit 在 Cobra 生产共享 Python 3.12 环境重跑真实参考源探针：6/6 connector connection PASS；仅 BaoStock 日线同时闭合请求/返回交易日，其余来源仍为 OBSERVED，不能直接进入历史 runtime/replay。
 - 已用 Cobra 生产审计目录中的真实 Redis 捕获文件重跑旧窄读取器：2026-09-07 的 0920/0925 各 200 行、无重复、无写入；该证据不是 live retention、完整市场快照或 0920→0924 相邻段证明，0924 当前仍 UNAVAILABLE。
 - 当前不打 `v0.3.1-engine-integration.1`：仍缺真实 0924 相邻捕获、Rabbit/runtime batch membership、Redis/TD writer projection 的上游一致性证据及旧正式 consumer oracle。下一步优先补证据，不新增 Provider/Replay/Engine 框架。
+- 2026-09-13 同提交真实只读复核：TD `daily_kline` 返回 2026-09-10 的 600519/000001 两行，但 `available_at` 未知，结果按合同为 `UNAVAILABLE`；TD `auction_snapshot_v2` 的 600519 三锚点可重建 `PARTIAL/FACT_ONLY` 事实；周日 Redis Q2 为空，adapter 返回 `MISSING/EMPTY_UNIVERSE`，不视为 live coverage 通过。
 
 - 新内核代码基线：663743cbebac5eafd9532c7fc3967b7df7307ea5。
 - 2026-09-09 07:15 Asia/Shanghai 远端只读核对：生产 engine-next 为 e272842c8f490f55a1b017badb71e71904ce008e，路径 /home/exedev/services/engine-next/releases/20260903_e272842。
