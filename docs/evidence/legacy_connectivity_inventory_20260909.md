@@ -46,6 +46,11 @@ the existing system obtains data so a future thin provider can reuse the verifie
 4. Current Redis Q2 coverage of 1.0 does not imply freshness or a same-time market snapshot.
 5. A successful network request today does not establish that the result was available at a
    historical replay cutoff.
+6. The legacy `web.services.tdengine_service.TDengineService` constructor is not a safe Core
+   boundary: its initialization path can execute `CREATE DATABASE/STABLE` checks.  Core probes
+   therefore must not instantiate that service.  The current thin TD provider receives an
+   injected read-only callable using the same production table/date query semantics; this is an
+   intentional access-boundary extraction, not a new TD storage layer or a permission to write.
 
 ## Next extraction boundary
 
