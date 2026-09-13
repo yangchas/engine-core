@@ -40,7 +40,7 @@ def test_real_opening_fact_composition_is_read_only_and_unit_explicit():
         trade_date="2026-09-04",
         symbols=("600519",),
         observed_at=datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc),
-        stale_after_ms=None,
+        stale_after_ms=300_000,
     )
     assert result["facts"]["600519"]["change_pct"] == pytest.approx(5.0)
     assert result["facts"]["600519"]["status"] == "available"
@@ -56,7 +56,7 @@ def test_missing_q2_symbol_is_unavailable_not_zero_filled():
         trade_date="2026-09-04",
         symbols=("000001",),
         observed_at=datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc),
-        stale_after_ms=None,
+        stale_after_ms=300_000,
     )
     assert result["facts"]["000001"]["status"] == "unavailable"
     assert result["facts"]["000001"]["reason"] == "symbol_not_in_q2_cohort"
@@ -83,3 +83,16 @@ def test_opening_runner_requires_nonnegative_explicit_freshness_policy(monkeypat
     )
     with pytest.raises(SystemExit):
         main()
+
+
+def test_opening_fact_builder_rejects_missing_or_negative_freshness_policy():
+    client = FakeRedis()
+    common = {
+        "trade_date": "2026-09-04",
+        "symbols": ("600519",),
+        "observed_at": datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc),
+    }
+    with pytest.raises((TypeError, ValueError)):
+        build_real_opening_facts(client, **common, stale_after_ms=None)
+    with pytest.raises(ValueError, match="nonnegative"):
+        build_real_opening_facts(client, **common, stale_after_ms=-1)
