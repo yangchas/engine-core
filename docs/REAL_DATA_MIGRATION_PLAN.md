@@ -4,9 +4,10 @@
 
 ### 2026-09-13 23:50 最新收口复核
 
-- 当前审计提交为 `4d5066d35a204ed965bfdcf3e6384c0c590e2096`；可执行源码自 `6275853` 后未改变，本轮仅补充真实证据和旧 consumer 路径审计。Windows 本地与 cobra-ion 生产共享 Python 3.12.3 临时归档均为 `306 passed`，`compileall` 通过，工作树干净。
+- 当前审计文档提交为 `8c499ca`；可执行源码自 `6275853` 后未改变，本轮仅补充真实证据和旧 consumer 路径审计。Windows 本地与 cobra-ion 生产共享 Python 3.12.3 临时归档均为 `306 passed`，`compileall` 通过，工作树干净。
 - Cobra 真实 TD `auction_snapshot_v2` 只读 shadow（2026-09-10/600519/0920,0924,0925）两次重复执行：0920→0924 `PARTIAL`、0924→0925 `READY`，结果 `FACT_ONLY/OBSERVE`；artifact SHA-256 为 `e7a06126d3d9d89e5aeb66f6400771363d5a21297341ac2c111c55126d31c7d0` 与 `a9977c6fd994474bef5356bc4f0b7d7ddf01b2a35c0a152090e3d2f9cdc2ba41`。详见 `docs/evidence/real_td_auction_shadow_20260913_2316.md`。
 - Cobra 当前 `engine_next` release 的 `build_auction_plate_bucket_stats`、`build_auction_snapshot_delta_stats`、`build_opening_validation_bundle` 调用及竞价 bucket 分支阈值已完成源码级只读审计；调用路径是 `OBSERVED`，实盘可达性、单位/生命周期和同输入 legacy oracle 仍是 `UNKNOWN`，因此不迁移正式 AuctionStrategy。详见 `docs/evidence/legacy_auction_consumer_active_path_20260913.md`。
+- 2026-09-13 对当前 release 的真实 Redis 只读路径复核：`load_auction_snapshots(2026-09-10)` 返回空快照；`IntradayContext` 对三个指定 symbol 返回行但竞价金额/涨跌字段均为 `0.0`，最新行情时间为空，板块字符串在远端输出为 mojibake。Redis 写保护未触发；这些结果仅为 `OBSERVED/UNKNOWN`，不作为 legacy oracle 或迁移依据。详见 `docs/evidence/legacy_read_path_probe_20260913.md`。
 - 当前不新增 Provider、Replay、Engine 或生产 writer。下一有效动作是下一个真实交易日获取受限的 Redis Q2/竞价 0920、0924、0925 输入并与旧 consumer 做同输入差异核对；在此之前继续保持 `AuctionFactShadow=FACT_ONLY/OBSERVE`。
 
 ### 2026-09-13 当前继续执行状态
