@@ -61,6 +61,12 @@ class DeterministicEngine:
     cumulative processed count is still reported.  ``signal_id_cache_limit``
     bounds this in-memory idempotency horizon; durable duplicate protection is
     intentionally deferred with journal/checkpoint integration.
+
+    ``_registered_evaluation_ids`` is a session-lifetime identity ledger. It
+    is deliberately not evicted: evicting it would allow a completed
+    evaluation to be registered again after its terminal tombstone expires.
+    The ledger therefore has no artificial item cap; durable session rotation
+    belongs to the deferred persistence layer.
     """
 
     def __init__(
@@ -75,15 +81,20 @@ class DeterministicEngine:
         evaluation_plan: Optional[EvaluationPlan] = None,
         result_history_limit: int = 256,
         signal_id_cache_limit: int = 4096,
-        evaluation_registration_limit: int = 4096,
+        evaluation_registration_limit: Optional[int] = None,
         terminal_evaluation_limit: int = 4096,
     ) -> None:
         if result_history_limit <= 0:
             raise ValueError("result_history_limit must be positive")
         if signal_id_cache_limit <= 0:
             raise ValueError("signal_id_cache_limit must be positive")
-        if evaluation_registration_limit <= 0:
-            raise ValueError("evaluation_registration_limit must be positive")
+        if (
+            evaluation_registration_limit is not None
+            and evaluation_registration_limit <= 0
+        ):
+            raise ValueError(
+                "evaluation_registration_limit must be positive when supplied"
+            )
         if terminal_evaluation_limit <= 0:
             raise ValueError("terminal_evaluation_limit must be positive")
         if session_plan is not None and not isinstance(session_plan, SessionPlan):
@@ -130,6 +141,9 @@ class DeterministicEngine:
         self._active_logical_time: Optional[int] = None
         self._pending_evaluations: Dict[str, _PendingEvaluation] = {}
         self._registered_evaluation_ids: set[str] = set()
+        # Kept as a compatibility argument for callers that supplied the old
+        # cap. It is intentionally not enforced: a hard cap would stop a long
+        # session while still failing to provide once-only semantics.
         self._evaluation_registration_limit = evaluation_registration_limit
         self._terminal_evaluations: OrderedDict[str, _TerminalEvaluation] = OrderedDict()
         self._terminal_evaluation_limit = terminal_evaluation_limit
@@ -377,8 +391,6 @@ class DeterministicEngine:
     ) -> None:
         if evaluation_id in self._registered_evaluation_ids:
             raise ValueError("evaluation_id was already registered")
-        if len(self._registered_evaluation_ids) >= self._evaluation_registration_limit:
-            raise RuntimeError("evaluation registration capacity exhausted")
         self._registered_evaluation_ids.add(evaluation_id)
         self._pending_evaluations[evaluation_id] = _PendingEvaluation(
             evaluation_id=evaluation_id,
