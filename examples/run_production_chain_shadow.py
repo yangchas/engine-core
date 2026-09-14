@@ -110,7 +110,14 @@ def manifest_summary(manifest: Mapping[str, Any]) -> dict[str, Any]:
     identity_equal = (
         isinstance(start, Mapping)
         and isinstance(end, Mapping)
-        and all(start.get(field) == end.get(field) for field in comparable_identity_fields)
+        and all(
+            field in start
+            and field in end
+            and start.get(field) is not None
+            and end.get(field) is not None
+            and start.get(field) == end.get(field)
+            for field in comparable_identity_fields
+        )
     )
     config_provenance = (
         "COMPLETE"

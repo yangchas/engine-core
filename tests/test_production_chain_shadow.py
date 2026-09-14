@@ -42,8 +42,26 @@ def _write_capture(tmp_path: Path, *, include_0924: bool = False) -> Path:
         "formal_ground_truth": True,
         "sealed": False,
         "slots": slots,
-        "runtime_identity_start": {"service": "t1", "main_pid": 1, "binary_sha256": "a"},
-        "runtime_identity_end": {"service": "t1", "main_pid": 1, "binary_sha256": "a"},
+        "runtime_identity_start": {
+            "service": "t1",
+            "main_pid": 1,
+            "binary_sha256": "a",
+            "release_git_commit": "commit",
+            "build_info_sha256": "build",
+            "source_bundle_sha256": "source",
+            "exec_main_start_timestamp": "2026-09-14T09:00:00+08:00",
+            "restart_count": 0,
+        },
+        "runtime_identity_end": {
+            "service": "t1",
+            "main_pid": 1,
+            "binary_sha256": "a",
+            "release_git_commit": "commit",
+            "build_info_sha256": "build",
+            "source_bundle_sha256": "source",
+            "exec_main_start_timestamp": "2026-09-14T09:00:00+08:00",
+            "restart_count": 0,
+        },
     }
     (capture / "capture_manifest.partial.json").write_text(
         json.dumps(manifest), encoding="utf-8"
@@ -84,6 +102,18 @@ def test_manifest_recomputes_partial_truth_instead_of_trusting_formal_flag(tmp_p
     assert result["failed_required_slots"] == ["auction_0924"]
     assert result["runtime_identity_claim"] == "STABLE_OBSERVED"
     assert result["runtime_config_provenance"] == "PARTIAL"
+
+
+def test_manifest_does_not_call_missing_identity_fields_stable():
+    result = manifest_summary(
+        {
+            "runtime_identity_start": {"main_pid": 1},
+            "runtime_identity_end": {"main_pid": 1},
+            "slots": [],
+        }
+    )
+    assert result["runtime_identity_observed_equal"] is False
+    assert result["runtime_identity_claim"] == "CHANGED_OR_UNPROVEN"
 
 
 def test_captured_q2_runs_same_core_twice_and_does_not_fabricate_0924(tmp_path):
