@@ -40,3 +40,10 @@ production service acceptance
 This prevents a green test count from being misreported as real-data or
 `engine_next` replacement acceptance. The active 2026-09-14 capture remains
 the authoritative source for the next real Q2/auction evidence.
+
+The current Cobra exact-archive verification also checks archive layout.  The
+repository-root paths (including `examples/`) must be preserved; an archive
+extracted with an extra `--strip-components=1` is invalid evidence because it
+causes import/collection errors unrelated to Core behavior.  The corrected
+current archive passed all 322 tests and `compileall`; see
+`docs/evidence/cobra_exact_verification_20260914_current.md`.

@@ -2,6 +2,7 @@
 
 - [VERIFIED] 2026-09-14 cobra-ion 真实只读 readiness 复核：`cache:hot_plates:2026-09-14` 为 50 行 hash、`cache:yest_limit_pool:2026-09-11` 为 40 行 hash，扫描与 HLEN 一致；两者 metadata 均缺 `schema_version/available_at_ms/field_units`，core 分别保持 `UNAVAILABLE(available_at_unknown)`，昨日涨停池另保留 `turnover_unit_unknown`。同次 Q2 读取 5220/5220、coverage=1.0，但在 60s freshness policy 下 5220 条均为 `STALE/BEST_EFFORT_STALE`，不能解释为 fresh。所有命令仅 `SMEMBERS/HGETALL/TYPE/HLEN/HSCAN/GET`，未写 Redis/TD、未改服务；完整 hash/证据见 `docs/evidence/reference_data_readiness_20260914.md`。
 - [VERIFIED] 2026-09-14 M0 current-release 启动/动作链只读审计：Cobra 部署路径为 `releases/20260903_e272842`（无 Git 元数据），`engine-next`/`t1-v2-live` 均 active 且零重启；已记录 systemd 入口、08:30/09:00、09:20/09:24/09:25/09:26/09:32 节点、getter/action 读写边界及 source/runtime 证据。当前 Core 只读 Q2 可运行，但启动协调器尚未实现；`recover_auction_anchor`、hot/yest fetch、mapping loader、market summary rebuild 均可能写入或触发外部 I/O，不能直接接入 Core。详见 `docs/evidence/m0_startup_flow_audit_20260914.md`。
+- [VERIFIED] 2026-09-14 当前 HEAD `ad098c5` 的 Cobra 精确归档校验已修正一次归档布局错误：`git archive` 本身保留根路径，不能额外使用 `--strip-components=1`；在全新目录按原路径展开后，Cobra Python 3.12.3 通过 `322 passed`、`compileall`，归档 SHA 为 `e05e7ae53555f0259fcf1294a377871f756b654e5b382450f741679346d64ec9`。详见 `docs/evidence/cobra_exact_verification_20260914_current.md`。
 
 ## 0. Current execution status (2026-09-13)
 
