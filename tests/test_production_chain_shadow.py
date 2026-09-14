@@ -229,3 +229,62 @@ def test_real_source_rows_can_recompute_fact_without_accepting_precomputed_resul
     assert summary["auction_fact_shadow"]["engine_connected"] is False
     assert summary["acceptance"]["engine_core_auction_fact"] == "OBSERVED"
     assert summary["acceptance"]["engine_core_shadow"] == "PARTIAL"
+
+
+def test_independent_auction_fact_is_not_projected_onto_missing_capture_slot(tmp_path):
+    capture = _write_capture(tmp_path / "capture-root")
+    source_rows = tmp_path / "auction-source.json"
+    source_rows.write_text(
+        json.dumps(
+            {
+                "trade_date": "2026-09-14",
+                "symbol": "600519",
+                "rows": [
+                    {
+                        "auction_tag": "0920",
+                        "symbol": "600519",
+                        "trade_date": "20260914",
+                        "ts": "2026-09-14 09:20:03.146000+08:00",
+                        "px_milli": 1275000,
+                        "match_amt_yuan": 1000,
+                        "rest_bid_amt_yuan": 2000,
+                        "rest_ask_amt_yuan": 500,
+                    },
+                    {
+                        "auction_tag": "0924",
+                        "symbol": "600519",
+                        "trade_date": "20260914",
+                        "ts": "2026-09-14 09:24:10.162000+08:00",
+                        "px_milli": 1276000,
+                        "match_amt_yuan": 1500,
+                        "rest_bid_amt_yuan": 2200,
+                        "rest_ask_amt_yuan": 400,
+                    },
+                    {
+                        "auction_tag": "0925",
+                        "symbol": "600519",
+                        "trade_date": "20260914",
+                        "ts": "2026-09-14 09:25:06.156000+08:00",
+                        "px_milli": 1277000,
+                        "match_amt_yuan": 1800,
+                        "rest_bid_amt_yuan": 2100,
+                        "rest_ask_amt_yuan": 350,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "audit"
+    build_audit_bundle(
+        capture,
+        output,
+        trade_date="2026-09-14",
+        stale_after_ms=10_000,
+        auction_shadow_file=source_rows,
+    )
+    matrix = (output / "production_chain_matrix.csv").read_text(encoding="utf-8")
+    assert "2026-09-14,auction_0920,engine_core,OBSERVED" in matrix
+    assert "2026-09-14,auction_0924,engine_core,UNPROVEN" in matrix
+    assert "2026-09-14,auction_0925,engine_core,OBSERVED" in matrix
+    assert "2026-09-14,auction_anchor,engine_core,UNPROVEN" in matrix

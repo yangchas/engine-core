@@ -541,14 +541,29 @@ def build_audit_bundle(
             elif layer == "engine-next":
                 status, detail = "UNKNOWN", "no read-only loader trace in capture"
             else:
-                status, detail = (
-                    ("OBSERVED", "real source-row AuctionFactShadow; not Engine-connected")
-                    if auction_fact.get("status") == "OBSERVED"
-                    else (
+                # The TD source-row shadow is an independent evidence scope.  Do
+                # not project it onto a missing Redis capture slot (especially
+                # 0924), or onto the aggregate anchor file, as if that layer had
+                # observed the same production-chain input.
+                if (
+                    auction_fact.get("status") == "OBSERVED"
+                    and anchor in REQUIRED_AUCTION_SLOTS
+                    and auction.get("status") == "OBSERVED"
+                ):
+                    status, detail = (
+                        "OBSERVED",
+                        "separate TD source-row AuctionFactShadow; capture projection not linked",
+                    )
+                elif auction_fact.get("status") == "OBSERVED":
+                    status, detail = (
+                        "UNPROVEN",
+                        "separate TD source-row fact exists but this capture slot is missing or aggregate-only",
+                    )
+                else:
+                    status, detail = (
                         "UNPROVEN",
                         "Q2 shadow is not linked to this auction anchor; auction fact path not run",
                     )
-                )
             matrix_rows.append({
                 "trade_date": trade_date,
                 "anchor": anchor,
