@@ -2,6 +2,11 @@
 
 ## 基线与执行状态
 
+### 2026-09-14 Live Morning Shadow V1 最新提交复验
+
+- `run_live_morning_shadow.py` 的最新修正提交为 `472bf7d`：统一 Q2 trace 中的 `DataStatus` 枚举输出为业务值，并补充节点 `input_sha256`/Q2 source-time metadata。Local/Cobra-ion Python 3.12.3 同一归档均为 `391 passed`、`compileall` PASS，归档 SHA-256 `0cb91fd65fab3cdc251558c74f284e803a265c7691f0c834ae42487915faecf7`。
+- 2026-09-14 17:28 在 Cobra-ion 使用真实 Redis Q2、TD `auction_snapshot_v2` 和 GuardRedis 旧 auction loader 做晚启动只读运行；`AUCTION_0926`、`OPENING_0932` 均生成，origin=`RECOVERY_CATCHUP`，节点保留实际 17:28 observation time，未伪造 09:26/09:32 输入。manifest safety 的新增 consumer、ACK/publish、Redis/TD write、notification/effect、production restart 均为 0。该证据只证明晚启动组合可运行，不是盘中时点证明；下一交易日须在 09:15 前启动捕获真实节点。详见 `docs/evidence/live_morning_shadow_20260914_1728.md`。
+
 ### 2026-09-14 Live Morning Shadow V1（晚启动只读验证）
 
 - 新增 `examples/run_live_morning_shadow.py`：有界只读运行壳，复用现有 `SessionPlanV1`/`SessionTimerV1`、Redis Q2 adapter、TD `auction_snapshot_v2` 查询、旧 Redis auction loader 的 GuardRedis 入口和既有 `dispatch_morning_fact_nodes`；不新增 scheduler、Provider、Rabbit consumer、ACK、writer、通知或 effect。每个节点在实际消费时刻读取，保留业务锚点与 source observation time，输出目录 write-once。

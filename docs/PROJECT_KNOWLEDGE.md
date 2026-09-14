@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-14 `LiveMorningShadowV1` 最新提交 `472bf7d` 在 Cobra-ion Python 3.12.3 同归档通过 `391 passed`/`compileall`；17:28 晚启动真实只读运行生成 startup、`AUCTION_0926`、`OPENING_0932` 三份证据，origin=`RECOVERY_CATCHUP`，节点使用实际 17:28 observation time，Q2 trace 保留 `STALE/BEST_EFFORT_STALE` 与 source-time range，GuardRedis/TD SELECT/Redis Q2 均无写入，安全计数全 0。该结果证明 Core 旁路可在真实连接上安全晚启动，不证明盘中 09:26/09:32 时点；下一交易日须 09:15 前启动。归档 SHA-256 `0cb91fd65fab3cdc251558c74f284e803a265c7691f0c834ae42487915faecf7`。详见 `docs/evidence/live_morning_shadow_20260914_1728.md`。
+
 - [VERIFIED] 2026-09-14 新增 `run_live_morning_shadow.py`（Core commit `44d6a46`）：有界只读运行壳在节点消费时刻调用现有 SessionTimer、Redis Q2、TD auction reader、GuardRedis legacy auction loader 与既有 morning fact dispatch；不新增 scheduler、Rabbit consumer/ACK、Redis/TD writer、通知或 effect，输出目录 write-once。Cobra-ion Python 3.12.3 同归档为 `390 passed`、`compileall` PASS；17:17 晚启动实跑生成 `startup.json`、`AUCTION_0926.json`、`OPENING_0932.json`，origin=`RECOVERY_CATCHUP`，safety 全 0。节点使用实际 17:17 观察时间而非伪造 09:26/09:32，故该证据不替代下一交易日盘中时点捕获。证据：`tmp/live-morning-shadow-20260914-1717/`。
 
 - [VERIFIED] 2026-09-14 对当前 Cobra release 的 `IntradayDataHub.load_auction_snapshots()` 做只读探针：Redis 当前 `0920/0924/0925` 各返回 200 行 TopN 投影，600519 三个锚点均存在，000001/000002 不在这三个 TopN 结果中；`guard_writes=[]`，artifact SHA-256 `2dbdb285aef39e689c1d78838ca5dc256c2b337065e522d7c349ae405b1f5043`。同一投影映射到 Core 后仍为 `FACT_ONLY/OBSERVE`，0920/0925 price=0 保持语义 UNKNOWN；该结果只证明当前时点投影可读，不证明完整市场快照、Rabbit batch 或 Redis/TD writer 上游一致。详见 `docs/evidence/legacy_auction_loader_probe_20260914.md`。
