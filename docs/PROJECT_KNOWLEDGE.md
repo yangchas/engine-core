@@ -1,6 +1,6 @@
 # Project Knowledge
 
-- [VERIFIED] 2026-09-14 当前 HEAD `75e71ae` 仅修正文档测试口径：当前本地收集为 `397` 个离线用例；代码等价的 Cobra-ion 归档 `81e0dd3` 已在 Python 3.12.3 通过 `397 passed` 与 `compileall`。此前 `322/393` 等数字保留为历史提交证据，不代表当前测试总数；在线 Redis/TD/生产替代验收仍须独立证据。
+- [VERIFIED] 2026-09-14 当前 HEAD `612a818` 仅修正文档测试口径：当前本地收集为 `397` 个离线用例；代码等价的 Cobra-ion 归档 `81e0dd3` 已在 Python 3.12.3 通过 `397 passed` 与 `compileall`。此前 `322/393` 等数字保留为历史提交证据，不代表当前测试总数；在线 Redis/TD/生产替代验收仍须独立证据。
 
 - [VERIFIED] 2026-09-14 19:23 Cobra-ion 排程审计发现此前三个相对 `sleep` 会错过预定窗口；已在不触碰 `engine-next`/`t1-v2-live` 的前提下，仅终止自有等待 shell 并按服务器绝对目标时间重排。当前 PID：capture `51820`（09:09:40）、Core morning shadow `51823`（09:15:00–09:33）、post-capture audit `51826`（09:40）；均使用独立验证目录，输出目录启动前为空。详见 `docs/evidence/scheduled_readonly_capture_20260915.md`。
 
