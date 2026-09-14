@@ -9,6 +9,7 @@
 - 真实 Q2 `q2_093210.jsonl` 为 5220/5220、coverage=1.0，但 `STALE/BEST_EFFORT_STALE`，source-time range 保留；TD Tick 11 行同毫秒顺序保持 `UNKNOWN`，没有把导出顺序/hash 当作生产因果顺序。远端产物和 SHA-256 详见 `docs/evidence/production_chain_shadow_20260914_full.md`。
 - 审计工具随后修正了独立 TD source-row fact 的矩阵归属：缺失的 `auction_0924` 与 aggregate-only `auction_anchor` 不再被标成 `engine_core=OBSERVED`，改为 `UNPROVEN`；独立 `auction_fact_shadow` 仍保留 `OBSERVED`。本地/Cobra 3.12.3 均为 `392 passed`、`compileall` PASS，最新矩阵 SHA-256 为 `f56144e42d36a3c6ba0457c05048a3ea8433038a710c6a412ade6cc775c18c25`。
 - 该次是 captured-file 只读审计，不是生产服务连接验证，也不宣称 Core 已替代 `engine-next`；下一有效证据仍需正常盘中 09:15 前启动的 in-session run 与可安全取得的 engine-next loader trace。
+- 审计工具收口提交 `7f24d33` 增加非空输出目录 write-once 保护，重跑不会覆盖既有证据；本地与 Cobra-ion Python 3.12.3 均为 `393 passed`、`compileall` PASS。该修正只影响证据写入边界，不改变生产链计算结果。
 
 ### 2026-09-14 Live Morning Shadow V1 最新提交复验
 

@@ -127,6 +127,11 @@ missing or aggregate capture row: `auction_0924/engine_core` and
 `auction_fact_shadow` remains `OBSERVED`. This prevents a later TD artifact from
 being mistaken for production-chain capture evidence.
 
+The follow-up executable commit `7f24d33` adds a write-once guard: an existing
+non-empty output directory is rejected instead of being overwritten. Cobra-ion
+Python 3.12.3 re-ran the full suite (`393 passed`) and `compileall` on that
+commit; the captured production-chain facts and hashes above are unchanged.
+
 ## Next action
 
 Do not add another production connector or change the producer from this evidence.

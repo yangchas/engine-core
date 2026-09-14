@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-14 生产链审计工具收口：`7f24d33` 对非空输出目录 fail-closed，防止证据重跑覆盖或混入旧文件；Cobra-ion Python 3.12.3 同归档通过 `393 passed`、`compileall`。该修正不改变六层矩阵或 Core 事实，仅强化证据 write-once 边界。
+
 - [VERIFIED] 2026-09-14 六层生产链捕获审计：当前提交 `cb5d6fd` 在 Cobra-ion Python 3.12.3 使用真实 `20260914` capture、真实 TD `auction_snapshot_v2` 600519 源行和 09:24:50–09:30:01 TD Tick 样本生成六层 `production_chain_matrix.csv`、tick morphology 与 `audit_summary.json`。Q2 5220/5220、coverage=1.0 但 `STALE/BEST_EFFORT_STALE`，Core Q2 重复 hash 一致；auction fact 为 `OBSERVED/FACT_ONLY/PARTIAL`。0924 capture 槽位仍 `MISSING`，未用后续数据补写；Gateway/Rabbit batch、内部 AuctionState/freeze、engine-next loader trace 仍 UNKNOWN。审计工具已修正独立 TD fact 的矩阵归属：缺失 0924 和 aggregate anchor 行为 `UNPROVEN`，不冒充 capture 观察。接受结论 `SOURCE=UNKNOWN/AUCTION=OBSERVED/STORAGE=WARN/ENGINE_NEXT=UNKNOWN/CORE=PARTIAL/JOINT=WARN`，安全计数全 0。证据：`docs/evidence/production_chain_shadow_20260914_full.md`。
 
 - [VERIFIED] 2026-09-14 `LiveMorningShadowV1` 最新提交 `472bf7d` 在 Cobra-ion Python 3.12.3 同归档通过 `391 passed`/`compileall`；17:28 晚启动真实只读运行生成 startup、`AUCTION_0926`、`OPENING_0932` 三份证据，origin=`RECOVERY_CATCHUP`，节点使用实际 17:28 observation time，Q2 trace 保留 `STALE/BEST_EFFORT_STALE` 与 source-time range，GuardRedis/TD SELECT/Redis Q2 均无写入，安全计数全 0。该结果证明 Core 旁路可在真实连接上安全晚启动，不证明盘中 09:26/09:32 时点；下一交易日须 09:15 前启动。归档 SHA-256 `0cb91fd65fab3cdc251558c74f284e803a265c7691f0c834ae42487915faecf7`。详见 `docs/evidence/live_morning_shadow_20260914_1728.md`。
