@@ -197,4 +197,3 @@ def test_same_time_core_nodes_are_stably_ordered_by_timer_id():
         origin="RECOVERY_CATCHUP",
     )
     assert tuple(item.timer_id for item in firings) == ("OPENING_A", "OPENING_B")
-
