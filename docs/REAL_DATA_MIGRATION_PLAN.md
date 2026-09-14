@@ -9,6 +9,12 @@
 - 真实 Cobra 只读运行得到 Q2 `5220/5220`、coverage `1.0` 但 freshness `STALE`；TD 返回 0920/0924/0925 三行，Auction shadow 为 `PARTIAL/FACT_ONLY/OBSERVE`，previous-day 与 hot-plates 因可用时间/metadata 合同未知保持 `UNAVAILABLE`。这证明真实读取和 fail-closed，不证明 Core 已替代 `engine-next`。
 - 下一步停止扩展基础设施，进入 Gate B 与第一条已验证 Auction Shadow 规则；Engine timer 消费、engine-next loader/report parity、多日 Shadow 和替代前启动协调仍未闭合。
 
+### 2026-09-14 Gate B anchor delta fact
+
+- 新增 `AnchorDeltaFactV1` 与 `examples/run_anchor_delta_shadow.py`。它只迁移生产 release 中已审计的纯逐股 anchor delta：`0920→0924`、`0924→0925`；不迁移板块评分、leader、turn_strong、Strategy 或报告编排。
+- Cobra-ion 对同一真实 TD `auction_snapshot_v2` 读入后，生产 `engine_next` helper 与 Core helper 的 canonical JSON 逐字段 exact compare 均通过；2026-09-09 两段均有真实数值，2026-09-14 因 price 缺失两段均一致返回 `unavailable`。详见 `docs/evidence/gate_b_anchor_delta_20260914.md`。
+- 该规则已达到事实层 VERIFIED，但不改变 Core replacement 状态；下一步仍需 Gate B 状态生命周期审计和最小 Auction Shadow differential，禁止因事实函数通过而宣称策略已迁移。
+
 ### 2026-09-14 当前验证覆盖
 
 - 当前可执行代码身份为 `541383d`；本地 Windows Python 3.9.13 套件为 `322 passed`，Cobra-ion Python 3.12.3 对同一归档也为 `322 passed`，`compileall` 通过。版本差异按用户决定仅作记录，不影响继续推进；正式运行证据仍以 Cobra 3.12.3 为准。此前本节中的 `306/307/311/313/315/320 passed` 及更早 commit 均为历史证据，不能覆盖当前提交；最新真实 readiness 证据见 `docs/evidence/reference_data_readiness_20260914.md`。
