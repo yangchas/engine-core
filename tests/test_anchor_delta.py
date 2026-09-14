@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 
 import pytest
 
+from examples.run_anchor_delta_shadow import build_shadow_from_td_rows, normalize_td_rows
 from engine_core import (
     ANCHOR_DELTA_CONTRACT_VERSION,
     amount_reference_bucket,
@@ -114,6 +116,18 @@ def test_anchor_delta_supports_audited_aliases_and_balanced_state():
     assert result["labels"] == []
     assert result["amount_reference_bucket"] == "lt_500k"
     assert result["reference_labels"] == ["small_volume_unconfirmed"]
+
+
+def test_td_adapter_keeps_native_timestamp_as_evidence_only():
+    rows = [
+        (datetime(2026, 9, 14, 9, 24, 10, 162000), 1305000, 0, 700000, 200000, 100000, 0, "600519", "20260914", "0924"),
+        (datetime(2026, 9, 14, 9, 25, 6, 156000), 1305010, 0, 800000, 300000, 100000, 0, "600519", "20260914", "0925"),
+    ]
+    normalized = normalize_td_rows(rows)
+    assert normalized[0]["source_record_time"] == datetime(2026, 9, 14, 9, 24, 10, 162000)
+    result = build_shadow_from_td_rows(rows, from_tag="0924", to_tag="0925")
+    assert result["facts"][0]["status"] == "resolved"
+    assert result["read_only"] is True
 
 
 @pytest.mark.parametrize(
