@@ -30,3 +30,12 @@ were `active` at scheduling time and were not restarted.
 
 This is a scheduled observation, not an acceptance result.  The next useful
 evidence is the actual slot status and manifest after the trading session.
+
+## Preflight recheck — 2026-09-14 20:47 CST
+
+The three waiting shells were still alive (`51820`, `51823`, `51826`) and the
+target output directories were still absent.  `engine-next` and `t1-v2-live`
+remained `active`.  The server root filesystem was at 89% (about 2.0 GB free)
+and `/home/exedev/validation` used 611 MB; no cleanup or process restart was
+performed.  This capacity is recorded as an operational warning for the
+bounded capture, not as evidence that any capture slot has completed.
