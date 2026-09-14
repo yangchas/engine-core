@@ -2,6 +2,7 @@
 
 ## 当前可复核数字
 
+- 本次审计所依据的基线提交：`6e623a8`；其固定归档 SHA-256：`b50240904934aba7daaf0c4633db3d0acd9a51e2f9e7ace4d582600f4d63703a`。
 - 测试模块：46 个 `tests/test_*.py` 文件。
 - 静态 `def test_*`：319 个；pytest 参数化后收集用例：393 个。
 - 本地完整执行：`393 passed`。
@@ -22,6 +23,8 @@ Real provider probes               = separate Cobra evidence
 In-session production shadow       = pending next trading day
 Core replacement acceptance        = not achieved
 ```
+
+该 `6e623a8` 归档已在 Cobra-ion Python 3.12.3 的新隔离目录中复验：`393 passed`、`compileall PASS`，远端归档 SHA 与本地一致；生产服务仍为 active。
 
 ## 已覆盖的主要轮子
 
