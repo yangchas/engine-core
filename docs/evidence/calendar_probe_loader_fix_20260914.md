@@ -18,7 +18,7 @@ contract shape.
 
 ## Fix
 
-Commit `6baba2d4c713943428a9dd435d284552923a0884` updates the read-only
+Code commit `6baba2d4c713943428a9dd435d284552923a0884` updates the read-only
 morning loader to accept both `RealCalendarProbeV1` and the existing
 `TradingCalendarSnapshotV1` fixture shape. For probe evidence it derives only
 the explicit compatibility defaults (`CN_A_SHARE`, `Asia/Shanghai`) and the
@@ -31,7 +31,7 @@ The new tests cover probe-shape loading and semantic-hash mismatch rejection.
 
 ## Cobra-ion verification
 
-The exact archive was uploaded as:
+The exact fix archive was uploaded as:
 
 ```text
 /home/exedev/validation/engine-core-6baba2d.tar
@@ -65,18 +65,20 @@ b62dbb28a0a945297e4035627d137e51229e7528d8ac2e9b8ca37d41f28debe5
 ## Scheduled validation process
 
 The previous self-owned waiting process was removed after the failed loader
-check. A new self-owned process uses the fixed archive and writes only to the
-validation area:
+check. A later docs-only evidence commit produced the current exact-HEAD
+archive `engine-core-8036d9c`; its executable content includes the same code
+fix as `6baba2d`. The current self-owned process uses that archive and writes
+only to the validation area:
 
 ```text
-PID=45867
-archive=engine-core-6baba2d
+PID=46465
+archive=engine-core-8036d9c
 trade_date=20260915
 start=09:15:00
 stop=09:33:00
 symbols=000001,000002,600519
 output=/home/exedev/validation/live-morning-shadow-20260915-0915
-log=/home/exedev/validation/live-morning-shadow-20260915-0915-6baba2d.log
+log=/home/exedev/validation/live-morning-shadow-20260915-0915-8036d9c.log
 ```
 
 At reschedule time `engine-next` and `t1-v2-live` were both `active`. The
