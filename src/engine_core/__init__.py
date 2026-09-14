@@ -151,6 +151,11 @@ from .evaluation import (
     EvaluationNode,
     EvaluationPlan,
 )
+from .startup_readiness import (
+    STARTUP_READINESS_CONTRACT_VERSION,
+    StartupReadiness,
+    assess_startup_readiness,
+)
 
 __all__ = [
     "BreadthFacts",
@@ -279,4 +284,7 @@ __all__ = [
     "build_frozen_bundle",
     "replay_q2frames",
     "replay_td_event_time",
+    "STARTUP_READINESS_CONTRACT_VERSION",
+    "StartupReadiness",
+    "assess_startup_readiness",
 ]
