@@ -38,6 +38,7 @@ from engine_core import (  # noqa: E402
     normalize_auction_change_ratio,
     semantic_hash,
 )
+from engine_core.anchor_delta import build_anchor_shadow_evidence  # noqa: E402
 
 try:  # Script execution resolves sibling examples directly.
     from run_real_auction_shadow import build_shadow_from_rows, query_rows  # noqa: E402
@@ -46,6 +47,11 @@ except ModuleNotFoundError:  # Pytest/import execution resolves the package.
         build_shadow_from_rows,
         query_rows,
     )
+
+try:  # Reuse the same TD projection normalization as the anchor runner.
+    from run_anchor_delta_shadow import normalize_td_rows  # noqa: E402
+except ModuleNotFoundError:  # Pytest/import execution resolves the package.
+    from examples.run_anchor_delta_shadow import normalize_td_rows  # noqa: E402
 
 
 CORE_TIMER_SPECS = (
@@ -203,6 +209,96 @@ def _opening_fact_from_q2(projection: Any, *, symbol: str, auction_row: Mapping[
     )
 
 
+def dispatch_morning_fact_nodes(
+    timer_rows: Sequence[Mapping[str, Any]],
+    *,
+    projection: Any,
+    auction_rows: Sequence[Sequence[Any] | Mapping[str, Any]],
+    symbol: str,
+) -> tuple[dict[str, Any], ...]:
+    """Dispatch existing morning timer nodes to pure fact wheels once.
+
+    The timer rows are already resolved by :func:`due_timer_firings`; this
+    function is only the bounded composition point for the evidence runner.
+    It is deliberately not a scheduler, workflow engine, retry loop, or
+    persistence layer.
+    """
+
+    seen: set[str] = set()
+    tagged: dict[str, Mapping[str, Any]] = {}
+    for row in auction_rows:
+        if isinstance(row, Mapping):
+            item = dict(row)
+        else:
+            names = (
+                "ts", "px_milli", "chg_bp", "match_amt_yuan",
+                "rest_bid_amt_yuan", "rest_ask_amt_yuan", "limit_state",
+                "symbol", "trade_date", "auction_tag",
+            )
+            if len(row) != len(names):
+                raise ValueError("auction row has an unexpected column count")
+            item = dict(zip(names, row))
+        tag = str(item.get("auction_tag") or item.get("tag") or "").strip()
+        if tag in {"0920", "0924", "0925"}:
+            tagged[tag] = item
+
+    dispatched: list[dict[str, Any]] = []
+    for timer in timer_rows:
+        timer_id = str(timer.get("timer_id") or "")
+        if timer_id in seen:
+            raise ValueError("timer node dispatched more than once: " + timer_id)
+        seen.add(timer_id)
+        origin = str(timer.get("origin") or "NORMAL")
+        if timer_id == "AUCTION_0926":
+            facts = build_anchor_shadow_evidence(
+                normalize_td_rows(tuple(tagged.values())),
+                from_tag="0924",
+                to_tag="0925",
+            )
+            status = (
+                "READY"
+                if facts and all(item["status"] == "resolved" for item in facts)
+                else "PARTIAL" if facts else "UNAVAILABLE"
+            )
+            dispatched.append(
+                {
+                    "timer_id": timer_id,
+                    "origin": origin,
+                    "status": status,
+                    "contract_version": "AnchorDeltaFactV1",
+                    "facts": facts,
+                }
+            )
+            continue
+        if timer_id == "OPENING_0932":
+            opening_row = tagged.get("0925")
+            fact = (
+                _opening_fact_from_q2(
+                    projection,
+                    symbol=symbol,
+                    auction_row=opening_row,
+                )
+                if opening_row is not None
+                else {
+                    "status": "unavailable",
+                    "symbol": symbol,
+                    "reason": "auction_0925_missing",
+                }
+            )
+            dispatched.append(
+                {
+                    "timer_id": timer_id,
+                    "origin": origin,
+                    "status": "READY" if fact.get("status") == "available" else "UNAVAILABLE",
+                    "contract_version": "OpeningTransitionFactV1",
+                    "fact": fact,
+                }
+            )
+            continue
+        raise ValueError("unknown Core morning timer: " + timer_id)
+    return tuple(dispatched)
+
+
 def build_morning_shadow(
     *,
     trade_date: str,
@@ -226,6 +322,18 @@ def build_morning_shadow(
         current_time_ms=current_time_ms,
         previous_time_ms=previous_time_ms,
         already_fired=already_fired,
+    )
+    normal_dispatch = dispatch_morning_fact_nodes(
+        timer_evidence["normal"],
+        projection=projection,
+        auction_rows=auction_rows,
+        symbol=symbol,
+    )
+    recovery_dispatch = dispatch_morning_fact_nodes(
+        timer_evidence["recovery_catchup"],
+        projection=projection,
+        auction_rows=auction_rows,
+        symbol=symbol,
     )
 
     tagged: dict[str, Mapping[str, Any]] = {}
@@ -302,6 +410,10 @@ def build_morning_shadow(
         "auction": auction_semantic,
         "opening": opening_fact,
         "timers": timer_evidence,
+        "fact_dispatch": {
+            "normal": normal_dispatch,
+            "recovery_catchup": recovery_dispatch,
+        },
     }
     return {
         "contract_version": "MorningVerticalSliceShadowV1",
@@ -321,6 +433,10 @@ def build_morning_shadow(
             "content_hash": projection.content_hash,
         },
         "timers": timer_evidence,
+        "fact_dispatch": {
+            "normal": normal_dispatch,
+            "recovery_catchup": recovery_dispatch,
+        },
         "auction": auction_result,
         "opening_transition": opening_fact,
         "reference_data": reference_data,

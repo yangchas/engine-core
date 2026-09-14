@@ -3,10 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from examples.run_morning_vertical_slice_shadow import (
     _build_projection_from_raw,
     _load_calendar,
     build_morning_shadow,
+    dispatch_morning_fact_nodes,
 )
 from engine_core import local_datetime_ms
 
@@ -123,3 +126,46 @@ def test_morning_shadow_does_not_synthesize_missing_0924():
     )
     assert result["auction"]["status"] == "UNAVAILABLE"
     assert result["auction"]["available_tags"] == ("0920", "0925")
+
+
+def test_morning_shadow_dispatches_existing_fact_wheels_for_both_timer_origins():
+    calendar = _load_calendar(CALENDAR, trade_date="2026-09-14")
+    result = build_morning_shadow(
+        trade_date="2026-09-14",
+        symbol="600519",
+        projection=_projection(),
+        auction_rows=_rows(),
+        calendar=calendar,
+        current_time_ms=local_datetime_ms("2026-09-14", "09:33:00", timezone_name="Asia/Shanghai"),
+    )
+
+    for origin in ("normal", "recovery_catchup"):
+        dispatch = result["fact_dispatch"][origin]
+        assert [item["timer_id"] for item in dispatch] == ["AUCTION_0926", "OPENING_0932"]
+        assert dispatch[0]["contract_version"] == "AnchorDeltaFactV1"
+        assert dispatch[1]["contract_version"] == "OpeningTransitionFactV1"
+        assert dispatch[0]["status"] == "PARTIAL"
+        assert dispatch[1]["status"] == "UNAVAILABLE"
+        assert all(item["origin"] == ("NORMAL" if origin == "normal" else "RECOVERY_CATCHUP") for item in dispatch)
+
+
+def test_morning_dispatch_rejects_duplicate_node_identity():
+    with pytest.raises(ValueError, match="dispatched more than once"):
+        dispatch_morning_fact_nodes(
+            (
+                {"timer_id": "AUCTION_0926", "origin": "NORMAL"},
+                {"timer_id": "AUCTION_0926", "origin": "NORMAL"},
+            ),
+            projection=_projection(),
+            auction_rows=_rows(),
+            symbol="600519",
+        )
+
+
+def test_morning_dispatch_before_due_has_no_side_effect_or_fact():
+    assert dispatch_morning_fact_nodes(
+        (),
+        projection=_projection(),
+        auction_rows=_rows(),
+        symbol="600519",
+    ) == ()
