@@ -89,6 +89,12 @@ from .facts import (
 )
 from .probe import ProbeStrategy
 from .auction_shadow import AuctionFactShadow, build_auction_fact_shadow
+from .anchor_delta import (
+    ANCHOR_DELTA_CONTRACT_VERSION,
+    amount_reference_bucket,
+    build_anchor_delta_evidence,
+    build_anchor_shadow_evidence,
+)
 from .auction import normalize_auction_change_ratio
 from .opening import (
     OPENING_FACT_CONTRACT_VERSION,
@@ -194,6 +200,10 @@ __all__ = [
     "ProbeStrategy",
     "AuctionFactShadow",
     "build_auction_fact_shadow",
+    "ANCHOR_DELTA_CONTRACT_VERSION",
+    "amount_reference_bucket",
+    "build_anchor_delta_evidence",
+    "build_anchor_shadow_evidence",
     "normalize_auction_change_ratio",
     "OPENING_FACT_CONTRACT_VERSION",
     "OPENING_TRANSITION_FACT_CONTRACT_VERSION",
