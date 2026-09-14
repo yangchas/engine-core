@@ -4,6 +4,7 @@
 
 ### 2026-09-14 六层生产链捕获审计（最新）
 
+- 18:06 在 Cobra-ion 复用旧 release 连接器完成有界真实参考源探针：Baostock `fetch_daily_kline(2026-09-11)` 请求/返回日期均闭合；Kaipanla 热板/昨日涨停池/原因、问财涨停池、同花顺热度均返回真实样本但缺结构化历史日期或 `available_at` 证据，继续保持 `OBSERVED`，不得进入历史 Replay runtime。6/6 connector calls PASS；响应中的旧中文编码异常原样保留为证据。详见 `docs/evidence/real_reference_probe_20260914_1806.md`。
 - 盘后补做了两个独立的 `engine-next` 真实 Redis 只读探针：当前 release 的 `load_auction_snapshots()` 在观察时点返回 0920/0924/0925 各 200 条 Top-200 projection，旧 context builder 对 3 个 bounded symbol 也成功读取，两个 Guard 均 `guard_writes=[]`。这只关闭 loader/context read-only 证据，不把不同 projection 宣称为 parity；Rabbit batch、AuctionState/freeze 和同源 as-of 仍为 `UNKNOWN/UNPROVEN`。详见 `docs/evidence/engine_next_loader_context_probe_20260914_1752.md`。
 - 使用当前可执行提交 `cb5d6fd` 在 Cobra-ion Python 3.12.3 对真实 `2026-09-14` capture、真实 TD `auction_snapshot_v2` 源行和真实 TD Tick 样本执行 `run_production_chain_shadow.py`。产物包含 `production_chain_matrix.csv`、tick morphology 文件和 `audit_summary.json`；Q2 Core shadow 重复 hash 一致，auction source-row fact 为 `OBSERVED/FACT_ONLY/PARTIAL`，未接受预计算结果自证。
 - 结果严格保持：`SOURCE_INGESTION=UNKNOWN`、`AUCTION_STATE=OBSERVED`、`STORAGE_PROJECTION=WARN`、`ENGINE_NEXT_CONSUMPTION=UNKNOWN`、`ENGINE_CORE_SHADOW=PARTIAL`、`JOINT=WARN`。`auction_0924` 在原 capture 时为空，未用后续 Redis/TD 观察回填；Gateway/Rabbit batch membership、内部 AuctionState/freeze 和 engine-next loader trace 仍未观测。
