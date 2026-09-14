@@ -80,6 +80,7 @@ def test_build_node_evidence_keeps_business_and_observation_times_separate():
     assert result["business_anchor_time"] == firing.scheduled_time_ms
     assert result["observed_at_ms"] == local_datetime_ms("2026-09-14", "09:26:00", timezone_name="Asia/Shanghai")
     assert result["fact_dispatch"][0]["facts"][0]["timer_id"] == "AUCTION_0926"
+    assert len(result["input_sha256"]) == 64
     assert result["semantic_hash"]
 
 

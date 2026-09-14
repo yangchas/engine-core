@@ -15,6 +15,7 @@ that a rerun cannot silently overwrite evidence.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -95,6 +96,19 @@ def _json_ready(value: Any) -> Any:
     if isinstance(value, (tuple, list)):
         return [_json_ready(item) for item in value]
     return value
+
+
+def _evidence_sha256(value: Any) -> str:
+    """Hash a JSON-safe evidence payload, never a machine-local path."""
+
+    encoded = json.dumps(
+        _json_ready(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _atomic_write_once(path: Path, payload: Mapping[str, Any]) -> str:
@@ -192,6 +206,18 @@ def build_node_evidence(
                 source_ranges.append(row.get("ts"))
             elif row:
                 source_ranges.append(row[0])
+    q2_evidence = None
+    if projection is not None:
+        q2_evidence = {
+            "status": str(projection.status),
+            "consistency_status": projection.consistency_status,
+            "coverage": projection.coverage,
+            "quote_count": len(projection.quotes),
+            "expected_symbol_count": len(projection.expected_symbols),
+            "oldest_source_time_ms": projection.oldest_source_time_ms,
+            "newest_source_time_ms": projection.newest_source_time_ms,
+            "content_hash": projection.content_hash,
+        }
     result = {
         "contract_version": LIVE_SHADOW_CONTRACT_VERSION,
         "timer": _timer_payload(firing),
@@ -204,6 +230,7 @@ def build_node_evidence(
             symbol: tuple(td_rows_by_symbol.get(symbol, ())) for symbol in ordered_symbols
         },
         "source_record_time_values": tuple(source_ranges),
+        "q2": q2_evidence,
         "legacy_loader": legacy_loader or {"status": "NOT_CONFIGURED"},
         "fact_dispatch": tuple(dispatch_rows),
         "read_only": True,
@@ -212,6 +239,16 @@ def build_node_evidence(
             "no Rabbit ACK/publish, Redis/TD write, recovery, notification or effect"
         ),
     }
+    result["input_sha256"] = _evidence_sha256(
+        {
+            "trade_date": trade_date,
+            "timer": result["timer"],
+            "symbols": ordered_symbols,
+            "td_rows_by_symbol": result["td_rows_by_symbol"],
+            "q2": q2_evidence,
+            "legacy_loader": result["legacy_loader"],
+        }
+    )
     result["semantic_hash"] = semantic_hash(
         {
             "contract_version": LIVE_SHADOW_CONTRACT_VERSION,
