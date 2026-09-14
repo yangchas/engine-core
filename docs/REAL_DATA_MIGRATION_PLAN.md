@@ -7,6 +7,7 @@
 - 当前可执行代码身份为 `541383d`；本地 Windows Python 3.9.13 套件为 `322 passed`，Cobra-ion Python 3.12.3 对同一归档也为 `322 passed`，`compileall` 通过。版本差异按用户决定仅作记录，不影响继续推进；正式运行证据仍以 Cobra 3.12.3 为准。此前本节中的 `306/307/311/313/315/320 passed` 及更早 commit 均为历史证据，不能覆盖当前提交；最新真实 readiness 证据见 `docs/evidence/reference_data_readiness_20260914.md`。
 - 2026-09-14 开盘前对 Cobra-ion Redis 执行真实只读 Q2 探针，目标日期 active cohort 为空，返回 `MISSING/EMPTY_UNIVERSE`，不是 live coverage 通过。ground-truth capture 进程已运行但尚未到交易时段采样点。
 - 2026-09-14 10:56–10:58 在 Cobra-ion 生产共享 Python 3.12.3 上完成真实 reference-data readiness 复核：热板 50 行、昨日涨停池 40 行均真实读取且 HLEN/scan 一致，但 metadata 均缺 `schema_version/available_at_ms/field_units`，按合同保持 `UNAVAILABLE`；同期 Q2 5220/5220、coverage=1.0，但 60s policy 下全量 `STALE`。该结果是成功的 fail-closed，不是 provider 失败；详见 `docs/evidence/reference_data_readiness_20260914.md`。
+- 2026-09-14 11:10–11:13 完成当前 release 的 M0 启动/动作链只读审计：固定 Cobra release `20260903_e272842`、systemd 入口与服务身份，逐节点核对启动自检、09:20/09:24/09:25/09:26/09:32 调度及 getter/action 的读写边界；`load_auction_snapshots` 是只读投影，`recover_auction_anchor`、hot/yest fetch、mapping loader、market summary rebuild 可能写入或触发外部 I/O，Core 不能直接复用。当前 Q2 真实探针仍 5220/5220、coverage=1.0、全量 `STALE`；M0 结论为 `OBSERVED`，不宣称 Core 已具备替代启动协调。详见 `docs/evidence/m0_startup_flow_audit_20260914.md`。
 - 当前仍不具备 `engine_next` 替代条件：缺真实当日 0920/0924/0925 成对证据、完整 source/runtime batch membership、正式报告 owner 和长会话幂等/内存边界。不得因 `307 passed` 或真实连接成功打正式替代标签。
 
 ### 2026-09-13 23:50 最新收口复核
