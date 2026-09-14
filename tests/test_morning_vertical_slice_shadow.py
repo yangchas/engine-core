@@ -162,6 +162,27 @@ def test_morning_dispatch_rejects_duplicate_node_identity():
         )
 
 
+def test_morning_dispatch_rejects_cross_symbol_auction_rows():
+    with pytest.raises(ValueError, match="symbol does not match"):
+        dispatch_morning_fact_nodes(
+            ({"timer_id": "AUCTION_0926", "origin": "NORMAL"},),
+            projection=_projection(),
+            auction_rows=[{**_rows()[0], "symbol": "000001"}],
+            symbol="600519",
+        )
+
+
+def test_morning_dispatch_rejects_duplicate_auction_tag():
+    rows = _rows()
+    with pytest.raises(ValueError, match="duplicate auction tag"):
+        dispatch_morning_fact_nodes(
+            ({"timer_id": "AUCTION_0926", "origin": "NORMAL"},),
+            projection=_projection(),
+            auction_rows=(rows[0], rows[0], rows[1]),
+            symbol="600519",
+        )
+
+
 def test_morning_dispatch_before_due_has_no_side_effect_or_fact():
     assert dispatch_morning_fact_nodes(
         (),

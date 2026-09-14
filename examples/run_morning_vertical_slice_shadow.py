@@ -209,6 +209,38 @@ def _opening_fact_from_q2(projection: Any, *, symbol: str, auction_row: Mapping[
     )
 
 
+def _tagged_auction_rows(
+    auction_rows: Sequence[Sequence[Any] | Mapping[str, Any]],
+    *,
+    symbol: str | None = None,
+) -> dict[str, Mapping[str, Any]]:
+    """Normalize the bounded auction rows and reject ambiguous ownership."""
+
+    tagged: dict[str, Mapping[str, Any]] = {}
+    for row in auction_rows:
+        if isinstance(row, Mapping):
+            item = dict(row)
+        else:
+            names = (
+                "ts", "px_milli", "chg_bp", "match_amt_yuan",
+                "rest_bid_amt_yuan", "rest_ask_amt_yuan", "limit_state",
+                "symbol", "trade_date", "auction_tag",
+            )
+            if len(row) != len(names):
+                raise ValueError("auction row has an unexpected column count")
+            item = dict(zip(names, row))
+        row_symbol = str(item.get("symbol") or "").strip()
+        if symbol is not None and row_symbol and row_symbol != symbol:
+            raise ValueError("auction row symbol does not match requested symbol")
+        tag = str(item.get("auction_tag") or item.get("tag") or "").strip()
+        if tag not in {"0920", "0924", "0925"}:
+            continue
+        if tag in tagged:
+            raise ValueError("duplicate auction tag: " + tag)
+        tagged[tag] = item
+    return tagged
+
+
 def dispatch_morning_fact_nodes(
     timer_rows: Sequence[Mapping[str, Any]],
     *,
@@ -225,22 +257,7 @@ def dispatch_morning_fact_nodes(
     """
 
     seen: set[str] = set()
-    tagged: dict[str, Mapping[str, Any]] = {}
-    for row in auction_rows:
-        if isinstance(row, Mapping):
-            item = dict(row)
-        else:
-            names = (
-                "ts", "px_milli", "chg_bp", "match_amt_yuan",
-                "rest_bid_amt_yuan", "rest_ask_amt_yuan", "limit_state",
-                "symbol", "trade_date", "auction_tag",
-            )
-            if len(row) != len(names):
-                raise ValueError("auction row has an unexpected column count")
-            item = dict(zip(names, row))
-        tag = str(item.get("auction_tag") or item.get("tag") or "").strip()
-        if tag in {"0920", "0924", "0925"}:
-            tagged[tag] = item
+    tagged = _tagged_auction_rows(auction_rows, symbol=symbol)
 
     dispatched: list[dict[str, Any]] = []
     for timer in timer_rows:
@@ -336,22 +353,7 @@ def build_morning_shadow(
         symbol=symbol,
     )
 
-    tagged: dict[str, Mapping[str, Any]] = {}
-    for row in auction_rows:
-        if isinstance(row, Mapping):
-            item = dict(row)
-        else:
-            names = (
-                "ts", "px_milli", "chg_bp", "match_amt_yuan",
-                "rest_bid_amt_yuan", "rest_ask_amt_yuan", "limit_state",
-                "symbol", "trade_date", "auction_tag",
-            )
-            if len(row) != len(names):
-                raise ValueError("auction row has an unexpected column count")
-            item = dict(zip(names, row))
-        tag = str(item.get("auction_tag") or "").strip()
-        if tag in {"0920", "0924", "0925"}:
-            tagged[tag] = item
+    tagged = _tagged_auction_rows(auction_rows, symbol=symbol)
 
     auction_result: dict[str, Any]
     if set(tagged) == {"0920", "0924", "0925"}:
