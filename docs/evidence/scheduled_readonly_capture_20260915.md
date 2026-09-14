@@ -39,3 +39,12 @@ remained `active`.  The server root filesystem was at 89% (about 2.0 GB free)
 and `/home/exedev/validation` used 611 MB; no cleanup or process restart was
 performed.  This capacity is recorded as an operational warning for the
 bounded capture, not as evidence that any capture slot has completed.
+
+## Preflight recheck — 2026-09-14 21:04 CST
+
+The same three server-side waiting shells remained alive (`51820`, `51823`,
+`51826`); `engine-next` and `t1-v2-live` were still `active`, and all three
+target directories remained absent before their scheduled windows.  No
+production process was restarted, no Rabbit consumer/ACK was changed, and no
+Redis/TD write or notification was performed.  This is a verified wait only;
+it does not upgrade any source, batch, or node evidence.
