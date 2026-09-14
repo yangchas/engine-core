@@ -157,12 +157,15 @@ def _load_legacy(legacy_root: str) -> ModuleType:
     return importlib.import_module("engine_next.runtime.open_confirmation")
 
 
-def _auction_change_from_rows(rows: Sequence[Sequence[Any] | Mapping[str, Any]]) -> float | None:
+def _auction_change_evidence_from_rows(
+    rows: Sequence[Sequence[Any] | Mapping[str, Any]],
+) -> tuple[float | None, str | None]:
     names = (
         "ts", "px_milli", "chg_bp", "match_amt_yuan",
         "rest_bid_amt_yuan", "rest_ask_amt_yuan", "limit_state",
         "symbol", "trade_date", "auction_tag",
     )
+    saw_0925 = False
     for row in rows:
         if isinstance(row, Mapping):
             item = dict(row)
@@ -172,8 +175,16 @@ def _auction_change_from_rows(rows: Sequence[Sequence[Any] | Mapping[str, Any]])
             item = dict(zip(names, row))
         if str(item.get("auction_tag") or "").strip() != "0925":
             continue
-        return normalize_auction_change_bp_to_pct(item.get("chg_bp"))
-    return None
+        saw_0925 = True
+        value = normalize_auction_change_bp_to_pct(item.get("chg_bp"))
+        return value, None if value is not None else "0925_chg_bp_missing_or_invalid"
+    return None, "0925_row_missing" if not saw_0925 else "0925_chg_bp_missing_or_invalid"
+
+
+def _auction_change_from_rows(rows: Sequence[Sequence[Any] | Mapping[str, Any]]) -> float | None:
+    """Return only the typed change value for small pure-function tests."""
+
+    return _auction_change_evidence_from_rows(rows)[0]
 
 
 def run_real_differential(
@@ -205,14 +216,17 @@ def run_real_differential(
             continue
         row = _row_from_quote(quote, symbol)
         auction_change = None
+        change_reason = None
         if td_config is not None:
             raw_rows = query_rows(symbol=symbol, trade_date=trade_date, **dict(td_config))
-            auction_change = _auction_change_from_rows(raw_rows)
+            auction_change, change_reason = _auction_change_evidence_from_rows(raw_rows)
         item = compare_opening_rows(
             legacy,
             (row,),
             auction_change_pct=auction_change,
         )["comparisons"][0]
+        if auction_change is None and td_config is not None:
+            item["reason"] = change_reason or "0925_change_unavailable"
         item["status"] = _comparison_status(item, transition_requested=td_config is not None)
         comparisons.append(item)
     return {
@@ -225,6 +239,35 @@ def run_real_differential(
         "oldest_source_time_ms": projection.oldest_source_time_ms,
         "newest_source_time_ms": projection.newest_source_time_ms,
         "comparisons": tuple(comparisons),
+        "transition_comparable_count": (
+            sum(item.get("transition_exact") is not None for item in comparisons)
+            if td_config is not None
+            else None
+        ),
+        "transition_non_comparable_count": (
+            sum(item.get("transition_exact") is None for item in comparisons)
+            if td_config is not None
+            else None
+        ),
+        "transition_mismatch_count": (
+            sum(item.get("transition_exact") is False for item in comparisons)
+            if td_config is not None
+            else None
+        ),
+        "transition_non_comparable_reasons": (
+            {
+                reason: sum(1 for item in comparisons if item.get("reason") == reason)
+                for reason in sorted(
+                    {
+                        str(item.get("reason"))
+                        for item in comparisons
+                        if item.get("transition_exact") is None
+                    }
+                )
+            }
+            if td_config is not None
+            else {}
+        ),
         "opening_exact": all(item.get("opening_exact", False) for item in comparisons),
         "transition_exact": (
             all(item.get("transition_exact", False) for item in comparisons)
