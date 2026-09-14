@@ -4,9 +4,10 @@
 
 ### 2026-09-14 六层生产链捕获审计（最新）
 
-- 使用当前可执行提交 `fee36b8` 在 Cobra-ion Python 3.12.3 对真实 `2026-09-14` capture、真实 TD `auction_snapshot_v2` 源行和真实 TD Tick 样本执行 `run_production_chain_shadow.py`。产物包含 `production_chain_matrix.csv`、tick morphology 文件和 `audit_summary.json`；Q2 Core shadow 重复 hash 一致，auction source-row fact 为 `OBSERVED/FACT_ONLY/PARTIAL`，未接受预计算结果自证。
+- 使用当前可执行提交 `cb5d6fd` 在 Cobra-ion Python 3.12.3 对真实 `2026-09-14` capture、真实 TD `auction_snapshot_v2` 源行和真实 TD Tick 样本执行 `run_production_chain_shadow.py`。产物包含 `production_chain_matrix.csv`、tick morphology 文件和 `audit_summary.json`；Q2 Core shadow 重复 hash 一致，auction source-row fact 为 `OBSERVED/FACT_ONLY/PARTIAL`，未接受预计算结果自证。
 - 结果严格保持：`SOURCE_INGESTION=UNKNOWN`、`AUCTION_STATE=OBSERVED`、`STORAGE_PROJECTION=WARN`、`ENGINE_NEXT_CONSUMPTION=UNKNOWN`、`ENGINE_CORE_SHADOW=PARTIAL`、`JOINT=WARN`。`auction_0924` 在原 capture 时为空，未用后续 Redis/TD 观察回填；Gateway/Rabbit batch membership、内部 AuctionState/freeze 和 engine-next loader trace 仍未观测。
 - 真实 Q2 `q2_093210.jsonl` 为 5220/5220、coverage=1.0，但 `STALE/BEST_EFFORT_STALE`，source-time range 保留；TD Tick 11 行同毫秒顺序保持 `UNKNOWN`，没有把导出顺序/hash 当作生产因果顺序。远端产物和 SHA-256 详见 `docs/evidence/production_chain_shadow_20260914_full.md`。
+- 审计工具随后修正了独立 TD source-row fact 的矩阵归属：缺失的 `auction_0924` 与 aggregate-only `auction_anchor` 不再被标成 `engine_core=OBSERVED`，改为 `UNPROVEN`；独立 `auction_fact_shadow` 仍保留 `OBSERVED`。本地/Cobra 3.12.3 均为 `392 passed`、`compileall` PASS，最新矩阵 SHA-256 为 `f56144e42d36a3c6ba0457c05048a3ea8433038a710c6a412ade6cc775c18c25`。
 - 该次是 captured-file 只读审计，不是生产服务连接验证，也不宣称 Core 已替代 `engine-next`；下一有效证据仍需正常盘中 09:15 前启动的 in-session run 与可安全取得的 engine-next loader trace。
 
 ### 2026-09-14 Live Morning Shadow V1 最新提交复验

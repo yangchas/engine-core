@@ -2,9 +2,9 @@
 
 ## Scope and identity
 
-- Executable Core commit: `fee36b8`
-- Cobra archive: `/home/exedev/validation/engine-core-fee36b8.tar`
-- Archive SHA-256: `96a5bd3e55ca8c708466975a73f504be09bb49df2a90eff78cb3df7bf93de005`
+- Executable Core commit: `cb5d6fd`
+- Cobra archive: `/home/exedev/validation/engine-core-cb5d6fd.tar`
+- Archive SHA-256: `1019bb54fbdcdf87a2374fe639bff96067ed334249fae0a25474ec37c46460a7`
 - Formal runtime: `/home/exedev/services/engine-next/shared/venv/bin/python` — Python 3.12.3
 - Remote capture: `/home/exedev/audit/production_ground_truth/20260914`
 - Remote output: `/home/exedev/validation/production-chain-shadow-20260914-full`
@@ -110,7 +110,7 @@ inventing an auction/post-auction predicate. Same-symbol/same-timestamp order is
 
 ```text
 audit_summary.json          446c27cad04e1c8dec864a9018cddd7e101d83d6a5910ff5557fddf7aea58ca6
-production_chain_matrix.csv 3b5d389f07c4a34cb422c78097a43c96ae31078f6230f4e6b8ac135467dc7a40
+production_chain_matrix.csv f56144e42d36a3c6ba0457c05048a3ea8433038a710c6a412ade6cc775c18c25
 tick_shape_samples.jsonl    69bcec164573f6bea8ba3c32cac1b7709784a2baeae2753bee510d7ae28fd4ee
 tick_shape_transition.csv   f35d513009d69bab2d3ec2de9526909a1d75120c2c1e6aa74408a7a30093a2f2
 tick_shape_statistics.csv   8871b8b85540db9375f3e05cf21aa3182130b29098bf5f8db6c53b0b91782a54
@@ -120,6 +120,12 @@ tick_shape_audit.md         21b417b9fcba2943873ed5e1a35d25ab8f54d5f8a30b8cc90338
 The audit tool only reads captured files, normalizes them, runs the in-memory Core
 Q2 path, and writes a new evidence directory. It does not repair missing slots,
 connect to production services, or send effects.
+
+The `cb5d6fd` audit fix keeps the independent TD source-row shadow out of a
+missing or aggregate capture row: `auction_0924/engine_core` and
+`auction_anchor/engine_core` are `UNPROVEN`, while the separate
+`auction_fact_shadow` remains `OBSERVED`. This prevents a later TD artifact from
+being mistaken for production-chain capture evidence.
 
 ## Next action
 
