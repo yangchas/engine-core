@@ -20,13 +20,14 @@ consumer has been replaced.
 ## Code and verification identity
 
 ```text
-Core commit: d976f6d fix(shadow): reject ambiguous auction rows
+Core commit: ca05ddf fix(opening): honor typed auction change units
+Previous boundary fix: d976f6d fix(shadow): reject ambiguous auction rows
 Core feature commit: 41bc60d feat(shadow): dispatch morning fact nodes
-Core archive: /home/exedev/validation/engine-core-d976f6d.tar
-Archive SHA-256: 0b87120f043d1264218d771fed29c5ae6d1dd5e08aa5e07f902a0757cb8ebf0d
-Local suite: 359 passed
+Core archive: /home/exedev/validation/engine-core-ca05ddf.tar
+Archive SHA-256: dd7bb3fcf3345790fe2e2bdf0ec56a0c61e76c9359384d46997b828d5c2c8fb5
+Local suite: 372 passed
 Cobra-ion Python: 3.12.3
-Cobra-ion suite: 359 passed
+Cobra-ion suite: 372 passed
 compileall: PASS
 ```
 
@@ -47,14 +48,28 @@ symbols: 000001, 300750, 600519
 projection: coverage=1.0, status=STALE,
             consistency=BEST_EFFORT_STALE
 opening_exact: true for all three symbols
-transition_exact: true only where the 0925 auction-change input was present;
-                  300750 and 600519 remained without a comparable transition
-                  input, not a fabricated mismatch
-artifact SHA-256: 83ed7c0dca5655b528ece34aaaaf2cb4ad7af5fd024c716ba185f315caa442f4
+transition_exact: true for 000001; 300750 and 600519 remained without a
+                  comparable transition input, not a fabricated mismatch
+artifact SHA-256: 78f2fff501a19224fb089c203bb8cc253ef64c9b8201eca4536f49f265390902
 ```
 
 This is an exact opening helper differential for the available fields.  It
 does not establish fresh live coverage or full opening-transition parity.
+
+### 0925 change input lineage closure
+
+The TD row contract was inspected against the deployed production normalizer:
+
+```text
+TD auction_snapshot_v2.chg_bp = -8
+production normalize_td_auction_row -> change_pct = -0.08
+Core normalize_auction_change_bp_to_pct -> -0.08
+```
+
+The previous generic ratio normalizer was not appropriate for this typed TD
+column and could turn `-8` into `-8.0` percentage points.  The typed conversion
+is now a separately tested Core wheel.  For 300750 and 600519 the raw TD
+`chg_bp` is genuinely null and both production/Core remain unavailable.
 
 ## Real Q2 capture Morning Shadow
 
@@ -70,10 +85,10 @@ consistency: BEST_EFFORT_MIXED_FRESHNESS
 source-time range: 2026-09-14 00:00:00 -> 09:31:14 CST
 TD rows for 600519: 3
 
-normal AUCTION_0926: PARTIAL
-normal OPENING_0932: UNAVAILABLE
-recovery AUCTION_0926: PARTIAL
-recovery OPENING_0932: UNAVAILABLE
+normal AUCTION_0926: READY
+normal OPENING_0932: READY (000001; auction_change_pct=-0.08)
+recovery AUCTION_0926: READY
+recovery OPENING_0932: READY (000001; auction_change_pct=-0.08)
 ```
 
 `OPENING_0932=UNAVAILABLE` is fail-closed because the required comparable
@@ -81,9 +96,13 @@ auction-change input was not available.  It is not a provider exception and
 not a reason to substitute `amount_yuan` or another field.
 
 ```text
-Morning artifact SHA-256:
-a754a288ed75221ab3d02f52b1c4386fe04828de66dc7320c6d5c4b1ea2e451a
+Morning artifact SHA-256 (000001):
+181063f60e34be6ddd7f797552c6ebc377df78514a0fdda7d8ac4fbc84e7102c
 ```
+
+The same capture for 600519 remains `AUCTION_0926=PARTIAL` and
+`OPENING_0932=UNAVAILABLE` because its TD 0925 price/change fields are absent;
+the missing source fact is not synthesized.
 
 The timer evidence at a late observation time contains both normal due and
 recovery-catchup views.  The two views are evidence scopes, not two production

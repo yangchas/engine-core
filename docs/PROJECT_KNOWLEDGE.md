@@ -1,6 +1,6 @@
 # Project Knowledge
 
-- [VERIFIED] 2026-09-14 Gate B morning fact dispatch：最终 Core commit `d976f6d`（功能提交 `41bc60d`）在薄组合边界中派发 `AUCTION_0926`→`AnchorDeltaFactV1`、`OPENING_0932`→`OpeningFactV1/OpeningTransitionFactV1`，并拒绝跨股票/重复 auction tag，不新增 scheduler/workflow/persistence/effect。Cobra-ion Python 3.12.3 同归档通过 `359 passed`、`compileall`；真实 Q2 capture 5220/5220 但 `PARTIAL`，09:26 为 `PARTIAL`、09:32 因竞价变动输入缺失为 `UNAVAILABLE`。opening helper 对选定真实 Q2 行 exact；transition 只在输入可比时比较。详见 `docs/evidence/gate_b_morning_fact_dispatch_20260914.md`。
+- [VERIFIED] 2026-09-14 Gate B morning fact dispatch：最终 Core commit `ca05ddf`（功能提交 `41bc60d`、边界修正 `d976f6d`）在薄组合边界中派发 `AUCTION_0926`→`AnchorDeltaFactV1`、`OPENING_0932`→`OpeningFactV1/OpeningTransitionFactV1`，拒绝跨股票/重复 auction tag，并按生产 typed TD `chg_bp/100` 合同转换竞价变动。Cobra-ion Python 3.12.3 同归档通过 `372 passed`、`compileall`；真实 Q2 capture 5220/5220 但 `PARTIAL`，000001 的 09:26/09:32 均 `READY`，300750/600519 的真实缺字段保持 `UNAVAILABLE`。opening helper exact；可比 transition exact。详见 `docs/evidence/gate_b_morning_fact_dispatch_20260914.md`。
 
 - [VERIFIED] 2026-09-14 新增只读 `morning_vertical_slice_shadow` 组合工具（Core commit `b902d7e`）：真实 Redis Q2 + TD `auction_snapshot_v2` + SessionPlan timer evidence 可在不启动完整 Engine、不执行策略、不写 Redis/TD 的条件下生成可追溯 morning shadow。固定输入在 Cobra-ion Python 3.12.3 重跑两次 artifact/semantic hash 一致；本地/Cobra 同一归档均为 `332 passed`、`compileall` PASS。真实结果保持 Q2 `coverage=1.0` 但 `STALE`，auction `PARTIAL/FACT_ONLY/OBSERVE`，reference data `UNAVAILABLE`；这不是 engine-next 替代证明。详见 `docs/evidence/morning_vertical_slice_shadow_20260914.md`。
 
