@@ -15,7 +15,7 @@ from engine_core import (
     build_q2_projection,
     local_datetime_ms,
 )
-from examples.run_startup_readiness_probe import run_probe
+from examples.run_startup_readiness_probe import _load_calendar, run_probe
 
 
 TRADE_DATE = "2026-09-08"
@@ -321,3 +321,43 @@ def test_real_probe_wrapper_only_reads_q2_and_exposes_readiness():
     assert result["read_only"] is True
     assert result["readiness"]["q2_status"] == "READY"
     assert result["readiness"]["due_timer_ids"] == ("AUCTION_0926",)
+
+
+def test_startup_probe_calendar_loader_accepts_raw_probe_shape(tmp_path):
+    path = tmp_path / "real-calendar-probe.json"
+    path.write_text(
+        '{"contract_version":"RealCalendarProbeV1",'
+        '"version":"baostock-test-v1",'
+        '"query_start":"2026-09-07",'
+        '"query_end":"2026-09-09",'
+        '"declared_valid_from":"2026-09-07",'
+        '"declared_valid_to":"2026-09-09",'
+        '"trading_dates":["2026-09-08"]}',
+        encoding="utf-8",
+    )
+
+    snapshot = _load_calendar(path)
+
+    assert snapshot.calendar_id == "CN_A_SHARE"
+    assert snapshot.timezone_name == "Asia/Shanghai"
+    assert snapshot.source_guard_valid_from == "2026-09-07"
+    assert snapshot.source_guard_valid_to == "2026-09-09"
+    assert snapshot.is_trading_day("2026-09-08")
+
+
+def test_startup_probe_calendar_loader_rejects_probe_hash_mismatch(tmp_path):
+    path = tmp_path / "bad-calendar-probe.json"
+    path.write_text(
+        '{"contract_version":"RealCalendarProbeV1",'
+        '"version":"baostock-test-v1",'
+        '"query_start":"2026-09-07",'
+        '"query_end":"2026-09-09",'
+        '"declared_valid_from":"2026-09-07",'
+        '"declared_valid_to":"2026-09-09",'
+        '"trading_dates":["2026-09-08"],'
+        '"calendar_semantic_hash":"not-the-rebuilt-hash"}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="semantic hash"):
+        _load_calendar(path)

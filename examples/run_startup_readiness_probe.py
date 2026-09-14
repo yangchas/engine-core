@@ -23,24 +23,77 @@ from engine_core import (  # noqa: E402
     TradingCalendarSnapshot,
     assess_startup_readiness,
     build_a_share_session_plan,
+    build_calendar_snapshot,
 )
 
 
 def _load_calendar(path: Path) -> TradingCalendarSnapshot:
+    """Load either normalized calendar evidence or a raw calendar probe.
+
+    The production probe currently writes ``RealCalendarProbeV1`` (query
+    bounds plus canonical dates), while older fixtures use the directly
+    consumable ``TradingCalendarSnapshotV1`` shape.  Rebuild the immutable
+    snapshot in both cases and verify any supplied semantic hash; never trust
+    arbitrary JSON fields as the runtime identity.
+    """
+
     payload = json.loads(path.read_text(encoding="utf-8"))
-    return TradingCalendarSnapshot(
-        calendar_id=payload["calendar_id"],
+    probe_shape = payload.get("contract_version") == "RealCalendarProbeV1"
+    if probe_shape:
+        required = (
+            "query_start",
+            "query_end",
+            "version",
+            "declared_valid_from",
+            "declared_valid_to",
+            "trading_dates",
+        )
+        missing = [field for field in required if field not in payload]
+        if missing:
+            raise ValueError("calendar probe evidence missing fields: " + ",".join(missing))
+        calendar_id = str(payload.get("calendar_id") or "CN_A_SHARE")
+        timezone_name = str(payload.get("timezone") or "Asia/Shanghai")
+        source_guard_valid_from = str(
+            payload.get("source_guard_valid_from") or payload["query_start"]
+        )
+        source_guard_valid_to = str(
+            payload.get("source_guard_valid_to") or payload["query_end"]
+        )
+    else:
+        required = (
+            "calendar_id",
+            "version",
+            "timezone",
+            "declared_valid_from",
+            "declared_valid_to",
+            "source_guard_valid_from",
+            "source_guard_valid_to",
+            "trading_dates",
+        )
+        missing = [field for field in required if field not in payload]
+        if missing:
+            raise ValueError("calendar evidence missing fields: " + ",".join(missing))
+        calendar_id = payload["calendar_id"]
+        timezone_name = payload["timezone"]
+        source_guard_valid_from = payload["source_guard_valid_from"]
+        source_guard_valid_to = payload["source_guard_valid_to"]
+    snapshot = build_calendar_snapshot(
+        payload["trading_dates"],
+        calendar_id=calendar_id,
         version=payload["version"],
-        timezone_name=payload["timezone"],
+        timezone_name=timezone_name,
         declared_valid_from=payload["declared_valid_from"],
         declared_valid_to=payload["declared_valid_to"],
-        source_guard_valid_from=payload["source_guard_valid_from"],
-        source_guard_valid_to=payload["source_guard_valid_to"],
-        trading_dates=tuple(payload["trading_dates"]),
+        source_guard_valid_from=source_guard_valid_from,
+        source_guard_valid_to=source_guard_valid_to,
         source_id=payload.get("source_id"),
         observed_at_ms=payload.get("observed_at_ms"),
         evidence_ref=payload.get("evidence_ref"),
     )
+    expected_hash = payload.get("calendar_semantic_hash")
+    if expected_hash is not None and expected_hash != snapshot.semantic_hash:
+        raise ValueError("calendar semantic hash does not match evidence")
+    return snapshot
 
 
 def run_probe(
