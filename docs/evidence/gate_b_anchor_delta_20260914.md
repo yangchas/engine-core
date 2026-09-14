@@ -25,9 +25,10 @@ strategy thresholds, reporting, recovery, or effects.
 ```text
 Production release: /home/exedev/services/engine-next/releases/20260903_e272842
 Legacy auction_shadow.py SHA-256: c530b41b10643204eb89ce3b73b720e01caade4936643aa215948f686ab90af0
-Core commit: fa555b1317d7e76776207edc4e54d84c7fe1c497
-Core archive SHA-256: 667646219c580331cb4f0aac3f5294801c8f8aa4c056fe79b4a9091dc4930d87
-Local/Cobra suite: 349 passed
+Core implementation commit: fa555b1 (follow-up normalization fix: `697b6ba`)
+Final Core commit used for verification: 697b6ba2e5cfc2ad9dcda3d3851620071d3007fc
+Final Core archive SHA-256: 4dd239df56d2d4407f93626dc16cc1ca0c7e7d9c0a209c50f3ef174aa4aed513
+Local/Cobra suite: 351 passed
 compileall: PASS
 ```
 
@@ -97,7 +98,7 @@ Native TD adapter: provider-native timestamps retained as evidence only
 Full repository verification on local Windows and Cobra-ion Python 3.12.3:
 
 ```text
-349 passed
+351 passed
 compileall PASS
 ```
 

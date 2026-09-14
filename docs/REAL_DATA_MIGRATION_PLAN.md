@@ -11,8 +11,8 @@
 
 ### 2026-09-14 Gate B anchor delta fact
 
-- 新增 `AnchorDeltaFactV1` 与 `examples/run_anchor_delta_shadow.py`。它只迁移生产 release 中已审计的纯逐股 anchor delta：`0920→0924`、`0924→0925`；不迁移板块评分、leader、turn_strong、Strategy 或报告编排。
-- Cobra-ion 对同一真实 TD `auction_snapshot_v2` 读入后，生产 `engine_next` helper 与 Core helper 的 canonical JSON 逐字段 exact compare 均通过；2026-09-09 两段均有真实数值，2026-09-14 因 price 缺失两段均一致返回 `unavailable`。详见 `docs/evidence/gate_b_anchor_delta_20260914.md`。
+- 新增 `AnchorDeltaFactV1` 与 `examples/run_anchor_delta_shadow.py`。它只迁移生产 release 中已审计的纯逐股 anchor delta：`0920→0924`、`0924→0925`；不迁移板块评分、leader、turn_strong、Strategy 或报告编排。最终代码为 `697b6ba2e5cfc2ad9dcda3d3851620071d3007fc`。
+- Cobra-ion 对同一真实 TD `auction_snapshot_v2` 读入后，生产 `engine_next` helper 与 Core helper 的 canonical JSON 逐字段 exact compare 均通过；2026-09-09 两段均有真实数值，2026-09-14 因 price 缺失两段均一致返回 `unavailable`。最终本地/Cobra 套件均为 `351 passed`，详见 `docs/evidence/gate_b_anchor_delta_20260914.md`。
 - 该规则已达到事实层 VERIFIED，但不改变 Core replacement 状态；下一步仍需 Gate B 状态生命周期审计和最小 Auction Shadow differential，禁止因事实函数通过而宣称策略已迁移。
 
 ### 2026-09-14 当前验证覆盖
