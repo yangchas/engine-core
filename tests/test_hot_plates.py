@@ -19,7 +19,10 @@ CALENDAR = build_calendar_snapshot(
     declared_valid_from="2026-09-09",
     declared_valid_to="2026-09-11",
     source_guard_valid_from="2026-09-09",
-    source_guard_valid_to="2026-09-11",
+    # Guard coverage includes the weekend so the function can distinguish a
+    # non-trading request from an out-of-coverage request before touching the
+    # provider.  Declared decision coverage remains the three trading dates.
+    source_guard_valid_to="2026-09-13",
     source_id="fixture-calendar",
     observed_at_ms=1789000000000,
 )
@@ -216,3 +219,36 @@ def test_unknown_required_field_is_invalid():
 
     assert result.status is DataStatus.INVALID
     assert result.missing_fields == ("unknown_required_field:not_a_contract_field",)
+
+
+def test_non_trading_request_is_rejected_before_provider_access():
+    calls = []
+
+    def fetch_rows(trade_date):
+        calls.append(trade_date)
+        return _rows()
+
+    provider = RedisHotPlatesProvider(
+        fetch_rows,
+        observed_at_ms=lambda: 1789080000000,
+        metadata=lambda trade_date: _verified_metadata(),
+    )
+    result = HotPlatesFunction(provider, CALENDAR).execute(
+        _context(), _request(trade_date="2026-09-12")
+    )
+
+    assert result.status is DataStatus.INVALID
+    assert result.missing_fields == ("trade_date",)
+    assert calls == []
+
+
+def test_empty_verified_snapshot_is_missing_not_ready():
+    provider = RedisHotPlatesProvider(
+        lambda trade_date: [],
+        observed_at_ms=lambda: 1789080000000,
+        metadata=lambda trade_date: _verified_metadata(),
+    )
+    result = HotPlatesFunction(provider, CALENDAR).execute(_context(), _request())
+
+    assert result.status is DataStatus.MISSING
+    assert result.completeness == 0.0

@@ -49,6 +49,15 @@ Core replacement acceptance        = not achieved
 - 不能用 fixture hash、测试数量或当前 Redis 可读性替代历史可见性、批边界或生产链等价性证据。
 - 下一有效证据仍是已安排的交易日 in-session Shadow；在此之前不增加通用框架、不切换生产主链。
 
+## Recheck — 2026-09-14 (date-bound provider edges)
+
+Added four offline boundary tests covering two date-bound data functions:
+non-trading requests fail closed before provider access, and empty verified
+snapshots return `MISSING` rather than `READY`. Local verification now reports
+`404 passed`, with `compileall` and `git diff --check` passing. The cases use
+deterministic callables and do not access Redis, TDengine, RabbitMQ, or
+third-party network sources; live-provider status is unchanged.
+
 ## Recheck — 2026-09-14 20:49 CST
 
 The current local HEAD (`1393d7b`) is code-identical to the fixed Linux archive

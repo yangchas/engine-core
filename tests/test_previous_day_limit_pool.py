@@ -21,7 +21,9 @@ CALENDAR = build_calendar_snapshot(
     declared_valid_from="2026-09-09",
     declared_valid_to="2026-09-11",
     source_guard_valid_from="2026-09-09",
-    source_guard_valid_to="2026-09-11",
+    # Guard coverage includes the weekend so the function can reject a
+    # non-trading request without invoking the provider.
+    source_guard_valid_to="2026-09-13",
     source_id="fixture-calendar",
     observed_at_ms=1789000000000,
 )
@@ -155,3 +157,54 @@ def test_provider_rejects_malformed_source_metadata():
     )
     assert result.status is DataStatus.ERROR
     assert result.available_at_ms is None
+
+
+def test_non_trading_request_is_rejected_before_provider_access():
+    calls = []
+
+    def fetch_rows(previous_trade_date):
+        calls.append(previous_trade_date)
+        return _rows()
+
+    provider = RedisPreviousDayLimitPoolProvider(
+        fetch_rows,
+        observed_at_ms=lambda: 1789080000000,
+        available_at_ms=lambda: 1789070000000,
+        verified_field_units={"turnover": "yuan"},
+    )
+    result = PreviousDayLimitPoolFunction(provider, CALENDAR).execute(
+        DataContext("eval", "READ_ONLY", 1789080000000),
+        _request(),
+    )
+    # The request date in _request is a trading day; explicitly use the
+    # Saturday within the same source guard to exercise the fail-closed path.
+    invalid_request = DataRequest(
+        request_id="limit-pool-weekend",
+        function_id="previous_day_limit_pool",
+        trade_date="2026-09-12",
+        effective_as_of_ms=1789080000000,
+        knowledge_as_of_ms=1789080000000,
+    )
+    invalid = PreviousDayLimitPoolFunction(provider, CALENDAR).execute(
+        DataContext("eval", "READ_ONLY", 1789080000000), invalid_request
+    )
+
+    assert result.status is DataStatus.READY
+    assert invalid.status is DataStatus.INVALID
+    assert invalid.missing_fields == ("trade_date",)
+    assert calls == ["2026-09-10"]
+
+
+def test_empty_verified_pool_is_missing_not_ready():
+    provider = RedisPreviousDayLimitPoolProvider(
+        lambda previous_trade_date: [],
+        observed_at_ms=lambda: 1789080000000,
+        available_at_ms=lambda: 1789070000000,
+        verified_field_units={"turnover": "yuan"},
+    )
+    result = PreviousDayLimitPoolFunction(provider, CALENDAR).execute(
+        DataContext("eval", "READ_ONLY", 1789080000000), _request()
+    )
+
+    assert result.status is DataStatus.MISSING
+    assert result.completeness == 0.0

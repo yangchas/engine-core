@@ -50,3 +50,13 @@ extracted with an extra `--strip-components=1` is invalid evidence because it
 causes import/collection errors unrelated to Core behavior.  The corrected
 code-equivalent archive passed all 397 tests and `compileall`; see
 `docs/evidence/cobra_exact_verification_20260914_current.md`.
+
+## Recheck — 2026-09-14 (date-bound provider edges)
+
+Two additional deterministic boundary cases were added for the date-bound
+`HotPlatesFunction` and `PreviousDayLimitPoolFunction` wheels. They verify
+that a non-trading request is rejected before the provider callable is
+invoked, and that an empty but otherwise verified source snapshot is reported
+as `MISSING` rather than `READY`. The local suite now completes **404
+passed**; `compileall` and `git diff --check` pass. These remain offline
+contract tests and do not upgrade live Redis/TD or replacement acceptance.
