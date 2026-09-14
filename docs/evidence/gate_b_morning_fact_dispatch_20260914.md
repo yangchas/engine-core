@@ -20,12 +20,13 @@ consumer has been replaced.
 ## Code and verification identity
 
 ```text
-Core commit: b241a70 fix(opening): distinguish non-comparable inputs
+Core commit: 244e7ae feat(opening): report transition input coverage
+Previous status fix: b241a70 fix(opening): distinguish non-comparable inputs
 Typed-unit fix: ca05ddf fix(opening): honor typed auction change units
 Previous boundary fix: d976f6d fix(shadow): reject ambiguous auction rows
 Core feature commit: 41bc60d feat(shadow): dispatch morning fact nodes
-Core archive: /home/exedev/validation/engine-core-b241a70.tar
-Archive SHA-256: a975cd4a99f8540f6cf57b0dc235c3bb677cbe448dacf457289be337f3ca089e
+Core archive: /home/exedev/validation/engine-core-244e7ae.tar
+Archive SHA-256: 824c1a3b8e5ec08f8207d603d17a9c16d809d7530780468246db7e5d38d62690
 Local suite: 373 passed
 Cobra-ion Python: 3.12.3
 Cobra-ion suite: 373 passed
@@ -91,7 +92,7 @@ The runner reports missing transition input as `NON_COMPARABLE` rather than
 mismatch.  Batch artifact SHA-256:
 
 ```text
-a87ca104273198887df88dd9b1d5cc17ff343004a9c6ceddcc5786e4d314c5da
+94160872c038f5d4e5af3aeedd120819095795ff60def24aca5163e3f418e1d5
 ```
 
 ## Real Q2 capture Morning Shadow
