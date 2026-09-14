@@ -64,6 +64,12 @@ AUCTIONSTATE_FREEZE_MEMBERSHIP     UNKNOWN
 REDIS_TD_WRITER_PROJECTION_PARITY  UNPROVEN
 ```
 
+The probe wrapper was executed from Core commit
+`f467ea3c8f2b39c2d6bd3dc9c88b4940e28ea38a`. The full Core suite for that
+commit passed locally (`393 passed`) and on Cobra-ion Python 3.12.3
+(`393 passed`, compileall PASS) from archive SHA-256
+`14055eb7a110fac2c588633034dab0b247c729e02df6efd6d756b576612a8049`.
+
 The evidence is suitable for the M0/M1 read-path audit only. It does not
 authorize producer changes, report/effect delivery, Redis/TD writes, or
 replacement of `engine-next`. A normal in-session run started before 09:15 is
