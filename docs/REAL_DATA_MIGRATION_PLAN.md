@@ -1,5 +1,9 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-14 报告/通知边界补充
+
+- 只读审计确认旧 `engine_next` 的 `build_auction_email_report()` 是报告表示构建边界：它消费已形成的 shadow/evidence/context，生成 HTML/文本及哈希；SMTP、Webhook 和通知去重由 `RuntimeNotificationService` 持有。Core 后续只允许提供冻结事实上的 build-only 报告产物，不接管通知副作用、隐式补数或旧 runtime controller。详见 `docs/audit/engine_next_report_boundary_20260914.md`。
+
 ## 基线与执行状态
 
 ### 2026-09-14 日历证据格式兼容修复
