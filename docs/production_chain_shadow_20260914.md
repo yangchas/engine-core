@@ -8,10 +8,10 @@
 
 ```text
 SOURCE_INGESTION_ACCEPTANCE        UNKNOWN
-AUCTION_STATE_ACCEPTANCE           PASS（0920/0925 有真实投影）
-STORAGE_PROJECTION_ACCEPTANCE      PASS（受限于可比字段）
+AUCTION_STATE_ACCEPTANCE           OBSERVED（只有 Redis 投影，未观测内部 AuctionState/freeze）
+STORAGE_PROJECTION_ACCEPTANCE      WARN（未完成 Redis/TD 与共同上游状态的逐字段证明）
 ENGINE_NEXT_CONSUMPTION_ACCEPTANCE UNKNOWN（未捕获只读 loader trace）
-ENGINE_CORE_SHADOW_ACCEPTANCE      PASS
+ENGINE_CORE_SHADOW_ACCEPTANCE      PARTIAL（Q2 path PASS；Auction Fact path 未运行）
 JOINT_TRADING_DAY_ACCEPTANCE       WARN
 ```
 
@@ -22,6 +22,9 @@ JOINT_TRADING_DAY_ACCEPTANCE       WARN
 Rabbit/runtime batch membership 未观测；
 effective_config_sha256 缺失；
 ```
+
+当前旁路工具只对真实 Q2 完成了 Core 计算；竞价投影尚未接入同一次
+Engine/FrozenDataBundle/AuctionFactShadow 运行，因此不把 Q2 PASS 冒充完整竞价 Shadow。
 
 不得用之后出现的 0924 Redis/TD 值回填此前的空捕获槽位。
 
@@ -167,7 +170,7 @@ audit_summary.json
 ## 最终跨环境验证身份
 
 ```text
-code commit: 9392f1e9e9227f316bb89570d5afa483a5a10b2d
+code commit: e0853010de31e5acc891be61d497073da377f1d7
 Python: 3.12.3 (local / cobra-ion)
 pytest: 319 passed (local / cobra-ion)
 compileall: PASS (local / cobra-ion)
@@ -176,8 +179,8 @@ compileall: PASS (local / cobra-ion)
 同一真实 capture、同一 TD tick 样本下，以下产物的字节级 SHA-256 在 Windows 与 cobra-ion Linux 完全一致：
 
 ```text
-audit_summary.json           d914bce9fbdfd9f3d4d68712d96b13ec5f5bfa8f36b6a115774ee4c6791cd727
-production_chain_matrix.csv  7fa4fa8c664548eed333fc5aa84fa71c88cf277d2a4fc8c9618f34e928f34c86
+audit_summary.json           680863c61ff7c569da1dfa9e4c36551fc153ab3d00f154c46917c906d7a9ed9b
+production_chain_matrix.csv  ae50109b8134f9c1af781d97d618e2772aca520f758a56435409b9141b8986bb
 tick_shape_samples.jsonl     69bcec164573f6bea8ba3c32cac1b7709784a2baeae2753bee510d7ae28fd4ee
 tick_shape_transition.csv    f35d513009d69bab2d3ec2de9526909a1d75120c2c1e6aa74408a7a30093a2f2
 tick_shape_statistics.csv    8871b8b85540db9375f3e05cf21aa3182130b29098bf5f8db6c53b0b91782a54
@@ -200,7 +203,7 @@ python examples/run_production_chain_shadow.py \
   --stale-after-ms 10000
 ```
 
-cobra-ion 使用同一 commit 的临时验证目录和 Python 3.12.3，完整套件为 `319 passed`；本地与远端审计产物 SHA-256 完全一致。
+cobra-ion 使用同一 commit 的临时验证目录和 Python 3.12.3，完整套件为 `319 passed`；本地与远端审计产物 SHA-256 完全一致。当前摘要明确区分 `engine_core_q2_path=PASS` 与 `engine_core_shadow=PARTIAL`。
 
 ## 后续边界
 
