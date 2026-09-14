@@ -20,14 +20,15 @@ consumer has been replaced.
 ## Code and verification identity
 
 ```text
-Core commit: ca05ddf fix(opening): honor typed auction change units
+Core commit: b241a70 fix(opening): distinguish non-comparable inputs
+Typed-unit fix: ca05ddf fix(opening): honor typed auction change units
 Previous boundary fix: d976f6d fix(shadow): reject ambiguous auction rows
 Core feature commit: 41bc60d feat(shadow): dispatch morning fact nodes
-Core archive: /home/exedev/validation/engine-core-ca05ddf.tar
-Archive SHA-256: dd7bb3fcf3345790fe2e2bdf0ec56a0c61e76c9359384d46997b828d5c2c8fb5
-Local suite: 372 passed
+Core archive: /home/exedev/validation/engine-core-b241a70.tar
+Archive SHA-256: a975cd4a99f8540f6cf57b0dc235c3bb677cbe448dacf457289be337f3ca089e
+Local suite: 373 passed
 Cobra-ion Python: 3.12.3
-Cobra-ion suite: 372 passed
+Cobra-ion suite: 373 passed
 compileall: PASS
 ```
 
@@ -70,6 +71,28 @@ The previous generic ratio normalizer was not appropriate for this typed TD
 column and could turn `-8` into `-8.0` percentage points.  The typed conversion
 is now a separately tested Core wheel.  For 300750 and 600519 the raw TD
 `chg_bp` is genuinely null and both production/Core remain unavailable.
+
+### Bounded 0925 transition differential
+
+The current release was queried read-only for the first 100 deterministic
+symbols returned by the 0925 TD projection, then joined to the real Redis Q2
+projection:
+
+```text
+symbols examined: 100
+opening helper exact: 100/100
+transition exact on comparable rows: 99/99
+non-comparable source rows: 1 (000016, chg_bp is null)
+transition mismatches: 0
+```
+
+The runner reports missing transition input as `NON_COMPARABLE` rather than
+`MATCH`; this keeps source-fact absence visible without manufacturing a
+mismatch.  Batch artifact SHA-256:
+
+```text
+a87ca104273198887df88dd9b1d5cc17ff343004a9c6ceddcc5786e4d314c5da
+```
 
 ## Real Q2 capture Morning Shadow
 

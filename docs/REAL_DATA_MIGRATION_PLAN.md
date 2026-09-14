@@ -4,8 +4,8 @@
 
 ### 2026-09-14 Gate B morning fact dispatch
 
-- 当前可执行 Core 提交为 `ca05ddf`（功能提交 `41bc60d`，边界修正 `d976f6d`）。`dispatch_morning_fact_nodes` 仅把已到期的 `AUCTION_0926` 与 `OPENING_0932` timer evidence 组合到既有 Anchor/Opening facts；并在边界处拒绝跨股票或重复 tag，不新增 scheduler、workflow、retry、persistence、strategy effect，也不接管 engine-next。
-- 本地与 Cobra-ion Python 3.12.3 使用同一归档均为 `372 passed`、`compileall` PASS。真实 Cobra opening differential 对 000001/300750/600519 的 opening helper exact；typed TD `chg_bp` 已按生产 `/100` 合同转换为百分点，000001 transition exact，300750/600519 的真实空字段保持不可用。详见 `docs/evidence/gate_b_morning_fact_dispatch_20260914.md`。
+- 当前可执行 Core 提交为 `b241a70`（typed-unit 修正 `ca05ddf`，功能提交 `41bc60d`，边界修正 `d976f6d`）。`dispatch_morning_fact_nodes` 仅把已到期的 `AUCTION_0926` 与 `OPENING_0932` timer evidence 组合到既有 Anchor/Opening facts；并在边界处拒绝跨股票或重复 tag，不新增 scheduler、workflow、retry、persistence、strategy effect，也不接管 engine-next。
+- 本地与 Cobra-ion Python 3.12.3 使用同一归档均为 `373 passed`、`compileall` PASS。真实 Cobra opening differential 的 opening helper 对 100/100 exact；typed TD `chg_bp` 已按生产 `/100` 合同转换为百分点，可比 transition 99/99 exact，1 只真实空字段标记 `NON_COMPARABLE`。详见 `docs/evidence/gate_b_morning_fact_dispatch_20260914.md`。
 - 真实 Q2 capture `q2_093210.jsonl` 为 5220/5220、coverage `1.0`，但 freshness/completeness 为 `PARTIAL/BEST_EFFORT_MIXED_FRESHNESS`；000001 的 09:26 Anchor 与 09:32 Opening dispatch 均 `READY`，600519 因真实竞价 price/change 缺失仍 fail-closed。该结果证明真实只读数据可进入同一事实链，不证明实时新鲜度或 engine-next 替代。
 - 当前仍需先完成 production timer/batch 证据、0924/0925 source contract、engine-next loader/report parity 与多交易日 shadow；不新增 Provider、Rabbit consumer、Checkpoint、watermark 或 effect。
 
