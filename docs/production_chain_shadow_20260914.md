@@ -191,10 +191,15 @@ audit_summary.json
 ## 最终跨环境验证身份
 
 ```text
-code commit: cb1ea9d863ed6340b15e760e2dadc041ba74e07a
-Python: 3.12.3 (local / cobra-ion)
-pytest: 320 passed (local / cobra-ion)
-compileall: PASS (local / cobra-ion)
+executable code commit: cb1ea9d863ed6340b15e760e2dadc041ba74e07a
+formal runtime: cobra-ion Python 3.12.3
+formal pytest: 320 passed
+formal compileall: PASS
+Windows compatibility check: Python 3.9.13, 320 passed (informational only)
+
+`pyproject.toml` 要求 Python `>=3.12`，因此 Windows 3.9 结果不构成正式
+运行时验收；正式 Gate 以 cobra-ion 的 Python 3.12.3 为准。文档证据提交
+随后更新，但未改变上述可执行 `src/` 与测试语义。
 ```
 
 同一真实 capture、同一 TD tick 样本下，以下产物的字节级 SHA-256 在 Windows 与 cobra-ion Linux 完全一致：
@@ -224,7 +229,12 @@ python examples/run_production_chain_shadow.py \
   --stale-after-ms 10000
 ```
 
-cobra-ion 使用同一 commit 的临时验证目录和 Python 3.12.3，完整套件为 `320 passed`；本地与远端审计产物 SHA-256 完全一致。默认 capture 模式的 `engine_core_q2_path=PASS`，带真实 TD 源行模式的 `engine_core_auction_fact=OBSERVED`，而完整 `engine_core_shadow` 仍为 `PARTIAL`。
+cobra-ion 使用上述可执行代码的临时归档和 Python 3.12.3，完整套件为
+`320 passed`；本地 Windows 3.9.13 兼容检查与远端使用相同测试集合，且在
+相同 capture/fixture 下产物 SHA-256 完全一致，但不把不同 Python 版本称为
+environment parity。默认 capture 模式的 `engine_core_q2_path=PASS`，带真实
+TD 源行模式的 `engine_core_auction_fact=OBSERVED`，而完整
+`engine_core_shadow` 仍为 `PARTIAL`。
 
 ## 后续边界
 
