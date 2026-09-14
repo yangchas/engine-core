@@ -28,7 +28,7 @@
 - [VERIFIED] Cobra-ion 2026-09-14 开盘前真实 Redis 只读探针连接成功，但 `q2:active:20260914` 为空，结果为 `MISSING/EMPTY_UNIVERSE`、coverage `0.0`；两次同一观察 Engine hash 一致。该结果只证明真实连接和 fail-closed，不证明 live Q2 正向覆盖。
 - [OBSERVED] 2026-09-14 ground-truth capture 进程 `PID=4014185` 已启动并等待 09:20/09:24/09:25 采集点，当前尚无交易时段 artifact。`engine-next` 与 `t1-v2-live` 保持 active，Cobra 根分区约 83% 使用率、约 3.1GB 可用。
 - [OBSERVED] Cobra-ion 既有 `t1_v2.log` 在 2026-09-11 09:19–09:25 持续记录 batches/source_in/ack/ticks/last_ts_ms，证明运行计数连续；日志没有 batch_id、`emit_a25` 或 writer 顺序，因此 `FINAL_TICK_BATCH_MEMBERSHIP` 仍 UNKNOWN。详见 `docs/evidence/t1_runtime_progress_20260911.md`。
-- [BLOCKER] `DeterministicEngine._registered_evaluation_ids` 在一个 session 内无界增长，`signal_id` 去重只有有限内存窗口；当前只读影子可接受，但在正式替代 `engine_next` 前必须明确 session 生命周期或持久化幂等方案。
+- [VERIFIED] `DeterministicEngine._registered_evaluation_ids` 已改为有界 session ledger（默认 65536）；不驱逐已注册身份，达到上限时 fail-closed，避免终态 tombstone 淘汰后 evaluation 复活。Cobra-ion Python 3.12.3 对 commit `3d870ee` 通过 `375 passed`、`compileall`；跨进程/跨重启 durable identity 仍延期，不得解释为 replacement-ready。详见 `docs/evidence/engine_registration_bound_20260914.md`。
 
 - [VERIFIED] 可执行 Core 代码对象为 `ed3547c5799e6b72dcdcc79f1f13d500616ac0fa`；本地 Windows 与 cobra-ion Python 3.12.3 临时归档均通过 `306 passed`、`compileall`。当前分支后续提交仅补充审计/证据文档，未改变 `src/` 或测试语义。
 - [VERIFIED] 2026-09-13 对提交 `bc2b2c10c77a5ae0e1719a5b083d7bc426f401d6`（后续仅有文档提交）在 cobra-ion Python 3.12.3 临时目录重跑完整套件：`306 passed`、`compileall` PASS；同次只读真实 TD 竞价/昨日数据和既有第三方连接探针均执行成功，证据见 `docs/evidence/real_provider_cross_source_audit_20260913.md`。周日 Redis 没有 `q2:active:*`，不宣称 live Q2 可用。当前可执行代码提交为 `2375e6be8ab10a2d380597d60a38b9e5272d66f5`，之后提交仍仅补充审计文档。

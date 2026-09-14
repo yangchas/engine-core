@@ -2,6 +2,11 @@
 
 ## 基线与执行状态
 
+### 2026-09-14 Engine evaluation registration bound
+
+- `DeterministicEngine` 的 evaluation 注册身份已改为有界 session ledger，默认上限 `65536`；不驱逐注册记录，容量耗尽时 fail-closed，确保 terminal tombstone 淘汰后不会重新注册同一 evaluation。commit `3d870ee` 在本地与 Cobra-ion Python 3.12.3 均通过 `375 passed`、`compileall`，详见 `docs/evidence/engine_registration_bound_20260914.md`。
+- 该修复只关闭单 session 内存上界，不提供跨进程/跨重启 durable idempotency；Checkpoint/persistence 仍是 Core 替代 `engine-next` 前的后续门槛。
+
 ### 2026-09-14 Legacy/Core context read-path probe
 
 - 已在 cobra-ion 对当前 `engine-next` release 与 Core `244e7ae` 执行 bounded read-only probe。旧 context builder 和 Core Q2 adapter 均无 Redis 写入；Core 5220/5220、coverage `1.0` 但 `STALE/BEST_EFFORT_STALE`，重复 observation hash 稳定。
