@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from examples.run_morning_vertical_slice_shadow import (
+    _build_projection_from_raw,
     _load_calendar,
-    _projection_from_jsonl,
     build_morning_shadow,
 )
 from engine_core import local_datetime_ms
@@ -13,7 +13,6 @@ from engine_core import local_datetime_ms
 
 ROOT = Path(__file__).resolve().parents[1]
 CALENDAR = ROOT / "tests" / "fixtures" / "calendar" / "baostock_cn_a_share_20260907.json"
-Q2 = ROOT / "tmp" / "capture-20260914" / "q2_093210.jsonl"
 
 
 def _rows() -> list[dict[str, object]]:
@@ -55,10 +54,25 @@ def _rows() -> list[dict[str, object]]:
 
 
 def _projection():
-    return _projection_from_jsonl(
-        Q2,
+    return _build_projection_from_raw(
         trade_date="2026-09-14",
         observed_at=datetime(2026, 9, 14, 9, 31, 20, tzinfo=timezone.utc),
+        raw_hashes={
+            "600519": {
+                "symbol": "600519",
+                "px": "1276000",
+                "pc": "1270000",
+                "amt": "396959488",
+                "vol": "3102",
+                "ts": "1789349472000",
+                "br": "383103",
+                "ar": "0",
+                "am": "16984233",
+                "mk": "sh",
+                "ph": "2",
+                "ls": "0",
+            },
+        },
         stale_after_ms=60_000,
     )
 
