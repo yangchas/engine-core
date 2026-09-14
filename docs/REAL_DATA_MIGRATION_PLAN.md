@@ -2,6 +2,13 @@
 
 ## 基线与执行状态
 
+### 2026-09-14 morning vertical slice shadow
+
+- 当前 Core 可执行对象为 `b902d7e99f1294dcffee275a15d17818ab7ae900`。新增的 `examples/run_morning_vertical_slice_shadow.py` 只是薄的、只读组合工具：复用 Q2 Adapter、既有 TD `auction_snapshot_v2` 查询和事实轮子，输出 Core-owned timer evidence、Q2 状态、AuctionFactShadow、OpeningFact 与 provenance；不启动完整 Engine timer 消费、不执行策略、不写 Redis/TD、不接 Rabbit、不发通知。
+- 本地与 Cobra-ion Python 3.12.3 均通过同一归档的 `332 passed`、`compileall`；归档 SHA-256 为 `99d635c859e96782dab097609b1e30de0f30ae140dca15dcea0b0578f1744114`。固定时间同一 Q2 capture 重跑两次，artifact SHA 与 semantic hash 均一致，详见 `docs/evidence/morning_vertical_slice_shadow_20260914.md`。
+- 真实 Cobra 只读运行得到 Q2 `5220/5220`、coverage `1.0` 但 freshness `STALE`；TD 返回 0920/0924/0925 三行，Auction shadow 为 `PARTIAL/FACT_ONLY/OBSERVE`，previous-day 与 hot-plates 因可用时间/metadata 合同未知保持 `UNAVAILABLE`。这证明真实读取和 fail-closed，不证明 Core 已替代 `engine-next`。
+- 下一步停止扩展基础设施，进入 Gate B 与第一条已验证 Auction Shadow 规则；Engine timer 消费、engine-next loader/report parity、多日 Shadow 和替代前启动协调仍未闭合。
+
 ### 2026-09-14 当前验证覆盖
 
 - 当前可执行代码身份为 `541383d`；本地 Windows Python 3.9.13 套件为 `322 passed`，Cobra-ion Python 3.12.3 对同一归档也为 `322 passed`，`compileall` 通过。版本差异按用户决定仅作记录，不影响继续推进；正式运行证据仍以 Cobra 3.12.3 为准。此前本节中的 `306/307/311/313/315/320 passed` 及更早 commit 均为历史证据，不能覆盖当前提交；最新真实 readiness 证据见 `docs/evidence/reference_data_readiness_20260914.md`。
