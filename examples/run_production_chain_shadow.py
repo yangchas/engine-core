@@ -335,10 +335,17 @@ def tick_shape_features(path: Path) -> list[dict[str, Any]]:
 
 
 def _write_json(path: Path, value: Any) -> None:
-    path.write_text(
+    _write_text_lf(
+        path,
         json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
     )
+
+
+def _write_text_lf(path: Path, text: str) -> None:
+    """Write comparable UTF-8 evidence with platform-independent LF endings."""
+
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
 
 
 def _write_matrix(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
@@ -388,7 +395,9 @@ def build_audit_bundle(
 
     tick_path = tick_file or (capture_dir / "td_stock_tick_092450_093001.jsonl")
     tick_rows = tick_shape_features(tick_path) if tick_path.is_file() else []
-    with (output_dir / "tick_shape_samples.jsonl").open("w", encoding="utf-8") as handle:
+    with (output_dir / "tick_shape_samples.jsonl").open(
+        "w", encoding="utf-8", newline="\n"
+    ) as handle:
         for row in tick_rows:
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
     transition_rows = [
@@ -411,11 +420,11 @@ def build_audit_bundle(
         writer.writeheader()
         writer.writerows(transition_rows)
     counters = Counter(row["classification"] for row in tick_rows)
-    (output_dir / "tick_shape_statistics.csv").write_text(
+    _write_text_lf(
+        output_dir / "tick_shape_statistics.csv",
         "classification,count\n" + "".join(
             f"{key},{value}\n" for key, value in sorted(counters.items())
         ),
-        encoding="utf-8",
     )
 
     matrix_rows = []
@@ -477,7 +486,7 @@ def build_audit_bundle(
         "9. 0925 freeze ordering: UNKNOWN without runtime batch evidence.",
         "10. Market/special-stock differences: UNKNOWN beyond the bounded sample.",
     ]
-    (output_dir / "tick_shape_audit.md").write_text("\n".join(audit_lines) + "\n", encoding="utf-8")
+    _write_text_lf(output_dir / "tick_shape_audit.md", "\n".join(audit_lines) + "\n")
 
     # Directory names are machine-local (for example ``capture-20260914``
     # versus ``20260914``) and must not participate in comparable evidence.

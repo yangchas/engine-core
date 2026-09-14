@@ -127,3 +127,10 @@ def test_audit_summary_identity_is_not_machine_directory_name(tmp_path):
     assert (first_output / "audit_summary.json").read_text() == (
         second_output / "audit_summary.json"
     ).read_text()
+    for name in (
+        "audit_summary.json",
+        "tick_shape_samples.jsonl",
+        "tick_shape_statistics.csv",
+        "tick_shape_audit.md",
+    ):
+        assert b"\r\n" not in (first_output / name).read_bytes()
