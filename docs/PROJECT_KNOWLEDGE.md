@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-14 盘后独立 read-only probe：对 Cobra 当前 `engine-next@20260903_e272842` 的 `load_auction_snapshots()` 与旧 context/fact path 分别执行真实 Redis 读取，三只 bounded symbol、无 GuardRedis 写入。loader 当前观察到 0920/0924/0925 各 200 条 Top-200 projection（artifact `033536e5efbfe810575dc350e291c84e3016d39c8d19b6f833aee8b6a2e28ebd`），context probe 读取 3 行（artifact `36e44f3ada5c74d755c87613ab6922406cf0bb84b941481b68135f25d835c3cc`）。两者是不同 projection，未共享 immutable AuctionState/source-time，不宣称 parity 或 first divergence；Rabbit batch、freeze membership 与正式 effect 仍 UNKNOWN。详见 `docs/evidence/engine_next_loader_context_probe_20260914_1752.md`。
+
 - [VERIFIED] 2026-09-14 生产链审计工具收口：`7f24d33` 对非空输出目录 fail-closed，防止证据重跑覆盖或混入旧文件；Cobra-ion Python 3.12.3 同归档通过 `393 passed`、`compileall`。该修正不改变六层矩阵或 Core 事实，仅强化证据 write-once 边界。
 
 - [VERIFIED] 2026-09-14 六层生产链捕获审计：当前提交 `cb5d6fd` 在 Cobra-ion Python 3.12.3 使用真实 `20260914` capture、真实 TD `auction_snapshot_v2` 600519 源行和 09:24:50–09:30:01 TD Tick 样本生成六层 `production_chain_matrix.csv`、tick morphology 与 `audit_summary.json`。Q2 5220/5220、coverage=1.0 但 `STALE/BEST_EFFORT_STALE`，Core Q2 重复 hash 一致；auction fact 为 `OBSERVED/FACT_ONLY/PARTIAL`。0924 capture 槽位仍 `MISSING`，未用后续数据补写；Gateway/Rabbit batch、内部 AuctionState/freeze、engine-next loader trace 仍 UNKNOWN。审计工具已修正独立 TD fact 的矩阵归属：缺失 0924 和 aggregate anchor 行为 `UNPROVEN`，不冒充 capture 观察。接受结论 `SOURCE=UNKNOWN/AUCTION=OBSERVED/STORAGE=WARN/ENGINE_NEXT=UNKNOWN/CORE=PARTIAL/JOINT=WARN`，安全计数全 0。证据：`docs/evidence/production_chain_shadow_20260914_full.md`。
