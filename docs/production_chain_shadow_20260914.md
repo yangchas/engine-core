@@ -11,7 +11,7 @@ SOURCE_INGESTION_ACCEPTANCE        UNKNOWN
 AUCTION_STATE_ACCEPTANCE           OBSERVED（只有 Redis 投影，未观测内部 AuctionState/freeze）
 STORAGE_PROJECTION_ACCEPTANCE      WARN（未完成 Redis/TD 与共同上游状态的逐字段证明）
 ENGINE_NEXT_CONSUMPTION_ACCEPTANCE UNKNOWN（未捕获只读 loader trace）
-ENGINE_CORE_SHADOW_ACCEPTANCE      PARTIAL（Q2 path PASS；Auction Fact path 未运行）
+ENGINE_CORE_SHADOW_ACCEPTANCE      PARTIAL（Q2 path PASS；TD source-row Auction Fact 为 OBSERVED，尚未 Engine-connected）
 JOINT_TRADING_DAY_ACCEPTANCE       WARN
 ```
 
@@ -23,8 +23,9 @@ Rabbit/runtime batch membership 未观测；
 effective_config_sha256 缺失；
 ```
 
-当前旁路工具只对真实 Q2 完成了 Core 计算；竞价投影尚未接入同一次
-Engine/FrozenDataBundle/AuctionFactShadow 运行，因此不把 Q2 PASS 冒充完整竞价 Shadow。
+当前旁路工具对真实 Q2 完成了 Core 计算，并可从独立 TD `auction_snapshot_v2`
+源行重算 600519 的 AuctionFactShadow；该事实仍是 `FACT_ONLY/OBSERVE`、
+`engine_connected=false`，因此不把它冒充完整 Engine/FrozenDataBundle 竞价 Shadow。
 
 不得用之后出现的 0924 Redis/TD 值回填此前的空捕获槽位。
 
@@ -152,6 +153,26 @@ pressure        PRESSURE_WEAKENING
 
 TD `stock_tick_v2` 只读取得 09:24:50–09:30:00 的 11 条选定股票样本。保存了五档可见性、价格/量额存在性和 `source_record_time`，但没有 source sequence，因此同毫秒因果顺序仍为 `UNKNOWN`，没有把 hash 或 TD 返回顺序解释成生产到达顺序。
 
+本次还从真实 TD `auction_snapshot_v2` 源行（不是预计算 shadow 结果）重算了
+600519 的 0920/0924/0925 三锚点：
+
+```text
+source_row_count       3
+segment_count          2
+shadow_status          PARTIAL
+decision_status        FACT_ONLY
+state                  OBSERVE
+content_hash           0df98bbaa5072f03309075a1c9e3484f115aaeef60d5300bb2afa7b6e29f9aa6
+evidence_hash          53205bf3528b8e97b07864bef75fc7d92a4340256a586a625de549eb7caed5af
+comparison_hash        6ed1d5c928d88e2b1462b96b6a621af9224a4a55fd37b03a2fc6642cd1a3451e
+source_file_sha256     b63f8ceab510561f7b4e9092159ae55827bdead1aa8530d80a02f63f520d256c
+```
+
+这条路径只证明事实轮子能够消费真实 TD 源行并保持稳定哈希；它不证明
+Rabbit batch membership、内部 AuctionState/freeze、Redis/TD writer 一致性或
+engine-next loader 已经接通。0924 capture 槽位仍按原始捕获结果为 `MISSING`，
+不得用该后续 TD 证据回填捕获文件。
+
 ## 输出产物
 
 由 `examples/run_production_chain_shadow.py` 从真实捕获文件生成：
@@ -170,16 +191,16 @@ audit_summary.json
 ## 最终跨环境验证身份
 
 ```text
-code commit: e0853010de31e5acc891be61d497073da377f1d7
+code commit: cb1ea9d863ed6340b15e760e2dadc041ba74e07a
 Python: 3.12.3 (local / cobra-ion)
-pytest: 319 passed (local / cobra-ion)
+pytest: 320 passed (local / cobra-ion)
 compileall: PASS (local / cobra-ion)
 ```
 
 同一真实 capture、同一 TD tick 样本下，以下产物的字节级 SHA-256 在 Windows 与 cobra-ion Linux 完全一致：
 
 ```text
-audit_summary.json           680863c61ff7c569da1dfa9e4c36551fc153ab3d00f154c46917c906d7a9ed9b
+audit_summary.json           7b759e47c9d979126dd9f9db375ad2e39cd7699a86c9363b504f422b9259663e
 production_chain_matrix.csv  ae50109b8134f9c1af781d97d618e2772aca520f758a56435409b9141b8986bb
 tick_shape_samples.jsonl     69bcec164573f6bea8ba3c32cac1b7709784a2baeae2753bee510d7ae28fd4ee
 tick_shape_transition.csv    f35d513009d69bab2d3ec2de9526909a1d75120c2c1e6aa74408a7a30093a2f2
@@ -203,7 +224,7 @@ python examples/run_production_chain_shadow.py \
   --stale-after-ms 10000
 ```
 
-cobra-ion 使用同一 commit 的临时验证目录和 Python 3.12.3，完整套件为 `319 passed`；本地与远端审计产物 SHA-256 完全一致。当前摘要明确区分 `engine_core_q2_path=PASS` 与 `engine_core_shadow=PARTIAL`。
+cobra-ion 使用同一 commit 的临时验证目录和 Python 3.12.3，完整套件为 `320 passed`；本地与远端审计产物 SHA-256 完全一致。默认 capture 模式的 `engine_core_q2_path=PASS`，带真实 TD 源行模式的 `engine_core_auction_fact=OBSERVED`，而完整 `engine_core_shadow` 仍为 `PARTIAL`。
 
 ## 后续边界
 
