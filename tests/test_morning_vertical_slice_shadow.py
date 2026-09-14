@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -78,6 +79,57 @@ def _projection():
         },
         stale_after_ms=60_000,
     )
+
+
+def test_load_calendar_accepts_real_calendar_probe_evidence(tmp_path: Path):
+    path = tmp_path / "real-calendar-probe.json"
+    path.write_text(
+        json.dumps(
+            {
+                "contract_version": "RealCalendarProbeV1",
+                "version": "baostock-test-v1",
+                "query_start": "2026-09-13",
+                "query_end": "2026-09-15",
+                "declared_valid_from": "2026-09-13",
+                "declared_valid_to": "2026-09-15",
+                "trading_dates": ["2026-09-15"],
+                "source_id": "baostock",
+                "observed_at_ms": 1789000000000,
+                "evidence_ref": "baostock://query_trade_dates/2026-09-13/2026-09-15",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = _load_calendar(path, trade_date="2026-09-15")
+
+    assert snapshot.calendar_id == "CN_A_SHARE"
+    assert snapshot.timezone_name == "Asia/Shanghai"
+    assert snapshot.source_guard_valid_from == "2026-09-13"
+    assert snapshot.source_guard_valid_to == "2026-09-15"
+    assert snapshot.is_trading_day("2026-09-15")
+
+
+def test_load_calendar_rejects_probe_semantic_hash_mismatch(tmp_path: Path):
+    path = tmp_path / "bad-calendar-probe.json"
+    path.write_text(
+        json.dumps(
+            {
+                "contract_version": "RealCalendarProbeV1",
+                "version": "baostock-test-v1",
+                "query_start": "2026-09-13",
+                "query_end": "2026-09-15",
+                "declared_valid_from": "2026-09-13",
+                "declared_valid_to": "2026-09-15",
+                "trading_dates": ["2026-09-15"],
+                "calendar_semantic_hash": "not-the-rebuilt-hash",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="semantic hash"):
+        _load_calendar(path, trade_date="2026-09-15")
 
 
 def test_morning_shadow_keeps_reference_data_unavailable_without_blocking_facts():
