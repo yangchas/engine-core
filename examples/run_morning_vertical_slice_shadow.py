@@ -283,12 +283,24 @@ def build_morning_shadow(
             "reason": "metadata_contract_not_verified",
         },
     }
+    # Raw TD rows remain evidence only.  In particular, taos may return a
+    # naive datetime object; including it in a semantic hash would make the
+    # result platform-dependent and would confuse source evidence with facts.
+    auction_semantic = {
+        "status": auction_result.get("status"),
+        "shadow_content_hash": (
+            auction_result.get("shadow", {}).get("content_hash")
+            if isinstance(auction_result.get("shadow"), Mapping)
+            else None
+        ),
+        "available_tags": auction_result.get("available_tags", ()),
+    }
     semantic_payload = {
         "trade_date": trade_date,
         "symbol": symbol,
         "projection_hash": projection.content_hash,
         "projection_status": projection.status,
-        "auction": auction_result,
+        "auction": auction_semantic,
         "opening": opening_fact,
         "timers": timer_evidence,
     }
