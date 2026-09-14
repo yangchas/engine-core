@@ -209,7 +209,7 @@ def build_node_evidence(
     q2_evidence = None
     if projection is not None:
         q2_evidence = {
-            "status": str(projection.status),
+            "status": getattr(projection.status, "value", str(projection.status)),
             "consistency_status": projection.consistency_status,
             "coverage": projection.coverage,
             "quote_count": len(projection.quotes),
@@ -363,7 +363,7 @@ def _startup_evidence(
         "observed_at_ms": _epoch_ms(observed_at),
         "readiness": asdict(readiness),
         "q2": {
-            "status": projection.status,
+            "status": getattr(projection.status, "value", str(projection.status)),
             "consistency_status": projection.consistency_status,
             "coverage": projection.coverage,
             "oldest_source_time_ms": projection.oldest_source_time_ms,

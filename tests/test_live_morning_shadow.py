@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from engine_core import TimerFiring, build_a_share_session_plan, build_calendar_snapshot, local_datetime_ms
+from engine_core import DataStatus, TimerFiring, build_a_share_session_plan, build_calendar_snapshot, local_datetime_ms
 from examples import run_live_morning_shadow as live
 
 
@@ -82,6 +83,52 @@ def test_build_node_evidence_keeps_business_and_observation_times_separate():
     assert result["fact_dispatch"][0]["facts"][0]["timer_id"] == "AUCTION_0926"
     assert len(result["input_sha256"]) == 64
     assert result["semantic_hash"]
+
+
+def test_build_node_evidence_normalizes_q2_status_for_trace():
+    quote = SimpleNamespace(
+        source_record_time_ms=local_datetime_ms("2026-09-14", "09:32:00", timezone_name="Asia/Shanghai"),
+        price_milli=1276000,
+        pre_close_milli=1270000,
+        amount_2m_yuan=100,
+        limit_state=0,
+        name="fixture",
+        speed_1m_bp=10,
+    )
+    projection = SimpleNamespace(
+        status=DataStatus.STALE,
+        consistency_status="BEST_EFFORT_STALE",
+        coverage=1.0,
+        quotes={"600519": quote},
+        expected_symbols=("600519",),
+        oldest_source_time_ms=1,
+        newest_source_time_ms=2,
+        content_hash="q2-hash",
+    )
+    result = live.build_node_evidence(
+        _firing("OPENING_0932"),
+        observed_at=_dt("09:32:00"),
+        trade_date="2026-09-14",
+        symbols=("600519",),
+        td_rows_by_symbol={
+            "600519": [
+                {
+                    "auction_tag": "0925",
+                    "symbol": "600519",
+                    "trade_date": "20260914",
+                    "ts": _dt("09:25:06"),
+                    "px_milli": 1276000,
+                    "chg_bp": 6,
+                    "match_amt_yuan": 100,
+                    "rest_bid_amt_yuan": 200,
+                    "rest_ask_amt_yuan": 50,
+                }
+            ]
+        },
+        projection=projection,
+    )
+    assert result["q2"]["status"] == "STALE"
+    assert result["q2"]["content_hash"] == "q2-hash"
 
 
 def test_live_shell_captures_each_node_at_its_due_observation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
