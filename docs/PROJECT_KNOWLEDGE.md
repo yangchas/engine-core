@@ -2,6 +2,8 @@
 
 - [WARN] 2026-09-14 t1-v2 runtime lag：只读日志样本中 `wall_lag_ms` 从 09:25 的 `2418` 增至 09:30 的 `12222`，15:23 达到 `1428792`（约 23.8 分钟），尽管采样行 `ack_fail=0` 且服务 active。该问题根因 UNKNOWN，必须纳入 Core 替代前多交易日容量/积压门槛；未授权盘中修改 producer。详见 `docs/evidence/runtime_lag_observation_20260914.md`。
 
+- [WARN] 2026-09-14 同一 t1-v2 进度行存在累计 `source_reject`（09:25 `3,674,985`，15:23 `5,494,355`）和少量 `last_reject`；日志没有给出拒绝分支/字段原因，不能把它解释成 Rabbit 丢失或 ACK 失败。该未知已加入 Core 替代前的输入完整性门槛，未修改 producer。详见 `docs/evidence/runtime_input_reject_observation_20260914.md`。
+
 - [VERIFIED] 2026-09-14 测试范围审计：46 个测试模块、319 个静态测试函数、pytest 参数化后 393 个用例；本地与 Cobra 均通过。测试套件主要覆盖离线轮子和 fake 客户端，真实 Redis/TD/第三方连接由显式 Cobra 只读 probe 单独证明；in-session 生产 Shadow、批边界和替代验收仍未完成。详见 `docs/evidence/test_scope_audit_20260914.md`。
 
 - [VERIFIED] 当前提交 `cf90956` 的固定归档在本地与 Cobra-ion Python 3.12.3 复验一致：两端 `393 passed`、`compileall` PASS，归档 SHA-256 `9eb57034d83e1f52f17bb90ac6879bde2b9576d1f06863cb55c89c85fbaacdd8`。归档目录不含 `.git`，`git diff --check` 仅在本地提交前执行；该证据不改变生产服务或 Core replacement 状态。详见 `docs/evidence/verification_cf90956_20260914.md`。

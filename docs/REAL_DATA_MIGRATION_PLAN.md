@@ -4,6 +4,7 @@
 
 ### 2026-09-14 六层生产链捕获审计（最新）
 
+- 同一只读日志切片还显示累计 `source_reject`（09:25 为 3,674,985，15:23 为 5,494,355）以及少量 `last_reject`，但当前无法把计数映射到具体 decode/字段分支；与 wall lag 的因果关系保持 UNKNOWN，已纳入多交易日输入完整性门槛，未修改 producer。详见 `docs/evidence/runtime_input_reject_observation_20260914.md`。
 - 测试范围审计已完成：当前 46 个测试模块、319 个静态测试函数，pytest 参数化后 393 个收集用例；本地/Cobra 均通过。但其中真实源验证由显式 Cobra 只读 probe 独立完成，393 passed 不代表 393 次真实连接；真实 in-session Shadow、批边界、writer 同源和 Core replacement 仍未闭合。详见 `docs/evidence/test_scope_audit_20260914.md`。
 - 当前提交 `cf90956` 已完成固定归档的跨环境复验：本地与 Cobra-ion Python 3.12.3 均为 `393 passed`、`compileall` PASS，归档 SHA-256 一致；本次只确认代码/证据提交可重复执行，不改变生产接受结论。详见 `docs/evidence/verification_cf90956_20260914.md`。
 - t1-v2 生产日志的只读切片显示 09:25 `wall_lag_ms=2418`，09:30 已为 `12222`，15:23 达到 `1428792`（约 23.8 分钟）；采样行 `ack_fail=0` 且服务仍 active，但存在持续积压/性能风险。该事实加入 Core 替代前的多交易日容量门槛，未在盘中修改 producer。详见 `docs/evidence/runtime_lag_observation_20260914.md`。
