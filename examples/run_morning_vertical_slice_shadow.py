@@ -35,7 +35,7 @@ from engine_core import (  # noqa: E402
     build_opening_transition_fact,
     build_calendar_snapshot,
     due_timer_firings,
-    normalize_auction_change_ratio,
+    normalize_auction_change_bp_to_pct,
     semantic_hash,
 )
 from engine_core.anchor_delta import build_anchor_shadow_evidence  # noqa: E402
@@ -192,8 +192,7 @@ def _opening_fact_from_q2(projection: Any, *, symbol: str, auction_row: Mapping[
             "symbol": symbol,
             "reason": "symbol_not_in_q2_projection",
         }
-    auction_ratio = normalize_auction_change_ratio(auction_row.get("chg_bp"))
-    auction_change_pct = auction_ratio * 100.0 if auction_ratio is not None else None
+    auction_change_pct = normalize_auction_change_bp_to_pct(auction_row.get("chg_bp"))
     return build_opening_transition_fact(
         auction_change_pct,
         {

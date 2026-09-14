@@ -27,7 +27,7 @@ from engine_core import (  # noqa: E402
     build_open_fact,
     build_opening_transition_fact,
     canonical_json,
-    normalize_auction_change_ratio,
+    normalize_auction_change_bp_to_pct,
     semantic_hash,
 )
 
@@ -160,8 +160,7 @@ def _auction_change_from_rows(rows: Sequence[Sequence[Any] | Mapping[str, Any]])
             item = dict(zip(names, row))
         if str(item.get("auction_tag") or "").strip() != "0925":
             continue
-        ratio = normalize_auction_change_ratio(item.get("chg_bp"))
-        return ratio * 100.0 if ratio is not None else None
+        return normalize_auction_change_bp_to_pct(item.get("chg_bp"))
     return None
 
 

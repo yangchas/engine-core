@@ -95,7 +95,7 @@ from .anchor_delta import (
     build_anchor_delta_evidence,
     build_anchor_shadow_evidence,
 )
-from .auction import normalize_auction_change_ratio
+from .auction import normalize_auction_change_bp_to_pct, normalize_auction_change_ratio
 from .opening import (
     OPENING_FACT_CONTRACT_VERSION,
     OPENING_TRANSITION_FACT_CONTRACT_VERSION,
@@ -205,6 +205,7 @@ __all__ = [
     "build_anchor_delta_evidence",
     "build_anchor_shadow_evidence",
     "normalize_auction_change_ratio",
+    "normalize_auction_change_bp_to_pct",
     "OPENING_FACT_CONTRACT_VERSION",
     "OPENING_TRANSITION_FACT_CONTRACT_VERSION",
     "build_open_fact",

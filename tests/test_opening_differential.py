@@ -68,3 +68,7 @@ def test_auction_change_uses_only_the_0925_row_and_keeps_missing_unknown():
     ]
     assert _auction_change_from_rows(rows) == 2.5
     assert _auction_change_from_rows([{ "auction_tag": "0925", "chg_bp": None }]) is None
+
+
+def test_typed_td_chg_bp_matches_production_percentage_point_contract():
+    assert _auction_change_from_rows([{ "auction_tag": "0925", "chg_bp": -8 }]) == -0.08
