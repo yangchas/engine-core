@@ -2,6 +2,13 @@
 
 ## 基线与执行状态
 
+### 2026-09-14 StartupReadinessV1 read-only closure
+
+- 新增最小 `StartupReadinessV1` 纯轮子与 `run_startup_readiness_probe.py`：显式校验交易日/SessionPlan 身份，复用 Q2 状态和 source-time range，重新执行参考数据 `TemporalDataGuard`，并委托 `SessionTimerV1` 计算到期节点；不创建 provider、不预取、不写 Redis/TD、不接 Rabbit、不发 effect。提交 `4e7b2f1`。
+- 本地与 Cobra-ion Python 3.12.3 同一归档均为 `386 passed`、`compileall` PASS，归档 SHA-256 为 `ab6ab6ee2a5cc0775d1d1f042474a840bbf0ef08d79b85144b5561d7397951e3`。
+- Cobra 真实 Redis 只读探针（`2026-09-14`）得到 Q2 `5220/5220`、coverage `1.0` 但 `STALE/BEST_EFFORT_STALE`；readiness 为 `PARTIAL`，到期 Core 节点为 `AUCTION_0926`、`OPENING_0932`，artifact `575d9e5c152a39c023521210872f2824c335634915d71045df4888db20b711f5`。`engine-next` 与 `t1-v2-live` 保持 active、`NRestarts=0`。
+- 该闭环只关闭 M1 的 side-effect-free startup assessment，不等于 Core 已接管 next 的启动生命周期；09:20/09:24/09:25 source freeze、正式报告/effect、跨重启 durable identity 与多日 differential 仍未迁移。详见 `docs/evidence/startup_readiness_probe_20260914.md`。
+
 ### 2026-09-14 Engine evaluation registration bound
 
 - `DeterministicEngine` 的 evaluation 注册身份已改为有界 session ledger，默认上限 `65536`；不驱逐注册记录，容量耗尽时 fail-closed，确保 terminal tombstone 淘汰后不会重新注册同一 evaluation。commit `3d870ee` 在本地与 Cobra-ion Python 3.12.3 均通过 `375 passed`、`compileall`，详见 `docs/evidence/engine_registration_bound_20260914.md`。

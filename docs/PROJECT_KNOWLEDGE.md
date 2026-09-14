@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-14 新增 `StartupReadinessV1` 只读自检轮子（commit `4e7b2f1`）：显式校验 Calendar/SessionPlan、Q2 source-time cutoff、已获得的参考数据可用性和 SessionTimer 到期节点；缺 Q2 时只返回 `WAIT/DEFER`，不调用 Provider、不预取、不写 Redis/TD、不接 Rabbit。Local/Cobra 3.12.3 同一归档 `386 passed`，真实 Cobra Redis Q2 probe 为 `5220/5220`、coverage `1.0` 但 `STALE`，artifact SHA-256 `575d9e5c152a39c023521210872f2824c335634915d71045df4888db20b711f5`。这不是 Core 替代 engine-next 的启动协调或生产部署。详见 `docs/evidence/startup_readiness_probe_20260914.md`。
+
 - [OBSERVED] 2026-09-14 cobra-ion 只读对照探查：旧 `engine_next` context builder 与 Core `RedisQ2ProjectionAdapter` 均可在 Guard/只读边界运行且无写入；旧链对指定 09:26 诊断读到晚于该时间的当前 Q2，并将未来源年龄裁为零（`future_source_timestamp=true`），因此不适合作为历史 replay oracle。Core 同日读取 5220/5220、coverage=1.0 但 `STALE/BEST_EFFORT_STALE`，同一观察重复运行确定性一致；两链未共享不可变输入快照，跨链路 exact parity 保持 `UNPROVEN`。证据见 `docs/evidence/legacy_core_context_probe_20260914.md`。
 
 - [VERIFIED] 2026-09-14 Gate B morning fact dispatch：最终 Core commit `244e7ae`（状态修正 `b241a70`、typed-unit 修正 `ca05ddf`、功能提交 `41bc60d`、边界修正 `d976f6d`）在薄组合边界中派发 `AUCTION_0926`→`AnchorDeltaFactV1`、`OPENING_0932`→`OpeningFactV1/OpeningTransitionFactV1`，拒绝跨股票/重复 auction tag，并按生产 typed TD `chg_bp/100` 合同转换竞价变动。Cobra-ion Python 3.12.3 同归档通过 `373 passed`、`compileall`；真实 Q2 capture 5220/5220 但 `PARTIAL`，100 只 opening helper exact，可比 transition 99/99 exact，1 只真实空字段为 `NON_COMPARABLE`，产物含原因计数。详见 `docs/evidence/gate_b_morning_fact_dispatch_20260914.md`。
