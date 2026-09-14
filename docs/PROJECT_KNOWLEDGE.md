@@ -4,6 +4,12 @@
 
 ### 2026-09-14 current verification override
 
+- [VERIFIED] 2026-09-14 交易日真实生产链只读旁路：`engine-next` PID 4022407 与 `t1-v2-live` PID 2878024 均 active、NRestarts=0；未新增 Rabbit consumer、未改变 ACK、未写 Redis/TD、未发送通知。真实 capture 副本已保存到 `tmp/capture-20260914/`，关键 0920/0925/anchor 文件与远端 SHA-256 一致。
+- [VERIFIED] 2026-09-14 capture required slot `auction_0924` 在 09:24:05 捕获时为空；后续 Redis/TD 虽出现 0924 数据，也不能回填早先空槽位。本次 ground truth 重新计算为 `PARTIAL`，不得信任 manifest 中矛盾的 `formal_ground_truth=true`。
+- [VERIFIED] 2026-09-14 真实 Q2 `q2_093210.jsonl` 为 5220/5220、coverage `1.0`，但 source-time range 为 2026-09-14 00:00:00 至 09:31:14，10 秒 freshness policy 下全部 `STALE/BEST_EFFORT_STALE`；捕获文件经过 Q2 Adapter + in-memory Engine 重复运行，Probe hash 一致。直接 Redis 探针在约 09:49 观察时同样为 5220/5220 但全部 stale。
+- [VERIFIED] 2026-09-14 cobra-ion 只读 TD `daily_kline` 为日历派生的 2026-09-11，3 个 symbol 均有行，但 `available_at` 未知，`PreviousDayStatsFunction` 按合同返回 `UNAVAILABLE`，未把查询时间冒充历史可见时间。
+- [VERIFIED] 2026-09-14 只读 TD `stock_tick_v2` 在 09:24:50–09:30:00 选定 3 个 symbol 返回 11 行；已保留五档可见性、价格/量额存在性和 source timestamp，未推断同毫秒真实顺序。真实 TD 竞价投影的 600519 0920/0924/0925 shadow 保持 `PARTIAL/FACT_ONLY/OBSERVE`。
+- [VERIFIED] 新增 `examples/run_production_chain_shadow.py`：从已捕获真实文件生成六层 `production_chain_matrix.csv`、tick morphology 证据和 `audit_summary.json`，并以当前 Core Q2 Adapter/Engine 重复计算验证确定性；工具不连接生产服务、不执行修复、不写 Redis/TD。
 - [VERIFIED] 当前可执行 commit 已更新为 `0b6021c`；本地与 cobra-ion 生产共享 Python 3.12.3 临时归档均执行 `315 passed`，`compileall` 通过。最新验证证据见 `docs/evidence/current_verification_20260914.md`。此前文档中的 `306/307/311/313 passed`、`30c7c12`、`3f8982c`、`ed3547c`、`8004874`、`e0946f6` 和 `6275853` 均为历史记录，不代表当前代码身份。
 - [VERIFIED] Cobra-ion 2026-09-14 开盘前真实 Redis 只读探针连接成功，但 `q2:active:20260914` 为空，结果为 `MISSING/EMPTY_UNIVERSE`、coverage `0.0`；两次同一观察 Engine hash 一致。该结果只证明真实连接和 fail-closed，不证明 live Q2 正向覆盖。
 - [OBSERVED] 2026-09-14 ground-truth capture 进程 `PID=4014185` 已启动并等待 09:20/09:24/09:25 采集点，当前尚无交易时段 artifact。`engine-next` 与 `t1-v2-live` 保持 active，Cobra 根分区约 83% 使用率、约 3.1GB 可用。

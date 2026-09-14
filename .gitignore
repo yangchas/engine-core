@@ -18,4 +18,6 @@ docs/evidence/*
 *.sqlite-shm
 replay_data/
 local_config.toml
+tmp/
+*.tar
 .vertical_slice_trace.jsonl
