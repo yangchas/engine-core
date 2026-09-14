@@ -2,6 +2,8 @@
 
 - [WARN] 2026-09-14 t1-v2 runtime lag：只读日志样本中 `wall_lag_ms` 从 09:25 的 `2418` 增至 09:30 的 `12222`，15:23 达到 `1428792`（约 23.8 分钟），尽管采样行 `ack_fail=0` 且服务 active。该问题根因 UNKNOWN，必须纳入 Core 替代前多交易日容量/积压门槛；未授权盘中修改 producer。详见 `docs/evidence/runtime_lag_observation_20260914.md`。
 
+- [VERIFIED] 当前提交 `cf90956` 的固定归档在本地与 Cobra-ion Python 3.12.3 复验一致：两端 `393 passed`、`compileall` PASS，归档 SHA-256 `9eb57034d83e1f52f17bb90ac6879bde2b9576d1f06863cb55c89c85fbaacdd8`。归档目录不含 `.git`，`git diff --check` 仅在本地提交前执行；该证据不改变生产服务或 Core replacement 状态。详见 `docs/evidence/verification_cf90956_20260914.md`。
+
 - [OBSERVED] 2026-09-14 09:24:50–09:26:30 生产日志只读切片：t1-v2 在 09:24:51/09:25:02 继续处理并 ACK 批次（`ack_fail=0`），保留 `last_ts_ms` 与 wall lag；engine-next 记录 09:25:10 `auction_finalize_0925`、09:25:49 完成 5219 条 context、09:26:27 `auction_followup_0926` 并由生产 owner 发出邮件。日志没有 exact Rabbit batch、AuctionState commit 或 writer 同源标识，因此 batch/freeze/projection parity 仍 UNKNOWN/UNPROVEN。详见 `docs/evidence/runtime_log_slice_20260914_0925.md`。
 
 - [VERIFIED] 2026-09-14 18:06 Cobra-ion 真实参考源探针：复用 `engine-next@20260903_e272842` 的 Baostock/Kaipanla/Wencai/THS 连接方式，6/6 调用成功。Baostock 日线请求与返回交易日均为 `2026-09-11`；其他源只证明当前响应可读，日期/历史 `available_at` 仍 UNKNOWN，不能进入 Replay runtime。乱码响应按原样保留，不冒充语义修复。artifact SHA-256 `ff8d875b9a8a1d50134280be0160df99085c822c45c2a6d6fcfffd63210f5bbd`。详见 `docs/evidence/real_reference_probe_20260914_1806.md`。
