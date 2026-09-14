@@ -24,6 +24,9 @@ from .session import SessionPlan
 from .windows import WindowManager
 
 
+DEFAULT_EVALUATION_REGISTRATION_LIMIT = 65_536
+
+
 class Strategy(Protocol):
     def evaluate(
         self,
@@ -62,11 +65,13 @@ class DeterministicEngine:
     bounds this in-memory idempotency horizon; durable duplicate protection is
     intentionally deferred with journal/checkpoint integration.
 
-    ``_registered_evaluation_ids`` is a session-lifetime identity ledger. It
-    is deliberately not evicted: evicting it would allow a completed
-    evaluation to be registered again after its terminal tombstone expires.
-    The ledger therefore has no artificial item cap; durable session rotation
-    belongs to the deferred persistence layer.
+    ``_registered_evaluation_ids`` is a bounded, session-lifetime identity
+    ledger.  It is deliberately not evicted: evicting it would allow a
+    completed evaluation to be registered again after its terminal tombstone
+    expires.  When the configured capacity is exhausted the engine fails
+    closed instead of silently weakening once-only semantics.  A new engine
+    instance (one trading session) is the lifecycle boundary for this ledger;
+    durable cross-restart identity belongs to the deferred persistence layer.
     """
 
     def __init__(
@@ -81,20 +86,21 @@ class DeterministicEngine:
         evaluation_plan: Optional[EvaluationPlan] = None,
         result_history_limit: int = 256,
         signal_id_cache_limit: int = 4096,
-        evaluation_registration_limit: Optional[int] = None,
+        evaluation_registration_limit: Optional[int] = DEFAULT_EVALUATION_REGISTRATION_LIMIT,
         terminal_evaluation_limit: int = 4096,
     ) -> None:
         if result_history_limit <= 0:
             raise ValueError("result_history_limit must be positive")
         if signal_id_cache_limit <= 0:
             raise ValueError("signal_id_cache_limit must be positive")
+        if evaluation_registration_limit is None:
+            evaluation_registration_limit = DEFAULT_EVALUATION_REGISTRATION_LIMIT
         if (
-            evaluation_registration_limit is not None
-            and evaluation_registration_limit <= 0
+            isinstance(evaluation_registration_limit, bool)
+            or not isinstance(evaluation_registration_limit, int)
+            or evaluation_registration_limit <= 0
         ):
-            raise ValueError(
-                "evaluation_registration_limit must be positive when supplied"
-            )
+            raise ValueError("evaluation_registration_limit must be a positive integer")
         if terminal_evaluation_limit <= 0:
             raise ValueError("terminal_evaluation_limit must be positive")
         if session_plan is not None and not isinstance(session_plan, SessionPlan):
@@ -141,9 +147,8 @@ class DeterministicEngine:
         self._active_logical_time: Optional[int] = None
         self._pending_evaluations: Dict[str, _PendingEvaluation] = {}
         self._registered_evaluation_ids: set[str] = set()
-        # Kept as a compatibility argument for callers that supplied the old
-        # cap. It is intentionally not enforced: a hard cap would stop a long
-        # session while still failing to provide once-only semantics.
+        # The ledger is bounded and fail-closed.  We do not evict registrations
+        # because once-only semantics must survive terminal tombstone eviction.
         self._evaluation_registration_limit = evaluation_registration_limit
         self._terminal_evaluations: OrderedDict[str, _TerminalEvaluation] = OrderedDict()
         self._terminal_evaluation_limit = terminal_evaluation_limit
@@ -391,6 +396,8 @@ class DeterministicEngine:
     ) -> None:
         if evaluation_id in self._registered_evaluation_ids:
             raise ValueError("evaluation_id was already registered")
+        if len(self._registered_evaluation_ids) >= self._evaluation_registration_limit:
+            raise ValueError("evaluation registration capacity exhausted")
         self._registered_evaluation_ids.add(evaluation_id)
         self._pending_evaluations[evaluation_id] = _PendingEvaluation(
             evaluation_id=evaluation_id,

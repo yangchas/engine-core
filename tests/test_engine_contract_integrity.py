@@ -108,8 +108,8 @@ def test_evaluation_registration_is_once_and_terminal_tombstone_classifies_retri
         engine._complete_evaluation("eval-1", bundle, 1)
 
 
-def test_evaluation_registration_ledger_allows_long_session_without_artificial_cap():
-    engine = _engine(terminal_evaluation_limit=1)
+def test_evaluation_registration_ledger_is_bounded_and_fails_closed():
+    engine = _engine(terminal_evaluation_limit=1, evaluation_registration_limit=4097)
     snapshot = engine._reducer.build_snapshot("LONG", logical_time_ms=1)
     for index in range(4097):
         evaluation_id = "long-eval-%04d" % index
@@ -122,8 +122,24 @@ def test_evaluation_registration_ledger_allows_long_session_without_artificial_c
     assert len(engine._registered_evaluation_ids) == 4097
     assert len(engine._terminal_evaluations) == 1
     assert not engine._pending_evaluations
+    with pytest.raises(ValueError, match="capacity exhausted"):
+        engine._register_evaluation("long-eval-over-cap", snapshot, ())
     with pytest.raises(ValueError, match="already registered"):
         engine._register_evaluation("long-eval-0000", snapshot, ())
+
+
+def test_evaluation_registration_ledger_has_a_finite_default_capacity():
+    engine = _engine()
+    assert engine._evaluation_registration_limit == 65_536
+
+
+def test_evaluation_registration_capacity_rejects_before_pending_mutation():
+    engine = _engine(evaluation_registration_limit=1)
+    snapshot = engine._reducer.build_snapshot("CAP", logical_time_ms=1)
+    engine._register_evaluation("cap-1", snapshot, ())
+    with pytest.raises(ValueError, match="capacity exhausted"):
+        engine._register_evaluation("cap-2", snapshot, ())
+    assert tuple(engine._pending_evaluations) == ("cap-1",)
 
 
 def test_submission_hash_contains_observation_context_but_content_hash_does_not():
