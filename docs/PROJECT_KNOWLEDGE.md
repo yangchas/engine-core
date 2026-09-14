@@ -10,7 +10,7 @@
 - [VERIFIED] 2026-09-14 cobra-ion 只读 TD `daily_kline` 为日历派生的 2026-09-11，3 个 symbol 均有行，但 `available_at` 未知，`PreviousDayStatsFunction` 按合同返回 `UNAVAILABLE`，未把查询时间冒充历史可见时间。
 - [VERIFIED] 2026-09-14 只读 TD `stock_tick_v2` 在 09:24:50–09:30:00 选定 3 个 symbol 返回 11 行；已保留五档可见性、价格/量额存在性和 source timestamp，未推断同毫秒真实顺序。真实 TD 竞价投影的 600519 0920/0924/0925 shadow 保持 `PARTIAL/FACT_ONLY/OBSERVE`。
 - [VERIFIED] 新增 `examples/run_production_chain_shadow.py`：从已捕获真实文件生成六层 `production_chain_matrix.csv`、tick morphology 证据和 `audit_summary.json`，并以当前 Core Q2 Adapter/Engine 重复计算验证确定性；工具不连接生产服务、不执行修复、不写 Redis/TD。
-- [VERIFIED] 当前可执行 commit 已更新为 `0b6021c`；本地与 cobra-ion 生产共享 Python 3.12.3 临时归档均执行 `315 passed`，`compileall` 通过。最新验证证据见 `docs/evidence/current_verification_20260914.md`。此前文档中的 `306/307/311/313 passed`、`30c7c12`、`3f8982c`、`ed3547c`、`8004874`、`e0946f6` 和 `6275853` 均为历史记录，不代表当前代码身份。
+- [VERIFIED] 当前只读生产链审计工具最终验证 commit 为 `e106e124573a2e49cde5cd43e722268746a69fc6`；本地与 cobra-ion Python 3.12.3 均执行 `318 passed`、`compileall` 通过，真实 capture/TD 样本生成的六类审计产物字节级 SHA-256 一致。此前的 `0b6021c` 及更早测试/commit 记录均为历史证据，不代表当前代码身份；详见 `docs/production_chain_shadow_20260914.md`。
 - [VERIFIED] Cobra-ion 2026-09-14 开盘前真实 Redis 只读探针连接成功，但 `q2:active:20260914` 为空，结果为 `MISSING/EMPTY_UNIVERSE`、coverage `0.0`；两次同一观察 Engine hash 一致。该结果只证明真实连接和 fail-closed，不证明 live Q2 正向覆盖。
 - [OBSERVED] 2026-09-14 ground-truth capture 进程 `PID=4014185` 已启动并等待 09:20/09:24/09:25 采集点，当前尚无交易时段 artifact。`engine-next` 与 `t1-v2-live` 保持 active，Cobra 根分区约 83% 使用率、约 3.1GB 可用。
 - [OBSERVED] Cobra-ion 既有 `t1_v2.log` 在 2026-09-11 09:19–09:25 持续记录 batches/source_in/ack/ticks/last_ts_ms，证明运行计数连续；日志没有 batch_id、`emit_a25` 或 writer 顺序，因此 `FINAL_TICK_BATCH_MEMBERSHIP` 仍 UNKNOWN。详见 `docs/evidence/t1_runtime_progress_20260911.md`。

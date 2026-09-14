@@ -164,6 +164,28 @@ audit_summary.json
 
 工具只做：文件读取、规范化、Core 内存计算和证据输出；不连接生产 Redis/TD，不写任何外部存储。
 
+## 最终跨环境验证身份
+
+```text
+commit: e106e124573a2e49cde5cd43e722268746a69fc6
+Python: 3.12.3 (local / cobra-ion)
+pytest: 318 passed (local / cobra-ion)
+compileall: PASS (local / cobra-ion)
+```
+
+同一真实 capture、同一 TD tick 样本下，以下产物的字节级 SHA-256 在 Windows 与 cobra-ion Linux 完全一致：
+
+```text
+audit_summary.json           d914bce9fbdfd9f3d4d68712d96b13ec5f5bfa8f36b6a115774ee4c6791cd727
+production_chain_matrix.csv  7fa4fa8c664548eed333fc5aa84fa71c88cf277d2a4fc8c9618f34e928f34c86
+tick_shape_samples.jsonl     69bcec164573f6bea8ba3c32cac1b7709784a2baeae2753bee510d7ae28fd4ee
+tick_shape_transition.csv    f35d513009d69bab2d3ec2de9526909a1d75120c2c1e6aa74408a7a30093a2f2
+tick_shape_statistics.csv    8871b8b85540db9375f3e05cf21aa3182130b29098bf5f8db6c53b0b91782a54
+tick_shape_audit.md          21b417b9fcba2943873ed5e1a35d25ab8f54d5f8a30b8cc90338e2bf90409181
+```
+
+证据文本统一使用 UTF-8 + LF，避免 Windows/Linux 换行差异伪造 hash 漂移；capture 目录名不参与语义身份。
+
 ## 验证命令
 
 本地：
@@ -178,7 +200,7 @@ python examples/run_production_chain_shadow.py \
   --stale-after-ms 10000
 ```
 
-cobra-ion 使用同一 commit 的临时验证目录和 Python 3.12.3，完整套件为 `315 passed`。
+cobra-ion 使用同一 commit 的临时验证目录和 Python 3.12.3，完整套件为 `318 passed`；本地与远端审计产物 SHA-256 完全一致。
 
 ## 后续边界
 
