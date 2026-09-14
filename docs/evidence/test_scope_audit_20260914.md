@@ -65,3 +65,14 @@ The same archive was re-run on cobra-ion with Python 3.12.3, fixed `TZ`,
 This remains offline/frozen-fixture verification. It does not upgrade the
 status of real Redis/TD probes, in-session production evidence, or Core
 replacement acceptance.
+
+## Recheck — 2026-09-14 21:10 CST
+
+The calendar boundary suite was strengthened with holiday/weekend data-date
+flow and source-guard rejection cases.  Local `pytest -q -p no:cacheprovider`
+now completes `400 passed`; `compileall` and `git diff --check` pass and the
+worktree is clean.  A separate read-only Python 3.12.3 check on the existing
+Cobra validation archive exercised the same calendar semantics
+(`remote_calendar_semantics=PASS`) without Redis, TDengine, Rabbit or
+notification access.  This is a test-contract improvement only; it does not
+upgrade live source, in-session capture, or replacement acceptance.
