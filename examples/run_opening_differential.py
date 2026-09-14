@@ -137,6 +137,18 @@ def compare_opening_rows(
     }
 
 
+def _comparison_status(comparison: Mapping[str, Any], *, transition_requested: bool) -> str:
+    """Classify a differential without turning missing inputs into a match."""
+
+    if comparison.get("opening_exact") is not True:
+        return "MISMATCH"
+    if transition_requested and comparison.get("transition_exact") is None:
+        return "NON_COMPARABLE"
+    if transition_requested and comparison.get("transition_exact") is not True:
+        return "MISMATCH"
+    return "MATCH"
+
+
 def _load_legacy(legacy_root: str) -> ModuleType:
     root = Path(legacy_root).expanduser().resolve()
     if not root.exists() or not root.is_dir():
@@ -201,7 +213,7 @@ def run_real_differential(
             (row,),
             auction_change_pct=auction_change,
         )["comparisons"][0]
-        item["status"] = "MATCH" if item["opening_exact"] and item.get("transition_exact", True) else "MISMATCH"
+        item["status"] = _comparison_status(item, transition_requested=td_config is not None)
         comparisons.append(item)
     return {
         "trade_date": trade_date,

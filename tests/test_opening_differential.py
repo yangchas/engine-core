@@ -12,6 +12,7 @@ from engine_core import (
 )
 from examples.run_opening_differential import (
     _auction_change_from_rows,
+    _comparison_status,
     compare_opening_rows,
 )
 
@@ -72,3 +73,9 @@ def test_auction_change_uses_only_the_0925_row_and_keeps_missing_unknown():
 
 def test_typed_td_chg_bp_matches_production_percentage_point_contract():
     assert _auction_change_from_rows([{ "auction_tag": "0925", "chg_bp": -8 }]) == -0.08
+
+
+def test_differential_status_does_not_call_missing_transition_a_match():
+    assert _comparison_status({"opening_exact": True, "transition_exact": None}, transition_requested=True) == "NON_COMPARABLE"
+    assert _comparison_status({"opening_exact": True, "transition_exact": True}, transition_requested=True) == "MATCH"
+    assert _comparison_status({"opening_exact": False, "transition_exact": True}, transition_requested=True) == "MISMATCH"
