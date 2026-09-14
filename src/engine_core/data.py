@@ -540,11 +540,33 @@ class ReadyDataStore:
 
         if result.function_id != request.function_id:
             raise ValueError("result function_id does not match request")
+        if result.requested_trade_date != request.trade_date:
+            raise ValueError("result requested_trade_date does not match request")
         guarded = TemporalDataGuard.check(result, request)
         if guarded.status is not DataStatus.READY:
             reason = ",".join(guarded.missing_fields) or guarded.status.value
             raise ValueError("result is not ready for request: " + reason)
+        if not self._satisfies_required_fields(request, guarded):
+            raise ValueError("result does not contain request required_fields")
         self._entries[self._key(request, guarded)] = guarded
+
+    @staticmethod
+    def _satisfies_required_fields(
+        request: DataRequest,
+        result: DataResult,
+    ) -> bool:
+        """Check request-specific fields before accepting/reusing a cache entry.
+
+        A result can be READY for a permissive request while still lacking a
+        field required by a later node.  The readiness store must not turn
+        that narrower result into a false cache hit.
+        """
+
+        if not request.required_fields:
+            return True
+        if not isinstance(result.data, Mapping):
+            return False
+        return all(field in result.data for field in request.required_fields)
 
     def get(self, request: DataRequest) -> Optional[DataResult]:
         """Return the newest temporally valid result for an exact scope."""
@@ -564,7 +586,10 @@ class ReadyDataStore:
             ):
                 continue
             guarded = TemporalDataGuard.check(result, request)
-            if guarded.status is DataStatus.READY:
+            if (
+                guarded.status is DataStatus.READY
+                and self._satisfies_required_fields(request, guarded)
+            ):
                 candidates.append(guarded)
         if not candidates:
             return None

@@ -4,8 +4,9 @@
 
 ### 2026-09-14 当前验证覆盖
 
-- 当前可执行代码身份为 `0b6021c`，本地与 Cobra-ion 同代码归档离线套件均为 `315 passed`，`compileall` 通过。此前本节中的 `306/307/311/313 passed`、`30c7c12`、`3f8982c`、`6275853`、`ed3547c`、`8004874`、`e0946f6` 是历史证据，不能覆盖当前提交；最新证据见 `docs/evidence/current_verification_20260914.md`。
+- 当前可执行代码身份为 `7d2d575`（本轮 ReadyDataStore 字段/日期边界修复尚未形成新提交）；本地 Windows Python 3.9.13 套件为 `322 passed`，Cobra-ion Python 3.12.3 对上一个 exact archive 为 `320 passed`。版本差异按用户决定仅作记录，不影响继续推进；正式运行证据仍以 Cobra 3.12.3 为准。此前本节中的 `306/307/311/313/315 passed` 及更早 commit 均为历史证据，不能覆盖当前提交；最新真实 readiness 证据见 `docs/evidence/reference_data_readiness_20260914.md`。
 - 2026-09-14 开盘前对 Cobra-ion Redis 执行真实只读 Q2 探针，目标日期 active cohort 为空，返回 `MISSING/EMPTY_UNIVERSE`，不是 live coverage 通过。ground-truth capture 进程已运行但尚未到交易时段采样点。
+- 2026-09-14 10:56–10:58 在 Cobra-ion 生产共享 Python 3.12.3 上完成真实 reference-data readiness 复核：热板 50 行、昨日涨停池 40 行均真实读取且 HLEN/scan 一致，但 metadata 均缺 `schema_version/available_at_ms/field_units`，按合同保持 `UNAVAILABLE`；同期 Q2 5220/5220、coverage=1.0，但 60s policy 下全量 `STALE`。该结果是成功的 fail-closed，不是 provider 失败；详见 `docs/evidence/reference_data_readiness_20260914.md`。
 - 当前仍不具备 `engine_next` 替代条件：缺真实当日 0920/0924/0925 成对证据、完整 source/runtime batch membership、正式报告 owner 和长会话幂等/内存边界。不得因 `307 passed` 或真实连接成功打正式替代标签。
 
 ### 2026-09-13 23:50 最新收口复核

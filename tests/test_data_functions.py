@@ -496,6 +496,68 @@ def test_ready_data_store_rejects_unobserved_put():
         ReadyDataStore().put(request, late)
 
 
+def test_ready_data_store_does_not_reuse_result_missing_later_required_field():
+    prefetch_request = DataRequest(
+        request_id="prefetch-narrow",
+        function_id="previous_day_stats",
+        trade_date="2026-09-04",
+        effective_as_of_ms=1788484800000,
+        knowledge_as_of_ms=1788484800000,
+        required_fields=("previous_trade_date",),
+    )
+    result = DataResult(
+        request_id="prefetch-narrow",
+        function_id="previous_day_stats",
+        status=DataStatus.READY,
+        data={"previous_trade_date": "2026-09-03"},
+        actual_source="fixture",
+        requested_trade_date="2026-09-04",
+        actual_trade_date="2026-09-03",
+        effective_at_ms=None,
+        available_at_ms=1788480000000,
+        observed_at_ms=1788484800000,
+        schema_version=1,
+        completeness=1.0,
+    )
+    store = ReadyDataStore()
+    store.put(prefetch_request, result)
+    stricter_request = DataRequest(
+        request_id="node-strict",
+        function_id="previous_day_stats",
+        trade_date="2026-09-04",
+        effective_as_of_ms=1788484800000,
+        knowledge_as_of_ms=1788484800000,
+        required_fields=("previous_trade_date", "volume_by_symbol"),
+    )
+    assert store.get(stricter_request) is None
+
+
+def test_ready_data_store_rejects_result_for_different_requested_trade_date():
+    request = DataRequest(
+        request_id="date-mismatch",
+        function_id="previous_day_stats",
+        trade_date="2026-09-04",
+        effective_as_of_ms=1788484800000,
+        knowledge_as_of_ms=1788484800000,
+    )
+    result = DataResult(
+        request_id="date-mismatch",
+        function_id="previous_day_stats",
+        status=DataStatus.READY,
+        data={"previous_trade_date": "2026-09-02"},
+        actual_source="fixture",
+        requested_trade_date="2026-09-03",
+        actual_trade_date="2026-09-02",
+        effective_at_ms=None,
+        available_at_ms=1788480000000,
+        observed_at_ms=1788484800000,
+        schema_version=1,
+        completeness=1.0,
+    )
+    with pytest.raises(ValueError, match="requested_trade_date"):
+        ReadyDataStore().put(request, result)
+
+
 def test_data_result_semantic_hash_excludes_provider_identity():
     physical = provider_result_from_previous_day_rows(
         [{"symbol": "000001", "close": 11.59, "amount": 100}],

@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-14 cobra-ion 真实只读 readiness 复核：`cache:hot_plates:2026-09-14` 为 50 行 hash、`cache:yest_limit_pool:2026-09-11` 为 40 行 hash，扫描与 HLEN 一致；两者 metadata 均缺 `schema_version/available_at_ms/field_units`，core 分别保持 `UNAVAILABLE(available_at_unknown)`，昨日涨停池另保留 `turnover_unit_unknown`。同次 Q2 读取 5220/5220、coverage=1.0，但在 60s freshness policy 下 5220 条均为 `STALE/BEST_EFFORT_STALE`，不能解释为 fresh。所有命令仅 `SMEMBERS/HGETALL/TYPE/HLEN/HSCAN/GET`，未写 Redis/TD、未改服务；完整 hash/证据见 `docs/evidence/reference_data_readiness_20260914.md`。
+
 ## 0. Current execution status (2026-09-13)
 
 ### 2026-09-14 current verification override
