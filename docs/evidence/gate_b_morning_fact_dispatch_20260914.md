@@ -20,12 +20,13 @@ consumer has been replaced.
 ## Code and verification identity
 
 ```text
-Core commit: 41bc60d feat(shadow): dispatch morning fact nodes
-Core archive: /home/exedev/validation/engine-core-41bc60d/engine-core.tar
-Archive SHA-256: d931f36a8d227ad3d0d0041e60f1776f88cbbbcb0fe5a17e8d2fd843d2abd2fc
-Local suite: 357 passed
+Core commit: d976f6d fix(shadow): reject ambiguous auction rows
+Core feature commit: 41bc60d feat(shadow): dispatch morning fact nodes
+Core archive: /home/exedev/validation/engine-core-d976f6d.tar
+Archive SHA-256: 0b87120f043d1264218d771fed29c5ae6d1dd5e08aa5e07f902a0757cb8ebf0d
+Local suite: 359 passed
 Cobra-ion Python: 3.12.3
-Cobra-ion suite: 357 passed
+Cobra-ion suite: 359 passed
 compileall: PASS
 ```
 
@@ -87,6 +88,10 @@ a754a288ed75221ab3d02f52b1c4386fe04828de66dc7320c6d5c4b1ea2e451a
 The timer evidence at a late observation time contains both normal due and
 recovery-catchup views.  The two views are evidence scopes, not two production
 executions.
+
+The final code also rejects cross-symbol auction rows and duplicate auction
+tags at this composition boundary instead of silently letting the last row
+overwrite an earlier row.  Boundary tests cover both cases.
 
 ## Production-chain shadow from the capture
 
