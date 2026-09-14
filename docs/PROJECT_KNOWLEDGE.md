@@ -4,6 +4,8 @@
 
 - [WARN] 2026-09-14 同一 t1-v2 进度行存在累计 `source_reject`（09:25 `3,674,985`，15:23 `5,494,355`）和少量 `last_reject`；日志没有给出拒绝分支/字段原因，不能把它解释成 Rabbit 丢失或 ACK 失败。该未知已加入 Core 替代前的输入完整性门槛，未修改 producer。详见 `docs/evidence/runtime_input_reject_observation_20260914.md`。
 
+- [VERIFIED] 2026-09-14 18:30 Cobra-ion 真实 Provider 复验：Redis Q2 5220/5220、coverage=1.0 但全量 `STALE`；TD PreviousDayStats 派生 `2026-09-11` 并返回 3 行，但 `available_at_ms` 未知，runtime 结果为 `UNAVAILABLE`；Redis/TD 竞价对照 `mismatch=0`，整体仍为 `PARTIAL_COMPARABLE/NOT_COMPARABLE`。所有操作只读，无生产副作用。详见 `docs/evidence/real_provider_probe_20260914_1830.md`。
+
 - [VERIFIED] 2026-09-14 测试范围审计：46 个测试模块、319 个静态测试函数、pytest 参数化后 393 个用例；本地与 Cobra 均通过。测试套件主要覆盖离线轮子和 fake 客户端，真实 Redis/TD/第三方连接由显式 Cobra 只读 probe 单独证明；in-session 生产 Shadow、批边界和替代验收仍未完成。详见 `docs/evidence/test_scope_audit_20260914.md`。
 
 - [VERIFIED] 当前提交 `cf90956` 的固定归档在本地与 Cobra-ion Python 3.12.3 复验一致：两端 `393 passed`、`compileall` PASS，归档 SHA-256 `9eb57034d83e1f52f17bb90ac6879bde2b9576d1f06863cb55c89c85fbaacdd8`。归档目录不含 `.git`，`git diff --check` 仅在本地提交前执行；该证据不改变生产服务或 Core replacement 状态。详见 `docs/evidence/verification_cf90956_20260914.md`。
