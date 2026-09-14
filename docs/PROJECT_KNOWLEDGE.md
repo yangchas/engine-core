@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- [OBSERVED] 2026-09-14 cobra-ion 只读对照探查：旧 `engine_next` context builder 与 Core `RedisQ2ProjectionAdapter` 均可在 Guard/只读边界运行且无写入；旧链对指定 09:26 诊断读到晚于该时间的当前 Q2，并将未来源年龄裁为零（`future_source_timestamp=true`），因此不适合作为历史 replay oracle。Core 同日读取 5220/5220、coverage=1.0 但 `STALE/BEST_EFFORT_STALE`，同一观察重复运行确定性一致；两链未共享不可变输入快照，跨链路 exact parity 保持 `UNPROVEN`。证据见 `docs/evidence/legacy_core_context_probe_20260914.md`。
+
 - [VERIFIED] 2026-09-14 Gate B morning fact dispatch：最终 Core commit `244e7ae`（状态修正 `b241a70`、typed-unit 修正 `ca05ddf`、功能提交 `41bc60d`、边界修正 `d976f6d`）在薄组合边界中派发 `AUCTION_0926`→`AnchorDeltaFactV1`、`OPENING_0932`→`OpeningFactV1/OpeningTransitionFactV1`，拒绝跨股票/重复 auction tag，并按生产 typed TD `chg_bp/100` 合同转换竞价变动。Cobra-ion Python 3.12.3 同归档通过 `373 passed`、`compileall`；真实 Q2 capture 5220/5220 但 `PARTIAL`，100 只 opening helper exact，可比 transition 99/99 exact，1 只真实空字段为 `NON_COMPARABLE`，产物含原因计数。详见 `docs/evidence/gate_b_morning_fact_dispatch_20260914.md`。
 
 - [VERIFIED] 2026-09-14 新增只读 `morning_vertical_slice_shadow` 组合工具（Core commit `b902d7e`）：真实 Redis Q2 + TD `auction_snapshot_v2` + SessionPlan timer evidence 可在不启动完整 Engine、不执行策略、不写 Redis/TD 的条件下生成可追溯 morning shadow。固定输入在 Cobra-ion Python 3.12.3 重跑两次 artifact/semantic hash 一致；本地/Cobra 同一归档均为 `332 passed`、`compileall` PASS。真实结果保持 Q2 `coverage=1.0` 但 `STALE`，auction `PARTIAL/FACT_ONLY/OBSERVE`，reference data `UNAVAILABLE`；这不是 engine-next 替代证明。详见 `docs/evidence/morning_vertical_slice_shadow_20260914.md`。

@@ -2,6 +2,12 @@
 
 ## 基线与执行状态
 
+### 2026-09-14 Legacy/Core context read-path probe
+
+- 已在 cobra-ion 对当前 `engine-next` release 与 Core `244e7ae` 执行 bounded read-only probe。旧 context builder 和 Core Q2 adapter 均无 Redis 写入；Core 5220/5220、coverage `1.0` 但 `STALE/BEST_EFFORT_STALE`，重复 observation hash 稳定。
+- 旧 context builder 在指定 09:26 诊断中读到晚于该时间的当前 Q2，并将 `future_source_timestamp` 裁成 `CLAMPED_TO_ZERO_AGE`；这属于旧实时读取行为，不能作为历史 replay 的时间语义，也不迁移到 Core。
+- 两个 probe 没有共享不可变 Q2 快照或同一 source-time as-of，跨链路 exact parity 保持 `UNPROVEN`，不能据此指定 first divergence。详见 `docs/evidence/legacy_core_context_probe_20260914.md`。
+
 ### 2026-09-14 Gate B morning fact dispatch
 
 - 当前可执行 Core 提交为 `244e7ae`（状态修正 `b241a70`，typed-unit 修正 `ca05ddf`，功能提交 `41bc60d`，边界修正 `d976f6d`）。`dispatch_morning_fact_nodes` 仅把已到期的 `AUCTION_0926` 与 `OPENING_0932` timer evidence 组合到既有 Anchor/Opening facts；并在边界处拒绝跨股票或重复 tag，不新增 scheduler、workflow、retry、persistence、strategy effect，也不接管 engine-next。
