@@ -48,3 +48,20 @@ Core replacement acceptance        = not achieved
 - 真实探针必须复用旧系统已验证连接方式，并经过 side-effect guard。
 - 不能用 fixture hash、测试数量或当前 Redis 可读性替代历史可见性、批边界或生产链等价性证据。
 - 下一有效证据仍是已安排的交易日 in-session Shadow；在此之前不增加通用框架、不切换生产主链。
+
+## Recheck — 2026-09-14 20:49 CST
+
+The current local HEAD (`1393d7b`) is code-identical to the fixed Linux archive
+`81e0dd3` for `src`, `tests`, `examples`, and `pyproject.toml`; the intervening
+commits are documentation/operations records only. The local suite was run
+with `python -m pytest -q -p no:cacheprovider` and completed `397 passed`.
+`compileall` and `git diff --check` also passed. A separate standard-library
+execution trace confirmed that every public function/method in `src/engine_core`
+was reached by at least one collected test; this is a reachability audit, not a
+branch or line coverage percentage.
+
+The same archive was re-run on cobra-ion with Python 3.12.3, fixed `TZ`,
+`PYTHONHASHSEED`, and `LC_ALL`; it completed `397 passed` and `compileall PASS`.
+This remains offline/frozen-fixture verification. It does not upgrade the
+status of real Redis/TD probes, in-session production evidence, or Core
+replacement acceptance.
