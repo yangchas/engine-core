@@ -128,9 +128,17 @@ def test_captured_q2_runs_same_core_twice_and_does_not_fabricate_0924(tmp_path):
     assert summary["q2_engine_shadow"]["symbol_count"] == 1
     assert summary["q2_engine_shadow"]["repeat_hash_equal"] is True
     assert summary["auction"]["auction_0924"]["status"] == "MISSING"
+    assert summary["auction_fact_shadow"]["status"] == "NOT_RUN"
+    assert summary["acceptance"]["auction_state"] == "OBSERVED"
+    assert summary["acceptance"]["storage_projection"] == "WARN"
+    assert summary["acceptance"]["engine_core_q2_path"] == "PASS"
+    assert summary["acceptance"]["engine_core_shadow"] == "PARTIAL"
     assert not (output / "auction_0924.json").exists()
     assert (output / "production_chain_matrix.csv").is_file()
     assert (output / "tick_shape_audit.md").is_file()
+    matrix = (output / "production_chain_matrix.csv").read_text(encoding="utf-8")
+    assert "q2_capture,engine_core,PASS" in matrix
+    assert "auction_0925,engine_core,UNPROVEN" in matrix
 
 
 def test_audit_summary_identity_is_not_machine_directory_name(tmp_path):

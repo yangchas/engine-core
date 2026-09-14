@@ -277,6 +277,7 @@ def auction_summary(capture_dir: Path, manifest: Mapping[str, Any]) -> dict[str,
         top_amount = _json_value(latest.get("top_amount"))
         result[slot] = {
             "status": "OBSERVED",
+            "projection_only": True,
             "capture_status": slot_meta.get("status", "UNKNOWN"),
             "source_key": payload.get("source_key"),
             "latest_tag": latest.get("tag"),
@@ -447,17 +448,20 @@ def build_audit_bundle(
             if layer == "Gateway/Runtime":
                 status, detail = "UNKNOWN", "capture has no Rabbit batch membership"
             elif layer == "AuctionState":
-                status, detail = auction.get("status", "UNKNOWN"), "captured projection only"
+                status, detail = auction.get("status", "UNKNOWN"), (
+                    "captured Redis projection only; internal AuctionState/freeze not observed"
+                )
             elif layer == "Redis":
                 status, detail = auction.get("status", "UNKNOWN"), "auction/anchor capture"
             elif layer == "TD":
                 status = "OBSERVED" if tick_rows else "UNKNOWN"
-                detail = "normalized stock_tick sample; no batch order inferred"
+                detail = "normalized stock_tick sample; not as-of aligned to this auction anchor"
             elif layer == "engine-next":
                 status, detail = "UNKNOWN", "no read-only loader trace in capture"
             else:
-                status = "PASS" if q2_result["repeat_hash_equal"] else "FAIL"
-                detail = "captured Q2 adapter + in-memory engine shadow"
+                status, detail = "UNPROVEN", (
+                    "Q2 shadow is not linked to this auction anchor; auction fact path not run"
+                )
             matrix_rows.append({
                 "trade_date": trade_date,
                 "anchor": anchor,
@@ -466,6 +470,32 @@ def build_audit_bundle(
                 "detail": detail,
                 "evidence_ref": f"capture://production_ground_truth/{trade_date}/{anchor}",
             })
+    # Keep the Q2 Engine result in its own evidence scope.  It is a real,
+    # deterministic shadow, but it is not evidence that the auction anchors
+    # passed through the internal AuctionState/finalization path.
+    q2_matrix_status = {
+        "Gateway/Runtime": ("UNKNOWN", "capture has no Rabbit batch membership"),
+        "AuctionState": ("UNKNOWN", "Q2 capture has no auction-state evidence"),
+        "Redis": ("OBSERVED", "captured Redis Q2 cohort"),
+        "TD": (
+            "OBSERVED" if tick_rows else "UNKNOWN",
+            "normalized stock_tick sample; no as-of join to Q2 performed",
+        ),
+        "engine-next": ("UNKNOWN", "no read-only loader trace in capture"),
+        "engine_core": (
+            "PASS" if q2_result["repeat_hash_equal"] else "FAIL",
+            "captured Q2 adapter + in-memory engine shadow",
+        ),
+    }
+    for layer, (status, detail) in q2_matrix_status.items():
+        matrix_rows.append({
+            "trade_date": trade_date,
+            "anchor": "q2_capture",
+            "layer": layer,
+            "status": status,
+            "detail": detail,
+            "evidence_ref": f"capture://production_ground_truth/{trade_date}/q2",
+        })
     _write_matrix(output_dir / "production_chain_matrix.csv", matrix_rows)
 
     audit_lines = [
@@ -507,6 +537,11 @@ def build_audit_bundle(
         "manifest": manifest_result,
         "auction": auctions,
         "q2_engine_shadow": q2_result,
+        "auction_fact_shadow": {
+            "status": "NOT_RUN",
+            "reason": "captured auction projections were not joined to a per-symbol fact runner",
+            "0924_status": auctions.get("auction_0924", {}).get("status"),
+        },
         "tick_shape": {
             "status": "OBSERVED" if tick_rows else "UNKNOWN",
             "row_count": len(tick_rows),
@@ -515,10 +550,12 @@ def build_audit_bundle(
         },
         "acceptance": {
             "source_ingestion": "UNKNOWN",
-            "auction_state": "PASS" if auctions.get("auction_0920", {}).get("status") == "OBSERVED" and auctions.get("auction_0925", {}).get("status") == "OBSERVED" else "WARN",
-            "storage_projection": "PASS" if auctions.get("auction_0925", {}).get("status") == "OBSERVED" else "WARN",
+            "auction_state": "OBSERVED" if auctions.get("auction_0920", {}).get("status") == "OBSERVED" and auctions.get("auction_0925", {}).get("status") == "OBSERVED" else "UNKNOWN",
+            "storage_projection": "WARN",
             "engine_next_consumption": "UNKNOWN",
-            "engine_core_shadow": "PASS" if q2_result["repeat_hash_equal"] else "FAIL",
+            "engine_core_q2_path": "PASS" if q2_result["repeat_hash_equal"] else "FAIL",
+            "engine_core_auction_fact": "NOT_RUN",
+            "engine_core_shadow": "PARTIAL" if q2_result["repeat_hash_equal"] else "FAIL",
             "joint_trading_day": "WARN",
         },
         "read_only": True,
