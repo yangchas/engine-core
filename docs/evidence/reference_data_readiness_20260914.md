@@ -2,13 +2,15 @@
 
 ## Scope and safety
 
-This is a read-only run of the exact `engine_core` archive
-`verify-7d2d575` on `cobra-ion` using the production shared Python 3.12.3
+This is a read-only run of the exact `engine_core` commit
+`541383d` on `cobra-ion` using the production shared Python 3.12.3
 environment. It did not restart `engine-next` or `t1-v2-live`, add a Rabbit
 consumer, acknowledge messages, write Redis/TD, repair caches, send mail, or
 invoke an effect.
 
-Observation window: `2026-09-14 10:56–10:58 Asia/Shanghai`.
+Initial observation window: `2026-09-14 10:56–10:58 Asia/Shanghai`.
+The same probes were rerun from commit `541383d` at approximately
+`2026-09-14 11:03 Asia/Shanghai`; the values below use that exact-commit run.
 
 ## Service and storage observation
 
@@ -44,7 +46,7 @@ meta field_units           = absent
 core result                = UNAVAILABLE
 missing_fields             = [available_at_unknown]
 core content_hash          = 6fc40f13489a26a81f52cb598660c02ac68f9f9be025d447efaf56c78772f45d
-artifact sha256             = 75456cd2929655da89add1c5c480ba59f930a2e41b4a13be5f323b92a05027c3
+artifact sha256             = 52b965e541f97d437b69d6862ea81a998337ed7c7783f5cf845c21a86c7d4f82
 ```
 
 The 50 rows are real and date-matching, but the legacy metadata only carries
@@ -70,7 +72,7 @@ turnover unit              = UNKNOWN
 core result                = UNAVAILABLE
 missing_fields             = [available_at_unknown]
 core content_hash          = e5bcaae8f91e0fb86095acc3ec3ba7ee25b954556129875712dd7058677b3f92
-artifact sha256             = 6f653aeb6c1863d3835944eb626aff67cfbeb31f86dbe4a470d6ce1c59743bf1
+artifact sha256             = e0c05ec1986527982c07cf0fe0c775f327864cc192a7174d80bb63619d95b8ce
 ```
 
 The function derived `2026-09-11` from the supplied trading-day calendar and
@@ -92,10 +94,11 @@ consistency                 = BEST_EFFORT_STALE
 stale symbols               = 5220
 oldest source_record_time   = 1789315200000
 newest source_record_time   = 1789353028000
-projection_hash             = d0a1b7c2759eb2fcea356c4a4bfa0e44fc5d887da4f688968f7e05fca2dcef78
+projection_hash             = 2240f7dcee2c64081b7b02ff7c36989601ba41629e50010a1071d976d26cfbfb
 same observation deterministic= true
 read operations             = smembers=1, hgetall=5220
-artifact sha256              = 1668d0df2bcb7703426859c9c1d1806e6be9319e952b286c21be3065893a59d0
+input canonical sha256       = 873d6e60a92607245811612f06e3ff6d68747ba15b0fd5d4fe30dd4f3d6c3d72
+artifact sha256              = d0430c6fb3af66e945f862710dc800adb118467ceca9d6b3429cc135d3e755f5
 ```
 
 `coverage=1.0` means every member in the observed active cohort was read. It
