@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-14 21:34 Cobra-ion 真实 Provider 复验：TD `daily_kline` 按日历派生 `2026-09-11` 返回 600519/000001 两行；Redis 热板真实返回 50 行、昨日涨停池真实返回 40 行且 HSCAN/HLEN 一致。三者均因缺少可证明的历史 `available_at` 保持 `UNAVAILABLE(available_at_unknown)`；这证明真实连接、日期推导与 fail-closed 合同，不证明历史 runtime 可用或 Core replacement。详见 `docs/evidence/real_provider_probe_20260914_2134.md`。
+
 - [VERIFIED] 2026-09-14 离线/跨平台验证基线更新（代码与测试提交 `12483d7`，当前文档头随后仅补证据）：本地与 Cobra-ion Python 3.12.3 同一归档均为 `404 passed`，`compileall` PASS；归档 SHA-256 为 `a9bfb150cde36cf155c1db9372d2392d8c7def2690ce9987fad11efc03a034aa`。新增日期绑定 Provider 边界测试只证明离线合同，不改变在线 Redis/TD/生产替代验收状态。此前 `322/393/397/400` 等数字保留为历史提交证据，不代表当前测试总数。详见 `docs/evidence/cobra_exact_verification_20260914_12483d7.md`。
 
 - [VERIFIED] 2026-09-14 19:23 Cobra-ion 排程审计发现此前三个相对 `sleep` 会错过预定窗口；已在不触碰 `engine-next`/`t1-v2-live` 的前提下，仅终止自有等待 shell 并按服务器绝对目标时间重排。当前 PID：capture `51820`（09:09:40）、Core morning shadow `51823`（09:15:00–09:33）、post-capture audit `51826`（09:40）；均使用独立验证目录，输出目录启动前为空。详见 `docs/evidence/scheduled_readonly_capture_20260915.md`。
