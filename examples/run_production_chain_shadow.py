@@ -447,7 +447,15 @@ def build_audit_bundle(
     auction_shadow_file: Path | None = None,
 ) -> dict[str, Any]:
     manifest = load_manifest(capture_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if output_dir.exists():
+        if not output_dir.is_dir():
+            raise NotADirectoryError(output_dir)
+        if any(output_dir.iterdir()):
+            raise FileExistsError(
+                f"audit output directory must be empty/write-once: {output_dir}"
+            )
+    else:
+        output_dir.mkdir(parents=True)
     q2_candidates = sorted(capture_dir.glob(f"{Q2_PREFIX}*{Q2_SUFFIX}"))
     if not q2_candidates:
         raise FileNotFoundError("no captured q2_*.jsonl files")

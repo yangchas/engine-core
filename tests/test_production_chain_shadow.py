@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from examples.run_production_chain_shadow import build_audit_bundle, manifest_summary
 
 
@@ -288,3 +290,21 @@ def test_independent_auction_fact_is_not_projected_onto_missing_capture_slot(tmp
     assert "2026-09-14,auction_0924,engine_core,UNPROVEN" in matrix
     assert "2026-09-14,auction_0925,engine_core,OBSERVED" in matrix
     assert "2026-09-14,auction_anchor,engine_core,UNPROVEN" in matrix
+
+
+def test_audit_output_is_write_once(tmp_path):
+    capture = _write_capture(tmp_path / "capture-root")
+    output = tmp_path / "audit"
+    build_audit_bundle(
+        capture,
+        output,
+        trade_date="2026-09-14",
+        stale_after_ms=10_000,
+    )
+    with pytest.raises(FileExistsError, match="write-once"):
+        build_audit_bundle(
+            capture,
+            output,
+            trade_date="2026-09-14",
+            stale_after_ms=10_000,
+        )
