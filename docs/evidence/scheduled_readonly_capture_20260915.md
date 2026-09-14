@@ -1,19 +1,25 @@
 # Scheduled read-only evidence capture — 2026-09-15
 
-At 2026-09-14 19:10 CST on `cobra-ion`, two bounded, self-owned read-only
-processes were scheduled for the next trading day:
+At 2026-09-14 19:23 CST on `cobra-ion`, three bounded, self-owned read-only
+processes were rescheduled for the next trading day after a read-only timing
+audit found the earlier relative sleeps would miss their intended windows:
 
-- Core morning shadow: PID `48703`, output
+- Core morning shadow: PID `51823`, output
   `/home/exedev/validation/live-morning-shadow-20260915-0915`, using the
-  exact `engine-core-59f0d91` archive.  It runs 09:15–09:33 for symbols
+  exact `engine-core-81e0dd3` archive.  It runs 09:15–09:33 for symbols
   `000001,000002,600519`.
-- Existing production ground-truth capture: PID `49266`, output
+- Existing production ground-truth capture: PID `51820`, output
   `/home/exedev/validation/production-ground-truth-20260915`.  It starts at
   09:09:40 and samples the existing 0920/0924/0925 auction keys plus the
   configured Q2 slots through 09:32.
-- Post-capture Core audit: PID `49695`, scheduled for 09:40, reads that
+- Post-capture Core audit: PID `51826`, scheduled for 09:40, reads that
   capture directory with `run_production_chain_shadow.py` and writes
   `/home/exedev/validation/production-chain-shadow-20260915`.
+
+The replacement was guarded by exact command-line checks on the prior PIDs;
+only the three self-owned waiting shells were stopped.  The new waits use
+server-side absolute target timestamps (09:09:40, 09:15:00 and 09:40:00),
+not hard-coded sleeps copied from an earlier observation time.
 
 The second command is the existing release tool
 `/home/exedev/services/engine-next/current/tools/production_capture/ground_truth_capture.py`
