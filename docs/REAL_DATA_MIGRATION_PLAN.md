@@ -2,6 +2,10 @@
 
 ## 基线与执行状态
 
+### 2026-09-14 日历证据格式兼容修复
+
+- 发现明日只读 Morning Shadow 使用的 `cc-m0-calendar-20260911-v3.json` 是 `RealCalendarProbeV1` 原始证据格式，旧 loader 会因缺少 `calendar_id/timezone/source_guard_*` 直接 fail-closed；这不是数据损坏。提交 `6baba2d` 使只读 loader 同时接受该格式和 `TradingCalendarSnapshotV1` fixture，按 `query_start/query_end` 重建不可变快照并校验 `calendar_semantic_hash`，新增两项回归测试。Cobra-ion Python 3.12.3 对精确归档为 `395 passed`、`compileall PASS`，无生产写入。已用修复副本重新安排明日 09:15–09:33 Shadow；详见 `docs/evidence/calendar_probe_loader_fix_20260914.md`。
+
 ### 2026-09-14 六层生产链捕获审计（最新）
 
 - 18:30 在 Cobra-ion 使用现有只读 runner 重做真实 Provider 复验：Redis Q2 5220/5220、coverage=1.0 但全量 `STALE`；TD 上一交易日真实返回 3 行但因 `available_at` 未知按合同为 `UNAVAILABLE`；Redis/TD 竞价对照 `mismatch=0`，但 5 条 `PARTIAL_COMPARABLE`、4 条 Top-200 外 `NOT_COMPARABLE`。未写 Redis/TD、未碰 Rabbit/通知。详见 `docs/evidence/real_provider_probe_20260914_1830.md`。

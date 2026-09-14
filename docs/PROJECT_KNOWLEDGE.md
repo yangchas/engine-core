@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-14 修复明日 Morning Shadow 的日历加载阻塞：远端 `cc-m0-calendar-20260911-v3.json` 是 `RealCalendarProbeV1` 原始证据格式，`6baba2d` loader 现在兼容该格式和标准日历 fixture，按显式 query guard bounds 重建快照并校验 semantic hash。Cobra-ion Python 3.12.3 对精确归档为 `395 passed`、`compileall PASS`；自有只读 Shadow 已切换到修复副本 `engine-core-6baba2d`，生产服务未改动。详见 `docs/evidence/calendar_probe_loader_fix_20260914.md`。
+
 - [WARN] 2026-09-14 t1-v2 runtime lag：只读日志样本中 `wall_lag_ms` 从 09:25 的 `2418` 增至 09:30 的 `12222`，15:23 达到 `1428792`（约 23.8 分钟），尽管采样行 `ack_fail=0` 且服务 active。该问题根因 UNKNOWN，必须纳入 Core 替代前多交易日容量/积压门槛；未授权盘中修改 producer。详见 `docs/evidence/runtime_lag_observation_20260914.md`。
 
 - [WARN] 2026-09-14 同一 t1-v2 进度行存在累计 `source_reject`（09:25 `3,674,985`，15:23 `5,494,355`）和少量 `last_reject`；日志没有给出拒绝分支/字段原因，不能把它解释成 Rabbit 丢失或 ACK 失败。该未知已加入 Core 替代前的输入完整性门槛，未修改 producer。详见 `docs/evidence/runtime_input_reject_observation_20260914.md`。
