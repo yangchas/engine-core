@@ -4,6 +4,7 @@
 
 ### 2026-09-14 六层生产链捕获审计（最新）
 
+- 测试范围审计已完成：当前 46 个测试模块、319 个静态测试函数，pytest 参数化后 393 个收集用例；本地/Cobra 均通过。但其中真实源验证由显式 Cobra 只读 probe 独立完成，393 passed 不代表 393 次真实连接；真实 in-session Shadow、批边界、writer 同源和 Core replacement 仍未闭合。详见 `docs/evidence/test_scope_audit_20260914.md`。
 - 当前提交 `cf90956` 已完成固定归档的跨环境复验：本地与 Cobra-ion Python 3.12.3 均为 `393 passed`、`compileall` PASS，归档 SHA-256 一致；本次只确认代码/证据提交可重复执行，不改变生产接受结论。详见 `docs/evidence/verification_cf90956_20260914.md`。
 - t1-v2 生产日志的只读切片显示 09:25 `wall_lag_ms=2418`，09:30 已为 `12222`，15:23 达到 `1428792`（约 23.8 分钟）；采样行 `ack_fail=0` 且服务仍 active，但存在持续积压/性能风险。该事实加入 Core 替代前的多交易日容量门槛，未在盘中修改 producer。详见 `docs/evidence/runtime_lag_observation_20260914.md`。
 - 读取现有生产日志补齐了一段 09:24:50–09:26:30 runtime 证据：t1-v2 在 09:24:51/09:25:02 分别报告 `batches=110927/110953`、`ack=110927/110953`、`ack_fail=0`、source-time 与 wall lag；engine-next 在 09:25:10 执行 `auction_finalize_0925`，09:25:48–09:25:49 完成 5219 条 runtime context，09:26:27 执行 `auction_followup_0926`。这仍不能证明具体 final Tick batch membership、AuctionState freeze 或 Redis/TD writer 同源一致。详见 `docs/evidence/runtime_log_slice_20260914_0925.md`。
