@@ -34,7 +34,6 @@ from engine_core import (  # noqa: E402
     build_a_share_session_plan,
     build_opening_transition_fact,
     build_calendar_snapshot,
-    canonical_json,
     due_timer_firings,
     normalize_auction_change_ratio,
     semantic_hash,
@@ -421,7 +420,11 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as handle:
         handle.write(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2, default=str) + "\n")
-    print(canonical_json(result))
+    # Terminal rendering is evidence output and may contain provider-native
+    # datetime values from taos.  The semantic hash above deliberately
+    # excludes those raw rows; rendering must not make a successful read-only
+    # run fail merely because the driver returned a naive datetime object.
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True, default=str))
     return 0
 
 
