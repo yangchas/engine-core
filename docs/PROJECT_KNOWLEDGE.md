@@ -1,6 +1,6 @@
 # Project Knowledge
 
-- [VERIFIED] 2026-09-14 离线验证基线更新（当前代码提交 `1c4ee52`）：当前本地收集为 `404` 个离线用例；新增日期绑定 Provider 边界测试后，`404 passed`、`compileall` 与 `git diff --check` 均通过。此前 `322/393/397/400` 等数字保留为历史提交证据，不代表当前测试总数；当前代码尚未完成 Cobra-ion 同提交复验，在线 Redis/TD/生产替代验收仍须独立证据。
+- [VERIFIED] 2026-09-14 离线/跨平台验证基线更新（当前代码提交 `8fcd367`）：本地与 Cobra-ion Python 3.12.3 同一归档均为 `404 passed`，`compileall` PASS；归档 SHA-256 为 `45007ee4f569fe8d9d9ca2bb929047a6d9d9b6933abec62ef8ced36085a3b034`。新增日期绑定 Provider 边界测试只证明离线合同，不改变在线 Redis/TD/生产替代验收状态。此前 `322/393/397/400` 等数字保留为历史提交证据，不代表当前测试总数。详见 `docs/evidence/cobra_exact_verification_20260914_8fcd367.md`。
 
 - [VERIFIED] 2026-09-14 19:23 Cobra-ion 排程审计发现此前三个相对 `sleep` 会错过预定窗口；已在不触碰 `engine-next`/`t1-v2-live` 的前提下，仅终止自有等待 shell 并按服务器绝对目标时间重排。当前 PID：capture `51820`（09:09:40）、Core morning shadow `51823`（09:15:00–09:33）、post-capture audit `51826`（09:40）；均使用独立验证目录，输出目录启动前为空。详见 `docs/evidence/scheduled_readonly_capture_20260915.md`。
 
