@@ -37,4 +37,3 @@ This is an isolated test directory.  It does not deploy Core, stop or restart
 `engine-next`/`t1-v2-live`, add a Rabbit consumer, write Redis/TDengine, or
 send notifications.  Windows Python 3.9 results remain informational only;
 Cobra Python 3.12.3 is the formal runtime as specified by the project.
-
