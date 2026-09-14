@@ -11,6 +11,9 @@ processes were scheduled for the next trading day:
   `/home/exedev/validation/production-ground-truth-20260915`.  It starts at
   09:09:40 and samples the existing 0920/0924/0925 auction keys plus the
   configured Q2 slots through 09:32.
+- Post-capture Core audit: PID `49695`, scheduled for 09:40, reads that
+  capture directory with `run_production_chain_shadow.py` and writes
+  `/home/exedev/validation/production-chain-shadow-20260915`.
 
 The second command is the existing release tool
 `/home/exedev/services/engine-next/current/tools/production_capture/ground_truth_capture.py`
