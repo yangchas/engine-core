@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from engine_core import (  # noqa: E402
     DeterministicEngine,
@@ -37,6 +38,7 @@ from engine_core import (  # noqa: E402
     WindowSpec,
     build_q2_projection,
 )
+from examples.run_real_auction_shadow import build_shadow_from_rows  # noqa: E402
 
 
 REQUIRED_AUCTION_SLOTS = ("auction_0920", "auction_0924", "auction_0925")
@@ -301,6 +303,76 @@ def auction_summary(capture_dir: Path, manifest: Mapping[str, Any]) -> dict[str,
     return result
 
 
+def _auction_source_rows(path: Path) -> tuple[str, list[dict[str, Any]], Mapping[str, Any]]:
+    """Load raw/canonical auction rows, never a precomputed fact result."""
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError("auction source artifact must be a JSON object")
+    rows_value = payload.get("rows")
+    if isinstance(rows_value, list):
+        raw_rows = rows_value
+    else:
+        anchors = payload.get("anchors")
+        if not isinstance(anchors, Mapping):
+            raise ValueError("auction source artifact has no rows or anchors")
+        raw_rows = []
+        for tag in ("0920", "0924", "0925"):
+            anchor = anchors.get(tag)
+            if not isinstance(anchor, Mapping):
+                raise ValueError(f"auction source anchor {tag} is missing")
+            raw_rows.append(anchor.get("raw"))
+    if not raw_rows or any(not isinstance(row, Mapping) for row in raw_rows):
+        raise ValueError("auction source rows must be mappings")
+    rows: list[dict[str, Any]] = []
+    for row in raw_rows:
+        normalized = dict(row)
+        source_time = normalized.get("ts")
+        if isinstance(source_time, str):
+            normalized["ts"] = datetime.fromisoformat(source_time.replace("Z", "+00:00"))
+        rows.append(normalized)
+    symbols = {str(row.get("symbol") or "") for row in rows}
+    symbols.discard("")
+    if len(symbols) != 1:
+        raise ValueError("auction source rows must contain exactly one symbol")
+    return next(iter(symbols)), rows, payload
+
+
+def run_captured_auction_fact(
+    path: Path,
+    *,
+    trade_date: str,
+) -> dict[str, Any]:
+    """Recompute the Core fact from real source rows and retain its evidence."""
+
+    symbol, rows, source_payload = _auction_source_rows(path)
+    recomputed = build_shadow_from_rows(rows, trade_date=trade_date, symbol=symbol)
+    stored_shadow = source_payload.get("shadow")
+    if isinstance(stored_shadow, Mapping):
+        if stored_shadow.get("content_hash") != recomputed["shadow"].get("content_hash"):
+            raise ValueError("stored auction shadow does not match source-row recomputation")
+    shadow = recomputed["shadow"]
+    return {
+        "status": "OBSERVED",
+        "source_file": path.name,
+        "source_table": recomputed.get("source_table"),
+        "source_semantics": recomputed.get("source_semantics"),
+        "symbol": symbol,
+        "anchor_tags": ("0920", "0924", "0925"),
+        "segment_count": len(recomputed.get("segments", ())),
+        "shadow_status": shadow.get("status"),
+        "decision_status": shadow.get("decision_status"),
+        "state": shadow.get("state"),
+        "content_hash": shadow.get("content_hash"),
+        "evidence_hash": shadow.get("evidence_hash"),
+        "comparison_hash": shadow.get("comparison_hash"),
+        "source_row_count": len(rows),
+        "source_observed_at": source_payload.get("observed_at"),
+        "engine_connected": False,
+        "file_sha256": _sha256(path),
+    }
+
+
 def tick_shape_features(path: Path) -> list[dict[str, Any]]:
     """Extract morphology only; never infer causal ordering or phase."""
 
@@ -372,6 +444,7 @@ def build_audit_bundle(
     stale_after_ms: int,
     q2_file: str | None = None,
     tick_file: Path | None = None,
+    auction_shadow_file: Path | None = None,
 ) -> dict[str, Any]:
     manifest = load_manifest(capture_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -394,6 +467,15 @@ def build_audit_bundle(
     observed_at_ms = _iso_to_ms(str(q2_slot["actual_capture_time"]))
     manifest_result = manifest_summary(manifest)
     auctions = auction_summary(capture_dir, manifest)
+    auction_fact = (
+        run_captured_auction_fact(auction_shadow_file, trade_date=trade_date)
+        if auction_shadow_file is not None
+        else {
+            "status": "NOT_RUN",
+            "reason": "no raw/canonical auction source-row artifact supplied",
+            "engine_connected": False,
+        }
+    )
     q2_result = run_captured_q2_engine(
         trade_date=trade_date,
         q2_path=q2_path,
@@ -459,8 +541,13 @@ def build_audit_bundle(
             elif layer == "engine-next":
                 status, detail = "UNKNOWN", "no read-only loader trace in capture"
             else:
-                status, detail = "UNPROVEN", (
-                    "Q2 shadow is not linked to this auction anchor; auction fact path not run"
+                status, detail = (
+                    ("OBSERVED", "real source-row AuctionFactShadow; not Engine-connected")
+                    if auction_fact.get("status") == "OBSERVED"
+                    else (
+                        "UNPROVEN",
+                        "Q2 shadow is not linked to this auction anchor; auction fact path not run",
+                    )
                 )
             matrix_rows.append({
                 "trade_date": trade_date,
@@ -538,8 +625,7 @@ def build_audit_bundle(
         "auction": auctions,
         "q2_engine_shadow": q2_result,
         "auction_fact_shadow": {
-            "status": "NOT_RUN",
-            "reason": "captured auction projections were not joined to a per-symbol fact runner",
+            **auction_fact,
             "0924_status": auctions.get("auction_0924", {}).get("status"),
         },
         "tick_shape": {
@@ -554,7 +640,7 @@ def build_audit_bundle(
             "storage_projection": "WARN",
             "engine_next_consumption": "UNKNOWN",
             "engine_core_q2_path": "PASS" if q2_result["repeat_hash_equal"] else "FAIL",
-            "engine_core_auction_fact": "NOT_RUN",
+            "engine_core_auction_fact": auction_fact.get("status", "NOT_RUN"),
             "engine_core_shadow": "PARTIAL" if q2_result["repeat_hash_equal"] else "FAIL",
             "joint_trading_day": "WARN",
         },
@@ -573,6 +659,7 @@ def main() -> int:
     parser.add_argument("--stale-after-ms", type=int, required=True)
     parser.add_argument("--q2-file")
     parser.add_argument("--tick-file", type=Path)
+    parser.add_argument("--auction-shadow-file", type=Path)
     args = parser.parse_args()
     if args.stale_after_ms < 0:
         parser.error("stale-after-ms must be nonnegative")
@@ -583,6 +670,7 @@ def main() -> int:
         stale_after_ms=args.stale_after_ms,
         q2_file=args.q2_file,
         tick_file=args.tick_file,
+        auction_shadow_file=args.auction_shadow_file,
     )
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 0
