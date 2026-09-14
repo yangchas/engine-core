@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-14 对当前 Cobra release 的 `IntradayDataHub.load_auction_snapshots()` 做只读探针：Redis 当前 `0920/0924/0925` 各返回 200 行 TopN 投影，600519 三个锚点均存在，000001/000002 不在这三个 TopN 结果中；`guard_writes=[]`，artifact SHA-256 `2dbdb285aef39e689c1d78838ca5dc256c2b337065e522d7c349ae405b1f5043`。同一投影映射到 Core 后仍为 `FACT_ONLY/OBSERVE`，0920/0925 price=0 保持语义 UNKNOWN；该结果只证明当前时点投影可读，不证明完整市场快照、Rabbit batch 或 Redis/TD writer 上游一致。详见 `docs/evidence/legacy_auction_loader_probe_20260914.md`。
+
 - [VERIFIED] 2026-09-14 新增 `StartupReadinessV1` 只读自检轮子（commit `4e7b2f1`）：显式校验 Calendar/SessionPlan、Q2 source-time cutoff、已获得的参考数据可用性和 SessionTimer 到期节点；缺 Q2 时只返回 `WAIT/DEFER`，不调用 Provider、不预取、不写 Redis/TD、不接 Rabbit。Local/Cobra 3.12.3 同一归档 `386 passed`，真实 Cobra Redis Q2 probe 为 `5220/5220`、coverage `1.0` 但 `STALE`，artifact SHA-256 `575d9e5c152a39c023521210872f2824c335634915d71045df4888db20b711f5`。这不是 Core 替代 engine-next 的启动协调或生产部署。详见 `docs/evidence/startup_readiness_probe_20260914.md`。
 
 - [OBSERVED] 2026-09-14 cobra-ion 只读对照探查：旧 `engine_next` context builder 与 Core `RedisQ2ProjectionAdapter` 均可在 Guard/只读边界运行且无写入；旧链对指定 09:26 诊断读到晚于该时间的当前 Q2，并将未来源年龄裁为零（`future_source_timestamp=true`），因此不适合作为历史 replay oracle。Core 同日读取 5220/5220、coverage=1.0 但 `STALE/BEST_EFFORT_STALE`，同一观察重复运行确定性一致；两链未共享不可变输入快照，跨链路 exact parity 保持 `UNPROVEN`。证据见 `docs/evidence/legacy_core_context_probe_20260914.md`。

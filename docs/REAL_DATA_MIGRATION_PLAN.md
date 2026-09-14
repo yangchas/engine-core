@@ -9,6 +9,11 @@
 - Cobra 真实 Redis 只读探针（`2026-09-14`）得到 Q2 `5220/5220`、coverage `1.0` 但 `STALE/BEST_EFFORT_STALE`；readiness 为 `PARTIAL`，到期 Core 节点为 `AUCTION_0926`、`OPENING_0932`，artifact `575d9e5c152a39c023521210872f2824c335634915d71045df4888db20b711f5`。`engine-next` 与 `t1-v2-live` 保持 active、`NRestarts=0`。
 - 该闭环只关闭 M1 的 side-effect-free startup assessment，不等于 Core 已接管 next 的启动生命周期；09:20/09:24/09:25 source freeze、正式报告/effect、跨重启 durable identity 与多日 differential 仍未迁移。详见 `docs/evidence/startup_readiness_probe_20260914.md`。
 
+### 2026-09-14 legacy auction loader projection probe
+
+- 对 Cobra 当前 release 的 `IntradayDataHub.load_auction_snapshots()` 做了受限只读复核：当前 Redis `0920/0924/0925` 各返回 200 行 TopN，600519 三锚点均存在，000001/000002 不在所读 TopN；无 guard write。该结果说明 Redis 0924 的存在随观察时点变化，不能把一次空捕获推广成永久缺失，也不能把 TopN 当完整市场集合。
+- 600519 投影映射到既有 Core facts 后，两个相邻段保留 amount/pressure 观察，0920/0925 price=0 仍不升级为价格事实，shadow 继续 `PARTIAL/FACT_ONLY/OBSERVE`。未获得 AuctionState 或 runtime batch 证据，`FIRST_DIVERGENCE=UNPROVEN`。详见 `docs/evidence/legacy_auction_loader_probe_20260914.md`。
+
 ### 2026-09-14 Engine evaluation registration bound
 
 - `DeterministicEngine` 的 evaluation 注册身份已改为有界 session ledger，默认上限 `65536`；不驱逐注册记录，容量耗尽时 fail-closed，确保 terminal tombstone 淘汰后不会重新注册同一 evaluation。commit `3d870ee` 在本地与 Cobra-ion Python 3.12.3 均通过 `375 passed`、`compileall`，详见 `docs/evidence/engine_registration_bound_20260914.md`。
