@@ -2,9 +2,12 @@
 
 ## Result
 
-The default suite currently has **322 tests**. It is a deterministic offline
-contract/fixture suite. All tests pass locally and in a Cobra-ion Python 3.12
-isolated archive.
+The original audit snapshot at this document's first commit had **322 tests**.
+The current HEAD (`8d921b4`) collects **397 tests** locally; the additional
+cases are still deterministic offline contract/fixture tests.  The
+code-equivalent Cobra-ion archive (`81e0dd3`; later commits are documentation
+only) also passed 397 tests under Python 3.12.3.  These counts remain an
+offline suite result, not live-source acceptance.
 
 The files named `test_real_*` are not live network tests. Static inspection
 shows they use fake Redis clients, fixture rows, connector doubles, or explicit
@@ -16,9 +19,9 @@ are reachable at test time.
 
 | Scope | Collected tests | Meaning |
 |---|---:|---|
-| Core/offline contract, wheel, engine and replay tests | 279 | repeatable behavior against fixtures and in-memory doubles |
-| `test_real_*` contract/runner tests | 43 | deterministic tests of real-data command boundaries; fake/override inputs |
-| Total | 322 | no implicit external I/O |
+| Core/offline contract, wheel, engine and replay tests | historical 279 | repeatable behavior against fixtures and in-memory doubles |
+| `test_real_*` contract/runner tests | historical 43 | deterministic tests of real-data command boundaries; fake/override inputs |
+| Current total | 397 | no implicit external I/O |
 
 The `test_real_*` count includes real-named tests such as cache inventory,
 reference probes, Redis/TD comparison, opening facts, and auction shadow. The
@@ -45,5 +48,5 @@ The current Cobra exact-archive verification also checks archive layout.  The
 repository-root paths (including `examples/`) must be preserved; an archive
 extracted with an extra `--strip-components=1` is invalid evidence because it
 causes import/collection errors unrelated to Core behavior.  The corrected
-current archive passed all 322 tests and `compileall`; see
+code-equivalent archive passed all 397 tests and `compileall`; see
 `docs/evidence/cobra_exact_verification_20260914_current.md`.
