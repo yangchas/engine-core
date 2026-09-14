@@ -52,17 +52,26 @@ def normalize_td_rows(rows: Sequence[Sequence[Any] | Mapping[str, Any]]) -> tupl
             {
                 "symbol": item.get("symbol"),
                 "tag": item.get("auction_tag") or item.get("tag"),
-                "price_milli": item.get("px_milli", item.get("price_milli")),
-                "auction_amount_yuan": item.get("match_amt_yuan", item.get("auction_amount_yuan")),
-                "bid_amount_yuan": item.get("rest_bid_amt_yuan", item.get("bid_amount_yuan")),
-                "ask_amount_yuan": item.get("rest_ask_amt_yuan", item.get("ask_amount_yuan")),
-                "ask_amount_present": item.get("rest_ask_amt_yuan") is not None
-                if "rest_ask_amt_yuan" in item
-                else item.get("ask_amount_present", True),
+                "price_milli": _prefer(item, "px_milli", "price_milli"),
+                "auction_amount_yuan": _prefer(item, "match_amt_yuan", "auction_amount_yuan"),
+                "bid_amount_yuan": _prefer(item, "rest_bid_amt_yuan", "bid_amount_yuan"),
+                "ask_amount_yuan": _prefer(item, "rest_ask_amt_yuan", "ask_amount_yuan"),
+                "ask_amount_present": (
+                    _prefer(item, "rest_ask_amt_yuan", "ask_amount_yuan") is not None
+                    if "rest_ask_amt_yuan" in item or "ask_amount_yuan" in item
+                    else item.get("ask_amount_present", True)
+                ),
                 "source_record_time": item.get("ts"),
             }
         )
     return tuple(normalized)
+
+
+def _prefer(item: Mapping[str, Any], primary: str, fallback: str) -> Any:
+    """Use the primary alias when populated, otherwise the canonical alias."""
+
+    value = item.get(primary)
+    return value if value is not None else item.get(fallback)
 
 
 def build_shadow_from_td_rows(
@@ -78,7 +87,7 @@ def build_shadow_from_td_rows(
     # driver timezone representation from changing the fact identity.
     semantic_input = tuple(
         {key: value for key, value in item.items() if key != "source_record_time"}
-        for item in normalized
+        for item in sorted(normalized, key=lambda item: (str(item.get("symbol") or ""), str(item.get("tag") or "")))
     )
     return {
         "contract_version": "AnchorDeltaFactV1",

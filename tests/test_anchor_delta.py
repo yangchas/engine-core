@@ -130,6 +130,38 @@ def test_td_adapter_keeps_native_timestamp_as_evidence_only():
     assert result["read_only"] is True
 
 
+def test_td_adapter_falls_back_when_legacy_alias_is_present_but_null():
+    row = {
+        "auction_tag": "0924",
+        "symbol": "600519",
+        "px_milli": None,
+        "price_milli": 1305000,
+        "match_amt_yuan": None,
+        "auction_amount_yuan": 700000,
+        "rest_bid_amt_yuan": None,
+        "bid_amount_yuan": 200000,
+        "rest_ask_amt_yuan": None,
+        "ask_amount_yuan": 100000,
+    }
+    normalized = normalize_td_rows([row])[0]
+    assert normalized["price_milli"] == 1305000
+    assert normalized["auction_amount_yuan"] == 700000
+    assert normalized["bid_amount_yuan"] == 200000
+    assert normalized["ask_amount_yuan"] == 100000
+    assert normalized["ask_amount_present"] is True
+
+
+def test_td_adapter_input_hash_is_independent_of_provider_row_order():
+    left = [
+        (datetime(2026, 9, 14, 9, 25, 6), 1305010, 0, 800000, 300000, 100000, 0, "600519", "20260914", "0925"),
+        (datetime(2026, 9, 14, 9, 24, 10), 1305000, 0, 700000, 200000, 100000, 0, "600519", "20260914", "0924"),
+    ]
+    right = list(reversed(left))
+    assert build_shadow_from_td_rows(left, from_tag="0924", to_tag="0925")["normalized_input_hash"] == build_shadow_from_td_rows(
+        right, from_tag="0924", to_tag="0925"
+    )["normalized_input_hash"]
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
