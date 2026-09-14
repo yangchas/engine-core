@@ -167,9 +167,9 @@ audit_summary.json
 ## 最终跨环境验证身份
 
 ```text
-commit: e106e124573a2e49cde5cd43e722268746a69fc6
+code commit: 9392f1e9e9227f316bb89570d5afa483a5a10b2d
 Python: 3.12.3 (local / cobra-ion)
-pytest: 318 passed (local / cobra-ion)
+pytest: 319 passed (local / cobra-ion)
 compileall: PASS (local / cobra-ion)
 ```
 
@@ -200,7 +200,7 @@ python examples/run_production_chain_shadow.py \
   --stale-after-ms 10000
 ```
 
-cobra-ion 使用同一 commit 的临时验证目录和 Python 3.12.3，完整套件为 `318 passed`；本地与远端审计产物 SHA-256 完全一致。
+cobra-ion 使用同一 commit 的临时验证目录和 Python 3.12.3，完整套件为 `319 passed`；本地与远端审计产物 SHA-256 完全一致。
 
 ## 后续边界
 
