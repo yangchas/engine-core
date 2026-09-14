@@ -2,6 +2,13 @@
 
 ## 基线与执行状态
 
+### 2026-09-14 Live Morning Shadow V1（晚启动只读验证）
+
+- 新增 `examples/run_live_morning_shadow.py`：有界只读运行壳，复用现有 `SessionPlanV1`/`SessionTimerV1`、Redis Q2 adapter、TD `auction_snapshot_v2` 查询、旧 Redis auction loader 的 GuardRedis 入口和既有 `dispatch_morning_fact_nodes`；不新增 scheduler、Provider、Rabbit consumer、ACK、writer、通知或 effect。每个节点在实际消费时刻读取，保留业务锚点与 source observation time，输出目录 write-once。
+- 本地与 Cobra-ion Python 3.12.3 同归档均为 `390 passed`、`compileall` PASS；代码提交为 `44d6a46`，归档 SHA-256 `5a62e1de868b17b1f72b5fd5d526d9bdb16d4209957df23b3528b8ea6f7f60cc`。
+- 2026-09-14 17:17 在 Cobra-ion 按晚启动 `RECOVERY_CATCHUP` 路径真实运行：startup、`AUCTION_0926`、`OPENING_0932` 三节点均生成；TD SELECT、GuardRedis loader、Redis Q2 读取只读完成，manifest safety 中 Redis/TD write、Rabbit ACK/publish、notification/effect、production restart 均为 `0`。节点观察时间原样为 `17:17:42+08:00`，业务锚点仍分别为 09:26/09:32；该结果证明晚启动的有界只读组合可运行，不等于盘中 09:26/09:32 时点证据，也不等于 Core 已替代 `engine-next`。证据保存在 `tmp/live-morning-shadow-20260914-1717/`，远端目录为 `/home/exedev/validation/live-morning-shadow-20260914-1717`。
+- 下一交易日只需使用相同命令在 09:15 启动，等待真实 09:26/09:32 节点；不在盘后用历史最新数据冒充当刻输入。该 runner 仍不触发正式报告/邮件，`engine-next` 与 `t1-v2-live` 继续作为生产 owner。
+
 ### 2026-09-14 StartupReadinessV1 read-only closure
 
 - 新增最小 `StartupReadinessV1` 纯轮子与 `run_startup_readiness_probe.py`：显式校验交易日/SessionPlan 身份，复用 Q2 状态和 source-time range，重新执行参考数据 `TemporalDataGuard`，并委托 `SessionTimerV1` 计算到期节点；不创建 provider、不预取、不写 Redis/TD、不接 Rabbit、不发 effect。提交 `4e7b2f1`。
