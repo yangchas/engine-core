@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- [OBSERVED] 2026-09-14 09:24:50–09:26:30 生产日志只读切片：t1-v2 在 09:24:51/09:25:02 继续处理并 ACK 批次（`ack_fail=0`），保留 `last_ts_ms` 与 wall lag；engine-next 记录 09:25:10 `auction_finalize_0925`、09:25:49 完成 5219 条 context、09:26:27 `auction_followup_0926` 并由生产 owner 发出邮件。日志没有 exact Rabbit batch、AuctionState commit 或 writer 同源标识，因此 batch/freeze/projection parity 仍 UNKNOWN/UNPROVEN。详见 `docs/evidence/runtime_log_slice_20260914_0925.md`。
+
 - [VERIFIED] 2026-09-14 18:06 Cobra-ion 真实参考源探针：复用 `engine-next@20260903_e272842` 的 Baostock/Kaipanla/Wencai/THS 连接方式，6/6 调用成功。Baostock 日线请求与返回交易日均为 `2026-09-11`；其他源只证明当前响应可读，日期/历史 `available_at` 仍 UNKNOWN，不能进入 Replay runtime。乱码响应按原样保留，不冒充语义修复。artifact SHA-256 `ff8d875b9a8a1d50134280be0160df99085c822c45c2a6d6fcfffd63210f5bbd`。详见 `docs/evidence/real_reference_probe_20260914_1806.md`。
 
 - [VERIFIED] 2026-09-14 盘后独立 read-only probe：对 Cobra 当前 `engine-next@20260903_e272842` 的 `load_auction_snapshots()` 与旧 context/fact path 分别执行真实 Redis 读取，三只 bounded symbol、无 GuardRedis 写入。loader 当前观察到 0920/0924/0925 各 200 条 Top-200 projection（artifact `033536e5efbfe810575dc350e291c84e3016d39c8d19b6f833aee8b6a2e28ebd`），context probe 读取 3 行（artifact `36e44f3ada5c74d755c87613ab6922406cf0bb84b941481b68135f25d835c3cc`）。两者是不同 projection，未共享 immutable AuctionState/source-time，不宣称 parity 或 first divergence；Rabbit batch、freeze membership 与正式 effect 仍 UNKNOWN。详见 `docs/evidence/engine_next_loader_context_probe_20260914_1752.md`。
