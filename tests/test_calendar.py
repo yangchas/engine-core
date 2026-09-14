@@ -62,6 +62,39 @@ def test_latest_completed_trade_day_has_explicit_cutoff_and_timezone():
         calendar.latest_completed_trade_day(datetime(2024, 1, 3, 7, 30))
 
 
+def test_holiday_and_weekend_flow_answers_previous_trade_date_for_data_queries():
+    calendar = _calendar()
+
+    # A holiday is a valid declared date, but it is not a trading-day request
+    # for a data function.  The calendar still supplies the prior completed
+    # trading date when the caller explicitly asks for that derived relation.
+    assert calendar.is_trading_day("2024-01-01") is False
+    assert calendar.previous_trade_day("2024-01-01") == date(2023, 12, 29)
+    assert calendar.next_trade_day("2024-01-01") == date(2024, 1, 2)
+
+    # The same rule applies across a weekend: callers get the last listed
+    # trading date, never a fabricated Saturday/Sunday data date.
+    assert calendar.is_trading_day("2024-01-06") is False
+    assert calendar.previous_trade_day("2024-01-06") == date(2024, 1, 4)
+
+
+def test_calendar_rejects_dates_outside_source_guard_before_answering_status():
+    calendar = _calendar()
+    with pytest.raises(CalendarCoverageError):
+        calendar.is_trading_day("2023-11-30")
+    with pytest.raises(CalendarCoverageError):
+        calendar.is_trading_day("2027-02-01")
+
+
+def test_latest_completed_trade_day_uses_previous_trade_day_on_holiday():
+    calendar = _calendar()
+
+    # 2024-01-01 is a holiday even after the completion cutoff, so it must not
+    # be promoted to a completed trading day.
+    holiday_after_cutoff = datetime(2024, 1, 1, 8, 0, tzinfo=timezone.utc)
+    assert calendar.latest_completed_trade_day(holiday_after_cutoff) == date(2023, 12, 29)
+
+
 def test_calendar_semantic_hash_ignores_evidence_but_version_identity_detects_content_change():
     left = _calendar()
     right = build_calendar_snapshot(
