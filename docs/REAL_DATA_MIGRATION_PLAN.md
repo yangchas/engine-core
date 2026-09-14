@@ -2,6 +2,13 @@
 
 ## 基线与执行状态
 
+### 2026-09-14 Gate B morning fact dispatch
+
+- 当前可执行 Core 提交为 `41bc60d`。`dispatch_morning_fact_nodes` 仅把已到期的 `AUCTION_0926` 与 `OPENING_0932` timer evidence 组合到既有 Anchor/Opening facts；不新增 scheduler、workflow、retry、persistence、strategy effect，也不接管 engine-next。
+- 本地与 Cobra-ion Python 3.12.3 使用同一归档均为 `357 passed`、`compileall` PASS。真实 Cobra opening differential 对 000001/300750/600519 的 opening helper 为 exact；transition 仅在存在 0925 auction-change 输入时比较，缺输入保持不可用，不伪造差异。详见 `docs/evidence/gate_b_morning_fact_dispatch_20260914.md`。
+- 真实 Q2 capture `q2_093210.jsonl` 为 5220/5220、coverage `1.0`，但 freshness/completeness 为 `PARTIAL/BEST_EFFORT_MIXED_FRESHNESS`；09:26 Anchor dispatch 为 `PARTIAL`，09:32 Opening dispatch 因缺少可比较竞价变动输入保持 `UNAVAILABLE`。该结果证明真实只读数据可进入同一事实链，不证明实时新鲜度或 engine-next 替代。
+- 当前仍需先完成 production timer/batch 证据、0924/0925 source contract、engine-next loader/report parity 与多交易日 shadow；不新增 Provider、Rabbit consumer、Checkpoint、watermark 或 effect。
+
 ### 2026-09-14 morning vertical slice shadow
 
 - 当前 Core 可执行对象为 `b902d7e99f1294dcffee275a15d17818ab7ae900`。新增的 `examples/run_morning_vertical_slice_shadow.py` 只是薄的、只读组合工具：复用 Q2 Adapter、既有 TD `auction_snapshot_v2` 查询和事实轮子，输出 Core-owned timer evidence、Q2 状态、AuctionFactShadow、OpeningFact 与 provenance；不启动完整 Engine timer 消费、不执行策略、不写 Redis/TD、不接 Rabbit、不发通知。

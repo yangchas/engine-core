@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-14 Gate B morning fact dispatch：Core commit `41bc60d` 在薄组合边界中派发 `AUCTION_0926`→`AnchorDeltaFactV1`、`OPENING_0932`→`OpeningFactV1/OpeningTransitionFactV1`，不新增 scheduler/workflow/persistence/effect。Cobra-ion Python 3.12.3 同归档通过 `357 passed`、`compileall`；真实 Q2 capture 5220/5220 但 `PARTIAL`，09:26 为 `PARTIAL`、09:32 因竞价变动输入缺失为 `UNAVAILABLE`。opening helper 对选定真实 Q2 行 exact；transition 只在输入可比时比较。详见 `docs/evidence/gate_b_morning_fact_dispatch_20260914.md`。
+
 - [VERIFIED] 2026-09-14 新增只读 `morning_vertical_slice_shadow` 组合工具（Core commit `b902d7e`）：真实 Redis Q2 + TD `auction_snapshot_v2` + SessionPlan timer evidence 可在不启动完整 Engine、不执行策略、不写 Redis/TD 的条件下生成可追溯 morning shadow。固定输入在 Cobra-ion Python 3.12.3 重跑两次 artifact/semantic hash 一致；本地/Cobra 同一归档均为 `332 passed`、`compileall` PASS。真实结果保持 Q2 `coverage=1.0` 但 `STALE`，auction `PARTIAL/FACT_ONLY/OBSERVE`，reference data `UNAVAILABLE`；这不是 engine-next 替代证明。详见 `docs/evidence/morning_vertical_slice_shadow_20260914.md`。
 
 - [VERIFIED] 2026-09-14 Gate B 首条事实迁移为 `AnchorDeltaFactV1`（最终 Core commit `697b6ba`）：只迁移旧生产纯函数的逐股 0920→0924、0924→0925 anchor delta。Cobra-ion 同一真实 TD 输入与 `engine_next@e272842` 逐字段 canonical JSON exact match；当前日 price 缺失时两边均 fail-closed 为 `unavailable`。该事实轮子不包含板块评分、策略阈值或报告 effect，不能解释为 AuctionStrategy 已迁移。最终本地/Cobra 套件 `351 passed`。详见 `docs/evidence/gate_b_anchor_delta_20260914.md`。
