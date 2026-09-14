@@ -9,6 +9,7 @@
 - 2026-09-14 10:56–10:58 在 Cobra-ion 生产共享 Python 3.12.3 上完成真实 reference-data readiness 复核：热板 50 行、昨日涨停池 40 行均真实读取且 HLEN/scan 一致，但 metadata 均缺 `schema_version/available_at_ms/field_units`，按合同保持 `UNAVAILABLE`；同期 Q2 5220/5220、coverage=1.0，但 60s policy 下全量 `STALE`。该结果是成功的 fail-closed，不是 provider 失败；详见 `docs/evidence/reference_data_readiness_20260914.md`。
 - 2026-09-14 11:10–11:13 完成当前 release 的 M0 启动/动作链只读审计：固定 Cobra release `20260903_e272842`、systemd 入口与服务身份，逐节点核对启动自检、09:20/09:24/09:25/09:26/09:32 调度及 getter/action 的读写边界；`load_auction_snapshots` 是只读投影，`recover_auction_anchor`、hot/yest fetch、mapping loader、market summary rebuild 可能写入或触发外部 I/O，Core 不能直接复用。当前 Q2 真实探针仍 5220/5220、coverage=1.0、全量 `STALE`；M0 结论为 `OBSERVED`，不宣称 Core 已具备替代启动协调。详见 `docs/evidence/m0_startup_flow_audit_20260914.md`。
 - 当前仍不具备 `engine_next` 替代条件：缺真实当日 0920/0924/0925 成对证据、完整 source/runtime batch membership、正式报告 owner 和长会话幂等/内存边界。不得因 `307 passed` 或真实连接成功打正式替代标签。
+- 2026-09-14 补充 M1 纯启动/重启矩阵：复用既有 `SessionPlanV1` + `SessionTimerV1`，只覆盖 Core 消费节点 `AUCTION_0926` 与 `OPENING_0932`；证明盘前无 due、09:26 正常触发、09:28 `RECOVERY_CATCHUP`、09:33 冷启动稳定补发、完成节点不重复、非交易日/跨日期 fail-closed。09:20/09:24/09:25 source freeze 仍由 t1-v2 负责；该矩阵不实现 StartupReadiness、持久化 exactly-once 或新的 scheduler。详见 `docs/evidence/m1_startup_restart_matrix_20260914.md`。
 
 ### 2026-09-13 23:50 最新收口复核
 
