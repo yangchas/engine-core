@@ -22,6 +22,14 @@ alter production services.
   - `timezone=Asia/Shanghai`
   - source guard `2023-12-01..2026-12-31`
   - semantic hash `a64a5dfa7a9e256c500799c2fa646f9e92b0a3d21d9b45c9f68d01ee1655610e`
+- Real Redis startup-readiness probe (read-only) on the same runtime:
+  - `q2_status=STALE`, `q2_consistency=BEST_EFFORT_STALE`
+  - `q2_coverage=1.0`
+  - source range `1789315200000..1789369205000`
+  - readiness `PARTIAL`, actions `REFRESH_Q2` plus due `AUCTION_0926` and
+    `OPENING_0932` timer dispatches
+  - evidence file:
+    `/home/exedev/validation/startup-readiness-probe-20260914-9919518.json`
 
 ## Safety
 
