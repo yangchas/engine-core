@@ -1,5 +1,11 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-15 真实实时旁路复核
+
+- Cobra-ion 11:05–11:08 的只读 Redis Q2/Opening probe 使用真实生产 Q2：5220/5220 行、coverage `1.0`、字段完整，但在 60s freshness policy 下全量 `STALE`，最新 source time 约滞后 75 分钟。两次 Core 计算的 probe/snapshot hash 一致。
+- TD `market_data1.stock_tick_v2` 在 11:07 查询到今日数据至 09:51:55；`market_data1.auction_snapshot_v2` 今日无行。`engine-next`/`t1-v2-live` 仍是生产 owner；未写 Redis/TD、未消费 Rabbit、未发送通知或重启服务。
+- Opening 单股 fact 的 `status=available` 只表示字段存在且可解析，不能覆盖批量 `projection_status=STALE`/`freshness_status=STALE_OR_MIXED`。本次是真实数据 Shadow 证据，不是 normal-origin 09:26/09:32 证据，也不改变 Core replacement 结论。详见 `docs/evidence/real_live_probe_20260915_1106.md`。
+
 ### 2026-09-14 当前离线验证基线（最新）
 
 - 代码/测试提交 `12483d7` 及其后文档头 `fb966c0` 的当前离线套件为 `404 passed`；Cobra-ion Python 3.12.3 对同一归档、`compileall` 均通过。新增日期绑定 Provider 边界测试只强化 `HotPlatesFunction` 与 `PreviousDayLimitPoolFunction` 的 fail-closed 合同，不改变真实数据、生产链或 Core replacement 结论。详见 `docs/evidence/cobra_exact_verification_20260914_12483d7.md`。
