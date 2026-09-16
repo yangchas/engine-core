@@ -41,10 +41,31 @@ invented. The output artifact is retained locally at
 `tmp/real-reference-readiness-20260917-feb89de.json` with SHA-256
 `4e5e7b617a0e54d1d15a5ca281ecadd32766ec65d69c2e7c8780da7283ec37d1`.
 
+## Prepared-reference Engine binding
+
+Using the same read-only Redis/TD access paths and the exact archive, a
+bounded 2026-09-16 run passed the prepared reference context into the public
+Engine. All three reference results were truthfully `UNAVAILABLE` (the source
+availability metadata is absent), but the Engine still accepted the explicit
+degraded results through three owned `DATA_READY` evaluations:
+
+```text
+reference_binding      = ENGINE_DATA_READY
+reference_bundle_count = 3
+processed_signals      = 9
+strategy_result_count  = 3
+engine_fact_status     = PARTIAL
+semantic_hash_equal    = true
+read_only              = true
+```
+
+The bounded output artifact is retained locally at
+`tmp/real-reference-engine-shadow-20260916-a266fef.json` with SHA-256
+`6a1ffc89f7981eea2c6703c00c03826a4dba6dde805e4d865caabee17e682b1b`.
+
 ## Safety
 
 Both runs were isolated, read-only validation. `engine-next` and `t1-v2-live`
 remain active with zero restarts (`MainPID=657653` and `2878024`). No Rabbit
 consumer or ACK behavior changed; no Redis/TD write, repair, notification,
 order or effect was performed.
-
