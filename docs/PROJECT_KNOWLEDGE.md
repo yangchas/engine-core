@@ -334,3 +334,4 @@ Evidence：
 
 Evidence：
 - `docs/evidence/gate_b_formula_correction_600519_20260905.md`
+- [VERIFIED] 2026-09-16 Core commit `b0f8f4b` added a thin read-only provider for the existing `cache:kline_ready:{date}` Redis view and made the real readiness runner select it explicitly only after a successful empty TD read. Local and cobra-ion exact-archive suites both pass `436`. A real bounded run found all three requested Redis daily-kline rows, but no kline availability metadata exists, so the result truthfully changed from `MISSING` to `UNAVAILABLE` rather than fabricating `available_at`. Production services remained active. See `docs/evidence/real_redis_previous_day_stats_20260916_b0f8f4b.md`.
