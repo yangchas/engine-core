@@ -62,6 +62,12 @@ Opening 迁移从同一原则开始：`build_open_fact` 只计算可复核的单
 使用百分数单位，`limit_state` 保持独立状态，不由涨幅推断。真实 Redis Q2 旁路验证脚本
 为 `examples/run_real_opening_facts.py`，仅执行 `SMEMBERS/HGETALL`，不写生产数据。
 
+`examples/run_live_morning_shadow.py` 在每个 Core-owned 节点（`AUCTION_0926`、
+`OPENING_0932`）各做一次有界的 Q2 readiness 复检，并把结果写入节点证据；这不是
+高频轮询或第二套调度器。Q2 复检失败时，竞价节点仍保留独立的 TD 事实路径并显式记录
+错误；开盘节点依赖 Q2，因此继续 fail-closed。Q2 readiness 证据不改变 TD 事实的
+semantic hash，也不把 Q2 偷换成竞价输入。
+
 `examples/run_real_opening_engine_shadow.py` 使用同一公开 Engine signal path
 验证真实 Redis Q2 的单股开盘事实。它只读取 `SMEMBERS/HGETALL`，将 Q2 状态
 提交为 `MARKET_UPDATE` 和开盘 `TIMER`，输出 `OpeningShadowStrategy` 的
