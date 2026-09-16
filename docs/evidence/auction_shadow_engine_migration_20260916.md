@@ -51,7 +51,7 @@ verification command output).
 
 ```text
 Python 3.12.3 (/home/exedev/services/engine-next/shared/venv/bin/python)
-pytest: 410 passed
+pytest: 411 passed
 compileall: PASS
 real command: run_real_auction_strategy_shadow.py
 trade_date: 2026-09-16
@@ -59,7 +59,7 @@ symbols: 600519
 rows: 3 (0920/0924/0925)
 anchor completeness: PARTIAL / READY / READY
 strategy: OBSERVE / FACT_ONLY / PARTIAL
-real artifact SHA-256: 4789B76F4645B2FEF8E9A72F20A4187F3741412B4CA904EA42BBE6509BACFF11
+real artifact SHA-256: 43380C5E16DF2094C10D9D2E6F33A7A1123D8FFFCB6295005F7619889DD89DB7
 ```
 
 The real strategy run used TD `SELECT` only and preserved the observed
