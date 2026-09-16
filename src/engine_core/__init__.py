@@ -89,6 +89,12 @@ from .facts import (
 )
 from .probe import ProbeStrategy
 from .auction_strategy import AuctionShadowStrategy
+from .auction_references import (
+    AUCTION_REFERENCE_CONTRACT_VERSION,
+    AUCTION_REFERENCE_FUNCTION_ORDER,
+    AuctionReferencePreparation,
+    prepare_auction_references,
+)
 from .auction_shadow import AuctionFactShadow, build_auction_fact_shadow
 from .anchor_delta import (
     ANCHOR_DELTA_CONTRACT_VERSION,
@@ -176,6 +182,9 @@ __all__ = [
     "EngineSignal",
     "EngineSnapshot",
     "FrozenDataBundle",
+    "AUCTION_REFERENCE_CONTRACT_VERSION",
+    "AUCTION_REFERENCE_FUNCTION_ORDER",
+    "AuctionReferencePreparation",
     "FactResult",
     "FactStatus",
     "FixturePreviousDayStatsProvider",
@@ -286,6 +295,7 @@ __all__ = [
     "compare_segments",
     "compute_resting_order_pressure",
     "build_frozen_bundle",
+    "prepare_auction_references",
     "replay_q2frames",
     "replay_td_event_time",
     "STARTUP_READINESS_CONTRACT_VERSION",
