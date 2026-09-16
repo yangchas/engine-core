@@ -280,6 +280,66 @@ class TDPreviousDayStatsProvider:
             )
 
 
+class RedisPreviousDayStatsProvider:
+    """Thin provider for the existing date-bucketed Redis kline view.
+
+    The caller owns the verified read-only Redis access.  This boundary only
+    normalizes rows and preserves source/temporal evidence; it never repairs
+    the cache or treats the read time as historical availability.
+    """
+
+    def __init__(
+        self,
+        fetch_rows: Callable[[str, Tuple[str, ...]], Iterable[Mapping[str, Any]]],
+        *,
+        observed_at_ms: Callable[[], int],
+        available_at_ms: Optional[Callable[[], Optional[int]]] = None,
+        source_id: str = "redis_daily_kline_cache",
+        source_schema: str = "cache:kline_ready",
+        evidence_ref: Optional[str] = None,
+    ) -> None:
+        self._fetch_rows = fetch_rows
+        self._observed_at_ms = observed_at_ms
+        self._available_at_ms = available_at_ms
+        self._source_id = source_id
+        self._source_schema = source_schema
+        self._evidence_ref = evidence_ref
+
+    def fetch(
+        self,
+        request: DataRequest,
+        *,
+        previous_trade_date: str,
+    ) -> ProviderResult:
+        try:
+            rows = tuple(self._fetch_rows(previous_trade_date, tuple(request.symbols)))
+            observed = self._observed_at_ms()
+            available = self._available_at_ms() if self._available_at_ms else None
+            return provider_result_from_previous_day_rows(
+                rows,
+                actual_trade_date=previous_trade_date,
+                source_id=self._source_id,
+                source_schema=self._source_schema,
+                effective_at_ms=None,
+                available_at_ms=available,
+                observed_at_ms=observed,
+                availability_status="VERIFIED" if available is not None else "OBSERVED",
+                evidence_ref=self._evidence_ref,
+            )
+        except Exception as exc:
+            return ProviderResult(
+                raw_data=None,
+                source_id=self._source_id,
+                source_schema=self._source_schema,
+                effective_at_ms=None,
+                available_at_ms=None,
+                observed_at_ms=self._observed_at_ms(),
+                availability_status="UNKNOWN",
+                evidence_ref=self._evidence_ref,
+                error=type(exc).__name__ + ": " + str(exc),
+            )
+
+
 class DataFunction(Protocol):
     """Business data contract executed outside the reducer."""
 

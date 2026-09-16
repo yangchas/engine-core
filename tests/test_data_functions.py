@@ -12,6 +12,7 @@ from engine_core import (
     PreviousDayStatsFunction,
     ProviderResult,
     ReadyDataStore,
+    RedisPreviousDayStatsProvider,
     TDPreviousDayStatsProvider,
     TemporalDataGuard,
     build_calendar_snapshot,
@@ -357,6 +358,78 @@ def test_td_provider_access_error_remains_error_not_missing():
         DataContext("eval-timeout", "AUCTION", 1788484800000),
         _request(),
     )
+    assert result.status is DataStatus.ERROR
+    assert "error" in result.missing_fields
+
+
+def test_redis_previous_day_provider_normalizes_real_cache_shape():
+    def cache_rows(previous_trade_date, symbols):
+        assert previous_trade_date == "2026-09-03"
+        assert symbols == ("000001",)
+        return [
+            {
+                "symbol": "000001",
+                "trade_date": "2026-09-03",
+                "preclose": 11.40,
+                "close": 11.59,
+                "pct_chg": 1.67,
+                "amount": 123456789.5,
+                "source": "baostock",
+            }
+        ]
+
+    result = PreviousDayStatsFunction(
+        RedisPreviousDayStatsProvider(
+            cache_rows,
+            observed_at_ms=lambda: 1788484800000,
+            available_at_ms=lambda: 1788480000000,
+            evidence_ref="redis://cache:kline_ready/2026-09-03",
+        ),
+        TEST_CALENDAR,
+    ).execute(
+        DataContext("eval-redis-cache", "AUCTION", 1788484800000),
+        replace(_request(), symbols=("000001",)),
+    )
+
+    assert result.status is DataStatus.READY
+    assert result.actual_source == "redis_daily_kline_cache"
+    assert result.data["close_by_symbol"]["000001"] == 11.59
+    assert result.data["amount_by_symbol"]["000001"] == 123456789.5
+    assert result.provenance[0].evidence_ref == "redis://cache:kline_ready/2026-09-03"
+
+
+def test_redis_previous_day_provider_unknown_availability_fails_closed():
+    provider = RedisPreviousDayStatsProvider(
+        lambda previous, symbols: [
+            {"symbol": "000001", "close": 11.59, "amount": 100}
+        ],
+        observed_at_ms=lambda: 1788484800000,
+    )
+    result = PreviousDayStatsFunction(provider, TEST_CALENDAR).execute(
+        DataContext("eval-redis-observed", "AUCTION", 1788484800000),
+        replace(_request(), symbols=("000001",)),
+    )
+
+    assert result.status is DataStatus.UNAVAILABLE
+    assert result.available_at_ms is None
+    assert "available_at_unknown" in result.missing_fields
+
+
+def test_redis_previous_day_provider_access_error_is_not_empty_data():
+    def broken_cache(previous_trade_date, symbols):
+        raise TimeoutError("Redis read timeout")
+
+    result = PreviousDayStatsFunction(
+        RedisPreviousDayStatsProvider(
+            broken_cache,
+            observed_at_ms=lambda: 1788484800000,
+        ),
+        TEST_CALENDAR,
+    ).execute(
+        DataContext("eval-redis-error", "AUCTION", 1788484800000),
+        replace(_request(), symbols=("000001",)),
+    )
+
     assert result.status is DataStatus.ERROR
     assert "error" in result.missing_fields
 

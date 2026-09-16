@@ -57,6 +57,19 @@ class ReadOnlyRedis:
                 "ts": str(NOW),
                 "mk": "sz",
             },
+            "cache:kline_ready:" + PREVIOUS_DATE: {
+                "000001": json.dumps(
+                    {
+                        "symbol": "000001",
+                        "trade_date": PREVIOUS_DATE,
+                        "preclose": 11.40,
+                        "close": 11.59,
+                        "pct_chg": 1.67,
+                        "amount": 123456789.5,
+                        "source": "baostock",
+                    }
+                )
+            },
         }
         self.strings = {
             "cache:yest_limit_pool_meta:" + PREVIOUS_DATE: json.dumps(
@@ -105,6 +118,10 @@ class ReadOnlyRedis:
     def hgetall(self, key):
         return self.hashes.get(key, {})
 
+    def hmget(self, key, fields):
+        values = self.hashes.get(key, {})
+        return [values.get(field) for field in fields]
+
 
 def test_real_reference_runner_uses_read_only_sources_and_truthful_statuses():
     calendar = build_calendar_snapshot(
@@ -133,10 +150,40 @@ def test_real_reference_runner_uses_read_only_sources_and_truthful_statuses():
     assert result["q2"]["status"] == "READY"
     # TD daily_kline has no verified historical publication timestamp.
     assert result["reference_results"]["previous_day_stats"]["status"] == "UNAVAILABLE"
+    assert result["previous_day_stats_source_selection"] == "td_daily_kline"
     assert result["reference_results"]["previous_day_limit_pool"]["status"] == "READY"
     assert result["reference_results"]["hot_plates"]["status"] == "READY"
     assert result["readiness"]["status"] == "PARTIAL"
     assert "Redis" in result["side_effect_boundary"]
+
+
+def test_real_reference_runner_selects_existing_redis_view_after_empty_td():
+    calendar = build_calendar_snapshot(
+        (PREVIOUS_DATE, TRADE_DATE),
+        version="real-reference-runner-test-v1",
+        declared_valid_from=TRADE_DATE,
+        declared_valid_to=TRADE_DATE,
+        source_guard_valid_from=PREVIOUS_DATE,
+        source_guard_valid_to=TRADE_DATE,
+    )
+    result = run_real_auction_reference_readiness(
+        client=ReadOnlyRedis(),
+        trade_date=TRADE_DATE,
+        calendar=calendar,
+        observed_at=datetime.fromtimestamp(NOW / 1000, tz=timezone.utc),
+        symbols=("000001",),
+        stale_after_ms=60_000,
+        td_kwargs={},
+        fetch_td_rows_override=lambda date, symbols: [],
+    )
+
+    stats = result["reference_results"]["previous_day_stats"]
+    assert result["previous_day_stats_source_selection"] == "redis_kline_ready_after_td_empty"
+    assert stats["actual_source"] == "redis_daily_kline_cache"
+    # The cache proves data presence, not historical publication time.
+    assert stats["status"] == "UNAVAILABLE"
+    assert stats["available_at_ms"] is None
+    assert "available_at_unknown" in stats["missing_fields"]
 
 
 def test_real_reference_runner_rejects_unbounded_td_probe():

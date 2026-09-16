@@ -27,6 +27,7 @@ from engine_core import (  # noqa: E402
     PreviousDayStatsFunction,
     RedisHotPlatesProvider,
     RedisPreviousDayLimitPoolProvider,
+    RedisPreviousDayStatsProvider,
     RedisQ2ProjectionAdapter,
     TDPreviousDayStatsProvider,
     TradingCalendarSnapshot,
@@ -69,15 +70,74 @@ def run_real_auction_reference_readiness(
             return fetch_td_rows_override(previous, requested)
         return _fetch_td_rows(previous, requested, **td_kwargs)
 
-    previous_stats = PreviousDayStatsFunction(
-        TDPreviousDayStatsProvider(
-            td_rows,
+    def redis_kline_rows(
+        previous: str,
+        requested: tuple[str, ...],
+    ) -> list[dict[str, Any]]:
+        key = "cache:kline_ready:" + previous
+        values = client.hmget(key, requested)
+        rows = []
+        for symbol, raw in zip(requested, values):
+            if raw is None:
+                continue
+            row = json.loads(raw)
+            if not isinstance(row, dict):
+                raise ValueError("Redis daily-kline row must be an object")
+            row = dict(row)
+            row.setdefault("symbol", symbol)
+            if row.get("symbol") != symbol:
+                raise ValueError("Redis daily-kline symbol does not match hash field")
+            if row.get("trade_date") != previous:
+                raise ValueError("Redis daily-kline trade_date does not match key")
+            rows.append(row)
+        return rows
+
+    # This is an explicit audit-source choice, not a semantic fallback engine:
+    # TD remains first.  Only a successful empty TD read selects the existing
+    # Redis runtime view.  Access errors remain TD errors and are not hidden.
+    try:
+        td_candidate_rows = tuple(td_rows(previous_trade_date, symbols))
+        td_error: Exception | None = None
+    except Exception as exc:  # preserved by the selected TD provider below
+        td_candidate_rows = ()
+        td_error = exc
+
+    if td_error is not None:
+        def selected_td_rows(previous: str, requested: tuple[str, ...]):
+            raise td_error
+
+        previous_stats_provider = TDPreviousDayStatsProvider(
+            selected_td_rows,
             observed_at_ms=lambda: observed_at_ms,
             available_at_ms=None,
             source_id="tdengine_daily_kline",
             source_schema="daily_kline",
             evidence_ref="td://market_data1/daily_kline/" + previous_trade_date,
-        ),
+        )
+        previous_day_stats_source_selection = "td_error_no_redis_selection"
+    elif td_candidate_rows:
+        previous_stats_provider = TDPreviousDayStatsProvider(
+            lambda previous, requested: td_candidate_rows,
+            observed_at_ms=lambda: observed_at_ms,
+            available_at_ms=None,
+            source_id="tdengine_daily_kline",
+            source_schema="daily_kline",
+            evidence_ref="td://market_data1/daily_kline/" + previous_trade_date,
+        )
+        previous_day_stats_source_selection = "td_daily_kline"
+    else:
+        previous_stats_provider = RedisPreviousDayStatsProvider(
+            redis_kline_rows,
+            observed_at_ms=lambda: observed_at_ms,
+            available_at_ms=None,
+            source_id="redis_daily_kline_cache",
+            source_schema="cache:kline_ready",
+            evidence_ref="redis://cache:kline_ready/" + previous_trade_date,
+        )
+        previous_day_stats_source_selection = "redis_kline_ready_after_td_empty"
+
+    previous_stats = PreviousDayStatsFunction(
+        previous_stats_provider,
         calendar,
     )
     limit_pool = PreviousDayLimitPoolFunction(
@@ -139,6 +199,7 @@ def run_real_auction_reference_readiness(
         "reference_results": {
             function_id: {
                 "status": result.status.value,
+                "actual_source": result.actual_source,
                 "actual_trade_date": result.actual_trade_date,
                 "available_at_ms": result.available_at_ms,
                 "observed_at_ms": result.observed_at_ms,
@@ -171,9 +232,10 @@ def run_real_auction_reference_readiness(
             "previous_day_limit_pool": limit_summary,
             "hot_plates": hot_summary,
         },
+        "previous_day_stats_source_selection": previous_day_stats_source_selection,
         "read_only": True,
         "side_effect_boundary": (
-            "Redis SMEMBERS/HGETALL/TYPE/HLEN/HSCAN/GET and bounded TD SELECT only; "
+            "Redis SMEMBERS/HMGET/HGETALL/TYPE/HLEN/HSCAN/GET and bounded TD SELECT only; "
             "no Redis/TD write, Rabbit consume/ACK, repair, network fallback, or effect"
         ),
     }
