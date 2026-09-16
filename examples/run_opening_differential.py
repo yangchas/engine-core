@@ -149,6 +149,26 @@ def _comparison_status(comparison: Mapping[str, Any], *, transition_requested: b
     return "MATCH"
 
 
+def _aggregate_exact(
+    comparisons: Sequence[Mapping[str, Any]],
+    *,
+    key: str,
+) -> bool | None:
+    """Aggregate exactness without turning non-comparable into mismatch.
+
+    ``False`` means a comparable row actually differed, ``None`` means no
+    mismatch was observed but at least one row lacked the requested input, and
+    ``True`` means every row was comparable and exact.
+    """
+
+    values = [item.get(key) for item in comparisons]
+    if any(value is False for value in values):
+        return False
+    if any(value is None for value in values):
+        return None
+    return True
+
+
 def _load_legacy(legacy_root: str) -> ModuleType:
     root = Path(legacy_root).expanduser().resolve()
     if not root.exists() or not root.is_dir():
@@ -270,7 +290,7 @@ def run_real_differential(
         ),
         "opening_exact": all(item.get("opening_exact", False) for item in comparisons),
         "transition_exact": (
-            all(item.get("transition_exact", False) for item in comparisons)
+            _aggregate_exact(comparisons, key="transition_exact")
             if td_config is not None
             else None
         ),

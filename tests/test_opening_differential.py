@@ -13,6 +13,7 @@ from engine_core import (
 from examples.run_opening_differential import (
     _auction_change_from_rows,
     _auction_change_evidence_from_rows,
+    _aggregate_exact,
     _comparison_status,
     compare_opening_rows,
 )
@@ -82,3 +83,18 @@ def test_differential_status_does_not_call_missing_transition_a_match():
     assert _comparison_status({"opening_exact": True, "transition_exact": None}, transition_requested=True) == "NON_COMPARABLE"
     assert _comparison_status({"opening_exact": True, "transition_exact": True}, transition_requested=True) == "MATCH"
     assert _comparison_status({"opening_exact": False, "transition_exact": True}, transition_requested=True) == "MISMATCH"
+
+
+def test_differential_aggregate_keeps_non_comparable_distinct_from_mismatch():
+    assert _aggregate_exact(
+        ({"transition_exact": True}, {"transition_exact": True}),
+        key="transition_exact",
+    ) is True
+    assert _aggregate_exact(
+        ({"transition_exact": True}, {"transition_exact": None}),
+        key="transition_exact",
+    ) is None
+    assert _aggregate_exact(
+        ({"transition_exact": False}, {"transition_exact": None}),
+        key="transition_exact",
+    ) is False
