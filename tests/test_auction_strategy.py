@@ -69,6 +69,7 @@ def test_strategy_is_pending_until_all_auction_anchors_exist():
 
     assert result.state == "OBSERVE"
     assert result.trace["decision_status"] == "FACT_ONLY"
+    assert result.trace["hash_contract_versions"]["submission"] == "SubmissionHashV1"
     assert result.trace["fact_status"] == "PENDING"
     assert result.trace["missing_trigger_ids"] == (
         "AUCTION_0920",

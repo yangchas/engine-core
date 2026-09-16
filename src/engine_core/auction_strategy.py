@@ -15,6 +15,7 @@ from .auction_shadow import build_auction_fact_shadow_from_snapshots
 from .contracts import (
     EVIDENCE_HASH_CONTRACT_VERSION,
     SEMANTIC_HASH_CONTRACT_VERSION,
+    SUBMISSION_HASH_CONTRACT_VERSION,
     EngineSnapshot,
     FrozenDataBundle,
     StrategyResult,
@@ -121,6 +122,7 @@ class AuctionShadowStrategy:
             "hash_contract_versions": {
                 "semantic": SEMANTIC_HASH_CONTRACT_VERSION,
                 "evidence": EVIDENCE_HASH_CONTRACT_VERSION,
+                "submission": SUBMISSION_HASH_CONTRACT_VERSION,
             },
         }
 
