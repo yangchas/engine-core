@@ -41,6 +41,46 @@ class EngineRunResult:
     processed_signals: int
     snapshots: Tuple[EngineSnapshot, ...]
     strategy_results: Tuple[StrategyResult, ...]
+    pending_evaluations: Tuple["PendingEvaluationRequest", ...] = ()
+
+
+@dataclass(frozen=True)
+class PendingEvaluationRequest:
+    """Public, immutable request for data needed by one frozen evaluation.
+
+    The frozen ``EngineSnapshot`` remains Engine-owned.  Runtime I/O workers
+    receive only this identity/cutoff contract and return a
+    ``FrozenDataBundle`` through ``DATA_READY``; they cannot replace or mutate
+    the snapshot that caused the request.
+    """
+
+    evaluation_id: str
+    trigger_id: str
+    knowledge_as_of_ms: int
+    function_order: Tuple[str, ...]
+    snapshot_content_hash: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.evaluation_id, str) or not self.evaluation_id:
+            raise ValueError("evaluation_id is required")
+        if not isinstance(self.trigger_id, str) or not self.trigger_id:
+            raise ValueError("trigger_id is required")
+        if (
+            isinstance(self.knowledge_as_of_ms, bool)
+            or not isinstance(self.knowledge_as_of_ms, int)
+            or self.knowledge_as_of_ms <= 0
+        ):
+            raise ValueError("knowledge_as_of_ms must be a positive integer")
+        object.__setattr__(self, "function_order", tuple(self.function_order))
+        if any(
+            not isinstance(function_id, str) or not function_id
+            for function_id in self.function_order
+        ):
+            raise ValueError("function_order must contain non-empty strings")
+        if len(self.function_order) != len(set(self.function_order)):
+            raise ValueError("function_order must not contain duplicates")
+        if not isinstance(self.snapshot_content_hash, str) or not self.snapshot_content_hash:
+            raise ValueError("snapshot_content_hash is required")
 
 
 @dataclass(frozen=True)
@@ -217,6 +257,28 @@ class DeterministicEngine:
             processed_signals=self._processed,
             snapshots=tuple(self._snapshots),
             strategy_results=tuple(self._strategy_results),
+            pending_evaluations=self.pending_evaluation_requests(),
+        )
+
+    def pending_evaluation_requests(self) -> Tuple[PendingEvaluationRequest, ...]:
+        """Return deterministic public views of Engine-owned evaluations."""
+
+        ordered = sorted(
+            self._pending_evaluations.values(),
+            key=lambda item: (
+                item.snapshot.logical_time_ms,
+                item.evaluation_id,
+            ),
+        )
+        return tuple(
+            PendingEvaluationRequest(
+                evaluation_id=item.evaluation_id,
+                trigger_id=item.snapshot.trigger_id,
+                knowledge_as_of_ms=item.snapshot.logical_time_ms,
+                function_order=item.function_order,
+                snapshot_content_hash=item.snapshot.content_hash,
+            )
+            for item in ordered
         )
 
     def _handle(self, signal: EngineSignal) -> None:

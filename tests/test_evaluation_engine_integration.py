@@ -55,9 +55,53 @@ def test_evaluation_plan_supplies_fixed_data_requirement_order():
     engine.submit(_timer())
     result = engine.run_until_empty()
     assert not result.strategy_results
-    pending = next(iter(engine._pending_evaluations.values()))
+    assert len(result.pending_evaluations) == 1
+    pending = result.pending_evaluations[0]
     assert pending.function_order == ("previous_day_stats", "theme_members")
-    assert pending.snapshot.trigger_id == "AUCTION_0920"
+    assert pending.trigger_id == "AUCTION_0920"
+    assert pending.knowledge_as_of_ms == 100
+    assert pending.snapshot_content_hash
+    assert not hasattr(pending, "snapshot")
+
+
+def test_pending_evaluation_view_disappears_after_owned_data_ready():
+    from engine_core import DataResult, DataStatus, FrozenDataBundle
+
+    engine = _engine(_plan(requirements=("previous_day_stats",)))
+    engine.submit(_timer())
+    pending = engine.run_until_empty().pending_evaluations[0]
+    result = DataResult(
+        request_id="previous-day",
+        function_id="previous_day_stats",
+        status=DataStatus.READY,
+        data={"previous_trade_date": "2026-09-03"},
+        actual_source="fixture",
+        requested_trade_date="2026-09-04",
+        actual_trade_date="2026-09-03",
+        effective_at_ms=90,
+        available_at_ms=95,
+        observed_at_ms=105,
+        schema_version=1,
+        completeness=1.0,
+    )
+    bundle = FrozenDataBundle.from_results(
+        pending.evaluation_id,
+        pending.knowledge_as_of_ms,
+        pending.function_order,
+        {"previous_day_stats": result},
+    )
+    engine.submit(
+        EngineSignal(
+            "data-ready-0920",
+            105,
+            2,
+            SignalKind.DATA_READY,
+            {"evaluation_id": pending.evaluation_id, "bundle": bundle},
+        )
+    )
+    completed = engine.run_until_empty()
+    assert completed.pending_evaluations == ()
+    assert completed.strategy_results[-1].evaluation_id == pending.evaluation_id
 
 
 def test_plan_and_signal_cannot_both_define_data_requirements():

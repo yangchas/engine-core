@@ -74,7 +74,7 @@ from .hot_plates import (
     canonical_hot_plates_payload_hash,
     normalize_hot_plates_rows,
 )
-from .engine import DeterministicEngine
+from .engine import DeterministicEngine, EngineRunResult, PendingEvaluationRequest
 from .facts import (
     BreadthFacts,
     DataQuality,
@@ -183,6 +183,7 @@ __all__ = [
     "DataStatus",
     "DataQuality",
     "DeterministicEngine",
+    "EngineRunResult",
     "EngineSignal",
     "EngineSnapshot",
     "FrozenDataBundle",
@@ -197,6 +198,7 @@ __all__ = [
     "MonotonicClock",
     "OrderBookFacts",
     "PayloadKind",
+    "PendingEvaluationRequest",
     "PriceFacts",
     "PreviousDayStatsFunction",
     "PreviousDayStatsProvider",
