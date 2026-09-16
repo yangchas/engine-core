@@ -72,8 +72,8 @@ def build_auction_reference_bundle(
 
     Preparation performs provider I/O outside the reducer.  This function is
     the small deterministic hand-off back to Engine: it accepts only the
-    fixed auction requirement order and the exact knowledge cutoff captured
-    when the Engine froze its snapshot.
+    fixed auction requirement order and a preparation cutoff that is no later
+    than the knowledge cutoff captured when the Engine froze its snapshot.
     """
 
     if not isinstance(pending, PendingEvaluationRequest):
@@ -82,8 +82,8 @@ def build_auction_reference_bundle(
         raise TypeError("preparation must be an AuctionReferencePreparation")
     if pending.function_order != AUCTION_REFERENCE_FUNCTION_ORDER:
         raise ValueError("pending evaluation does not request auction references")
-    if pending.knowledge_as_of_ms != preparation.knowledge_as_of_ms:
-        raise ValueError("reference preparation cutoff does not match evaluation")
+    if preparation.knowledge_as_of_ms > pending.knowledge_as_of_ms:
+        raise ValueError("reference preparation is after evaluation cutoff")
     return build_frozen_bundle(
         evaluation_id=pending.evaluation_id,
         knowledge_as_of_ms=pending.knowledge_as_of_ms,

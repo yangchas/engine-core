@@ -267,6 +267,39 @@ def test_prepared_references_complete_public_engine_evaluation():
     assert completed.strategy_results[-1].trace["bundle_hash"] == bundle.content_hash
 
 
+def test_prefetch_before_evaluation_cutoff_can_complete_later_evaluation():
+    calendar = _calendar()
+    stats, limit_pool, hot = _functions(calendar)
+    prepared = prepare_auction_references(
+        trade_date=TRADE_DATE,
+        knowledge_as_of_ms=CUTOFF,
+        context=DataContext("auction-ref", "LIVE_SHADOW", CUTOFF + 100),
+        calendar=calendar,
+        previous_day_stats=stats,
+        previous_day_limit_pool=limit_pool,
+        hot_plates=hot,
+    )
+    pending = PendingEvaluationRequest(
+        evaluation_id="evaluation:later",
+        trigger_id="AUCTION_0924",
+        knowledge_as_of_ms=CUTOFF + 60_000,
+        function_order=AUCTION_REFERENCE_FUNCTION_ORDER,
+        snapshot_content_hash="snapshot-hash",
+    )
+
+    bundle = build_auction_reference_bundle(pending, prepared)
+
+    assert bundle.knowledge_as_of_ms == CUTOFF + 60_000
+    assert tuple(bundle.results_by_function) == AUCTION_REFERENCE_FUNCTION_ORDER
+    assert tuple(
+        bundle.results_by_function[function_id].content_hash
+        for function_id in AUCTION_REFERENCE_FUNCTION_ORDER
+    ) == tuple(
+        prepared.as_mapping()[function_id].content_hash
+        for function_id in AUCTION_REFERENCE_FUNCTION_ORDER
+    )
+
+
 def test_reference_bundle_rejects_a_different_evaluation_cutoff():
     calendar = _calendar()
     stats, limit_pool, hot = _functions(calendar)
@@ -282,7 +315,7 @@ def test_reference_bundle_rejects_a_different_evaluation_cutoff():
     pending = PendingEvaluationRequest(
         evaluation_id="evaluation:mismatch",
         trigger_id="AUCTION_0920",
-        knowledge_as_of_ms=CUTOFF + 1,
+        knowledge_as_of_ms=CUTOFF - 1,
         function_order=AUCTION_REFERENCE_FUNCTION_ORDER,
         snapshot_content_hash="snapshot-hash",
     )
