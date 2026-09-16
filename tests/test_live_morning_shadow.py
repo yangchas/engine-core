@@ -240,6 +240,32 @@ def test_auction_node_keeps_td_fact_when_q2_readiness_probe_fails(
     assert result["fact_dispatch"][0]["facts"][0]["status"] == "READY"
 
 
+def test_opening_node_keeps_q2_failure_fail_closed(monkeypatch: pytest.MonkeyPatch):
+    """Opening facts require the node-boundary Q2 observation."""
+
+    def fail_q2(**kwargs):
+        raise ConnectionError("redis unavailable")
+
+    monkeypatch.setattr(live, "_redis_projection", fail_q2)
+    monkeypatch.setattr(
+        live,
+        "_read_td_rows",
+        lambda symbols, **kwargs: {symbol: () for symbol in symbols},
+    )
+    with pytest.raises(ConnectionError, match="redis unavailable"):
+        live._capture_node(
+            _firing("OPENING_0932"),
+            observed_at=_dt("09:32:00"),
+            trade_date="2026-09-14",
+            symbols=("600519",),
+            stale_after_ms=60_000,
+            legacy_root=None,
+            td_config={},
+            calendar=CALENDAR,
+            plan=build_a_share_session_plan("2026-09-14", CALENDAR),
+        )
+
+
 def test_live_shell_captures_each_node_at_its_due_observation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     clock_values = iter((_dt("09:15:00"), _dt("09:15:00"), _dt("09:26:00"), _dt("09:32:00")))
     captured: list[tuple[str, datetime]] = []
