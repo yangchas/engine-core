@@ -282,6 +282,7 @@ def build_node_evidence(
             "symbols": ordered_symbols,
             "td_rows_by_symbol": result["td_rows_by_symbol"],
             "q2": q2_evidence,
+            "q2_observation_error": q2_observation_error,
             "legacy_loader": result["legacy_loader"],
         }
     )

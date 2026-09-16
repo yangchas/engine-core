@@ -238,6 +238,7 @@ def test_auction_node_keeps_td_fact_when_q2_readiness_probe_fails(
     assert result["q2_observation_error"] == "builtins.ConnectionError"
     assert result["node_readiness"]["q2_status"] == "MISSING"
     assert result["fact_dispatch"][0]["facts"][0]["status"] == "READY"
+    assert len(result["input_sha256"]) == 64
 
 
 def test_opening_node_keeps_q2_failure_fail_closed(monkeypatch: pytest.MonkeyPatch):
