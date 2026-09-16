@@ -19,8 +19,8 @@ to a verified rule.
 | Probe contract | `EngineNextContextProbeV2` |
 | Engine Core commit | `d17d153c053730f98897f90a88e3b32514aa0ff0` |
 | Read-only guard | `guard_writes=[]` |
-| Probe observed at | `2026-09-16T03:23:23.501930+00:00` |
-| Latest source timestamp | `1789527255000` |
+| Probe observed at | `2026-09-16T03:28:19.505423+00:00` |
+| Latest source timestamp | `1789527513000` |
 | Future source timestamp | `false` |
 
 The probe disabled legacy cache, network, recovery, writer, notification and
@@ -45,10 +45,10 @@ reported as audit evidence.
 
 | Symbol | Open ratio | Current ratio | Auction amount (Yuan) | Amount 2m (Yuan) | Speed 1m (ratio) | Floor (Yuan) | Legacy label |
 |---|---:|---:|---:|---:|---:|---:|---|
-| `000993` | 0.0250 | 0.100000 | 89,184,096 | 1,352,704 | 0.0000 | 5,000,000 | `limit_attack` |
-| `300207` | 0.0000 | 0.129651 | 9,534,195 | 29,785,984 | -0.0019 | 5,000,000 | `low_open_repair` |
-| `600330` | 0.0000 | 0.049259 | 9,059,430 | 8,870,656 | 0.0003 | 5,000,000 | `low_open_repair` |
-| `600519` | 0.0009 | -0.012218 | 9,427,100 | 8,295,808 | 0.0000 | 5,000,000 | `mixed` |
+| `000993` | 0.0250 | 0.100000 | 89,184,096 | 2,047,488 | 0.0000 | 5,000,000 | `limit_attack` |
+| `300207` | 0.154453 | 0.154453 | 9,534,195 | 69,256,576 | -0.0024 | 5,000,000 | `limit_attack` |
+| `600330` | 0.0000 | 0.043059 | 9,059,430 | 6,907,648 | -0.0019 | 5,000,000 | `low_open_repair` |
+| `600519` | 0.0009 | -0.013003 | 9,427,100 | 18,591,616 | 0.0000 | 5,000,000 | `mixed` |
 
 ## Interpretation boundary
 
