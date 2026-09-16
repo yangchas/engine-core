@@ -33,5 +33,28 @@ The observed source timestamp is retained as the Q2 source-time range. It is
 not interpreted as Rabbit arrival time or exchange tick ordering.
 
 The same Engine path is covered by `tests/test_real_opening_engine_shadow.py`
-with an injected client. A real Cobra-ion Redis run must be recorded separately
-with the explicit trade-date, observation time and freshness budget.
+with an injected client.
+
+## Cobra-ion real run
+
+```text
+core commit: 803f7bf7d74113b0fac141b122c0bbaa3c79c12d
+Python: 3.12.3
+trade_date: 2026-09-16
+symbol: 600519
+observed_at: 2026-09-16T10:35:00+08:00
+freshness budget: 60000 ms
+Q2 symbols: 5221/5221
+coverage: 1.0
+projection status: PARTIAL
+stale symbols: 5221
+processed signals: 2
+strategy: OBSERVE / FACT_ONLY / PARTIAL
+```
+
+The result is intentionally `PARTIAL`: full symbol coverage did not promote
+stale source observations to fresh data. The run used the production Redis
+connection convention (`REDIS_HOST/PORT/DB/PASSWORD`), exposed only
+`SMEMBERS/HGETALL`, and produced no Redis/TD writes, Rabbit operations,
+notifications or effects. The production `engine-next` and `t1-v2-live`
+services remained active with `NRestarts=0`.
