@@ -24,10 +24,14 @@ from typing import Any, Mapping
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core import (  # noqa: E402
+    AUCTION_REFERENCE_FUNCTION_ORDER,
+    AuctionReferencePreparation,
     AuctionShadowStrategy,
     DataStatus,
     DeterministicEngine,
     EngineSignal,
+    EvaluationNode,
+    EvaluationPlan,
     FrozenDataBundle,
     MarketDataEnvelope,
     MarketStateReducer,
@@ -36,6 +40,7 @@ from engine_core import (  # noqa: E402
     SignalKind,
     WindowManager,
     WindowSpec,
+    build_auction_reference_bundle,
     canonical_json,
     semantic_hash,
 )
@@ -155,8 +160,16 @@ def run_engine_shadow(
     rows: list[tuple[Any, ...]],
     trade_date: str,
     symbol: str,
+    preparation: AuctionReferencePreparation | None = None,
 ) -> dict[str, Any]:
-    """Run one real-row set through Engine and return a stable trace."""
+    """Run one real-row set through Engine and return a stable trace.
+
+    When ``preparation`` is supplied, each auction timer is configured with
+    the public evaluation-plan contract and the same already-prepared
+    reference results are bound through ``DATA_READY``.  This is still a
+    bounded shadow path: no provider I/O occurs here and the preparation is
+    never re-read or rewritten.
+    """
 
     snapshots = build_snapshots_from_rows(rows, trade_date=trade_date, symbol=symbol)
     strategy = AuctionShadowStrategy(
@@ -179,13 +192,30 @@ def run_engine_shadow(
             else "PARTIAL"
         ),
     )
+    evaluation_plan = None
+    if preparation is not None:
+        evaluation_plan = EvaluationPlan(
+            "real-auction-reference-shadow",
+            "v1",
+            tuple(
+                EvaluationNode(
+                    "auction-reference-" + tag,
+                    snapshots[tag].trigger_id,
+                    data_requirements=AUCTION_REFERENCE_FUNCTION_ORDER,
+                    strategies=(strategy.strategy_id,),
+                )
+                for tag in ANCHOR_ORDER
+            ),
+        )
     engine = DeterministicEngine(
         MarketStateReducer(),
         WindowManager((WindowSpec("auction", 0, 10**15),)),
         strategy,
         session_id=trade_date,
         phase="AUCTION",
+        evaluation_plan=evaluation_plan,
     )
+    reference_bundles = []
     for index, tag in enumerate(ANCHOR_ORDER):
         snapshot = snapshots[tag]
         logical_time = snapshot.logical_time_ms
@@ -210,6 +240,27 @@ def run_engine_shadow(
                 {"trigger_id": snapshot.trigger_id},
             )
         )
+        if preparation is None:
+            continue
+        timer_result = engine.run_until_empty()
+        pending = timer_result.pending_evaluations
+        if len(pending) != 1:
+            raise RuntimeError("expected exactly one pending auction evaluation")
+        bundle = build_auction_reference_bundle(pending[0], preparation)
+        reference_bundles.append(bundle)
+        engine.submit(
+            EngineSignal(
+                "auction-data-ready-%s" % tag,
+                logical_time + 1,
+                index * 3 + 3,
+                SignalKind.DATA_READY,
+                {
+                    "evaluation_id": pending[0].evaluation_id,
+                    "bundle": bundle,
+                },
+            )
+        )
+        engine.run_until_empty()
     result = engine.run_until_empty()
     if len(result.strategy_results) != len(ANCHOR_ORDER):
         raise RuntimeError("unexpected number of Engine strategy results")
@@ -227,6 +278,8 @@ def run_engine_shadow(
         "side_effect_boundary": "TD SELECT + in-memory Engine only",
         "processed_signals": result.processed_signals,
         "strategy_result_count": len(result.strategy_results),
+        "reference_binding": "ENGINE_DATA_READY" if preparation is not None else "NONE",
+        "reference_bundle_hashes": tuple(bundle.content_hash for bundle in reference_bundles),
         "engine_fact_status": engine_shadow["status"],
         "engine_fact_only": engine_shadow["decision_status"] == "FACT_ONLY",
         "engine_fact_content_hash": engine_shadow["content_hash"],

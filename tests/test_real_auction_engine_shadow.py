@@ -2,6 +2,14 @@ from datetime import datetime
 import importlib.util
 from pathlib import Path
 
+from engine_core import (
+    AUCTION_REFERENCE_FUNCTION_ORDER,
+    AuctionReferencePreparation,
+    DataResult,
+    DataStatus,
+    local_datetime_ms,
+)
+
 
 SPEC = importlib.util.spec_from_file_location(
     "real_auction_engine_shadow",
@@ -20,6 +28,37 @@ def _rows():
     ]
 
 
+def _prepared_references():
+    cutoff = local_datetime_ms("2026-09-09", "09:19:00")
+    results = []
+    for function_id in AUCTION_REFERENCE_FUNCTION_ORDER:
+        results.append(
+            (
+                function_id,
+                DataResult(
+                    request_id="%s-request" % function_id,
+                    function_id=function_id,
+                    status=DataStatus.READY,
+                    data={"source": "fixture", "function": function_id},
+                    actual_source="fixture",
+                    requested_trade_date="2026-09-09",
+                    actual_trade_date="2026-09-08",
+                    effective_at_ms=cutoff,
+                    available_at_ms=cutoff,
+                    observed_at_ms=cutoff,
+                    schema_version=1,
+                    completeness=1.0,
+                ),
+            )
+        )
+    return AuctionReferencePreparation(
+        trade_date="2026-09-09",
+        previous_trade_date="2026-09-08",
+        knowledge_as_of_ms=cutoff,
+        results=tuple(results),
+    )
+
+
 def test_real_projection_traverses_public_engine_signal_path_and_matches_fact_wheel():
     result = MODULE.run_engine_shadow(
         rows=_rows(), trade_date="2026-09-09", symbol="600519"
@@ -33,3 +72,19 @@ def test_real_projection_traverses_public_engine_signal_path_and_matches_fact_wh
     assert result["semantic_hash_equal"] is True
     assert len(result["engine_strategy_evidence_refs"]) == 3
     assert result["snapshot_source_time_range"]["0920"]["oldest"] == 1788916803083
+
+
+def test_prepared_references_bind_through_engine_data_ready_path():
+    result = MODULE.run_engine_shadow(
+        rows=_rows(),
+        trade_date="2026-09-09",
+        symbol="600519",
+        preparation=_prepared_references(),
+    )
+
+    assert result["read_only"] is True
+    assert result["reference_binding"] == "ENGINE_DATA_READY"
+    assert len(result["reference_bundle_hashes"]) == 3
+    assert result["processed_signals"] == 9
+    assert result["strategy_result_count"] == 3
+    assert result["semantic_hash_equal"] is True
