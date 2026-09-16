@@ -13,7 +13,7 @@ trigger effects.
 | Item | Value |
 |---|---|
 | Server | `cobra-ion` |
-| Core commit | `71f483a8c667e776cc7309d13d8c11cb4febe95e` |
+| Core commit | `ee9fa8f83e33ba41c271aba48a8deae66f51ebf4` |
 | Legacy release | `/home/exedev/services/engine-next/releases/20260903_e272842` |
 | Trade date | `2026-09-16` |
 | Symbols | `000993, 300207, 600330, 600519` |
@@ -36,12 +36,13 @@ opening_exact = true (4/4)
 transition exact among comparable rows = true (2/2)
 transition mismatches = 0
 transition non-comparable = 2
+transition_exact aggregate = None (non-comparable rows present)
 ```
 
-The command-level `transition_exact` aggregate is not treated as a pass when
-non-comparable rows exist. The two unavailable transition inputs remain
-explicitly non-comparable; no value is fabricated from Q2 or from a nearby TD
-row.
+The command-level `transition_exact` aggregate is tri-state: it is `None` when
+non-comparable rows exist without a mismatch. The two unavailable transition
+inputs remain explicitly non-comparable; no value is fabricated from Q2 or
+from a nearby TD row.
 
 The real Q2 cohort was partial/stale at the observation time, but the selected
 rows still produced identical Core and legacy opening facts. This proves
@@ -60,4 +61,3 @@ cd /home/exedev/validation/engine-core-71f483a8c667e776cc7309d13d8c11cb4febe95e
   --legacy-root /home/exedev/services/engine-next/current \
   --output /tmp/core-opening-differential-20260916-71f483a.json
 ```
-
