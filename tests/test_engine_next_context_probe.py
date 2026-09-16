@@ -6,6 +6,7 @@ from examples.run_engine_next_context_probe import (
     GuardRedis,
     _parse_now,
     _phase_for_request,
+    _opening_behavior_rows,
     _strict_symbols,
 )
 from engine_core import normalize_auction_change_ratio
@@ -18,6 +19,57 @@ def test_context_probe_normalizes_and_sorts_symbols():
 def test_context_probe_rejects_invalid_symbols():
     with pytest.raises(ValueError):
         _strict_symbols("600519,ABC")
+
+
+def test_opening_behavior_audit_is_bounded_and_uses_full_context_floor():
+    from types import SimpleNamespace
+
+    snapshots = (
+        SimpleNamespace(
+            symbol="600519",
+            open_pct=0.0,
+            current_pct=0.04,
+            auction_amount=10_000_000.0,
+            amount_2m=30_000_000.0,
+            speed_1m=0.01,
+        ),
+        SimpleNamespace(
+            symbol="000001",
+            open_pct=0.02,
+            current_pct=0.03,
+            auction_amount=5_000_000.0,
+            amount_2m=5_000_000.0,
+            speed_1m=0.0,
+        ),
+    )
+
+    def floor(rows, attr_name, *, top_n, fallback):
+        assert rows == snapshots
+        assert attr_name == "amount_2m"
+        assert top_n == 160
+        assert fallback == 20_000_000
+        return 7_500_000.0
+
+    def classify(row, *, amount_2m_floor):
+        return f"{row.symbol}:{amount_2m_floor:.0f}"
+
+    result = _opening_behavior_rows(
+        {
+            "relative_amount_floor": floor,
+            "classify_opening_entry_behavior": classify,
+        },
+        snapshots,
+        ("000001", "600519", "300001"),
+    )
+
+    assert result[0]["behavior"] == "000001:7500000"
+    assert result[1]["behavior"] == "600519:7500000"
+    assert result[2] == {
+        "symbol": "300001",
+        "status": "MISSING",
+        "amount_2m_floor_yuan": 7_500_000.0,
+        "behavior": None,
+    }
 
 
 def test_context_probe_attaches_explicit_shanghai_timezone_to_local_time():

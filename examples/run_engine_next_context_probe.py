@@ -253,6 +253,12 @@ def _load_legacy(legacy_root: Path) -> Mapping[str, Any]:
     from engine_next.strategy_skill_layer.auction_plate_buckets import (  # type: ignore[import-not-found]
         build_auction_plate_bucket_stats,
     )
+    from engine_next.strategy_skill_layer.relative_amount import (  # type: ignore[import-not-found]
+        relative_amount_floor,
+    )
+    from engine_next.strategy_skill_layer.stock_behavior import (  # type: ignore[import-not-found]
+        classify_opening_entry_behavior,
+    )
     return {
         "RunPhase": RunPhase,
         "IntradayContextBuilder": IntradayContextBuilder,
@@ -260,7 +266,60 @@ def _load_legacy(legacy_root: Path) -> Mapping[str, Any]:
         "IntradayDataHub": IntradayDataHub,
         "infer_run_phase": infer_run_phase,
         "build_auction_plate_bucket_stats": build_auction_plate_bucket_stats,
+        "relative_amount_floor": relative_amount_floor,
+        "classify_opening_entry_behavior": classify_opening_entry_behavior,
     }
+
+
+def _opening_behavior_rows(
+    legacy: Mapping[str, Any],
+    snapshots: tuple[Any, ...],
+    symbols: tuple[str, ...],
+) -> tuple[dict[str, Any], ...]:
+    """Expose the legacy opening label without promoting it to a Core rule.
+
+    The amount floor is deliberately calculated from the full context, while
+    output is bounded to the requested symbols.  Values retain the legacy
+    context units (amounts are Yuan and percentage fields are ratios).
+    """
+
+    floor = float(
+        legacy["relative_amount_floor"](
+            snapshots,
+            "amount_2m",
+            top_n=160,
+            fallback=20_000_000,
+        )
+    )
+    by_symbol = {str(row.symbol): row for row in snapshots}
+    classify = legacy["classify_opening_entry_behavior"]
+    rows: list[dict[str, Any]] = []
+    for symbol in symbols:
+        row = by_symbol.get(symbol)
+        if row is None:
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "status": "MISSING",
+                    "amount_2m_floor_yuan": floor,
+                    "behavior": None,
+                }
+            )
+            continue
+        rows.append(
+            {
+                "symbol": symbol,
+                "status": "OBSERVED",
+                "open_pct_ratio": row.open_pct,
+                "current_pct_ratio": row.current_pct,
+                "auction_amount_yuan": row.auction_amount,
+                "amount_2m_yuan": row.amount_2m,
+                "speed_1m_ratio": row.speed_1m,
+                "amount_2m_floor_yuan": floor,
+                "behavior": classify(row, amount_2m_floor=floor),
+            }
+        )
+    return tuple(rows)
 
 
 def probe(
@@ -307,6 +366,11 @@ def probe(
         )
         context = builder.build(request)
         stats = legacy["build_auction_plate_bucket_stats"](context, top_n=10)
+        opening_behavior_rows = _opening_behavior_rows(
+            legacy,
+            tuple(context.stock_snapshots),
+            symbols,
+        )
         now_ms = int(now.timestamp() * 1000)
         latest_source_ms = int(context.latest_quote_timestamp_ms or 0)
         future_source = latest_source_ms > now_ms
@@ -319,7 +383,7 @@ def probe(
             "recovery, writer, notification and effect hooks disabled"
         )
         return {
-            "contract_version": "EngineNextContextProbeV1",
+            "contract_version": "EngineNextContextProbeV2",
             "trade_date": trade_date,
             "previous_trade_date": previous_trade_date,
             "symbols": symbols,
@@ -355,6 +419,18 @@ def probe(
                 }
                 for row in stats
             ],
+            "opening_behavior_audit": {
+                "status": "OBSERVED",
+                "rule_status": "UNKNOWN",
+                "rule_source": "engine_next.strategy_skill_layer.stock_behavior.classify_opening_entry_behavior",
+                "amount_floor_source": "engine_next.strategy_skill_layer.relative_amount.relative_amount_floor",
+                "amount_floor_scope": "full_context_snapshots",
+                "rows": opening_behavior_rows,
+                "notes": (
+                    "Legacy labels are audit observations only; no Core strategy threshold is inferred.",
+                    "speed_1m and amount_2m retain legacy context units; cross-source parity remains UNKNOWN.",
+                ),
+            },
             "guard_writes": blocked_writes,
             "read_only": not blocked_writes,
             "side_effect_boundary": side_effect_boundary,
