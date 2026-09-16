@@ -13,6 +13,14 @@ MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
+STRATEGY_SPEC = importlib.util.spec_from_file_location(
+    "real_auction_strategy_shadow",
+    Path(__file__).parents[1] / "examples" / "run_real_auction_strategy_shadow.py",
+)
+STRATEGY_MODULE = importlib.util.module_from_spec(STRATEGY_SPEC)
+assert STRATEGY_SPEC.loader is not None
+STRATEGY_SPEC.loader.exec_module(STRATEGY_MODULE)
+
 
 def _rows():
     return [
@@ -94,3 +102,28 @@ def test_shadow_source_metadata_and_refs_are_explicit_not_assumed_td():
         if ref.startswith("redis://")
     )
     assert not any(ref.startswith("td://") for ref in result["shadow"]["evidence_refs"])
+
+
+def test_real_rows_can_enter_migrated_fact_only_strategy(monkeypatch):
+    monkeypatch.setattr(
+        STRATEGY_MODULE,
+        "query_rows",
+        lambda **kwargs: _rows(),
+    )
+    result = STRATEGY_MODULE.run_real_strategy_shadow(
+        trade_date="2026-09-09",
+        symbols=("600519",),
+        td_config={
+            "host": "unused",
+            "port": 0,
+            "user": "unused",
+            "password": "unused",
+            "database": "unused",
+        },
+    )
+    trace = result["results"][0]["strategy_result"]
+    assert result["read_only"] is True
+    assert trace.state == "OBSERVE"
+    assert trace.trace["decision_status"] == "FACT_ONLY"
+    assert trace.trace["auction_fact_shadow"]["status"] == "PARTIAL"
+    assert trace.trace["auction_fact_shadow"]["metrics"]["price_delta_milli"] == 10

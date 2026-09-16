@@ -127,22 +127,20 @@ def _segment_quality(previous: EngineSnapshot, current: EngineSnapshot) -> str:
     return "PARTIAL"
 
 
-def build_shadow_from_rows(
+def build_snapshots_from_rows(
     rows: Iterable[Sequence[Any] | Mapping[str, Any]],
     *,
     trade_date: str,
     symbol: str,
     timezone_name: str = "Asia/Shanghai",
     source_table: str = "market_data1.auction_snapshot_v2",
-    source_semantics: str = "TD projection rows; no Rabbit arrival or batch ordering",
     evidence_ref_prefix: str = "td://market_data1/auction_snapshot_v2",
-) -> dict[str, Any]:
-    """Build adjacent 0920→0924 and 0924→0925 facts from TD projection rows.
+) -> dict[str, EngineSnapshot]:
+    """Build immutable business-anchor snapshots from real TD projection rows.
 
-    This pure helper is intentionally independent of taos.  Rows must contain
-    the exact ``auction_snapshot_v2`` columns listed in :data:`TD_FIELDS`.
-    ``source_record_time_ms`` preserves the actual TD timestamp while each
-    segment retains its business anchor interval.
+    This is an adapter-only helper.  It preserves the TD source timestamp and
+    maps only the four fields already accepted by the auction fact contract.
+    It does not query TD, fill missing values, or infer source arrival order.
     """
 
     trade_date = _strict_date(trade_date)
@@ -166,7 +164,10 @@ def build_shadow_from_rows(
             raise ValueError("TD row ts must be datetime")
         source_record_time_ms = _epoch_ms(source_time, timezone_name)
         business_anchor_time_ms = _epoch_ms(
-            datetime.combine(date.fromisoformat(trade_date), datetime.strptime(ANCHOR_CLOCKS[tag], "%H:%M:%S").time()),
+            datetime.combine(
+                date.fromisoformat(trade_date),
+                datetime.strptime(ANCHOR_CLOCKS[tag], "%H:%M:%S").time(),
+            ),
             timezone_name,
         )
         state = {
@@ -208,6 +209,38 @@ def build_shadow_from_rows(
                 f"{evidence_ref_prefix}/{trade_date}/{symbol}/{tag}",
             ),
         )
+    return snapshots
+
+
+def build_shadow_from_rows(
+    rows: Iterable[Sequence[Any] | Mapping[str, Any]],
+    *,
+    trade_date: str,
+    symbol: str,
+    timezone_name: str = "Asia/Shanghai",
+    source_table: str = "market_data1.auction_snapshot_v2",
+    source_semantics: str = "TD projection rows; no Rabbit arrival or batch ordering",
+    evidence_ref_prefix: str = "td://market_data1/auction_snapshot_v2",
+) -> dict[str, Any]:
+    """Build adjacent 0920→0924 and 0924→0925 facts from TD projection rows.
+
+    This pure helper is intentionally independent of taos.  Rows must contain
+    the exact ``auction_snapshot_v2`` columns listed in :data:`TD_FIELDS`.
+    ``source_record_time_ms`` preserves the actual TD timestamp while each
+    segment retains its business anchor interval.
+    """
+
+    trade_date = _strict_date(trade_date)
+    symbol = _strict_symbol(symbol)
+    tagged = _tagged_rows(rows)
+    snapshots = build_snapshots_from_rows(
+        tuple(tagged.values()),
+        trade_date=trade_date,
+        symbol=symbol,
+        timezone_name=timezone_name,
+        source_table=source_table,
+        evidence_ref_prefix=evidence_ref_prefix,
+    )
 
     segments = (
         build_segment_frame(
