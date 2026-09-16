@@ -88,6 +88,7 @@ from .facts import (
     compute_resting_order_pressure,
 )
 from .probe import ProbeStrategy
+from .auction_strategy import AuctionShadowStrategy
 from .auction_shadow import AuctionFactShadow, build_auction_fact_shadow
 from .anchor_delta import (
     ANCHOR_DELTA_CONTRACT_VERSION,
@@ -203,6 +204,7 @@ __all__ = [
     "RedisHotPlatesProvider",
     "normalize_hot_plates_rows",
     "ProbeStrategy",
+    "AuctionShadowStrategy",
     "AuctionFactShadow",
     "build_auction_fact_shadow",
     "ANCHOR_DELTA_CONTRACT_VERSION",

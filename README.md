@@ -44,10 +44,12 @@ drain 和 Probe 调用；不包含持久化恢复或 Rabbit 接管。Real Data P
 读取边界证据，不是非空历史快照可用性证明。旧 context builder 仍有被阻止的写尝试，
 不能直接作为 engine_core 的只读 Provider。
 
-当前第一条 Auction Shadow 仍停在事实层：`AuctionFactShadow` 复用相邻
-`SegmentFrame`/`SegmentComparison` 输出可追溯的 P/M/RB/RA/pressure 变化，固定为
-`FACT_ONLY/OBSERVE`。旧系统的正式买盘阈值和转强/转弱规则仍待 legacy consumer
-parity 闭环，不能从事实标签直接升级为交易策略。
+当前第一条 Auction Shadow 已接入 Core 的 Engine 组合边界：
+`AuctionShadowStrategy` 只按 `PRE_AUCTION_0915`、`AUCTION_0920`、`AUCTION_0924`
+三个明确锚点调用既有 `AuctionFactShadow`/`SegmentFrame`/`SegmentComparison` 轮子，
+输出仍固定为 `FACT_ONLY/OBSERVE`，且不含阈值、候选、买卖或外部副作用。该类是
+只读迁移适配，不替代 `engine-next` 的生产 owner；真实 0920/0924/0925 投影和
+旧消费者的正式买盘阈值、转强/转弱规则仍需 parity 证据后才能迁移。
 
 Opening 迁移从同一原则开始：`build_open_fact` 只计算可复核的单股事实；
 `build_opening_transition_fact` 只组合已归一化的竞价/开盘变化；`change_pct`
