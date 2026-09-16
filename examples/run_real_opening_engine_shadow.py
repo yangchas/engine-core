@@ -90,20 +90,34 @@ def main() -> int:
     parser.add_argument("--observed-at", required=True)
     parser.add_argument("--stale-after-ms", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--redis-url", default=os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"))
+    parser.add_argument("--redis-host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
+    parser.add_argument("--redis-port", type=int, default=int(os.environ.get("REDIS_PORT", "6379")))
+    parser.add_argument("--redis-db", type=int, default=int(os.environ.get("REDIS_DB", "0")))
     args = parser.parse_args()
     import redis  # type: ignore[import-not-found]
 
-    client = redis.Redis.from_url(args.redis_url, decode_responses=False)
-    result = run_real_opening_engine_shadow(
-        client=client,
-        trade_date=args.trade_date,
-        symbol=args.symbol,
-        observed_at=datetime.fromisoformat(args.observed_at),
-        stale_after_ms=args.stale_after_ms,
+    client = redis.Redis(
+        host=args.redis_host,
+        port=args.redis_port,
+        db=args.redis_db,
+        password=os.environ.get("REDIS_PASSWORD"),
+        decode_responses=True,
+        socket_timeout=5,
+        socket_connect_timeout=5,
     )
-    args.output.write_text(canonical_json(result), encoding="utf-8")
-    print(canonical_json(result))
+    try:
+        result = run_real_opening_engine_shadow(
+            client=client,
+            trade_date=args.trade_date,
+            symbol=args.symbol,
+            observed_at=datetime.fromisoformat(args.observed_at),
+            stale_after_ms=args.stale_after_ms,
+        )
+        with args.output.open("x", encoding="utf-8") as output:
+            output.write(canonical_json(result))
+        print(canonical_json(result))
+    finally:
+        client.close()
     return 0
 
 
