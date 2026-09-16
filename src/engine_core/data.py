@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import hashlib
+import json
 import math
 import re
 from typing import Any, Callable, Iterable, Mapping, Optional, Protocol, Tuple
@@ -105,6 +107,30 @@ def normalize_previous_day_stats_rows(
         "volume_by_symbol": dict(sorted(volume_by_symbol.items())),
         "row_count": len(close_by_symbol),
     }
+
+
+def canonical_daily_kline_cache_payload_hash(
+    rows: Iterable[Mapping[str, Any]],
+) -> str:
+    """Hash the existing date-bucketed Redis kline view by symbol.
+
+    This small contract mirrors the legacy writer's metadata payload hash.
+    It intentionally hashes the persisted row fields exactly as read back;
+    source identity and temporal metadata live in the sidecar metadata key.
+    """
+
+    canonical = {
+        str(row.get("symbol") or ""): dict(row)
+        for row in rows
+    }
+    payload = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def provider_result_from_previous_day_rows(

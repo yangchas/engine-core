@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core import (  # noqa: E402
     AUCTION_REFERENCE_FUNCTION_ORDER,
+    canonical_daily_kline_cache_payload_hash,
     DataContext,
     FreshnessPolicy,
     HotPlatesFunction,
@@ -92,6 +93,43 @@ def run_real_auction_reference_readiness(
             rows.append(row)
         return rows
 
+    def redis_kline_available_at(previous: str) -> int | None:
+        """Return sidecar availability only when it matches the full cache."""
+        try:
+            metadata_raw = client.get("cache:kline_ready_meta:" + previous)
+            if metadata_raw is None:
+                return None
+            metadata = json.loads(metadata_raw)
+            if not isinstance(metadata, dict):
+                return None
+            available = metadata.get("available_at_ms")
+            if (
+                metadata.get("schema_version") != "DailyKlineRuntimeCacheV1"
+                or metadata.get("trade_date") != previous
+                or metadata.get("source") != "baostock"
+                or metadata.get("success") is not True
+                or isinstance(available, bool)
+                or not isinstance(available, int)
+                or available <= 0
+            ):
+                return None
+            raw_payload = client.hgetall("cache:kline_ready:" + previous) or {}
+            if not isinstance(raw_payload, dict):
+                return None
+            rows = []
+            for field, raw_value in raw_payload.items():
+                value = json.loads(raw_value) if isinstance(raw_value, (str, bytes)) else raw_value
+                if not isinstance(value, dict) or str(value.get("symbol") or "") != str(field):
+                    return None
+                if value.get("trade_date") != previous:
+                    return None
+                rows.append(dict(value))
+            if not rows or canonical_daily_kline_cache_payload_hash(rows) != metadata.get("payload_sha256"):
+                return None
+            return available
+        except (TypeError, ValueError, OverflowError):
+            return None
+
     # This is an explicit audit-source choice, not a semantic fallback engine:
     # TD remains first.  Only a successful empty TD read selects the existing
     # Redis runtime view.  Access errors remain TD errors and are not hidden.
@@ -126,10 +164,11 @@ def run_real_auction_reference_readiness(
         )
         previous_day_stats_source_selection = "td_daily_kline"
     else:
+        redis_available_at_ms = redis_kline_available_at(previous_trade_date)
         previous_stats_provider = RedisPreviousDayStatsProvider(
             redis_kline_rows,
             observed_at_ms=lambda: observed_at_ms,
-            available_at_ms=None,
+            available_at_ms=lambda: redis_available_at_ms,
             source_id="redis_daily_kline_cache",
             source_schema="cache:kline_ready",
             evidence_ref="redis://cache:kline_ready/" + previous_trade_date,
