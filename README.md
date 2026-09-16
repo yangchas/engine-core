@@ -51,6 +51,12 @@ drain 和 Probe 调用；不包含持久化恢复或 Rabbit 接管。Real Data P
 只读迁移适配，不替代 `engine-next` 的生产 owner；真实 0920/0924/0925 投影和
 旧消费者的正式买盘阈值、转强/转弱规则仍需 parity 证据后才能迁移。
 
+`examples/run_real_auction_engine_shadow.py` 提供一个有界验证入口：将真实
+TD `auction_snapshot_v2` 投影适配为 canonical market projection，按每个业务锚点
+提交 `MARKET_UPDATE` 与 `TIMER`，再由同一个 `DeterministicEngine` 调用该事实
+Shadow。它只证明真实投影经过公开 Engine signal path 后与纯事实轮子保持 semantic
+hash 一致；仍是单股票、TD SELECT-only、FACT_ONLY，不是全市场生产循环。
+
 Opening 迁移从同一原则开始：`build_open_fact` 只计算可复核的单股事实；
 `build_opening_transition_fact` 只组合已归一化的竞价/开盘变化；`change_pct`
 使用百分数单位，`limit_state` 保持独立状态，不由涨幅推断。真实 Redis Q2 旁路验证脚本
