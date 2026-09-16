@@ -8,7 +8,15 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from engine_core import DataStatus, TimerFiring, build_a_share_session_plan, build_calendar_snapshot, local_datetime_ms
+from engine_core import (
+    DataStatus,
+    FreshnessPolicy,
+    TimerFiring,
+    build_a_share_session_plan,
+    build_calendar_snapshot,
+    build_q2_projection,
+    local_datetime_ms,
+)
 from examples import run_live_morning_shadow as live
 
 
@@ -130,6 +138,106 @@ def test_build_node_evidence_normalizes_q2_status_for_trace():
     )
     assert result["q2"]["status"] == "STALE"
     assert result["q2"]["content_hash"] == "q2-hash"
+
+
+def test_capture_node_rechecks_q2_at_node_boundary(monkeypatch: pytest.MonkeyPatch):
+    """A startup miss must not hide a later node-boundary Q2 observation."""
+
+    observed_at = _dt("09:26:00")
+    projection = build_q2_projection(
+        "2026-09-14",
+        observed_at,
+        ("600519",),
+        {
+            "600519": {
+                "mk": "sh",
+                "px": "1276000",
+                "pc": "1270000",
+                "amt": "100000",
+                "ts": str(local_datetime_ms("2026-09-14", "09:26:00", timezone_name="Asia/Shanghai")),
+            }
+        },
+        freshness_policy=FreshnessPolicy(stale_after_ms=60_000),
+    )
+    monkeypatch.setattr(live, "_redis_projection", lambda **kwargs: projection)
+    monkeypatch.setattr(
+        live,
+        "_read_td_rows",
+        lambda symbols, **kwargs: {symbol: () for symbol in symbols},
+    )
+    result = live._capture_node(
+        _firing("AUCTION_0926"),
+        observed_at=observed_at,
+        trade_date="2026-09-14",
+        symbols=("600519",),
+        stale_after_ms=60_000,
+        legacy_root=None,
+        td_config={},
+        calendar=CALENDAR,
+        plan=build_a_share_session_plan("2026-09-14", CALENDAR),
+    )
+    assert result["node_readiness"]["q2_status"] == "READY"
+    assert result["node_readiness"]["q2_coverage"] == 1.0
+    # Auction facts remain TD-owned; the Q2 recheck is readiness evidence,
+    # not an implicit replacement for the auction input contract.
+    assert result["q2"] is None
+
+
+def test_auction_node_keeps_td_fact_when_q2_readiness_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Q2 readiness is diagnostic for auction; it is not an auction input."""
+
+    monkeypatch.setattr(
+        live,
+        "_redis_projection",
+        lambda **kwargs: (_ for _ in ()).throw(ConnectionError("redis unavailable")),
+    )
+    monkeypatch.setattr(
+        live,
+        "_read_td_rows",
+        lambda symbols, **kwargs: {
+            "600519": (
+                {
+                    "auction_tag": "0924",
+                    "symbol": "600519",
+                    "trade_date": "20260914",
+                    "ts": _dt("09:24:10"),
+                    "px_milli": 1276000,
+                    "chg_bp": 6,
+                    "match_amt_yuan": 100,
+                    "rest_bid_amt_yuan": 200,
+                    "rest_ask_amt_yuan": 50,
+                },
+                {
+                    "auction_tag": "0925",
+                    "symbol": "600519",
+                    "trade_date": "20260914",
+                    "ts": _dt("09:25:06"),
+                    "px_milli": 1277000,
+                    "chg_bp": 7,
+                    "match_amt_yuan": 150,
+                    "rest_bid_amt_yuan": 250,
+                    "rest_ask_amt_yuan": 40,
+                },
+            )
+            for symbol in symbols
+        },
+    )
+    result = live._capture_node(
+        _firing("AUCTION_0926"),
+        observed_at=_dt("09:26:00"),
+        trade_date="2026-09-14",
+        symbols=("600519",),
+        stale_after_ms=60_000,
+        legacy_root=None,
+        td_config={},
+        calendar=CALENDAR,
+        plan=build_a_share_session_plan("2026-09-14", CALENDAR),
+    )
+    assert result["q2_observation_error"] == "builtins.ConnectionError"
+    assert result["node_readiness"]["q2_status"] == "MISSING"
+    assert result["fact_dispatch"][0]["facts"][0]["status"] == "READY"
 
 
 def test_live_shell_captures_each_node_at_its_due_observation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

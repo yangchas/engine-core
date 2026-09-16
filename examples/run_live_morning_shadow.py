@@ -196,6 +196,8 @@ def build_node_evidence(
     td_rows_by_symbol: Mapping[str, Sequence[Sequence[Any] | Mapping[str, Any]]],
     projection: Any = None,
     legacy_loader: Mapping[str, Any] | None = None,
+    node_readiness: Mapping[str, Any] | None = None,
+    q2_observation_error: str | None = None,
 ) -> dict[str, Any]:
     """Build one node's deterministic evidence from already-read inputs.
 
@@ -259,6 +261,12 @@ def build_node_evidence(
         },
         "source_record_time_values": tuple(source_ranges),
         "q2": q2_evidence,
+        # Node readiness is an observation about the input available at the
+        # node boundary.  It is deliberately kept out of the fact semantic
+        # hash: a stale/partial Q2 observation must not rewrite an otherwise
+        # deterministic TD-derived fact identity.
+        "node_readiness": node_readiness or {"status": "NOT_CAPTURED"},
+        "q2_observation_error": q2_observation_error,
         "legacy_loader": legacy_loader or {"status": "NOT_CONFIGURED"},
         "fact_dispatch": tuple(dispatch_rows),
         "read_only": True,
@@ -339,7 +347,40 @@ def _capture_node(
     stale_after_ms: int,
     legacy_root: Path | None,
     td_config: Mapping[str, Any],
+    calendar: TradingCalendarSnapshot,
+    plan: SessionPlan,
 ) -> dict[str, Any]:
+    # Re-read Q2 once at each Core node.  This is a bounded readiness
+    # observation, not a hot-path poll and not a second scheduler.  It closes
+    # the gap where startup can see MISSING Q2 but a later node can observe a
+    # recovered (possibly PARTIAL/STALE) cohort.
+    q2_observation_error = None
+    try:
+        q2_projection = _redis_projection(
+            trade_date=trade_date,
+            observed_at=observed_at,
+            stale_after_ms=stale_after_ms,
+        )
+    except Exception as exc:
+        # Auction facts are independently TD-owned.  A bounded Q2 readiness
+        # probe failure must be visible but must not suppress that fact path.
+        # Opening facts require Q2 and therefore preserve the previous
+        # fail-closed behavior by re-raising the observation error.
+        if firing.timer_id == "OPENING_0932":
+            raise
+        q2_projection = None
+        q2_observation_error = f"{type(exc).__module__}.{type(exc).__name__}"
+    node_readiness = asdict(
+        assess_startup_readiness(
+            trade_date=trade_date,
+            as_of_ms=_epoch_ms(observed_at),
+            calendar=calendar,
+            session_plan=plan,
+            q2=q2_projection,
+            timer_specs=(),
+            origin=firing.origin,
+        )
+    )
     td_rows = _read_td_rows(symbols, trade_date=trade_date, **td_config)
     legacy = _legacy_loader_evidence(
         legacy_root,
@@ -348,11 +389,7 @@ def _capture_node(
     )
     projection = None
     if firing.timer_id == "OPENING_0932":
-        projection = _redis_projection(
-            trade_date=trade_date,
-            observed_at=observed_at,
-            stale_after_ms=stale_after_ms,
-        )
+        projection = q2_projection
     return build_node_evidence(
         firing,
         observed_at=observed_at,
@@ -361,6 +398,8 @@ def _capture_node(
         td_rows_by_symbol=td_rows,
         projection=projection,
         legacy_loader=legacy,
+        node_readiness=node_readiness,
+        q2_observation_error=q2_observation_error,
     )
 
 
@@ -480,6 +519,8 @@ def run_live_morning_shadow(
                 stale_after_ms=stale_after_ms,
                 legacy_root=legacy_root,
                 td_config=td_config,
+                calendar=calendar,
+                plan=plan,
             )
             node_path = output_dir / (firing.timer_id + ".json")
             node_file_shas[firing.timer_id] = _atomic_write_once(node_path, node)
