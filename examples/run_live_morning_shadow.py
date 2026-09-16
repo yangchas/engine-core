@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core import (  # noqa: E402
+    AuctionReferencePreparation,
     FreshnessPolicy,
     SessionPlan,
     TimerFiring,
@@ -212,6 +213,7 @@ def build_node_evidence(
     legacy_loader: Mapping[str, Any] | None = None,
     node_readiness: Mapping[str, Any] | None = None,
     q2_observation_error: str | None = None,
+    auction_reference_preparation: AuctionReferencePreparation | None = None,
 ) -> dict[str, Any]:
     """Build one node's deterministic evidence from already-read inputs.
 
@@ -248,6 +250,7 @@ def build_node_evidence(
                         rows=list(rows),
                         trade_date=trade_date,
                         symbol=symbol,
+                        preparation=auction_reference_preparation,
                     ),
                 }
             elif firing.timer_id == "OPENING_0932":
@@ -320,6 +323,15 @@ def build_node_evidence(
         "node_readiness": node_readiness or {"status": "NOT_CAPTURED"},
         "q2_observation_error": q2_observation_error,
         "legacy_loader": legacy_loader or {"status": "NOT_CONFIGURED"},
+        "auction_reference_preparation": (
+            {
+                "status": "PREPARED",
+                "content_hash": auction_reference_preparation.content_hash,
+                "knowledge_as_of_ms": auction_reference_preparation.knowledge_as_of_ms,
+            }
+            if auction_reference_preparation is not None
+            else {"status": "NOT_PROVIDED"}
+        ),
         "fact_dispatch": tuple(dispatch_rows),
         "read_only": True,
         "side_effect_boundary": (
@@ -402,6 +414,7 @@ def _capture_node(
     td_config: Mapping[str, Any],
     calendar: TradingCalendarSnapshot,
     plan: SessionPlan,
+    auction_reference_preparation: AuctionReferencePreparation | None = None,
 ) -> dict[str, Any]:
     # Re-read Q2 once at each Core node.  This is a bounded readiness
     # observation, not a hot-path poll and not a second scheduler.  It closes
@@ -453,6 +466,7 @@ def _capture_node(
         legacy_loader=legacy,
         node_readiness=node_readiness,
         q2_observation_error=q2_observation_error,
+        auction_reference_preparation=auction_reference_preparation,
     )
 
 
@@ -508,6 +522,7 @@ def run_live_morning_shadow(
     poll_seconds: float = 0.25,
     start_at: clock_time = clock_time(9, 15),
     stop_at: clock_time = clock_time(9, 33),
+    auction_reference_preparation: AuctionReferencePreparation | None = None,
 ) -> dict[str, Any]:
     """Run the bounded live shell; clock/sleep are injectable for tests."""
 
@@ -574,6 +589,7 @@ def run_live_morning_shadow(
                 td_config=td_config,
                 calendar=calendar,
                 plan=plan,
+                auction_reference_preparation=auction_reference_preparation,
             )
             node_path = output_dir / (firing.timer_id + ".json")
             node_file_shas[firing.timer_id] = _atomic_write_once(node_path, node)

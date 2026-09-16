@@ -347,12 +347,15 @@ def test_opening_node_keeps_q2_failure_fail_closed(monkeypatch: pytest.MonkeyPat
 def test_live_shell_captures_each_node_at_its_due_observation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     clock_values = iter((_dt("09:15:00"), _dt("09:15:00"), _dt("09:26:00"), _dt("09:32:00")))
     captured: list[tuple[str, datetime]] = []
+    reference_preparations: list[object] = []
+    preparation = object()
 
     monkeypatch.setattr(live, "_startup_evidence", lambda **kwargs: {"read_only": True})
 
     def fake_capture(firing, **kwargs):
         observed = kwargs["observed_at"]
         captured.append((firing.timer_id, observed))
+        reference_preparations.append(kwargs["auction_reference_preparation"])
         return {"timer": live._timer_payload(firing), "observed_at": observed.isoformat()}
 
     monkeypatch.setattr(live, "_capture_node", fake_capture)
@@ -366,9 +369,11 @@ def test_live_shell_captures_each_node_at_its_due_observation(tmp_path: Path, mo
         now_fn=lambda: next(clock_values),
         sleep_fn=lambda _: None,
         poll_seconds=0,
+        auction_reference_preparation=preparation,
     )
     assert [item[0] for item in captured] == ["AUCTION_0926", "OPENING_0932"]
     assert [item[1].strftime("%H:%M:%S") for item in captured] == ["09:26:00", "09:32:00"]
+    assert reference_preparations == [preparation, preparation]
     assert manifest["node_timer_ids"] == ("AUCTION_0926", "OPENING_0932")
     assert (tmp_path / "run" / "startup.json").exists()
     assert (tmp_path / "run" / "AUCTION_0926.json").exists()
