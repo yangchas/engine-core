@@ -65,3 +65,23 @@ def test_opening_shadow_preserves_missing_symbol_state():
 
     assert result.trace["fact_status"] == "MISSING"
     assert result.trace["reason_codes"] == ("SYMBOL_STATE_MISSING",)
+
+
+def test_opening_shadow_does_not_promote_partial_snapshot_to_ready():
+    snapshot = replace(
+        _snapshot(
+            {
+                "price_milli": 10500,
+                "pre_close_milli": 10000,
+                "amount_2m_yuan": 1200000,
+                "limit_state": 0,
+            }
+        ),
+        completeness="PARTIAL",
+    )
+    result = OpeningShadowStrategy(scope_id="600519").evaluate(
+        snapshot, FrozenDataBundle.empty("opening-partial", 2000)
+    )
+
+    assert result.trace["opening_fact"]["status"] == "available"
+    assert result.trace["fact_status"] == "PARTIAL"

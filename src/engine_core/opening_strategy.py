@@ -80,9 +80,15 @@ class OpeningShadowStrategy:
                 "name": values.get("name"),
             }
             fact = build_open_fact(row)
+            fact_available = fact["status"] == "available"
+            snapshot_complete = snapshot.completeness == "READY"
             trace.update(
                 {
-                    "fact_status": "READY" if fact["status"] == "available" else "PARTIAL",
+                    # A valid row is not enough to claim a ready evaluation:
+                    # the surrounding Q2 cohort may be stale or partial.  Do
+                    # not promote a field-level calculation above the source
+                    # snapshot quality contract.
+                    "fact_status": "READY" if fact_available and snapshot_complete else "PARTIAL",
                     "opening_fact": fact,
                     "source_time_range": {
                         "oldest": snapshot.source_observation_metadata.get(
