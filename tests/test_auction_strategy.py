@@ -105,6 +105,49 @@ def test_strategy_engine_boundary_composes_same_foundation_fact():
     assert shadow["metrics"]["pressure_delta_yuan"] == 778730
 
 
+def test_strategy_lifecycle_pending_to_ready_and_duplicate_anchor_is_idempotent():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    strategy = AuctionShadowStrategy(
+        scope_id=fixture["symbol"],
+        previous_coverage_status="READY",
+        current_coverage_status="READY",
+    )
+    snapshots = tuple(
+        _snapshot(fixture, name)
+        for name in ("pre_auction_0915", "auction_0920", "auction_0924")
+    )
+
+    results = [
+        strategy.evaluate(
+            snapshot,
+            FrozenDataBundle.empty("lifecycle-%d" % index, snapshot.logical_time_ms),
+        )
+        for index, snapshot in enumerate(snapshots)
+    ]
+
+    assert [item.trace["fact_status"] for item in results] == [
+        "PENDING",
+        "PENDING",
+        "PARTIAL",
+    ]
+    terminal_shadow = results[-1].trace["auction_fact_shadow"]
+
+    duplicate = strategy.evaluate(
+        snapshots[-1],
+        FrozenDataBundle.empty("lifecycle-2", snapshots[-1].logical_time_ms),
+    )
+
+    assert duplicate.trace["fact_status"] == "PARTIAL"
+    assert duplicate.trace["auction_fact_shadow"]["content_hash"] == terminal_shadow[
+        "content_hash"
+    ]
+    assert tuple(strategy._snapshots) == (
+        "PRE_AUCTION_0915",
+        "AUCTION_0920",
+        "AUCTION_0924",
+    )
+
+
 def test_strategy_repeated_execution_is_deterministic():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
 
