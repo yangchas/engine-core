@@ -9,6 +9,8 @@ or convert percentage fields into another unit.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
 import math
 import re
@@ -20,6 +22,25 @@ from .data import DataContext, ProviderResult, TemporalDataGuard
 
 
 PREVIOUS_DAY_LIMIT_POOL_CONTRACT_VERSION = "PreviousDayLimitPoolV1"
+
+
+def canonical_previous_day_limit_pool_payload_hash(
+    rows: Iterable[Mapping[str, Any]],
+) -> str:
+    """Hash the symbol-keyed Redis payload using the producer contract."""
+
+    canonical = {
+        str(row.get("symbol") or ""): dict(row)
+        for row in rows
+    }
+    payload = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 _SYMBOL_PATTERN = re.compile(r"\d{6}")
 
@@ -222,6 +243,13 @@ class RedisPreviousDayLimitPoolProvider:
                 )
                 if has_contract_fields and metadata.get("schema_version") != PREVIOUS_DAY_LIMIT_POOL_CONTRACT_VERSION:
                     raise ValueError("source metadata schema_version is not verified")
+                if has_contract_fields:
+                    expected_hash = metadata.get("payload_sha256")
+                    if not isinstance(expected_hash, str) or not expected_hash:
+                        raise ValueError("source metadata payload_sha256 is missing")
+                    actual_hash = canonical_previous_day_limit_pool_payload_hash(rows)
+                    if expected_hash != actual_hash:
+                        raise ValueError("source metadata payload_sha256 mismatch")
                 if isinstance(metadata, Mapping) and "available_at_ms" in metadata:
                     available = _verified_available_at_ms(metadata)
                 metadata_units = _verified_field_units(metadata)

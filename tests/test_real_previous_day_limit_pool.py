@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from engine_core import canonical_previous_day_limit_pool_payload_hash
 from examples.run_real_previous_day_limit_pool import run_real_previous_day_limit_pool
 
 
@@ -78,6 +79,7 @@ def test_real_composition_accepts_only_explicit_redis_meta_contract():
                     "turnover": "yuan",
                     "close_pct": "percent",
                 },
+                "payload_sha256": canonical_previous_day_limit_pool_payload_hash(_rows()),
             },
         },
     )

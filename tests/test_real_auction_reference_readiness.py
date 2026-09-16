@@ -3,7 +3,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from engine_core import build_calendar_snapshot, local_datetime_ms
+from engine_core import (
+    build_calendar_snapshot,
+    canonical_hot_plates_payload_hash,
+    canonical_previous_day_limit_pool_payload_hash,
+    local_datetime_ms,
+)
 from examples.run_real_auction_reference_readiness import (
     run_real_auction_reference_readiness,
 )
@@ -17,35 +22,33 @@ NOW = local_datetime_ms(TRADE_DATE, "09:19:00")
 class ReadOnlyRedis:
     def __init__(self):
         available = NOW - 1
+        limit_row = {
+            "trade_date": PREVIOUS_DATE,
+            "symbol": "000001",
+            "name": "sample",
+            "lb_days": 1,
+            "plate": "bank",
+            "seal_time": "09:31:00",
+            "turnover": 10.0,
+            "close_pct": 10.0,
+            "source": "kaipan",
+        }
+        hot_row = {
+            "trade_date": TRADE_DATE,
+            "plate_name": "bank",
+            "rank": 1,
+            "strength": 10.0,
+            "hot": 10.0,
+            "change_pct": 1.0,
+            "net_inflow_yi": 1.0,
+            "source": "kaipan",
+        }
         self.hashes = {
             "cache:yest_limit_pool:" + PREVIOUS_DATE: {
-                "000001": json.dumps(
-                    {
-                        "trade_date": PREVIOUS_DATE,
-                        "symbol": "000001",
-                        "name": "sample",
-                        "lb_days": 1,
-                        "plate": "bank",
-                        "seal_time": "09:31:00",
-                        "turnover": 10.0,
-                        "close_pct": 10.0,
-                        "source": "kaipan",
-                    }
-                )
+                "000001": json.dumps(limit_row)
             },
             "cache:hot_plates:" + TRADE_DATE: {
-                "bank": json.dumps(
-                    {
-                        "trade_date": TRADE_DATE,
-                        "plate_name": "bank",
-                        "rank": 1,
-                        "strength": 10.0,
-                        "hot": 10.0,
-                        "change_pct": 1.0,
-                        "net_inflow_yi": 1.0,
-                        "source": "kaipan",
-                    }
-                )
+                "bank": json.dumps(hot_row)
             },
             "q2:000001": {
                 "px": "1000",
@@ -65,6 +68,7 @@ class ReadOnlyRedis:
                         "turnover": "percent",
                         "close_pct": "percent",
                     },
+                    "payload_sha256": canonical_previous_day_limit_pool_payload_hash((limit_row,)),
                 }
             ),
             "cache:hot_plates_meta:" + TRADE_DATE: json.dumps(
@@ -78,6 +82,7 @@ class ReadOnlyRedis:
                         "change_pct": "percent",
                         "net_inflow_yi": "yi",
                     },
+                    "payload_sha256": canonical_hot_plates_payload_hash((hot_row,)),
                 }
             ),
         }

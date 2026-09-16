@@ -11,6 +11,7 @@ from engine_core import (
     PreviousDayLimitPoolFunction,
     RedisPreviousDayLimitPoolProvider,
     build_calendar_snapshot,
+    canonical_previous_day_limit_pool_payload_hash,
     normalize_previous_day_limit_pool_rows,
 )
 
@@ -157,6 +158,42 @@ def test_provider_rejects_malformed_source_metadata():
     )
     assert result.status is DataStatus.ERROR
     assert result.available_at_ms is None
+
+
+def test_provider_accepts_only_metadata_bound_to_the_same_payload():
+    provider = RedisPreviousDayLimitPoolProvider(
+        lambda previous: _rows(),
+        observed_at_ms=lambda: 1789080000000,
+        metadata=lambda previous: {
+            "schema_version": "PreviousDayLimitPoolV1",
+            "available_at_ms": 1789070000000,
+            "field_units": {
+                "lb_days": "boards",
+                "turnover": "yuan",
+                "close_pct": "percent",
+            },
+            "payload_sha256": canonical_previous_day_limit_pool_payload_hash(_rows()),
+        },
+    )
+    ready = PreviousDayLimitPoolFunction(provider, CALENDAR).execute(
+        DataContext("eval", "READ_ONLY", 1789080000000), _request()
+    )
+    assert ready.status is DataStatus.READY
+
+    mismatched = RedisPreviousDayLimitPoolProvider(
+        lambda previous: _rows(),
+        observed_at_ms=lambda: 1789080000000,
+        metadata=lambda previous: {
+            "schema_version": "PreviousDayLimitPoolV1",
+            "available_at_ms": 1789070000000,
+            "field_units": {"turnover": "yuan"},
+            "payload_sha256": "0" * 64,
+        },
+    )
+    rejected = PreviousDayLimitPoolFunction(mismatched, CALENDAR).execute(
+        DataContext("eval", "READ_ONLY", 1789080000000), _request()
+    )
+    assert rejected.status is DataStatus.ERROR
 
 
 def test_non_trading_request_is_rejected_before_provider_access():

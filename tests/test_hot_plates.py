@@ -9,6 +9,7 @@ from engine_core import (
     HotPlatesFunction,
     RedisHotPlatesProvider,
     build_calendar_snapshot,
+    canonical_hot_plates_payload_hash,
     normalize_hot_plates_rows,
 )
 
@@ -68,7 +69,7 @@ def _context():
     return DataContext("eval", "READ_ONLY", 1789080000000)
 
 
-def _verified_metadata(available_at_ms=1789070000000):
+def _verified_metadata(available_at_ms=1789070000000, *, rows=None):
     return {
         "schema_version": "HotPlatesV1",
         "available_at_ms": available_at_ms,
@@ -79,6 +80,7 @@ def _verified_metadata(available_at_ms=1789070000000):
             "change_pct": "percent",
             "net_inflow_yi": "yi",
         },
+        "payload_sha256": canonical_hot_plates_payload_hash(_rows() if rows is None else rows),
     }
 
 
@@ -172,6 +174,21 @@ def test_provider_malformed_metadata_is_error_not_unknown_ready():
     assert result.available_at_ms is None
 
 
+def test_provider_rejects_metadata_for_a_different_payload():
+    metadata = _verified_metadata()
+    metadata["payload_sha256"] = "0" * 64
+    provider = RedisHotPlatesProvider(
+        lambda trade_date: _rows(),
+        observed_at_ms=lambda: 1789080000000,
+        metadata=lambda trade_date: metadata,
+    )
+
+    result = HotPlatesFunction(provider, CALENDAR).execute(_context(), _request())
+
+    assert result.status is DataStatus.ERROR
+    assert result.available_at_ms is None
+
+
 def test_optional_numeric_values_stay_null_and_are_not_fabricated():
     rows = _rows()
     rows[0]["strength"] = None
@@ -179,7 +196,7 @@ def test_optional_numeric_values_stay_null_and_are_not_fabricated():
     provider = RedisHotPlatesProvider(
         lambda trade_date: rows,
         observed_at_ms=lambda: 1789080000000,
-        metadata=lambda trade_date: _verified_metadata(),
+        metadata=lambda trade_date: _verified_metadata(rows=rows),
     )
     result = HotPlatesFunction(provider, CALENDAR).execute(_context(), _request())
 
@@ -246,7 +263,7 @@ def test_empty_verified_snapshot_is_missing_not_ready():
     provider = RedisHotPlatesProvider(
         lambda trade_date: [],
         observed_at_ms=lambda: 1789080000000,
-        metadata=lambda trade_date: _verified_metadata(),
+        metadata=lambda trade_date: _verified_metadata(rows=[]),
     )
     result = HotPlatesFunction(provider, CALENDAR).execute(_context(), _request())
 

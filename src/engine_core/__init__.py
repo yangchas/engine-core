@@ -61,6 +61,7 @@ from .previous_day_limit_pool import (
     PreviousDayLimitPoolFunction,
     PreviousDayLimitPoolProvider,
     RedisPreviousDayLimitPoolProvider,
+    canonical_previous_day_limit_pool_payload_hash,
     normalize_previous_day_limit_pool_rows,
 )
 from .hot_plates import (
@@ -68,6 +69,7 @@ from .hot_plates import (
     HotPlatesFunction,
     HotPlatesProvider,
     RedisHotPlatesProvider,
+    canonical_hot_plates_payload_hash,
     normalize_hot_plates_rows,
 )
 from .engine import DeterministicEngine
@@ -206,11 +208,13 @@ __all__ = [
     "PREVIOUS_DAY_LIMIT_POOL_CONTRACT_VERSION",
     "PreviousDayLimitPoolFunction",
     "PreviousDayLimitPoolProvider",
+    "canonical_previous_day_limit_pool_payload_hash",
     "RedisPreviousDayLimitPoolProvider",
     "normalize_previous_day_limit_pool_rows",
     "HOT_PLATES_CONTRACT_VERSION",
     "HotPlatesFunction",
     "HotPlatesProvider",
+    "canonical_hot_plates_payload_hash",
     "RedisHotPlatesProvider",
     "normalize_hot_plates_rows",
     "ProbeStrategy",

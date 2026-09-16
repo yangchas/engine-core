@@ -8,6 +8,8 @@ availability evidence.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
 import math
 import re
@@ -19,6 +21,23 @@ from .data import DataContext, ProviderResult, TemporalDataGuard
 
 
 HOT_PLATES_CONTRACT_VERSION = "HotPlatesV1"
+
+
+def canonical_hot_plates_payload_hash(rows: Iterable[Mapping[str, Any]]) -> str:
+    """Hash the normalized producer payload using the shared Redis contract."""
+
+    ordered = sorted(
+        (dict(row) for row in rows),
+        key=lambda row: (int(row.get("rank", 0)), str(row.get("plate_name") or "").strip()),
+    )
+    payload = json.dumps(
+        {"rows": ordered},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 _VERIFIED_UNIT_FIELDS = frozenset(
     {"rank", "strength", "hot", "change_pct", "net_inflow_yi"}
@@ -200,6 +219,13 @@ class RedisHotPlatesProvider:
                 )
                 if has_contract_fields and metadata.get("schema_version") != HOT_PLATES_CONTRACT_VERSION:
                     raise ValueError("source metadata schema_version is not verified")
+                if has_contract_fields:
+                    expected_hash = metadata.get("payload_sha256")
+                    if not isinstance(expected_hash, str) or not expected_hash:
+                        raise ValueError("source metadata payload_sha256 is missing")
+                    actual_hash = canonical_hot_plates_payload_hash(rows)
+                    if expected_hash != actual_hash:
+                        raise ValueError("source metadata payload_sha256 mismatch")
                 if "available_at_ms" in metadata:
                     available = _verified_available_at_ms(metadata)
                 metadata_units = _verified_field_units(metadata)

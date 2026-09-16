@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from engine_core import canonical_hot_plates_payload_hash
 from examples.run_real_hot_plates import run_real_hot_plates
 
 
@@ -67,6 +68,7 @@ def test_real_composition_accepts_only_explicit_hot_plate_metadata():
                     "change_pct": "percent",
                     "net_inflow_yi": "yi",
                 },
+                "payload_sha256": canonical_hot_plates_payload_hash(_rows()),
             },
         },
     )
