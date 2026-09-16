@@ -54,8 +54,17 @@ def run_real_auction_reference_readiness(
     stale_after_ms: int,
     td_kwargs: dict[str, Any],
     fetch_td_rows_override: Callable[[str, tuple[str, ...]], list[dict[str, Any]]] | None = None,
+    _return_context: bool = False,
 ) -> dict[str, Any]:
-    """Read and assess the current real reference sources exactly once."""
+    """Read and assess the current real reference sources exactly once.
+
+    The normal return value remains the JSON-safe audit payload.  The private
+    ``_return_context`` path is for a same-process live shadow coordinator: it
+    exposes the already-prepared immutable objects so the caller can bind the
+    exact results to an Engine-owned evaluation without issuing a second
+    provider read.  It is intentionally private and does not alter the CLI
+    contract.
+    """
 
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("observed_at must be timezone-aware")
@@ -228,7 +237,7 @@ def run_real_auction_reference_readiness(
         previous_time_ms=None,
         origin="RECOVERY_CATCHUP",
     )
-    return {
+    payload = {
         "trade_date": trade_date,
         "previous_trade_date": previous_trade_date,
         "observed_at": observed_at.isoformat(),
@@ -278,6 +287,14 @@ def run_real_auction_reference_readiness(
             "no Redis/TD write, Rabbit consume/ACK, repair, network fallback, or effect"
         ),
     }
+    if _return_context:
+        return {
+            "audit": payload,
+            "preparation": prepared,
+            "q2": q2,
+            "readiness_object": readiness,
+        }
+    return payload
 
 
 def main() -> int:

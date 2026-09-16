@@ -280,3 +280,39 @@ def test_real_reference_runner_rejects_unbounded_td_probe():
             td_kwargs={},
             fetch_td_rows_override=lambda date, symbols: [],
         )
+
+
+def test_real_reference_runner_can_return_same_prepared_objects_for_engine_binding():
+    client = ReadOnlyRedis()
+    calendar = build_calendar_snapshot(
+        (PREVIOUS_DATE, TRADE_DATE),
+        version="real-reference-runner-context-v1",
+        declared_valid_from=TRADE_DATE,
+        declared_valid_to=TRADE_DATE,
+        source_guard_valid_from=PREVIOUS_DATE,
+        source_guard_valid_to=TRADE_DATE,
+    )
+    result = run_real_auction_reference_readiness(
+        client=client,
+        trade_date=TRADE_DATE,
+        calendar=calendar,
+        observed_at=datetime.fromtimestamp(NOW / 1000, tz=timezone.utc),
+        symbols=("000001",),
+        stale_after_ms=60_000,
+        td_kwargs={},
+        fetch_td_rows_override=lambda _date, _symbols: [
+            {
+                "symbol": "000001",
+                "trade_date": PREVIOUS_DATE,
+                "close": 10.0,
+                "amount": 1000.0,
+                "volume": 1.0,
+            }
+        ],
+        _return_context=True,
+    )
+    assert result["audit"]["read_only"] is True
+    assert result["preparation"].trade_date == TRADE_DATE
+    assert result["preparation"].content_hash == result["audit"]["reference_preparation_hash"]
+    assert result["q2"].trade_date == TRADE_DATE
+    assert result["readiness_object"].trade_date == TRADE_DATE
