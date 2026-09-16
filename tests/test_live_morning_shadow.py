@@ -167,6 +167,14 @@ def test_live_shell_captures_each_node_at_its_due_observation(tmp_path: Path, mo
     assert len(manifest_payload["build_identity"]["value"]) == 64
 
 
+def test_runtime_build_identity_accepts_explicit_immutable_id(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ENGINE_CORE_BUILD_ID", "release-20260916-1")
+    assert live._runtime_build_identity() == {
+        "kind": "EXPLICIT",
+        "value": "release-20260916-1",
+    }
+
+
 def test_late_start_marks_recovery_and_does_not_reuse_normal_origin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     clock_values = iter((_dt("09:30:00"), _dt("09:30:00"), _dt("09:32:00")))
     origins: list[str] = []
