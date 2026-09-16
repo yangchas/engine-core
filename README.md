@@ -62,6 +62,11 @@ Opening 迁移从同一原则开始：`build_open_fact` 只计算可复核的单
 使用百分数单位，`limit_state` 保持独立状态，不由涨幅推断。真实 Redis Q2 旁路验证脚本
 为 `examples/run_real_opening_facts.py`，仅执行 `SMEMBERS/HGETALL`，不写生产数据。
 
+`examples/run_real_opening_engine_shadow.py` 使用同一公开 Engine signal path
+验证真实 Redis Q2 的单股开盘事实。它只读取 `SMEMBERS/HGETALL`，将 Q2 状态
+提交为 `MARKET_UPDATE` 和开盘 `TIMER`，输出 `OpeningShadowStrategy` 的
+`FACT_ONLY` 结果；速度字段不在单位未证明时强行映射，仍不产生策略结论。
+
 ## 开发
 
     python -m pytest -q

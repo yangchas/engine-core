@@ -108,6 +108,7 @@ from .opening import (
     compute_delta,
     compute_open_change_pct,
 )
+from .opening_strategy import OpeningShadowStrategy
 from .replay import (
     Q2FrameReplaySource,
     Q2FrameV1,
@@ -217,6 +218,7 @@ __all__ = [
     "OPENING_TRANSITION_FACT_CONTRACT_VERSION",
     "build_open_fact",
     "build_opening_transition_fact",
+    "OpeningShadowStrategy",
     "classify_delta",
     "classify_sign_state",
     "compute_change_delta_bp",
