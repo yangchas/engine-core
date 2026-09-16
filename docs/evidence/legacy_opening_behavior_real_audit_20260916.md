@@ -17,6 +17,7 @@ to a verified rule.
 | Input | Real Redis Q2 through the legacy `IntradayDataHub` path |
 | Symbols | `000993, 300207, 600330, 600519` |
 | Probe contract | `EngineNextContextProbeV2` |
+| Engine Core commit | `d17d153c053730f98897f90a88e3b32514aa0ff0` |
 | Read-only guard | `guard_writes=[]` |
 | Probe observed at | `2026-09-16T03:23:23.501930+00:00` |
 | Latest source timestamp | `1789527255000` |
@@ -26,6 +27,13 @@ The probe disabled legacy cache, network, recovery, writer, notification and
 effect hooks. It performed real Redis reads and called only the existing pure
 legacy fact/classification functions. No Rabbit consumer, ACK, Redis write or
 TD write was introduced.
+
+The same commit passed the local and cobra-ion verification suites:
+
+```text
+local:     418 passed; compileall PASS
+cobra-ion: 418 passed; compileall PASS; real probe PASS
+```
 
 ## Observed legacy context and behavior
 
@@ -61,7 +69,7 @@ Core strategy implementation.
 ## Reproduction
 
 ```text
-cd /home/exedev/validation/engine-core-5b6459e26de971c78c5e86d0da2b454df3075237
+cd /home/exedev/validation/engine-core-d17d153c053730f98897f90a88e3b32514aa0ff0
 /home/exedev/services/engine-next/shared/venv/bin/python \
   examples/run_engine_next_context_probe.py \
   --legacy-root /home/exedev/services/engine-next/current \
@@ -71,4 +79,3 @@ cd /home/exedev/validation/engine-core-5b6459e26de971c78c5e86d0da2b454df3075237
   --now <server-local-time> \
   --output /tmp/engine-next-context-20260916-opening-audit.json
 ```
-
