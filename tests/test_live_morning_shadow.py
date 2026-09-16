@@ -90,6 +90,7 @@ def test_build_node_evidence_keeps_business_and_observation_times_separate():
     assert result["business_anchor_time"] == firing.scheduled_time_ms
     assert result["observed_at_ms"] == local_datetime_ms("2026-09-14", "09:26:00", timezone_name="Asia/Shanghai")
     assert result["fact_dispatch"][0]["facts"][0]["timer_id"] == "AUCTION_0926"
+    assert result["fact_dispatch"][0]["engine_shadow"]["status"] == "UNAVAILABLE"
     assert len(result["input_sha256"]) == 64
     assert result["semantic_hash"]
 
@@ -140,6 +141,48 @@ def test_build_node_evidence_normalizes_q2_status_for_trace():
     assert result["q2"]["content_hash"] == "q2-hash"
 
 
+def test_opening_node_routes_the_same_q2_cohort_through_public_engine():
+    observed_at = _dt("09:32:00")
+    projection = build_q2_projection(
+        "2026-09-14",
+        observed_at,
+        ("600519",),
+        {
+            "600519": {
+                "mk": "sh",
+                "px": "1276000",
+                "pc": "1270000",
+                "amt": "100000",
+                "amt2m": "50000",
+                "ts": str(
+                    local_datetime_ms(
+                        "2026-09-14",
+                        "09:32:00",
+                        timezone_name="Asia/Shanghai",
+                    )
+                ),
+            }
+        },
+        freshness_policy=FreshnessPolicy(stale_after_ms=60_000),
+    )
+    result = live.build_node_evidence(
+        _firing("OPENING_0932"),
+        observed_at=observed_at,
+        trade_date="2026-09-14",
+        symbols=("600519",),
+        td_rows_by_symbol={"600519": ()},
+        projection=projection,
+    )
+    engine = result["fact_dispatch"][0]["engine_shadow"]
+    assert engine["status"] == "EXECUTED"
+    assert engine["result"]["processed_signals"] == 2
+    assert engine["result"]["strategy_result"]["trace"]["decision_status"] == "FACT_ONLY"
+    assert engine["result"]["source_time_range"] == {
+        "oldest": projection.oldest_source_time_ms,
+        "newest": projection.newest_source_time_ms,
+    }
+
+
 def test_capture_node_rechecks_q2_at_node_boundary(monkeypatch: pytest.MonkeyPatch):
     """A startup miss must not hide a later node-boundary Q2 observation."""
 
@@ -181,6 +224,40 @@ def test_capture_node_rechecks_q2_at_node_boundary(monkeypatch: pytest.MonkeyPat
     # Auction facts remain TD-owned; the Q2 recheck is readiness evidence,
     # not an implicit replacement for the auction input contract.
     assert result["q2"] is None
+
+
+def test_auction_node_routes_complete_real_rows_through_public_engine():
+    rows = {
+        "600519": [
+            {
+                "auction_tag": tag,
+                "symbol": "600519",
+                "trade_date": "20260914",
+                "ts": _dt(source_time),
+                "px_milli": price,
+                "chg_bp": change,
+                "match_amt_yuan": match,
+                "rest_bid_amt_yuan": bid,
+                "rest_ask_amt_yuan": ask,
+            }
+            for tag, source_time, price, change, match, bid, ask in (
+                ("0920", "09:20:03", 1275000, 5, 80, 180, 60),
+                ("0924", "09:24:10", 1276000, 6, 100, 200, 50),
+                ("0925", "09:25:06", 1277000, 7, 150, 250, 40),
+            )
+        ]
+    }
+    result = live.build_node_evidence(
+        _firing("AUCTION_0926"),
+        observed_at=_dt("09:26:00"),
+        trade_date="2026-09-14",
+        symbols=("600519",),
+        td_rows_by_symbol=rows,
+    )
+    engine = result["fact_dispatch"][0]["engine_shadow"]
+    assert engine["status"] == "EXECUTED"
+    assert engine["result"]["semantic_hash_equal"] is True
+    assert engine["result"]["processed_signals"] == 6
 
 
 def test_auction_node_keeps_td_fact_when_q2_readiness_probe_fails(

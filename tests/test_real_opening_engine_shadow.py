@@ -42,3 +42,23 @@ def test_real_opening_path_runs_q2_adapter_through_public_engine():
     assert result["processed_signals"] == 2
     assert result["strategy_result"].trace["decision_status"] == "FACT_ONLY"
     assert result["strategy_result"].trace["fact_status"] in {"READY", "PARTIAL"}
+
+
+def test_already_read_projection_uses_one_input_cohort():
+    observed_at = datetime.fromtimestamp(1000, tz=timezone.utc)
+    projection = MODULE.RedisQ2ProjectionAdapter(_FakeRedis()).read(
+        "1970-01-01",
+        observed_at,
+        freshness_policy=MODULE.FreshnessPolicy(stale_after_ms=100000000000),
+    )
+    result = MODULE.run_opening_engine_shadow_from_projection(
+        projection=projection,
+        trade_date="1970-01-01",
+        symbol="600519",
+        logical_time_ms=int(observed_at.timestamp() * 1000),
+    )
+    assert result["processed_signals"] == 2
+    assert result["source_time_range"] == {
+        "oldest": projection.oldest_source_time_ms,
+        "newest": projection.newest_source_time_ms,
+    }

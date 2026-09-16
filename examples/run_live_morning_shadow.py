@@ -20,7 +20,7 @@ import json
 import os
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, fields, is_dataclass
 from datetime import datetime, time as clock_time, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -49,6 +49,8 @@ try:  # Script execution resolves sibling examples directly.
         dispatch_morning_fact_nodes,
     )
     from run_real_auction_shadow import query_rows
+    from run_real_auction_engine_shadow import run_engine_shadow as run_auction_engine_shadow
+    from run_real_opening_engine_shadow import run_opening_engine_shadow_from_projection
 except ModuleNotFoundError:  # Pytest/import execution resolves the package.
     from examples.run_engine_next_auction_loader_probe import probe as probe_legacy_auction_loader
     from examples.run_morning_vertical_slice_shadow import (
@@ -58,6 +60,12 @@ except ModuleNotFoundError:  # Pytest/import execution resolves the package.
         dispatch_morning_fact_nodes,
     )
     from examples.run_real_auction_shadow import query_rows
+    from examples.run_real_auction_engine_shadow import (
+        run_engine_shadow as run_auction_engine_shadow,
+    )
+    from examples.run_real_opening_engine_shadow import (
+        run_opening_engine_shadow_from_projection,
+    )
 
 
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
@@ -89,8 +97,14 @@ def _now_local() -> datetime:
 def _json_ready(value: Any) -> Any:
     """Convert dataclasses/tuples for evidence JSON without changing hashes."""
 
-    if hasattr(value, "__dataclass_fields__"):
-        return _json_ready(asdict(value))
+    if is_dataclass(value) and not isinstance(value, type):
+        # ``dataclasses.asdict`` deep-copies leaves.  Core contracts contain
+        # immutable ``mappingproxy`` values which intentionally cannot be
+        # pickled/deep-copied, so walk fields without changing their identity.
+        return {
+            item.name: _json_ready(getattr(value, item.name))
+            for item in fields(value)
+        }
     if isinstance(value, Mapping):
         return {str(key): _json_ready(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):
@@ -222,11 +236,49 @@ def build_node_evidence(
             auction_rows=rows,
             symbol=symbol,
         )
+        engine_shadow: dict[str, Any]
+        try:
+            if firing.timer_id == "AUCTION_0926":
+                engine_shadow = {
+                    # This status describes successful Engine execution, not
+                    # source/fact readiness.  The nested result retains the
+                    # truthful READY/PARTIAL/MISSING fact status.
+                    "status": "EXECUTED",
+                    "result": run_auction_engine_shadow(
+                        rows=list(rows),
+                        trade_date=trade_date,
+                        symbol=symbol,
+                    ),
+                }
+            elif firing.timer_id == "OPENING_0932":
+                if projection is None:
+                    raise ValueError("opening projection is unavailable")
+                engine_shadow = {
+                    "status": "EXECUTED",
+                    "result": run_opening_engine_shadow_from_projection(
+                        projection=projection,
+                        trade_date=trade_date,
+                        symbol=symbol,
+                        logical_time_ms=_epoch_ms(observed_at),
+                    ),
+                }
+            else:  # guarded by the timer-id check above
+                raise ValueError("unsupported Core morning timer")
+        except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+            # A bounded shadow must preserve partial evidence from the other
+            # symbols.  Record only the stable exception type; exception text
+            # may contain driver- or machine-specific details.
+            engine_shadow = {
+                "status": "UNAVAILABLE",
+                "reason": "ENGINE_INPUT_CONTRACT_REJECTED",
+                "error_type": f"{type(exc).__module__}.{type(exc).__name__}",
+            }
         dispatch_rows.append(
             {
                 "symbol": symbol,
                 "td_row_count": len(rows),
                 "facts": facts,
+                "engine_shadow": _json_ready(engine_shadow),
             }
         )
     source_ranges = []

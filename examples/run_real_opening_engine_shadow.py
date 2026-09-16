@@ -28,36 +28,55 @@ from engine_core import (  # noqa: E402
     WindowSpec,
     canonical_json,
 )
+from engine_core.q2 import Q2ProjectionSnapshot  # noqa: E402
 
 
-def run_real_opening_engine_shadow(
+def run_opening_engine_shadow_from_projection(
     *,
-    client,
+    projection: Q2ProjectionSnapshot,
     trade_date: str,
     symbol: str,
-    observed_at: datetime,
-    stale_after_ms: int,
+    logical_time_ms: int,
 ) -> dict:
-    projection = RedisQ2ProjectionAdapter(client).read(
-        trade_date,
-        observed_at,
-        freshness_policy=FreshnessPolicy(stale_after_ms=stale_after_ms),
-    )
-    now_ms = int(observed_at.timestamp() * 1000)
+    """Run one already-read Q2 projection through the public Engine path.
+
+    Keeping this boundary separate from Redis access lets the live morning
+    shadow reuse the exact node observation it has already captured.  A
+    second Redis read would create a different cohort and make the evidence
+    impossible to attribute to one input.
+    """
+
+    if not isinstance(projection, Q2ProjectionSnapshot):
+        raise TypeError("projection must be a Q2ProjectionSnapshot")
+    if not isinstance(logical_time_ms, int) or isinstance(logical_time_ms, bool):
+        raise TypeError("logical_time_ms must be an integer")
+    if logical_time_ms <= 0:
+        raise ValueError("logical_time_ms must be positive")
+    if symbol not in projection.expected_symbols:
+        raise ValueError("symbol is outside the Q2 projection universe")
+
     engine = DeterministicEngine(
         MarketStateReducer(),
-        WindowManager((WindowSpec("opening", now_ms, now_ms + 1),)),
+        WindowManager(
+            (WindowSpec("opening", logical_time_ms, logical_time_ms + 1),)
+        ),
         OpeningShadowStrategy(scope_id=symbol),
         session_id=trade_date,
         phase="OPENING",
     )
     engine.submit(
-        EngineSignal("real-opening-market", now_ms, 1, SignalKind.MARKET_UPDATE, projection)
+        EngineSignal(
+            "real-opening-market",
+            logical_time_ms,
+            1,
+            SignalKind.MARKET_UPDATE,
+            projection,
+        )
     )
     engine.submit(
         EngineSignal(
             "real-opening-timer",
-            now_ms + 1,
+            logical_time_ms + 1,
             2,
             SignalKind.TIMER,
             {"trigger_id": "OPENING_0932", "close_windows": ("opening",)},
@@ -81,6 +100,27 @@ def run_real_opening_engine_shadow(
         "processed_signals": result.processed_signals,
         "strategy_result": strategy_result,
     }
+
+
+def run_real_opening_engine_shadow(
+    *,
+    client,
+    trade_date: str,
+    symbol: str,
+    observed_at: datetime,
+    stale_after_ms: int,
+) -> dict:
+    projection = RedisQ2ProjectionAdapter(client).read(
+        trade_date,
+        observed_at,
+        freshness_policy=FreshnessPolicy(stale_after_ms=stale_after_ms),
+    )
+    return run_opening_engine_shadow_from_projection(
+        projection=projection,
+        trade_date=trade_date,
+        symbol=symbol,
+        logical_time_ms=int(observed_at.timestamp() * 1000),
+    )
 
 
 def main() -> int:
