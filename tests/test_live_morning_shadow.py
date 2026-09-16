@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -161,6 +162,9 @@ def test_live_shell_captures_each_node_at_its_due_observation(tmp_path: Path, mo
     assert (tmp_path / "run" / "AUCTION_0926.json").exists()
     assert (tmp_path / "run" / "OPENING_0932.json").exists()
     assert (tmp_path / "run" / "manifest.json").exists()
+    manifest_payload = json.loads((tmp_path / "run" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest_payload["build_identity"]["kind"] == "SOURCE_TREE_SHA256"
+    assert len(manifest_payload["build_identity"]["value"]) == 64
 
 
 def test_late_start_marks_recovery_and_does_not_reuse_normal_origin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

@@ -111,6 +111,34 @@ def _evidence_sha256(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _runtime_build_identity() -> dict[str, str]:
+    """Return a stable build identity without requiring Git metadata.
+
+    Production validation copies are intentionally extracted without ``.git``.
+    Hash the source-relative paths and bytes so a shadow manifest can still be
+    bound to the exact code that produced it.  An operator may provide an
+    immutable release/commit id through ``ENGINE_CORE_BUILD_ID``; that value
+    is recorded verbatim and is not mixed into any business semantic hash.
+    """
+
+    explicit = os.environ.get("ENGINE_CORE_BUILD_ID", "").strip()
+    if explicit:
+        return {"kind": "EXPLICIT", "value": explicit}
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    files = []
+    for directory in (root / "src", root / "examples"):
+        if directory.exists():
+            files.extend(path for path in directory.rglob("*.py") if path.is_file())
+    for path in sorted(files, key=lambda item: item.relative_to(root).as_posix()):
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        digest.update(relative)
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return {"kind": "SOURCE_TREE_SHA256", "value": digest.hexdigest()}
+
+
 def _atomic_write_once(path: Path, payload: Mapping[str, Any]) -> str:
     """Write one evidence file without overwrite and return its SHA identity."""
 
@@ -474,6 +502,9 @@ def run_live_morning_shadow(
         "node_timer_ids": tuple(item["timer"]["timer_id"] for item in nodes),
         "node_count": len(nodes),
         "origin": origin,
+        # Build identity is evidence metadata.  It is deliberately added
+        # after the manifest semantic hash below, so code identity cannot
+        # change the business/timer semantic identity.
         "read_only": True,
         "safety": {
             "new_rabbit_consumer": 0,
@@ -490,6 +521,7 @@ def run_live_morning_shadow(
         ),
     }
     manifest["semantic_hash"] = semantic_hash(manifest)
+    manifest["build_identity"] = _runtime_build_identity()
     _atomic_write_once(output_dir / "manifest.json", manifest)
     return manifest
 
