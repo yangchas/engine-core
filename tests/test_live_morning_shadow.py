@@ -348,7 +348,7 @@ def test_live_shell_captures_each_node_at_its_due_observation(tmp_path: Path, mo
     clock_values = iter((_dt("09:15:00"), _dt("09:15:00"), _dt("09:26:00"), _dt("09:32:00")))
     captured: list[tuple[str, datetime]] = []
     reference_preparations: list[object] = []
-    preparation = object()
+    preparation = SimpleNamespace(content_hash="prep-hash", knowledge_as_of_ms=1)
 
     monkeypatch.setattr(live, "_startup_evidence", lambda **kwargs: {"read_only": True})
 

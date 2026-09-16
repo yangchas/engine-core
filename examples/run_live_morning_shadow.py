@@ -43,6 +43,9 @@ from engine_core import (  # noqa: E402
 
 try:  # Script execution resolves sibling examples directly.
     from run_engine_next_auction_loader_probe import probe as probe_legacy_auction_loader
+    from run_real_auction_reference_readiness import (
+        run_real_auction_reference_readiness,
+    )
     from run_morning_vertical_slice_shadow import (
         CORE_TIMER_SPECS,
         _load_calendar,
@@ -54,6 +57,9 @@ try:  # Script execution resolves sibling examples directly.
     from run_real_opening_engine_shadow import run_opening_engine_shadow_from_projection
 except ModuleNotFoundError:  # Pytest/import execution resolves the package.
     from examples.run_engine_next_auction_loader_probe import probe as probe_legacy_auction_loader
+    from examples.run_real_auction_reference_readiness import (
+        run_real_auction_reference_readiness,
+    )
     from examples.run_morning_vertical_slice_shadow import (
         CORE_TIMER_SPECS,
         _load_calendar,
@@ -477,6 +483,7 @@ def _startup_evidence(
     plan: SessionPlan,
     observed_at: datetime,
     stale_after_ms: int,
+    auction_reference_preparation: AuctionReferencePreparation | None = None,
 ) -> dict[str, Any]:
     projection = _redis_projection(
         trade_date=trade_date,
@@ -504,6 +511,15 @@ def _startup_evidence(
             "newest_source_time_ms": projection.newest_source_time_ms,
             "content_hash": projection.content_hash,
         },
+        "auction_reference_preparation": (
+            {
+                "status": "PREPARED",
+                "content_hash": auction_reference_preparation.content_hash,
+                "knowledge_as_of_ms": auction_reference_preparation.knowledge_as_of_ms,
+            }
+            if auction_reference_preparation is not None
+            else {"status": "NOT_PROVIDED"}
+        ),
         "read_only": True,
     }
 
@@ -552,6 +568,7 @@ def run_live_morning_shadow(
         plan=plan,
         observed_at=first_now,
         stale_after_ms=stale_after_ms,
+        auction_reference_preparation=auction_reference_preparation,
     )
     startup_path = output_dir / "startup.json"
     startup_sha = _atomic_write_once(startup_path, startup)
@@ -612,6 +629,15 @@ def run_live_morning_shadow(
         "node_timer_ids": tuple(item["timer"]["timer_id"] for item in nodes),
         "node_count": len(nodes),
         "origin": origin,
+        "auction_reference_preparation": (
+            {
+                "status": "PREPARED",
+                "content_hash": auction_reference_preparation.content_hash,
+                "knowledge_as_of_ms": auction_reference_preparation.knowledge_as_of_ms,
+            }
+            if auction_reference_preparation is not None
+            else {"status": "NOT_PROVIDED"}
+        ),
         # Build identity is evidence metadata.  It is deliberately added
         # after the manifest semantic hash below, so code identity cannot
         # change the business/timer semantic identity.
@@ -647,6 +673,11 @@ def main() -> int:
     parser.add_argument("--start-at", default="09:15:00")
     parser.add_argument("--stop-at", default="09:33:00")
     parser.add_argument("--legacy-root", type=Path)
+    parser.add_argument(
+        "--prefetch-auction-references",
+        action="store_true",
+        help="prefetch read-only auction references before the live shadow starts",
+    )
     parser.add_argument("--td-host", default=os.environ.get("TDENGINE_HOST", "127.0.0.1"))
     parser.add_argument("--td-port", type=int, default=int(os.environ.get("TDENGINE_PORT", "6030")))
     parser.add_argument("--td-user", default=os.environ.get("TDENGINE_USER", "root"))
@@ -660,6 +691,44 @@ def main() -> int:
         start_at = _parse_local_time(args.start_at)
         stop_at = _parse_local_time(args.stop_at)
         calendar = _load_calendar(args.calendar_file, trade_date=args.trade_date)
+        reference_preparation = None
+        if args.prefetch_auction_references:
+            import redis  # type: ignore[import-not-found]
+
+            reference_client = redis.Redis(
+                host=os.environ.get("REDIS_HOST", "127.0.0.1"),
+                port=int(os.environ.get("REDIS_PORT", "6379")),
+                db=int(os.environ.get("REDIS_DB", "0")),
+                password=os.environ.get("REDIS_PASSWORD"),
+                decode_responses=True,
+                socket_timeout=5,
+                socket_connect_timeout=5,
+            )
+            try:
+                reference_context = run_real_auction_reference_readiness(
+                    client=reference_client,
+                    trade_date=args.trade_date,
+                    calendar=calendar,
+                    observed_at=datetime.now(timezone.utc),
+                    symbols=symbols,
+                    stale_after_ms=args.stale_after_ms,
+                    td_kwargs={
+                        "host": args.td_host,
+                        "port": args.td_port,
+                        "user": args.td_user,
+                        "password": args.td_password,
+                        "database": args.td_database,
+                        "config": os.environ.get("TDENGINE_CONFIG", "/etc/taos"),
+                        "timezone_name": os.environ.get(
+                            "TDENGINE_TIMEZONE", "Asia/Shanghai"
+                        ),
+                    },
+                    _return_context=True,
+                )
+            finally:
+                reference_client.close()
+            reference_preparation = reference_context["preparation"]
+
         manifest = run_live_morning_shadow(
             trade_date=args.trade_date,
             calendar=calendar,
@@ -674,6 +743,7 @@ def main() -> int:
                 "password": args.td_password,
                 "database": args.td_database,
             },
+            auction_reference_preparation=reference_preparation,
             poll_seconds=args.poll_ms / 1000.0,
             start_at=start_at,
             stop_at=stop_at,
