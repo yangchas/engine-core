@@ -45,8 +45,8 @@ strategy threshold is inferred from the fact labels in this change.
 
 ## Verification on cobra-ion
 
-Final validation archive: `core-migration-3a30dcc`, commit
-`3a30dcc741bfd9bd4ffc084d0e9e5795f88df159`.
+Final validation archive: `core-migration-710859e`, commit
+`710859ede5adcf85f1720ca8a1f4b720f6e4556a`.
 
 ```text
 Python 3.12.3 (/home/exedev/services/engine-next/shared/venv/bin/python)
