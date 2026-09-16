@@ -220,3 +220,23 @@ def test_strategy_rejects_cross_session_and_conflicting_anchor_snapshots():
             other,
             FrozenDataBundle.empty("eval-3", other.logical_time_ms),
         )
+
+
+def test_strategy_retains_only_declared_anchor_snapshots():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    start = _snapshot(fixture, "pre_auction_0915")
+    strategy = AuctionShadowStrategy(scope_id=fixture["symbol"])
+    strategy.evaluate(start, FrozenDataBundle.empty("eval-start", start.logical_time_ms))
+
+    for index in range(100):
+        unrelated = replace(
+            start,
+            trigger_id="UNRELATED_%03d" % index,
+            snapshot_id="unrelated-%03d" % index,
+        )
+        strategy.evaluate(
+            unrelated,
+            FrozenDataBundle.empty("eval-unrelated-%03d" % index, unrelated.logical_time_ms),
+        )
+
+    assert tuple(strategy._snapshots) == ("PRE_AUCTION_0915",)

@@ -102,10 +102,11 @@ class AuctionShadowStrategy:
             self._session_id = snapshot.session_id
         elif snapshot.session_id != self._session_id:
             raise ValueError("auction strategy cannot mix sessions")
-        previous = self._snapshots.get(snapshot.trigger_id)
-        if previous is not None and previous.content_hash != snapshot.content_hash:
-            raise ValueError("conflicting snapshot for auction trigger")
-        self._snapshots[snapshot.trigger_id] = snapshot
+        if snapshot.trigger_id in self.required_trigger_ids:
+            previous = self._snapshots.get(snapshot.trigger_id)
+            if previous is not None and previous.content_hash != snapshot.content_hash:
+                raise ValueError("conflicting snapshot for auction trigger")
+            self._snapshots[snapshot.trigger_id] = snapshot
         trace: Dict[str, Any] = {
             "state": "OBSERVE",
             "decision_status": "FACT_ONLY",

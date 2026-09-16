@@ -85,7 +85,8 @@ def run_real_strategy_shadow(
                     snapshot.logical_time_ms,
                 ),
             )
-        assert trace is not None
+        if trace is None:
+            raise RuntimeError("auction strategy did not produce a result")
         results.append(
             {
                 "symbol": symbol,
