@@ -97,6 +97,7 @@ from .auction_references import (
     AUCTION_REFERENCE_CONTRACT_VERSION,
     AUCTION_REFERENCE_FUNCTION_ORDER,
     AuctionReferencePreparation,
+    build_auction_reference_bundle,
     prepare_auction_references,
 )
 from .auction_shadow import AuctionFactShadow, build_auction_fact_shadow
@@ -190,6 +191,7 @@ __all__ = [
     "AUCTION_REFERENCE_CONTRACT_VERSION",
     "AUCTION_REFERENCE_FUNCTION_ORDER",
     "AuctionReferencePreparation",
+    "build_auction_reference_bundle",
     "FactResult",
     "FactStatus",
     "FixturePreviousDayStatsProvider",

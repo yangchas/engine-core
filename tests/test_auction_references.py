@@ -1,3 +1,5 @@
+import pytest
+
 from engine_core import (
     AUCTION_REFERENCE_FUNCTION_ORDER,
     DataContext,
@@ -6,10 +8,21 @@ from engine_core import (
     HotPlatesFunction,
     PreviousDayLimitPoolFunction,
     PreviousDayStatsFunction,
+    PendingEvaluationRequest,
     RedisHotPlatesProvider,
     RedisPreviousDayLimitPoolProvider,
+    DeterministicEngine,
+    EngineSignal,
+    EvaluationNode,
+    EvaluationPlan,
+    MarketStateReducer,
+    ProbeStrategy,
+    SignalKind,
+    WindowManager,
+    WindowSpec,
     assess_startup_readiness,
     build_a_share_session_plan,
+    build_auction_reference_bundle,
     build_calendar_snapshot,
     local_datetime_ms,
     prepare_auction_references,
@@ -193,3 +206,85 @@ def test_preparation_hash_is_stable_for_same_semantic_results():
     )
 
     assert first.content_hash == second.content_hash
+
+
+def test_prepared_references_complete_public_engine_evaluation():
+    calendar = _calendar()
+    stats, limit_pool, hot = _functions(calendar)
+    prepared = prepare_auction_references(
+        trade_date=TRADE_DATE,
+        knowledge_as_of_ms=CUTOFF,
+        context=DataContext("auction-ref", "LIVE_SHADOW", CUTOFF + 100),
+        calendar=calendar,
+        previous_day_stats=stats,
+        previous_day_limit_pool=limit_pool,
+        hot_plates=hot,
+        symbols=("000001",),
+    )
+    plan = EvaluationPlan(
+        "auction-reference-plan",
+        "v1",
+        (
+            EvaluationNode(
+                "auction-0920",
+                "AUCTION_0920",
+                data_requirements=AUCTION_REFERENCE_FUNCTION_ORDER,
+                strategies=("probe",),
+            ),
+        ),
+    )
+    engine = DeterministicEngine(
+        MarketStateReducer(),
+        WindowManager((WindowSpec("auction", CUTOFF - 1000, CUTOFF + 1000),)),
+        ProbeStrategy(),
+        session_id=TRADE_DATE,
+        phase="AUCTION",
+        evaluation_plan=plan,
+    )
+    engine.submit(
+        EngineSignal(
+            "auction-0920-timer",
+            CUTOFF,
+            1,
+            SignalKind.TIMER,
+            {"trigger_id": "AUCTION_0920"},
+        )
+    )
+    pending = engine.run_until_empty().pending_evaluations[0]
+    bundle = build_auction_reference_bundle(pending, prepared)
+    engine.submit(
+        EngineSignal(
+            "auction-0920-data-ready",
+            CUTOFF + 100,
+            2,
+            SignalKind.DATA_READY,
+            {"evaluation_id": pending.evaluation_id, "bundle": bundle},
+        )
+    )
+    completed = engine.run_until_empty()
+    assert completed.pending_evaluations == ()
+    assert completed.strategy_results[-1].evaluation_id == pending.evaluation_id
+    assert completed.strategy_results[-1].trace["bundle_hash"] == bundle.content_hash
+
+
+def test_reference_bundle_rejects_a_different_evaluation_cutoff():
+    calendar = _calendar()
+    stats, limit_pool, hot = _functions(calendar)
+    prepared = prepare_auction_references(
+        trade_date=TRADE_DATE,
+        knowledge_as_of_ms=CUTOFF,
+        context=DataContext("auction-ref", "LIVE_SHADOW", CUTOFF + 100),
+        calendar=calendar,
+        previous_day_stats=stats,
+        previous_day_limit_pool=limit_pool,
+        hot_plates=hot,
+    )
+    pending = PendingEvaluationRequest(
+        evaluation_id="evaluation:mismatch",
+        trigger_id="AUCTION_0920",
+        knowledge_as_of_ms=CUTOFF + 1,
+        function_order=AUCTION_REFERENCE_FUNCTION_ORDER,
+        snapshot_content_hash="snapshot-hash",
+    )
+    with pytest.raises(ValueError, match="cutoff"):
+        build_auction_reference_bundle(pending, prepared)

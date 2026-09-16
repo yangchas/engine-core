@@ -6,8 +6,9 @@ from dataclasses import dataclass, field
 from typing import Mapping, Tuple
 
 from .calendar import TradingCalendarSnapshot, parse_trade_date
-from .contracts import DataRequest, DataResult, semantic_hash
-from .data import DataContext, PreviousDayStatsFunction
+from .contracts import DataRequest, DataResult, FrozenDataBundle, semantic_hash
+from .data import DataContext, PreviousDayStatsFunction, build_frozen_bundle
+from .engine import PendingEvaluationRequest
 from .hot_plates import HotPlatesFunction
 from .previous_day_limit_pool import PreviousDayLimitPoolFunction
 
@@ -61,6 +62,34 @@ class AuctionReferencePreparation:
         """Return a fresh lookup mapping without exposing mutable identity."""
 
         return dict(self.results)
+
+
+def build_auction_reference_bundle(
+    pending: PendingEvaluationRequest,
+    preparation: AuctionReferencePreparation,
+) -> FrozenDataBundle:
+    """Bind prepared references to one Engine-owned frozen evaluation.
+
+    Preparation performs provider I/O outside the reducer.  This function is
+    the small deterministic hand-off back to Engine: it accepts only the
+    fixed auction requirement order and the exact knowledge cutoff captured
+    when the Engine froze its snapshot.
+    """
+
+    if not isinstance(pending, PendingEvaluationRequest):
+        raise TypeError("pending must be a PendingEvaluationRequest")
+    if not isinstance(preparation, AuctionReferencePreparation):
+        raise TypeError("preparation must be an AuctionReferencePreparation")
+    if pending.function_order != AUCTION_REFERENCE_FUNCTION_ORDER:
+        raise ValueError("pending evaluation does not request auction references")
+    if pending.knowledge_as_of_ms != preparation.knowledge_as_of_ms:
+        raise ValueError("reference preparation cutoff does not match evaluation")
+    return build_frozen_bundle(
+        evaluation_id=pending.evaluation_id,
+        knowledge_as_of_ms=pending.knowledge_as_of_ms,
+        function_order=pending.function_order,
+        results_by_function=preparation.as_mapping(),
+    )
 
 
 def prepare_auction_references(
