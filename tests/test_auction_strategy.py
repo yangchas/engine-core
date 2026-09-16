@@ -136,6 +136,25 @@ def test_strategy_repeated_execution_is_deterministic():
     ]["evidence_hash"]
 
 
+def test_strategy_result_exposes_all_anchor_evidence_refs():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    strategy = AuctionShadowStrategy(scope_id=fixture["symbol"])
+    for index, name in enumerate(("pre_auction_0915", "auction_0920", "auction_0924")):
+        snapshot = _snapshot(fixture, name)
+        snapshot = replace(snapshot, evidence_refs=("fixture://anchor/%s" % index,))
+        result = strategy.evaluate(
+            snapshot,
+            FrozenDataBundle.empty("eval-%d" % index, snapshot.logical_time_ms),
+        )
+
+    assert result is not None
+    assert result.evidence_refs == (
+        "fixture://anchor/0",
+        "fixture://anchor/1",
+        "fixture://anchor/2",
+    )
+
+
 def test_engine_uses_production_strategy_without_changing_wheel_result():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     snapshots = tuple(

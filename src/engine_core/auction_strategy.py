@@ -172,12 +172,26 @@ class AuctionShadowStrategy:
                 }
             )
 
+        # A completed three-anchor fact is only auditable when the top-level
+        # result carries every participating snapshot reference.  Keeping
+        # only the current snapshot here would make the nested fact trace
+        # complete while consumers of StrategyResult.evidence_refs lost the
+        # 09:15/09:20/09:24 lineage.
+        evidence_refs = tuple(
+            sorted(
+                {
+                    evidence_ref
+                    for item in self._snapshots.values()
+                    for evidence_ref in item.evidence_refs
+                }
+            )
+        )
         return StrategyResult(
             strategy_id=self.strategy_id,
             evaluation_id=bundle.evaluation_id,
             state="OBSERVE",
             trace=trace,
-            evidence_refs=tuple(sorted(set(snapshot.evidence_refs))),
+            evidence_refs=evidence_refs,
             content_hash=semantic_hash(trace),
         )
 
