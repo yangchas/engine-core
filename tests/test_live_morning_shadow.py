@@ -332,6 +332,42 @@ def test_auction_node_routes_complete_real_rows_through_public_engine():
     assert engine["result"]["processed_signals"] == 6
 
 
+def test_auction_node_binds_prefetched_references_through_public_engine():
+    rows = {
+        "600519": [
+            {
+                "auction_tag": tag,
+                "symbol": "600519",
+                "trade_date": "20260914",
+                "ts": _dt(source_time),
+                "px_milli": price,
+                "chg_bp": change,
+                "match_amt_yuan": match,
+                "rest_bid_amt_yuan": bid,
+                "rest_ask_amt_yuan": ask,
+            }
+            for tag, source_time, price, change, match, bid, ask in (
+                ("0920", "09:20:03", 1275000, 5, 80, 180, 60),
+                ("0924", "09:24:10", 1276000, 6, 100, 200, 50),
+                ("0925", "09:25:06", 1277000, 7, 150, 250, 40),
+            )
+        ]
+    }
+    result = live.build_node_evidence(
+        _firing("AUCTION_0926"),
+        observed_at=_dt("09:26:00"),
+        trade_date="2026-09-14",
+        symbols=("600519",),
+        td_rows_by_symbol=rows,
+        auction_reference_preparation=_reference_preparation(),
+    )
+    engine = result["fact_dispatch"][0]["engine_shadow"]
+    assert engine["status"] == "EXECUTED"
+    assert engine["result"]["reference_binding"] == "ENGINE_DATA_READY"
+    assert engine["result"]["processed_signals"] == 9
+    assert engine["result"]["semantic_hash_equal"] is True
+
+
 def test_auction_node_keeps_td_fact_when_q2_readiness_probe_fails(
     monkeypatch: pytest.MonkeyPatch,
 ):
