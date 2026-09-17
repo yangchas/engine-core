@@ -9,7 +9,10 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from engine_core import (
+    AUCTION_REFERENCE_FUNCTION_ORDER,
+    AuctionReferencePreparation,
     DataStatus,
+    DataResult,
     FreshnessPolicy,
     TimerFiring,
     build_a_share_session_plan,
@@ -49,6 +52,37 @@ def _firing(timer_id: str) -> TimerFiring:
         origin="NORMAL",
         late_by_ms=0,
         session_plan_hash=plan.content_hash,
+    )
+
+
+def _reference_preparation() -> AuctionReferencePreparation:
+    observed_at_ms = local_datetime_ms(
+        "2026-09-14", "09:14:00", timezone_name="Asia/Shanghai"
+    )
+    return AuctionReferencePreparation(
+        trade_date="2026-09-14",
+        previous_trade_date="2026-09-11",
+        knowledge_as_of_ms=observed_at_ms,
+        results=tuple(
+            (
+                function_id,
+                DataResult(
+                    request_id=function_id + "-request",
+                    function_id=function_id,
+                    status=DataStatus.UNAVAILABLE,
+                    data=None,
+                    actual_source=None,
+                    requested_trade_date="2026-09-14",
+                    actual_trade_date=None,
+                    effective_at_ms=None,
+                    available_at_ms=None,
+                    observed_at_ms=observed_at_ms,
+                    schema_version=1,
+                    completeness=0.0,
+                ),
+            )
+            for function_id in AUCTION_REFERENCE_FUNCTION_ORDER
+        ),
     )
 
 
@@ -224,6 +258,44 @@ def test_capture_node_rechecks_q2_at_node_boundary(monkeypatch: pytest.MonkeyPat
     # Auction facts remain TD-owned; the Q2 recheck is readiness evidence,
     # not an implicit replacement for the auction input contract.
     assert result["q2"] is None
+
+
+def test_startup_evidence_uses_the_same_prefetched_reference_results(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    observed_at = _dt("09:15:00")
+    projection = build_q2_projection(
+        "2026-09-14",
+        observed_at,
+        ("600519",),
+        {
+            "600519": {
+                "mk": "sh",
+                "px": "1276000",
+                "pc": "1270000",
+                "amt": "100000",
+                "ts": str(local_datetime_ms("2026-09-14", "09:15:00", timezone_name="Asia/Shanghai")),
+            }
+        },
+        freshness_policy=FreshnessPolicy(stale_after_ms=60_000),
+    )
+    monkeypatch.setattr(live, "_redis_projection", lambda **kwargs: projection)
+    preparation = _reference_preparation()
+
+    evidence = live._startup_evidence(
+        trade_date="2026-09-14",
+        calendar=CALENDAR,
+        plan=build_a_share_session_plan("2026-09-14", CALENDAR),
+        observed_at=observed_at,
+        stale_after_ms=60_000,
+        auction_reference_preparation=preparation,
+    )
+
+    assert evidence["auction_reference_preparation"]["content_hash"] == preparation.content_hash
+    assert evidence["readiness"]["reference_statuses"] == tuple(
+        (function_id, "UNAVAILABLE")
+        for function_id in AUCTION_REFERENCE_FUNCTION_ORDER
+    )
 
 
 def test_auction_node_routes_complete_real_rows_through_public_engine():

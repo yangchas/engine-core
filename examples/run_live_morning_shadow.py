@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core import (  # noqa: E402
+    AUCTION_REFERENCE_FUNCTION_ORDER,
     AuctionReferencePreparation,
     FreshnessPolicy,
     SessionPlan,
@@ -496,6 +497,16 @@ def _startup_evidence(
         calendar=calendar,
         session_plan=plan,
         q2=projection,
+        required_reference_functions=(
+            AUCTION_REFERENCE_FUNCTION_ORDER
+            if auction_reference_preparation is not None
+            else ()
+        ),
+        reference_results=(
+            auction_reference_preparation.as_mapping()
+            if auction_reference_preparation is not None
+            else None
+        ),
         timer_specs=CORE_TIMER_SPECS,
         origin="NORMAL",
     )
