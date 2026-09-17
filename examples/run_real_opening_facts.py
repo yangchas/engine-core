@@ -91,13 +91,14 @@ def build_real_opening_facts(
             "amount_2m_yuan": quote.amount_2m_yuan,
             "limit_state": quote.limit_state,
             "name": quote.name,
-            # ``spd1m`` is the legacy source field; retain its value and do
-            # not silently convert the unit while validating the opening rule.
-            "speed_1m": quote.speed_1m_bp,
         }
         facts[symbol] = build_open_fact(row)
         source_meta[symbol] = {
             "source_record_time_ms": quote.source_record_time_ms,
+            # Preserve the observed Q2 field under its proven unit.  The
+            # opening wheel's generic ``speed_1m`` unit is not proven equal,
+            # so the source value must not be injected into the fact.
+            "speed_1m_bp": quote.speed_1m_bp,
             "field_errors": list(quote.field_errors),
             "raw_field_names": sorted(quote.raw_fields),
             "source_mapping_fields": sorted(mapping),

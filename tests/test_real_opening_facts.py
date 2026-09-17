@@ -45,6 +45,8 @@ def test_real_opening_fact_composition_is_read_only_and_unit_explicit():
     assert result["facts"]["600519"]["change_pct"] == pytest.approx(5.0)
     assert result["facts"]["600519"]["status"] == "available"
     assert result["facts"]["600519"]["limit_state_status"] == "available"
+    assert result["facts"]["600519"]["speed_1m"] is None
+    assert result["source_meta"]["600519"]["speed_1m_bp"] == 25
     assert result["read_only"] is True
     assert all(operation in {"smembers", "hgetall"} for operation, _ in client.reads)
 
