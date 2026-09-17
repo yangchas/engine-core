@@ -68,6 +68,10 @@ Opening 迁移从同一原则开始：`build_open_fact` 只计算可复核的单
 错误；开盘节点依赖 Q2，因此继续 fail-closed。Q2 readiness 证据不改变 TD 事实的
 semantic hash，也不把 Q2 偷换成竞价输入。
 
+该入口可显式加 `--prefetch-auction-references`，在启动前沿用既有 Redis/TD 只读访问路径
+准备一次冻结的竞价参考数据；准备结果会进入启动 readiness 和后续节点的 Engine
+`DATA_READY` 绑定。默认不启用，且不会写 Redis/TD、接管 Rabbit 或触发 effect。
+
 `examples/run_real_opening_engine_shadow.py` 使用同一公开 Engine signal path
 验证真实 Redis Q2 的单股开盘事实。它只读取 `SMEMBERS/HGETALL`，将 Q2 状态
 提交为 `MARKET_UPDATE` 和开盘 `TIMER`，输出 `OpeningShadowStrategy` 的
