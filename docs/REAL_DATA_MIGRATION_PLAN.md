@@ -1,5 +1,12 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-17 真实生产日只读 morning shadow
+
+- 使用 Cobra-ion 上的 `engine_core` 只读副本 `72e3c17`，真实读取 Redis Q2、TD 竞价行和节点前 reference preparation；`AUCTION_0926` 与 `OPENING_0932` 均完成，三个 bounded symbols 均执行 in-memory Core。预取 reference 通过 `ENGINE_DATA_READY` 绑定，auction direct/engine semantic hash 一致；000001/000002 的 0924→0925 fact 为 READY，600519 因真实字段缺失保持 PARTIAL/UNAVAILABLE。
+- 节点实际晚于 09:15 启动，两个 timer 均诚实标记 `RECOVERY_CATCHUP`；Q2 coverage 为 `1.0` 但 freshness/completeness 为 `PARTIAL`，没有把覆盖率升级为 READY。source-record time range 原样保留，未用 TD 行推断 Rabbit batch/arrival 顺序。
+- manifest safety 记录 `new_rabbit_consumer=0`、`rabbit_ack_or_publish=0`、`redis_write=0`、`td_write=0`、`notification_or_effect=0`、`production_restart=0`；`engine-next` 与 `t1-v2-live` 完成时仍 active、`NRestarts=0`。本次是真实数据 shadow，不是 Core 替代生产 owner 的验收。
+- 远端四个 JSON 证据已复制到 `tmp/live-morning-shadow-20260917-2414eed/`，本地/远端 SHA-256 完全一致；详见 `docs/evidence/live_shadow_20260917_2414eed.md`。当前仍缺正常起盘 `NORMAL` 证据、engine-next loader trace 和 runtime batch membership，联合结论保持 `WARN`。
+
 ### 2026-09-15 真实实时旁路复核
 
 - Cobra-ion 11:05–11:08 的只读 Redis Q2/Opening probe 使用真实生产 Q2：5220/5220 行、coverage `1.0`、字段完整，但在 60s freshness policy 下全量 `STALE`，最新 source time 约滞后 75 分钟。两次 Core 计算的 probe/snapshot hash 一致。
