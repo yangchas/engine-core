@@ -1,5 +1,12 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-17 engine-next / Core 同输入 Q2 差分
+
+- `EngineNextContextProbeV3` 在不改变旧 Redis pipeline 返回顺序的前提下，只记录 000001/000002/600519 实际被旧 context 链读到的 `stock:quote:*` / `q2:*` Hash；未分类 pipeline 方法改为 fail-closed，`guard_writes=[]`。
+- 将同一批冻结 raw Q2 交给 Core `normalize_q2()` + `build_open_fact()` 后，涨跌幅（Core 百分点 vs legacy 比例 x100）、`amount_2m_yuan` 均为 3/3 MATCH；Q2 `speed_1m_bp` 与 legacy ratio 的 `/10000` 变换为 OBSERVED，Core 事实继续保持 `speed_1m=None`，不偷换单位。
+- 600519 的当前 Q2 `am=17,611,700` 与旧 context `auction_amount=16,856,932` 不同，证明旧链会使用冻结竞价投影覆盖当前 Q2；这是 source-priority 合同，不是计算 mismatch，Core 不得用当前 `am` 覆盖 0925 reference。
+- 随后 Core 独立重读时 000001/000002 的 source timestamp 已前进，因此只保留 ASOF/UNPROVEN，不因数值接近宣称 exact。精确证据、SHA 和验收边界见 `docs/evidence/engine_next_q2_same_input_differential_20260917.md`。
+
 ### 2026-09-17 真实生产日只读 morning shadow
 
 - 使用 Cobra-ion 上的 `engine_core` 只读副本 `72e3c17`，真实读取 Redis Q2、TD 竞价行和节点前 reference preparation；`AUCTION_0926` 与 `OPENING_0932` 均完成，三个 bounded symbols 均执行 in-memory Core。预取 reference 通过 `ENGINE_DATA_READY` 绑定，auction direct/engine semantic hash 一致；000001/000002 的 0924→0925 fact 为 READY，600519 因真实字段缺失保持 PARTIAL/UNAVAILABLE。
