@@ -139,6 +139,69 @@ def test_guard_redis_blocks_pipeline_mutation():
     assert guarded.writes == ["pipeline.set"]
 
 
+def test_guard_redis_records_only_selected_direct_hash_reads():
+    class FakeRedis:
+        def hgetall(self, key):
+            return {"ts": "123", "px": key}
+
+    guarded = GuardRedis(FakeRedis(), record_keys=frozenset({"q2:600519"}))
+    assert guarded.hgetall("q2:000001")["px"] == "q2:000001"
+    assert guarded.hgetall("q2:600519")["px"] == "q2:600519"
+    assert guarded.reads == [
+        {
+            "operation": "hgetall",
+            "key": "q2:600519",
+            "value": {"ts": "123", "px": "q2:600519"},
+        }
+    ]
+
+
+def test_guard_redis_records_selected_pipeline_hash_read_without_changing_order():
+    class FakePipeline:
+        def __init__(self):
+            self.commands = []
+
+        def get(self, key):
+            self.commands.append(("get", key))
+            return self
+
+        def hgetall(self, key):
+            self.commands.append(("hgetall", key))
+            return self
+
+        def execute(self):
+            return [
+                "plain-value" if command == "get" else {"ts": "456", "px": key}
+                for command, key in self.commands
+            ]
+
+    class FakeRedis:
+        def pipeline(self, *args, **kwargs):
+            return FakePipeline()
+
+    guarded = GuardRedis(FakeRedis(), record_keys=frozenset({"q2:600519"}))
+    results = (
+        guarded.pipeline()
+        .get("plain")
+        .hgetall("q2:000001")
+        .hgetall("q2:600519")
+        .execute()
+    )
+
+    assert results == [
+        "plain-value",
+        {"ts": "456", "px": "q2:000001"},
+        {"ts": "456", "px": "q2:600519"},
+    ]
+    assert guarded.reads == [
+        {
+            "operation": "hgetall",
+            "key": "q2:600519",
+            "value": {"ts": "456", "px": "q2:600519"},
+        }
+    ]
+
+
 def test_guard_redis_blocks_chained_pipeline_mutation_and_low_level_command():
     class FakePipeline:
         def get(self, key):
@@ -176,6 +239,20 @@ def test_guard_redis_rejects_unclassified_client_method():
     guarded = GuardRedis(FakeRedis())
     with pytest.raises(RuntimeError, match="unclassified Redis method"):
         guarded.custom_mutation()
+
+
+def test_guard_redis_rejects_unclassified_pipeline_method():
+    class FakePipeline:
+        def custom_mutation(self):  # pragma: no cover - must be blocked
+            raise AssertionError("underlying pipeline method must not run")
+
+    class FakeRedis:
+        def pipeline(self):
+            return FakePipeline()
+
+    guarded = GuardRedis(FakeRedis())
+    with pytest.raises(RuntimeError, match="unclassified Redis pipeline method"):
+        guarded.pipeline().custom_mutation()
 
 
 @pytest.mark.parametrize(

@@ -142,12 +142,18 @@ class GuardPipeline:
     def __init__(self, inner: Any, parent: "GuardRedis") -> None:
         self._inner = inner
         self._parent = parent
+        self._queued_count = 0
+        self._recorded_hgetall: list[tuple[int, str]] = []
 
     def __getattr__(self, name: str) -> Any:
         if name in WRITE_METHODS:
             return self._blocked(name)
         if name == "execute_command":
             return self._execute_command
+        if name == "execute":
+            return self.execute
+        if name not in READ_METHODS:
+            raise RuntimeError("read-only probe rejected unclassified Redis pipeline method: " + name)
         attr = getattr(self._inner, name)
         if not callable(attr):
             return attr
@@ -156,7 +162,15 @@ class GuardPipeline:
             result = attr(*args, **kwargs)
             # redis-py queues commands by returning the pipeline itself.  Keep
             # the guard wrapper in the chain so a later write cannot escape.
-            return self if result is self._inner else result
+            if result is self._inner:
+                command_index = self._queued_count
+                self._queued_count += 1
+                if name == "hgetall" and args:
+                    key = self._parent._normalize_key(args[0])
+                    if key in self._parent.record_keys:
+                        self._recorded_hgetall.append((command_index, key))
+                return self
+            return result
 
         return call
 
@@ -172,15 +186,50 @@ class GuardPipeline:
         if command_name not in READ_COMMANDS:
             self._parent.writes.append("pipeline." + command_name.lower())
             raise RuntimeError("read-only probe blocked Redis pipeline write: " + command_name)
-        return self._inner.execute_command(command, *args, **kwargs)
+        result = self._inner.execute_command(command, *args, **kwargs)
+        if result is self._inner:
+            command_index = self._queued_count
+            self._queued_count += 1
+            if command_name == "HGETALL" and args:
+                key = self._parent._normalize_key(args[0])
+                if key in self._parent.record_keys:
+                    self._recorded_hgetall.append((command_index, key))
+            return self
+        return result
+
+    def execute(self, *args: Any, **kwargs: Any) -> Any:
+        results = self._inner.execute(*args, **kwargs)
+        for command_index, key in self._recorded_hgetall:
+            if command_index < len(results):
+                self._parent._record_hgetall(key, results[command_index])
+        self._queued_count = 0
+        self._recorded_hgetall.clear()
+        return results
 
 
 class GuardRedis:
     """Proxy a real Redis client and fail closed on direct and pipeline writes."""
 
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: Any, *, record_keys: frozenset[str] = frozenset()) -> None:
         self._inner = inner
         self.writes: list[str] = []
+        self.record_keys = record_keys
+        self.reads: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _normalize_key(key: Any) -> str:
+        return str(key.decode() if isinstance(key, bytes) else key)
+
+    def _record_hgetall(self, key: str, value: Any) -> None:
+        if key not in self.record_keys:
+            return
+        self.reads.append(
+            {
+                "operation": "hgetall",
+                "key": key,
+                "value": dict(value) if isinstance(value, Mapping) else {},
+            }
+        )
 
     def __getattr__(self, name: str) -> Any:
         if name == "pipeline":
@@ -188,6 +237,13 @@ class GuardRedis:
                 return GuardPipeline(self._inner.pipeline(*args, **kwargs), self)
 
             return pipeline
+        if name == "hgetall":
+            def hgetall(key: Any, *args: Any, **kwargs: Any) -> Any:
+                result = self._inner.hgetall(key, *args, **kwargs)
+                self._record_hgetall(self._normalize_key(key), result)
+                return result
+
+            return hgetall
         if name in WRITE_METHODS:
             def blocked(*args: Any, **kwargs: Any) -> None:
                 self.writes.append(name)
@@ -344,7 +400,12 @@ def probe(
         socket_timeout=5,
         socket_connect_timeout=5,
     )
-    guarded = GuardRedis(inner)
+    recorded_quote_keys = frozenset(
+        key
+        for symbol in symbols
+        for key in (f"stock:quote:{symbol}", f"q2:{symbol}")
+    )
+    guarded = GuardRedis(inner, record_keys=recorded_quote_keys)
     try:
         hub = legacy["IntradayDataHub"](redis_client=guarded)
         builder = legacy["IntradayContextBuilder"](intraday_hub=hub)
@@ -383,7 +444,7 @@ def probe(
             "recovery, writer, notification and effect hooks disabled"
         )
         return {
-            "contract_version": "EngineNextContextProbeV2",
+            "contract_version": "EngineNextContextProbeV3",
             "trade_date": trade_date,
             "previous_trade_date": previous_trade_date,
             "symbols": symbols,
@@ -431,6 +492,15 @@ def probe(
                     "speed_1m and amount_2m retain legacy context units; cross-source parity remains UNKNOWN.",
                 ),
             },
+            "selected_quote_reads": tuple(
+                sorted(
+                    guarded.reads,
+                    key=lambda item: (
+                        str(item["key"]),
+                        str(item["value"].get("ts", "")),
+                    ),
+                )
+            ),
             "guard_writes": blocked_writes,
             "read_only": not blocked_writes,
             "side_effect_boundary": side_effect_boundary,
