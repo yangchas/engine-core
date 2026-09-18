@@ -1,5 +1,14 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-18 temporal guard contract clarification: `HISTORICAL`
+  and `REPLAY` require a known `available_at_ms <= knowledge_as_of_ms`; an
+  unknown availability is fail-closed and cannot be promoted by `observed_at`
+  or `fetch_completed_at_ms`. `LIVE` has one explicit acquisition exception:
+  when the provider declares a live fetch, `fetch_completed_at_ms <=
+  knowledge_as_of_ms`, the trade-date/session is valid, and the result remains
+  marked as live acquisition (never historical availability), the result may
+  pass. This exception does not change replay or historical semantics.
+
 - [VERIFIED] 2026-09-18 M3-1 adds the smallest 09:20 preflight composition:
   one real Redis Q2 prefetch, calendar/session identity validation,
   `SessionRuntimeCoordinator` timer identity and a single in-memory Engine
