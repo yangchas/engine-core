@@ -23,6 +23,9 @@ raw Q2 am (yuan)
 → Q2Quote.auction_amount_yuan
 ```
 
+The normalizer input also keeps the captured cumulative `amt` values; the
+test does not substitute a synthetic amount merely to satisfy the Q2 shape.
+
 All three bounded rows also match the legacy current-price ratio formula:
 
 ```text

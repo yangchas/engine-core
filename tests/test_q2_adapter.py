@@ -294,7 +294,7 @@ def test_real_legacy_context_amount_mapping_keeps_q2_amount_semantics_and_source
                 "mk": "sz" if row["symbol"].startswith(("000", "001", "002")) else "sh",
                 "px": str(row["raw_px"]),
                 "pc": str(row["raw_pc"]),
-                "amt": "1",
+                "amt": str(row["raw_amt"]),
                 "am": str(row["raw_am"]),
                 "ts": str(row["source_record_time_ms"]),
             },
