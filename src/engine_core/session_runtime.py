@@ -40,6 +40,8 @@ class RuntimePoll:
             raise ValueError("as_of_ms must be positive")
         if not isinstance(self.readiness, StartupReadiness):
             raise TypeError("readiness must be StartupReadiness")
+        if self.trade_date != self.readiness.trade_date:
+            raise ValueError("trade_date does not match readiness trade_date")
         dispatchable = tuple(self.dispatchable_firings)
         deferred = tuple(self.deferred_timer_ids)
         if any(not isinstance(item, TimerFiring) for item in dispatchable):

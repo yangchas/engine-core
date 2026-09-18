@@ -140,3 +140,11 @@ def test_runtime_session_identity_is_validated_at_construction():
             session_plan=build_a_share_session_plan(TRADE_DATE, calendar),
             timer_specs=(),
         )
+
+
+def test_runtime_poll_rejects_mismatched_readiness_trade_date():
+    as_of = local_datetime_ms(TRADE_DATE, "09:26:00")
+    coordinator = _coordinator()
+    result = coordinator.poll(as_of_ms=as_of, q2=_q2(as_of))
+    with pytest.raises(ValueError, match="does not match readiness"):
+        replace(result, trade_date="2026-09-09")
