@@ -51,6 +51,14 @@ drain 和 Probe 调用；不包含持久化恢复或 Rabbit 接管。Real Data P
 只读迁移适配，不替代 `engine-next` 的生产 owner；真实 0920/0924/0925 投影和
 旧消费者的正式买盘阈值、转强/转弱规则仍需 parity 证据后才能迁移。
 
+当前又增加了 `AnchorDeltaShadowStrategy` 这一条更窄的事实迁移切片：它只声明
+`AUCTION_0920→AUCTION_0924` 与 `AUCTION_0924→AUCTION_0925` 两个相邻锚点，
+委托已验证的 `build_anchor_delta_evidence` 计算价格/金额/买卖盘差值，输出
+`FACT_ONLY/OBSERVE`、semantic/evidence/submission 身份，不产生任何策略结论。
+默认相邻 pair 允许共享 `AUCTION_0924`，但重复 pair、跨 session 或冲突快照会拒绝。
+该切片已在 Cobra-ion 的真实 TD `auction_snapshot_v2` 只读行上验证；这仍不代表
+Rabbit batch、source-freeze ownership 或 engine-next 替代已经通过。
+
 `examples/run_real_auction_engine_shadow.py` 提供一个有界验证入口：将真实
 TD `auction_snapshot_v2` 投影适配为 canonical market projection，按每个业务锚点
 提交 `MARKET_UPDATE` 与 `TIMER`，再由同一个 `DeterministicEngine` 调用该事实
