@@ -6,6 +6,7 @@ from pathlib import Path
 
 from engine_core import (
     AnchorDeltaShadowStrategy,
+    AuctionShadowStrategy,
     DEFAULT_ANCHOR_PAIRS,
     DeterministicEngine,
     EngineSignal,
@@ -173,6 +174,47 @@ def test_anchor_delta_strategy_propagates_missing_anchor_fields():
         item["fact"]["status"] == "unavailable"
         for item in result.trace["anchor_deltas"]
     )
+
+
+def test_anchor_delta_strategy_matches_legacy_shadow_shared_metrics():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    snapshots = tuple(
+        _snapshot(fixture, name)
+        for name in ("pre_auction_0915", "auction_0920", "auction_0924")
+    )
+
+    legacy = AuctionShadowStrategy(
+        scope_id=fixture["symbol"],
+        start_trigger_id="PRE_AUCTION_0915",
+        middle_trigger_id="AUCTION_0920",
+        end_trigger_id="AUCTION_0924",
+    )
+    legacy_result = None
+    for index, snapshot in enumerate(snapshots):
+        legacy_result = legacy.evaluate(
+            snapshot,
+            FrozenDataBundle.empty(f"legacy-{index}", snapshot.logical_time_ms),
+        )
+
+    migrated = AnchorDeltaShadowStrategy(scope_id=fixture["symbol"])
+    migrated_result = None
+    for index, snapshot in enumerate(snapshots[1:]):
+        migrated_result = migrated.evaluate(
+            snapshot,
+            FrozenDataBundle.empty(f"migrated-{index}", snapshot.logical_time_ms),
+        )
+
+    assert legacy_result is not None
+    assert migrated_result is not None
+    legacy_metrics = legacy_result.trace["auction_fact_shadow"]["metrics"]
+    migrated_facts = migrated_result.trace["anchor_deltas"]
+    assert len(migrated_facts) == 1
+    migrated_metrics = migrated_facts[0]["fact"]
+    assert migrated_metrics["price_delta_milli"] == legacy_metrics["price_delta_milli"]
+    assert migrated_metrics["amount_delta_yuan"] == legacy_metrics["amount_delta_yuan"]
+    assert migrated_metrics["rest_bid_delta_yuan"] == legacy_metrics["rest_bid_delta_yuan"]
+    assert migrated_metrics["rest_ask_delta_yuan"] == legacy_metrics["rest_ask_delta_yuan"]
+    assert migrated_metrics["pressure_delta_yuan"] == legacy_metrics["pressure_delta_yuan"]
 
 
 def test_anchor_delta_strategy_hash_is_semantic_and_evidence_separated():
