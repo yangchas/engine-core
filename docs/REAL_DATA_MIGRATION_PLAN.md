@@ -8,6 +8,12 @@
 - 真实日历 probe 使用 BaoStock 登录/query/logout 只读路径生成当前可用范围快照：查询 `2025-12-01..2026-09-18`，声明覆盖 `2026-01-01..2026-09-18`，`197` 个交易日；不能把未来尚未由源发布的日期写入 guard coverage。artifact 位于 Cobra-ion `/home/exedev/validation/calendar-probe-20260918/calendar.json`，文件 SHA-256=`b3e633497be579ab20dd31231af4257d1dcb417a35af1f059295bdb43a47e6f4`，semantic hash=`8f2a56c8dca12d7a37779fb14961ab5fb0bed21d03ef4aaf3a4c7b8d76c3b96f`。
 - 一次第三方连接器探针在超出命令预算后被停止，不采纳其结果；这进一步确认第三方网络 I/O 必须有界、不能阻塞 Core reducer。完整证据见 `docs/evidence/real_readonly_chain_20260918_1315.md`。
 
+### 2026-09-18 13:23 真实参考数据 readiness 复核
+
+- 使用当天 BaoStock 日历快照推导唯一 `previous_trade_date=2026-09-17`，真实读取 TD `daily_kline`、Redis `cache:yest_limit_pool:2026-09-17`（47 行）和 Redis `cache:hot_plates:2026-09-18`（50 行）；Redis HLEN/HSCAN、日期、来源和行数一致。
+- 三个结果均因没有可证明的历史 `available_at_ms` 保持 `UNAVAILABLE/available_at_unknown`，`observed_at` 没有被冒充可用时间；Q2 同时为 `5224/5224`、coverage=`1.0` 但 `STALE`。readiness=`PARTIAL`，动作仅为 `REFRESH_Q2` 与三个 `PREFETCH`。
+- 该结果关闭了真实连接、日期 authority 和 fail-closed 行为，但没有关闭 M2 runtime readiness；下一步必须获得 producer availability/field-unit evidence，或由架构决策明确 live-only policy，不能私自放宽 TemporalDataGuard。详见 `docs/evidence/real_reference_readiness_20260918_1323.md`。
+
 ### 2026-09-18 12:27–12:30 真实 Q2/参考数据/Core Shadow 复核
 
 - 在不重启 `engine-next`/`t1-v2-live`、不新增 Rabbit consumer、不改变 ACK、不中断生产链的前提下，使用 Cobra-ion 部署 venv 对真实 Redis/TD 做只读复核。两个服务仍 `active`、`NRestarts=0`；根盘约 85% 使用率、可用约 2.8G，未进行盘中清理或写入。
