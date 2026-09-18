@@ -19,18 +19,37 @@ SPEC.loader.exec_module(MODULE)
 TRADE_DATE = "2026-09-08"
 
 
+def _source_ms(clock: str) -> int:
+    if "." in clock:
+        return int(
+            datetime.fromisoformat(f"{TRADE_DATE}T{clock}+08:00").timestamp()
+            * 1000
+        )
+    return local_datetime_ms(TRADE_DATE, clock)
+
+
 class FakeRedis:
-    def __init__(self, *, future_tag: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        future_tag: str | None = None,
+        source_clock_0925: str = "09:25:06",
+    ) -> None:
         self.calls = []
         self.future_tag = future_tag
+        self.source_clock_0925 = source_clock_0925
 
     def hgetall(self, key):
         self.calls.append(("hgetall", key))
         tag = key.rsplit(":", 1)[-1]
         if tag not in {"0920", "0924", "0925"}:
             return {}
-        source_clock = "09:25:06" if tag == "0925" else f"{tag[:2]}:{tag[2:]}:00"
-        ts = local_datetime_ms(TRADE_DATE, source_clock)
+        source_clock = (
+            self.source_clock_0925
+            if tag == "0925"
+            else f"{tag[:2]}:{tag[2:]}:00"
+        )
+        ts = _source_ms(source_clock)
         if tag == self.future_tag:
             ts = local_datetime_ms(TRADE_DATE, "09:30:00")
         return {
@@ -154,6 +173,41 @@ def test_0925_normal_is_admissible_at_six_second_settling_barrier():
     )
     assert result["preflight_gate"] == "PASS"
     assert result["node_dispatched"] is True
+
+
+def test_0925_barrier_is_earliest_admission_not_source_timestamp_rewrite():
+    redis = FakeRedis(source_clock_0925="09:25:06.197")
+    barrier = local_datetime_ms(TRADE_DATE, "09:25:06")
+    projections = _projections(redis, barrier)
+    too_early = MODULE.run_m3_auction_followup_shadow(
+        calendar=_calendar(),
+        current_projection=projections["0925"],
+        prior_projections={"0920": projections["0920"], "0924": projections["0924"]},
+        trade_date=TRADE_DATE,
+        symbol="000001",
+        node_tag="0925",
+        observed_at=_dt(barrier),
+        as_of=_dt(barrier),
+    )
+    assert too_early["preflight_gate"] == "BLOCKED"
+    assert too_early["startup_self_check"]["reasons"] == (
+        "projection_source_time_after_0925_cutoff",
+    )
+
+    actual_source_time = _source_ms("09:25:06.197")
+    projections = _projections(redis, actual_source_time)
+    admitted = MODULE.run_m3_auction_followup_shadow(
+        calendar=_calendar(),
+        current_projection=projections["0925"],
+        prior_projections={"0920": projections["0920"], "0924": projections["0924"]},
+        trade_date=TRADE_DATE,
+        symbol="000001",
+        node_tag="0925",
+        observed_at=_dt(actual_source_time),
+        as_of=_dt(actual_source_time),
+    )
+    assert admitted["preflight_gate"] == "PASS"
+    assert admitted["node_dispatched"] is True
 
 
 def test_late_normal_followup_is_blocked_without_engine_dispatch():
