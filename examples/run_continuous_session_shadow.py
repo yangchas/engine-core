@@ -30,7 +30,11 @@ from engine_core import (  # noqa: E402
     MarketStateReducer,
     OpeningShadowStrategy,
     Q2ProjectionSnapshot,
+    SessionPlan,
+    SessionRuntimeCoordinator,
     SignalKind,
+    TimerSpec,
+    TradingCalendarSnapshot,
     WindowManager,
     WindowSpec,
     build_auction_reference_bundle,
@@ -274,6 +278,8 @@ def run_continuous_session_shadow(
     opening_projection: Q2ProjectionSnapshot,
     trade_date: str,
     symbol: str,
+    calendar: TradingCalendarSnapshot,
+    session_plan: SessionPlan,
     preparation: AuctionReferencePreparation | None = None,
     evaluation_times_ms: Mapping[str, int] | None = None,
     run_mode: str = "NORMAL",
@@ -306,6 +312,8 @@ def run_continuous_session_shadow(
         opening_projection=opening_projection,
         trade_date=trade_date,
         symbol=symbol,
+        calendar=calendar,
+        session_plan=session_plan,
         preparation=preparation,
         evaluation_times_ms=evaluation_times_ms,
         run_mode=run_mode,
@@ -318,6 +326,8 @@ def run_continuous_redis_session_shadow(
     opening_projection: Q2ProjectionSnapshot,
     trade_date: str,
     symbol: str,
+    calendar: TradingCalendarSnapshot,
+    session_plan: SessionPlan,
     preparation: AuctionReferencePreparation | None = None,
     evaluation_times_ms: Mapping[str, int] | None = None,
     run_mode: str = "NORMAL",
@@ -350,6 +360,8 @@ def run_continuous_redis_session_shadow(
         opening_projection=opening_projection,
         trade_date=trade_date,
         symbol=symbol,
+        calendar=calendar,
+        session_plan=session_plan,
         preparation=preparation,
         evaluation_times_ms=evaluation_times_ms,
         run_mode=run_mode,
@@ -362,6 +374,8 @@ def _run_projection_session(
     opening_projection: Q2ProjectionSnapshot,
     trade_date: str,
     symbol: str,
+    calendar: TradingCalendarSnapshot,
+    session_plan: SessionPlan,
     preparation: AuctionReferencePreparation | None,
     evaluation_times_ms: Mapping[str, int] | None,
     run_mode: str,
@@ -372,6 +386,10 @@ def _run_projection_session(
     if missing:
         raise ValueError("missing auction projections: " + ",".join(missing))
     evaluation_times = _validate_evaluation_times(trade_date, evaluation_times_ms)
+    if not isinstance(calendar, TradingCalendarSnapshot):
+        raise TypeError("calendar must be TradingCalendarSnapshot")
+    if not isinstance(session_plan, SessionPlan):
+        raise TypeError("session_plan must be SessionPlan")
     _validate_session_inputs(
         auction_projections=auction_projections,
         opening_projection=opening_projection,
@@ -380,6 +398,22 @@ def _run_projection_session(
         preparation=preparation,
         evaluation_times_ms=evaluation_times,
         run_mode=run_mode,
+    )
+    coordinator = SessionRuntimeCoordinator(
+        trade_date=trade_date,
+        calendar=calendar,
+        session_plan=session_plan,
+        timer_specs=(
+            TimerSpec("AUCTION_0920", "09:20:00"),
+            TimerSpec("AUCTION_0924", "09:24:00"),
+            TimerSpec("AUCTION_0925", "09:25:00"),
+            TimerSpec("OPENING_0932", "09:32:00"),
+        ),
+        q2_optional_timer_ids=(
+            "AUCTION_0920",
+            "AUCTION_0924",
+            "AUCTION_0925",
+        ),
     )
     strategy = ContinuousSessionShadowStrategy(symbol=symbol)
     engine = DeterministicEngine(
@@ -391,12 +425,39 @@ def _run_projection_session(
     )
     signal_seq = 1
     reference_bundle_hash = None
+    timer_firings: list[dict[str, Any]] = []
     for tag in ANCHOR_ORDER:
         projection = auction_projections[tag]
         logical_time_ms = evaluation_times[tag]
         business_anchor_ms = _business_time_ms(
             trade_date,
             time(int(tag[:2]), int(tag[2:])),
+        )
+        poll = coordinator.poll(
+            as_of_ms=logical_time_ms,
+            q2=None,
+            origin="NORMAL",
+        )
+        firing = next(
+            (
+                item
+                for item in poll.dispatchable_firings
+                if item.timer_id == f"AUCTION_{tag}"
+            ),
+            None,
+        )
+        if firing is None:
+            raise RuntimeError(f"coordinator did not dispatch AUCTION_{tag}")
+        if firing.fired_time_ms != logical_time_ms:
+            raise RuntimeError(f"coordinator firing time mismatch for AUCTION_{tag}")
+        timer_firings.append(
+            {
+                "timer_id": firing.timer_id,
+                "scheduled_time_ms": firing.scheduled_time_ms,
+                "fired_time_ms": firing.fired_time_ms,
+                "origin": firing.origin,
+                "content_hash": firing.content_hash,
+            }
         )
         engine.submit(
             EngineSignal(
@@ -412,6 +473,7 @@ def _run_projection_session(
             "trigger_id": f"AUCTION_{tag}",
             "business_anchor_time_ms": business_anchor_ms,
             "firing_time_ms": logical_time_ms,
+            "timer_firing_content_hash": firing.content_hash,
         }
         if tag == "0925" and preparation is not None:
             timer_payload["data_requirements"] = AUCTION_REFERENCE_FUNCTION_ORDER
@@ -443,9 +505,36 @@ def _run_projection_session(
             )
             signal_seq += 1
             current = engine.run_until_empty()
+        coordinator.acknowledge(firing)
 
     opening_time_ms = evaluation_times["OPENING_0932"]
     opening_business_anchor_ms = _business_time_ms(trade_date, time(9, 32))
+    opening_poll = coordinator.poll(
+        as_of_ms=opening_time_ms,
+        q2=opening_projection,
+        origin="NORMAL",
+    )
+    opening_firing = next(
+        (
+            item
+            for item in opening_poll.dispatchable_firings
+            if item.timer_id == "OPENING_0932"
+        ),
+        None,
+    )
+    if opening_firing is None:
+        raise RuntimeError("coordinator did not dispatch OPENING_0932")
+    if opening_firing.fired_time_ms != opening_time_ms:
+        raise RuntimeError("coordinator firing time mismatch for OPENING_0932")
+    timer_firings.append(
+        {
+            "timer_id": opening_firing.timer_id,
+            "scheduled_time_ms": opening_firing.scheduled_time_ms,
+            "fired_time_ms": opening_firing.fired_time_ms,
+            "origin": opening_firing.origin,
+            "content_hash": opening_firing.content_hash,
+        }
+    )
     engine.submit(
         EngineSignal(
             "continuous-market-opening-0932",
@@ -466,10 +555,12 @@ def _run_projection_session(
             "trigger_id": "OPENING_0932",
             "business_anchor_time_ms": opening_business_anchor_ms,
             "firing_time_ms": opening_time_ms,
+            "timer_firing_content_hash": opening_firing.content_hash,
         },
         )
     )
     current = engine.run_until_empty()
+    coordinator.acknowledge(opening_firing)
     # ``EngineRunResult.strategy_results`` is the bounded observable history,
     # not only the delta from this drain call.  Read it once after the final
     # stage so intermediate drains cannot duplicate entries in the report.
@@ -482,6 +573,12 @@ def _run_projection_session(
         "trade_date": trade_date,
         "symbol": symbol,
         "single_engine": True,
+        "coordinator": {
+            "session_plan_hash": session_plan.content_hash,
+            "state_hash": coordinator.state_hash(),
+            "completed_timer_ids": coordinator.completed_timer_ids,
+            "timer_firings": tuple(timer_firings),
+        },
         "processed_signals": current.processed_signals,
         "strategy_result_count": len(result_history),
         "reference_bundle_hash": reference_bundle_hash,

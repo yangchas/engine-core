@@ -6,8 +6,14 @@ from pathlib import Path
 import pytest
 
 from engine_core import (
+    AUCTION_REFERENCE_FUNCTION_ORDER,
+    AuctionReferencePreparation,
+    DataResult,
+    DataStatus,
     FreshnessPolicy,
     RedisQ2ProjectionAdapter,
+    build_a_share_session_plan,
+    build_calendar_snapshot,
     build_q2_projection,
     read_redis_auction_projection,
 )
@@ -114,6 +120,51 @@ def _evaluation_times(trade_date: str, *, auction_0925: str = "09:25:06"):
     }
 
 
+def _session_contract(trade_date: str):
+    calendar = build_calendar_snapshot(
+        (trade_date,),
+        version="continuous-session-test-v1",
+        declared_valid_from=trade_date,
+        declared_valid_to=trade_date,
+        source_guard_valid_from=trade_date,
+        source_guard_valid_to=trade_date,
+    )
+    return calendar, build_a_share_session_plan(trade_date, calendar)
+
+
+def _reference_preparation(trade_date: str, knowledge_as_of_ms: int, *, available=True):
+    previous_trade_date = (
+        datetime.fromisoformat(trade_date).date() - timedelta(days=1)
+    ).isoformat()
+    results = []
+    for function_id in AUCTION_REFERENCE_FUNCTION_ORDER:
+        results.append(
+            (
+                function_id,
+                DataResult(
+                    request_id=f"test:{trade_date}:{function_id}",
+                    function_id=function_id,
+                    status=DataStatus.READY,
+                    data={"function_id": function_id},
+                    actual_source="fixture",
+                    requested_trade_date=trade_date,
+                    actual_trade_date=previous_trade_date,
+                    effective_at_ms=knowledge_as_of_ms - 1,
+                    available_at_ms=(knowledge_as_of_ms - 1 if available else None),
+                    observed_at_ms=knowledge_as_of_ms - 1,
+                    schema_version=1,
+                    completeness=1.0,
+                ),
+            )
+        )
+    return AuctionReferencePreparation(
+        trade_date=trade_date,
+        previous_trade_date=previous_trade_date,
+        knowledge_as_of_ms=knowledge_as_of_ms,
+        results=tuple(results),
+    )
+
+
 def _fixture_rows_without_final_anchor(fixture: dict):
     rows = []
     for item in fixture["snapshots"].values():
@@ -178,11 +229,14 @@ def test_continuous_shadow_reuses_one_engine_for_auction_and_opening():
     row_0925["ts"] = row_0924["ts"] + timedelta(seconds=56)
     rows.append(row_0925)
     projection = _q2_projection(fixture["trade_date"], "09:32:00", "09:32:00")
+    calendar, session_plan = _session_contract(fixture["trade_date"])
     result = MODULE.run_continuous_session_shadow(
         auction_rows=rows,
         opening_projection=projection,
         trade_date=fixture["trade_date"],
         symbol="600519",
+        calendar=calendar,
+        session_plan=session_plan,
         evaluation_times_ms=_evaluation_times(fixture["trade_date"]),
     )
     assert result["single_engine"] is True
@@ -197,6 +251,79 @@ def test_continuous_shadow_reuses_one_engine_for_auction_and_opening():
         "OPENING_0932",
     ]
     assert result["strategy_results"][-1]["delegated_strategy_id"] == "opening-shadow-v1"
+
+
+def test_continuous_shadow_binds_one_prefetched_reference_bundle():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    trade_date = fixture["trade_date"]
+    evaluation_times = _evaluation_times(trade_date)
+    calendar, session_plan = _session_contract(trade_date)
+    preparation = _reference_preparation(
+        trade_date,
+        evaluation_times["0925"] - 1_000,
+    )
+    result = MODULE.run_continuous_session_shadow(
+        auction_rows=_fixture_rows_without_final_anchor(fixture),
+        opening_projection=_q2_projection(trade_date, "09:32:00", "09:32:00"),
+        trade_date=trade_date,
+        symbol="600519",
+        calendar=calendar,
+        session_plan=session_plan,
+        preparation=preparation,
+        evaluation_times_ms=evaluation_times,
+    )
+    assert result["reference_bundle_hash"]
+    assert result["processed_signals"] == 9
+    assert result["coordinator"]["completed_timer_ids"] == (
+        "AUCTION_0920",
+        "AUCTION_0924",
+        "AUCTION_0925",
+        "OPENING_0932",
+    )
+    assert len(result["coordinator"]["timer_firings"]) == 4
+
+
+def test_continuous_shadow_rejects_late_reference_preparation():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    trade_date = fixture["trade_date"]
+    evaluation_times = _evaluation_times(trade_date)
+    calendar, session_plan = _session_contract(trade_date)
+    with pytest.raises(ValueError, match="after 0925 evaluation"):
+        MODULE.run_continuous_session_shadow(
+            auction_rows=_fixture_rows_without_final_anchor(fixture),
+            opening_projection=_q2_projection(trade_date, "09:32:00", "09:32:00"),
+            trade_date=trade_date,
+            symbol="600519",
+            calendar=calendar,
+            session_plan=session_plan,
+            preparation=_reference_preparation(
+                trade_date,
+                evaluation_times["0925"] + 1,
+            ),
+            evaluation_times_ms=evaluation_times,
+        )
+
+
+def test_continuous_shadow_rejects_unknown_reference_availability():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    trade_date = fixture["trade_date"]
+    evaluation_times = _evaluation_times(trade_date)
+    calendar, session_plan = _session_contract(trade_date)
+    with pytest.raises(ValueError, match="unknown available_at"):
+        MODULE.run_continuous_session_shadow(
+            auction_rows=_fixture_rows_without_final_anchor(fixture),
+            opening_projection=_q2_projection(trade_date, "09:32:00", "09:32:00"),
+            trade_date=trade_date,
+            symbol="600519",
+            calendar=calendar,
+            session_plan=session_plan,
+            preparation=_reference_preparation(
+                trade_date,
+                evaluation_times["0925"] - 1_000,
+                available=False,
+            ),
+            evaluation_times_ms=evaluation_times,
+        )
 
 
 def test_continuous_shadow_rejects_cross_trade_date_projection():
@@ -225,18 +352,22 @@ def test_continuous_shadow_rejects_cross_trade_date_projection():
     row_0925["auction_tag"] = "0925"
     row_0925["ts"] = row_0925["ts"] + timedelta(seconds=60)
     rows.append(row_0925)
+    calendar, session_plan = _session_contract(fixture["trade_date"])
     with pytest.raises(ValueError, match="trade_date"):
         MODULE.run_continuous_session_shadow(
             auction_rows=rows,
             opening_projection=_q2_projection("2026-09-02", "09:32:00", "09:32:00"),
             trade_date=fixture["trade_date"],
             symbol="600519",
+            calendar=calendar,
+            session_plan=session_plan,
             evaluation_times_ms=_evaluation_times(fixture["trade_date"]),
         )
 
 
 def test_continuous_shadow_rejects_future_opening_source_time():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    calendar, session_plan = _session_contract(fixture["trade_date"])
     with pytest.raises(ValueError, match="source time"):
         MODULE.run_continuous_session_shadow(
             auction_rows=_fixture_rows_without_final_anchor(fixture),
@@ -245,12 +376,15 @@ def test_continuous_shadow_rejects_future_opening_source_time():
             ),
             trade_date=fixture["trade_date"],
             symbol="600519",
+            calendar=calendar,
+            session_plan=session_plan,
             evaluation_times_ms=_evaluation_times(fixture["trade_date"]),
         )
 
 
 def test_continuous_shadow_rejects_auction_source_after_explicit_evaluation_time():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    calendar, session_plan = _session_contract(fixture["trade_date"])
     with pytest.raises(ValueError, match="after node cutoff"):
         MODULE.run_continuous_session_shadow(
             auction_rows=_fixture_rows_without_final_anchor(fixture),
@@ -259,6 +393,8 @@ def test_continuous_shadow_rejects_auction_source_after_explicit_evaluation_time
             ),
             trade_date=fixture["trade_date"],
             symbol="600519",
+            calendar=calendar,
+            session_plan=session_plan,
             evaluation_times_ms=_evaluation_times(
                 fixture["trade_date"], auction_0925="09:25:05"
             ),
@@ -267,6 +403,7 @@ def test_continuous_shadow_rejects_auction_source_after_explicit_evaluation_time
 
 def test_continuous_shadow_rejects_evaluation_times_on_another_trade_date():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    calendar, session_plan = _session_contract(fixture["trade_date"])
     evaluation_times = {
         key: value + 86_400_000
         for key, value in _evaluation_times(fixture["trade_date"]).items()
@@ -279,12 +416,15 @@ def test_continuous_shadow_rejects_evaluation_times_on_another_trade_date():
             ),
             trade_date=fixture["trade_date"],
             symbol="600519",
+            calendar=calendar,
+            session_plan=session_plan,
             evaluation_times_ms=evaluation_times,
         )
 
 
 def test_continuous_shadow_rejects_evaluation_before_0925_business_anchor():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    calendar, session_plan = _session_contract(fixture["trade_date"])
     evaluation_times = _evaluation_times(fixture["trade_date"])
     evaluation_times["0925"] -= 7_000
     with pytest.raises(ValueError, match="before business anchor"):
@@ -295,6 +435,8 @@ def test_continuous_shadow_rejects_evaluation_before_0925_business_anchor():
             ),
             trade_date=fixture["trade_date"],
             symbol="600519",
+            calendar=calendar,
+            session_plan=session_plan,
             evaluation_times_ms=evaluation_times,
         )
 
@@ -336,11 +478,14 @@ def test_continuous_redis_shadow_preserves_missing_0924_without_substitution():
         datetime.fromisoformat(f"{trade_date}T09:32:00+08:00"),
         freshness_policy=FreshnessPolicy(stale_after_ms=60_000),
     )
+    calendar, session_plan = _session_contract(trade_date)
     result = MODULE.run_continuous_redis_session_shadow(
         auction_projections=auction,
         opening_projection=opening,
         trade_date=trade_date,
         symbol="600519",
+        calendar=calendar,
+        session_plan=session_plan,
         evaluation_times_ms=_evaluation_times(trade_date, auction_0925="09:25:06"),
     )
     assert result["single_engine"] is True
@@ -392,6 +537,7 @@ def test_continuous_redis_shadow_rejects_duplicate_anchor_tags():
         datetime.fromisoformat(f"{trade_date}T09:32:00+08:00"),
         freshness_policy=FreshnessPolicy(stale_after_ms=60_000),
     )
+    calendar, session_plan = _session_contract(trade_date)
     duplicate = tuple(auction) + (auction[0],)
     try:
         MODULE.run_continuous_redis_session_shadow(
@@ -399,6 +545,8 @@ def test_continuous_redis_shadow_rejects_duplicate_anchor_tags():
             opening_projection=opening,
             trade_date=trade_date,
             symbol="600519",
+            calendar=calendar,
+            session_plan=session_plan,
             evaluation_times_ms=_evaluation_times(trade_date, auction_0925="09:25:06"),
         )
     except ValueError as exc:
