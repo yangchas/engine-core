@@ -2,7 +2,8 @@
 
 ## Change
 
-Commit `ec5dd37` closes two narrow contract gaps in the A2 report slice:
+Commits `ec5dd37` and `5409cf5` close two narrow contract gaps in the A2
+report slice:
 
 1. `AuctionMarketSummaryFact.as_mapping()` now exposes the canonical
    `limit_up_seal_amount_yuan` field that is already part of the semantic
@@ -11,6 +12,8 @@ Commit `ec5dd37` closes two narrow contract gaps in the A2 report slice:
    evidence hash and stable evidence references. A source/evidence change with
    identical business values therefore preserves `semantic_hash` but changes
    `evidence_hash`.
+3. The summary evidence-reference payload is canonicalized as a direct stable
+   tuple rather than an unnecessary nested tuple.
 
 No provider, runtime, strategy, delivery, or production path was changed.
 
