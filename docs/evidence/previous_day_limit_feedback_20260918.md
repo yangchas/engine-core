@@ -32,7 +32,7 @@ business anchor (`0925`) and source record time remain separate fields.
 ## Verification
 
 - Local targeted tests: 9 passed.
-- Full local suite after this slice: 497 passed (expected count after the
+- Full local suite after this slice: 498 passed (expected count after the
   new fact tests).
 - `compileall` and `git diff --check`: PASS.
 - The real 47-row Redis capture for `2026-09-17` remains `UNAVAILABLE` for
