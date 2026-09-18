@@ -33,9 +33,12 @@ if journalctl -u t1-v2-live --since '2026-09-18 00:00:00' --no-pager \
 else
   echo 'TD_WRITE_HEALTH=NO_KNOWN_DISK_ERROR'
 fi
+echo 'LAST_T1V2_PROGRESS:'
+journalctl -u t1-v2-live --since '09:15:00' --no-pager \
+  | grep 't1_v2 progress' | tail -1
 ```
 
-如果仍有 `No enough disk space`，本次不得把 TD 当完整 ground truth；可以继续
+如果仍有 `No enough disk space`，或在受控运行窗口内没有新的 progress/heartbeat，本次不得把 TD 当完整 ground truth；可以继续
 Redis-only 只读 Shadow，但结论必须标记 `WARN/BLOCKED`，不能宣称 TD/跨源 parity
 通过。不得在运行单中自行删除数据、prune volume 或修改 keep 策略。
 
