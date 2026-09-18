@@ -2,7 +2,8 @@
 
 ## Scope
 
-Commit `4ca5915` adds the pure `PreviousDayLimitStructureFact` wheel. It
+Commits `4ca5915` and `bfbfd85` add and harden the pure
+`PreviousDayLimitStructureFact` wheel. It
 derives only previous-session membership structure from a guarded
 `previous_day_limit_pool` result:
 
@@ -29,7 +30,10 @@ strength, or a strategy conclusion. A source result that is `UNAVAILABLE`,
 ## Verification
 
 - Local: `486 passed`; compileall passed.
-- Cobra-ion isolated copy under Python 3.12.3: `486 passed`; compileall passed.
+- The mapping carrying board-height counts is recursively frozen after hash
+  construction; mutation is rejected by regression test.
+- Local: `488 passed`; compileall passed.
+- Cobra-ion isolated copy under Python 3.12.3: `488 passed`; compileall passed.
 - New source/test/fixture hashes matched local and remote exactly.
 - No Redis/TD write, Rabbit change, service restart, notification, or effect
   occurred.
