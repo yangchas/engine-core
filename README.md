@@ -99,6 +99,12 @@ calendar/session identity，调用既有 readiness/timer 纯轮子，返回可�
 把旧 Q2 误报为 fresh。探针自己的 pytest 文件只使用 fake client 验证探针合同，不能冒充在线
 连接测试。
 
+Cobra-ion 在线探针必须使用生产共享 Python 3.12 venv（当前路径为
+`/home/exedev/services/engine-next/shared/venv/bin/python`）。系统
+`/usr/bin/python3.12` 不保证安装 `redis`/`taos`，它只能用于无外部依赖的
+compile/test 检查；如果在线探针导入依赖失败，先修正运行时解释器，不要把依赖缺失误判为
+Redis/TD 数据源故障。在线运行仍必须写入隔离 validation 目录，不得写生产服务目录。
+
 当前真实验证范围和未迁移能力见：
 
 - `docs/evidence/real_data_probe/20260909-real-integration-audit.md`
