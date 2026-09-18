@@ -1,5 +1,20 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 M3-1 09:20 preflight shadow
+
+- Added only the bounded M3-1 composition: one real Redis Q2 prefetch,
+  calendar/session self-check, `SessionRuntimeCoordinator` timer identity,
+  cutoff validation and one existing Engine instance. Preflight failure is
+  fail-closed; no fallback, repair, persistence or effect was added.
+- Local and Cobra-ion isolated suites both pass `525` with compileall. The
+  real post-market Cobra run for `000338` was intentionally
+  `RECOVERY_CATCHUP` and returned `BLOCKED` because current Q2 observation was
+  after the 09:20 anchor; Engine dispatch stayed false. Artifact SHA-256:
+  `a60e93fe7f2cfc826fbc5bcb021e5e2c26dfc556cb8f5f66c294affb791223b7`.
+- This closes only M3-1's code and fail-closed recovery boundary. A normal
+  09:20 run before/at the node is still required; 09:24 and 09:25 remain
+  separate slices and `engine-next` remains the production owner.
+
 ### 2026-09-18 M2 Redis projection -> Core Engine queue
 
 - Added a bounded read-only runner that consumes the existing Redis auction

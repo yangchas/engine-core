@@ -1,5 +1,16 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-18 M3-1 adds the smallest 09:20 preflight composition:
+  one real Redis Q2 prefetch, calendar/session identity validation,
+  `SessionRuntimeCoordinator` timer identity and a single in-memory Engine
+  dispatch only when the cutoff is safe. Local/Cobra-ion Python 3.12.3 suites
+  both pass `525`; compileall passes. A real post-market recovery run for
+  `000338` correctly returned `BLOCKED` because the current Q2 observation was
+  after the historical 09:20 anchor, with `node_dispatched=false` and no
+  fallback. Artifact SHA-256=`a60e93fe7f2cfc826fbc5bcb021e5e2c26dfc556cb8f5f66c294affb791223b7`.
+  Normal-origin 09:20 acceptance and 09:24/09:25 remain open. Evidence:
+  `docs/evidence/m3_0920_preflight_shadow_20260918.md`.
+
 - [VERIFIED] 2026-09-18 the bounded Core Redis auction projection is now
   consumed through the existing public `DeterministicEngine` queue by a
   separate read-only shadow runner. A real Cobra-ion run for TopN symbol
