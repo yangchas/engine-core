@@ -511,6 +511,38 @@ class DeterministicEngine:
             result = bundle.results_by_function[function_id]
             if result.status in (DataStatus.READY, DataStatus.PARTIAL):
                 if result.available_at_ms is None:
-                    raise ValueError("runtime data has unknown available_at")
+                    if not DeterministicEngine._live_fetch_is_cutoff_safe(
+                        result,
+                        bundle.knowledge_as_of_ms,
+                    ):
+                        raise ValueError("runtime data has unknown available_at")
+                    continue
                 if result.available_at_ms > bundle.knowledge_as_of_ms:
                     raise ValueError("runtime data is after knowledge cutoff")
+
+    @staticmethod
+    def _live_fetch_is_cutoff_safe(
+        result: Any,
+        knowledge_as_of_ms: int,
+    ) -> bool:
+        """Accept only the explicit live-acquisition exception.
+
+        A live adapter may prove that it completed its read before the
+        evaluation cutoff without claiming the upstream publication time.
+        Historical and replay results must still carry a verified
+        ``available_at_ms``.  The provenance marker is required so callers
+        cannot bypass ``TemporalDataGuard`` by merely setting
+        ``temporal_mode=LIVE`` and ``fetch_completed_at_ms``.
+        """
+
+        if result.temporal_mode != "LIVE":
+            return False
+        completed_at_ms = result.fetch_completed_at_ms
+        if completed_at_ms is None or completed_at_ms > knowledge_as_of_ms:
+            return False
+        return any(
+            item.source_kind == "temporal_guard"
+            and "live_fetch_completed" in item.notes
+            and "available_at_unknown_not_historical_evidence" in item.notes
+            for item in result.provenance
+        )

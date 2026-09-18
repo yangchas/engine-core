@@ -600,13 +600,11 @@ def run_live_morning_shadow(
 ) -> dict[str, Any]:
     """Run the bounded live shell; clock/sleep are injectable for tests.
 
-    ``auction_reference_preparation`` is the startup observation.  When a
-    factory is supplied, each timer node that consumes auction references
-    obtains a fresh read-only preparation at its actual observation time.  This
-    preserves the legacy timing contract:
-    data that was absent at startup must not remain permanently absent merely
-    because the first probe was early.  The factory is deliberately a callable
-    boundary, not a new coordinator or retry framework.
+    ``auction_reference_preparation`` is the startup observation and remains
+    frozen for the run.  If a factory is supplied without a preparation, it is
+    called once at startup to produce that frozen observation.  It is never
+    called at a timer boundary, so a missing prefetch remains fail-closed at
+    the node instead of being refreshed after the evaluation cutoff.
     """
 
     if stale_after_ms < 0:
@@ -627,6 +625,18 @@ def run_live_morning_shadow(
         raise ValueError("stop_at must be later than start_at")
     if local_first > stop_dt:
         raise ValueError("live shadow start is after stop_at; use a new output directory")
+    if (
+        auction_reference_preparation is None
+        and reference_preparation_factory is not None
+    ):
+        auction_reference_preparation = reference_preparation_factory(first_now)
+        if auction_reference_preparation is not None and not isinstance(
+            auction_reference_preparation, AuctionReferencePreparation
+        ):
+            raise TypeError(
+                "reference_preparation_factory must return "
+                "AuctionReferencePreparation or None"
+            )
 
     output_dir.mkdir(parents=True, exist_ok=False)
     late_start = local_first > start_dt
@@ -679,18 +689,6 @@ def run_live_morning_shadow(
             if firing.timer_id in fired_ids:
                 continue
             node_reference_preparation = auction_reference_preparation
-            if (
-                reference_preparation_factory is not None
-                and firing.timer_id == "AUCTION_0926"
-            ):
-                node_reference_preparation = reference_preparation_factory(now)
-                if node_reference_preparation is not None and not isinstance(
-                    node_reference_preparation, AuctionReferencePreparation
-                ):
-                    raise TypeError(
-                        "reference_preparation_factory must return "
-                        "AuctionReferencePreparation or None"
-                    )
             node = _capture_node(
                 firing,
                 observed_at=now,
@@ -796,7 +794,6 @@ def main() -> int:
         )
         reference_preparation = None
         reference_client = None
-        reference_preparation_factory = None
         if args.prefetch_auction_references:
             import redis  # type: ignore[import-not-found]
 
@@ -835,7 +832,6 @@ def main() -> int:
                 )
                 return reference_context["preparation"]
 
-            reference_preparation_factory = prepare_references
             reference_preparation = prepare_references(datetime.now(timezone.utc))
 
         try:
@@ -854,7 +850,6 @@ def main() -> int:
                     "database": args.td_database,
                 },
                 auction_reference_preparation=reference_preparation,
-                reference_preparation_factory=reference_preparation_factory,
                 poll_seconds=args.poll_ms / 1000.0,
                 start_at=start_at,
                 stop_at=stop_at,

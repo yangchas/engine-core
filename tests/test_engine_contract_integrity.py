@@ -14,7 +14,7 @@ from engine_core import (
     WindowSpec,
     semantic_hash,
 )
-from engine_core.contracts import StrategyResult
+from engine_core.contracts import Provenance, StrategyResult
 
 
 class RecordingStrategy:
@@ -218,3 +218,82 @@ def test_ready_data_uses_available_at_not_observed_at_for_cutoff():
     )
     outcome = engine.run_until_empty()
     assert outcome.strategy_results[-1].evaluation_id == "eval-ready"
+
+
+def test_live_ready_data_may_use_guarded_fetch_completion_without_available_at():
+    engine = _engine()
+    snapshot = engine._reducer.build_snapshot("LIVE_ASYNC", logical_time_ms=100)
+    engine._register_evaluation("eval-live", snapshot, ("f",))
+    result = DataResult(
+        request_id="r-live",
+        function_id="f",
+        status=DataStatus.READY,
+        data={"value": 1},
+        actual_source="fixture-live",
+        requested_trade_date="2026-09-04",
+        actual_trade_date="2026-09-03",
+        effective_at_ms=1,
+        available_at_ms=None,
+        observed_at_ms=101,
+        schema_version=1,
+        completeness=1.0,
+        temporal_mode="LIVE",
+        fetch_completed_at_ms=100,
+        provenance=(
+            Provenance(
+                source_id="fixture-live",
+                source_kind="temporal_guard",
+                source_schema="TemporalDataGuardV1",
+                source_trade_date="2026-09-03",
+                effective_at_ms=1,
+                observed_at_ms=101,
+                evidence_ref=None,
+                notes=(
+                    "live_fetch_completed",
+                    "available_at_unknown_not_historical_evidence",
+                ),
+            ),
+        ),
+    )
+    bundle = FrozenDataBundle.from_results("eval-live", 100, ("f",), {"f": result})
+    engine.submit(
+        EngineSignal(
+            "ready-live",
+            101,
+            1,
+            SignalKind.DATA_READY,
+            {"evaluation_id": "eval-live", "bundle": bundle},
+        )
+    )
+    outcome = engine.run_until_empty()
+    assert outcome.strategy_results[-1].evaluation_id == "eval-live"
+
+
+def test_live_unknown_availability_without_guard_marker_is_rejected():
+    engine = _engine()
+    snapshot = engine._reducer.build_snapshot("LIVE_UNSAFE", logical_time_ms=100)
+    engine._register_evaluation("eval-unsafe", snapshot, ("f",))
+    result = DataResult(
+        request_id="r-unsafe",
+        function_id="f",
+        status=DataStatus.READY,
+        data={"value": 1},
+        actual_source="fixture-live",
+        requested_trade_date="2026-09-04",
+        actual_trade_date="2026-09-03",
+        effective_at_ms=1,
+        available_at_ms=None,
+        observed_at_ms=100,
+        schema_version=1,
+        completeness=1.0,
+        temporal_mode="LIVE",
+        fetch_completed_at_ms=100,
+    )
+    bundle = FrozenDataBundle.from_results(
+        "eval-unsafe", 100, ("f",), {"f": result}
+    )
+    with pytest.raises(ValueError, match="unknown available_at"):
+        engine._validate_bundle(
+            engine._pending_evaluations["eval-unsafe"],
+            bundle,
+        )

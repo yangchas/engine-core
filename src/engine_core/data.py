@@ -396,11 +396,12 @@ class DataFunction(Protocol):
 class TemporalDataGuard:
     """Reject data whose historical availability is not cutoff-safe.
 
-    ``available_at_ms`` is the only runtime knowledge-cutoff gate.  A provider
-    observation proves when this process acquired a result, but it does not
-    prove when the upstream source first made the result knowable.  Therefore
-    ``observed_at_ms`` is audit/provenance data only and can never substitute
-    for a missing ``available_at_ms``.
+    Historical and replay runtime knowledge cutoffs require a verified
+    ``available_at_ms``.  LIVE may use the explicit adapter-completion
+    exception when ``fetch_completed_at_ms`` is before the cutoff; that proves
+    when this process acquired the result, not when the upstream source first
+    made the result knowable.  Therefore ``observed_at_ms`` remains
+    audit/provenance data and cannot substitute for historical availability.
     """
 
     @staticmethod

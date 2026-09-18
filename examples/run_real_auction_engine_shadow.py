@@ -167,11 +167,12 @@ def run_engine_shadow(
 
     When ``preparation`` is supplied, only the final ``AUCTION_0925`` timer is
     configured with the reference-data requirement.  The earlier anchors are
-    pure market observations and complete with an empty bundle.  A live
-    ``AUCTION_0926`` coordinator may therefore prepare references at 09:26 and
-    bind them to the final auction evaluation without pretending they were
-    known at 09:20 or 09:24.  This remains a bounded shadow path: no provider
-    I/O occurs here and the preparation is never re-read or rewritten.
+    pure market observations and complete with an empty bundle.  A caller may
+    prefetch references before the ``AUCTION_0926`` evaluation and
+    bind that frozen preparation to the final auction evaluation without
+    pretending the data was known at 09:20 or 09:24.  This remains a bounded
+    shadow path: no provider I/O occurs here and the preparation is never
+    re-read or rewritten.
     """
 
     snapshots = build_snapshots_from_rows(rows, trade_date=trade_date, symbol=symbol)
