@@ -174,6 +174,12 @@ from .session_runtime import (
     RuntimePoll,
     SessionRuntimeCoordinator,
 )
+from .reporting import (
+    ALLOWED_DATA_ORIGINS,
+    AuctionFactReportArtifact,
+    REPORT_CONTRACT_VERSION,
+    build_auction_fact_report,
+)
 
 __all__ = [
     "BreadthFacts",
@@ -321,4 +327,8 @@ __all__ = [
     "SESSION_RUNTIME_CONTRACT_VERSION",
     "RuntimePoll",
     "SessionRuntimeCoordinator",
+    "ALLOWED_DATA_ORIGINS",
+    "AuctionFactReportArtifact",
+    "REPORT_CONTRACT_VERSION",
+    "build_auction_fact_report",
 ]
