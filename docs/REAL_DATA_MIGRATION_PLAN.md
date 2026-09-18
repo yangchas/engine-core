@@ -3,8 +3,8 @@
 ### 2026-09-19 M1 下一交易日运行单固化
 
 - 将 `docs/runbooks/m1_live_morning_next_session_20260921.md` 固定到当前已在
-  Cobra-ion Python 3.12.3 完整验证的 Core 副本 `cf7edb3`，归档 SHA-256 为
-  `ba380df3080256f09aaa9820d353262eadeaac71d98aa01e7025576601d8876d`。
+  Cobra-ion Python 3.12.3 完整验证的 Core 副本 `9aaf8b4d1c562d31869c2812841fe6216a64a918`，归档 SHA-256 为
+  `e6e048a7c3718bac7ba06c6d34109ea0b95379645affe5dd09cb69a7da53b192`。
 - 下一个交易日只执行真实、只读的启动自检、节点前 reference prefetch、
   `AUCTION_0926` 与 `OPENING_0932`；生产 owner、Rabbit/ACK、Redis/TD writer、
   通知/effect 保持不变。该运行单不替代 t1-v2 的 09:25 source finalization，
