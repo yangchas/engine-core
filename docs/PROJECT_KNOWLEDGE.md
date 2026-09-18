@@ -23,6 +23,13 @@
   conservative missing propagation. Theme numeric/strategy parity is therefore
   not claimed. Evidence:
   `docs/evidence/theme_auction_delta_legacy_aggregation_audit_20260918.md`.
+- [OBSERVED] 2026-09-18 the exact Core read-only theme shadow consumed real
+  Redis 0924/0925 projections and existing plate mappings on cobra-ion. The
+  TopN intersection yielded one mapped symbol (`000338`) and two fact-only
+  themes with deterministic lineage; no write, repair, TD/network fallback,
+  Rabbit action, or effect occurred. This proves the real Redis-to-fact seam
+  only, not full-universe coverage or legacy theme numeric/strategy parity.
+  Evidence: `docs/evidence/real_theme_auction_delta_shadow_20260918.md`.
 
 - [OBSERVED] 当前 Windows 工作区默认 Python 为 `3.9.13`，而
   `pyproject.toml` 的正式要求是 `>=3.12`；`cobra-ion` 隔离验证使用
