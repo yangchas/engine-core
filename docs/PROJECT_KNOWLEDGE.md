@@ -1,5 +1,15 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-18 commit `d5b4bcf` extracts the legacy snapshot-to-theme
+  weight transform into the pure `resolve_legacy_theme_weights` wheel. It
+  preserves the verified `plate`/`real_plate_names` ordering, generic-theme
+  swap, `1.0`/`0.6` weights and `0.18` generic discount, and is covered by
+  local legacy differential cases. Commit `17b4e7b` records the bounded
+  parity evidence. Local and cobra-ion Python 3.12.3 isolated suites both
+  pass `550`; compileall passes. This does not make Redis theme mapping
+  authoritative, does not fetch providers, and does not migrate theme
+  strategy labels or reports.
+
 - [OBSERVED] 当前 Windows 工作区默认 Python 为 `3.9.13`，而
   `pyproject.toml` 的正式要求是 `>=3.12`；`cobra-ion` 隔离验证使用
   Python `3.12.3`。因此本地 `525 passed` 只能作为开发兼容性参考，不能冒充
