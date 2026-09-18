@@ -105,6 +105,16 @@ Cobra-ion 在线探针必须使用生产共享 Python 3.12 venv（当前路径�
 compile/test 检查；如果在线探针导入依赖失败，先修正运行时解释器，不要把依赖缺失误判为
 Redis/TD 数据源故障。在线运行仍必须写入隔离 validation 目录，不得写生产服务目录。
 
+如果需要在非生产隔离环境运行在线探针，可先在该隔离环境安装项目的 `live` extra：
+
+```bash
+python -m pip install -e '.[live]'
+```
+
+这只适用于临时验证副本；不要为了让生产旁路通过而修改或安装生产服务的环境。生产
+Cobra-ion 优先复用已经验证的 engine-next 共享 venv，并在证据中记录 Python、依赖版本
+和解释器路径。
+
 当前真实验证范围和未迁移能力见：
 
 - `docs/evidence/real_data_probe/20260909-real-integration-audit.md`
