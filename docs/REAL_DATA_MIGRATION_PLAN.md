@@ -1,5 +1,11 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 Legacy report status parity closure
+
+- `bcb7f68`/`f521a47` closed the capability-local report status boundary: every Core `FactStatus` maps deterministically to the verified legacy three-state presentation contract (`COMPLETE`, `PARTIAL`, `DATA_UNAVAILABLE`). Local and cobra-ion isolated suites both pass `507`; compileall passes; the bounded real TD auction report shadow for `600519` remains deterministic and direct/Engine semantic hashes remain equal.
+- This is not full legacy report parity. Plate rows, locked-order tables, mapping, lifecycle claim/dedupe, delivery, and strategy-console output remain outside Core; `engine-next` remains the production owner.
+- No production service, Redis/TD writer, Rabbit consumer/ACK, notification, or effect path changed. Evidence: `docs/evidence/legacy_report_status_parity_20260918.md`.
+
 ### 2026-09-18 昨日涨停结构报告投影
 
 - `6a56388` 将 `PreviousDayLimitStructureFact` 作为可选事实段接入 build-only 报告；只输出上一交易日结构，不把未知的当日反馈、板块/封单或策略结论写进报告。Local/Cobra 均 `487 passed`、compileall PASS，旧 `engine-next` 仍是正式报告/投递 owner。详见 `docs/evidence/previous_limit_report_projection_20260918.md`。
