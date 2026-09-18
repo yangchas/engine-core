@@ -1,5 +1,13 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 正常起盘节点 Shadow
+
+- Cobra-ion 只读 Shadow 于 09:13 启动，09:26/09:32 两个节点均以 `NORMAL` 触发，分别仅晚 91ms/10ms；不再是晚启动 `RECOVERY_CATCHUP` 证据。
+- 000001/000002/600519 的 TD 0920/0924/0925 行齐全，0924→0925 Auction Fact 和 09:32 Opening Transition Fact 均 READY；Engine 与纯轮子 fact hash 相等，source record time 原样保留。
+- Q2 覆盖率为 1.0，但 09:26/09:32 均按真实质量保持 PARTIAL；09:32 为 5224/5224、16 个 stale symbol。启动时 `previous_day_stats/previous_day_limit_pool` 仍 UNAVAILABLE，`hot_plates` MISSING，所以参考数据 readiness 未闭环。
+- manifest 记录 Rabbit/ACK、Redis/TD write、notification/effect、production restart 全部为 0。同日未观察到 TD 磁盘不足错误，但 10:06 时 t1-v2 wall lag 已增至约 500 秒，实时新鲜度仍为 WARN。
+- 详细时间、事实、SHA 与验收边界见 `docs/evidence/live_shadow_normal_20260918_7e61862.md`。该证据关闭 M1 缺失的 normal-origin timer 空白，但不关闭启动参考数据、全量 legacy differential 或 Core 替代门槛。
+
 ### 2026-09-17 engine-next / Core 同输入 Q2 差分
 
 - `EngineNextContextProbeV3` 在不改变旧 Redis pipeline 返回顺序的前提下，只记录 000001/000002/600519 实际被旧 context 链读到的 `stock:quote:*` / `q2:*` Hash；未分类 pipeline 方法改为 fail-closed，`guard_writes=[]`。
