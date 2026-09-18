@@ -536,3 +536,7 @@ Evidence：
   coverage, historical availability, producer batch equivalence, strategy
   labels, report parity, or replacement readiness. See
   `docs/evidence/legacy_theme_auction_delta_compat_20260918.md`.
+- Final Core commit `763164b` also ran the real Redis projection shadow in a
+  fresh Cobra-ion validation directory: 175 normalized rows, 170 mapped rows,
+  119 facts, 0924/0925 both `READY`, result `OBSERVED`, read-only. Artifact
+  SHA-256: `d7d396061e9df7ca7d85f2279dc5d247471e6aa060e6a1da3157263fbbc34117`.

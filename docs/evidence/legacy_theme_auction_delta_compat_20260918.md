@@ -63,3 +63,25 @@ same real rows
 ```
 
 Keep production ownership and all strategy/effect migration gates unchanged.
+
+## Final Core commit read-only shadow
+
+The final Core commit `763164b` was deployed to a fresh Cobra-ion validation
+directory and ran the existing Redis projection shadow without changing the
+production services. The current read-only result was:
+
+| Item | Value |
+|---|---|
+| artifact | `/home/exedev/validation/engine-core-763164b/theme-shadow-final-20260918.json` |
+| artifact SHA-256 | `d7d396061e9df7ca7d85f2279dc5d247471e6aa060e6a1da3157263fbbc34117` |
+| projection status | `0924=READY`, `0925=READY` |
+| normalized rows | `175` |
+| mapped rows | `170` |
+| missing mappings | `5` |
+| fact count | `119` |
+| result status | `OBSERVED` |
+| read-only | `true` |
+
+This run confirms the final commit can consume the current real Redis
+projection path. It remains bounded TopN Shadow evidence and is not a claim of
+full-universe or production replacement readiness.
