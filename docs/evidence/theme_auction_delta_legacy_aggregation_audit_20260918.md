@@ -37,3 +37,27 @@ theme-name normalization/ordering/weight transform = MATCH (bounded)
 theme numeric aggregation parity                 = NOT_PROVEN
 theme strategy/report parity                     = NOT_MIGRATED
 ```
+
+## Real Cobra-ion differential
+
+The same-input read-only comparison was run on the 2026-09-18 Redis 0924/0925
+TopN intersection (175 symbols, 170 with a non-empty mapping, 119 themes).
+Artifact:
+
+```text
+/home/exedev/validation/engine-core-10fcab7/theme-differential-20260918.json
+sha256=5567ed707f455d88e3a3db5290e3363ffec6ab835e9c4d2732bcc8ba40d852be
+```
+
+| field | compared | matched | different | Core missing |
+|---|---:|---:|---:|---:|
+| amount_yuan | 119 | 119 | 0 | 0 |
+| amount_delta_yuan | 119 | 118 | 1 | 0 |
+| bid_amount_delta_yuan | 119 | 117 | 2 | 0 |
+| change_pct_delta_avg | 82 | 37 | 45 | 37 |
+| amount_ratio_avg | 119 | 2 | 117 | 0 |
+
+This real result confirms that only the amount fields are currently close to
+parity. The change/ratio fields must not be used as a migrated legacy strategy
+oracle until an explicit compatibility or intentional-change contract is
+chosen.

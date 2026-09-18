@@ -36,6 +36,13 @@
   the legacy-only ratio rounding and `温和放量` signal remain outside Core.
   This is bounded numeric parity, not full-universe or strategy parity.
   Evidence: `docs/evidence/real_theme_auction_delta_legacy_diff_20260918.md`.
+- [VERIFIED] 2026-09-18 the bounded full TopN Redis differential (175 common
+  symbols, 119 themes) quantified the theme aggregation gap: `amount_yuan`
+  matched 119/119, `amount_delta_yuan` 118/119, `bid_amount_delta_yuan`
+  117/119, `change_pct_delta_avg` 37/82 with 37 Core-missing, and
+  `amount_ratio_avg` only 2/119. This is real-source evidence that the Core
+  theme fact is not yet a drop-in legacy strategy replacement. Artifact
+  SHA-256=`5567ed707f455d88e3a3db5290e3363ffec6ab835e9c4d2732bcc8ba40d852be`.
 
 - [OBSERVED] 当前 Windows 工作区默认 Python 为 `3.9.13`，而
   `pyproject.toml` 的正式要求是 `>=3.12`；`cobra-ion` 隔离验证使用
