@@ -1,5 +1,10 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 A2 summary report projection integration
+
+- `adaf831` 将已归一化的 `AuctionMarketSummaryFact` 作为可选输入接入 build-only `AuctionFactReportArtifact`。报告只组合冻结事实，不读取 Redis/TD、不恢复、不 claim、不发邮件/通知、不做策略判断；summary 的语义 hash 与 evidence/provenance 分离。
+- 本地与 Cobra-ion 隔离副本均 `481 passed`、compileall PASS。该项只关闭 A2 summary 的报告投影，不代表完整旧报告 parity，也不改变 `engine-next` 的生产 report/effect owner。详见 `docs/evidence/auction_report_a2_integration_20260918.md`。
+
 ### 2026-09-18 A2 市场汇总事实轮子
 
 - 从真实 `auction_0920` capture 的 Redis `summary` 字段提取受控 Golden fixture，新增 `AuctionMarketSummaryFact` 与 `normalize_auction_market_summary()`。字段只在边界接受旧 raw alias，内部使用明确 count/yuan 单位；缺失、非法、显式零分别处理，不推断上游时间语义。
