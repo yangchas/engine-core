@@ -53,10 +53,10 @@ The two changed files had matching local/remote SHA-256:
 
 ```text
 examples/run_m3_auction_followup_shadow.py
-ebef960b186211622f5b4a9ff1e855a7e93702a4b9b12c1bbcc8e4e42a4d3173
+6ed5dce63d3771ce2883fb59b8c2e4d90e2b7d817f650a14294af8be9a4f251e
 
 tests/test_m3_auction_followup_shadow.py
-cbba35924d6efccd766cd8926d9901803401b6dae0921d631b1d5cf1ef5346c0
+d8e4fd702e60668096cf698541fdade50c33e4b15cf4368962d68f7f399a9ac4
 ```
 
 ## Real Redis recovery guard
