@@ -9,6 +9,13 @@
   pass `550`; compileall passes. This does not make Redis theme mapping
   authoritative, does not fetch providers, and does not migrate theme
   strategy labels or reports.
+- [OBSERVED] 2026-09-18 the exact Core theme-weight wheel was run against
+  bounded real Cobra-ion Redis reads for `000001`, `000002`, `000338`, and
+  `600519`. Existing `market:stock_plate`, `market:stock_reason`, and
+  `config:plate_mapping:s2p` values produced the expected legacy two-level
+  weights without writes. This confirms dialect and bounded transform parity
+  only; mapping authority, historical availability, and theme strategy parity
+  remain UNKNOWN. Evidence: `docs/evidence/real_theme_weight_probe_20260918.md`.
 
 - [OBSERVED] 当前 Windows 工作区默认 Python 为 `3.9.13`，而
   `pyproject.toml` 的正式要求是 `>=3.12`；`cobra-ion` 隔离验证使用
