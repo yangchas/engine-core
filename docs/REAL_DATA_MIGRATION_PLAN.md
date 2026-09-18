@@ -1,5 +1,9 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 M1 pure startup checkpoint trace
+
+- Commit `b7c1c25` adds `StartupCheckpointTraceV1` for the already-observed 08:30/09:00 readiness boundary. It keeps business anchor time, observation time, Q2 identity and timer-firing identity explicit while remaining side-effect-free: no provider acquisition, repair, persistence, Rabbit consumer/ACK, Redis/TD write, notification, or effect. Local and Cobra-ion Python 3.12.3 isolated suites both pass `511`; compileall and changed-file SHA-256 equality pass. This does not transfer production startup ownership from `engine-next`; the next step is a bounded read-only shadow integration.
+
 ### 2026-09-18 M0 startup parity audit
 
 - The deployed legacy startup path still owns 08:30/09:00 checkpoints, formal kline/factor/chip/DDE gap classification, dated reference readiness and bounded repair recommendations. Core `StartupReadiness`/`SessionRuntimeCoordinator` currently evaluate already-observed inputs and dispatch read-only 0926/0932 shadow nodes; they do not acquire, repair, persist, or own those legacy startup actions. 0920/0924/0925 source freeze remains external to t1-v2. This is a replacement-gap audit, not an acceptance claim. Evidence: `docs/evidence/m0_startup_parity_audit_20260918.md`.
