@@ -29,7 +29,8 @@ class FakeRedis:
         tag = key.rsplit(":", 1)[-1]
         if tag not in {"0920", "0924", "0925"}:
             return {}
-        ts = local_datetime_ms(TRADE_DATE, f"{tag[:2]}:{tag[2:]}:00")
+        source_clock = "09:25:06" if tag == "0925" else f"{tag[:2]}:{tag[2:]}:00"
+        ts = local_datetime_ms(TRADE_DATE, source_clock)
         if tag == self.future_tag:
             ts = local_datetime_ms(TRADE_DATE, "09:30:00")
         return {
@@ -194,6 +195,25 @@ def test_recovery_never_retrofits_projection_observed_after_anchor():
     assert result["preflight_gate"] == "BLOCKED"
     assert result["node_dispatched"] is False
     assert result["startup_self_check"]["reasons"] == ("projection_observed_after_0925_cutoff",)
+
+
+def test_0925_recovery_uses_six_second_source_cutoff():
+    redis = FakeRedis()
+    observed = local_datetime_ms(TRADE_DATE, "09:25:06")
+    projections = _projections(redis, observed)
+    result = MODULE.run_m3_auction_followup_shadow(
+        calendar=_calendar(),
+        current_projection=projections["0925"],
+        prior_projections={"0920": projections["0920"], "0924": projections["0924"]},
+        trade_date=TRADE_DATE,
+        symbol="000001",
+        node_tag="0925",
+        observed_at=_dt(observed),
+        as_of=_dt(local_datetime_ms(TRADE_DATE, "09:26:00")),
+        origin="RECOVERY_CATCHUP",
+    )
+    assert result["preflight_gate"] == "PASS"
+    assert result["node_dispatched"] is True
 
 
 def test_prior_projection_key_cannot_mask_a_wrong_projection_tag():

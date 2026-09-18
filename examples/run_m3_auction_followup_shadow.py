@@ -110,6 +110,18 @@ def _normal_finalization_barrier_reached(
     )
 
 
+def _source_finalization_cutoff_ms(trade_date: str, node_tag: str) -> int:
+    """Return the historical source cutoff for a node's admitted projection."""
+
+    anchor = datetime.combine(
+        date.fromisoformat(trade_date),
+        FOLLOWUP_WINDOWS[node_tag][0],
+        tzinfo=LOCAL_TZ,
+    )
+    delay = AUCTION_0925_FINALIZATION_DELAY_MS if node_tag == "0925" else 0
+    return int((anchor + timedelta(milliseconds=delay)).timestamp() * 1000)
+
+
 def _source_time_ms(projection: Any) -> int | None:
     value = projection.meta.get("ts") if isinstance(projection.meta, Mapping) else None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -242,7 +254,19 @@ def run_m3_auction_followup_shadow(
             side_effect_boundary="no Engine dispatch",
         )
 
-    cutoff_ms = firing.scheduled_time_ms if origin == "RECOVERY_CATCHUP" else firing.fired_time_ms
+    if origin == "RECOVERY_CATCHUP":
+        cutoff_ms = _source_finalization_cutoff_ms(trade_date, node_tag)
+        if as_of_ms < cutoff_ms:
+            return _blocked(
+                trade_date=trade_date,
+                symbol=symbol,
+                node_tag=node_tag,
+                origin=origin,
+                reason="recovery_before_source_finalization_barrier",
+                side_effect_boundary="already-read projections only; no backfill",
+            )
+    else:
+        cutoff_ms = firing.fired_time_ms
     projections = [current_projection, *(prior_projections[tag] for tag in required)]
     for projection in projections:
         if projection.trade_date != trade_date:

@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core import (  # noqa: E402
+    AUCTION_0925_FINALIZATION_DELAY_MS,
     DataStatus,
     DeterministicEngine,
     EngineSignal,
@@ -261,6 +262,13 @@ def run_engine_shadow_from_redis(
         "symbol": symbol,
         "read_only": True,
         "side_effect_boundary": "Redis HGETALL + in-memory Core Engine only",
+        "timing_contract": {
+            "mode": "ANCHOR_ALIGNED_DIAGNOSTIC",
+            "business_anchor_0925": "09:25:00",
+            "source_finalization_delay_ms_0925": AUCTION_0925_FINALIZATION_DELAY_MS,
+            "normal_0925_finalization_admission": "NOT_ENFORCED",
+            "normal_finalization_evidence": False,
+        },
         "processed_signals": result.processed_signals,
         "strategy_result_count": len(result.strategy_results),
         "projection_statuses": {
