@@ -1,5 +1,9 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 M1 startup shadow trace integration
+
+- Commit `b4c2bc4` wires the pure startup checkpoint trace into the existing bounded read-only morning shadow. `startup.json` now records 08:30/09:00 checkpoint identity, business anchor, observation boundary and readiness/Q2 status without adding a scheduler or taking production ownership. Local and Cobra-ion Python 3.12.3 isolated suites both pass `511`; compileall and changed-file SHA-256 equality pass. The next step is isolated real-data execution, not production replacement.
+
 ### 2026-09-18 M1 pure startup checkpoint trace
 
 - Commit `b7c1c25` adds `StartupCheckpointTraceV1` for the already-observed 08:30/09:00 readiness boundary. It keeps business anchor time, observation time, Q2 identity and timer-firing identity explicit while remaining side-effect-free: no provider acquisition, repair, persistence, Rabbit consumer/ACK, Redis/TD write, notification, or effect. Local and Cobra-ion Python 3.12.3 isolated suites both pass `511`; compileall and changed-file SHA-256 equality pass. This does not transfer production startup ownership from `engine-next`; the next step is a bounded read-only shadow integration.
