@@ -71,6 +71,11 @@ from .previous_day_limit_structure import (
     PreviousDayLimitStructureFact,
     build_previous_day_limit_structure,
 )
+from .previous_day_limit_feedback import (
+    PREVIOUS_DAY_LIMIT_FEEDBACK_CONTRACT_VERSION,
+    PreviousDayLimitFeedbackFact,
+    build_previous_day_limit_feedback,
+)
 from .hot_plates import (
     HOT_PLATES_CONTRACT_VERSION,
     HotPlatesFunction,
@@ -243,6 +248,9 @@ __all__ = [
     "PREVIOUS_DAY_LIMIT_STRUCTURE_CONTRACT_VERSION",
     "PreviousDayLimitStructureFact",
     "build_previous_day_limit_structure",
+    "PREVIOUS_DAY_LIMIT_FEEDBACK_CONTRACT_VERSION",
+    "PreviousDayLimitFeedbackFact",
+    "build_previous_day_limit_feedback",
     "HOT_PLATES_CONTRACT_VERSION",
     "HotPlatesFunction",
     "HotPlatesProvider",
