@@ -1,5 +1,9 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 M1 real reference shadow
+
+- Real read-only reference probing reached TD `daily_kline` and Redis yesterday-limit/hot-plate sources (`47`/`50` rows, HLEN/HSCAN consistent), but the fixed same-instant cutoff correctly kept all three results `UNAVAILABLE` because `available_at_ms` is unknown and fetch completion was later than the cutoff. Q2 was `STALE` at `5224/5224`. This validates fail-closed timing; a true pre-09:20 prefetch/reuse observation is still required. Artifact SHA-256=`7852f547d22c054d525fa56f10a5df7f32e1b1e04c277dc15857be3088bcd5d0`.
+
 ### 2026-09-18 M1 real Redis startup probe
 
 - The isolated read-only startup probe reached the real Cobra-ion Redis Q2 path after market close: `5224/5224`, coverage `1.0`, source quality `STALE/BEST_EFFORT_STALE`, readiness `PARTIAL`, observed at 17:29 CST. This confirms the new trace path uses real Redis data and remains fail-closed on stale input; it is not live opening acceptance. Artifact SHA-256=`a60b45b06488db67f5938285907f8b71eb9d172408a417583ab6b5b13e21dded`. No production restart/write/effect occurred.
