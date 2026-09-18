@@ -127,6 +127,15 @@ from .theme_auction_delta import (
     ThemeAuctionDeltaFact,
     build_theme_auction_delta_facts,
 )
+from .theme_weights import (
+    GENERIC_THEME_DISCOUNT,
+    LEGACY_THEME_WEIGHTS_CONTRACT_VERSION,
+    SECONDARY_THEME_WEIGHT,
+    is_generic_theme,
+    normalize_theme_name,
+    resolve_legacy_theme_weights,
+    split_theme_tokens,
+)
 from .auction import normalize_auction_change_bp_to_pct, normalize_auction_change_ratio
 from .opening import (
     OPENING_FACT_CONTRACT_VERSION,
@@ -293,6 +302,13 @@ __all__ = [
     "THEME_AUCTION_DELTA_CONTRACT_VERSION",
     "ThemeAuctionDeltaFact",
     "build_theme_auction_delta_facts",
+    "GENERIC_THEME_DISCOUNT",
+    "LEGACY_THEME_WEIGHTS_CONTRACT_VERSION",
+    "SECONDARY_THEME_WEIGHT",
+    "is_generic_theme",
+    "normalize_theme_name",
+    "resolve_legacy_theme_weights",
+    "split_theme_tokens",
     "normalize_auction_change_ratio",
     "normalize_auction_change_bp_to_pct",
     "OPENING_FACT_CONTRACT_VERSION",
