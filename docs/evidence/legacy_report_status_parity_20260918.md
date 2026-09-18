@@ -41,6 +41,17 @@ cannot supply a report status independently. The new parametrized test
 `test_report_status_mapping_matches_legacy_three_state_contract` covers every
 `FactStatus` value.
 
+## Verification
+
+The parity test was added in commit `bcb7f68`. Local Windows and the exact
+synced files in the cobra-ion isolated validation copy both passed the full
+suite (`507 passed`) and `compileall`; the changed test and evidence file
+SHA-256 values matched across the two environments. The real TD auction shadow
+was also rerun read-only for `600519` on `2026-09-18`; its existing report
+artifact remained deterministic and direct/Engine semantic hashes remained
+equal. No production service, storage writer, Rabbit path, or effect was
+changed.
+
 ## Result
 
 ```text
