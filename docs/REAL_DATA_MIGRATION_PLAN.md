@@ -1,5 +1,10 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 14:47 盘中真实 Q2 复验
+
+- Cobra-ion 只读 Redis Q2 返回 `5224/5224`、coverage=`1.0`，但全量 `STALE/BEST_EFFORT_STALE`，最新 source lag 约 `1811s`；重复 Core observation hash 一致。artifact SHA-256=`9f98da4eb83d4c1965a37eb6d062d5b97b1dc786558815b10c35d67eb8e758d9`，详见 `docs/evidence/real_live_q2_20260918_1447.md`。
+- 该结果证明真实 Q2 只读路径可用，不证明实时新鲜度或 Core 可替代 `engine-next`；t1-v2 仍报告 TD 磁盘不足，继续保留生产主链与只读 Shadow 边界。
+
 ### 2026-09-18 14:47 Legacy reporting boundary audit
 
 - 只读审计旧 `engine-next@20260903_e272842` 的 fact assembly、build-only report、delivery lifecycle/claim、notifier 和 strategy-console 边界，确认 Core 后续只能先承接冻结事实上的 build-only projection，不能接管 Redis claim、SMTP/Webhook、恢复补数、通知或策略阈值。证据见 `docs/evidence/legacy_reporting_contract_audit_20260918.md`。
