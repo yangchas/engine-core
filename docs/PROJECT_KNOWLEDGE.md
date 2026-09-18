@@ -1,5 +1,10 @@
 # Project Knowledge
 
+- [OBSERVED] 当前 Windows 工作区默认 Python 为 `3.9.13`，而
+  `pyproject.toml` 的正式要求是 `>=3.12`；`cobra-ion` 隔离验证使用
+  Python `3.12.3`。因此本地 `525 passed` 只能作为开发兼容性参考，不能冒充
+  与正式 Linux 运行时同环境；正式验收必须继续以 Cobra-ion 3.12.3 的结果为准。
+
 - [VERIFIED] 2026-09-18 temporal guard contract clarification: `HISTORICAL`
   and `REPLAY` require a known `available_at_ms <= knowledge_as_of_ms`; an
   unknown availability is fail-closed and cannot be promoted by `observed_at`
