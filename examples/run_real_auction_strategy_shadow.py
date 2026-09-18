@@ -19,6 +19,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core import (  # noqa: E402
+    AnchorDeltaShadowStrategy,
     AuctionShadowStrategy,
     FrozenDataBundle,
     canonical_json,
@@ -75,18 +76,21 @@ def run_real_strategy_shadow(
                 else "PARTIAL"
             ),
         )
+        anchor_delta_strategy = AnchorDeltaShadowStrategy(scope_id=symbol)
         trace = None
+        anchor_delta_trace = None
         for index, tag in enumerate(("0920", "0924", "0925")):
             snapshot = snapshots[tag]
-            trace = strategy.evaluate(
-                snapshot,
-                FrozenDataBundle.empty(
-                    "real-auction:%s:%s:%s" % (trade_date, symbol, index),
-                    snapshot.logical_time_ms,
-                ),
+            bundle = FrozenDataBundle.empty(
+                "real-auction:%s:%s:%s" % (trade_date, symbol, index),
+                snapshot.logical_time_ms,
             )
+            trace = strategy.evaluate(snapshot, bundle)
+            anchor_delta_trace = anchor_delta_strategy.evaluate(snapshot, bundle)
         if trace is None:
             raise RuntimeError("auction strategy did not produce a result")
+        if anchor_delta_trace is None:
+            raise RuntimeError("anchor delta strategy did not produce a result")
         results.append(
             {
                 "symbol": symbol,
@@ -95,10 +99,11 @@ def run_real_strategy_shadow(
                     tag: snapshots[tag].completeness for tag in ("0920", "0924", "0925")
                 },
                 "strategy_result": trace,
+                "anchor_delta_strategy_result": anchor_delta_trace,
             }
         )
     return {
-        "contract_version": "RealAuctionStrategyShadowV1",
+        "contract_version": "RealAuctionStrategyShadowV2",
         "trade_date": trade_date,
         "symbols": _strict_symbols(",".join(symbols)),
         "read_only": True,

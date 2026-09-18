@@ -127,3 +127,10 @@ def test_real_rows_can_enter_migrated_fact_only_strategy(monkeypatch):
     assert trace.trace["decision_status"] == "FACT_ONLY"
     assert trace.trace["auction_fact_shadow"]["status"] == "PARTIAL"
     assert trace.trace["auction_fact_shadow"]["metrics"]["price_delta_milli"] == 10
+    anchor_delta = result["results"][0]["anchor_delta_strategy_result"]
+    assert anchor_delta.trace["decision_status"] == "FACT_ONLY"
+    assert anchor_delta.trace["fact_status"] == "OBSERVED"
+    assert tuple(
+        (item["from_trigger_id"], item["to_trigger_id"])
+        for item in anchor_delta.trace["anchor_deltas"]
+    ) == (("AUCTION_0920", "AUCTION_0924"), ("AUCTION_0924", "AUCTION_0925"))
