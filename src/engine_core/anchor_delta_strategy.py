@@ -115,6 +115,7 @@ class AnchorDeltaShadowStrategy:
             evidence_refs.update(previous.evidence_refs)
             evidence_refs.update(current.evidence_refs)
 
+        fact_status = _fact_status(missing, facts)
         semantic_trace = {
             "contract_version": ANCHOR_DELTA_STRATEGY_CONTRACT_VERSION,
             "state": "OBSERVE",
@@ -126,7 +127,7 @@ class AnchorDeltaShadowStrategy:
             "trigger_id": snapshot.trigger_id,
             "logical_time_ms": snapshot.logical_time_ms,
             "phase": snapshot.phase,
-            "fact_status": "PENDING" if missing else "OBSERVED",
+            "fact_status": fact_status,
             "missing_trigger_ids": missing,
             "anchor_deltas": tuple(facts),
             "hash_contract_versions": {
@@ -176,6 +177,23 @@ def _tag_from_trigger(trigger_id: str) -> str:
     if len(tag) != 4 or not tag.isdigit():
         raise ValueError("anchor trigger must end with a four-digit tag")
     return tag
+
+
+def _fact_status(missing: tuple[str, ...], facts: list[dict[str, Any]]) -> str:
+    """Propagate anchor-wheel quality without promoting missing fields."""
+
+    if missing:
+        return "PENDING"
+    statuses = tuple(str(item["fact"].get("status") or "") for item in facts)
+    if not statuses:
+        return "UNAVAILABLE"
+    if any(status == "invalid" for status in statuses):
+        return "INVALID"
+    if all(status == "unavailable" for status in statuses):
+        return "UNAVAILABLE"
+    if any(status == "unavailable" for status in statuses):
+        return "PARTIAL"
+    return "OBSERVED"
 
 
 def _snapshot_row(snapshot: EngineSnapshot, *, scope_id: str) -> Mapping[str, Any]:

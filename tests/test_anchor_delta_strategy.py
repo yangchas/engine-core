@@ -142,6 +142,39 @@ def test_anchor_delta_strategy_default_pairs_emit_both_adjacent_facts():
     ) == DEFAULT_ANCHOR_PAIRS
 
 
+def test_anchor_delta_strategy_propagates_missing_anchor_fields():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    synthetic = json.loads(json.dumps(fixture))
+    synthetic["snapshots"]["auction_0925"] = dict(
+        synthetic["snapshots"]["auction_0924"],
+        snapshot_id="600519:20260903:AUCTION_0925",
+        trigger_id="AUCTION_0925",
+        business_anchor_time_ms=(
+            synthetic["snapshots"]["auction_0924"]["business_anchor_time_ms"] + 60_000
+        ),
+        source_record_time_ms=(
+            synthetic["snapshots"]["auction_0924"]["source_record_time_ms"] + 60_000
+        ),
+    )
+    for name in ("auction_0920", "auction_0924", "auction_0925"):
+        synthetic["snapshots"][name]["state"]["auction_ask_amount_yuan"] = None
+    strategy = AnchorDeltaShadowStrategy(scope_id=fixture["symbol"])
+    result = None
+    for tag in ("auction_0920", "auction_0924", "auction_0925"):
+        snapshot = _snapshot(synthetic, tag)
+        result = strategy.evaluate(
+            snapshot,
+            FrozenDataBundle.empty(tag, snapshot.logical_time_ms),
+        )
+
+    assert result is not None
+    assert result.trace["fact_status"] == "UNAVAILABLE"
+    assert all(
+        item["fact"]["status"] == "unavailable"
+        for item in result.trace["anchor_deltas"]
+    )
+
+
 def test_anchor_delta_strategy_hash_is_semantic_and_evidence_separated():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     previous = _snapshot(fixture, "auction_0920")
