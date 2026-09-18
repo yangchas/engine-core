@@ -75,5 +75,7 @@ M3_0925_NORMAL = PASS | BLOCKED | WARN
 
 只有真实窗口内的 `NORMAL` 结果才可作为正常节点证据。盘后重跑统一标记
 `RECOVERY_CATCHUP`，若 projection 的 observed/source time 晚于业务 cutoff，必须
+`BLOCKED`；其中 `0925` 的 recovery source cutoff 是 `09:25:06`，不是 Timer 的
+`09:25:00` scheduled time。若晚启动时 `as_of` 尚未到该 barrier，也必须
 `BLOCKED`。本运行单只验证节点接入，不宣称 source-freeze ownership 或完整
 Auction Shadow 规则迁移。
