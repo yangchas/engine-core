@@ -292,13 +292,15 @@ def test_real_legacy_context_amount_mapping_keeps_q2_amount_semantics_and_source
             row["symbol"],
             {
                 "mk": "sz" if row["symbol"].startswith(("000", "001", "002")) else "sh",
-                "px": "1000",
-                "pc": "990",
+                "px": str(row["raw_px"]),
+                "pc": str(row["raw_pc"]),
                 "amt": "1",
                 "am": str(row["raw_am"]),
                 "ts": str(row["source_record_time_ms"]),
             },
         )
+        current_pct = (quote.price_milli / quote.pre_close_milli) - 1.0
+        assert current_pct == pytest.approx(row["legacy_current_pct"])
         assert quote.auction_amount_yuan == row["raw_am"]
         if row["comparison"] == "MATCH":
             assert quote.auction_amount_yuan == row["legacy_context_auction_amount"]

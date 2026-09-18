@@ -6,6 +6,9 @@
   "rows": [
     {
       "symbol": "000001",
+      "raw_px": 11700,
+      "raw_pc": 11610,
+      "legacy_current_pct": 0.007751937984496138,
       "raw_am": 4333500,
       "legacy_context_auction_amount": 4333500,
       "source_record_time_ms": 1789714800000,
@@ -13,6 +16,9 @@
     },
     {
       "symbol": "000002",
+      "raw_px": 3320,
+      "raw_pc": 3020,
+      "legacy_current_pct": 0.0993377483443707,
       "raw_am": 696600,
       "legacy_context_auction_amount": 696600,
       "source_record_time_ms": 1789714800000,
@@ -20,6 +26,9 @@
     },
     {
       "symbol": "600519",
+      "raw_px": 1257120,
+      "raw_pc": 1266980,
+      "legacy_current_pct": -0.007782285434655756,
       "raw_am": 14312200,
       "legacy_context_auction_amount": 14271787,
       "source_record_time_ms": 1789714804000,
