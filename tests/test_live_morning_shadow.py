@@ -506,6 +506,7 @@ def test_live_shell_captures_each_node_at_its_due_observation(tmp_path: Path, mo
             _dt("09:15:00"),
             _dt("09:26:00"),
             _dt("09:32:00"),
+            _dt("09:32:09"),
             _dt("09:32:10"),
         )
     )
