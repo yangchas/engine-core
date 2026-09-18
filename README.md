@@ -59,6 +59,12 @@ drain 和 Probe 调用；不包含持久化恢复或 Rabbit 接管。Real Data P
 该切片已在 Cobra-ion 的真实 TD `auction_snapshot_v2` 只读行上验证；这仍不代表
 Rabbit batch、source-freeze ownership 或 engine-next 替代已经通过。
 
+Gate B 的下一条轮子是 `ThemeAuctionDeltaFact`：它只对规范化的 0924→0925
+逐股行和显式 symbol→theme 权重做字段级质量聚合，缺失值保持 `None` 并传播为
+`PARTIAL`，不会复刻旧 consumer 的零填充，也不会输出“转强/资金流入”结论。
+当前仅完成纯函数和边界测试；旧系统的板块映射、热板单位与同输入 consumer
+oracle 尚未闭环，因此该轮子暂不进入生产运行路径。
+
 `examples/run_real_auction_engine_shadow.py` 提供一个有界验证入口：将真实
 TD `auction_snapshot_v2` 投影适配为 canonical market projection，按每个业务锚点
 提交 `MARKET_UPDATE` 与 `TIMER`，再由同一个 `DeterministicEngine` 调用该事实
