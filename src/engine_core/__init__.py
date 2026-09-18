@@ -175,9 +175,13 @@ from .evaluation import (
     EvaluationPlan,
 )
 from .startup_readiness import (
+    STARTUP_CHECKPOINT_TIMER_IDS,
+    STARTUP_CHECKPOINT_TIMER_SPECS,
+    STARTUP_CHECKPOINT_TRACE_CONTRACT_VERSION,
     STARTUP_READINESS_CONTRACT_VERSION,
     StartupReadiness,
     assess_startup_readiness,
+    build_startup_checkpoint_trace,
 )
 from .session_runtime import (
     SESSION_RUNTIME_CONTRACT_VERSION,
@@ -343,8 +347,12 @@ __all__ = [
     "replay_q2frames",
     "replay_td_event_time",
     "STARTUP_READINESS_CONTRACT_VERSION",
+    "STARTUP_CHECKPOINT_TRACE_CONTRACT_VERSION",
+    "STARTUP_CHECKPOINT_TIMER_SPECS",
+    "STARTUP_CHECKPOINT_TIMER_IDS",
     "StartupReadiness",
     "assess_startup_readiness",
+    "build_startup_checkpoint_trace",
     "SESSION_RUNTIME_CONTRACT_VERSION",
     "RuntimePoll",
     "SessionRuntimeCoordinator",

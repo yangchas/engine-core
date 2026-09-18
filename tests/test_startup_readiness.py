@@ -8,12 +8,15 @@ from engine_core import (
     DataResult,
     DataStatus,
     FreshnessPolicy,
+    STARTUP_CHECKPOINT_TIMER_SPECS,
     TimerSpec,
     TradingCalendarSnapshot,
     assess_startup_readiness,
+    build_startup_checkpoint_trace,
     build_a_share_session_plan,
     build_calendar_snapshot,
     build_q2_projection,
+    due_timer_firings,
     local_datetime_ms,
 )
 from examples.run_startup_readiness_probe import _load_calendar, run_probe
@@ -381,3 +384,87 @@ def test_startup_probe_calendar_loader_rejects_probe_hash_mismatch(tmp_path):
 
     with pytest.raises(ValueError, match="semantic hash"):
         _load_calendar(path)
+
+
+def test_startup_checkpoint_trace_records_business_anchor_and_observation_boundary():
+    calendar = _calendar()
+    plan = build_a_share_session_plan(TRADE_DATE, calendar)
+    readiness = assess_startup_readiness(
+        TRADE_DATE,
+        local_datetime_ms(TRADE_DATE, "08:30:02"),
+        calendar,
+        plan,
+        q2=None,
+        timer_specs=STARTUP_CHECKPOINT_TIMER_SPECS,
+        origin="NORMAL",
+    )
+    firing = next(
+        item
+        for item in due_timer_firings(
+            plan,
+            STARTUP_CHECKPOINT_TIMER_SPECS,
+            previous_time_ms=None,
+            current_time_ms=local_datetime_ms(TRADE_DATE, "08:30:02"),
+            origin="NORMAL",
+        )
+        if item.timer_id == "STARTUP_0830"
+    )
+    trace = build_startup_checkpoint_trace(readiness, firing)
+    assert trace["checkpoint_id"] == "STARTUP_0830"
+    assert trace["business_anchor_time_ms"] == local_datetime_ms(TRADE_DATE, "08:30:00")
+    assert trace["observed_at_ms"] == local_datetime_ms(TRADE_DATE, "08:30:02")
+    assert trace["readiness_status"] == "BLOCKED"
+    assert trace["q2_content_hash"] is None
+    assert trace["readiness_content_hash"] == readiness.content_hash
+    assert trace["timer_firing_content_hash"] == firing.content_hash
+    assert trace["actions"] == ("WAIT_FOR_Q2", "DEFER_TIMER:STARTUP_0830")
+    assert trace["read_only"] is True
+    assert trace["content_hash"]
+
+
+def test_startup_checkpoint_trace_is_deterministic_and_rejects_non_startup_timer():
+    calendar = _calendar()
+    plan = build_a_share_session_plan(TRADE_DATE, calendar)
+    observed_ms = local_datetime_ms(TRADE_DATE, "09:00:01")
+    readiness = assess_startup_readiness(
+        TRADE_DATE,
+        observed_ms,
+        calendar,
+        plan,
+        q2=None,
+        timer_specs=STARTUP_CHECKPOINT_TIMER_SPECS,
+        origin="RECOVERY_CATCHUP",
+    )
+    firing = next(
+        item
+        for item in due_timer_firings(
+            plan,
+            STARTUP_CHECKPOINT_TIMER_SPECS,
+            previous_time_ms=None,
+            current_time_ms=observed_ms,
+            origin="RECOVERY_CATCHUP",
+        )
+        if item.timer_id == "STARTUP_0900"
+    )
+    first = build_startup_checkpoint_trace(readiness, firing)
+    second = build_startup_checkpoint_trace(readiness, firing)
+    assert first == second
+    assert first["q2_content_hash"] is None
+
+    auction_firing = TimerSpec("AUCTION_0926", "09:26:00")
+    auction_readiness = assess_startup_readiness(
+        TRADE_DATE,
+        local_datetime_ms(TRADE_DATE, "09:26:00"),
+        calendar,
+        plan,
+        q2=None,
+        timer_specs=(auction_firing,),
+    )
+    due = due_timer_firings(
+        plan,
+        (auction_firing,),
+        previous_time_ms=None,
+        current_time_ms=local_datetime_ms(TRADE_DATE, "09:26:00"),
+    )[0]
+    with pytest.raises(ValueError, match="not a startup checkpoint"):
+        build_startup_checkpoint_trace(auction_readiness, due)

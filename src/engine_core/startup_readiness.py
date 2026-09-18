@@ -21,6 +21,14 @@ from .timers import TimerFiring, TimerSpec, due_timer_firings
 
 
 STARTUP_READINESS_CONTRACT_VERSION = "StartupReadinessV1"
+STARTUP_CHECKPOINT_TRACE_CONTRACT_VERSION = "StartupCheckpointTraceV1"
+STARTUP_CHECKPOINT_TIMER_SPECS = (
+    TimerSpec("STARTUP_0830", "08:30:00"),
+    TimerSpec("STARTUP_0900", "09:00:00"),
+)
+STARTUP_CHECKPOINT_TIMER_IDS = frozenset(
+    item.timer_id for item in STARTUP_CHECKPOINT_TIMER_SPECS
+)
 
 
 @dataclass(frozen=True)
@@ -298,3 +306,60 @@ def _readiness_request(
         knowledge_as_of_ms=as_of_ms,
         temporal_mode=result.temporal_mode,
     )
+
+
+def build_startup_checkpoint_trace(
+    readiness: StartupReadiness,
+    firing: TimerFiring,
+) -> dict[str, object]:
+    """Freeze one startup checkpoint observation without performing I/O.
+
+    The trace is deliberately an adapter result, not a repair coordinator:
+    it records what the existing readiness wheel decided at 08:30/09:00 and
+    leaves all provider, cache, persistence, and effect ownership outside
+    Core.  ``firing.scheduled_time_ms`` is the business checkpoint while
+    ``readiness.as_of_ms`` is the actual observation time.
+    """
+
+    if not isinstance(readiness, StartupReadiness):
+        raise TypeError("readiness must be StartupReadiness")
+    if not isinstance(firing, TimerFiring):
+        raise TypeError("firing must be TimerFiring")
+    if firing.timer_id not in STARTUP_CHECKPOINT_TIMER_IDS:
+        raise ValueError("firing is not a startup checkpoint")
+    if firing.session_plan_hash != readiness.session_plan_hash:
+        raise ValueError("firing session plan does not match readiness")
+    if firing.scheduled_time_ms > readiness.as_of_ms:
+        raise ValueError("startup checkpoint was not due at readiness observation")
+
+    trace = {
+        "contract_version": STARTUP_CHECKPOINT_TRACE_CONTRACT_VERSION,
+        "trade_date": readiness.trade_date,
+        "checkpoint_id": firing.timer_id,
+        "business_anchor_time_ms": firing.scheduled_time_ms,
+        "observed_at_ms": readiness.as_of_ms,
+        "origin": firing.origin,
+        "late_by_ms": firing.late_by_ms,
+        "trigger_basis": firing.trigger_basis,
+        "timer_firing_content_hash": firing.content_hash,
+        "session_plan_hash": readiness.session_plan_hash,
+        "readiness_content_hash": readiness.content_hash,
+        "readiness_status": readiness.status,
+        "q2_status": readiness.q2_status,
+        "q2_consistency_status": readiness.q2_consistency_status,
+        "q2_content_hash": readiness.q2_content_hash,
+        "q2_coverage": readiness.q2_coverage,
+        "q2_oldest_source_time_ms": readiness.q2_oldest_source_time_ms,
+        "q2_newest_source_time_ms": readiness.q2_newest_source_time_ms,
+        "reference_statuses": readiness.reference_statuses,
+        "reference_content_hashes": readiness.reference_content_hashes,
+        "actions": readiness.actions,
+        "reasons": readiness.reasons,
+        "read_only": True,
+        "side_effect_boundary": (
+            "readiness and timer calculation only; no provider read, repair, "
+            "Redis/TD write, Rabbit action, notification, or effect"
+        ),
+    }
+    trace["content_hash"] = semantic_hash(trace)
+    return trace
