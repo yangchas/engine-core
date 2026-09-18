@@ -1,5 +1,10 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 昨日涨停结构事实切片
+
+- `4ca5915` 新增纯 `PreviousDayLimitStructureFact`，只从已守门的昨日涨停池派生数量、最高板和板高分布；不计算当日反馈、不做板块/策略判断。真实 Cobra-ion Redis capture 的 47 行数据被纳入冻结 fixture，HLEN/scan 一致且解码错误为 0。
+- 因真实 metadata 没有可证明历史 `available_at_ms`，`PreviousDayLimitPoolFunction` 与结构事实均保持 `UNAVAILABLE`，未把真实 rows 偷渡成 runtime-ready。Local/Cobra 均 `486 passed`、compileall PASS；详见 `docs/evidence/previous_day_limit_structure_fact_20260918.md`。
+
 ### 2026-09-18 A2 report evidence-lineage correction
 
 - `ec5dd37` 修复 A2 报告切片的两个合同缺口：summary mapping 补齐 `limit_up_seal_amount_yuan`；报告 `evidence_hash` 纳入 summary evidence identity，而 `semantic_hash` 仍只表达业务语义。未改变 Provider、Engine、策略、投递或生产链路。
