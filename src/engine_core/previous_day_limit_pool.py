@@ -176,7 +176,17 @@ def normalize_previous_day_limit_pool_rows(
         for field, unit in verified_field_units.items():
             if field not in field_units or not isinstance(unit, str) or not unit.strip():
                 raise ValueError("invalid verified field unit: " + str(field))
-            field_units[field] = unit
+            canonical_unit = field_units[field]
+            if unit.strip() != canonical_unit:
+                raise ValueError(
+                    "verified unit does not match canonical field: "
+                    + str(field)
+                    + " expected="
+                    + canonical_unit
+                    + " actual="
+                    + unit.strip()
+                )
+            field_units[field] = canonical_unit
     unit_uncertainties = tuple(
         sorted(field for field, unit in field_units.items() if unit == "UNKNOWN")
     )

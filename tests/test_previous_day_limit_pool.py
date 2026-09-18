@@ -88,6 +88,15 @@ def test_normalizer_rejects_ambiguous_rows(mutator, message):
         normalize_previous_day_limit_pool_rows(rows, actual_trade_date="2026-09-10")
 
 
+def test_normalizer_rejects_legacy_percent_override_for_canonical_yuan_field():
+    with pytest.raises(ValueError, match="canonical field"):
+        normalize_previous_day_limit_pool_rows(
+            _rows(),
+            actual_trade_date="2026-09-10",
+            verified_field_units={"turnover_yuan": "percent"},
+        )
+
+
 def _request(symbols=()):
     return DataRequest(
         request_id="limit-pool-test",
