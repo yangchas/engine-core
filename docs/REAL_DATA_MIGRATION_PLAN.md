@@ -1,5 +1,13 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 13:12–13:18 真实 Redis / engine-next / Core 只读链路复核
+
+- `engine-next` 与 `t1-v2-live` 仍为 active、`NRestarts=0`；未新增 Rabbit consumer、未改变 ACK、未写 Redis/TD、未重启生产服务。真实 Redis Q2 返回 `5224/5224`、coverage=`1.0`，但 `stale=5224`，最新源时间落后约 `6691s`，因此状态保持 `STALE/BEST_EFFORT_STALE`，重复 Core hash 一致；coverage 不升级为 READY。
+- 使用生产 release `20260903_e272842` 的旧只读路径：auction loader 在 0920/0924/0925 各返回 200 条 Top-200 投影，context probe 读取 3 个 bounded symbol；两条 projection 不共享 immutable as-of，不能宣称 exact parity，`guard_writes=[]`。
+- Core public Engine 对真实 Redis Q2 opening 输入和真实 TD `auction_snapshot_v2` auction 输入均完成 bounded shadow。Opening 三只标的均 `projection=STALE`、`fact=PARTIAL`、`state=OBSERVE`；Auction 三只标的均 `direct_fact_hash == engine_fact_hash`，但仍为 `FACT_ONLY/PARTIAL`。这证明真实只读事实链可运行，不构成替代生产 owner。
+- 真实日历 probe 使用 BaoStock 登录/query/logout 只读路径生成当前可用范围快照：查询 `2025-12-01..2026-09-18`，声明覆盖 `2026-01-01..2026-09-18`，`197` 个交易日；不能把未来尚未由源发布的日期写入 guard coverage。artifact 位于 Cobra-ion `/home/exedev/validation/calendar-probe-20260918/calendar.json`，文件 SHA-256=`b3e633497be579ab20dd31231af4257d1dcb417a35af1f059295bdb43a47e6f4`，semantic hash=`8f2a56c8dca12d7a37779fb14961ab5fb0bed21d03ef4aaf3a4c7b8d76c3b96f`。
+- 一次第三方连接器探针在超出命令预算后被停止，不采纳其结果；这进一步确认第三方网络 I/O 必须有界、不能阻塞 Core reducer。完整证据见 `docs/evidence/real_readonly_chain_20260918_1315.md`。
+
 ### 2026-09-18 12:27–12:30 真实 Q2/参考数据/Core Shadow 复核
 
 - 在不重启 `engine-next`/`t1-v2-live`、不新增 Rabbit consumer、不改变 ACK、不中断生产链的前提下，使用 Cobra-ion 部署 venv 对真实 Redis/TD 做只读复核。两个服务仍 `active`、`NRestarts=0`；根盘约 85% 使用率、可用约 2.8G，未进行盘中清理或写入。
