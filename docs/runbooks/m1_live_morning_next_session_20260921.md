@@ -23,6 +23,22 @@ test -r /home/exedev/validation/cc-m0-calendar-20260911-v3.json
 test ! -e /home/exedev/validation/live-morning-shadow-20260921-0915
 ```
 
+TD 写入健康也必须单独检查；仅 `systemctl active` 不足以放行：
+
+```bash
+df -P / /home/exedev
+if journalctl -u t1-v2-live --since '2026-09-18 00:00:00' --no-pager \
+  | grep -q 'stage=commit.tdengine.*No enough disk space'; then
+  echo 'TD_WRITE_HEALTH=BLOCKED'
+else
+  echo 'TD_WRITE_HEALTH=NO_KNOWN_DISK_ERROR'
+fi
+```
+
+如果仍有 `No enough disk space`，本次不得把 TD 当完整 ground truth；可以继续
+Redis-only 只读 Shadow，但结论必须标记 `WARN/BLOCKED`，不能宣称 TD/跨源 parity
+通过。不得在运行单中自行删除数据、prune volume 或修改 keep 策略。
+
 目标交易日必须在快照中，且输出目录必须不存在：
 
 ```bash
@@ -37,7 +53,7 @@ print("calendar_target_present=2026-09-21")
 PY
 ```
 
-若服务不为 `active`、目标交易日缺失、磁盘空间不足、输出目录已存在，停止并记录
+若服务不为 `active`、目标交易日缺失、磁盘空间不足、TD 写入健康为 BLOCKED、输出目录已存在，停止并记录
 `BLOCKED`，不得使用 recovery/fallback 代替本次正常来源验证。
 
 ## 运行命令
@@ -89,4 +105,3 @@ BLOCKED    服务、日历、依赖或输入边界不满足
 
 保存 manifest、各节点 JSON、SHA-256、commit、Python/dependency/TZ 信息；当天只提交证据
 和文档。即使本次通过，也只关闭 M1 早盘 shadow，不代表 Core 已替代 `engine-next`。
-
