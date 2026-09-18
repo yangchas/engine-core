@@ -7,6 +7,7 @@
 - 真实 reference readiness 读到 `cache:hot_plates:2026-09-18` 50 行、`cache:yest_limit_pool:2026-09-17` 47 行及 3 条 TD 日线，但三类来源都缺可证明的历史 `available_at_ms`，按合同保持 `UNAVAILABLE`；`observed_at` 未被冒充为 `available_at`。readiness=`PARTIAL/LUNCH_BREAK`。
 - 600519 真实 `auction_snapshot_v2` 经过 Core public Engine path，处理 6 个 signal、产生 3 个 fact-only 结果，direct/engine semantic hash 相等，状态 `PARTIAL`；opening shadow 读取真实 Redis Q2 后 coverage=`1.0` 但 projection=`STALE`、5224 行 stale，保持 `PARTIAL`。
 - 证据文件：`docs/evidence/real_live_shadow_20260918_1227.md`；远端原始产物保存在 `/home/exedev/validation/engine-core-6511981-v1/`。当前结论：`REAL_REDIS_READ_PATH=PASS`、`REAL_TD_AUCTION_SHADOW=PASS`、`REFERENCE_TIME_SAFETY=PASS`、`LIVE_Q2_FRESHNESS=WARN`，Core 仍不能替代生产 owner。
+- 同时完成了真实 Redis 映射方言审计：`market:stock_plate`/`market:stock_reason` 是 plain string hash，`config:plate_mapping:s2p` 是 JSON-list hash；没有日期或 `available_at` 元数据，因此只关闭解码歧义，不把这些 runtime enrichment keys 提升为历史 Replay 输入。详见 `docs/evidence/real_redis_mapping_dialect_20260918.md`。
 
 ### 2026-09-18 正常起盘节点 Shadow
 
