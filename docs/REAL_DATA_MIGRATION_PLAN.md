@@ -1,5 +1,11 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 19:20 真实 Q2 复核
+
+- Cobra-ion 现有 Redis Q2 只读探针返回 `5224/5224`、coverage=`1.0`、missing=`0`，但在显式 `10s` freshness policy 下 `5224/5224` 均为 `STALE`，最新 source lag 约 `14893s`。coverage 不升级为 READY，Core 继续 fail-closed。
+- 同一真实 observation 两次进入 Core 后 probe/snapshot hash 完全一致；该结果证明真实连接和确定性消费，不证明盘中 freshness、Rabbit arrival 或 Core 替代 `engine-next`。
+- 证据：`docs/evidence/real_q2_probe_20260918_1920.md`，远端 artifact SHA-256=`14847cef2d09d773f6214edbf563c5faf86ad350a4f05614a96077e467a95466`。
+
 ### 2026-09-18 19:01–19:03 盘后真实 Redis → Core Shadow 复核
 
 - 使用 Cobra-ion 既有 engine-next Python 3.12.3 共享虚拟环境中的 `redis 8.1.0`，对真实 `market:auction:20260918:{0920,0924,0925}` 执行只读 HGETALL，并将结果送入 Core 的公开 Engine signal path。未新增 Rabbit consumer、未改变 ACK、未写 Redis/TD、未触发通知/effect，`engine-next` 与 `t1-v2-live` 仍为生产 owner。
