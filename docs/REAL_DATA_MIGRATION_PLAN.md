@@ -16,6 +16,19 @@
   replay。Core 仍未取得生产替代资格。
 - 证据：`docs/evidence/real_auction_loader_core_shadow_20260918_1938.md`。
 
+### 2026-09-18 19:42 真实 TD/Redis reference readiness 复核
+
+- 通过现有有界只读 runner 读取 `previous_day_stats`、昨日涨停池、热板和
+  Q2：TD daily-kline 返回 `2` 行，Redis reference cache 返回昨日涨停池 `47`
+  行、热板 `50` 行，Q2 coverage=`1.0` 但 `5224/5224` stale。
+- 因当前查询发生在盘后且没有历史 `available_at_ms` 证明，三个 reference
+  结果均保持 `UNAVAILABLE`；整体 readiness=`PARTIAL`，并给出
+  `REFRESH_Q2/PREFETCH:*` 动作。这个结果证明 TemporalDataGuard 没有把
+  “现在能读到”误判成“09:20 已知”，也不证明下一交易日盘前预取已完成。
+- 下一步只需在真实节点前捕获一次 prefetch，并把冻结结果绑定到对应
+  Engine evaluation；不新增 Provider/Replay/工作流框架。
+- 证据：`docs/evidence/real_reference_readiness_20260918_1942.md`。
+
 ### 2026-09-18 19:36 盘后真实 Q2 / 生产状态复核
 
 - Cobra-ion server time was `2026-09-18 19:36:15 CST`; this is outside the
