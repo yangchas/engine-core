@@ -60,5 +60,6 @@ pairs = 0920->0924, 0924->0925
 本地和 Cobra-ion 隔离副本均为 `538 passed`，`compileall` 通过。远端运行时仍为
 engine-next 共享 Python 3.12 venv；本验证只读 TD，不改变任何生产服务状态。
 
-随后增加了缺失字段质量传播测试，当前同一隔离副本重新验证为 `539 passed`，并
-仍通过 `compileall`；完整字段的真实 `000338` 运行仍为 `OBSERVED/FACT_ONLY`。
+随后增加了缺失字段质量传播和旧 Shadow 共享指标差分测试，当前同一隔离副本重新
+验证为 `540 passed`，并仍通过 `compileall`；完整字段的真实 `000338` 运行仍为
+`OBSERVED/FACT_ONLY`。
