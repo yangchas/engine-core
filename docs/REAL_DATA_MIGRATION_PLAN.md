@@ -1,5 +1,9 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 M2 legacy/Core differential
+
+- Real current-day probes show the deployed legacy loader returns 200 TopN rows per 0920/0924/0925 but not the bounded symbols, while legacy context reads those symbols and clamps future Q2 age to zero. Core TD auction Engine shadow processes all three symbols with direct/Engine semantic equality and `PARTIAL/FACT_ONLY`. Because authorities/as-of cohorts differ, numeric differences remain `NOT_COMPARABLE`; no strategy migration or producer change follows from this evidence. Evidence: `docs/evidence/m2_legacy_core_differential_20260918.md`.
+
 ### 2026-09-18 M1 real recovery shadow
 
 - The isolated Cobra-ion copy ran the bounded morning shell at 17:35 CST with real Redis Q2 and TD reads for `600519`. It emitted startup, `AUCTION_0926`, and `OPENING_0932`; startup checkpoint traces were `RECOVERY_CATCHUP/PARTIAL/STALE`, opening preserved the stale-Q2 gate, and all safety counters were zero. This is post-market recovery evidence only; normal-origin 09:20/09:25/09:32 and replacement acceptance remain open. Evidence: `docs/evidence/m1_live_recovery_shadow_20260918_1735.md`.
