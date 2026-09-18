@@ -180,6 +180,11 @@ from .reporting import (
     REPORT_CONTRACT_VERSION,
     build_auction_fact_report,
 )
+from .market_summary import (
+    AUCTION_MARKET_SUMMARY_CONTRACT_VERSION,
+    AuctionMarketSummaryFact,
+    normalize_auction_market_summary,
+)
 
 __all__ = [
     "BreadthFacts",
@@ -331,4 +336,7 @@ __all__ = [
     "AuctionFactReportArtifact",
     "REPORT_CONTRACT_VERSION",
     "build_auction_fact_report",
+    "AUCTION_MARKET_SUMMARY_CONTRACT_VERSION",
+    "AuctionMarketSummaryFact",
+    "normalize_auction_market_summary",
 ]
