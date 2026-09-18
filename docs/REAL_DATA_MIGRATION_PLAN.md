@@ -1,5 +1,16 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-19 真实 TD 竞价 Engine 旁路复验
+
+- Cobra-ion 以 Core 隔离归档 `a1259af` 对真实 TD `auction_snapshot_v2` 的
+  `600519/2026-09-18` 做只读复验：源记录时间为 `09:20:03.287`、`09:24:10.292`、
+  `09:25:06.197`，纯事实与公共 Engine semantic hash 一致，事实状态保持
+  `PARTIAL`，安全边界为 `TD SELECT + in-memory Engine only`。
+- 证据 SHA-256 为
+  `1ce43a09607613c7224e35d8b0b2fbd4d3c97f74338d05b1875c4a1f74a059a5`，详见
+  `docs/evidence/real_td_auction_shadow_20260919_0248.md`。该结果是盘后诊断，
+  不证明 Rabbit batch、Redis/TD writer 同源、正常盘中时点或 Core 替代 `engine-next`。
+
 ### 2026-09-19 M1 下一交易日运行单固化
 
 - 将 `docs/runbooks/m1_live_morning_next_session_20260921.md` 固定到当前已在
