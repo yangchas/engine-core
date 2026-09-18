@@ -4,6 +4,7 @@ import pytest
 
 from engine_core import (
     FactStatus,
+    build_legacy_theme_auction_delta_compat_facts,
     build_theme_auction_delta_facts,
 )
 
@@ -106,3 +107,40 @@ def test_theme_delta_ignores_other_anchor_rows_without_inventing_facts():
         {"600519": (("theme-a", 1.0),), "000001": (("theme-a", 1.0),), "300001": (("theme-b", 1.0),)},
     )
     assert [fact.theme_id for fact in facts] == ["theme-a"]
+
+
+def test_legacy_compat_fact_preserves_old_nonuniform_weighting_and_rounding():
+    rows = [
+        dict(_rows()[0], change_pct_delta=2.0, amount_ratio=2.0),
+        dict(_rows()[1], change_pct_delta=1.0, amount_ratio=1.0),
+    ]
+    facts = build_legacy_theme_auction_delta_compat_facts(
+        rows,
+        {
+            "600519": (("theme-a", 0.6),),
+            "000001": (("theme-a", 1.0),),
+        },
+    )
+    fact = facts[0]
+    # Legacy: weighted change sum is divided by symbol count, while ratio
+    # ignores theme weight and is averaged only over positive values.
+    assert fact.change_pct_delta_avg == 1.1
+    assert fact.amount_ratio_avg == 1.5
+    assert fact.amount_delta_24_25 == 10.0
+    assert fact.bid_amount_delta_24_25 == 1.0
+
+
+def test_legacy_compat_fact_zero_fills_only_inside_explicit_compatibility_type():
+    rows = [dict(_rows()[0], amount_ratio=None, change_pct_delta=None)]
+    legacy = build_legacy_theme_auction_delta_compat_facts(
+        rows,
+        {"600519": (("theme-a", 1.0),)},
+    )[0]
+    conservative = build_theme_auction_delta_facts(
+        rows,
+        {"600519": (("theme-a", 1.0),)},
+    )[0]
+    assert legacy.amount_ratio_avg == 0.0
+    assert legacy.change_pct_delta_avg == 0.0
+    assert conservative.amount_ratio_avg is None
+    assert conservative.change_pct_delta_avg is None
