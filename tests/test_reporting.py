@@ -17,6 +17,7 @@ from engine_core.auction_shadow import build_auction_fact_shadow
 from engine_core.facts import FactStatus
 from engine_core.market_summary import normalize_auction_market_summary
 from engine_core.previous_day_limit_structure import PreviousDayLimitStructureFact
+from engine_core.previous_day_limit_feedback import PreviousDayLimitFeedbackFact
 
 
 FIXTURE = Path(__file__).parent / "fixtures/facts/auction_600519_20260903.json"
@@ -137,6 +138,38 @@ def test_report_can_include_previous_limit_structure_without_feedback_claim():
     assert "valid_return_count" not in report.text_body
     assert "up_ratio" not in report.text_body
     assert report.as_mapping()["previous_limit_structure"]["row_count"] == 2
+
+
+def test_report_can_include_previous_limit_feedback_as_objective_fact():
+    feedback = PreviousDayLimitFeedbackFact(
+        previous_trade_date="2026-09-02",
+        current_trade_date="2026-09-03",
+        business_anchor="0925",
+        status=FactStatus.READY,
+        prior_limit_up_count=2,
+        valid_return_count=2,
+        return_unavailable_count=0,
+        up_count=1,
+        down_count=1,
+        flat_count=0,
+        up_ratio=0.5,
+        median_return_pct=0.75,
+        highest_board_height=2,
+        highest_board_symbols=("600519",),
+        board_height_distribution={"1": 1, "2": 1},
+        records=({"symbol": "600519", "current_change_pct": 2.5},),
+        source_time_min_ms=1788398706000,
+        source_time_max_ms=1788398706000,
+        evidence_refs=("fixture://limit-feedback",),
+    )
+    report = build_auction_fact_report(
+        _fact(), trade_date="2026-09-03", event_id="AUCTION_0925",
+        data_origin="production_capture", previous_limit_feedback=feedback,
+    )
+    assert "valid_return_count: 2" in report.text_body
+    assert "up_ratio: 0.5" in report.text_body
+    assert report.as_mapping()["previous_limit_feedback"]["business_anchor"] == "0925"
+    assert report.provenance["previous_limit_feedback_evidence_hash"] == feedback.evidence_hash
 
 
 def test_report_evidence_hash_includes_summary_evidence_identity():

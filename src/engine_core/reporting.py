@@ -24,6 +24,7 @@ from .contracts import (
 from .facts import FactStatus
 from .market_summary import AuctionMarketSummaryFact
 from .previous_day_limit_structure import PreviousDayLimitStructureFact
+from .previous_day_limit_feedback import PreviousDayLimitFeedbackFact
 
 
 REPORT_CONTRACT_VERSION = "AuctionFactReportV1"
@@ -62,6 +63,7 @@ class AuctionFactReportArtifact:
     reason_codes: Tuple[str, ...]
     market_summary: Optional[AuctionMarketSummaryFact]
     previous_limit_structure: Optional[PreviousDayLimitStructureFact]
+    previous_limit_feedback: Optional[PreviousDayLimitFeedbackFact]
     provenance: Mapping[str, Any]
     text_body: str
     semantic_hash: str
@@ -99,6 +101,10 @@ class AuctionFactReportArtifact:
                 self.previous_limit_structure.as_mapping()
                 if self.previous_limit_structure is not None else None
             ),
+            "previous_limit_feedback": (
+                self.previous_limit_feedback.as_mapping()
+                if self.previous_limit_feedback is not None else None
+            ),
             "provenance": self.provenance,
             "semantic_hash": self.semantic_hash,
             "evidence_hash": self.evidence_hash,
@@ -113,6 +119,7 @@ def build_auction_fact_report(
     data_origin: str,
     market_summary: Optional[AuctionMarketSummaryFact] = None,
     previous_limit_structure: Optional[PreviousDayLimitStructureFact] = None,
+    previous_limit_feedback: Optional[PreviousDayLimitFeedbackFact] = None,
     source_time_min_ms: Optional[int] = None,
     source_time_max_ms: Optional[int] = None,
 ) -> AuctionFactReportArtifact:
@@ -138,6 +145,12 @@ def build_auction_fact_report(
     ):
         raise TypeError(
             "previous_limit_structure must be a PreviousDayLimitStructureFact"
+        )
+    if previous_limit_feedback is not None and not isinstance(
+        previous_limit_feedback, PreviousDayLimitFeedbackFact
+    ):
+        raise TypeError(
+            "previous_limit_feedback must be a PreviousDayLimitFeedbackFact"
         )
     if (
         not isinstance(trade_date, str)
@@ -184,6 +197,10 @@ def build_auction_fact_report(
             previous_limit_structure.content_hash
             if previous_limit_structure is not None else None
         ),
+        "previous_limit_feedback": (
+            previous_limit_feedback.content_hash
+            if previous_limit_feedback is not None else None
+        ),
     }
     provenance = {
         "data_origin": data_origin,
@@ -207,6 +224,18 @@ def build_auction_fact_report(
         "previous_limit_structure_evidence_refs": (
             previous_limit_structure.evidence_refs
             if previous_limit_structure is not None else ()
+        ),
+        "previous_limit_feedback_content_hash": (
+            previous_limit_feedback.content_hash
+            if previous_limit_feedback is not None else None
+        ),
+        "previous_limit_feedback_evidence_hash": (
+            previous_limit_feedback.evidence_hash
+            if previous_limit_feedback is not None else None
+        ),
+        "previous_limit_feedback_evidence_refs": (
+            previous_limit_feedback.evidence_refs
+            if previous_limit_feedback is not None else ()
         ),
         "evidence_refs": fact.evidence_refs,
         "source_time_min_ms": source_time_min_ms,
@@ -238,6 +267,14 @@ def build_auction_fact_report(
             previous_limit_structure.evidence_refs
             if previous_limit_structure is not None else ()
         ),
+        "previous_limit_feedback_evidence_hash": (
+            previous_limit_feedback.evidence_hash
+            if previous_limit_feedback is not None else None
+        ),
+        "previous_limit_feedback_evidence_refs": (
+            previous_limit_feedback.evidence_refs
+            if previous_limit_feedback is not None else ()
+        ),
         "source_time_min_ms": source_time_min_ms,
         "source_time_max_ms": source_time_max_ms,
     }
@@ -252,6 +289,7 @@ def build_auction_fact_report(
         reason_codes=fact.reason_codes,
         market_summary=market_summary,
         previous_limit_structure=previous_limit_structure,
+        previous_limit_feedback=previous_limit_feedback,
     )
     return AuctionFactReportArtifact(
         report_id=report_id,
@@ -265,6 +303,7 @@ def build_auction_fact_report(
         reason_codes=semantic_payload["reason_codes"],
         market_summary=market_summary,
         previous_limit_structure=previous_limit_structure,
+        previous_limit_feedback=previous_limit_feedback,
         provenance=provenance,
         text_body=text_body,
         semantic_hash=semantic_hash(semantic_payload),
@@ -284,6 +323,7 @@ def _render_text(
     reason_codes: Tuple[str, ...],
     market_summary: Optional[AuctionMarketSummaryFact],
     previous_limit_structure: Optional[PreviousDayLimitStructureFact],
+    previous_limit_feedback: Optional[PreviousDayLimitFeedbackFact],
 ) -> str:
     """Render only objective facts; strategy language is intentionally absent."""
 
@@ -321,6 +361,24 @@ def _render_text(
             f"- highest_board_height: {_display(previous_limit_structure.highest_board_height)}",
             f"- highest_board_symbols: {', '.join(previous_limit_structure.highest_board_symbols) or 'unavailable'}",
             f"- board_height_distribution: {_display(previous_limit_structure.board_height_distribution)}",
+        ])
+    if previous_limit_feedback is not None:
+        lines.extend([
+            "",
+            "## Previous Limit-up Feedback",
+            f"- status: {previous_limit_feedback.status.value}",
+            f"- current_trade_date: {_display(previous_limit_feedback.current_trade_date)}",
+            f"- business_anchor: {previous_limit_feedback.business_anchor}",
+            f"- prior_limit_up_count: {_display(previous_limit_feedback.prior_limit_up_count)}",
+            f"- valid_return_count: {_display(previous_limit_feedback.valid_return_count)}",
+            f"- return_unavailable_count: {_display(previous_limit_feedback.return_unavailable_count)}",
+            f"- up_count: {_display(previous_limit_feedback.up_count)}",
+            f"- down_count: {_display(previous_limit_feedback.down_count)}",
+            f"- flat_count: {_display(previous_limit_feedback.flat_count)}",
+            f"- up_ratio: {_display(previous_limit_feedback.up_ratio)}",
+            f"- median_return_pct: {_display(previous_limit_feedback.median_return_pct)}",
+            f"- source_time_min_ms: {_display(previous_limit_feedback.source_time_min_ms)}",
+            f"- source_time_max_ms: {_display(previous_limit_feedback.source_time_max_ms)}",
         ])
     lines.extend(["", "## Changes"])
     for key in sorted(changes):
