@@ -100,7 +100,7 @@ def _q2_projection(trade_date: str, source_time: str, observed_time: str):
     )
 
 
-def _evaluation_times(trade_date: str, *, auction_0925: str = "09:25:10"):
+def _evaluation_times(trade_date: str, *, auction_0925: str = "09:25:06"):
     return {
         tag: int(
             datetime.fromisoformat(f"{trade_date}T{clock}+08:00").timestamp() * 1000
@@ -137,7 +137,9 @@ def _fixture_rows_without_final_anchor(fixture: dict):
         )
     row_0925 = dict(rows[-1])
     row_0925["auction_tag"] = "0925"
-    row_0925["ts"] = row_0925["ts"] + timedelta(seconds=60)
+    # The production finalization firing is 09:25:06: the source does not
+    # contain the complete auction cohort at the wall anchor 09:25:00.
+    row_0925["ts"] = row_0925["ts"] + timedelta(seconds=56)
     rows.append(row_0925)
     return rows
 
@@ -173,7 +175,7 @@ def test_continuous_shadow_reuses_one_engine_for_auction_and_opening():
     row_0924 = next(item for item in rows if item["auction_tag"] == "0924")
     row_0925 = dict(row_0924)
     row_0925["auction_tag"] = "0925"
-    row_0925["ts"] = row_0924["ts"] + timedelta(seconds=60)
+    row_0925["ts"] = row_0924["ts"] + timedelta(seconds=56)
     rows.append(row_0925)
     projection = _q2_projection(fixture["trade_date"], "09:32:00", "09:32:00")
     result = MODULE.run_continuous_session_shadow(
@@ -258,8 +260,42 @@ def test_continuous_shadow_rejects_auction_source_after_explicit_evaluation_time
             trade_date=fixture["trade_date"],
             symbol="600519",
             evaluation_times_ms=_evaluation_times(
-                fixture["trade_date"], auction_0925="09:25:09"
+                fixture["trade_date"], auction_0925="09:25:05"
             ),
+        )
+
+
+def test_continuous_shadow_rejects_evaluation_times_on_another_trade_date():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    evaluation_times = {
+        key: value + 86_400_000
+        for key, value in _evaluation_times(fixture["trade_date"]).items()
+    }
+    with pytest.raises(ValueError, match="crosses trade date"):
+        MODULE.run_continuous_session_shadow(
+            auction_rows=_fixture_rows_without_final_anchor(fixture),
+            opening_projection=_q2_projection(
+                fixture["trade_date"], "09:32:00", "09:32:00"
+            ),
+            trade_date=fixture["trade_date"],
+            symbol="600519",
+            evaluation_times_ms=evaluation_times,
+        )
+
+
+def test_continuous_shadow_rejects_evaluation_before_0925_business_anchor():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    evaluation_times = _evaluation_times(fixture["trade_date"])
+    evaluation_times["0925"] -= 7_000
+    with pytest.raises(ValueError, match="before business anchor"):
+        MODULE.run_continuous_session_shadow(
+            auction_rows=_fixture_rows_without_final_anchor(fixture),
+            opening_projection=_q2_projection(
+                fixture["trade_date"], "09:32:00", "09:32:00"
+            ),
+            trade_date=fixture["trade_date"],
+            symbol="600519",
+            evaluation_times_ms=evaluation_times,
         )
 
 

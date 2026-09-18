@@ -100,9 +100,17 @@ def _validate_projection_time(
     observed_ms = projection.envelope.observed_time_ms
     if run_mode == "NORMAL" and observed_ms > evaluation_time_ms:
         raise ValueError(f"{node_id} observed time is after node cutoff")
+    oldest_source = projection.oldest_source_time_ms
+    newest_source = projection.newest_source_time_ms
+    if (
+        oldest_source is not None
+        and newest_source is not None
+        and oldest_source > newest_source
+    ):
+        raise ValueError(f"{node_id} source time range is reversed")
     source_times = tuple(
         value
-        for value in (projection.oldest_source_time_ms, projection.newest_source_time_ms)
+        for value in (oldest_source, newest_source)
         if value is not None
     )
     if projection.status == DataStatus.MISSING:
@@ -111,8 +119,6 @@ def _validate_projection_time(
         return
     if not source_times:
         raise ValueError(f"{node_id} projection is missing source time")
-    if min(source_times) > max(source_times):
-        raise ValueError(f"{node_id} source time range is reversed")
     if any(_source_date(value) != trade_date for value in source_times):
         raise ValueError(f"{node_id} source time crosses trade date")
     if run_mode == "NORMAL" and max(source_times) > evaluation_time_ms:
@@ -120,8 +126,10 @@ def _validate_projection_time(
 
 
 def _validate_evaluation_times(
+    trade_date: str,
     evaluation_times_ms: Mapping[str, int] | None,
 ) -> dict[str, int]:
+    trade_date = _strict_trade_date(trade_date)
     if evaluation_times_ms is None:
         raise ValueError(
             "evaluation_times_ms is required; pass the actual node firing times"
@@ -136,6 +144,19 @@ def _validate_evaluation_times(
         value = evaluation_times_ms[key]
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ValueError(f"evaluation time for {key} must be a positive integer")
+        local_date = datetime.fromtimestamp(
+            value / 1000.0,
+            tz=timezone.utc,
+        ).astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
+        if local_date != trade_date:
+            raise ValueError(f"evaluation time for {key} crosses trade date")
+        anchor_text = key[-4:]
+        anchor_ms = _business_time_ms(
+            trade_date,
+            time(int(anchor_text[:2]), int(anchor_text[2:])),
+        )
+        if value < anchor_ms:
+            raise ValueError(f"evaluation time for {key} is before business anchor")
         normalized[key] = value
     if any(
         normalized[left] >= normalized[right]
@@ -157,7 +178,7 @@ def _validate_session_inputs(
 ) -> None:
     trade_date = _strict_trade_date(trade_date)
     symbol = _strict_symbol(symbol)
-    evaluation_times = _validate_evaluation_times(evaluation_times_ms)
+    evaluation_times = dict(evaluation_times_ms)
     if run_mode not in _RUN_MODES:
         raise ValueError("run_mode must be NORMAL or POSTMARKET_DIAGNOSTIC")
     if opening_projection.trade_date != trade_date:
@@ -350,13 +371,14 @@ def _run_projection_session(
     missing = [tag for tag in ANCHOR_ORDER if tag not in auction_projections]
     if missing:
         raise ValueError("missing auction projections: " + ",".join(missing))
+    evaluation_times = _validate_evaluation_times(trade_date, evaluation_times_ms)
     _validate_session_inputs(
         auction_projections=auction_projections,
         opening_projection=opening_projection,
         trade_date=trade_date,
         symbol=symbol,
         preparation=preparation,
-        evaluation_times_ms=evaluation_times_ms,
+        evaluation_times_ms=evaluation_times,
         run_mode=run_mode,
     )
     strategy = ContinuousSessionShadowStrategy(symbol=symbol)
@@ -371,7 +393,7 @@ def _run_projection_session(
     reference_bundle_hash = None
     for tag in ANCHOR_ORDER:
         projection = auction_projections[tag]
-        logical_time_ms = _validate_evaluation_times(evaluation_times_ms)[tag]
+        logical_time_ms = evaluation_times[tag]
         business_anchor_ms = _business_time_ms(
             trade_date,
             time(int(tag[:2]), int(tag[2:])),
@@ -422,7 +444,7 @@ def _run_projection_session(
             signal_seq += 1
             current = engine.run_until_empty()
 
-    opening_time_ms = _validate_evaluation_times(evaluation_times_ms)["OPENING_0932"]
+    opening_time_ms = evaluation_times["OPENING_0932"]
     opening_business_anchor_ms = _business_time_ms(trade_date, time(9, 32))
     engine.submit(
         EngineSignal(
@@ -456,7 +478,7 @@ def _run_projection_session(
     return {
         "contract_version": "ContinuousSessionShadowV1",
         "run_mode": run_mode,
-        "evaluation_times_ms": dict(_validate_evaluation_times(evaluation_times_ms)),
+        "evaluation_times_ms": dict(evaluation_times),
         "trade_date": trade_date,
         "symbol": symbol,
         "single_engine": True,
