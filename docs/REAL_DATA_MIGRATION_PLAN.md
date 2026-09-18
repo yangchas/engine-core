@@ -1,5 +1,12 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 19:20 生产存储压力阻塞 TD 验证
+
+- Cobra-ion 只读检查确认 `engine-next` 与 `t1-v2-live` 均 `active`、`NRestarts=0`，但根盘使用率为 `93%`（`19G` 总量、约 `1.4G` 可用），TD `/var/lib/taos` 约 `5.9G`。
+- `t1-v2-live` 在 `14:26:10`–`15:40:53` 期间多次记录 `stage=commit.tdengine | error=No enough disk space`。因此“服务 active”不能作为 TD 写入健康或数据完整的证据。
+- 本次没有删除数据、清理 Docker volume、重启服务、修改 Rabbit ACK/consumer、写 Redis/TD 或触发 effect。未有明确 retention/备份审批前，不执行破坏性清理。
+- 当前允许继续：真实 Redis 只读 Core shadow，并显式保留 `STALE/PARTIAL`；当前禁止：把 TD 当完整 ground truth、TD 依赖 replay/cross-source parity、Core 替代 owner 验收。详见 `docs/evidence/runtime_storage_disk_pressure_20260918_1920.md`。
+
 ### 2026-09-18 19:30 真实第三方参考源连接探查
 
 - 复用旧 `engine-next` release `e272842c8f490f55a1b017badb71e71904ce008e` 的已验证 connector 路径，在 Cobra-ion 共享 Python 3.12.3 环境执行有界只读探查，6/6 连接调用成功；未写 Redis/TD、未消费 Rabbit、未修复缓存、未发通知。
