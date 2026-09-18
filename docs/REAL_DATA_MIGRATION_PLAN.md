@@ -1,5 +1,27 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-19 Redis 投影接入单 Engine 连续 Shadow
+
+- `3889df4` 将连续会话入口扩展为两条等价输入路径：已读取的 TD
+  `auction_snapshot_v2` 行，或已读取的 Redis `market:auction:{date}:{tag}`
+  projection；两者都进入同一 `_run_projection_session`，不创建第二个
+  Engine，不在节点重读 Redis，不做缺失槽位修复。
+- 新增边界：重复 tag 直接拒绝；Redis `0924` 缺失时保留 projection
+  `MISSING`，0924 结果保持等待，0925 结果保持 `MISSING/PARTIAL`，不以
+  0920/0925 伪造相邻段。
+- Local/Cobra-ion Python 3.12.3 同一归档均为 `576 passed`、compileall
+  PASS；新增文件 SHA-256：
+  `run_continuous_session_shadow.py=50481eb0df96edcac08ae232bb864d4d00832da6e99a01ed0fdef65835c0bae6`，
+  `test_continuous_session_shadow.py=7cf7d0689871e6b5718413eae05ea4aba878a8b403dac0af9115348d53dc7900`。
+- 真实 Cobra-ion 盘后只读运行（trade date=`2026-09-18`, symbol=`000338`）
+  读取 Redis 0920/0924/0925 均为 `READY`，Q2 为 `5224/5224`、coverage
+  `1.0` 但 `STALE`，单 Engine 消费 8 个 signal、输出 4 个 `FACT_ONLY` 结果，
+  opening=`PARTIAL`；artifact SHA-256 为
+  `d317dbe60ce5a0019c8007bc8211775eb4c5cf9f5bf7e60cf65b45c35776bedc`。
+  生产服务仍保持 active；未写 Redis/TD、未接管 Rabbit/ACK、未发送通知或
+  effect。该证据只关闭 Redis projection → continuous Core 的窄 seam，
+  不关闭正常交易时段、全市场、启动恢复或 engine-next 替代验收。
+
 ### 2026-09-18 22:40 单 Engine 连续会话真实 Shadow
 
 - 新增 `examples/run_continuous_session_shadow.py`，将已读取的真实 TD

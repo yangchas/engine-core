@@ -1,5 +1,21 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-19 commit `3889df4` adds a thin read-only Redis auction
+  projection path to the bounded continuous-session shadow. It accepts the
+  already-read `0920/0924/0925` Redis projections, rejects duplicate or missing
+  anchor tags, preserves a missing `0924` as `MISSING`, and feeds the existing
+  single `DeterministicEngine` without rereading or repairing Redis. Local and
+  Cobra-ion Python 3.12.3 isolated suites both pass `576`; compileall passes;
+  changed-file SHA-256 values match. This does not prove full-market coverage,
+  normal-origin timing, Rabbit batch membership, or Core replacement.
+- [OBSERVED] 2026-09-19 00:07 CST the exact `3889df4` archive ran a real
+  read-only Redis continuous shadow for trade date `2026-09-18`, symbol
+  `000338`: Redis auction projection tags `0920/0924/0925` were all `READY`,
+  Q2 was `5224/5224` with coverage `1.0` but `STALE`, the single Engine
+  processed 8 signals and produced 4 `FACT_ONLY` results, and no pending
+  evaluation remained. Opening stayed `PARTIAL`; no Redis/TD write, Rabbit
+  action, notification, or effect occurred. Artifact SHA-256 is
+  `d317dbe60ce5a0019c8007bc8211775eb4c5cf9f5bf7e60cf65b45c35776bedc`.
 - [VERIFIED] 2026-09-18 commit `d5b4bcf` extracts the legacy snapshot-to-theme
   weight transform into the pure `resolve_legacy_theme_weights` wheel. It
   preserves the verified `plate`/`real_plate_names` ordering, generic-theme
