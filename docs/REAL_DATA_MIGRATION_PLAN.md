@@ -10,7 +10,7 @@
   real post-market Cobra run for `000338` was intentionally
   `RECOVERY_CATCHUP` and returned `BLOCKED` because current Q2 observation was
   after the 09:20 anchor; Engine dispatch stayed false. Artifact SHA-256:
-  `a60e93fe7f2cfc826fbc5bcb021e5e2c26dfc556cb8f5f66c294affb791223b7`.
+  `a6d0ab5d5948c664e7d0148326b848b1386780d42c097b18c4e5003fc207e570`.
 - This closes only M3-1's code and fail-closed recovery boundary. A normal
   09:20 run before/at the node is still required; 09:24 and 09:25 remain
   separate slices and `engine-next` remains the production owner.

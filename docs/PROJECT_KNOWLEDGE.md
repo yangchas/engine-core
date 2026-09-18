@@ -7,7 +7,7 @@
   both pass `525`; compileall passes. A real post-market recovery run for
   `000338` correctly returned `BLOCKED` because the current Q2 observation was
   after the historical 09:20 anchor, with `node_dispatched=false` and no
-  fallback. Artifact SHA-256=`a60e93fe7f2cfc826fbc5bcb021e5e2c26dfc556cb8f5f66c294affb791223b7`.
+  fallback. Artifact SHA-256=`a6d0ab5d5948c664e7d0148326b848b1386780d42c097b18c4e5003fc207e570`.
   Normal-origin 09:20 acceptance and 09:24/09:25 remain open. Evidence:
   `docs/evidence/m3_0920_preflight_shadow_20260918.md`.
 
