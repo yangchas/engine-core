@@ -560,3 +560,9 @@ Evidence：
   pure rule to the explicit compatibility facts on the same Redis path. It
   remains fact-only/read-only and is the next input for legacy-vs-Core Shadow;
   it does not emit production strategy/effect output.
+- Exact commit `47d4392` ran that runner against real Cobra-ion Redis: 119
+  labels from 175 rows (170 mapped), with signal counts `增量转强=3`,
+  `封单增强=4`, `平稳=2`, `温和放量=110`; both projections were `READY` and
+  the result was `OBSERVED`. Artifact SHA-256:
+  `ae8857c4b730bde06b099827dbc9ffc5d43be1b45a991251dac001b39714d8a6`.
+  Labels remained Shadow-only.

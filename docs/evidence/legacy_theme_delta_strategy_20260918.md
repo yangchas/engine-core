@@ -55,3 +55,21 @@ SHA-256: f03fa1f227e8ed263f4383e158ed09c9058067ac138eb7043a684e1f5a432248
 
 This is a real-data input exercise for the pure rule, not a legacy strategy
 output comparison and not a production effect test.
+
+The exact commit `47d4392` also ran the reusable strategy Shadow runner on the
+same real Redis projections. It produced 119 fact-level labels from 175 rows
+(170 mapped), with `READY` 0924/0925 projections and overall `OBSERVED`:
+
+```text
+signal_counts = {
+  增量转强: 3,
+  封单增强: 4,
+  平稳: 2,
+  温和放量: 110,
+}
+artifact = /home/exedev/validation/engine-core-47d4392/theme-strategy-shadow-20260918.json
+SHA-256 = ae8857c4b730bde06b099827dbc9ffc5d43be1b45a991251dac001b39714d8a6
+```
+
+These labels are Shadow observations only. They are not sent to the existing
+report, email, notification, order, or production strategy path.
