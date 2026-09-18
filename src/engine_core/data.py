@@ -429,6 +429,39 @@ class TemporalDataGuard:
         elif result.available_at_ms > request.knowledge_as_of_ms:
             reasons.append("available_at_after_knowledge_cutoff")
         if not reasons:
+            if (
+                request.temporal_mode == "LIVE"
+                and result.available_at_ms is None
+                and result.fetch_completed_at_ms is not None
+                and result.fetch_completed_at_ms <= request.knowledge_as_of_ms
+                and not any(
+                    "live_fetch_completed" in item.notes
+                    for item in result.provenance
+                )
+            ):
+                # This is an explicit live-acquisition exception, not
+                # historical availability evidence.  Keep it in provenance
+                # so downstream traces cannot mistake the result for a
+                # replay-safe ``available_at`` claim.  The marker is
+                # idempotent because guard checks run again on ReadyDataStore
+                # retrieval and DATA_READY validation.
+                marker = Provenance(
+                    source_id=result.actual_source or "unknown",
+                    source_kind="temporal_guard",
+                    source_schema="TemporalDataGuardV1",
+                    source_trade_date=result.actual_trade_date,
+                    effective_at_ms=result.effective_at_ms,
+                    observed_at_ms=result.observed_at_ms,
+                    evidence_ref=None,
+                    notes=(
+                        "live_fetch_completed",
+                        "available_at_unknown_not_historical_evidence",
+                    ),
+                )
+                return replace(
+                    result,
+                    provenance=result.provenance + (marker,),
+                )
             return result
         return replace(
             result,

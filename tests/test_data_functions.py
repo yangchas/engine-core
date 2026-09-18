@@ -275,6 +275,19 @@ def test_live_temporal_guard_accepts_observed_fetch_without_historical_availabil
     assert guarded.status is DataStatus.READY
     assert guarded.available_at_ms is None
     assert guarded.fetch_completed_at_ms == request.knowledge_as_of_ms
+    marker = [
+        item
+        for item in guarded.provenance
+        if item.source_kind == "temporal_guard"
+    ]
+    assert len(marker) == 1
+    assert "live_fetch_completed" in marker[0].notes
+    assert "available_at_unknown_not_historical_evidence" in marker[0].notes
+    assert guarded.content_hash == result.content_hash
+    guarded_again = TemporalDataGuard.check(guarded, request)
+    assert len(
+        [item for item in guarded_again.provenance if item.source_kind == "temporal_guard"]
+    ) == 1
 
 
 def test_live_temporal_guard_rejects_fetch_completed_after_cutoff():
