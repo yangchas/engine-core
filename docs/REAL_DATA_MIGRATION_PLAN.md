@@ -1,5 +1,21 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 M2 Redis projection -> Core Engine queue
+
+- Added a bounded read-only runner that consumes the existing Redis auction
+  projection adapter through the public `DeterministicEngine` queue. It submits
+  only three market-update/timer pairs for 0920/0924/0925 and emits fact-only
+  shadow output; no provider framework, production writer, Rabbit action or
+  effect was added.
+- A real Cobra-ion run for TopN symbol `000338` processed 6 signals and 3
+  strategy results, preserved source times, and returned `PARTIAL/FACT_ONLY`.
+  The Redis projection remains TopN-scoped and does not promote `price_yuan`
+  into an unverified `price_milli`; missing price/ask/pressure stays missing.
+- Local and isolated Cobra-ion suites both pass `520` with compileall. Real
+  artifact SHA-256 is
+  `16968e367626fc046f762bdf92e9f0f9c5a476e954438dee07b8802b500a843c`.
+  This is M2 bounded seam evidence only, not engine-next replacement.
+
 ### 2026-09-18 M2 Redis auction projection adapter
 
 - A thin Core read-only adapter now extracts the exact legacy Redis snapshot

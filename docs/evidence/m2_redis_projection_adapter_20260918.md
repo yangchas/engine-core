@@ -1,5 +1,34 @@
 # M2 Redis auction projection adapter — 2026-09-18
 
+## Redis projection through the public Core Engine queue
+
+The bounded adapter is now consumed by a separate read-only Engine shadow
+runner (`examples/run_real_redis_auction_engine_shadow.py`). The runner
+submits one `MARKET_UPDATE` and one same-time `TIMER` for each of `0920`,
+`0924` and `0925` to the existing `DeterministicEngine`; it does not add a
+provider layer, alter production owners, or write Redis/TD.
+
+- Local full suite after this seam: `520 passed`, compileall PASS.
+- Cobra-ion Python 3.12.3 isolated full suite: `520 passed`, compileall PASS.
+- Real Cobra-ion run for common TopN symbol `000338`:
+  - `processed_signals=6`, `strategy_result_count=3`
+  - all three Redis projections were `PARTIAL` at the canonical Q2/Engine
+    boundary because the projection does not provide a verified milli-price
+    contract or full-universe state;
+  - final fact was `PARTIAL/FACT_ONLY` with `amount_delta_yuan=24231638`,
+    `rest_bid_delta_yuan=89760`, and price/ask/pressure left unavailable
+    where the source contract does not support them;
+  - Redis source times were preserved: `0920=1789694403287`,
+    `0924=1789694650292`, `0925=1789694706197`.
+- Real artifact: `/home/exedev/validation/m2-redis-engine-shadow-20260918-000338.json`
+- Artifact SHA-256: `16968e367626fc046f762bdf92e9f0f9c5a476e954438dee07b8802b500a843c`
+- Production `engine-next` and `t1-v2-live` remained `active`; no Redis/TD
+  write, Rabbit action, restart, notification or effect occurred.
+
+This closes only the bounded `Redis projection -> existing Core Engine queue`
+consumption seam. It does not close full-universe coverage, price authority,
+AuctionState/freeze ownership, or `engine-next` replacement.
+
 ## Scope
 
 This slice extracts only the verified read path used by the deployed

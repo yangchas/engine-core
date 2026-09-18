@@ -1,5 +1,16 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-18 the bounded Core Redis auction projection is now
+  consumed through the existing public `DeterministicEngine` queue by a
+  separate read-only shadow runner. A real Cobra-ion run for TopN symbol
+  `000338` processed 6 signals and 3 strategy results, preserved source times
+  for 0920/0924/0925, and emitted `PARTIAL/FACT_ONLY` with no price guessing.
+  Local and Cobra-ion Python 3.12.3 suites both pass `520`; compileall passes.
+  Artifact SHA-256=`16968e367626fc046f762bdf92e9f0f9c5a476e954438dee07b8802b500a843c`.
+  This closes only the bounded Redis-projection-to-Core-Engine seam; full
+  universe, freeze ownership and engine-next replacement remain open. Evidence:
+  `docs/evidence/m2_redis_projection_adapter_20260918.md`.
+
 - [VERIFIED] 2026-09-18 M2 Redis auction projection adapter: Core now reads
   only the legacy `market:auction:{date}:{tag}` `summary/top_amount` hash
   fields through a thin source-specific adapter. It preserves `TOP_AMOUNT`
