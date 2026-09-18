@@ -66,6 +66,11 @@ from .previous_day_limit_pool import (
     canonical_previous_day_limit_pool_payload_hash,
     normalize_previous_day_limit_pool_rows,
 )
+from .previous_day_limit_structure import (
+    PREVIOUS_DAY_LIMIT_STRUCTURE_CONTRACT_VERSION,
+    PreviousDayLimitStructureFact,
+    build_previous_day_limit_structure,
+)
 from .hot_plates import (
     HOT_PLATES_CONTRACT_VERSION,
     HotPlatesFunction,
@@ -235,6 +240,9 @@ __all__ = [
     "canonical_previous_day_limit_pool_payload_hash",
     "RedisPreviousDayLimitPoolProvider",
     "normalize_previous_day_limit_pool_rows",
+    "PREVIOUS_DAY_LIMIT_STRUCTURE_CONTRACT_VERSION",
+    "PreviousDayLimitStructureFact",
+    "build_previous_day_limit_structure",
     "HOT_PLATES_CONTRACT_VERSION",
     "HotPlatesFunction",
     "HotPlatesProvider",
