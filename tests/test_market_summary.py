@@ -35,6 +35,7 @@ def test_real_capture_summary_maps_to_canonical_a2_fact():
     assert fact.negative_count == 614
     assert fact.auction_amount_yuan == 2528071637
     assert fact.limit_up_seal_amount_yuan == 2743276692
+    assert fact.as_mapping()["limit_up_seal_amount_yuan"] == 2743276692
     assert fact.missing_fields == ()
     assert fact.content_hash and fact.evidence_hash
 

@@ -195,6 +195,12 @@ def build_auction_fact_report(
         "fact_evidence_hash": fact.evidence_hash,
         "comparison_hash": fact.comparison_hash,
         "evidence_refs": fact.evidence_refs,
+        "market_summary_evidence_hash": (
+            market_summary.evidence_hash if market_summary is not None else None
+        ),
+        "market_summary_evidence_refs": (
+            market_summary.evidence_refs if market_summary is not None else (),
+        ),
         "source_time_min_ms": source_time_min_ms,
         "source_time_max_ms": source_time_max_ms,
     }

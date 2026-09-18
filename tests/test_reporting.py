@@ -116,6 +116,38 @@ def test_report_can_include_explicit_a2_summary_without_strategy_interpretation(
     assert report.as_mapping()["market_summary"]["status"] is FactStatus.READY
 
 
+def test_report_evidence_hash_includes_summary_evidence_identity():
+    fact = _fact()
+    raw = json.loads(
+        (Path(__file__).parent / "fixtures/facts/auction_market_summary_20260914.json")
+        .read_text(encoding="utf-8")
+    )
+    left_summary = normalize_auction_market_summary(
+        raw,
+        trade_date="2026-09-03",
+        source_id="fixture://auction-summary",
+        observation_time_ms=1789348803146,
+        evidence_refs=("fixture://auction-summary",),
+    )
+    right_summary = normalize_auction_market_summary(
+        raw,
+        trade_date="2026-09-03",
+        source_id="fixture://auction-summary-other",
+        observation_time_ms=1789348803146,
+        evidence_refs=("fixture://auction-summary-other",),
+    )
+    left = build_auction_fact_report(
+        fact, trade_date="2026-09-03", event_id="AUCTION_0925",
+        data_origin="production_capture", market_summary=left_summary,
+    )
+    right = build_auction_fact_report(
+        fact, trade_date="2026-09-03", event_id="AUCTION_0925",
+        data_origin="production_capture", market_summary=right_summary,
+    )
+    assert left.semantic_hash == right.semantic_hash
+    assert left.evidence_hash != right.evidence_hash
+
+
 def test_report_semantics_exclude_source_observation_range_but_evidence_keeps_it():
     fact = _fact()
     left = build_auction_fact_report(
