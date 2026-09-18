@@ -329,6 +329,7 @@ def test_startup_evidence_uses_the_same_prefetched_reference_results(
         observed_at=observed_at,
         stale_after_ms=60_000,
         auction_reference_preparation=preparation,
+        origin="RECOVERY_CATCHUP",
     )
 
     assert evidence["auction_reference_preparation"]["content_hash"] == preparation.content_hash
@@ -336,6 +337,11 @@ def test_startup_evidence_uses_the_same_prefetched_reference_results(
         (function_id, "UNAVAILABLE")
         for function_id in AUCTION_REFERENCE_FUNCTION_ORDER
     )
+    assert [item["checkpoint_id"] for item in evidence["startup_checkpoint_traces"]] == [
+        "STARTUP_0830",
+        "STARTUP_0900",
+    ]
+    assert all(item["origin"] == "RECOVERY_CATCHUP" for item in evidence["startup_checkpoint_traces"])
 
 
 def test_auction_node_routes_complete_real_rows_through_public_engine():

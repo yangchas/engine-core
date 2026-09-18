@@ -35,11 +35,14 @@ from engine_core import (  # noqa: E402
     Q2ProjectionSnapshot,
     SessionPlan,
     SessionRuntimeCoordinator,
+    STARTUP_CHECKPOINT_TIMER_SPECS,
     TimerFiring,
     TimerSpec,
     TradingCalendarSnapshot,
     assess_startup_readiness,
     build_a_share_session_plan,
+    build_startup_checkpoint_trace,
+    due_timer_firings,
     semantic_hash,
 )
 
@@ -494,6 +497,7 @@ def _startup_evidence(
     observed_at: datetime,
     stale_after_ms: int,
     auction_reference_preparation: AuctionReferencePreparation | None = None,
+    origin: str = "NORMAL",
 ) -> dict[str, Any]:
     projection = _redis_projection(
         trade_date=trade_date,
@@ -519,10 +523,41 @@ def _startup_evidence(
         timer_specs=CORE_TIMER_SPECS,
         origin="NORMAL",
     )
+    checkpoint_readiness = assess_startup_readiness(
+        trade_date=trade_date,
+        as_of_ms=_epoch_ms(observed_at),
+        calendar=calendar,
+        session_plan=plan,
+        q2=projection,
+        required_reference_functions=(
+            AUCTION_REFERENCE_FUNCTION_ORDER
+            if auction_reference_preparation is not None
+            else ()
+        ),
+        reference_results=(
+            auction_reference_preparation.as_mapping()
+            if auction_reference_preparation is not None
+            else None
+        ),
+        timer_specs=STARTUP_CHECKPOINT_TIMER_SPECS,
+        origin=origin,
+    )
+    checkpoint_firings = due_timer_firings(
+        plan,
+        STARTUP_CHECKPOINT_TIMER_SPECS,
+        previous_time_ms=None,
+        current_time_ms=_epoch_ms(observed_at),
+        origin=origin,
+    )
+    checkpoint_traces = tuple(
+        build_startup_checkpoint_trace(checkpoint_readiness, firing)
+        for firing in checkpoint_firings
+    )
     return {
         "observed_at": observed_at.isoformat(),
         "observed_at_ms": _epoch_ms(observed_at),
         "readiness": asdict(readiness),
+        "startup_checkpoint_traces": checkpoint_traces,
         "q2": {
             "status": getattr(projection.status, "value", str(projection.status)),
             "consistency_status": projection.consistency_status,
@@ -594,6 +629,13 @@ def run_live_morning_shadow(
         raise ValueError("live shadow start is after stop_at; use a new output directory")
 
     output_dir.mkdir(parents=True, exist_ok=False)
+    late_start = local_first > start_dt
+    origin = "RECOVERY_CATCHUP" if late_start else "NORMAL"
+    startup_origin = (
+        "RECOVERY_CATCHUP"
+        if local_first.time() > clock_time(8, 30)
+        else origin
+    )
     startup = _startup_evidence(
         trade_date=trade_date,
         calendar=calendar,
@@ -601,12 +643,11 @@ def run_live_morning_shadow(
         observed_at=first_now,
         stale_after_ms=stale_after_ms,
         auction_reference_preparation=auction_reference_preparation,
+        origin=startup_origin,
     )
     startup_path = output_dir / "startup.json"
     startup_sha = _atomic_write_once(startup_path, startup)
 
-    late_start = local_first > start_dt
-    origin = "RECOVERY_CATCHUP" if late_start else "NORMAL"
     fired_ids: set[str] = set()
     nodes: list[dict[str, Any]] = []
     node_file_shas: dict[str, str] = {}
