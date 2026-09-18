@@ -7,7 +7,9 @@
 ## 固定边界
 
 - 生产 owner：`engine-next`、`t1-v2-live`
-- Core 代码副本：`/home/exedev/validation/engine-core-6b4f726-v1`
+- Core 代码副本：`/home/exedev/validation/engine_core-ecc-16a2522`
+- Core commit：`16a2522`（归档 SHA-256：
+  `44bac778f3cf8791708837f87d1374077b53a549ca8d2174deeaf7326d4d28ab`）
 - Python：`/home/exedev/services/engine-next/shared/venv/bin/python`
 - Legacy release（只读 loader 证据）：`/home/exedev/services/engine-next/releases/20260903_e272842`
 - 交易日：`2026-09-21`
@@ -64,7 +66,7 @@ PY
 必须在 09:15 前启动；观察时间由脚本实际读取，不能手填历史时间：
 
 ```bash
-cd /home/exedev/validation/engine-core-6b4f726-v1
+cd /home/exedev/validation/engine_core-ecc-16a2522
 /home/exedev/services/engine-next/shared/venv/bin/python \
   examples/run_live_morning_shadow.py \
   --trade-date 2026-09-21 \
