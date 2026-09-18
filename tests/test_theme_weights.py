@@ -44,7 +44,7 @@ def test_theme_token_normalization_matches_legacy_suffix_and_reason_rules():
     assert not is_generic_theme("芯片")
 
 
-def test_theme_weights_do_not_accept_non_finite_or_unordered_inputs_by_accident():
+def test_theme_weights_require_an_iterable_of_real_plate_names():
     # The function consumes an ordered iterable because the legacy consumer's
     # first two candidates are semantically meaningful.
     with pytest.raises(TypeError):

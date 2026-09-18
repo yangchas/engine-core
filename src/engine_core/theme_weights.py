@@ -17,7 +17,7 @@ availability remain outside this wheel.
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable, Sequence, Tuple
+from typing import Any, Iterable, Tuple
 
 
 LEGACY_THEME_WEIGHTS_CONTRACT_VERSION = "LegacyThemeWeightsV1"
