@@ -60,7 +60,7 @@ strategy rule is moved into Core.
 | TD/Redis read-only fact inputs | present in bounded shadows | real source, explicit status and provenance |
 | deterministic fact functions | present | no strategy conclusion in fact objects |
 | frozen bundle/evidence lineage | present | no provider/network access from strategy |
-| build-only report projection | not yet implemented as a Core owner | may be added only from frozen facts |
+| build-only report projection | implemented as `AuctionFactReportArtifact` (`69f8535`) | frozen fact-only projection; not a delivery owner |
 | Redis delivery claim/dedupe | intentionally external | do not migrate into Core |
 | SMTP/webhook/effects | intentionally external | deny-all in shadow/replay |
 | full strategy-console controller | not migrated | requires Gate B parity |
@@ -77,6 +77,24 @@ strategy rule is moved into Core.
 5. Replay, recovery, disabled, and manual paths cannot trigger formal delivery.
 6. A report hash identifies the canonical rendered/result payload; source
    evidence and lineage remain separately inspectable.
+
+## Current parity matrix
+
+| Legacy contract | Core projection | Status | Evidence |
+|---|---|---|---|
+| explicit accepted data origin | `data_origin` is validated against the fixed origin set | MATCH for the narrow fact artifact | `tests/test_reporting.py` |
+| `COMPLETE/PARTIAL/DATA_UNAVAILABLE` report state | derived from `FactStatus`, never supplied by caller | MATCH for the narrow fact artifact | `tests/test_reporting.py` |
+| missing values remain unavailable | metrics preserve `None` and status remains degraded | MATCH for the narrow fact artifact | `tests/test_reporting.py` |
+| deterministic business hash separate from evidence | `semantic_hash` and `evidence_hash` are independent | MATCH for the narrow fact artifact | `tests/test_reporting.py` |
+| A2 market summary authority | not represented by `AuctionFactShadow` | UNKNOWN / not migrated | requires a verified A2 fact source |
+| plate rows, locked-order tables, appendix rankings | not represented by the current single-symbol fact shadow | NOT_APPLICABLE to this first slice | requires Gate B plate capability parity |
+| Redis claim/dedupe before delivery | intentionally outside Core | INTENTIONAL_CHANGE | delivery remains `engine-next` owner |
+| SMTP/Webhook notification | intentionally outside Core | INTENTIONAL_CHANGE | no notifier imported or called |
+
+The matrix is capability-local. It does not claim that the narrow fact report
+is equivalent to the old full email report. Full report parity remains blocked
+until the A2 summary, plate universe, locked orders, mapping, and lifecycle
+contracts have verified authorities.
 
 ## Test evidence available in the old tree
 
@@ -101,11 +119,11 @@ engine-next loader parity.
 
 `ENGINE_CORE_REPORT_OWNER = NOT_READY`.
 
-The next safe implementation is a narrow, build-only, fact-only projection
-from frozen Core facts, guarded by the old origin/status rules. It must not
-include a notifier, Redis claim, SMTP/webhook call, implicit recovery, or
-strategy thresholds. Live acceptance remains blocked while t1-v2 reports TD
-storage `No enough disk space` and the real Q2 projection is stale.
+The next safe implementation after `AuctionFactReportArtifact` is capability-
+local parity for one verified report field at a time. It must not include a
+notifier, Redis claim, SMTP/webhook call, implicit recovery, or strategy
+thresholds. Live acceptance remains blocked while t1-v2 reports TD storage
+`No enough disk space` and the real Q2 projection is stale.
 
 This audit is therefore an offline migration input, not a production readiness
 claim.

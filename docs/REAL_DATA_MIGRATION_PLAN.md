@@ -2,7 +2,7 @@
 
 ### 2026-09-18 build-only 报告投影
 
-- Core 新增最小 `AuctionFactReportArtifact`，仅将已冻结 `AuctionFactShadow` 投影为结构化/文本事实产物，保留数据来源、状态、semantic/evidence hash 和 provenance；不接管通知、claim、SMTP、Webhook、恢复或策略结论。提交 `69f8535`，本地/Cobra 隔离套件均 `474 passed`、compileall PASS。详见 `docs/evidence/build_only_report_projection_20260918.md`。
+- Core 新增最小 `AuctionFactReportArtifact`，仅将已冻结 `AuctionFactShadow` 投影为结构化/文本事实产物，保留数据来源、状态、semantic/evidence hash 和 provenance；不接管通知、claim、SMTP、Webhook、恢复或策略结论。提交 `69f8535`，本地/Cobra 隔离套件均 `474 passed`、compileall PASS。旧报告字段 parity 仍按能力逐项推进，不能把该单股 fact 产物宣称为完整邮件等价物。详见 `docs/evidence/build_only_report_projection_20260918.md`。
 - `engine-next` 继续作为生产报告/副作用 owner；该提交不改变生产服务和真实数据结论。
 
 ### 2026-09-18 14:47 盘中真实 Q2 复验
