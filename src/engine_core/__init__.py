@@ -117,6 +117,11 @@ from .anchor_delta import (
     build_anchor_delta_evidence,
     build_anchor_shadow_evidence,
 )
+from .anchor_delta_strategy import (
+    ANCHOR_DELTA_STRATEGY_CONTRACT_VERSION,
+    DEFAULT_ANCHOR_PAIRS,
+    AnchorDeltaShadowStrategy,
+)
 from .auction import normalize_auction_change_bp_to_pct, normalize_auction_change_ratio
 from .opening import (
     OPENING_FACT_CONTRACT_VERSION,
@@ -277,6 +282,9 @@ __all__ = [
     "amount_reference_bucket",
     "build_anchor_delta_evidence",
     "build_anchor_shadow_evidence",
+    "ANCHOR_DELTA_STRATEGY_CONTRACT_VERSION",
+    "DEFAULT_ANCHOR_PAIRS",
+    "AnchorDeltaShadowStrategy",
     "normalize_auction_change_ratio",
     "normalize_auction_change_bp_to_pct",
     "OPENING_FACT_CONTRACT_VERSION",
