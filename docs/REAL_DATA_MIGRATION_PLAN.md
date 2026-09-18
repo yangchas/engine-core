@@ -1,5 +1,15 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 M3 09:20 NORMAL 时间窗口防伪装修复
+
+- 修复 `run_m3_0920_shadow` 的运行单边界：盘后调用不能继续标记
+  `origin=NORMAL`，超过 `09:21:00` 直接返回 `BLOCKED`，不读 Q2、不创建
+  Engine；晚启动仍必须使用 `RECOVERY_CATCHUP`。
+- 新增对应反例单测，验证 fail-closed 且 source read count 为零。Local
+  `526 passed`、compileall PASS；Cobra-ion 独立验证副本同样 `526 passed`、
+  compileall PASS。生产 `engine-next`/`t1-v2-live` 未改动。
+- 证据：`docs/evidence/m3_normal_window_guard_20260918.md`。
+
 ### 2026-09-18 19:38 engine-next loader 与 Core 真实竞价投影交叉复核
 
 - 使用正式 `engine-next` release `20260903_e272842` 的既有

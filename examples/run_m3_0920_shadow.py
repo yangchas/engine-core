@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
@@ -48,6 +48,7 @@ except ModuleNotFoundError:  # Pytest/import execution resolves the package.
 
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 AUCTION_0920_SPEC = TimerSpec("AUCTION_0920", "09:20:00")
+NORMAL_CAPTURE_WINDOW_END = time(9, 21, 0)
 
 
 def _strict_date(value: str) -> str:
@@ -96,6 +97,36 @@ def run_m3_0920_shadow(
         raise ValueError("as_of cannot precede observed_at")
     if origin not in {"NORMAL", "RECOVERY_CATCHUP"}:
         raise ValueError("origin must be NORMAL or RECOVERY_CATCHUP")
+
+    # The normal 09:20 acceptance is a live observation window, not a label
+    # that may be applied to a post-market rerun.  The runbook keeps the
+    # bounded window at 09:15-09:21; enforce its end here as well so callers
+    # cannot accidentally turn a late observation into NORMAL evidence.
+    local_as_of = as_of.astimezone(LOCAL_TZ)
+    if origin == "NORMAL" and local_as_of.time() > NORMAL_CAPTURE_WINDOW_END:
+        # Return the same fail-closed evidence shape as other preflight
+        # failures, but do not read Q2 or dispatch an Engine node.
+        return {
+            "contract_version": "M3_0920_ShadowV1",
+            "trade_date": trade_date,
+            "symbol": symbol,
+            "origin": origin,
+            "read_only": True,
+            "prefetch_calls": 0,
+            "side_effect_boundary": "no source read; no Engine dispatch",
+            "startup_self_check": {
+                "trade_date": trade_date,
+                "status": "BLOCKED",
+                "reasons": ("normal_capture_window_expired",),
+                "actions": (),
+            },
+            "q2": None,
+            "timer": {"due": False, "readiness_dispatchable": False, "deferred_timer_ids": (), "fired": None},
+            "node_dispatched": False,
+            "engine": None,
+            "preflight_gate": "BLOCKED",
+            "preflight_failure_is_fail_closed": True,
+        }
 
     # Exactly one Q2 prefetch.  The adapter is the existing verified Redis
     # path; this function never repairs, writes, or retries another source.

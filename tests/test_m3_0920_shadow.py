@@ -146,6 +146,32 @@ def test_m3_0920_recovery_does_not_retrofit_current_q2_to_old_anchor():
     assert "q2_observed_after_0920_firing" in result["startup_self_check"]["reasons"]
 
 
+def test_m3_0920_normal_after_capture_window_is_blocked_without_source_read():
+    redis = FakeRedis()
+    observed = local_datetime_ms(TRADE_DATE, "09:30:00")
+    projection = _projection(redis, observed)
+    redis.calls.clear()
+    result = MODULE.run_m3_0920_shadow(
+        client=redis,
+        calendar=_calendar(),
+        auction_projection=projection,
+        trade_date=TRADE_DATE,
+        symbol="000001",
+        observed_at=datetime.fromtimestamp(observed / 1000, MODULE.LOCAL_TZ),
+        as_of=datetime.fromtimestamp(observed / 1000, MODULE.LOCAL_TZ),
+        stale_after_ms=60_000,
+        origin="NORMAL",
+    )
+
+    assert result["preflight_gate"] == "BLOCKED"
+    assert result["preflight_failure_is_fail_closed"] is True
+    assert result["startup_self_check"]["reasons"] == ("normal_capture_window_expired",)
+    assert result["prefetch_calls"] == 0
+    assert result["node_dispatched"] is False
+    assert result["engine"] is None
+    assert redis.calls == []
+
+
 def test_m3_0920_missing_auction_projection_does_not_dispatch_engine():
     redis = FakeRedis()
     observed = local_datetime_ms(TRADE_DATE, "09:19:59")
