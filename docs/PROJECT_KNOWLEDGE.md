@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-18 14:28 盘中 Cobra-ion 只读复验：真实 Redis Q2 返回 `5224/5224`、coverage=`1.0`，但全量为 `STALE/BEST_EFFORT_STALE`；重复 Core 观测 hash 一致。显式一分钟节点 cutoff 下，TD previous-day stats 与 Redis 昨日涨停池（47 行）为 `READY`，热板因 `hot/strength/net_inflow_yi` 单位未闭环保持 `UNAVAILABLE`；`temporal_live_readiness=PASS`、`temporal_historical_proof=UNAVAILABLE`、整体 `PARTIAL`。服务 active/零重启、无写入/Rabbit ACK/effect。证据：`docs/evidence/real_live_reference_readiness_20260918_1429.md`。
+
 - [VERIFIED] 2026-09-18 `turnover_yuan` canonical unit guard 在 Cobra-ion 真实旁路复验通过：469 tests、compileall PASS；previous-day stats/limit pool 均 READY（limit pool 47 行），hot plates 仍 UNAVAILABLE，Q2 5224/5224 STALE，整体 PARTIAL。复验 artifact SHA-256=`2957af09e890edda895f575e39b3f019fd6a3317edf30fef94f8a3f807a8e8de`。
 
 - [VERIFIED] 2026-09-18 turnover canonicalization 在 Cobra-ion 隔离副本通过真实运行：TD `previous_day_stats=READY`，Redis `previous_day_limit_pool=READY`（47 行），热点板块继续 `UNAVAILABLE`（单位未闭环），Q2 `5224/5224` 但 `STALE`，整体 readiness=`PARTIAL`；`temporal_live_readiness=PASS`、`temporal_historical_proof=UNAVAILABLE`。artifact SHA-256=`6ed6e2f5fe2b967367dd9b033d8e94f489f3e4c2ff35b29b126153355a19735b`，生产服务 active/零重启/零写入。详见 `docs/evidence/real_live_reference_turnover_20260918.md`。

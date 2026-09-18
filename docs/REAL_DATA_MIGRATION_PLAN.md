@@ -1,5 +1,11 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 14:28 盘中真实预取 cutoff 复验
+
+- 在 Cobra-ion 生产环境旁路隔离副本执行新的只读观测：真实 Redis Q2 为 `5224/5224`、coverage=`1.0`，但全量 `STALE/BEST_EFFORT_STALE`，最新 source time 为 `1789711401000` ms；重复 Core 观测 hash 一致。
+- 使用显式的一分钟未来节点 cutoff 模拟“节点前预取”：TD `previous_day_stats=READY`，Redis `previous_day_limit_pool=READY`（47 行），`hot_plates=UNAVAILABLE`（`hot/strength/net_inflow_yi` 单位仍未闭环）；`temporal_live_readiness=PASS`、`temporal_historical_proof=UNAVAILABLE`、整体 readiness=`PARTIAL`。
+- 这只证明 LIVE 预取合同可以在明确 cutoff 下放行，不把 `observed_at` 冒充历史 `available_at`，也不改变 Q2 stale gate。生产 `engine-next`/`t1-v2-live` 保持 active，未新增 Rabbit consumer/ACK、未写 Redis/TD、未触发 effect。证据见 `docs/evidence/real_live_reference_readiness_20260918_1429.md`。
+
 ### 2026-09-18 真实 Linux 复验：canonical unit guard
 
 - 为 `turnover_yuan` 增加固定单位校验，拒绝调用方/metadata 将 canonical yuan 字段覆盖成 percent 等其他单位；本地与 Cobra-ion 全套分别为 `469 passed`、`compileall PASS`。
