@@ -42,3 +42,20 @@ evidence_hash = 75f3558ba23be7dcfbfa8930a0cc6e27d6cc99c4ca6aa98163f6eed197232dcf
 - 不证明 0925 source-freeze owner 或可替代 `engine-next`。
 - 不因为盘后真实 TD 可读而宣称当天正常节点 live acceptance。
 
+## Runner 组合验证
+
+提交 `ceffe5e` 将该策略接入现有只读
+`examples/run_real_auction_strategy_shadow.py`。在同一 Cobra-ion 隔离副本、同一
+真实 TD 查询路径上重新运行 `000338` 后：
+
+```text
+contract_version = RealAuctionStrategyShadowV2
+row_count = 3
+anchor_completeness = {0920: READY, 0924: READY, 0925: READY}
+anchor_delta fact_status = OBSERVED
+anchor_delta decision_status = FACT_ONLY
+pairs = 0920->0924, 0924->0925
+```
+
+本地和 Cobra-ion 隔离副本均为 `538 passed`，`compileall` 通过。远端运行时仍为
+engine-next 共享 Python 3.12 venv；本验证只读 TD，不改变任何生产服务状态。
