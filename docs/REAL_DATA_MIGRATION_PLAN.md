@@ -1,5 +1,10 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 真实 Linux 复验：canonical unit guard
+
+- 为 `turnover_yuan` 增加固定单位校验，拒绝调用方/metadata 将 canonical yuan 字段覆盖成 percent 等其他单位；本地与 Cobra-ion 全套分别为 `469 passed`、`compileall PASS`。
+- 同一真实 Redis/TD 只读旁路复验结果保持不变：`previous_day_stats=READY`、`previous_day_limit_pool=READY`（47 行）、`hot_plates=UNAVAILABLE`、Q2 `5224/5224 STALE`、整体 readiness=`PARTIAL`。Follow-up artifact SHA-256=`2957af09e890edda895f575e39b3f019fd6a3317edf30fef94f8a3f807a8e8de`。
+
 ### 2026-09-18 真实 LIVE turnover canonicalization 复核
 
 - 将旧 Redis/Kaipan raw `turnover` 在 Core Provider 边界映射为 `turnover_yuan` 后，在 Cobra-ion 隔离副本使用真实 Redis/TD 重新运行：`previous_day_stats=READY`、`previous_day_limit_pool=READY`（47 行）、`hot_plates=UNAVAILABLE`（strength/hot/net_inflow_yi 单位仍未闭环），Q2 `5224/5224` 但仍为 `STALE`，整体 readiness=`PARTIAL`，`temporal_live_readiness=PASS`、`temporal_historical_proof=UNAVAILABLE`。

@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-18 `turnover_yuan` canonical unit guard 在 Cobra-ion 真实旁路复验通过：469 tests、compileall PASS；previous-day stats/limit pool 均 READY（limit pool 47 行），hot plates 仍 UNAVAILABLE，Q2 5224/5224 STALE，整体 PARTIAL。复验 artifact SHA-256=`2957af09e890edda895f575e39b3f019fd6a3317edf30fef94f8a3f807a8e8de`。
+
 - [VERIFIED] 2026-09-18 turnover canonicalization 在 Cobra-ion 隔离副本通过真实运行：TD `previous_day_stats=READY`，Redis `previous_day_limit_pool=READY`（47 行），热点板块继续 `UNAVAILABLE`（单位未闭环），Q2 `5224/5224` 但 `STALE`，整体 readiness=`PARTIAL`；`temporal_live_readiness=PASS`、`temporal_historical_proof=UNAVAILABLE`。artifact SHA-256=`6ed6e2f5fe2b967367dd9b033d8e94f489f3e4c2ff35b29b126153355a19735b`，生产服务 active/零重启/零写入。详见 `docs/evidence/real_live_reference_turnover_20260918.md`。
 
 - [VERIFIED] 2026-09-18 Legacy reference semantics 只读复核：旧 `StockAnalyzer.get_history_bans_pool()` 的 `rec[9]` 与真实 Redis `cache:yest_limit_pool:2026-09-17` 样本均为金额型 turnover，Core Provider 已将其 canonicalize 为 `turnover_yuan`；`close_pct` 保持百分比点。热点板块 tuple 路径 `tuple[6]/1e8 -> net_inflow_yi` 有 source-formula 证据，但 dict 路径不做同样换算，且当前 `strength/hot` 约 89–153 与旧 consumer `strength>=3000` 阈值量纲冲突，因此相关字段继续 UNKNOWN/NOT_AUTHORIZED。Redis metadata 仍无 `available_at_ms/field_units`，因此历史回放可用性仍未关闭。详见 `docs/evidence/legacy_reference_semantics_20260918.md`。

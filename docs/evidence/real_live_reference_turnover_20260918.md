@@ -33,3 +33,11 @@ The command used only bounded Redis reads (`TYPE`, `HLEN`, `HSCAN`, `GET`,
 messages, write Redis/TD, repair caches, invoke network fallbacks, or trigger
 effects.
 
+## Follow-up after canonical-unit guard
+
+- Code commit: `414dfe0`
+- Linux suite: `469 passed in 1.61s`, `compileall PASS`
+- Follow-up artifact: `reference_readiness_live_turnover_v2_20260918.json`
+- Follow-up artifact SHA-256: `2957af09e890edda895f575e39b3f019fd6a3317edf30fef94f8a3f807a8e8de`
+- Result unchanged: previous-day stats `READY`, previous-day limit pool
+  `READY`, hot plates `UNAVAILABLE`, Q2 `STALE`, overall `PARTIAL`.
