@@ -15,7 +15,7 @@ def _rows():
             "lb_days": 2,
             "plate": "消费",
             "seal_time": "09:31:22",
-            "turnover": 18.3,
+            "turnover": 61_814_324.0,
             "close_pct": 10.01,
             "source": "kaipan",
         }
@@ -41,7 +41,7 @@ def test_real_composition_keeps_redis_observation_separate_from_core_result():
     assert result["redis"]["row_count"] == 1
     assert result["read_only"] is True
     assert result["data"]["scope"] == "provider_declared_pool"
-    assert result["data"]["field_units"]["turnover"] == "UNKNOWN"
+    assert result["data"]["field_units"]["turnover_yuan"] == "yuan"
 
 
 def test_real_composition_accepts_verified_availability_only_at_provider_boundary():
@@ -76,7 +76,7 @@ def test_real_composition_accepts_only_explicit_redis_meta_contract():
                 "available_at_ms": 1789070000000,
                 "field_units": {
                     "lb_days": "boards",
-                    "turnover": "yuan",
+                    "turnover_yuan": "yuan",
                     "close_pct": "percent",
                 },
                 "payload_sha256": canonical_previous_day_limit_pool_payload_hash(_rows()),
@@ -85,4 +85,4 @@ def test_real_composition_accepts_only_explicit_redis_meta_contract():
     )
     assert result["result_status"] == "READY"
     assert result["available_at_ms"] == 1789070000000
-    assert result["data"]["field_units"]["turnover"] == "yuan"
+    assert result["data"]["field_units"]["turnover_yuan"] == "yuan"

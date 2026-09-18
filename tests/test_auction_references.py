@@ -69,7 +69,7 @@ def _functions(calendar, *, available_at_ms=CUTOFF - 1):
                     "symbol": "000001",
                     "name": "sample",
                     "lb_days": 1,
-                    "turnover": 10.0,
+                    "turnover": 61_814_324.0,
                     "close_pct": 10.0,
                     "plate": "bank",
                     "reason": "sample",
@@ -79,7 +79,7 @@ def _functions(calendar, *, available_at_ms=CUTOFF - 1):
             ),
             observed_at_ms=lambda: CUTOFF + 20,
             available_at_ms=lambda: available_at_ms,
-            verified_field_units={"turnover": "percent"},
+            verified_field_units={"turnover_yuan": "yuan"},
         ),
         calendar,
     )

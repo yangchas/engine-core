@@ -39,7 +39,7 @@ def _rows():
             "lb_days": 2,
             "plate": "消费",
             "seal_time": "09:31:22",
-            "turnover": 18.3,
+            "turnover": 61_814_324.0,
             "close_pct": 10.01,
             "source": "kaipan",
         },
@@ -50,25 +50,25 @@ def _rows():
             "lb_days": 1,
             "plate": None,
             "seal_time": None,
-            "turnover": 5,
+            "turnover": 101_359_868.0,
             "close_pct": 9.9,
             "source": "kaipan",
         },
     ]
 
 
-def test_normalizer_sorts_rows_and_keeps_declared_percent_units():
+def test_normalizer_sorts_rows_and_maps_legacy_turnover_to_yuan():
     result = normalize_previous_day_limit_pool_rows(
         reversed(_rows()), actual_trade_date="2026-09-10"
     )
     assert [row["symbol"] for row in result["rows"]] == ["000001", "600519"]
-    assert result["by_symbol"]["600519"]["turnover"] == 18.3
+    assert result["by_symbol"]["600519"]["turnover_yuan"] == 61_814_324.0
     assert result["field_units"] == {
         "lb_days": "boards",
-        "turnover": "UNKNOWN",
+        "turnover_yuan": "yuan",
         "close_pct": "percent",
     }
-    assert result["unit_uncertainties"] == ("turnover",)
+    assert result["unit_uncertainties"] == ()
     assert result["scope"] == "provider_declared_pool"
 
 
@@ -117,7 +117,7 @@ def test_function_supports_exact_symbol_scope_when_availability_is_verified():
         lambda previous: _rows(),
         observed_at_ms=lambda: 1789080000000,
         available_at_ms=lambda: 1789070000000,
-        verified_field_units={"turnover": "yuan"},
+        verified_field_units={"turnover_yuan": "yuan"},
     )
     result = PreviousDayLimitPoolFunction(provider, CALENDAR).execute(
         DataContext("eval", "READ_ONLY", 1789080000000), _request(("600519",))
@@ -134,7 +134,7 @@ def test_function_reports_partial_requested_symbol_scope_without_fabricating_row
         lambda previous: _rows(),
         observed_at_ms=lambda: 1789080000000,
         available_at_ms=lambda: 1789070000000,
-        verified_field_units={"turnover": "yuan"},
+        verified_field_units={"turnover_yuan": "yuan"},
     )
     result = PreviousDayLimitPoolFunction(provider, CALENDAR).execute(
         DataContext("eval", "READ_ONLY", 1789080000000), _request(("600519", "300750"))
@@ -150,7 +150,7 @@ def test_provider_rejects_malformed_source_metadata():
         observed_at_ms=lambda: 1789080000000,
         metadata=lambda previous: {
             "available_at_ms": "1789070000000",
-            "field_units": {"turnover": "yuan"},
+            "field_units": {"turnover_yuan": "yuan"},
         },
     )
     result = PreviousDayLimitPoolFunction(provider, CALENDAR).execute(
@@ -169,7 +169,7 @@ def test_provider_accepts_only_metadata_bound_to_the_same_payload():
             "available_at_ms": 1789070000000,
             "field_units": {
                 "lb_days": "boards",
-                "turnover": "yuan",
+                "turnover_yuan": "yuan",
                 "close_pct": "percent",
             },
             "payload_sha256": canonical_previous_day_limit_pool_payload_hash(_rows()),
@@ -186,7 +186,7 @@ def test_provider_accepts_only_metadata_bound_to_the_same_payload():
         metadata=lambda previous: {
             "schema_version": "PreviousDayLimitPoolV1",
             "available_at_ms": 1789070000000,
-            "field_units": {"turnover": "yuan"},
+            "field_units": {"turnover_yuan": "yuan"},
             "payload_sha256": "0" * 64,
         },
     )
@@ -207,7 +207,7 @@ def test_non_trading_request_is_rejected_before_provider_access():
         fetch_rows,
         observed_at_ms=lambda: 1789080000000,
         available_at_ms=lambda: 1789070000000,
-        verified_field_units={"turnover": "yuan"},
+        verified_field_units={"turnover_yuan": "yuan"},
     )
     result = PreviousDayLimitPoolFunction(provider, CALENDAR).execute(
         DataContext("eval", "READ_ONLY", 1789080000000),
@@ -237,7 +237,7 @@ def test_empty_verified_pool_is_missing_not_ready():
         lambda previous_trade_date: [],
         observed_at_ms=lambda: 1789080000000,
         available_at_ms=lambda: 1789070000000,
-        verified_field_units={"turnover": "yuan"},
+        verified_field_units={"turnover_yuan": "yuan"},
     )
     result = PreviousDayLimitPoolFunction(provider, CALENDAR).execute(
         DataContext("eval", "READ_ONLY", 1789080000000), _request()

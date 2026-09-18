@@ -30,7 +30,7 @@ class ReadOnlyRedis:
             "lb_days": 1,
             "plate": "bank",
             "seal_time": "09:31:00",
-            "turnover": 10.0,
+            "turnover": 61_814_324.0,
             "close_pct": 10.0,
             "source": "kaipan",
         }
@@ -79,7 +79,7 @@ class ReadOnlyRedis:
                     "available_at_ms": available,
                     "field_units": {
                         "lb_days": "boards",
-                        "turnover": "percent",
+                        "turnover_yuan": "yuan",
                         "close_pct": "percent",
                     },
                     "payload_sha256": canonical_previous_day_limit_pool_payload_hash((limit_row,)),

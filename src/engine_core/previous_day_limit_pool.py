@@ -62,7 +62,7 @@ def _finite_number(value: Any, *, field: str) -> float | int:
     return value
 
 
-_VERIFIED_UNIT_FIELDS = frozenset({"lb_days", "turnover", "close_pct"})
+_VERIFIED_UNIT_FIELDS = frozenset({"lb_days", "turnover_yuan", "close_pct"})
 
 
 def _verified_available_at_ms(metadata: Any) -> Optional[int]:
@@ -108,9 +108,11 @@ def normalize_previous_day_limit_pool_rows(
 
     ``trade_date`` is required in every row.  The caller must not backfill it
     from the request date because the cache is a delayed, date-bucketed
-    source.  ``turnover`` keeps its raw value but remains ``UNKNOWN`` until
-    the source explicitly verifies its unit; ``close_pct`` remains a
-    percentage-point value and is never silently converted.
+    source.  The legacy provider field ``turnover`` is mapped at this
+    boundary to the canonical ``turnover_yuan`` field.  The producer recipe
+    and real Redis samples establish that it is a yuan-denominated turnover
+    amount; Core never exposes the unitless legacy name.  ``close_pct``
+    remains a percentage-point value and is never silently converted.
     """
 
     actual_trade_date = _strict_date(actual_trade_date, field="actual_trade_date")
@@ -154,7 +156,10 @@ def normalize_previous_day_limit_pool_rows(
                 "lb_days": lb_days,
                 "plate": plate,
                 "seal_time": seal_time,
-                "turnover": _finite_number(raw.get("turnover"), field="turnover"),
+                # The legacy Redis/Kaipan payload calls this field
+                # ``turnover``.  Its verified producer recipe is an amount in
+                # yuan, so the Core contract carries the unit explicitly.
+                "turnover_yuan": _finite_number(raw.get("turnover"), field="turnover"),
                 "close_pct": _finite_number(raw.get("close_pct"), field="close_pct"),
                 "source": source,
             }
@@ -164,7 +169,7 @@ def normalize_previous_day_limit_pool_rows(
     by_symbol = {item["symbol"]: item for item in normalized}
     field_units = {
         "lb_days": "boards",
-        "turnover": "UNKNOWN",
+        "turnover_yuan": "yuan",
         "close_pct": "percent",
     }
     if verified_field_units:
