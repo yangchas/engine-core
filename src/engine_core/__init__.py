@@ -122,6 +122,11 @@ from .anchor_delta_strategy import (
     DEFAULT_ANCHOR_PAIRS,
     AnchorDeltaShadowStrategy,
 )
+from .theme_auction_delta import (
+    THEME_AUCTION_DELTA_CONTRACT_VERSION,
+    ThemeAuctionDeltaFact,
+    build_theme_auction_delta_facts,
+)
 from .auction import normalize_auction_change_bp_to_pct, normalize_auction_change_ratio
 from .opening import (
     OPENING_FACT_CONTRACT_VERSION,
@@ -285,6 +290,9 @@ __all__ = [
     "ANCHOR_DELTA_STRATEGY_CONTRACT_VERSION",
     "DEFAULT_ANCHOR_PAIRS",
     "AnchorDeltaShadowStrategy",
+    "THEME_AUCTION_DELTA_CONTRACT_VERSION",
+    "ThemeAuctionDeltaFact",
+    "build_theme_auction_delta_facts",
     "normalize_auction_change_ratio",
     "normalize_auction_change_bp_to_pct",
     "OPENING_FACT_CONTRACT_VERSION",
