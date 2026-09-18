@@ -23,7 +23,7 @@ import time
 from dataclasses import asdict, fields, is_dataclass
 from datetime import datetime, time as clock_time, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -550,8 +550,20 @@ def run_live_morning_shadow(
     start_at: clock_time = clock_time(9, 15),
     stop_at: clock_time = clock_time(9, 33),
     auction_reference_preparation: AuctionReferencePreparation | None = None,
+    reference_preparation_factory: (
+        Callable[[datetime], AuctionReferencePreparation | None] | None
+    ) = None,
 ) -> dict[str, Any]:
-    """Run the bounded live shell; clock/sleep are injectable for tests."""
+    """Run the bounded live shell; clock/sleep are injectable for tests.
+
+    ``auction_reference_preparation`` is the startup observation.  When a
+    factory is supplied, each timer node that consumes auction references
+    obtains a fresh read-only preparation at its actual observation time.  This
+    preserves the legacy timing contract:
+    data that was absent at startup must not remain permanently absent merely
+    because the first probe was early.  The factory is deliberately a callable
+    boundary, not a new coordinator or retry framework.
+    """
 
     if stale_after_ms < 0:
         raise ValueError("stale_after_ms must be non-negative")
@@ -607,6 +619,19 @@ def run_live_morning_shadow(
         for firing in firings:
             if firing.timer_id in fired_ids:
                 continue
+            node_reference_preparation = auction_reference_preparation
+            if (
+                reference_preparation_factory is not None
+                and firing.timer_id == "AUCTION_0926"
+            ):
+                node_reference_preparation = reference_preparation_factory(now)
+                if node_reference_preparation is not None and not isinstance(
+                    node_reference_preparation, AuctionReferencePreparation
+                ):
+                    raise TypeError(
+                        "reference_preparation_factory must return "
+                        "AuctionReferencePreparation or None"
+                    )
             node = _capture_node(
                 firing,
                 observed_at=now,
@@ -617,7 +642,7 @@ def run_live_morning_shadow(
                 td_config=td_config,
                 calendar=calendar,
                 plan=plan,
-                auction_reference_preparation=auction_reference_preparation,
+                auction_reference_preparation=node_reference_preparation,
             )
             node_path = output_dir / (firing.timer_id + ".json")
             node_file_shas[firing.timer_id] = _atomic_write_once(node_path, node)
@@ -703,6 +728,8 @@ def main() -> int:
         stop_at = _parse_local_time(args.stop_at)
         calendar = _load_calendar(args.calendar_file, trade_date=args.trade_date)
         reference_preparation = None
+        reference_client = None
+        reference_preparation_factory = None
         if args.prefetch_auction_references:
             import redis  # type: ignore[import-not-found]
 
@@ -715,12 +742,13 @@ def main() -> int:
                 socket_timeout=5,
                 socket_connect_timeout=5,
             )
-            try:
+
+            def prepare_references(observed_at: datetime) -> AuctionReferencePreparation:
                 reference_context = run_real_auction_reference_readiness(
                     client=reference_client,
                     trade_date=args.trade_date,
                     calendar=calendar,
-                    observed_at=datetime.now(timezone.utc),
+                    observed_at=observed_at,
                     symbols=symbols,
                     stale_after_ms=args.stale_after_ms,
                     td_kwargs={
@@ -736,29 +764,35 @@ def main() -> int:
                     },
                     _return_context=True,
                 )
-            finally:
-                reference_client.close()
-            reference_preparation = reference_context["preparation"]
+                return reference_context["preparation"]
 
-        manifest = run_live_morning_shadow(
-            trade_date=args.trade_date,
-            calendar=calendar,
-            output_dir=args.output_dir,
-            symbols=symbols,
-            stale_after_ms=args.stale_after_ms,
-            legacy_root=args.legacy_root,
-            td_config={
-                "host": args.td_host,
-                "port": args.td_port,
-                "user": args.td_user,
-                "password": args.td_password,
-                "database": args.td_database,
-            },
-            auction_reference_preparation=reference_preparation,
-            poll_seconds=args.poll_ms / 1000.0,
-            start_at=start_at,
-            stop_at=stop_at,
-        )
+            reference_preparation_factory = prepare_references
+            reference_preparation = prepare_references(datetime.now(timezone.utc))
+
+        try:
+            manifest = run_live_morning_shadow(
+                trade_date=args.trade_date,
+                calendar=calendar,
+                output_dir=args.output_dir,
+                symbols=symbols,
+                stale_after_ms=args.stale_after_ms,
+                legacy_root=args.legacy_root,
+                td_config={
+                    "host": args.td_host,
+                    "port": args.td_port,
+                    "user": args.td_user,
+                    "password": args.td_password,
+                    "database": args.td_database,
+                },
+                auction_reference_preparation=reference_preparation,
+                reference_preparation_factory=reference_preparation_factory,
+                poll_seconds=args.poll_ms / 1000.0,
+                start_at=start_at,
+                stop_at=stop_at,
+            )
+        finally:
+            if reference_client is not None:
+                reference_client.close()
     except (FileExistsError, OSError, TypeError, ValueError) as exc:
         parser.error(str(exc))
     print(json.dumps(_json_ready(manifest), ensure_ascii=False, sort_keys=True))

@@ -55,14 +55,16 @@ def _firing(timer_id: str) -> TimerFiring:
     )
 
 
-def _reference_preparation() -> AuctionReferencePreparation:
+def _reference_preparation(knowledge_as_of_ms: int | None = None) -> AuctionReferencePreparation:
     observed_at_ms = local_datetime_ms(
         "2026-09-14", "09:14:00", timezone_name="Asia/Shanghai"
     )
     return AuctionReferencePreparation(
         trade_date="2026-09-14",
         previous_trade_date="2026-09-11",
-        knowledge_as_of_ms=observed_at_ms,
+        knowledge_as_of_ms=(
+            observed_at_ms if knowledge_as_of_ms is None else knowledge_as_of_ms
+        ),
         results=tuple(
             (
                 function_id,
@@ -490,6 +492,69 @@ def test_live_shell_captures_each_node_at_its_due_observation(tmp_path: Path, mo
     manifest_payload = json.loads((tmp_path / "run" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest_payload["build_identity"]["kind"] == "SOURCE_TREE_SHA256"
     assert len(manifest_payload["build_identity"]["value"]) == 64
+
+
+def test_live_shell_refreshes_references_at_each_node_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    clock_values = iter((_dt("09:15:00"), _dt("09:15:00"), _dt("09:26:00"), _dt("09:32:00")))
+    captured: list[object] = []
+    preparations = iter((_reference_preparation(1), _reference_preparation(2)))
+    monkeypatch.setattr(live, "_startup_evidence", lambda **kwargs: {"read_only": True})
+    monkeypatch.setattr(
+        live,
+        "_capture_node",
+        lambda firing, **kwargs: (
+            captured.append(kwargs["auction_reference_preparation"])
+            or {"timer": live._timer_payload(firing)}
+        ),
+    )
+
+    def factory(observed_at: datetime):
+        assert observed_at == _dt("09:26:00")
+        return next(preparations)
+
+    manifest = live.run_live_morning_shadow(
+        trade_date="2026-09-14",
+        calendar=CALENDAR,
+        output_dir=tmp_path / "run",
+        symbols=("600519",),
+        stale_after_ms=60_000,
+        td_config={},
+        now_fn=lambda: next(clock_values),
+        sleep_fn=lambda _: None,
+        poll_seconds=0,
+        auction_reference_preparation=next(preparations),
+        reference_preparation_factory=factory,
+    )
+
+    assert [item.knowledge_as_of_ms for item in captured] == [2, 1]
+    assert manifest["node_timer_ids"] == ("AUCTION_0926", "OPENING_0932")
+
+
+def test_live_shell_rejects_invalid_reference_factory_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    clock_values = iter((_dt("09:15:00"), _dt("09:15:00"), _dt("09:26:00")))
+    monkeypatch.setattr(live, "_startup_evidence", lambda **kwargs: {"read_only": True})
+    monkeypatch.setattr(
+        live,
+        "_capture_node",
+        lambda firing, **kwargs: {"timer": live._timer_payload(firing)},
+    )
+    with pytest.raises(TypeError, match="reference_preparation_factory"):
+        live.run_live_morning_shadow(
+            trade_date="2026-09-14",
+            calendar=CALENDAR,
+            output_dir=tmp_path / "run",
+            symbols=("600519",),
+            stale_after_ms=60_000,
+            td_config={},
+            now_fn=lambda: next(clock_values),
+            sleep_fn=lambda _: None,
+            poll_seconds=0,
+            reference_preparation_factory=lambda _: object(),
+        )
 
 
 def test_runtime_build_identity_accepts_explicit_immutable_id(monkeypatch: pytest.MonkeyPatch):
