@@ -1,5 +1,10 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 真实 LIVE turnover canonicalization 复核
+
+- 将旧 Redis/Kaipan raw `turnover` 在 Core Provider 边界映射为 `turnover_yuan` 后，在 Cobra-ion 隔离副本使用真实 Redis/TD 重新运行：`previous_day_stats=READY`、`previous_day_limit_pool=READY`（47 行）、`hot_plates=UNAVAILABLE`（strength/hot/net_inflow_yi 单位仍未闭环），Q2 `5224/5224` 但仍为 `STALE`，整体 readiness=`PARTIAL`，`temporal_live_readiness=PASS`、`temporal_historical_proof=UNAVAILABLE`。
+- 远端 artifact `/home/exedev/validation/engine-core-6511981-v1/reference_readiness_live_turnover_20260918.json` SHA-256=`6ed6e2f5fe2b967367dd9b033d8e94f489f3e4c2ff35b29b126153355a19735b`；同一隔离副本 `468 passed`、`compileall PASS`。生产 `engine-next`/`t1-v2-live` 保持 active、`NRestarts=0`，无写入、无 Rabbit consumer/ACK、无 effect。详见 `docs/evidence/real_live_reference_turnover_20260918.md`。
+
 ### 2026-09-18 继续审计：Legacy reference semantics 收口
 
 - 只读核对 Cobra-ion `engine-next@20260903_e272842` 的 `StockAnalyzer.get_history_bans_pool()` 与 `KaipanConnector`：`rec[9]` 是旧 payload 的金额型 `turnover`，`rec[2]` 是百分比点 `close_pct`，而不是旧 schema 中错误标注的百分比 turnover。真实 Redis `cache:yest_limit_pool:2026-09-17` 的 47 行样本（约 6,181 万～15.2 亿）与该语义一致。
