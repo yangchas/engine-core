@@ -15,6 +15,7 @@ from engine_core import (
 )
 from engine_core.auction_shadow import build_auction_fact_shadow
 from engine_core.facts import FactStatus
+from engine_core.market_summary import normalize_auction_market_summary
 
 
 FIXTURE = Path(__file__).parent / "fixtures/facts/auction_600519_20260903.json"
@@ -67,6 +68,20 @@ def _fact():
     return build_auction_fact_shadow(first, second)
 
 
+def _market_summary():
+    raw = json.loads(
+        (Path(__file__).parent / "fixtures/facts/auction_market_summary_20260914.json")
+        .read_text(encoding="utf-8")
+    )
+    return normalize_auction_market_summary(
+        raw,
+        trade_date="2026-09-03",
+        source_id="fixture://auction-summary",
+        observation_time_ms=1789348803146,
+        evidence_refs=("fixture://auction-summary",),
+    )
+
+
 def test_build_only_fact_report_is_deterministic_and_fact_only():
     fact = _fact()
     left = build_auction_fact_report(
@@ -87,6 +102,18 @@ def test_build_only_fact_report_is_deterministic_and_fact_only():
     assert "BUY" not in left.text_body
     assert "买入" not in left.text_body
     assert left.provenance["fact_content_hash"] == fact.content_hash
+
+
+def test_report_can_include_explicit_a2_summary_without_strategy_interpretation():
+    report = build_auction_fact_report(
+        _fact(), trade_date="2026-09-03", event_id="AUCTION_0925",
+        data_origin="production_capture", market_summary=_market_summary(),
+    )
+    assert report.market_summary is not None
+    assert "stock_count: 4914" in report.text_body
+    assert "auction_amount_yuan: 2528071637" in report.text_body
+    assert "BUY" not in report.text_body
+    assert report.as_mapping()["market_summary"]["status"] is FactStatus.READY
 
 
 def test_report_semantics_exclude_source_observation_range_but_evidence_keeps_it():
