@@ -29,6 +29,18 @@
   Engine evaluation；不新增 Provider/Replay/工作流框架。
 - 证据：`docs/evidence/real_reference_readiness_20260918_1942.md`。
 
+### 2026-09-18 19:45 真实 Redis 竞价投影 → Core Engine 复核
+
+- 直接通过 Core `RedisAuctionProjection` adapter 读取生产
+  `market:auction:20260918:{0920,0924,0925}`，将 `000338` 的三个槽位提交
+  到同一个 in-memory Engine；两次重复运行均为 `6` 个 signal、`3` 个结果，
+  `fact_content_hash=bd7660727cbe9967248b99c2ff1ad4bc502d0c5c9a044e55d1efd14379d1582a`。
+- 事实保持 `PARTIAL/FACT_ONLY/OBSERVE`：只确认成交额变化和买方剩余量变化，
+  未把 Top-Amount 中缺失的价格、卖方盘口、宽度、主题补成零或其它来源。
+- 这关闭了当前真实 Redis projection → Core 的确定性消费基线，但不转移
+  09:20/09:24/09:25 source freeze ownership，也不构成全市场或生产替代验收。
+- 证据：`docs/evidence/real_redis_auction_core_shadow_20260918_1945.md`。
+
 ### 2026-09-18 19:36 盘后真实 Q2 / 生产状态复核
 
 - Cobra-ion server time was `2026-09-18 19:36:15 CST`; this is outside the
