@@ -69,17 +69,20 @@ replacement for `available_at`.
 
 ### Auction
 
-Artifact: `auction-engine-shadow-20260918-1230.json` for `600519`.
+Artifacts: `auction-engine-shadow-20260918-1230.json` for `600519` and
+`auction-engine-shadow-20260918-1236-{000001,300750}.json` for two additional
+bounded symbols.
 
 ```text
-processed_signals       6
-strategy_result_count    3
-engine_fact_status       PARTIAL
-semantic_hash_equal      true
-read_only                true
-direct_fact_content_hash 3904bb7d4a331bdfff9e38c8d26f8d1871752954ec41c482f05bac5d3de9e276
-engine_fact_content_hash 3904bb7d4a331bdfff9e38c8d26f8d1871752954ec41c482f05bac5d3de9e276
+symbol   processed_signals   strategy_results   status    semantic_hash_equal
+000001   6                    3                  PARTIAL   true
+300750   6                    3                  PARTIAL   true
+600519   6                    3                  PARTIAL   true
 ```
+
+The 600519 direct/engine fact hash is
+`3904bb7d4a331bdfff9e38c8d26f8d1871752954ec41c482f05bac5d3de9e276`; the
+other two artifacts contain their own direct/engine matching hashes.
 
 The public Engine path produces the same fact semantic hash as the direct
 wheel. The three observed projection points are retained as separate
