@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Any, Mapping, Optional, Tuple
 
-from .contracts import DataResult, DataStatus, evidence_hash, semantic_hash
+from .contracts import DataResult, DataStatus, deep_freeze, evidence_hash, semantic_hash
 from .facts import FactStatus
 
 
@@ -61,7 +61,11 @@ class PreviousDayLimitStructureFact:
         if any(value < 0 for value in distribution.values()):
             raise ValueError("board height counts must be non-negative")
         object.__setattr__(self, "highest_board_symbols", symbols)
-        object.__setattr__(self, "board_height_distribution", dict(sorted(distribution.items())))
+        object.__setattr__(
+            self,
+            "board_height_distribution",
+            deep_freeze(dict(sorted(distribution.items()))),
+        )
         object.__setattr__(self, "missing_fields", tuple(sorted(set(self.missing_fields))))
         object.__setattr__(self, "invalid_fields", tuple(sorted(set(self.invalid_fields))))
         object.__setattr__(self, "evidence_refs", tuple(sorted(set(self.evidence_refs))))

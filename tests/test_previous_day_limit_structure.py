@@ -96,6 +96,18 @@ def test_structure_semantic_hash_excludes_provider_evidence_identity():
     assert left.evidence_hash != right.evidence_hash
 
 
+def test_structure_distribution_is_immutable_after_hashing():
+    fact = build_previous_day_limit_structure(_result())
+    before = fact.content_hash
+    try:
+        fact.board_height_distribution["9"] = 1
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("board height distribution must be immutable")
+    assert fact.content_hash == before
+
+
 def test_real_redis_capture_is_used_but_unknown_availability_stays_fail_closed():
     payload = json.loads(
         (Path(__file__).parent / "fixtures/data/previous_day_limit_pool_20260917_real.json")
