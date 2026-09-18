@@ -1,5 +1,10 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 19:35 Cobra-ion 功能基线复核
+
+- 在 `/home/exedev/validation/engine-core-6b4f726-v1` 使用正式 Python 3.12.3 共享环境重新执行 `pytest -q -p no:cacheprovider` 与 `compileall`：`525 passed`、compileall `PASS`。
+- 当前 `6b4f726` 之后的本地提交仅为 README/证据/运行单文档变更，未改变功能代码；因此该结果可作为当前 Core 功能基线验证，但不证明实时 Q2 freshness、TD 写入健康或替代 `engine-next`。详见 `docs/evidence/cobra_exact_verification_20260918_1935.md`。
+
 ### 2026-09-18 19:28–19:30 真实 Q2 停滞复核
 
 - 按真实 Redis 方言（`SMEMBERS q2:active:20260918` + `HGETALL q2:{symbol}`）重新读取 `5224/5224`，coverage=`1.0`，但 `5224/5224` 全部 `STALE`；最新 source lag 约 `16234s`，source range=`1789660800000..1789714805000`。
