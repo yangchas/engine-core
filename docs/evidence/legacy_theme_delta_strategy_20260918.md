@@ -39,3 +39,19 @@ rule itself refuses invalid numeric inputs.
 This is ready for a bounded fact-only Shadow comparison using the real Redis
 0924/0925 TopN intersection. It is not an authorization to replace
 `engine-next`, emit strategy output, or infer a final trade decision.
+
+## Real-data input check
+
+The exact Core commit `d8f4f6c` ran the existing read-only Redis 0924/0925
+projection shadow on Cobra-ion. The input produced 175 normalized rows, 170
+mapped rows, and 119 theme facts (82 `READY`, 37 `PARTIAL`). Both projections
+were `READY`, the overall result was `OBSERVED`, and the script reported its
+read-only boundary. Artifact:
+
+```text
+/home/exedev/validation/engine-core-d8f4f6c/theme-shadow-final-20260918.json
+SHA-256: f03fa1f227e8ed263f4383e158ed09c9058067ac138eb7043a684e1f5a432248
+```
+
+This is a real-data input exercise for the pure rule, not a legacy strategy
+output comparison and not a production effect test.

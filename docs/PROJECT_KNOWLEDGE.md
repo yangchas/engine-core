@@ -551,3 +551,8 @@ Evidence：
   values. The rule is ready for a bounded real Redis 0924/0925 Shadow run;
   surrounding theme ranking, opening confirmation, report output and formal
   strategy migration remain out of scope.
+- Exact commit `d8f4f6c` also consumed the real Redis 0924/0925 projection in
+  a read-only Shadow: 175 normalized rows, 170 mapped rows, 119 facts (82
+  `READY`, 37 `PARTIAL`), both projections `READY`, overall `OBSERVED`.
+  Artifact SHA-256:
+  `f03fa1f227e8ed263f4383e158ed09c9058067ac138eb7043a684e1f5a432248`.
