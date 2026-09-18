@@ -199,7 +199,7 @@ def build_auction_fact_report(
             market_summary.evidence_hash if market_summary is not None else None
         ),
         "market_summary_evidence_refs": (
-            market_summary.evidence_refs if market_summary is not None else (),
+            market_summary.evidence_refs if market_summary is not None else ()
         ),
         "source_time_min_ms": source_time_min_ms,
         "source_time_max_ms": source_time_max_ms,
