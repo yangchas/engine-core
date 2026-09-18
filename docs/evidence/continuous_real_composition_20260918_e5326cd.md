@@ -31,7 +31,7 @@ delivery, notification, or effect was performed.
 | Core commit | `e5326cd` |
 | Trade date | `2026-09-18` |
 | Symbol | `000338` |
-| Auction 0920/0924/0925 | `READY`, 200 rows each |
+| Auction 0920/0924/0925 | `READY`, 200-row `TOP_AMOUNT` projections each |
 | Q2 | real Redis read, `READY`, coverage `1.0`, stale count `0` under the diagnostic no-stale policy |
 | Q2 source range | `1789660800000` → `1789714805000` |
 | Reference preparation | executed through existing TD/Redis read paths |
@@ -63,7 +63,8 @@ The production 09:25 contract remains unchanged:
 
 ```text
 business anchor = 09:25:00
-actual finalization/evaluation time = 09:25:06 (or the observed source-confirmed time)
+formal finalization/evaluation target = 09:25:06
+an actually delayed dispatch is recorded as observation evidence; it does not change the formal target or prove cohort completeness
 ```
 
 ## Conclusion
