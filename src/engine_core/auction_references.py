@@ -140,6 +140,7 @@ def prepare_auction_references(
             knowledge_as_of_ms=knowledge_as_of_ms,
             symbols=request_symbols,
             purpose="auction_reference_prefetch",
+            temporal_mode=context.temporal_mode,
         )
 
     ordered = (

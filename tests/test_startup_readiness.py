@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -169,6 +170,25 @@ def test_unknown_reference_availability_is_not_treated_as_ready():
     assert result.reference_statuses == (("previous_day_stats", "UNAVAILABLE"),)
     assert result.actions == ("PREFETCH:previous_day_stats",)
     assert "reference_status:previous_day_stats:UNAVAILABLE" in result.reasons
+
+
+def test_live_reference_readiness_reuses_fetch_completion_evidence():
+    calendar = _calendar()
+    live_reference = replace(
+        _reference(available_at_ms=None),
+        temporal_mode="LIVE",
+        fetch_completed_at_ms=NOW,
+    )
+    result = assess_startup_readiness(
+        TRADE_DATE,
+        NOW,
+        calendar,
+        build_a_share_session_plan(TRADE_DATE, calendar),
+        q2=_q2(),
+        required_reference_functions=("previous_day_stats",),
+        reference_results={"previous_day_stats": live_reference},
+    )
+    assert result.reference_statuses == (("previous_day_stats", "READY"),)
 
 
 def test_future_reference_availability_is_not_cutoff_safe():

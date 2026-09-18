@@ -260,6 +260,46 @@ def test_temporal_guard_does_not_use_observed_at_as_knowledge_cutoff():
     assert "observed_at_after_knowledge_cutoff" not in result.missing_fields
 
 
+def test_live_temporal_guard_accepts_observed_fetch_without_historical_availability():
+    request = replace(_request(), temporal_mode="LIVE")
+    result = replace(
+        _ready_result(
+            effective_at_ms=None,
+            available_at_ms=None,
+            observed_at_ms=request.knowledge_as_of_ms,
+        ),
+        temporal_mode="LIVE",
+        fetch_completed_at_ms=request.knowledge_as_of_ms,
+    )
+    guarded = TemporalDataGuard.check(result, request)
+    assert guarded.status is DataStatus.READY
+    assert guarded.available_at_ms is None
+    assert guarded.fetch_completed_at_ms == request.knowledge_as_of_ms
+
+
+def test_live_temporal_guard_rejects_fetch_completed_after_cutoff():
+    request = replace(_request(), temporal_mode="LIVE")
+    result = replace(
+        _ready_result(effective_at_ms=None, available_at_ms=None),
+        temporal_mode="LIVE",
+        fetch_completed_at_ms=request.knowledge_as_of_ms + 1,
+    )
+    guarded = TemporalDataGuard.check(result, request)
+    assert guarded.status is DataStatus.UNAVAILABLE
+    assert "live_fetch_completion_after_cutoff" in guarded.missing_fields
+
+
+def test_historical_temporal_guard_does_not_promote_live_fetch_completion():
+    request = _request()
+    result = replace(
+        _ready_result(effective_at_ms=None, available_at_ms=None),
+        fetch_completed_at_ms=request.knowledge_as_of_ms,
+    )
+    guarded = TemporalDataGuard.check(result, request)
+    assert guarded.status is DataStatus.UNAVAILABLE
+    assert "available_at_unknown" in guarded.missing_fields
+
+
 def test_previous_day_function_never_promotes_temporally_unavailable_result():
     class FutureProvider:
         def fetch(self, request, *, previous_trade_date):
@@ -304,6 +344,7 @@ def test_td_provider_wraps_existing_access_without_reimplementing_connection():
     assert result.actual_source == "tdengine_daily_kline"
     assert result.provenance[0].evidence_ref == "probe/td/daily_kline"
     assert result.available_at_ms == 1788480000000
+    assert result.fetch_completed_at_ms == result.observed_at_ms
 
 
 def test_td_provider_samples_observed_time_after_legacy_fetch_returns():

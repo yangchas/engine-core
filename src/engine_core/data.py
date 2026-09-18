@@ -25,6 +25,13 @@ class DataContext:
     evaluation_id: str
     phase: str
     observed_at_ms: int
+    temporal_mode: str = "HISTORICAL"
+
+    def __post_init__(self) -> None:
+        if self.temporal_mode not in {"HISTORICAL", "REPLAY", "LIVE"}:
+            raise ValueError(
+                "temporal_mode must be HISTORICAL, REPLAY or LIVE"
+            )
 
 
 @dataclass(frozen=True)
@@ -45,6 +52,9 @@ class ProviderResult:
     availability_status: str = "UNKNOWN"
     evidence_ref: Optional[str] = None
     error: Optional[str] = None
+    # Successful live reads set this at the adapter boundary. It does not
+    # claim when the upstream source first made the fact available.
+    fetch_completed_at_ms: Optional[int] = None
 
 
 class DataProvider(Protocol):
@@ -142,6 +152,7 @@ def provider_result_from_previous_day_rows(
     effective_at_ms: Optional[int],
     available_at_ms: Optional[int],
     observed_at_ms: int,
+    fetch_completed_at_ms: Optional[int] = None,
     availability_status: str = "UNKNOWN",
     evidence_ref: Optional[str] = None,
 ) -> ProviderResult:
@@ -158,6 +169,11 @@ def provider_result_from_previous_day_rows(
         effective_at_ms=effective_at_ms,
         available_at_ms=available_at_ms,
         observed_at_ms=observed_at_ms,
+        fetch_completed_at_ms=(
+            observed_at_ms
+            if fetch_completed_at_ms is None
+            else fetch_completed_at_ms
+        ),
         availability_status=availability_status,
         evidence_ref=evidence_ref,
     )
@@ -219,6 +235,8 @@ def _data_result_from_provider(
         schema_version=1,
         completeness=1.0 if status is DataStatus.READY else 0.0,
         missing_fields=("error",) if physical.error else (),
+        temporal_mode=request.temporal_mode,
+        fetch_completed_at_ms=physical.fetch_completed_at_ms,
         provenance=(
             Provenance(
                 source_id=physical.source_id,
@@ -284,6 +302,7 @@ class TDPreviousDayStatsProvider:
                 effective_at_ms=None,
                 available_at_ms=available,
                 observed_at_ms=observed,
+                fetch_completed_at_ms=observed,
                 availability_status=availability_status,
                 evidence_ref=self._evidence_ref,
             )
@@ -349,6 +368,7 @@ class RedisPreviousDayStatsProvider:
                 effective_at_ms=None,
                 available_at_ms=available,
                 observed_at_ms=observed,
+                fetch_completed_at_ms=observed,
                 availability_status="VERIFIED" if available is not None else "OBSERVED",
                 evidence_ref=self._evidence_ref,
             )
@@ -399,7 +419,13 @@ class TemporalDataGuard:
         ):
             reasons.append("effective_at_after_cutoff")
         if result.available_at_ms is None:
-            reasons.append("available_at_unknown")
+            if request.temporal_mode == "LIVE":
+                if result.fetch_completed_at_ms is None:
+                    reasons.append("live_fetch_completion_unknown")
+                elif result.fetch_completed_at_ms > request.knowledge_as_of_ms:
+                    reasons.append("live_fetch_completion_after_cutoff")
+            else:
+                reasons.append("available_at_unknown")
         elif result.available_at_ms > request.knowledge_as_of_ms:
             reasons.append("available_at_after_knowledge_cutoff")
         if not reasons:
@@ -456,6 +482,7 @@ class PreviousDayStatsFunction:
                 observed_at_ms=context.observed_at_ms,
                 schema_version=1,
                 completeness=0.0,
+                temporal_mode=request.temporal_mode,
                 missing_fields=tuple(
                     "unknown_required_field:" + field for field in unknown_required
                 ),
@@ -479,6 +506,7 @@ class PreviousDayStatsFunction:
                 observed_at_ms=context.observed_at_ms,
                 schema_version=1,
                 completeness=0.0,
+                temporal_mode=request.temporal_mode,
                 missing_fields=("trade_date",),
                 provenance=(
                     Provenance(
@@ -751,6 +779,7 @@ class FixturePreviousDayStatsProvider:
             effective_at_ms=self._effective_at_ms,
             available_at_ms=self._available_at_ms,
             observed_at_ms=self._observed_at_ms,
+            fetch_completed_at_ms=self._observed_at_ms,
             availability_status=availability_status,
             evidence_ref=self._evidence_ref,
         )

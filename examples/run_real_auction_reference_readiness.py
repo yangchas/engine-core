@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -54,6 +55,8 @@ def run_real_auction_reference_readiness(
     stale_after_ms: int,
     td_kwargs: dict[str, Any],
     fetch_td_rows_override: Callable[[str, tuple[str, ...]], list[dict[str, Any]]] | None = None,
+    clock_ms: Callable[[], int] | None = None,
+    knowledge_as_of_ms: int | None = None,
     _return_context: bool = False,
 ) -> dict[str, Any]:
     """Read and assess the current real reference sources exactly once.
@@ -71,6 +74,12 @@ def run_real_auction_reference_readiness(
     if not symbols:
         raise ValueError("a bounded symbol set is required for the TD read probe")
     observed_at_ms = int(observed_at.timestamp() * 1000)
+    fetch_clock_ms = clock_ms or (lambda: observed_at_ms)
+    reference_cutoff_ms = (
+        observed_at_ms if knowledge_as_of_ms is None else knowledge_as_of_ms
+    )
+    if reference_cutoff_ms <= 0:
+        raise ValueError("knowledge_as_of_ms must be positive")
     previous_trade_date = calendar.previous_trade_day(trade_date).isoformat()
     limit_rows, limit_summary = _read_limit_pool(client, previous_trade_date)
     hot_rows, hot_summary = _read_hot_plates(client, trade_date)
@@ -155,7 +164,7 @@ def run_real_auction_reference_readiness(
 
         previous_stats_provider = TDPreviousDayStatsProvider(
             selected_td_rows,
-            observed_at_ms=lambda: observed_at_ms,
+            observed_at_ms=fetch_clock_ms,
             available_at_ms=None,
             source_id="tdengine_daily_kline",
             source_schema="daily_kline",
@@ -165,7 +174,7 @@ def run_real_auction_reference_readiness(
     elif td_candidate_rows:
         previous_stats_provider = TDPreviousDayStatsProvider(
             lambda previous, requested: td_candidate_rows,
-            observed_at_ms=lambda: observed_at_ms,
+            observed_at_ms=fetch_clock_ms,
             available_at_ms=None,
             source_id="tdengine_daily_kline",
             source_schema="daily_kline",
@@ -173,10 +182,25 @@ def run_real_auction_reference_readiness(
         )
         previous_day_stats_source_selection = "td_daily_kline"
     else:
+        redis_metadata_present = client.get(
+            "cache:kline_ready_meta:" + previous_trade_date
+        ) is not None
         redis_available_at_ms = redis_kline_available_at(previous_trade_date)
+        if redis_metadata_present and redis_available_at_ms is None:
+            # A present but unverifiable sidecar is an integrity failure, not
+            # a live observation that may be promoted by fetch completion.
+            def invalid_redis_rows(
+                previous: str,
+                requested: tuple[str, ...],
+            ):
+                raise ValueError("Redis daily-kline metadata is invalid")
+
+            redis_fetch = invalid_redis_rows
+        else:
+            redis_fetch = redis_kline_rows
         previous_stats_provider = RedisPreviousDayStatsProvider(
-            redis_kline_rows,
-            observed_at_ms=lambda: observed_at_ms,
+            redis_fetch,
+            observed_at_ms=fetch_clock_ms,
             available_at_ms=lambda: redis_available_at_ms,
             source_id="redis_daily_kline_cache",
             source_schema="cache:kline_ready",
@@ -191,7 +215,7 @@ def run_real_auction_reference_readiness(
     limit_pool = PreviousDayLimitPoolFunction(
         RedisPreviousDayLimitPoolProvider(
             lambda date: limit_rows,
-            observed_at_ms=lambda: observed_at_ms,
+            observed_at_ms=fetch_clock_ms,
             metadata=lambda date: limit_summary.get("meta"),
             evidence_ref="redis://cache:yest_limit_pool/" + previous_trade_date,
         ),
@@ -200,7 +224,7 @@ def run_real_auction_reference_readiness(
     hot_plates = HotPlatesFunction(
         RedisHotPlatesProvider(
             lambda date: hot_rows,
-            observed_at_ms=lambda: observed_at_ms,
+            observed_at_ms=fetch_clock_ms,
             metadata=lambda date: hot_summary.get("meta"),
             evidence_ref="redis://cache:hot_plates/" + trade_date,
         ),
@@ -208,11 +232,12 @@ def run_real_auction_reference_readiness(
     )
     prepared = prepare_auction_references(
         trade_date=trade_date,
-        knowledge_as_of_ms=observed_at_ms,
+        knowledge_as_of_ms=reference_cutoff_ms,
         context=DataContext(
             "real-auction-reference:" + trade_date,
             "LIVE_SHADOW",
             observed_at_ms,
+            temporal_mode="LIVE",
         ),
         calendar=calendar,
         previous_day_stats=previous_stats,
@@ -226,9 +251,10 @@ def run_real_auction_reference_readiness(
         freshness_policy=FreshnessPolicy(stale_after_ms=stale_after_ms),
     )
     plan = build_a_share_session_plan(trade_date, calendar)
+    readiness_as_of_ms = max(observed_at_ms, fetch_clock_ms())
     readiness = assess_startup_readiness(
         trade_date,
-        observed_at_ms,
+        readiness_as_of_ms,
         calendar,
         plan,
         q2=q2,
@@ -237,13 +263,34 @@ def run_real_auction_reference_readiness(
         previous_time_ms=None,
         origin="RECOVERY_CATCHUP",
     )
+    reference_values = tuple(result for _, result in prepared.results)
+    live_reference_ready = all(
+        result.fetch_completed_at_ms is not None
+        and result.fetch_completed_at_ms <= readiness_as_of_ms
+        and not any(
+            reason.startswith("live_fetch_") for reason in result.missing_fields
+        )
+        for result in reference_values
+    )
+    historical_reference_proven = all(
+        result.status.value in {"READY", "PARTIAL"}
+        and result.available_at_ms is not None
+        and result.available_at_ms <= readiness_as_of_ms
+        for result in reference_values
+    )
     payload = {
         "trade_date": trade_date,
         "previous_trade_date": previous_trade_date,
         "observed_at": observed_at.isoformat(),
+        "knowledge_as_of_ms": reference_cutoff_ms,
+        "readiness_as_of_ms": readiness_as_of_ms,
         "calendar_semantic_hash": calendar.semantic_hash,
         "session_plan_hash": plan.content_hash,
         "reference_preparation_hash": prepared.content_hash,
+        "temporal_live_readiness": "PASS" if live_reference_ready else "PARTIAL",
+        "temporal_historical_proof": (
+            "PASS" if historical_reference_proven else "UNAVAILABLE"
+        ),
         "reference_results": {
             function_id: {
                 "status": result.status.value,
@@ -251,6 +298,8 @@ def run_real_auction_reference_readiness(
                 "actual_trade_date": result.actual_trade_date,
                 "available_at_ms": result.available_at_ms,
                 "observed_at_ms": result.observed_at_ms,
+                "fetch_completed_at_ms": result.fetch_completed_at_ms,
+                "temporal_mode": result.temporal_mode,
                 "completeness": result.completeness,
                 "missing_fields": result.missing_fields,
                 "missing_symbols": result.missing_symbols,
@@ -304,6 +353,12 @@ def main() -> int:
     parser.add_argument("--symbols", required=True)
     parser.add_argument("--stale-after-ms", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--knowledge-as-of-ms",
+        type=int,
+        default=None,
+        help="Explicit node/prefetch cutoff; omit to use the observation instant.",
+    )
     args = parser.parse_args()
     import redis  # type: ignore[import-not-found]
 
@@ -323,6 +378,8 @@ def main() -> int:
             trade_date=args.trade_date,
             calendar=_load_calendar(args.calendar),
             observed_at=observed_at,
+            clock_ms=lambda: int(time.time() * 1000),
+            knowledge_as_of_ms=args.knowledge_as_of_ms,
             symbols=tuple(item.strip() for item in args.symbols.split(",") if item.strip()),
             stale_after_ms=args.stale_after_ms,
             td_kwargs={

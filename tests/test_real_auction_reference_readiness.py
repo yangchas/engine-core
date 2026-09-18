@@ -165,12 +165,16 @@ def test_real_reference_runner_uses_read_only_sources_and_truthful_statuses():
     assert result["read_only"] is True
     assert result["previous_trade_date"] == PREVIOUS_DATE
     assert result["q2"]["status"] == "READY"
-    # TD daily_kline has no verified historical publication timestamp.
-    assert result["reference_results"]["previous_day_stats"]["status"] == "UNAVAILABLE"
+    # LIVE mode may use the successful adapter completion without inventing a
+    # historical publication timestamp.
+    assert result["reference_results"]["previous_day_stats"]["status"] == "READY"
+    assert result["reference_results"]["previous_day_stats"]["available_at_ms"] is None
     assert result["previous_day_stats_source_selection"] == "td_daily_kline"
     assert result["reference_results"]["previous_day_limit_pool"]["status"] == "READY"
     assert result["reference_results"]["hot_plates"]["status"] == "READY"
-    assert result["readiness"]["status"] == "PARTIAL"
+    assert result["readiness"]["status"] == "READY"
+    assert result["temporal_live_readiness"] == "PASS"
+    assert result["temporal_historical_proof"] == "UNAVAILABLE"
     assert "Redis" in result["side_effect_boundary"]
 
 
@@ -197,10 +201,11 @@ def test_real_reference_runner_selects_existing_redis_view_after_empty_td():
     stats = result["reference_results"]["previous_day_stats"]
     assert result["previous_day_stats_source_selection"] == "redis_kline_ready_after_td_empty"
     assert stats["actual_source"] == "redis_daily_kline_cache"
-    # The cache proves data presence, not historical publication time.
-    assert stats["status"] == "UNAVAILABLE"
+    # LIVE mode proves this process fetched the cache before the cutoff, while
+    # preserving the unknown historical publication time.
+    assert stats["status"] == "READY"
     assert stats["available_at_ms"] is None
-    assert "available_at_unknown" in stats["missing_fields"]
+    assert stats["fetch_completed_at_ms"] == NOW
 
 
 def test_real_reference_runner_accepts_verified_kline_metadata_only_after_payload_match():
@@ -255,9 +260,9 @@ def test_real_reference_runner_rejects_kline_metadata_payload_mismatch():
     )
 
     stats = result["reference_results"]["previous_day_stats"]
-    assert stats["status"] == "UNAVAILABLE"
+    assert stats["status"] == "ERROR"
     assert stats["available_at_ms"] is None
-    assert "available_at_unknown" in stats["missing_fields"]
+    assert "error" in stats["missing_fields"]
 
 
 def test_real_reference_runner_rejects_unbounded_td_probe():

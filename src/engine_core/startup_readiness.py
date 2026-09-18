@@ -296,4 +296,5 @@ def _readiness_request(
         trade_date=trade_date,
         effective_as_of_ms=as_of_ms,
         knowledge_as_of_ms=as_of_ms,
+        temporal_mode=result.temporal_mode,
     )

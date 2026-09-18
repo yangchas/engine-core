@@ -1,5 +1,12 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 13:49–13:55 LIVE reference readiness 合同收口
+
+- 为真实 Provider 增加显式 `temporal_mode` 和 `fetch_completed_at_ms`：HISTORICAL/REPLAY 仍要求已证明的 `available_at_ms`；LIVE 只在 `fetch_completed_at_ms <=` 明确的节点/预取 `knowledge_as_of_ms` 时放行，绝不把读取完成时间写成历史可用时间。
+- 第一次真实探针故意使用读取开始时刻作为 cutoff，三项参考数据均因完成时间晚于 cutoff 而 `UNAVAILABLE`；随后用显式的一分钟预取 cutoff 重跑，TD `previous_day_stats` 为 `READY`，Redis 昨日涨停池/热板因真实字段单位未闭环保持 `UNAVAILABLE`。`temporal_live_readiness=PASS`、`temporal_historical_proof=UNAVAILABLE`、整体 readiness=`PARTIAL`。
+- Q2 真实返回 `5224/5224`、coverage=`1.0`，但在 60 秒策略下仍为 `STALE`；Redis 昨日涨停池 47 行、热板 50 行，HLEN/HSCAN 一致。全程只读，无 Rabbit consumer/ACK、Redis/TD 写入、修复、回退或 effect。
+- 本地与 Cobra-ion 隔离副本均为 `468 passed`、`compileall PASS`。证据：`docs/evidence/real_live_reference_readiness_20260918_1355.md`。这只关闭 LIVE 参考数据时间门禁，不改变历史回放合同，也不表示 Core 已可替代 engine-next。
+
 ### 2026-09-18 13:12–13:18 真实 Redis / engine-next / Core 只读链路复核
 
 - `engine-next` 与 `t1-v2-live` 仍为 active、`NRestarts=0`；未新增 Rabbit consumer、未改变 ACK、未写 Redis/TD、未重启生产服务。真实 Redis Q2 返回 `5224/5224`、coverage=`1.0`，但 `stale=5224`，最新源时间落后约 `6691s`，因此状态保持 `STALE/BEST_EFFORT_STALE`，重复 Core hash 一致；coverage 不升级为 READY。

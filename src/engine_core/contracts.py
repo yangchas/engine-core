@@ -346,6 +346,9 @@ class DataRequest:
     freshness_max_age_ms: Optional[int] = None
     catalog_version: Optional[str] = None
     purpose: str = ""
+    # Historical/replay remains the fail-closed default. LIVE is an explicit
+    # mode for facts obtained at the live adapter boundary.
+    temporal_mode: str = "HISTORICAL"
 
     def __post_init__(self) -> None:
         """Freeze caller-provided request sequences at the contract boundary.
@@ -363,6 +366,10 @@ class DataRequest:
         )
         object.__setattr__(self, "symbols", symbols)
         object.__setattr__(self, "required_fields", required_fields)
+        if self.temporal_mode not in {"HISTORICAL", "REPLAY", "LIVE"}:
+            raise ValueError(
+                "temporal_mode must be HISTORICAL, REPLAY or LIVE"
+            )
 
 
 def _freeze_request_sequence(value: Any, field_name: str) -> Tuple[Any, ...]:
@@ -394,11 +401,19 @@ class DataResult:
     missing_symbols: Tuple[str, ...] = ()
     content_hash: str = field(init=False)
     provenance: Tuple[Provenance, ...] = ()
+    temporal_mode: str = "HISTORICAL"
+    # Adapter completion evidence; this is not historical availability.
+    fetch_completed_at_ms: Optional[int] = None
 
     def __post_init__(self) -> None:
         _validate_epoch_ms("observed_at_ms", self.observed_at_ms, required=True)
         _validate_epoch_ms("effective_at_ms", self.effective_at_ms)
         _validate_epoch_ms("available_at_ms", self.available_at_ms)
+        _validate_epoch_ms("fetch_completed_at_ms", self.fetch_completed_at_ms)
+        if self.temporal_mode not in {"HISTORICAL", "REPLAY", "LIVE"}:
+            raise ValueError(
+                "temporal_mode must be HISTORICAL, REPLAY or LIVE"
+            )
         object.__setattr__(self, "data", deep_freeze(self.data))
         object.__setattr__(self, "missing_fields", tuple(self.missing_fields))
         object.__setattr__(self, "missing_symbols", tuple(self.missing_symbols))
@@ -492,6 +507,8 @@ class FrozenDataBundle:
                     "status": self.results_by_function[function_id].status,
                     "observed_at_ms": self.results_by_function[function_id].observed_at_ms,
                     "available_at_ms": self.results_by_function[function_id].available_at_ms,
+                    "fetch_completed_at_ms": self.results_by_function[function_id].fetch_completed_at_ms,
+                    "temporal_mode": self.results_by_function[function_id].temporal_mode,
                 }
                 for function_id in self.function_order
             ],
