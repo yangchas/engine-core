@@ -1,5 +1,23 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 M3 09:24/09:25 后续节点窄接入（代码验证）
+
+- 新增 `examples/run_m3_auction_followup_shadow.py`，只把已经读到的
+  `0924`/`0925` Redis projection 接入现有 `SessionRuntimeCoordinator` 和一个
+  in-memory Core Engine；不新增调度器、不读取 Q2、不写 Redis/TD、不回填缺失的
+  前置竞价槽位。
+- `NORMAL` 只允许在对应业务窗口内运行：`0924=[09:24,09:25)`、
+  `0925=[09:25,09:26)`；窗口外不创建 Redis 读取或 Engine dispatch。恢复运行
+  只能显式使用 `RECOVERY_CATCHUP`，且所有当前及前置 projection 必须在业务锚点
+  cutoff 前已经被观察到，否则 fail-closed。
+- `0924` 必须由已观察的 `0920` projection 先验提供，`0925` 必须同时提供
+  `0920` 与 `0924`；projection tag、交易日、观察时间均逐项校验。当前代码只
+  验证节点接入和事实输入边界，AuctionFactShadow 仍由已有三锚点 shadow 入口负责。
+- Local 新增 follow-up 合同测试后为 `531 passed`；该项尚未在交易时段执行真实
+  NORMAL 采集，不能宣称 09:24/09:25 生产节点已通过，`engine-next` 仍是生产 owner。
+- 隔离 Cobra-ion 验证与盘后真实 Redis recovery fail-closed 证据见
+  `docs/evidence/m3_followup_node_validation_20260918.md`。
+
 ### 2026-09-18 M3 09:20 NORMAL 时间窗口防伪装修复
 
 - 修复 `run_m3_0920_shadow` 的运行单边界：盘后调用不能继续标记

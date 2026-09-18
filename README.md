@@ -68,6 +68,12 @@ Opening 迁移从同一原则开始：`build_open_fact` 只计算可复核的单
 错误；开盘节点依赖 Q2，因此继续 fail-closed。Q2 readiness 证据不改变 TD 事实的
 semantic hash，也不把 Q2 偷换成竞价输入。
 
+`examples/run_m3_auction_followup_shadow.py` 是 09:24/09:25 的窄节点验证入口：
+它只接受调用方已经捕获的前置 projection，使用现有 session/timer/Engine 组合做一次
+只读节点消费；正常运行窗口外不会读取 Redis，恢复运行不会用盘后数据回填旧锚点。它
+只证明节点接入边界，不转移 t1-v2 的 09:20/09:24/09:25 source-freeze owner，
+也不替代三锚点 `AuctionFactShadow` 的事实验收。
+
 `SessionRuntimeCoordinator` 是 M1 的最小组合边界：它只锁定一个明确的交易日和
 calendar/session identity，调用既有 readiness/timer 纯轮子，返回可提交或应延后的
 `TimerFiring`，并在调用方确认 Engine 接收后记录一次性内存状态。它不读 Provider、
