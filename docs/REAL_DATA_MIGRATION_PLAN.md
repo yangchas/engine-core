@@ -1,5 +1,10 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 Gate B numeric auction parity
+
+- `417d2d9` closes one capability-local differential slice against the old pure auction shadow helper for the real 600519 `0920→0924` fixture. Core matches price/amount/resting-bid/resting-ask/pressure deltas exactly; legacy directional labels and strategy thresholds remain intentionally unmigrated.
+- Local and cobra-ion isolated suites pass `508`; compileall passes. This does not close full auction strategy, plate/locked-order, report delivery, or engine-next replacement parity. Evidence: `docs/evidence/gate_b_legacy_numeric_parity_20260918.md`.
+
 ### 2026-09-18 Legacy report status parity closure
 
 - `bcb7f68`/`f521a47` closed the capability-local report status boundary: every Core `FactStatus` maps deterministically to the verified legacy three-state presentation contract (`COMPLETE`, `PARTIAL`, `DATA_UNAVAILABLE`). Local and cobra-ion isolated suites both pass `507`; compileall passes; the bounded real TD auction report shadow for `600519` remains deterministic and direct/Engine semantic hashes remain equal.
