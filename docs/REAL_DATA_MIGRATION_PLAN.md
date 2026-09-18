@@ -1,5 +1,13 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 12:27–12:30 真实 Q2/参考数据/Core Shadow 复核
+
+- 在不重启 `engine-next`/`t1-v2-live`、不新增 Rabbit consumer、不改变 ACK、不中断生产链的前提下，使用 Cobra-ion 部署 venv 对真实 Redis/TD 做只读复核。两个服务仍 `active`、`NRestarts=0`；根盘约 85% 使用率、可用约 2.8G，未进行盘中清理或写入。
+- Redis Q2 真实观测为 `5224/5224`、coverage=`1.0`，但最新 `source_record_time_ms` 落后约 `6676s`，全量 5224 行均 `STALE`，Core 重复计算 hash 一致。该结果证明读路径和确定性，不构成当前盘中 fresh 资格；不得为了得到 READY 放宽 stale gate。
+- 真实 reference readiness 读到 `cache:hot_plates:2026-09-18` 50 行、`cache:yest_limit_pool:2026-09-17` 47 行及 3 条 TD 日线，但三类来源都缺可证明的历史 `available_at_ms`，按合同保持 `UNAVAILABLE`；`observed_at` 未被冒充为 `available_at`。readiness=`PARTIAL/LUNCH_BREAK`。
+- 600519 真实 `auction_snapshot_v2` 经过 Core public Engine path，处理 6 个 signal、产生 3 个 fact-only 结果，direct/engine semantic hash 相等，状态 `PARTIAL`；opening shadow 读取真实 Redis Q2 后 coverage=`1.0` 但 projection=`STALE`、5224 行 stale，保持 `PARTIAL`。
+- 证据文件：`docs/evidence/real_live_shadow_20260918_1227.md`；远端原始产物保存在 `/home/exedev/validation/engine-core-6511981-v1/`。当前结论：`REAL_REDIS_READ_PATH=PASS`、`REAL_TD_AUCTION_SHADOW=PASS`、`REFERENCE_TIME_SAFETY=PASS`、`LIVE_Q2_FRESHNESS=WARN`，Core 仍不能替代生产 owner。
+
 ### 2026-09-18 正常起盘节点 Shadow
 
 - Cobra-ion 只读 Shadow 于 09:13 启动，09:26/09:32 两个节点均以 `NORMAL` 触发，分别仅晚 91ms/10ms；不再是晚启动 `RECOVERY_CATCHUP` 证据。
