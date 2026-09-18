@@ -57,10 +57,27 @@ Redis data under a write-blocking proxy:
   semantic correction, not a numeric parity failure.
 - Redis write calls observed through the legacy proxy: none.
 
+## Core read seam differential
+
+The existing Core Redis↔TD projection comparison tool now calls the Core
+adapter for its snapshot reads; it no longer re-parses `HGETALL` JSON itself.
+The anchor remains a separate read because it is a different source scope.
+
+- Local/Cobra suite after seam integration: `518 passed`, compileall PASS.
+- Real bounded symbols remain `NOT_COMPARABLE` when absent from TopN; this is
+  an explicit projection-window result, not a zero-filled mismatch.
+- Real common TopN symbol `000338` comparison artifact:
+  `/home/exedev/validation/m2-redis-td-adapter-compare-20260918-000338.json`
+- Artifact SHA-256: `d12ce2832af5cbef53a0410379d1f6a555cd05b1de162336917df9ff0a3d50a5`
+- 0920/0924/0925: `match_amt_yuan=MATCH`, `rest_bid_amt_yuan=MATCH`,
+  `rest_ask_amt_yuan=NOT_COMPARABLE` because Redis projection omits ask.
+- `read_only=true`; Redis/TD writes, recovery, fallback and effects were not
+  invoked.
+
 ## Boundary
 
 This closes `core_consumes_redis_auction_projection` for the bounded
-TopN-projection path only. It does **not** close full-universe auction
+TopN-projection path and its existing read-only comparison seam. It does **not** close full-universe auction
 coverage, 0920→0924 adjacency, AuctionState/freeze ownership, or
 engine-next replacement. Production `engine-next` and `t1-v2-live` remain the
 owners.

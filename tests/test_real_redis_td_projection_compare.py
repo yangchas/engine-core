@@ -94,6 +94,24 @@ def test_real_projection_compares_shared_fields_and_marks_missing_fields():
     assert result["semantic_hash"] == semantic_hash(payload)
 
 
+def test_real_redis_reader_uses_core_projection_adapter(monkeypatch):
+    calls = []
+    original = MODULE.read_redis_auction_projection
+
+    def spy(client, **kwargs):
+        calls.append(kwargs)
+        return original(client, **kwargs)
+
+    monkeypatch.setattr(MODULE, "read_redis_auction_projection", spy)
+    MODULE._read_redis(_redis_client(), "2026-09-09", ("600519",))
+
+    assert len(calls) == 1
+    assert calls[0]["trade_date"] == "2026-09-09"
+    assert calls[0]["tags"] == MODULE.TAGS
+    assert calls[0]["symbols"] == ("600519",)
+    assert isinstance(calls[0]["observed_at_ms"], int)
+
+
 def test_real_projection_does_not_call_absent_top_rows_equal():
     redis_data = MODULE._read_redis(_redis_client(), "2026-09-09", ("000001",))
     rows = [(*row[:5], "000001", *row[6:]) for row in _td_rows()]

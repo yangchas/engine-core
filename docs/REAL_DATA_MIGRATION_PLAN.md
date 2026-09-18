@@ -16,6 +16,11 @@
   price and change fields; Core intentionally preserves `None`/missing. This
   is an explicit semantic correction, not a claim of byte-for-byte old output
   parity. Full-universe, freeze ownership and replacement remain open.
+- The existing Core Redis↔TD comparison seam now calls this adapter for Redis
+  snapshot reads. A real common TopN symbol (`000338`) matched amount and bid
+  fields at all three tags; missing Redis ask remained `NOT_COMPARABLE`. This
+  closes the bounded source-consumption seam, not full Engine auction
+  ownership.
 
 ### 2026-09-18 M2 legacy/Core differential
 

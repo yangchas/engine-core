@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from engine_core import semantic_hash
+from engine_core import read_redis_auction_projection, semantic_hash
 
 
 TAGS = ("0920", "0924", "0925")
@@ -83,17 +83,26 @@ def _parse_json(value: Any, *, field: str) -> Any:
 def _read_redis(client: Any, trade_date: str, symbols: Sequence[str]) -> dict[str, Any]:
     date_tag = _compact_date(trade_date)
     selected = tuple(sorted({_strict_symbol(item) for item in symbols}))
+    observed_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    projections = read_redis_auction_projection(
+        client,
+        trade_date=trade_date,
+        observed_at_ms=observed_at_ms,
+        tags=TAGS,
+        symbols=selected,
+    )
     snapshots: dict[str, Any] = {}
-    for tag in TAGS:
-        key = f"market:auction:{date_tag}:{tag}"
-        raw = dict(client.hgetall(key))
-        snapshots[tag] = {
-            "key": key,
-            "meta": _parse_json(raw["meta"], field=f"{key}.meta") if raw.get("meta") else None,
-            "summary": _parse_json(raw["summary"], field=f"{key}.summary") if raw.get("summary") else None,
-            "top_amount": _parse_json(raw["top_amount"], field=f"{key}.top_amount") if raw.get("top_amount") else [],
+    for projection in projections:
+        snapshots[projection.tag] = {
+            "key": projection.key,
+            "meta": dict(projection.meta) or None,
+            "summary": dict(projection.summary) or None,
+            "top_amount": [dict(row) for row in projection.rows],
+            "top_amount_count": projection.row_count,
+            "projection_status": projection.status,
+            "projection_content_hash": projection.content_hash,
+            "projection_evidence_hash": projection.evidence_hash,
         }
-        snapshots[tag]["top_amount_count"] = len(snapshots[tag]["top_amount"])
     anchor_key = f"market:auction:anchor:{date_tag}"
     anchor_raw = client.get(anchor_key)
     anchor = _parse_json(anchor_raw, field=anchor_key) if anchor_raw else {}

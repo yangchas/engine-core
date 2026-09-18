@@ -13,6 +13,12 @@
 - [OPEN] This closes only the bounded Redis TopN read path. Full-universe
   auction authority, 0920→0924 adjacency, AuctionState/freeze ownership and
   engine-next replacement remain open.
+- [VERIFIED] The existing Core Redis↔TD read-only comparison tool consumes the
+  new adapter. On real Cobra-ion data, common TopN symbol `000338` matched
+  amount and bid at 0920/0924/0925; Redis ask stayed `NOT_COMPARABLE` because
+  that source field is absent. Bounded symbols outside TopN remain explicitly
+  `NOT_COMPARABLE`. This closes only the source-consumption seam; it does not
+  make the Engine a production auction owner.
 
 - [OBSERVED] 2026-09-18 M2 real legacy/Core differential: deployed legacy auction loader returned 200 rows per 0920/0924/0925 but none of the three bounded symbols (TopN projection); legacy context returned the symbols and clamped future Q2 source age to zero. Core TD auction Engine shadow processed all three symbols with direct/Engine semantic equality and `PARTIAL/FACT_ONLY`. Authority/as-of differs, so numeric legacy/Core differences are `NOT_COMPARABLE`, not automatic mismatches. Evidence: `docs/evidence/m2_legacy_core_differential_20260918.md`.
 
