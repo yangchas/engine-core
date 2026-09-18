@@ -16,6 +16,7 @@ from engine_core import (
 from engine_core.auction_shadow import build_auction_fact_shadow
 from engine_core.facts import FactStatus
 from engine_core.market_summary import normalize_auction_market_summary
+from engine_core.previous_day_limit_structure import PreviousDayLimitStructureFact
 
 
 FIXTURE = Path(__file__).parent / "fixtures/facts/auction_600519_20260903.json"
@@ -114,6 +115,28 @@ def test_report_can_include_explicit_a2_summary_without_strategy_interpretation(
     assert "auction_amount_yuan: 2528071637" in report.text_body
     assert "BUY" not in report.text_body
     assert report.as_mapping()["market_summary"]["status"] is FactStatus.READY
+
+
+def test_report_can_include_previous_limit_structure_without_feedback_claim():
+    structure = PreviousDayLimitStructureFact(
+        previous_trade_date="2026-09-02",
+        status=FactStatus.READY,
+        source_id="fixture://limit-pool",
+        row_count=2,
+        highest_board_height=2,
+        highest_board_symbols=("600519",),
+        board_height_distribution={"1": 1, "2": 1},
+        evidence_refs=("fixture://limit-pool",),
+    )
+    report = build_auction_fact_report(
+        _fact(), trade_date="2026-09-03", event_id="AUCTION_0925",
+        data_origin="production_capture", previous_limit_structure=structure,
+    )
+    assert "highest_board_height: 2" in report.text_body
+    assert "previous_trade_date: 2026-09-02" in report.text_body
+    assert "valid_return_count" not in report.text_body
+    assert "up_ratio" not in report.text_body
+    assert report.as_mapping()["previous_limit_structure"]["row_count"] == 2
 
 
 def test_report_evidence_hash_includes_summary_evidence_identity():

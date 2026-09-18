@@ -23,6 +23,7 @@ from .contracts import (
 )
 from .facts import FactStatus
 from .market_summary import AuctionMarketSummaryFact
+from .previous_day_limit_structure import PreviousDayLimitStructureFact
 
 
 REPORT_CONTRACT_VERSION = "AuctionFactReportV1"
@@ -60,6 +61,7 @@ class AuctionFactReportArtifact:
     changes: Mapping[str, str]
     reason_codes: Tuple[str, ...]
     market_summary: Optional[AuctionMarketSummaryFact]
+    previous_limit_structure: Optional[PreviousDayLimitStructureFact]
     provenance: Mapping[str, Any]
     text_body: str
     semantic_hash: str
@@ -93,6 +95,10 @@ class AuctionFactReportArtifact:
                 self.market_summary.as_mapping()
                 if self.market_summary is not None else None
             ),
+            "previous_limit_structure": (
+                self.previous_limit_structure.as_mapping()
+                if self.previous_limit_structure is not None else None
+            ),
             "provenance": self.provenance,
             "semantic_hash": self.semantic_hash,
             "evidence_hash": self.evidence_hash,
@@ -106,6 +112,7 @@ def build_auction_fact_report(
     event_id: str,
     data_origin: str,
     market_summary: Optional[AuctionMarketSummaryFact] = None,
+    previous_limit_structure: Optional[PreviousDayLimitStructureFact] = None,
     source_time_min_ms: Optional[int] = None,
     source_time_max_ms: Optional[int] = None,
 ) -> AuctionFactReportArtifact:
@@ -126,6 +133,12 @@ def build_auction_fact_report(
         market_summary, AuctionMarketSummaryFact
     ):
         raise TypeError("market_summary must be an AuctionMarketSummaryFact")
+    if previous_limit_structure is not None and not isinstance(
+        previous_limit_structure, PreviousDayLimitStructureFact
+    ):
+        raise TypeError(
+            "previous_limit_structure must be a PreviousDayLimitStructureFact"
+        )
     if (
         not isinstance(trade_date, str)
         or not _STRICT_TRADE_DATE.fullmatch(trade_date)
@@ -167,6 +180,10 @@ def build_auction_fact_report(
         "market_summary": (
             market_summary.content_hash if market_summary is not None else None
         ),
+        "previous_limit_structure": (
+            previous_limit_structure.content_hash
+            if previous_limit_structure is not None else None
+        ),
     }
     provenance = {
         "data_origin": data_origin,
@@ -178,6 +195,18 @@ def build_auction_fact_report(
         ),
         "market_summary_evidence_hash": (
             market_summary.evidence_hash if market_summary is not None else None
+        ),
+        "previous_limit_structure_content_hash": (
+            previous_limit_structure.content_hash
+            if previous_limit_structure is not None else None
+        ),
+        "previous_limit_structure_evidence_hash": (
+            previous_limit_structure.evidence_hash
+            if previous_limit_structure is not None else None
+        ),
+        "previous_limit_structure_evidence_refs": (
+            previous_limit_structure.evidence_refs
+            if previous_limit_structure is not None else ()
         ),
         "evidence_refs": fact.evidence_refs,
         "source_time_min_ms": source_time_min_ms,
@@ -201,6 +230,14 @@ def build_auction_fact_report(
         "market_summary_evidence_refs": (
             market_summary.evidence_refs if market_summary is not None else ()
         ),
+        "previous_limit_structure_evidence_hash": (
+            previous_limit_structure.evidence_hash
+            if previous_limit_structure is not None else None
+        ),
+        "previous_limit_structure_evidence_refs": (
+            previous_limit_structure.evidence_refs
+            if previous_limit_structure is not None else ()
+        ),
         "source_time_min_ms": source_time_min_ms,
         "source_time_max_ms": source_time_max_ms,
     }
@@ -214,6 +251,7 @@ def build_auction_fact_report(
         changes=fact.changes,
         reason_codes=fact.reason_codes,
         market_summary=market_summary,
+        previous_limit_structure=previous_limit_structure,
     )
     return AuctionFactReportArtifact(
         report_id=report_id,
@@ -226,6 +264,7 @@ def build_auction_fact_report(
         changes=semantic_payload["changes"],
         reason_codes=semantic_payload["reason_codes"],
         market_summary=market_summary,
+        previous_limit_structure=previous_limit_structure,
         provenance=provenance,
         text_body=text_body,
         semantic_hash=semantic_hash(semantic_payload),
@@ -244,6 +283,7 @@ def _render_text(
     changes: Mapping[str, str],
     reason_codes: Tuple[str, ...],
     market_summary: Optional[AuctionMarketSummaryFact],
+    previous_limit_structure: Optional[PreviousDayLimitStructureFact],
 ) -> str:
     """Render only objective facts; strategy language is intentionally absent."""
 
@@ -270,6 +310,17 @@ def _render_text(
             f"- limit_up_count: {_display(market_summary.limit_up_count)}",
             f"- limit_down_count: {_display(market_summary.limit_down_count)}",
             f"- limit_up_seal_amount_yuan: {_display(market_summary.limit_up_seal_amount_yuan)}",
+        ])
+    if previous_limit_structure is not None:
+        lines.extend([
+            "",
+            "## Previous Limit-up Structure",
+            f"- status: {previous_limit_structure.status.value}",
+            f"- previous_trade_date: {_display(previous_limit_structure.previous_trade_date)}",
+            f"- row_count: {_display(previous_limit_structure.row_count)}",
+            f"- highest_board_height: {_display(previous_limit_structure.highest_board_height)}",
+            f"- highest_board_symbols: {', '.join(previous_limit_structure.highest_board_symbols) or 'unavailable'}",
+            f"- board_height_distribution: {_display(previous_limit_structure.board_height_distribution)}",
         ])
     lines.extend(["", "## Changes"])
     for key in sorted(changes):
