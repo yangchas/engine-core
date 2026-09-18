@@ -47,3 +47,11 @@ fields currently covered: prior-pool membership, board height, current
 0925 `change_pct`, up/down/flat counts, ratio, and median.  Plate aggregation,
 formal current-return authority, and strategy thresholds remain outside this
 slice and are not claimed as migrated.
+
+Intentional safety differences are recorded rather than hidden:
+
+- malformed or duplicate current rows fail closed instead of using a last-row
+  wins interpretation;
+- a missing return or missing source-record timestamp yields `PARTIAL` rather
+  than the legacy `available` label;
+- plate grouping is not copied until its mapping authority is verified.
