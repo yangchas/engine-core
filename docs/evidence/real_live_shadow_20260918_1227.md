@@ -102,6 +102,23 @@ read_only                true
 The Core opening path is executable and deterministic, but the current Q2
 observation is too stale for a production-equivalent opening claim.
 
+## Startup readiness at 12:31
+
+Artifact: `startup-readiness-20260918-1231.json`.
+
+```text
+phase          LUNCH_BREAK
+q2_status      STALE
+q2_coverage    1.0
+due_timers     AUCTION_0926, OPENING_0932 (already elapsed)
+actions        REFRESH_Q2 plus recovery dispatch markers
+status         PARTIAL
+```
+
+The elapsed-node markers are recovery diagnostics from the bounded probe; they
+do not re-run production timers and do not imply that a late shadow is a normal
+09:26/09:32 execution.
+
 ## Current conclusion
 
 ```text
@@ -117,4 +134,3 @@ bounded startup/node coordinator that reuses these already-verified adapters,
 performs readiness checks before each node, and keeps `engine-next` as the
 production owner until Q2 freshness and reference-data readiness are both
 proven on a live session.
-
