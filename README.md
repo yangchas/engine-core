@@ -65,6 +65,13 @@ Gate B 的下一条轮子是 `ThemeAuctionDeltaFact`：它只对规范化的 092
 当前仅完成纯函数和边界测试；旧系统的板块映射、热板单位与同输入 consumer
 oracle 尚未闭环，因此该轮子暂不进入生产运行路径。
 
+已验证的 legacy theme-delta 规则现在可以通过
+`AuctionShadowStrategy(theme_delta_function_id="theme_auction_delta_compat")`
+以冻结 `DataResult.data["facts"]` 形式接入现有 Engine trace。该接入只生成
+`FACT_ONLY` shadow、保持证据引用和版本化 hash，不改变默认策略行为，不执行
+I/O，也不产生 BUY/PASS/EV 或任何 effect。详见
+`docs/evidence/auction_shadow_theme_delta_engine_integration_20260918.md`。
+
 `examples/run_real_auction_engine_shadow.py` 提供一个有界验证入口：将真实
 TD `auction_snapshot_v2` 投影适配为 canonical market projection，按每个业务锚点
 提交 `MARKET_UPDATE` 与 `TIMER`，再由同一个 `DeterministicEngine` 调用该事实

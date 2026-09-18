@@ -9,7 +9,7 @@ the production ``engine-next`` process remains the owner of decisions.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .auction_shadow import build_auction_fact_shadow_from_snapshots
 from .contracts import (
@@ -21,6 +21,7 @@ from .contracts import (
     StrategyResult,
     semantic_hash,
 )
+from .theme_auction_delta_strategy import build_legacy_theme_delta_shadow_trace
 
 
 class AuctionShadowStrategy:
@@ -52,6 +53,7 @@ class AuctionShadowStrategy:
         volume_semantics: str = "UNKNOWN",
         previous_coverage_status: Optional[str] = None,
         current_coverage_status: Optional[str] = None,
+        theme_delta_function_id: Optional[str] = None,
     ) -> None:
         if scope_type != "SYMBOL":
             raise ValueError("the first auction strategy slice supports SYMBOL only")
@@ -77,6 +79,11 @@ class AuctionShadowStrategy:
         self.volume_semantics = volume_semantics
         self.previous_coverage_status = previous_coverage_status
         self.current_coverage_status = current_coverage_status
+        if theme_delta_function_id is not None and (
+            not isinstance(theme_delta_function_id, str) or not theme_delta_function_id.strip()
+        ):
+            raise ValueError("theme_delta_function_id must be non-empty when provided")
+        self.theme_delta_function_id = theme_delta_function_id
         self._session_id: Optional[str] = None
         self._snapshots: Dict[str, EngineSnapshot] = {}
 
@@ -171,6 +178,20 @@ class AuctionShadowStrategy:
                     "auction_fact_shadow": fact.as_trace(),
                 }
             )
+            if self.theme_delta_function_id is not None:
+                result = bundle.results_by_function.get(self.theme_delta_function_id)
+                if result is not None:
+                    data = result.data
+                    if not isinstance(data, Mapping):
+                        raise TypeError("theme delta DataResult.data must be a mapping")
+                    theme_facts = data.get("facts", ())
+                    theme_trace = build_legacy_theme_delta_shadow_trace(theme_facts)
+                    trace["theme_delta_shadow"] = {
+                        "function_id": self.theme_delta_function_id,
+                        "data_status": result.status,
+                        "data_result_hash": result.content_hash,
+                        "shadow": theme_trace,
+                    }
 
         # A completed three-anchor fact is only auditable when the top-level
         # result carries every participating snapshot reference.  Keeping
@@ -186,6 +207,13 @@ class AuctionShadowStrategy:
                 }
             )
         )
+        theme_shadow = trace.get("theme_delta_shadow")
+        if isinstance(theme_shadow, Mapping):
+            shadow = theme_shadow.get("shadow")
+            if isinstance(shadow, Mapping):
+                evidence_refs = tuple(
+                    sorted(set(evidence_refs).union(shadow.get("evidence_refs", ())))
+                )
         return StrategyResult(
             strategy_id=self.strategy_id,
             evaluation_id=bundle.evaluation_id,

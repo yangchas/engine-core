@@ -5,6 +5,8 @@ from dataclasses import replace
 import pytest
 
 from engine_core import (
+    DataResult,
+    DataStatus,
     DeterministicEngine,
     EngineSignal,
     FrozenDataBundle,
@@ -103,6 +105,57 @@ def test_strategy_engine_boundary_composes_same_foundation_fact():
     assert shadow["metrics"]["price_delta_milli"] == -2060
     assert shadow["metrics"]["amount_delta_yuan"] == 4407516
     assert shadow["metrics"]["pressure_delta_yuan"] == 778730
+
+
+def test_strategy_composes_legacy_theme_shadow_from_frozen_data_bundle():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    strategy = AuctionShadowStrategy(
+        scope_id=fixture["symbol"],
+        theme_delta_function_id="theme_auction_delta_compat",
+    )
+    theme_result = DataResult(
+        request_id="theme-request",
+        function_id="theme_auction_delta_compat",
+        status=DataStatus.READY,
+        data={
+            "facts": (
+                {
+                    "theme_id": "theme-a",
+                    "symbol_count": 1,
+                    "amount_0925": 100.0,
+                    "amount_delta_24_25": 60_000_000.0,
+                    "amount_ratio_avg": 2.0,
+                    "bid_amount_delta_24_25": 0.0,
+                    "change_pct_delta_avg": 1.0,
+                    "positive_delta_count": 1,
+                    "evidence_refs": ("fixture://theme/a",),
+                },
+            )
+        },
+        actual_source="fixture",
+        requested_trade_date=fixture["trade_date"],
+        actual_trade_date=fixture["trade_date"],
+        effective_at_ms=1,
+        available_at_ms=1,
+        observed_at_ms=1,
+        schema_version=1,
+        completeness=1.0,
+    )
+    bundle = lambda evaluation_id, logical_time_ms: FrozenDataBundle.from_results(
+        evaluation_id=evaluation_id,
+        knowledge_as_of_ms=logical_time_ms,
+        function_order=("theme_auction_delta_compat",),
+        results_by_function={"theme_auction_delta_compat": theme_result},
+    )
+    result = None
+    for index, name in enumerate(("pre_auction_0915", "auction_0920", "auction_0924")):
+        snapshot = _snapshot(fixture, name)
+        result = strategy.evaluate(snapshot, bundle("theme-eval-%d" % index, snapshot.logical_time_ms))
+    assert result is not None
+    theme_shadow = result.trace["theme_delta_shadow"]
+    assert theme_shadow["data_status"] is DataStatus.READY
+    assert theme_shadow["shadow"]["signal_counts"] == {"增量转强": 1}
+    assert result.evidence_refs == tuple(sorted(set(fixture["evidence_refs"]) | {"fixture://theme/a"}))
 
 
 def test_strategy_lifecycle_pending_to_ready_and_duplicate_anchor_is_idempotent():

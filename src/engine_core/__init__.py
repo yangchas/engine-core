@@ -134,6 +134,8 @@ from .theme_auction_delta_legacy import (
 )
 from .theme_auction_delta_strategy import (
     LEGACY_THEME_AUCTION_DELTA_STRATEGY_CONTRACT_VERSION,
+    LEGACY_THEME_AUCTION_DELTA_FUNCTION_ID,
+    build_legacy_theme_delta_shadow_trace,
     infer_legacy_theme_delta_signal,
 )
 from .theme_weights import (
@@ -315,6 +317,8 @@ __all__ = [
     "LegacyThemeAuctionDeltaCompatFact",
     "build_legacy_theme_auction_delta_compat_facts",
     "LEGACY_THEME_AUCTION_DELTA_STRATEGY_CONTRACT_VERSION",
+    "LEGACY_THEME_AUCTION_DELTA_FUNCTION_ID",
+    "build_legacy_theme_delta_shadow_trace",
     "infer_legacy_theme_delta_signal",
     "GENERIC_THEME_DISCOUNT",
     "LEGACY_THEME_WEIGHTS_CONTRACT_VERSION",
