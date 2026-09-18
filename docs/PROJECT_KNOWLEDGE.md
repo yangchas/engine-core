@@ -540,3 +540,14 @@ Evidence：
   fresh Cobra-ion validation directory: 175 normalized rows, 170 mapped rows,
   119 facts, 0924/0925 both `READY`, result `OBSERVED`, read-only. Artifact
   SHA-256: `d7d396061e9df7ca7d85f2279dc5d247471e6aa060e6a1da3157263fbbc34117`.
+
+# [IN PROGRESS] 2026-09-18 first Auction Shadow rule
+
+- Extracted the exact legacy `_infer_snapshot_delta_signal` precedence and
+  thresholds as the pure `infer_legacy_theme_delta_signal` function under
+  `LegacyThemeAuctionDeltaStrategyV1`. It accepts only finite numeric fields
+  from the explicit legacy compatibility fact and has no I/O/effect behavior.
+- Boundary tests cover all threshold edges and reject missing/non-finite
+  values. The rule is ready for a bounded real Redis 0924/0925 Shadow run;
+  surrounding theme ranking, opening confirmation, report output and formal
+  strategy migration remain out of scope.
