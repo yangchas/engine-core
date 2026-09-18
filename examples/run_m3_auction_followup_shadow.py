@@ -90,6 +90,13 @@ def _normal_window_valid(node_tag: str, as_of: datetime) -> bool:
     return start_time <= local_time < end_time
 
 
+def _source_time_ms(projection: Any) -> int | None:
+    value = projection.meta.get("ts") if isinstance(projection.meta, Mapping) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
 def _blocked(
     *,
     trade_date: str,
@@ -224,6 +231,16 @@ def run_m3_auction_followup_shadow(
                 node_tag=node_tag,
                 origin=origin,
                 reason=f"projection_observed_after_{node_tag}_cutoff",
+                side_effect_boundary="already-read projections only; no backfill",
+            )
+        source_time_ms = _source_time_ms(projection)
+        if source_time_ms is not None and source_time_ms > cutoff_ms:
+            return _blocked(
+                trade_date=trade_date,
+                symbol=symbol,
+                node_tag=node_tag,
+                origin=origin,
+                reason=f"projection_source_time_after_{node_tag}_cutoff",
                 side_effect_boundary="already-read projections only; no backfill",
             )
 

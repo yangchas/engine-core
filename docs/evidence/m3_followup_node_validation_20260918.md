@@ -18,7 +18,7 @@ Safety boundary:
 ## Local verification
 
 ```text
-pytest -q -p no:cacheprovider: 531 passed
+pytest -q -p no:cacheprovider: 532 passed
 compileall: PASS
 git diff --check: PASS
 ```
@@ -45,7 +45,7 @@ Python 3.12
 The exact isolated copy ran:
 
 ```text
-pytest -q -p no:cacheprovider: 531 passed
+pytest -q -p no:cacheprovider: 532 passed
 compileall: PASS
 ```
 

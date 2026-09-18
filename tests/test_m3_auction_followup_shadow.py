@@ -20,8 +20,9 @@ TRADE_DATE = "2026-09-08"
 
 
 class FakeRedis:
-    def __init__(self) -> None:
+    def __init__(self, *, future_tag: str | None = None) -> None:
         self.calls = []
+        self.future_tag = future_tag
 
     def hgetall(self, key):
         self.calls.append(("hgetall", key))
@@ -29,6 +30,8 @@ class FakeRedis:
         if tag not in {"0920", "0924", "0925"}:
             return {}
         ts = local_datetime_ms(TRADE_DATE, f"{tag[:2]}:{tag[2:]}:00")
+        if tag == self.future_tag:
+            ts = local_datetime_ms(TRADE_DATE, "09:30:00")
         return {
             "meta": json.dumps({"tag": tag, "ts": ts, "n": 1}),
             "summary": json.dumps({"tag": tag, "ts": ts}),
@@ -169,3 +172,23 @@ def test_prior_projection_key_cannot_mask_a_wrong_projection_tag():
     )
     assert result["preflight_gate"] == "BLOCKED"
     assert result["startup_self_check"]["reasons"] == ("prior_projection_tag_mismatch:0920",)
+
+
+def test_future_source_record_time_is_not_admitted_to_followup_cutoff():
+    redis = FakeRedis(future_tag="0924")
+    observed = local_datetime_ms(TRADE_DATE, "09:24:05")
+    projections = _projections(redis, observed)
+    result = MODULE.run_m3_auction_followup_shadow(
+        calendar=_calendar(),
+        current_projection=projections["0924"],
+        prior_projections={"0920": projections["0920"]},
+        trade_date=TRADE_DATE,
+        symbol="000001",
+        node_tag="0924",
+        observed_at=_dt(observed),
+        as_of=_dt(local_datetime_ms(TRADE_DATE, "09:24:10")),
+    )
+    assert result["preflight_gate"] == "BLOCKED"
+    assert result["startup_self_check"]["reasons"] == (
+        "projection_source_time_after_0924_cutoff",
+    )

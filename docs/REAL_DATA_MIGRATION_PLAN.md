@@ -13,7 +13,7 @@
 - `0924` 必须由已观察的 `0920` projection 先验提供，`0925` 必须同时提供
   `0920` 与 `0924`；projection tag、交易日、观察时间均逐项校验。当前代码只
   验证节点接入和事实输入边界，AuctionFactShadow 仍由已有三锚点 shadow 入口负责。
-- Local 新增 follow-up 合同测试后为 `531 passed`；该项尚未在交易时段执行真实
+- Local 新增 follow-up 合同测试后为 `532 passed`；该项尚未在交易时段执行真实
   NORMAL 采集，不能宣称 09:24/09:25 生产节点已通过，`engine-next` 仍是生产 owner。
 - 隔离 Cobra-ion 验证与盘后真实 Redis recovery fail-closed 证据见
   `docs/evidence/m3_followup_node_validation_20260918.md`。
