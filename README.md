@@ -68,6 +68,13 @@ Opening 迁移从同一原则开始：`build_open_fact` 只计算可复核的单
 错误；开盘节点依赖 Q2，因此继续 fail-closed。Q2 readiness 证据不改变 TD 事实的
 semantic hash，也不把 Q2 偷换成竞价输入。
 
+`SessionRuntimeCoordinator` 是 M1 的最小组合边界：它只锁定一个明确的交易日和
+calendar/session identity，调用既有 readiness/timer 纯轮子，返回可提交或应延后的
+`TimerFiring`，并在调用方确认 Engine 接收后记录一次性内存状态。它不读 Provider、
+不持久化、不提交 Rabbit/Redis/TD、不发送 effect；因此可以先用于 Core Shadow，再
+替换旧启动协调逻辑。`PARTIAL` readiness 不被自动升级为 `READY`，节点消费者仍需按
+自身事实要求决定是否接受 stale/partial 输入。
+
 该入口可显式加 `--prefetch-auction-references`，在启动前沿用既有 Redis/TD 只读访问路径
 准备一次冻结的竞价参考数据；准备结果会进入启动 readiness 和后续节点的 Engine
 `DATA_READY` 绑定。默认不启用，且不会写 Redis/TD、接管 Rabbit 或触发 effect。
