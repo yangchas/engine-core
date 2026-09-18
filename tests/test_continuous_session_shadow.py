@@ -3,7 +3,11 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from engine_core import FreshnessPolicy, RedisQ2ProjectionAdapter
+from engine_core import (
+    FreshnessPolicy,
+    RedisQ2ProjectionAdapter,
+    read_redis_auction_projection,
+)
 
 
 SPEC = importlib.util.spec_from_file_location(
@@ -33,6 +37,27 @@ class _FakeRedis:
             b"amt2m": b"50000",
             b"ls": b"1",
         }
+
+
+class _AuctionAndQ2Redis(_FakeRedis):
+    def hgetall(self, key):
+        if key.startswith("market:auction:"):
+            if key.endswith(":0924"):
+                return {}
+            tag = key.rsplit(":", 1)[-1]
+            row = {
+                "symbol": "600519",
+                "auction_amount_yuan": 1200000 if tag == "0920" else 1300000,
+                "bid_amount_yuan": 700000,
+                "ask_amount_yuan": 200000,
+                "price": 105.0,
+            }
+            return {
+                "meta": json.dumps({"tag": tag, "ts": 1000}),
+                "summary": json.dumps({"tag": tag}),
+                "top_amount": json.dumps([row]),
+            }
+        return super().hgetall(key)
 
 
 def test_continuous_shadow_reuses_one_engine_for_auction_and_opening():
@@ -91,3 +116,67 @@ def test_continuous_shadow_reuses_one_engine_for_auction_and_opening():
         "OPENING_0932",
     ]
     assert result["strategy_results"][-1]["delegated_strategy_id"] == "opening-shadow-v1"
+
+
+def test_continuous_redis_shadow_preserves_missing_0924_without_substitution():
+    from engine_core import FreshnessPolicy, RedisQ2ProjectionAdapter
+
+    redis = _AuctionAndQ2Redis()
+    auction = read_redis_auction_projection(
+        redis,
+        trade_date="1970-01-01",
+        observed_at_ms=1000,
+        tags=("0920", "0924", "0925"),
+        symbols=("600519",),
+    )
+    opening = RedisQ2ProjectionAdapter(redis).read(
+        "1970-01-01",
+        datetime.fromtimestamp(1000, tz=timezone.utc),
+        freshness_policy=FreshnessPolicy(stale_after_ms=100000000000),
+    )
+    result = MODULE.run_continuous_redis_session_shadow(
+        auction_projections=auction,
+        opening_projection=opening,
+        trade_date="1970-01-01",
+        symbol="600519",
+    )
+    assert result["single_engine"] is True
+    assert result["processed_signals"] == 8
+    assert result["strategy_result_count"] == 4
+    assert result["strategy_results"][1]["trigger_id"] == "AUCTION_0924"
+    # 0924 itself cannot compare until the 0925 close anchor arrives; the
+    # later 0925 result must expose the missing middle anchor instead of
+    # substituting 0920 or inventing a segment.
+    assert result["strategy_results"][1]["child_trace"]["fact_status"] == "PENDING"
+    assert result["strategy_results"][2]["child_trace"]["fact_status"] == "MISSING"
+    json.dumps(result, ensure_ascii=False, sort_keys=True)
+
+
+def test_continuous_redis_shadow_rejects_duplicate_anchor_tags():
+    from engine_core import FreshnessPolicy, RedisQ2ProjectionAdapter
+
+    redis = _AuctionAndQ2Redis()
+    auction = read_redis_auction_projection(
+        redis,
+        trade_date="1970-01-01",
+        observed_at_ms=1000,
+        tags=("0920", "0924", "0925"),
+        symbols=("600519",),
+    )
+    opening = RedisQ2ProjectionAdapter(redis).read(
+        "1970-01-01",
+        datetime.fromtimestamp(1000, tz=timezone.utc),
+        freshness_policy=FreshnessPolicy(stale_after_ms=100000000000),
+    )
+    duplicate = tuple(auction) + (auction[0],)
+    try:
+        MODULE.run_continuous_redis_session_shadow(
+            auction_projections=duplicate,
+            opening_projection=opening,
+            trade_date="1970-01-01",
+            symbol="600519",
+        )
+    except ValueError as exc:
+        assert "duplicate Redis auction tag" in str(exc)
+    else:
+        raise AssertionError("duplicate Redis auction tag was accepted")

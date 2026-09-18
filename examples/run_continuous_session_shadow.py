@@ -40,9 +40,11 @@ from engine_core.contracts import StrategyResult  # noqa: E402
 try:  # Script execution resolves sibling examples directly.
     from run_real_auction_engine_shadow import _projection_from_snapshot  # type: ignore
     from run_real_auction_shadow import ANCHOR_ORDER, build_snapshots_from_rows  # type: ignore
+    from run_real_redis_auction_engine_shadow import build_engine_projection  # type: ignore
 except ModuleNotFoundError:  # Pytest/import execution resolves the package.
     from examples.run_real_auction_engine_shadow import _projection_from_snapshot  # type: ignore
     from examples.run_real_auction_shadow import ANCHOR_ORDER, build_snapshots_from_rows  # type: ignore
+    from examples.run_real_redis_auction_engine_shadow import build_engine_projection  # type: ignore
 
 
 def _business_time_ms(trade_date: str, value: time) -> int:
@@ -137,6 +139,76 @@ def run_continuous_session_shadow(
         trade_date=trade_date,
         symbol=symbol,
     )
+    auction_projections = {
+        tag: _projection_from_snapshot(
+            snapshots[tag],
+            trade_date=trade_date,
+            symbol=symbol,
+        )
+        for tag in ANCHOR_ORDER
+    }
+    return _run_projection_session(
+        auction_projections=auction_projections,
+        opening_projection=opening_projection,
+        trade_date=trade_date,
+        symbol=symbol,
+        preparation=preparation,
+    )
+
+
+def run_continuous_redis_session_shadow(
+    *,
+    auction_projections: Sequence[Any],
+    opening_projection: Q2ProjectionSnapshot,
+    trade_date: str,
+    symbol: str,
+    preparation: AuctionReferencePreparation | None = None,
+) -> dict[str, Any]:
+    """Run Redis auction projections and Q2 through one Engine instance.
+
+    The projections must already have been read by the caller with
+    ``read_redis_auction_projection``.  This function never rereads Redis and
+    never repairs a missing tag.
+    """
+
+    by_tag: dict[str, Any] = {}
+    for projection in auction_projections:
+        if projection.tag in by_tag:
+            raise ValueError("duplicate Redis auction tag: " + str(projection.tag))
+        by_tag[projection.tag] = projection
+    missing = [tag for tag in ANCHOR_ORDER if tag not in by_tag]
+    if missing:
+        raise ValueError("missing Redis auction tags: " + ",".join(missing))
+    converted = {
+        tag: build_engine_projection(
+            by_tag[tag],
+            trade_date=trade_date,
+            symbol=symbol,
+        )
+        for tag in ANCHOR_ORDER
+    }
+    return _run_projection_session(
+        auction_projections=converted,
+        opening_projection=opening_projection,
+        trade_date=trade_date,
+        symbol=symbol,
+        preparation=preparation,
+    )
+
+
+def _run_projection_session(
+    *,
+    auction_projections: Mapping[str, Q2ProjectionSnapshot],
+    opening_projection: Q2ProjectionSnapshot,
+    trade_date: str,
+    symbol: str,
+    preparation: AuctionReferencePreparation | None,
+) -> dict[str, Any]:
+    """Run already-adapted auction/Q2 projections in one Engine."""
+
+    missing = [tag for tag in ANCHOR_ORDER if tag not in auction_projections]
+    if missing:
+        raise ValueError("missing auction projections: " + ",".join(missing))
     strategy = ContinuousSessionShadowStrategy(symbol=symbol)
     engine = DeterministicEngine(
         MarketStateReducer(),
@@ -148,13 +220,8 @@ def run_continuous_session_shadow(
     signal_seq = 1
     reference_bundle_hash = None
     for tag in ANCHOR_ORDER:
-        snapshot = snapshots[tag]
-        projection = _projection_from_snapshot(
-            snapshot,
-            trade_date=trade_date,
-            symbol=symbol,
-        )
-        logical_time_ms = snapshot.logical_time_ms
+        projection = auction_projections[tag]
+        logical_time_ms = _business_time_ms(trade_date, time(int(tag[:2]), int(tag[2:])))
         engine.submit(
             EngineSignal(
                 f"continuous-market-{tag}",
@@ -165,7 +232,7 @@ def run_continuous_session_shadow(
             )
         )
         signal_seq += 1
-        timer_payload: dict[str, Any] = {"trigger_id": snapshot.trigger_id}
+        timer_payload: dict[str, Any] = {"trigger_id": f"AUCTION_{tag}"}
         if tag == "0925" and preparation is not None:
             timer_payload["data_requirements"] = AUCTION_REFERENCE_FUNCTION_ORDER
         engine.submit(
@@ -248,4 +315,8 @@ def run_continuous_session_shadow(
     }
 
 
-__all__ = ["ContinuousSessionShadowStrategy", "run_continuous_session_shadow"]
+__all__ = [
+    "ContinuousSessionShadowStrategy",
+    "run_continuous_session_shadow",
+    "run_continuous_redis_session_shadow",
+]
