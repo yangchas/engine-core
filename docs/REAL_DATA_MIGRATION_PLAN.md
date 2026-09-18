@@ -1,5 +1,9 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 M0 startup parity audit
+
+- The deployed legacy startup path still owns 08:30/09:00 checkpoints, formal kline/factor/chip/DDE gap classification, dated reference readiness and bounded repair recommendations. Core `StartupReadiness`/`SessionRuntimeCoordinator` currently evaluate already-observed inputs and dispatch read-only 0926/0932 shadow nodes; they do not acquire, repair, persist, or own those legacy startup actions. 0920/0924/0925 source freeze remains external to t1-v2. This is a replacement-gap audit, not an acceptance claim. Evidence: `docs/evidence/m0_startup_parity_audit_20260918.md`.
+
 ### 2026-09-18 Legacy Q2 amount mapping and source-priority boundary
 
 - The real bounded context probe closes only the raw field mapping `Redis Q2 am → Core auction_amount_yuan` for 000001 and 000002. 600519 is retained as a source-priority divergence (`Q2 am=14,312,200` while the legacy context uses auction projection `14,271,787`), so the value is not normalized away and no full Redis-Q2/legacy-projection parity is claimed. The new regression test and frozen extraction are read-only evidence; plate and strategy parity remain open. Evidence: `docs/evidence/legacy_q2_amount_mapping_20260918.md`.
