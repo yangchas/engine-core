@@ -25,6 +25,25 @@ test -r /home/exedev/validation/cc-m0-calendar-20260911-v3.json
 test ! -e /home/exedev/validation/live-morning-shadow-20260921-0915
 ```
 
+制品身份必须先通过校验；不要只依赖目录名：
+
+```bash
+CORE_DIR=/home/exedev/validation/engine_core-ecc-9aaf8b4d1c562d31869c2812841fe6216a64a918
+CORE_ARCHIVE=${CORE_DIR}.tar
+EXPECTED_ARCHIVE_SHA=e6e048a7c3718bac7ba06c6d34109ea0b95379645affe5dd09cb69a7da53b192
+test -d "$CORE_DIR" && test -f "$CORE_ARCHIVE"
+test "$(sha256sum "$CORE_ARCHIVE" | awk '{print $1}')" = "$EXPECTED_ARCHIVE_SHA"
+cd "$CORE_DIR"
+/home/exedev/services/engine-next/shared/venv/bin/python - <<'PY'
+from examples.run_live_morning_shadow import OPENING_0932_EVALUATION_DELAY_MS
+assert OPENING_0932_EVALUATION_DELAY_MS == 10_000
+print("opening_anchor=09:32:00")
+print(f"opening_formal_target_delay_ms={OPENING_0932_EVALUATION_DELAY_MS}")
+PY
+```
+
+该预检只验证制品、代码常量和解释器，不连接行情、不写 Redis/TD。
+
 TD 写入健康也必须单独检查；仅 `systemctl active` 不足以放行：
 
 ```bash
