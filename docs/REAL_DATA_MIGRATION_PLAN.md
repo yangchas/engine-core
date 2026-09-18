@@ -1,5 +1,25 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 19:36 盘后真实 Q2 / 生产状态复核
+
+- Cobra-ion server time was `2026-09-18 19:36:15 CST`; this is outside the
+  market window. `engine-next` and `t1-v2-live` remain `active` with no
+  recorded restarts, but `t1-v2 progress` has not advanced since the earlier
+  observed afternoon line. Active systemd state is therefore not treated as
+  a live-heartbeat proof.
+- The real Redis Q2 path read `5224/5224` symbols using the existing
+  `SMEMBERS q2:active:20260918` + `HGETALL q2:{symbol}` dialect. Coverage was
+  `1.0`, but all `5224` rows were `STALE` under the explicit 10-second policy;
+  newest source lag was about `16610s`, with source range
+  `1789660800000..1789714805000`.
+- Two Core observations over the same real input produced identical probe and
+  snapshot hashes. This keeps deterministic shadow verification `PASS`, but
+  does not close freshness or production-replacement gates.
+- Root disk remains about `93%` used with `1.4G` available; earlier
+  `t1-v2` logs contain TD `No enough disk space` commit errors. No cleanup,
+  restart, Redis/TD write, Rabbit consumer/ACK change, or effect was made.
+- Evidence: `docs/evidence/real_q2_probe_20260918_1936.md`.
+
 ### 2026-09-18 19:35 Cobra-ion 功能基线复核
 
 - 在 `/home/exedev/validation/engine-core-6b4f726-v1` 使用正式 Python 3.12.3 共享环境重新执行 `pytest -q -p no:cacheprovider` 与 `compileall`：`525 passed`、compileall `PASS`。
