@@ -1,5 +1,10 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 14:47 Legacy reporting boundary audit
+
+- 只读审计旧 `engine-next@20260903_e272842` 的 fact assembly、build-only report、delivery lifecycle/claim、notifier 和 strategy-console 边界，确认 Core 后续只能先承接冻结事实上的 build-only projection，不能接管 Redis claim、SMTP/Webhook、恢复补数、通知或策略阈值。证据见 `docs/evidence/legacy_reporting_contract_audit_20260918.md`。
+- 当前 `ENGINE_CORE_REPORT_OWNER=NOT_READY`。生产 `engine-next`/`t1-v2-live` 继续作为 owner；盘中 TD `No enough disk space` 与 Q2 stale 门禁仍阻止 live replacement，离线报告合同审计可以继续。
+
 ### 2026-09-18 14:34–14:38 真实上游滞后与存储容量告警
 
 - `t1-v2-live` 仍 active、持续消费并 ACK，但日志多次报告 `commit.tdengine: No enough disk space`；wall lag 约 26–27 分钟。Core 新的真实 Q2 只读观测仍为 `5224/5224`、coverage=`1.0`，但全量 stale，最新 source lag 约 `1615s`，未放宽 freshness gate。
