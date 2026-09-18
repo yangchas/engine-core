@@ -1,5 +1,10 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 19:28 Redis Q2 key 方言复核
+
+- 真实 Redis 只读核验确认 `q2:active:{trade_date}` 是包含 symbol 的 `SET`，`q2:{symbol}` 才是逐股 `HASH`；`2026-09-18` active set 有 `5224` 个成员，`000338/600519` 的逐股 hash 均可读。
+- 对 active key 使用 `HGET` 会触发 `WRONGTYPE`，不属于生产数据损坏；Core 现有 `RedisQ2ProjectionAdapter` 已按 `SMEMBERS + HGETALL q2:{symbol}` 读取。该证据只关闭 key dialect，不改变 stale/TD/freshness 结论。详见 `docs/evidence/q2_redis_key_shape_20260918_1928.md`。
+
 ### 2026-09-18 M1 启动替代差距审计
 
 - 对照部署中的 `engine-next` 启动协调器、bootstrap/self-check 与 Core 当前 `TradingCalendarSnapshot`、`StartupReadiness`、`SessionRuntimeCoordinator`。Core 已关闭纯日历/Q2/计时器/参考数据门禁的 shadow 组合，但仍不拥有日线/因子/筹码/DDE 缺口修复、昨日涨停/热板/板块映射补齐、竞价 anchor recovery、持久化启动状态或正式投递。
