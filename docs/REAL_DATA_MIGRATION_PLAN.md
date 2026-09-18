@@ -1,5 +1,9 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 M1 real Redis startup probe
+
+- The isolated read-only startup probe reached the real Cobra-ion Redis Q2 path after market close: `5224/5224`, coverage `1.0`, source quality `STALE/BEST_EFFORT_STALE`, readiness `PARTIAL`, observed at 17:29 CST. This confirms the new trace path uses real Redis data and remains fail-closed on stale input; it is not live opening acceptance. Artifact SHA-256=`a60b45b06488db67f5938285907f8b71eb9d172408a417583ab6b5b13e21dded`. No production restart/write/effect occurred.
+
 ### 2026-09-18 M1 startup shadow trace integration
 
 - Commit `b4c2bc4` wires the pure startup checkpoint trace into the existing bounded read-only morning shadow. `startup.json` now records 08:30/09:00 checkpoint identity, business anchor, observation boundary and readiness/Q2 status without adding a scheduler or taking production ownership. Local and Cobra-ion Python 3.12.3 isolated suites both pass `511`; compileall and changed-file SHA-256 equality pass. The next step is isolated real-data execution, not production replacement.
