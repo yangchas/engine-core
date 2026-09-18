@@ -86,7 +86,7 @@ strategy rule is moved into Core.
 | `COMPLETE/PARTIAL/DATA_UNAVAILABLE` report state | derived from `FactStatus`, never supplied by caller | MATCH for the narrow fact artifact | `tests/test_reporting.py` |
 | missing values remain unavailable | metrics preserve `None` and status remains degraded | MATCH for the narrow fact artifact | `tests/test_reporting.py` |
 | deterministic business hash separate from evidence | `semantic_hash` and `evidence_hash` are independent | MATCH for the narrow fact artifact | `tests/test_reporting.py` |
-| A2 market summary authority | not represented by `AuctionFactShadow` | UNKNOWN / not migrated | requires a verified A2 fact source |
+| A2 market summary authority | `AuctionMarketSummaryFact` normalizer from explicit Redis summary | MATCH for summary normalization only | `tests/test_market_summary.py`; does not prove live freshness |
 | plate rows, locked-order tables, appendix rankings | not represented by the current single-symbol fact shadow | NOT_APPLICABLE to this first slice | requires Gate B plate capability parity |
 | Redis claim/dedupe before delivery | intentionally outside Core | INTENTIONAL_CHANGE | delivery remains `engine-next` owner |
 | SMTP/Webhook notification | intentionally outside Core | INTENTIONAL_CHANGE | no notifier imported or called |

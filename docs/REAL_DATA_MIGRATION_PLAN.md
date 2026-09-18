@@ -1,5 +1,10 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 A2 市场汇总事实轮子
+
+- 从真实 `auction_0920` capture 的 Redis `summary` 字段提取受控 Golden fixture，新增 `AuctionMarketSummaryFact` 与 `normalize_auction_market_summary()`。字段只在边界接受旧 raw alias，内部使用明确 count/yuan 单位；缺失、非法、显式零分别处理，不推断上游时间语义。
+- 本地/Cobra-ion 均 `480 passed`、compileall PASS；无生产写入或服务变更。该项只关闭 A2 summary normalization，不宣称完整报告、板块聚合或实时 freshness parity。详见 `docs/evidence/auction_market_summary_fact_20260918.md`。
+
 ### 2026-09-18 build-only 报告投影
 
 - Core 新增最小 `AuctionFactReportArtifact`，仅将已冻结 `AuctionFactShadow` 投影为结构化/文本事实产物，保留数据来源、状态、semantic/evidence hash 和 provenance；不接管通知、claim、SMTP、Webhook、恢复或策略结论。提交 `69f8535`，本地/Cobra 隔离套件均 `474 passed`、compileall PASS。旧报告字段 parity 仍按能力逐项推进，不能把该单股 fact 产物宣称为完整邮件等价物。详见 `docs/evidence/build_only_report_projection_20260918.md`。
