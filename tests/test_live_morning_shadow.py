@@ -124,6 +124,7 @@ def test_build_node_evidence_keeps_business_and_observation_times_separate():
         td_rows_by_symbol=rows,
     )
     assert result["business_anchor_time"] == firing.scheduled_time_ms
+    assert result["formal_evaluation_target_time"] == firing.scheduled_time_ms
     assert result["observed_at_ms"] == local_datetime_ms("2026-09-14", "09:26:00", timezone_name="Asia/Shanghai")
     assert result["fact_dispatch"][0]["facts"][0]["timer_id"] == "AUCTION_0926"
     assert result["fact_dispatch"][0]["engine_shadow"]["status"] == "UNAVAILABLE"
@@ -499,7 +500,15 @@ def test_opening_node_keeps_q2_failure_fail_closed(monkeypatch: pytest.MonkeyPat
 
 
 def test_live_shell_captures_each_node_at_its_due_observation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    clock_values = iter((_dt("09:15:00"), _dt("09:15:00"), _dt("09:26:00"), _dt("09:32:00")))
+    clock_values = iter(
+        (
+            _dt("09:15:00"),
+            _dt("09:15:00"),
+            _dt("09:26:00"),
+            _dt("09:32:00"),
+            _dt("09:32:10"),
+        )
+    )
     captured: list[tuple[str, datetime]] = []
     reference_preparations: list[object] = []
     preparation = SimpleNamespace(content_hash="prep-hash", knowledge_as_of_ms=1)
@@ -526,7 +535,7 @@ def test_live_shell_captures_each_node_at_its_due_observation(tmp_path: Path, mo
         auction_reference_preparation=preparation,
     )
     assert [item[0] for item in captured] == ["AUCTION_0926", "OPENING_0932"]
-    assert [item[1].strftime("%H:%M:%S") for item in captured] == ["09:26:00", "09:32:00"]
+    assert [item[1].strftime("%H:%M:%S") for item in captured] == ["09:26:00", "09:32:10"]
     assert reference_preparations == [preparation, preparation]
     assert manifest["node_timer_ids"] == ("AUCTION_0926", "OPENING_0932")
     assert (tmp_path / "run" / "startup.json").exists()
@@ -538,10 +547,46 @@ def test_live_shell_captures_each_node_at_its_due_observation(tmp_path: Path, mo
     assert len(manifest_payload["build_identity"]["value"]) == 64
 
 
+def test_opening_timer_anchor_waits_until_formal_evaluation_target():
+    firing = _firing("OPENING_0932")
+    assert live._formal_evaluation_target_ms(firing) == firing.scheduled_time_ms + 10_000
+    assert not live._evaluation_admission_reached(firing, _dt("09:32:09"))
+    assert live._evaluation_admission_reached(firing, _dt("09:32:10"))
+
+
+def test_opening_evidence_keeps_anchor_and_formal_target_separate():
+    firing = _firing("OPENING_0932")
+    projection = SimpleNamespace(
+        status=DataStatus.STALE,
+        consistency_status="BEST_EFFORT_STALE",
+        coverage=1.0,
+        quotes={},
+        expected_symbols=(),
+        oldest_source_time_ms=None,
+        newest_source_time_ms=None,
+        content_hash="q2-hash",
+    )
+    result = live.build_node_evidence(
+        firing,
+        observed_at=_dt("09:32:10"),
+        trade_date="2026-09-14",
+        symbols=("600519",),
+        td_rows_by_symbol={"600519": ()},
+        projection=projection,
+    )
+    assert result["business_anchor_time"] == firing.scheduled_time_ms
+    assert result["formal_evaluation_target_time"] == firing.scheduled_time_ms + 10_000
+    assert result["observed_at_ms"] == local_datetime_ms(
+        "2026-09-14", "09:32:10", timezone_name="Asia/Shanghai"
+    )
+
+
 def test_live_shell_reuses_startup_references_at_each_node_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    clock_values = iter((_dt("09:15:00"), _dt("09:15:00"), _dt("09:26:00"), _dt("09:32:00")))
+    clock_values = iter(
+        (_dt("09:15:00"), _dt("09:15:00"), _dt("09:26:00"), _dt("09:32:10"))
+    )
     captured: list[object] = []
     preparation = _reference_preparation(1)
     monkeypatch.setattr(live, "_startup_evidence", lambda **kwargs: {"read_only": True})
@@ -609,7 +654,7 @@ def test_runtime_build_identity_accepts_explicit_immutable_id(monkeypatch: pytes
 
 
 def test_late_start_marks_recovery_and_does_not_reuse_normal_origin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    clock_values = iter((_dt("09:30:00"), _dt("09:30:00"), _dt("09:32:00")))
+    clock_values = iter((_dt("09:30:00"), _dt("09:30:00"), _dt("09:32:10")))
     origins: list[str] = []
     monkeypatch.setattr(live, "_startup_evidence", lambda **kwargs: {"read_only": True})
 

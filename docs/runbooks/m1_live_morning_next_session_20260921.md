@@ -7,9 +7,9 @@
 ## 固定边界
 
 - 生产 owner：`engine-next`、`t1-v2-live`
-- Core 代码副本：`/home/exedev/validation/engine_core-ecc-16a2522`
-- Core commit：`16a2522`（归档 SHA-256：
-  `44bac778f3cf8791708837f87d1374077b53a549ca8d2174deeaf7326d4d28ab`）
+- Core 代码副本：`/home/exedev/validation/engine_core-ecc-cf7edb3`
+- Core commit：`cf7edb3`（归档 SHA-256：
+  `ba380df3080256f09aaa9820d353262eadeaac71d98aa01e7025576601d8876d`）
 - Python：`/home/exedev/services/engine-next/shared/venv/bin/python`
 - Legacy release（只读 loader 证据）：`/home/exedev/services/engine-next/releases/20260903_e272842`
 - 交易日：`2026-09-21`
@@ -66,7 +66,7 @@ PY
 必须在 09:15 前启动；观察时间由脚本实际读取，不能手填历史时间：
 
 ```bash
-cd /home/exedev/validation/engine_core-ecc-16a2522
+cd /home/exedev/validation/engine_core-ecc-cf7edb3
 /home/exedev/services/engine-next/shared/venv/bin/python \
   examples/run_live_morning_shadow.py \
   --trade-date 2026-09-21 \
@@ -93,6 +93,10 @@ source-time range
 semantic/evidence/submission hashes
 read/write/effect safety counters
 ```
+
+`OPENING_0932` 的业务锚点仍为 `09:32:00`，但正式评估/采样不得早于
+`09:32:10`。这是源行情 settling barrier，不改变通用 Timer；仅在
+`09:32:00` 采样不能作为正式 opening 证据。
 
 允许的结论：
 

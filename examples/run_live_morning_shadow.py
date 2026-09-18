@@ -82,6 +82,11 @@ except ModuleNotFoundError:  # Pytest/import execution resolves the package.
 
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 LIVE_SHADOW_CONTRACT_VERSION = "LiveMorningShadowV1"
+# 09:32:00 is the business/session anchor.  The opening Q2 cohort is not
+# treated as formally evaluable until the source-side settling interval has
+# elapsed.  This is an evaluation admission rule for this bounded live shell,
+# not a change to the generic SessionTimer schedule.
+OPENING_0932_EVALUATION_DELAY_MS = 10_000
 
 
 def _strict_symbols(value: str) -> tuple[str, ...]:
@@ -100,6 +105,20 @@ def _epoch_ms(value: datetime) -> int:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("datetime must be timezone-aware")
     return int(value.astimezone(timezone.utc).timestamp() * 1000)
+
+
+def _formal_evaluation_target_ms(firing: TimerFiring) -> int:
+    """Return the earliest formal observation time for one Core node."""
+
+    if firing.timer_id == "OPENING_0932":
+        return firing.scheduled_time_ms + OPENING_0932_EVALUATION_DELAY_MS
+    return firing.scheduled_time_ms
+
+
+def _evaluation_admission_reached(firing: TimerFiring, observed_at: datetime) -> bool:
+    """Keep timer anchor and source-stable evaluation time separate."""
+
+    return _epoch_ms(observed_at) >= _formal_evaluation_target_ms(firing)
 
 
 def _now_local() -> datetime:
@@ -320,6 +339,16 @@ def build_node_evidence(
         "timer": _timer_payload(firing),
         "trade_date": trade_date,
         "business_anchor_time": firing.scheduled_time_ms,
+        "formal_evaluation_target_time": _formal_evaluation_target_ms(firing),
+        "timing_contract": {
+            "business_anchor_time": firing.scheduled_time_ms,
+            "formal_evaluation_target_time": _formal_evaluation_target_ms(firing),
+            "opening_source_settling_delay_ms": (
+                OPENING_0932_EVALUATION_DELAY_MS
+                if firing.timer_id == "OPENING_0932"
+                else 0
+            ),
+        },
         "observed_at_ms": _epoch_ms(observed_at),
         "observed_at": observed_at.isoformat(),
         "symbols": ordered_symbols,
@@ -687,6 +716,12 @@ def run_live_morning_shadow(
         firings = list(readiness_poll.dispatchable_firings)
         for firing in firings:
             if firing.timer_id in fired_ids:
+                continue
+            # The timer remains anchored at 09:32:00, but the opening source
+            # cohort is admitted only at/after 09:32:10.  Keep the firing
+            # pending and re-poll; do not capture a premature Q2 snapshot or
+            # acknowledge the timer before the source contract is met.
+            if not _evaluation_admission_reached(firing, now):
                 continue
             node_reference_preparation = auction_reference_preparation
             node = _capture_node(

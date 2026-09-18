@@ -3,12 +3,15 @@
 ### 2026-09-19 M1 下一交易日运行单固化
 
 - 将 `docs/runbooks/m1_live_morning_next_session_20260921.md` 固定到当前已在
-  Cobra-ion Python 3.12.3 完整验证的 Core 副本 `16a2522`，归档 SHA-256 为
-  `44bac778f3cf8791708837f87d1374077b53a549ca8d2174deeaf7326d4d28ab`。
+  Cobra-ion Python 3.12.3 完整验证的 Core 副本 `cf7edb3`，归档 SHA-256 为
+  `ba380df3080256f09aaa9820d353262eadeaac71d98aa01e7025576601d8876d`。
 - 下一个交易日只执行真实、只读的启动自检、节点前 reference prefetch、
   `AUCTION_0926` 与 `OPENING_0932`；生产 owner、Rabbit/ACK、Redis/TD writer、
   通知/effect 保持不变。该运行单不替代 t1-v2 的 09:25 source finalization，
   其 09:25 business anchor/09:25:06 settling barrier 合同仍按本计划前条执行。
+- `OPENING_0932` 的 Timer/business anchor 仍为 `09:32:00`，但当前 live morning
+  shadow 的正式评估 admission 最早为 `09:32:10`；`09:32:00` 仅表示节点到期，
+  不表示 opening source cohort 已稳定，source observation time 仍原样保存。
 
 ### 2026-09-19 09:25 settling barrier contract correction
 
