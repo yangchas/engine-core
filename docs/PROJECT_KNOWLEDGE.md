@@ -16,6 +16,13 @@
   weights without writes. This confirms dialect and bounded transform parity
   only; mapping authority, historical availability, and theme strategy parity
   remain UNKNOWN. Evidence: `docs/evidence/real_theme_weight_probe_20260918.md`.
+- [OBSERVED] 2026-09-18 audit found that legacy theme aggregation does not use
+  one uniform weighting rule: `change_pct_delta` is divided by symbol count
+  after weighted accumulation, while `amount_ratio` ignores theme weights;
+  Core `ThemeAuctionDeltaFactV1` currently uses explicit weighted averages and
+  conservative missing propagation. Theme numeric/strategy parity is therefore
+  not claimed. Evidence:
+  `docs/evidence/theme_auction_delta_legacy_aggregation_audit_20260918.md`.
 
 - [OBSERVED] 当前 Windows 工作区默认 Python 为 `3.9.13`，而
   `pyproject.toml` 的正式要求是 `>=3.12`；`cobra-ion` 隔离验证使用
