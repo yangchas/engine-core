@@ -319,7 +319,7 @@ Auction和Opening优先复用既有正式事实与报告合同。将迁移计算
 
 先实盘数据只读运行，再默认关闭的消费者shadow，再单项owner切换。生产依赖用固定版本制品，不用sys.path临时拼接、源码复制或subprocess桥接。唯一迁移职责验收后才移除旧实现。报告发信、持久化、运行owner分别验证，避免双发送/双写。
 
-当前阶段：M0仍在补齐 current-release source/action authority；M1已有受控真实读取与消费者证据，但尚未形成新版本完整验收；M2正在推进昨日涨停/连板准备链，producer contract 已完成 candidate/integration，仍阻塞于 Cobra runtime metadata 与真实 Shadow evidence；M3–M5待执行。既有测试数量不代表上述迁移阶段通过。
+当前阶段：M0 的 current-release source/action authority 已形成审计证据；M1 已有 `SessionRuntimeCoordinator`、真实 Q2/Auction/Opening 只读 Shadow，但尚未形成替代验收；M2 的准备组合与 `HISTORICAL/REPLAY/LIVE` 时间模式已实现，真实 Q2 live admission 仍因上游 stale/存储滞后阻塞，昨日涨停/热板 producer metadata 也未在生产 release 闭环；M3 已有受控节点 Shadow，但跨重启持久身份和正式 source freeze ownership 仍未迁移；M4 已有窄范围 build-only Auction fact report projection，完整 legacy report/effect parity 仍未关闭；M5 的 Q2Frame/TD event-time replay 已有，但 Rabbit arrival/batch replay 继续延期。既有测试数量不代表上述迁移阶段通过。
 
 ## 已验证可执行的只读命令
 
@@ -341,7 +341,7 @@ python -m compileall -q src tests
 git diff --check
 ```
 
-正式验证使用服务器Python3.12固定提交副本。M1 目前已有只读 Q2/Opening runner；M2 prepare 与 M4 build-only 命令尚待实现，当前不虚构尚不存在的CLI。服务器没有redis-cli，使用既有venv的redis客户端，不为探查安装新服务。
+正式验证使用服务器Python3.12固定提交副本。当前已有只读 Q2/Opening/Auction runner、M2 reference preparation/readiness runner、M1 morning shadow 和 M4 build-only report projection；这些命令仍是隔离验证入口，不是生产 owner。服务器没有redis-cli，使用既有venv的redis客户端，不为探查安装新服务。
 
 M0 只读转换/兼容命令已固定在 `engine_core/examples`，后续优先重跑命令，不修改业务 reader：
 
