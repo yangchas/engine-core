@@ -10,8 +10,10 @@ callers pass already-read projections and rows.
 from __future__ import annotations
 
 from datetime import date, datetime, time
+from enum import Enum
 from pathlib import Path
 import sys
+from collections.abc import Mapping as MappingABC
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
@@ -52,6 +54,21 @@ def _business_time_ms(trade_date: str, value: time) -> int:
         ).timestamp()
         * 1000
     )
+
+
+def _json_ready(value: Any) -> Any:
+    """Convert frozen mappings/enums into deterministic JSON values."""
+
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, MappingABC):
+        return {
+            str(key): _json_ready(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (tuple, list)):
+        return [_json_ready(item) for item in value]
+    return value
 
 
 class ContinuousSessionShadowStrategy:
@@ -215,8 +232,17 @@ def run_continuous_session_shadow(
         "strategy_result_count": len(result_history),
         "reference_bundle_hash": reference_bundle_hash,
         "opening_status": final.trace["child_trace"].get("fact_status"),
-        "strategy_results": tuple(result.trace for result in result_history),
-        "pending_evaluations": current.pending_evaluations,
+        "strategy_results": tuple(_json_ready(result.trace) for result in result_history),
+        "pending_evaluations": tuple(
+            {
+                "evaluation_id": item.evaluation_id,
+                "trigger_id": item.trigger_id,
+                "knowledge_as_of_ms": item.knowledge_as_of_ms,
+                "function_order": item.function_order,
+                "snapshot_content_hash": item.snapshot_content_hash,
+            }
+            for item in current.pending_evaluations
+        ),
         "read_only": True,
         "side_effect_boundary": "already-read projections + in-memory Engine only",
     }

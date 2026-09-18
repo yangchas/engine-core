@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -82,6 +83,7 @@ def test_continuous_shadow_reuses_one_engine_for_auction_and_opening():
     assert result["processed_signals"] == 8
     assert result["strategy_result_count"] == 4
     assert result["pending_evaluations"] == ()
+    json.dumps(result, ensure_ascii=False, sort_keys=True)
     assert [item["trigger_id"] for item in result["strategy_results"]] == [
         "AUCTION_0920",
         "AUCTION_0924",
