@@ -1,5 +1,10 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 A2 report evidence-lineage correction
+
+- `ec5dd37` 修复 A2 报告切片的两个合同缺口：summary mapping 补齐 `limit_up_seal_amount_yuan`；报告 `evidence_hash` 纳入 summary evidence identity，而 `semantic_hash` 仍只表达业务语义。未改变 Provider、Engine、策略、投递或生产链路。
+- 本地 `482 passed`、compileall PASS；新增回归测试证明相同业务结果但不同 summary evidence 时 semantic hash 相同、evidence hash 不同。详见 `docs/evidence/auction_report_lineage_fix_20260918.md`。
+
 ### 2026-09-18 A2 summary report projection integration
 
 - `adaf831` 将已归一化的 `AuctionMarketSummaryFact` 作为可选输入接入 build-only `AuctionFactReportArtifact`。报告只组合冻结事实，不读取 Redis/TD、不恢复、不 claim、不发邮件/通知、不做策略判断；summary 的语义 hash 与 evidence/provenance 分离。

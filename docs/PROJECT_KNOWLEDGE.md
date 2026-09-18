@@ -1,5 +1,7 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-18 `ec5dd37` closed two A2 report lineage gaps: canonical `limit_up_seal_amount_yuan` is present in summary mappings, and report `evidence_hash` now includes summary evidence identity while `semantic_hash` remains business-only. Local suite is `482 passed`; compileall passes. No provider/runtime/effect path changed. Evidence: `docs/evidence/auction_report_lineage_fix_20260918.md`.
+
 - [VERIFIED] 2026-09-18 `adaf831` extends the narrow build-only `AuctionFactReportArtifact` with an optional normalized `AuctionMarketSummaryFact`. Summary semantic identity includes the normalized A2 fields while source/evidence identity stays in provenance; text remains fact-only and no delivery/effect path is connected. Local and Cobra-ion isolated suites both pass `481`; compileall passes. This closes A2 summary report projection only; plate rows, locked orders, mapping, delivery lifecycle, and strategy parity remain open. Evidence: `docs/evidence/auction_report_a2_integration_20260918.md`.
 
 - [VERIFIED] 2026-09-18 A2 0925/auction summary fact wheel added in commit `a05da4c`: real captured summary fields are normalized to explicit count/yuan canonical fields; missing/invalid/explicit-zero behavior is covered. Local and cobra-ion suites both pass `480`; compileall passes. The frozen fixture is a small extraction of real capture evidence, not fabricated market rows. This closes summary normalization only, not live freshness or full report parity. Evidence: `docs/evidence/auction_market_summary_fact_20260918.md`.
