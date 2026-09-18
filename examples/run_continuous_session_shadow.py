@@ -448,8 +448,13 @@ def _run_projection_session(
         )
         if firing is None:
             raise RuntimeError(f"coordinator did not dispatch AUCTION_{tag}")
-        if firing.fired_time_ms != logical_time_ms:
-            raise RuntimeError(f"coordinator firing time mismatch for AUCTION_{tag}")
+        # A coordinator poll can discover multiple overdue timers at once.
+        # ``fired_time_ms`` is then the first dispatch observation shared by
+        # each pending TimerFiring, while ``logical_time_ms`` is this node's
+        # explicit Engine evaluation/cutoff time.  They must not be conflated:
+        # a pending firing may be older, but can never be from the future.
+        if firing.fired_time_ms > logical_time_ms:
+            raise RuntimeError(f"coordinator firing time is after evaluation for AUCTION_{tag}")
         timer_firings.append(
             {
                 "timer_id": firing.timer_id,
@@ -472,6 +477,8 @@ def _run_projection_session(
         timer_payload: dict[str, Any] = {
             "trigger_id": f"AUCTION_{tag}",
             "business_anchor_time_ms": business_anchor_ms,
+            "dispatch_fired_time_ms": firing.fired_time_ms,
+            "evaluation_time_ms": logical_time_ms,
             "firing_time_ms": logical_time_ms,
             "timer_firing_content_hash": firing.content_hash,
         }
@@ -524,8 +531,8 @@ def _run_projection_session(
     )
     if opening_firing is None:
         raise RuntimeError("coordinator did not dispatch OPENING_0932")
-    if opening_firing.fired_time_ms != opening_time_ms:
-        raise RuntimeError("coordinator firing time mismatch for OPENING_0932")
+    if opening_firing.fired_time_ms > opening_time_ms:
+        raise RuntimeError("coordinator firing time is after evaluation for OPENING_0932")
     timer_firings.append(
         {
             "timer_id": opening_firing.timer_id,
@@ -554,6 +561,8 @@ def _run_projection_session(
         {
             "trigger_id": "OPENING_0932",
             "business_anchor_time_ms": opening_business_anchor_ms,
+            "dispatch_fired_time_ms": opening_firing.fired_time_ms,
+            "evaluation_time_ms": opening_time_ms,
             "firing_time_ms": opening_time_ms,
             "timer_firing_content_hash": opening_firing.content_hash,
         },

@@ -283,6 +283,42 @@ def test_continuous_shadow_binds_one_prefetched_reference_bundle():
     assert len(result["coordinator"]["timer_firings"]) == 4
 
 
+def test_continuous_shadow_preserves_overdue_timer_identity_across_nodes():
+    """A single poll may dispatch multiple timers; later nodes reuse identity."""
+
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    trade_date = fixture["trade_date"]
+    evaluation_times = _evaluation_times(trade_date)
+    # The first evaluation happens after both 09:20 and 09:24 business
+    # anchors.  The coordinator may therefore return both firings together;
+    # the second node must retain its original dispatch time while using its
+    # own explicit evaluation/cutoff time.
+    evaluation_times["0920"] = evaluation_times["0924"]
+    evaluation_times["0924"] += 1_000
+    calendar, session_plan = _session_contract(trade_date)
+    result = MODULE.run_continuous_session_shadow(
+        auction_rows=_fixture_rows_without_final_anchor(fixture),
+        opening_projection=_q2_projection(trade_date, "09:32:00", "09:32:00"),
+        trade_date=trade_date,
+        symbol="600519",
+        calendar=calendar,
+        session_plan=session_plan,
+        evaluation_times_ms=evaluation_times,
+    )
+    assert result["processed_signals"] == 8
+    assert result["coordinator"]["completed_timer_ids"] == (
+        "AUCTION_0920",
+        "AUCTION_0924",
+        "AUCTION_0925",
+        "OPENING_0932",
+    )
+    firings = {
+        item["timer_id"]: item for item in result["coordinator"]["timer_firings"]
+    }
+    assert firings["AUCTION_0920"]["fired_time_ms"] == evaluation_times["0920"]
+    assert firings["AUCTION_0924"]["fired_time_ms"] == evaluation_times["0920"]
+
+
 def test_continuous_shadow_rejects_late_reference_preparation():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     trade_date = fixture["trade_date"]
