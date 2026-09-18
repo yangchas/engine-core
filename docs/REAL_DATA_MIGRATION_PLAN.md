@@ -6,9 +6,9 @@
   `auction_snapshot_v2` 三锚点与真实 Redis Q2 开盘投影，在同一个
   `DeterministicEngine`、同一个 reducer/window 会话中连续消费：
   `AUCTION_0920 → AUCTION_0924 → AUCTION_0925 → OPENING_0932`。
-- Cobra-ion Python 3.12.3 对当前精确 commit `498599f` 重跑完整套件：
-  `574 passed`、compileall PASS；本地同样 `574 passed`。新增 runner/test
-  文件 hash 与远端一致。
+- Cobra-ion Python 3.12.3 对实现 commit `498599f` 重跑完整套件：
+  `574 passed`、compileall PASS；本地同样 `574 passed`。随后仅补充本条
+  迁移证据文档形成最终 HEAD；新增 runner/test 文件 hash 与远端一致。
 - 真实盘后诊断（symbol=`000338`）消费 8 个 signal、产生 4 个结果、无
   pending evaluation；竞价与开盘均保持 `FACT_ONLY`，Q2 为
   `5224/5224`、coverage=`1.0` 但在 10 秒策略下为 `STALE`。Redis/TD
