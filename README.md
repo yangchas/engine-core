@@ -89,6 +89,10 @@ Opening 迁移从同一原则开始：`build_open_fact` 只计算可复核的单
 错误；开盘节点依赖 Q2，因此继续 fail-closed。Q2 readiness 证据不改变 TD 事实的
 semantic hash，也不把 Q2 偷换成竞价输入。
 
+M1 live morning shadow 中，`OPENING_0932` 的业务锚点仍是 `09:32:00`，但源行情
+settling barrier 要求正式采样/评估不早于 `09:32:10`；`09:32:00` 到期本身不构成
+opening 正式证据，source observation time 必须保留实际值。
+
 `examples/run_m3_auction_followup_shadow.py` 是 09:24/09:25 的窄节点验证入口：
 它只接受调用方已经捕获的前置 projection，使用现有 session/timer/Engine 组合做一次
 只读节点消费；正常运行窗口外不会读取 Redis，恢复运行不会用盘后数据回填旧锚点。它
