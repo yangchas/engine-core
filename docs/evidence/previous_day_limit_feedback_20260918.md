@@ -59,3 +59,23 @@ Intentional safety differences are recorded rather than hidden:
 The fact is now an optional section of the existing build-only
 `AuctionFactReportArtifact`; semantic and evidence identities are carried
 through the report projection, with no delivery/effect behavior added.
+
+## Real bounded probe
+
+At 2026-09-18 15:47 CST, Cobra-ion ran
+`examples/run_real_previous_day_limit_feedback.py` for
+`2026-09-18` / `2026-09-17` and symbols `000001,000002,600519`.
+
+```text
+Redis yesterday-pool read: real, 47 physical rows
+TD 0925 read: real, 3 bounded rows
+fact status: UNAVAILABLE
+current_0925_row_count: 3
+read/write boundary: Redis TYPE/HLEN/HSCAN/GET + TD SELECT only
+```
+
+The fact correctly emitted no records because the real previous-pool result
+has no verified historical `available_at`.  It did not promote the physical
+Redis payload from `observed` to runtime-ready.  The copied artifact is
+`tmp/real-reference-20260918/limit-feedback-1547.json`, SHA-256
+`f6c67bb6bddd672fc112d039559bb49fbe66a5660ec1d47200a9236b1d65648`.
