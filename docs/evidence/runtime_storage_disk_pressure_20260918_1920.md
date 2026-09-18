@@ -19,6 +19,19 @@ TD market_data1: 135679 tables, keep=3650d,3650d,3650d
 host /var/log/taos: approximately 760MB across taoslog files
 ```
 
+The largest files are active:
+
+```text
+taoslog0.0  ~517MB  opened by engine-next (PID 1041872)
+taoslog1.0  ~240MB  opened by t1-v2 (PID 2878024)
+taoslog2.0  ~1.4MB
+```
+
+No dedicated `/etc/logrotate.d` rule for these files was found. A non-root
+`logrotate -d` invocation could not switch credentials and is not evidence that
+rotation is safe. Because the files are open by production processes, deleting
+or truncating them requires an approved logging/restart procedure.
+
 The `t1-v2-live` journal contains repeated `stage=commit.tdengine` errors:
 
 ```text
@@ -47,7 +60,7 @@ and a clean post-action write-health observation.
 
 No deletion or cleanup was attempted. Docker reports the TD volume as active;
 the database retention is currently `3650d` and there is no approved change to
-that retention in this evidence. The large TD log files are a separate log
-rotation candidate, but they are also not deleted or rotated here. Any cleanup
+that retention in this evidence. The large TD log files are a separate
+log-rotation candidate, but they are also not deleted or rotated here. Any cleanup
 requires a separate explicit change window, an exact target, a backup/restore
 plan where applicable, and a post-change integrity check.
