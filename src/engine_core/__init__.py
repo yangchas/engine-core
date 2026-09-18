@@ -199,6 +199,14 @@ from .market_summary import (
     AuctionMarketSummaryFact,
     normalize_auction_market_summary,
 )
+from .auction_projection import (
+    DEFAULT_AUCTION_TAGS,
+    REDIS_AUCTION_PROJECTION_CONTRACT_VERSION,
+    REDIS_AUCTION_PROJECTION_SCOPE,
+    RedisAuctionProjection,
+    RedisAuctionProjectionClient,
+    read_redis_auction_projection,
+)
 
 __all__ = [
     "BreadthFacts",
@@ -363,4 +371,10 @@ __all__ = [
     "AUCTION_MARKET_SUMMARY_CONTRACT_VERSION",
     "AuctionMarketSummaryFact",
     "normalize_auction_market_summary",
+    "DEFAULT_AUCTION_TAGS",
+    "REDIS_AUCTION_PROJECTION_CONTRACT_VERSION",
+    "REDIS_AUCTION_PROJECTION_SCOPE",
+    "RedisAuctionProjection",
+    "RedisAuctionProjectionClient",
+    "read_redis_auction_projection",
 ]

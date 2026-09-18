@@ -1,5 +1,22 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 M2 Redis auction projection adapter
+
+- A thin Core read-only adapter now extracts the exact legacy Redis snapshot
+  contract (`summary`/`top_amount` from `market:auction:{date}:{tag}`) without
+  importing `engine-next` or carrying its recovery/write paths. The adapter
+  preserves `TOP_AMOUNT` scope, missing tags, missing fields and stable
+  logical evidence references; it never turns TopN into a full-market fact.
+- Cobra-ion real Redis verification returned 200 rows for each of 0920/0924/0925
+  on 2026-09-18. The requested bounded symbols were absent from all TopN rows
+  and remained missing. Local/Cobra suites both pass `517`; no Redis writes or
+  production changes occurred. Differential evidence is in
+  `docs/evidence/m2_redis_projection_adapter_20260918.md`.
+- Legacy/Core shared amount and bid values match. Legacy zero-fills absent ask,
+  price and change fields; Core intentionally preserves `None`/missing. This
+  is an explicit semantic correction, not a claim of byte-for-byte old output
+  parity. Full-universe, freeze ownership and replacement remain open.
+
 ### 2026-09-18 M2 legacy/Core differential
 
 - Real current-day probes show the deployed legacy loader returns 200 TopN rows per 0920/0924/0925 but not the bounded symbols, while legacy context reads those symbols and clamps future Q2 age to zero. Core TD auction Engine shadow processes all three symbols with direct/Engine semantic equality and `PARTIAL/FACT_ONLY`. Because authorities/as-of cohorts differ, numeric differences remain `NOT_COMPARABLE`; no strategy migration or producer change follows from this evidence. Evidence: `docs/evidence/m2_legacy_core_differential_20260918.md`.

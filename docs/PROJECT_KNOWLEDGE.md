@@ -1,5 +1,19 @@
 # Project Knowledge
 
+- [VERIFIED] 2026-09-18 M2 Redis auction projection adapter: Core now reads
+  only the legacy `market:auction:{date}:{tag}` `summary/top_amount` hash
+  fields through a thin source-specific adapter. It preserves `TOP_AMOUNT`
+  scope, missing tags and missing fields; no fallback, recovery, write,
+  network, TD, Rabbit or effect path is included. Real Cobra-ion Redis
+  returned 200 rows for each of 0920/0924/0925, while requested
+  `600519/000001/000002` were absent from each TopN projection. Legacy/Core
+  shared amount and bid values matched; Core intentionally retained missing
+  ask/price/change instead of legacy zero-fill. Local/Cobra suites both passed
+  `517`. Evidence: `docs/evidence/m2_redis_projection_adapter_20260918.md`.
+- [OPEN] This closes only the bounded Redis TopN read path. Full-universe
+  auction authority, 0920→0924 adjacency, AuctionState/freeze ownership and
+  engine-next replacement remain open.
+
 - [OBSERVED] 2026-09-18 M2 real legacy/Core differential: deployed legacy auction loader returned 200 rows per 0920/0924/0925 but none of the three bounded symbols (TopN projection); legacy context returned the symbols and clamped future Q2 source age to zero. Core TD auction Engine shadow processed all three symbols with direct/Engine semantic equality and `PARTIAL/FACT_ONLY`. Authority/as-of differs, so numeric legacy/Core differences are `NOT_COMPARABLE`, not automatic mismatches. Evidence: `docs/evidence/m2_legacy_core_differential_20260918.md`.
 
 - [OBSERVED] 2026-09-18 17:35 CST real Cobra-ion recovery shadow for `600519` ran the existing bounded morning shell with real Redis Q2 and TD read-only inputs. It produced startup, `AUCTION_0926`, and `OPENING_0932`; startup checkpoint traces were `STARTUP_0830/0900=RECOVERY_CATCHUP/PARTIAL/STALE`, opening preserved the stale-Q2 gate, and all safety counters were zero. Source-tree identity matched local. This is post-market recovery evidence, not normal-origin opening acceptance or Core replacement. Evidence: `docs/evidence/m1_live_recovery_shadow_20260918_1735.md`.
@@ -405,3 +419,17 @@ Evidence：
 # [VERIFIED] 2026-09-18 `PreviousDayLimitFeedbackFactV1` adds the smallest current-session feedback slice beside the existing previous-limit structure wheel. It joins a guarded previous-session limit-up pool with normalized `0925` rows and derives only objective return counts/ratio/median, board-height structure, source-time range, and per-symbol lineage. It requires explicit `change_pct` percentage-point semantics and keeps `source_record_time_ms` separate from the `0925` business anchor; missing return or source-time evidence is not converted to zero and cannot claim `READY`. The fact is now an optional build-only section of `AuctionFactReportArtifact`, carrying semantic/evidence lineage without delivery effects. Local full suite is 498 passed with compileall; the real 47-row Redis capture remains runtime `UNAVAILABLE` because historical `available_at` is unknown. Plate aggregation, formal return authority, strategy thresholds, and production writers remain outside this slice. See `docs/evidence/previous_day_limit_feedback_20260918.md`.
 
 # [VERIFIED] 2026-09-18 bounded real feedback probe: Cobra-ion read 47 physical rows from the real Redis previous-limit hash and 3 bounded `0925` rows from the existing TD `auction_snapshot_v2` SELECT path for `2026-09-18` / `2026-09-17` (`000001,000002,600519`). The new fact returned `UNAVAILABLE` with no row leakage because Redis history has no verified `available_at`; the probe performed no Redis/TD writes, repair, Rabbit action or effect. Artifact SHA-256 `f6c67bb6bddd672fc112d039559bb49fbe66a5660ec1d47200a9236b1d65648`. Local and Cobra isolated suites are now 500 passed with compileall. See `docs/evidence/previous_day_limit_feedback_20260918.md`.
+### 2026-09-18 M2 Redis auction projection adapter
+
+- [VERIFIED] Core now has a thin read-only Redis auction projection adapter
+  for the exact legacy `market:auction:{date}:{tag}` `summary/top_amount`
+  contract. It preserves `TOP_AMOUNT` scope and missing semantics, performs
+  no fallback/recovery/write, and does not import the legacy runtime.
+- [VERIFIED] Real Cobra-ion Redis returned 200 rows for each 0920/0924/0925
+  on 2026-09-18; requested symbols `600519/000001/000002` were absent from
+  every TopN projection and remained missing. Legacy/Core shared amount and
+  bid fields matched; Core retained missing ask/price/change instead of the
+  legacy zero-fill. Local and Cobra-ion suites both passed `516`.
+- [OPEN] This closes only the bounded TopN read path. Full-universe auction
+  authority, 0920→0924 adjacency, AuctionState/freeze ownership and
+  engine-next replacement are still open.
