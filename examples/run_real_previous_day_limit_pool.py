@@ -24,6 +24,7 @@ from engine_core import (
     PreviousDayLimitPoolFunction,
     RedisPreviousDayLimitPoolProvider,
     build_calendar_snapshot,
+    build_previous_day_limit_structure,
     canonical_json,
 )
 
@@ -167,6 +168,7 @@ def run_real_previous_day_limit_pool(
         DataContext("real-previous-day-limit-pool", "READ_ONLY", observed_at_ms),
         request,
     )
+    structure = build_previous_day_limit_structure(result)
     return {
         "trade_date": trade_date,
         "previous_trade_date": previous_trade_date,
@@ -181,6 +183,7 @@ def run_real_previous_day_limit_pool(
         "available_at_ms": result.available_at_ms,
         "observed_at_ms": result.observed_at_ms,
         "content_hash": result.content_hash,
+        "structure_fact": json.loads(canonical_json(structure.as_mapping())),
         "calendar_semantic_hash": calendar.semantic_hash,
         "provenance": json.loads(canonical_json(result.provenance)),
         "redis": redis_summary,

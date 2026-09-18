@@ -42,6 +42,8 @@ def test_real_composition_keeps_redis_observation_separate_from_core_result():
     assert result["read_only"] is True
     assert result["data"]["scope"] == "provider_declared_pool"
     assert result["data"]["field_units"]["turnover_yuan"] == "yuan"
+    assert result["structure_fact"]["status"] == "UNAVAILABLE"
+    assert result["structure_fact"]["row_count"] is None
 
 
 def test_real_composition_accepts_verified_availability_only_at_provider_boundary():
