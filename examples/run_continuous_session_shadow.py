@@ -60,11 +60,7 @@ def _business_time_ms(trade_date: str, value: time) -> int:
 
 
 _RUN_MODES = {"NORMAL", "POSTMARKET_DIAGNOSTIC"}
-_AUCTION_CUTOFFS = {
-    "0920": time(9, 24),
-    "0924": time(9, 25),
-    "0925": time(9, 26),
-}
+_EVALUATION_KEYS = (*ANCHOR_ORDER, "OPENING_0932")
 
 
 def _strict_trade_date(value: str) -> str:
@@ -92,7 +88,7 @@ def _validate_projection_time(
     *,
     trade_date: str,
     node_id: str,
-    cutoff_ms: int,
+    evaluation_time_ms: int,
     run_mode: str,
 ) -> None:
     """Reject cross-day or post-cutoff projections before they enter Engine."""
@@ -102,7 +98,7 @@ def _validate_projection_time(
             f"{node_id} projection trade_date does not match requested trade_date"
         )
     observed_ms = projection.envelope.observed_time_ms
-    if run_mode == "NORMAL" and observed_ms > cutoff_ms:
+    if run_mode == "NORMAL" and observed_ms > evaluation_time_ms:
         raise ValueError(f"{node_id} observed time is after node cutoff")
     source_times = tuple(
         value
@@ -119,8 +115,34 @@ def _validate_projection_time(
         raise ValueError(f"{node_id} source time range is reversed")
     if any(_source_date(value) != trade_date for value in source_times):
         raise ValueError(f"{node_id} source time crosses trade date")
-    if run_mode == "NORMAL" and max(source_times) > cutoff_ms:
+    if run_mode == "NORMAL" and max(source_times) > evaluation_time_ms:
         raise ValueError(f"{node_id} source time is after node cutoff")
+
+
+def _validate_evaluation_times(
+    evaluation_times_ms: Mapping[str, int] | None,
+) -> dict[str, int]:
+    if evaluation_times_ms is None:
+        raise ValueError(
+            "evaluation_times_ms is required; pass the actual node firing times"
+        )
+    if set(evaluation_times_ms) != set(_EVALUATION_KEYS):
+        raise ValueError(
+            "evaluation_times_ms must contain exactly: "
+            + ",".join(_EVALUATION_KEYS)
+        )
+    normalized: dict[str, int] = {}
+    for key in _EVALUATION_KEYS:
+        value = evaluation_times_ms[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"evaluation time for {key} must be a positive integer")
+        normalized[key] = value
+    if any(
+        normalized[left] >= normalized[right]
+        for left, right in zip(_EVALUATION_KEYS, _EVALUATION_KEYS[1:])
+    ):
+        raise ValueError("evaluation times must be strictly increasing")
+    return normalized
 
 
 def _validate_session_inputs(
@@ -130,10 +152,12 @@ def _validate_session_inputs(
     trade_date: str,
     symbol: str,
     preparation: AuctionReferencePreparation | None,
+    evaluation_times_ms: Mapping[str, int] | None,
     run_mode: str,
 ) -> None:
     trade_date = _strict_trade_date(trade_date)
     symbol = _strict_symbol(symbol)
+    evaluation_times = _validate_evaluation_times(evaluation_times_ms)
     if run_mode not in _RUN_MODES:
         raise ValueError("run_mode must be NORMAL or POSTMARKET_DIAGNOSTIC")
     if opening_projection.trade_date != trade_date:
@@ -146,7 +170,7 @@ def _validate_session_inputs(
             projection,
             trade_date=trade_date,
             node_id=f"AUCTION_{tag}",
-            cutoff_ms=_business_time_ms(trade_date, _AUCTION_CUTOFFS[tag]),
+            evaluation_time_ms=evaluation_times[tag],
             run_mode=run_mode,
         )
         if symbol not in projection.expected_symbols:
@@ -155,13 +179,13 @@ def _validate_session_inputs(
         opening_projection,
         trade_date=trade_date,
         node_id="OPENING_0932",
-        cutoff_ms=_business_time_ms(trade_date, time(9, 32)),
+        evaluation_time_ms=evaluation_times["OPENING_0932"],
         run_mode=run_mode,
     )
     if preparation is not None:
         if preparation.trade_date != trade_date:
             raise ValueError("reference preparation trade_date does not match session")
-        if preparation.knowledge_as_of_ms > _business_time_ms(trade_date, time(9, 25)):
+        if preparation.knowledge_as_of_ms > evaluation_times["0925"]:
             raise ValueError("reference preparation was observed after 0925 evaluation")
 
 
@@ -230,6 +254,7 @@ def run_continuous_session_shadow(
     trade_date: str,
     symbol: str,
     preparation: AuctionReferencePreparation | None = None,
+    evaluation_times_ms: Mapping[str, int] | None = None,
     run_mode: str = "NORMAL",
 ) -> dict[str, Any]:
     """Run 0920→0925→0932 using one Engine and already-read inputs.
@@ -261,6 +286,7 @@ def run_continuous_session_shadow(
         trade_date=trade_date,
         symbol=symbol,
         preparation=preparation,
+        evaluation_times_ms=evaluation_times_ms,
         run_mode=run_mode,
     )
 
@@ -272,6 +298,7 @@ def run_continuous_redis_session_shadow(
     trade_date: str,
     symbol: str,
     preparation: AuctionReferencePreparation | None = None,
+    evaluation_times_ms: Mapping[str, int] | None = None,
     run_mode: str = "NORMAL",
 ) -> dict[str, Any]:
     """Run Redis auction projections and Q2 through one Engine instance.
@@ -303,6 +330,7 @@ def run_continuous_redis_session_shadow(
         trade_date=trade_date,
         symbol=symbol,
         preparation=preparation,
+        evaluation_times_ms=evaluation_times_ms,
         run_mode=run_mode,
     )
 
@@ -314,6 +342,7 @@ def _run_projection_session(
     trade_date: str,
     symbol: str,
     preparation: AuctionReferencePreparation | None,
+    evaluation_times_ms: Mapping[str, int] | None,
     run_mode: str,
 ) -> dict[str, Any]:
     """Run already-adapted auction/Q2 projections in one Engine."""
@@ -327,6 +356,7 @@ def _run_projection_session(
         trade_date=trade_date,
         symbol=symbol,
         preparation=preparation,
+        evaluation_times_ms=evaluation_times_ms,
         run_mode=run_mode,
     )
     strategy = ContinuousSessionShadowStrategy(symbol=symbol)
@@ -341,7 +371,11 @@ def _run_projection_session(
     reference_bundle_hash = None
     for tag in ANCHOR_ORDER:
         projection = auction_projections[tag]
-        logical_time_ms = _business_time_ms(trade_date, time(int(tag[:2]), int(tag[2:])))
+        logical_time_ms = _validate_evaluation_times(evaluation_times_ms)[tag]
+        business_anchor_ms = _business_time_ms(
+            trade_date,
+            time(int(tag[:2]), int(tag[2:])),
+        )
         engine.submit(
             EngineSignal(
                 f"continuous-market-{tag}",
@@ -352,7 +386,11 @@ def _run_projection_session(
             )
         )
         signal_seq += 1
-        timer_payload: dict[str, Any] = {"trigger_id": f"AUCTION_{tag}"}
+        timer_payload: dict[str, Any] = {
+            "trigger_id": f"AUCTION_{tag}",
+            "business_anchor_time_ms": business_anchor_ms,
+            "firing_time_ms": logical_time_ms,
+        }
         if tag == "0925" and preparation is not None:
             timer_payload["data_requirements"] = AUCTION_REFERENCE_FUNCTION_ORDER
         engine.submit(
@@ -384,7 +422,8 @@ def _run_projection_session(
             signal_seq += 1
             current = engine.run_until_empty()
 
-    opening_time_ms = _business_time_ms(trade_date, time(9, 32))
+    opening_time_ms = _validate_evaluation_times(evaluation_times_ms)["OPENING_0932"]
+    opening_business_anchor_ms = _business_time_ms(trade_date, time(9, 32))
     engine.submit(
         EngineSignal(
             "continuous-market-opening-0932",
@@ -401,7 +440,11 @@ def _run_projection_session(
             opening_time_ms,
             signal_seq,
             SignalKind.TIMER,
-            {"trigger_id": "OPENING_0932"},
+        {
+            "trigger_id": "OPENING_0932",
+            "business_anchor_time_ms": opening_business_anchor_ms,
+            "firing_time_ms": opening_time_ms,
+        },
         )
     )
     current = engine.run_until_empty()
@@ -413,6 +456,7 @@ def _run_projection_session(
     return {
         "contract_version": "ContinuousSessionShadowV1",
         "run_mode": run_mode,
+        "evaluation_times_ms": dict(_validate_evaluation_times(evaluation_times_ms)),
         "trade_date": trade_date,
         "symbol": symbol,
         "single_engine": True,

@@ -100,6 +100,48 @@ def _q2_projection(trade_date: str, source_time: str, observed_time: str):
     )
 
 
+def _evaluation_times(trade_date: str, *, auction_0925: str = "09:25:10"):
+    return {
+        tag: int(
+            datetime.fromisoformat(f"{trade_date}T{clock}+08:00").timestamp() * 1000
+        )
+        for tag, clock in (
+            ("0920", "09:20:03"),
+            ("0924", "09:24:10"),
+            ("0925", auction_0925),
+            ("OPENING_0932", "09:32:00"),
+        )
+    }
+
+
+def _fixture_rows_without_final_anchor(fixture: dict):
+    rows = []
+    for item in fixture["snapshots"].values():
+        tag = item["trigger_id"].split("_")[-1]
+        if tag not in {"0920", "0924"}:
+            continue
+        rows.append(
+            {
+                "ts": datetime.fromtimestamp(
+                    item["source_record_time_ms"] / 1000,
+                    tz=timezone.utc,
+                ),
+                "px_milli": item["state"].get("price_milli"),
+                "match_amt_yuan": item["state"].get("auction_amount_yuan"),
+                "rest_bid_amt_yuan": item["state"].get("auction_bid_amount_yuan"),
+                "rest_ask_amt_yuan": item["state"].get("auction_ask_amount_yuan"),
+                "symbol": fixture["symbol"],
+                "trade_date": fixture["trade_date"].replace("-", ""),
+                "auction_tag": tag,
+            }
+        )
+    row_0925 = dict(rows[-1])
+    row_0925["auction_tag"] = "0925"
+    row_0925["ts"] = row_0925["ts"] + timedelta(seconds=60)
+    rows.append(row_0925)
+    return rows
+
+
 def test_continuous_shadow_reuses_one_engine_for_auction_and_opening():
     import json
 
@@ -139,6 +181,7 @@ def test_continuous_shadow_reuses_one_engine_for_auction_and_opening():
         opening_projection=projection,
         trade_date=fixture["trade_date"],
         symbol="600519",
+        evaluation_times_ms=_evaluation_times(fixture["trade_date"]),
     )
     assert result["single_engine"] is True
     assert result["processed_signals"] == 8
@@ -178,7 +221,7 @@ def test_continuous_shadow_rejects_cross_trade_date_projection():
         )
     row_0925 = dict(rows[-1])
     row_0925["auction_tag"] = "0925"
-    row_0925["ts"] = row_0925["ts"] + timedelta(seconds=1)
+    row_0925["ts"] = row_0925["ts"] + timedelta(seconds=60)
     rows.append(row_0925)
     with pytest.raises(ValueError, match="trade_date"):
         MODULE.run_continuous_session_shadow(
@@ -186,41 +229,37 @@ def test_continuous_shadow_rejects_cross_trade_date_projection():
             opening_projection=_q2_projection("2026-09-02", "09:32:00", "09:32:00"),
             trade_date=fixture["trade_date"],
             symbol="600519",
+            evaluation_times_ms=_evaluation_times(fixture["trade_date"]),
         )
 
 
 def test_continuous_shadow_rejects_future_opening_source_time():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    rows = []
-    for item in fixture["snapshots"].values():
-        tag = item["trigger_id"].split("_")[-1]
-        if tag not in {"0920", "0924"}:
-            continue
-        rows.append(
-            {
-                "ts": datetime.fromtimestamp(
-                    item["source_record_time_ms"] / 1000,
-                    tz=timezone.utc,
-                ),
-                "px_milli": item["state"].get("price_milli"),
-                "match_amt_yuan": item["state"].get("auction_amount_yuan"),
-                "rest_bid_amt_yuan": item["state"].get("auction_bid_amount_yuan"),
-                "rest_ask_amt_yuan": item["state"].get("auction_ask_amount_yuan"),
-                "symbol": fixture["symbol"],
-                "trade_date": fixture["trade_date"].replace("-", ""),
-                "auction_tag": tag,
-            }
-        )
-    row_0925 = dict(rows[-1])
-    row_0925["auction_tag"] = "0925"
-    row_0925["ts"] = row_0925["ts"] + timedelta(seconds=1)
-    rows.append(row_0925)
     with pytest.raises(ValueError, match="source time"):
         MODULE.run_continuous_session_shadow(
-            auction_rows=rows,
-            opening_projection=_q2_projection("2026-09-03", "09:32:01", "09:32:00"),
+            auction_rows=_fixture_rows_without_final_anchor(fixture),
+            opening_projection=_q2_projection(
+                fixture["trade_date"], "09:32:01", "09:32:00"
+            ),
             trade_date=fixture["trade_date"],
             symbol="600519",
+            evaluation_times_ms=_evaluation_times(fixture["trade_date"]),
+        )
+
+
+def test_continuous_shadow_rejects_auction_source_after_explicit_evaluation_time():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    with pytest.raises(ValueError, match="after node cutoff"):
+        MODULE.run_continuous_session_shadow(
+            auction_rows=_fixture_rows_without_final_anchor(fixture),
+            opening_projection=_q2_projection(
+                fixture["trade_date"], "09:32:00", "09:32:00"
+            ),
+            trade_date=fixture["trade_date"],
+            symbol="600519",
+            evaluation_times_ms=_evaluation_times(
+                fixture["trade_date"], auction_0925="09:25:09"
+            ),
         )
 
 
@@ -266,6 +305,7 @@ def test_continuous_redis_shadow_preserves_missing_0924_without_substitution():
         opening_projection=opening,
         trade_date=trade_date,
         symbol="600519",
+        evaluation_times_ms=_evaluation_times(trade_date, auction_0925="09:25:06"),
     )
     assert result["single_engine"] is True
     assert result["processed_signals"] == 8
@@ -323,6 +363,7 @@ def test_continuous_redis_shadow_rejects_duplicate_anchor_tags():
             opening_projection=opening,
             trade_date=trade_date,
             symbol="600519",
+            evaluation_times_ms=_evaluation_times(trade_date, auction_0925="09:25:06"),
         )
     except ValueError as exc:
         assert "duplicate Redis auction tag" in str(exc)
