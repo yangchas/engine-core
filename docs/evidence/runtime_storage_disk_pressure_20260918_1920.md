@@ -15,6 +15,8 @@ root filesystem: 19G total, 16G used, 1.4G available, 93%
 TDengine /var/lib/taos: 5.9G
 TDengine /var/log/taos: 134M
 Docker local volumes: 6.783GB, all active and non-reclaimable
+TD market_data1: 135679 tables, keep=3650d,3650d,3650d
+host /var/log/taos: approximately 760MB across taoslog files
 ```
 
 The `t1-v2-live` journal contains repeated `stage=commit.tdengine` errors:
@@ -44,6 +46,8 @@ and a clean post-action write-health observation.
 ## Safety boundary
 
 No deletion or cleanup was attempted. Docker reports the TD volume as active;
-there is no approved retention policy in this evidence. Any cleanup requires a
-separate explicit change window, an exact date-bucket/backup target, and a
-post-change integrity check.
+the database retention is currently `3650d` and there is no approved change to
+that retention in this evidence. The large TD log files are a separate log
+rotation candidate, but they are also not deleted or rotated here. Any cleanup
+requires a separate explicit change window, an exact target, a backup/restore
+plan where applicable, and a post-change integrity check.

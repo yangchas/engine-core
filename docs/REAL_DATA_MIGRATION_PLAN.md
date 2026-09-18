@@ -5,6 +5,7 @@
 - Cobra-ion 只读检查确认 `engine-next` 与 `t1-v2-live` 均 `active`、`NRestarts=0`，但根盘使用率为 `93%`（`19G` 总量、约 `1.4G` 可用），TD `/var/lib/taos` 约 `5.9G`。
 - `t1-v2-live` 在 `14:26:10`–`15:40:53` 期间多次记录 `stage=commit.tdengine | error=No enough disk space`。因此“服务 active”不能作为 TD 写入健康或数据完整的证据。
 - 本次没有删除数据、清理 Docker volume、重启服务、修改 Rabbit ACK/consumer、写 Redis/TD 或触发 effect。未有明确 retention/备份审批前，不执行破坏性清理。
+- 进一步只读查询确认 `market_data1` 为 `135679` 张表、`keep=3650d,3650d,3650d`；主机 `/var/log/taos` 的 taoslog 文件合计约 `760MB`。这两个都是容量处置候选，但尚未批准 retention 变更或日志轮转，因此本次仍不删除、不压缩、不重启。
 - 当前允许继续：真实 Redis 只读 Core shadow，并显式保留 `STALE/PARTIAL`；当前禁止：把 TD 当完整 ground truth、TD 依赖 replay/cross-source parity、Core 替代 owner 验收。详见 `docs/evidence/runtime_storage_disk_pressure_20260918_1920.md`。
 
 ### 2026-09-18 19:30 真实第三方参考源连接探查
