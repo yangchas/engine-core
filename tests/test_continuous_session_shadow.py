@@ -586,9 +586,13 @@ def test_continuous_shadow_rejects_future_opening_source_time():
 def test_continuous_shadow_rejects_auction_source_after_explicit_evaluation_time():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     calendar, session_plan = _session_contract(fixture["trade_date"])
+    rows = _fixture_rows_without_final_anchor(fixture)
+    for row in rows:
+        if row.get("auction_tag") == "0925":
+            row["ts"] += timedelta(seconds=1)
     with pytest.raises(ValueError, match="after node cutoff"):
         MODULE.run_continuous_session_shadow(
-            auction_rows=_fixture_rows_without_final_anchor(fixture),
+            auction_rows=rows,
             opening_projection=_q2_projection(
                 fixture["trade_date"], "09:32:00", "09:32:00"
             ),
@@ -596,9 +600,7 @@ def test_continuous_shadow_rejects_auction_source_after_explicit_evaluation_time
             symbol="600519",
             calendar=calendar,
             session_plan=session_plan,
-            evaluation_times_ms=_evaluation_times(
-                fixture["trade_date"], auction_0925="09:25:05"
-            ),
+            evaluation_times_ms=_evaluation_times(fixture["trade_date"]),
         )
 
 
@@ -639,6 +641,21 @@ def test_continuous_shadow_rejects_evaluation_before_0925_business_anchor():
             calendar=calendar,
             session_plan=session_plan,
             evaluation_times_ms=evaluation_times,
+        )
+
+
+def test_continuous_shadow_rejects_0925_before_six_second_settling_barrier():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    calendar, session_plan = _session_contract(fixture["trade_date"])
+    with pytest.raises(ValueError, match="finalization barrier 09:25:06"):
+        MODULE.run_continuous_session_shadow(
+            auction_rows=_fixture_rows_without_final_anchor(fixture),
+            opening_projection=_q2_projection(fixture["trade_date"], "09:32:00", "09:32:00"),
+            trade_date=fixture["trade_date"],
+            symbol=fixture["symbol"],
+            calendar=calendar,
+            session_plan=session_plan,
+            evaluation_times_ms=_evaluation_times(fixture["trade_date"], auction_0925="09:25:05"),
         )
 
 

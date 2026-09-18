@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core import (  # noqa: E402
     AUCTION_REFERENCE_FUNCTION_ORDER,
+    AUCTION_0925_FINALIZATION_DELAY_MS,
     AuctionReferencePreparation,
     AuctionShadowStrategy,
     DataStatus,
@@ -63,6 +64,12 @@ def _business_time_ms(trade_date: str, value: time) -> int:
     )
 
 
+def _auction_0925_finalization_barrier_ms(trade_date: str) -> int:
+    """Return the minimum normal 0925 source-finalization evaluation time."""
+
+    return _business_time_ms(trade_date, time(9, 25)) + AUCTION_0925_FINALIZATION_DELAY_MS
+
+
 _RUN_MODES = {"NORMAL", "POSTMARKET_DIAGNOSTIC"}
 _EVALUATION_KEYS = (*ANCHOR_ORDER, "OPENING_0932")
 
@@ -102,6 +109,12 @@ def _validate_projection_time(
             f"{node_id} projection trade_date does not match requested trade_date"
         )
     observed_ms = projection.envelope.observed_time_ms
+    if (
+        run_mode == "NORMAL"
+        and node_id == "AUCTION_0925"
+        and evaluation_time_ms < _auction_0925_finalization_barrier_ms(trade_date)
+    ):
+        raise ValueError("0925 evaluation precedes source finalization barrier 09:25:06")
     if run_mode == "NORMAL" and observed_ms > evaluation_time_ms:
         raise ValueError(f"{node_id} observed time is after node cutoff")
     oldest_source = projection.oldest_source_time_ms

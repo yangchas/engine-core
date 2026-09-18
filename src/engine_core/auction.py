@@ -6,6 +6,13 @@ import math
 from typing import Any, Optional
 
 
+# The business timer remains anchored at 09:25:00.  The deployed t1-v2
+# source does not contain the complete auction cohort at that wall anchor;
+# normal 0925 finalization is not admissible until the six-second settling
+# barrier.  This is a producer/source contract, not a generic timer rule.
+AUCTION_0925_FINALIZATION_DELAY_MS = 6_000
+
+
 def normalize_auction_change_ratio(value: Any) -> Optional[float]:
     """Normalize a valid auction change value to ratio units.
 

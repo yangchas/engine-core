@@ -1,5 +1,18 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-19 09:25 settling barrier contract correction
+
+- 固定生产时间语义：`09:25:00` 仍是业务锚点和 Timer scheduled time，但该时刻
+  行情 cohort 尚未全部补齐；NORMAL `0925` source finalization/evaluation 最早
+  为 `09:25:06`（六秒 settling barrier）。源记录时间必须原样保留，不能改写成
+  `09:25:00`。
+- `run_m3_auction_followup_shadow.py` 在 NORMAL `0925` 未到 `09:25:06` 时
+  fail-closed，不读源、不 dispatch Engine；`run_continuous_session_shadow.py`
+  对 NORMAL 连续会话同样拒绝早于 barrier 的显式 evaluation time。RECOVERY 或
+  POSTMARKET_DIAGNOSTIC 不借此伪造正常交易时段证据。
+- 新增合同测试覆盖 `09:25:05` 拒绝与 `09:25:06` 可接受；Timer 合同本身仍只
+  表达业务 scheduled time，不把 producer-specific settling gate 混入通用 Timer。
+
 ### 2026-09-19 Redis 投影接入单 Engine 连续 Shadow
 
 - `3889df4` 将连续会话入口扩展为两条等价输入路径：已读取的 TD

@@ -92,7 +92,9 @@ semantic hash，也不把 Q2 偷换成竞价输入。
 `examples/run_m3_auction_followup_shadow.py` 是 09:24/09:25 的窄节点验证入口：
 它只接受调用方已经捕获的前置 projection，使用现有 session/timer/Engine 组合做一次
 只读节点消费；正常运行窗口外不会读取 Redis，恢复运行不会用盘后数据回填旧锚点。它
-只证明节点接入边界，不转移 t1-v2 的 09:20/09:24/09:25 source-freeze owner，
+其中 `09:25:00` 是业务锚点，但生产行情需经过六秒 settling barrier；NORMAL `0925`
+最早在 `09:25:06` 才允许 source finalization/evaluation，源记录时间仍保留原值。
+它只证明节点接入边界，不转移 t1-v2 的 09:20/09:24/09:25 source-freeze owner，
 也不替代三锚点 `AuctionFactShadow` 的事实验收。
 
 `SessionRuntimeCoordinator` 是 M1 的最小组合边界：它只锁定一个明确的交易日和

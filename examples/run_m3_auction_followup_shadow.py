@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core import (  # noqa: E402
+    AUCTION_0925_FINALIZATION_DELAY_MS,
     DataStatus,
     DeterministicEngine,
     EngineSignal,
@@ -88,6 +89,25 @@ def _normal_window_valid(node_tag: str, as_of: datetime) -> bool:
     local_time = as_of.astimezone(LOCAL_TZ).time()
     start_time, end_time = FOLLOWUP_WINDOWS[node_tag]
     return start_time <= local_time < end_time
+
+
+def _normal_finalization_barrier_reached(
+    trade_date: str,
+    node_tag: str,
+    as_of: datetime,
+) -> bool:
+    """Return whether the source settling barrier has elapsed for a node."""
+
+    if node_tag != "0925":
+        return True
+    barrier = datetime.combine(
+        date.fromisoformat(trade_date),
+        time(9, 25),
+        tzinfo=LOCAL_TZ,
+    )
+    return as_of >= barrier.replace(microsecond=0) + timedelta(
+        milliseconds=AUCTION_0925_FINALIZATION_DELAY_MS
+    )
 
 
 def _source_time_ms(projection: Any) -> int | None:
@@ -178,6 +198,16 @@ def run_m3_auction_followup_shadow(
             origin=origin,
             reason="missing_prior_projection:" + ",".join(missing_prior),
             side_effect_boundary="already-read projections only; no backfill",
+        )
+
+    if origin == "NORMAL" and not _normal_finalization_barrier_reached(trade_date, node_tag, as_of):
+        return _blocked(
+            trade_date=trade_date,
+            symbol=symbol,
+            node_tag=node_tag,
+            origin=origin,
+            reason="auction_0925_finalization_barrier_not_reached",
+            side_effect_boundary="no source read; no Engine dispatch",
         )
 
     for tag in required:

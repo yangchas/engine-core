@@ -117,6 +117,44 @@ def test_0925_requires_both_prior_anchors_and_does_not_backfill():
     assert "missing_prior_projection:0924" in result["startup_self_check"]["reasons"]
 
 
+def test_0925_normal_waits_for_six_second_settling_barrier():
+    redis = FakeRedis()
+    observed = local_datetime_ms(TRADE_DATE, "09:25:05")
+    projections = _projections(redis, observed)
+    result = MODULE.run_m3_auction_followup_shadow(
+        calendar=_calendar(),
+        current_projection=projections["0925"],
+        prior_projections={"0920": projections["0920"], "0924": projections["0924"]},
+        trade_date=TRADE_DATE,
+        symbol="000001",
+        node_tag="0925",
+        observed_at=_dt(observed),
+        as_of=_dt(observed),
+    )
+    assert result["preflight_gate"] == "BLOCKED"
+    assert result["startup_self_check"]["reasons"] == (
+        "auction_0925_finalization_barrier_not_reached",
+    )
+
+
+def test_0925_normal_is_admissible_at_six_second_settling_barrier():
+    redis = FakeRedis()
+    observed = local_datetime_ms(TRADE_DATE, "09:25:06")
+    projections = _projections(redis, observed)
+    result = MODULE.run_m3_auction_followup_shadow(
+        calendar=_calendar(),
+        current_projection=projections["0925"],
+        prior_projections={"0920": projections["0920"], "0924": projections["0924"]},
+        trade_date=TRADE_DATE,
+        symbol="000001",
+        node_tag="0925",
+        observed_at=_dt(observed),
+        as_of=_dt(observed),
+    )
+    assert result["preflight_gate"] == "PASS"
+    assert result["node_dispatched"] is True
+
+
 def test_late_normal_followup_is_blocked_without_engine_dispatch():
     redis = FakeRedis()
     observed = local_datetime_ms(TRADE_DATE, "09:30:00")
