@@ -101,8 +101,8 @@ def _rebuild_previous_result(raw: Mapping[str, Any]) -> DataResult:
         missing_fields=tuple(raw.get("missing_fields") or ()),
         missing_symbols=tuple(raw.get("missing_symbols") or ()),
         provenance=provenance,
-        temporal_mode="HISTORICAL",
-        fetch_completed_at_ms=raw.get("observed_at_ms"),
+        temporal_mode=str(raw.get("temporal_mode") or "HISTORICAL"),
+        fetch_completed_at_ms=raw.get("fetch_completed_at_ms", raw.get("observed_at_ms")),
     )
 
 
@@ -164,6 +164,7 @@ def run_real_feedback(
     redis_kwargs: Mapping[str, Any],
     td_kwargs: Mapping[str, Any],
     timezone_name: str = "Asia/Shanghai",
+    temporal_mode: str = "HISTORICAL",
 ) -> Mapping[str, Any]:
     trade_date = _strict_date(trade_date, field="trade_date")
     previous_trade_date = _strict_date(previous_trade_date, field="previous_trade_date")
@@ -175,6 +176,7 @@ def run_real_feedback(
         previous_trade_date=previous_trade_date,
         observed_at=observed_at,
         redis_kwargs=dict(redis_kwargs),
+        temporal_mode=temporal_mode,
     )
     previous_result = _rebuild_previous_result(pool_raw)
     current_rows = _load_current_0925_rows(
@@ -193,6 +195,7 @@ def run_real_feedback(
         "previous_trade_date": previous_trade_date,
         "symbols": symbols,
         "previous_result_status": previous_result.status,
+        "temporal_mode": previous_result.temporal_mode,
         "current_0925_row_count": len(current_rows),
         "fact": json.loads(canonical_json(fact.as_mapping())),
         "read_only": True,
@@ -214,6 +217,12 @@ def main() -> int:
     parser.add_argument("--td-user", default=os.environ.get("TDENGINE_USER", "root"))
     parser.add_argument("--td-password", default=os.environ.get("TDENGINE_PASSWORD", "taosdata"))
     parser.add_argument("--td-database", default=os.environ.get("TDENGINE_DATABASE", "market_data1"))
+    parser.add_argument(
+        "--temporal-mode",
+        choices=("HISTORICAL", "REPLAY", "LIVE"),
+        default="HISTORICAL",
+        help="Historical/replay require verified availability; LIVE is for an actual pre-node prefetch.",
+    )
     args = parser.parse_args()
     result = run_real_feedback(
         trade_date=args.trade_date,
@@ -232,6 +241,7 @@ def main() -> int:
             "password": args.td_password,
             "database": args.td_database,
         },
+        temporal_mode=args.temporal_mode,
     )
     content = json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2, default=str) + "\n"
     args.output.parent.mkdir(parents=True, exist_ok=True)

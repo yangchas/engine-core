@@ -107,6 +107,7 @@ def run_real_previous_day_limit_pool(
     previous_trade_date: str,
     observed_at: datetime,
     redis_kwargs: dict[str, Any],
+    temporal_mode: str = "HISTORICAL",
     fetch_rows_override: Any = None,
     redis_summary_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -163,6 +164,7 @@ def run_real_previous_day_limit_pool(
         effective_as_of_ms=observed_at_ms,
         knowledge_as_of_ms=observed_at_ms,
         purpose="read_only_m2_probe",
+        temporal_mode=temporal_mode,
     )
     result = PreviousDayLimitPoolFunction(provider, calendar).execute(
         DataContext("real-previous-day-limit-pool", "READ_ONLY", observed_at_ms),
@@ -182,6 +184,8 @@ def run_real_previous_day_limit_pool(
         "data": json.loads(canonical_json(result.data)) if result.data is not None else None,
         "available_at_ms": result.available_at_ms,
         "observed_at_ms": result.observed_at_ms,
+        "temporal_mode": result.temporal_mode,
+        "fetch_completed_at_ms": result.fetch_completed_at_ms,
         "content_hash": result.content_hash,
         "structure_fact": json.loads(canonical_json(structure.as_mapping())),
         "calendar_semantic_hash": calendar.semantic_hash,
@@ -199,6 +203,12 @@ def main() -> int:
     parser.add_argument("--redis-host", default=os.environ.get("REDIS_HOST", "127.0.0.1"))
     parser.add_argument("--redis-port", type=int, default=int(os.environ.get("REDIS_PORT", "6379")))
     parser.add_argument("--redis-db", type=int, default=int(os.environ.get("REDIS_DB", "0")))
+    parser.add_argument(
+        "--temporal-mode",
+        choices=("HISTORICAL", "REPLAY", "LIVE"),
+        default="HISTORICAL",
+        help="Historical/replay require verified availability; LIVE permits a completed prefetch before cutoff.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     observed_at = datetime.now(timezone.utc)
@@ -212,6 +222,7 @@ def main() -> int:
             "db": args.redis_db,
             "password": os.environ.get("REDIS_PASSWORD"),
         },
+        temporal_mode=args.temporal_mode,
     )
     result["observed_at"] = observed_at.isoformat()
     content = json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2, default=str) + "\n"

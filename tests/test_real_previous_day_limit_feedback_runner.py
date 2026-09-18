@@ -60,3 +60,23 @@ def test_real_feedback_runner_rebuilds_enum_string_status():
         }
     )
     assert result.status is DataStatus.UNAVAILABLE
+
+
+def test_real_feedback_runner_rebuilds_temporal_mode_and_fetch_completion():
+    result = runner._rebuild_previous_result(
+        {
+            "result_status": "READY",
+            "data": {"previous_trade_date": "2026-09-17", "row_count": 1},
+            "actual_source": "redis",
+            "requested_trade_date": "2026-09-18",
+            "actual_trade_date": "2026-09-17",
+            "available_at_ms": None,
+            "observed_at_ms": 1_000,
+            "fetch_completed_at_ms": 1_001,
+            "temporal_mode": "LIVE",
+            "completeness": 1.0,
+            "provenance": [],
+        }
+    )
+    assert result.temporal_mode == "LIVE"
+    assert result.fetch_completed_at_ms == 1_001
