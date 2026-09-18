@@ -298,6 +298,8 @@ def run_m3_auction_followup_shadow(
         "side_effect_boundary": "already-read Redis projection + in-memory Core only",
         "startup_self_check": {
             "status": poll.readiness.status,
+            "node_readiness": "DISPATCHABLE",
+            "q2_policy": "OPTIONAL_FOR_SOURCE_OWNED_AUCTION_NODE",
             "reasons": poll.readiness.reasons,
             "actions": poll.readiness.actions,
             "calendar_hash": calendar.semantic_hash,

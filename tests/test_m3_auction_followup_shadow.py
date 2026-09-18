@@ -92,6 +92,8 @@ def test_0924_normal_node_uses_existing_projection_and_one_engine():
     )
     assert result["preflight_gate"] == "PASS"
     assert result["node_dispatched"] is True
+    assert result["startup_self_check"]["node_readiness"] == "DISPATCHABLE"
+    assert result["startup_self_check"]["q2_policy"] == "OPTIONAL_FOR_SOURCE_OWNED_AUCTION_NODE"
     assert result["engine"]["same_engine_instance"] is True
     assert result["engine"]["processed_signals"] == 2
 
