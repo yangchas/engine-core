@@ -1,5 +1,11 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 19:30 真实第三方参考源连接探查
+
+- 复用旧 `engine-next` release `e272842c8f490f55a1b017badb71e71904ce008e` 的已验证 connector 路径，在 Cobra-ion 共享 Python 3.12.3 环境执行有界只读探查，6/6 连接调用成功；未写 Redis/TD、未消费 Rabbit、未修复缓存、未发通知。
+- 仅 BaoStock 日线同时满足请求日期与返回日期闭合（`2026-09-18`），标记 `PASS`。开盘啦 ban reason/热板、同花顺热度、问财涨停结果均保留 `OBSERVED`，因为响应不提供足够的结构化历史日期/可用时间；开盘啦昨日涨停池本次为空，标记 `MISSING`。
+- 这些结果只能作为连接性与事后 oracle 证据，不能直接进入历史 Replay 或策略 Bundle；仍需通过 `DataFunction + TemporalDataGuard`。证据见 `docs/evidence/real_reference_probe_20260918_1930.md`，artifact SHA-256=`b3506114b96f260bb1523b2e095471fbe37fb66b75cf835a4d24cc36d32c4870`。
+
 ### 2026-09-18 19:20 真实 Q2 复核
 
 - Cobra-ion 现有 Redis Q2 只读探针返回 `5224/5224`、coverage=`1.0`、missing=`0`，但在显式 `10s` freshness policy 下 `5224/5224` 均为 `STALE`，最新 source lag 约 `14893s`。coverage 不升级为 READY，Core 继续 fail-closed。
