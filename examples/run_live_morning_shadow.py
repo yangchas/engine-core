@@ -745,6 +745,14 @@ def main() -> int:
         start_at = _parse_local_time(args.start_at)
         stop_at = _parse_local_time(args.stop_at)
         calendar = _load_calendar(args.calendar_file, trade_date=args.trade_date)
+        trade_day = datetime.strptime(args.trade_date, "%Y-%m-%d").date()
+        reference_prefetch_cutoff_ms = _epoch_ms(
+            datetime.combine(
+                trade_day,
+                clock_time(9, 26, 0),
+                tzinfo=LOCAL_TZ,
+            )
+        )
         reference_preparation = None
         reference_client = None
         reference_preparation_factory = None
@@ -769,6 +777,8 @@ def main() -> int:
                     observed_at=observed_at,
                     symbols=symbols,
                     stale_after_ms=args.stale_after_ms,
+                    knowledge_as_of_ms=reference_prefetch_cutoff_ms,
+                    clock_ms=lambda: int(time.time() * 1000),
                     td_kwargs={
                         "host": args.td_host,
                         "port": args.td_port,
