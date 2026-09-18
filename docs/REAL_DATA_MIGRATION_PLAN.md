@@ -1,5 +1,23 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 22:40 单 Engine 连续会话真实 Shadow
+
+- 新增 `examples/run_continuous_session_shadow.py`，将已读取的真实 TD
+  `auction_snapshot_v2` 三锚点与真实 Redis Q2 开盘投影，在同一个
+  `DeterministicEngine`、同一个 reducer/window 会话中连续消费：
+  `AUCTION_0920 → AUCTION_0924 → AUCTION_0925 → OPENING_0932`。
+- Cobra-ion Python 3.12.3 对当前精确 commit `498599f` 重跑完整套件：
+  `574 passed`、compileall PASS；本地同样 `574 passed`。新增 runner/test
+  文件 hash 与远端一致。
+- 真实盘后诊断（symbol=`000338`）消费 8 个 signal、产生 4 个结果、无
+  pending evaluation；竞价与开盘均保持 `FACT_ONLY`，Q2 为
+  `5224/5224`、coverage=`1.0` 但在 10 秒策略下为 `STALE`。Redis/TD
+  写入、Rabbit consumer/ACK、通知和 effect 均为 0。
+- 该证据只关闭“跨节点共用一个 Engine”的组合 seam，不证明正常交易时段
+  09:20–09:32、全市场覆盖、Rabbit batch/source-freeze、启动补数、持久化恢复、
+  报告投递或 `engine-next` 替代。artifact 保存在 Cobra-ion 隔离目录，SHA-256
+  为 `f1f2a60fc259ba0f2f74510b591f8af5ced1b5a235402969fffefcd500ad1ac4`。
+
 ### 2026-09-18 M3 09:24/09:25 后续节点窄接入（代码验证）
 
 - 新增 `examples/run_m3_auction_followup_shadow.py`，只把已经读到的
