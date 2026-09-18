@@ -1,5 +1,9 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 M1 real recovery shadow
+
+- The isolated Cobra-ion copy ran the bounded morning shell at 17:35 CST with real Redis Q2 and TD reads for `600519`. It emitted startup, `AUCTION_0926`, and `OPENING_0932`; startup checkpoint traces were `RECOVERY_CATCHUP/PARTIAL/STALE`, opening preserved the stale-Q2 gate, and all safety counters were zero. This is post-market recovery evidence only; normal-origin 09:20/09:25/09:32 and replacement acceptance remain open. Evidence: `docs/evidence/m1_live_recovery_shadow_20260918_1735.md`.
+
 ### 2026-09-18 M1 real reference shadow
 
 - Real read-only reference probing reached TD `daily_kline` and Redis yesterday-limit/hot-plate sources (`47`/`50` rows, HLEN/HSCAN consistent), but the fixed same-instant cutoff correctly kept all three results `UNAVAILABLE` because `available_at_ms` is unknown and fetch completion was later than the cutoff. Q2 was `STALE` at `5224/5224`. This validates fail-closed timing; a true pre-09:20 prefetch/reuse observation is still required. Artifact SHA-256=`7852f547d22c054d525fa56f10a5df7f32e1b1e04c277dc15857be3088bcd5d0`.
