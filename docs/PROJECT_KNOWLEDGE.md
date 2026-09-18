@@ -30,6 +30,12 @@
   Rabbit action, or effect occurred. This proves the real Redis-to-fact seam
   only, not full-universe coverage or legacy theme numeric/strategy parity.
   Evidence: `docs/evidence/real_theme_auction_delta_shadow_20260918.md`.
+- [VERIFIED] 2026-09-18 a same-input Cobra-ion Redis differential for `000338`
+  compared Core `ThemeAuctionDeltaFactV1` with the deployed legacy pure theme
+  aggregator. Weighted amount/bid/change facts matched for both mapped themes;
+  the legacy-only ratio rounding and `温和放量` signal remain outside Core.
+  This is bounded numeric parity, not full-universe or strategy parity.
+  Evidence: `docs/evidence/real_theme_auction_delta_legacy_diff_20260918.md`.
 
 - [OBSERVED] 当前 Windows 工作区默认 Python 为 `3.9.13`，而
   `pyproject.toml` 的正式要求是 `>=3.12`；`cobra-ion` 隔离验证使用
