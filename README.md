@@ -111,6 +111,12 @@ calendar/session identity，调用既有 readiness/timer 纯轮子，返回可�
 提交为 `MARKET_UPDATE` 和开盘 `TIMER`，输出 `OpeningShadowStrategy` 的
 `FACT_ONLY` 结果；速度字段不在单位未证明时强行映射，仍不产生策略结论。
 
+`examples/run_continuous_session_shadow.py` 是下一步的最小连续会话验证入口：它把
+已经读取的 0920/0924/0925 竞价投影和一份 Q2 投影提交给同一个
+`DeterministicEngine`，在同一 reducer/window/Engine 会话内完成竞价事实到
+`OPENING_0932` 开盘事实的组合。它不负责数据获取、不刷新参考数据、不写外部存储，
+只证明跨节点状态连续性；当前仍是单股票、只读 Shadow，不代表全市场生产接管。
+
 ## 开发
 
     python -m pytest -q
