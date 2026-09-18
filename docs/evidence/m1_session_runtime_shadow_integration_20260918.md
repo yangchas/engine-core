@@ -12,7 +12,8 @@ The runner deliberately keeps the node-level input boundary:
 - `AUCTION_0926` may execute through the independent TD auction fact path when
   Q2 is missing or stale.
 - `OPENING_0932` still calls the node Q2 read and raises/fails closed when that
-  read is unavailable.
+  read is unavailable, future, invalid, or otherwise blocked by the readiness
+  contract.
 
 This avoids a second high-frequency Q2 read merely to calculate timer due-ness
 and preserves the existing production-shadow behavior.
@@ -25,10 +26,10 @@ deferred 09:32 timer after acknowledging the 09:26 timer.
 
 | Check | Result |
 |---|---|
-| Local full suite | `463 passed` |
+| Local full suite | `464 passed` |
 | Local compileall (`src tests examples`) | PASS |
 | Local diff-check | PASS |
-| cobra-ion isolated suite | `463 passed` |
+| cobra-ion isolated suite | `464 passed` |
 | cobra-ion compileall (`src tests examples`) | PASS |
 | Production services changed | NO |
 | Rabbit consumer/ACK changed | NO |

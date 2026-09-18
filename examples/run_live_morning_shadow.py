@@ -458,6 +458,11 @@ def _capture_node(
             origin=firing.origin,
         )
     )
+    if firing.timer_id == "OPENING_0932" and node_readiness["status"] == "BLOCKED":
+        # The coordinator owns timer identity, but the node owns input
+        # admissibility.  Never push a missing/future/invalid Q2 projection
+        # through the opening Engine path merely because the wall timer is due.
+        raise RuntimeError("opening Q2 readiness is blocked")
     td_rows = _read_td_rows(symbols, trade_date=trade_date, **td_config)
     legacy = _legacy_loader_evidence(
         legacy_root,

@@ -262,6 +262,44 @@ def test_capture_node_rechecks_q2_at_node_boundary(monkeypatch: pytest.MonkeyPat
     assert result["q2"] is None
 
 
+def test_capture_opening_node_rejects_future_q2(monkeypatch: pytest.MonkeyPatch):
+    observed_at = _dt("09:32:00")
+    future_projection = build_q2_projection(
+        "2026-09-14",
+        observed_at,
+        ("600519",),
+        {
+            "600519": {
+                "mk": "sh",
+                "px": "1276000",
+                "pc": "1270000",
+                "amt": "100000",
+                "ts": str(
+                    local_datetime_ms(
+                        "2026-09-14",
+                        "09:32:01",
+                        timezone_name="Asia/Shanghai",
+                    )
+                ),
+            }
+        },
+        freshness_policy=FreshnessPolicy(stale_after_ms=60_000, max_future_skew_ms=0),
+    )
+    monkeypatch.setattr(live, "_redis_projection", lambda **kwargs: future_projection)
+    with pytest.raises(RuntimeError, match="opening Q2 readiness is blocked"):
+        live._capture_node(
+            _firing("OPENING_0932"),
+            observed_at=observed_at,
+            trade_date="2026-09-14",
+            symbols=("600519",),
+            stale_after_ms=60_000,
+            legacy_root=None,
+            td_config={},
+            calendar=CALENDAR,
+            plan=build_a_share_session_plan("2026-09-14", CALENDAR),
+        )
+
+
 def test_startup_evidence_uses_the_same_prefetched_reference_results(
     monkeypatch: pytest.MonkeyPatch,
 ):
