@@ -158,6 +158,43 @@ def test_strategy_composes_legacy_theme_shadow_from_frozen_data_bundle():
     assert result.evidence_refs == tuple(sorted(set(fixture["evidence_refs"]) | {"fixture://theme/a"}))
 
 
+def test_strategy_does_not_promote_unavailable_theme_data_to_facts():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    strategy = AuctionShadowStrategy(
+        scope_id=fixture["symbol"],
+        theme_delta_function_id="theme_auction_delta_compat",
+    )
+    unavailable = DataResult(
+        request_id="theme-request-unavailable",
+        function_id="theme_auction_delta_compat",
+        status=DataStatus.UNAVAILABLE,
+        data={"facts": ({"theme_id": "must-not-run"},)},
+        actual_source=None,
+        requested_trade_date=fixture["trade_date"],
+        actual_trade_date=None,
+        effective_at_ms=None,
+        available_at_ms=None,
+        observed_at_ms=1,
+        schema_version=1,
+        completeness=0.0,
+    )
+    result = None
+    for index, name in enumerate(("pre_auction_0915", "auction_0920", "auction_0924")):
+        snapshot = _snapshot(fixture, name)
+        bundle = FrozenDataBundle.from_results(
+            evaluation_id="unavailable-theme-%d" % index,
+            knowledge_as_of_ms=snapshot.logical_time_ms,
+            function_order=("theme_auction_delta_compat",),
+            results_by_function={"theme_auction_delta_compat": unavailable},
+        )
+        result = strategy.evaluate(snapshot, bundle)
+    assert result is not None
+    theme_shadow = result.trace["theme_delta_shadow"]
+    assert theme_shadow["data_status"] is DataStatus.UNAVAILABLE
+    assert theme_shadow["shadow"] is None
+    assert theme_shadow["reason_codes"] == ("THEME_DATA_NOT_READY",)
+
+
 def test_strategy_lifecycle_pending_to_ready_and_duplicate_anchor_is_idempotent():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     strategy = AuctionShadowStrategy(

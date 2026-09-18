@@ -13,6 +13,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .auction_shadow import build_auction_fact_shadow_from_snapshots
 from .contracts import (
+    DataStatus,
     EVIDENCE_HASH_CONTRACT_VERSION,
     SEMANTIC_HASH_CONTRACT_VERSION,
     SUBMISSION_HASH_CONTRACT_VERSION,
@@ -181,16 +182,21 @@ class AuctionShadowStrategy:
             if self.theme_delta_function_id is not None:
                 result = bundle.results_by_function.get(self.theme_delta_function_id)
                 if result is not None:
-                    data = result.data
-                    if not isinstance(data, Mapping):
-                        raise TypeError("theme delta DataResult.data must be a mapping")
-                    theme_facts = data.get("facts", ())
-                    theme_trace = build_legacy_theme_delta_shadow_trace(theme_facts)
+                    theme_trace: Optional[Mapping[str, Any]] = None
+                    if result.status in (DataStatus.READY, DataStatus.PARTIAL):
+                        data = result.data
+                        if not isinstance(data, Mapping):
+                            raise TypeError("theme delta DataResult.data must be a mapping")
+                        theme_facts = data.get("facts", ())
+                        theme_trace = build_legacy_theme_delta_shadow_trace(theme_facts)
                     trace["theme_delta_shadow"] = {
                         "function_id": self.theme_delta_function_id,
                         "data_status": result.status,
                         "data_result_hash": result.content_hash,
                         "shadow": theme_trace,
+                        "reason_codes": ()
+                        if theme_trace is not None
+                        else ("THEME_DATA_NOT_READY",),
                     }
 
         # A completed three-anchor fact is only auditable when the top-level
