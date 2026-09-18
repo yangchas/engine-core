@@ -42,6 +42,12 @@ Observed repeatedly from `14:26:10` through `15:40:53` CST. The services being
 `active` is therefore not sufficient evidence that the TD write path is
 healthy or complete.
 
+At the 19:28 CST recheck, `t1-v2-live` was still `active` with the same PID and
+`NRestarts=0`, but its last journal progress line was at `15:43:55` CST. This
+leaves the current consumer/progress state as `STALE_OR_UNOBSERVED`; it must not
+be described as live healthy consumption without a newer heartbeat/progress
+source.
+
 ## Decision
 
 ```text
