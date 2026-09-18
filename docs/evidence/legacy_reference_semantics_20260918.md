@@ -61,10 +61,13 @@ tuple[3] -> change_pct
 tuple[6] / 1e8 -> net_inflow_yi
 ```
 
-`change_pct` and the `1e8` conversion for `net_inflow_yi` are source-formula
-evidence. However, live Redis values (`strength`/`hot` approximately 89–153 on
-2026-09-18) do not match the old consumer's `strength >= 3000` thresholds.
-This is a producer/API generation or scale mismatch until proven otherwise.
+`change_pct` and the tuple-path `1e8` conversion for `net_inflow_yi` are
+source-formula evidence. The connector's dict payload path, however, accepts
+`net_inflow`/`net_amount`/`main_net` without that conversion. Therefore the
+unit is not globally closed until the live API payload shape is pinned. Live
+Redis values (`strength`/`hot` approximately 89–153 on 2026-09-18) also do not
+match the old consumer's `strength >= 3000` thresholds. This is a producer/API
+generation or scale mismatch until proven otherwise.
 
 ```text
 strength: UNKNOWN / NOT_AUTHORIZED for strategy thresholds
@@ -85,7 +88,7 @@ any hot-strength threshold is migrated.
 | `close_pct` percentage-point unit | MATCH | Producer uses `rec[2]`; live values are around 10.0 |
 | Limit-pool historical availability | UNKNOWN | Legacy Redis metadata has no historical availability proof |
 | Hot `change_pct` | OBSERVED | Connector maps source field; runtime consumer parity still pending |
-| Hot `net_inflow_yi` | OBSERVED | Connector explicitly divides tuple[6] by `1e8` |
+| Hot `net_inflow_yi` | UNKNOWN | Tuple path divides by `1e8`, dict path does not; payload shape must be pinned |
 | Hot `strength`/`hot` scale | UNKNOWN | Live values conflict with legacy threshold scale |
 
 ## Core guardrails
@@ -97,4 +100,3 @@ any hot-strength threshold is migrated.
   before the explicit node cutoff.
 - Hot strength/heat fields remain `UNAVAILABLE` for strategy consumption until
   a matching source schema and consumer oracle are proven.
-

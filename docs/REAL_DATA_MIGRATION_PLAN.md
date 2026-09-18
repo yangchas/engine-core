@@ -9,7 +9,7 @@
 
 - 只读核对 Cobra-ion `engine-next@20260903_e272842` 的 `StockAnalyzer.get_history_bans_pool()` 与 `KaipanConnector`：`rec[9]` 是旧 payload 的金额型 `turnover`，`rec[2]` 是百分比点 `close_pct`，而不是旧 schema 中错误标注的百分比 turnover。真实 Redis `cache:yest_limit_pool:2026-09-17` 的 47 行样本（约 6,181 万～15.2 亿）与该语义一致。
 - Core Provider 边界现将 legacy raw `turnover` 映射为明确的 canonical `turnover_yuan`；不做数值换算，也不向事实/策略层暴露无单位 `turnover`。`close_pct` 保持百分比点。对应测试已改为验证 canonical unit。
-- 热点板块旧 connector 的 `tuple[6]/1e8 -> net_inflow_yi` 仅记录为 source-formula evidence；当前 Redis `strength/hot` 约 89～153，与旧 consumer 的 `strength>=3000` 阈值不在同一已证实量纲，继续保持 UNKNOWN/NOT_AUTHORIZED，不猜测换算、不迁移阈值。
+- 热点板块旧 connector 的 tuple 路径 `tuple[6]/1e8 -> net_inflow_yi` 仅记录为 source-formula evidence；dict 路径对 `net_inflow`/`net_amount`/`main_net` 不做同样换算，因此当前 `net_inflow_yi` 仍不能全局放行。Redis `strength/hot` 约 89～153，与旧 consumer 的 `strength>=3000` 阈值不在同一已证实量纲，继续保持 UNKNOWN/NOT_AUTHORIZED，不猜测换算、不迁移阈值。
 - 真实 Redis metadata 仍缺 `schema_version/field_units/available_at_ms`；本次只关闭 limit-pool 数值单位歧义，不改变 HISTORICAL/REPLAY 的 availability fail-closed 合同。证据：`docs/evidence/legacy_reference_semantics_20260918.md`。
 
 ### 2026-09-18 13:49–13:55 LIVE reference readiness 合同收口
