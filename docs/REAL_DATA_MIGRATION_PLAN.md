@@ -1,5 +1,11 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 19:28–19:30 真实 Q2 停滞复核
+
+- 按真实 Redis 方言（`SMEMBERS q2:active:20260918` + `HGETALL q2:{symbol}`）重新读取 `5224/5224`，coverage=`1.0`，但 `5224/5224` 全部 `STALE`；最新 source lag 约 `16234s`，source range=`1789660800000..1789714805000`。
+- 同一次只读运行内两次 Core observation 的 probe/snapshot hash 一致，说明确定性消费仍正常；源时间没有继续推进，与 t1-v2 最后 progress 停在 15:43 的现象相互印证。artifact SHA-256=`a6d39ee964d2cfcaff9f90b3dfca1432e9b0c9b37b614b9ae378d67c84918d10`，详见 `docs/evidence/real_q2_probe_20260918_1928.md`。
+- 结论：Redis 读取路径可继续 Shadow，但实时数据源停滞/滞后仍阻止 Core live admission 和替代 `engine-next`。
+
 ### 2026-09-18 19:28 Redis Q2 key 方言复核
 
 - 真实 Redis 只读核验确认 `q2:active:{trade_date}` 是包含 symbol 的 `SET`，`q2:{symbol}` 才是逐股 `HASH`；`2026-09-18` active set 有 `5224` 个成员，`000338/600519` 的逐股 hash 均可读。
