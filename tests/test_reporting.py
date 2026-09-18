@@ -252,3 +252,33 @@ def test_unavailable_fact_is_not_promoted_to_partial_or_complete():
         data_origin="current_cache_only",
     )
     assert report.status == "DATA_UNAVAILABLE"
+
+
+@pytest.mark.parametrize(
+    ("fact_status", "expected_report_status"),
+    (
+        (FactStatus.READY, "COMPLETE"),
+        (FactStatus.PARTIAL, "PARTIAL"),
+        (FactStatus.MISSING, "DATA_UNAVAILABLE"),
+        (FactStatus.INVALID, "DATA_UNAVAILABLE"),
+        (FactStatus.UNAVAILABLE, "DATA_UNAVAILABLE"),
+    ),
+)
+def test_report_status_mapping_matches_legacy_three_state_contract(
+    fact_status: FactStatus,
+    expected_report_status: str,
+):
+    """Keep the verified legacy presentation status contract capability-local.
+
+    This compares only the status boundary.  It does not claim parity for the
+    legacy full email report, plate rows, locked orders, delivery lifecycle, or
+    strategy-console output.
+    """
+
+    report = build_auction_fact_report(
+        replace(_fact(), status=fact_status),
+        trade_date="2026-09-03",
+        event_id="AUCTION_0925",
+        data_origin="replay_fixture_only",
+    )
+    assert report.status == expected_report_status
