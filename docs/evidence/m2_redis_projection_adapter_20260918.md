@@ -8,8 +8,8 @@ submits one `MARKET_UPDATE` and one same-time `TIMER` for each of `0920`,
 `0924` and `0925` to the existing `DeterministicEngine`; it does not add a
 provider layer, alter production owners, or write Redis/TD.
 
-- Local full suite after this seam: `520 passed`, compileall PASS.
-- Cobra-ion Python 3.12.3 isolated full suite: `520 passed`, compileall PASS.
+- Local full suite after this seam: `521 passed`, compileall PASS.
+- Cobra-ion Python 3.12.3 isolated full suite: `521 passed`, compileall PASS.
 - Real Cobra-ion run for common TopN symbol `000338`:
   - `processed_signals=6`, `strategy_result_count=3`
   - all three Redis projections were `PARTIAL` at the canonical Q2/Engine
@@ -20,8 +20,8 @@ provider layer, alter production owners, or write Redis/TD.
     where the source contract does not support them;
   - Redis source times were preserved: `0920=1789694403287`,
     `0924=1789694650292`, `0925=1789694706197`.
-- Real artifact: `/home/exedev/validation/m2-redis-engine-shadow-20260918-000338.json`
-- Artifact SHA-256: `16968e367626fc046f762bdf92e9f0f9c5a476e954438dee07b8802b500a843c`
+- Real artifact (latest code): `/home/exedev/validation/m2-redis-engine-shadow-20260918-000338-v2.json`
+- Artifact SHA-256: `686dff98811a9f0f3e207e31883fad2f31765201323c9fb646f73dfeb3efce28`
 - Production `engine-next` and `t1-v2-live` remained `active`; no Redis/TD
   write, Rabbit action, restart, notification or effect occurred.
 

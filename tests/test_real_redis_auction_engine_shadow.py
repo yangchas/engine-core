@@ -100,3 +100,22 @@ def test_real_redis_missing_symbol_is_not_synthesized_into_engine_state():
     }
     assert result["fact_status"] == "MISSING"
     assert result["fact_only"] is True
+
+
+def test_invalid_redis_projection_is_not_relabelled_as_missing():
+    class InvalidRedis(FakeRedis):
+        def hgetall(self, key):
+            self.calls.append(key)
+            tag = key[-4:]
+            if tag == "0924":
+                return {"top_amount": json.dumps({"invalid": True})}
+            return super().hgetall(key)
+
+    redis = InvalidRedis({tag: (_row(),) for tag in ("0920", "0924", "0925")})
+    projections = _read(redis)
+    invalid = MODULE.build_engine_projection(
+        projections[1], trade_date="2026-09-18", symbol="000338"
+    )
+
+    assert invalid.status.value == "INVALID"
+    assert invalid.coverage == 0.0

@@ -11,9 +11,9 @@
   strategy results, preserved source times, and returned `PARTIAL/FACT_ONLY`.
   The Redis projection remains TopN-scoped and does not promote `price_yuan`
   into an unverified `price_milli`; missing price/ask/pressure stays missing.
-- Local and isolated Cobra-ion suites both pass `520` with compileall. Real
-  artifact SHA-256 is
-  `16968e367626fc046f762bdf92e9f0f9c5a476e954438dee07b8802b500a843c`.
+- Local and isolated Cobra-ion suites both pass `521` with compileall. Latest
+  real artifact SHA-256 is
+  `686dff98811a9f0f3e207e31883fad2f31765201323c9fb646f73dfeb3efce28`.
   This is M2 bounded seam evidence only, not engine-next replacement.
 
 ### 2026-09-18 M2 Redis auction projection adapter

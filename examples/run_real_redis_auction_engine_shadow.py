@@ -129,7 +129,12 @@ def build_engine_projection(
         vector_5m_bp=None,
         raw_fields=raw_fields,
     )
-    status = DataStatus.MISSING if row is None else DataStatus.PARTIAL
+    if projection.status == "INVALID":
+        status = DataStatus.INVALID
+    elif row is None:
+        status = DataStatus.MISSING
+    else:
+        status = DataStatus.PARTIAL
     source_times = (source_time,) if source_time is not None else ()
     content = {
         "contract_version": "RedisAuctionEngineProjectionV1",

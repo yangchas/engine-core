@@ -5,8 +5,8 @@
   separate read-only shadow runner. A real Cobra-ion run for TopN symbol
   `000338` processed 6 signals and 3 strategy results, preserved source times
   for 0920/0924/0925, and emitted `PARTIAL/FACT_ONLY` with no price guessing.
-  Local and Cobra-ion Python 3.12.3 suites both pass `520`; compileall passes.
-  Artifact SHA-256=`16968e367626fc046f762bdf92e9f0f9c5a476e954438dee07b8802b500a843c`.
+  Local and Cobra-ion Python 3.12.3 suites both pass `521`; compileall passes.
+  Latest artifact SHA-256=`686dff98811a9f0f3e207e31883fad2f31765201323c9fb646f73dfeb3efce28`.
   This closes only the bounded Redis-projection-to-Core-Engine seam; full
   universe, freeze ownership and engine-next replacement remain open. Evidence:
   `docs/evidence/m2_redis_projection_adapter_20260918.md`.
