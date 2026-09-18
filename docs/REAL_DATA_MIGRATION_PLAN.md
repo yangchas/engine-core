@@ -1,5 +1,9 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 Legacy active-consumer temporal audit
+
+- A bounded read-only probe of the exact deployed `engine-next` context path used real Redis Q2 and executed the legacy plate-bucket fact helper without writes. Under a simulated 09:26 cutoff, the old path observed future Q2 source timestamps and clamped their age to zero. This is recorded as legacy behavior evidence, not a Core contract; Core keeps future-source rejection fail-closed. Plate strings were mojibake and plate/opening labels remain `OBSERVED/UNKNOWN`, so no strategy parity is claimed. Evidence: `docs/evidence/legacy_active_consumer_probe_20260918_1645.md`.
+
 ### 2026-09-18 Gate B numeric auction parity
 
 - `417d2d9` closes one capability-local differential slice against the old pure auction shadow helper for the real 600519 `0920→0924` fixture. Core matches price/amount/resting-bid/resting-ask/pressure deltas exactly; legacy directional labels and strategy thresholds remain intentionally unmigrated.
