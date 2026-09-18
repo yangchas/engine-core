@@ -1,5 +1,9 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 Legacy Q2 amount mapping and source-priority boundary
+
+- The real bounded context probe closes only the raw field mapping `Redis Q2 am → Core auction_amount_yuan` for 000001 and 000002. 600519 is retained as a source-priority divergence (`Q2 am=14,312,200` while the legacy context uses auction projection `14,271,787`), so the value is not normalized away and no full Redis-Q2/legacy-projection parity is claimed. The new regression test and frozen extraction are read-only evidence; plate and strategy parity remain open. Evidence: `docs/evidence/legacy_q2_amount_mapping_20260918.md`.
+
 ### 2026-09-18 Legacy active-consumer temporal audit
 
 - A bounded read-only probe of the exact deployed `engine-next` context path used real Redis Q2 and executed the legacy plate-bucket fact helper without writes. Under a simulated 09:26 cutoff, the old path observed future Q2 source timestamps and clamped their age to zero. This is recorded as legacy behavior evidence, not a Core contract; Core keeps future-source rejection fail-closed. Plate strings were mojibake and plate/opening labels remain `OBSERVED/UNKNOWN`, so no strategy parity is claimed. Evidence: `docs/evidence/legacy_active_consumer_probe_20260918_1645.md`.

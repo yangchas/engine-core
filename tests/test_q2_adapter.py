@@ -268,3 +268,39 @@ def test_q2_cohort_identity_includes_observation_time_but_semantic_content_does_
     ).read("2026-09-04", datetime(2026, 9, 4, 1, 20, 1, tzinfo=timezone.utc))
     assert first.content_hash == second.content_hash
     assert first.envelope.envelope_id != second.envelope.envelope_id
+
+
+def test_real_legacy_context_amount_mapping_keeps_q2_amount_semantics_and_source_priority():
+    """The real probe closes only the raw ``am`` mapping, not projection parity.
+
+    For two bounded symbols the old context's auction amount equals Redis Q2
+    ``am``.  The 600519 divergence is retained as evidence that the legacy
+    consumer can prefer a frozen auction projection over the current Q2 value;
+    it must not be hidden by treating every amount field as interchangeable.
+    """
+
+    fixture = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures/legacy/legacy_q2_amount_mapping_20260918.json"
+        ).read_text(encoding="utf-8")
+    )
+    observed = datetime.fromisoformat(fixture["observed_at"])
+    assert observed.tzinfo is not None
+    for row in fixture["rows"]:
+        quote = normalize_q2(
+            row["symbol"],
+            {
+                "mk": "sz" if row["symbol"].startswith(("000", "001", "002")) else "sh",
+                "px": "1000",
+                "pc": "990",
+                "amt": "1",
+                "am": str(row["raw_am"]),
+                "ts": str(row["source_record_time_ms"]),
+            },
+        )
+        assert quote.auction_amount_yuan == row["raw_am"]
+        if row["comparison"] == "MATCH":
+            assert quote.auction_amount_yuan == row["legacy_context_auction_amount"]
+        else:
+            assert quote.auction_amount_yuan != row["legacy_context_auction_amount"]

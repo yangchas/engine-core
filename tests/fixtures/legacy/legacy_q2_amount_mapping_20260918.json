@@ -1,0 +1,29 @@
+{
+  "contract_version": "LegacyQ2AmountMappingV1",
+  "trade_date": "2026-09-18",
+  "observed_at": "2026-09-18T08:51:57.800062+00:00",
+  "source": "real_redis_q2_and_engine_next_context_probe",
+  "rows": [
+    {
+      "symbol": "000001",
+      "raw_am": 4333500,
+      "legacy_context_auction_amount": 4333500,
+      "source_record_time_ms": 1789714800000,
+      "comparison": "MATCH"
+    },
+    {
+      "symbol": "000002",
+      "raw_am": 696600,
+      "legacy_context_auction_amount": 696600,
+      "source_record_time_ms": 1789714800000,
+      "comparison": "MATCH"
+    },
+    {
+      "symbol": "600519",
+      "raw_am": 14312200,
+      "legacy_context_auction_amount": 14271787,
+      "source_record_time_ms": 1789714804000,
+      "comparison": "SOURCE_PRIORITY_DIVERGENCE"
+    }
+  ]
+}
