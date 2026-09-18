@@ -1,5 +1,11 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 14:34–14:38 真实上游滞后与存储容量告警
+
+- `t1-v2-live` 仍 active、持续消费并 ACK，但日志多次报告 `commit.tdengine: No enough disk space`；wall lag 约 26–27 分钟。Core 新的真实 Q2 只读观测仍为 `5224/5224`、coverage=`1.0`，但全量 stale，最新 source lag 约 `1615s`，未放宽 freshness gate。
+- 根盘约 `94%` 使用率、剩余 `1.2G`；活动 `infra_tdengine-data` 约 `6.1G`，`market_data1` 保留策略为 `3650d`。本次未删除生产数据、未 prune Docker volume、未重启服务、未改变 Rabbit/ACK。
+- 该证据将当前阻塞明确为“生产上游 TD 容量/积压问题”，不是 Core 计算问题。下一步需要单独审批精确的 retention/容量处理后，才能重新验证 fresh Q2/TD；Core 继续只读 Shadow。详见 `docs/evidence/runtime_storage_lag_20260918_1438.md`。
+
 ### 2026-09-18 14:28 盘中真实预取 cutoff 复验
 
 - 在 Cobra-ion 生产环境旁路隔离副本执行新的只读观测：真实 Redis Q2 为 `5224/5224`、coverage=`1.0`，但全量 `STALE/BEST_EFFORT_STALE`，最新 source time 为 `1789711401000` ms；重复 Core 观测 hash 一致。
