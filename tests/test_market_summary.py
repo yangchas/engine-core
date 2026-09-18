@@ -12,12 +12,11 @@ from engine_core import (
 )
 
 
-CAPTURE = Path(__file__).parent.parent / "tmp/capture-20260914/auction_0920.json"
+CAPTURE = Path(__file__).parent / "fixtures/facts/auction_market_summary_20260914.json"
 
 
 def _raw_summary() -> dict:
-    payload = json.loads(CAPTURE.read_text(encoding="utf-8"))
-    return json.loads(payload["hash_fields"]["summary"])
+    return json.loads(CAPTURE.read_text(encoding="utf-8"))
 
 
 def test_real_capture_summary_maps_to_canonical_a2_fact():

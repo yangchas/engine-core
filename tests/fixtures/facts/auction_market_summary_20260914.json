@@ -1,0 +1,14 @@
+{
+  "tag": "0920",
+  "ts": 1789348803146,
+  "total_stocks": 4914,
+  "valid_stock_count": 1022,
+  "unavailable_stock_count": 3892,
+  "high_open_count": 264,
+  "low_open_count": 614,
+  "flat_open_count": 144,
+  "limit_up_count": 12,
+  "limit_down_count": 18,
+  "total_auction_amount_yuan": 2528071637,
+  "total_limit_up_bid_amount_yuan": 2743276692
+}
