@@ -1,5 +1,9 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 昨日涨停结构报告投影
+
+- `6a56388` 将 `PreviousDayLimitStructureFact` 作为可选事实段接入 build-only 报告；只输出上一交易日结构，不把未知的当日反馈、板块/封单或策略结论写进报告。Local/Cobra 均 `487 passed`、compileall PASS，旧 `engine-next` 仍是正式报告/投递 owner。详见 `docs/evidence/previous_limit_report_projection_20260918.md`。
+
 ### 2026-09-18 昨日涨停结构事实切片
 
 - `4ca5915` 新增纯 `PreviousDayLimitStructureFact`，只从已守门的昨日涨停池派生数量、最高板和板高分布；不计算当日反馈、不做板块/策略判断。真实 Cobra-ion Redis capture 的 47 行数据被纳入冻结 fixture，HLEN/scan 一致且解码错误为 0。
