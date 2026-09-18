@@ -1,5 +1,17 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 19:01–19:03 盘后真实 Redis → Core Shadow 复核
+
+- 使用 Cobra-ion 既有 engine-next Python 3.12.3 共享虚拟环境中的 `redis 8.1.0`，对真实 `market:auction:20260918:{0920,0924,0925}` 执行只读 HGETALL，并将结果送入 Core 的公开 Engine signal path。未新增 Rabbit consumer、未改变 ACK、未写 Redis/TD、未触发通知/effect，`engine-next` 与 `t1-v2-live` 仍为生产 owner。
+- `0925` 投影在 `TOP_AMOUNT` 范围内为 `READY`，但 `600519` 不在该 200 行范围，Core 正确返回 `MISSING`；没有用零值或其它来源补齐。选取实际存在的 `000338` 后，Core 返回 `PARTIAL/FACT_ONLY`，`amount_delta_yuan=24231638`，缺失价格/盘口字段保持未知。
+- 同一真实输入重复执行时，`fact_content_hash` 与 `0920/0924/0925` projection hash 一致；证据 hash 随观测上下文变化属于预期。该结果证明真实 Redis seam 可执行和可重复，但不证明 TopN 是全市场 authority，也不构成正常开盘验收或 engine-next 替代。
+- 证据：`docs/evidence/real_redis_shadow_20260918_1901.md`；远端 artifact 为 `/home/exedev/validation/engine-core-shadow-20260918-1901-600519.json`、`/home/exedev/validation/engine-core-shadow-20260918-1902-000338.json` 和重复运行文件。
+
+### 2026-09-18 周一 M3-1 日历 guard 收口
+
+- `m3_0920_next_session_20260921.md` 增加目标交易日存在性检查；Cobra-ion 复核 `cc-m0-calendar-20260911-v3.json` 的 guard 日期包含 `2026-09-21`，声明覆盖至 `2026-12-31`。目标日期缺失时运行单直接 `BLOCKED`，不进入 recovery/fallback。
+- 该修正只改变运行前 fail-closed 证据，不改变生产服务、日历内容或 Core 计算；提交为 `bf6b43e`。
+
 ### 2026-09-18 M3-1 09:20 preflight shadow
 
 - Added only the bounded M3-1 composition: one real Redis Q2 prefetch,
