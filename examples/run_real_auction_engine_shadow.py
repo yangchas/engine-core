@@ -27,6 +27,7 @@ from engine_core import (  # noqa: E402
     AUCTION_REFERENCE_FUNCTION_ORDER,
     AuctionReferencePreparation,
     AuctionShadowStrategy,
+    build_auction_fact_report,
     DataStatus,
     DeterministicEngine,
     EngineSignal,
@@ -44,20 +45,19 @@ from engine_core import (  # noqa: E402
     canonical_json,
     semantic_hash,
 )
+from engine_core.auction_shadow import build_auction_fact_shadow_from_snapshots  # noqa: E402
 from engine_core.contracts import Provenance  # noqa: E402
 from engine_core.q2 import Q2Quote  # noqa: E402
 
 try:  # Script execution resolves sibling examples directly.
     from run_real_auction_shadow import (  # type: ignore
         ANCHOR_ORDER,
-        build_shadow_from_rows,
         build_snapshots_from_rows,
         query_rows,
     )
 except ModuleNotFoundError:  # Pytest/import execution resolves the package.
     from examples.run_real_auction_shadow import (  # type: ignore
         ANCHOR_ORDER,
-        build_shadow_from_rows,
         build_snapshots_from_rows,
         query_rows,
     )
@@ -182,25 +182,29 @@ def run_engine_shadow(
             raise TypeError("evaluation_logical_time_ms must be an integer")
         if evaluation_logical_time_ms < snapshots["0925"].logical_time_ms:
             raise ValueError("evaluation_logical_time_ms cannot precede 0925")
+    previous_segment_id = "auction_%s_%s_0920_to_0924" % (trade_date, symbol)
+    current_segment_id = "auction_%s_%s_0924_to_0925" % (trade_date, symbol)
+    previous_coverage_status = (
+        "READY"
+        if snapshots["0920"].completeness == "READY"
+        and snapshots["0924"].completeness == "READY"
+        else "PARTIAL"
+    )
+    current_coverage_status = (
+        "READY"
+        if snapshots["0924"].completeness == "READY"
+        and snapshots["0925"].completeness == "READY"
+        else "PARTIAL"
+    )
     strategy = AuctionShadowStrategy(
         scope_id=symbol,
         start_trigger_id="AUCTION_0920",
         middle_trigger_id="AUCTION_0924",
         end_trigger_id="AUCTION_0925",
-        previous_segment_id="auction_%s_%s_0920_to_0924" % (trade_date, symbol),
-        current_segment_id="auction_%s_%s_0924_to_0925" % (trade_date, symbol),
-        previous_coverage_status=(
-            "READY"
-            if snapshots["0920"].completeness == "READY"
-            and snapshots["0924"].completeness == "READY"
-            else "PARTIAL"
-        ),
-        current_coverage_status=(
-            "READY"
-            if snapshots["0924"].completeness == "READY"
-            and snapshots["0925"].completeness == "READY"
-            else "PARTIAL"
-        ),
+        previous_segment_id=previous_segment_id,
+        current_segment_id=current_segment_id,
+        previous_coverage_status=previous_coverage_status,
+        current_coverage_status=current_coverage_status,
     )
     evaluation_plan = None
     if preparation is not None:
@@ -282,8 +286,36 @@ def run_engine_shadow(
     if len(result.strategy_results) != len(ANCHOR_ORDER):
         raise RuntimeError("unexpected number of Engine strategy results")
     final_result = result.strategy_results[-1]
-    direct = build_shadow_from_rows(rows, trade_date=trade_date, symbol=symbol)
-    direct_shadow = direct["shadow"]
+    direct_fact = build_auction_fact_shadow_from_snapshots(
+        snapshots["0920"],
+        snapshots["0924"],
+        snapshots["0925"],
+        scope_type="SYMBOL",
+        scope_id=symbol,
+        previous_segment_id=previous_segment_id,
+        current_segment_id=current_segment_id,
+        amount_semantics="OBSERVED_STATE",
+        volume_semantics="UNKNOWN",
+        previous_coverage_status=previous_coverage_status,
+        current_coverage_status=current_coverage_status,
+        previous_observed_start_time_ms=snapshots["0920"].source_observation_metadata["source_record_time_ms"],
+        previous_observed_end_time_ms=snapshots["0924"].source_observation_metadata["source_record_time_ms"],
+        current_observed_start_time_ms=snapshots["0924"].source_observation_metadata["source_record_time_ms"],
+        current_observed_end_time_ms=snapshots["0925"].source_observation_metadata["source_record_time_ms"],
+    )
+    direct_shadow = direct_fact.as_trace()
+    source_times = tuple(
+        snapshots[tag].source_observation_metadata["source_record_time_ms"]
+        for tag in ANCHOR_ORDER
+    )
+    report = build_auction_fact_report(
+        direct_fact,
+        trade_date=trade_date,
+        event_id="AUCTION_0925",
+        data_origin="production_capture",
+        source_time_min_ms=min(source_times),
+        source_time_max_ms=max(source_times),
+    )
     engine_shadow = final_result.trace.get("auction_fact_shadow")
     if not isinstance(engine_shadow, Mapping):
         raise RuntimeError("Engine did not emit auction_fact_shadow")
@@ -304,6 +336,15 @@ def run_engine_shadow(
         "semantic_hash_equal": engine_shadow["content_hash"] == direct_shadow["content_hash"],
         "engine_evidence_hash": engine_shadow["evidence_hash"],
         "direct_evidence_hash": direct_shadow["evidence_hash"],
+        "report_projection": {
+            "report_id": report.report_id,
+            "status": report.status,
+            "fact_status": report.fact_status.value,
+            "semantic_hash": report.semantic_hash,
+            "evidence_hash": report.evidence_hash,
+            "text_body": report.text_body,
+            "side_effect_free": True,
+        },
         "engine_strategy_evidence_refs": final_result.evidence_refs,
         "snapshot_source_time_range": {
             tag: {

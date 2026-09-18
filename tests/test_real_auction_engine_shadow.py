@@ -72,6 +72,11 @@ def test_real_projection_traverses_public_engine_signal_path_and_matches_fact_wh
     assert result["semantic_hash_equal"] is True
     assert len(result["engine_strategy_evidence_refs"]) == 3
     assert result["snapshot_source_time_range"]["0920"]["oldest"] == 1788916803083
+    report = result["report_projection"]
+    assert report["status"] == "PARTIAL"
+    assert report["fact_status"] == "PARTIAL"
+    assert report["side_effect_free"] is True
+    assert "买入" not in report["text_body"]
 
 
 def test_prepared_references_bind_through_engine_data_ready_path():
