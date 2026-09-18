@@ -26,6 +26,12 @@ strength, or a strategy conclusion. A source result that is `UNAVAILABLE`,
 - The captured JSON fixture is
   `tests/fixtures/data/previous_day_limit_pool_20260917_real.json`, SHA-256
   `00c6376d1ca8587c15be7aadb5ff3f08d7c76f5cc45db0d782d1788daa290c89`.
+- The Cobra-ion real runner now emits the structure projection in
+  `runtime-observations/limit-pool-structure-1519.json`; copied artifact
+  SHA-256 is `5ae6704b48da85dbeb43ae6992d23d2b078c45ab41173082c99a8e022fb3c6d7`.
+  Its real result is `UNAVAILABLE` with `row_count=null` because the source
+  still lacks historical availability evidence; this is the intended
+  fail-closed result.
 
 ## Verification
 
