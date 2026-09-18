@@ -48,3 +48,28 @@ THEME_MAPPING_AUTHORITY = UNKNOWN
 LEGACY_THEME_STRATEGY_PARITY = NOT_PROVEN
 PRODUCTION_USE = NOT_AUTHORIZED
 ```
+
+## Cobra-ion 真实 Redis 探查
+
+使用现有共享 Python 3.12 环境运行只读 `run_real_cache_inventory.py`，没有写 Redis、
+没有读取 Rabbit、没有调用网络 fallback。结果：
+
+```text
+config:plate_mapping:s2p  = hash, 2914 fields, JSON-list values
+market:stock_plate        = hash, 5955 fields, plain-string values
+market:stock_reason       = hash, 2486 fields, plain-string values
+config:plate_mapping:info = missing
+config:plate_mapping:full_sync_info = missing
+```
+
+真实日分区也显示 `cache:hot_plates:2026-09-18` 有 50 行、
+`cache:yest_limit_pool:2026-09-17` 有 47 行，但两者 metadata 均没有可验证的
+`available_at_ms`/`field_units`。本次探查 artifact：
+
+```text
+/home/exedev/validation/engine-core-theme-map-20260918.json
+sha256=caf8865a022417f49b55e57d2396b6ceb37b859bc4c23268356f4aa29c139d55
+```
+
+这关闭了真实 Redis 方言和覆盖规模的观察证据，但没有关闭历史 replay 可用时间、
+主题字段单位或旧 consumer 同输入 parity，因此仍不授权接入生产主题策略。
