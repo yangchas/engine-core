@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,8 +16,10 @@ from engine_core import (
     build_a_share_session_plan,
     build_calendar_snapshot,
     build_q2_projection,
+    canonical_json,
     read_redis_auction_projection,
 )
+from engine_core.theme_auction_delta_strategy import build_legacy_theme_delta_shadow_trace
 
 
 SPEC = importlib.util.spec_from_file_location(
@@ -162,6 +165,56 @@ def _reference_preparation(trade_date: str, knowledge_as_of_ms: int, *, availabl
         previous_trade_date=previous_trade_date,
         knowledge_as_of_ms=knowledge_as_of_ms,
         results=tuple(results),
+    )
+
+
+def _theme_delta_result(trade_date: str, knowledge_as_of_ms: int, *, status=DataStatus.READY):
+    return DataResult(
+        request_id=f"test:{trade_date}:theme_auction_delta_compat",
+        function_id="theme_auction_delta_compat",
+        status=status,
+        data={
+            "facts": (
+                {
+                    "theme_id": "theme-a",
+                    "symbol_count": 1,
+                    "amount_0925": 100.0,
+                    "amount_delta_24_25": 60_000_000.0,
+                    "amount_ratio_avg": 2.0,
+                    "bid_amount_delta_24_25": 0.0,
+                    "change_pct_delta_avg": 1.0,
+                    "positive_delta_count": 1,
+                    "evidence_refs": ("fixture://theme/a",),
+                },
+            )
+            if status is not DataStatus.UNAVAILABLE
+            else (),
+        },
+        actual_source="fixture" if status is not DataStatus.UNAVAILABLE else None,
+        requested_trade_date=trade_date,
+        actual_trade_date=trade_date if status is not DataStatus.UNAVAILABLE else None,
+        effective_at_ms=knowledge_as_of_ms - 1 if status is not DataStatus.UNAVAILABLE else None,
+        available_at_ms=knowledge_as_of_ms - 1 if status is not DataStatus.UNAVAILABLE else None,
+        observed_at_ms=knowledge_as_of_ms - 1,
+        schema_version=1,
+        completeness=1.0 if status is DataStatus.READY else 0.0,
+    )
+
+
+def _run_continuous_with_theme(fixture: dict, theme_result: DataResult):
+    trade_date = fixture["trade_date"]
+    evaluation_times = _evaluation_times(trade_date)
+    calendar, session_plan = _session_contract(trade_date)
+    return MODULE.run_continuous_session_shadow(
+        auction_rows=_fixture_rows_without_final_anchor(fixture),
+        opening_projection=_q2_projection(trade_date, "09:32:00", "09:32:00"),
+        trade_date=trade_date,
+        symbol="600519",
+        calendar=calendar,
+        session_plan=session_plan,
+        preparation=_reference_preparation(trade_date, evaluation_times["0925"] - 1_000),
+        theme_delta_result=theme_result,
+        evaluation_times_ms=evaluation_times,
     )
 
 
@@ -360,6 +413,118 @@ def test_continuous_shadow_rejects_unknown_reference_availability():
             ),
             evaluation_times_ms=evaluation_times,
         )
+
+
+def test_continuous_theme_matches_direct_trace_and_runs_once_at_0925():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    trade_date = fixture["trade_date"]
+    evaluation_times = _evaluation_times(trade_date)
+    theme_result = _theme_delta_result(trade_date, evaluation_times["0925"] - 1_000)
+
+    direct = build_legacy_theme_delta_shadow_trace(theme_result.data["facts"])
+    result = _run_continuous_with_theme(fixture, theme_result)
+    auction_results = [
+        item
+        for item in result["strategy_results"]
+        if item["delegated_strategy_id"] == "auction-shadow-v1"
+    ]
+    theme_results = [
+        item["child_trace"]["theme_delta_shadow"]
+        for item in auction_results
+        if "theme_delta_shadow" in item["child_trace"]
+    ]
+    assert len(theme_results) == 1
+    assert theme_results[0]["function_id"] == "theme_auction_delta_compat"
+    assert canonical_json(theme_results[0]["shadow"]) == canonical_json(direct)
+    assert theme_results[0]["shadow"]["signal_counts"] == {"增量转强": 1}
+    assert result["pending_evaluations"] == ()
+
+
+def test_continuous_theme_unavailable_is_not_promoted():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    trade_date = fixture["trade_date"]
+    evaluation_times = _evaluation_times(trade_date)
+    result = _run_continuous_with_theme(
+        fixture,
+        _theme_delta_result(
+            trade_date,
+            evaluation_times["0925"] - 1_000,
+            status=DataStatus.UNAVAILABLE,
+        ),
+    )
+    final_auction = next(
+        item
+        for item in result["strategy_results"]
+        if item["trigger_id"] == "AUCTION_0925"
+    )
+    theme_shadow = final_auction["child_trace"]["theme_delta_shadow"]
+    assert theme_shadow["data_status"] == DataStatus.UNAVAILABLE.value
+    assert theme_shadow["shadow"] is None
+    assert theme_shadow["reason_codes"] == ["THEME_DATA_NOT_READY"]
+
+
+def test_continuous_theme_only_binds_without_reference_prefetch():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    trade_date = fixture["trade_date"]
+    evaluation_times = _evaluation_times(trade_date)
+    calendar, session_plan = _session_contract(trade_date)
+    result = MODULE.run_continuous_session_shadow(
+        auction_rows=_fixture_rows_without_final_anchor(fixture),
+        opening_projection=_q2_projection(trade_date, "09:32:00", "09:32:00"),
+        trade_date=trade_date,
+        symbol="600519",
+        calendar=calendar,
+        session_plan=session_plan,
+        theme_delta_result=_theme_delta_result(
+            trade_date,
+            evaluation_times["0925"] - 1_000,
+        ),
+        evaluation_times_ms=evaluation_times,
+    )
+    assert result["processed_signals"] == 9
+    assert result["pending_evaluations"] == ()
+    final_auction = next(
+        item
+        for item in result["strategy_results"]
+        if item["trigger_id"] == "AUCTION_0925"
+    )
+    assert final_auction["child_trace"]["theme_delta_shadow"]["shadow"]["signal_counts"] == {
+        "增量转强": 1
+    }
+
+
+def test_continuous_theme_rejects_wrong_function_identity():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    trade_date = fixture["trade_date"]
+    evaluation_times = _evaluation_times(trade_date)
+    wrong = DataResult(
+        request_id="wrong-theme",
+        function_id="other_function",
+        status=DataStatus.UNAVAILABLE,
+        data=None,
+        actual_source=None,
+        requested_trade_date=trade_date,
+        actual_trade_date=None,
+        effective_at_ms=None,
+        available_at_ms=None,
+        observed_at_ms=evaluation_times["0925"] - 1,
+        schema_version=1,
+        completeness=0.0,
+    )
+    with pytest.raises(ValueError, match="function_id"):
+        _run_continuous_with_theme(fixture, wrong)
+
+
+def test_continuous_theme_rejects_future_availability():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    trade_date = fixture["trade_date"]
+    evaluation_times = _evaluation_times(trade_date)
+    future = replace(
+        _theme_delta_result(trade_date, evaluation_times["0925"] - 1_000),
+        available_at_ms=evaluation_times["0925"] + 1,
+    )
+    with pytest.raises(ValueError, match="after knowledge cutoff"):
+        _run_continuous_with_theme(fixture, future)
 
 
 def test_continuous_shadow_rejects_cross_trade_date_projection():

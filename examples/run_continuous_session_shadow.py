@@ -24,6 +24,7 @@ from engine_core import (  # noqa: E402
     AuctionReferencePreparation,
     AuctionShadowStrategy,
     DataStatus,
+    DataResult,
     DeterministicEngine,
     EngineSignal,
     FrozenDataBundle,
@@ -37,7 +38,6 @@ from engine_core import (  # noqa: E402
     TradingCalendarSnapshot,
     WindowManager,
     WindowSpec,
-    build_auction_reference_bundle,
     semantic_hash,
 )
 from engine_core.contracts import StrategyResult  # noqa: E402
@@ -234,7 +234,12 @@ class ContinuousSessionShadowStrategy:
 
     strategy_id = "continuous-session-shadow-v1"
 
-    def __init__(self, *, symbol: str) -> None:
+    def __init__(
+        self,
+        *,
+        symbol: str,
+        theme_delta_function_id: str | None = None,
+    ) -> None:
         self._auction = AuctionShadowStrategy(
             scope_id=symbol,
             start_trigger_id="AUCTION_0920",
@@ -244,6 +249,7 @@ class ContinuousSessionShadowStrategy:
             current_segment_id="auction_reprice_" + symbol,
             previous_coverage_status="PARTIAL",
             current_coverage_status="PARTIAL",
+            theme_delta_function_id=theme_delta_function_id,
         )
         self._opening = OpeningShadowStrategy(scope_id=symbol)
 
@@ -281,6 +287,7 @@ def run_continuous_session_shadow(
     calendar: TradingCalendarSnapshot,
     session_plan: SessionPlan,
     preparation: AuctionReferencePreparation | None = None,
+    theme_delta_result: DataResult | None = None,
     evaluation_times_ms: Mapping[str, int] | None = None,
     run_mode: str = "NORMAL",
 ) -> dict[str, Any]:
@@ -315,6 +322,7 @@ def run_continuous_session_shadow(
         calendar=calendar,
         session_plan=session_plan,
         preparation=preparation,
+        theme_delta_result=theme_delta_result,
         evaluation_times_ms=evaluation_times_ms,
         run_mode=run_mode,
     )
@@ -329,6 +337,7 @@ def run_continuous_redis_session_shadow(
     calendar: TradingCalendarSnapshot,
     session_plan: SessionPlan,
     preparation: AuctionReferencePreparation | None = None,
+    theme_delta_result: DataResult | None = None,
     evaluation_times_ms: Mapping[str, int] | None = None,
     run_mode: str = "NORMAL",
 ) -> dict[str, Any]:
@@ -363,6 +372,7 @@ def run_continuous_redis_session_shadow(
         calendar=calendar,
         session_plan=session_plan,
         preparation=preparation,
+        theme_delta_result=theme_delta_result,
         evaluation_times_ms=evaluation_times_ms,
         run_mode=run_mode,
     )
@@ -377,6 +387,7 @@ def _run_projection_session(
     calendar: TradingCalendarSnapshot,
     session_plan: SessionPlan,
     preparation: AuctionReferencePreparation | None,
+    theme_delta_result: DataResult | None,
     evaluation_times_ms: Mapping[str, int] | None,
     run_mode: str,
 ) -> dict[str, Any]:
@@ -399,6 +410,10 @@ def _run_projection_session(
         evaluation_times_ms=evaluation_times,
         run_mode=run_mode,
     )
+    theme_delta_function_id = _validate_theme_delta_result(
+        theme_delta_result,
+        trade_date=trade_date,
+    )
     coordinator = SessionRuntimeCoordinator(
         trade_date=trade_date,
         calendar=calendar,
@@ -415,7 +430,10 @@ def _run_projection_session(
             "AUCTION_0925",
         ),
     )
-    strategy = ContinuousSessionShadowStrategy(symbol=symbol)
+    strategy = ContinuousSessionShadowStrategy(
+        symbol=symbol,
+        theme_delta_function_id=theme_delta_function_id,
+    )
     engine = DeterministicEngine(
         MarketStateReducer(),
         WindowManager((WindowSpec("session", 0, 10**15),)),
@@ -425,6 +443,7 @@ def _run_projection_session(
     )
     signal_seq = 1
     reference_bundle_hash = None
+    data_bundle_hash = None
     timer_firings: list[dict[str, Any]] = []
     for tag in ANCHOR_ORDER:
         projection = auction_projections[tag]
@@ -482,8 +501,13 @@ def _run_projection_session(
             "firing_time_ms": logical_time_ms,
             "timer_firing_content_hash": firing.content_hash,
         }
-        if tag == "0925" and preparation is not None:
-            timer_payload["data_requirements"] = AUCTION_REFERENCE_FUNCTION_ORDER
+        if tag == "0925" and (
+            preparation is not None or theme_delta_result is not None
+        ):
+            timer_payload["data_requirements"] = _continuous_reference_order(
+                theme_delta_function_id,
+                include_references=preparation is not None,
+            )
         engine.submit(
             EngineSignal(
                 f"continuous-timer-{tag}",
@@ -495,12 +519,21 @@ def _run_projection_session(
         )
         signal_seq += 1
         current = engine.run_until_empty()
-        if tag == "0925" and preparation is not None:
+        if tag == "0925" and (
+            preparation is not None or theme_delta_result is not None
+        ):
             pending = current.pending_evaluations
             if len(pending) != 1:
                 raise RuntimeError("expected one pending 0925 evaluation")
-            bundle = build_auction_reference_bundle(pending[0], preparation)
-            reference_bundle_hash = bundle.content_hash
+            bundle = _build_continuous_bundle(
+                pending[0],
+                preparation=preparation,
+                theme_delta_result=theme_delta_result,
+                theme_delta_function_id=theme_delta_function_id,
+            )
+            data_bundle_hash = bundle.content_hash
+            if theme_delta_result is None:
+                reference_bundle_hash = bundle.content_hash
             engine.submit(
                 EngineSignal(
                     "continuous-data-ready-0925",
@@ -591,6 +624,7 @@ def _run_projection_session(
         "processed_signals": current.processed_signals,
         "strategy_result_count": len(result_history),
         "reference_bundle_hash": reference_bundle_hash,
+        "data_bundle_hash": data_bundle_hash,
         "opening_status": final.trace["child_trace"].get("fact_status"),
         "strategy_results": tuple(_json_ready(result.trace) for result in result_history),
         "pending_evaluations": tuple(
@@ -613,3 +647,88 @@ __all__ = [
     "run_continuous_session_shadow",
     "run_continuous_redis_session_shadow",
 ]
+
+
+_THEME_DELTA_FUNCTION_ID = "theme_auction_delta_compat"
+
+
+def _validate_theme_delta_result(
+    result: DataResult | None,
+    *,
+    trade_date: str,
+) -> str | None:
+    """Validate one already-computed compatibility fact input.
+
+    The continuous runner accepts a frozen ``DataResult`` only; it never
+    performs theme aggregation, mapping lookup, Redis access, or fallback.
+    ``UNAVAILABLE``/``MISSING`` results remain diagnostic and are still bound
+    to the evaluation so the strategy can report the missing state truthfully.
+    """
+
+    if result is None:
+        return None
+    if not isinstance(result, DataResult):
+        raise TypeError("theme_delta_result must be DataResult")
+    if result.function_id != _THEME_DELTA_FUNCTION_ID:
+        raise ValueError(
+            "theme_delta_result function_id must be " + _THEME_DELTA_FUNCTION_ID
+        )
+    if result.requested_trade_date != trade_date:
+        raise ValueError("theme_delta_result requested_trade_date does not match session")
+    if result.actual_trade_date not in (None, trade_date):
+        raise ValueError("theme_delta_result actual_trade_date does not match session")
+    return result.function_id
+
+
+def _continuous_reference_order(
+    theme_delta_function_id: str | None,
+    *,
+    include_references: bool,
+) -> tuple[str, ...]:
+    """Return the single 0925 requirement order for this run."""
+
+    order = AUCTION_REFERENCE_FUNCTION_ORDER if include_references else ()
+    if theme_delta_function_id is None:
+        return order
+    if theme_delta_function_id in order:
+        raise ValueError("theme delta function collides with auction reference order")
+    return (*order, theme_delta_function_id)
+
+
+def _build_continuous_bundle(
+    pending: Any,
+    *,
+    preparation: AuctionReferencePreparation | None,
+    theme_delta_result: DataResult | None,
+    theme_delta_function_id: str | None,
+) -> FrozenDataBundle:
+    """Bind existing reference and optional theme results once to one evaluation."""
+
+    expected_order = _continuous_reference_order(
+        theme_delta_function_id,
+        include_references=preparation is not None,
+    )
+    if tuple(pending.function_order) != expected_order:
+        raise ValueError("0925 pending function order does not match supplied inputs")
+    results: dict[str, DataResult] = {}
+    if preparation is not None:
+        if tuple(preparation.results[i][0] for i in range(len(preparation.results))) != AUCTION_REFERENCE_FUNCTION_ORDER:
+            raise ValueError("auction reference preparation order is invalid")
+        results.update(preparation.as_mapping())
+    if theme_delta_result is not None:
+        results[theme_delta_result.function_id] = theme_delta_result
+    if set(results) != set(expected_order):
+        missing = sorted(set(expected_order).difference(results))
+        extra = sorted(set(results).difference(expected_order))
+        detail = []
+        if missing:
+            detail.append("missing=" + ",".join(missing))
+        if extra:
+            detail.append("unexpected=" + ",".join(extra))
+        raise ValueError("0925 bundle inputs do not match requirements: " + "; ".join(detail))
+    return FrozenDataBundle.from_results(
+        evaluation_id=pending.evaluation_id,
+        knowledge_as_of_ms=pending.knowledge_as_of_ms,
+        function_order=expected_order,
+        results_by_function=results,
+    )
