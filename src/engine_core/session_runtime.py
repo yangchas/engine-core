@@ -91,6 +91,7 @@ class SessionRuntimeCoordinator:
         session_plan: SessionPlan,
         timer_specs: Iterable[TimerSpec],
         required_reference_functions: Iterable[str] = (),
+        q2_optional_timer_ids: Iterable[str] = (),
     ) -> None:
         parsed = parse_trade_date(trade_date)
         if parsed.isoformat() != trade_date:
@@ -120,16 +121,26 @@ class SessionRuntimeCoordinator:
             raise ValueError("required_reference_functions must contain non-empty ids")
         if len(set(required)) != len(required):
             raise ValueError("required_reference_functions must be unique")
+        q2_optional = tuple(q2_optional_timer_ids)
+        if any(not isinstance(item, str) or not item for item in q2_optional):
+            raise ValueError("q2_optional_timer_ids must contain non-empty ids")
+        if len(set(q2_optional)) != len(q2_optional):
+            raise ValueError("q2_optional_timer_ids must be unique")
+        unknown_optional = set(q2_optional).difference(item.timer_id for item in specs)
+        if unknown_optional:
+            raise ValueError("q2_optional_timer_ids contains an unknown timer_id")
 
         self.trade_date = trade_date
         self.calendar = calendar
         self.session_plan = session_plan
         self.timer_specs = specs
         self.required_reference_functions = required
+        self.q2_optional_timer_ids = q2_optional
         self._frontier_ms: Optional[int] = None
         self._last_poll_ms: Optional[int] = None
         self._fired: dict[str, TimerFiring] = {}
         self._pending: dict[str, TimerFiring] = {}
+        self._deferred: set[str] = set()
 
     @property
     def frontier_ms(self) -> Optional[int]:
@@ -164,6 +175,11 @@ class SessionRuntimeCoordinator:
         if self._last_poll_ms is not None and as_of_ms < self._last_poll_ms:
             raise ValueError("runtime observation time cannot move backwards")
 
+        logical_previous_ms = (
+            None
+            if self._pending or self._deferred
+            else self._frontier_ms
+        )
         readiness = assess_startup_readiness(
             self.trade_date,
             as_of_ms,
@@ -173,27 +189,51 @@ class SessionRuntimeCoordinator:
             required_reference_functions=self.required_reference_functions,
             reference_results=reference_results,
             timer_specs=self.timer_specs,
-            previous_time_ms=self._frontier_ms,
+            previous_time_ms=logical_previous_ms,
             already_fired=self._fired,
             origin=origin,
         )
+        # A pending or deferred firing is still part of the current logical
+        # frontier.  Re-evaluate from the day start so an earlier timer is not
+        # lost when another timer at the same poll is acknowledged first.
         due = due_timer_firings(
             self.session_plan,
             self.timer_specs,
-            previous_time_ms=self._frontier_ms,
+            previous_time_ms=logical_previous_ms,
             current_time_ms=as_of_ms,
             already_fired=self._fired,
             origin=origin,
         )
 
         if readiness.status == "BLOCKED":
-            dispatchable: tuple[TimerFiring, ...] = ()
-            deferred = tuple(item.timer_id for item in due)
+            # Auction fact collection is independently TD-owned in the
+            # current shadow path.  Explicitly configured q2-optional timers
+            # may therefore dispatch when the only blocking reason is Q2;
+            # all other blocked work remains deferred.  This is a small node
+            # policy, not a workflow engine or fallback mechanism.
+            q2_only_blocked = bool(readiness.reasons) and all(
+                reason.startswith("q2_") for reason in readiness.reasons
+            )
+            if q2_only_blocked:
+                dispatchable = tuple(
+                    self._pending.setdefault(item.timer_id, item)
+                    for item in due
+                    if item.timer_id in self.q2_optional_timer_ids
+                )
+            else:
+                dispatchable = ()
+            deferred = tuple(
+                item.timer_id
+                for item in due
+                if item.timer_id not in {firing.timer_id for firing in dispatchable}
+            )
         else:
             dispatchable = tuple(
                 self._pending.setdefault(item.timer_id, item) for item in due
             )
             deferred = ()
+        self._deferred.update(deferred)
+        self._deferred.difference_update(item.timer_id for item in dispatchable)
         self._last_poll_ms = as_of_ms
         return RuntimePoll(
             trade_date=self.trade_date,
@@ -222,6 +262,7 @@ class SessionRuntimeCoordinator:
             raise ValueError("firing does not match pending poll result")
         self._fired[firing.timer_id] = firing
         self._pending.pop(firing.timer_id, None)
+        self._deferred.discard(firing.timer_id)
         self._frontier_ms = max(self._frontier_ms or firing.fired_time_ms, firing.fired_time_ms)
 
     def state_hash(self) -> str:
@@ -242,6 +283,7 @@ class SessionRuntimeCoordinator:
                     (timer_id, firing.content_hash)
                     for timer_id, firing in sorted(self._pending.items())
                 ),
+                "deferred": tuple(sorted(self._deferred)),
             }
         )
 

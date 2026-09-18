@@ -32,13 +32,14 @@ from engine_core import (  # noqa: E402
     AUCTION_REFERENCE_FUNCTION_ORDER,
     AuctionReferencePreparation,
     FreshnessPolicy,
+    Q2ProjectionSnapshot,
     SessionPlan,
+    SessionRuntimeCoordinator,
     TimerFiring,
     TimerSpec,
     TradingCalendarSnapshot,
     assess_startup_readiness,
     build_a_share_session_plan,
-    due_timer_firings,
     semantic_hash,
 )
 
@@ -423,27 +424,29 @@ def _capture_node(
     calendar: TradingCalendarSnapshot,
     plan: SessionPlan,
     auction_reference_preparation: AuctionReferencePreparation | None = None,
+    q2_projection: Q2ProjectionSnapshot | None = None,
 ) -> dict[str, Any]:
     # Re-read Q2 once at each Core node.  This is a bounded readiness
     # observation, not a hot-path poll and not a second scheduler.  It closes
     # the gap where startup can see MISSING Q2 but a later node can observe a
     # recovered (possibly PARTIAL/STALE) cohort.
     q2_observation_error = None
-    try:
-        q2_projection = _redis_projection(
-            trade_date=trade_date,
-            observed_at=observed_at,
-            stale_after_ms=stale_after_ms,
-        )
-    except Exception as exc:
-        # Auction facts are independently TD-owned.  A bounded Q2 readiness
-        # probe failure must be visible but must not suppress that fact path.
-        # Opening facts require Q2 and therefore preserve the previous
-        # fail-closed behavior by re-raising the observation error.
-        if firing.timer_id == "OPENING_0932":
-            raise
-        q2_projection = None
-        q2_observation_error = f"{type(exc).__module__}.{type(exc).__name__}"
+    if q2_projection is None:
+        try:
+            q2_projection = _redis_projection(
+                trade_date=trade_date,
+                observed_at=observed_at,
+                stale_after_ms=stale_after_ms,
+            )
+        except Exception as exc:
+            # Auction facts are independently TD-owned.  A bounded Q2
+            # readiness probe failure must be visible but must not suppress
+            # that fact path.  Opening facts require Q2 and therefore
+            # preserve the previous fail-closed behavior by re-raising.
+            if firing.timer_id == "OPENING_0932":
+                raise
+            q2_projection = None
+            q2_observation_error = f"{type(exc).__module__}.{type(exc).__name__}"
     node_readiness = asdict(
         assess_startup_readiness(
             trade_date=trade_date,
@@ -598,25 +601,34 @@ def run_live_morning_shadow(
     startup_sha = _atomic_write_once(startup_path, startup)
 
     late_start = local_first > start_dt
-    previous_ms = None if late_start else _epoch_ms(first_now)
     origin = "RECOVERY_CATCHUP" if late_start else "NORMAL"
     fired_ids: set[str] = set()
     nodes: list[dict[str, Any]] = []
     node_file_shas: dict[str, str] = {}
+    coordinator = SessionRuntimeCoordinator(
+        trade_date=trade_date,
+        calendar=calendar,
+        session_plan=plan,
+        timer_specs=CORE_TIMER_SPECS,
+        # The coordinator owns timer identity only.  Each node's capture
+        # boundary still performs its own input gate: auction may proceed
+        # with an independent TD path, while opening raises if its Q2 read is
+        # unavailable.  This avoids a second Q2 read merely to calculate due
+        # timers and preserves the existing bounded-shadow behavior.
+        q2_optional_timer_ids=("AUCTION_0926", "OPENING_0932"),
+    )
     while True:
         now = now_fn()
         local_now = now.astimezone(LOCAL_TZ)
         if local_now > stop_dt:
             break
         current_ms = _epoch_ms(now)
-        firings = due_timer_firings(
-            plan,
-            CORE_TIMER_SPECS,
-            previous_time_ms=previous_ms,
-            current_time_ms=current_ms,
-            already_fired=tuple(sorted(fired_ids)),
+        readiness_poll = coordinator.poll(
+            as_of_ms=current_ms,
+            q2=None,
             origin=origin,
         )
+        firings = list(readiness_poll.dispatchable_firings)
         for firing in firings:
             if firing.timer_id in fired_ids:
                 continue
@@ -649,9 +661,9 @@ def run_live_morning_shadow(
             node_file_shas[firing.timer_id] = _atomic_write_once(node_path, node)
             nodes.append(node)
             fired_ids.add(firing.timer_id)
+            coordinator.acknowledge(firing)
         if len(fired_ids) == len(CORE_TIMER_SPECS):
             break
-        previous_ms = current_ms
         if poll_seconds:
             sleep_fn(poll_seconds)
 

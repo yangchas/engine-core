@@ -58,6 +58,20 @@ def _coordinator():
     )
 
 
+def _mixed_coordinator():
+    calendar = _calendar()
+    return SessionRuntimeCoordinator(
+        trade_date=TRADE_DATE,
+        calendar=calendar,
+        session_plan=build_a_share_session_plan(TRADE_DATE, calendar),
+        timer_specs=(
+            TimerSpec("AUCTION_0926", "09:26:00"),
+            TimerSpec("OPENING_0932", "09:32:00"),
+        ),
+        q2_optional_timer_ids=("AUCTION_0926",),
+    )
+
+
 def test_blocked_q2_defers_then_ready_q2_dispatches_and_acknowledges_once():
     at_0926 = local_datetime_ms(TRADE_DATE, "09:26:00")
     coordinator = _coordinator()
@@ -140,6 +154,43 @@ def test_runtime_session_identity_is_validated_at_construction():
             session_plan=build_a_share_session_plan(TRADE_DATE, calendar),
             timer_specs=(),
         )
+
+
+def test_q2_optional_timer_dispatches_but_q2_required_timer_stays_deferred():
+    at_0933 = local_datetime_ms(TRADE_DATE, "09:33:00")
+    coordinator = _mixed_coordinator()
+
+    without_q2 = coordinator.poll(as_of_ms=at_0933, q2=None)
+    assert tuple(item.timer_id for item in without_q2.dispatchable_firings) == (
+        "AUCTION_0926",
+    )
+    assert without_q2.deferred_timer_ids == ("OPENING_0932",)
+    coordinator.acknowledge(without_q2.dispatchable_firings[0])
+
+    with_q2 = coordinator.poll(as_of_ms=at_0933 + 1_000, q2=_q2(at_0933 + 1_000))
+    assert tuple(item.timer_id for item in with_q2.dispatchable_firings) == (
+        "OPENING_0932",
+    )
+    coordinator.acknowledge(with_q2.dispatchable_firings[0])
+    assert coordinator.completed_timer_ids == ("AUCTION_0926", "OPENING_0932")
+
+
+def test_q2_optional_timer_does_not_bypass_reference_block():
+    calendar = _calendar()
+    coordinator = SessionRuntimeCoordinator(
+        trade_date=TRADE_DATE,
+        calendar=calendar,
+        session_plan=build_a_share_session_plan(TRADE_DATE, calendar),
+        timer_specs=(TimerSpec("AUCTION_0926", "09:26:00"),),
+        required_reference_functions=("previous_day_stats",),
+        q2_optional_timer_ids=("AUCTION_0926",),
+    )
+    result = coordinator.poll(
+        as_of_ms=local_datetime_ms(TRADE_DATE, "09:26:00"),
+        q2=None,
+    )
+    assert result.dispatchable_firings == ()
+    assert result.deferred_timer_ids == ("AUCTION_0926",)
 
 
 def test_runtime_poll_rejects_mismatched_readiness_trade_date():
