@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
-from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Iterable, Mapping, Sequence, Tuple
 
 from .contracts import (
     EVIDENCE_HASH_CONTRACT_VERSION,

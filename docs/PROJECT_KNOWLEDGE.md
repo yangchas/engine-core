@@ -519,3 +519,20 @@ Evidence：
 - [OPEN] This closes only the bounded TopN read path. Full-universe auction
   authority, 0920→0924 adjacency, AuctionState/freeze ownership and
   engine-next replacement are still open.
+
+# [VERIFIED] 2026-09-18 legacy theme auction-delta compatibility wheel
+
+- Core now contains an explicitly compatibility-only
+  `LegacyThemeAuctionDeltaCompatV1` wheel. It preserves the deployed
+  `engine-next` numeric behavior (legacy weighting, zero-fill, and averaging)
+  without importing the legacy runtime or emitting strategy labels. The
+  conservative Core fact wheel remains separate and keeps missing values.
+- A real read-only Cobra-ion differential over the Redis 0924/0925 TopN
+  intersection matched the deployed legacy helper for all 119 themes and all
+  five compared numeric fields. Common normalized rows: 175; mapped rows: 170.
+  Artifact SHA-256:
+  `cbaef1aeb495a0efaa6e429e0d37187edc9403bdaac940516ad7b295aef6dc2e`.
+- This is bounded numeric Shadow parity only. It does not prove full-universe
+  coverage, historical availability, producer batch equivalence, strategy
+  labels, report parity, or replacement readiness. See
+  `docs/evidence/legacy_theme_auction_delta_compat_20260918.md`.
