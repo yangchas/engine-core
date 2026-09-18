@@ -16,6 +16,7 @@ from engine_core import (
     compare_adjacent_segments,
     semantic_hash,
 )
+from engine_core.auction_shadow import build_auction_fact_shadow
 
 
 FIXTURE = Path(__file__).parent / "fixtures/facts/auction_600519_20260903.json"
@@ -186,3 +187,53 @@ def test_600519_fixture_mapping_and_adjacent_facts_match_source_formula():
     assert comparison.price_change == "PRICE_WEAKER"
     assert comparison.volume_change == "VOLUME_EXPANDING"
     assert comparison.order_book_change == "PRESSURE_IMPROVING"
+
+
+def test_core_auction_shadow_matches_verified_legacy_numeric_delta_slice():
+    """Compare only numeric facts from the old pure auction shadow helper.
+
+    The legacy helper's ``direction`` and ``labels`` are intentionally not
+    migrated here: they are strategy-facing interpretations and remain
+    outside this fact-only parity slice.
+    """
+
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    start = _snapshot(fixture, "pre_auction_0915")
+    at_0920 = _snapshot(fixture, "auction_0920")
+    at_0924 = _snapshot(fixture, "auction_0924")
+    segment_a = build_segment_frame(
+        "auction_trial_600519",
+        start,
+        at_0920,
+        scope_type="SYMBOL",
+        scope_id=fixture["symbol"],
+        amount_semantics="OBSERVED_STATE",
+        volume_semantics="UNKNOWN",
+        coverage_status="PARTIAL",
+        observed_start_time_ms=1788398108000,
+        observed_end_time_ms=1788398403000,
+    )
+    segment_b = build_segment_frame(
+        "auction_reprice_600519",
+        at_0920,
+        at_0924,
+        scope_type="SYMBOL",
+        scope_id=fixture["symbol"],
+        amount_semantics="OBSERVED_STATE",
+        volume_semantics="UNKNOWN",
+        coverage_status="READY",
+        observed_start_time_ms=1788398403000,
+        observed_end_time_ms=1788398650000,
+    )
+    shadow = build_auction_fact_shadow(segment_a, segment_b)
+
+    # These values are the verified output of the old
+    # engine_next.runtime.auction_shadow numeric delta helper on the same
+    # captured 0920 -> 0924 source rows.
+    assert shadow.metrics == {
+        "price_delta_milli": -2060,
+        "amount_delta_yuan": 4407516,
+        "rest_bid_delta_yuan": 648770,
+        "rest_ask_delta_yuan": -129960,
+        "pressure_delta_yuan": 778730,
+    }
