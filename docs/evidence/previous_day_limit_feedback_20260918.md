@@ -55,3 +55,7 @@ Intentional safety differences are recorded rather than hidden:
 - a missing return or missing source-record timestamp yields `PARTIAL` rather
   than the legacy `available` label;
 - plate grouping is not copied until its mapping authority is verified.
+
+The fact is now an optional section of the existing build-only
+`AuctionFactReportArtifact`; semantic and evidence identities are carried
+through the report projection, with no delivery/effect behavior added.
