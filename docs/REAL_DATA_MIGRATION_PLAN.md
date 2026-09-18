@@ -1,5 +1,21 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 19:38 engine-next loader 与 Core 真实竞价投影交叉复核
+
+- 使用正式 `engine-next` release `20260903_e272842` 的既有
+  `IntradayDataHub.load_auction_snapshots()`，在 Redis 写保护下只读检查
+  `2026-09-18` 的三个竞价槽位：`0920=200`、`0924=200`、`0925=200`。
+  因此早先某次采集中的 `0924` 缺失不能泛化为今天当前投影的状态；历史
+  capture 仍按当时的证据保存，不回写。
+- 对 `000338` 通过 Core 公开 Engine 队列重复运行两次，`6` 个 signal、`3`
+  个事实结果，direct/engine `fact_content_hash` 均为
+  `e1904a88aa98f5503865054b7388fcc56d14d1427e94c583308c1cee85496c7e`，
+  业务事实一致；状态保持 `PARTIAL/FACT_ONLY`，未推导交易结论。
+- 当前交叉证据只证明 Redis loader seam 与 Core 组合一致，不证明全市场
+  authority、Rabbit batch 归属、上游 AuctionState 同源，或可进行历史 cutoff
+  replay。Core 仍未取得生产替代资格。
+- 证据：`docs/evidence/real_auction_loader_core_shadow_20260918_1938.md`。
+
 ### 2026-09-18 19:36 盘后真实 Q2 / 生产状态复核
 
 - Cobra-ion server time was `2026-09-18 19:36:15 CST`; this is outside the
