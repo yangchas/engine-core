@@ -556,3 +556,7 @@ Evidence：
   `READY`, 37 `PARTIAL`), both projections `READY`, overall `OBSERVED`.
   Artifact SHA-256:
   `f03fa1f227e8ed263f4383e158ed09c9058067ac138eb7043a684e1f5a432248`.
+- A bounded `run_real_theme_delta_strategy_shadow.py` runner now applies the
+  pure rule to the explicit compatibility facts on the same Redis path. It
+  remains fact-only/read-only and is the next input for legacy-vs-Core Shadow;
+  it does not emit production strategy/effect output.
