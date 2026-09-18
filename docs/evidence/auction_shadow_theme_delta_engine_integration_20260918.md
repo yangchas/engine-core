@@ -32,6 +32,8 @@ network access. The default `AuctionShadowStrategy` behavior is unchanged when
   completion order does not change the trace identity.
 - Evidence references are normalized, deduplicated, and promoted to the
   top-level `StrategyResult.evidence_refs`.
+- `UNAVAILABLE`, `STALE`, `MISSING`, `INVALID`, and `ERROR` results are
+  fail-closed: residual payloads are not promoted to a theme fact trace.
 - The output remains `FACT_ONLY`; no BUY/PASS/EV/effect decision is emitted.
 
 ## Verification
@@ -40,7 +42,7 @@ Local verification on the final implementation:
 
 ```text
 python -m pytest -q -p no:cacheprovider
-570 passed
+571 passed
 
 python -m compileall -q src tests examples
 PASS
