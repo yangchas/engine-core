@@ -1,5 +1,11 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-18 M1 启动替代差距审计
+
+- 对照部署中的 `engine-next` 启动协调器、bootstrap/self-check 与 Core 当前 `TradingCalendarSnapshot`、`StartupReadiness`、`SessionRuntimeCoordinator`。Core 已关闭纯日历/Q2/计时器/参考数据门禁的 shadow 组合，但仍不拥有日线/因子/筹码/DDE 缺口修复、昨日涨停/热板/板块映射补齐、竞价 anchor recovery、持久化启动状态或正式投递。
+- 下一最小迁移单元不是新 Replay/Provider 框架，而是复用已验证访问路径的“单目标日、小股票集、只读启动组合”；它只能预取、冻结、判断和 dispatch，不能 repair、写 Redis/TD、消费 Rabbit 或触发 effect。
+- TD `No enough disk space` 仍使 TD parity/替代验收不可用。详见 `docs/evidence/m1_startup_replacement_gap_audit_20260918.md`。
+
 ### 2026-09-18 19:20 生产存储压力阻塞 TD 验证
 
 - Cobra-ion 只读检查确认 `engine-next` 与 `t1-v2-live` 均 `active`、`NRestarts=0`，但根盘使用率为 `93%`（`19G` 总量、约 `1.4G` 可用），TD `/var/lib/taos` 约 `5.9G`。
