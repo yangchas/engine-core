@@ -566,3 +566,11 @@ Evidence：
   the result was `OBSERVED`. Artifact SHA-256:
   `ae8857c4b730bde06b099827dbc9ffc5d43be1b45a991251dac001b39714d8a6`.
   Labels remained Shadow-only.
+- A corrected read-only old/new differential explicitly mapped canonical Core
+  fields to the deployed helper's legacy input names. For all 119 themes,
+  all five numeric fields and the final signal matched 119/119; no mismatch
+  samples remained. Artifact SHA-256:
+  `faf86074375634786d8b42aa633e3cdd2cfc808852579fd9e50176e29010e085`.
+  The discarded first attempt had passed the wrong field names and produced
+  false zero defaults; it is not evidence. See
+  `docs/evidence/legacy_theme_delta_strategy_differential_20260918.md`.
