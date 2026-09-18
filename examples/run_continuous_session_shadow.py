@@ -9,7 +9,7 @@ callers pass already-read projections and rows.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from enum import Enum
 from pathlib import Path
 import sys
@@ -23,6 +23,7 @@ from engine_core import (  # noqa: E402
     AUCTION_REFERENCE_FUNCTION_ORDER,
     AuctionReferencePreparation,
     AuctionShadowStrategy,
+    DataStatus,
     DeterministicEngine,
     EngineSignal,
     FrozenDataBundle,
@@ -56,6 +57,112 @@ def _business_time_ms(trade_date: str, value: time) -> int:
         ).timestamp()
         * 1000
     )
+
+
+_RUN_MODES = {"NORMAL", "POSTMARKET_DIAGNOSTIC"}
+_AUCTION_CUTOFFS = {
+    "0920": time(9, 24),
+    "0924": time(9, 25),
+    "0925": time(9, 26),
+}
+
+
+def _strict_trade_date(value: str) -> str:
+    parsed = date.fromisoformat(value)
+    if parsed.isoformat() != value:
+        raise ValueError("trade_date must be strict YYYY-MM-DD")
+    return value
+
+
+def _strict_symbol(value: str) -> str:
+    if not isinstance(value, str) or len(value) != 6 or not value.isdigit():
+        raise ValueError("symbol must be a six-digit code")
+    return value
+
+
+def _source_date(source_time_ms: int) -> str:
+    return datetime.fromtimestamp(
+        source_time_ms / 1000.0,
+        tz=timezone.utc,
+    ).astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
+
+
+def _validate_projection_time(
+    projection: Q2ProjectionSnapshot,
+    *,
+    trade_date: str,
+    node_id: str,
+    cutoff_ms: int,
+    run_mode: str,
+) -> None:
+    """Reject cross-day or post-cutoff projections before they enter Engine."""
+
+    if projection.trade_date != trade_date:
+        raise ValueError(
+            f"{node_id} projection trade_date does not match requested trade_date"
+        )
+    observed_ms = projection.envelope.observed_time_ms
+    if run_mode == "NORMAL" and observed_ms > cutoff_ms:
+        raise ValueError(f"{node_id} observed time is after node cutoff")
+    source_times = tuple(
+        value
+        for value in (projection.oldest_source_time_ms, projection.newest_source_time_ms)
+        if value is not None
+    )
+    if projection.status == DataStatus.MISSING:
+        if source_times:
+            raise ValueError(f"{node_id} missing projection contains source time")
+        return
+    if not source_times:
+        raise ValueError(f"{node_id} projection is missing source time")
+    if min(source_times) > max(source_times):
+        raise ValueError(f"{node_id} source time range is reversed")
+    if any(_source_date(value) != trade_date for value in source_times):
+        raise ValueError(f"{node_id} source time crosses trade date")
+    if run_mode == "NORMAL" and max(source_times) > cutoff_ms:
+        raise ValueError(f"{node_id} source time is after node cutoff")
+
+
+def _validate_session_inputs(
+    *,
+    auction_projections: Mapping[str, Q2ProjectionSnapshot],
+    opening_projection: Q2ProjectionSnapshot,
+    trade_date: str,
+    symbol: str,
+    preparation: AuctionReferencePreparation | None,
+    run_mode: str,
+) -> None:
+    trade_date = _strict_trade_date(trade_date)
+    symbol = _strict_symbol(symbol)
+    if run_mode not in _RUN_MODES:
+        raise ValueError("run_mode must be NORMAL or POSTMARKET_DIAGNOSTIC")
+    if opening_projection.trade_date != trade_date:
+        raise ValueError("opening projection trade_date does not match requested date")
+    if symbol not in opening_projection.expected_symbols:
+        raise ValueError("opening projection does not contain symbol")
+    for tag in ANCHOR_ORDER:
+        projection = auction_projections[tag]
+        _validate_projection_time(
+            projection,
+            trade_date=trade_date,
+            node_id=f"AUCTION_{tag}",
+            cutoff_ms=_business_time_ms(trade_date, _AUCTION_CUTOFFS[tag]),
+            run_mode=run_mode,
+        )
+        if symbol not in projection.expected_symbols:
+            raise ValueError(f"AUCTION_{tag} projection does not contain symbol")
+    _validate_projection_time(
+        opening_projection,
+        trade_date=trade_date,
+        node_id="OPENING_0932",
+        cutoff_ms=_business_time_ms(trade_date, time(9, 32)),
+        run_mode=run_mode,
+    )
+    if preparation is not None:
+        if preparation.trade_date != trade_date:
+            raise ValueError("reference preparation trade_date does not match session")
+        if preparation.knowledge_as_of_ms > _business_time_ms(trade_date, time(9, 25)):
+            raise ValueError("reference preparation was observed after 0925 evaluation")
 
 
 def _json_ready(value: Any) -> Any:
@@ -123,6 +230,7 @@ def run_continuous_session_shadow(
     trade_date: str,
     symbol: str,
     preparation: AuctionReferencePreparation | None = None,
+    run_mode: str = "NORMAL",
 ) -> dict[str, Any]:
     """Run 0920→0925→0932 using one Engine and already-read inputs.
 
@@ -132,8 +240,8 @@ def run_continuous_session_shadow(
 
     if not isinstance(opening_projection, Q2ProjectionSnapshot):
         raise TypeError("opening_projection must be Q2ProjectionSnapshot")
-    if symbol not in opening_projection.expected_symbols:
-        raise ValueError("opening projection does not contain symbol")
+    _strict_trade_date(trade_date)
+    _strict_symbol(symbol)
     snapshots = build_snapshots_from_rows(
         auction_rows,
         trade_date=trade_date,
@@ -153,6 +261,7 @@ def run_continuous_session_shadow(
         trade_date=trade_date,
         symbol=symbol,
         preparation=preparation,
+        run_mode=run_mode,
     )
 
 
@@ -163,6 +272,7 @@ def run_continuous_redis_session_shadow(
     trade_date: str,
     symbol: str,
     preparation: AuctionReferencePreparation | None = None,
+    run_mode: str = "NORMAL",
 ) -> dict[str, Any]:
     """Run Redis auction projections and Q2 through one Engine instance.
 
@@ -193,6 +303,7 @@ def run_continuous_redis_session_shadow(
         trade_date=trade_date,
         symbol=symbol,
         preparation=preparation,
+        run_mode=run_mode,
     )
 
 
@@ -203,12 +314,21 @@ def _run_projection_session(
     trade_date: str,
     symbol: str,
     preparation: AuctionReferencePreparation | None,
+    run_mode: str,
 ) -> dict[str, Any]:
     """Run already-adapted auction/Q2 projections in one Engine."""
 
     missing = [tag for tag in ANCHOR_ORDER if tag not in auction_projections]
     if missing:
         raise ValueError("missing auction projections: " + ",".join(missing))
+    _validate_session_inputs(
+        auction_projections=auction_projections,
+        opening_projection=opening_projection,
+        trade_date=trade_date,
+        symbol=symbol,
+        preparation=preparation,
+        run_mode=run_mode,
+    )
     strategy = ContinuousSessionShadowStrategy(symbol=symbol)
     engine = DeterministicEngine(
         MarketStateReducer(),
@@ -292,6 +412,7 @@ def _run_projection_session(
     final = result_history[-1]
     return {
         "contract_version": "ContinuousSessionShadowV1",
+        "run_mode": run_mode,
         "trade_date": trade_date,
         "symbol": symbol,
         "single_engine": True,

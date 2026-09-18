@@ -3,9 +3,12 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from engine_core import (
     FreshnessPolicy,
     RedisQ2ProjectionAdapter,
+    build_q2_projection,
     read_redis_auction_projection,
 )
 
@@ -23,6 +26,9 @@ FIXTURE = Path(__file__).parent / "fixtures" / "facts" / "auction_600519_2026090
 
 
 class _FakeRedis:
+    def __init__(self, *, source_time_ms: int = 1000):
+        self.source_time_ms = source_time_ms
+
     def smembers(self, key):
         return {b"600519"}
 
@@ -33,13 +39,17 @@ class _FakeRedis:
             b"pc": b"10000",
             b"amt": b"1200000",
             b"vol": b"100",
-            b"ts": b"1000",
+            b"ts": str(self.source_time_ms).encode(),
             b"amt2m": b"50000",
             b"ls": b"1",
         }
 
 
 class _AuctionAndQ2Redis(_FakeRedis):
+    def __init__(self, *, source_time_ms: int, auction_source_times=None):
+        super().__init__(source_time_ms=source_time_ms)
+        self.auction_source_times = dict(auction_source_times or {})
+
     def hgetall(self, key):
         if key.startswith("market:auction:"):
             if key.endswith(":0924"):
@@ -53,11 +63,41 @@ class _AuctionAndQ2Redis(_FakeRedis):
                 "price": 105.0,
             }
             return {
-                "meta": json.dumps({"tag": tag, "ts": 1000}),
+                "meta": json.dumps(
+                    {
+                        "tag": tag,
+                        "ts": self.auction_source_times.get(tag, self.source_time_ms),
+                    }
+                ),
                 "summary": json.dumps({"tag": tag}),
                 "top_amount": json.dumps([row]),
             }
         return super().hgetall(key)
+
+
+def _q2_projection(trade_date: str, source_time: str, observed_time: str):
+    observed = datetime.fromisoformat(
+        f"{trade_date}T{observed_time}+08:00"
+    ).astimezone(timezone.utc)
+    source = datetime.fromisoformat(
+        f"{trade_date}T{source_time}+08:00"
+    ).astimezone(timezone.utc)
+    return build_q2_projection(
+        trade_date,
+        observed,
+        ("600519",),
+        {
+            "600519": {
+                "mk": "sh",
+                "px": "105000",
+                "pc": "100000",
+                "amt": "1200000",
+                "vol": "100",
+                "ts": str(int(source.timestamp() * 1000)),
+            }
+        },
+        freshness_policy=FreshnessPolicy(stale_after_ms=60_000),
+    )
 
 
 def test_continuous_shadow_reuses_one_engine_for_auction_and_opening():
@@ -93,11 +133,7 @@ def test_continuous_shadow_reuses_one_engine_for_auction_and_opening():
     row_0925["auction_tag"] = "0925"
     row_0925["ts"] = row_0924["ts"] + timedelta(seconds=60)
     rows.append(row_0925)
-    projection = RedisQ2ProjectionAdapter(_FakeRedis()).read(
-        "1970-01-01",
-        datetime.fromtimestamp(1000, tz=timezone.utc),
-        freshness_policy=FreshnessPolicy(stale_after_ms=100000000000),
-    )
+    projection = _q2_projection(fixture["trade_date"], "09:32:00", "09:32:00")
     result = MODULE.run_continuous_session_shadow(
         auction_rows=rows,
         opening_projection=projection,
@@ -118,26 +154,117 @@ def test_continuous_shadow_reuses_one_engine_for_auction_and_opening():
     assert result["strategy_results"][-1]["delegated_strategy_id"] == "opening-shadow-v1"
 
 
+def test_continuous_shadow_rejects_cross_trade_date_projection():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    rows = []
+    for item in fixture["snapshots"].values():
+        tag = item["trigger_id"].split("_")[-1]
+        if tag not in {"0920", "0924"}:
+            continue
+        rows.append(
+            {
+                "ts": datetime.fromtimestamp(
+                    item["source_record_time_ms"] / 1000,
+                    tz=timezone.utc,
+                ),
+                "px_milli": item["state"].get("price_milli"),
+                "match_amt_yuan": item["state"].get("auction_amount_yuan"),
+                "rest_bid_amt_yuan": item["state"].get("auction_bid_amount_yuan"),
+                "rest_ask_amt_yuan": item["state"].get("auction_ask_amount_yuan"),
+                "symbol": fixture["symbol"],
+                "trade_date": fixture["trade_date"].replace("-", ""),
+                "auction_tag": tag,
+            }
+        )
+    row_0925 = dict(rows[-1])
+    row_0925["auction_tag"] = "0925"
+    row_0925["ts"] = row_0925["ts"] + timedelta(seconds=1)
+    rows.append(row_0925)
+    with pytest.raises(ValueError, match="trade_date"):
+        MODULE.run_continuous_session_shadow(
+            auction_rows=rows,
+            opening_projection=_q2_projection("2026-09-02", "09:32:00", "09:32:00"),
+            trade_date=fixture["trade_date"],
+            symbol="600519",
+        )
+
+
+def test_continuous_shadow_rejects_future_opening_source_time():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    rows = []
+    for item in fixture["snapshots"].values():
+        tag = item["trigger_id"].split("_")[-1]
+        if tag not in {"0920", "0924"}:
+            continue
+        rows.append(
+            {
+                "ts": datetime.fromtimestamp(
+                    item["source_record_time_ms"] / 1000,
+                    tz=timezone.utc,
+                ),
+                "px_milli": item["state"].get("price_milli"),
+                "match_amt_yuan": item["state"].get("auction_amount_yuan"),
+                "rest_bid_amt_yuan": item["state"].get("auction_bid_amount_yuan"),
+                "rest_ask_amt_yuan": item["state"].get("auction_ask_amount_yuan"),
+                "symbol": fixture["symbol"],
+                "trade_date": fixture["trade_date"].replace("-", ""),
+                "auction_tag": tag,
+            }
+        )
+    row_0925 = dict(rows[-1])
+    row_0925["auction_tag"] = "0925"
+    row_0925["ts"] = row_0925["ts"] + timedelta(seconds=1)
+    rows.append(row_0925)
+    with pytest.raises(ValueError, match="source time"):
+        MODULE.run_continuous_session_shadow(
+            auction_rows=rows,
+            opening_projection=_q2_projection("2026-09-03", "09:32:01", "09:32:00"),
+            trade_date=fixture["trade_date"],
+            symbol="600519",
+        )
+
+
 def test_continuous_redis_shadow_preserves_missing_0924_without_substitution():
     from engine_core import FreshnessPolicy, RedisQ2ProjectionAdapter
 
-    redis = _AuctionAndQ2Redis()
-    auction = read_redis_auction_projection(
-        redis,
-        trade_date="1970-01-01",
-        observed_at_ms=1000,
-        tags=("0920", "0924", "0925"),
-        symbols=("600519",),
+    trade_date = "2026-09-03"
+    redis = _AuctionAndQ2Redis(
+        source_time_ms=int(
+            datetime.fromisoformat(f"{trade_date}T09:32:00+08:00").timestamp() * 1000
+        ),
+        auction_source_times={
+            tag: int(datetime.fromisoformat(f"{trade_date}T{clock}+08:00").timestamp() * 1000)
+            for tag, clock in (("0920", "09:20:03"), ("0925", "09:25:06"))
+        },
     )
+    auction = []
+    for tag, observed_time in (
+        ("0920", "09:20:03"),
+        ("0924", "09:24:10"),
+        ("0925", "09:25:06"),
+    ):
+        observed_ms = int(
+            datetime.fromisoformat(f"{trade_date}T{observed_time}+08:00").timestamp()
+            * 1000
+        )
+        auction.extend(
+            read_redis_auction_projection(
+                redis,
+                trade_date=trade_date,
+                observed_at_ms=observed_ms,
+                tags=(tag,),
+                symbols=("600519",),
+            )
+        )
     opening = RedisQ2ProjectionAdapter(redis).read(
-        "1970-01-01",
-        datetime.fromtimestamp(1000, tz=timezone.utc),
-        freshness_policy=FreshnessPolicy(stale_after_ms=100000000000),
+        trade_date,
+        datetime.fromisoformat(f"{trade_date}T09:32:00+08:00"),
+        freshness_policy=FreshnessPolicy(stale_after_ms=60_000),
     )
     result = MODULE.run_continuous_redis_session_shadow(
         auction_projections=auction,
         opening_projection=opening,
-        trade_date="1970-01-01",
+        trade_date=trade_date,
         symbol="600519",
     )
     assert result["single_engine"] is True
@@ -155,25 +282,46 @@ def test_continuous_redis_shadow_preserves_missing_0924_without_substitution():
 def test_continuous_redis_shadow_rejects_duplicate_anchor_tags():
     from engine_core import FreshnessPolicy, RedisQ2ProjectionAdapter
 
-    redis = _AuctionAndQ2Redis()
-    auction = read_redis_auction_projection(
-        redis,
-        trade_date="1970-01-01",
-        observed_at_ms=1000,
-        tags=("0920", "0924", "0925"),
-        symbols=("600519",),
+    trade_date = "2026-09-03"
+    redis = _AuctionAndQ2Redis(
+        source_time_ms=int(
+            datetime.fromisoformat(f"{trade_date}T09:32:00+08:00").timestamp() * 1000
+        ),
+        auction_source_times={
+            tag: int(datetime.fromisoformat(f"{trade_date}T{clock}+08:00").timestamp() * 1000)
+            for tag, clock in (("0920", "09:20:03"), ("0925", "09:25:06"))
+        },
     )
+    auction = []
+    for tag, observed_time in (
+        ("0920", "09:20:03"),
+        ("0924", "09:24:10"),
+        ("0925", "09:25:06"),
+    ):
+        observed_ms = int(
+            datetime.fromisoformat(f"{trade_date}T{observed_time}+08:00").timestamp()
+            * 1000
+        )
+        auction.extend(
+            read_redis_auction_projection(
+                redis,
+                trade_date=trade_date,
+                observed_at_ms=observed_ms,
+                tags=(tag,),
+                symbols=("600519",),
+            )
+        )
     opening = RedisQ2ProjectionAdapter(redis).read(
-        "1970-01-01",
-        datetime.fromtimestamp(1000, tz=timezone.utc),
-        freshness_policy=FreshnessPolicy(stale_after_ms=100000000000),
+        trade_date,
+        datetime.fromisoformat(f"{trade_date}T09:32:00+08:00"),
+        freshness_policy=FreshnessPolicy(stale_after_ms=60_000),
     )
     duplicate = tuple(auction) + (auction[0],)
     try:
         MODULE.run_continuous_redis_session_shadow(
             auction_projections=duplicate,
             opening_projection=opening,
-            trade_date="1970-01-01",
+            trade_date=trade_date,
             symbol="600519",
         )
     except ValueError as exc:
