@@ -366,7 +366,7 @@ def test_auction_node_binds_prefetched_references_through_public_engine():
     engine = result["fact_dispatch"][0]["engine_shadow"]
     assert engine["status"] == "EXECUTED"
     assert engine["result"]["reference_binding"] == "ENGINE_DATA_READY"
-    assert engine["result"]["processed_signals"] == 9
+    assert engine["result"]["processed_signals"] == 7
     assert engine["result"]["semantic_hash_equal"] is True
 
 

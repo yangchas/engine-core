@@ -161,17 +161,27 @@ def run_engine_shadow(
     trade_date: str,
     symbol: str,
     preparation: AuctionReferencePreparation | None = None,
+    evaluation_logical_time_ms: int | None = None,
 ) -> dict[str, Any]:
     """Run one real-row set through Engine and return a stable trace.
 
-    When ``preparation`` is supplied, each auction timer is configured with
-    the public evaluation-plan contract and the same already-prepared
-    reference results are bound through ``DATA_READY``.  This is still a
-    bounded shadow path: no provider I/O occurs here and the preparation is
-    never re-read or rewritten.
+    When ``preparation`` is supplied, only the final ``AUCTION_0925`` timer is
+    configured with the reference-data requirement.  The earlier anchors are
+    pure market observations and complete with an empty bundle.  A live
+    ``AUCTION_0926`` coordinator may therefore prepare references at 09:26 and
+    bind them to the final auction evaluation without pretending they were
+    known at 09:20 or 09:24.  This remains a bounded shadow path: no provider
+    I/O occurs here and the preparation is never re-read or rewritten.
     """
 
     snapshots = build_snapshots_from_rows(rows, trade_date=trade_date, symbol=symbol)
+    if evaluation_logical_time_ms is not None:
+        if isinstance(evaluation_logical_time_ms, bool) or not isinstance(
+            evaluation_logical_time_ms, int
+        ):
+            raise TypeError("evaluation_logical_time_ms must be an integer")
+        if evaluation_logical_time_ms < snapshots["0925"].logical_time_ms:
+            raise ValueError("evaluation_logical_time_ms cannot precede 0925")
     strategy = AuctionShadowStrategy(
         scope_id=symbol,
         start_trigger_id="AUCTION_0920",
@@ -201,7 +211,9 @@ def run_engine_shadow(
                 EvaluationNode(
                     "auction-reference-" + tag,
                     snapshots[tag].trigger_id,
-                    data_requirements=AUCTION_REFERENCE_FUNCTION_ORDER,
+                    data_requirements=(
+                        AUCTION_REFERENCE_FUNCTION_ORDER if tag == "0925" else ()
+                    ),
                     strategies=(strategy.strategy_id,),
                 )
                 for tag in ANCHOR_ORDER
@@ -231,10 +243,13 @@ def run_engine_shadow(
                 projection,
             )
         )
+        timer_logical_time = snapshot.logical_time_ms
+        if tag == "0925" and evaluation_logical_time_ms is not None:
+            timer_logical_time = evaluation_logical_time_ms
         engine.submit(
             EngineSignal(
                 "auction-timer-%s" % tag,
-                logical_time,
+                timer_logical_time,
                 index * 2 + 2,
                 SignalKind.TIMER,
                 {"trigger_id": snapshot.trigger_id},
@@ -243,6 +258,8 @@ def run_engine_shadow(
         if preparation is None:
             continue
         timer_result = engine.run_until_empty()
+        if tag != "0925":
+            continue
         pending = timer_result.pending_evaluations
         if len(pending) != 1:
             raise RuntimeError("expected exactly one pending auction evaluation")
@@ -251,7 +268,7 @@ def run_engine_shadow(
         engine.submit(
             EngineSignal(
                 "auction-data-ready-%s" % tag,
-                logical_time + 1,
+                timer_logical_time + 1,
                 index * 3 + 3,
                 SignalKind.DATA_READY,
                 {

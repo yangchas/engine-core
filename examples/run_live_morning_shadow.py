@@ -258,6 +258,7 @@ def build_node_evidence(
                         trade_date=trade_date,
                         symbol=symbol,
                         preparation=auction_reference_preparation,
+                        evaluation_logical_time_ms=firing.scheduled_time_ms,
                     ),
                 }
             elif firing.timer_id == "OPENING_0932":

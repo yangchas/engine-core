@@ -28,8 +28,8 @@ def _rows():
     ]
 
 
-def _prepared_references():
-    cutoff = local_datetime_ms("2026-09-09", "09:19:00")
+def _prepared_references(cutoff_text: str = "09:19:00"):
+    cutoff = local_datetime_ms("2026-09-09", cutoff_text)
     results = []
     for function_id in AUCTION_REFERENCE_FUNCTION_ORDER:
         results.append(
@@ -84,7 +84,24 @@ def test_prepared_references_bind_through_engine_data_ready_path():
 
     assert result["read_only"] is True
     assert result["reference_binding"] == "ENGINE_DATA_READY"
-    assert len(result["reference_bundle_hashes"]) == 3
-    assert result["processed_signals"] == 9
+    assert len(result["reference_bundle_hashes"]) == 1
+    assert result["processed_signals"] == 7
+    assert result["strategy_result_count"] == 3
+    assert result["semantic_hash_equal"] is True
+
+
+def test_late_reference_preparation_binds_only_to_final_auction_evaluation():
+    evaluation_time = local_datetime_ms("2026-09-09", "09:26:00")
+    result = MODULE.run_engine_shadow(
+        rows=_rows(),
+        trade_date="2026-09-09",
+        symbol="600519",
+        preparation=_prepared_references("09:26:00"),
+        evaluation_logical_time_ms=evaluation_time,
+    )
+
+    assert result["reference_binding"] == "ENGINE_DATA_READY"
+    assert len(result["reference_bundle_hashes"]) == 1
+    assert result["processed_signals"] == 7
     assert result["strategy_result_count"] == 3
     assert result["semantic_hash_equal"] is True
