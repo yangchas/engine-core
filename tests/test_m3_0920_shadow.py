@@ -1,5 +1,7 @@
 import json
 import importlib.util
+import sys
+import types
 from datetime import datetime
 from pathlib import Path
 
@@ -55,6 +57,9 @@ class FakeRedis:
                 ),
             }
         return {}
+
+    def close(self):
+        return None
 
 
 def _calendar():
@@ -212,6 +217,61 @@ def test_m3_0920_normal_capture_window_boundaries_are_explicit():
     assert MODULE._normal_capture_window_reason(at("09:21:01")) == (
         "normal_capture_window_expired"
     )
+
+
+def test_m3_0920_cli_does_not_read_redis_outside_normal_window(
+    tmp_path: Path, monkeypatch
+):
+    redis = FakeRedis()
+    calendar = _calendar()
+    calendar_file = tmp_path / "calendar.json"
+    calendar_file.write_text(
+        json.dumps(
+            {
+                "calendar_id": calendar.calendar_id,
+                "version": calendar.version,
+                "timezone": calendar.timezone_name,
+                "declared_valid_from": calendar.declared_valid_from,
+                "declared_valid_to": calendar.declared_valid_to,
+                "source_guard_valid_from": calendar.source_guard_valid_from,
+                "source_guard_valid_to": calendar.source_guard_valid_to,
+                "trading_dates": list(calendar.trading_dates),
+                "calendar_semantic_hash": calendar.semantic_hash,
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "m3.json"
+    fake_redis_module = types.SimpleNamespace(Redis=lambda **_: redis)
+    monkeypatch.setitem(sys.modules, "redis", fake_redis_module)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_m3_0920_shadow.py",
+            "--trade-date",
+            TRADE_DATE,
+            "--symbol",
+            "000001",
+            "--calendar-file",
+            str(calendar_file),
+            "--observed-at",
+            "09:10:00",
+            "--as-of",
+            "09:10:00",
+            "--stale-after-ms",
+            "60000",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert MODULE.main() == 0
+    result = json.loads(output.read_text(encoding="utf-8"))
+    assert result["preflight_gate"] == "BLOCKED"
+    assert result["prefetch_calls"] == 0
+    assert result["node_dispatched"] is False
+    assert redis.calls == []
 
 
 def test_m3_0920_missing_auction_projection_does_not_dispatch_engine():
