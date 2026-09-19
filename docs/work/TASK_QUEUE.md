@@ -6,12 +6,16 @@
 
 - title: Real-data replay audit for 2026-09-18 09:15-09:40
 - owner: `replay-investigator`
-- state: `RUNNING`
+- state: `MERGED`
 - started_at: `2026-09-20T01:47:07+08:00`
 - current_commit: `9f7c2a3`
 - branch: `codex/task-real-data-replay-20260918`
 - worktree: `../engine-core-replay-20260918`
-- execution: explicitly invoked; bounded read-only audit in progress
+- execution: bounded read-only audit completed; evidence and review gates passed
+- final_status: `REPLAY_READY_BOUNDED`
+- validation_dir: `/home/exedev/validation/replay-20260918-0915-0940-20260920T014707+0800`
+- tester: `PASS`
+- auditor: `PASS`
 - current M3-1 status: `BLOCKED` / `TD_WRITE_HEALTH=UNPROVEN`
 
 Merge gate:
