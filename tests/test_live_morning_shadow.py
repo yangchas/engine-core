@@ -243,7 +243,22 @@ def test_capture_node_rechecks_q2_at_node_boundary(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(
         live,
         "_read_td_rows",
-        lambda symbols, **kwargs: {symbol: () for symbol in symbols},
+        lambda symbols, **kwargs: {
+            symbol: (
+                {
+                    "auction_tag": "0925",
+                    "symbol": symbol,
+                    "trade_date": "20260914",
+                    "ts": _dt("09:25:06"),
+                    "px_milli": 1277000,
+                    "chg_bp": 7,
+                    "match_amt_yuan": 150,
+                    "rest_bid_amt_yuan": 250,
+                    "rest_ask_amt_yuan": 40,
+                },
+            )
+            for symbol in symbols
+        },
     )
     result = live._capture_node(
         _firing("AUCTION_0926"),
@@ -261,6 +276,49 @@ def test_capture_node_rechecks_q2_at_node_boundary(monkeypatch: pytest.MonkeyPat
     # Auction facts remain TD-owned; the Q2 recheck is readiness evidence,
     # not an implicit replacement for the auction input contract.
     assert result["q2"] is None
+
+
+def test_capture_auction_node_rejects_empty_source_rows_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    observed_at = _dt("09:26:00")
+    projection = build_q2_projection(
+        "2026-09-14",
+        observed_at,
+        ("600519",),
+        {
+            "600519": {
+                "mk": "sh",
+                "px": "1276000",
+                "pc": "1270000",
+                "amt": "100000",
+                "amt2m": "50000",
+                "ts": str(
+                    local_datetime_ms(
+                        "2026-09-14", "09:26:00", timezone_name="Asia/Shanghai"
+                    )
+                ),
+            }
+        },
+        freshness_policy=FreshnessPolicy(stale_after_ms=60_000),
+    )
+    monkeypatch.setattr(live, "_redis_projection", lambda **kwargs: projection)
+    monkeypatch.setattr(
+        live, "_read_td_rows", lambda symbols, **kwargs: {symbol: () for symbol in symbols}
+    )
+
+    with pytest.raises(RuntimeError, match="auction input rows are not ready"):
+        live._capture_node(
+            _firing("AUCTION_0926"),
+            observed_at=observed_at,
+            trade_date="2026-09-14",
+            symbols=("600519",),
+            stale_after_ms=60_000,
+            legacy_root=None,
+            td_config={},
+            calendar=CALENDAR,
+            plan=build_a_share_session_plan("2026-09-14", CALENDAR),
+        )
 
 
 def test_capture_opening_node_rejects_future_q2(monkeypatch: pytest.MonkeyPatch):

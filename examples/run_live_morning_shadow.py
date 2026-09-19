@@ -126,9 +126,10 @@ def _is_retryable_node_error(exc: BaseException) -> bool:
 
     if isinstance(exc, (ConnectionError, TimeoutError)):
         return True
-    return isinstance(exc, RuntimeError) and str(exc) == (
-        "opening Q2 readiness is blocked"
-    )
+    return isinstance(exc, RuntimeError) and str(exc) in {
+        "opening Q2 readiness is blocked",
+        "auction input rows are not ready",
+    }
 
 
 def _now_local() -> datetime:
@@ -506,6 +507,13 @@ def _capture_node(
         # through the opening Engine path merely because the wall timer is due.
         raise RuntimeError("opening Q2 readiness is blocked")
     td_rows = _read_td_rows(symbols, trade_date=trade_date, **td_config)
+    if firing.timer_id == "AUCTION_0926" and symbols and not any(
+        td_rows.get(symbol) for symbol in symbols
+    ):
+        # A timer firing is not a data-ready event.  Keep it pending while
+        # the source-side auction rows are still arriving; the live shell's
+        # bounded retry loop will re-read the same read-only path.
+        raise RuntimeError("auction input rows are not ready")
     legacy = _legacy_loader_evidence(
         legacy_root,
         trade_date=trade_date,
