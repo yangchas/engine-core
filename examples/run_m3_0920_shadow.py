@@ -48,6 +48,7 @@ except ModuleNotFoundError:  # Pytest/import execution resolves the package.
 
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 AUCTION_0920_SPEC = TimerSpec("AUCTION_0920", "09:20:00")
+NORMAL_CAPTURE_WINDOW_START = time(9, 15, 0)
 NORMAL_CAPTURE_WINDOW_END = time(9, 21, 0)
 
 
@@ -72,6 +73,17 @@ def _parse_datetime(value: str, *, trade_date: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         parsed = parsed.replace(tzinfo=LOCAL_TZ)
     return parsed
+
+
+def _normal_capture_window_reason(as_of: datetime) -> str | None:
+    """Return a fail-closed reason when NORMAL is outside its capture window."""
+
+    local_time = as_of.astimezone(LOCAL_TZ).time()
+    if local_time < NORMAL_CAPTURE_WINDOW_START:
+        return "normal_capture_window_not_started"
+    if local_time > NORMAL_CAPTURE_WINDOW_END:
+        return "normal_capture_window_expired"
+    return None
 
 
 def run_m3_0920_shadow(
@@ -102,8 +114,10 @@ def run_m3_0920_shadow(
     # that may be applied to a post-market rerun.  The runbook keeps the
     # bounded window at 09:15-09:21; enforce its end here as well so callers
     # cannot accidentally turn a late observation into NORMAL evidence.
-    local_as_of = as_of.astimezone(LOCAL_TZ)
-    if origin == "NORMAL" and local_as_of.time() > NORMAL_CAPTURE_WINDOW_END:
+    normal_window_reason = (
+        _normal_capture_window_reason(as_of) if origin == "NORMAL" else None
+    )
+    if normal_window_reason is not None:
         # Return the same fail-closed evidence shape as other preflight
         # failures, but do not read Q2 or dispatch an Engine node.
         return {
@@ -117,7 +131,7 @@ def run_m3_0920_shadow(
             "startup_self_check": {
                 "trade_date": trade_date,
                 "status": "BLOCKED",
-                "reasons": ("normal_capture_window_expired",),
+                "reasons": (normal_window_reason,),
                 "actions": (),
             },
             "q2": None,
@@ -328,17 +342,26 @@ def main() -> int:
         socket_connect_timeout=5,
     )
     try:
-        projections = read_redis_auction_projection(
-            client,
-            trade_date=trade_date,
-            observed_at_ms=_epoch_ms(observed_at),
-            tags=("0920",),
-            symbols=(args.symbol,),
-        )
+        # Do not even read the projection when NORMAL is outside the bounded
+        # trading-day capture window.  The library function also enforces this
+        # guard, but the CLI must make the no-source-read boundary explicit.
+        projection = None
+        if not (
+            args.origin == "NORMAL"
+            and _normal_capture_window_reason(as_of) is not None
+        ):
+            projections = read_redis_auction_projection(
+                client,
+                trade_date=trade_date,
+                observed_at_ms=_epoch_ms(observed_at),
+                tags=("0920",),
+                symbols=(args.symbol,),
+            )
+            projection = projections[0]
         result = run_m3_0920_shadow(
             client=client,
             calendar=calendar,
-            auction_projection=projections[0],
+            auction_projection=projection,
             trade_date=trade_date,
             symbol=args.symbol,
             observed_at=observed_at,
