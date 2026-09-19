@@ -6,10 +6,12 @@
 
 - title: Real-data replay audit for 2026-09-18 09:15-09:40
 - owner: `replay-investigator`
-- state: `READY`
+- state: `RUNNING`
+- started_at: `2026-09-20T01:47:07+08:00`
+- current_commit: `9f7c2a3`
 - branch: `codex/task-real-data-replay-20260918`
 - worktree: `../engine-core-replay-20260918`
-- execution: explicitly invoked later; not started by bootstrap
+- execution: explicitly invoked; bounded read-only audit in progress
 - current M3-1 status: `BLOCKED` / `TD_WRITE_HEALTH=UNPROVEN`
 
 Merge gate:
