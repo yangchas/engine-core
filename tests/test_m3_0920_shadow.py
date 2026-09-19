@@ -274,6 +274,50 @@ def test_m3_0920_cli_does_not_read_redis_outside_normal_window(
     assert redis.calls == []
 
 
+def test_m3_0920_rejects_observation_date_mismatch_before_source_read():
+    redis = FakeRedis()
+    observed = datetime.fromisoformat("2026-09-20T09:19:59+08:00")
+    as_of = datetime.fromisoformat("2026-09-20T09:20:00+08:00")
+    try:
+        MODULE.run_m3_0920_shadow(
+            client=redis,
+            calendar=_calendar(),
+            auction_projection=None,
+            trade_date=TRADE_DATE,
+            symbol="000001",
+            observed_at=observed,
+            as_of=as_of,
+            stale_after_ms=60_000,
+        )
+    except ValueError as exc:
+        assert str(exc) == "observed_at local date does not match trade_date"
+    else:
+        raise AssertionError("expected observation date mismatch")
+    assert redis.calls == []
+
+
+def test_m3_0920_rejects_as_of_date_mismatch_before_source_read():
+    redis = FakeRedis()
+    observed = datetime.fromisoformat("2026-09-08T09:19:59+08:00")
+    as_of = datetime.fromisoformat("2026-09-09T09:20:00+08:00")
+    try:
+        MODULE.run_m3_0920_shadow(
+            client=redis,
+            calendar=_calendar(),
+            auction_projection=None,
+            trade_date=TRADE_DATE,
+            symbol="000001",
+            observed_at=observed,
+            as_of=as_of,
+            stale_after_ms=60_000,
+        )
+    except ValueError as exc:
+        assert str(exc) == "as_of local date does not match trade_date"
+    else:
+        raise AssertionError("expected as_of date mismatch")
+    assert redis.calls == []
+
+
 def test_m3_0920_missing_auction_projection_does_not_dispatch_engine():
     redis = FakeRedis()
     observed = local_datetime_ms(TRADE_DATE, "09:19:59")

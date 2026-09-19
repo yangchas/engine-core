@@ -110,6 +110,10 @@ def run_m3_0920_shadow(
         raise ValueError("as_of must be timezone-aware")
     if as_of < observed_at:
         raise ValueError("as_of cannot precede observed_at")
+    if observed_at.astimezone(LOCAL_TZ).date().isoformat() != trade_date:
+        raise ValueError("observed_at local date does not match trade_date")
+    if as_of.astimezone(LOCAL_TZ).date().isoformat() != trade_date:
+        raise ValueError("as_of local date does not match trade_date")
     if origin not in {"NORMAL", "RECOVERY_CATCHUP"}:
         raise ValueError("origin must be NORMAL or RECOVERY_CATCHUP")
 
