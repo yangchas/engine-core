@@ -49,6 +49,9 @@ except ModuleNotFoundError:  # Pytest/import execution resolves the package.
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 AUCTION_0920_SPEC = TimerSpec("AUCTION_0920", "09:20:00")
 NORMAL_CAPTURE_WINDOW_START = time(9, 15, 0)
+# The bounded NORMAL admission window is closed on both ends:
+# [09:15:00, 09:21:00] in Asia/Shanghai.  The exact 09:21:00 boundary is
+# retained for the existing runbook contract; 09:21:00.001 is outside it.
 NORMAL_CAPTURE_WINDOW_END = time(9, 21, 0)
 
 

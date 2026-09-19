@@ -198,6 +198,22 @@ def test_m3_0920_normal_before_capture_window_is_blocked_without_source_read():
     assert redis.calls == []
 
 
+def test_m3_0920_normal_capture_window_boundaries_are_explicit():
+    def at(clock_time: str) -> datetime:
+        epoch = local_datetime_ms(TRADE_DATE, clock_time)
+        return datetime.fromtimestamp(epoch / 1000, MODULE.LOCAL_TZ)
+
+    assert MODULE._normal_capture_window_reason(at("09:14:59")) == (
+        "normal_capture_window_not_started"
+    )
+    assert MODULE._normal_capture_window_reason(at("09:15:00")) is None
+    assert MODULE._normal_capture_window_reason(at("09:20:59")) is None
+    assert MODULE._normal_capture_window_reason(at("09:21:00")) is None
+    assert MODULE._normal_capture_window_reason(at("09:21:01")) == (
+        "normal_capture_window_expired"
+    )
+
+
 def test_m3_0920_missing_auction_projection_does_not_dispatch_engine():
     redis = FakeRedis()
     observed = local_datetime_ms(TRADE_DATE, "09:19:59")
