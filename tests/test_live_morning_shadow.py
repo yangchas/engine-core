@@ -724,6 +724,8 @@ def test_opening_evidence_keeps_anchor_and_formal_target_separate():
     assert result["observed_at_ms"] == local_datetime_ms(
         "2026-09-14", "09:32:10", timezone_name="Asia/Shanghai"
     )
+    assert result["timing_contract"]["actual_evaluation_time"] == result["observed_at_ms"]
+    assert result["timing_contract"]["late_execution"] is False
 
 
 def test_live_shell_reuses_startup_references_at_each_node_boundary(

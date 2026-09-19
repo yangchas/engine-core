@@ -354,6 +354,9 @@ def build_node_evidence(
         "timing_contract": {
             "business_anchor_time": firing.scheduled_time_ms,
             "formal_evaluation_target_time": _formal_evaluation_target_ms(firing),
+            "actual_evaluation_time": _epoch_ms(observed_at),
+            "late_execution": _epoch_ms(observed_at)
+            > _formal_evaluation_target_ms(firing),
             "opening_source_settling_delay_ms": (
                 OPENING_0932_EVALUATION_DELAY_MS
                 if firing.timer_id == "OPENING_0932"
