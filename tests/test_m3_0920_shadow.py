@@ -131,7 +131,7 @@ def test_m3_0920_accepts_already_read_q2_without_second_redis_read():
         as_of=datetime.fromtimestamp(as_of / 1000, MODULE.LOCAL_TZ),
         stale_after_ms=60_000,
         q2_snapshot=q2,
-        preflight_at=observed_dt,
+        preflight_at=datetime.fromtimestamp(as_of / 1000, MODULE.LOCAL_TZ),
     )
 
     assert result["preflight_gate"] == "PASS"
@@ -354,7 +354,7 @@ def test_m3_0920_cli_timer_not_due_does_not_consume_output_path(
 
     assert MODULE.main() == 2
     assert not output.exists()
-    assert redis.calls
+    assert redis.calls == []
 
 
 def test_m3_0920_rejects_observation_date_mismatch_before_source_read():

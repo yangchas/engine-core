@@ -49,6 +49,10 @@ except ModuleNotFoundError:  # Pytest/import execution resolves the package.
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 AUCTION_0920_SPEC = TimerSpec("AUCTION_0920", "09:20:00")
 NORMAL_CAPTURE_WINDOW_START = time(9, 15, 0)
+# Source reads are admitted only once the 09:20 timer is due.  The wider
+# capture window remains useful for static preflight, but it must not cause a
+# one-shot runner to consume Redis before the evaluation node can fire.
+NORMAL_TIMER_DUE_TIME = time(9, 20, 0)
 # The bounded NORMAL admission window is closed on both ends:
 # [09:15:00, 09:21:00] in Asia/Shanghai.  The exact 09:21:00 boundary is
 # retained for the existing runbook contract; 09:21:00.001 is outside it.
@@ -86,6 +90,17 @@ def _normal_capture_window_reason(as_of: datetime) -> str | None:
         return "normal_capture_window_not_started"
     if local_time > NORMAL_CAPTURE_WINDOW_END:
         return "normal_capture_window_expired"
+    return None
+
+
+def _normal_preflight_reason(as_of: datetime) -> str | None:
+    """Return the admission reason before any live source read occurs."""
+
+    reason = _normal_capture_window_reason(as_of)
+    if reason is not None:
+        return reason
+    if as_of.astimezone(LOCAL_TZ).time() < NORMAL_TIMER_DUE_TIME:
+        return "timer_not_due_preflight"
     return None
 
 
@@ -128,7 +143,7 @@ def run_m3_0920_shadow(
     # bounded window at 09:15-09:21; enforce its end here as well so callers
     # cannot accidentally turn a late observation into NORMAL evidence.
     normal_window_reason = (
-        _normal_capture_window_reason(admission_at) if origin == "NORMAL" else None
+        _normal_preflight_reason(admission_at) if origin == "NORMAL" else None
     )
     if normal_window_reason is not None:
         # Return the same fail-closed evidence shape as other preflight
@@ -414,7 +429,7 @@ def main() -> int:
         # guard, but the CLI must make the no-source-read boundary explicit.
         projection = None
         preflight_window_reason = (
-            _normal_capture_window_reason(preflight_at)
+            _normal_preflight_reason(preflight_at)
             if args.origin == "NORMAL"
             else None
         )
@@ -458,8 +473,9 @@ def main() -> int:
     # A NORMAL invocation before 09:20 is a preflight observation only.  It
     # must not consume the write-once final artifact path; the runbook starts
     # the source-reading command at the timer boundary.
-    timer_not_due = "timer_not_due" in result.get("startup_self_check", {}).get(
-        "reasons", ()
+    timer_not_due = any(
+        str(reason).startswith("timer_not_due")
+        for reason in result.get("startup_self_check", {}).get("reasons", ())
     )
     if args.origin == "NORMAL" and timer_not_due:
         return 2
