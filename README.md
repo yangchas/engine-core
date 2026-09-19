@@ -95,9 +95,11 @@ opening 正式证据，source observation time 必须保留实际值。
 
 `examples/run_m3_auction_followup_shadow.py` 是 09:24/09:25 的窄节点验证入口：
 它只接受调用方已经捕获的前置 projection，使用现有 session/timer/Engine 组合做一次
-只读节点消费；正常运行窗口外不会读取 Redis，恢复运行不会用盘后数据回填旧锚点。它
-其中 `09:25:00` 是业务锚点，但生产行情需经过六秒 settling barrier；NORMAL `0925`
-最早在 `09:25:06` 才允许 source finalization/evaluation，源记录时间仍保留原值。
+只读节点消费；业务锚点是最早检查时间，不是迟到数据的失效时间。晚启动或数据晚到
+时允许按真实 observed/evaluation time 做 `NORMAL` late execution 或
+`RECOVERY_CATCHUP`，但不会用盘后 latest 连续竞价状态回填旧锚点。其中
+`09:25:00` 是业务锚点，生产行情需经过六秒 settling barrier；`09:25:06` 只是
+最早允许检查 0925 finalization，源记录时间仍保留原值，不能作为 source cutoff。
 它只证明节点接入边界，不转移 t1-v2 的 09:20/09:24/09:25 source-freeze owner，
 也不替代三锚点 `AuctionFactShadow` 的事实验收。
 

@@ -210,7 +210,7 @@ def test_0925_barrier_is_earliest_admission_not_source_timestamp_rewrite():
     assert admitted["node_dispatched"] is True
 
 
-def test_late_normal_followup_is_blocked_without_engine_dispatch():
+def test_late_normal_followup_is_admitted_when_data_is_available():
     redis = FakeRedis()
     observed = local_datetime_ms(TRADE_DATE, "09:30:00")
     projections = _projections(redis, observed)
@@ -225,14 +225,14 @@ def test_late_normal_followup_is_blocked_without_engine_dispatch():
         observed_at=_dt(observed),
         as_of=_dt(observed),
     )
-    assert result["preflight_gate"] == "BLOCKED"
-    assert result["node_dispatched"] is False
-    assert result["startup_self_check"]["reasons"] == ("normal_capture_window_invalid",)
+    assert result["preflight_gate"] == "PASS"
+    assert result["node_dispatched"] is True
+    assert result["timing"]["late_execution"] is True
     assert redis.calls == []
 
 
-def test_recovery_never_retrofits_projection_observed_after_anchor():
-    redis = FakeRedis()
+def test_recovery_can_consume_retained_anchor_observed_after_business_time():
+    redis = FakeRedis(source_clock_0925="09:25:06.197")
     observed = local_datetime_ms(TRADE_DATE, "09:30:00")
     projections = _projections(redis, observed)
     result = MODULE.run_m3_auction_followup_shadow(
@@ -246,12 +246,35 @@ def test_recovery_never_retrofits_projection_observed_after_anchor():
         as_of=_dt(observed),
         origin="RECOVERY_CATCHUP",
     )
+    assert result["preflight_gate"] == "PASS"
+    assert result["node_dispatched"] is True
+    assert result["origin"] == "RECOVERY_CATCHUP"
+    assert result["timing"]["late_execution"] is True
+    assert result["projection"]["source_time_max_ms"] == _source_ms("09:25:06.197")
+
+
+def test_0925_recovery_still_waits_for_earliest_barrier():
+    redis = FakeRedis(source_clock_0925="09:25:06.197")
+    observed = local_datetime_ms(TRADE_DATE, "09:25:05")
+    projections = _projections(redis, observed)
+    result = MODULE.run_m3_auction_followup_shadow(
+        calendar=_calendar(),
+        current_projection=projections["0925"],
+        prior_projections={"0920": projections["0920"], "0924": projections["0924"]},
+        trade_date=TRADE_DATE,
+        symbol="000001",
+        node_tag="0925",
+        observed_at=_dt(observed),
+        as_of=_dt(observed),
+        origin="RECOVERY_CATCHUP",
+    )
     assert result["preflight_gate"] == "BLOCKED"
-    assert result["node_dispatched"] is False
-    assert result["startup_self_check"]["reasons"] == ("projection_observed_after_0925_cutoff",)
+    assert result["startup_self_check"]["reasons"] == (
+        "auction_0925_finalization_barrier_not_reached",
+    )
 
 
-def test_0925_recovery_uses_six_second_source_cutoff():
+def test_0925_recovery_uses_actual_observation_as_cutoff_not_barrier_timestamp():
     redis = FakeRedis()
     observed = local_datetime_ms(TRADE_DATE, "09:25:06")
     projections = _projections(redis, observed)
@@ -268,6 +291,9 @@ def test_0925_recovery_uses_six_second_source_cutoff():
     )
     assert result["preflight_gate"] == "PASS"
     assert result["node_dispatched"] is True
+    assert result["timing"]["source_cutoff_ms"] == local_datetime_ms(
+        TRADE_DATE, "09:26:00"
+    )
 
 
 def test_prior_projection_key_cannot_mask_a_wrong_projection_tag():

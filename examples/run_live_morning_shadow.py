@@ -121,6 +121,16 @@ def _evaluation_admission_reached(firing: TimerFiring, observed_at: datetime) ->
     return _epoch_ms(observed_at) >= _formal_evaluation_target_ms(firing)
 
 
+def _is_retryable_node_error(exc: BaseException) -> bool:
+    """Classify only transient input-readiness failures for bounded retry."""
+
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    return isinstance(exc, RuntimeError) and str(exc) == (
+        "opening Q2 readiness is blocked"
+    )
+
+
 def _now_local() -> datetime:
     return datetime.now(LOCAL_TZ)
 
@@ -620,6 +630,7 @@ def run_live_morning_shadow(
     now_fn=_now_local,
     sleep_fn=time.sleep,
     poll_seconds: float = 0.25,
+    max_node_attempts: int = 200,
     start_at: clock_time = clock_time(9, 15),
     stop_at: clock_time = clock_time(9, 33),
     auction_reference_preparation: AuctionReferencePreparation | None = None,
@@ -640,6 +651,8 @@ def run_live_morning_shadow(
         raise ValueError("stale_after_ms must be non-negative")
     if poll_seconds < 0:
         raise ValueError("poll_seconds must be non-negative")
+    if max_node_attempts <= 0:
+        raise ValueError("max_node_attempts must be positive")
     ordered_symbols = _strict_symbols(",".join(symbols))
     plan = build_a_share_session_plan(trade_date, calendar)
     first_now = now_fn()
@@ -690,6 +703,8 @@ def run_live_morning_shadow(
     fired_ids: set[str] = set()
     nodes: list[dict[str, Any]] = []
     node_file_shas: dict[str, str] = {}
+    node_attempts: dict[str, int] = {}
+    node_retry_errors: dict[str, list[dict[str, Any]]] = {}
     coordinator = SessionRuntimeCoordinator(
         trade_date=trade_date,
         calendar=calendar,
@@ -724,18 +739,53 @@ def run_live_morning_shadow(
             if not _evaluation_admission_reached(firing, now):
                 continue
             node_reference_preparation = auction_reference_preparation
-            node = _capture_node(
-                firing,
-                observed_at=now,
-                trade_date=trade_date,
-                symbols=ordered_symbols,
-                stale_after_ms=stale_after_ms,
-                legacy_root=legacy_root,
-                td_config=td_config,
-                calendar=calendar,
-                plan=plan,
-                auction_reference_preparation=node_reference_preparation,
-            )
+            attempt = node_attempts.get(firing.timer_id, 0) + 1
+            node_attempts[firing.timer_id] = attempt
+            try:
+                node = _capture_node(
+                    firing,
+                    observed_at=now,
+                    trade_date=trade_date,
+                    symbols=ordered_symbols,
+                    stale_after_ms=stale_after_ms,
+                    legacy_root=legacy_root,
+                    td_config=td_config,
+                    calendar=calendar,
+                    plan=plan,
+                    auction_reference_preparation=node_reference_preparation,
+                )
+                node["capture_attempt"] = attempt
+            except (ConnectionError, TimeoutError, RuntimeError) as exc:
+                # Missing/late input is a readiness condition, not a reason
+                # to terminate the bounded shadow.  Keep the timer pending so
+                # the next poll can observe newly arrived data.  Contract and
+                # configuration errors (ValueError/TypeError) still fail
+                # closed immediately.
+                if not _is_retryable_node_error(exc):
+                    raise
+                error = {
+                    "attempt": attempt,
+                    "observed_at_ms": _epoch_ms(now),
+                    "error_type": f"{type(exc).__module__}.{type(exc).__name__}",
+                }
+                node_retry_errors.setdefault(firing.timer_id, []).append(error)
+                if attempt < max_node_attempts:
+                    continue
+                node = {
+                    "contract_version": LIVE_SHADOW_CONTRACT_VERSION,
+                    "trade_date": trade_date,
+                    "timer": _timer_payload(firing),
+                    "observed_at": now.isoformat(),
+                    "observed_at_ms": _epoch_ms(now),
+                    "node_status": "SKIPPED_INPUT_NOT_READY",
+                    "capture_attempt": attempt,
+                    "retry_errors": tuple(node_retry_errors[firing.timer_id]),
+                    "read_only": True,
+                    "side_effect_boundary": (
+                        "no Engine dispatch after bounded readiness retries; "
+                        "no Rabbit/Redis/TD write or effect"
+                    ),
+                }
             node_path = output_dir / (firing.timer_id + ".json")
             node_file_shas[firing.timer_id] = _atomic_write_once(node_path, node)
             nodes.append(node)
@@ -756,6 +806,11 @@ def run_live_morning_shadow(
         "node_file_sha256": node_file_shas,
         "node_timer_ids": tuple(item["timer"]["timer_id"] for item in nodes),
         "node_count": len(nodes),
+        "node_attempts": dict(node_attempts),
+        "node_retry_errors": {
+            timer_id: tuple(errors)
+            for timer_id, errors in node_retry_errors.items()
+        },
         "origin": origin,
         "auction_reference_preparation": (
             {
@@ -798,6 +853,7 @@ def main() -> int:
     parser.add_argument("--symbols", default="600519")
     parser.add_argument("--stale-after-ms", type=int, required=True)
     parser.add_argument("--poll-ms", type=int, default=250)
+    parser.add_argument("--max-node-attempts", type=int, default=200)
     parser.add_argument("--start-at", default="09:15:00")
     parser.add_argument("--stop-at", default="09:33:00")
     parser.add_argument("--legacy-root", type=Path)
@@ -814,6 +870,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.poll_ms < 0:
         parser.error("poll-ms must be non-negative")
+    if args.max_node_attempts <= 0:
+        parser.error("max-node-attempts must be positive")
     try:
         symbols = _strict_symbols(args.symbols)
         start_at = _parse_local_time(args.start_at)
@@ -886,6 +944,7 @@ def main() -> int:
                 },
                 auction_reference_preparation=reference_preparation,
                 poll_seconds=args.poll_ms / 1000.0,
+                max_node_attempts=args.max_node_attempts,
                 start_at=start_at,
                 stop_at=stop_at,
             )

@@ -86,9 +86,19 @@ def _parse_datetime(value: str, *, trade_date: str) -> datetime:
 
 
 def _normal_window_valid(node_tag: str, as_of: datetime) -> bool:
+    """Return whether the node's earliest business observation has arrived.
+
+    The wall-clock interval is an *earliest check* boundary, not a hard
+    expiry.  A source projection can arrive after the nominal minute and is
+    still eligible for a late normal/catch-up evaluation when its own
+    business tag and source timestamp are valid.  The caller records that
+    late execution explicitly instead of pretending it happened at the
+    business anchor.
+    """
+
     local_time = as_of.astimezone(LOCAL_TZ).time()
-    start_time, end_time = FOLLOWUP_WINDOWS[node_tag]
-    return start_time <= local_time < end_time
+    start_time, _end_time = FOLLOWUP_WINDOWS[node_tag]
+    return local_time >= start_time
 
 
 def _normal_finalization_barrier_reached(
@@ -108,18 +118,6 @@ def _normal_finalization_barrier_reached(
     return as_of >= barrier.replace(microsecond=0) + timedelta(
         milliseconds=AUCTION_0925_FINALIZATION_DELAY_MS
     )
-
-
-def _source_finalization_cutoff_ms(trade_date: str, node_tag: str) -> int:
-    """Return the historical source cutoff for a node's admitted projection."""
-
-    anchor = datetime.combine(
-        date.fromisoformat(trade_date),
-        FOLLOWUP_WINDOWS[node_tag][0],
-        tzinfo=LOCAL_TZ,
-    )
-    delay = AUCTION_0925_FINALIZATION_DELAY_MS if node_tag == "0925" else 0
-    return int((anchor + timedelta(milliseconds=delay)).timestamp() * 1000)
 
 
 def _source_time_ms(projection: Any) -> int | None:
@@ -212,7 +210,11 @@ def run_m3_auction_followup_shadow(
             side_effect_boundary="already-read projections only; no backfill",
         )
 
-    if origin == "NORMAL" and not _normal_finalization_barrier_reached(trade_date, node_tag, as_of):
+    # The six-second value is only the earliest normal check for 0925.  It is
+    # also the minimum catch-up check, but never a historical source cutoff:
+    # retained projections may be observed later and still carry an authentic
+    # 0925 source timestamp.
+    if not _normal_finalization_barrier_reached(trade_date, node_tag, as_of):
         return _blocked(
             trade_date=trade_date,
             symbol=symbol,
@@ -254,19 +256,11 @@ def run_m3_auction_followup_shadow(
             side_effect_boundary="no Engine dispatch",
         )
 
-    if origin == "RECOVERY_CATCHUP":
-        cutoff_ms = _source_finalization_cutoff_ms(trade_date, node_tag)
-        if as_of_ms < cutoff_ms:
-            return _blocked(
-                trade_date=trade_date,
-                symbol=symbol,
-                node_tag=node_tag,
-                origin=origin,
-                reason="recovery_before_source_finalization_barrier",
-                side_effect_boundary="already-read projections only; no backfill",
-            )
-    else:
-        cutoff_ms = firing.fired_time_ms
+    # Source/observation admissibility is evaluated against the actual
+    # evaluation observation.  The business barrier above prevents a
+    # premature 0925 check; it must not reject a valid projection merely
+    # because it was read after 09:25:06.
+    cutoff_ms = as_of_ms
     projections = [current_projection, *(prior_projections[tag] for tag in required)]
     for projection in projections:
         if projection.trade_date != trade_date:
@@ -366,6 +360,21 @@ def run_m3_auction_followup_shadow(
             "source_time_max_ms": projection.newest_source_time_ms,
             "content_hash": current_projection.content_hash,
         },
+        "timing": {
+            "business_anchor_time_ms": firing.scheduled_time_ms,
+            "earliest_admission_time_ms": firing.scheduled_time_ms
+            + (
+                AUCTION_0925_FINALIZATION_DELAY_MS
+                if node_tag == "0925"
+                else 0
+            ),
+            "source_cutoff_ms": cutoff_ms,
+            "observed_at_ms": _epoch_ms(observed_at),
+            "execution_time_ms": as_of_ms,
+            "late_execution": as_of.astimezone(LOCAL_TZ).time()
+            >= FOLLOWUP_WINDOWS[node_tag][1],
+            "source_time_is_not_rewritten": True,
+        },
         "timer": {
             "scheduled_time_ms": firing.scheduled_time_ms,
             "fired_time_ms": firing.fired_time_ms,
@@ -401,10 +410,10 @@ def main() -> int:
     as_of = _parse_datetime(args.as_of, trade_date=trade_date)
     calendar = _load_calendar(args.calendar_file, trade_date=trade_date)
 
-    # Keep the normal capture guard ahead of the Redis client/read.  A late
-    # invocation must not even observe a source and then label the result as a
-    # normal node.  Recovery remains explicit and fail-closed at the function
-    # boundary below.
+    # Keep the earliest business-time guard ahead of the Redis client/read.
+    # A late invocation is allowed to observe a retained, correctly tagged
+    # projection; it is recorded as a late normal execution by the function
+    # boundary below.  Only a pre-anchor invocation is rejected here.
     if args.origin == "NORMAL" and not _normal_window_valid(args.node_tag, as_of):
         result = _blocked(
             trade_date=trade_date,

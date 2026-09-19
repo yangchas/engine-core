@@ -1,5 +1,19 @@
 # engine_core 真实数据与生命周期迁移计划
 
+### 2026-09-19 时间准入合同修正（数据就绪优先）
+
+- `09:25:00` 仍是业务锚点，`09:25:06` 只表示最早进行 0925 最终状态检查的
+  settling barrier；它不是 source timestamp、观测时间或迟到读取的截止线。
+- LIVE/NORMAL 在 barrier 后按真实数据是否已就绪决定执行；数据晚到时允许迟到
+  完成，并分别记录 business anchor、source record time、observed/evaluation time
+  以及 `late_execution`。源时间不得被改写成业务锚点。
+- RECOVERY_CATCHUP 可以在 09:26/09:30 消费明确标记为当日 0925 的保留锚点，
+  以本次实际 evaluation time 拒绝未来 source；不得用 latest 连续竞价状态冒充
+  0925。只有历史时点重建才使用严格 knowledge cutoff/availability 合同。
+- live morning shadow 对明确的暂时不可用/读取异常进行有界重读；成功前不确认
+  timer，预算耗尽输出 `SKIPPED_INPUT_NOT_READY`，不重复提交 Engine。该重读不
+  承诺跨进程 exactly-once，也不改变 Rabbit/Redis/TD 生产 owner。
+
 ### 2026-09-19 真实 TD 竞价 Engine 旁路复验
 
 - Cobra-ion 以 Core 隔离归档 `a1259af` 对真实 TD `auction_snapshot_v2` 的

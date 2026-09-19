@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, time
 from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -546,6 +546,92 @@ def test_live_shell_captures_each_node_at_its_due_observation(tmp_path: Path, mo
     manifest_payload = json.loads((tmp_path / "run" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest_payload["build_identity"]["kind"] == "SOURCE_TREE_SHA256"
     assert len(manifest_payload["build_identity"]["value"]) == 64
+
+
+def test_live_shell_retries_not_ready_node_before_acknowledging_timer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    clock_values = iter(
+        (
+            _dt("09:15:00"),
+            _dt("09:15:00"),
+            _dt("09:26:00"),
+            _dt("09:26:01"),
+            _dt("09:26:03"),
+        )
+    )
+    attempts: list[int] = []
+    monkeypatch.setattr(live, "_startup_evidence", lambda **kwargs: {"read_only": True})
+
+    def flaky_capture(firing, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("opening Q2 readiness is blocked")
+        return {
+            "timer": live._timer_payload(firing),
+            "node_status": "EXECUTED",
+        }
+
+    monkeypatch.setattr(live, "_capture_node", flaky_capture)
+    manifest = live.run_live_morning_shadow(
+        trade_date="2026-09-14",
+        calendar=CALENDAR,
+        output_dir=tmp_path / "retry-run",
+        symbols=("600519",),
+        stale_after_ms=60_000,
+        td_config={},
+        now_fn=lambda: next(clock_values),
+        sleep_fn=lambda _: None,
+        poll_seconds=0,
+        max_node_attempts=3,
+        stop_at=time(9, 26, 2),
+    )
+
+    assert len(attempts) == 2
+    assert manifest["node_attempts"]["AUCTION_0926"] == 2
+    assert len(manifest["node_retry_errors"]["AUCTION_0926"]) == 1
+    assert manifest["node_timer_ids"] == ("AUCTION_0926",)
+
+
+def test_live_shell_marks_input_not_ready_after_bounded_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    clock_values = iter(
+        (
+            _dt("09:15:00"),
+            _dt("09:15:00"),
+            _dt("09:26:00"),
+            _dt("09:26:01"),
+            _dt("09:26:03"),
+        )
+    )
+    monkeypatch.setattr(live, "_startup_evidence", lambda **kwargs: {"read_only": True})
+    monkeypatch.setattr(
+        live,
+        "_capture_node",
+        lambda firing, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("opening Q2 readiness is blocked")
+        ),
+    )
+    manifest = live.run_live_morning_shadow(
+        trade_date="2026-09-14",
+        calendar=CALENDAR,
+        output_dir=tmp_path / "skip-run",
+        symbols=("600519",),
+        stale_after_ms=60_000,
+        td_config={},
+        now_fn=lambda: next(clock_values),
+        sleep_fn=lambda _: None,
+        poll_seconds=0,
+        max_node_attempts=2,
+        stop_at=time(9, 26, 2),
+    )
+
+    payload = json.loads(
+        (tmp_path / "skip-run" / "AUCTION_0926.json").read_text(encoding="utf-8")
+    )
+    assert payload["node_status"] == "SKIPPED_INPUT_NOT_READY"
+    assert manifest["node_attempts"]["AUCTION_0926"] == 2
 
 
 def test_opening_timer_anchor_waits_until_formal_evaluation_target():
