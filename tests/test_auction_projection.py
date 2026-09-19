@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -110,6 +111,26 @@ def test_missing_tag_is_not_replaced_by_another_tag_or_zero_filled():
         "market:auction:20260918:0920",
         "market:auction:20260918:0924",
     ]
+
+
+def test_live_projection_captures_observed_time_after_hgetall():
+    redis = FakeRedis(
+        {
+            "market:auction:20260918:0920": _payload(
+                rows=[{"symbol": "600519", "auction_amount_yuan": 100}]
+            )
+        }
+    )
+    before = datetime.now(timezone.utc)
+    projection = read_redis_auction_projection(
+        redis,
+        trade_date="2026-09-18",
+        observed_at_ms=None,
+        tags=("0920",),
+    )[0]
+    after = datetime.now(timezone.utc)
+    observed_ms = projection.observed_at_ms
+    assert int(before.timestamp() * 1000) <= observed_ms <= int(after.timestamp() * 1000)
 
 
 def test_duplicate_projection_rows_fail_closed_as_invalid():

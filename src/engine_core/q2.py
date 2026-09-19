@@ -461,18 +461,25 @@ class RedisQ2ProjectionAdapter:
     def read(
         self,
         trade_date: str,
-        observed_at: datetime,
+        observed_at: Optional[datetime] = None,
         *,
         freshness_policy: Optional[FreshnessPolicy] = None,
         stale_after_ms: Optional[int] = None,
     ) -> Q2ProjectionSnapshot:
         """Read one best-effort Q2 projection cohort.
 
-        observed_at must be timezone-aware.  Missing hashes are reported in
-        the result; they are never represented as zero-valued quotes.
+        ``observed_at`` is optional for live reads.  When omitted, the
+        observation timestamp is captured only after the active-symbol set
+        and all requested hashes have been read.  Explicit timestamps remain
+        supported for deterministic fixtures and replay.
+
+        Missing hashes are reported in the result; they are never represented
+        as zero-valued quotes.
         """
 
-        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+        if observed_at is not None and (
+            observed_at.tzinfo is None or observed_at.utcoffset() is None
+        ):
             raise ValueError("observed_at must be timezone-aware")
         if freshness_policy is not None and stale_after_ms is not None:
             raise ValueError("pass freshness_policy or stale_after_ms, not both")
@@ -486,9 +493,10 @@ class RedisQ2ProjectionAdapter:
             raw_hash = self._client.hgetall(self._q2_prefix + symbol)
             if raw_hash:
                 raw_hashes[symbol] = raw_hash
+        read_completed_at = observed_at or datetime.now(timezone.utc)
         return build_q2_projection(
             trade_date,
-            observed_at,
+            read_completed_at,
             expected,
             raw_hashes,
             freshness_policy=policy,

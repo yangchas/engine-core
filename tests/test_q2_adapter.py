@@ -140,6 +140,29 @@ def test_q2_adapter_prefers_legacy_compact_active_date_key():
     assert result.expected_symbols == ("000001",)
 
 
+def test_q2_adapter_captures_observed_time_after_live_reads():
+    redis = FakeRedis(
+        {"q2:active:20260904": {"000001"}},
+        {
+            "q2:000001": {
+                "px": "1000",
+                "pc": "990",
+                "amt": "1",
+                "ts": "1788484799000",
+            }
+        },
+    )
+    before = datetime.now(timezone.utc)
+    result = RedisQ2ProjectionAdapter(redis).read("2026-09-04")
+    after = datetime.now(timezone.utc)
+    observed_ms = result.envelope.observed_time_ms
+    assert int(before.timestamp() * 1000) <= observed_ms <= int(after.timestamp() * 1000)
+    assert redis.read_keys == [
+        "q2:active:20260904",
+        "q2:000001",
+    ]
+
+
 def test_q2_adapter_rejects_invalid_symbol_and_naive_observation():
     with pytest.raises(ValueError):
         normalize_symbol("not-a-symbol")

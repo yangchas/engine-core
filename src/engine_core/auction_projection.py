@@ -17,7 +17,7 @@ import json
 import math
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any, Mapping, Protocol, Sequence
 
 from .auction import normalize_auction_change_ratio
@@ -288,7 +288,7 @@ def read_redis_auction_projection(
     client: RedisAuctionProjectionClient,
     *,
     trade_date: str,
-    observed_at_ms: int,
+    observed_at_ms: int | None = None,
     tags: Sequence[str] = DEFAULT_AUCTION_TAGS,
     symbols: Sequence[str] = (),
     evidence_ref_prefix: str = "redis://market-auction",
@@ -301,6 +301,10 @@ def read_redis_auction_projection(
     """
 
     date_text = _strict_trade_date(trade_date)
+    if observed_at_ms is not None and (
+        isinstance(observed_at_ms, bool) or observed_at_ms <= 0
+    ):
+        raise ValueError("observed_at_ms must be a positive epoch-ms integer")
     date_tag = date_text.replace("-", "")
     normalized_tags = tuple(dict.fromkeys(_strict_tag(tag) for tag in tags))
     if not normalized_tags:
@@ -310,6 +314,11 @@ def read_redis_auction_projection(
     for tag in normalized_tags:
         key = f"market:auction:{date_tag}:{tag}"
         raw = dict(client.hgetall(key) or {})
+        projection_observed_at_ms = observed_at_ms
+        if projection_observed_at_ms is None:
+            projection_observed_at_ms = int(
+                datetime.now(timezone.utc).timestamp() * 1000
+            )
         try:
             meta_value = _json_field(raw, "meta")
             summary_value = _json_field(raw, "summary")
@@ -342,7 +351,7 @@ def read_redis_auction_projection(
                     meta=meta,
                     requested_symbols=requested,
                     missing_requested_symbols=missing,
-                    observed_at_ms=observed_at_ms,
+                    observed_at_ms=projection_observed_at_ms,
                     evidence_ref=f"{evidence_ref_prefix.rstrip('/')}/{date_text}/{tag}",
                 )
             )
@@ -359,7 +368,7 @@ def read_redis_auction_projection(
                     meta={},
                     requested_symbols=requested,
                     missing_requested_symbols=requested,
-                    observed_at_ms=observed_at_ms,
+                    observed_at_ms=projection_observed_at_ms,
                     evidence_ref=f"{evidence_ref_prefix.rstrip('/')}/{date_text}/{tag}",
                 )
             )

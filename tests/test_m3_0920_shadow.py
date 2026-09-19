@@ -108,6 +108,37 @@ def test_m3_0920_prefetches_once_then_uses_one_engine_instance():
     assert result["timer"]["fired"]["origin"] == "NORMAL"
 
 
+def test_m3_0920_accepts_already_read_q2_without_second_redis_read():
+    redis = FakeRedis()
+    observed = local_datetime_ms(TRADE_DATE, "09:19:59")
+    observed_dt = datetime.fromtimestamp(observed / 1000, MODULE.LOCAL_TZ)
+    as_of = local_datetime_ms(TRADE_DATE, "09:20:00")
+    projection = _projection(redis, observed)
+    q2 = MODULE.RedisQ2ProjectionAdapter(redis).read(
+        TRADE_DATE,
+        observed_dt,
+        freshness_policy=MODULE.FreshnessPolicy(stale_after_ms=60_000),
+    )
+    redis.calls.clear()
+
+    result = MODULE.run_m3_0920_shadow(
+        client=redis,
+        calendar=_calendar(),
+        auction_projection=projection,
+        trade_date=TRADE_DATE,
+        symbol="000001",
+        observed_at=observed_dt,
+        as_of=datetime.fromtimestamp(as_of / 1000, MODULE.LOCAL_TZ),
+        stale_after_ms=60_000,
+        q2_snapshot=q2,
+        preflight_at=observed_dt,
+    )
+
+    assert result["preflight_gate"] == "PASS"
+    assert result["prefetch_calls"] == 1
+    assert redis.calls == []
+
+
 def test_m3_0920_preflight_failure_does_not_dispatch_or_fallback():
     redis = FakeRedis(include_q2=False)
     observed = local_datetime_ms(TRADE_DATE, "09:19:59")
