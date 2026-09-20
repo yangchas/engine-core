@@ -1,5 +1,21 @@
 # Task Queue
 
+## RUNNING
+
+### TASK-008
+
+- title: Real opening validation (read-only)
+- owner: `replay-investigator`
+- state: `PARTIAL_EVIDENCE`
+- branch: `codex/feature-session-engine-integration`
+- worktree: current development worktree
+- plan: `docs/work/plans/TASK-008-opening-validation.md`
+- handoff: `docs/work/handoffs/TASK-008-REAL-DATA-20260920.md`
+- validation_dir: `/home/exedev/validation/task008-opening-validation-20260920T183000+0800/`
+- result: real Redis Q2 projection is `PARTIAL`/`STALE_OR_MIXED`; Engine shadow is
+  `FACT_ONLY`/`OBSERVE`; no production side effects
+- normal_opening_pass: `UNPROVEN`
+
 ## MERGED
 
 ### TASK-007
@@ -39,7 +55,7 @@
   `/home/exedev/validation/task007-real-shuffled-20260920T161558+0800/`
 - production_side_effects: `NONE_OBSERVED`
 - merge_recommendation: `MERGE`
-- next_task: `TASK-008` remains `BACKLOG` and is not auto-started
+- next_task: no further task is auto-started until TASK-008 evidence is closed
 
 Merge gate (all satisfied):
 

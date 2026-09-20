@@ -9,6 +9,7 @@ Failure or missing evidence moves a card to `BLOCKED`; obsolete work moves to `A
 
 | Card | Owner | State | Branch | Worktree | Merge gate |
 |---|---|---|---|---|---|
+| TASK-008 Real opening validation (read-only) | replay-investigator | PARTIAL_EVIDENCE | `codex/feature-session-engine-integration` | current development worktree | real Q2 evidence and Engine FACT_ONLY shadow recorded; NORMAL 09:32:10 evidence still pending; no production source or write path |
 | TASK-007 Offline canonical replay / auction facts | replay-investigator | MERGED | `codex/feature-session-engine-integration` | current development worktree | offline tester PASS; real ordered/shuffled 500-frame evidence PASS; optimized ordered FINAL 500-frame evidence PASS; independent auditor PASS; performance remains optimization follow-up; no production source or write path |
 | TASK-006 Unified Rabbit-primary canonical tick/batch contract | replay-investigator | MERGED | `codex/feature-session-engine-integration` | current development worktree | canonical tick/batch, TD compatibility adapter, protobuf fixture, hash and legacy shadow gates passed |
 | TASK-005 Replay session timeline integration | replay-investigator | MERGED | `codex/feature-session-engine-integration` | current development worktree | hash-only ledger for frames, auction revisions, timer firings, and 09:40 checkpoint |

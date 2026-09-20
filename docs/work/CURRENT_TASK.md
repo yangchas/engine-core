@@ -1,12 +1,12 @@
 # Current Task
 
 ```text
-active_task: TASK-007
+active_task: TASK-008
 bootstrap_status: COMPLETE
 last_task: TASK-007
 last_task_state: MERGED
-next_task: TASK-008
-next_task_state: BACKLOG / NOT_STARTED
+next_task: TASK-008 real opening validation
+next_task_state: RUNNING / PARTIAL_EVIDENCE
 
 owner: replay-investigator
 branch: codex/feature-session-engine-integration
@@ -64,11 +64,15 @@ TASK-007 is therefore `MERGED`. The slow runtime remains a non-blocking
 optimization item; it is not a functional replay failure and does not weaken
 the real-data evidence.
 
-The next task is not started:
+TASK-008 has now started as a bounded real-data validation:
 
 ```text
-TASK-008: deferred
-state: BACKLOG
+TASK-008: real opening validation
+state: RUNNING / PARTIAL_EVIDENCE
+plan: `docs/work/plans/TASK-008-opening-validation.md`
+handoff: `docs/work/handoffs/TASK-008-REAL-DATA-20260920.md`
+NORMAL opening acceptance remains UNPROVEN until a controlled 09:32:10
+observation or equivalent historical available_at evidence exists.
 ```
 ```
 
