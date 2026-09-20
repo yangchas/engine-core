@@ -185,6 +185,60 @@ def test_replay_uses_one_engine_update_per_global_frame():
     assert engine._reducer.state.revision == 3
 
 
+def test_incremental_verification_preserves_values_and_final_full_parity():
+    batches = [
+        _batch([_tick("600000", START + 500)]),
+        _batch([_tick("000001", START + 3_500)], logical_ts_ms=START + 6_000),
+    ]
+
+    class CaptureEngine:
+        def __init__(self):
+            self.signals = []
+
+        def submit(self, signal):
+            self.signals.append(signal)
+
+        def run_until_empty(self):
+            return None
+
+    full = OfflineCanonicalReplay(
+        TRADE_DATE,
+        ("600000", "000001"),
+        start_ms=START,
+        end_exclusive_ms=START + 6_000,
+        verification_level="FULL",
+    )
+    final = OfflineCanonicalReplay(
+        TRADE_DATE,
+        ("600000", "000001"),
+        start_ms=START,
+        end_exclusive_ms=START + 6_000,
+        verification_level="FINAL",
+    )
+    full_engine = CaptureEngine()
+    final_engine = CaptureEngine()
+    full.replay(batches, full_engine)
+    final.replay(batches, final_engine)
+
+    assert len(full_engine.signals) == len(final_engine.signals) == 2
+    for full_signal, final_signal in zip(full_engine.signals, final_engine.signals):
+        assert final_signal.payload.quotes == full_signal.payload.quotes
+        assert final_signal.payload.cross_section.symbol_states == full_signal.payload.cross_section.symbol_states
+    assert final_engine.signals[-1].payload.cross_section.content_hash == full_engine.signals[-1].payload.cross_section.content_hash
+    assert final_engine.signals[0].payload.cross_section.content_hash != full_engine.signals[0].payload.cross_section.content_hash
+
+
+def test_invalid_replay_verification_level_is_rejected():
+    with pytest.raises(ValueError, match="verification_level"):
+        OfflineCanonicalReplay(
+            TRADE_DATE,
+            ("600000",),
+            start_ms=START,
+            end_exclusive_ms=START + 3_000,
+            verification_level="UNKNOWN",
+        )
+
+
 def test_all_missing_batch_is_degraded_and_does_not_stop_the_timeline():
     source = OfflineCanonicalReplay(
         TRADE_DATE,

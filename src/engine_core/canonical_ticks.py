@@ -18,6 +18,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, tzinfo
 from enum import Enum
+from functools import lru_cache
 from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 from .replay import SHANGHAI, TDEventV1
@@ -102,6 +103,55 @@ _PRICE_FIELDS = {"px_milli", "pc_milli", "o_milli", "h_milli", "l_milli",
 _INT_FIELDS = set(_TICK_VALUE_FIELDS) - {"ap_milli", "bp_milli", "av", "bv",
                                           "no_price_limit", "is_st"}
 _ARRAY_FIELDS = {"ap_milli", "bp_milli", "av", "bv"}
+_TICK_VALUE_FIELD_SET = frozenset(_TICK_VALUE_FIELDS)
+_TD_SCALAR_ALIASES = (
+    ("px_milli", ("px_milli", "lp")),
+    ("pc_milli", ("pc_milli", "lc")),
+    ("o_milli", ("o_milli", "o")),
+    ("h_milli", ("h_milli", "h")),
+    ("l_milli", ("l_milli", "l")),
+    ("amt_yuan", ("amt_yuan", "a")),
+    ("vol_units", ("vol_units", "v")),
+    ("inst_vol", ("inst_vol",)),
+    ("inst_amt_yuan", ("inst_amt_yuan", "inst_amt")),
+    ("large_net_yuan", ("large_net_yuan", "large_net")),
+    ("limit_up_milli", ("limit_up_milli", "limit_up")),
+    ("limit_down_milli", ("limit_down_milli", "limit_down")),
+    ("limit_band_bp", ("limit_band_bp", "limit_ratio_bp")),
+    ("no_price_limit", ("no_price_limit",)),
+    ("is_st", ("is_st", "st_flag")),
+)
+_TD_ARRAY_ALIASES = {
+    field_name: tuple(
+        (
+            "%s_milli%d" % (prefix, index),
+            "%s%d_milli" % (prefix, index),
+            "%s%d" % (prefix, index),
+        )
+        for index in range(1, 6)
+    )
+    for field_name, prefix in (
+        ("ap_milli", "ap"),
+        ("bp_milli", "bp"),
+        ("av", "av"),
+        ("bv", "bv"),
+    )
+}
+
+
+@lru_cache(maxsize=16)
+def _strict_trade_date(value: str) -> str:
+    """Validate and cache the replay trade date on the hot row path."""
+
+    if not isinstance(value, str):
+        raise TypeError("trade_date must be a string")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("trade_date must be YYYY-MM-DD") from exc
+    if parsed.date().isoformat() != value:
+        raise ValueError("trade_date must be strict YYYY-MM-DD")
+    return value
 
 
 def _pack_len(size: int) -> bytes:
@@ -110,30 +160,55 @@ def _pack_len(size: int) -> bytes:
 
 def _encode(value: Any) -> bytes:
     """Encode contract values without relying on dict/JSON ordering."""
+    # Keep the byte contract identical to the original recursive encoder, but
+    # append into one buffer.  Tick hashes contain many nested tuples; joining
+    # a new bytes object at every level was a measurable replay hotspot.
+    encoded = bytearray()
 
-    if value is None:
-        return b"N"
-    if isinstance(value, bool):
-        return b"B1" if value else b"B0"
-    if isinstance(value, int) and not isinstance(value, bool):
-        try:
-            return b"I" + struct.pack(">q", value)
-        except struct.error as exc:
-            raise OverflowError("canonical integer is outside int64") from exc
-    if isinstance(value, str):
-        raw = value.encode("utf-8")
-        return b"S" + _pack_len(len(raw)) + raw
-    if isinstance(value, bytes):
-        return b"Y" + _pack_len(len(value)) + value
-    if isinstance(value, Enum):
-        return _encode(value.value)
-    if isinstance(value, tuple):
-        encoded = b"".join(_encode(item) for item in value)
-        return b"T" + _pack_len(len(value)) + encoded
-    if isinstance(value, list):
-        encoded = b"".join(_encode(item) for item in value)
-        return b"L" + _pack_len(len(value)) + encoded
-    raise TypeError("unsupported CanonicalHashEncodingV1 value: %s" % type(value).__name__)
+    def emit(item: Any) -> None:
+        if item is None:
+            encoded.extend(b"N")
+            return
+        if isinstance(item, bool):
+            encoded.extend(b"B1" if item else b"B0")
+            return
+        if isinstance(item, int) and not isinstance(item, bool):
+            try:
+                encoded.extend(b"I")
+                encoded.extend(struct.pack(">q", item))
+            except struct.error as exc:
+                raise OverflowError("canonical integer is outside int64") from exc
+            return
+        if isinstance(item, str):
+            raw = item.encode("utf-8")
+            encoded.extend(b"S")
+            encoded.extend(_pack_len(len(raw)))
+            encoded.extend(raw)
+            return
+        if isinstance(item, bytes):
+            encoded.extend(b"Y")
+            encoded.extend(_pack_len(len(item)))
+            encoded.extend(item)
+            return
+        if isinstance(item, Enum):
+            emit(item.value)
+            return
+        if isinstance(item, tuple):
+            encoded.extend(b"T")
+            encoded.extend(_pack_len(len(item)))
+            for child in item:
+                emit(child)
+            return
+        if isinstance(item, list):
+            encoded.extend(b"L")
+            encoded.extend(_pack_len(len(item)))
+            for child in item:
+                emit(child)
+            return
+        raise TypeError("unsupported CanonicalHashEncodingV1 value: %s" % type(item).__name__)
+
+    emit(value)
+    return bytes(encoded)
 
 
 def _hash(kind: str, payload: Any) -> str:
@@ -164,6 +239,11 @@ def _strict_symbol(value: Any) -> str:
     if isinstance(value, bytes):
         value = value.decode("utf-8", errors="strict")
     text = str(value).strip()
+    return _strict_symbol_text(text)
+
+
+@lru_cache(maxsize=8192)
+def _strict_symbol_text(text: str) -> str:
     if len(text) != 6 or not text.isascii() or not text.isdigit():
         raise ValueError("symbol must be exactly six ASCII digits")
     return text
@@ -183,16 +263,19 @@ def normalize_td_symbol(value: Any) -> str:
         text = text[:dot]
     if len(text) > 6:
         text = text[-6:]
-    return _strict_symbol(text)
+    return _strict_symbol_text(text)
 
 
 def _effective_market(symbol: str, exchange: Any, market: Any) -> str:
     """Match the existing C++ source converter's market fallback."""
 
-    market_text = str(market or "")
+    return _effective_market_text(symbol, str(exchange or "").lower(), str(market or "").lower())
+
+
+@lru_cache(maxsize=8192)
+def _effective_market_text(symbol: str, exchange_text: str, market_text: str) -> str:
     if market_text:
-        return market_text.lower()
-    exchange_text = str(exchange or "").lower()
+        return market_text
     if exchange_text == "sz":
         return "sz"
     if symbol.startswith("68"):
@@ -225,6 +308,17 @@ class FieldMetaV1:
             raise ValueError("invalid_reason is only valid for INVALID fields")
 
 
+@lru_cache(maxsize=32)
+def _field_meta(
+    quality: FieldQuality,
+    provenance: FieldProvenance,
+    invalid_reason: Optional[str] = None,
+) -> FieldMetaV1:
+    """Reuse immutable field metadata objects across TD rows."""
+
+    return FieldMetaV1(quality, provenance, invalid_reason)
+
+
 def _default_value(field_name: str) -> Any:
     if field_name in _ARRAY_FIELDS:
         return (None,) * 5
@@ -238,11 +332,11 @@ def _coerce_field_meta(value: Any, field_name: str, field_value: Any) -> FieldMe
             and all(item is None for item in field_value)
         )
         quality = FieldQuality.UNKNOWN if null_value else FieldQuality.PRESENT_VALUE
-        return FieldMetaV1(quality, _default_provenance(field_name))
+        return _field_meta(quality, _default_provenance(field_name))
     if isinstance(value, FieldMetaV1):
         return value
     if isinstance(value, Mapping):
-        return FieldMetaV1(
+        return _field_meta(
             FieldQuality(value["quality"]),
             FieldProvenance(value.get("provenance", FieldProvenance.UNKNOWN)),
             value.get("invalid_reason"),
@@ -291,18 +385,11 @@ class MarketTickV1:
     bv: Tuple[Optional[int], ...] = field(default_factory=lambda: (None,) * 5)
     field_meta: Tuple[Tuple[str, FieldMetaV1], ...] = ()
     schema_version: int = 1
-    canonical_value_hash: str = field(init=False)
-    canonical_semantic_hash: str = field(init=False)
+    _canonical_value_hash: Optional[str] = field(init=False, default=None, repr=False, compare=False)
+    _canonical_semantic_hash: Optional[str] = field(init=False, default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.trade_date, str):
-            raise TypeError("trade_date must be a string")
-        try:
-            parsed_date = datetime.fromisoformat(self.trade_date)
-        except ValueError as exc:
-            raise ValueError("trade_date must be YYYY-MM-DD") from exc
-        if parsed_date.date().isoformat() != self.trade_date:
-            raise ValueError("trade_date must be strict YYYY-MM-DD")
+        _strict_trade_date(self.trade_date)
         if isinstance(self.event_time_ms, bool) or self.event_time_ms <= 0:
             raise ValueError("event_time_ms must be a positive epoch millisecond")
         symbol = _strict_symbol(self.symbol)
@@ -329,16 +416,14 @@ class MarketTickV1:
             meta = _coerce_field_meta(supplied.get(field_name), field_name, value)
             _validate_quality(field_name, value, meta)
             normalized_meta.append((field_name, meta))
-        unknown_meta = set(supplied) - set(_TICK_VALUE_FIELDS)
+        unknown_meta = set(supplied) - _TICK_VALUE_FIELD_SET
         if unknown_meta:
             raise ValueError("unknown field metadata: %s" % sorted(unknown_meta))
         object.__setattr__(self, "symbol", symbol)
         object.__setattr__(self, "market_code", market)
         object.__setattr__(self, "field_meta", tuple(normalized_meta))
-        value_hash = _hash("canonical_value", self._value_payload())
-        semantic_hash = _hash("canonical_semantic", (self._value_payload(), self._meta_payload()))
-        object.__setattr__(self, "canonical_value_hash", value_hash)
-        object.__setattr__(self, "canonical_semantic_hash", semantic_hash)
+        semantic = _hash("canonical_semantic", (self._value_payload(), self._meta_payload()))
+        object.__setattr__(self, "_canonical_semantic_hash", semantic)
 
     def _value_payload(self) -> tuple[Any, ...]:
         return (
@@ -356,6 +441,21 @@ class MarketTickV1:
             (name, meta.quality.value, meta.provenance.value, meta.invalid_reason)
             for name, meta in self.field_meta
         )
+
+    @property
+    def canonical_value_hash(self) -> str:
+        value_hash = self._canonical_value_hash
+        if value_hash is None:
+            value_hash = _hash("canonical_value", self._value_payload())
+            object.__setattr__(self, "_canonical_value_hash", value_hash)
+        return value_hash
+
+    @property
+    def canonical_semantic_hash(self) -> str:
+        semantic = self._canonical_semantic_hash
+        if semantic is None:
+            raise RuntimeError("canonical semantic hash was not initialized")
+        return semantic
 
     @property
     def canonical_content_hash(self) -> str:
@@ -414,15 +514,17 @@ def _td_number(
 ) -> tuple[Any, FieldMetaV1]:
     provenance = _default_provenance(field_name)
     if not present or raw is None:
-        return None, FieldMetaV1(FieldQuality.MISSING, provenance)
+        return None, _field_meta(FieldQuality.MISSING, provenance)
     if isinstance(raw, bool):
-        return None, FieldMetaV1(FieldQuality.INVALID, provenance, "BOOLEAN_NUMERIC")
+        return None, _field_meta(FieldQuality.INVALID, provenance, "BOOLEAN_NUMERIC")
+    if already_canonical and isinstance(raw, int):
+        return raw, _field_meta(FieldQuality.PRESENT_VALUE, provenance)
     try:
         numeric = float(raw)
     except (TypeError, ValueError):
-        return None, FieldMetaV1(FieldQuality.INVALID, provenance, "NOT_NUMERIC")
+        return None, _field_meta(FieldQuality.INVALID, provenance, "NOT_NUMERIC")
     if not math.isfinite(numeric):
-        return None, FieldMetaV1(FieldQuality.INVALID, provenance, "NON_FINITE")
+        return None, _field_meta(FieldQuality.INVALID, provenance, "NON_FINITE")
     try:
         if already_canonical:
             if not float(numeric).is_integer():
@@ -441,8 +543,8 @@ def _td_number(
         else:
             value = cxx_llround(numeric)
     except (OverflowError, ValueError):
-        return None, FieldMetaV1(FieldQuality.INVALID, provenance, "OUT_OF_RANGE")
-    return value, FieldMetaV1(FieldQuality.PRESENT_VALUE, provenance)
+        return None, _field_meta(FieldQuality.INVALID, provenance, "OUT_OF_RANGE")
+    return value, _field_meta(FieldQuality.PRESENT_VALUE, provenance)
 
 
 def _row_tick(row: Mapping[str, Any], trade_date: str, *, source: str) -> tuple[MarketTickV1, Optional[str]]:
@@ -464,30 +566,18 @@ def _row_tick(row: Mapping[str, Any], trade_date: str, *, source: str) -> tuple[
         ts = int(ts)
     values: dict[str, Any] = {}
     metadata: dict[str, FieldMetaV1] = {}
-    scalar_aliases = {
-        "px_milli": ("px_milli", "lp"), "pc_milli": ("pc_milli", "lc"),
-        "o_milli": ("o_milli", "o"), "h_milli": ("h_milli", "h"),
-        "l_milli": ("l_milli", "l"), "amt_yuan": ("amt_yuan", "a"),
-        "vol_units": ("vol_units", "v"), "inst_vol": ("inst_vol",),
-        "inst_amt_yuan": ("inst_amt_yuan", "inst_amt"),
-        "large_net_yuan": ("large_net_yuan", "large_net"),
-        "limit_up_milli": ("limit_up_milli", "limit_up"),
-        "limit_down_milli": ("limit_down_milli", "limit_down"),
-        "limit_band_bp": ("limit_band_bp", "limit_ratio_bp"),
-        "no_price_limit": ("no_price_limit",), "is_st": ("is_st", "st_flag"),
-    }
-    for field_name, names in scalar_aliases.items():
+    for field_name, names in _TD_SCALAR_ALIASES:
         present, raw = _field_with_presence(row, *names)
         if field_name in {"no_price_limit", "is_st"}:
             if not present or raw is None:
                 values[field_name] = None
-                metadata[field_name] = FieldMetaV1(FieldQuality.MISSING, _default_provenance(field_name))
+                metadata[field_name] = _field_meta(FieldQuality.MISSING, _default_provenance(field_name))
             elif isinstance(raw, bool):
                 values[field_name] = raw
-                metadata[field_name] = FieldMetaV1(FieldQuality.PRESENT_VALUE, _default_provenance(field_name))
+                metadata[field_name] = _field_meta(FieldQuality.PRESENT_VALUE, _default_provenance(field_name))
             else:
                 values[field_name] = bool(int(raw))
-                metadata[field_name] = FieldMetaV1(FieldQuality.PRESENT_VALUE, _default_provenance(field_name))
+                metadata[field_name] = _field_meta(FieldQuality.PRESENT_VALUE, _default_provenance(field_name))
         else:
             value, meta = _td_number(
                 raw,
@@ -500,15 +590,19 @@ def _row_tick(row: Mapping[str, Any], trade_date: str, *, source: str) -> tuple[
             values[field_name] = value
             metadata[field_name] = meta
     for field_name in _ARRAY_FIELDS:
+        # The real bounded TD query selects scalar columns only.  Skip the
+        # 20 per-level alias probes when an entire depth group is absent.
+        aliases_by_level = _TD_ARRAY_ALIASES[field_name]
+        if not any(alias in row for aliases in aliases_by_level for alias in aliases):
+            values[field_name] = (None,) * 5
+            metadata[field_name] = _field_meta(
+                FieldQuality.MISSING,
+                _default_provenance(field_name),
+            )
+            continue
         values[field_name] = []
         element_meta: list[FieldMetaV1] = []
-        prefix = field_name[:-6] if field_name.endswith("_milli") else field_name
-        for index in range(1, 6):
-            aliases = (
-                "%s_milli%d" % (prefix, index),
-                "%s%d_milli" % (prefix, index),
-                "%s%d" % (prefix, index),
-            )
+        for index, aliases in enumerate(aliases_by_level, start=1):
             present, raw = _field_with_presence(row, *aliases)
             value, meta = _td_number(
                 raw,
@@ -521,13 +615,13 @@ def _row_tick(row: Mapping[str, Any], trade_date: str, *, source: str) -> tuple[
             element_meta.append(meta)
         values[field_name] = tuple(values[field_name])
         if any(meta.quality is FieldQuality.INVALID for meta in element_meta):
-            metadata[field_name] = FieldMetaV1(FieldQuality.INVALID, _default_provenance(field_name), "ARRAY_ELEMENT_INVALID")
+            metadata[field_name] = _field_meta(FieldQuality.INVALID, _default_provenance(field_name), "ARRAY_ELEMENT_INVALID")
         elif all(meta.quality is FieldQuality.MISSING for meta in element_meta):
-            metadata[field_name] = FieldMetaV1(FieldQuality.MISSING, _default_provenance(field_name))
+            metadata[field_name] = _field_meta(FieldQuality.MISSING, _default_provenance(field_name))
         elif any(meta.quality is FieldQuality.MISSING for meta in element_meta):
-            metadata[field_name] = FieldMetaV1(FieldQuality.UNKNOWN, _default_provenance(field_name))
+            metadata[field_name] = _field_meta(FieldQuality.UNKNOWN, _default_provenance(field_name))
         else:
-            metadata[field_name] = FieldMetaV1(FieldQuality.PRESENT_VALUE, _default_provenance(field_name))
+            metadata[field_name] = _field_meta(FieldQuality.PRESENT_VALUE, _default_provenance(field_name))
     market = _effective_market(symbol, _field_value(row, "exchange"), _field_value(row, "market", "market_code"))
     stable_key = _field_value(row, "stable_td_row_key", "row_key", "source_row_key")
     return MarketTickV1(
@@ -712,32 +806,32 @@ class RabbitFixtureAdapter:
         def scalar(name: str, proto_name: str, *, kind: str, provenance: FieldProvenance) -> None:
             if not _proto_declared(record, proto_name):
                 values[name] = None
-                quality[name] = FieldMetaV1(FieldQuality.MISSING, provenance)
+                quality[name] = _field_meta(FieldQuality.MISSING, provenance)
                 return
             present = _proto_present(record, proto_name)
             raw = _proto_get(record, proto_name, 0 if kind != "bool" else False)
             if kind == "float":
                 if not present and raw == 0:
                     values[name] = 0
-                    quality[name] = FieldMetaV1(FieldQuality.WIRE_DEFAULT_AMBIGUOUS, provenance)
+                    quality[name] = _field_meta(FieldQuality.WIRE_DEFAULT_AMBIGUOUS, provenance)
                 else:
                     if not math.isfinite(float(raw)):
                         values[name] = None
-                        quality[name] = FieldMetaV1(FieldQuality.INVALID, provenance, "NON_FINITE")
+                        quality[name] = _field_meta(FieldQuality.INVALID, provenance, "NON_FINITE")
                     else:
                         try:
                             values[name] = cxx_llround(float(raw) * 1000.0) if name in _PRICE_FIELDS else cxx_llround(float(raw))
                         except (OverflowError, ValueError):
                             values[name] = None
-                            quality[name] = FieldMetaV1(FieldQuality.INVALID, provenance, "OUT_OF_RANGE")
+                            quality[name] = _field_meta(FieldQuality.INVALID, provenance, "OUT_OF_RANGE")
                         else:
-                            quality[name] = FieldMetaV1(FieldQuality.PRESENT_VALUE, provenance)
+                            quality[name] = _field_meta(FieldQuality.PRESENT_VALUE, provenance)
             elif kind == "int":
                 values[name] = int(raw)
-                quality[name] = FieldMetaV1(FieldQuality.PRESENT_VALUE if present else FieldQuality.WIRE_DEFAULT_AMBIGUOUS, provenance)
+                quality[name] = _field_meta(FieldQuality.PRESENT_VALUE if present else FieldQuality.WIRE_DEFAULT_AMBIGUOUS, provenance)
             else:
                 values[name] = bool(raw)
-                quality[name] = FieldMetaV1(FieldQuality.PRESENT_VALUE if present else FieldQuality.WIRE_DEFAULT_AMBIGUOUS, provenance)
+                quality[name] = _field_meta(FieldQuality.PRESENT_VALUE if present else FieldQuality.WIRE_DEFAULT_AMBIGUOUS, provenance)
 
         for name, proto_name, kind, provenance in (
             ("px_milli", "lp", "float", FieldProvenance.SOURCE_SNAPSHOT),
@@ -755,7 +849,7 @@ class RabbitFixtureAdapter:
                 field_name = "%s%d" % (prefix, index)
                 if not _proto_declared(record, field_name):
                     values[target].append(None)
-                    quality["%s[%d]" % (target, index - 1)] = FieldMetaV1(
+                    quality["%s[%d]" % (target, index - 1)] = _field_meta(
                         FieldQuality.MISSING,
                         FieldProvenance.SOURCE_SNAPSHOT,
                     )
@@ -765,16 +859,16 @@ class RabbitFixtureAdapter:
                 if kind == "float":
                     if not present and raw == 0:
                         value = 0
-                        meta = FieldMetaV1(FieldQuality.WIRE_DEFAULT_AMBIGUOUS, FieldProvenance.SOURCE_SNAPSHOT)
+                        meta = _field_meta(FieldQuality.WIRE_DEFAULT_AMBIGUOUS, FieldProvenance.SOURCE_SNAPSHOT)
                     elif not math.isfinite(float(raw)):
                         value = None
-                        meta = FieldMetaV1(FieldQuality.INVALID, FieldProvenance.SOURCE_SNAPSHOT, "NON_FINITE")
+                        meta = _field_meta(FieldQuality.INVALID, FieldProvenance.SOURCE_SNAPSHOT, "NON_FINITE")
                     else:
                         value = cxx_llround(float(raw) * 1000.0)
-                        meta = FieldMetaV1(FieldQuality.PRESENT_VALUE, FieldProvenance.SOURCE_SNAPSHOT)
+                        meta = _field_meta(FieldQuality.PRESENT_VALUE, FieldProvenance.SOURCE_SNAPSHOT)
                 else:
                     value = int(raw)
-                    meta = FieldMetaV1(FieldQuality.PRESENT_VALUE if present else FieldQuality.WIRE_DEFAULT_AMBIGUOUS, FieldProvenance.SOURCE_SNAPSHOT)
+                    meta = _field_meta(FieldQuality.PRESENT_VALUE if present else FieldQuality.WIRE_DEFAULT_AMBIGUOUS, FieldProvenance.SOURCE_SNAPSHOT)
                 values[target].append(value)
                 quality["%s[%d]" % (target, index - 1)] = meta
             values[target] = tuple(values[target])
@@ -798,13 +892,13 @@ class RabbitFixtureAdapter:
         for name in _ARRAY_FIELDS:
             entries = [quality["%s[%d]" % (name, i)] for i in range(5)]
             if any(meta.quality is FieldQuality.INVALID for meta in entries):
-                group_quality[name] = FieldMetaV1(FieldQuality.INVALID, FieldProvenance.SOURCE_SNAPSHOT, "ARRAY_ELEMENT_INVALID")
+                group_quality[name] = _field_meta(FieldQuality.INVALID, FieldProvenance.SOURCE_SNAPSHOT, "ARRAY_ELEMENT_INVALID")
             elif any(meta.quality is FieldQuality.WIRE_DEFAULT_AMBIGUOUS for meta in entries):
-                group_quality[name] = FieldMetaV1(FieldQuality.WIRE_DEFAULT_AMBIGUOUS, FieldProvenance.SOURCE_SNAPSHOT)
+                group_quality[name] = _field_meta(FieldQuality.WIRE_DEFAULT_AMBIGUOUS, FieldProvenance.SOURCE_SNAPSHOT)
             elif all(meta.quality is FieldQuality.MISSING for meta in entries):
-                group_quality[name] = FieldMetaV1(FieldQuality.MISSING, FieldProvenance.SOURCE_SNAPSHOT)
+                group_quality[name] = _field_meta(FieldQuality.MISSING, FieldProvenance.SOURCE_SNAPSHOT)
             else:
-                group_quality[name] = FieldMetaV1(FieldQuality.PRESENT_VALUE, FieldProvenance.SOURCE_SNAPSHOT)
+                group_quality[name] = _field_meta(FieldQuality.PRESENT_VALUE, FieldProvenance.SOURCE_SNAPSHOT)
         event_time_ms = int(_proto_get(record, "tss", 0))
         event_local_date = datetime.fromtimestamp(
             event_time_ms / 1000.0,
@@ -841,14 +935,19 @@ class TDFrameAdapter:
     ) -> TickBatchV1:
         if frame_end_ms <= frame_start_ms:
             raise ValueError("TD frame must be a positive half-open interval")
+        frame_start_date = datetime.fromtimestamp(
+            frame_start_ms / 1000.0, timezone.utc
+        ).astimezone(SHANGHAI).date().isoformat()
+        frame_last_date = datetime.fromtimestamp(
+            (frame_end_ms - 1) / 1000.0, timezone.utc
+        ).astimezone(SHANGHAI).date().isoformat()
+        if frame_start_date != trade_date or frame_last_date != trade_date:
+            raise ValueError("TD frame interval must stay within trade_date")
         normalized: list[tuple[MarketTickV1, Optional[str]]] = []
         for row in rows:
             tick, stable_key = _row_tick(row, trade_date, source="td")
             if tick.event_time_ms < frame_start_ms or tick.event_time_ms >= frame_end_ms:
                 raise ValueError("TD tick is outside the half-open frame")
-            local_date = datetime.fromtimestamp(tick.event_time_ms / 1000.0, timezone.utc).astimezone(SHANGHAI).date().isoformat()
-            if local_date != trade_date:
-                raise ValueError("TD tick event date does not match trade_date")
             normalized.append((tick, None if stable_key is None else str(stable_key)))
         normalized.sort(key=lambda item: (
             item[0].event_time_ms,

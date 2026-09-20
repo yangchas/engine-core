@@ -37,6 +37,22 @@ not treated as a data or replay correctness failure. A 20-frame real
 ordered/shuffled determinism is PASS for the complete 500-frame window. See
 `docs/work/handoffs/TASK-007-REAL-DATA-20260920.md`.
 
+The latest no-semantic-change hot-path optimization was measured against real
+TD data with `FINAL` verification:
+
+```text
+validation: /home/exedev/validation/task007-perf-final-500-hotpath-20260920T172951+0800
+500 frames / 1,224,811 rows / 98 empty frames
+500 signals / reducer revision 500 / VirtualClock 09:40
+811,534.946 ms (13.53 min)
+session and final hashes equal to the prior FINAL baseline
+```
+
+This is performance evidence, not a new functional acceptance gate. The full
+ordered/shuffled determinism evidence remains the earlier FULL validation; the
+optimized run is ordered FINAL parity/performance evidence. Details are in
+`docs/work/handoffs/TASK-007-PERFORMANCE-20260920.md`.
+
 TASK-007 remains RUNNING with acceptance pending the independent auditor. The
 slow runtime is a follow-up optimization item, not a functional replay
 failure; it must not be used to invalidate the real-data evidence.

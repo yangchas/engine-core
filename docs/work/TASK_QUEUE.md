@@ -29,6 +29,10 @@
   effects)
 - real_data_performance: `OPTIMIZATION_REQUIRED` (18.07 min for 500 canonical
   frames; not a functional replay failure)
+- performance_variant: `FINAL` hot-path optimization completed; latest real
+  ordered run 13.53 min with final session hash parity
+- performance_evidence:
+  `/home/exedev/validation/task007-perf-final-500-hotpath-20260920T172951+0800/`
 - real_data_determinism: 500-frame ordered/shuffled `PASS`; validation:
   `/home/exedev/validation/task007-real-shuffled-20260920T161558+0800/`
 - production_side_effects: `NONE_OBSERVED`

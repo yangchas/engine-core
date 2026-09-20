@@ -17,12 +17,18 @@ from .auction_timeline import AuctionAnchorRevisionV1, AuctionTimeline
 from .clock import VirtualClock
 from .contracts import semantic_hash
 from .replay import TDEventV1
-from .replay_frames import CrossSectionReplaySource, MarketFrameV1
+from .replay_frames import (
+    CrossSectionReplaySource,
+    IncrementalCrossSectionState,
+    MarketFrameV1,
+)
+from .q2 import IncrementalQ2Projection
 from .canonical_ticks import FieldQuality, MarketTickV1, TickBatchV1
 
 
 CANONICAL_OFFLINE_REPLAY_CONTRACT_VERSION = "CanonicalOfflineReplayV1"
 OFFLINE_REPLAY_MODES = frozenset({"REPLAY", "OFFLINE", "HISTORICAL"})
+REPLAY_VERIFICATION_LEVELS = frozenset({"FULL", "FRAME", "FINAL"})
 
 
 class CanonicalReplayStatus(str, Enum):
@@ -208,7 +214,15 @@ class OfflineCanonicalReplay:
         end_exclusive_ms: int,
         slice_ms: int = 3_000,
         session_timeline: Any = None,
+        verification_level: str = "FULL",
     ) -> None:
+        verification_level = str(verification_level).upper()
+        if verification_level not in REPLAY_VERIFICATION_LEVELS:
+            raise ValueError(
+                "verification_level must be one of FULL, FRAME, FINAL"
+            )
+        self.verification_level = verification_level
+        self.trade_date = trade_date
         self._clock = VirtualClock(datetime.fromtimestamp(start_ms / 1000.0, timezone.utc))
         self.source = CrossSectionReplaySource(
             trade_date,
@@ -478,12 +492,56 @@ class OfflineCanonicalReplay:
     def replay(self, batches: Iterable[TickBatchV1], engine: Any, *, signal_prefix: str = "canonical-replay") -> None:
         """Submit one MARKET_UPDATE signal per global frame to one Engine."""
 
-        latest_raw: dict[str, Mapping[str, Any]] = {}
+        incremental_state = (
+            None
+            if self.verification_level == "FULL"
+            else IncrementalCrossSectionState(
+                self.source.expected_symbols,
+                trade_date=self.trade_date,
+            )
+        )
+        projection_builder = (
+            None
+            if incremental_state is None
+            else IncrementalQ2Projection(
+                self.trade_date,
+                self.source.expected_symbols,
+                freshness_policy=self.source.freshness_policy,
+                source_id=self.source.source_id,
+            )
+        )
+        latest_raw: dict[str, Mapping[str, Any]] = (
+            {} if incremental_state is None else incremental_state.latest_raw
+        )
         for result in self.iter_frame_results(batches):
+            state_content_hash_override = None
+            symbol_states_already_frozen = False
+            if incremental_state is not None:
+                # Keep the cumulative leaf identity cheap for FRAME/FINAL;
+                # FINAL deliberately emits one complete public state hash on
+                # the last frame so the incremental path remains auditable.
+                incremental_state.apply(result.frame.events)
+                if not (
+                    self.verification_level == "FINAL"
+                    and result.frame.frame_no == self.source.frame_count - 1
+                ):
+                    state_content_hash_override = incremental_state.identity_hash(
+                        frame_no=result.frame.frame_no,
+                        logical_ts_ms=result.frame.logical_ts_ms,
+                        updated_symbols=result.frame.updated_symbols,
+                        missing_symbols=result.frame.missing_symbols,
+                        completeness=result.frame.completeness,
+                        coverage=result.frame.coverage,
+                    )
+                symbol_states_already_frozen = True
             signal = self.source.signal_for_frame(
                 result.frame,
                 latest_raw,
                 signal_prefix=signal_prefix,
+                state_content_hash_override=state_content_hash_override,
+                projection_builder=projection_builder,
+                symbol_states_already_frozen=symbol_states_already_frozen,
+                latest_raw_already_updated=incremental_state is not None,
                 replay_status=result.status.value,
                 replay_reasons=result.reasons,
                 skipped_symbols=result.skipped_symbols,
@@ -506,6 +564,7 @@ class OfflineCanonicalReplay:
 
 __all__ = [
     "CANONICAL_OFFLINE_REPLAY_CONTRACT_VERSION",
+    "REPLAY_VERIFICATION_LEVELS",
     "CanonicalReplayBlocked",
     "CanonicalReplayStatus",
     "CanonicalBatchProjectionV1",

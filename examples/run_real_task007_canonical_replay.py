@@ -228,7 +228,12 @@ def _frame_rows(cursor: Any, frame_start_ms: int, frame_end_ms: int) -> list[dic
         batch = cursor.fetchmany(10_000)
         if not batch:
             break
-        rows.extend({name: _jsonable(value) for name, value in zip(TICK_FIELDS, row)} for row in batch)
+        for row in batch:
+            mapped = {
+                name: (_timestamp_ms(value) if name == "ts" else _jsonable(value))
+                for name, value in zip(TICK_FIELDS, row)
+            }
+            rows.append(mapped)
     return rows
 
 
@@ -296,6 +301,7 @@ def _run_pass(
     auction_rows: Mapping[str, list[dict[str, Any]]],
     auction_error: Optional[str],
     shuffled: bool,
+    verification_level: str,
 ) -> dict[str, Any]:
     source = OfflineCanonicalReplay(
         TRADE_DATE,
@@ -304,6 +310,7 @@ def _run_pass(
         end_exclusive_ms=end_ms,
         slice_ms=3_000,
         session_timeline=ReplaySessionTimeline(manifest),
+        verification_level=verification_level,
     )
     engine = DeterministicEngine(
         MarketStateReducer(),
@@ -363,6 +370,7 @@ def _run_pass(
     snapshot = source.session_timeline.snapshot()
     return {
         "shuffled": shuffled,
+        "verification_level": verification_level,
         "frame_count": source.session_timeline.frame_count,
         "processed_signals": capture.signal_count,
         "reducer_revision": engine._reducer.state.revision,
@@ -387,6 +395,12 @@ def main() -> int:
     parser.add_argument("--end-time", default=WINDOW_END)
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--passes", choices=("ordered", "shuffled", "both"), default="ordered")
+    parser.add_argument(
+        "--verification-level",
+        choices=("FULL", "FINAL", "FRAME"),
+        default="FINAL",
+        help="canonical state verification level; FINAL preserves full parity on the last frame",
+    )
     parser.add_argument(
         "--baseline-dir",
         type=Path,
@@ -452,6 +466,7 @@ def main() -> int:
                 auction_rows=auction_rows,
                 auction_error=auction_error,
                 shuffled=False,
+                verification_level=args.verification_level,
             )
         shuffled = None
         if args.passes in {"shuffled", "both"}:
@@ -465,6 +480,7 @@ def main() -> int:
                 auction_rows=auction_rows,
                 auction_error=auction_error,
                 shuffled=True,
+                verification_level=args.verification_level,
             )
     finally:
         conn.close()
@@ -554,6 +570,7 @@ def main() -> int:
         "trade_date": TRADE_DATE,
         "frame_count": frame_count,
         "passes": args.passes,
+        "verification_level": args.verification_level,
         "expected_symbol_count": len(expected_symbols),
         "event_count": event_count,
         "performance": performance,

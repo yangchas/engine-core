@@ -914,6 +914,7 @@ class CrossSectionReplaySource:
         state_content_hash_override: Optional[str] = None,
         projection_builder: Any = None,
         symbol_states_already_frozen: bool = False,
+        latest_raw_already_updated: bool = False,
         replay_status: str = REPLAY_READY,
         replay_reasons: Sequence[str] = (),
         skipped_symbols: Sequence[str] = (),
@@ -929,8 +930,9 @@ class CrossSectionReplaySource:
     ) -> EngineSignal:
         """Create one frame signal while updating a caller-owned cumulative state."""
 
-        for event in frame.events:
-            latest_raw[event.symbol] = event.to_q2_raw()
+        if not latest_raw_already_updated:
+            for event in frame.events:
+                latest_raw[event.symbol] = event.to_q2_raw()
         observed_at = datetime.fromtimestamp(frame.logical_ts_ms / 1000.0, tz=timezone.utc)
         if projection_builder is None:
             base = build_q2_projection(

@@ -200,6 +200,7 @@ from .canonical_ticks import (
 )
 from .canonical_replay import (
     CANONICAL_OFFLINE_REPLAY_CONTRACT_VERSION,
+    REPLAY_VERIFICATION_LEVELS,
     CanonicalBatchProjectionV1,
     CanonicalFrameResultV1,
     CanonicalReplayBlocked,
