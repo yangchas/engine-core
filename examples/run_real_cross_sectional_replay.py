@@ -382,8 +382,16 @@ def _run_pass(
         "state_hash": _sequence_hash(state_hashes),
         "final_cross_section_full_hash": final_cross_section_full_hash,
         "final_cross_section_incremental_identity": final_cross_section_incremental_identity,
-        "final_cross_section_full_hash_matches_recorded": (
-            not state_hashes or final_cross_section_full_hash == state_hashes[-1]
+        "state_hash_verification": {
+            "FULL": "FULL_PER_FRAME",
+            "FRAME": "INCREMENTAL_IDENTITY_ONLY",
+            "FINAL": "FINAL_ONLY",
+            "NONE": "NONE",
+        }.get(verification_level, "UNKNOWN"),
+        "final_cross_section_full_hash_parity": (
+            "NOT_RUN" if not state_hashes else (
+                "PASS" if final_cross_section_full_hash == state_hashes[-1] else "FAIL"
+            )
         ),
         "projection_hash": _sequence_hash(projection_hashes),
         "signal_hash": _sequence_hash(signal_hashes),
