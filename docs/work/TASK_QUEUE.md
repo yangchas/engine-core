@@ -1,6 +1,6 @@
 # Task Queue
 
-## READY
+## REVIEW
 
 ### TASK-004
 
@@ -33,6 +33,8 @@ Merge gate:
 - ECC production audit: no blocking side-effect or semantic finding; explicit
   integrator acceptance remains required
 
+## BLOCKED
+
 ### TASK-003
 
 - title: Robust cross-sectional replay foundation
@@ -41,6 +43,8 @@ Merge gate:
 - tests: `623 passed`
 - evidence: `/home/exedev/validation/replay-20260918-performance-20260920T101233+0800-final`
 - production_side_effects: `NONE_OBSERVED`
+
+## MERGED
 
 ### TASK-001
 
