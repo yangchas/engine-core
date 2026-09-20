@@ -82,8 +82,29 @@ class MarketStateReducer:
             "stale_symbols": projection.stale_symbols,
             "content_hash": projection.content_hash,
         }
+        cross_section = getattr(projection, "cross_section", None)
+        if cross_section is not None:
+            self.state.source_observation_metadata.update(
+                {
+                    "cross_section_contract": "CrossSectionStateV1",
+                    "cross_section_hash": cross_section.content_hash,
+                    "cross_section_evidence_hash": cross_section.evidence_hash,
+                    "frame_no": cross_section.frame_no,
+                    "frame_completeness": cross_section.frame_completeness,
+                    "updated_symbols": cross_section.updated_symbols,
+                    "frame_missing_symbols": cross_section.missing_symbols,
+                    "source_sequence_status": cross_section.source_sequence_status,
+                    "rabbit_arrival_order": cross_section.rabbit_arrival_order,
+                    "historical_available_at": cross_section.historical_available_at,
+                }
+            )
         self.state.coverage = projection.coverage
-        self.state.completeness = projection.status.value
+        cross_section = getattr(projection, "cross_section", None)
+        self.state.completeness = (
+            cross_section.frame_completeness
+            if cross_section is not None
+            else projection.status.value
+        )
         self.state.last_envelope_id = projection.envelope.envelope_id
         return self.state
 
