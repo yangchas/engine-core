@@ -10,7 +10,8 @@
 - branch: `codex/task-cross-sectional-performance`
 - worktree: current development worktree
 - depends_on: `TASK-005` review and existing C++ RawTick/TickBatch contract
-- commit: `272cbd7428aaf8ac205759ec7d6afa5f230814a8`
+- implementation_commit: `272cbd7428aaf8ac205759ec7d6afa5f230814a8`
+- review_metadata_commit: `f4bbf850357436f8b0be7507958ae78e284888ca`
 - scope: pure Core contract, TD compatibility adapter, parsed Rabbit fixture,
   canonical hash layers, and legacy shadow projection
 - canonical_authority: `RABBITMQ_DATASERVICE_RAWTICK_V1`
