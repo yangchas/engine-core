@@ -20,6 +20,25 @@ silently converted into Q2 values. The Q2 input must come from a real Redis
 capture or an equivalent historical Q2 artifact with explicit source time and
 `available_at` evidence.
 
+The producer boundary is `t1-v2`, not Core. Its stateful quote calculator owns
+Q2 derivation and its writer owns Redis serialization. Core must consume the
+producer's Q2Frame output rather than recompute Q2 from TD rows. The replay
+seam is deliberately time-agnostic: any positive monotonic producer source
+timestamp is accepted, including premarket and postmarket times. Market-hours
+classification, freshness, and historical `available_at` remain evidence or
+consumer policies, not a Q2 computation gate.
+
+The same-input validation path is:
+
+```text
+TD stock_tick_v2 (read-only)
+    -> t1-v2 replay --dry-run --q2frame <validation file>
+    -> Core Q2FrameReplaySource
+```
+
+A Core TD tick replay without the corresponding t1-v2 Q2Frame is tick-layer
+evidence only and cannot close Q2-dependent opening acceptance.
+
 The canonical path is:
 
 ```text

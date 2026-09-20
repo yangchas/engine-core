@@ -79,6 +79,19 @@ target-date frozen Redis Q2 capture was replayed for determinism, but 5,219
 source rows are future relative to that cutoff; see the replay handoff. This is
 `REPLAY_PARTIAL`, not NORMAL acceptance.
 ```
+
+The producer boundary is explicit: t1-v2 generates Q2; Core does not derive
+Q2 from TD ticks. The earlier 09:15–09:40 TD replay remains tick-layer
+evidence only. TASK-008 cannot close until a same-input t1-v2 dry-run Q2Frame
+artifact is consumed by Core. Q2Frame source timestamps are accepted without a
+market-hours gate; freshness and historical availability remain separate
+evidence policies.
+
+Verification for this boundary correction: `687 passed`, compileall and
+diff-check PASS. The producer-bridge tooling lives in
+`examples/run_task008_t1v2_q2frame_replay.py` and
+`examples/aggregate_t1_v2_q2frame_3s.py`; it reads and writes local JSONL
+artifacts only.
 ```
 
 TASK-003 established the streamed cross-sectional foundation and performance
