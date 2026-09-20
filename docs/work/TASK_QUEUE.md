@@ -1,12 +1,12 @@
 # Task Queue
 
-## RUNNING
+## MERGED
 
 ### TASK-007
 
 - title: Offline canonical replay / auction facts
 - owner: `replay-investigator`
-- state: `RUNNING` (acceptance reopened after read-only audit)
+- state: `MERGED` (independent auditor PASS)
 - branch: `codex/feature-session-engine-integration`
 - worktree: current development worktree
 - started_at: `2026-09-20T14:10:36+08:00`
@@ -20,10 +20,11 @@
 - tester_handoff: `docs/work/handoffs/TASK-007-TESTER-20260920.md`
 - real_data_audit: `docs/work/handoffs/TASK-007-REAL-DATA-AUDIT-20260920.md`
 - readonly_audit: `docs/work/handoffs/TASK-007-READONLY-AUDIT-20260920.md`
+- independent_auditor: `docs/work/handoffs/TASK-007-INDEPENDENT-AUDIT-20260920.md`
 - integrated_by: `INTEGRATOR_REVIEW_TASK007_20260920.md`
 - implementation_tests_before_fix: `668 passed`
 - current_tests: `682 passed`, compileall PASS, diff-check PASS
-- offline_tester: `PASS`; independent auditor remains pending
+- offline_tester: `PASS`; independent auditor: `PASS`
 - real_data_ordered: `PASS (completed)`; validation:
   `/home/exedev/validation/task007-real-ordered-20260920T154654+0800/`
 - real_data_functional: `PASS` (500 canonical frames completed with no side
@@ -37,8 +38,10 @@
 - real_data_determinism: 500-frame ordered/shuffled `PASS`; validation:
   `/home/exedev/validation/task007-real-shuffled-20260920T161558+0800/`
 - production_side_effects: `NONE_OBSERVED`
+- merge_recommendation: `MERGE`
+- next_task: `TASK-008` remains `BACKLOG` and is not auto-started
 
-Merge gate:
+Merge gate (all satisfied):
 
 - canonical batch conversion is deterministic and missing-safe;
 - degraded `BLOCKED`/`PARTIAL` frame diagnostics reach Engine evidence;
@@ -50,6 +53,7 @@ Merge gate:
 - recovery revision idempotency and late correction evidence pass;
 - full pytest, compileall and diff-check pass;
 - integrator review is recorded before feature-branch merge.
+- independent auditor reports `AUDIT_STATUS=PASS` and no blocking findings.
 
 ### TASK-006
 

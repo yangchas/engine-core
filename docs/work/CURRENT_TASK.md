@@ -4,9 +4,9 @@
 active_task: TASK-007
 bootstrap_status: COMPLETE
 last_task: TASK-007
-last_task_state: REAL_DATA_PASS_PENDING_INDEPENDENT_REVIEW
-next_task: TASK-007 acceptance review
-next_task_state: BLOCKED_UNTIL_AUDITOR
+last_task_state: MERGED
+next_task: TASK-008
+next_task_state: BACKLOG / NOT_STARTED
 
 owner: replay-investigator
 branch: codex/feature-session-engine-integration
@@ -55,12 +55,14 @@ optimized run is ordered FINAL parity/performance evidence. Details are in
 
 A further local read-only boundary audit passed, including evidence checks and
 the public hash-field serialization compatibility fix; it is recorded in
-`docs/work/handoffs/TASK-007-READONLY-AUDIT-20260920.md`. This is not the
-independent auditor sign-off required by the task board.
+`docs/work/handoffs/TASK-007-READONLY-AUDIT-20260920.md`.
 
-TASK-007 remains RUNNING with acceptance pending the independent auditor. The
-slow runtime is a follow-up optimization item, not a functional replay
-failure; it must not be used to invalidate the real-data evidence.
+The independent read-only auditor returned `AUDIT_STATUS=PASS`,
+`BLOCKING_FINDINGS=NONE`, and `MERGE_RECOMMENDATION=MERGE`. The final sign-off
+is recorded in `docs/work/handoffs/TASK-007-INDEPENDENT-AUDIT-20260920.md`.
+TASK-007 is therefore `MERGED`. The slow runtime remains a non-blocking
+optimization item; it is not a functional replay failure and does not weaken
+the real-data evidence.
 
 The next task is not started:
 
