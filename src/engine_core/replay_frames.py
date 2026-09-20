@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, tzinfo
 from enum import Enum
+from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 from .contracts import DataStatus, EngineSignal, SignalKind, deep_freeze, evidence_hash, semantic_hash
@@ -244,6 +245,7 @@ class CrossSectionStateV1:
     rabbit_arrival_order: str = RABBIT_ARRIVAL_UNKNOWN
     historical_available_at: str = HISTORICAL_AVAILABLE_AT_UNKNOWN
     content_hash_override: Optional[str] = field(default=None, repr=False, compare=False)
+    symbol_states_already_frozen: bool = field(default=False, repr=False, compare=False)
     content_hash: str = field(init=False)
     evidence_hash: str = field(init=False)
 
@@ -260,11 +262,18 @@ class CrossSectionStateV1:
             raise ValueError("unsupported frame completeness")
         if not 0.0 <= self.coverage <= 1.0:
             raise ValueError("coverage must be between zero and one")
-        states = {normalize_symbol(symbol): dict(values) for symbol, values in self.symbol_states.items()}
+        states = {
+            normalize_symbol(symbol): values if self.symbol_states_already_frozen else dict(values)
+            for symbol, values in self.symbol_states.items()
+        }
         object.__setattr__(self, "expected_symbols", expected)
         object.__setattr__(self, "updated_symbols", updated)
         object.__setattr__(self, "missing_symbols", missing)
-        object.__setattr__(self, "symbol_states", deep_freeze(states))
+        object.__setattr__(
+            self,
+            "symbol_states",
+            MappingProxyType(states) if self.symbol_states_already_frozen else deep_freeze(states),
+        )
         object.__setattr__(self, "content_hash", self.content_hash_override or semantic_hash({
             "contract": CROSS_SECTION_STATE_CONTRACT_VERSION,
             "trade_date": self.trade_date,
@@ -405,17 +414,86 @@ class IncrementalCrossSectionState:
     for the FULL contract hash; parity is checked by callers at finalization.
     """
 
+    _LEAF_CONTRACT = "CrossSectionSymbolLeafV1"
+    _NODE_CONTRACT = "CrossSectionMerkleNodeV1"
+
     def __init__(self, expected_symbols: Iterable[Any], *, trade_date: str = "") -> None:
         self.expected_symbols = tuple(sorted({normalize_symbol(item) for item in expected_symbols}))
         self.trade_date = trade_date
         self.latest_raw: dict[str, Mapping[str, Any]] = {}
-        self._symbol_hashes: dict[str, str] = {}
+        self._symbol_indexes = {symbol: index for index, symbol in enumerate(self.expected_symbols)}
+        leaf_count = 1
+        while leaf_count < len(self.expected_symbols):
+            leaf_count *= 2
+        self._leaf_count = leaf_count
+        self._tree = [self._empty_leaf(index) for index in range(leaf_count * 2)]
+        for index, symbol in enumerate(self.expected_symbols):
+            self._tree[leaf_count + index] = self._leaf_hash(symbol, None)
+        for index in range(leaf_count - 1, 0, -1):
+            self._tree[index] = self._node_hash(self._tree[index * 2], self._tree[index * 2 + 1])
+
+    def _empty_leaf(self, index: int) -> str:
+        return semantic_hash({"contract": self._NODE_CONTRACT, "empty_index": index})
+
+    def _leaf_hash(self, symbol: str, raw: Optional[Mapping[str, Any]]) -> str:
+        return semantic_hash({
+            "contract": self._LEAF_CONTRACT,
+            "symbol": symbol,
+            "state": raw,
+        })
+
+    def _node_hash(self, left: str, right: str) -> str:
+        return semantic_hash({"contract": self._NODE_CONTRACT, "left": left, "right": right})
+
+    def _update_leaf(self, symbol: str, raw: Mapping[str, Any]) -> None:
+        position = self._leaf_count + self._symbol_indexes[symbol]
+        self._tree[position] = self._leaf_hash(symbol, raw)
+        position //= 2
+        while position:
+            self._tree[position] = self._node_hash(self._tree[position * 2], self._tree[position * 2 + 1])
+            position //= 2
 
     def apply(self, events: Iterable[TDEventV1]) -> None:
         for event in events:
             raw = event.to_q2_raw()
-            self.latest_raw[event.symbol] = raw
-            self._symbol_hashes[event.symbol] = semantic_hash(raw)
+            # TDEventV1 emits scalar values, so a shallow proxy is sufficient
+            # and avoids recursively freezing the full universe per frame.
+            frozen_raw = MappingProxyType(raw)
+            self.latest_raw[event.symbol] = frozen_raw
+            self._update_leaf(event.symbol, raw)
+
+    @property
+    def merkle_root(self) -> str:
+        return self._tree[1]
+
+    def full_state_hash(
+        self,
+        *,
+        frame_no: int,
+        logical_ts_ms: int,
+        updated_symbols: Sequence[str],
+        missing_symbols: Sequence[str],
+        completeness: str,
+        coverage: float,
+        source_time_min_ms: Optional[int] = None,
+        source_time_max_ms: Optional[int] = None,
+    ) -> str:
+        """Build the public FULL hash once for final parity verification."""
+
+        return CrossSectionStateV1(
+            trade_date=self.trade_date,
+            frame_no=frame_no,
+            logical_ts_ms=logical_ts_ms,
+            expected_symbols=self.expected_symbols,
+            updated_symbols=updated_symbols,
+            missing_symbols=missing_symbols,
+            symbol_states=self.latest_raw,
+            frame_completeness=completeness,
+            coverage=coverage,
+            source_time_min_ms=source_time_min_ms,
+            source_time_max_ms=source_time_max_ms,
+            symbol_states_already_frozen=True,
+        ).content_hash
 
     def identity_hash(
         self,
@@ -435,7 +513,7 @@ class IncrementalCrossSectionState:
             "expected_symbols": self.expected_symbols,
             "updated_symbols": tuple(updated_symbols),
             "missing_symbols": tuple(missing_symbols),
-            "symbol_hashes": tuple(sorted(self._symbol_hashes.items())),
+            "merkle_root": self.merkle_root,
             "frame_completeness": completeness,
             "coverage": coverage,
         })
@@ -588,7 +666,8 @@ class CrossSectionReplaySource:
             frame_end = frame_start + self.slice_ms
             frame_events = tuple(grouped.get(frame_no, ()))
             updated = tuple(sorted({event.symbol for event in frame_events}))
-            missing = tuple(symbol for symbol in self.expected_symbols if symbol not in set(updated))
+            updated_set = set(updated)
+            missing = tuple(symbol for symbol in self.expected_symbols if symbol not in updated_set)
             if not frame_events:
                 completeness = FRAME_EMPTY
             elif missing:
@@ -615,12 +694,16 @@ class CrossSectionReplaySource:
         self,
         frame_no: int,
         events: Iterable[Mapping[str, Any] | TDEventV1],
+        *,
+        presorted: bool = False,
     ) -> MarketFrameV1:
         """Build one frame from a bounded 3-second query result.
 
         This is the streaming counterpart to :meth:`frames`: callers may
         query one half-open interval at a time and never materialize the full
-        trading window in memory.
+        trading window in memory. ``presorted`` is safe only when the source
+        guarantees ``event_time_ms, symbol, content_hash`` order; bounds and
+        symbol membership are still validated here.
         """
 
         if frame_no < 0 or frame_no >= self.frame_count:
@@ -631,7 +714,8 @@ class CrossSectionReplaySource:
             item if isinstance(item, TDEventV1) else TDEventV1.from_mapping(item, source_timezone=self.source_timezone)
             for item in events
         ]
-        normalized.sort(key=lambda event: (event.event_time_ms, event.symbol, event.content_hash))
+        if not presorted:
+            normalized.sort(key=lambda event: (event.event_time_ms, event.symbol, event.content_hash))
         expected_set = set(self.expected_symbols)
         for event in normalized:
             if event.symbol not in expected_set:
@@ -641,7 +725,8 @@ class CrossSectionReplaySource:
             if _event_local_date(event, self.source_timezone) != self.trade_date:
                 raise ValueError("TD tick event date does not match trade_date")
         updated = tuple(sorted({event.symbol for event in normalized}))
-        missing = tuple(symbol for symbol in self.expected_symbols if symbol not in set(updated))
+        updated_set = set(updated)
+        missing = tuple(symbol for symbol in self.expected_symbols if symbol not in updated_set)
         completeness = FRAME_EMPTY if not normalized else FRAME_COMPLETE if not missing else FRAME_PARTIAL
         times = [event.event_time_ms for event in normalized]
         return MarketFrameV1(
@@ -724,6 +809,7 @@ class CrossSectionReplaySource:
         signal_prefix: str = "cross-section",
         state_content_hash_override: Optional[str] = None,
         projection_builder: Any = None,
+        symbol_states_already_frozen: bool = False,
     ) -> EngineSignal:
         """Create one frame signal while updating a caller-owned cumulative state."""
 
@@ -759,6 +845,7 @@ class CrossSectionReplaySource:
             source_time_min_ms=frame.source_time_min_ms,
             source_time_max_ms=frame.source_time_max_ms,
             content_hash_override=state_content_hash_override,
+            symbol_states_already_frozen=symbol_states_already_frozen,
         )
         projection = CrossSectionProjectionV1(base_projection=base, cross_section=state)
         return EngineSignal(

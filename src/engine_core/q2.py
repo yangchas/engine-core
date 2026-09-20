@@ -467,6 +467,47 @@ class IncrementalQ2Projection:
         self._raw_hashes: Dict[str, Mapping[Any, Any]] = {}
         self._quotes: Dict[str, Q2Quote] = {}
         self._quote_hashes: Dict[str, str] = {}
+        self._missing_symbols = set(self.expected_symbols)
+        self._invalid_symbols: set[str] = set()
+        self._future_symbols: set[str] = set()
+        self._stale_symbols: set[str] = set()
+        self._source_times: Dict[str, int] = {}
+
+    def _refresh_symbol(self, symbol: str, raw: Mapping[Any, Any], observed_ms: int) -> None:
+        normalized = normalize_symbol(symbol)
+        quote = normalize_q2(normalized, raw)
+        static_errors = tuple(
+            error for error in quote.field_errors
+            if error not in {"stale", "future_ts", "trade_date"}
+        )
+        checked = replace(quote, field_errors=static_errors)
+        validation_errors = validate_q2(
+            checked,
+            observed_at_ms=observed_ms,
+            trade_date=self.trade_date,
+            freshness_policy=self.freshness_policy,
+        )
+        checked = replace(checked, field_errors=validation_errors) if validation_errors else checked
+        self._raw_hashes[normalized] = raw
+        self._quotes[normalized] = checked
+        self._quote_hashes[normalized] = semantic_hash(checked.to_mapping())
+        self._missing_symbols.discard(normalized)
+        if any(error != "stale" for error in validation_errors):
+            self._invalid_symbols.add(normalized)
+        else:
+            self._invalid_symbols.discard(normalized)
+        if "future_ts" in validation_errors:
+            self._future_symbols.add(normalized)
+        else:
+            self._future_symbols.discard(normalized)
+        if "stale" in validation_errors:
+            self._stale_symbols.add(normalized)
+        else:
+            self._stale_symbols.discard(normalized)
+        if checked.source_record_time_ms is not None:
+            self._source_times[normalized] = checked.source_record_time_ms
+        else:
+            self._source_times.pop(normalized, None)
 
     def build(
         self,
@@ -480,6 +521,8 @@ class IncrementalQ2Projection:
             raise ValueError("observed_at must be timezone-aware")
         observed_ms = int(observed_at.astimezone(timezone.utc).timestamp() * 1000)
         changed = set(changed_symbols)
+        if not self._quotes and raw_hashes:
+            changed.update(raw_hashes)
         for symbol in changed:
             normalized = normalize_symbol(symbol)
             raw = raw_hashes.get(normalized)
@@ -487,60 +530,69 @@ class IncrementalQ2Projection:
                 self._raw_hashes.pop(normalized, None)
                 self._quotes.pop(normalized, None)
                 self._quote_hashes.pop(normalized, None)
+                self._missing_symbols.add(normalized)
+                self._invalid_symbols.discard(normalized)
+                self._future_symbols.discard(normalized)
+                self._stale_symbols.discard(normalized)
+                self._source_times.pop(normalized, None)
                 continue
-            quote = normalize_q2(normalized, raw)
-            self._raw_hashes[normalized] = raw
-            self._quotes[normalized] = quote
-            self._quote_hashes[normalized] = semantic_hash(quote.to_mapping())
-        # Reuse the caller-owned cumulative mapping for symbols that were
-        # already present before this frame.
-        for symbol, raw in raw_hashes.items():
-            normalized = normalize_symbol(symbol)
-            if normalized not in self._quotes:
-                self._raw_hashes[normalized] = raw
-                self._quotes[normalized] = normalize_q2(normalized, raw)
-                self._quote_hashes[normalized] = semantic_hash(self._quotes[normalized].to_mapping())
+            self._refresh_symbol(normalized, raw, observed_ms)
 
-        missing = []
-        stale = []
-        quotes: Dict[str, Q2Quote] = {}
-        current_quote_hashes: Dict[str, str] = {}
-        for symbol in self.expected_symbols:
-            quote = self._quotes.get(symbol)
-            if quote is None:
-                missing.append(symbol)
-                continue
-            static_errors = tuple(
-                error for error in quote.field_errors
-                if error not in {"stale", "future_ts", "trade_date"}
-            )
-            checked = replace(quote, field_errors=static_errors)
-            validation_errors = validate_q2(
-                checked,
-                observed_at_ms=observed_ms,
-                trade_date=self.trade_date,
-                freshness_policy=self.freshness_policy,
-            )
-            if validation_errors:
-                checked = replace(checked, field_errors=validation_errors)
-            if "stale" in validation_errors:
-                stale.append(symbol)
-            quotes[symbol] = checked
-            if validation_errors == static_errors:
-                current_quote_hashes[symbol] = self._quote_hashes[symbol]
-            else:
+        # With no stale-age policy, only changed symbols and previously future
+        # symbols can change validation state as the observation clock moves.
+        # A configured stale-age policy intentionally uses the conservative
+        # full validation path below.
+        fast_path = self.freshness_policy.stale_after_ms is None
+        if fast_path:
+            for symbol in tuple(self._future_symbols):
+                raw = self._raw_hashes.get(symbol)
+                if raw is not None:
+                    self._refresh_symbol(symbol, raw, observed_ms)
+            quotes = dict(self._quotes)
+            missing = tuple(sorted(self._missing_symbols))
+            stale = tuple(sorted(self._stale_symbols))
+            current_quote_hashes = dict(self._quote_hashes)
+            source_times = list(self._source_times.values())
+            has_non_stale_errors = bool(self._invalid_symbols)
+        else:
+            missing_list = []
+            stale_list = []
+            quotes = {}
+            current_quote_hashes = {}
+            for symbol in self.expected_symbols:
+                quote = self._quotes.get(symbol)
+                if quote is None:
+                    missing_list.append(symbol)
+                    continue
+                static_errors = tuple(
+                    error for error in quote.field_errors
+                    if error not in {"stale", "future_ts", "trade_date"}
+                )
+                checked = replace(quote, field_errors=static_errors)
+                validation_errors = validate_q2(
+                    checked,
+                    observed_at_ms=observed_ms,
+                    trade_date=self.trade_date,
+                    freshness_policy=self.freshness_policy,
+                )
+                if validation_errors:
+                    checked = replace(checked, field_errors=validation_errors)
+                if "stale" in validation_errors:
+                    stale_list.append(symbol)
+                quotes[symbol] = checked
                 current_quote_hashes[symbol] = semantic_hash(checked.to_mapping())
-
-        source_times = [
-            quote.source_record_time_ms
-            for quote in quotes.values()
-            if quote.source_record_time_ms is not None
-        ]
+            missing = tuple(missing_list)
+            stale = tuple(stale_list)
+            source_times = [
+                quote.source_record_time_ms
+                for quote in quotes.values()
+                if quote.source_record_time_ms is not None
+            ]
+            has_non_stale_errors = any(
+                any(error != "stale" for error in quote.field_errors)
+                for quote in quotes.values()
+            )
         coverage = len(quotes) / float(len(self.expected_symbols)) if self.expected_symbols else 0.0
-        has_non_stale_errors = any(
-            any(error != "stale" for error in quote.field_errors)
-            for quote in quotes.values()
-        )
         if not self.expected_symbols:
             status = DataStatus.MISSING
             consistency = "EMPTY_UNIVERSE"

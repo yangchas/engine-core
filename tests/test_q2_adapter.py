@@ -266,6 +266,26 @@ def test_incremental_q2_full_hash_matches_full_rebuild_across_updates():
     assert actual.quotes["000001"].to_mapping() == expected_projection.quotes["000001"].to_mapping()
 
 
+def test_incremental_q2_full_parity_preserves_missing_and_stale_semantics():
+    expected = ("000001", "000002")
+    raw = {
+        "000001": {"px": "1000", "pc": "990", "amt": "1", "ts": "1788484799000"},
+    }
+    policy = FreshnessPolicy(stale_after_ms=1_000)
+    first_observed = datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc)
+    later_observed = first_observed + timedelta(seconds=2)
+    incremental = IncrementalQ2Projection("2026-09-04", expected, freshness_policy=policy)
+    incremental.build(first_observed, raw, changed_symbols=("000001",), full_hash=True)
+    actual = incremental.build(later_observed, raw, changed_symbols=(), full_hash=True)
+    expected_projection = build_q2_projection(
+        "2026-09-04", later_observed, expected, raw, freshness_policy=policy
+    )
+    assert actual.content_hash == expected_projection.content_hash
+    assert actual.missing_symbols == ("000002",)
+    assert actual.stale_symbols == expected_projection.stale_symbols
+    assert actual.quotes["000001"].to_mapping() == expected_projection.quotes["000001"].to_mapping()
+
+
 def test_q2_contract_keeps_unknown_fields_for_evidence_but_not_business_mapping():
     quote = normalize_q2(
         "000001",

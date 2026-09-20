@@ -107,6 +107,7 @@ def test_streaming_single_frame_builder_matches_bounded_frame():
     whole = source.frames(rows)
     one = source.frame_from_events(1, [TDEventV1.from_mapping(rows[0])])
     assert whole[1].content_hash == one.content_hash
+    assert source.frame_from_events(1, [TDEventV1.from_mapping(rows[0])], presorted=True).content_hash == one.content_hash
 
 
 def test_incremental_state_identity_is_stable_for_reordered_frame_events():
@@ -133,3 +134,28 @@ def test_incremental_state_identity_is_stable_for_reordered_frame_events():
         "coverage": frame.coverage,
     }
     assert left.identity_hash(**kwargs) == right.identity_hash(**kwargs)
+
+
+def test_incremental_state_final_full_hash_matches_public_state_hash():
+    start = local_datetime_ms("2026-09-18", "09:15:00")
+    source = CrossSectionReplaySource(
+        "2026-09-18",
+        ("600519", "000001"),
+        VirtualClock(datetime.fromtimestamp(start / 1000, timezone.utc)),
+        slice_anchor_ms=start,
+        end_exclusive_ms=start + 3_000,
+    )
+    frame = source.frame_from_events(0, [_row(start + 100, "600519")])
+    accumulator = IncrementalCrossSectionState(source.expected_symbols, trade_date="2026-09-18")
+    accumulator.apply(frame.events)
+    signal = source.signal_for_frame(frame, accumulator.latest_raw)
+    assert accumulator.full_state_hash(
+        frame_no=frame.frame_no,
+        logical_ts_ms=frame.logical_ts_ms,
+        updated_symbols=frame.updated_symbols,
+        missing_symbols=frame.missing_symbols,
+        completeness=frame.completeness,
+        coverage=frame.coverage,
+        source_time_min_ms=frame.source_time_min_ms,
+        source_time_max_ms=frame.source_time_max_ms,
+    ) == signal.payload.cross_section.content_hash

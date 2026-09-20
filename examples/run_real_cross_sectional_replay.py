@@ -180,7 +180,6 @@ def _run_pass(
         phase="REPLAY",
         result_history_limit=1,
     )
-    latest_raw: dict[str, Mapping[str, Any]] = {}
     incremental_state = IncrementalCrossSectionState(expected_symbols, trade_date=TRADE_DATE)
     projection_builder = (
         IncrementalQ2Projection(TRADE_DATE, expected_symbols, source_id="task003_td_cross_section_replay")
@@ -198,6 +197,7 @@ def _run_pass(
     invalid_rows = 0
     missing_fields = {field: 0 for field in REQUIRED_FIELDS}
     invalid_examples: list[dict[str, Any]] = []
+    last_frame_for_parity: Any = None
     stage_ns = {
         "stream_query_time_ns": 0,
         "td_first_row_latency_ns": None,
@@ -210,12 +210,13 @@ def _run_pass(
     }
 
     def submit_frame(frame_no: int, events: list[TDEventV1]) -> None:
-        nonlocal replay_events
+        nonlocal replay_events, last_frame_for_parity
         if shuffled:
             random.Random(f"TASK-003:{frame_no}").shuffle(events)
         incremental_state.apply(events)
         frame_started_ns = time.perf_counter_ns()
-        frame = source.frame_from_events(frame_no, events)
+        frame = source.frame_from_events(frame_no, events, presorted=not shuffled)
+        last_frame_for_parity = frame
         stage_ns["frame_build_time_ns"] += time.perf_counter_ns() - frame_started_ns
         signal_started_ns = time.perf_counter_ns()
         state_override = None
@@ -236,6 +237,7 @@ def _run_pass(
             signal_prefix="task003-cross-section",
             state_content_hash_override=state_override,
             projection_builder=projection_builder,
+            symbol_states_already_frozen=True,
         )
         signal_elapsed_ns = time.perf_counter_ns() - signal_started_ns
         stage_ns["signal_build_time_ns"] += signal_elapsed_ns
@@ -287,10 +289,10 @@ def _run_pass(
     execute_done_ns = time.perf_counter_ns()
     stage_ns["stream_query_time_ns"] += execute_done_ns - query_started_ns
     first_batch = True
-    fetch_started_ns = time.perf_counter_ns()
     pending_frame_no = 0
     pending_events: list[TDEventV1] = []
     while True:
+        fetch_started_ns = time.perf_counter_ns()
         batch = cursor.fetchmany(10_000)
         fetch_done_ns = time.perf_counter_ns()
         stage_ns["td_fetch_time_ns"] += fetch_done_ns - fetch_started_ns
@@ -299,7 +301,6 @@ def _run_pass(
             first_batch = False
         if not batch:
             break
-        fetch_started_ns = time.perf_counter_ns()
         for row in batch:
             returned_rows += 1
             normalize_started_ns = time.perf_counter_ns()
@@ -352,12 +353,38 @@ def _run_pass(
         for timestamp in (item["source_min_time_ms"], item["source_max_time_ms"])
         if timestamp is not None
     ]
+    final_cross_section_full_hash = None
+    final_cross_section_incremental_identity = None
+    if last_frame_for_parity is not None:
+        final_cross_section_full_hash = incremental_state.full_state_hash(
+            frame_no=last_frame_for_parity.frame_no,
+            logical_ts_ms=last_frame_for_parity.logical_ts_ms,
+            updated_symbols=last_frame_for_parity.updated_symbols,
+            missing_symbols=last_frame_for_parity.missing_symbols,
+            completeness=last_frame_for_parity.completeness,
+            coverage=last_frame_for_parity.coverage,
+            source_time_min_ms=last_frame_for_parity.source_time_min_ms,
+            source_time_max_ms=last_frame_for_parity.source_time_max_ms,
+        )
+        final_cross_section_incremental_identity = incremental_state.identity_hash(
+            frame_no=last_frame_for_parity.frame_no,
+            logical_ts_ms=last_frame_for_parity.logical_ts_ms,
+            updated_symbols=last_frame_for_parity.updated_symbols,
+            missing_symbols=last_frame_for_parity.missing_symbols,
+            completeness=last_frame_for_parity.completeness,
+            coverage=last_frame_for_parity.coverage,
+        )
     return {
         "shuffled": shuffled,
         "frame_count": frame_count,
         "frame_statistics": frame_statistics,
         "frame_hash": _sequence_hash(frame_hashes),
         "state_hash": _sequence_hash(state_hashes),
+        "final_cross_section_full_hash": final_cross_section_full_hash,
+        "final_cross_section_incremental_identity": final_cross_section_incremental_identity,
+        "final_cross_section_full_hash_matches_recorded": (
+            not state_hashes or final_cross_section_full_hash == state_hashes[-1]
+        ),
         "projection_hash": _sequence_hash(projection_hashes),
         "signal_hash": _sequence_hash(signal_hashes),
         "processed_signals": engine._processed,
