@@ -72,8 +72,12 @@ class Q2FrameReplaySource:
 
     The source keeps only the latest raw hash per symbol, matching the
     existing Q2 projection shape. It has no Redis/TD/network access and does
-    not infer Rabbit arrival order. ``VirtualClock`` advances to each frame's
-    logical time before normalization.  Signal construction is side-effect free
+    not infer Rabbit arrival order. Q2Frame timestamps are producer source
+    times, not a market-hours gate: any positive, monotonic timestamp is
+    accepted, including premarket and postmarket fixture times. Freshness and
+    historical ``available_at`` are separate consumer/evidence policies and
+    are not decided by this source. ``VirtualClock`` advances to each frame's
+    logical time before normalization. Signal construction is side-effect free
     for the shared clock; replay helpers advance the clock immediately before
     the Engine consumes a signal.
     """

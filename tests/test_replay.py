@@ -55,6 +55,32 @@ def test_q2frame_replay_is_virtual_clock_driven_and_repeatable():
     assert all(projection.status.value == "READY" for projection in projections)
 
 
+def test_q2frame_replay_does_not_apply_market_hours_gate():
+    """Producer source time is data; freshness is a separate policy."""
+
+    first = {
+        "version": "Q2FrameV1",
+        "seq_no": 1,
+        "logical_ts_ms": 1789689600000,  # 2026-09-18 08:00 Asia/Shanghai
+        "q2_updates": [{"symbol": "600519", "px": 100000, "pc": 99000, "ts": 1789689600000}],
+    }
+    second = {
+        "version": "Q2FrameV1",
+        "seq_no": 2,
+        "logical_ts_ms": 1789745370000,  # 2026-09-18 23:29:30 Asia/Shanghai
+        "q2_updates": [{"symbol": "600519", "px": 101000, "pc": 99000, "ts": 1789745370000}],
+    }
+    clock = VirtualClock(datetime.fromtimestamp(first["logical_ts_ms"] / 1000, timezone.utc))
+    source = Q2FrameReplaySource("2026-09-18", ("600519",), clock)
+
+    first_projection = source.apply(first)
+    second_projection = source.apply(second)
+
+    assert first_projection.quotes["600519"].price_milli == 100000
+    assert second_projection.quotes["600519"].price_milli == 101000
+    assert source.last_seq_no == 2
+
+
 def test_q2frame_signal_construction_is_side_effect_free_until_consumption():
     source, clock = _source()
     initial = clock.now_utc()
