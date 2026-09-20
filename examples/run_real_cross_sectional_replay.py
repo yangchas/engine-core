@@ -583,23 +583,22 @@ def main() -> int:
         },
         "profile_elapsed_ms": round((time.perf_counter_ns() - profile_started_ns) / 1_000_000, 3),
     })
-    if ordered["frame_count"] <= 20:
-        _write_json(output_dir / "benchmark_20_frames.json", {
-            "status": status,
-            "frame_count": ordered["frame_count"],
-            "ordered_elapsed_ms": ordered["pass_elapsed_ms"],
-            "rows": ordered["returned_rows"],
-            "timings_ms": ordered["timings_ms"],
-        })
-    if ordered["frame_count"] == 500 and args.passes == "ordered":
-        _write_json(output_dir / "benchmark_full_ordered.json", {
-            "status": status,
-            "frame_count": ordered["frame_count"],
-            "ordered_elapsed_ms": ordered["pass_elapsed_ms"],
-            "rows": ordered["returned_rows"],
-            "timings_ms": ordered["timings_ms"],
-            "thresholds": {"pass_ms": 300_000, "warn_ms": 600_000, "blocked_above_ms": 600_000},
-        })
+    _write_json(output_dir / "benchmark_20_frames.json", {
+        "status": status if ordered["frame_count"] <= 20 else "NOT_APPLICABLE",
+        "frame_count": ordered["frame_count"],
+        "ordered_elapsed_ms": ordered["pass_elapsed_ms"],
+        "rows": ordered["returned_rows"],
+        "timings_ms": ordered["timings_ms"],
+    })
+    _write_json(output_dir / "benchmark_full_ordered.json", {
+        "status": status if ordered["frame_count"] == 500 and args.passes == "ordered" else "NOT_RUN",
+        "reason": None if ordered["frame_count"] == 500 and args.passes == "ordered" else "full 500-frame ordered benchmark was not executed in this bounded profiling run",
+        "frame_count": ordered["frame_count"],
+        "ordered_elapsed_ms": ordered["pass_elapsed_ms"],
+        "rows": ordered["returned_rows"],
+        "timings_ms": ordered["timings_ms"],
+        "thresholds": {"pass_ms": 300_000, "warn_ms": 600_000, "blocked_above_ms": 600_000},
+    })
     (output_dir / "optimization_decisions.md").write_text(
         "# Replay performance decisions\n\n"
         "- TD input is consumed with one ordered cursor and bounded `fetchmany` batches.\n"
