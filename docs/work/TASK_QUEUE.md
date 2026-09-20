@@ -1,5 +1,28 @@
 # Task Queue
 
+## RUNNING
+
+### TASK-007
+
+- title: Offline canonical replay / auction facts
+- owner: `replay-investigator`
+- state: `RUNNING`
+- branch: `codex/task-offline-canonical-auction-facts`
+- worktree: current development worktree
+- started_at: `2026-09-20T14:10:36+08:00`
+- plan: `docs/work/plans/TASK-007-offline-canonical-auction-facts.md`
+- scope: pure Rabbit-primary canonical batch to replay/facts seam
+- production_side_effects: `NONE_OBSERVED`
+
+Merge gate:
+
+- canonical batch conversion is deterministic and missing-safe;
+- no Rabbit/TD/Redis/Wencai/effect import or write path is added;
+- ordered/shuffled frame hashes agree;
+- empty frames and optional auction anchors remain explicit;
+- recovery revision idempotency and late correction evidence pass;
+- full pytest, compileall and diff-check pass.
+
 ## MERGED
 
 ### TASK-006

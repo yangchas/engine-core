@@ -1,17 +1,17 @@
 # Current Task
 
 ```text
-active_task: none
+active_task: TASK-007
 bootstrap_status: COMPLETE
 last_task: TASK-006
 last_task_state: MERGED
 next_task: TASK-007
-next_task_state: READY
+next_task_state: RUNNING
 
 owner: replay-investigator
-branch: codex/feature-session-engine-integration
+branch: codex/task-offline-canonical-auction-facts
 worktree: current development worktree
-started_at: 2026-09-20T10:30:00+08:00
+started_at: 2026-09-20T14:10:36+08:00
 implementation_commit: 272cbd7428aaf8ac205759ec7d6afa5f230814a8
 
 TASK-004, TASK-005 and TASK-006 passed integrator review on 2026-09-20.
@@ -19,11 +19,15 @@ TASK-004 remains `PASS_WITH_WARN` for the 5–10 minute benchmark band; this
 does not change the production gate. See
 `docs/work/handoffs/INTEGRATOR_REVIEW_20260920.md`.
 
-The next task is registered but not started:
+TASK-007 is now explicitly started in the isolated task branch. It is limited
+to the offline canonical replay/auction-facts seam described in
+`docs/work/plans/TASK-007-offline-canonical-auction-facts.md`.
+
+The next task is not started:
 
 ```text
-TASK-007: offline canonical replay / auction facts
-state: READY
+TASK-008: deferred
+state: BACKLOG
 ```
 ```
 
