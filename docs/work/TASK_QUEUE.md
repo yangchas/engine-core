@@ -13,11 +13,13 @@
 - plan: `docs/work/plans/TASK-007-offline-canonical-auction-facts.md`
 - scope: pure Rabbit-primary canonical batch to replay/facts seam
 - implementation_commit: `084d6819b31a80087d624cfabf0d78843c8613ba`
+- latest_fix_commit: `aa38614` (`state` moved to timing evidence; same auction
+  source revision keeps semantic identity)
 - handoff: `docs/work/handoffs/TASK-007-offline-canonical-audit.md`
 - fix_handoff: `docs/work/handoffs/TASK-007-FIX-20260920.md`
 - integrated_by: `INTEGRATOR_REVIEW_TASK007_20260920.md`
 - implementation_tests_before_fix: `668 passed`
-- current_tests: `677 passed`, compileall PASS, diff-check PASS
+- current_tests: `678 passed`, compileall PASS, diff-check PASS
 - production_side_effects: `NONE_OBSERVED`
 
 Merge gate:

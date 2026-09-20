@@ -4,7 +4,7 @@
 active_task: TASK-007
 bootstrap_status: COMPLETE
 last_task: TASK-007
-last_task_state: FIX_IN_PROGRESS
+last_task_state: FIX_COMPLETE_PENDING_INDEPENDENT_REVIEW
 next_task: TASK-007 acceptance review
 next_task_state: BLOCKED_UNTIL_FIXES_VERIFIED
 
@@ -14,6 +14,7 @@ worktree: current development worktree
 started_at: 2026-09-20T14:10:36+08:00
 fix_started_at: 2026-09-20T14:46:36+08:00
 implementation_commit: 084d6819b31a80087d624cfabf0d78843c8613ba
+latest_fix_commit: aa38614
 
 TASK-004, TASK-005, TASK-006 and TASK-007 passed integrator review on 2026-09-20.
 TASK-004 remains `PASS_WITH_WARN` for the 5–10 minute benchmark band; this
@@ -23,6 +24,10 @@ does not change the production gate. See
 TASK-007 implementation was merged, then its acceptance was reopened by a
 read-only audit. Fixes are limited to the offline canonical replay/auction-facts seam described in
 `docs/work/plans/TASK-007-offline-canonical-auction-facts.md`.
+
+The latest fix keeps timing-derived node state in evidence rather than source
+semantic identity. Full verification is green (`678 passed`, compileall and
+diff-check PASS); independent tester/auditor acceptance is still pending.
 
 The next task is not started:
 
