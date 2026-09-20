@@ -43,6 +43,7 @@ class ReplaySessionNodeV1:
     evaluation_time_ms: int
     state: str
     source_content_hash: str
+    source_evidence_hash: Optional[str] = None
     source_layers: tuple[str, ...] = ()
     source_time_min_ms: Optional[int] = None
     source_time_max_ms: Optional[int] = None
@@ -66,6 +67,10 @@ class ReplaySessionNodeV1:
             raise ValueError("state is required")
         if not isinstance(self.source_content_hash, str) or not self.source_content_hash:
             raise ValueError("source_content_hash is required")
+        if self.source_evidence_hash is not None and (
+            not isinstance(self.source_evidence_hash, str) or not self.source_evidence_hash
+        ):
+            raise ValueError("source_evidence_hash must be a non-empty string when present")
         if self.source_time_min_ms is not None:
             _positive_ms(self.source_time_min_ms, "source_time_min_ms")
         if self.source_time_max_ms is not None:
@@ -104,6 +109,7 @@ class ReplaySessionNodeV1:
                     "source_layers": layers,
                     "source_time_min_ms": self.source_time_min_ms,
                     "source_time_max_ms": self.source_time_max_ms,
+                    "source_evidence_hash": self.source_evidence_hash,
                     "late_execution": self.late_execution,
                 }
             ),
@@ -209,6 +215,7 @@ class ReplaySessionTimeline:
             evaluation_time_ms=frame.logical_ts_ms,
             state=frame.completeness,
             source_content_hash=frame.content_hash,
+            source_evidence_hash=frame.evidence_hash,
             source_layers=("cross_section_frame",),
             source_time_min_ms=frame.source_time_min_ms,
             source_time_max_ms=frame.source_time_max_ms,
@@ -248,6 +255,7 @@ class ReplaySessionTimeline:
                 evaluation_time_ms=revision.evaluation_time_ms,
                 state=revision.state,
                 source_content_hash=revision.content_hash,
+                source_evidence_hash=revision.evidence_hash,
                 source_layers=revision.source_layers,
                 source_time_min_ms=revision.source_time_min_ms,
                 source_time_max_ms=revision.source_time_max_ms,

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -57,6 +58,25 @@ def test_replay_session_requires_sequential_frames_including_empty_frames():
     timeline.record_frame(frames[0])
     with pytest.raises(ValueError, match="sequentially"):
         timeline.record_frame(frames[2])
+
+
+def test_replay_session_evidence_includes_frame_source_evidence_hash():
+    _, frames, plain = _timeline()
+    _, _, enriched = _timeline()
+    enriched_frame = replace(
+        frames[0],
+        source_batch_ids=("batch-0",),
+        source_sequences=("wire-0",),
+        batch_quality="PARTIAL",
+        same_event_order_ambiguity=True,
+    )
+    plain.record_frame(frames[0])
+    enriched.record_frame(enriched_frame)
+    for frame in frames[1:]:
+        plain.record_frame(frame)
+        enriched.record_frame(frame)
+    assert plain.content_hash == enriched.content_hash
+    assert plain.evidence_hash != enriched.evidence_hash
 
 
 def test_replay_session_keeps_optional_prior_anchors_unknown():

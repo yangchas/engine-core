@@ -29,6 +29,9 @@ effects.
   records every frame, including empty/degraded frames, and routes auction
   observations into that same timeline. The default remains an in-memory
   `AuctionTimeline` when no session ledger is supplied.
+- Session nodes retain the source `evidence_hash` separately from semantic
+  content, so source quality/order metadata changes cannot disappear from the
+  session evidence ledger.
 - Auction observations are passed to `AuctionTimeline`; 0920/0924 are optional
   for 0925 analysis, and late/repeated cohorts remain revisioned/idempotent.
 - Outputs are `FACT_ONLY`/offline evidence. No strategy conclusion or effect is
