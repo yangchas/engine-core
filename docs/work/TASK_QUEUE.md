@@ -14,7 +14,7 @@
 - scope: pure Rabbit-primary canonical batch to replay/facts seam
 - implementation_commit: `43a3dfc99c191fc2a3998879e7de26da51b1a2f5`
 - handoff: `docs/work/handoffs/TASK-007-offline-canonical-audit.md`
-- tests: `667 passed`, compileall PASS, diff-check PASS
+- tests: `668 passed`, compileall PASS, diff-check PASS
 - production_side_effects: `NONE_OBSERVED`
 
 Merge gate:

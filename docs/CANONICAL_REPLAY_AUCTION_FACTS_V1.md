@@ -15,7 +15,8 @@ Each canonical tick must have `PRESENT_VALUE` for `px_milli`, `pc_milli`, and
 `amt_yuan` before it is projected to the legacy `TDEventV1` oracle. Missing,
 unknown, invalid, or proto3-ambiguous required fields are never replaced with
 zero. A batch with some safe ticks is `PARTIAL`; a batch with no safe tick is
-`BLOCKED`; an explicitly empty batch is `EMPTY`.
+`BLOCKED`; an explicitly empty batch is `EMPTY`. Skipped tick diagnostics retain
+their event time so a partial/blocked result is attached to the correct frame.
 
 ## Frame stream
 

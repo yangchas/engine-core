@@ -50,6 +50,7 @@ class CanonicalBatchProjectionV1:
     skipped_symbols: Tuple[str, ...]
     reasons: Tuple[str, ...]
     events: Tuple[TDEventV1, ...]
+    skipped_events: Tuple[Tuple[int, str, str], ...] = ()
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -57,6 +58,11 @@ class CanonicalBatchProjectionV1:
         object.__setattr__(self, "skipped_symbols", tuple(sorted(set(self.skipped_symbols))))
         object.__setattr__(self, "reasons", tuple(sorted(set(self.reasons))))
         object.__setattr__(self, "events", tuple(self.events))
+        skipped_events = tuple(
+            (int(event_time_ms), str(symbol), str(reason))
+            for event_time_ms, symbol, reason in self.skipped_events
+        )
+        object.__setattr__(self, "skipped_events", skipped_events)
         if self.input_tick_count < 0 or self.projected_event_count < 0:
             raise ValueError("canonical batch counts must be non-negative")
         if self.projected_event_count != len(self.events):
@@ -77,6 +83,7 @@ class CanonicalBatchProjectionV1:
                     "skipped_symbols": self.skipped_symbols,
                     "reasons": self.reasons,
                     "events": tuple(event.content_hash for event in self.events),
+                    "skipped_events": self.skipped_events,
                 }
             ),
         )
@@ -164,17 +171,20 @@ class OfflineCanonicalReplay:
         events: list[TDEventV1] = []
         skipped: list[str] = []
         reasons: list[str] = []
+        skipped_events: list[tuple[int, str, str]] = []
         for tick in batch.ticks:
             reason = _required_field_reason(tick)
             if reason is not None:
                 skipped.append(tick.symbol)
                 reasons.append("%s:%s" % (tick.symbol, reason))
+                skipped_events.append((tick.event_time_ms, tick.symbol, reason))
                 continue
             try:
                 events.append(tick.to_tdevent())
             except (TypeError, ValueError) as exc:
                 skipped.append(tick.symbol)
                 reasons.append("%s:%s" % (tick.symbol, type(exc).__name__))
+                skipped_events.append((tick.event_time_ms, tick.symbol, type(exc).__name__))
         if not batch.ticks and batch.batch_quality.value == "EMPTY":
             status = CanonicalReplayStatus.EMPTY
         elif not events and batch.ticks:
@@ -194,6 +204,7 @@ class OfflineCanonicalReplay:
             skipped_symbols=tuple(skipped),
             reasons=tuple(reasons),
             events=tuple(events),
+            skipped_events=tuple(skipped_events),
         )
 
     def iter_frame_results(self, batches: Iterable[TickBatchV1]) -> Iterator[CanonicalFrameResultV1]:
@@ -232,15 +243,31 @@ class OfflineCanonicalReplay:
                     "canonical batch %s has no safe replayable tick: %s"
                     % (projection.source_batch_id, ";".join(projection.reasons))
                 )
-            for event in projection.events:
+            ordered_items = [
+                (event.event_time_ms, event.symbol, "event", event, None)
+                for event in projection.events
+            ] + [
+                (event_time_ms, symbol, "skipped", None, reason)
+                for event_time_ms, symbol, reason in projection.skipped_events
+            ]
+            ordered_items.sort(
+                key=lambda item: (
+                    item[0],
+                    item[1],
+                    item[2],
+                    "" if item[4] is None else item[4],
+                    "" if item[3] is None else item[3].content_hash,
+                )
+            )
+            for event_time_ms, symbol, item_kind, event, reason in ordered_items:
                 if (
-                    event.event_time_ms < self.source.slice_anchor_ms
-                    or event.event_time_ms >= self.source.end_exclusive_ms
+                    event_time_ms < self.source.slice_anchor_ms
+                    or event_time_ms >= self.source.end_exclusive_ms
                 ):
                     raise CanonicalReplayBlocked(
                         "canonical event is outside the configured replay window"
                     )
-                frame_no = (event.event_time_ms - self.source.slice_anchor_ms) // self.source.slice_ms
+                frame_no = (event_time_ms - self.source.slice_anchor_ms) // self.source.slice_ms
                 if frame_no < pending_frame_no:
                     raise CanonicalReplayBlocked("canonical batches moved backwards in event time")
                 while pending_frame_no < frame_no:
@@ -250,12 +277,11 @@ class OfflineCanonicalReplay:
                     pending_batch_ids.clear()
                     pending_skipped.clear()
                     pending_reasons.clear()
-                pending_events.append(event)
-                if projection.source_batch_id not in pending_batch_ids:
-                    pending_batch_ids.append(projection.source_batch_id)
-            if projection.skipped_symbols:
-                pending_skipped.extend(projection.skipped_symbols)
-                pending_reasons.extend(projection.reasons)
+                if item_kind == "event":
+                    pending_events.append(event)
+                else:
+                    pending_skipped.append(symbol)
+                    pending_reasons.append("%s:%s" % (symbol, reason))
                 if projection.source_batch_id not in pending_batch_ids:
                     pending_batch_ids.append(projection.source_batch_id)
         while pending_frame_no < self.source.frame_count:

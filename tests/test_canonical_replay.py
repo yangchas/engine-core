@@ -112,6 +112,25 @@ def test_event_outside_replay_window_is_rejected_instead_of_dropped():
         tuple(source.iter_frame_results([_batch([_tick(event_time_ms=START + 3_000)])]))
 
 
+def test_skipped_tick_diagnostics_stay_in_their_event_time_frame():
+    source = OfflineCanonicalReplay(
+        TRADE_DATE,
+        ("600000",),
+        start_ms=START,
+        end_exclusive_ms=START + 9_000,
+    )
+    invalid = _tick(
+        event_time_ms=START + 6_500,
+        px_milli=None,
+        field_meta=(("px_milli", FieldMetaV1(FieldQuality.MISSING)),),
+    )
+    results = tuple(source.iter_frame_results([_batch([_tick(), invalid])]))
+    assert results[0].status is CanonicalReplayStatus.READY
+    assert results[1].status is CanonicalReplayStatus.EMPTY
+    assert results[2].status is CanonicalReplayStatus.BLOCKED
+    assert results[2].skipped_symbols == ("600000",)
+
+
 def test_shuffled_batches_have_same_frame_hashes_when_events_are_equivalent():
     source = OfflineCanonicalReplay(
         TRADE_DATE,
