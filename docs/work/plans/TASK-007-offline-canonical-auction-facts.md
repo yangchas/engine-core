@@ -25,6 +25,10 @@ effects.
 - Frame and Engine evidence retain source sequence values, source/order status,
   batch quality, historical availability metadata and same-event order
   ambiguity; these fields are never silently discarded at the replay boundary.
+- Callers may supply a matching pure `ReplaySessionTimeline`; the replay then
+  records every frame, including empty/degraded frames, and routes auction
+  observations into that same timeline. The default remains an in-memory
+  `AuctionTimeline` when no session ledger is supplied.
 - Auction observations are passed to `AuctionTimeline`; 0920/0924 are optional
   for 0925 analysis, and late/repeated cohorts remain revisioned/idempotent.
 - Outputs are `FACT_ONLY`/offline evidence. No strategy conclusion or effect is

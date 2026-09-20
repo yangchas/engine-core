@@ -207,6 +207,7 @@ class OfflineCanonicalReplay:
         start_ms: int,
         end_exclusive_ms: int,
         slice_ms: int = 3_000,
+        session_timeline: Any = None,
     ) -> None:
         self._clock = VirtualClock(datetime.fromtimestamp(start_ms / 1000.0, timezone.utc))
         self.source = CrossSectionReplaySource(
@@ -217,7 +218,27 @@ class OfflineCanonicalReplay:
             slice_ms=slice_ms,
             end_exclusive_ms=end_exclusive_ms,
         )
-        self.auction_timeline = AuctionTimeline(trade_date)
+        if session_timeline is not None:
+            from .replay_session import ReplaySessionTimeline
+
+            if not isinstance(session_timeline, ReplaySessionTimeline):
+                raise TypeError("session_timeline must be ReplaySessionTimeline")
+            if session_timeline.trade_date != trade_date:
+                raise ValueError("session_timeline trade_date does not match replay")
+            if session_timeline.manifest.start_ms != start_ms:
+                raise ValueError("session_timeline start does not match replay")
+            if session_timeline.manifest.end_exclusive_ms != end_exclusive_ms:
+                raise ValueError("session_timeline end does not match replay")
+            if session_timeline.manifest.frame_interval_ms != slice_ms:
+                raise ValueError("session_timeline interval does not match replay")
+            if session_timeline.manifest.expected_symbols != self.source.expected_symbols:
+                raise ValueError("session_timeline symbols do not match replay")
+        self.session_timeline = session_timeline
+        self.auction_timeline = (
+            session_timeline.auction_timeline
+            if session_timeline is not None
+            else AuctionTimeline(trade_date)
+        )
 
     @staticmethod
     def project_batch(batch: TickBatchV1) -> CanonicalBatchProjectionV1:
@@ -445,6 +466,8 @@ class OfflineCanonicalReplay:
     def observe_auction(self, tag: str, rows: Any, **kwargs: Any) -> AuctionAnchorRevisionV1:
         """Record already-observed auction facts through the existing timeline."""
 
+        if self.session_timeline is not None:
+            return self.session_timeline.observe_auction(tag, rows, **kwargs)
         return self.auction_timeline.observe(tag, rows, **kwargs)
 
     def auction_analysis(self, tag: str = "0925") -> Mapping[str, Any]:
@@ -474,6 +497,8 @@ class OfflineCanonicalReplay:
                 historical_available_at_ms=result.historical_available_at_ms,
                 source_sequences=result.source_sequences,
             )
+            if self.session_timeline is not None:
+                self.session_timeline.record_frame(result.frame)
             self._clock.advance_to(datetime.fromtimestamp(signal.logical_time_ms / 1000, timezone.utc))
             engine.submit(signal)
             engine.run_until_empty()

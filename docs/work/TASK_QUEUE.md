@@ -17,7 +17,7 @@
 - fix_handoff: `docs/work/handoffs/TASK-007-FIX-20260920.md`
 - integrated_by: `INTEGRATOR_REVIEW_TASK007_20260920.md`
 - implementation_tests_before_fix: `668 passed`
-- current_tests: `675 passed`, compileall PASS, diff-check PASS
+- current_tests: `676 passed`, compileall PASS, diff-check PASS
 - production_side_effects: `NONE_OBSERVED`
 
 Merge gate:

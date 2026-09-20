@@ -15,6 +15,7 @@ from engine_core import (
     MarketStateReducer,
     OfflineCanonicalReplay,
     ProbeStrategy,
+    ReplaySessionTimeline,
     ReplayOrderStatus,
     SequenceStatus,
     TickBatchV1,
@@ -275,6 +276,44 @@ def test_canonical_replay_retains_all_500_empty_frames():
     assert tuple(item.frame.frame_no for item in results) == tuple(range(500))
     assert all(item.status is CanonicalReplayStatus.EMPTY for item in results)
     assert all(item.batch_quality == "UNKNOWN" for item in results)
+
+
+def test_canonical_replay_can_join_one_session_timeline():
+    base = OfflineCanonicalReplay(
+        TRADE_DATE,
+        ("600000",),
+        start_ms=START,
+        end_exclusive_ms=START + 9_000,
+    )
+    manifest = base.source.manifest(base.source.frames(()))
+    timeline = ReplaySessionTimeline(manifest)
+    replay = OfflineCanonicalReplay(
+        TRADE_DATE,
+        ("600000",),
+        start_ms=START,
+        end_exclusive_ms=START + 9_000,
+        session_timeline=timeline,
+    )
+
+    class CaptureEngine:
+        def submit(self, signal):
+            return None
+
+        def run_until_empty(self):
+            return None
+
+    replay.replay((), CaptureEngine())
+    assert timeline.frame_count == 3
+    at_0925 = local_datetime_ms(TRADE_DATE, "09:25:06")
+    revision = replay.observe_auction(
+        "0925",
+        [{"symbol": "600000", "ts": at_0925}],
+        evaluation_time_ms=at_0925,
+        expected_symbols=("600000",),
+    )
+    assert revision.revision == 1
+    assert timeline.snapshot()["anchors"]["0925"]["revision"] == 1
+    timeline.finalize()
 
 
 def test_replay_propagates_frame_diagnostics_and_batch_quality():
