@@ -1,17 +1,20 @@
 # Task Queue
 
-## RUNNING
+## REVIEW
 
 ### TASK-007
 
 - title: Offline canonical replay / auction facts
 - owner: `replay-investigator`
-- state: `RUNNING`
+- state: `REVIEW`
 - branch: `codex/task-offline-canonical-auction-facts`
 - worktree: current development worktree
 - started_at: `2026-09-20T14:10:36+08:00`
 - plan: `docs/work/plans/TASK-007-offline-canonical-auction-facts.md`
 - scope: pure Rabbit-primary canonical batch to replay/facts seam
+- implementation_commit: `43a3dfc99c191fc2a3998879e7de26da51b1a2f5`
+- handoff: `docs/work/handoffs/TASK-007-offline-canonical-audit.md`
+- tests: `666 passed`, compileall PASS, diff-check PASS
 - production_side_effects: `NONE_OBSERVED`
 
 Merge gate:
@@ -21,7 +24,8 @@ Merge gate:
 - ordered/shuffled frame hashes agree;
 - empty frames and optional auction anchors remain explicit;
 - recovery revision idempotency and late correction evidence pass;
-- full pytest, compileall and diff-check pass.
+- full pytest, compileall and diff-check pass;
+- integrator review completes before feature-branch merge.
 
 ## MERGED
 
@@ -55,10 +59,6 @@ Merge gate:
 - result: ordered FRAME/FINAL and both FRAME deterministic evidence completed;
   full passes remain in the 5–10 minute `PASS_WITH_WARN` band
 - production_side_effects: `NONE_OBSERVED`
-
-## REVIEW
-
-No tasks currently await review.
 
 ## BLOCKED
 
