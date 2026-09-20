@@ -69,6 +69,8 @@ def deep_freeze(value: T) -> T:
 
     if value is None or isinstance(value, (str, bool, int, float, bytes, datetime, Enum)):
         return value
+    if getattr(value, "__deep_frozen_contract__", False):
+        return value
     if isinstance(value, (set, frozenset)):
         raise TypeError("unordered sets are not allowed in frozen data")
     if isinstance(value, Mapping):

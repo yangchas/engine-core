@@ -8,6 +8,7 @@ still a fact in that timeline.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, tzinfo
 from enum import Enum
@@ -249,6 +250,8 @@ class CrossSectionStateV1:
     content_hash: str = field(init=False)
     evidence_hash: str = field(init=False)
 
+    __deep_frozen_contract__ = True
+
     def __post_init__(self) -> None:
         _strict_trade_date(self.trade_date)
         if self.logical_ts_ms <= 0 or self.frame_no < 0:
@@ -409,62 +412,63 @@ class IncrementalCrossSectionState:
 
     The mutable index is deliberately kept outside :class:`CrossSectionStateV1`:
     the public contract remains frozen, while FRAME/FINAL verification avoids
-    serializing the full 5k-symbol cumulative mapping on every frame.  The
-    resulting identity is an optimization evidence hash, not a replacement
-    for the FULL contract hash; parity is checked by callers at finalization.
+    serializing the full 5k-symbol cumulative mapping on every frame. Fixed
+    symbol slots maintain a stable SHA-256 leaf digest and an XOR aggregate;
+    this is an optimization identity, not a replacement for the FULL contract
+    hash. Parity is checked by callers at finalization.
     """
 
-    _LEAF_CONTRACT = "CrossSectionSymbolLeafV1"
-    _NODE_CONTRACT = "CrossSectionMerkleNodeV1"
+    _LEAF_CONTRACT = "CrossSectionSymbolSlotLeafV1"
+    _AGGREGATE_CONTRACT = "CrossSectionAggregateStateV1"
 
     def __init__(self, expected_symbols: Iterable[Any], *, trade_date: str = "") -> None:
         self.expected_symbols = tuple(sorted({normalize_symbol(item) for item in expected_symbols}))
         self.trade_date = trade_date
         self.latest_raw: dict[str, Mapping[str, Any]] = {}
         self._symbol_indexes = {symbol: index for index, symbol in enumerate(self.expected_symbols)}
-        leaf_count = 1
-        while leaf_count < len(self.expected_symbols):
-            leaf_count *= 2
-        self._leaf_count = leaf_count
-        self._tree = [self._empty_leaf(index) for index in range(leaf_count * 2)]
-        for index, symbol in enumerate(self.expected_symbols):
-            self._tree[leaf_count + index] = self._leaf_hash(symbol, None)
-        for index in range(leaf_count - 1, 0, -1):
-            self._tree[index] = self._node_hash(self._tree[index * 2], self._tree[index * 2 + 1])
-
-    def _empty_leaf(self, index: int) -> str:
-        return semantic_hash({"contract": self._NODE_CONTRACT, "empty_index": index})
+        self._leaf_hashes = [self._leaf_hash(symbol, None) for symbol in self.expected_symbols]
+        self._aggregate_xor = 0
+        for digest in self._leaf_hashes:
+            self._aggregate_xor ^= int(digest, 16)
 
     def _leaf_hash(self, symbol: str, raw: Optional[Mapping[str, Any]]) -> str:
         return semantic_hash({
             "contract": self._LEAF_CONTRACT,
             "symbol": symbol,
+            "slot": self._symbol_indexes[symbol],
             "state": raw,
         })
 
-    def _node_hash(self, left: str, right: str) -> str:
-        return semantic_hash({"contract": self._NODE_CONTRACT, "left": left, "right": right})
-
     def _update_leaf(self, symbol: str, raw: Mapping[str, Any]) -> None:
-        position = self._leaf_count + self._symbol_indexes[symbol]
-        self._tree[position] = self._leaf_hash(symbol, raw)
-        position //= 2
-        while position:
-            self._tree[position] = self._node_hash(self._tree[position * 2], self._tree[position * 2 + 1])
-            position //= 2
+        index = self._symbol_indexes[symbol]
+        new_digest = self._leaf_hash(symbol, raw)
+        self._aggregate_xor ^= int(self._leaf_hashes[index], 16)
+        self._aggregate_xor ^= int(new_digest, 16)
+        self._leaf_hashes[index] = new_digest
 
     def apply(self, events: Iterable[TDEventV1]) -> None:
+        pending_raw: dict[str, Mapping[str, Any]] = {}
         for event in events:
             raw = event.to_q2_raw()
             # TDEventV1 emits scalar values, so a shallow proxy is sufficient
             # and avoids recursively freezing the full universe per frame.
             frozen_raw = MappingProxyType(raw)
             self.latest_raw[event.symbol] = frozen_raw
-            self._update_leaf(event.symbol, raw)
+            pending_raw[event.symbol] = raw
+        for symbol, raw in pending_raw.items():
+            self._update_leaf(symbol, raw)
 
     @property
     def merkle_root(self) -> str:
-        return self._tree[1]
+        digest = hashlib.sha256()
+        digest.update(self._AGGREGATE_CONTRACT.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(self._aggregate_xor.to_bytes(32, "big"))
+        return digest.hexdigest()
+
+    @property
+    def aggregate_state_hash(self) -> str:
+        return self.merkle_root
 
     def full_state_hash(
         self,
@@ -525,6 +529,8 @@ class CrossSectionProjectionV1:
 
     base_projection: Q2ProjectionSnapshot
     cross_section: CrossSectionStateV1
+
+    __deep_frozen_contract__ = True
 
     @property
     def trade_date(self) -> str:

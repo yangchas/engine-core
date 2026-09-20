@@ -310,6 +310,8 @@ class Q2ProjectionSnapshot:
     content_hash: str
     content_hash_override: Optional[str] = field(default=None, repr=False, compare=False)
 
+    __deep_frozen_contract__ = True
+
     def __post_init__(self) -> None:
         object.__setattr__(self, "quotes", deep_freeze(self.quotes))
         object.__setattr__(self, "expected_symbols", tuple(self.expected_symbols))

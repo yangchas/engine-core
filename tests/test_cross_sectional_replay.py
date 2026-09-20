@@ -10,6 +10,7 @@ from engine_core import (
     VirtualClock,
     WindowManager,
     WindowSpec,
+    deep_freeze,
     local_datetime_ms,
 )
 
@@ -159,3 +160,17 @@ def test_incremental_state_final_full_hash_matches_public_state_hash():
         source_time_min_ms=frame.source_time_min_ms,
         source_time_max_ms=frame.source_time_max_ms,
     ) == signal.payload.cross_section.content_hash
+
+
+def test_cross_section_projection_is_not_rebuilt_by_deep_freeze():
+    start = local_datetime_ms("2026-09-18", "09:15:00")
+    source = CrossSectionReplaySource(
+        "2026-09-18",
+        ("600519",),
+        VirtualClock(datetime.fromtimestamp(start / 1000, timezone.utc)),
+        slice_anchor_ms=start,
+        end_exclusive_ms=start + 3_000,
+    )
+    frame = source.frame_from_events(0, [_row(start + 100)])
+    signal = source.signal_for_frame(frame, {})
+    assert deep_freeze(signal.payload) is signal.payload

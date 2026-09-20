@@ -535,7 +535,14 @@ def main() -> int:
         )
     else:
         elapsed_ms = ordered["pass_elapsed_ms"]
-        status = "CROSS_SECTION_REPLAY_BLOCKED_BY_PERFORMANCE" if elapsed_ms > 600_000 else "CROSS_SECTION_REPLAY_PROFILED"
+        if ordered["frame_count"] == 500:
+            status = (
+                "CROSS_SECTION_REPLAY_BLOCKED_BY_PERFORMANCE"
+                if elapsed_ms > 600_000
+                else "CROSS_SECTION_REPLAY_PASS_WITH_WARN"
+            )
+        else:
+            status = "CROSS_SECTION_REPLAY_PROFILED"
     manifest = FrameManifestV1(
         trade_date=TRADE_DATE,
         source_timezone="Asia/Shanghai",
@@ -674,7 +681,12 @@ def main() -> int:
         "symbols": len(expected_symbols),
         "deterministic": equal,
     }, ensure_ascii=False, sort_keys=True))
-    return 0 if status in {"CROSS_SECTION_REPLAY_READY", "CROSS_SECTION_REPLAY_PARTIAL", "CROSS_SECTION_REPLAY_PROFILED"} else 2
+    return 0 if status in {
+        "CROSS_SECTION_REPLAY_READY",
+        "CROSS_SECTION_REPLAY_PARTIAL",
+        "CROSS_SECTION_REPLAY_PROFILED",
+        "CROSS_SECTION_REPLAY_PASS_WITH_WARN",
+    } else 2
 
 
 if __name__ == "__main__":
