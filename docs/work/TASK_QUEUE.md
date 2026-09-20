@@ -12,9 +12,12 @@
 - plan: `docs/work/plans/TASK-008-opening-validation.md`
 - handoff: `docs/work/handoffs/TASK-008-REAL-DATA-20260920.md`
 - audit: `docs/work/handoffs/TASK-008-AUDIT-20260920.md`
+- replay_handoff: `docs/work/handoffs/TASK-008-REPLAY-REAL-DATA-20260920.md`
 - validation_dir: `/home/exedev/validation/task008-opening-validation-20260920T183000+0800/`
-- result: real Redis Q2 projection is `PARTIAL`/`STALE_OR_MIXED`; Engine shadow is
-  `FACT_ONLY`/`OBSERVE`; no production side effects
+- result: live Redis read was `PARTIAL`/`STALE_OR_MIXED`; frozen production Q2
+  replay completed with ordered/shuffled deterministic hashes equal, but all
+  source timestamps are previous-date/stale, so replay remains `REPLAY_PARTIAL`
+- replay_validation_dir: `/home/exedev/validation/task008-replay-opening-20260920T185041+0800/`
 - normal_opening_pass: `UNPROVEN`
 
 ## MERGED
