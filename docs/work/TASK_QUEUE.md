@@ -11,6 +11,7 @@
 - worktree: current development worktree
 - plan: `docs/work/plans/TASK-008-opening-validation.md`
 - handoff: `docs/work/handoffs/TASK-008-REAL-DATA-20260920.md`
+- audit: `docs/work/handoffs/TASK-008-AUDIT-20260920.md`
 - validation_dir: `/home/exedev/validation/task008-opening-validation-20260920T183000+0800/`
 - result: real Redis Q2 projection is `PARTIAL`/`STALE_OR_MIXED`; Engine shadow is
   `FACT_ONLY`/`OBSERVE`; no production side effects

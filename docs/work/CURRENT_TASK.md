@@ -71,6 +71,7 @@ TASK-008: real opening validation
 state: RUNNING / PARTIAL_EVIDENCE
 plan: `docs/work/plans/TASK-008-opening-validation.md`
 handoff: `docs/work/handoffs/TASK-008-REAL-DATA-20260920.md`
+audit: `docs/work/handoffs/TASK-008-AUDIT-20260920.md`
 NORMAL opening acceptance remains UNPROVEN until a controlled 09:32:10
 observation or equivalent historical available_at evidence exists.
 ```
