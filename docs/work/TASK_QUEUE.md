@@ -18,6 +18,7 @@
 - handoff: `docs/work/handoffs/TASK-007-offline-canonical-audit.md`
 - fix_handoff: `docs/work/handoffs/TASK-007-FIX-20260920.md`
 - tester_handoff: `docs/work/handoffs/TASK-007-TESTER-20260920.md`
+- real_data_audit: `docs/work/handoffs/TASK-007-REAL-DATA-AUDIT-20260920.md`
 - integrated_by: `INTEGRATOR_REVIEW_TASK007_20260920.md`
 - implementation_tests_before_fix: `668 passed`
 - current_tests: `679 passed`, compileall PASS, diff-check PASS
