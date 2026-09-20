@@ -198,6 +198,14 @@ from .canonical_ticks import (
     cxx_llround,
     normalize_td_symbol,
 )
+from .canonical_replay import (
+    CANONICAL_OFFLINE_REPLAY_CONTRACT_VERSION,
+    CanonicalBatchProjectionV1,
+    CanonicalFrameResultV1,
+    CanonicalReplayBlocked,
+    CanonicalReplayStatus,
+    OfflineCanonicalReplay,
+)
 from .replay_frames import (
     CROSS_SECTION_PROJECTION_CONTRACT_VERSION,
     CROSS_SECTION_FACTS_CONTRACT_VERSION,
