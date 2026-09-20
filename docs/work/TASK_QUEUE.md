@@ -17,9 +17,12 @@
   source revision keeps semantic identity)
 - handoff: `docs/work/handoffs/TASK-007-offline-canonical-audit.md`
 - fix_handoff: `docs/work/handoffs/TASK-007-FIX-20260920.md`
+- tester_handoff: `docs/work/handoffs/TASK-007-TESTER-20260920.md`
 - integrated_by: `INTEGRATOR_REVIEW_TASK007_20260920.md`
 - implementation_tests_before_fix: `668 passed`
 - current_tests: `678 passed`, compileall PASS, diff-check PASS
+- offline_tester: `PASS`; auditor and TASK-007-specific 500-frame/session evidence
+  remain pending
 - production_side_effects: `NONE_OBSERVED`
 
 Merge gate:

@@ -6,7 +6,7 @@ bootstrap_status: COMPLETE
 last_task: TASK-007
 last_task_state: FIX_COMPLETE_PENDING_INDEPENDENT_REVIEW
 next_task: TASK-007 acceptance review
-next_task_state: BLOCKED_UNTIL_FIXES_VERIFIED
+next_task_state: BLOCKED_UNTIL_AUDITOR_AND_TASK007_EVIDENCE
 
 owner: replay-investigator
 branch: codex/feature-session-engine-integration
@@ -27,7 +27,8 @@ read-only audit. Fixes are limited to the offline canonical replay/auction-facts
 
 The latest fix keeps timing-derived node state in evidence rather than source
 semantic identity. Full verification is green (`678 passed`, compileall and
-diff-check PASS); independent tester/auditor acceptance is still pending.
+diff-check PASS). Offline tester handoff is PASS; auditor and TASK-007-specific
+500-frame/session evidence are still pending.
 
 The next task is not started:
 
