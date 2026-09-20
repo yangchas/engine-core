@@ -14,6 +14,7 @@ import hashlib
 import json
 import random
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -44,15 +45,56 @@ def _parse_observed_at(value: str) -> datetime:
     return parsed
 
 
+def _canonical_quote_to_row(symbol: str, quote: Mapping[str, Any]) -> dict[str, Any]:
+    """Project a frozen Redis Q2 capture quote back to adapter raw fields."""
+
+    aliases = {
+        "market": "mk",
+        "name": "name",
+        "price_milli": "px",
+        "pre_close_milli": "pc",
+        "amount_yuan": "amt",
+        "volume_lots": "vol",
+        "source_record_time_ms": "ts",
+        "phase": "ph",
+        "limit_state": "ls",
+        "auction_amount_yuan": "am",
+        "auction_bid_amount_yuan": "br",
+        "auction_ask_amount_yuan": "ar",
+        "amount_2m_yuan": "amt2m",
+        "amount_5m_yuan": "amt5m",
+        "speed_1m_bp": "spd1m",
+        "vector_3m_bp": "vec3m",
+        "vector_5m_bp": "vec5m",
+    }
+    row: dict[str, Any] = {"symbol": symbol}
+    for canonical_name, raw_name in aliases.items():
+        if canonical_name in quote and quote[canonical_name] is not None:
+            row[raw_name] = quote[canonical_name]
+    return row
+
+
 def _load_rows(path: Path) -> list[dict[str, Any]]:
+    """Load JSONL raw rows or a frozen Redis Q2 projection capture."""
+
+    text = path.read_text(encoding="utf-8")
+    stripped = text.lstrip()
+    if stripped.startswith("{") and path.suffix.lower() == ".json":
+        payload = json.loads(text)
+        quotes = payload.get("projection", {}).get("quotes")
+        if isinstance(quotes, dict):
+            return [
+                _canonical_quote_to_row(str(symbol), quote)
+                for symbol, quote in sorted(quotes.items())
+                if isinstance(quote, dict)
+            ]
     rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            if line.strip():
-                value = json.loads(line)
-                if not isinstance(value, dict):
-                    raise ValueError("capture row must be an object")
-                rows.append(value)
+    for line in text.splitlines():
+        if line.strip():
+            value = json.loads(line)
+            if not isinstance(value, dict):
+                raise ValueError("capture row must be an object")
+            rows.append(value)
     if not rows:
         raise ValueError("capture is empty")
     return rows
@@ -148,6 +190,11 @@ def _run_pass(
         observed_at=observed_at,
         stale_after_ms=stale_after_ms,
     )
+    field_error_counts = Counter(
+        error
+        for quote in projection.quotes.values()
+        for error in quote.field_errors
+    )
     logical_time_ms = int(observed_at.astimezone(timezone.utc).timestamp() * 1000)
     return {
         "input_order": "SHUFFLED" if shuffled else "ORDERED",
@@ -159,6 +206,7 @@ def _run_pass(
             "observed_count": len(projection.quotes),
             "missing_count": len(projection.missing_symbols),
             "stale_count": len(projection.stale_symbols),
+            "field_error_counts": dict(sorted(field_error_counts.items())),
             "oldest_source_time_ms": projection.oldest_source_time_ms,
             "newest_source_time_ms": projection.newest_source_time_ms,
             "content_hash": projection.content_hash,

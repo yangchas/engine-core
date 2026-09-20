@@ -14,10 +14,11 @@
 - audit: `docs/work/handoffs/TASK-008-AUDIT-20260920.md`
 - replay_handoff: `docs/work/handoffs/TASK-008-REPLAY-REAL-DATA-20260920.md`
 - validation_dir: `/home/exedev/validation/task008-opening-validation-20260920T183000+0800/`
-- result: live Redis read was `PARTIAL`/`STALE_OR_MIXED`; frozen production Q2
-  replay completed with ordered/shuffled deterministic hashes equal, but all
-  source timestamps are previous-date/stale, so replay remains `REPLAY_PARTIAL`
-- replay_validation_dir: `/home/exedev/validation/task008-replay-opening-20260920T185041+0800/`
+- result: live Redis read was `PARTIAL`/`STALE_OR_MIXED`; target-date
+  2026-09-18 frozen Q2 replay completed with ordered/shuffled deterministic
+  hashes equal, but 5,219 source rows are future relative to 09:32:10, so
+  replay remains `REPLAY_PARTIAL`
+- replay_validation_dir: `/home/exedev/validation/task008-replay-opening-20260918T185727+0800-v2/`
 - normal_opening_pass: `UNPROVEN`
 
 ## MERGED

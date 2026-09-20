@@ -73,11 +73,11 @@ plan: `docs/work/plans/TASK-008-opening-validation.md`
 handoff: `docs/work/handoffs/TASK-008-REAL-DATA-20260920.md`
 audit: `docs/work/handoffs/TASK-008-AUDIT-20260920.md`
 replay_handoff: `docs/work/handoffs/TASK-008-REPLAY-REAL-DATA-20260920.md`
-NORMAL opening acceptance remains UNPROVEN until a controlled 09:32:10
-observation or equivalent historical available_at evidence exists. A frozen
-production Q2 capture was replayed for determinism, but its source timestamps
-are previous-date/stale; see the replay handoff. This is `REPLAY_PARTIAL`, not
-NORMAL acceptance.
+NORMAL opening acceptance remains UNPROVEN until a controlled 2026-09-18
+09:32:10 observation or equivalent historical available_at evidence exists. A
+target-date frozen Redis Q2 capture was replayed for determinism, but 5,219
+source rows are future relative to that cutoff; see the replay handoff. This is
+`REPLAY_PARTIAL`, not NORMAL acceptance.
 ```
 ```
 
