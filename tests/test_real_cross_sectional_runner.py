@@ -1,7 +1,16 @@
 from datetime import datetime, timezone
 
 from engine_core import CrossSectionReplaySource, VirtualClock, local_datetime_ms
-from examples.run_real_cross_sectional_replay import _run_pass
+from examples.run_real_cross_sectional_replay import _performance_status, _run_pass
+
+
+def test_performance_status_preserves_five_and_ten_minute_gates():
+    assert _performance_status(299_999, frame_count=500) == "CROSS_SECTION_REPLAY_READY"
+    assert _performance_status(300_000, frame_count=500) == "CROSS_SECTION_REPLAY_READY"
+    assert _performance_status(300_001, frame_count=500) == "CROSS_SECTION_REPLAY_PASS_WITH_WARN"
+    assert _performance_status(600_000, frame_count=500) == "CROSS_SECTION_REPLAY_PASS_WITH_WARN"
+    assert _performance_status(600_001, frame_count=500) == "CROSS_SECTION_REPLAY_BLOCKED_BY_PERFORMANCE"
+    assert _performance_status(999_999, frame_count=20) == "CROSS_SECTION_REPLAY_PROFILED"
 
 
 class _Cursor:

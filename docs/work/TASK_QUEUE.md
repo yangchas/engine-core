@@ -6,7 +6,7 @@
 
 - title: Cross-sectional replay performance closure
 - owner: `replay-investigator`
-- state: `BLOCKED_BY_PERFORMANCE`
+- state: `REVIEW`
 - branch: `codex/task-cross-sectional-performance`
 - worktree: current development worktree
 - depends_on: `TASK-003`
@@ -21,9 +21,17 @@ Merge gate:
 - deterministic comparison is run only after the ordered benchmark is viable;
 - source sequence, Rabbit arrival, and historical available_at remain UNKNOWN;
 - side effects remain `NONE_OBSERVED`.
-- result: 500-frame ordered FRAME completed in 835.1 seconds; threshold `>10m`
-- evidence: `/home/exedev/validation/replay-20260918-perf-frame-20260920T104925+0800-opt-full`
-- FINAL and BOTH passes: `NOT_RUN` after blocking result
+- result: ordered FRAME 458.8s (`PASS_WITH_WARN`), ordered FINAL 453.0s
+  (`PASS_WITH_WARN`, final FULL parity `PASS`), both FRAME 454.4/456.4s with
+  deterministic equality (`PASS_WITH_WARN` per pass)
+- evidence:
+  - `/home/exedev/validation/replay-20260918-perf-frame-20260920T113146+0800-aggregate-full`
+  - `/home/exedev/validation/replay-20260918-perf-final-20260920T114018+0800`
+  - `/home/exedev/validation/replay-20260918-perf-determinism-20260920T120503+0800-full`
+- frame-mode per-frame FULL parity: `NOT_RUN`; final-mode parity: `PASS`
+- tester: `PASS` (`628 passed`, compileall PASS, diff-check PASS)
+- ECC production audit: no blocking side-effect or semantic finding; explicit
+  integrator acceptance remains required
 
 ### TASK-003
 

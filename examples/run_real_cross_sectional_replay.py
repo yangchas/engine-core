@@ -51,6 +51,18 @@ FIELDS = ("ts", "px_milli", "pc_milli", "amt_yuan", "vol_units", "symbol")
 REQUIRED_FIELDS = ("ts", "px_milli", "pc_milli", "amt_yuan", "symbol")
 
 
+def _performance_status(elapsed_ms: float, *, frame_count: int) -> str:
+    """Classify a full ordered pass without hiding the 5/10 minute gates."""
+
+    if frame_count != 500:
+        return "CROSS_SECTION_REPLAY_PROFILED"
+    if elapsed_ms > 600_000:
+        return "CROSS_SECTION_REPLAY_BLOCKED_BY_PERFORMANCE"
+    if elapsed_ms > 300_000:
+        return "CROSS_SECTION_REPLAY_PASS_WITH_WARN"
+    return "CROSS_SECTION_REPLAY_READY"
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat(sep=" ")
@@ -533,19 +545,19 @@ def main() -> int:
     both_passes = shuffled is not None
     equal = None if not both_passes else all(ordered[key] == shuffled[key] for key in compare_keys)
     if both_passes:
-        status = "CROSS_SECTION_REPLAY_NON_DETERMINISTIC" if not equal else (
-            "CROSS_SECTION_REPLAY_PARTIAL" if ordered["invalid_rows"] or shuffled["invalid_rows"] else "CROSS_SECTION_REPLAY_READY"
-        )
-    else:
-        elapsed_ms = ordered["pass_elapsed_ms"]
-        if ordered["frame_count"] == 500:
-            status = (
-                "CROSS_SECTION_REPLAY_BLOCKED_BY_PERFORMANCE"
-                if elapsed_ms > 600_000
-                else "CROSS_SECTION_REPLAY_PASS_WITH_WARN"
-            )
+        if not equal:
+            status = "CROSS_SECTION_REPLAY_NON_DETERMINISTIC"
+        elif ordered["invalid_rows"] or shuffled["invalid_rows"]:
+            status = "CROSS_SECTION_REPLAY_PARTIAL"
         else:
-            status = "CROSS_SECTION_REPLAY_PROFILED"
+            status = _performance_status(
+                max(ordered["pass_elapsed_ms"], shuffled["pass_elapsed_ms"]),
+                frame_count=ordered["frame_count"],
+            )
+    else:
+        status = _performance_status(
+            ordered["pass_elapsed_ms"], frame_count=ordered["frame_count"]
+        )
     manifest = FrameManifestV1(
         trade_date=TRADE_DATE,
         source_timezone="Asia/Shanghai",
@@ -636,14 +648,28 @@ def main() -> int:
         "timings_ms": ordered["timings_ms"],
     })
     _write_json(output_dir / "benchmark_full_ordered.json", {
-        "status": status if ordered["frame_count"] == 500 and args.passes == "ordered" else "NOT_RUN",
-        "reason": None if ordered["frame_count"] == 500 and args.passes == "ordered" else "full 500-frame ordered benchmark was not executed in this bounded profiling run",
+        "status": _performance_status(ordered["pass_elapsed_ms"], frame_count=ordered["frame_count"]),
+        "reason": None,
+        "executed": ordered["frame_count"] == 500,
+        "passes": args.passes,
         "frame_count": ordered["frame_count"],
         "ordered_elapsed_ms": ordered["pass_elapsed_ms"],
         "rows": ordered["returned_rows"],
         "timings_ms": ordered["timings_ms"],
         "thresholds": {"pass_ms": 300_000, "warn_ms": 600_000, "blocked_above_ms": 600_000},
     })
+    if shuffled is not None:
+        _write_json(output_dir / "benchmark_full_shuffled.json", {
+            "status": _performance_status(shuffled["pass_elapsed_ms"], frame_count=shuffled["frame_count"]),
+            "reason": None,
+            "executed": shuffled["frame_count"] == 500,
+            "passes": args.passes,
+            "frame_count": shuffled["frame_count"],
+            "shuffled_elapsed_ms": shuffled["pass_elapsed_ms"],
+            "rows": shuffled["returned_rows"],
+            "timings_ms": shuffled["timings_ms"],
+            "thresholds": {"pass_ms": 300_000, "warn_ms": 600_000, "blocked_above_ms": 600_000},
+        })
     (output_dir / "optimization_decisions.md").write_text(
         "# Replay performance decisions\n\n"
         "- TD input is consumed with one ordered cursor and bounded `fetchmany` batches.\n"
