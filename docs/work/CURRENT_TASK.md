@@ -26,9 +26,10 @@ read-only audit. Fixes are limited to the offline canonical replay/auction-facts
 `docs/work/plans/TASK-007-offline-canonical-auction-facts.md`.
 
 The latest fix keeps timing-derived node state in evidence rather than source
-semantic identity. Full verification is green (`678 passed`, compileall and
+semantic identity. Full verification is green (`679 passed`, compileall and
 diff-check PASS). Offline tester handoff is PASS; auditor and TASK-007-specific
-500-frame/session evidence are still pending.
+real-data evidence review are still pending; a pure offline 500-frame session
+regression now covers the integration path.
 
 The next task is not started:
 

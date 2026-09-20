@@ -316,6 +316,51 @@ def test_canonical_replay_can_join_one_session_timeline():
     timeline.finalize()
 
 
+def test_canonical_replay_session_timeline_covers_500_frames_and_auction_anchor():
+    end = START + 500 * 3_000
+    base = OfflineCanonicalReplay(
+        TRADE_DATE,
+        ("600000",),
+        start_ms=START,
+        end_exclusive_ms=end,
+    )
+    timeline = ReplaySessionTimeline(base.source.manifest(base.source.frames(())))
+    replay = OfflineCanonicalReplay(
+        TRADE_DATE,
+        ("600000",),
+        start_ms=START,
+        end_exclusive_ms=end,
+        session_timeline=timeline,
+    )
+
+    class CaptureEngine:
+        def submit(self, signal):
+            return None
+
+        def run_until_empty(self):
+            return None
+
+    replay.replay((), CaptureEngine())
+    assert timeline.frame_count == 500
+    assert timeline.node_count == 500
+
+    at_0925 = local_datetime_ms(TRADE_DATE, "09:25:06")
+    revision = replay.observe_auction(
+        "0925",
+        [{"symbol": "600000", "ts": at_0925}],
+        evaluation_time_ms=at_0925,
+        expected_symbols=("600000",),
+    )
+    assert revision.revision == 1
+    checkpoint = timeline.finalize()
+    assert checkpoint.node_id == "CHECKPOINT:0940"
+    snapshot = timeline.snapshot()
+    assert snapshot["frame_count"] == 500
+    assert snapshot["expected_frame_count"] == 500
+    assert snapshot["anchors"]["0925"]["revision"] == 1
+    assert snapshot["node_count"] == 502
+
+
 def test_replay_propagates_frame_diagnostics_and_batch_quality():
     source = OfflineCanonicalReplay(
         TRADE_DATE,

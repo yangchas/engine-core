@@ -9,7 +9,7 @@ Failure or missing evidence moves a card to `BLOCKED`; obsolete work moves to `A
 
 | Card | Owner | State | Branch | Worktree | Merge gate |
 |---|---|---|---|---|---|
-| TASK-007 Offline canonical replay / auction facts | replay-investigator | RUNNING | `codex/feature-session-engine-integration` | current development worktree | offline tester PASS at d26a86f; auditor and TASK-007-specific 500-frame/session evidence pending; degraded-frame evidence, source metadata, session evidence and timing state fixes present; no production source or write path |
+| TASK-007 Offline canonical replay / auction facts | replay-investigator | RUNNING | `codex/feature-session-engine-integration` | current development worktree | offline tester PASS; 500-frame session regression now covered; auditor and real-data evidence review pending; degraded-frame evidence, source metadata, session evidence and timing state fixes present; no production source or write path |
 | TASK-006 Unified Rabbit-primary canonical tick/batch contract | replay-investigator | MERGED | `codex/feature-session-engine-integration` | current development worktree | canonical tick/batch, TD compatibility adapter, protobuf fixture, hash and legacy shadow gates passed |
 | TASK-005 Replay session timeline integration | replay-investigator | MERGED | `codex/feature-session-engine-integration` | current development worktree | hash-only ledger for frames, auction revisions, timer firings, and 09:40 checkpoint |
 | TASK-004 Cross-sectional replay performance closure | replay-investigator | MERGED_WITH_WARN | `codex/feature-session-engine-integration` | current development worktree | ordered FRAME/FINAL and both FRAME deterministic evidence; all full passes remain PASS_WITH_WARN |
