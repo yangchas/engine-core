@@ -3,7 +3,8 @@
 审计时间：2026-09-20 15:46–16:04 +08:00  
 审计对象：`codex/feature-session-engine-integration`  
 数据源：TD `market_data1.stock_tick_v2` 与 `market_data1.auction_snapshot_v2`  
-验证目录：`/home/exedev/validation/task007-real-ordered-20260920T154654+0800/`
+验证目录（ordered）：`/home/exedev/validation/task007-real-ordered-20260920T154654+0800/`
+验证目录（shuffled）：`/home/exedev/validation/task007-real-shuffled-20260920T161558+0800/`
 
 ## 安全边界
 
@@ -41,7 +42,7 @@ CANONICAL_500_FRAME_ORDERED_REPLAY   PASS (completed)
 SESSION_TIMELINE_500_FRAMES          PASS
 AUCTION_0920_0924_0925_READ          PASS
 PRODUCTION_SIDE_EFFECTS              NONE_OBSERVED
-ORDERED_SHUFFLED_DETERMINISM         NOT_RUN
+ORDERED_SHUFFLED_DETERMINISM         PASS (500 frames)
 REAL_FULL_MARKET_REPLAY_FUNCTIONAL   PASS
 PERFORMANCE_TARGET                   NOT_MET; OPTIMIZATION_REQUIRED
 TASK_007_ACCEPTANCE                  PENDING_AUDITOR
@@ -52,15 +53,15 @@ OPTIMIZATION_REQUIRED`。本次 18.07 分钟未达到性能目标，但这不否
 回放的功能和语义正确性；它只产生后续性能优化工作项。不能以旧 TASK-004
 的非 canonical 结果替代本证据。
 
-20-frame 的真实 ordered/shuffled 双 pass 已完成，最终 session、signal 和
-auction hashes 一致（`determinism_probe`：
-`/home/exedev/validation/task007-real-determinism-probe-20260920T160725+0800/`）。
-500-frame shuffled pass 尚未运行，因此不把小窗口结果扩展成完整窗口证明。
+500-frame 的真实 ordered/shuffled 双 pass 已完成，最终比较结果为
+`determinism_comparison.status=PASS`：frame、signal、session、VirtualClock、
+reducer revision 和 auction revisions 全部一致。20-frame 探针也保持 PASS：
+`/home/exedev/validation/task007-real-determinism-probe-20260920T160725+0800/`。
 
 ## 未证明事项
 
-- 本次只运行 ordered pass，未完成 500-frame shuffled pass，因此不宣称真实
-  全窗口 deterministic equality；
+- shuffled 只改变每个 frame 内 TD 返回行的顺序，不模拟 Rabbit 历史 arrival
+  order；
 - TD `event-time`/规范化回放顺序不等于 Rabbit 历史 arrival order；
 - source sequence、Rabbit arrival order、historical `available_at` 均为
   `UNKNOWN`；

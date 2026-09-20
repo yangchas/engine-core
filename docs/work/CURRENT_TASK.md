@@ -4,9 +4,9 @@
 active_task: TASK-007
 bootstrap_status: COMPLETE
 last_task: TASK-007
-last_task_state: FIX_COMPLETE_PENDING_INDEPENDENT_REVIEW
+last_task_state: REAL_DATA_PASS_PENDING_INDEPENDENT_REVIEW
 next_task: TASK-007 acceptance review
-next_task_state: BLOCKED_UNTIL_AUDITOR_AND_TASK007_EVIDENCE
+next_task_state: BLOCKED_UNTIL_AUDITOR
 
 owner: replay-investigator
 branch: codex/feature-session-engine-integration
@@ -29,16 +29,17 @@ The latest fix keeps timing-derived node state in evidence rather than source
 semantic identity. Full verification is green (`679 passed`, compileall and
 diff-check PASS). Offline tester handoff is PASS. A dedicated real TD ordered
 replay has now completed 500 canonical frames (1,224,811 rows, 98 empty frames,
-18.07 minutes) with no production side effects. The functional result is PASS;
+18.07 minutes) with no production side effects. A matching 500-frame shuffled
+pass also completed (19.25 minutes), with all comparison hashes equal. The
+functional result is PASS;
 the performance target is not met and needs optimization, but elapsed time is
 not treated as a data or replay correctness failure. A 20-frame real
-ordered/shuffled determinism probe is PASS; the 500-frame shuffled pass is not
-run. See `docs/work/handoffs/TASK-007-REAL-DATA-20260920.md`.
+ordered/shuffled determinism is PASS for the complete 500-frame window. See
+`docs/work/handoffs/TASK-007-REAL-DATA-20260920.md`.
 
-TASK-007 remains RUNNING with acceptance pending the independent auditor and
-the 500-frame determinism decision. The slow runtime is a follow-up
-optimization item, not a functional replay failure; it must not be used to
-invalidate the real-data evidence.
+TASK-007 remains RUNNING with acceptance pending the independent auditor. The
+slow runtime is a follow-up optimization item, not a functional replay
+failure; it must not be used to invalidate the real-data evidence.
 
 The next task is not started:
 

@@ -78,6 +78,19 @@ def _performance_status(elapsed_ms: float) -> str:
     return "BLOCKED_BY_PERFORMANCE"
 
 
+def _load_baseline_ordered(path: Optional[Path], frame_count: int) -> Optional[dict[str, Any]]:
+    if path is None:
+        return None
+    summary_path = path / "engine_summary.json"
+    if not summary_path.is_file():
+        raise SystemExit(f"baseline directory lacks engine_summary.json: {path}")
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    baseline = payload.get("ordered")
+    if not isinstance(baseline, dict) or baseline.get("frame_count") != frame_count:
+        raise SystemExit("baseline ordered replay does not match requested frame count")
+    return baseline
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat(sep=" ")
@@ -373,7 +386,13 @@ def main() -> int:
     parser.add_argument("--start-time", default=WINDOW_START)
     parser.add_argument("--end-time", default=WINDOW_END)
     parser.add_argument("--max-frames", type=int, default=None)
-    parser.add_argument("--passes", choices=("ordered", "both"), default="ordered")
+    parser.add_argument("--passes", choices=("ordered", "shuffled", "both"), default="ordered")
+    parser.add_argument(
+        "--baseline-dir",
+        type=Path,
+        default=None,
+        help="existing ordered replay directory for comparing a shuffled-only pass",
+    )
     parser.add_argument("--td-host", default=os.environ.get("TDENGINE_HOST", "127.0.0.1"))
     parser.add_argument("--td-port", type=int, default=int(os.environ.get("TDENGINE_PORT", "6030")))
     parser.add_argument("--td-user", default=os.environ.get("TDENGINE_USER", "root"))
@@ -394,6 +413,7 @@ def main() -> int:
         raise SystemExit("replay interval must contain whole 3-second frames")
     end_ms = configured_end
     frame_count = (end_ms - start_ms) // 3_000
+    baseline_ordered = _load_baseline_ordered(args.baseline_dir, frame_count)
     conn = _connect_td(args)
     try:
         cursor = conn.cursor()
@@ -420,19 +440,21 @@ def main() -> int:
             query_hash=query_hash,
             input_hash=semantic_hash((TRADE_DATE, start_ms, end_ms, event_count, expected_symbols)),
         )
-        ordered = _run_pass(
-            conn,
-            expected_symbols=expected_symbols,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            frame_count=frame_count,
-            manifest=manifest,
-            auction_rows=auction_rows,
-            auction_error=auction_error,
-            shuffled=False,
-        )
+        ordered = None
+        if args.passes in {"ordered", "both"}:
+            ordered = _run_pass(
+                conn,
+                expected_symbols=expected_symbols,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                frame_count=frame_count,
+                manifest=manifest,
+                auction_rows=auction_rows,
+                auction_error=auction_error,
+                shuffled=False,
+            )
         shuffled = None
-        if args.passes == "both":
+        if args.passes in {"shuffled", "both"}:
             shuffled = _run_pass(
                 conn,
                 expected_symbols=expected_symbols,
@@ -455,7 +477,12 @@ def main() -> int:
         "session_content_hash",
         "auction_revisions",
     )
-    equal = None if shuffled is None else all(ordered[key] == shuffled[key] for key in compare_keys)
+    comparison_ordered = ordered or baseline_ordered
+    equal = (
+        None
+        if shuffled is None or comparison_ordered is None
+        else all(comparison_ordered[key] == shuffled[key] for key in compare_keys)
+    )
     if equal is False:
         status = "REPLAY_NON_DETERMINISTIC"
     elif auction_error is not None:
@@ -485,11 +512,17 @@ def main() -> int:
         "query_hash": query_hash,
         "streaming_contract": "one SELECT per 3-second half-open frame; current frame discarded after submission",
     })
-    performance = {
-        "ordered_elapsed_ms": ordered["elapsed_ms"],
-        "ordered_status": _performance_status(ordered["elapsed_ms"]),
-        "thresholds_ms": {"pass": 300_000, "pass_with_warn": 600_000},
-    }
+    performance = {"thresholds_ms": {"pass": 300_000, "pass_with_warn": 600_000}}
+    if ordered is not None:
+        performance.update({
+            "ordered_elapsed_ms": ordered["elapsed_ms"],
+            "ordered_status": _performance_status(ordered["elapsed_ms"]),
+        })
+    elif baseline_ordered is not None:
+        performance.update({
+            "baseline_ordered_elapsed_ms": baseline_ordered.get("elapsed_ms"),
+            "baseline_ordered_status": _performance_status(float(baseline_ordered["elapsed_ms"])),
+        })
     if shuffled is not None:
         performance.update({
             "shuffled_elapsed_ms": shuffled["elapsed_ms"],
@@ -505,7 +538,7 @@ def main() -> int:
         "status": "NOT_RUN" if shuffled is None else ("PASS" if equal else "FAIL"),
         "equal": equal,
         "comparison_keys": list(compare_keys),
-        "ordered": {key: ordered[key] for key in compare_keys},
+        "ordered": None if comparison_ordered is None else {key: comparison_ordered[key] for key in compare_keys},
         "shuffled": None if shuffled is None else {key: shuffled[key] for key in compare_keys},
         "shuffle_scope": "TD row order before canonical adapter; not Rabbit arrival-order evidence",
     })
@@ -513,7 +546,7 @@ def main() -> int:
         "status": "UNAVAILABLE" if auction_error else "OBSERVED",
         "row_counts": {tag: len(rows) for tag, rows in auction_rows.items()},
         "error": auction_error,
-        "ordered": ordered["auction_revisions"],
+        "ordered": (ordered or baseline_ordered or {}).get("auction_revisions"),
     })
     _write_json(output_dir / "replay_summary.json", {
         "task_id": "TASK-007",

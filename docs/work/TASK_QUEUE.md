@@ -21,16 +21,15 @@
 - integrated_by: `INTEGRATOR_REVIEW_TASK007_20260920.md`
 - implementation_tests_before_fix: `668 passed`
 - current_tests: `679 passed`, compileall PASS, diff-check PASS
-- offline_tester: `PASS`; independent auditor and 500-frame shuffled
-  determinism decision remain pending
+- offline_tester: `PASS`; independent auditor remains pending
 - real_data_ordered: `PASS (completed)`; validation:
   `/home/exedev/validation/task007-real-ordered-20260920T154654+0800/`
 - real_data_functional: `PASS` (500 canonical frames completed with no side
   effects)
 - real_data_performance: `OPTIMIZATION_REQUIRED` (18.07 min for 500 canonical
   frames; not a functional replay failure)
-- real_data_determinism: 20-frame ordered/shuffled `PASS`; 500-frame shuffled
-  determinism `NOT_RUN`
+- real_data_determinism: 500-frame ordered/shuffled `PASS`; validation:
+  `/home/exedev/validation/task007-real-shuffled-20260920T161558+0800/`
 - production_side_effects: `NONE_OBSERVED`
 
 Merge gate:
