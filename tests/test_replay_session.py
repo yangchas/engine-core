@@ -126,6 +126,33 @@ def test_replay_session_updates_same_revision_auction_timing_evidence():
     assert timeline.snapshot()["anchors"]["0925"]["revision"] == 1
 
 
+def test_replay_session_updates_auction_node_evidence_without_new_revision():
+    _, frames, timeline = _timeline()
+    for frame in frames:
+        timeline.record_frame(frame)
+    before = local_datetime_ms(TRADE_DATE, "09:25:05")
+    after = local_datetime_ms(TRADE_DATE, "09:25:10")
+    rows = [_row(after)]
+    timeline.observe_auction(
+        "0925",
+        rows,
+        evaluation_time_ms=before,
+        expected_symbols=("600519", "000001"),
+    )
+    first_node = timeline._nodes["AUCTION:0925:r1"]
+    first_timeline_evidence = timeline.evidence_hash
+    timeline.observe_auction(
+        "0925",
+        rows,
+        evaluation_time_ms=after,
+        expected_symbols=("600519", "000001"),
+    )
+    second_node = timeline._nodes["AUCTION:0925:r1"]
+    assert second_node.content_hash == first_node.content_hash
+    assert second_node.evidence_hash != first_node.evidence_hash
+    assert timeline.evidence_hash != first_timeline_evidence
+
+
 def test_replay_session_joins_timer_nodes_without_scheduling_them():
     _, frames, left = _timeline()
     _, _, right = _timeline()

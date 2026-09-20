@@ -95,7 +95,6 @@ class ReplaySessionNodeV1:
                     "node_id": self.node_id,
                     "kind": self.kind,
                     "business_anchor_ms": self.business_anchor_ms,
-                    "state": self.state,
                     "source_content_hash": self.source_content_hash,
                 }
             ),
@@ -105,6 +104,7 @@ class ReplaySessionNodeV1:
             "evidence_hash",
             evidence_hash(
                 {
+                    "state": self.state,
                     "evaluation_time_ms": self.evaluation_time_ms,
                     "source_layers": layers,
                     "source_time_min_ms": self.source_time_min_ms,

@@ -32,6 +32,9 @@ effects.
 - Session nodes retain the source `evidence_hash` separately from semantic
   content, so source quality/order metadata changes cannot disappear from the
   session evidence ledger.
+- Node `state` is timing/observation evidence rather than source revision
+  identity; a same-content auction cohort may move from `OBSERVING` to
+  `PARTIAL`/`READY` without changing the node semantic hash.
 - Auction observations are passed to `AuctionTimeline`; 0920/0924 are optional
   for 0925 analysis, and late/repeated cohorts remain revisioned/idempotent.
 - Outputs are `FACT_ONLY`/offline evidence. No strategy conclusion or effect is
