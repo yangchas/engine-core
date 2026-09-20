@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from engine_core import (
     CrossSectionReplaySource,
+    IncrementalCrossSectionState,
     DeterministicEngine,
     MarketStateReducer,
     ProbeStrategy,
@@ -106,3 +107,29 @@ def test_streaming_single_frame_builder_matches_bounded_frame():
     whole = source.frames(rows)
     one = source.frame_from_events(1, [TDEventV1.from_mapping(rows[0])])
     assert whole[1].content_hash == one.content_hash
+
+
+def test_incremental_state_identity_is_stable_for_reordered_frame_events():
+    start = local_datetime_ms("2026-09-18", "09:15:00")
+    source = CrossSectionReplaySource(
+        "2026-09-18",
+        ("600519", "000001"),
+        VirtualClock(datetime.fromtimestamp(start / 1000, timezone.utc)),
+        slice_anchor_ms=start,
+        end_exclusive_ms=start + 3_000,
+    )
+    rows = [_row(start + 100, "600519"), _row(start + 200, "000001", 101_000)]
+    frame = source.frame_from_events(0, rows)
+    left = IncrementalCrossSectionState(source.expected_symbols, trade_date="2026-09-18")
+    right = IncrementalCrossSectionState(source.expected_symbols, trade_date="2026-09-18")
+    left.apply(frame.events)
+    right.apply(tuple(reversed(frame.events)))
+    kwargs = {
+        "frame_no": frame.frame_no,
+        "logical_ts_ms": frame.logical_ts_ms,
+        "updated_symbols": frame.updated_symbols,
+        "missing_symbols": frame.missing_symbols,
+        "completeness": frame.completeness,
+        "coverage": frame.coverage,
+    }
+    assert left.identity_hash(**kwargs) == right.identity_hash(**kwargs)

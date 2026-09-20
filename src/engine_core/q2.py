@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Mapping, Optional, Protocol, Sequence, Tuple
 from zoneinfo import ZoneInfo
@@ -308,12 +308,15 @@ class Q2ProjectionSnapshot:
     oldest_source_time_ms: Optional[int]
     newest_source_time_ms: Optional[int]
     content_hash: str
+    content_hash_override: Optional[str] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "quotes", deep_freeze(self.quotes))
         object.__setattr__(self, "expected_symbols", tuple(self.expected_symbols))
         object.__setattr__(self, "missing_symbols", tuple(self.missing_symbols))
         object.__setattr__(self, "stale_symbols", tuple(self.stale_symbols))
+        if self.content_hash_override is not None:
+            object.__setattr__(self, "content_hash", self.content_hash_override)
 
 
 def build_q2_projection(
@@ -437,6 +440,190 @@ def build_q2_projection(
         newest_source_time_ms=newest,
         content_hash=content_digest,
     )
+
+
+class IncrementalQ2Projection:
+    """Cache normalized Q2 quotes across adjacent replay frames.
+
+    Stock-tick frames usually update only a subset of the universe.  This
+    builder keeps the immutable snapshot contract, but normalizes only the
+    changed symbols and maintains a cheap quote-hash aggregate for FRAME
+    verification.  ``full_hash=True`` performs the original semantic hash and
+    is used for parity/final verification.
+    """
+
+    def __init__(
+        self,
+        trade_date: str,
+        expected_symbols: Sequence[Any],
+        *,
+        freshness_policy: FreshnessPolicy = FreshnessPolicy(),
+        source_id: str = "redis_q2_projection",
+    ) -> None:
+        self.trade_date = _strict_trade_date(trade_date)
+        self.expected_symbols = tuple(sorted({normalize_symbol(item) for item in expected_symbols}))
+        self.freshness_policy = freshness_policy
+        self.source_id = source_id
+        self._raw_hashes: Dict[str, Mapping[Any, Any]] = {}
+        self._quotes: Dict[str, Q2Quote] = {}
+        self._quote_hashes: Dict[str, str] = {}
+
+    def build(
+        self,
+        observed_at: datetime,
+        raw_hashes: Mapping[str, Mapping[Any, Any]],
+        *,
+        changed_symbols: Sequence[str] = (),
+        full_hash: bool = False,
+    ) -> Q2ProjectionSnapshot:
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware")
+        observed_ms = int(observed_at.astimezone(timezone.utc).timestamp() * 1000)
+        changed = set(changed_symbols)
+        for symbol in changed:
+            normalized = normalize_symbol(symbol)
+            raw = raw_hashes.get(normalized)
+            if raw is None:
+                self._raw_hashes.pop(normalized, None)
+                self._quotes.pop(normalized, None)
+                self._quote_hashes.pop(normalized, None)
+                continue
+            quote = normalize_q2(normalized, raw)
+            self._raw_hashes[normalized] = raw
+            self._quotes[normalized] = quote
+            self._quote_hashes[normalized] = semantic_hash(quote.to_mapping())
+        # Reuse the caller-owned cumulative mapping for symbols that were
+        # already present before this frame.
+        for symbol, raw in raw_hashes.items():
+            normalized = normalize_symbol(symbol)
+            if normalized not in self._quotes:
+                self._raw_hashes[normalized] = raw
+                self._quotes[normalized] = normalize_q2(normalized, raw)
+                self._quote_hashes[normalized] = semantic_hash(self._quotes[normalized].to_mapping())
+
+        missing = []
+        stale = []
+        quotes: Dict[str, Q2Quote] = {}
+        current_quote_hashes: Dict[str, str] = {}
+        for symbol in self.expected_symbols:
+            quote = self._quotes.get(symbol)
+            if quote is None:
+                missing.append(symbol)
+                continue
+            static_errors = tuple(
+                error for error in quote.field_errors
+                if error not in {"stale", "future_ts", "trade_date"}
+            )
+            checked = replace(quote, field_errors=static_errors)
+            validation_errors = validate_q2(
+                checked,
+                observed_at_ms=observed_ms,
+                trade_date=self.trade_date,
+                freshness_policy=self.freshness_policy,
+            )
+            if validation_errors:
+                checked = replace(checked, field_errors=validation_errors)
+            if "stale" in validation_errors:
+                stale.append(symbol)
+            quotes[symbol] = checked
+            if validation_errors == static_errors:
+                current_quote_hashes[symbol] = self._quote_hashes[symbol]
+            else:
+                current_quote_hashes[symbol] = semantic_hash(checked.to_mapping())
+
+        source_times = [
+            quote.source_record_time_ms
+            for quote in quotes.values()
+            if quote.source_record_time_ms is not None
+        ]
+        coverage = len(quotes) / float(len(self.expected_symbols)) if self.expected_symbols else 0.0
+        has_non_stale_errors = any(
+            any(error != "stale" for error in quote.field_errors)
+            for quote in quotes.values()
+        )
+        if not self.expected_symbols:
+            status = DataStatus.MISSING
+            consistency = "EMPTY_UNIVERSE"
+        elif missing or has_non_stale_errors:
+            status = DataStatus.PARTIAL
+            consistency = "BEST_EFFORT_PARTIAL"
+        elif stale and len(stale) == len(quotes):
+            status = DataStatus.STALE
+            consistency = "BEST_EFFORT_STALE"
+        elif stale:
+            status = DataStatus.PARTIAL
+            consistency = "BEST_EFFORT_MIXED_FRESHNESS"
+        else:
+            status = DataStatus.READY
+            consistency = "BEST_EFFORT"
+
+        quote_payload = {symbol: quotes[symbol].to_mapping() for symbol in sorted(quotes)}
+        if full_hash:
+            content_digest = semantic_hash({
+                "trade_date": self.trade_date,
+                "expected_symbols": self.expected_symbols,
+                "missing_symbols": tuple(missing),
+                "stale_symbols": tuple(sorted(stale)),
+                "quotes": quote_payload,
+            }, schema_version=1)
+        else:
+            content_digest = semantic_hash({
+                "contract": "Q2ProjectionIncrementalV1",
+                "trade_date": self.trade_date,
+                "observed_ms": observed_ms,
+                "missing_symbols": tuple(missing),
+                "stale_symbols": tuple(sorted(stale)),
+                "quote_hashes": tuple(sorted(current_quote_hashes.items())),
+            })
+        provenance = Provenance(
+            source_id=self.source_id,
+            source_kind="redis_projection",
+            source_schema="Q2RedisHashV1",
+            source_trade_date=self.trade_date,
+            effective_at_ms=max(source_times) if source_times else None,
+            observed_at_ms=observed_ms,
+            notes=(consistency,),
+        )
+        envelope_payload = {
+            "trade_date": self.trade_date,
+            "expected_symbols": self.expected_symbols,
+            "missing_symbols": tuple(missing),
+            "stale_symbols": tuple(sorted(stale)),
+            "quotes": quote_payload,
+        }
+        envelope = MarketDataEnvelope(
+            envelope_id=semantic_hash({
+                "source_id": self.source_id,
+                "trade_date": self.trade_date,
+                "effective_ms": max(source_times) if source_times else None,
+                "observed_ms": observed_ms,
+                "content_hash": content_digest,
+            }, schema_version=1),
+            payload_kind=PayloadKind.L2_PROJECTION_SNAPSHOT,
+            source_id=self.source_id,
+            schema_version=1,
+            effective_time_ms=max(source_times) if source_times else None,
+            observed_time_ms=observed_ms,
+            generation=None,
+            generation_kind="OBSERVATION_COHORT",
+            payload=envelope_payload,
+            provenance=provenance,
+        )
+        return Q2ProjectionSnapshot(
+            trade_date=self.trade_date,
+            envelope=envelope,
+            quotes=quotes,
+            expected_symbols=self.expected_symbols,
+            missing_symbols=tuple(missing),
+            stale_symbols=tuple(sorted(stale)),
+            coverage=coverage,
+            status=status,
+            consistency_status=consistency,
+            oldest_source_time_ms=min(source_times) if source_times else None,
+            newest_source_time_ms=max(source_times) if source_times else None,
+            content_hash=content_digest,
+            content_hash_override=content_digest,
+        )
 
 
 class RedisQ2ProjectionAdapter:

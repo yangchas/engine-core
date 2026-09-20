@@ -7,8 +7,10 @@ import pytest
 from engine_core.contracts import DataStatus, PayloadKind
 from engine_core.q2 import (
     FreshnessPolicy,
+    IncrementalQ2Projection,
     Q2_FIELD_CONTRACT,
     RedisQ2ProjectionAdapter,
+    build_q2_projection,
     classify_equity,
     normalize_q2,
     normalize_symbol,
@@ -243,6 +245,25 @@ def test_q2_adapter_does_not_mark_missing_amount_ready():
     )
     assert result.status is DataStatus.PARTIAL
     assert "amt" in result.quotes["000001"].field_errors
+
+
+def test_incremental_q2_full_hash_matches_full_rebuild_across_updates():
+    expected = ("000001", "000002")
+    first = {
+        "000001": {"px": "1000", "pc": "990", "amt": "1", "ts": "1788484799000"},
+        "000002": {"px": "2000", "pc": "1990", "amt": "2", "ts": "1788484799000"},
+    }
+    second = dict(first)
+    second["000001"] = {**first["000001"], "px": "1010", "ts": "1788484800000"}
+    observed = datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc)
+    incremental = IncrementalQ2Projection("2026-09-04", expected)
+    incremental.build(observed, first, changed_symbols=expected, full_hash=True)
+    actual = incremental.build(observed, second, changed_symbols=("000001",), full_hash=True)
+    expected_projection = build_q2_projection("2026-09-04", observed, expected, second)
+    assert actual.content_hash == expected_projection.content_hash
+    assert actual.missing_symbols == expected_projection.missing_symbols
+    assert actual.stale_symbols == expected_projection.stale_symbols
+    assert actual.quotes["000001"].to_mapping() == expected_projection.quotes["000001"].to_mapping()
 
 
 def test_q2_contract_keeps_unknown_fields_for_evidence_but_not_business_mapping():

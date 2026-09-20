@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, tzinfo
+from enum import Enum
 from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 from .contracts import DataStatus, EngineSignal, SignalKind, deep_freeze, evidence_hash, semantic_hash
@@ -31,6 +32,22 @@ HISTORICAL_AVAILABLE_AT_UNKNOWN = "UNKNOWN"
 FRAME_COMPLETE = "COMPLETE"
 FRAME_PARTIAL = "PARTIAL"
 FRAME_EMPTY = "EMPTY"
+
+
+class ReplayVerificationLevel(str, Enum):
+    """Cost/fidelity level for bounded replay evidence.
+
+    FULL retains the historical per-frame cumulative state hash.  FRAME keeps
+    frame/input/signal evidence and uses an incremental state identity.  FINAL
+    verifies the cumulative state only at the final snapshot.  NONE is only
+    appropriate for profiling and must never be presented as determinism
+    evidence.
+    """
+
+    FULL = "FULL"
+    FRAME = "FRAME"
+    FINAL = "FINAL"
+    NONE = "NONE"
 
 
 def _strict_trade_date(value: str) -> str:
@@ -226,6 +243,7 @@ class CrossSectionStateV1:
     source_sequence_status: str = SOURCE_SEQUENCE_UNKNOWN
     rabbit_arrival_order: str = RABBIT_ARRIVAL_UNKNOWN
     historical_available_at: str = HISTORICAL_AVAILABLE_AT_UNKNOWN
+    content_hash_override: Optional[str] = field(default=None, repr=False, compare=False)
     content_hash: str = field(init=False)
     evidence_hash: str = field(init=False)
 
@@ -247,7 +265,7 @@ class CrossSectionStateV1:
         object.__setattr__(self, "updated_symbols", updated)
         object.__setattr__(self, "missing_symbols", missing)
         object.__setattr__(self, "symbol_states", deep_freeze(states))
-        object.__setattr__(self, "content_hash", semantic_hash({
+        object.__setattr__(self, "content_hash", self.content_hash_override or semantic_hash({
             "contract": CROSS_SECTION_STATE_CONTRACT_VERSION,
             "trade_date": self.trade_date,
             "frame_no": self.frame_no,
@@ -375,6 +393,52 @@ def build_cross_section_facts(
         market_breadth=breadth,
         source_layers=source_layers,
     )
+
+
+class IncrementalCrossSectionState:
+    """Maintain a cheap deterministic identity for cumulative symbol facts.
+
+    The mutable index is deliberately kept outside :class:`CrossSectionStateV1`:
+    the public contract remains frozen, while FRAME/FINAL verification avoids
+    serializing the full 5k-symbol cumulative mapping on every frame.  The
+    resulting identity is an optimization evidence hash, not a replacement
+    for the FULL contract hash; parity is checked by callers at finalization.
+    """
+
+    def __init__(self, expected_symbols: Iterable[Any], *, trade_date: str = "") -> None:
+        self.expected_symbols = tuple(sorted({normalize_symbol(item) for item in expected_symbols}))
+        self.trade_date = trade_date
+        self.latest_raw: dict[str, Mapping[str, Any]] = {}
+        self._symbol_hashes: dict[str, str] = {}
+
+    def apply(self, events: Iterable[TDEventV1]) -> None:
+        for event in events:
+            raw = event.to_q2_raw()
+            self.latest_raw[event.symbol] = raw
+            self._symbol_hashes[event.symbol] = semantic_hash(raw)
+
+    def identity_hash(
+        self,
+        *,
+        frame_no: int,
+        logical_ts_ms: int,
+        updated_symbols: Sequence[str],
+        missing_symbols: Sequence[str],
+        completeness: str,
+        coverage: float,
+    ) -> str:
+        return semantic_hash({
+            "contract": CROSS_SECTION_STATE_CONTRACT_VERSION,
+            "trade_date": self.trade_date,
+            "frame_no": frame_no,
+            "logical_ts_ms": logical_ts_ms,
+            "expected_symbols": self.expected_symbols,
+            "updated_symbols": tuple(updated_symbols),
+            "missing_symbols": tuple(missing_symbols),
+            "symbol_hashes": tuple(sorted(self._symbol_hashes.items())),
+            "frame_completeness": completeness,
+            "coverage": coverage,
+        })
 
 
 @dataclass(frozen=True)
@@ -658,20 +722,30 @@ class CrossSectionReplaySource:
         latest_raw: dict[str, Mapping[str, Any]],
         *,
         signal_prefix: str = "cross-section",
+        state_content_hash_override: Optional[str] = None,
+        projection_builder: Any = None,
     ) -> EngineSignal:
         """Create one frame signal while updating a caller-owned cumulative state."""
 
         for event in frame.events:
             latest_raw[event.symbol] = event.to_q2_raw()
         observed_at = datetime.fromtimestamp(frame.logical_ts_ms / 1000.0, tz=timezone.utc)
-        base = build_q2_projection(
-            self.trade_date,
-            observed_at,
-            self.expected_symbols,
-            latest_raw,
-            freshness_policy=self.freshness_policy,
-            source_id=self.source_id,
-        )
+        if projection_builder is None:
+            base = build_q2_projection(
+                self.trade_date,
+                observed_at,
+                self.expected_symbols,
+                latest_raw,
+                freshness_policy=self.freshness_policy,
+                source_id=self.source_id,
+            )
+        else:
+            base = projection_builder.build(
+                observed_at,
+                latest_raw,
+                changed_symbols=frame.updated_symbols,
+                full_hash=state_content_hash_override is None,
+            )
         state = CrossSectionStateV1(
             trade_date=self.trade_date,
             frame_no=frame.frame_no,
@@ -684,6 +758,7 @@ class CrossSectionReplaySource:
             coverage=frame.coverage,
             source_time_min_ms=frame.source_time_min_ms,
             source_time_max_ms=frame.source_time_max_ms,
+            content_hash_override=state_content_hash_override,
         )
         projection = CrossSectionProjectionV1(base_projection=base, cross_section=state)
         return EngineSignal(
