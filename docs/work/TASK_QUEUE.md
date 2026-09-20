@@ -2,6 +2,36 @@
 
 ## REVIEW
 
+### TASK-006
+
+- title: Unified Rabbit-primary canonical tick/batch contract
+- owner: `replay-investigator`
+- state: `REVIEW`
+- branch: `codex/task-cross-sectional-performance`
+- worktree: current development worktree
+- depends_on: `TASK-005` review and existing C++ RawTick/TickBatch contract
+- commit: `272cbd7428aaf8ac205759ec7d6afa5f230814a8`
+- scope: pure Core contract, TD compatibility adapter, parsed Rabbit fixture,
+  canonical hash layers, and legacy shadow projection
+- canonical_authority: `RABBITMQ_DATASERVICE_RAWTICK_V1`
+- tests: `660 passed`, compileall PASS, diff-check PASS
+- protobuf_wire_fixture: PASS after installing `protobuf==4.21.12` in the
+  shared verification venv
+- production_side_effects: `NONE_OBSERVED`
+
+Merge gate:
+
+- Rabbit `DataRecord/DataBatch → RawTick/TickBatch` remains authoritative;
+- TD cannot add fields or redefine Rabbit units/semantics;
+- tick parity remains distinct from batch parity;
+- source evidence excludes session-local `seq_no`, `wall_ts_ms`, and `run_id`;
+- `canonical_content_hash == canonical_semantic_hash`;
+- `VALUE_MISMATCH` takes precedence over `ORDER_AMBIGUOUS`;
+- trade-date, quality/value, proto3 ambiguity, and symbol normalization tests
+  pass;
+- no production I/O import, write, ACK, restart, or effect is added;
+- integrator review completes before feature-branch merge.
+
 ### TASK-004
 
 - title: Cross-sectional replay performance closure

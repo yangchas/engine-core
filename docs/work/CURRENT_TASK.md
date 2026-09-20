@@ -1,12 +1,12 @@
 # Current Task
 
 ```text
-active_task: TASK-005
+active_task: TASK-006
 bootstrap_status: COMPLETE
-last_task: TASK-004
+last_task: TASK-005
 last_task_state: REVIEW
 next_task: none
-next_task_state: TASK005_REVIEW
+next_task_state: TASK006_REVIEW
 
 owner: replay-investigator
 branch: codex/task-cross-sectional-performance
@@ -41,9 +41,13 @@ continuation request authorized TASK-005 implementation on this isolated task
 branch; it does not authorize a feature-branch merge or production use. The
 production gate remains independent.
 
-TASK-005 has now been implemented as a pure in-memory `ReplaySessionTimeline`.
-It records sequential frames (including empty frames), AuctionTimeline
-revisions, already-computed timer firings, and the final 09:40 checkpoint using
-hashes and timing metadata only. It does not schedule, fetch, persist, write,
-consume Rabbit, or emit effects. The implementation is on the performance task
-branch and is awaiting review; it is not merged into the feature branch.
+TASK-005 has been implemented as a pure in-memory `ReplaySessionTimeline` and
+remains under review; it is not merged into the feature branch.
+
+TASK-006 has now been implemented on the same isolated branch as a RabbitMQ-
+primary canonical `MarketTickV1`/`TickBatchV1` contract.  Rabbit's parsed
+`DataRecord/DataBatch → RawTick/TickBatch` shape is authoritative; TD is a
+pure compatibility adapter.  It adds field-level quality, deterministic hash
+layers, proto3 default ambiguity handling, stable TD source identity, and
+legacy shadow projection.  The task is awaiting integrator review and is not
+merged into the feature branch.  No Rabbit/TD/Redis/effect path was added.
