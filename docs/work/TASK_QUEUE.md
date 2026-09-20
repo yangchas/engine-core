@@ -48,6 +48,8 @@ No tasks currently await review.
 - evidence: `/home/exedev/validation/replay-20260918-performance-20260920T101233+0800-final`
 - production_side_effects: `NONE_OBSERVED`
 
+## MERGED (historical)
+
 ### TASK-001
 
 - title: Real-data replay audit for 2026-09-18 09:15-09:40
