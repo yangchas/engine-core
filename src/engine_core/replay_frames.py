@@ -547,6 +547,53 @@ class CrossSectionReplaySource:
             ))
         return tuple(result)
 
+    def frame_from_events(
+        self,
+        frame_no: int,
+        events: Iterable[Mapping[str, Any] | TDEventV1],
+    ) -> MarketFrameV1:
+        """Build one frame from a bounded 3-second query result.
+
+        This is the streaming counterpart to :meth:`frames`: callers may
+        query one half-open interval at a time and never materialize the full
+        trading window in memory.
+        """
+
+        if frame_no < 0 or frame_no >= self.frame_count:
+            raise ValueError("frame_no is outside the configured replay window")
+        frame_start = self.slice_anchor_ms + frame_no * self.slice_ms
+        frame_end = frame_start + self.slice_ms
+        normalized = [
+            item if isinstance(item, TDEventV1) else TDEventV1.from_mapping(item, source_timezone=self.source_timezone)
+            for item in events
+        ]
+        normalized.sort(key=lambda event: (event.event_time_ms, event.symbol, event.content_hash))
+        expected_set = set(self.expected_symbols)
+        for event in normalized:
+            if event.symbol not in expected_set:
+                raise ValueError("TD tick symbol is outside expected_symbols")
+            if event.event_time_ms < frame_start or event.event_time_ms >= frame_end:
+                raise ValueError("TD tick is outside the frame interval")
+            if _event_local_date(event, self.source_timezone) != self.trade_date:
+                raise ValueError("TD tick event date does not match trade_date")
+        updated = tuple(sorted({event.symbol for event in normalized}))
+        missing = tuple(symbol for symbol in self.expected_symbols if symbol not in set(updated))
+        completeness = FRAME_EMPTY if not normalized else FRAME_COMPLETE if not missing else FRAME_PARTIAL
+        times = [event.event_time_ms for event in normalized]
+        return MarketFrameV1(
+            trade_date=self.trade_date,
+            frame_no=frame_no,
+            start_ms=frame_start,
+            end_exclusive_ms=frame_end,
+            expected_symbols=self.expected_symbols,
+            updated_symbols=updated,
+            missing_symbols=missing,
+            events=tuple(normalized),
+            completeness=completeness,
+            source_time_min_ms=min(times) if times else None,
+            source_time_max_ms=max(times) if times else None,
+        )
+
     def manifest(self, frames: Sequence[MarketFrameV1], *, source_table: str = "market_data1.stock_tick_v2", query_hash: str = "") -> FrameManifestV1:
         if not frames:
             raise ValueError("frames must not be empty")
@@ -564,9 +611,10 @@ class CrossSectionReplaySource:
             input_hash=semantic_hash(tuple(event.content_hash for frame in frames for event in frame.events)),
         )
 
-    def _signals_from_frames(self, frames: Sequence[MarketFrameV1], *, signal_prefix: str) -> Tuple[EngineSignal, ...]:
+    def iter_signals(self, frames: Sequence[MarketFrameV1], *, signal_prefix: str = "cross-section") -> Iterable[EngineSignal]:
+        """Yield one signal per frame without retaining all projections."""
+
         latest_raw: dict[str, Mapping[str, Any]] = {}
-        signals = []
         for frame in frames:
             for event in frame.events:
                 latest_raw[event.symbol] = event.to_q2_raw()
@@ -593,14 +641,58 @@ class CrossSectionReplaySource:
                 source_time_max_ms=frame.source_time_max_ms,
             )
             projection = CrossSectionProjectionV1(base_projection=base, cross_section=state)
-            signals.append(EngineSignal(
+            yield EngineSignal(
                 signal_id=f"{signal_prefix}:frame:{frame.frame_no}:{frame.content_hash[:16]}",
                 logical_time_ms=frame.logical_ts_ms,
                 signal_seq=frame.frame_no + 1,
                 signal_kind=SignalKind.MARKET_UPDATE,
                 payload=projection,
-            ))
-        return tuple(signals)
+            )
+
+    def _signals_from_frames(self, frames: Sequence[MarketFrameV1], *, signal_prefix: str) -> Tuple[EngineSignal, ...]:
+        return tuple(self.iter_signals(frames, signal_prefix=signal_prefix))
+
+    def signal_for_frame(
+        self,
+        frame: MarketFrameV1,
+        latest_raw: dict[str, Mapping[str, Any]],
+        *,
+        signal_prefix: str = "cross-section",
+    ) -> EngineSignal:
+        """Create one frame signal while updating a caller-owned cumulative state."""
+
+        for event in frame.events:
+            latest_raw[event.symbol] = event.to_q2_raw()
+        observed_at = datetime.fromtimestamp(frame.logical_ts_ms / 1000.0, tz=timezone.utc)
+        base = build_q2_projection(
+            self.trade_date,
+            observed_at,
+            self.expected_symbols,
+            latest_raw,
+            freshness_policy=self.freshness_policy,
+            source_id=self.source_id,
+        )
+        state = CrossSectionStateV1(
+            trade_date=self.trade_date,
+            frame_no=frame.frame_no,
+            logical_ts_ms=frame.logical_ts_ms,
+            expected_symbols=self.expected_symbols,
+            updated_symbols=frame.updated_symbols,
+            missing_symbols=frame.missing_symbols,
+            symbol_states=latest_raw,
+            frame_completeness=frame.completeness,
+            coverage=frame.coverage,
+            source_time_min_ms=frame.source_time_min_ms,
+            source_time_max_ms=frame.source_time_max_ms,
+        )
+        projection = CrossSectionProjectionV1(base_projection=base, cross_section=state)
+        return EngineSignal(
+            signal_id=f"{signal_prefix}:frame:{frame.frame_no}:{frame.content_hash[:16]}",
+            logical_time_ms=frame.logical_ts_ms,
+            signal_seq=frame.frame_no + 1,
+            signal_kind=SignalKind.MARKET_UPDATE,
+            payload=projection,
+        )
 
     def signals_for(self, rows: Iterable[Mapping[str, Any] | TDEventV1], *, signal_prefix: str = "cross-section") -> Tuple[EngineSignal, ...]:
         return self._signals_from_frames(self.frames(rows), signal_prefix=signal_prefix)
