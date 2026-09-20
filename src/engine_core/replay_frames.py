@@ -133,7 +133,11 @@ class MarketFrameV1:
         object.__setattr__(self, "missing_symbols", missing)
         object.__setattr__(self, "events", events)
         object.__setattr__(self, "source_batch_ids", tuple(sorted(set(self.source_batch_ids))))
-        object.__setattr__(self, "source_sequences", tuple(sorted({str(item) for item in self.source_sequences})))
+        object.__setattr__(
+            self,
+            "source_sequences",
+            tuple(sorted({str(item) for item in self.source_sequences if item is not None})),
+        )
         if self.batch_quality not in {"EMPTY", "COMPLETE", "PARTIAL", "UNKNOWN"}:
             raise ValueError("unsupported batch quality")
         object.__setattr__(self, "logical_ts_ms", self.end_exclusive_ms)
@@ -305,7 +309,11 @@ class CrossSectionStateV1:
         object.__setattr__(self, "updated_symbols", updated)
         object.__setattr__(self, "missing_symbols", missing)
         object.__setattr__(self, "source_batch_ids", tuple(sorted(set(self.source_batch_ids))))
-        object.__setattr__(self, "source_sequences", tuple(sorted({str(item) for item in self.source_sequences})))
+        object.__setattr__(
+            self,
+            "source_sequences",
+            tuple(sorted({str(item) for item in self.source_sequences if item is not None})),
+        )
         object.__setattr__(self, "replay_reasons", tuple(sorted(set(self.replay_reasons))))
         object.__setattr__(self, "skipped_symbols", tuple(sorted(set(self.skipped_symbols))))
         if self.batch_quality not in {"EMPTY", "COMPLETE", "PARTIAL", "UNKNOWN"}:
