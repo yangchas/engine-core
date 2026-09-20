@@ -1,19 +1,20 @@
 # Task Queue
 
-## REVIEW
+## MERGED
 
 ### TASK-007
 
 - title: Offline canonical replay / auction facts
 - owner: `replay-investigator`
-- state: `REVIEW`
-- branch: `codex/task-offline-canonical-auction-facts`
+- state: `MERGED`
+- branch: `codex/feature-session-engine-integration`
 - worktree: current development worktree
 - started_at: `2026-09-20T14:10:36+08:00`
 - plan: `docs/work/plans/TASK-007-offline-canonical-auction-facts.md`
 - scope: pure Rabbit-primary canonical batch to replay/facts seam
-- implementation_commit: `43a3dfc99c191fc2a3998879e7de26da51b1a2f5`
+- implementation_commit: `084d6819b31a80087d624cfabf0d78843c8613ba`
 - handoff: `docs/work/handoffs/TASK-007-offline-canonical-audit.md`
+- integrated_by: `INTEGRATOR_REVIEW_TASK007_20260920.md`
 - tests: `668 passed`, compileall PASS, diff-check PASS
 - production_side_effects: `NONE_OBSERVED`
 
@@ -25,9 +26,7 @@ Merge gate:
 - empty frames and optional auction anchors remain explicit;
 - recovery revision idempotency and late correction evidence pass;
 - full pytest, compileall and diff-check pass;
-- integrator review completes before feature-branch merge.
-
-## MERGED
+- integrator review is recorded before feature-branch merge.
 
 ### TASK-006
 

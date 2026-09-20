@@ -2,7 +2,7 @@
 
 Implementation branch: `codex/task-offline-canonical-auction-facts`  
 Implementation commit: `43a3dfc99c191fc2a3998879e7de26da51b1a2f5`  
-Status: `REVIEW`
+Status: `ACCEPT_MERGE`
 
 ## Delivered
 
@@ -37,5 +37,7 @@ Status: `REVIEW`
 
 ## Review gate
 
-Do not fast-forward to `codex/feature-session-engine-integration` until an
-integrator verifies the above evidence and the full suite again.
+Integrator acceptance is recorded in
+`docs/work/handoffs/INTEGRATOR_REVIEW_TASK007_20260920.md`. The task is safe to
+fast-forward to `codex/feature-session-engine-integration`; this does not grant
+production replay or change the M3-1 gate.
