@@ -213,11 +213,14 @@ def _run_pass(
         nonlocal replay_events, last_frame_for_parity
         if shuffled:
             random.Random(f"TASK-003:{frame_no}").shuffle(events)
-        incremental_state.apply(events)
         frame_started_ns = time.perf_counter_ns()
         frame = source.frame_from_events(frame_no, events, presorted=not shuffled)
         last_frame_for_parity = frame
         stage_ns["frame_build_time_ns"] += time.perf_counter_ns() - frame_started_ns
+        # Apply the canonical event order, not the TD cursor/shuffle order.
+        # This keeps cumulative state deterministic when a symbol has several
+        # events in one frame.
+        incremental_state.apply(frame.events)
         signal_started_ns = time.perf_counter_ns()
         state_override = None
         if verification_level in {"FRAME", "FINAL", "NONE"} and not (

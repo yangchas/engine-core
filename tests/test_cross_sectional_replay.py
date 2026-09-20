@@ -137,6 +137,34 @@ def test_incremental_state_identity_is_stable_for_reordered_frame_events():
     assert left.identity_hash(**kwargs) == right.identity_hash(**kwargs)
 
 
+def test_incremental_state_uses_canonical_order_for_multiple_events_per_symbol():
+    start = local_datetime_ms("2026-09-18", "09:15:00")
+    source = CrossSectionReplaySource(
+        "2026-09-18",
+        ("600519",),
+        VirtualClock(datetime.fromtimestamp(start / 1000, timezone.utc)),
+        slice_anchor_ms=start,
+        end_exclusive_ms=start + 3_000,
+    )
+    rows = [_row(start + 100, price=100_000), _row(start + 200, price=101_000)]
+    left_frame = source.frame_from_events(0, rows)
+    right_frame = source.frame_from_events(0, list(reversed(rows)))
+    left = IncrementalCrossSectionState(source.expected_symbols, trade_date="2026-09-18")
+    right = IncrementalCrossSectionState(source.expected_symbols, trade_date="2026-09-18")
+    left.apply(left_frame.events)
+    right.apply(right_frame.events)
+    kwargs = {
+        "frame_no": 0,
+        "logical_ts_ms": left_frame.logical_ts_ms,
+        "updated_symbols": left_frame.updated_symbols,
+        "missing_symbols": left_frame.missing_symbols,
+        "completeness": left_frame.completeness,
+        "coverage": left_frame.coverage,
+    }
+    assert left.identity_hash(**kwargs) == right.identity_hash(**kwargs)
+    assert left.latest_raw["600519"]["px"] == 101_000
+
+
 def test_incremental_state_final_full_hash_matches_public_state_hash():
     start = local_datetime_ms("2026-09-18", "09:15:00")
     source = CrossSectionReplaySource(
