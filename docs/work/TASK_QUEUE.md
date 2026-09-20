@@ -33,6 +33,30 @@ Merge gate:
 - ECC production audit: no blocking side-effect or semantic finding; explicit
   integrator acceptance remains required
 
+### TASK-005
+
+- title: Replay session timeline integration
+- owner: `replay-investigator`
+- state: `REVIEW`
+- branch: `codex/task-cross-sectional-performance`
+- worktree: current development worktree
+- depends_on: `TASK-004`
+- implementation: `ReplaySessionTimeline` hash-only ledger
+- scope: sequential 3-second frames, 0920/0924/0925 revisions, timer firings,
+  and 09:40 checkpoint
+- tests: `632 passed`
+- production_side_effects: `NONE_OBSERVED`
+
+Merge gate:
+
+- frame manifest is authoritative and EMPTY frames are retained;
+- optional auction anchors remain UNKNOWN rather than fabricated;
+- late revisions remain versioned and idempotent;
+- timer firings are recorded inputs, not scheduled by Core;
+- finalization requires every manifest frame;
+- no Redis/TD/Rabbit/effect path is added;
+- integrator review completes before feature-branch merge.
+
 ## BLOCKED
 
 ### TASK-003

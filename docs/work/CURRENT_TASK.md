@@ -1,18 +1,18 @@
 # Current Task
 
 ```text
-active_task: none
+active_task: TASK-005
 bootstrap_status: COMPLETE
 last_task: TASK-004
 last_task_state: REVIEW
-next_task: TASK-005
-next_task_state: PENDING_TASK004_ACCEPTANCE
+next_task: none
+next_task_state: TASK005_REVIEW
 
 owner: replay-investigator
 branch: codex/task-cross-sectional-performance
 worktree: current development worktree
 started_at: 2026-09-20T10:30:00+08:00
-current_commit: 6eddd02
+current_commit: 82287fb
 ```
 
 TASK-003 established the streamed cross-sectional foundation and performance
@@ -36,6 +36,14 @@ M3_1_NORMAL=BLOCKED
 TD_WRITE_HEALTH=UNPROVEN
 ```
 
-TASK-004 is ready for explicit integrator acceptance after the ECC audit. Do
-not start TASK-005 or reclassify this evidence as NORMAL production evidence
-until that acceptance is recorded. The production gate remains independent.
+TASK-004 remains under integrator review after the ECC audit. The explicit
+continuation request authorized TASK-005 implementation on this isolated task
+branch; it does not authorize a feature-branch merge or production use. The
+production gate remains independent.
+
+TASK-005 has now been implemented as a pure in-memory `ReplaySessionTimeline`.
+It records sequential frames (including empty frames), AuctionTimeline
+revisions, already-computed timer firings, and the final 09:40 checkpoint using
+hashes and timing metadata only. It does not schedule, fetch, persist, write,
+consume Rabbit, or emit effects. The implementation is on the performance task
+branch and is awaiting review; it is not merged into the feature branch.

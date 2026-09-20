@@ -10,6 +10,7 @@ Failure or missing evidence moves a card to `BLOCKED`; obsolete work moves to `A
 | Card | Owner | State | Branch | Worktree | Merge gate |
 |---|---|---|---|---|---|
 | TASK-004 Cross-sectional replay performance closure | replay-investigator | REVIEW | `codex/task-cross-sectional-performance` | current development worktree | ordered FRAME 458.8s, FINAL 453.0s with final parity PASS, both FRAME deterministic; all full passes are PASS_WITH_WARN |
+| TASK-005 Replay session timeline integration | replay-investigator | REVIEW | `codex/task-cross-sectional-performance` | current development worktree | hash-only ledger for frames, auction revisions, timer firings, and 09:40 checkpoint; 632 tests pass |
 | TASK-003 Robust cross-sectional replay foundation | replay-investigator | BLOCKED_BY_PERFORMANCE | `codex/feature-session-engine-integration` | integrated into development line | streaming foundation and instrumentation complete; 500-frame replay not verified |
 | TASK-001 Real-data replay audit 2026-09-18 09:15-09:40 | replay-investigator | MERGED | `codex/task-real-data-replay-20260918` | `../engine-core-replay-20260918` | read-only bounded replay, deterministic repeat, explicit unknowns, audit recommendation |
 
