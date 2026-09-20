@@ -13,6 +13,17 @@ NORMAL_OPENING_PASS=UNPROVEN
 PRODUCTION_SIDE_EFFECTS=NONE_OBSERVED
 ```
 
+## 与 09:15–09:40 回放的边界
+
+此前 TASK-001/TASK-007 的真实回放确实覆盖了
+`2026-09-18 09:15:00–09:40:00`，数据源是 TD `stock_tick_v2`，共 500 个
+3 秒 frame。那条证据属于全市场 stock-tick replay，不是本次 Q2 opening
+验证。
+
+本次 TASK-008 只验证 Redis Q2 输入在指定 `09:32:10` cutoff 下的时间质量；
+不能用 stock-tick frame 的结果替代 Q2 `available_at` 证据，也不能从 stock
+tick 反推 Redis Q2 数值。
+
 ## 输入证据
 
 来源目录（TASK-001 真实 Redis 捕获）：

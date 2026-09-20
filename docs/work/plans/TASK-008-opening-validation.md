@@ -7,6 +7,19 @@ Redis Q2 observations. This is an evidence task, not a production migration:
 it does not add a Redis writer, Rabbit consumer/ACK path, scheduler, recovery
 owner, strategy decision, notification, or effect.
 
+## Relationship to the 09:15–09:40 replay
+
+The 09:15–09:40, 500-frame replay belongs to TASK-001/TASK-007 and consumes
+TD `stock_tick_v2` (plus auction rows) through the cross-sectional replay path.
+It proves the stock-tick replay timeline and deterministic Engine processing;
+it does not prove that a Redis Q2 cohort was available at the 09:32:10 opening
+cutoff.
+
+TASK-008 is a separate Q2 opening validation. A stock-tick replay must not be
+silently converted into Q2 values. The Q2 input must come from a real Redis
+capture or an equivalent historical Q2 artifact with explicit source time and
+`available_at` evidence.
+
 The canonical path is:
 
 ```text
