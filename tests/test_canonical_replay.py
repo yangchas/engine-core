@@ -101,6 +101,17 @@ def test_live_batch_is_rejected_from_offline_replay():
         OfflineCanonicalReplay.project_batch(_batch([_tick()], mode="LIVE"))
 
 
+def test_event_outside_replay_window_is_rejected_instead_of_dropped():
+    source = OfflineCanonicalReplay(
+        TRADE_DATE,
+        ("600000",),
+        start_ms=START,
+        end_exclusive_ms=START + 3_000,
+    )
+    with pytest.raises(CanonicalReplayBlocked, match="outside"):
+        tuple(source.iter_frame_results([_batch([_tick(event_time_ms=START + 3_000)])]))
+
+
 def test_shuffled_batches_have_same_frame_hashes_when_events_are_equivalent():
     source = OfflineCanonicalReplay(
         TRADE_DATE,

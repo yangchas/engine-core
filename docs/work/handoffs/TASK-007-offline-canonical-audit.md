@@ -20,7 +20,7 @@ Status: `REVIEW`
 
 ## Verification
 
-- Server Python 3.12.3: `666 passed`, 3 existing protobuf deprecation warnings.
+- Server Python 3.12.3: `667 passed`, 3 existing protobuf deprecation warnings.
 - `compileall -q src tests examples`: PASS.
 - `git diff --check`: PASS.
 - Canonical replay module/tests contain no Rabbit, Redis, TDengine, Wencai,

@@ -233,6 +233,13 @@ class OfflineCanonicalReplay:
                     % (projection.source_batch_id, ";".join(projection.reasons))
                 )
             for event in projection.events:
+                if (
+                    event.event_time_ms < self.source.slice_anchor_ms
+                    or event.event_time_ms >= self.source.end_exclusive_ms
+                ):
+                    raise CanonicalReplayBlocked(
+                        "canonical event is outside the configured replay window"
+                    )
                 frame_no = (event.event_time_ms - self.source.slice_anchor_ms) // self.source.slice_ms
                 if frame_no < pending_frame_no:
                     raise CanonicalReplayBlocked("canonical batches moved backwards in event time")
