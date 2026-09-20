@@ -1,12 +1,12 @@
 # Task Queue
 
-## MERGED
+## RUNNING
 
 ### TASK-007
 
 - title: Offline canonical replay / auction facts
 - owner: `replay-investigator`
-- state: `MERGED`
+- state: `RUNNING` (acceptance reopened after read-only audit)
 - branch: `codex/feature-session-engine-integration`
 - worktree: current development worktree
 - started_at: `2026-09-20T14:10:36+08:00`
@@ -14,13 +14,18 @@
 - scope: pure Rabbit-primary canonical batch to replay/facts seam
 - implementation_commit: `084d6819b31a80087d624cfabf0d78843c8613ba`
 - handoff: `docs/work/handoffs/TASK-007-offline-canonical-audit.md`
+- fix_handoff: `docs/work/handoffs/TASK-007-FIX-20260920.md`
 - integrated_by: `INTEGRATOR_REVIEW_TASK007_20260920.md`
-- tests: `668 passed`, compileall PASS, diff-check PASS
+- implementation_tests_before_fix: `668 passed`
+- current_tests: `672 passed`, compileall PASS, diff-check PASS
 - production_side_effects: `NONE_OBSERVED`
 
 Merge gate:
 
 - canonical batch conversion is deterministic and missing-safe;
+- degraded `BLOCKED`/`PARTIAL` frame diagnostics reach Engine evidence;
+- batch quality and order ambiguity are not discarded;
+- identical auction content advances timing evidence without fabricating a revision;
 - no Rabbit/TD/Redis/Wencai/effect import or write path is added;
 - ordered/shuffled frame hashes agree;
 - empty frames and optional auction anchors remain explicit;

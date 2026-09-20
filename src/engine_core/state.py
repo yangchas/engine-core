@@ -96,6 +96,20 @@ class MarketStateReducer:
                     "source_sequence_status": cross_section.source_sequence_status,
                     "rabbit_arrival_order": cross_section.rabbit_arrival_order,
                     "historical_available_at": cross_section.historical_available_at,
+                    "historical_available_at_ms": getattr(
+                        cross_section, "historical_available_at_ms", None
+                    ),
+                    "replay_status": getattr(cross_section, "replay_status", "READY"),
+                    "replay_reasons": getattr(cross_section, "replay_reasons", ()),
+                    "skipped_symbols": getattr(cross_section, "skipped_symbols", ()),
+                    "batch_quality": getattr(cross_section, "batch_quality", "UNKNOWN"),
+                    "same_event_order_ambiguity": getattr(
+                        cross_section, "same_event_order_ambiguity", False
+                    ),
+                    "replay_order_status": getattr(
+                        cross_section, "replay_order_status", "UNKNOWN"
+                    ),
+                    "source_batch_ids": getattr(cross_section, "source_batch_ids", ()),
                 }
             )
         self.state.coverage = projection.coverage

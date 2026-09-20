@@ -8,7 +8,7 @@ client, clock scheduler, persistence, recovery provider, or effect path.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Iterable, Iterator, Mapping, Optional, Tuple
@@ -51,6 +51,13 @@ class CanonicalBatchProjectionV1:
     reasons: Tuple[str, ...]
     events: Tuple[TDEventV1, ...]
     skipped_events: Tuple[Tuple[int, str, str], ...] = ()
+    batch_quality: str = "UNKNOWN"
+    same_event_order_ambiguity: bool = False
+    source_sequence_status: str = "UNKNOWN"
+    arrival_order_status: str = "UNKNOWN"
+    replay_order_status: str = "UNKNOWN"
+    historical_available_at_ms: Optional[int] = None
+    historical_available_at_status: str = "UNKNOWN"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -84,6 +91,8 @@ class CanonicalBatchProjectionV1:
                     "reasons": self.reasons,
                     "events": tuple(event.content_hash for event in self.events),
                     "skipped_events": self.skipped_events,
+                    "batch_quality": self.batch_quality,
+                    "same_event_order_ambiguity": self.same_event_order_ambiguity,
                 }
             ),
         )
@@ -98,11 +107,18 @@ class CanonicalFrameResultV1:
     source_batch_ids: Tuple[str, ...]
     skipped_symbols: Tuple[str, ...]
     reasons: Tuple[str, ...]
+    batch_quality: str = "UNKNOWN"
+    same_event_order_ambiguity: bool = False
+    source_sequence_status: str = "UNKNOWN"
+    arrival_order_status: str = "UNKNOWN"
+    replay_order_status: str = "UNKNOWN"
+    historical_available_at_ms: Optional[int] = None
+    historical_available_at_status: str = "UNKNOWN"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", CanonicalReplayStatus(self.status))
-        object.__setattr__(self, "source_batch_ids", tuple(self.source_batch_ids))
+        object.__setattr__(self, "source_batch_ids", tuple(sorted(set(self.source_batch_ids))))
         object.__setattr__(self, "skipped_symbols", tuple(sorted(set(self.skipped_symbols))))
         object.__setattr__(self, "reasons", tuple(sorted(set(self.reasons))))
         object.__setattr__(
@@ -116,6 +132,13 @@ class CanonicalFrameResultV1:
                     "source_batch_ids": self.source_batch_ids,
                     "skipped_symbols": self.skipped_symbols,
                     "reasons": self.reasons,
+                    "batch_quality": self.batch_quality,
+                    "same_event_order_ambiguity": self.same_event_order_ambiguity,
+                    "source_sequence_status": self.source_sequence_status,
+                    "arrival_order_status": self.arrival_order_status,
+                    "replay_order_status": self.replay_order_status,
+                    "historical_available_at_ms": self.historical_available_at_ms,
+                    "historical_available_at_status": self.historical_available_at_status,
                 }
             ),
         )
@@ -132,6 +155,33 @@ def _required_field_reason(tick: MarketTickV1) -> Optional[str]:
         if quality is not FieldQuality.PRESENT_VALUE:
             return "%s:%s" % (field_name, quality.value)
     return None
+
+
+def _merge_evidence_status(values: Iterable[str], *, default: str = "UNKNOWN") -> str:
+    """Merge source metadata conservatively without inventing certainty."""
+
+    unique = tuple(sorted({str(value) for value in values if value is not None}))
+    if not unique:
+        return default
+    return unique[0] if len(unique) == 1 else default
+
+
+def _merge_batch_quality(values: Iterable[str], *, has_events: bool) -> str:
+    unique = {str(value) for value in values if value is not None}
+    if not unique:
+        return "UNKNOWN" if has_events else "EMPTY"
+    if "PARTIAL" in unique:
+        return "PARTIAL"
+    if "UNKNOWN" in unique:
+        return "UNKNOWN"
+    if unique == {"EMPTY"}:
+        return "EMPTY"
+    return "COMPLETE"
+
+
+def _merge_optional_int(values: Iterable[Optional[int]]) -> Optional[int]:
+    unique = {int(value) for value in values if value is not None}
+    return next(iter(unique)) if len(unique) == 1 else None
 
 
 class OfflineCanonicalReplay:
@@ -185,7 +235,7 @@ class OfflineCanonicalReplay:
                 skipped.append(tick.symbol)
                 reasons.append("%s:%s" % (tick.symbol, type(exc).__name__))
                 skipped_events.append((tick.event_time_ms, tick.symbol, type(exc).__name__))
-        if not batch.ticks and batch.batch_quality.value == "EMPTY":
+        if not batch.ticks:
             status = CanonicalReplayStatus.EMPTY
         elif not events and batch.ticks:
             status = CanonicalReplayStatus.BLOCKED
@@ -205,6 +255,13 @@ class OfflineCanonicalReplay:
             reasons=tuple(reasons),
             events=tuple(events),
             skipped_events=tuple(skipped_events),
+            batch_quality=batch.batch_quality.value,
+            same_event_order_ambiguity=batch.same_event_order_ambiguity,
+            source_sequence_status=batch.source_sequence_status.value,
+            arrival_order_status=batch.arrival_order_status.value,
+            replay_order_status=batch.replay_order_status.value,
+            historical_available_at_ms=batch.historical_available_at_ms,
+            historical_available_at_status=batch.historical_available_at_status.value,
         )
 
     def iter_frame_results(self, batches: Iterable[TickBatchV1]) -> Iterator[CanonicalFrameResultV1]:
@@ -215,9 +272,9 @@ class OfflineCanonicalReplay:
         pending_batch_ids: list[str] = []
         pending_skipped: list[str] = []
         pending_reasons: list[str] = []
+        pending_projections: list[CanonicalBatchProjectionV1] = []
 
         def emit(frame_no: int) -> CanonicalFrameResultV1:
-            frame = self.source.frame_from_events(frame_no, pending_events)
             if pending_reasons and pending_events:
                 status = CanonicalReplayStatus.PARTIAL
             elif pending_reasons:
@@ -226,23 +283,56 @@ class OfflineCanonicalReplay:
                 status = CanonicalReplayStatus.EMPTY
             else:
                 status = CanonicalReplayStatus.READY
+            qualities = [item.batch_quality for item in pending_projections]
+            batch_quality = _merge_batch_quality(qualities, has_events=bool(pending_events))
+            same_event_order_ambiguity = any(
+                item.same_event_order_ambiguity for item in pending_projections
+            )
+            source_sequence_status = _merge_evidence_status(
+                item.source_sequence_status for item in pending_projections
+            )
+            arrival_order_status = _merge_evidence_status(
+                item.arrival_order_status for item in pending_projections
+            )
+            replay_order_status = _merge_evidence_status(
+                item.replay_order_status for item in pending_projections
+            )
+            historical_available_at_ms = _merge_optional_int(
+                item.historical_available_at_ms for item in pending_projections
+            )
+            historical_available_at_status = _merge_evidence_status(
+                item.historical_available_at_status for item in pending_projections
+            )
+            frame = replace(
+                self.source.frame_from_events(frame_no, pending_events),
+                batch_quality=batch_quality,
+                same_event_order_ambiguity=same_event_order_ambiguity,
+                source_sequence_status=source_sequence_status,
+                rabbit_arrival_order=arrival_order_status,
+                replay_order_status=replay_order_status,
+                historical_available_at=historical_available_at_status,
+                historical_available_at_ms=historical_available_at_ms,
+                source_batch_ids=tuple(pending_batch_ids),
+            )
             return CanonicalFrameResultV1(
                 frame=frame,
                 status=status,
                 source_batch_ids=tuple(pending_batch_ids),
                 skipped_symbols=tuple(pending_skipped),
                 reasons=tuple(pending_reasons),
+                batch_quality=batch_quality,
+                same_event_order_ambiguity=same_event_order_ambiguity,
+                source_sequence_status=source_sequence_status,
+                arrival_order_status=arrival_order_status,
+                replay_order_status=replay_order_status,
+                historical_available_at_ms=historical_available_at_ms,
+                historical_available_at_status=historical_available_at_status,
             )
 
         for batch in batches:
             projection = self.project_batch(batch)
             if projection.trade_date != self.source.trade_date:
                 raise CanonicalReplayBlocked("canonical batch trade_date does not match replay")
-            if projection.status is CanonicalReplayStatus.BLOCKED:
-                raise CanonicalReplayBlocked(
-                    "canonical batch %s has no safe replayable tick: %s"
-                    % (projection.source_batch_id, ";".join(projection.reasons))
-                )
             ordered_items = [
                 (event.event_time_ms, event.symbol, "event", event, None)
                 for event in projection.events
@@ -277,6 +367,9 @@ class OfflineCanonicalReplay:
                     pending_batch_ids.clear()
                     pending_skipped.clear()
                     pending_reasons.clear()
+                    pending_projections.clear()
+                if projection not in pending_projections:
+                    pending_projections.append(projection)
                 if item_kind == "event":
                     pending_events.append(event)
                 else:
@@ -291,6 +384,7 @@ class OfflineCanonicalReplay:
             pending_batch_ids.clear()
             pending_skipped.clear()
             pending_reasons.clear()
+            pending_projections.clear()
 
     def observe_auction(self, tag: str, rows: Any, **kwargs: Any) -> AuctionAnchorRevisionV1:
         """Record already-observed auction facts through the existing timeline."""
@@ -311,6 +405,17 @@ class OfflineCanonicalReplay:
                 result.frame,
                 latest_raw,
                 signal_prefix=signal_prefix,
+                replay_status=result.status.value,
+                replay_reasons=result.reasons,
+                skipped_symbols=result.skipped_symbols,
+                source_batch_ids=result.source_batch_ids,
+                batch_quality=result.batch_quality,
+                same_event_order_ambiguity=result.same_event_order_ambiguity,
+                source_sequence_status=result.source_sequence_status,
+                rabbit_arrival_order=result.arrival_order_status,
+                replay_order_status=result.replay_order_status,
+                historical_available_at=result.historical_available_at_status,
+                historical_available_at_ms=result.historical_available_at_ms,
             )
             self._clock.advance_to(datetime.fromtimestamp(signal.logical_time_ms / 1000, timezone.utc))
             engine.submit(signal)

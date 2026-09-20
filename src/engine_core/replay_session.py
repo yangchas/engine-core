@@ -174,8 +174,15 @@ class ReplaySessionTimeline:
     def _put(self, node: ReplaySessionNodeV1) -> ReplaySessionNodeV1:
         previous = self._nodes.get(node.node_id)
         if previous is not None:
-            if previous.content_hash != node.content_hash or previous.evidence_hash != node.evidence_hash:
+            if previous.source_content_hash != node.source_content_hash:
                 raise ValueError(f"conflicting replay session node: {node.node_id}")
+            # A repeated auction cohort may retain the same source content
+            # revision while its timing-derived state and evidence advance
+            # across the soft cutoff.  Keep the newest node without inventing
+            # a source revision or losing the idempotent node identity.
+            if previous.content_hash != node.content_hash or previous.evidence_hash != node.evidence_hash:
+                self._nodes[node.node_id] = node
+                return node
             return previous
         self._nodes[node.node_id] = node
         return node

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
@@ -246,6 +246,11 @@ class AuctionTimeline:
         self.trade_date = trade_date
         self.policies = dict(policies or {tag: AuctionTimingPolicyV1.default(tag) for tag in ("0920", "0924", "0925")})
         self._history: dict[str, list[AuctionAnchorRevisionV1]] = {tag: [] for tag in self.policies}
+        # ``_history`` is a content-revision ledger.  ``_latest`` also tracks
+        # the newest observation/evaluation evidence for the current revision;
+        # identical rows observed after a soft cutoff must advance timing
+        # state without fabricating a new content revision.
+        self._latest: dict[str, AuctionAnchorRevisionV1] = {}
 
     def observe(
         self,
@@ -275,13 +280,20 @@ class AuctionTimeline:
             policy=self.policies[tag],
         )
         if history and history[-1].content_hash == candidate.content_hash:
-            return history[-1]
+            previous = history[-1]
+            candidate = replace(
+                candidate,
+                revision=previous.revision,
+                supersedes_revision=previous.supersedes_revision,
+            )
+            self._latest[tag] = candidate
+            return candidate
         history.append(candidate)
+        self._latest[tag] = candidate
         return candidate
 
     def latest(self, tag: str) -> Optional[AuctionAnchorRevisionV1]:
-        history = self._history.get(tag, [])
-        return history[-1] if history else None
+        return self._latest.get(tag)
 
     def apply_recovery(
         self,

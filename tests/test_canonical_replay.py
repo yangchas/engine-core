@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from engine_core import (
@@ -5,6 +7,7 @@ from engine_core import (
     BatchQuality,
     CanonicalReplayBlocked,
     CanonicalReplayStatus,
+    DataStatus,
     DeterministicEngine,
     FieldMetaV1,
     FieldQuality,
@@ -179,3 +182,88 @@ def test_replay_uses_one_engine_update_per_global_frame():
     source.replay([_batch([_tick()])], engine)
     assert engine._processed == 3
     assert engine._reducer.state.revision == 3
+
+
+def test_all_missing_batch_is_degraded_and_does_not_stop_the_timeline():
+    source = OfflineCanonicalReplay(
+        TRADE_DATE,
+        ("600000",),
+        start_ms=START,
+        end_exclusive_ms=START + 6_000,
+    )
+    invalid = _tick(
+        px_milli=None,
+        field_meta=(("px_milli", FieldMetaV1(FieldQuality.MISSING)),),
+    )
+    valid = _tick(event_time_ms=START + 3_500)
+    results = tuple(source.iter_frame_results([_batch([invalid]), _batch([valid])]))
+    assert results[0].status is CanonicalReplayStatus.BLOCKED
+    assert results[0].frame.completeness == "EMPTY"
+    assert results[0].skipped_symbols == ("600000",)
+    assert results[1].status is CanonicalReplayStatus.READY
+    assert len(results) == 2
+
+    class CaptureEngine:
+        def __init__(self):
+            self.signals = []
+
+        def submit(self, signal):
+            self.signals.append(signal)
+
+        def run_until_empty(self):
+            return None
+
+    engine = CaptureEngine()
+    source.replay([_batch([invalid]), _batch([valid])], engine)
+    assert len(engine.signals) == 2
+    assert engine.signals[0].payload.replay_status == "BLOCKED"
+    assert engine.signals[0].payload.status is DataStatus.MISSING
+
+
+def test_replay_propagates_frame_diagnostics_and_batch_quality():
+    source = OfflineCanonicalReplay(
+        TRADE_DATE,
+        ("600000",),
+        start_ms=START,
+        end_exclusive_ms=START + 3_000,
+    )
+    invalid = _tick(
+        event_time_ms=START + 1_000,
+        px_milli=None,
+        field_meta=(("px_milli", FieldMetaV1(FieldQuality.MISSING)),),
+    )
+    batch = _batch([_tick(), invalid])
+    batch = replace(
+        batch,
+        batch_quality=BatchQuality.PARTIAL,
+        same_event_order_ambiguity=True,
+        replay_order_status=ReplayOrderStatus.SYNTHETIC_DETERMINISTIC,
+    )
+
+    class CaptureEngine:
+        def __init__(self):
+            self.signals = []
+
+        def submit(self, signal):
+            self.signals.append(signal)
+
+        def run_until_empty(self):
+            return None
+
+    engine = CaptureEngine()
+    source.replay([batch], engine)
+    payload = engine.signals[0].payload
+    assert payload.status is DataStatus.PARTIAL
+    assert payload.replay_status == "PARTIAL"
+    assert payload.replay_reasons
+    assert payload.skipped_symbols == ("600000",)
+    assert payload.batch_quality == "PARTIAL"
+    assert payload.same_event_order_ambiguity is True
+    assert payload.cross_section.replay_order_status == "SYNTHETIC_DETERMINISTIC"
+
+    result = next(source.iter_frame_results([batch]))
+    assert result.frame.batch_quality == "PARTIAL"
+    assert result.frame.same_event_order_ambiguity is True
+    normal = next(source.iter_frame_results([_batch([_tick()])]))
+    assert normal.frame.evidence_hash != result.frame.evidence_hash
+    assert normal.content_hash != result.content_hash

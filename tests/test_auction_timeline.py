@@ -49,6 +49,31 @@ def test_late_correction_is_a_new_revision_and_same_hash_is_idempotent():
     assert changed_value.revision == corrected.revision + 1
 
 
+def test_identical_cohort_advances_soft_cutoff_timing_without_new_revision():
+    timeline = AuctionTimeline("2026-09-18")
+    before = local_datetime_ms("2026-09-18", "09:25:05")
+    after = local_datetime_ms("2026-09-18", "09:25:10")
+    rows = [{"symbol": "600519", "ts": after}]
+    observing = timeline.observe(
+        "0925",
+        rows,
+        evaluation_time_ms=before,
+        expected_symbols=("600519", "000001"),
+    )
+    finalized = timeline.observe(
+        "0925",
+        rows,
+        evaluation_time_ms=after,
+        expected_symbols=("600519", "000001"),
+    )
+    assert observing.revision == finalized.revision == 1
+    assert observing.state == OBSERVING
+    assert finalized.state == PARTIAL
+    assert finalized.evaluation_time_ms == after
+    assert len(timeline.revisions("0925")) == 1
+    assert timeline.latest("0925") == finalized
+
+
 def test_recovery_cohort_is_idempotent_and_does_not_promote_fact_status():
     timeline = AuctionTimeline("2026-09-18")
     t = local_datetime_ms("2026-09-18", "09:25:10")

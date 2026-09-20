@@ -81,6 +81,31 @@ def test_replay_session_keeps_optional_prior_anchors_unknown():
     }
 
 
+def test_replay_session_updates_same_revision_auction_timing_evidence():
+    _, frames, timeline = _timeline()
+    for frame in frames:
+        timeline.record_frame(frame)
+    before = local_datetime_ms(TRADE_DATE, "09:25:05")
+    after = local_datetime_ms(TRADE_DATE, "09:25:10")
+    rows = [_row(after)]
+    first = timeline.observe_auction(
+        "0925",
+        rows,
+        evaluation_time_ms=before,
+        expected_symbols=("600519", "000001"),
+    )
+    second = timeline.observe_auction(
+        "0925",
+        rows,
+        evaluation_time_ms=after,
+        expected_symbols=("600519", "000001"),
+    )
+    assert first.revision == second.revision == 1
+    assert first.state == "OBSERVING"
+    assert second.state == "PARTIAL"
+    assert timeline.snapshot()["anchors"]["0925"]["revision"] == 1
+
+
 def test_replay_session_joins_timer_nodes_without_scheduling_them():
     _, frames, left = _timeline()
     _, _, right = _timeline()

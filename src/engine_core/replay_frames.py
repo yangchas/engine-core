@@ -35,6 +35,13 @@ FRAME_COMPLETE = "COMPLETE"
 FRAME_PARTIAL = "PARTIAL"
 FRAME_EMPTY = "EMPTY"
 
+# String diagnostics keep this module independent from the canonical source
+# contract (which imports the frame layer).
+REPLAY_READY = "READY"
+REPLAY_PARTIAL = "PARTIAL"
+REPLAY_EMPTY = "EMPTY"
+REPLAY_BLOCKED = "BLOCKED"
+
 
 class ReplayVerificationLevel(str, Enum):
     """Cost/fidelity level for bounded replay evidence.
@@ -87,6 +94,11 @@ class MarketFrameV1:
     source_sequence_status: str = SOURCE_SEQUENCE_UNKNOWN
     rabbit_arrival_order: str = RABBIT_ARRIVAL_UNKNOWN
     historical_available_at: str = HISTORICAL_AVAILABLE_AT_UNKNOWN
+    historical_available_at_ms: Optional[int] = None
+    replay_order_status: str = "UNKNOWN"
+    batch_quality: str = "UNKNOWN"
+    same_event_order_ambiguity: bool = False
+    source_batch_ids: Tuple[str, ...] = ()
     logical_ts_ms: int = field(init=False)
     coverage: float = field(init=False)
     content_hash: str = field(init=False)
@@ -119,6 +131,9 @@ class MarketFrameV1:
         object.__setattr__(self, "updated_symbols", updated)
         object.__setattr__(self, "missing_symbols", missing)
         object.__setattr__(self, "events", events)
+        object.__setattr__(self, "source_batch_ids", tuple(sorted(set(self.source_batch_ids))))
+        if self.batch_quality not in {"EMPTY", "COMPLETE", "PARTIAL", "UNKNOWN"}:
+            raise ValueError("unsupported batch quality")
         object.__setattr__(self, "logical_ts_ms", self.end_exclusive_ms)
         coverage = len(updated) / float(len(expected)) if expected else 0.0
         object.__setattr__(self, "coverage", coverage)
@@ -145,6 +160,11 @@ class MarketFrameV1:
                     "source_sequence_status": self.source_sequence_status,
                     "rabbit_arrival_order": self.rabbit_arrival_order,
                     "historical_available_at": self.historical_available_at,
+                    "historical_available_at_ms": self.historical_available_at_ms,
+                    "replay_order_status": self.replay_order_status,
+                    "batch_quality": self.batch_quality,
+                    "same_event_order_ambiguity": self.same_event_order_ambiguity,
+                    "source_batch_ids": self.source_batch_ids,
                 }
             ),
         )
@@ -245,6 +265,14 @@ class CrossSectionStateV1:
     source_sequence_status: str = SOURCE_SEQUENCE_UNKNOWN
     rabbit_arrival_order: str = RABBIT_ARRIVAL_UNKNOWN
     historical_available_at: str = HISTORICAL_AVAILABLE_AT_UNKNOWN
+    historical_available_at_ms: Optional[int] = None
+    replay_order_status: str = "UNKNOWN"
+    batch_quality: str = "UNKNOWN"
+    same_event_order_ambiguity: bool = False
+    source_batch_ids: Tuple[str, ...] = ()
+    replay_status: str = REPLAY_READY
+    replay_reasons: Tuple[str, ...] = ()
+    skipped_symbols: Tuple[str, ...] = ()
     content_hash_override: Optional[str] = field(default=None, repr=False, compare=False)
     symbol_states_already_frozen: bool = field(default=False, repr=False, compare=False)
     content_hash: str = field(init=False)
@@ -272,6 +300,13 @@ class CrossSectionStateV1:
         object.__setattr__(self, "expected_symbols", expected)
         object.__setattr__(self, "updated_symbols", updated)
         object.__setattr__(self, "missing_symbols", missing)
+        object.__setattr__(self, "source_batch_ids", tuple(sorted(set(self.source_batch_ids))))
+        object.__setattr__(self, "replay_reasons", tuple(sorted(set(self.replay_reasons))))
+        object.__setattr__(self, "skipped_symbols", tuple(sorted(set(self.skipped_symbols))))
+        if self.batch_quality not in {"EMPTY", "COMPLETE", "PARTIAL", "UNKNOWN"}:
+            raise ValueError("unsupported batch quality")
+        if self.replay_status not in {REPLAY_READY, REPLAY_PARTIAL, REPLAY_EMPTY, REPLAY_BLOCKED}:
+            raise ValueError("unsupported replay status")
         object.__setattr__(
             self,
             "symbol_states",
@@ -288,6 +323,11 @@ class CrossSectionStateV1:
             "symbol_states": states,
             "frame_completeness": self.frame_completeness,
             "coverage": self.coverage,
+            "batch_quality": self.batch_quality,
+            "same_event_order_ambiguity": self.same_event_order_ambiguity,
+            "replay_status": self.replay_status,
+            "replay_reasons": self.replay_reasons,
+            "skipped_symbols": self.skipped_symbols,
         }))
         object.__setattr__(self, "evidence_hash", evidence_hash({
             "source_time_min_ms": self.source_time_min_ms,
@@ -295,6 +335,9 @@ class CrossSectionStateV1:
             "source_sequence_status": self.source_sequence_status,
             "rabbit_arrival_order": self.rabbit_arrival_order,
             "historical_available_at": self.historical_available_at,
+            "historical_available_at_ms": self.historical_available_at_ms,
+            "replay_order_status": self.replay_order_status,
+            "source_batch_ids": self.source_batch_ids,
         }))
 
     @property
@@ -562,6 +605,15 @@ class CrossSectionProjectionV1:
 
     @property
     def status(self) -> DataStatus:
+        if self.cross_section.replay_status == REPLAY_BLOCKED:
+            return DataStatus.MISSING
+        if self.cross_section.replay_status == REPLAY_PARTIAL:
+            return DataStatus.PARTIAL
+        if (
+            self.cross_section.batch_quality == "PARTIAL"
+            or self.cross_section.same_event_order_ambiguity
+        ):
+            return DataStatus.PARTIAL
         if self.cross_section.frame_completeness == FRAME_EMPTY:
             return DataStatus.MISSING
         if self.cross_section.frame_completeness == FRAME_PARTIAL:
@@ -571,6 +623,34 @@ class CrossSectionProjectionV1:
     @property
     def consistency_status(self) -> str:
         return "CROSS_SECTION_%s" % self.cross_section.frame_completeness
+
+    @property
+    def replay_status(self) -> str:
+        return self.cross_section.replay_status
+
+    @property
+    def replay_reasons(self) -> Tuple[str, ...]:
+        return self.cross_section.replay_reasons
+
+    @property
+    def skipped_symbols(self) -> Tuple[str, ...]:
+        return self.cross_section.skipped_symbols
+
+    @property
+    def batch_quality(self) -> str:
+        return self.cross_section.batch_quality
+
+    @property
+    def same_event_order_ambiguity(self) -> bool:
+        return self.cross_section.same_event_order_ambiguity
+
+    @property
+    def source_batch_ids(self) -> Tuple[str, ...]:
+        return self.cross_section.source_batch_ids
+
+    @property
+    def historical_available_at_ms(self) -> Optional[int]:
+        return self.cross_section.historical_available_at_ms
 
     @property
     def oldest_source_time_ms(self) -> Optional[int]:
@@ -816,6 +896,17 @@ class CrossSectionReplaySource:
         state_content_hash_override: Optional[str] = None,
         projection_builder: Any = None,
         symbol_states_already_frozen: bool = False,
+        replay_status: str = REPLAY_READY,
+        replay_reasons: Sequence[str] = (),
+        skipped_symbols: Sequence[str] = (),
+        source_batch_ids: Sequence[str] = (),
+        batch_quality: str = "UNKNOWN",
+        same_event_order_ambiguity: bool = False,
+        source_sequence_status: str = SOURCE_SEQUENCE_UNKNOWN,
+        rabbit_arrival_order: str = RABBIT_ARRIVAL_UNKNOWN,
+        replay_order_status: str = "UNKNOWN",
+        historical_available_at: str = HISTORICAL_AVAILABLE_AT_UNKNOWN,
+        historical_available_at_ms: Optional[int] = None,
     ) -> EngineSignal:
         """Create one frame signal while updating a caller-owned cumulative state."""
 
@@ -850,6 +941,17 @@ class CrossSectionReplaySource:
             coverage=frame.coverage,
             source_time_min_ms=frame.source_time_min_ms,
             source_time_max_ms=frame.source_time_max_ms,
+            source_sequence_status=source_sequence_status,
+            rabbit_arrival_order=rabbit_arrival_order,
+            historical_available_at=historical_available_at,
+            historical_available_at_ms=historical_available_at_ms,
+            replay_order_status=replay_order_status,
+            batch_quality=batch_quality,
+            same_event_order_ambiguity=same_event_order_ambiguity,
+            source_batch_ids=tuple(source_batch_ids) or frame.source_batch_ids,
+            replay_status=replay_status,
+            replay_reasons=tuple(replay_reasons),
+            skipped_symbols=tuple(skipped_symbols),
             content_hash_override=state_content_hash_override,
             symbol_states_already_frozen=symbol_states_already_frozen,
         )
