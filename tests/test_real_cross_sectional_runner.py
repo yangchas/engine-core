@@ -46,3 +46,18 @@ def test_real_runner_streams_rows_into_global_frames_without_full_capture():
     assert result["reducer_revision"] == 2
     assert result["total_events"] == 2
     assert result["final_virtual_clock"].endswith("01:15:06+00:00")
+    assert result["state_hash_verification"] == "FULL_PER_FRAME"
+    assert result["final_cross_section_full_hash_parity"] == "PASS"
+
+    frame_source = CrossSectionReplaySource(
+        "2026-09-18",
+        ("600519",),
+        VirtualClock(datetime.fromtimestamp(start / 1000, timezone.utc)),
+        slice_anchor_ms=start,
+        end_exclusive_ms=start + 6_000,
+    )
+    frame_result = _run_pass(
+        _Connection(rows), frame_source, ("600519",), shuffled=False, verification_level="FRAME"
+    )
+    assert frame_result["state_hash_verification"] == "INCREMENTAL_IDENTITY_ONLY"
+    assert frame_result["final_cross_section_full_hash_parity"] == "NOT_RUN"
