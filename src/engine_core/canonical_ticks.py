@@ -385,8 +385,11 @@ class MarketTickV1:
     bv: Tuple[Optional[int], ...] = field(default_factory=lambda: (None,) * 5)
     field_meta: Tuple[Tuple[str, FieldMetaV1], ...] = ()
     schema_version: int = 1
-    _canonical_value_hash: Optional[str] = field(init=False, default=None, repr=False, compare=False)
-    _canonical_semantic_hash: Optional[str] = field(init=False, default=None, repr=False, compare=False)
+    # Keep these public dataclass fields for serialization compatibility.  The
+    # value hash is populated lazily by __getattribute__; the cache itself is
+    # held in __dict__ so it is not a new contract field.
+    canonical_value_hash: str = field(init=False, compare=False)
+    canonical_semantic_hash: str = field(init=False, compare=False)
 
     def __post_init__(self) -> None:
         _strict_trade_date(self.trade_date)
@@ -423,7 +426,18 @@ class MarketTickV1:
         object.__setattr__(self, "market_code", market)
         object.__setattr__(self, "field_meta", tuple(normalized_meta))
         semantic = _hash("canonical_semantic", (self._value_payload(), self._meta_payload()))
-        object.__setattr__(self, "_canonical_semantic_hash", semantic)
+        object.__setattr__(self, "canonical_semantic_hash", semantic)
+
+    def __getattribute__(self, name: str) -> Any:
+        if name == "canonical_value_hash":
+            values = object.__getattribute__(self, "__dict__")
+            cached = values.get("_canonical_value_hash_cache")
+            if cached is None:
+                payload = object.__getattribute__(self, "_value_payload")()
+                cached = _hash("canonical_value", payload)
+                values["_canonical_value_hash_cache"] = cached
+            return cached
+        return object.__getattribute__(self, name)
 
     def _value_payload(self) -> tuple[Any, ...]:
         return (
@@ -441,21 +455,6 @@ class MarketTickV1:
             (name, meta.quality.value, meta.provenance.value, meta.invalid_reason)
             for name, meta in self.field_meta
         )
-
-    @property
-    def canonical_value_hash(self) -> str:
-        value_hash = self._canonical_value_hash
-        if value_hash is None:
-            value_hash = _hash("canonical_value", self._value_payload())
-            object.__setattr__(self, "_canonical_value_hash", value_hash)
-        return value_hash
-
-    @property
-    def canonical_semantic_hash(self) -> str:
-        semantic = self._canonical_semantic_hash
-        if semantic is None:
-            raise RuntimeError("canonical semantic hash was not initialized")
-        return semantic
 
     @property
     def canonical_content_hash(self) -> str:

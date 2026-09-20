@@ -26,7 +26,7 @@ read-only audit. Fixes are limited to the offline canonical replay/auction-facts
 `docs/work/plans/TASK-007-offline-canonical-auction-facts.md`.
 
 The latest fix keeps timing-derived node state in evidence rather than source
-semantic identity. Full verification is green (`679 passed`, compileall and
+semantic identity. Full verification is green (`682 passed`, compileall and
 diff-check PASS). Offline tester handoff is PASS. A dedicated real TD ordered
 replay has now completed 500 canonical frames (1,224,811 rows, 98 empty frames,
 18.07 minutes) with no production side effects. A matching 500-frame shuffled
@@ -52,6 +52,11 @@ This is performance evidence, not a new functional acceptance gate. The full
 ordered/shuffled determinism evidence remains the earlier FULL validation; the
 optimized run is ordered FINAL parity/performance evidence. Details are in
 `docs/work/handoffs/TASK-007-PERFORMANCE-20260920.md`.
+
+A further local read-only boundary audit passed, including evidence checks and
+the public hash-field serialization compatibility fix; it is recorded in
+`docs/work/handoffs/TASK-007-READONLY-AUDIT-20260920.md`. This is not the
+independent auditor sign-off required by the task board.
 
 TASK-007 remains RUNNING with acceptance pending the independent auditor. The
 slow runtime is a follow-up optimization item, not a functional replay

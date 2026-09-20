@@ -31,6 +31,10 @@ PRODUCTION_SIDE_EFFECTS=NONE_OBSERVED
 
 以上改动不连接 Rabbit/Redis/TD 写入，不改变 ACK、producer、systemd 或 effect。
 
+为保持已有合同序列化兼容，公开 `MarketTickV1` dataclass 字段
+`canonical_value_hash` / `canonical_semantic_hash` 保持原名；lazy cache 不会
+出现在 `dataclasses.asdict()` 输出中。该约束有专门回归测试覆盖。
+
 ## 真实 500-frame FINAL 结果
 
 验证目录：

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import asdict
 from datetime import datetime, timezone
 
 import pytest
@@ -143,6 +144,14 @@ def test_tick_hash_layers_and_content_alias_are_stable():
     assert ambiguous.canonical_value_hash == left.canonical_value_hash
     assert ambiguous.canonical_semantic_hash != left.canonical_semantic_hash
     assert compare_ticks(left, ambiguous) is ParityResult.VALUE_EQUAL_QUALITY_DIFFERENT
+
+
+def test_tick_hash_fields_keep_public_dataclass_serialization():
+    payload = asdict(_tick())
+    assert payload["canonical_value_hash"] == _tick().canonical_value_hash
+    assert payload["canonical_semantic_hash"] == _tick().canonical_semantic_hash
+    assert "_canonical_value_hash" not in payload
+    assert "_canonical_semantic_hash" not in payload
 
 
 def test_td_adapter_uses_stable_source_identity_and_unknown_completeness():
