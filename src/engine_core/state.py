@@ -110,6 +110,7 @@ class MarketStateReducer:
                         cross_section, "replay_order_status", "UNKNOWN"
                     ),
                     "source_batch_ids": getattr(cross_section, "source_batch_ids", ()),
+                    "source_sequences": getattr(cross_section, "source_sequences", ()),
                 }
             )
         self.state.coverage = projection.coverage

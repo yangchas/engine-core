@@ -99,6 +99,7 @@ class MarketFrameV1:
     batch_quality: str = "UNKNOWN"
     same_event_order_ambiguity: bool = False
     source_batch_ids: Tuple[str, ...] = ()
+    source_sequences: Tuple[str, ...] = ()
     logical_ts_ms: int = field(init=False)
     coverage: float = field(init=False)
     content_hash: str = field(init=False)
@@ -132,6 +133,7 @@ class MarketFrameV1:
         object.__setattr__(self, "missing_symbols", missing)
         object.__setattr__(self, "events", events)
         object.__setattr__(self, "source_batch_ids", tuple(sorted(set(self.source_batch_ids))))
+        object.__setattr__(self, "source_sequences", tuple(sorted({str(item) for item in self.source_sequences})))
         if self.batch_quality not in {"EMPTY", "COMPLETE", "PARTIAL", "UNKNOWN"}:
             raise ValueError("unsupported batch quality")
         object.__setattr__(self, "logical_ts_ms", self.end_exclusive_ms)
@@ -165,6 +167,7 @@ class MarketFrameV1:
                     "batch_quality": self.batch_quality,
                     "same_event_order_ambiguity": self.same_event_order_ambiguity,
                     "source_batch_ids": self.source_batch_ids,
+                    "source_sequences": self.source_sequences,
                 }
             ),
         )
@@ -270,6 +273,7 @@ class CrossSectionStateV1:
     batch_quality: str = "UNKNOWN"
     same_event_order_ambiguity: bool = False
     source_batch_ids: Tuple[str, ...] = ()
+    source_sequences: Tuple[str, ...] = ()
     replay_status: str = REPLAY_READY
     replay_reasons: Tuple[str, ...] = ()
     skipped_symbols: Tuple[str, ...] = ()
@@ -301,6 +305,7 @@ class CrossSectionStateV1:
         object.__setattr__(self, "updated_symbols", updated)
         object.__setattr__(self, "missing_symbols", missing)
         object.__setattr__(self, "source_batch_ids", tuple(sorted(set(self.source_batch_ids))))
+        object.__setattr__(self, "source_sequences", tuple(sorted({str(item) for item in self.source_sequences})))
         object.__setattr__(self, "replay_reasons", tuple(sorted(set(self.replay_reasons))))
         object.__setattr__(self, "skipped_symbols", tuple(sorted(set(self.skipped_symbols))))
         if self.batch_quality not in {"EMPTY", "COMPLETE", "PARTIAL", "UNKNOWN"}:
@@ -338,6 +343,7 @@ class CrossSectionStateV1:
             "historical_available_at_ms": self.historical_available_at_ms,
             "replay_order_status": self.replay_order_status,
             "source_batch_ids": self.source_batch_ids,
+            "source_sequences": self.source_sequences,
         }))
 
     @property
@@ -649,6 +655,10 @@ class CrossSectionProjectionV1:
         return self.cross_section.source_batch_ids
 
     @property
+    def source_sequences(self) -> Tuple[str, ...]:
+        return self.cross_section.source_sequences
+
+    @property
     def historical_available_at_ms(self) -> Optional[int]:
         return self.cross_section.historical_available_at_ms
 
@@ -900,6 +910,7 @@ class CrossSectionReplaySource:
         replay_reasons: Sequence[str] = (),
         skipped_symbols: Sequence[str] = (),
         source_batch_ids: Sequence[str] = (),
+        source_sequences: Sequence[str] = (),
         batch_quality: str = "UNKNOWN",
         same_event_order_ambiguity: bool = False,
         source_sequence_status: str = SOURCE_SEQUENCE_UNKNOWN,
@@ -949,6 +960,7 @@ class CrossSectionReplaySource:
             batch_quality=batch_quality,
             same_event_order_ambiguity=same_event_order_ambiguity,
             source_batch_ids=tuple(source_batch_ids) or frame.source_batch_ids,
+            source_sequences=tuple(source_sequences) or frame.source_sequences,
             replay_status=replay_status,
             replay_reasons=tuple(replay_reasons),
             skipped_symbols=tuple(skipped_symbols),

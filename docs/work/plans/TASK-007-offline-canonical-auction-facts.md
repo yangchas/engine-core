@@ -18,6 +18,13 @@ effects.
 - Valid ticks are projected to the existing legacy replay event shape and then
   fed through `CrossSectionReplaySource` one frame at a time.
 - Every configured frame, including empty frames, remains in the timeline.
+- Empty canonical batches are assigned by their logical frame-end timestamp;
+  their `source_batch_id`, explicit `EMPTY` quality and `source_sequence` stay
+  attached to that frame. A frame with no source batch is `EMPTY` in the
+  timeline but has source completeness `UNKNOWN`, not fabricated `EMPTY` proof.
+- Frame and Engine evidence retain source sequence values, source/order status,
+  batch quality, historical availability metadata and same-event order
+  ambiguity; these fields are never silently discarded at the replay boundary.
 - Auction observations are passed to `AuctionTimeline`; 0920/0924 are optional
   for 0925 analysis, and late/repeated cohorts remain revisioned/idempotent.
 - Outputs are `FACT_ONLY`/offline evidence. No strategy conclusion or effect is

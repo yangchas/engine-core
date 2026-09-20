@@ -220,6 +220,63 @@ def test_all_missing_batch_is_degraded_and_does_not_stop_the_timeline():
     assert engine.signals[0].payload.status is DataStatus.MISSING
 
 
+def test_empty_batch_keeps_frame_identity_and_source_sequence():
+    source = OfflineCanonicalReplay(
+        TRADE_DATE,
+        ("600000",),
+        start_ms=START,
+        end_exclusive_ms=START + 9_000,
+    )
+    empty = replace(
+        _batch([], logical_ts_ms=START + 3_000),
+        source_sequence="wire-0",
+        source_sequence_status=SequenceStatus.KNOWN,
+    )
+    results = tuple(source.iter_frame_results([empty]))
+    assert len(results) == 3
+    assert results[0].status is CanonicalReplayStatus.EMPTY
+    assert results[0].frame.batch_quality == "EMPTY"
+    assert results[0].frame.source_batch_ids == (empty.source_batch_id,)
+    assert results[0].source_sequences == ("wire-0",)
+    assert results[1].status is CanonicalReplayStatus.EMPTY
+
+
+def test_conflicting_historical_availability_is_not_collapsed_to_known():
+    source = OfflineCanonicalReplay(
+        TRADE_DATE,
+        ("600000",),
+        start_ms=START,
+        end_exclusive_ms=START + 3_000,
+    )
+    first = replace(
+        _batch([_tick(event_time_ms=START + 100)]),
+        historical_available_at_ms=START + 50,
+        historical_available_at_status="KNOWN",
+    )
+    second = replace(
+        _batch([_tick(event_time_ms=START + 200)]),
+        historical_available_at_ms=START + 60,
+        historical_available_at_status="KNOWN",
+    )
+    result = next(source.iter_frame_results([first, second]))
+    assert result.historical_available_at_ms is None
+    assert result.historical_available_at_status == "UNKNOWN"
+
+
+def test_canonical_replay_retains_all_500_empty_frames():
+    source = OfflineCanonicalReplay(
+        TRADE_DATE,
+        ("600000",),
+        start_ms=START,
+        end_exclusive_ms=START + 500 * 3_000,
+    )
+    results = tuple(source.iter_frame_results(()))
+    assert len(results) == 500
+    assert tuple(item.frame.frame_no for item in results) == tuple(range(500))
+    assert all(item.status is CanonicalReplayStatus.EMPTY for item in results)
+    assert all(item.batch_quality == "UNKNOWN" for item in results)
+
+
 def test_replay_propagates_frame_diagnostics_and_batch_quality():
     source = OfflineCanonicalReplay(
         TRADE_DATE,
@@ -237,6 +294,8 @@ def test_replay_propagates_frame_diagnostics_and_batch_quality():
         batch,
         batch_quality=BatchQuality.PARTIAL,
         same_event_order_ambiguity=True,
+        source_sequence="wire-1",
+        source_sequence_status=SequenceStatus.KNOWN,
         replay_order_status=ReplayOrderStatus.SYNTHETIC_DETERMINISTIC,
     )
 
@@ -260,6 +319,7 @@ def test_replay_propagates_frame_diagnostics_and_batch_quality():
     assert payload.batch_quality == "PARTIAL"
     assert payload.same_event_order_ambiguity is True
     assert payload.cross_section.replay_order_status == "SYNTHETIC_DETERMINISTIC"
+    assert payload.source_sequences == ("wire-1",)
 
     result = next(source.iter_frame_results([batch]))
     assert result.frame.batch_quality == "PARTIAL"

@@ -53,6 +53,7 @@ class CanonicalBatchProjectionV1:
     skipped_events: Tuple[Tuple[int, str, str], ...] = ()
     batch_quality: str = "UNKNOWN"
     same_event_order_ambiguity: bool = False
+    source_sequence: Optional[str] = None
     source_sequence_status: str = "UNKNOWN"
     arrival_order_status: str = "UNKNOWN"
     replay_order_status: str = "UNKNOWN"
@@ -65,6 +66,11 @@ class CanonicalBatchProjectionV1:
         object.__setattr__(self, "skipped_symbols", tuple(sorted(set(self.skipped_symbols))))
         object.__setattr__(self, "reasons", tuple(sorted(set(self.reasons))))
         object.__setattr__(self, "events", tuple(self.events))
+        object.__setattr__(
+            self,
+            "source_sequence",
+            None if self.source_sequence is None else str(self.source_sequence),
+        )
         skipped_events = tuple(
             (int(event_time_ms), str(symbol), str(reason))
             for event_time_ms, symbol, reason in self.skipped_events
@@ -93,6 +99,7 @@ class CanonicalBatchProjectionV1:
                     "skipped_events": self.skipped_events,
                     "batch_quality": self.batch_quality,
                     "same_event_order_ambiguity": self.same_event_order_ambiguity,
+                    "source_sequence": self.source_sequence,
                 }
             ),
         )
@@ -109,6 +116,7 @@ class CanonicalFrameResultV1:
     reasons: Tuple[str, ...]
     batch_quality: str = "UNKNOWN"
     same_event_order_ambiguity: bool = False
+    source_sequences: Tuple[str, ...] = ()
     source_sequence_status: str = "UNKNOWN"
     arrival_order_status: str = "UNKNOWN"
     replay_order_status: str = "UNKNOWN"
@@ -119,6 +127,7 @@ class CanonicalFrameResultV1:
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", CanonicalReplayStatus(self.status))
         object.__setattr__(self, "source_batch_ids", tuple(sorted(set(self.source_batch_ids))))
+        object.__setattr__(self, "source_sequences", tuple(sorted(set(self.source_sequences))))
         object.__setattr__(self, "skipped_symbols", tuple(sorted(set(self.skipped_symbols))))
         object.__setattr__(self, "reasons", tuple(sorted(set(self.reasons))))
         object.__setattr__(
@@ -134,6 +143,7 @@ class CanonicalFrameResultV1:
                     "reasons": self.reasons,
                     "batch_quality": self.batch_quality,
                     "same_event_order_ambiguity": self.same_event_order_ambiguity,
+                    "source_sequences": self.source_sequences,
                     "source_sequence_status": self.source_sequence_status,
                     "arrival_order_status": self.arrival_order_status,
                     "replay_order_status": self.replay_order_status,
@@ -166,10 +176,12 @@ def _merge_evidence_status(values: Iterable[str], *, default: str = "UNKNOWN") -
     return unique[0] if len(unique) == 1 else default
 
 
-def _merge_batch_quality(values: Iterable[str], *, has_events: bool) -> str:
+def _merge_batch_quality(values: Iterable[str]) -> str:
     unique = {str(value) for value in values if value is not None}
     if not unique:
-        return "UNKNOWN" if has_events else "EMPTY"
+        # No canonical batch means no source query completeness evidence.  An
+        # actual EMPTY batch is represented by the explicit EMPTY value below.
+        return "UNKNOWN"
     if "PARTIAL" in unique:
         return "PARTIAL"
     if "UNKNOWN" in unique:
@@ -257,6 +269,7 @@ class OfflineCanonicalReplay:
             skipped_events=tuple(skipped_events),
             batch_quality=batch.batch_quality.value,
             same_event_order_ambiguity=batch.same_event_order_ambiguity,
+            source_sequence=batch.source_sequence,
             source_sequence_status=batch.source_sequence_status.value,
             arrival_order_status=batch.arrival_order_status.value,
             replay_order_status=batch.replay_order_status.value,
@@ -274,6 +287,18 @@ class OfflineCanonicalReplay:
         pending_reasons: list[str] = []
         pending_projections: list[CanonicalBatchProjectionV1] = []
 
+        def frame_no_for_batch(batch: TickBatchV1) -> int:
+            """Map an empty batch's logical end to its global frame."""
+
+            delta = batch.logical_ts_ms - self.source.slice_anchor_ms
+            if delta <= 0 or batch.logical_ts_ms > self.source.end_exclusive_ms:
+                raise CanonicalReplayBlocked(
+                    "empty canonical batch logical time is outside the configured replay window"
+                )
+            if delta % self.source.slice_ms == 0:
+                return (delta // self.source.slice_ms) - 1
+            return delta // self.source.slice_ms
+
         def emit(frame_no: int) -> CanonicalFrameResultV1:
             if pending_reasons and pending_events:
                 status = CanonicalReplayStatus.PARTIAL
@@ -284,7 +309,7 @@ class OfflineCanonicalReplay:
             else:
                 status = CanonicalReplayStatus.READY
             qualities = [item.batch_quality for item in pending_projections]
-            batch_quality = _merge_batch_quality(qualities, has_events=bool(pending_events))
+            batch_quality = _merge_batch_quality(qualities)
             same_event_order_ambiguity = any(
                 item.same_event_order_ambiguity for item in pending_projections
             )
@@ -303,6 +328,18 @@ class OfflineCanonicalReplay:
             historical_available_at_status = _merge_evidence_status(
                 item.historical_available_at_status for item in pending_projections
             )
+            if (
+                historical_available_at_ms is None
+                and any(item.historical_available_at_ms is not None for item in pending_projections)
+            ):
+                # Conflicting known timestamps cannot be represented by one
+                # frame scalar without inventing a value.
+                historical_available_at_status = "UNKNOWN"
+            source_sequences = tuple(sorted({
+                item.source_sequence
+                for item in pending_projections
+                if item.source_sequence is not None
+            }))
             frame = replace(
                 self.source.frame_from_events(frame_no, pending_events),
                 batch_quality=batch_quality,
@@ -313,6 +350,7 @@ class OfflineCanonicalReplay:
                 historical_available_at=historical_available_at_status,
                 historical_available_at_ms=historical_available_at_ms,
                 source_batch_ids=tuple(pending_batch_ids),
+                source_sequences=source_sequences,
             )
             return CanonicalFrameResultV1(
                 frame=frame,
@@ -327,6 +365,7 @@ class OfflineCanonicalReplay:
                 replay_order_status=replay_order_status,
                 historical_available_at_ms=historical_available_at_ms,
                 historical_available_at_status=historical_available_at_status,
+                source_sequences=source_sequences,
             )
 
         for batch in batches:
@@ -340,6 +379,23 @@ class OfflineCanonicalReplay:
                 (event_time_ms, symbol, "skipped", None, reason)
                 for event_time_ms, symbol, reason in projection.skipped_events
             ]
+            if not ordered_items:
+                frame_no = frame_no_for_batch(batch)
+                if frame_no < pending_frame_no:
+                    raise CanonicalReplayBlocked("canonical batches moved backwards in event time")
+                while pending_frame_no < frame_no:
+                    yield emit(pending_frame_no)
+                    pending_frame_no += 1
+                    pending_events.clear()
+                    pending_batch_ids.clear()
+                    pending_skipped.clear()
+                    pending_reasons.clear()
+                    pending_projections.clear()
+                if projection not in pending_projections:
+                    pending_projections.append(projection)
+                if projection.source_batch_id not in pending_batch_ids:
+                    pending_batch_ids.append(projection.source_batch_id)
+                continue
             ordered_items.sort(
                 key=lambda item: (
                     item[0],
@@ -416,6 +472,7 @@ class OfflineCanonicalReplay:
                 replay_order_status=result.replay_order_status,
                 historical_available_at=result.historical_available_at_status,
                 historical_available_at_ms=result.historical_available_at_ms,
+                source_sequences=result.source_sequences,
             )
             self._clock.advance_to(datetime.fromtimestamp(signal.logical_time_ms / 1000, timezone.utc))
             engine.submit(signal)
