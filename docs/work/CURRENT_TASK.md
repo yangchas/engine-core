@@ -1,18 +1,30 @@
 # Current Task
 
 ```text
-active_task: TASK-006
+active_task: none
 bootstrap_status: COMPLETE
-last_task: TASK-005
-last_task_state: REVIEW
-next_task: none
-next_task_state: TASK006_REVIEW
+last_task: TASK-006
+last_task_state: MERGED
+next_task: TASK-007
+next_task_state: READY
 
 owner: replay-investigator
-branch: codex/task-cross-sectional-performance
+branch: codex/feature-session-engine-integration
 worktree: current development worktree
 started_at: 2026-09-20T10:30:00+08:00
 implementation_commit: 272cbd7428aaf8ac205759ec7d6afa5f230814a8
+
+TASK-004, TASK-005 and TASK-006 passed integrator review on 2026-09-20.
+TASK-004 remains `PASS_WITH_WARN` for the 5–10 minute benchmark band; this
+does not change the production gate. See
+`docs/work/handoffs/INTEGRATOR_REVIEW_20260920.md`.
+
+The next task is registered but not started:
+
+```text
+TASK-007: offline canonical replay / auction facts
+state: READY
+```
 ```
 
 TASK-003 established the streamed cross-sectional foundation and performance
@@ -36,18 +48,9 @@ M3_1_NORMAL=BLOCKED
 TD_WRITE_HEALTH=UNPROVEN
 ```
 
-TASK-004 remains under integrator review after the ECC audit. The explicit
-continuation request authorized TASK-005 implementation on this isolated task
-branch; it does not authorize a feature-branch merge or production use. The
-production gate remains independent.
-
-TASK-005 has been implemented as a pure in-memory `ReplaySessionTimeline` and
-remains under review; it is not merged into the feature branch.
-
-TASK-006 has now been implemented on the same isolated branch as a RabbitMQ-
-primary canonical `MarketTickV1`/`TickBatchV1` contract.  Rabbit's parsed
-`DataRecord/DataBatch → RawTick/TickBatch` shape is authoritative; TD is a
-pure compatibility adapter.  It adds field-level quality, deterministic hash
-layers, proto3 default ambiguity handling, stable TD source identity, and
-legacy shadow projection.  The task is awaiting integrator review and is not
-merged into the feature branch.  No Rabbit/TD/Redis/effect path was added.
+TASK-004 was accepted with its recorded `PASS_WITH_WARN` performance status.
+TASK-005 is merged as a pure in-memory `ReplaySessionTimeline`. TASK-006 is
+merged as a RabbitMQ-primary canonical `MarketTickV1`/`TickBatchV1` contract:
+Rabbit's parsed `DataRecord/DataBatch → RawTick/TickBatch` shape is authoritative
+and TD remains a pure compatibility adapter. No Rabbit/TD/Redis/effect path was
+added. The production gate remains independent.
