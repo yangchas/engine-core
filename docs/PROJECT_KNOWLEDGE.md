@@ -386,6 +386,7 @@
 
 - [VERIFIED] 当前只支持 Q2 projection fixture/live slice、Q2Frame 和 TD event-time replay；不支持 REPLAY_RECORDED，也不宣称 Rabbit arrival/batch 等价。
 - [VERIFIED] Q2Frame replay 与同一规范化 Q2 fixture 进入同一 Engine 的 semantic snapshot/Probe 结果 EXACT_EQUIVALENCE 已通过；该结论仅覆盖 Q2Frame 的 logical timestamp/逐帧 projection，不代表 Rabbit arrival/batch 等价。
+- [VERIFIED] 2026-09-23 Task008 Q2Frame runner 对同一 JSONL 连续回放两次，逐帧比较输入 frame hash、projection hash、processed_signals、reducer revision、final state hash、VirtualClock 和 symbol coverage；任一差异输出 `REPLAY_NON_DETERMINISTIC`。Coverage 无外部 universe 时只按文件内唯一 symbol 计算；tick manifest 可提供 expected-symbol 分母。历史 `available_at` 明确保持 UNKNOWN，不从 logical/source/replay time 推断。仓库 fixture 的 3 帧本地重复回放一致；这不证明 Rabbit batch 等价或实际生产 t1-v2 artifact 来源。
 - [VERIFIED] TD Event-Time Replay 已通过本地与 cobra-ion 只读验证；当前能力是 `DETERMINISTIC_EVENT_TIME_ONLY`，不恢复 Rabbit arrival/batch，不做 watermark 或 late correction。
 - [VERIFIED] TD Event-Time Replay 在同一 `event_time + symbol` 且缺少真实 source ordering key 时，使用原始字段内容 hash 作为 deterministic synthetic tie-break；该 hash 不代表生产真实先后。
 - [VERIFIED] Replay signal construction 不推进共享 VirtualClock；按 logical time 分组后在 Engine 消费前推进一次，同刻 child signal 进入下一 causal generation，不能越过当前 generation 的 parent/sibling。
