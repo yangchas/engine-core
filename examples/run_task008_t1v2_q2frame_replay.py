@@ -12,6 +12,7 @@ or from the replay clock.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import sys
@@ -36,8 +37,14 @@ from engine_core import (  # noqa: E402
 from engine_core.q2 import normalize_symbol  # noqa: E402
 
 
+def _open_jsonl(path: Path):
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt", encoding="utf-8")
+    return path.open("r", encoding="utf-8")
+
+
 def _iter_raw(path: Path) -> Iterator[Mapping[str, Any]]:
-    with path.open("r", encoding="utf-8") as handle:
+    with _open_jsonl(path) as handle:
         for line_no, line in enumerate(handle, 1):
             if not line.strip():
                 continue
