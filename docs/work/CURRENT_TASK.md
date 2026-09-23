@@ -82,10 +82,22 @@ source rows are future relative to that cutoff; see the replay handoff. This is
 
 The producer boundary is explicit: t1-v2 generates Q2; Core does not derive
 Q2 from TD ticks. The earlier 09:15–09:40 TD replay remains tick-layer
-evidence only. TASK-008 cannot close until a same-input t1-v2 dry-run Q2Frame
-artifact is consumed by Core. Q2Frame source timestamps are accepted without a
-market-hours gate; freshness and historical availability remain separate
-evidence policies.
+evidence only. The same-input t1-v2 dry-run Q2Frame artifact is the required
+bridge evidence for TASK-008; Q2Frame source timestamps are accepted without a
+market-hours gate, while freshness and historical availability remain separate
+evidence policies. NORMAL opening acceptance still requires its own cutoff
+evidence.
+
+The same-input real t1-v2 bridge has now completed with one Q2Frame per 3-second
+half-open TD slice. The strict run produced 500 contiguous frames for
+`[09:15:00,09:40:00)`, retained 98 empty frames, used slice-end logical
+timestamps through 09:40:00, and emitted no Redis/TD writes. Core consumed the
+gzip artifact twice and returned `REPLAY_READY_BOUNDED`; frame, projection,
+final, reducer, coverage, input and VirtualClock comparisons were all equal.
+Evidence: `/home/exedev/validation/task008-q2frame-real-20260923/`
+(`TASK-008-STRICT-500-FRAME-CLOSURE-20260923.md`). This closes the strict
+Q2Frame bridge evidence, but does not prove NORMAL opening acceptance or
+historical `available_at`; those remain `UNPROVEN`.
 
 Verification for this boundary correction: `687 passed`, compileall and
 diff-check PASS. The producer-bridge tooling lives in
