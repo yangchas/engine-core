@@ -121,7 +121,6 @@ def _run_once(
             "seq_no": frame.seq_no,
             "updated_symbol_count": len(frame_covered),
             "updated_coverage": len(frame_covered) / len(expected) if expected else 0.0,
-            "updated_symbols": tuple(sorted(frame_covered)),
             "projection_observed_symbol_count": len(projection_symbols),
             "projection_coverage": signal.payload.coverage,
             "projection_missing_symbols": signal.payload.missing_symbols,
