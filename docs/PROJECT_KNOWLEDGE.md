@@ -1,5 +1,21 @@
 # Project Knowledge
 
+- `[OBSERVED 2026-09-25 Phase P auction-close empty-slice fix]` Real TD for
+  2026-09-23 had zero rows in `[09:25:57,09:26:00)` and five rows at exactly
+  `09:26:00.000` in the next 3-second slice. The old empty-frame logical time
+  equaled the excluded right edge, so it emitted `latest` before those rows;
+  the one-second throttle then suppressed the corrected summary. t1-v2 commit
+  `9472f4c` moves empty frames inside their half-open interval, adds the
+  09:26:00 auction-close barrier, and forces the final latest summary. A real
+  bounded `[09:15:00,09:26:03)` replay now yields `latest.total_auction_amount`
+  equal to the Q2 `am` sum (`13,621,401,036`); 5,222 Q2 hashes and the frozen
+  0920/0924/0925 projections are unchanged. Redis writes were isolated to
+  unique DB15 prefixes; TD writes and Rabbit ACKs were zero. This closes only
+  the observed auction-close replay defect. Phase P remains `PARTIAL`,
+  TASK-008 remains partial, and M3-1 remains blocked. Evidence:
+  `docs/work/handoffs/TD_RABBIT_PHASE_P_AUCTION_CLOSE_EMPTY_SLICE_20260925.md`
+  and `/home/exedev/validation/t1v2-latest-boundary-repro-20260925/`.
+
 - `[OBSERVED 2026-09-25 replay development source parity]` t1-v2 commit
   `ca5ece0` aligns auction calculation, limit-state reference price, and
   anchor-specific A2/legacy projection semantics with the deployed release.

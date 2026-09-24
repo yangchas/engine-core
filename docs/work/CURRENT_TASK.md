@@ -16,6 +16,25 @@ fix_started_at: 2026-09-20T14:46:36+08:00
 implementation_commit: 084d6819b31a80087d624cfabf0d78843c8613ba
 latest_fix_commit: aa38614
 
+## Latest update — Phase P auction-close empty-slice fix (2026-09-25)
+
+Real TD for 2026-09-23 contained zero rows in `[09:25:57,09:26:00)` and five
+rows at exactly `09:26:00.000` in the next half-open slice. The current-source
+replay assigned the empty preceding slice its excluded right-edge time, so it
+emitted `latest` from stale pre-close values and the throttle suppressed the
+summary after those five rows. t1-v2 commit `9472f4c` now keeps empty frames
+inside their half-open interval, groups 09:26:00 rows at an auction-close
+barrier, and forces the final latest snapshot. On the same real 212,027-row
+bounded replay, `latest.total_auction_amount_yuan` now equals Q2 `am` sum
+`13,621,401,036`; the 5,222 Q2 hashes and frozen 0920/0924/0925 outputs are
+unchanged. Self-tests and full build passed; the replay wrote only to a unique
+Redis DB15 prefix (`td_sql=0`, `ack=0`). Handoff:
+`docs/work/handoffs/TD_RABBIT_PHASE_P_AUCTION_CLOSE_EMPTY_SLICE_20260925.md`.
+
+This closes only the observed 09:26 boundary defect. Phase P and TASK-008
+remain `PARTIAL`; Rabbit delivery/arrival, historical `available_at`, and
+NORMAL acceptance are not proven. Do not advance a phase from this result.
+
 ## Latest update — Phase P same-second barrier closure (2026-09-25)
 
 The replay barrier defect is fixed and committed in the t1-v2 development

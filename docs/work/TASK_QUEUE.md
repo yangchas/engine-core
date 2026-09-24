@@ -41,6 +41,19 @@
   remain PARTIAL and require same-version field-semantic evidence. Rabbit
   delivery equivalence, 09:25:06 live visibility, historical available_at
   and `TD_WRITE_HEALTH` remain `UNKNOWN/UNPROVEN`
+- phase_p_auction_close_empty_slice: current t1-v2 commit `9472f4c` was
+  regression-tested against real 2026-09-23 TD `[09:15:00,09:26:03)`. The
+  preceding `[09:25:57,09:26:00)` frame was empty; the next frame had five
+  `09:26:00.000` rows. Fixing the empty-frame right-edge timestamp and adding
+  an auction-close barrier changed the bounded `latest` summary from the stale
+  0925 amount `13,619,535,240` to `13,621,401,036`, equal to Q2 `am` sum and
+  the release control. All 5,222 Q2 hashes and frozen 0920/0924/0925 outputs
+  stayed identical. Self-tests passed; the run wrote only to isolated Redis
+  DB15 (`td_sql=0`, `ack=0`). This closes one current-source defect only;
+  Phase P stays `PARTIAL` and no later stage is started. Handoff:
+  `docs/work/handoffs/TD_RABBIT_PHASE_P_AUCTION_CLOSE_EMPTY_SLICE_20260925.md`;
+  detailed validation:
+  `/home/exedev/validation/t1v2-latest-boundary-repro-20260925/auction_close_boundary_report.md`.
 - phase_p_barrier_experiment: validation-only barrier-aware whole-slice binary
   replayed real 2026-09-24 `[09:15:00,09:25:09)` into Redis DB13/
   `task009pbarrier:`. It processed 210730 ticks in 204 batches plus one Clock;
