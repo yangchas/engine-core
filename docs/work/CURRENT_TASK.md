@@ -16,6 +16,16 @@ fix_started_at: 2026-09-20T14:46:36+08:00
 implementation_commit: 084d6819b31a80087d624cfabf0d78843c8613ba
 latest_fix_commit: aa38614
 
+## Independent audit — Phase P auction-close fix (2026-09-25)
+
+A second bounded real-data replay into isolated Redis DB15 matched the prior
+fixed-run Q2 and auction outputs (5,222 active symbols; Q2 `am` sum
+`13,621,401,036`). Only run telemetry `m2:runtime.redis_bytes` differed, by
+the expected key-prefix length. The second replay's process exit code and final
+stdout summary were not retained, so this remains `PASS_WITH_LIMITS`, not full
+producer or Rabbit equivalence. Phase P/TASK-008 remain partial; M3-1 remains
+blocked. Audit: `docs/work/handoffs/TD_RABBIT_PHASE_P_AUCTION_CLOSE_INDEPENDENT_AUDIT_20260925.md`.
+
 ## Latest update — Phase P auction-close empty-slice fix (2026-09-25)
 
 Real TD for 2026-09-23 contained zero rows in `[09:25:57,09:26:00)` and five
