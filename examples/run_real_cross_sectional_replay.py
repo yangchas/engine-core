@@ -173,11 +173,13 @@ def _run_pass(
     shuffled: bool,
     verification_level: str = "FULL",
 ) -> dict[str, Any]:
-    """Execute one pass from one ordered streaming cursor.
+    """Execute one pass with exactly one TD query per 3-second frame.
 
-    The cursor is fetched in bounded batches.  ``pending_events`` contains
-    only the current 3-second frame; once a frame is submitted to the Engine
-    it is discarded before the next frame is assembled.
+    The query boundary is the replay contract, not an implementation detail:
+    each ``[start,end)`` slice is fetched, normalized, submitted, and then
+    released before the next slice is queried.  ``fetchmany`` is only a
+    bounded driver-level read inside that one slice; it is never a calculation
+    chunk and no rows from another slice are retained.
     """
 
     start_ms = source.slice_anchor_ms
@@ -205,6 +207,7 @@ def _run_pass(
     input_digest = hashlib.sha256()
     canonical_event_digest = hashlib.sha256()
     returned_rows = 0
+    slice_query_count = 0
     replay_events = 0
     invalid_rows = 0
     missing_fields = {field: 0 for field in REQUIRED_FIELDS}
@@ -226,7 +229,11 @@ def _run_pass(
         if shuffled:
             random.Random(f"TASK-003:{frame_no}").shuffle(events)
         frame_started_ns = time.perf_counter_ns()
-        frame = source.frame_from_events(frame_no, events, presorted=not shuffled)
+        # TD only orders by event time and symbol; same-time/same-symbol rows
+        # still have no proven source sequence. Always let the canonical
+        # adapter apply its stable content-hash tie-breaker. ``shuffled`` is
+        # an input-order determinism probe, never evidence of Rabbit arrival.
+        frame = source.frame_from_events(frame_no, events, presorted=False)
         last_frame_for_parity = frame
         stage_ns["frame_build_time_ns"] += time.perf_counter_ns() - frame_started_ns
         # Apply the canonical event order, not the TD cursor/shuffle order.
@@ -293,67 +300,60 @@ def _run_pass(
             }, sort_keys=True), flush=True)
 
     cursor = conn.cursor()
-    full_sql = (
-        "SELECT " + ", ".join(FIELDS)
-        + f" FROM {SOURCE_TABLE}"
-        + f" WHERE ts >= '{_local_time(start_ms)}' AND ts < '{_local_time(source.end_exclusive_ms)}'"
-        + " ORDER BY ts, symbol"
-    )
-    query_started_ns = time.perf_counter_ns()
-    cursor.execute(full_sql)
-    execute_done_ns = time.perf_counter_ns()
-    stage_ns["stream_query_time_ns"] += execute_done_ns - query_started_ns
-    first_batch = True
-    pending_frame_no = 0
-    pending_events: list[TDEventV1] = []
-    while True:
-        fetch_started_ns = time.perf_counter_ns()
-        batch = cursor.fetchmany(10_000)
-        fetch_done_ns = time.perf_counter_ns()
-        stage_ns["td_fetch_time_ns"] += fetch_done_ns - fetch_started_ns
-        if first_batch:
-            stage_ns["td_first_row_latency_ns"] = fetch_done_ns - query_started_ns
-            first_batch = False
-        if not batch:
-            break
-        for row in batch:
-            returned_rows += 1
-            normalize_started_ns = time.perf_counter_ns()
-            raw = {name: _jsonable(value) for name, value in zip(FIELDS, row)}
-            input_digest.update(canonical_json(raw).encode("utf-8"))
-            input_digest.update(b"\n")
-            for field in REQUIRED_FIELDS:
-                if raw.get(field) is None:
-                    missing_fields[field] += 1
-            try:
-                event = TDEventV1.from_mapping(raw, source_timezone=SOURCE_TIMEZONE)
-            except (TypeError, ValueError) as exc:
+    for frame_no in range(frame_count):
+        frame_start_ms = start_ms + frame_no * source.slice_ms
+        frame_end_ms = frame_start_ms + source.slice_ms
+        frame_events: list[TDEventV1] = []
+        slice_query = (
+            "SELECT " + ", ".join(FIELDS)
+            + f" FROM {SOURCE_TABLE}"
+            + f" WHERE ts >= '{_local_time(frame_start_ms)}' AND ts < '{_local_time(frame_end_ms)}'"
+            + " ORDER BY ts, symbol"
+        )
+        query_started_ns = time.perf_counter_ns()
+        cursor.execute(slice_query)
+        execute_done_ns = time.perf_counter_ns()
+        slice_query_count += 1
+        stage_ns["stream_query_time_ns"] += execute_done_ns - query_started_ns
+        first_fetch = True
+        while True:
+            fetch_started_ns = time.perf_counter_ns()
+            batch = cursor.fetchmany(10_000)
+            fetch_done_ns = time.perf_counter_ns()
+            stage_ns["td_fetch_time_ns"] += fetch_done_ns - fetch_started_ns
+            if first_fetch and stage_ns["td_first_row_latency_ns"] is None:
+                stage_ns["td_first_row_latency_ns"] = fetch_done_ns - query_started_ns
+                first_fetch = False
+            if not batch:
+                break
+            for row in batch:
+                returned_rows += 1
+                normalize_started_ns = time.perf_counter_ns()
+                raw = {name: _jsonable(value) for name, value in zip(FIELDS, row)}
+                input_digest.update(canonical_json(raw).encode("utf-8"))
+                input_digest.update(b"\n")
+                for field in REQUIRED_FIELDS:
+                    if raw.get(field) is None:
+                        missing_fields[field] += 1
+                try:
+                    event = TDEventV1.from_mapping(raw, source_timezone=SOURCE_TIMEZONE)
+                except (TypeError, ValueError) as exc:
+                    stage_ns["row_normalization_time_ns"] += time.perf_counter_ns() - normalize_started_ns
+                    invalid_rows += 1
+                    if len(invalid_examples) < 20:
+                        invalid_examples.append({
+                            "frame_no": frame_no,
+                            "error": type(exc).__name__,
+                            "message": str(exc),
+                            "symbol": raw.get("symbol"),
+                        })
+                    continue
                 stage_ns["row_normalization_time_ns"] += time.perf_counter_ns() - normalize_started_ns
-                invalid_rows += 1
-                if len(invalid_examples) < 20:
-                    invalid_examples.append({
-                        "frame_no": pending_frame_no,
-                        "error": type(exc).__name__,
-                        "message": str(exc),
-                        "symbol": raw.get("symbol"),
-                    })
-                continue
-            stage_ns["row_normalization_time_ns"] += time.perf_counter_ns() - normalize_started_ns
-            event_frame_no = (event.event_time_ms - start_ms) // source.slice_ms
-            if event_frame_no < 0 or event_frame_no >= frame_count:
-                invalid_rows += 1
-                continue
-            if event_frame_no < pending_frame_no:
-                raise ValueError("TD stream moved backwards across 3-second frames")
-            while pending_frame_no < event_frame_no:
-                submit_frame(pending_frame_no, pending_events)
-                pending_frame_no += 1
-                pending_events = []
-            pending_events.append(event)
-    while pending_frame_no < frame_count:
-        submit_frame(pending_frame_no, pending_events)
-        pending_frame_no += 1
-        pending_events = []
+                if event.event_time_ms < frame_start_ms or event.event_time_ms >= frame_end_ms:
+                    invalid_rows += 1
+                    continue
+                frame_events.append(event)
+        submit_frame(frame_no, frame_events)
 
     final_snapshot = engine._reducer.build_snapshot(
         "TASK003_FINAL",
@@ -425,6 +425,7 @@ def _run_pass(
         "source_time_min_ms": min(source_times) if source_times else None,
         "source_time_max_ms": max(source_times) if source_times else None,
         "returned_rows": returned_rows,
+        "slice_query_count": slice_query_count,
         "replay_events": replay_events,
         "invalid_rows": invalid_rows,
         "missing_required_field_counts": missing_fields,
@@ -568,7 +569,7 @@ def main() -> int:
         frame_count=ordered["frame_count"],
         event_count=ordered["replay_events"],
         source_table=SOURCE_TABLE,
-        query_hash=semantic_hash({"universe": universe_sql, "stream_query": "SELECT ordered bounded window; emit 3-second frames"}),
+        query_hash=semantic_hash({"universe": universe_sql, "slice_query": "SELECT one half-open 3-second frame; discard before next query"}),
         input_hash=ordered["source_return_order_hash"],
     )
     _write_json(output_dir / "source_schema.json", {
@@ -587,7 +588,7 @@ def main() -> int:
         "expected_symbol_count": len(expected_symbols),
         "ordered": {key: ordered[key] for key in ("returned_rows", "replay_events", "invalid_rows", "missing_required_field_counts", "source_return_order_hash", "canonical_event_content_hash")},
         "shuffled": None if shuffled is None else {key: shuffled[key] for key in ("returned_rows", "replay_events", "invalid_rows", "missing_required_field_counts", "source_return_order_hash", "canonical_event_content_hash")},
-        "query_shape": "one ordered streaming SELECT per pass; rows are emitted into 3-second global half-open frames and discarded after submission",
+        "query_shape": "one ordered SELECT per 3-second half-open frame; current frame is discarded before the next query",
         "passes": args.passes,
         "verification_level": args.verification_level,
     })
@@ -672,8 +673,8 @@ def main() -> int:
         })
     (output_dir / "optimization_decisions.md").write_text(
         "# Replay performance decisions\n\n"
-        "- TD input is consumed with one ordered cursor and bounded `fetchmany` batches.\n"
-        "- The runner retains only the current 3-second frame; submitted frames are discarded.\n"
+        "- TD input is queried once per ordered 3-second half-open slice; bounded `fetchmany` is only driver I/O inside that slice.\n"
+        "- The runner retains only the current 3-second frame; submitted frames are discarded before the next query.\n"
         "- Empty frames remain in the 3-second timeline.\n"
         "- The ordered pass is the baseline. The optional second pass shuffles only events within each frame; it is not a Rabbit arrival-order simulation.\n"
         "- No semantic verification was removed by this profiling run; verification level is recorded in the manifest.\n",
@@ -681,7 +682,7 @@ def main() -> int:
     )
     (output_dir / "unknowns_and_limits.md").write_text(
         "# TASK-003 unknowns and limits\n\n"
-        "- TD rows were fetched one global 3-second half-open slice at a time; no full-window row fetch was used.\n"
+        "- TD rows were queried one global 3-second half-open slice at a time; no full-window row query was used.\n"
         "- `source_sequence_status`, Rabbit arrival order and historical `available_at` remain UNKNOWN.\n"
         "- Selected stock-tick fields do not reconstruct t1-v2/Q2 producer formulas.\n"
         "- Missing required values are counted and excluded from normalized replay; they are never replaced with zero.\n"
@@ -690,7 +691,7 @@ def main() -> int:
     )
     _write_json(output_dir / "side_effect_audit.json", {
         "status": "NONE_OBSERVED",
-        "td_operations": ["DESCRIBE", "SELECT DISTINCT", "SELECT (ordered streaming window per pass)"],
+        "td_operations": ["DESCRIBE", "SELECT DISTINCT", "SELECT (one ordered 3-second half-open frame per query)"],
         "td_write": False,
         "redis_operations": [],
         "redis_write": False,

@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 
 from engine_core import CrossSectionReplaySource, VirtualClock, local_datetime_ms
@@ -16,16 +17,22 @@ def test_performance_status_preserves_five_and_ten_minute_gates():
 class _Cursor:
     def __init__(self, rows):
         self.rows = rows
+        self.frame_rows = []
         self.done = False
 
     def execute(self, sql):
         assert "SELECT" in sql
+        bounds = re.search(r"ts >= '([^']+)' AND ts < '([^']+)'", sql)
+        assert bounds is not None
+        start, end = bounds.groups()
+        self.frame_rows = [row for row in self.rows if start <= str(row[0]) < end]
+        self.done = False
 
     def fetchmany(self, size):
         if self.done:
             return []
         self.done = True
-        return self.rows
+        return self.frame_rows
 
 
 class _Connection:
@@ -54,6 +61,7 @@ def test_real_runner_streams_rows_into_global_frames_without_full_capture():
     assert result["processed_signals"] == 2
     assert result["reducer_revision"] == 2
     assert result["total_events"] == 2
+    assert result["slice_query_count"] == 2
     assert result["final_virtual_clock"].endswith("01:15:06+00:00")
     assert result["state_hash_verification"] == "FULL_PER_FRAME"
     assert result["final_cross_section_full_hash_parity"] == "PASS"
@@ -70,3 +78,4 @@ def test_real_runner_streams_rows_into_global_frames_without_full_capture():
     )
     assert frame_result["state_hash_verification"] == "INCREMENTAL_IDENTITY_ONLY"
     assert frame_result["final_cross_section_full_hash_parity"] == "NOT_RUN"
+    assert frame_result["slice_query_count"] == 2
