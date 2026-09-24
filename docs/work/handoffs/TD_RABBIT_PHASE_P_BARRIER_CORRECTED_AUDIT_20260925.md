@@ -54,6 +54,20 @@ TD_WRITE_HEALTH                    UNPROVEN
 
 因此本轮结论是“重复确定性 PASS，旧基线等价未通过/未解释”，不是回放失败，也不是 strict parity。下一步若继续应先定位上述逐字段差异及稳定源行身份；没有可证明的 TD row sequence 时，真实 arrival/order 继续保持 `UNKNOWN`。不应为了让 hash 相等而过滤、去重或补造行情。
 
+## 追加审计：旧基线的 batch cadence 不同
+
+后续核对旧 DB5/`task009k:` 的原始运行日志发现：旧基线处理同一交易日、同一 `[09:15:00,09:25:09)` TD 查询窗口时，最终为 `source_in=212022`、`batches=604`；其 progress 日志中每增加 10 个 batch，`last_ts_ms` 前进 10 秒，说明旧执行路径约为每秒一个逻辑 batch。证据：
+
+- `/home/exedev/validation/td-rabbit-phase-k-0923-0915-0925-20260924T202721825+0800/t1_v2_stdout.txt`
+- `/home/exedev/validation/td-rabbit-phase-k-0923-0915-0925-20260924T202721825+0800/run_meta.txt`
+
+当前 3 秒路径对同一历史窗口查询 203 个 `[start,end)` frame、读取相同的 212,022 行；三个业务屏障将处理 batch 增至 207。证据：
+
+- `/home/exedev/validation/td-rabbit-phase-p-barrier23-run-20260925T013000+0800/per_slice_stats_v1.json`
+- `/home/exedev/validation/td-rabbit-phase-p-barrier23-run-20260925T013000+0800/phase_p_barrier23_summary.json`
+
+因此，DB5 与当前输出的比较是不同逻辑 batch cadence 下的结果比较，不满足“输入边界相同”的严格 parity 前提。它仍然是有价值的差异诊断，但不能单独证明当前实现错误，也不能抹掉字段差异。当前 `br/ar` 差异是否由 batch cadence、屏障位置、TD 同时间行顺序或 source/build 差异造成，仍为 `UNKNOWN`；在取得真实 Rabbit DataBatch 的成员边界/投递证据前，不应把旧 Redis 输出当作同边界 oracle。
+
 ## 副作用与服务状态
 
 - Redis 写入仅限获批的 DB15 唯一隔离前缀；生产 DB0 候选前缀命中为 0。
