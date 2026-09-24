@@ -1,5 +1,19 @@
 # Project Knowledge
 
+- `[OBSERVED 2026-09-25 replay development source parity]` t1-v2 commit
+  `ca5ece0` aligns auction calculation, limit-state reference price, and
+  anchor-specific A2/legacy projection semantics with the deployed release.
+  A full-dependency validation binary replayed real TD
+  `2026-09-23 [09:15:00,09:25:09)` one 3-second SELECT at a time into isolated
+  Redis DB15. All 5,222 Q2 hashes and active symbols matched both DB5 baseline
+  and the release-source control; A2/legacy 0920/0924/0925, latest, and the
+  0925 anchor also matched exactly. The run processed 212,022 rows with
+  `td_sql=0`, `ack=0`, and no DB0 prefix keys. This is bounded pre-open
+  semantic parity, not binary identity, Rabbit arrival/delivery proof,
+  historical `available_at`, continuous-session validation, or NORMAL
+  acceptance. Phase P remains partial; M3-1 remains blocked and TD health
+  unproven. Evidence: `docs/work/handoffs/TD_T1V2_AUCTION_SEMANTIC_PARITY_20260925.md`.
+
 - `[OBSERVED 2026-09-25 controlled source-alignment replay]` A validation-only
   hybrid build used the deployed release calculation files plus the current
   3-second TD reader/barrier on real 2026-09-23 `[09:15:00,09:25:09)` input,
