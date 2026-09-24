@@ -57,6 +57,19 @@ and `/home/exedev/validation/td-rabbit-phase-p-barrier-run-20260925T010000+0800/
 parity 结论。当前状态仍为 `PHASE_P_PARTIAL`，见
 `docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_CORRECTED_AUDIT_20260925.md`。
 
+**Source-alignment correction (2026-09-25):** a read-only audit subsequently
+found that development commit `e91a20a` does not use the same calculation
+source as deployed release `20260923_tdstop0945b`. Auction matching/rest
+amounts, limit-state reference price, and Engine clock/session handling differ;
+the release's declared base commit is unavailable in the local t1-v2 Git
+object database, and that repo has no remote configured. These are plausible
+confounders for the observed Q2/A2 deltas, not a proven full cause. Therefore
+do not run another batching-sensitivity comparison against the old baseline
+using `e91a20a`. First build a replay-only validation binary pinned to the
+release source snapshot, in a separate validation directory, then compare the
+same real input against the existing baseline. Phase P remains `PARTIAL`.
+Details: `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNMENT_AUDIT_20260925.md`.
+
 Phase O update: the current state is `PHASE_O_PARTIAL`. The same-day real
 2026-09-24 `09:15:00–09:40:00` TD window was replayed through the exact
 t1-v2 release into isolated Redis DB9/`task009o:` with TD writes disabled.

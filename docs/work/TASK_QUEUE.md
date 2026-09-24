@@ -73,6 +73,14 @@
   must not be attributed to this current-source build. Still `PHASE_P_PARTIAL`;
   do not advance to Rabbit/live or NORMAL claims. Full audit:
   `docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_CORRECTED_AUDIT_20260925.md`.
+- source_alignment_audit: read-only comparison found current development
+  `e91a20a` calculation semantics differ from deployed release source in
+  auction matching/rest amount, auction limit reference and Engine clock/session
+  handling. This plausibly confounds the Q2/A2 deltas but is not yet a proven
+  full cause. Release base commit `9fd4a42` is absent from the local Git object
+  database and this repo has no remote configured. Keep Phase P `PARTIAL`; pin
+  a validation build to the release source before testing batching sensitivity.
+  Audit: `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNMENT_AUDIT_20260925.md`.
 - Phase G real Redis write evidence: isolated DB15/`task009g:` replayed
   09:20:00–09:25:09 from real TD through the current t1-v2 release; 129281
   ticks, 305 batches, one empty-slice Clock, 260710 Redis commands, `td_sql=0`,

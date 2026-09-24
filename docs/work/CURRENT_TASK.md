@@ -34,6 +34,17 @@ Rabbit delivery/arrival, historical `available_at`, and NORMAL acceptance are
 not. Phase P remains PARTIAL; do not advance this task or M3-1 from this result.
 Details: `docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_CORRECTED_AUDIT_20260925.md`.
 
+Follow-up source alignment audit found that development commit `e91a20a` is not
+calculation-source equivalent to deployed release `20260923_tdstop0945b`:
+auction matching/rest formulas, limit-state reference price, and Engine clock /
+session handling differ. The release metadata names base commit `9fd4a42`, which
+is unavailable in the local t1-v2 Git object database; that repo has no remote
+configured. These differences are a plausible confounder for the observed Q2 /
+A2 deltas, not a proven complete root cause. Keep Phase P `PARTIAL`; next is a
+release-source-pinned replay-only build under validation, not another
+uncontrolled batch comparison. Audit:
+`docs/work/handoffs/TD_T1V2_SOURCE_ALIGNMENT_AUDIT_20260925.md`.
+
 TASK-004, TASK-005, TASK-006 and TASK-007 passed integrator review on 2026-09-20.
 TASK-004 remains `PASS_WITH_WARN` for the 5–10 minute benchmark band; this
 does not change the production gate. See
