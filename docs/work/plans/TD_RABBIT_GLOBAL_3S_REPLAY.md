@@ -46,6 +46,17 @@ delivery membership/arrival order、completion watermark、historical
 `docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER23_EXPERIMENT_20260925.md`
 and `/home/exedev/validation/td-rabbit-phase-p-barrier-run-20260925T010000+0800/`.
 
+**最新复核（2026-09-25，t1-v2 当前开发源码提交 `e91a20a`）**：在真实
+2026-09-23 `[09:15:00,09:25:09)` 上运行三次，真实源输入均为 212022；两次
+退出码明确为 0，第三次退出码未捕获但命名空间完整。三组隔离 Redis DB15
+前缀去除全局 `m2:runtime.redis_bytes` 后的语义 SHA 完全一致，DB0 前缀命中为
+0；Core 读回均为 5222/5222、coverage 1.0、missing 0、stale 154、`PARTIAL`。
+但与旧 DB5/`task009k:` 的逐项比较发现 5206 个 Q2 hash 值不同；0920/0924
+锚点计数各少 1，0925 数量相同，`latest` 从旧基线 09:25:03 推进到本轮空片
+时钟 09:25:09。根因尚未证实，不能沿用之前 validation-only binary 的旧基线
+parity 结论。当前状态仍为 `PHASE_P_PARTIAL`，见
+`docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_CORRECTED_AUDIT_20260925.md`。
+
 Phase O update: the current state is `PHASE_O_PARTIAL`. The same-day real
 2026-09-24 `09:15:00–09:40:00` TD window was replayed through the exact
 t1-v2 release into isolated Redis DB9/`task009o:` with TD writes disabled.
@@ -94,9 +105,11 @@ The 0925 anchor was then compared against all 5222 same-day TD snapshot rows:
 5208/5208 comparable match and rest-bid values matched, while 14 rows were
 explicitly unavailable (NULL price/change and zero amounts). Rest-ask/price/
 limit are not carried by that anchor and remain not comparable.
-Because the replay scheduler is half-open and end-aligned, a no-row barrier
-interval requires replaying through `09:25:09` to emit the `09:25:06` Clock;
-`end=09:25:06` would stop before that control slice.
+旧 exact-release/validation reader 按历史调度行为需要延伸到 09:25:09 才能
+查询屏障后的空片。当前开发 reader 已将片右边界屏障纳入该片处理计划：
+`[09:25:03,09:25:06)` 可在结束时发出 09:25:06 Clock，因此 `end=09:25:06`
+不需要再查询 `[09:25:06,09:25:09)` 才能冻结。若继续运行至 09:25:09，随后
+空片仍会推进 Q2/latest 观察时间，但不产生新 tick。历史行为保留在对应旧审计。
 Read-only TD search across 2026-09-18–2026-09-24 found no rows in the 06–09
 second interval on any date, so mixed 05/06/07 evidence remains dependent on a
 real Rabbit capture or future source data.

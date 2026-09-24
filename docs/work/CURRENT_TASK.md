@@ -16,6 +16,24 @@ fix_started_at: 2026-09-20T14:46:36+08:00
 implementation_commit: 084d6819b31a80087d624cfabf0d78843c8613ba
 latest_fix_commit: aa38614
 
+## Latest TD/Rabbit Phase P source replay audit — 2026-09-25
+
+The current t1-v2 development-source barrier implementation is committed
+locally as `stock-situation-runtime` commit `e91a20a` (not pushed/deployed).
+Three real 2026-09-23 `[09:15:00,09:25:09)` TD replays wrote only isolated
+Redis DB15 namespaces. Successful run counters were 212022 input/ticks, zero
+rejects, zero TD SQL writes and zero Rabbit ACKs; all three Redis namespaces
+were semantically identical after excluding only global `redis_bytes`. Core
+readback was 5222/5222, coverage 1.0, no missing, 154 stale, `PARTIAL`.
+
+This corrects the prior validation-only conclusion: current-source output is
+not fully equal to old DB5/`task009k:`. Q2 has 5206 hash-value differences;
+0920/0924 A2 counts each differ by one; 0925 count is equal. Root cause remains
+UNKNOWN. Replay repeatability is proven for this build; old-baseline parity,
+Rabbit delivery/arrival, historical `available_at`, and NORMAL acceptance are
+not. Phase P remains PARTIAL; do not advance this task or M3-1 from this result.
+Details: `docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_CORRECTED_AUDIT_20260925.md`.
+
 TASK-004, TASK-005, TASK-006 and TASK-007 passed integrator review on 2026-09-20.
 TASK-004 remains `PASS_WITH_WARN` for the 5–10 minute benchmark band; this
 does not change the production gate. See

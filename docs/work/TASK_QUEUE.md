@@ -60,6 +60,19 @@
   is the second real-date validation of the barrier hypothesis, not Rabbit
   delivery equivalence or NORMAL acceptance. Evidence:
   `docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER23_EXPERIMENT_20260925.md`.
+- phase_p_barrier_corrected_current_source: the current t1-v2 development source
+  was built and real-replayed three times on 2026-09-23
+  `[09:15:00,09:25:09)` into three unique Redis DB15 prefixes. Successful runs
+  processed `212022` ticks with `source_reject=0`, `td_sql=0`, `ack=0`; all three
+  normalized semantic Redis hashes match after excluding only global
+  `m2:runtime.redis_bytes` (`ea53a68d...`), and DB0 prefix hits are zero. Core
+  readback is `5222/5222`, coverage `1.0`, missing `0`, stale `154`, `PARTIAL`.
+  Important correction: output does **not** fully match the old DB5 baseline:
+  5206 Q2 hashes differ, 0920/0924 counts each differ by one, while 0925 count is
+  equal; root cause remains UNKNOWN. The previous validation-only parity result
+  must not be attributed to this current-source build. Still `PHASE_P_PARTIAL`;
+  do not advance to Rabbit/live or NORMAL claims. Full audit:
+  `docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_CORRECTED_AUDIT_20260925.md`.
 - Phase G real Redis write evidence: isolated DB15/`task009g:` replayed
   09:20:00–09:25:09 from real TD through the current t1-v2 release; 129281
   ticks, 305 batches, one empty-slice Clock, 260710 Redis commands, `td_sql=0`,
@@ -148,10 +161,11 @@
   was 09:25:03 while the frozen anchor meta ts was 09:25:06. This proves the
   observed-date empty-Clock barrier path; a real 05/06/07 mixed delivery is
   not present and remains `UNVERIFIED`.
-- phase_m_replay_cutoff_fact: with the exact scheduler, `end=09:25:06` would
-  stop before querying the empty `[09:25:06,09:25:09)` control slice; replay
-  must extend to `09:25:09` to emit the 09:25:06 Clock when that interval has
-  no market rows.
+- phase_m_replay_cutoff_fact: the old exact-release scheduler needed the
+  `[09:25:06,09:25:09)` query to observe its empty control slice. The current
+  development reader includes a barrier at the right edge of
+  `[09:25:03,09:25:06)` and emits its Clock there; the old statement is
+  historical, not current-source behavior. See the corrected source audit.
 - phase_m_cross_day_barrier_search: TD read-only search across 2026-09-18
   through 2026-09-24 found zero rows in `[09:25:06,09:25:09)` for every date;
   a real mixed 05/06/07 sample therefore requires Rabbit capture or a future
