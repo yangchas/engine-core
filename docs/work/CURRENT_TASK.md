@@ -16,6 +16,25 @@ fix_started_at: 2026-09-20T14:46:36+08:00
 implementation_commit: 084d6819b31a80087d624cfabf0d78843c8613ba
 latest_fix_commit: aa38614
 
+## Latest update — Phase P same-second barrier closure (2026-09-25)
+
+The replay barrier defect is fixed and committed in the t1-v2 development
+repository as `acf277bbba0d3bab90aa6550a23850e2c8aa7013` (not pushed, merged, or
+deployed). The final full build/self-test passed. A real TD replay of
+`2026-09-23 [09:15:00,09:25:09)` processed 212022 ticks, 204 market batches,
+one separate 09:25:06 Clock control event, wrote Redis only to a unique DB15
+prefix, and emitted zero TD SQL or Rabbit ACKs. Current-dev anchor counts and
+times align with DB5, but its Q2/A2 content differs because its calculator
+source is not release-equivalent. Exact Q2/A2 parity was independently
+re-confirmed on the release-calculation/current-reader validation copy after
+the same barrier fix.
+
+This closes the narrow same-second barrier issue only. Phase P remains
+`PARTIAL`; current-dev full projection/member-set parity, Rabbit membership or
+arrival order, historical `available_at`, and M3-1 are not passed. Do not
+advance to strategy migration from this evidence. Detailed phase audit:
+`docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_SECOND_INCLUSIVE_20260925.md`.
+
 ## Latest TD/Rabbit Phase P source replay audit — 2026-09-25
 
 The current t1-v2 development-source barrier implementation is committed

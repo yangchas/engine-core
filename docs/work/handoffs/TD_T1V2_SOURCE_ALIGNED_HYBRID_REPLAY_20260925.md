@@ -117,3 +117,32 @@ keep TD read-only and Redis writes in a fresh isolated non-DB0 namespace, then
 compare the exact member set and barrier position with the earlier
 source-aligned barrier evidence. Do not synthesize a missing member or infer
 Rabbit arrival order from TD event time.
+
+## Inclusive barrier follow-up — 2026-09-25 04:49
+
+The one-member 0920/0924 deltas described above were tested against a concrete
+boundary hypothesis: because the business time is truncated to a second, TD
+rows in that same second must be applied before the snapshot. The replay barrier
+was changed to defer an anchor at the half-open slice's right edge and to let a
+real tick in the anchor second trigger the snapshot. The validation copy also
+uses an explicit Clock control event only when that second has no row.
+
+After the change, the source-aligned validation binary
+`/home/exedev/validation/t1v2-barrier-second-inclusive-20260925T041338+0800/t1_v2_inclusive_final`
+(SHA-256 `0cf2c5f7f1cede0770d592d5e9c3b275ebc346385139f1cbc6cc26ff2fb83208`)
+was replayed on the same real window. Re-reading isolated Redis DB15
+`task009pbarrierinc20260925T042334:` against DB5/`task009k:` confirmed exact
+equality for all 5222 Q2 hashes, all three A2 and legacy auction snapshots,
+latest metadata, and the 0925 anchor. The prior one-member count deltas are
+therefore resolved in this source-aligned experiment.
+
+The patch is also ported to the current development source and committed as
+`acf277bbba0d3bab90aa6550a23850e2c8aa7013`. The current development-source real
+replay aligns `meta.n` and trigger timestamps for all three anchors, but still
+differs in Q2 fields and auction ranked/summary content because that branch is
+not calculation-source equivalent to the deployed release. It does not prove
+exact current-dev member-set parity. This updates the earlier `Next bounded
+action`: do not continue tuning the barrier; next, audit calculator/source
+semantics under a fixed source before proposing a separate implementation.
+Rabbit membership/arrival and historical `available_at` remain UNKNOWN, and
+Phase P/M3-1 remain PARTIAL/BLOCKED.

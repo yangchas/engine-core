@@ -136,6 +136,34 @@ with `NRestarts=0`; root filesystem availability was 22 GB at the post-run
 check. Full comparison notes are in
 `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNED_HYBRID_REPLAY_20260925.md`.
 
+## Later same-second barrier follow-up — 2026-09-25
+
+The earlier one-member 0920/0924 differences were subsequently isolated to the
+barrier second being placed after a replay Clock. The scheduler uses
+second-truncated business anchors, so rows whose truncated event second equals
+the anchor must be processed before snapshot evaluation. A right-edge anchor
+is now deferred to the next half-open slice; if real rows exist in that second,
+the tick batch itself triggers the snapshot, otherwise a distinct Clock control
+event advances time.
+
+The release-calculation/current-reader validation copy was rebuilt with this
+inclusive barrier rule and replayed against the same real 2026-09-23 window. A
+read-only DB15-vs-DB5 comparison now shows exact Q2 (5222 symbols), A2 0920,
+0924, 0925, legacy auction, latest, and 0925 anchor equality. The validation
+binary SHA-256 is
+`0cf2c5f7f1cede0770d592d5e9c3b275ebc346385139f1cbc6cc26ff2fb83208` and the
+candidate namespace is DB15/`task009pbarrierinc20260925T042334:`. The detailed
+audit is `TD_RABBIT_PHASE_P_BARRIER_SECOND_INCLUSIVE_20260925.md`.
+
+The same source fix is committed in the development t1-v2 branch as
+`acf277bbba0d3bab90aa6550a23850e2c8aa7013`. Its real replay has matching
+0920/0924/0925 `meta.n` and trigger timestamps, but not full Q2/A2 content
+parity: 5206 Q2 hashes differ and auction ranked/summary payloads differ. This
+matches the already documented calculation-source drift; exact current-dev
+snapshot member-set parity remains unproven. Thus the narrow barrier-time
+cause is closed under source-aligned replay, but Phase P remains partial and
+this does not prove Rabbit arrival or NORMAL behavior.
+
 ## Next bounded action — remain in Phase P
 
 Instrument one real replay-only run to capture the exact symbol membership and
