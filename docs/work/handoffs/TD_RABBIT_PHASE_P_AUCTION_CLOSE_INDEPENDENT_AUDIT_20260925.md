@@ -75,9 +75,11 @@ source bootstrap (`batches=0`, `ticks=0`, `redis_cmds=0`, `td_sql=0`). No Redis
 prefix was populated by that attempt. The endpoint was then set to the already
 running local TD listener; no source or production configuration was changed.
 
-The second run populated DB15 under
-`task009audit20260925T065650+0800:`. Its normalized Redis content was compared
-read-only with the earlier fixed run under
+The first independent repeat populated DB15 under
+`task009audit20260925T065650+0800:`. A follow-up repeat at 07:13 Asia/Shanghai
+used a fresh DB15 namespace,
+`task009audit20260925T071306+0800:`, and preserved the process result. Its
+normalized Redis content was compared read-only with the earlier fixed run under
 `task009githcfix20260925T064500:`:
 
 | Output group | Keys | Audit-run aggregate SHA-256 | Fixed-run aggregate SHA-256 |
@@ -86,23 +88,26 @@ read-only with the earlier fixed run under
 | A2 | 4 | `06908d3412732d83b189fe096662f993a67f992633bf0cee48aa9553184e89d7` | same |
 | legacy auction/anchor | 5 | `1c676bc92b8e099c1d7550bb811dd4c2600209402dc26f4008e6ab613e728f06` | same |
 
-All 5,233 keys existed in both DB15 namespaces; there were no extra or missing
-keys. The sole per-key content difference was the `m2:runtime` hash's
+For the 07:13 repeat, all 5,233 keys existed in both DB15 namespaces; there
+were no extra or missing keys. The sole per-key content difference was the `m2:runtime` hash's
 `redis_bytes` field. The run prefix was two bytes longer, and the recorded
 `redis_bytes` was eight bytes higher across four Redis commands, consistent
 with run-specific key length rather than changed market output. All other
-runtime fields matched.
+runtime fields matched. The same Q2/A2/legacy group hashes also matched the
+first independent repeat.
 
 Both active Q2 sets had 5,222 symbols, no missing `am` field, and the same
 `am` sum: `13,621,401,036`. The DB0 key count for both candidate prefixes was
 zero. Redis reported `rdb_last_bgsave_status=ok` and
 `aof_last_write_status=ok`.
 
-The command session did not preserve the replay process exit code or its final
-stdout summary. The output namespace and runtime state were complete and
-matched the fixed-run output, but this audit does not claim a freshly captured
-`212,027` input counter or a captured clean process exit for this second run.
-The prior run's counter evidence remains in
+The first repeat's command session did not preserve its exit code. The 07:13
+repeat closed that evidence gap: the process exited `0` with
+`batches=222`, `clocks=1`, `clock_ts_ms=1790126706000`, `source_in=212027`,
+`source_reject=0`, `ticks=212027`, `ack=0`, `reject=0`, `redis_cmds=425620`,
+`td_sql=0`, and `redis_committed=211937`. The fixed-run Q2 and auction output
+hashes matched exactly. These counters apply to the 07:13 repeat; earlier-run
+counters remain recorded in
 `TD_RABBIT_PHASE_P_AUCTION_CLOSE_EMPTY_SLICE_20260925.md`.
 
 ## Side effects and final alignment
