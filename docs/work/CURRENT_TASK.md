@@ -39,11 +39,18 @@ calculation-source equivalent to deployed release `20260923_tdstop0945b`:
 auction matching/rest formulas, limit-state reference price, and Engine clock /
 session handling differ. The release metadata names base commit `9fd4a42`, which
 is unavailable in the local t1-v2 Git object database; that repo has no remote
-configured. These differences are a plausible confounder for the observed Q2 /
-A2 deltas, not a proven complete root cause. Keep Phase P `PARTIAL`; next is a
-release-source-pinned replay-only build under validation, not another
-uncontrolled batch comparison. Audit:
-`docs/work/handoffs/TD_T1V2_SOURCE_ALIGNMENT_AUDIT_20260925.md`.
+configured. A validation-only hybrid then used the release calculation files
+with the current 3-second TD reader/barrier on the same real 2026-09-23 window,
+writing only to an isolated DB15 Redis prefix. All 5222 Q2 hashes and the Q2
+active set exactly matched DB5/`task009k:` (aggregate SHA-256
+`308a928e...5b9ff04f`). Auction parity is partial: 0925 A2/legacy output and
+the 0925 anchor match, but 0920 and 0924 are each short by one member
+(`4872 vs 4873`, `5099 vs 5100`) and their ranked/summary payloads differ.
+The `latest` timestamp is run-specific. This narrows the remaining issue to
+auction barrier membership/timing or related reader behavior; it does not
+prove which one. Phase P remains `PARTIAL`. Details:
+`docs/work/handoffs/TD_T1V2_SOURCE_ALIGNMENT_AUDIT_20260925.md` and
+`docs/work/handoffs/TD_T1V2_SOURCE_ALIGNED_HYBRID_REPLAY_20260925.md`.
 
 TASK-004, TASK-005, TASK-006 and TASK-007 passed integrator review on 2026-09-20.
 TASK-004 remains `PASS_WITH_WARN` for the 5–10 minute benchmark band; this

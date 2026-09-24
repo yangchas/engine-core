@@ -1,6 +1,6 @@
 # t1-v2 replay source alignment audit — 2026-09-25
 
-Status: `SOURCE_ALIGNMENT_BLOCKED`  
+Status: `SOURCE_ALIGNMENT_PARTIAL`
 Scope: read-only comparison of the active development source and the deployed
 release source snapshot. No service was started/restarted, no production file
 was edited, and no Redis/TD/Rabbit access or write was performed in this audit.
@@ -17,11 +17,12 @@ semantics from replay batching/barrier behavior.
 Keep the acceptance split:
 
 ```text
-DEVELOPMENT_BUILD_REPEATABILITY       PASS (prior real replay evidence)
-DEVELOPMENT_VS_DEPLOYED_SOURCE_PARITY  NOT_COMPARABLE_YET
-PHASE_P                               PARTIAL
-M3_1_NORMAL                           BLOCKED
-TD_WRITE_HEALTH                       UNPROVEN
+DEVELOPMENT_BUILD_REPEATABILITY                PASS (prior real replay evidence)
+RELEASE_CALCULATION_Q2_PARITY                  PASS (controlled real replay)
+RELEASE_CALCULATION_AUCTION_BARRIER_PARITY      PARTIAL (0920/0924 differ)
+PHASE_P                                        PARTIAL
+M3_1_NORMAL                                    BLOCKED
+TD_WRITE_HEALTH                                UNPROVEN
 ```
 
 ## Source identity evidence
@@ -92,28 +93,56 @@ its real input. It must not be generalized to the later `e91a20a` build, whose
 calculation source differs. Determinism within either build is not cross-build
 semantic parity.
 
+## Controlled hybrid replay follow-up — 2026-09-25
+
+A validation-only build then combined the deployed release calculation source
+with the current 3-second TD reader/barrier. Its staging source differed from
+the release snapshot only in `td_replay_tick_source.cpp/.h` plus the added
+`replay_slice_barrier.cpp/.h`; compatibility edits were confined to that
+validation staging directory. The binary SHA-256 was
+`424c4f57b8c1b0a1948602ac6906e7720ee8039484343a4a808b4f18d33a6d48`.
+
+The binary successfully read the real TD window
+`2026-09-23 [09:15:00,09:25:09)` and wrote the run to isolated Redis DB15 under
+`task009p_cross_20260925T033757:`. It did not write TD, consume/ACK Rabbit, or
+touch a production service. The same output was compared read-only with DB5 /
+`task009k:`:
+
+- Q2: 5,222 hash keys on both sides, no key/member or field/value differences;
+  active-symbol sets are equal. A length-prefixed digest over sorted Redis
+  suffix/field/value tuples is `308a928ebdee7b75c2ef762c9b518bb97a358932553a350f53affbef5b9ff04f`
+  on both sides. This is a comparison checksum, not the Core canonical hash.
+- A2 0920: `meta.n` 4,872 vs 4,873; `top_amt`, `top_br`, and `top_chg` differ.
+- A2 0924: `meta.n` 5,099 vs 5,100; the same ranked fields differ.
+- A2 0925: exact Redis hash equality (`meta.n=5,208`).
+- Legacy auction 0920/0924 summaries and `top_amount` differ; 0925 matches.
+- The 0925 anchor string is byte-identical (539,474 bytes; SHA-256
+  `1df35d745018384e6585df125e2c1f78e2df935c2114ed9ff2af20cc320d8bcb`).
+- `latest` differs only in run timestamp metadata; this is not a semantic
+  snapshot comparison target.
+
+This controlled result supports that the release calculation source restores
+Q2 parity for this real input. It does not close the 0920/0924 business-barrier
+membership/ranking mismatch. The existing earlier validation binary matched
+those snapshots, but used a different replay reader/scheduler and emitted 204
+batches rather than this run's 207 frame sequence; therefore the remaining
+cause is still `UNKNOWN`, not automatically a data-completeness failure.
+
+The full release-source build SHA-256 is
+`373f7c64386e6b4ab24a632ada6122f74979fe91dce258f90e992513ad03c790`; it did
+not byte-match the deployed executable, so source provenance is stronger than
+binary reproducibility. Both `t1-v2-live` and `engine-next` remained active,
+with `NRestarts=0`; root filesystem availability was 22 GB at the post-run
+check. Full comparison notes are in
+`docs/work/handoffs/TD_T1V2_SOURCE_ALIGNED_HYBRID_REPLAY_20260925.md`.
+
 ## Next bounded action — remain in Phase P
 
-Before another batching-sensitivity run, produce a replay-only validation build
-whose calculation files are pinned to the deployed release source snapshot.
-Keep the release directory untouched; stage the build under a dedicated
-`/home/exedev/validation/` directory and overlay only the already-reviewed
-replay slice/barrier mechanism needed for the same `[09:15:00,09:25:09)` input.
-Then:
-
-1. Record source-manifest hashes, build flags/tool versions and resulting
-   validation-binary hash.
-2. Read the same real TD date/window, one 3-second half-open slice at a time;
-   preserve all rows and empty frames.
-3. Write only to a fresh isolated non-DB0 Redis namespace; keep TD writes and
-   Rabbit consume/ACK disabled.
-4. Compare Q2 and 0920/0924/0925 outputs with the existing DB5 baseline and the
-   `e91a20a` result, field by field. Repeat once to verify deterministic output.
-5. Classify the remaining delta as source-semantic, barrier/batch, order, or
-   still `UNKNOWN`; do not force a PASS by filtering or changing market facts.
-
-Do not copy the deployed source into the development branch wholesale, do not
-modify the live release, and do not promote Phase P or start a new migration
-phase from this audit. If a source-aligned staging build cannot be made
-reproducible, record that as the next blocker and keep the already-valid
-single-build repeatability evidence separate.
+Instrument one real replay-only run to capture the exact symbol membership and
+source event-time state visible at the 09:20 and 09:24 barriers, then compare
+against the old source-aligned barrier evidence. Keep each TD read bounded to
+one 3-second half-open slice; do not add symbols, synthesize ticks, or weaken
+completeness. Keep writes confined to a fresh isolated non-DB0 Redis namespace;
+TD writes and Rabbit consume/ACK remain disabled. Repeat once only if the
+instrumented output is deterministic and the first pass identifies a concrete
+membership/timing hypothesis. Do not promote Phase P or M3-1 from Q2 parity.

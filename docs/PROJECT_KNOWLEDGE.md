@@ -1,16 +1,31 @@
 # Project Knowledge
 
+- `[OBSERVED 2026-09-25 controlled source-alignment replay]` A validation-only
+  hybrid build used the deployed release calculation files plus the current
+  3-second TD reader/barrier on real 2026-09-23 `[09:15:00,09:25:09)` input,
+  writing only to an isolated Redis DB15 prefix. Its 5,222 Q2 hashes and Q2
+  active set matched DB5/`task009k:` exactly (aggregate SHA-256
+  `308a928e...5b9ff04f`). Auction parity is mixed: the 0925 A2 and legacy
+  projection hashes match, while 0920/0924 each contain one fewer snapshot
+  member (4872 vs 4873; 5099 vs 5100) and their ranked/summary fields differ.
+  The 0925 anchor matches; `latest` run timestamps differ as expected. This
+  supports release-calculation source alignment for Q2, but does not close
+  barrier-time auction parity. TD writes, Rabbit consume/ACK, and service
+  changes were absent; both services remained active with zero restarts.
+  Phase P remains `PARTIAL`. Evidence:
+  `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNED_HYBRID_REPLAY_20260925.md`.
+
 - `[OBSERVED 2026-09-25 source-alignment audit]` t1-v2 development HEAD
   `e91a20a` is not calculation-source equivalent to deployed release
   `20260923_tdstop0945b`. Verified differences include auction matching/rest
   amount formulas, pre-09:25 limit-state reference price, and Engine logical
   clock/session handling. Release metadata declares base commit `9fd4a42`, but
   that object is absent from the local t1-v2 Git repo, which has no remote
-  configured. This plausibly confounds the 5,206 Q2 and two A2 count deltas but
-  does not yet prove their complete cause. Do not attribute the mismatch to
-  batching until a replay-only build pinned to the release source is compared
-  on the same real input. Phase P remains `PARTIAL`; see
-  `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNMENT_AUDIT_20260925.md`.
+  configured. The controlled hybrid run above demonstrates exact Q2 output
+  against the release baseline when release calculation files are used; it
+  does not explain the remaining 0920/0924 auction membership/ranking delta.
+  See `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNMENT_AUDIT_20260925.md` and
+  `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNED_HYBRID_REPLAY_20260925.md`.
 
 - `[OBSERVED 2026-09-24 Phase P]` A real same-day `09:15:00–09:40:00` replay
   through exact t1-v2 with isolated Redis DB10/`task009p:` processed

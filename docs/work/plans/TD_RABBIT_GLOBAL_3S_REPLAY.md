@@ -63,12 +63,17 @@ source as deployed release `20260923_tdstop0945b`. Auction matching/rest
 amounts, limit-state reference price, and Engine clock/session handling differ;
 the release's declared base commit is unavailable in the local t1-v2 Git
 object database, and that repo has no remote configured. These are plausible
-confounders for the observed Q2/A2 deltas, not a proven full cause. Therefore
-do not run another batching-sensitivity comparison against the old baseline
-using `e91a20a`. First build a replay-only validation binary pinned to the
-release source snapshot, in a separate validation directory, then compare the
-same real input against the existing baseline. Phase P remains `PARTIAL`.
-Details: `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNMENT_AUDIT_20260925.md`.
+confounders for the observed Q2/A2 deltas, not a proven full cause. A
+validation-only hybrid replay has since used release calculation files with the
+current 3-second reader/barrier on the same real 2026-09-23 window. It matched
+all 5222 Q2 hashes and the 0925 auction projection/anchor against the DB5
+baseline, while 0920 and 0924 remained one member short with ranked/summary
+differences. Thus Q2 source alignment is supported, but barrier-time auction
+parity remains open. Keep Phase P `PARTIAL`; the next diagnostic is to compare
+which real source members have been consumed at each business barrier, not to
+relax completeness or synthesize a member. Details:
+`docs/work/handoffs/TD_T1V2_SOURCE_ALIGNMENT_AUDIT_20260925.md` and
+`docs/work/handoffs/TD_T1V2_SOURCE_ALIGNED_HYBRID_REPLAY_20260925.md`.
 
 Phase O update: the current state is `PHASE_O_PARTIAL`. The same-day real
 2026-09-24 `09:15:00–09:40:00` TD window was replayed through the exact
