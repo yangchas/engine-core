@@ -205,7 +205,12 @@ def build_auction_anchor_revision(
         state = READY
     else:
         state = PARTIAL
-    freeze = times["preferred_finalize_ms"] if evaluation_time_ms >= times["preferred_finalize_ms"] else None
+    # The production t1-v2 contract emits the 0925 snapshot at the first
+    # observable barrier (09:25:06).  ``preferred_finalize_ms`` remains an
+    # adaptive-grace reference for later observations; it is not a hard
+    # prerequisite for the first immutable anchor.  Late cohorts create a
+    # new content revision without moving the original freeze barrier.
+    freeze = times["first_observable_ms"] if evaluation_time_ms >= times["first_observable_ms"] else None
     event_times = [
         value.get("source_time_ms", value.get("ts"))
         for value in by_symbol.values()

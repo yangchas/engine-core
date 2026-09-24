@@ -25,6 +25,7 @@ def test_auction_timeline_accepts_0925_without_optional_prior_anchors():
     at_first = local_datetime_ms("2026-09-18", "09:25:06")
     partial = timeline.observe("0925", [{"symbol": "600519", "ts": at_first}], evaluation_time_ms=at_first, expected_symbols=("600519", "000001"))
     assert partial.state == PARTIAL
+    assert partial.freeze_time_ms == at_first
     bundle = timeline.build_analysis_bundle("0925")
     assert bundle["fact_status"] == FACT_ONLY
     assert bundle["prior_deltas"] == {"0920": "UNKNOWN", "0924": "UNKNOWN"}
