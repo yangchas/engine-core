@@ -55,6 +55,63 @@ HISTORICAL_AVAILABLE_AT=UNKNOWN
 09:25:01 到 09:26:01 之间没有更细的 progress 行，不应解释为没有
 消息或没有 09:25:06 处理；progress 间隔本身不是 completion watermark。
 
+## 补充定量核对：progress 累计计数与 batch 大小采样
+
+2026-09-25 对该日志文件的 2026-09-24 09:15–09:40 区间做了只筛选/聚合，
+未输出认证配置或无关日志：
+
+```text
+progress rows:                  109
+first progress:                 09:15:01 batches=52 source_in=45,378 ack=52
+last progress:                  09:39:58 batches=3,348 source_in=1,975,895 ack=3,348
+counter delta:                  3,296 processed batches / 3,296 ACKs
+counter delta source records:   1,930,517
+records per processed batch:    585.7 (counter-delta weighted mean)
+sampled last_in:                min=16 max=1,000 mean=497.7; 23/109 exactly 1,000
+```
+
+解释范围：运行日志路径来自 `t1-v2-live` 的 `LOG_FILE_PATH`，服务配置为
+`DATA_SOURCE=live`；运行代码把每次成功处理的 source batch 计入 `batches`，
+把 decoder 交给 `SourceTickBatchBuilder` 的记录数计入 `source_in`，处理后再
+ACK。首末 progress 计数之差是这两条进度记录之间已处理并确认批次/记录的
+聚合量。`last_in` 只表示每条进度日志前最后一个 batch 的记录数，是稀疏
+样本，不是完整 batch-size histogram；样本最大 1,000 也不能证明协议硬上限为
+1,000。
+
+Release reader 的源码合同是：一次 `RabbitMqTickSource::next_batch()` 调用只做
+一次 `amqp_consume_message`，随后只解析这一条 envelope 中的一个
+`DataRequest/DataBatch`，逐条转为 `SourceTickRecord`，不在 consumer 内等待或
+合并后续 message。内部 `TickBatch` 保存 ticks、logical/wall time 和 session
+sequence，但当前 decoder 没把 `DataBatch.batch_id/sent_at` 传入它；因此 progress
+计数不能还原 batch 与 frame 的成员映射，也没有所有 symbol 到齐的 marker。
+
+此窗口首末 progress 相隔约 1,497 秒，聚合批次数相当于约 6.6 个已处理 batch/
+名义 3 秒；这只能作为速率观察，**不能**把 batch 按比例映射到任何具体 TD
+frame。它与“每个 3 秒时间片固定恰有 3–4 个 delivery”的简单解释不一致；但
+由于日志没有逐条 delivery 的 `batch_id`、records 成员、tick `tss` 范围或完成
+标记，不能据此否定用户提供的分批描述，也不能证明每条 message 的事件时间范围。
+
+运行服务当时指向 release `20260923_tdstop0945b`；活动 executable SHA-256 为
+`363685f830c62aa3a2a8321eb93f91c5c7babccbd74c5e67b1e5b4c2dad1ab56`。Release
+目录内源码可说明 reader 的处理合同，但没有可核对的 build manifest 将 binary
+精确绑定到某次源码提交，故源码/二进制构建同一性仍为 `UNPROVEN`。本地和当前
+release 搜索未找到可确认的上游 market publisher 实现；旧 Node receiver 未观察到
+其 gRPC 端口 listener，不能拿它代表当前 publisher。
+
+因此更新为：
+
+```text
+LIVE_BATCH_COUNTERS=OBSERVED
+LIVE_BATCH_MEMBERSHIP=UNKNOWN
+LIVE_BATCH_TO_3S_FRAME_MAPPING=UNKNOWN
+USER_REPORTED_3_TO_4_DELIVERIES_PER_SLICE=UNVERIFIED_BY_RUNTIME_CAPTURE
+PUBLISHER_SOURCE_PROVENANCE=UNKNOWN
+```
+
+补齐 membership 的最小证据应来自现有 publisher 代码或其已存在的、不含 payload
+和凭据的逐 delivery 记录（`batch_id`、`record_count`、`sent_at`、tick 时间
+min/max）；不通过新增 Rabbit consumer、peek/requeue 或改变 ACK 获取。
+
 ## 结论
 
 真实生产日志没有提供足够信息证明 Rabbit delivery 与 TD event-time

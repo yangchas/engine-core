@@ -134,7 +134,7 @@ TD 只读、逐个 3 秒片 ────┘
 ```
 
 - 回放每次只读取一个全市场 `[start_ms,end_ms)` 3 秒片，保留片内**每一条**真实 tick；不一次装载全天，不把片再拆成计算 `chunk`。允许至多一个片的有界预读。空片也推进时钟，但不制造 tick。
-- TD 片是一次**读取/时间线边界**，转换成 Rabbit 同字段的 tick；它不是已证明与生产 Rabbit delivery 相同的**处理批次**。生产 Rabbit 可能分 3–4 个 delivery，且一个 delivery 可混有相邻事件秒。片内必要的时钟屏障只划分处理先后，不重新查询 TD、不丢 tick，也不引入计算 `chunk`。字段同形、逐 tick 计算相同和不同分批下状态相同是三项分别验收的结论；真实 delivery 边界、到达顺序及历史 `available_at` 未记录时保持 `UNKNOWN`。
+- TD 片是一次**读取/时间线边界**，转换成 Rabbit 同字段的 tick；它不是已证明与生产 Rabbit delivery 相同的**处理批次**。用户报告 Rabbit 可能将一个时间片分成 3–4 个 delivery，且一个 delivery 可混有相邻事件秒；该固定数量尚无逐 delivery capture 验证。2026-09-24 09:15:01–09:39:58 live progress 累计计数显示 3,296 个已处理/ACK batch、1,930,517 条 source record，约 585.7 条/batch、约 6.6 个 batch/名义 3 秒；这只是区间计数率，不是 delivery→frame 映射。详见 `docs/work/handoffs/TD_RABBIT_LIVE_LOG_AUDIT_20260924.md`。片内必要的时钟屏障只划分处理先后，不重新查询 TD、不丢 tick，也不引入行数/性能 `chunk`。字段同形、逐 tick 计算相同和不同分批下状态相同是三项分别验收的结论；真实 delivery 边界、到达顺序及历史 `available_at` 未记录时保持 `UNKNOWN`。
 - 每条 tick 都进入 t1-v2 Q2 状态机；选竞价候选只是额外的逐股视图，**不得**预先去重而改变累计量差分、盘口更新或 Q2。实盘 Q2 逐 tick 即时更新，不等待 3 秒片。
 - Q2 数值计算不以程序启动时刻或交易时段作准入门禁；竞价/连续阶段的**事实计算规则**仍需区分。当前 `EngineCore::on_batch` 以整批 `logical_ts_ms` 决定阶段，TD 片的结束时间不一定适用于片内每条 tick；09:25/09:26/09:30 等跨界片必须先做同输入、不同分批与阶段归属差异测试，不能仅凭原始 tick 数相等宣布行为等价。
 - Q2 的逐股最新值会被后续行情覆盖；09:25 锚点必须另存冻结版本，不能在 09:30 回头扫描滚动 `q2:<symbol>` 拼接 09:25。回放只使用隔离 Redis namespace/DB；不写 TD，也不覆盖生产 key。
