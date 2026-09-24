@@ -1,5 +1,53 @@
 # Project Knowledge
 
+- `[OBSERVED 2026-09-24 Phase P]` A real same-day `09:15:00–09:40:00` replay
+  through exact t1-v2 with isolated Redis DB10/`task009p:` processed
+  `1,194,572` TD rows (`td_sql=0`, `ack=0`) and produced 5222 Q2 symbols.
+  The semantic Q2 hash and 0920/0924/0925 stable auction projections matched
+  Phase O exactly; Core ordered/shuffled replay was deterministic. The exact
+  release still emits 1224 `tss` timestamp-group batches even when
+  `REPLAY_BATCH_SIZE=1000000`, so this is Q2 repeatability evidence, not proof
+  that one 3-second read slice has Rabbit-equivalent delivery shape. Evidence:
+  `docs/work/handoffs/TD_RABBIT_PHASE_P_AUDIT_20260924.md` and
+  `/home/exedev/validation/td-rabbit-phase-p-single-slice-20260924T232137629+0800/`.
+
+- `[OBSERVED 2026-09-25 Phase P barrier experiment]` A validation-only binary
+  replayed real 2026-09-24 TD `[09:15:00,09:25:09)` one SELECT per 3-second
+  slice, with processing boundaries only at the business barriers. Isolated
+  Redis DB13/`task009pbarrier:` received 210730 ticks in 204 batches plus one
+  Clock (`td_sql=0`, `ack=0`, DB0 prefix hits `0`). Q2 normalized SHA and
+  0920/0924/0925/latest/0925-anchor semantics matched Phase M exactly. Core
+  readback was deterministic, coverage `1.0`, with 549 stale quotes and
+  `FACT_ONLY`; this is a real barrier-aware validation, not proof of Rabbit
+  delivery/arrival or historical `available_at`. Evidence:
+  `docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_EXPERIMENT_20260925.md`.
+
+- `[OBSERVED 2026-09-25 Phase P second real-date barrier experiment]` The same
+  validation-only binary replayed real 2026-09-23 TD `[09:15:00,09:25:09)` with
+  one SELECT per 3-second slice into isolated Redis DB14/`task009pbarrier23:`.
+  It covered 203 slices/212022 rows (one empty slice), 24 slices with multiple
+  event times for a symbol, and produced 204 batches plus one Clock with
+  `td_sql=0` and `ack=0`. Q2, legacy auction, anchor and A2 semantic content
+  matched the exact DB5/`task009k:` baseline; Core readback was deterministic,
+  coverage `1.0`, missing `0`, stale `154`, `FACT_ONLY`. This validates the
+  barrier hypothesis on a second real date, but not Rabbit delivery/arrival or
+  historical `available_at`. Evidence:
+  `docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER23_EXPERIMENT_20260925.md`.
+
+- [OBSERVED] 2026-09-24 Phase O completed a real same-day full-window replay
+  (`09:15:00–09:40:00`) from TD through the exact current t1-v2 release into
+  isolated Redis DB9/`task009o:` and then Core readback. Independent TD count
+  and t1-v2 `source_in/ticks` were both 1,194,572; the run produced 1,224
+  batches, 78 clocks, 2,408,279 Redis commands, `td_sql=0`, and `ack=0`.
+  Core read 5,222 Q2 hashes with coverage 1.0 and deterministic
+  ordered/shuffled plus sampled Engine hashes. 116 quotes were stale under the
+  explicit 10-second policy, so this is `PHASE_O_PARTIAL`/`REPLAY_PARTIAL`, not
+  NORMAL acceptance. Stable 0920/0924/0925 legacy auction projections matched
+  prior isolated runs; production DB0 had zero `task009o:*` keys. Rabbit
+  arrival/delivery membership, historical `available_at`, and live 09:25:06
+  visibility remain UNKNOWN. Evidence:
+  `docs/work/handoffs/TD_RABBIT_PHASE_O_AUDIT_20260924.md`.
+
 - [VERIFIED] 2026-09-19 commit `3889df4` adds a thin read-only Redis auction
   projection path to the bounded continuous-session shadow. It accepts the
   already-read `0920/0924/0925` Redis projections, rejects duplicate or missing
@@ -276,8 +324,13 @@
 - [VERIFIED] 真实只读 Redis opening probe 在空 `q2:active:20260910` 时输出 `MISSING/EMPTY_UNIVERSE`、coverage `0.0`、freshness `MISSING`；这证明缺失状态不再被误报为 `FRESH`，不证明历史 live coverage。
 - [VERIFIED] 真实只读 TD `daily_kline` 为日历派生的 2026-09-09 返回 3 行，但因历史 `available_at` 未知，`PreviousDayStatsFunction` 正确输出 `UNAVAILABLE`；查询时刻仅作 `observed_at` 审计。
 - [VERIFIED] Cobra `engine-next` 与 `t1-v2-live` 当前 active、零重启；`engine_core` 尚未部署为生产服务。根分区约 83% 使用率、可用约 3.1GB；本轮仅使用独立 `/tmp` 验证目录并清理。
+- [OBSERVED] 2026-09-24 Phase A 只读源合同审计已完成为 `PARTIAL`：当前 exact release 的 Rabbit `DataBatch` 只有 `batch_id/records/sent_at`，没有每 tick arrival、delivery sequence 或 completion/watermark；TD reader 每次查询一个 3 秒片但当前实现按同 `tss` 分组发出多个 batch，因此尚不能宣称 Rabbit delivery 等价。该轮未消费 Rabbit、未写 Redis/TD、未重启服务；证据见 `/home/exedev/validation/td-rabbit-phase-a-20260924/phase_a_report.md`。进入 Phase B 前，根分区 `100%`（约 108MB 可用）和 `engine-next` `activating/auto-restart`（`NRestarts=194`）必须由运维单独处理并复核。
+- [OBSERVED] 2026-09-24 Phase B bounded sliced-read：Core runner 已改为每个 `[start,end)` 3 秒片单独 `SELECT`，当前片提交后释放，再查询下一片；真实 2026-09-18 09:25:00–09:25:06 两片返回 6041/6041 行、5171 symbols、0 invalid，VirtualClock 到 09:25:06，Redis/TD/Rabbit/effect 副作用为 0。完整 500 片、t1-v2 Q2 同源计算、Rabbit delivery 等价仍未验证。证据见 `/home/exedev/validation/td-rabbit-phase-b-slice-20260924T012653+0800/phase_b_report.md`。
+- [OBSERVED] 2026-09-24 Phase B 完整真实 sliced-read：2026-09-18 09:15–09:40 共 500 个 3 秒片、500 次 TD SELECT、1,224,811 行、98 个空片、402 个 PARTIAL、0 invalid；每片提交后释放，500 个 signal/reducer revision，VirtualClock 到 09:40，副作用为 NONE。结果为 sliced supply/function `PASS`、性能 `PASS_WITH_WARN`（约 545.7 秒）；未接 t1-v2 Q2，未证明 Rabbit delivery/arrival 或历史 available_at。证据见 `/home/exedev/validation/td-rabbit-phase-b-full-20260924T012832+0800/phase_b_report.md`。
 
 ## 1. Market & Auction Knowledge
+
+- [OBSERVED] 2026-09-24 对 2026-09-18/09-23 真实 TD `stock_tick_v2` 与 0925 `auction_snapshot_v2` 只读复核：09:25 前样本第五档未展开，09:25 后逐股展开存在 0–4 秒差异；09-18 的单侧第五档样本含 9 只快照涨跌停与 3 只普通状态，故单侧形态可作为结束盘口候选，不等于涨跌停结论。09-18 最新候选覆盖 5171/5221，快照价格非 NULL 的 4408 只逐股价格一致；763 只快照价格 NULL 与派生金额差异仍待生产计算链复核。详细查询边界、限制及分阶段目标见 `docs/work/plans/TD_RABBIT_GLOBAL_3S_REPLAY.md`；该事件时间核对不证明 Rabbit arrival 或 live 09:25:06 可见性。
 
 - [UNKNOWN] Q2 generation 是否是旧生产链真实提供的全局一致版本，待 Gate K 证实。
 - [OBSERVED] 旧 Q2 读取使用 q2:active:{trade_date} 与 q2:{symbol}；px/pc 为 milli 价格字段，其余数量单位必须继续审计。
@@ -591,3 +644,240 @@ Evidence：
   The discarded first attempt had passed the wrong field names and produced
   false zero defaults; it is not evidence. See
   `docs/evidence/legacy_theme_delta_strategy_differential_20260918.md`.
+
+### 2026-09-24 TD → t1-v2 → Core bounded replay
+
+- [VERIFIED] Phase B used real `market_data1.stock_tick_v2` with exactly one
+  read-only `SELECT` per 3-second half-open frame. The complete
+  09:15–09:40 window completed 500 frame queries, returned 1,224,811 rows,
+  preserved 98 empty frames, and did not write Redis/TD or consume Rabbit.
+  Runtime was recorded as `PASS_WITH_WARN`; no correctness failure was inferred
+  from elapsed time. See
+  `/home/exedev/validation/td-rabbit-phase-b-full-20260924T012832+0800/phase_b_report.md`.
+- [VERIFIED] Phase C bounded bridge ran the exact current t1-v2 release on the
+  real TD 09:25:00–09:25:06 window in local `--q2frame` mode. It processed
+  6,041 rows into 5 source-time batches and 6,041 Q2 updates with
+  `redis=skip`, `tdengine=skip`, `ack=0`, and `td_sql=0`. Core replayed the
+  frozen Q2Frame twice; final/frame/projection hashes, signal count, reducer
+  revision, symbol coverage, and VirtualClock were identical. This proves only
+  a bounded Q2 bridge, not live Rabbit delivery parity or the full-window
+  bridge. See
+  `/home/exedev/validation/td-rabbit-phase-c-q2-2slice-20260924T014004+0800/phase_c_report.md`.
+- [OPEN] A 3-second TD read slice and a t1-v2 processing batch are different
+  boundaries: t1-v2 groups rows by source `tss`. The replay must preserve
+  source batches while maintaining the 3-second logical timeline; it must not
+  force one batch per slice or call synthetic ordering historical Rabbit
+  arrival order. TD space warnings and `TD_WRITE_HEALTH` remain unproven.
+- [VERIFIED] The same bridge was extended to the real 09:15–09:40 window.
+  Exact t1-v2 consumed `1,224,811` TD rows with no source rejects and emitted
+  `1,205` source-time batches, `1,226,603` Q2Frame updates, `98` clock events,
+  and `5,221` symbols in local `--q2frame` mode (`redis=skip`,
+  `tdengine=skip`, `ack=0`, `td_sql=0`). Core consumed that frozen artifact
+  twice; all determinism fields matched and the result was
+  `REPLAY_READY_BOUNDED`. This closes the real full-window t1-v2→Core Q2
+  bridge only. Rabbit batch membership/arrival, 09:25:06 live visibility,
+  Redis key/TTL projection, and TD write health remain open. See
+  `/home/exedev/validation/td-rabbit-phase-c-q2-full-20260924T014403+0800/phase_c_full_report.md`.
+- [VERIFIED] After correcting the Core TD runner to always canonical-sort each
+  slice (TD `ORDER BY ts,symbol` is not a proven same-time/same-symbol source
+  sequence), the real 09:15–09:40 sliced-read was rerun: 500 SELECTs,
+  1,224,811 rows, 98 empty frames, 5,221 symbols, no invalid rows, and
+  VirtualClock 09:40. The result was functional
+  `CROSS_SECTION_REPLAY_PASS_WITH_WARN`; elapsed time was recorded only, not
+  used as a failure gate. Evidence:
+  `/home/exedev/validation/td-rabbit-phase-b-full-canonical-20260924T192010+0800/phase_b_canonical_report.md`.
+- [VERIFIED] Phase E allowed Redis writes only in isolated DB14/DB13 with
+  unique prefixes. Real t1-v2 replay over 09:25:00–09:25:09 processed 6,041
+  TD ticks in 5 source-time batches, emitted one empty-slice Clock at 09:25:06,
+  produced 12,126 Redis commands, and recorded `td_sql=0`, `ack=0`. DB14
+  contained 5,172 Q2 keys, 0925/latest A2, runtime and immutable 0925 anchor;
+  production DB0 had no task prefix. A repeat run in DB13 had the same
+  normalized Redis content hash. Evidence:
+  `/home/exedev/validation/td-rabbit-phase-e-redis-20260924T193920+0800-barrier/`.
+- [VERIFIED] The current release `snapshot_trigger.cpp` and real Redis anchor
+  both use the 09:25:06 barrier. Core `AuctionAnchorRevisionV1` now records
+  `freeze_time_ms=first_observable_ms` at that barrier while retaining
+  `preferred_finalize_ms=09:25:10` as adaptive-grace evidence. Full Core tests
+  remain green. This does not prove historical Rabbit arrival or live visible
+  membership; `HISTORICAL_AVAILABLE_AT`, `RABBIT_DELIVERY_EQUIVALENCE`, and
+  `TD_WRITE_HEALTH` remain `UNKNOWN/UNPROVEN`.
+- [VERIFIED] A bounded real 09:24:00–09:25:09 replay was run twice through the
+  current t1-v2 release with isolated Redis DB12/DB11. It processed 46,507 TD
+  ticks in 65 source-time batches, emitted one empty-slice Clock at 09:25:06,
+  produced 93,480 Redis commands, and wrote no TD SQL or ACK. Both 0924 and
+  0925 A2 projections were emitted. Removing DB/prefix differences made all
+  Q2/A2/anchor semantic values identical; only runtime `redis_bytes` differed
+  because the test prefixes had different lengths.
+- [PARTIAL] Reading 5,209 real Q2 hashes from isolated Redis DB12 into Core
+  produced deterministic ordered/shuffled opening projections
+  (`REPLAY_READY_BOUNDED`, coverage 1.0 for the captured universe). Against
+  `auction_snapshot_v2`, 0925 price and change fields matched comparable rows,
+  while match amount/rest bid/rest ask had 1,576/1,626/1,621 mismatches. These
+  fields are not yet proven to share the same production/version semantics;
+  zeros are not inferred. Evidence:
+  `/home/exedev/validation/td-rabbit-phase-f-0924-0925-20260924T194854+0800/`.
+- [VERIFIED] Applying the current release `AuctionCalculator` formulas to each
+  symbol's last real TD tick before 09:25:06 reproduced t1-v2 Redis `am`, `br`,
+  and `ar` for 5171/5171 symbols each. The remaining differences against
+  `auction_snapshot_v2` therefore identify an unresolved snapshot/Q2 field
+  semantic or producer-version boundary, not a reason to silently alter Q2 or
+  fill missing values with zero.
+- [VERIFIED] Phase G extended the real Redis write path to
+  `09:20:00–09:25:09` using the exact current t1-v2 release and real TD input.
+  The run processed `129281` ticks in `305` source batches, emitted one empty
+  Clock, committed `260710` Redis commands, and wrote `td_sql=0`, `ack=0`.
+  Isolated DB15/`task009g:` produced 5209 Q2 hashes and A2 `0920/0924/0925`
+  outputs; an identical repeat in DB10/`task009g2:` had the same normalized
+  semantic content (SHA-256
+  `89af33ea3c469271ca419737e36edb091f5af4030cca19af16fc6055e502add8`). Core
+  read the DB15 Q2 capture and produced equal ordered/shuffled projection
+  hashes. DB0 stayed at 12269 keys with no test prefix. This is real Redis
+  write/read evidence, but TASK-008 remains `PARTIAL_EVIDENCE` because
+  snapshot amount/rest semantics, Rabbit delivery equivalence and historical
+  `available_at` are still unproven. See
+  `docs/work/handoffs/TD_RABBIT_PHASE_G_AUDIT_20260924.md`.
+- [VERIFIED] A follow-up SELECT-only source-time audit compared the current
+  t1-v2 formulas against all 129281 real ticks before the 09:25:06.197 barrier.
+  Of 5221 historical 0925 snapshot rows, 5184 matched some earlier TD tick's
+  `match/br/ar` tuple, but only 3576 matched the event-time latest tick before
+  the barrier. Matches clustered at 09:25:00 (3606), 09:24:59 (693),
+  09:25:01 (681), and 09:25:02 (121). This is evidence for a visibility/arrival
+  set difference between the old snapshot and event-time replay, not evidence
+  of Rabbit arrival order; the replay must not substitute the old snapshot
+  values. Rabbit delivery and historical `available_at` remain UNKNOWN. See
+  `/home/exedev/validation/td-rabbit-phase-h-snapshot-source-20260924T200951431+0800/`.
+- [PARTIAL] A cross-day real Redis repeat on 2026-09-23 09:24:00–09:25:09
+  used the exact current t1-v2 release and real TD input. DB9/`task009i:`
+  processed 44276 ticks in 64 source-time batches plus one Clock, committed
+  89010 Redis commands, and recorded `td_sql=0`, `ack=0`; DB8/`task009i2:`
+  repeated the same run. Both isolated namespaces had 5215 keys and identical
+  normalized semantic content. Core read 5206 real Q2 hashes and obtained
+  equal ordered/shuffled projection hashes. The 0925 snapshot has 5222 rows,
+  including 16 symbols absent from this TD window; this is retained as a real
+  source-set difference, not silently filled or treated as a producer failure.
+  `normal_opening_pass=UNPROVEN` and historical Rabbit/available_at evidence
+  remain open. See `docs/work/handoffs/TD_RABBIT_PHASE_I_AUDIT_20260924.md`.
+- [VERIFIED] Extending the same 2026-09-23 replay to the required 09:15
+  baseline (`09:15:00–09:25:09`) processed 212022 real TD ticks in 604
+  batches with one Clock and committed 428284 Redis commands to isolated
+  DB5. A DB4 repeat produced identical normalized semantic content. The TD
+  source, t1-v2 Q2, and 0925 snapshot symbol sets were all 5222; the 16
+  symbols absent from the 09:20-start run were present once the 09:15 baseline
+  was included. Core readback was deterministic for 5222 Q2 rows but remained
+  `REPLAY_PARTIAL` with 17 stale baseline quotes under the explicit 10-second
+  freshness policy. t1-v2 0925 A2 metadata had `n=5208` versus 5222 Q2 hashes,
+  so anchor/candidate field parity remains `PARTIAL`; no values were filled or
+  silently promoted. See `docs/work/handoffs/TD_RABBIT_PHASE_K_AUDIT_20260924.md`.
+- [VERIFIED] The 14 Q2 symbols not present in the 2026-09-23 0925 A2 anchor
+  were checked against the real `auction_snapshot_v2`: every row had
+  `px/chg=NULL` and `match_amt/rest_bid/rest_ask=0`. The A2 count of 5208
+  therefore reflects an unavailable-fact projection, not a Q2 symbol loss;
+  complete numeric A2/legacy-snapshot parity remains PARTIAL. The detailed
+  evidence is `a2_missing_symbol_audit.json` in the Phase K validation
+  directory.
+- [VERIFIED] Real field comparison for the remaining 5208 Phase K A2 symbols
+  matched change, match amount, rest bid, and rest ask at 5208/5208. Price
+  matched 5068/5068 comparable non-NULL snapshot rows; 140 rows explicitly
+  retain unavailable price semantics (`snapshot NULL`, Q2 `a25=0`). The
+  resulting status is `PARTIAL_WITH_EXPLICIT_UNAVAILABLE`, not strict full
+  parity. Evidence: `a2_field_parity_audit.json` in the Phase K directory.
+- [VERIFIED] The exact current t1-v2 release replayed the complete real
+  2026-09-23 `09:15:00–09:40:00` TD window into isolated Redis DB3 and was
+  repeated in DB2. Both runs processed 1204178 ticks in 1224 batches with 78
+  clocks and 2430075 Redis commands; normalized semantic content matched
+  exactly, with `td_sql=0` and `ack=0`. Frozen 0920/0924/0925 A2 and anchor
+  keys matched the shorter 09:25 cutoff run, proving the later rolling Q2 did
+  not overwrite frozen auction output. The final 5222-Q2 capture was then
+  read by Core with coverage=1.0; ordered/shuffled projection hashes and
+  sampled Engine hashes matched. Core status is `REPLAY_PARTIAL` because 68
+  quotes are stale under the explicit 10-second freshness policy; this is not
+  NORMAL opening acceptance. Evidence is
+  `docs/work/handoffs/TD_RABBIT_PHASE_L_AUDIT_20260924.md`.
+- [VERIFIED] The exact t1-v2 release derives auction/phase `HHMMSS` from
+  `ts_ms / 1000`: a source tick such as `09:25:06.197` is evaluated as the
+  `09:25:06` barrier second while its original millisecond remains available
+  in source evidence. This is second-truncated trigger semantics, not loss of
+  the raw event timestamp.
+- [VERIFIED] Read-only TD distributions around the real 09:25 barrier show
+  repeated per-symbol ticks rather than one tick per symbol: 2026-09-18 had
+  10914 rows / 5208 symbols / 4930 multi-tick symbols in
+  `[09:24:57,09:25:09)`, with the last event second at 09:25:04; 2026-09-23
+  had 9970 rows / 5205 symbols / 4762 multi-tick symbols, with the last event
+  second at 09:25:03. Both dates can have no event exactly at 09:25:06, so the
+  replay Clock must trigger the freeze; this does not prove Rabbit arrival or
+  live visibility. Q2 must still process every tick, while auction candidate
+  selection remains a separate view.
+- [VERIFIED] Current production Redis DB0 on 2026-09-24 had 5225 members in
+  `q2:active:20260924` and 5225 `q2:<symbol>` hashes, while same-day TD
+  09:15–09:40 and `auction_snapshot_v2` each covered 5222 symbols. The three
+  Redis-only symbols (`001246`, `301660`, `301716`) had trade-date-midnight
+  source timestamps and zero-valued fields with no same-day TD tick, so they
+  are stale/unavailable placeholders rather than valid market observations.
+  Auction Redis metadata `n=4865/5116/5208` for 0920/0924/0925 is a candidate
+  or Top-N contract, not full-market coverage. Evidence:
+  `docs/work/handoffs/TD_RABBIT_LIVE_LOG_AUDIT_20260924.md`.
+- [PARTIAL] Phase M same-day real bridge on 2026-09-24 replayed TD
+  `09:15:00–09:25:09` through the exact current t1-v2 binary into isolated
+  Redis DB1/`task009m:`. Independent TD count and t1-v2 `source_in/ticks` were
+  both 210730; t1-v2 emitted 604 batches plus one 09:25:06 Clock, 425676 Redis
+  commands, `td_sql=0`, and `ack=0`. Core read 5222 Q2 hashes with coverage
+  1.0; ordered/shuffled projection and sampled Engine hashes matched, but 549
+  quotes were stale under the explicit 10-second policy, so this is
+  `REPLAY_PARTIAL`, not NORMAL acceptance. DB0 had zero task009m keys. The
+  0925 frozen summary/top-amount matched DB0 after removing write-time
+  milliseconds; two top-change boundary ties differ. Rabbit delivery/arrival
+  and historical `available_at` remain UNKNOWN. See
+  `docs/work/handoffs/TD_RABBIT_PHASE_M_AUDIT_20260924.md`.
+- [VERIFIED] Phase M full same-day 0925 anchor comparison found 5208/5208
+  match amounts and 5208/5208 rest-bid amounts equal to TD rows. The 14 TD rows
+  absent from the anchor all had NULL price/change and zero match/rest fields;
+  they are explicit unavailable facts. Anchor does not carry rest-ask/price/
+  limit fields for strict comparison, so those remain NOT_COMPARABLE rather than
+  inferred. Anchor SHA-256:
+  `52b2c8f0faf58e2db3efaac69a1c86516be9b6ff6c4ed60016dda04179169884a`.
+- [VERIFIED] Phase M was repeated in isolated Redis DB6/`task009m2:` for the
+  same 2026-09-24 cutoff. Counters remained 210730 ticks, 604 batches, one
+  Clock, 425676 Redis commands, `td_sql=0`, and `ack=0`; normalized semantic
+  key content matched DB1 (SHA-256
+  `17d8f3f176116d8578559713fcfcf0d9d5e95294f74e00b3c4e85356acd3c28f`). Only
+  Redis runtime byte/counter metrics differed. This closes same-input repeat
+  determinism for the isolated cutoff, not Rabbit arrival equivalence.
+- [VERIFIED/PARTIAL] The same-day barrier distribution was 4681 rows in
+  `09:25:00–09:25:03`, one row in `09:25:03–09:25:06`, and zero rows in
+  `09:25:06–09:25:09`. DB1 Q2 max source time was 09:25:03 while the frozen
+  anchor meta time was 09:25:06, proving the observed-date empty-Clock path.
+  A real `05.xxx/06.xxx/07.xxx` mixed delivery is absent from available TD
+  history and remains `UNVERIFIED`; no synthetic data was used to upgrade it.
+- [VERIFIED] A read-only TD search for 2026-09-18 through 2026-09-24 found zero
+  `stock_tick_v2` rows in `[09:25:06,09:25:09)` on every date. Historical TD
+  therefore cannot supply a real mixed 05/06/07 barrier sample; Rabbit capture
+  or a future source date is required for that specific evidence.
+- [PARTIAL] Phase N (`PHASE_N_PARTIAL`) same-day real opening bridge on
+  2026-09-24 replayed TD
+  `09:15:00–09:32:09` through the exact current t1-v2 binary into isolated
+  Redis DB7/`task009n:`. Independent TD count and t1-v2 `source_in/ticks` were
+  both 429392; t1-v2 produced 753 batches, 78 clocks, 878448 Redis commands,
+  `td_sql=0`, and `ack=0`. Core directly read 5222 Q2 hashes at historical
+  observation `09:32:09`, coverage=1.0, with 24 stale quotes under the
+  explicit 10-second policy; ordered/shuffled projection and sampled Engine
+  hashes matched. Result remains `REPLAY_PARTIAL` and
+  `normal_opening_pass=UNPROVEN`; DB0 had zero `task009n:*` keys. Evidence:
+  `docs/work/handoffs/TD_RABBIT_PHASE_N_AUDIT_20260924.md`.
+- [VERIFIED] Phase N was repeated through the same t1-v2 binary into isolated
+  Redis DB8/`task009n2:`. Counters matched DB7 exactly (429392 ticks, 753
+  batches, 78 clocks, 878448 Redis commands, `td_sql=0`, `ack=0`). The two
+  Redis projections had 5232 normalized semantic keys each, zero differences,
+  and equal SHA-256
+  `c88639da305a303221c8ea9ca900060a816551bcf0385244aadb62f854050a05` after
+  excluding runtime metrics. DB0 remained untouched. This proves isolated
+  same-input repeat determinism, not Rabbit arrival or historical
+  `available_at` equivalence.
+- [PARTIAL] ECC contract-first audit of the exact t1-v2 Rabbit path confirms
+  the wire fields (`DataBatch.batch_id/records/sent_at`, DataRequest
+  compression) and the RawTick field set, but the C++ runtime `TickBatch`
+  retains only `mode/logical_ts_ms/wall_ts_ms/seq_no/ticks`; wire `batch_id`,
+  `sent_at`, and `record_count` are not propagated. Per-tick arrival,
+  delivery sequence, completion watermark, and historical `available_at` are
+  absent/UNKNOWN. Core's RabbitFixtureAdapter is implemented, but exact
+  production C++ wiring remains a separately approved contract task. See
+  `docs/work/handoffs/TD_RABBIT_CONTRACT_AUDIT_20260924.md`.
