@@ -138,3 +138,41 @@ Evidence directory:
 
 The implementation is committed locally only. No push, merge, deployment,
 service restart, Phase E operation, or production Redis/TD write was performed.
+
+## Follow-up — TD auction snapshot anchor semantics (2026-09-25)
+
+The t1-v2 development writer had one release-contract mismatch: per-symbol TD
+auction rows used the latest `QuoteState.px_milli` and latest change even when
+the requested 0920/0924/0925 anchor was unavailable. The writer now uses the
+same `auction_snapshot_price_fact` / `auction_change_fact` contract as the
+auction projection; unavailable anchor values remain SQL `NULL`. A regression
+checks both an anchor that differs from latest quote price and a missing anchor
+that must not fall back to latest quote price.
+
+t1-v2 local commit:
+
+```text
+344daaee912069a83f31b01d71db79a97b053e50
+branch: codex/task-q2-pure-function
+not pushed, merged, or deployed
+```
+
+Verification: full-dependency build and self-test passed. A fresh real TD
+dry-run read 2026-09-18 `[09:15:00,09:25:09)` in 203 three-second slices
+(226,254 rows/ticks, zero rejects). It emitted 0920/0924/0925 barrier evidence;
+all 5,171 candidate members and their 15 selected state fields exactly match
+the prior full-window replay. Redis commands, TD writes, and ACKs were all zero.
+The evidence is at
+`/home/exedev/validation/t1v2-td-anchor-semantics-20260925T142531+0800/`.
+
+This fixes the development-writer contract, but does not explain the 763 NULL
+prices in the stored 2026-09-18 snapshot: current event-time replay has anchor
+values for the candidate set, while historical `available_at` and visibility
+at the 09:25:06 live freeze remain unknown. The active 2026-09-23 release source
+uses the same anchor helper, but the exact binary deployed on 2026-09-18 is not
+proven by the available release metadata. Do not infer the cause from this
+alignment.
+
+Status remains `CANDIDATE_SELECTION=PASS_WITH_LIMITS`, `STAGE_D=PARTIAL`,
+`PHASE_P=PARTIAL`, `TASK_008=PARTIAL`; M3-1 remains blocked and
+`TD_WRITE_HEALTH=UNPROVEN`. No next phase is started.

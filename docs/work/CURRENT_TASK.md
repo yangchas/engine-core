@@ -27,6 +27,25 @@ historical `available_at`, live 09:25:06 visibility, historical `limit_state`
 provenance, NULL prices, and amount differences remain unknown/unresolved.
 M3-1 remains blocked and `TD_WRITE_HEALTH=UNPROVEN`.
 
+## Latest Stage D follow-up — TD auction anchor writer repair (2026-09-25)
+
+t1-v2 local commit `344daaee912069a83f31b01d71db79a97b053e50` aligns the TD
+auction snapshot writer with the existing anchor-fact contract: 0920/0924/0925
+rows use their corresponding captured anchor and serialize unavailable anchor
+price/change as `NULL`, never the latest quote as a substitute. Full-dependency
+self-test passed. A fresh read-only real TD replay of 2026-09-18
+`[09:15:00,09:25:09)` completed 203 three-second slices / 226,254 rows with
+zero rejects; all 5,171 candidate states and 15 selected fields matched the
+previous full-window replay exactly. `redis_cmds=0`, `td_sql=0`, `ack=0`.
+Evidence: `/home/exedev/validation/t1v2-td-anchor-semantics-20260925T142531+0800/`.
+
+The 763 historical NULL A25 prices are still unexplained; historical
+availability and live visibility at the 09:25:06 freeze are unknown. The
+writer fix does not establish which release generated the 2026-09-18 snapshot.
+This is a narrow writer-contract repair only: `STAGE_D=PARTIAL`,
+`PHASE_P=PARTIAL`, `TASK_008=PARTIAL`; do not advance to a new phase from this
+result. Commit is local only; no push/deploy or TD write.
+
 ## Latest Phase P full-window isolated Redis replay audit (2026-09-25)
 
 The real 2026-09-23 `[09:15:00,09:40:00)` TD window was replayed twice through
