@@ -111,6 +111,30 @@ These Q2, auction and anchor values all equal the first isolated run. The 68
 stale records are not missing hashes or parse errors; they make the snapshot
 partial at this cutoff. `TOP_AMOUNT` is not full-market coverage.
 
+## Independent retained-baseline comparison
+
+The earlier Redis DB5 baseline `task009k:` was still present at audit time
+(5,233 prefixed keys, no evictions). Its active set contained 5,222 symbols;
+the sorted-symbol SHA-256 was
+`5dfd52d3f75efa6179f463422285c1e1254c7c124a086cbd51dd7f4d49802cb5`. The
+current full-window run's active set has the same 5,222 symbols and same
+sorted-symbol SHA-256. Core read-only adapter comparison also found exact
+content-hash equality for each retained frozen `TOP_AMOUNT` projection:
+
+```text
+0920  8aeb253136483a2633fa83ea0ab20b8c67070382f070d26cb5394c05d26b38d4
+0924  e4bda4e6b06f0d4c032a477391124e53430e88540656d2012e5a9fdae385622a
+0925  6432aecbe66b6ef299309c26cca0cf54cbe8edb03184ce151949327684bcda36
+```
+
+The 5,208-symbol 0925 anchor raw JSON was byte-identical by SHA-256:
+`1df35d745018384e6585df125e2c1f78e2df935c2114ed9ff2af20cc320d8bcb`.
+This provides an independent historical comparison for active membership
+and frozen auction outputs. The DB5 baseline window ends at 09:25:09, whereas
+the new replay ends at 09:40:00; therefore it is not a same-cutoff oracle for
+the evolving per-symbol Q2 latest values, and no such Q2 value parity is
+claimed here.
+
 ## Phase alignment / limitations
 
 This demonstrates a bounded current-source path over one full real window:

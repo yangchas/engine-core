@@ -9,7 +9,10 @@ rejects, zero ACKs and zero TD write statements. Core's read-only adapters
 read back Q2 5,222/5,222 with no missing hashes and 68 stale at the explicit
 10-second cutoff; 0920/0924/0925 were each 200-row `TOP_AMOUNT` projections.
 Q2, all three auction hashes, and the 5,208-symbol anchor raw SHA-256 match
-the first isolated run.
+the first isolated run. A separate read-only comparison with retained DB5 /
+`task009k:` also found the active symbol set, all three frozen auction hashes,
+and anchor raw SHA-256 equal. The DB5 run ends at 09:25:09, so no 09:40 latest
+Q2 value parity is claimed.
 
 The first run's 176 MB barrier CSV is preserved as diagnostic evidence but is
 invalid for 0926 auditing: ordinary `tick` latest updates were mislabeled as
