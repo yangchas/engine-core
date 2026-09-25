@@ -16,6 +16,14 @@
   Redis Q2 snapshots and mapping/security artifacts, but no raw Rabbit
   envelope. Rabbit delivery membership/order remains UNKNOWN. No live Rabbit,
   Redis, TD, or production service action occurred; the commit is local only.
+  A subsequent audit found 32-bit overflow in the 4-byte-prefix plus
+  `header_len` bounds check. t1-v2 local commit
+  `16beee67cf778cebaa20fb442ca178d01b301979` now validates by subtraction
+  before pointer arithmetic and rejects the `0xFFFFFFFC` length case. The
+  full-dependency self-test and an ASan/UBSan full-dependency self-test both
+  pass; the build retains only existing hiredis/TAOS address-of-array
+  warnings. This remains fixture-level evidence, not real Rabbit payload
+  validation; no external data source or production service was accessed.
   See docs/work/handoffs/TD_RABBIT_RUNTIME_RELEASE_AUDIT_20260925.md.
 
 - `[VERIFIED 2026-09-25 t1-v2 Rabbit metadata sidecar]` On the local

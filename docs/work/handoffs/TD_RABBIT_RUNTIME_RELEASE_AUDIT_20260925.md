@@ -172,3 +172,23 @@ payload 验证。未连接/消费 Rabbit，未写 Redis/TD，未改 ACK/生产�
 真实来源验证，必须先取得既有原始 envelope，或单独批准一种不新增 consumer、
 不改变 ACK 且不影响现有消费链的受控 capture 方案。在此之前，
 RABBIT_LIVE_PAYLOAD=UNVERIFIED，Phase P/TASK-008 仍为 PARTIAL。
+
+## Follow-up — 32-bit header-length overflow guard
+
+在继续审查结构化 parser 时发现：`body.size() < 4u + header_len` 会先在
+32-bit unsigned arithmetic 中求和；`header_len=0xFFFFFFFC` 可使和回绕为
+0，令四字节输入绕过长度检查并形成越界 string range。t1-v2 本地提交
+`16beee67cf778cebaa20fb442ca178d01b301979` 改为先验证
+`header_size <= body.size() - 4`，校验通过后才计算指针偏移；self-test 新增
+该回绕长度拒绝用例。
+
+全依赖 build/self-test 与 ASan/UBSan 全依赖 build/self-test 均通过：
+`/tmp/t1v2-rabbit-header-length-overflow-20260925` 和
+`/tmp/t1v2-rabbit-header-length-overflow-asan-20260925`；`git diff --check`
+通过。仅见既有 hiredis/TAOS 数组地址告警，以及 sanitizer 下大型 self-test
+的 GCC 变量跟踪提示。此为本地 fixture/parser 安全性证据，不是真实 Rabbit
+payload 验证；未连接 Rabbit、Redis 或 TD，未写 Redis/TD，未触碰 ACK、生产
+服务或部署。分支 `codex/task-q2-pure-function` 的工作树干净；提交未推送，且
+当前 t1-v2 仓库无 remote。真实 producer 源码及原始 envelope 仍缺，因此
+Rabbit delivery/batch/arrival 等价保持 `UNKNOWN/UNVERIFIED`，Phase P/TASK-008
+仍为 `PARTIAL`。
