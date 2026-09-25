@@ -1,5 +1,24 @@
 # Current Task
 
+## Latest bounded gate repair — replay status dimensions (2026-09-25)
+
+The frozen-Q2 opening shadow report now separates projection determinism from
+whether sampled Engine inputs are comparable. Before Engine evaluation, quotes
+with missing source time, another trade date, or an event time after the
+whole-second-truncated historical observation cutoff are excluded; subseconds
+are discarded, and the complete source projection still records its original
+quality diagnostics. CLI status codes distinguish mismatch (`2`) from
+not-comparable (`3`). Subsecond cutoff cases (`.000/.197/.999`) are treated as
+the same second; the following second is excluded. Regression suite: `16`
+targeted and `705` total tests passed; compileall and diff-check pass. The real frozen Redis capture
+contains 5,219 future-dated quotes relative to 09:32:10; the four sampled
+symbols therefore have no eligible quote, so projection determinism is `PASS`
+but Engine comparison is `NOT_COMPARABLE`, not a vacuous pass. Historical
+`available_at` remains `UNKNOWN`, and `normal_opening_pass` remains `UNPROVEN`.
+No production gate or live path changed. TASK-008 / Phase P remain partial;
+M3-1 remains blocked. Details and verification:
+`docs/work/handoffs/TASK-008-GATE-STATUS-SEPARATION-20260925.md`.
+
 ## Bounded Stage D fifth-depth candidate repair and audit (2026-09-25)
 
 t1-v2 development commit `b2a575ca585f248e4454997751af87590aa76bd3` adds one

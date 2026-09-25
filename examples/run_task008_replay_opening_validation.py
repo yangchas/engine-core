@@ -17,13 +17,12 @@ import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from engine_core import (  # noqa: E402
-    DataStatus,
     DeterministicEngine,
     EngineSignal,
     FreshnessPolicy,
@@ -43,6 +42,14 @@ def _parse_observed_at(value: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("observed-at must include a timezone")
     return parsed
+
+
+def _truncate_to_second(value: datetime) -> datetime:
+    """Apply the replay contract's whole-second event-time precision."""
+
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("time values must include a timezone")
+    return value.replace(microsecond=0)
 
 
 def _canonical_quote_to_row(symbol: str, quote: Mapping[str, Any]) -> dict[str, Any]:
@@ -74,12 +81,12 @@ def _canonical_quote_to_row(symbol: str, quote: Mapping[str, Any]) -> dict[str, 
     return row
 
 
-def _load_rows(path: Path) -> list[dict[str, Any]]:
-    """Load JSONL raw rows or a frozen Redis Q2 projection capture."""
+def _load_rows_from_bytes(content: bytes, *, suffix: str) -> list[dict[str, Any]]:
+    """Decode the exact bytes whose digest is recorded in the replay report."""
 
-    text = path.read_text(encoding="utf-8")
+    text = content.decode("utf-8")
     stripped = text.lstrip()
-    if stripped.startswith("{") and path.suffix.lower() == ".json":
+    if stripped.startswith("{") and suffix.lower() == ".json":
         payload = json.loads(text)
         quotes = payload.get("projection", {}).get("quotes")
         if isinstance(quotes, dict):
@@ -100,6 +107,12 @@ def _load_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _load_rows(path: Path) -> list[dict[str, Any]]:
+    """Load JSONL raw rows or a frozen Redis Q2 projection capture."""
+
+    return _load_rows_from_bytes(path.read_bytes(), suffix=path.suffix)
+
+
 def _raw_hash(row: Mapping[str, Any]) -> dict[str, Any]:
     """Map the frozen Q2 capture dialect to the existing adapter dialect."""
 
@@ -113,15 +126,26 @@ def _projection(
     trade_date: str,
     observed_at: datetime,
     stale_after_ms: int,
+    expected_symbols: Sequence[str] | None = None,
 ) -> Q2ProjectionSnapshot:
     # Keep the symbol-to-payload association independent of input order.  The
     # shuffled pass is intended to test deterministic replay, not to permute
     # values between symbols by zipping a sorted key list with unsorted rows.
+    normalized_symbols = [str(row["symbol"]).zfill(6) for row in rows]
+    if len(normalized_symbols) != len(set(normalized_symbols)):
+        raise ValueError("duplicate symbol in Q2 capture after symbol normalization")
     raw = {
-        str(row["symbol"]).zfill(6): _raw_hash(row)
-        for row in rows
+        symbol: _raw_hash(row)
+        for symbol, row in zip(normalized_symbols, rows)
     }
-    expected = tuple(sorted(raw))
+    expected = tuple(
+        sorted(
+            raw
+            if expected_symbols is None
+            else {str(symbol).zfill(6) for symbol in expected_symbols}
+        )
+    )
+    observed_at = _truncate_to_second(observed_at)
     return build_q2_projection(
         trade_date,
         observed_at,
@@ -129,7 +153,10 @@ def _projection(
         raw,
         freshness_policy=FreshnessPolicy(
             stale_after_ms=stale_after_ms,
-            max_future_skew_ms=0,
+            # Timestamp subseconds are intentionally discarded for replay.
+            # With an integer-second observation boundary, this admits only
+            # the remainder of that same second, never the following second.
+            max_future_skew_ms=999,
         ),
         source_id="replay:production-ground-truth-q2",
     )
@@ -181,6 +208,7 @@ def _run_pass(
     symbols: tuple[str, ...],
     shuffled: bool,
 ) -> dict[str, Any]:
+    observed_at = _truncate_to_second(observed_at)
     ordered = list(rows)
     if shuffled:
         random.Random("TASK-008-replay-opening").shuffle(ordered)
@@ -189,6 +217,46 @@ def _run_pass(
         trade_date=trade_date,
         observed_at=observed_at,
         stale_after_ms=stale_after_ms,
+    )
+    # A current Redis Q2 capture is not a historical availability log.  At a
+    # historical cutoff, never let a quote from a later event time (or a
+    # different trade date / unknown source time) enter the Engine.  Preserve
+    # the unfiltered projection above for evidence, and replay only the
+    # event-time-eligible subset.  This does not prove historical availability.
+    event_time_eligible_symbols = {
+        symbol
+        for symbol, quote in projection.quotes.items()
+        if quote.source_record_time_ms is not None
+        and "future_ts" not in quote.field_errors
+        and "trade_date" not in quote.field_errors
+    }
+    normalized_rows = {
+        str(row["symbol"]).zfill(6): row
+        for row in rows
+    }
+    event_time_eligible_rows = [
+        normalized_rows[symbol]
+        for symbol in sorted(event_time_eligible_symbols)
+        if symbol in normalized_rows
+    ]
+    engine_projection = _projection(
+        event_time_eligible_rows,
+        trade_date=trade_date,
+        observed_at=observed_at,
+        stale_after_ms=stale_after_ms,
+        expected_symbols=projection.expected_symbols,
+    )
+    future_count = sum(
+        "future_ts" in quote.field_errors for quote in projection.quotes.values()
+    )
+    trade_date_mismatch_count = sum(
+        "trade_date" in quote.field_errors for quote in projection.quotes.values()
+    )
+    missing_source_time_count = sum(
+        quote.source_record_time_ms is None for quote in projection.quotes.values()
+    )
+    sample_quote_count = sum(
+        symbol in engine_projection.quotes for symbol in symbols
     )
     field_error_counts = Counter(
         error
@@ -211,9 +279,32 @@ def _run_pass(
             "newest_source_time_ms": projection.newest_source_time_ms,
             "content_hash": projection.content_hash,
         },
+        "engine_input": {
+            "eligible_quote_count": len(engine_projection.quotes),
+            "expected_count": len(engine_projection.expected_symbols),
+            "excluded_future_count": future_count,
+            "excluded_trade_date_mismatch_count": trade_date_mismatch_count,
+            "excluded_missing_source_time_count": missing_source_time_count,
+            "sample_quote_count": sample_quote_count,
+            "sample_quote_symbols": sorted(
+                set(symbols) & set(engine_projection.quotes)
+            ),
+            "quality_status": (
+                "NO_EVENT_TIME_ELIGIBLE_QUOTES"
+                if not engine_projection.quotes
+                else "PARTIAL_EVENT_TIME_ELIGIBLE_QUOTES"
+                if len(engine_projection.quotes) < len(engine_projection.expected_symbols)
+                else "EVENT_TIME_ELIGIBLE_QUOTES"
+            ),
+            "historical_available_at_status": "UNKNOWN",
+            "filter_policy": (
+                "same trade date and source event time <= observed_at; "
+                "availability unknown"
+            ),
+        },
         "engine": {
             symbol: _engine_result(
-                projection,
+                engine_projection,
                 trade_date=trade_date,
                 symbol=symbol,
                 logical_time_ms=logical_time_ms,
@@ -235,8 +326,11 @@ def main() -> int:
     args = parser.parse_args()
     if args.stale_after_ms < 0:
         parser.error("stale-after-ms must be nonnegative")
-    observed_at = _parse_observed_at(args.observed_at)
-    rows = _load_rows(args.input)
+    requested_observed_at = _parse_observed_at(args.observed_at)
+    observed_at = _truncate_to_second(requested_observed_at)
+    input_bytes = args.input.read_bytes()
+    input_sha256 = hashlib.sha256(input_bytes).hexdigest()
+    rows = _load_rows_from_bytes(input_bytes, suffix=args.input.suffix)
     symbols = tuple(sorted({item.strip() for item in args.symbols.split(",") if item.strip()}))
     ordered = _run_pass(
         rows,
@@ -254,34 +348,93 @@ def main() -> int:
         symbols=symbols,
         shuffled=True,
     )
+    ordered_engine_symbols = set(ordered["engine"])
+    shuffled_engine_symbols = set(shuffled["engine"])
+    engine_symbols = tuple(sorted(ordered_engine_symbols & shuffled_engine_symbols))
+    projection_determinism_passed = (
+        ordered["projection"]["content_hash"]
+        == shuffled["projection"]["content_hash"]
+    )
+    ordered_sample_symbols = set(ordered["engine_input"]["sample_quote_symbols"])
+    shuffled_sample_symbols = set(shuffled["engine_input"]["sample_quote_symbols"])
+    engine_comparison_possible = bool(engine_symbols) and (
+        ordered_engine_symbols == shuffled_engine_symbols
+    ) and bool(ordered_sample_symbols) and (
+        ordered_sample_symbols == shuffled_sample_symbols
+    )
     comparison = {
-        "projection_content_hash_equal": ordered["projection"]["content_hash"] == shuffled["projection"]["content_hash"],
+        "projection_content_hash_equal": projection_determinism_passed,
         "engine_content_hash_equal": {
-            symbol: ordered["engine"][symbol]["content_hash"] == shuffled["engine"][symbol]["content_hash"]
-            for symbol in ordered["engine"]
+            symbol: ordered["engine"][symbol]["content_hash"]
+            == shuffled["engine"][symbol]["content_hash"]
+            for symbol in engine_symbols
         },
     }
+    engine_comparison_passed = engine_comparison_possible and all(
+        comparison["engine_content_hash_equal"].values()
+    )
+    deterministic = (
+        engine_comparison_passed
+        and projection_determinism_passed
+    )
+    if not projection_determinism_passed or (
+        engine_comparison_possible and not engine_comparison_passed
+    ):
+        exit_code = 2
+    elif not engine_comparison_possible:
+        exit_code = 3
+    else:
+        exit_code = 0
     result = {
-        "contract_version": "Task008ReplayOpeningValidationV1",
+        "contract_version": "Task008ReplayOpeningValidationV4",
         "trade_date": args.trade_date,
         "observed_at": observed_at.isoformat(),
+        "requested_observed_at": requested_observed_at.isoformat(),
+        "time_precision_policy": "TRUNCATE_TO_WHOLE_SECONDS",
         "input": str(args.input),
-        "input_sha256": hashlib.sha256(args.input.read_bytes()).hexdigest(),
+        "input_sha256": input_sha256,
         "row_count": len(rows),
+        "unique_symbol_count": len({str(row["symbol"]).zfill(6) for row in rows}),
         "symbols": symbols,
         "ordered": ordered,
         "shuffled": shuffled,
         "comparison": comparison,
-        "deterministic": comparison["projection_content_hash_equal"] and all(comparison["engine_content_hash_equal"].values()),
+        "deterministic": deterministic,
+        # Execution, determinism, and input quality are independent outcomes.
+        # Reaching report generation means both ordered and shuffled passes
+        # completed; stale/missing/invalid facts are reported separately.
+        "replay_execution_status": "COMPLETE",
+        "replay_determinism_status": (
+            "MISMATCH"
+            if exit_code == 2
+            else "NOT_COMPARABLE"
+            if exit_code == 3
+            else "PASS"
+        ),
+        "projection_determinism_status": (
+            "PASS" if projection_determinism_passed else "MISMATCH"
+        ),
+        "engine_comparison_status": (
+            "NOT_COMPARABLE"
+            if not engine_comparison_possible
+            else "PASS"
+            if engine_comparison_passed
+            else "MISMATCH"
+        ),
+        "engine_comparison_symbols": list(engine_symbols),
+        "engine_sample_quote_symbols": sorted(ordered_sample_symbols),
+        "projection_quality_status": ordered["projection"]["status"],
+        "engine_input_quality_status": ordered["engine_input"]["quality_status"],
+        "historical_available_at_status": "UNKNOWN",
+        "exit_code": exit_code,
         "normal_opening_pass": "UNPROVEN",
-        "replay_status": "REPLAY_PARTIAL" if ordered["projection"]["status"] != DataStatus.READY.value else "REPLAY_READY_BOUNDED",
         "production_side_effects": "NONE_OBSERVED",
         "side_effect_boundary": "frozen capture + in-memory Q2 projection/Engine only",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(canonical_json(result) + "\n", encoding="utf-8")
     print(canonical_json(result))
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":
