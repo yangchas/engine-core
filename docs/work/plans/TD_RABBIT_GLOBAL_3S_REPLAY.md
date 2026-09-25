@@ -258,6 +258,18 @@ t1-v2 `AuctionCalculator` 逐条重算后发现，0925 `auction_snapshot_v2` 的
 
 ## 分阶段实施与退出条件
 
+### 开发回放可用性与实盘验收分开判断
+
+本计划有两个独立结果。`REPLAY_FOR_DEVELOPMENT` 在真实 TD 三秒切片经选定的
+t1-v2 计算路径、隔离 Redis/Q2Frame 和 Core 后，可以用重复 hash、字段差异、
+缺失/陈旧质量和锚点对照支持功能开发。缺少 Rabbit 到达顺序或历史
+`available_at` 时，必须标出适用边界，但不因此停止不依赖这些信息的开发。
+
+`LIVE_EQUIVALENCE` 与 `NORMAL` 验收仍需真实运行时证据。依赖 Rabbit delivery
+成员/顺序、墙钟可见性或 09:25:06 线上冻结的结论，不能只由事件时间回放推出。
+这一区分不改变生产 owner、ACK、TD 写入或部署边界，也不把 `PARTIAL` 数据
+伪装成完整数据。
+
 | 阶段 | 只做什么 | 退出证据与审计点 |
 | --- | --- | --- |
 | A. 基线/源合同 | 核对**当前运行 release** 的 Rabbit `DataBatch` 字段、Q2 计算/Redis 节流、整批阶段归属、09:25 触发与快照写入顺序；只读补查 09-18/09-23 TD 和**现成**真实 Rabbit 捕获/日志，不新增 consumer | 字段、单位、源时间、batch/arrival 是否真实可得的矩阵；“3–4 delivery”若无捕获只记为待证描述；内存 `QuoteStateStore` 为冻结计算输入、Redis 为输出的现状和失败路径明确；审计与用户对齐后才进入 B |
@@ -265,11 +277,11 @@ t1-v2 `AuctionCalculator` 逐条重算后发现，0925 `auction_snapshot_v2` 的
 | C. Q2 同源计算 | 实盘即时 Q2 不变；回放在隔离 Redis 或 dry-run 中复用 t1-v2 的同一计算/投影；另外核对迟到旧时间 tick 是否使滚动状态回退 | 同输入重复回放 Q2 hash、逐股来源时间和计数一致；内存态、生成命令、已提交 Redis 态和提交失败分别可观察；Q2 计算不受启动时刻门禁；不把 Core 自算 Q2 冒充 t1-v2；审计后进入 D |
 | D. 五档候选 | 在既有逐股状态增加最小候选，不额外预分配全市场第二份席位；单侧或双侧第五档均可入选，Q2 仍吃全部 tick | 当前实现为 `CANDIDATE_SELECTION=PASS_WITH_LIMITS`：09-18 为 5,171/5,221 候选、4,408 个非 NULL 可比价格全部匹配；09-23 为 5,068/5,222 候选、四个延后展开样本均被保留、5,068 个可比价格全部匹配。两日单侧盘口均有不同历史 `limit_state`，不据此分类涨跌停。763 个 NULL 与 1,579 个金额差异仍未解决。已在 `TD_RABBIT_STAGE_D_CANDIDATE_AUDIT_20260925.md` 对齐；不得据此自动进入 E，等待用户确认后再行动。 |
 | E. 冻结与 Redis | 独立 09:25:06 clock barrier；内存状态冻结为单独锚点，滚动 Q2 继续；回放仅隔离 Redis，TD 零写入 | `05/06/07` 混合时间 batch、空片、09:30 后继续流和 Redis 写失败测试；锚点不被 07/30 秒行情覆盖、无“等齐全市场”硬停机；实盘墙钟与回放事件时间重建的差异明确，不假装 live 可见性；审计后进入 F |
-| F. 端到端真实验证 | 同一天同输入做 TD→t1-v2→隔离 Redis→锚点→Core 只读事实，按天/逐股对照既有快照的可比字段 | `CANDIDATE_SELECTION`、`Q2_DERIVATION`、`SNAPSHOT_PROJECTION` 三份结论与两次重复 hash、coverage/缺失/例外、代码版本/副作用审计；tester/auditor 独立复核。缺历史版本或 arrival 时保持 `PARTIAL/UNPROVEN`，不伪报完整等价；仅此时讨论下一阶段，不自动部署生产 |
+| F. 端到端真实验证 | 同一天同输入做 TD→t1-v2→隔离 Redis→锚点→Core 只读事实，按天/逐股对照既有快照的可比字段 | `CANDIDATE_SELECTION`、`Q2_DERIVATION`、`SNAPSHOT_PROJECTION` 三份结论与两次重复 hash、coverage/缺失/例外、代码版本/副作用审计；tester/auditor 独立复核。通过的字段和路径可标记为 `REPLAY_FOR_DEVELOPMENT=USABLE`；未证明的 arrival/available_at/版本字段单独标为 `UNKNOWN/UNPROVEN`，不扩大其用途。只要剩余开发不依赖这些未知项，就可继续主线；正常开盘/上线仍走独立验收 |
 
 若阶段 B 发现整批 `logical_ts_ms` 让边界前 tick 被归到边界后阶段，优先在**同一已读取片内部**按 tick 源时间切换计算阶段/插入时钟屏障，再用相同输入复核；不增加 TD 查询、不预丢 tick，也不冒充 Rabbit 原始 delivery。若差异仅来自每批 Redis flush/节流，则分开报告 Q2 内存计算与存储提交时序，不为了做出相同 hash 编造生产批次。任何改法都须先独立验证，再决定是否进入下一阶段。
 
-每阶段结束都要做一次**主线对齐审计**：是否仍为 Rabbit 同形输入、单片供给、同一 t1-v2 Q2、实盘即时/回放隔离、09:25:06 冻结；记录 `PASS/PARTIAL/BLOCKED`、真实证据和未知项，再由用户决定是否推进。Phase C 审计记录在 `docs/work/handoffs/TD_RABBIT_PHASE_C_AUDIT_20260924.md`，Phase E 审计记录在 `docs/work/handoffs/TD_RABBIT_PHASE_E_AUDIT_20260924.md`，Phase F 审计记录在 `docs/work/handoffs/TD_RABBIT_PHASE_F_AUDIT_20260924.md`；Phase F 仍为 `PARTIAL`，不自动进入下一迁移阶段。性能只记录实测耗时与瓶颈，不因一个武断阈值把正确回放判失败；若一个局部问题连续两轮证据驱动修复仍不收敛，应暂停该局部、提出假设和取证办法，不无限循环。
+每阶段结束都要做一次**主线对齐审计**：是否仍为 Rabbit 同形输入、单片供给、同一 t1-v2 Q2、实盘即时/回放隔离、09:25:06 冻结；记录开发可用性、实盘等价性、真实证据和未知项。Phase C 审计记录在 `docs/work/handoffs/TD_RABBIT_PHASE_C_AUDIT_20260924.md`，Phase E 审计记录在 `docs/work/handoffs/TD_RABBIT_PHASE_E_AUDIT_20260924.md`，Phase F 审计记录在 `docs/work/handoffs/TD_RABBIT_PHASE_F_AUDIT_20260924.md`。Phase F 对开发可用性的结论不自动升级 NORMAL 或部署状态。性能只记录实测耗时与瓶颈，不因一个武断阈值把正确回放判失败；若一个局部问题连续两轮证据驱动修复仍不收敛，应暂停该局部、提出假设和取证办法，不无限循环。
 
 ## 必须保持的边界
 

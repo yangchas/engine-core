@@ -4,9 +4,11 @@
 
 ### TASK-008
 
-- title: Real opening validation (read-only)
+- title: Real opening validation (production read-only; isolated replay allowed)
 - owner: `replay-investigator`
 - state: `PARTIAL_EVIDENCE`
+- replay_for_development: `USABLE_WITH_LIMITS`
+- normal_opening_acceptance: `UNPROVEN`
 - branch: `codex/feature-session-engine-integration`
 - worktree: current development worktree
 - plan: `docs/work/plans/TASK-008-opening-validation.md`
@@ -41,6 +43,16 @@
   remain PARTIAL and require same-version field-semantic evidence. Rabbit
   delivery equivalence, 09:25:06 live visibility, historical available_at
   and `TD_WRITE_HEALTH` remain `UNKNOWN/UNPROVEN`
+- development-use basis: real 2026-09-24 TD→exact t1-v2→isolated Redis DB7/8→Core
+  replay processed 429,392 rows; both runs had identical normalized semantic
+  keys, 5,222 Q2 hashes, and matching ordered/shuffled Core hashes. The result
+  remains `PARTIAL` with 24 stale quotes. Unknown historical `available_at`
+  limits point-in-time claims but does not block replay-led feature development.
+- current Redis cutoff probe: `/home/exedev/validation/task008-real-redis-audit-20260925-qlzb4egc/`;
+  this is a later read of date-scoped active membership plus global Q2 hashes,
+  so it is a source/runner diagnostic and not a historical 09:32 cohort.
+- mainline_next: continue development against pinned real TD/t1-v2/Q2 replay
+  evidence; retain Rabbit timing and NORMAL opening as separately unproven.
 - phase_p_auction_close_empty_slice: current t1-v2 commit `9472f4c` was
   regression-tested against real 2026-09-23 TD `[09:15:00,09:26:03)`. The
   preceding `[09:25:57,09:26:00)` frame was empty; the next frame had five

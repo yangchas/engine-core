@@ -1,5 +1,24 @@
 # Current Task
 
+## 主线对齐 — 回放用于开发（2026-09-25）
+
+回放的工程目标是复现真实 tick 经 t1-v2 产生 Q2、再由 Core 消费的计算
+路径，支持事实和策略迭代。历史 Redis `available_at`、Rabbit arrival 和墙钟
+可见性未知时，限制相应实时等价结论，不阻断不依赖这些信息的回放开发。
+
+已有真实 2026-09-24 `[09:15:00,09:32:09)` 证据：精确 t1-v2 release 处理
+429,392 行，分别写入隔离 Redis DB7/DB8；Core 读回 5,222 个 Q2，重复运行
+语义 key 无差异、ordered/shuffled hash 一致，24 个 quote 在 10 秒 freshness
+策略下为 stale。结论：`REPLAY_FOR_DEVELOPMENT=USABLE_WITH_LIMITS`；
+`TASK-008=PARTIAL_EVIDENCE`、`NORMAL_OPENING_ACCEPTANCE=UNPROVEN`。
+
+2026-09-25 直接读取的当前 Redis Q2 hash 不是历史 09:32 快照，相关 cutoff
+探针只作为源时间过滤诊断，证据位于
+`/home/exedev/validation/task008-real-redis-audit-20260925-qlzb4egc/`。
+主线继续使用冻结的真实 TD/t1-v2/Q2 回放基线做开发与差异比较；不重复用
+当前全局 Q2 hash 反推历史，也不等待历史 `available_at` 才开发无关功能。
+完整口径见 `docs/work/handoffs/TASK-008-REPLAY-DEV-USABILITY-ALIGNMENT-20260925.md`。
+
 ## Latest bounded gate repair — replay status dimensions (2026-09-25)
 
 The frozen-Q2 opening shadow report now separates projection determinism from
