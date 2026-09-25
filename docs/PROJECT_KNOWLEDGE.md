@@ -1,5 +1,24 @@
 # Project Knowledge
 
+- `[VERIFIED 2026-09-25 t1-v2 Rabbit metadata sidecar]` On the local
+  `stock-situation-runtime` development branch
+  `codex/task-q2-pure-function`, commit
+  `9a52e8af5f8c8adcc79151abf8dcd35c474c35ff` retains Rabbit outer-envelope
+  metadata and parsed inner `DataBatch` metadata on `TickBatch` as an
+  audit-only sidecar. The outer JSON parser distinguishes absent keys from
+  explicit empty/zero values; proto3 default-valued inner `batch_id`/`sent_at`
+  remain `Proto3DefaultAmbiguous`. Process-local `seq_no` is not presented as
+  producer sequence or arrival evidence. Full-dependency build and
+  serialization-path self-test pass (`/tmp/t1v2-rabbit-batch-metadata-final4`);
+  `git diff --check` passes. No schema, consumer, ACK, live service, or
+  calculation behavior changed; no live Rabbit/Redis/TD access or write was
+  performed. This closes development-side metadata propagation only. Actual
+  Rabbit delivery membership/order, outer-vs-inner ID meaning, `sent_at`
+  semantics/units, per-tick arrival/availability, and `p` semantics remain
+  UNKNOWN. The commit is local only, not pushed/merged/deployed. Phase P and
+  TASK-008 remain partial; M3-1 remains blocked and TD write health unproven.
+  See `docs/work/handoffs/TD_RABBIT_RUNTIME_RELEASE_AUDIT_20260925.md`.
+
 - `[OBSERVED 2026-09-25 Phase P auction-close empty-slice fix]` Real TD for
   2026-09-23 had zero rows in `[09:25:57,09:26:00)` and five rows at exactly
   `09:26:00.000` in the next 3-second slice. The old empty-frame logical time

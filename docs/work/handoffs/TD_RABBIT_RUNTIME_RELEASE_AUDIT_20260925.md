@@ -43,10 +43,12 @@ TD_WRITE_HEALTH=UNPROVEN
 
 1. 一次 `RabbitMqTickSource::next_batch()` 消费一个 AMQP envelope；
    `delivery_tag` 留在 source result 中供后续 ACK，不是 tick sequence。
-2. decoder 解析外层 header 和 protobuf records；但只将 records 传给
-   `SourceTickBatchBuilder`。外层 `batch_id/record_count` 与内层
-   `DataBatch.batch_id/sent_at` 没有进入 `TickBatch`。
-3. 当前 `TickBatch` 只有 `mode/logical_ts_ms/wall_ts_ms/seq_no/ticks`。
+2. 在本次审计所检查的 release/source revision 中，decoder 解析外层
+   header 和 protobuf records；但只将 records 传给 `SourceTickBatchBuilder`。
+   外层 `batch_id/record_count` 与内层 `DataBatch.batch_id/sent_at` 没有进入
+   当时的 `TickBatch`。
+3. 被审计的 release `TickBatch` 只有
+   `mode/logical_ts_ms/wall_ts_ms/seq_no/ticks`。
    Rabbit 的 `logical_ts_ms` 由本批最大 tick `tss` 回填；`wall_ts_ms` 被外层
    header `timestamp` 覆写；`seq_no` 是进程内本地计数。
 4. 字段 `p` 被 protobuf decoder 放入 `SourceTickRecord`，但
@@ -125,8 +127,24 @@ Phase A 已确认当前 release 的 Rabbit schema、consumer batch 边界、t1-v
 每个 delivery 的成员/到达顺序、`sent_at` 的具体业务来源、`p` 的意义、历史
 `available_at`。
 
-继续主线前的下一项宜为一个独立、开发态的 batch metadata contract：分别保留
-outer 与 inner batch id/count/time、consumer-local sequence 和 source time；不
-臆造 Rabbit arrival，不改 live consumer/ACK/schema。对齐后才能决定它如何映射到
-TD 3 秒 frame 和后续跨 source parity。不要把此审计或 Redis retry fix 描述成
-TASK-008、Phase P 或全流程通过。
+本审计当时建议的独立、开发态 batch metadata contract 已在后续 t1-v2 开发提交
+`9a52e8af5f8c8adcc79151abf8dcd35c474c35ff` 完成：保留 outer 与 inner metadata，
+不把进程本地 `seq_no` 冒充 producer sequence/arrival，也不修改 live
+consumer/ACK/schema。验证命令：
+
+```text
+bash make.sh --full --self-test --out=/tmp/t1v2-rabbit-batch-metadata-final4
+result: build PASS; t1_v2 self-test passed
+git diff --check: PASS
+```
+
+该提交仅存在于 `stock-situation-runtime` 本地分支
+`codex/task-q2-pure-function`，未推送、合并或部署。测试走 protobuf
+serialize→parse→adapter 路径及合成 wire-header fixture；没有消费真实 Rabbit，
+也没有访问/写入 Redis 或 TD。sidecar 不参与 Engine/Q2 计算。仍不能证明真实
+delivery 的成员/到达顺序、outer/inner ID 的业务关系、`sent_at` 的来源/单位、
+逐 tick arrival/历史 `available_at` 或 `p` 的语义；这些仍为 UNKNOWN。
+
+因此这关闭的是开发态 metadata propagation，不是 Rabbit live parity、TASK-008、
+Phase P 或全流程。TD 3 秒 frame 与 Rabbit delivery 的映射仍须以真实来源证据
+为依据，不得从 metadata sidecar 推断。
