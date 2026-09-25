@@ -1,23 +1,37 @@
 # Current Task
 
-## Latest bounded repair — remove row-chunk contract drift (2026-09-25)
+## Latest bounded repair — one TickBatch per TD slice (2026-09-25)
 
-t1-v2 development commit `dde58d64b530f5eec65a34c3254ec6fcb7f930d0` removed
-the unused `REPLAY_BATCH_SIZE` reserve setting and `chunk_no` metadata, and
-renamed slice completion metadata to `slice_final_phase`. The current TD
-source issues one SELECT per half-open 3-second slice and retains every row;
-real 2026-09-23 checks processed 5,071 rows in one ordinary slice and 906 rows
-in two in-memory event-time phases for a slice crossing the 09:24:10 barrier.
-The latter still emitted one final Q2Frame. C++ full build/self-test and Core
-Q2Frame readback passed. No Redis/TD write, Rabbit consume/ACK, service change,
-or deployment occurred.
+t1-v2 local development commit `26f60ae0c87d109421b71ce4dae6f4c8e5025e2e`
+now returns one `TickBatch` for each TD half-open 3-second SELECT, retaining all
+converted rows. A business barrier is represented as an in-batch tick cut and
+callback; it does not split the slice into additional source batches, issue
+another TD query, or drop rows. Replay ticks use their own event timestamps for
+phase transitions. Barrier audit snapshots are captured at the exact cut and
+label the 09:26 auction-close barrier as `0926`.
 
-This closes only row-count chunking/configuration drift. Barrier-crossing slices
-still yield multiple Engine batch calls so the business snapshot is captured at
-its event-time barrier; therefore exact one-Engine-batch-per-slice and Rabbit
-delivery/batch equivalence are not proven. Return to the existing mainline:
-keep Phase P/TASK-008 `PARTIAL`, do not promote a task or start strategy work.
-Audit: `docs/work/handoffs/TD_RABBIT_NO_ROW_CHUNK_REPAIR_20260925.md`.
+Real 2026-09-23 evidence includes a 906-row `[09:24:09,09:24:12)` slice whose
+09:24:10 snapshot held 603 then-observed auction states; an empty
+`[09:25:06,09:25:09)` slice preserved one empty Q2Frame and advanced Core's
+timeline without inventing market coverage; and a `[09:26:00,09:26:03)` SELECT
+returned 5 rows in one frame, with a `0926/tick_batch_barrier` audit containing
+5 states. Evidence is under
+`/home/exedev/validation/t1v2-one-batch-repair-20260925/`.
+
+t1-v2 full-dependency build/self-test passed. Core local commit
+`5cc45ac4976821ceebf839234c3f9439318ce9f7` accepts genuine empty Q2Frame time
+frames while reporting coverage as unknown when no symbol universe is
+available; Core verification passed (`693 passed`, compileall and diff-check).
+Both repositories are clean after local commits. No production Redis write,
+TD write, Rabbit consume/ACK, service change, push, merge, or deployment was
+performed. These commits are local and have not been pushed.
+
+This closes the bounded one-batch-per-slice/barrier-audit repair only. It does
+not prove Rabbit delivery membership/order, historical `available_at`, or
+live/replay batch equivalence; isolated production-Redis execution and the
+broader Phase P comparisons remain open. Keep Phase P/TASK-008 `PARTIAL`; do
+not promote a task or start strategy work. Audit:
+`docs/work/handoffs/TD_RABBIT_ONE_BATCH_SLICE_REPAIR_20260925.md`.
 
 ```text
 active_task: TASK-008
