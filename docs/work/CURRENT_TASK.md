@@ -16,6 +16,22 @@ fix_started_at: 2026-09-20T14:46:36+08:00
 implementation_commit: 084d6819b31a80087d624cfabf0d78843c8613ba
 latest_fix_commit: aa38614
 
+## Latest Phase P audit — source-aligned barrier trace (2026-09-25)
+
+A real TD replay of `2026-09-23 [09:15:00,09:25:09)` captured all 5,222
+per-symbol states at 09:20:03, 09:24:10 and the 09:25:06 Clock barrier. The
+5,222 Q2 hashes and active set, all A2/legacy 0920/0924/0925 projections, and
+the 0925 anchor matched DB5/`task009k:`; the trace's 5,208 candidate symbols
+matched the Redis anchor member set. No future source timestamps were included.
+Run: `212022` ticks, `204` batches, one Clock, `td_sql=0`, `ack=0`; Redis
+writes were only DB15/`phasepdiag20260925T0840:` and DB0 had zero prefix hits.
+The replay-only trace code/test was committed locally in t1-v2 as `5c61f43`
+(not pushed or deployed); full-dependency build/self-test passed. This closes
+the bounded current-source output mismatch for this one date/window, not Phase
+P/TASK-008: Rabbit delivery/arrival, same-timestamp source ordering and
+historical `available_at` remain unknown; M3-1 remains blocked. Audit:
+`docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_TRACE_AUDIT_20260925.md`.
+
 ## Independent audit — Phase P auction-close fix (2026-09-25)
 
 A second bounded real-data replay into isolated Redis DB15 matched the prior

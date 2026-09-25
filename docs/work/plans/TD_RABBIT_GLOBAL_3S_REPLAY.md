@@ -75,6 +75,18 @@ relax completeness or synthesize a member. Details:
 `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNMENT_AUDIT_20260925.md` and
 `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNED_HYBRID_REPLAY_20260925.md`.
 
+**Latest bounded trace follow-up (2026-09-25):** the current t1-v2 development
+source, after `ca5ece0` and the barrier fixes, was replayed again over the same
+real 2026-09-23 window with opt-in per-symbol barrier tracing. Q2 (5222/5222),
+A2 and legacy 0920/0924/0925, and the 0925 anchor all matched DB5/`task009k:`;
+the full 0925 trace member set matched the frozen anchor. No future source
+timestamps appeared at a barrier. This supersedes the prior mismatch result
+for the earlier `e91a20a`/pre-source-alignment development build only; the
+result is bounded to this real date/window and does not establish Rabbit
+delivery/arrival or historical `available_at`. Phase P and TASK-008 remain
+`PARTIAL`. Full evidence:
+`docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_TRACE_AUDIT_20260925.md`.
+
 Phase O update: the current state is `PHASE_O_PARTIAL`. The same-day real
 2026-09-24 `09:15:00–09:40:00` TD window was replayed through the exact
 t1-v2 release into isolated Redis DB9/`task009o:` with TD writes disabled.

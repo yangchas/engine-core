@@ -98,6 +98,16 @@
   delta to one cause until barrier membership is compared. Audits:
   `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNMENT_AUDIT_20260925.md` and
   `docs/work/handoffs/TD_T1V2_SOURCE_ALIGNED_HYBRID_REPLAY_20260925.md`.
+- phase_p_barrier_trace_followup: a later current-source replay on the same
+  real date/window, with opt-in per-symbol barrier capture, now matches DB5/
+  `task009k:` for all 5222 Q2 hashes, the active set, all A2/legacy 0920/0924/
+  0925 projections, and the 0925 anchor. Trace counts are 4873/5100/5208 at
+  09:20:03/09:24:10/09:25:06; no future source timestamps were included. This
+  supersedes the mismatch conclusion for the earlier `e91a20a` build only and
+  is bounded to 2026-09-23 `[09:15:00,09:25:09)`. Phase P/TASK-008 remain
+  partial because Rabbit delivery/arrival and historical `available_at` are
+  still unproven. t1-v2 trace/test commit `5c61f43` is local only, not pushed or
+  deployed. Audit: `docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_TRACE_AUDIT_20260925.md`.
 - Phase G real Redis write evidence: isolated DB15/`task009g:` replayed
   09:20:00–09:25:09 from real TD through the current t1-v2 release; 129281
   ticks, 305 batches, one empty-slice Clock, 260710 Redis commands, `td_sql=0`,
