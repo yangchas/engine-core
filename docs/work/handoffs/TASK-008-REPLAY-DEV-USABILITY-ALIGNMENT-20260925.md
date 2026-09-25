@@ -15,9 +15,11 @@ LIVE_RABBIT_EQUIVALENCE=UNKNOWN
 
 Historical `available_at`, Rabbit delivery membership/order, and exact
 wall-clock visibility constrain claims about what was live at a particular
-instant. They do not block replay-led development of behavior supported by the
-validated real inputs and calculation path. Missing, stale, partial, and
-unavailable facts remain visible in each result.
+instant. They do not block replay-led development of behavior whose required
+inputs, field semantics, and source version are covered by evidence. Assess
+each feature against the fields it actually consumes; an unverified field is
+not a parity or correctness oracle. Missing, stale, partial, and unavailable
+facts remain visible in each result.
 
 ## Existing real-source basis
 
@@ -36,6 +38,14 @@ unavailable facts remain visible in each result.
 These runs are useful development baselines because they use real market rows,
 the t1-v2 Q2 producer path, and Core readback. Their result quality and source
 version must remain attached to any feature comparison.
+
+Known field limit: the 2026-09-18 Phase F snapshot comparison matched
+comparable price (`4408/4408`) and change (`5209/5209`), but match amount had
+1,576/5,209 mismatches, rest bid had 1,626/5,209, and rest ask had 1,621/5,209.
+Do not use those amount/rest fields as parity oracles until the source version
+and field semantics are reconciled. This limits features depending on those
+fields, not unrelated replay development. See
+`TD_RABBIT_PHASE_F_AUDIT_20260924.md`.
 
 ## Current Redis probe interpretation
 

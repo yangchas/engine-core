@@ -3,14 +3,21 @@
 ## 主线对齐 — 回放用于开发（2026-09-25）
 
 回放的工程目标是复现真实 tick 经 t1-v2 产生 Q2、再由 Core 消费的计算
-路径，支持事实和策略迭代。历史 Redis `available_at`、Rabbit arrival 和墙钟
-可见性未知时，限制相应实时等价结论，不阻断不依赖这些信息的回放开发。
+路径，支持由证据覆盖的事实和策略迭代。每个功能按其实际依赖的输入字段、
+单位、版本和时间语义单独核对；未验证的字段不能作为 parity/正确性依据，
+但不阻断不依赖它们的开发。历史 Redis `available_at`、Rabbit arrival 和墙钟
+可见性未知时，只限制相应实时等价结论。
 
 已有真实 2026-09-24 `[09:15:00,09:32:09)` 证据：精确 t1-v2 release 处理
 429,392 行，分别写入隔离 Redis DB7/DB8；Core 读回 5,222 个 Q2，重复运行
 语义 key 无差异、ordered/shuffled hash 一致，24 个 quote 在 10 秒 freshness
 策略下为 stale。结论：`REPLAY_FOR_DEVELOPMENT=USABLE_WITH_LIMITS`；
 `TASK-008=PARTIAL_EVIDENCE`、`NORMAL_OPENING_ACCEPTANCE=UNPROVEN`。
+
+已知边界：09-18 Phase F 的价格和涨跌幅可比项分别为 4408/4408、5209/5209
+一致；match amount 有 1,576/5,209 差异，rest bid/ask 分别有 1,626/5,209、
+1,621/5,209 差异。金额和剩余量相关功能仍需先核对字段语义/版本，不能因
+回放链路可重复就宣称这些功能已验证。详见 Phase F 审计。
 
 2026-09-25 直接读取的当前 Redis Q2 hash 不是历史 09:32 快照，相关 cutoff
 探针只作为源时间过滤诊断，证据位于

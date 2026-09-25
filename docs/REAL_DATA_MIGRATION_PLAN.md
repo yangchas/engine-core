@@ -6,7 +6,7 @@
 
 ### 2026-09-25 回放开发可用性对齐
 
-- 回放目标是足以反映实盘计算路径并支持功能演化，不要求先取得完美的历史 Redis/`available_at` 镜像。真实 TD 经 t1-v2 生成 Q2、写入隔离 Redis/Q2Frame，再由 Core 消费的可重复链路，可用于开发和差异分析；`MISSING`、`STALE`、`PARTIAL` 继续作为数据质量事实保留。
+- 回放目标是足以反映实盘计算路径并支持功能演化，不要求先取得完美的历史 Redis/`available_at` 镜像。真实 TD 经 t1-v2 生成 Q2、写入隔离 Redis/Q2Frame，再由 Core 消费的可重复链路，可用于其输入字段、单位、来源版本和时间语义已有证据覆盖的功能开发与差异分析；未验证字段不能据此宣称 parity/策略正确，`MISSING`、`STALE`、`PARTIAL` 继续作为数据质量事实保留。
 - 历史 `available_at`、Rabbit delivery/arrival 和墙钟冻结证据只限制对具体实时可见性和 NORMAL/上线等价性的结论，不作为一般 replay-led 开发的总门禁。
 - 当前已有 2026-09-24 真实 TD→t1-v2→隔离 Redis→Core 09:32 回放和重复运行证据，故 `REPLAY_FOR_DEVELOPMENT=USABLE_WITH_LIMITS`；`TASK-008/NORMAL_OPENING_ACCEPTANCE` 仍为 `PARTIAL/UNPROVEN`。细则见 `docs/work/plans/TASK-008-opening-validation.md`、`docs/work/plans/TD_RABBIT_GLOBAL_3S_REPLAY.md` 和 `docs/work/handoffs/TASK-008-REPLAY-DEV-USABILITY-ALIGNMENT-20260925.md`。
 

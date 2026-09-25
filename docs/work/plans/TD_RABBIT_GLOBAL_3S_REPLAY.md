@@ -260,10 +260,12 @@ t1-v2 `AuctionCalculator` 逐条重算后发现，0925 `auction_snapshot_v2` 的
 
 ### 开发回放可用性与实盘验收分开判断
 
-本计划有两个独立结果。`REPLAY_FOR_DEVELOPMENT` 在真实 TD 三秒切片经选定的
-t1-v2 计算路径、隔离 Redis/Q2Frame 和 Core 后，可以用重复 hash、字段差异、
-缺失/陈旧质量和锚点对照支持功能开发。缺少 Rabbit 到达顺序或历史
-`available_at` 时，必须标出适用边界，但不因此停止不依赖这些信息的开发。
+本计划有两个独立结果。`REPLAY_FOR_DEVELOPMENT=USABLE_WITH_LIMITS` 表示真实
+TD 三秒切片经选定的 t1-v2 计算路径、隔离 Redis/Q2Frame 和 Core 后，可支持
+那些所需输入、字段语义和来源版本已有证据覆盖的功能开发。每个功能按实际
+依赖字段单独核对；未核字段/版本上的结果仍为 `UNVERIFIED`，不冒充 parity，
+也不阻断不依赖这些未知项的其他开发。缺少 Rabbit 到达顺序或历史
+`available_at` 时，必须标出适用边界。
 
 `LIVE_EQUIVALENCE` 与 `NORMAL` 验收仍需真实运行时证据。依赖 Rabbit delivery
 成员/顺序、墙钟可见性或 09:25:06 线上冻结的结论，不能只由事件时间回放推出。
@@ -277,7 +279,7 @@ t1-v2 计算路径、隔离 Redis/Q2Frame 和 Core 后，可以用重复 hash、
 | C. Q2 同源计算 | 实盘即时 Q2 不变；回放在隔离 Redis 或 dry-run 中复用 t1-v2 的同一计算/投影；另外核对迟到旧时间 tick 是否使滚动状态回退 | 同输入重复回放 Q2 hash、逐股来源时间和计数一致；内存态、生成命令、已提交 Redis 态和提交失败分别可观察；Q2 计算不受启动时刻门禁；不把 Core 自算 Q2 冒充 t1-v2；审计后进入 D |
 | D. 五档候选 | 在既有逐股状态增加最小候选，不额外预分配全市场第二份席位；单侧或双侧第五档均可入选，Q2 仍吃全部 tick | 当前实现为 `CANDIDATE_SELECTION=PASS_WITH_LIMITS`：09-18 为 5,171/5,221 候选、4,408 个非 NULL 可比价格全部匹配；09-23 为 5,068/5,222 候选、四个延后展开样本均被保留、5,068 个可比价格全部匹配。两日单侧盘口均有不同历史 `limit_state`，不据此分类涨跌停。763 个 NULL 与 1,579 个金额差异仍未解决。已在 `TD_RABBIT_STAGE_D_CANDIDATE_AUDIT_20260925.md` 对齐；不得据此自动进入 E，等待用户确认后再行动。 |
 | E. 冻结与 Redis | 独立 09:25:06 clock barrier；内存状态冻结为单独锚点，滚动 Q2 继续；回放仅隔离 Redis，TD 零写入 | `05/06/07` 混合时间 batch、空片、09:30 后继续流和 Redis 写失败测试；锚点不被 07/30 秒行情覆盖、无“等齐全市场”硬停机；实盘墙钟与回放事件时间重建的差异明确，不假装 live 可见性；审计后进入 F |
-| F. 端到端真实验证 | 同一天同输入做 TD→t1-v2→隔离 Redis→锚点→Core 只读事实，按天/逐股对照既有快照的可比字段 | `CANDIDATE_SELECTION`、`Q2_DERIVATION`、`SNAPSHOT_PROJECTION` 三份结论与两次重复 hash、coverage/缺失/例外、代码版本/副作用审计；tester/auditor 独立复核。通过的字段和路径可标记为 `REPLAY_FOR_DEVELOPMENT=USABLE`；未证明的 arrival/available_at/版本字段单独标为 `UNKNOWN/UNPROVEN`，不扩大其用途。只要剩余开发不依赖这些未知项，就可继续主线；正常开盘/上线仍走独立验收 |
+| F. 端到端真实验证 | 同一天同输入做 TD→t1-v2→隔离 Redis→锚点→Core 只读事实，按天/逐股对照既有快照的可比字段 | `CANDIDATE_SELECTION`、`Q2_DERIVATION`、`SNAPSHOT_PROJECTION` 三份结论与两次重复 hash、coverage/缺失/例外、代码版本/副作用审计；tester/auditor 独立复核。证据覆盖的具体字段和路径可标记为 `REPLAY_FOR_DEVELOPMENT=USABLE_WITH_LIMITS`；未证明的 arrival/available_at/版本/字段语义单独标为 `UNKNOWN/UNPROVEN`，不得用于相应功能的正确性结论，也不扩大用途。正常开盘/上线仍走独立验收 |
 
 若阶段 B 发现整批 `logical_ts_ms` 让边界前 tick 被归到边界后阶段，优先在**同一已读取片内部**按 tick 源时间切换计算阶段/插入时钟屏障，再用相同输入复核；不增加 TD 查询、不预丢 tick，也不冒充 Rabbit 原始 delivery。若差异仅来自每批 Redis flush/节流，则分开报告 Q2 内存计算与存储提交时序，不为了做出相同 hash 编造生产批次。任何改法都须先独立验证，再决定是否进入下一阶段。
 

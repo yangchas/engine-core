@@ -49,7 +49,11 @@ TASK-008 therefore tracks two independent outcomes:
   t1-v2 calculation path, its Q2 output is captured in an isolated sink or
   Q2Frame, and Core consumes that output. Repeatable hashes and explicit
   `MISSING`/`STALE`/`PARTIAL` facts make this useful for iterative development.
-  Historical `available_at` is not a gate for this outcome.
+  Usability is feature-specific: the inputs and field semantics required by a
+  feature must be present and supported by evidence. Unverified fields remain
+  unsuitable for parity or correctness claims, but do not block unrelated
+  development. Historical `available_at` is not a general gate for this
+  outcome.
 - `NORMAL_OPENING_ACCEPTANCE`: evidence establishes what was observable at the
   actual 09:32:10 live cutoff, through a controlled live observation or
   equivalent historical availability evidence. Event-time replay alone does
@@ -113,6 +117,14 @@ hashes matched. The projection remained `PARTIAL` with 24 stale quotes. This
 supports replay-led development while `NORMAL_OPENING_ACCEPTANCE` remains
 `UNPROVEN`. See
 `docs/work/handoffs/TD_RABBIT_PHASE_N_AUDIT_20260924.md`.
+
+This does not validate every auction field. The 2026-09-18 Phase F comparison
+matched comparable price (`4408/4408`) and change (`5209/5209`), but found
+1,576/5,209 match-amount mismatches, 1,626/5,209 rest-bid mismatches, and
+1,621/5,209 rest-ask mismatches. Those fields remain unusable as parity
+oracles until source-version and field semantics are reconciled; features that
+depend on them need their own evidence. See
+`docs/work/handoffs/TD_RABBIT_PHASE_F_AUDIT_20260924.md`.
 
 ## Out of scope
 
