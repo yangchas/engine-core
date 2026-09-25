@@ -32,6 +32,21 @@ P/TASK-008: Rabbit delivery/arrival, same-timestamp source ordering and
 historical `available_at` remain unknown; M3-1 remains blocked. Audit:
 `docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_TRACE_AUDIT_20260925.md`.
 
+## Phase A exact runtime release refresh + bounded Redis retry repair (2026-09-25)
+
+Read-only audit re-verified the active release binary and found Rabbit outer/inner
+batch metadata is dropped before `TickBatch`; Rabbit arrival/member ordering and
+historical `available_at` remain unknown. It also found a frozen A20/A24/A25
+Redis command could be lost after a failed one-shot trigger. A process-local
+retry cache was added to the t1-v2 development branch as
+`f4c3eb50056d7d1faa4cd1bcfe2fd7ce71da6e51` (not pushed, merged, or deployed).
+Failure injection, full t1-v2 build/self-test, Core `691 passed`, compileall and
+diff-check passed. The test used fake Redis/Null TD; it did not write real Redis
+or TD. This is not a durable outbox and does not resolve TD dual-write retry.
+Phase A is `PASS_WITH_LIMITS`; Phase P/TASK-008 remain `PARTIAL`, M3-1 remains
+blocked. Full matrix and boundary notes:
+`docs/work/handoffs/TD_RABBIT_RUNTIME_RELEASE_AUDIT_20260925.md`.
+
 ## Independent audit — Phase P auction-close fix (2026-09-25)
 
 A second bounded real-data replay into isolated Redis DB15 matched the prior

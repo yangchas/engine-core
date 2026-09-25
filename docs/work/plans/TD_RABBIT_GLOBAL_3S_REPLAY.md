@@ -87,6 +87,27 @@ delivery/arrival or historical `available_at`. Phase P and TASK-008 remain
 `PARTIAL`. Full evidence:
 `docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_TRACE_AUDIT_20260925.md`.
 
+**Phase A exact-runtime refresh (2026-09-25):** read-only identity checks verified
+that `t1-v2-live` is still running release `20260923_tdstop0945b` (binary SHA
+`363685f8…ab56`; source manifest valid). Its Rabbit `DataBatch` schema includes
+inner `batch_id/sent_at`, and the outer wire header includes batch metadata, but
+the decoder drops those fields before constructing `TickBatch`; consumer-local
+`seq_no` is not delivery order. `DataRecord.p` is decoded into an intermediate
+record but is not mapped to `RawTick`. TD's 3-second query projection also omits
+`p/market/exchange/limit` fields, so those fields are not yet cross-source
+parity evidence. Live 09:25:06 is driven by a ~250 ms wall-clock control poll
+after the first successful live batch; a source batch that crosses the barrier
+is not split at 09:25 in the deployed release. Static inspection found that a
+failed Redis write can consume the one-shot A25 trigger without retrying its
+frozen command. A process-local pending-command retry was implemented and
+fault-injection tested on the t1-v2 development branch only
+(`f4c3eb50056d7d1faa4cd1bcfe2fd7ce71da6e51`); it is not deployed and is not a
+durable outbox. Exact source/delivery membership, Rabbit arrival, `p` semantics,
+and `historical_available_at` remain unknown. Phase A is `PASS_WITH_LIMITS`;
+Phase P/TASK-008 remain `PARTIAL`, and the next batch-metadata contract step
+requires mainline alignment before implementation. Full audit:
+`docs/work/handoffs/TD_RABBIT_RUNTIME_RELEASE_AUDIT_20260925.md`.
+
 Phase O update: the current state is `PHASE_O_PARTIAL`. The same-day real
 2026-09-24 `09:15:00–09:40:00` TD window was replayed through the exact
 t1-v2 release into isolated Redis DB9/`task009o:` with TD writes disabled.
