@@ -1,5 +1,30 @@
 # Current Task
 
+## Latest Phase P full-window isolated Redis replay audit (2026-09-25)
+
+The real 2026-09-23 `[09:15:00,09:40:00)` TD window was replayed twice through
+t1-v2 into isolated Redis databases. The corrected second run completed 500
+three-second SELECT slices / 500 t1-v2 batches, 1,204,178 ticks, zero source
+rejects, zero ACKs and zero TD write statements. Core's read-only adapters
+read back Q2 5,222/5,222 with no missing hashes and 68 stale at the explicit
+10-second cutoff; 0920/0924/0925 were each 200-row `TOP_AMOUNT` projections.
+Q2, all three auction hashes, and the 5,208-symbol anchor raw SHA-256 match
+the first isolated run.
+
+The first run's 176 MB barrier CSV is preserved as diagnostic evidence but is
+invalid for 0926 auditing: ordinary `tick` latest updates were mislabeled as
+0926. t1-v2 commit `8926cb1a49420c46896f6eec403ca46c85ed6d47` fixes the audit
+predicate and adds a regression; full-dependency self-test passes. The corrected
+full run has exactly four summaries (0920/0924/0925/0926), all
+`tick_batch_barrier`; the 0926 record has 5,222 states and 5,208 candidates.
+
+This is real TD → t1-v2 → isolated Redis → Core read-adapter evidence, not
+Rabbit delivery equivalence or NORMAL acceptance. Q2 remains `PARTIAL` under
+the freshness policy; TopN remains TopN. Rabbit delivery/member/arrival order
+and historical `available_at` remain unknown. TASK-008 / Phase P remains
+`PARTIAL`; M3-1 remains blocked and `TD_WRITE_HEALTH=UNPROVEN`. Full audit:
+`docs/work/handoffs/TD_RABBIT_PHASE_P_FULL_REPLAY_ISOLATED_REDIS_AUDIT_20260925.md`.
+
 ## Latest bounded repair — one TickBatch per TD slice (2026-09-25)
 
 t1-v2 local development commit `26f60ae0c87d109421b71ce4dae6f4c8e5025e2e`
