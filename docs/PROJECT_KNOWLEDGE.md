@@ -1,5 +1,23 @@
 # Project Knowledge
 
+- [VERIFIED 2026-09-25 Rabbit outer-header parsing hardening] ECC
+  production-audit and contract-first review found the t1-v2 metadata
+  sidecar's prior substring extractor could mistake a nested timestamp or a
+  quoted batch_id mention for a top-level header member. A regression test
+  failed before the fix (RED). t1-v2 local commit
+  8a27370b6750aa9f4173b004fd5cf60f9688f5b6 now parses the JSON object
+  structurally, decodes JSON strings, rejects duplicate top-level keys, uses
+  checked integer conversion, and reports wrong-typed/out-of-range optional
+  fields as Invalid. Full-dependency build and self-test pass at
+  /tmp/t1v2-rabbit-header-decoys-overflow-green; diff-check passes. This is
+  fixture-level parser verification, not validation against a production
+  Rabbit payload. The inspected offline contract inventory directory contains
+  only inventory/checksum artifacts; the 2026-09-15 ground-truth capture has
+  Redis Q2 snapshots and mapping/security artifacts, but no raw Rabbit
+  envelope. Rabbit delivery membership/order remains UNKNOWN. No live Rabbit,
+  Redis, TD, or production service action occurred; the commit is local only.
+  See docs/work/handoffs/TD_RABBIT_RUNTIME_RELEASE_AUDIT_20260925.md.
+
 - `[VERIFIED 2026-09-25 t1-v2 Rabbit metadata sidecar]` On the local
   `stock-situation-runtime` development branch
   `codex/task-q2-pure-function`, commit

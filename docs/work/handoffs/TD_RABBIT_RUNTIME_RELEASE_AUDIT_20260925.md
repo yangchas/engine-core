@@ -148,3 +148,27 @@ delivery 的成员/到达顺序、outer/inner ID 的业务关系、`sent_at` 的
 因此这关闭的是开发态 metadata propagation，不是 Rabbit live parity、TASK-008、
 Phase P 或全流程。TD 3 秒 frame 与 Rabbit delivery 的映射仍须以真实来源证据
 为依据，不得从 metadata sidecar 推断。
+
+## Follow-up — outer-header member provenance hardening
+
+在后续审查 sidecar 的 evidence 可信度时，发现旧的 substring extractor 会把
+JSON 字符串中的转义文本或嵌套 object 中的同名字段误认为 outer header 成员，
+从而可能把 Unavailable 错标为 Present。先加入 decoy 回归后旧逻辑 RED；
+t1-v2 commit 8a27370b6750aa9f4173b004fd5cf60f9688f5b6 改为结构化扫描 JSON
+object、解码字符串、拒绝重复顶层字段，并对错误类型/越界整数记为 Invalid。
+
+全依赖构建和自测命令：bash make.sh --full --self-test --out=/tmp/t1v2-rabbit-header-decoys-overflow-green。
+结果：build PASS，t1_v2 self-test passed，git diff --check PASS。
+
+离线证据盘点没有找到可供真实 decoder 重放的 Rabbit 原始 envelope：
+/home/exedev/validation/td-rabbit-rabbit-contract-20260924T224500+0800/
+保存的是合同 inventory/checksum；
+/home/exedev/validation/production-ground-truth-20260915/ 保存 Q2 Redis
+快照和静态映射，不含 Rabbit 原始消息。该盘点限于上述证据目录及可识别的
+payload 文件格式，不证明其他未检索存储位置绝对不存在 payload。
+
+本修复只提高合成 wire fixture 下的字段识别正确性；不构成真实 Rabbit
+payload 验证。未连接/消费 Rabbit，未写 Redis/TD，未改 ACK/生产服务。要完成
+真实来源验证，必须先取得既有原始 envelope，或单独批准一种不新增 consumer、
+不改变 ACK 且不影响现有消费链的受控 capture 方案。在此之前，
+RABBIT_LIVE_PAYLOAD=UNVERIFIED，Phase P/TASK-008 仍为 PARTIAL。
