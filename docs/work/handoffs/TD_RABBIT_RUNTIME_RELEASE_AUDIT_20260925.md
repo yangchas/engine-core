@@ -1,6 +1,6 @@
 # Phase A — exact runtime release and auction Redis retry audit
 
-审计日期：2026-09-25（Asia/Shanghai）  
+审计日期：2026-09-25（Asia/Shanghai）
 方式：ECC `contract-first` + `production-audit`；C++ 修复按 ECC `cpp-testing`
 执行 RED → GREEN。只读检查生产 release；代码仅改 t1-v2 开发分支。
 
