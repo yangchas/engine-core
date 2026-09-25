@@ -1,5 +1,23 @@
 # TD 3 秒全市场回放 → Rabbit 同形输入 → t1-v2 Q2/竞价验证计划
 
+**Current-source row-chunk repair (2026-09-25):** t1-v2 development commit
+`dde58d64b530f5eec65a34c3254ec6fcb7f930d0` removes the unused
+`REPLAY_BATCH_SIZE` reserve hint and the obsolete `chunk_no` evidence field;
+the completion flag is now `slice_final_phase`. A real 2026-09-23
+`[09:25:00,09:25:03)` TD slice processed all 5,071 rows in one batch (5,071
+accepted, 0 rejected, 5,068 Q2 symbol updates). A separate real
+`[09:24:09,09:24:12)` slice processed all 906 rows as two chronological
+in-memory phases around the 09:24:10 business barrier and produced one final
+Q2Frame. Neither run split TD reads or rows by a size limit; each issued one
+SELECT for the half-open 3-second interval. Core Q2Frame readback passed.
+Both used the local evidence sink: Redis writes, TD writes, Rabbit consumption
+and ACKs were zero. This closes only the stale row-count-chunk contract; a
+business-barrier slice can still produce multiple t1-v2 processing phases, so
+strict Rabbit delivery/batch-shape equivalence remains unproven. Phase P and
+TASK-008 remain `PARTIAL`; no next phase is auto-started. Full evidence:
+`docs/work/handoffs/TD_RABBIT_NO_ROW_CHUNK_REPAIR_20260925.md` and
+`/home/exedev/validation/t1v2-no-row-chunk-20260925/`.
+
 Phase P update: the current state is `PHASE_P_PARTIAL`. A same-day real
 2026-09-24 `09:15:00–09:40:00` TD window was replayed through the exact
 t1-v2 release into isolated Redis DB10/`task009p:` with

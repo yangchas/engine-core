@@ -1,5 +1,24 @@
 # Current Task
 
+## Latest bounded repair — remove row-chunk contract drift (2026-09-25)
+
+t1-v2 development commit `dde58d64b530f5eec65a34c3254ec6fcb7f930d0` removed
+the unused `REPLAY_BATCH_SIZE` reserve setting and `chunk_no` metadata, and
+renamed slice completion metadata to `slice_final_phase`. The current TD
+source issues one SELECT per half-open 3-second slice and retains every row;
+real 2026-09-23 checks processed 5,071 rows in one ordinary slice and 906 rows
+in two in-memory event-time phases for a slice crossing the 09:24:10 barrier.
+The latter still emitted one final Q2Frame. C++ full build/self-test and Core
+Q2Frame readback passed. No Redis/TD write, Rabbit consume/ACK, service change,
+or deployment occurred.
+
+This closes only row-count chunking/configuration drift. Barrier-crossing slices
+still yield multiple Engine batch calls so the business snapshot is captured at
+its event-time barrier; therefore exact one-Engine-batch-per-slice and Rabbit
+delivery/batch equivalence are not proven. Return to the existing mainline:
+keep Phase P/TASK-008 `PARTIAL`, do not promote a task or start strategy work.
+Audit: `docs/work/handoffs/TD_RABBIT_NO_ROW_CHUNK_REPAIR_20260925.md`.
+
 ```text
 active_task: TASK-008
 bootstrap_status: COMPLETE
