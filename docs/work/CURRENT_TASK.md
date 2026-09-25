@@ -1,5 +1,32 @@
 # Current Task
 
+## Bounded Stage D fifth-depth candidate repair and audit (2026-09-25)
+
+t1-v2 development commit `b2a575ca585f248e4454997751af87590aa76bd3` adds one
+per-symbol, per-date fifth-depth candidate to the existing `QuoteState`, shared
+by live and replay tick processing. The candidate rule uses truncated local
+seconds in `[09:24:57,09:25:07)`, accepts either fifth bid or fifth ask, keeps
+the greatest processed source timestamp, flags conflicting same-time books,
+resets on a new date, and never filters ticks from Q2. Replay audit output
+separates this candidate from positive auction-amount state and excludes stale
+prior-date candidates.
+
+Latest full-dependency self-test passed. Latest binary completed real TD
+dry-run replays for 2026-09-18 and 2026-09-23 `[09:15:00,09:25:09)`: 203
+three-second slices each; respectively 226,254 and 212,022 source rows/ticks;
+zero rejects, ACKs, Redis commands, or TD write statements. Candidate tuples
+match the prior full-run outputs. Read-only snapshot SELECTs matched every
+comparable candidate price: 4,408/4,408 on 09-18 (763 snapshot prices remain
+NULL) and 5,068/5,068 on 09-23; 50 and 154 symbols respectively had no new
+window candidate. Exact audit and limits:
+`docs/work/handoffs/TD_RABBIT_STAGE_D_CANDIDATE_AUDIT_20260925.md`.
+
+This is `CANDIDATE_SELECTION=PASS_WITH_LIMITS`, not whole Stage D/Phase P
+acceptance. No next phase is started. Rabbit arrival/delivery order,
+historical `available_at`, live 09:25:06 visibility, historical `limit_state`
+provenance, NULL prices, and amount differences remain unknown/unresolved.
+M3-1 remains blocked and `TD_WRITE_HEALTH=UNPROVEN`.
+
 ## Latest Phase P full-window isolated Redis replay audit (2026-09-25)
 
 The real 2026-09-23 `[09:15:00,09:40:00)` TD window was replayed twice through
