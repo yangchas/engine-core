@@ -95,8 +95,9 @@ class Q2FrameReplaySource:
         self._expected_symbols = tuple(
             sorted({normalize_symbol(value) for value in expected_symbols})
         )
-        if not self._expected_symbols:
-            raise ValueError("expected_symbols must not be empty")
+        # An empty universe is valid for preserving a genuine empty frame on
+        # the timeline. build_q2_projection marks it MISSING/EMPTY_UNIVERSE;
+        # it must never be interpreted as complete coverage or a zero quote.
         self._clock = clock
         self._freshness_policy = freshness_policy
         self._source_id = source_id

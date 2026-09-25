@@ -55,13 +55,15 @@ def _iter_raw(path: Path) -> Iterator[Mapping[str, Any]]:
 
 
 def _inventory(path: Path) -> dict[str, Any]:
-    frames = updates = 0
+    frames = updates = empty_frames = 0
     symbols: set[str] = set()
     first_ts = last_ts = None
     for raw in _iter_raw(path):
         frame = Q2FrameV1.from_mapping(raw)
         frames += 1
         updates += len(frame.q2_updates)
+        if not frame.q2_updates:
+            empty_frames += 1
         symbols.update(str(item["symbol"]) for item in frame.q2_updates)
         if first_ts is None:
             first_ts = frame.logical_ts_ms
@@ -73,6 +75,8 @@ def _inventory(path: Path) -> dict[str, Any]:
     return {
         "frame_count": frames,
         "update_count": updates,
+        "empty_frame_count": empty_frames,
+        "non_empty_frame_count": frames - empty_frames,
         "symbol_count": len(symbols),
         "symbols": tuple(sorted(symbols)),
         "first_logical_ts_ms": first_ts,
@@ -124,12 +128,20 @@ def _run_once(
         frame_symbols = {str(item["symbol"]) for item in frame.q2_updates}
         frame_covered = frame_symbols & expected
         projection_symbols = set(signal.payload.quotes)
+        has_coverage_denominator = bool(expected)
         per_frame_coverage.append({
             "seq_no": frame.seq_no,
             "updated_symbol_count": len(frame_covered),
-            "updated_coverage": len(frame_covered) / len(expected) if expected else 0.0,
+            "updated_coverage": len(frame_covered) / len(expected) if has_coverage_denominator else None,
             "projection_observed_symbol_count": len(projection_symbols),
-            "projection_coverage": signal.payload.coverage,
+            "projection_coverage": signal.payload.coverage if has_coverage_denominator else None,
+            "projection_coverage_status": (
+                "MEASURED_WITHIN_DENOMINATOR"
+                if has_coverage_denominator
+                else "UNKNOWN_NO_UNIVERSE"
+            ),
+            "projection_status": signal.payload.status.value,
+            "projection_consistency_status": signal.payload.consistency_status,
             "projection_missing_symbols": signal.payload.missing_symbols,
         })
     state = engine._reducer.state  # evidence-only read of the in-memory reducer
@@ -158,6 +170,11 @@ def _run_once(
         "final_state_hash": final_state_hash,
         "symbol_coverage": {
             "basis": coverage_basis,
+            "status": (
+                "MEASURED_WITHIN_DENOMINATOR"
+                if expected_symbols
+                else "UNKNOWN_NO_UNIVERSE"
+            ),
             "expected_symbol_count": len(expected_symbols),
             "expected_symbols": tuple(expected_symbols),
             "q2frame_symbol_count": len(inventory["symbols"]),
@@ -166,7 +183,7 @@ def _run_once(
             "covered_symbols": tuple(sorted(covered_symbols)),
             "missing_expected_symbols": tuple(sorted(expected - covered_symbols)),
             "out_of_scope_q2_symbols": tuple(sorted(set(inventory["symbols"]) - expected)),
-            "coverage": len(covered_symbols) / len(expected) if expected else 0.0,
+            "coverage": len(covered_symbols) / len(expected) if expected else None,
             "per_frame": tuple(per_frame_coverage),
         },
     }
@@ -247,7 +264,11 @@ def main() -> int:
     tick_evidence = None
     if args.tick_evidence is None:
         expected_symbols = tuple(inventory["symbols"])
-        coverage_basis = "Q2FRAME_UNIQUE_SYMBOLS_ONLY"
+        coverage_basis = (
+            "Q2FRAME_UNIQUE_SYMBOLS_ONLY"
+            if expected_symbols
+            else "UNKNOWN_NO_UNIVERSE"
+        )
     else:
         tick_evidence, expected_symbols = _read_tick_evidence(args.tick_evidence, args.trade_date)
         coverage_basis = "TICK_EVIDENCE_EXPECTED_SYMBOLS"
@@ -312,6 +333,11 @@ def main() -> int:
         "tick_q2_coverage": tick_coverage,
         "same_input_provenance": "Q2FRAME_FILE_SHA256_CHECKED_BEFORE_INVENTORY_BEFORE_BETWEEN_AND_AFTER_RUNS",
         "q2_source": "t1-v2",
+        "market_data_observation": (
+            "EMPTY_FRAMES_ONLY_NO_MARKET_FACTS"
+            if inventory["update_count"] == 0
+            else "Q2_UPDATES_OBSERVED"
+        ),
         "q2_time_policy": "SOURCE_TIME_ONLY; NO_MARKET_HOURS_GATE",
         "historical_available_at": "UNKNOWN_NOT_INFERRED",
         "historical_available_at_policy": "NOT_INFERRED_FROM_LOGICAL_TS_SOURCE_TS_OR_REPLAY_TIME",

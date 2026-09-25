@@ -55,6 +55,29 @@ def test_q2frame_replay_is_virtual_clock_driven_and_repeatable():
     assert all(projection.status.value == "READY" for projection in projections)
 
 
+def test_empty_q2frame_advances_timeline_without_inventing_universe():
+    timestamp_ms = 1788398650000
+    frame = {
+        "version": "Q2FrameV1",
+        "seq_no": 1,
+        "logical_ts_ms": timestamp_ms,
+        "q2_updates": [],
+    }
+    clock = VirtualClock(datetime.fromtimestamp(timestamp_ms / 1000, timezone.utc))
+    source = Q2FrameReplaySource("2026-09-03", (), clock)
+
+    projection = source.apply(frame)
+
+    assert source.last_seq_no == 1
+    assert source.last_logical_ts_ms == timestamp_ms
+    assert projection.quotes == {}
+    assert projection.expected_symbols == ()
+    assert projection.coverage == 0.0
+    assert projection.status.value == "MISSING"
+    assert projection.consistency_status == "EMPTY_UNIVERSE"
+    assert clock.now_utc() == datetime.fromtimestamp(timestamp_ms / 1000, timezone.utc)
+
+
 def test_q2frame_replay_does_not_apply_market_hours_gate():
     """Producer source time is data; freshness is a separate policy."""
 

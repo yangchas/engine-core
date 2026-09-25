@@ -64,6 +64,63 @@ def test_q2frame_cli_replays_same_file_twice_and_reports_required_metrics(monkey
     )
 
 
+def test_cli_preserves_empty_frames_without_claiming_market_coverage(monkeypatch, tmp_path):
+    artifact = tmp_path / "empty-q2frame.jsonl"
+    artifact.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "version": "Q2FrameV1",
+                    "seq_no": sequence,
+                    "logical_ts_ms": 1788398650000 + (sequence - 1) * 3000,
+                    "q2_updates": [],
+                }
+            )
+            for sequence in (1, 2)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "empty-report.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_task008_t1v2_q2frame_replay",
+            "--q2frame",
+            str(artifact),
+            "--trade-date",
+            "2026-09-03",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert main() == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+
+    assert report["inventory"]["frame_count"] == 2
+    assert report["inventory"]["update_count"] == 0
+    assert report["inventory"]["empty_frame_count"] == 2
+    assert report["inventory"]["non_empty_frame_count"] == 0
+    assert report["inventory"]["symbol_count"] == 0
+    assert report["ordered"]["processed_signals"] == 2
+    assert report["ordered"]["reducer_revision"] == 2
+    coverage = report["ordered"]["symbol_coverage"]
+    assert coverage["status"] == "UNKNOWN_NO_UNIVERSE"
+    assert coverage["coverage"] is None
+    assert coverage["expected_symbol_count"] == 0
+    assert [item["projection_status"] for item in coverage["per_frame"]] == [
+        "MISSING",
+        "MISSING",
+    ]
+    assert [item["projection_consistency_status"] for item in coverage["per_frame"]] == [
+        "EMPTY_UNIVERSE",
+        "EMPTY_UNIVERSE",
+    ]
+    assert report["deterministic"] is True
+
+
 def test_tick_evidence_defines_symbol_coverage_denominator(monkeypatch, tmp_path):
     evidence = tmp_path / "tick-manifest.json"
     evidence.write_text(
