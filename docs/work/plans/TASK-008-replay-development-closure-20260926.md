@@ -296,6 +296,21 @@ The exact 2026-09-18 full-window replay and same-symbol experiment are recorded
 in `docs/work/handoffs/TASK-008-PHASE3-DEDUP-AB-20260926.md` and
 `/home/exedev/validation/task008-dedup-20260926T210044+0800/dedup_ab_report.md`.
 
+The 09:25:06 event-time barrier already has bounded real-data evidence in
+`docs/work/handoffs/TD_RABBIT_PHASE_P_BARRIER_TRACE_AUDIT_20260925.md`: on
+2026-09-23, all traced source timestamps were at or before the barrier, the
+5,208-symbol anchor member set matched the archived Redis anchor, and the
+isolated Q2/auction outputs matched the retained DB5 baseline. Do not repeat a
+generic barrier-algorithm replay. Live wall-clock visibility remains unknown.
+
+Source inspection confirms the wire fields `DataRecord.tss` and
+`DataBatch.sent_at`; the current decoder copies `tss` into the tick source time
+and reads the Rabbit header timestamp as wall metadata. A search of the
+available repositories found no production publisher assignment proving
+whether those values are exchange event time, publish time, or another clock.
+Keep that timestamp-origin question open, while allowing development of
+features that do not depend on the missing arrival-time evidence.
+
 The experiment rejects latest-per-symbol de-duplication as a transparent
 pre-processing step: it changes 09:20 facts and Q2 state. The default must
 continue to preserve all rows through the shared t1-v2 pipeline. Do not repeat

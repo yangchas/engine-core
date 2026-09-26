@@ -603,3 +603,12 @@ The audit follow-up on 2026-09-27 reclassified the experiment as
 `EXECUTION=COMPLETE` / `LATEST_ONLY_EQUIVALENCE=REJECTED` and recorded that
 per-frame input identity was not proven. The restored t1-v2 branch contains no
 latest-per-symbol policy.
+
+Mainline reconciliation on 2026-09-27 found that the event-time 09:25:06
+barrier already has bounded real TD/Redis evidence in
+`TD_RABBIT_PHASE_P_BARRIER_TRACE_AUDIT_20260925.md`; do not repeat that generic
+check. The remaining real-time uncertainty is the source/assignment semantics
+of `DataRecord.tss`, `DataBatch.sent_at`, and the Rabbit header timestamp. The
+available producer source does not establish those semantics, so arrival-time
+claims remain unknown and do not block replay work on independently supported
+fields.
