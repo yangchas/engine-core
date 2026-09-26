@@ -563,3 +563,36 @@ NORMAL acceptance. Stable 0920/0924/0925 legacy auction projections matched
 the prior isolated runs; DB0 had zero `task009o:*` keys. Evidence:
 `docs/work/handoffs/TD_RABBIT_PHASE_O_AUDIT_20260924.md` and
 `/home/exedev/validation/td-rabbit-phase-o-0924-full-20260924T224351+0800/`.
+
+## TASK-008 Phase 3/4 — real same-symbol-per-slice experiment (2026-09-26)
+
+The opt-in replay-only latest-per-symbol policy was tested against the default
+all-row path using real TD `stock_tick_v2` for 2026-09-18 09:15–09:40. Both
+same-build runs read 500 three-second slices / 1,224,811 rows. The variant
+removed 2,728 rows, had no tied max-time groups, and changed 14 final raw Q2
+symbol hashes (`mn`/`mx`); 09:20/09:24/09:25:06/09:26 barrier Q2 snapshots also
+differed. Core's 09:20 `TOP_AMOUNT` auction summary changed; 09:24/09:25
+TOP_AMOUNT output matched for this date/window. Core's final canonical Q2 hash
+was equal only because raw-only `mn`/`mx` are excluded from that canonical
+mapping. This is not full Redis Q2 parity.
+
+Decision: preserve every returned event through t1-v2 by default. Do not make
+pre-processing de-duplication a default or equate a TD time slice with a Rabbit
+DataBatch. The policy remains explicit, replay-only, default-off, and rejects
+Live mode. Full-dependency t1-v2 build/self-test passed; Core suite passed
+`705`; compileall and diff-check passed. The all-row repeat to Redis DB10/DB11
+matched Q2/A2/legacy auction/anchor content except M2 runtime `redis_bytes`.
+Both Core barrier Q2Frame replays were deterministic. Redis output was isolated
+to DB6/DB10/DB11, DB0 run-prefix hits were zero, TD writes and ACKs were zero,
+and both services remained active with no restarts.
+
+Evidence and limits:
+`docs/work/handoffs/TASK-008-PHASE3-DEDUP-AB-20260926.md` and
+`/home/exedev/validation/task008-dedup-20260926T210044+0800/dedup_ab_report.md`.
+Current direct replay logs do not contain a per-frame row-count/digest manifest;
+an older real SELECT inventory reports 500 frames/98 empty frames but does not
+attest each frame in these runs. Rabbit arrival/order and historical
+`available_at` remain `UNKNOWN`. `TASK-008=PARTIAL_EVIDENCE`,
+`REPLAY_FOR_DEVELOPMENT=USABLE_WITH_LIMITS`, `NORMAL_OPENING_ACCEPTANCE=UNPROVEN`,
+`M3_1_NORMAL=BLOCKED`, and `TD_WRITE_HEALTH=UNPROVEN` remain unchanged. No next
+business phase was promoted.

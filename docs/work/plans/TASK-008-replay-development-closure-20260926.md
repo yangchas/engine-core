@@ -2,7 +2,8 @@
 
 Date: 2026-09-26 (Asia/Shanghai)
 Owner: `replay-investigator` (sequential `tester` and `auditor` reviews)
-Status: `PLAN_READY`; no replay was started by writing this plan.
+Status: `IN_PROGRESS`; Phases 3–4 have bounded real-data evidence recorded; no
+successor business phase has been started.
 
 ## 1. Goal and current facts
 
@@ -288,10 +289,44 @@ general gates for replay-led feature development. They remain limitations or
 feature-specific evidence needs. A feature may proceed only when the fields it
 uses have the required source/version/unit/time evidence.
 
-## 7. Immediate next action
+## 7. Current next action
 
-Perform Phase 0 and Phase 1 read-only reconciliation first. Do not rerun a full
-real-data replay until the inventory proves that the current HEAD lacks a
-needed cutoff artifact or that the newest commits changed replay behavior.
-The next experiment should close the earliest evidenced gap, not restart the
-whole project or promote a later migration task.
+Phases 0–1 were reconciled against the current t1-v2/Core branches and source.
+The exact 2026-09-18 full-window replay and same-symbol experiment are recorded
+in `docs/work/handoffs/TASK-008-PHASE3-DEDUP-AB-20260926.md` and
+`/home/exedev/validation/task008-dedup-20260926T210044+0800/dedup_ab_report.md`.
+
+The experiment rejects latest-per-symbol de-duplication as a transparent
+pre-processing step: it changes 09:20 facts and Q2 state. The default must
+continue to preserve all rows through the shared t1-v2 pipeline. Do not repeat
+the same de-dup experiment, promote a successor task, or treat this result as
+NORMAL acceptance.
+
+Remaining bounded evidence gap: the current t1-v2 runner logs aggregate counts,
+not a per-frame row-count/digest inventory. Existing real SELECT inventory
+records 500 frames/98 empty frames, but current direct replays did not emit a
+per-frame manifest; report this limit without turning it into a general
+development stop. Continue only with the next feature-specific question from
+the original replay-for-development goal.
+
+## 8. Execution alignment review — 2026-09-26
+
+| Plan phase | Result | Evidence/limit |
+|---|---|---|
+| Phase 0: reconcile | Complete, read-only | Current source branches and prior validation manifests reconciled; stale DB7 attempt excluded because its terminal summary/exit code were not preserved. |
+| Phase 1: shared path | Complete, source-audited | Rabbit and TD both use `SourceTickBatchBuilder`/`TickBatch` and the shared runtime pipeline; Rabbit delivery grouping remains unknown. |
+| Phase 2: full-window replay | Bounded pass | A and B each issued 500 sequential three-second SELECT slices for 09/18 and reported 1,224,811 source rows; `source_reject=0`, `ack=0`, `td_sql=0`. Current per-frame input digests/counts were not emitted. |
+| Phase 3: de-dup experiment | Complete for this date/window; semantic differences found | B removed 2,728 rows, with 0 ambiguous max-time groups; changed Q2 state and 09:20 auction facts. Keep A as default. This is not a universal result for other dates/features. |
+| Phase 4: repeatability/Core consumption | Bounded pass with limits | Same-build all-row Redis DB10/DB11 semantic payloads match except M2 `redis_bytes`; Core read-only adapters consumed A/B Q2 and auction data; both A/B barrier Q2Frame replays were deterministic. Core Q2 projection hash equality excludes raw-only fields and does not erase the raw Q2 differences. |
+| Phase 5: tests/audit | Local tester and self-audit complete | Full-dependency t1-v2 build/self-test passed; Core `705 passed`, compileall and diff-check passed. A separate independent second-agent audit was not run. No push, merge, deploy, service restart, or M3-1 execution. |
+
+Current states remain:
+
+```text
+TASK_008=PARTIAL_EVIDENCE
+REPLAY_FOR_DEVELOPMENT=USABLE_WITH_LIMITS
+NORMAL_OPENING_ACCEPTANCE=UNPROVEN
+M3_1_NORMAL=BLOCKED
+TD_WRITE_HEALTH=UNPROVEN
+PRODUCTION_SIDE_EFFECTS=NONE_OBSERVED
+```
