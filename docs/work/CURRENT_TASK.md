@@ -578,13 +578,15 @@ mapping. This is not full Redis Q2 parity.
 
 Decision: preserve every returned event through t1-v2 by default. Do not make
 pre-processing de-duplication a default or equate a TD time slice with a Rabbit
-DataBatch. The policy remains explicit, replay-only, default-off, and rejects
-Live mode. Full-dependency t1-v2 build/self-test passed; Core suite passed
-`705`; compileall and diff-check passed. The all-row repeat to Redis DB10/DB11
-matched Q2/A2/legacy auction/anchor content except M2 runtime `redis_bytes`.
-Both Core barrier Q2Frame replays were deterministic. Redis output was isolated
-to DB6/DB10/DB11, DB0 run-prefix hits were zero, TD writes and ACKs were zero,
-and both services remained active with no restarts.
+DataBatch. The experiment policy was committed as `fd6856e` and reverted as
+`0aff8cf` after the equivalence hypothesis was rejected; both commits remain in
+local history and neither was pushed or deployed. The post-revert full-
+dependency build and t1-v2 self-test passed. The Core suite passed `705`, and
+compileall and diff-check passed. The all-row repeat to Redis DB10/DB11 matched
+Q2/A2/legacy auction/anchor content except M2 runtime `redis_bytes`. Both Core
+barrier Q2Frame replays were deterministic. Redis output was isolated to
+DB6/DB10/DB11, DB0 run-prefix hits were zero, TD writes and ACKs were zero, and
+both services remained active with no restarts.
 
 Evidence and limits:
 `docs/work/handoffs/TASK-008-PHASE3-DEDUP-AB-20260926.md` and
@@ -596,3 +598,8 @@ attest each frame in these runs. Rabbit arrival/order and historical
 `REPLAY_FOR_DEVELOPMENT=USABLE_WITH_LIMITS`, `NORMAL_OPENING_ACCEPTANCE=UNPROVEN`,
 `M3_1_NORMAL=BLOCKED`, and `TD_WRITE_HEALTH=UNPROVEN` remain unchanged. No next
 business phase was promoted.
+
+The audit follow-up on 2026-09-27 reclassified the experiment as
+`EXECUTION=COMPLETE` / `LATEST_ONLY_EQUIVALENCE=REJECTED` and recorded that
+per-frame input identity was not proven. The restored t1-v2 branch contains no
+latest-per-symbol policy.

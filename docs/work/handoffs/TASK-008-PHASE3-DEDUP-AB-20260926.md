@@ -1,8 +1,8 @@
 # TASK-008 Phase 3/4 — real same-symbol-per-slice A/B
 
 Date: 2026-09-26 (Asia/Shanghai)
-Audit result: `PASS_WITH_SEMANTIC_DIFFERENCES` for the bounded 2026-09-18
-window; default filtering is **not** accepted.
+Experiment execution: `COMPLETE`
+Latest-only semantic equivalence: `REJECTED` for observed outputs.
 
 ## Finding
 
@@ -52,17 +52,35 @@ Verification:
   row-count/digest manifest. An earlier captured real SELECT inventory has 500
   frames/98 empty frames, but that is not a per-frame attestation for these
   direct replay runs.
+- A and B independently queried the same historical TD date/window; equal
+  aggregate row counts do not prove row-for-row identical inputs. The observed
+  Q2 differences justify rejecting latest-only as a safe default, while exact
+  per-frame causal attribution remains unproven.
 - Rabbit arrival order, delivery grouping, publisher timestamp assignment,
   and historical `available_at` remain `UNKNOWN`.
 - 5,221 symbols is observed t1-v2 membership, not an independently proven
   full-market denominator.
 - `TASK-008` remains `PARTIAL_EVIDENCE`; `M3_1_NORMAL=BLOCKED` and
   `TD_WRITE_HEALTH=UNPROVEN` are unchanged.
-- No successor phase/task was started. Local t1-v2 experiment code has not been
+- No successor phase/task was started. The experiment code was committed as
+  t1-v2 commit `fd6856e`, then reverted in `0aff8cf` after the equivalence
+  hypothesis was rejected; both commits remain in local history. Neither was
   pushed, merged, or deployed. Core documentation changes do not alter the
   task-board structure.
 
 The ECC `production-audit` and `cpp-testing` lenses were applied: source/sink
-boundaries and DB isolation were audited, and the experimental policy has
-focused tests for defaults, live-mode rejection, latest-time selection, ties,
-and empty slices.
+boundaries and DB isolation were audited, and the experiment commit had focused
+self-tests for defaults, live-mode rejection, latest-time selection, ties, and
+empty slices. After the revert, the full-dependency t1-v2 build and self-test
+also passed on the restored all-rows branch.
+
+## Audit follow-up — 2026-09-27
+
+The original `PASS_WITH_SEMANTIC_DIFFERENCES` label described experiment
+execution, but could be mistaken for a successful equivalence result. The
+status above now separates `Experiment execution: COMPLETE` from
+`Latest-only semantic equivalence: REJECTED`. A/B read the same date/window
+independently and had equal aggregate row counts; the lack of per-frame input
+digests keeps exact row-for-row causal attribution unproven. This limitation
+does not justify enabling the policy: observed Q2 and auction differences are
+enough to retain all rows.
