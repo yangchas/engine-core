@@ -49,6 +49,11 @@ from engine_core.contracts import StrategyResult  # noqa: E402
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 AUCTION_TAGS = ("0920", "0924", "0925")
+AUCTION_PRICE_FIELDS = (
+    "auction_anchor_0920_price_milli",
+    "auction_anchor_0924_price_milli",
+    "auction_anchor_0925_price_milli",
+)
 
 
 def _floor_second(timestamp_ms: int) -> int:
@@ -162,6 +167,7 @@ class _AllSymbolAuctionShadow:
                 end_trigger_id="AUCTION_0925",
                 previous_segment_id=f"q2frame_{symbol}_0920_to_0924",
                 current_segment_id=f"q2frame_{symbol}_0924_to_0925",
+                price_fields=AUCTION_PRICE_FIELDS,
             )
             for symbol in symbols
         }
@@ -519,7 +525,7 @@ def run_q2frame_auction_engine_shadow(
     determinism["input_sha256_stable"] = input_stable
     deterministic = all(determinism.values())
     return {
-        "contract_version": "Task008Q2FrameAuctionEngineShadowV1",
+        "contract_version": "Task008Q2FrameAuctionEngineShadowV2",
         "trade_date": trade_date,
         "run_mode": "REAL_T1V2_Q2FRAME_EVENT_TIME_REPLAY",
         "q2frame": {
@@ -544,6 +550,10 @@ def run_q2frame_auction_engine_shadow(
             for tag in AUCTION_TAGS
             for policies in (AuctionTimingPolicyV1.default(tag),)
         },
+        "auction_price_field_policy": {
+            tag: field for tag, field in zip(AUCTION_TAGS, AUCTION_PRICE_FIELDS)
+        },
+        "missing_auction_price_behavior": "MISSING_NO_FALLBACK_TO_LATEST_PX",
         "replay_time_policy": (
             "logical frame and timer times are floored to whole seconds; "
             "raw Q2Frame/update source milliseconds are retained in payload/evidence"

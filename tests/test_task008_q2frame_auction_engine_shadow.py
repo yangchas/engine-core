@@ -37,6 +37,11 @@ def _frame(seq_no: int, clock: str) -> dict:
                 "am": 500_000 + seq_no * 10 + index,
                 "br": 300_000 + seq_no * 5 + index,
                 "ar": 200_000 + seq_no * 3 + index,
+                # Q2's live px continues changing; the captured t1-v2 auction
+                # anchors are separate fields and must drive auction prices.
+                "a20": 10_000 if seq_no >= 3 else 0,
+                "a24": 11_000 if seq_no >= 5 else 0,
+                "a25": 12_000 if seq_no >= 7 else 0,
             }
         )
     return {
@@ -72,6 +77,13 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
     )
 
     assert result["deterministic"] is True
+    assert result["contract_version"] == "Task008Q2FrameAuctionEngineShadowV2"
+    assert result["auction_price_field_policy"] == {
+        "0920": "auction_anchor_0920_price_milli",
+        "0924": "auction_anchor_0924_price_milli",
+        "0925": "auction_anchor_0925_price_milli",
+    }
+    assert result["missing_auction_price_behavior"] == "MISSING_NO_FALLBACK_TO_LATEST_PX"
     assert result["inventory"]["symbol_count"] == 2
     assert result["ordered"]["engine_instances"] == 1
     assert result["ordered"]["input_frames_processed"] == 8
@@ -95,6 +107,10 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
     assert anchors["0925"]["last_raw_update_time_ms"] == _epoch_ms("09:25:06.999")
     assert anchors["0925"]["facts_by_symbol_hash"]
     assert len(anchors["0925"]["facts_by_symbol"]) == 2
+    assert (
+        anchors["0925"]["facts_by_symbol"]["000001"]["metrics"]["price_delta_milli"]
+        == 1_000
+    )
 
     revision = anchors["0925"]["auction_revision"]
     assert revision["contract"] == "AuctionAnchorRevisionV1"

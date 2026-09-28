@@ -53,6 +53,9 @@ Q2_FIELD_CONTRACT: Tuple[Q2FieldSpec, ...] = (
     Q2FieldSpec("br", "auction_bid_amount_yuan", "int", "yuan", "derived level-2 resting bid amount", False),
     Q2FieldSpec("ar", "auction_ask_amount_yuan", "int", "yuan", "derived level-2 resting ask amount", False),
     Q2FieldSpec("am", "auction_amount_yuan", "int", "yuan", "current auction matched amount", False),
+    Q2FieldSpec("a20", "auction_anchor_0920_price_milli", "int", "milli_price", "captured 09:20 matching-price anchor; zero means unavailable", False),
+    Q2FieldSpec("a24", "auction_anchor_0924_price_milli", "int", "milli_price", "captured 09:24 matching-price anchor; zero means unavailable", False),
+    Q2FieldSpec("a25", "auction_anchor_0925_price_milli", "int", "milli_price", "captured 09:25 matching-price anchor; zero means unavailable", False),
     Q2FieldSpec("spd1m", "speed_1m_bp", "int", "basis_point", "exact one-minute price change", False),
     Q2FieldSpec("amt2m", "amount_2m_yuan", "int", "yuan", "cumulative amount delta within two minutes", False),
     Q2FieldSpec("amt5m", "amount_5m_yuan", "int", "yuan", "cumulative amount delta within five minutes", False),
@@ -151,6 +154,9 @@ class Q2Quote:
     vector_3m_bp: Optional[int]
     vector_5m_bp: Optional[int]
     raw_fields: Mapping[str, Any]
+    auction_anchor_0920_price_milli: Optional[int] = None
+    auction_anchor_0924_price_milli: Optional[int] = None
+    auction_anchor_0925_price_milli: Optional[int] = None
     field_errors: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -177,6 +183,9 @@ class Q2Quote:
             "speed_1m_bp": self.speed_1m_bp,
             "vector_3m_bp": self.vector_3m_bp,
             "vector_5m_bp": self.vector_5m_bp,
+            "auction_anchor_0920_price_milli": self.auction_anchor_0920_price_milli,
+            "auction_anchor_0924_price_milli": self.auction_anchor_0924_price_milli,
+            "auction_anchor_0925_price_milli": self.auction_anchor_0925_price_milli,
             "field_errors": self.field_errors,
         }
 
@@ -197,6 +206,17 @@ def normalize_q2(symbol: str, raw_hash: Mapping[Any, Any]) -> Q2Quote:
         value = _to_int(raw.get(name))
         if name in raw and raw.get(name) not in (None, "") and value is None:
             errors.append(name)
+        return value
+
+    def auction_anchor_price(name: str) -> Optional[int]:
+        value = int_field(name)
+        if value is None or value == 0:
+            # t1-v2 zero-initializes an uncaptured anchor; retain the raw wire
+            # value in raw_fields while representing the fact as unavailable.
+            return None
+        if value < 0:
+            errors.append(name + "_non_positive")
+            return None
         return value
 
     timestamp_raw = int_field("ts")
@@ -223,6 +243,9 @@ def normalize_q2(symbol: str, raw_hash: Mapping[Any, Any]) -> Q2Quote:
         vector_3m_bp=int_field("vec3m"),
         vector_5m_bp=int_field("vec5m"),
         raw_fields=raw,
+        auction_anchor_0920_price_milli=auction_anchor_price("a20"),
+        auction_anchor_0924_price_milli=auction_anchor_price("a24"),
+        auction_anchor_0925_price_milli=auction_anchor_price("a25"),
         field_errors=tuple(sorted(set(errors))),
     )
     return quote

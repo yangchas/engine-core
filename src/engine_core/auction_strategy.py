@@ -55,6 +55,7 @@ class AuctionShadowStrategy:
         previous_coverage_status: Optional[str] = None,
         current_coverage_status: Optional[str] = None,
         theme_delta_function_id: Optional[str] = None,
+        price_fields: Optional[Tuple[str, str, str]] = None,
     ) -> None:
         if scope_type != "SYMBOL":
             raise ValueError("the first auction strategy slice supports SYMBOL only")
@@ -80,6 +81,13 @@ class AuctionShadowStrategy:
         self.volume_semantics = volume_semantics
         self.previous_coverage_status = previous_coverage_status
         self.current_coverage_status = current_coverage_status
+        if price_fields is not None and (
+            not isinstance(price_fields, tuple)
+            or len(price_fields) != 3
+            or any(not isinstance(item, str) or not item for item in price_fields)
+        ):
+            raise ValueError("price_fields must be a tuple of three non-empty field names")
+        self.price_fields = price_fields
         if theme_delta_function_id is not None and (
             not isinstance(theme_delta_function_id, str) or not theme_delta_function_id.strip()
         ):
@@ -133,6 +141,8 @@ class AuctionShadowStrategy:
                 "submission": SUBMISSION_HASH_CONTRACT_VERSION,
             },
         }
+        if self.price_fields is not None:
+            trace["price_fields"] = self.price_fields
 
         missing = [
             trigger_id
@@ -172,6 +182,7 @@ class AuctionShadowStrategy:
                 previous_observed_end_time_ms=self._observed_end(middle),
                 current_observed_start_time_ms=self._observed_start(middle),
                 current_observed_end_time_ms=self._observed_end(end),
+                price_fields=self.price_fields,
             )
             trace.update(
                 {
