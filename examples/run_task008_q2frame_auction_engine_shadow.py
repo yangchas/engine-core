@@ -32,8 +32,10 @@ from engine_core import (  # noqa: E402
     AuctionTimingPolicyV1,
     DeterministicEngine,
     EngineSignal,
+    FreshnessPolicy,
     FrozenDataBundle,
     MarketStateReducer,
+    OpeningShadowStrategy,
     Q2FrameReplaySource,
     Q2FrameV1,
     SignalKind,
@@ -49,6 +51,9 @@ from engine_core.contracts import StrategyResult  # noqa: E402
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 AUCTION_TAGS = ("0920", "0924", "0925")
+OPENING_TAG = "OPENING_0932"
+OPENING_EVALUATION_LOCAL = "09:32:10"
+OPENING_STALE_AFTER_MS = 60_000
 AUCTION_PRICE_FIELDS = (
     "auction_anchor_0920_price_milli",
     "auction_anchor_0924_price_milli",
@@ -62,6 +67,13 @@ def _floor_second(timestamp_ms: int) -> int:
 
 def _local_datetime(timestamp_ms: int) -> datetime:
     return datetime.fromtimestamp(timestamp_ms / 1000, timezone.utc).astimezone(SHANGHAI)
+
+
+def _opening_evaluation_ms(trade_date: str) -> int:
+    local = datetime.fromisoformat(f"{trade_date}T{OPENING_EVALUATION_LOCAL}")
+    if local.tzinfo is None:
+        local = local.replace(tzinfo=SHANGHAI)
+    return int(local.astimezone(timezone.utc).timestamp() * 1000)
 
 
 def _iter_raw(path: Path) -> Iterable[Mapping[str, Any]]:
@@ -87,6 +99,15 @@ def _inventory(path: Path, trade_date: str) -> dict[str, Any]:
     frame_count = update_count = empty_frame_count = 0
     missing_update_ts_count = subsecond_update_ts_count = 0
     frame_ts_mismatch_count = 0
+    duplicate_symbol_occurrences = 0
+    frame_minus_source_time = {
+        "future": 0,
+        "zero_to_under_3s": 0,
+        "3s_to_under_60s": 0,
+        "60s_or_more": 0,
+        "min": None,
+        "max": None,
+    }
     symbols: set[str] = set()
     first_raw_ms = last_raw_ms = None
     previous_seq = 0
@@ -109,9 +130,13 @@ def _inventory(path: Path, trade_date: str) -> dict[str, Any]:
             first_raw_ms = frame.logical_ts_ms
         last_raw_ms = frame.logical_ts_ms
         frame_second = _floor_second(frame.logical_ts_ms)
+        symbols_in_frame: set[str] = set()
         for update in frame.q2_updates:
             symbol = str(update["symbol"])
             symbols.add(symbol)
+            if symbol in symbols_in_frame:
+                duplicate_symbol_occurrences += 1
+            symbols_in_frame.add(symbol)
             source_ms = update.get("ts")
             if isinstance(source_ms, bool) or not isinstance(source_ms, int):
                 missing_update_ts_count += 1
@@ -120,6 +145,23 @@ def _inventory(path: Path, trade_date: str) -> dict[str, Any]:
                 subsecond_update_ts_count += 1
             if _floor_second(source_ms) != frame_second:
                 frame_ts_mismatch_count += 1
+            delta_ms = frame.logical_ts_ms - source_ms
+            if delta_ms < 0:
+                frame_minus_source_time["future"] += 1
+            elif delta_ms < 3_000:
+                frame_minus_source_time["zero_to_under_3s"] += 1
+            elif delta_ms < 60_000:
+                frame_minus_source_time["3s_to_under_60s"] += 1
+            else:
+                frame_minus_source_time["60s_or_more"] += 1
+            min_delta = frame_minus_source_time["min"]
+            max_delta = frame_minus_source_time["max"]
+            frame_minus_source_time["min"] = (
+                delta_ms if min_delta is None else min(min_delta, delta_ms)
+            )
+            frame_minus_source_time["max"] = (
+                delta_ms if max_delta is None else max(max_delta, delta_ms)
+            )
     if frame_count == 0:
         raise ValueError("Q2Frame artifact is empty")
     return {
@@ -134,6 +176,14 @@ def _inventory(path: Path, trade_date: str) -> dict[str, Any]:
         "missing_update_ts_count": missing_update_ts_count,
         "subsecond_update_ts_count": subsecond_update_ts_count,
         "frame_second_mismatch_count": frame_ts_mismatch_count,
+        "duplicate_symbol_occurrences_within_frame": duplicate_symbol_occurrences,
+        "frame_minus_source_time_ms": {
+            **frame_minus_source_time,
+            "meaning": (
+                "frame logical timestamp minus per-symbol source timestamp; "
+                "not arrival latency"
+            ),
+        },
         "universe_basis": "UNIQUE_SYMBOLS_IN_FROZEN_Q2FRAME_ONLY",
     }
 
@@ -154,11 +204,11 @@ def _groups_by_replay_second(path: Path) -> Iterable[tuple[int, tuple[Q2FrameV1,
 
 
 class _AllSymbolAuctionShadow:
-    """Compose the existing per-symbol Core fact rule under one Engine."""
+    """Compose auction and optional opening facts under one Engine."""
 
     strategy_id = "q2frame-all-symbol-auction-shadow-v1"
 
-    def __init__(self, symbols: tuple[str, ...]) -> None:
+    def __init__(self, symbols: tuple[str, ...], *, include_opening: bool = False) -> None:
         self._strategies = {
             symbol: AuctionShadowStrategy(
                 scope_id=symbol,
@@ -171,14 +221,25 @@ class _AllSymbolAuctionShadow:
             )
             for symbol in symbols
         }
+        self._opening_strategies = (
+            {symbol: OpeningShadowStrategy(scope_id=symbol) for symbol in symbols}
+            if include_opening
+            else {}
+        )
 
     def evaluate(self, snapshot: Any, bundle: FrozenDataBundle) -> StrategyResult:
+        is_opening = snapshot.trigger_id == OPENING_TAG
+        strategies = self._opening_strategies if is_opening else self._strategies
+        if is_opening and not strategies:
+            raise ValueError("OPENING_0932 was not enabled for this replay")
         child_results = {
             symbol: strategy.evaluate(snapshot, bundle)
-            for symbol, strategy in self._strategies.items()
+            for symbol, strategy in strategies.items()
         }
         status_counts: Counter[str] = Counter()
         facts_by_symbol: dict[str, Any] = {}
+        opening_field_status_by_symbol: dict[str, Any] = {}
+        opening_field_status_counts: dict[str, Counter[str]] = {}
         child_hashes: dict[str, str] = {}
         evidence_refs: set[str] = set()
         for symbol, result in child_results.items():
@@ -186,20 +247,36 @@ class _AllSymbolAuctionShadow:
             evidence_refs.update(result.evidence_refs)
             status = result.trace.get("fact_status", "UNKNOWN")
             status_counts[getattr(status, "value", str(status))] += 1
-            fact = result.trace.get("auction_fact_shadow")
+            fact = (
+                result.trace.get("opening_fact")
+                if is_opening
+                else result.trace.get("auction_fact_shadow")
+            )
             if fact is not None:
                 facts_by_symbol[symbol] = fact
+            if is_opening:
+                field_status = result.trace.get("opening_fact_field_status")
+                if field_status is not None:
+                    opening_field_status_by_symbol[symbol] = field_status
+                    for field_name, field_status_value in field_status.items():
+                        opening_field_status_counts.setdefault(
+                            field_name, Counter()
+                        )[str(field_status_value)] += 1
 
         trigger_id = snapshot.trigger_id
         trace: dict[str, Any] = {
             "state": "OBSERVE",
             "decision_status": "FACT_ONLY",
-            "strategy_id": self.strategy_id,
+            "strategy_id": (
+                "q2frame-all-symbol-opening-shadow-v1"
+                if is_opening
+                else self.strategy_id
+            ),
             "trigger_id": trigger_id,
             "logical_time_ms": snapshot.logical_time_ms,
             "snapshot_hash": snapshot.content_hash,
             "fact_status_counts": dict(sorted(status_counts.items())),
-            "expected_q2frame_symbol_count": len(self._strategies),
+            "expected_q2frame_symbol_count": len(strategies),
             "observed_symbol_count": len(snapshot.symbol_states),
             "coverage": snapshot.coverage,
             "completeness": snapshot.completeness,
@@ -209,6 +286,26 @@ class _AllSymbolAuctionShadow:
         if trigger_id == "AUCTION_0925":
             trace["facts_by_symbol"] = facts_by_symbol
             trace["facts_by_symbol_hash"] = semantic_hash(facts_by_symbol)
+        if is_opening:
+            trace["fact_status_scope"] = "change_pct_and_source_time"
+            trace["facts_by_symbol"] = facts_by_symbol
+            trace["facts_by_symbol_hash"] = semantic_hash(facts_by_symbol)
+            trace["opening_fact_field_status_by_symbol"] = (
+                opening_field_status_by_symbol
+            )
+            trace["opening_fact_field_status_counts"] = {
+                field_name: dict(sorted(counts.items()))
+                for field_name, counts in sorted(opening_field_status_counts.items())
+            }
+            trace["opening_fact_field_status_hash"] = semantic_hash(
+                opening_field_status_by_symbol
+            )
+            trace["stale_symbol_count"] = len(
+                snapshot.source_observation_metadata.get("stale_symbols", ())
+            )
+            trace["missing_symbol_count"] = len(
+                snapshot.source_observation_metadata.get("missing_symbols", ())
+            )
         return StrategyResult(
             strategy_id=self.strategy_id,
             evaluation_id=bundle.evaluation_id,
@@ -219,8 +316,15 @@ class _AllSymbolAuctionShadow:
         )
 
 
-def _new_engine(trade_date: str, symbols: tuple[str, ...], first_ms: int, last_ms: int) -> DeterministicEngine:
-    strategy = _AllSymbolAuctionShadow(symbols)
+def _new_engine(
+    trade_date: str,
+    symbols: tuple[str, ...],
+    first_ms: int,
+    last_ms: int,
+    *,
+    include_opening: bool = False,
+) -> DeterministicEngine:
+    strategy = _AllSymbolAuctionShadow(symbols, include_opening=include_opening)
     return DeterministicEngine(
         MarketStateReducer(),
         WindowManager((WindowSpec("q2frame_replay", first_ms, last_ms + 1),)),
@@ -235,6 +339,7 @@ def _run_once(
     *,
     trade_date: str,
     inventory: Mapping[str, Any],
+    include_opening: bool = False,
 ) -> dict[str, Any]:
     symbols = tuple(inventory["symbols"])
     policies = {tag: AuctionTimingPolicyV1.default(tag) for tag in AUCTION_TAGS}
@@ -242,20 +347,114 @@ def _run_once(
         tag: policies[tag].at(trade_date)["first_observable_ms"]
         for tag in AUCTION_TAGS
     }
-    ordered_barriers = tuple((tag, barriers[tag]) for tag in AUCTION_TAGS)
+    if include_opening:
+        barriers[OPENING_TAG] = _opening_evaluation_ms(trade_date)
+    ordered_barriers = tuple(sorted(barriers.items(), key=lambda item: (item[1], item[0])))
     first_ms = _floor_second(int(inventory["first_logical_ts_ms"]))
-    final_ms = barriers["0925"]
+    final_ms = ordered_barriers[-1][1]
     initial_clock = datetime.fromtimestamp(first_ms / 1000, timezone.utc)
     clock = VirtualClock(initial_clock)
-    source = Q2FrameReplaySource(trade_date, symbols, clock, source_id="t1_v2_q2frame")
-    engine = _new_engine(trade_date, symbols, first_ms, final_ms)
+    freshness_policy = (
+        FreshnessPolicy(
+            stale_after_ms=OPENING_STALE_AFTER_MS,
+            max_future_skew_ms=999,
+        )
+        if include_opening
+        else FreshnessPolicy()
+    )
+    source = Q2FrameReplaySource(
+        trade_date,
+        symbols,
+        clock,
+        freshness_policy=freshness_policy,
+        source_id="t1_v2_q2frame",
+    )
+    engine = _new_engine(
+        trade_date,
+        symbols,
+        first_ms,
+        final_ms,
+        include_opening=include_opening,
+    )
     auction_timeline = AuctionTimeline(trade_date)
     anchor_evidence: dict[str, dict[str, Any]] = {}
+    opening_evidence: dict[str, dict[str, Any]] = {}
     frame_count = update_count = 0
     last_raw_frame_ms = None
     last_raw_update_ms = None
     first_excluded_frame: dict[str, Any] | None = None
     barrier_index = 0
+
+    def capture_barrier(tag: str, logical_ms: int, result: Any) -> None:
+        snapshot = result.snapshots[-1]
+        strategy_result = result.strategy_results[-1]
+        base = {
+            "first_observable_ms": logical_ms,
+            "first_observable_local": _local_datetime(logical_ms).isoformat(),
+            "engine_snapshot_hash": snapshot.content_hash,
+            "engine_revision": snapshot.market_state_revision,
+            "engine_completeness": snapshot.completeness,
+            "coverage": snapshot.coverage,
+            "observed_symbol_count": len(snapshot.symbol_states),
+            "expected_q2frame_symbol_count": len(symbols),
+            "oldest_source_time_ms": snapshot.source_observation_metadata.get(
+                "oldest_source_time_ms"
+            ),
+            "newest_source_time_ms": snapshot.source_observation_metadata.get(
+                "newest_source_time_ms"
+            ),
+            "input_frames_included": frame_count,
+            "input_updates_included": update_count,
+            "last_raw_frame_time_ms": last_raw_frame_ms,
+            "last_raw_update_time_ms": last_raw_update_ms,
+            "strategy_result_hash": strategy_result.content_hash,
+            "fact_status_counts": strategy_result.trace.get("fact_status_counts", {}),
+            "facts_by_symbol_hash": strategy_result.trace.get("facts_by_symbol_hash"),
+            "facts_by_symbol": strategy_result.trace.get("facts_by_symbol", {}),
+            "processed_signals": result.processed_signals,
+            "reducer_revision": engine._reducer.state.revision,
+            "virtual_clock_ms": int(clock.now_utc().timestamp() * 1000),
+        }
+        if tag == OPENING_TAG:
+            base.update(
+                {
+                    "contract": "OpeningFactV1",
+                    "fact_status_scope": strategy_result.trace.get(
+                        "fact_status_scope"
+                    ),
+                    "evaluation_time_ms": logical_ms,
+                    "expected_symbol_count": len(symbols),
+                    "stale_symbol_count": strategy_result.trace.get(
+                        "stale_symbol_count", 0
+                    ),
+                    "missing_symbol_count": strategy_result.trace.get(
+                        "missing_symbol_count", 0
+                    ),
+                    "opening_fact_field_status_by_symbol": strategy_result.trace.get(
+                        "opening_fact_field_status_by_symbol", {}
+                    ),
+                    "opening_fact_field_status_counts": strategy_result.trace.get(
+                        "opening_fact_field_status_counts", {}
+                    ),
+                    "opening_fact_field_status_hash": strategy_result.trace.get(
+                        "opening_fact_field_status_hash"
+                    ),
+                    "freshness_policy": {
+                        "stale_after_ms": OPENING_STALE_AFTER_MS,
+                        "max_future_skew_ms": 999,
+                    },
+                    "universe_basis": inventory["universe_basis"],
+                    "availability_status": "UNKNOWN_NOT_INFERRED",
+                }
+            )
+            opening_evidence[tag] = base
+        else:
+            base["auction_revision"] = auction_revision_summary(
+                tag,
+                snapshot,
+                logical_ms,
+            )
+            anchor_evidence[tag] = base
 
     def auction_revision_summary(
         tag: str,
@@ -306,50 +505,18 @@ def _run_once(
     def fire_barrier(tag: str, logical_ms: int) -> None:
         nonlocal barrier_index
         clock.advance_to(datetime.fromtimestamp(logical_ms / 1000, timezone.utc))
+        trigger_id = OPENING_TAG if tag == OPENING_TAG else f"AUCTION_{tag}"
         engine.submit(
             EngineSignal(
-                signal_id=f"q2frame-auction-timer:{tag}",
+                signal_id=f"q2frame-timer:{tag}",
                 logical_time_ms=logical_ms,
                 signal_seq=1_000_000_000 + barrier_index,
                 signal_kind=SignalKind.TIMER,
-                payload={"trigger_id": f"AUCTION_{tag}"},
+                payload={"trigger_id": trigger_id},
             )
         )
         result = engine.run_until_empty()
-        snapshot = result.snapshots[-1]
-        strategy_result = result.strategy_results[-1]
-        anchor_evidence[tag] = {
-            "first_observable_ms": logical_ms,
-            "first_observable_local": _local_datetime(logical_ms).isoformat(),
-            "engine_snapshot_hash": snapshot.content_hash,
-            "engine_revision": snapshot.market_state_revision,
-            "engine_completeness": snapshot.completeness,
-            "coverage": snapshot.coverage,
-            "observed_symbol_count": len(snapshot.symbol_states),
-            "expected_q2frame_symbol_count": len(symbols),
-            "oldest_source_time_ms": snapshot.source_observation_metadata.get(
-                "oldest_source_time_ms"
-            ),
-            "newest_source_time_ms": snapshot.source_observation_metadata.get(
-                "newest_source_time_ms"
-            ),
-            "input_frames_included": frame_count,
-            "input_updates_included": update_count,
-            "last_raw_frame_time_ms": last_raw_frame_ms,
-            "last_raw_update_time_ms": last_raw_update_ms,
-            "strategy_result_hash": strategy_result.content_hash,
-            "fact_status_counts": strategy_result.trace["fact_status_counts"],
-            "facts_by_symbol_hash": strategy_result.trace.get("facts_by_symbol_hash"),
-            "facts_by_symbol": strategy_result.trace.get("facts_by_symbol"),
-            "processed_signals": result.processed_signals,
-            "reducer_revision": engine._reducer.state.revision,
-            "virtual_clock_ms": int(clock.now_utc().timestamp() * 1000),
-            "auction_revision": auction_revision_summary(
-                tag,
-                snapshot,
-                logical_ms,
-            ),
-        }
+        capture_barrier(tag, logical_ms, result)
         barrier_index += 1
 
     for replay_second, group in _groups_by_replay_second(path):
@@ -361,7 +528,11 @@ def _run_once(
                 "raw_logical_time_local": _local_datetime(first.logical_ts_ms).isoformat(),
                 "replay_second_ms": replay_second,
                 "update_count": len(first.q2_updates),
-                "excluded_reason": "AFTER_0925_FIRST_OBSERVABLE_SECOND",
+                "excluded_reason": (
+                    "AFTER_OPENING_0932_EVALUATION_SECOND"
+                    if include_opening
+                    else "AFTER_0925_FIRST_OBSERVABLE_SECOND"
+                ),
             }
             break
 
@@ -410,54 +581,20 @@ def _run_once(
             # Engine signal priority applies every Q2Frame update in this whole
             # second before the same-time auction timer.
             clock.advance_to(datetime.fromtimestamp(logical_ms / 1000, timezone.utc))
+            trigger_id = OPENING_TAG if tag == OPENING_TAG else f"AUCTION_{tag}"
             engine.submit(
                 EngineSignal(
-                    signal_id=f"q2frame-auction-timer:{tag}",
+                    signal_id=f"q2frame-timer:{tag}",
                     logical_time_ms=logical_ms,
                     signal_seq=1_000_000_000 + barrier_index,
                     signal_kind=SignalKind.TIMER,
-                    payload={"trigger_id": f"AUCTION_{tag}"},
+                    payload={"trigger_id": trigger_id},
                 )
             )
         result = engine.run_until_empty()
         if matching_barrier is not None and matching_barrier[1] == replay_second:
             tag, logical_ms = matching_barrier
-            snapshot = result.snapshots[-1]
-            strategy_result = result.strategy_results[-1]
-            anchor_evidence[tag] = {
-                "first_observable_ms": logical_ms,
-                "first_observable_local": _local_datetime(logical_ms).isoformat(),
-                "engine_snapshot_hash": snapshot.content_hash,
-                "engine_revision": snapshot.market_state_revision,
-                "engine_completeness": snapshot.completeness,
-                "coverage": snapshot.coverage,
-                "observed_symbol_count": len(snapshot.symbol_states),
-                "expected_q2frame_symbol_count": len(symbols),
-                "oldest_source_time_ms": snapshot.source_observation_metadata.get(
-                    "oldest_source_time_ms"
-                ),
-                "newest_source_time_ms": snapshot.source_observation_metadata.get(
-                    "newest_source_time_ms"
-                ),
-                "input_frames_included": frame_count,
-                "input_updates_included": update_count,
-                "last_raw_frame_time_ms": last_raw_frame_ms,
-                "last_raw_update_time_ms": last_raw_update_ms,
-                "strategy_result_hash": strategy_result.content_hash,
-                "fact_status_counts": strategy_result.trace["fact_status_counts"],
-                "facts_by_symbol_hash": strategy_result.trace.get(
-                    "facts_by_symbol_hash"
-                ),
-                "facts_by_symbol": strategy_result.trace.get("facts_by_symbol"),
-                "processed_signals": result.processed_signals,
-                "reducer_revision": engine._reducer.state.revision,
-                "virtual_clock_ms": int(clock.now_utc().timestamp() * 1000),
-                "auction_revision": auction_revision_summary(
-                    tag,
-                    snapshot,
-                    logical_ms,
-                ),
-            }
+            capture_barrier(tag, logical_ms, result)
             barrier_index += 1
 
     while barrier_index < len(ordered_barriers):
@@ -466,9 +603,12 @@ def _run_once(
 
     if tuple(anchor_evidence) != AUCTION_TAGS:
         raise RuntimeError("not all three auction barriers produced Engine snapshots")
+    if include_opening and tuple(opening_evidence) != (OPENING_TAG,):
+        raise RuntimeError("OPENING_0932 did not produce an Engine snapshot")
     final_state = engine._reducer.state
     return {
         "anchor_evidence": anchor_evidence,
+        "opening_evidence": opening_evidence,
         "first_excluded_frame": first_excluded_frame,
         "input_frames_processed": frame_count,
         "input_updates_processed": update_count,
@@ -494,23 +634,35 @@ def run_q2frame_auction_engine_shadow(
     q2frame_path: Path,
     trade_date: str,
     expected_sha256: str | None = None,
+    include_opening: bool = False,
 ) -> dict[str, Any]:
-    """Run the feature-scoped full-symbol auction replay twice."""
+    """Run a pinned Q2Frame auction replay, optionally through opening, twice."""
 
     initial_sha = _file_sha256(q2frame_path)
     if expected_sha256 is not None and initial_sha != expected_sha256:
         raise ValueError("Q2Frame SHA-256 does not match the pinned artifact")
     inventory = _inventory(q2frame_path, trade_date)
     after_inventory_sha = _file_sha256(q2frame_path)
-    first = _run_once(q2frame_path, trade_date=trade_date, inventory=inventory)
+    first = _run_once(
+        q2frame_path,
+        trade_date=trade_date,
+        inventory=inventory,
+        include_opening=include_opening,
+    )
     between_runs_sha = _file_sha256(q2frame_path)
-    repeat = _run_once(q2frame_path, trade_date=trade_date, inventory=inventory)
+    repeat = _run_once(
+        q2frame_path,
+        trade_date=trade_date,
+        inventory=inventory,
+        include_opening=include_opening,
+    )
     final_sha = _file_sha256(q2frame_path)
     input_stable = len(
         {initial_sha, after_inventory_sha, between_runs_sha, final_sha}
     ) == 1
     compared_fields = (
         "anchor_evidence",
+        "opening_evidence",
         "input_frames_processed",
         "input_updates_processed",
         "processed_signals",
@@ -525,7 +677,11 @@ def run_q2frame_auction_engine_shadow(
     determinism["input_sha256_stable"] = input_stable
     deterministic = all(determinism.values())
     return {
-        "contract_version": "Task008Q2FrameAuctionEngineShadowV2",
+        "contract_version": (
+            "Task008Q2FrameSessionEngineShadowV2"
+            if include_opening
+            else "Task008Q2FrameAuctionEngineShadowV3"
+        ),
         "trade_date": trade_date,
         "run_mode": "REAL_T1V2_Q2FRAME_EVENT_TIME_REPLAY",
         "q2frame": {
@@ -550,6 +706,17 @@ def run_q2frame_auction_engine_shadow(
             for tag in AUCTION_TAGS
             for policies in (AuctionTimingPolicyV1.default(tag),)
         },
+        "opening_timing_policy": (
+            {
+                "trigger_id": OPENING_TAG,
+                "business_anchor_local": "09:32:00",
+                "evaluation_local": OPENING_EVALUATION_LOCAL,
+                "evaluation_time_ms": _opening_evaluation_ms(trade_date),
+                "source_availability": "UNKNOWN_NOT_INFERRED",
+            }
+            if include_opening
+            else None
+        ),
         "auction_price_field_policy": {
             tag: field for tag, field in zip(AUCTION_TAGS, AUCTION_PRICE_FIELDS)
         },
@@ -572,12 +739,18 @@ def main() -> int:
     parser.add_argument("--q2frame", type=Path, required=True)
     parser.add_argument("--trade-date", required=True)
     parser.add_argument("--expected-sha256")
+    parser.add_argument(
+        "--include-opening",
+        action="store_true",
+        help="continue the same Engine/Q2Frame replay through 09:32:10",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     result = run_q2frame_auction_engine_shadow(
         q2frame_path=args.q2frame,
         trade_date=args.trade_date,
         expected_sha256=args.expected_sha256,
+        include_opening=args.include_opening,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as output:
@@ -589,13 +762,24 @@ def main() -> int:
                 "output": str(args.output),
                 "q2frame_sha256": result["q2frame"]["sha256"],
                 "symbols": result["inventory"]["symbol_count"],
-                "frames_to_0925": result["ordered"]["input_frames_processed"],
-                "updates_to_0925": result["ordered"]["input_updates_processed"],
+                "frames_processed_through_evaluation": result["ordered"][
+                    "input_frames_processed"
+                ],
+                "updates_processed_through_evaluation": result["ordered"][
+                    "input_updates_processed"
+                ],
                 "deterministic": result["deterministic"],
                 "anchors": {
                     tag: result["ordered"]["anchor_evidence"][tag]["fact_status_counts"]
                     for tag in AUCTION_TAGS
                 },
+                "opening_fact_status_counts": (
+                    result["ordered"]["opening_evidence"][OPENING_TAG][
+                        "fact_status_counts"
+                    ]
+                    if args.include_opening
+                    else None
+                ),
             }
         )
     )

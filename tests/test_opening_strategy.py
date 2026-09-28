@@ -43,6 +43,7 @@ def test_opening_shadow_wraps_verified_fact_only_without_reinterpreting_speed_un
             "limit_state": 1,
             "name": "fixture",
             "speed_1m_bp": 250,
+            "source_record_time_ms": 1050,
         }
     )
     result = OpeningShadowStrategy(scope_id="600519").evaluate(
@@ -54,6 +55,14 @@ def test_opening_shadow_wraps_verified_fact_only_without_reinterpreting_speed_un
     assert result.trace["fact_status"] == "READY"
     assert result.trace["opening_fact"]["change_pct"] == 5.000000000000004
     assert result.trace["opening_fact"]["speed_1m"] is None
+    assert result.trace["opening_fact"]["timestamp_ms"] == 1050
+    assert result.trace["fact_status_scope"] == "change_pct_and_source_time"
+    assert result.trace["opening_fact_field_status"] == {
+        "change_pct": "AVAILABLE",
+        "amount_2m_yuan": "AVAILABLE",
+        "limit_state": "AVAILABLE",
+        "speed_1m": "UNKNOWN_UNIT_MAPPING",
+    }
     assert result.evidence_refs == ("fixture://opening/600519",)
 
 
@@ -67,7 +76,7 @@ def test_opening_shadow_preserves_missing_symbol_state():
     assert result.trace["reason_codes"] == ("SYMBOL_STATE_MISSING",)
 
 
-def test_opening_shadow_does_not_promote_partial_snapshot_to_ready():
+def test_opening_shadow_keeps_fresh_symbol_fact_ready_when_other_symbols_are_partial():
     snapshot = replace(
         _snapshot(
             {
@@ -75,13 +84,72 @@ def test_opening_shadow_does_not_promote_partial_snapshot_to_ready():
                 "pre_close_milli": 10000,
                 "amount_2m_yuan": 1200000,
                 "limit_state": 0,
+                "source_record_time_ms": 1050,
+                "field_errors": (),
             }
         ),
         completeness="PARTIAL",
+        source_observation_metadata={
+            "oldest_source_time_ms": 1000,
+            "newest_source_time_ms": 1100,
+            "stale_symbols": ("000001",),
+            "missing_symbols": (),
+        },
     )
     result = OpeningShadowStrategy(scope_id="600519").evaluate(
         snapshot, FrozenDataBundle.empty("opening-partial", 2000)
     )
 
     assert result.trace["opening_fact"]["status"] == "available"
+    assert result.trace["fact_status"] == "READY"
+    assert result.trace["snapshot_quality"] == {
+        "completeness": "PARTIAL",
+        "coverage": 1.0,
+        "stale_symbol_count": 1,
+        "missing_symbol_count": 0,
+    }
+
+
+def test_opening_shadow_marks_stale_target_symbol_partial_without_erasing_its_fact():
+    snapshot = _snapshot(
+        {
+            "price_milli": 10500,
+            "pre_close_milli": 10000,
+            "amount_2m_yuan": 1200000,
+            "limit_state": 0,
+            "source_record_time_ms": 900,
+            "field_errors": ("stale",),
+        }
+    )
+    result = OpeningShadowStrategy(scope_id="600519").evaluate(
+        snapshot, FrozenDataBundle.empty("opening-stale", 2000)
+    )
+
+    assert result.trace["opening_fact"]["status"] == "available"
     assert result.trace["fact_status"] == "PARTIAL"
+
+
+def test_opening_primary_ready_does_not_hide_unavailable_or_invalid_auxiliary_fields():
+    snapshot = _snapshot(
+        {
+            "price_milli": 10500,
+            "pre_close_milli": 10000,
+            "amount_2m_yuan": None,
+            "limit_state": 7,
+            "source_record_time_ms": 1050,
+            "field_errors": ("amt2m",),
+        }
+    )
+    result = OpeningShadowStrategy(scope_id="600519").evaluate(
+        snapshot, FrozenDataBundle.empty("opening-aux-quality", 2000)
+    )
+
+    assert result.trace["fact_status"] == "READY"
+    assert result.trace["fact_status_scope"] == "change_pct_and_source_time"
+    assert result.trace["opening_fact"]["change_pct"] == 5.000000000000004
+    assert result.trace["opening_fact_field_status"] == {
+        "change_pct": "AVAILABLE",
+        "amount_2m_yuan": "INVALID",
+        "limit_state": "INVALID",
+        "speed_1m": "UNKNOWN_UNIT_MAPPING",
+    }
