@@ -41,6 +41,12 @@ recovery provider ran. The optional 0920/0924 facts remain `PARTIAL`, do not
 schedule recovery, and do not block the 0925 result; per-symbol unavailable
 prior anchors cannot be converted into fabricated deltas.
 
+Downstream output also confirms no fallback: all 50 recovery-target symbols
+have `price_delta_milli=null` and `changes.price=PRICE_UNKNOWN`. The cohort has
+3,472 non-null price-delta metrics, while all 5,221 auction strategy facts
+remain `PARTIAL` under their broader fact requirements; this handoff makes no
+overall auction-readiness claim.
+
 Earlier oral counts of 1,490 / 3,610 for the first two anchors were incorrect;
 streaming the immutable source again produced 1,124 / 3,495, matching the
 Core V2 output. This correction is recorded to prevent the stale numbers from

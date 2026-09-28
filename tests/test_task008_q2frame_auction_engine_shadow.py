@@ -219,6 +219,10 @@ def test_real_q2frame_shape_surfaces_partial_0925_recovery_targets(tmp_path: Pat
     assert revision["recovery_plan"]["missing_fields"] == ["anchor"]
     assert revision["recovery_plan"]["recovery_state"] == "REQUESTED"
     assert revision["recovery_execution"] == "NOT_RUN_BY_CORE"
+    facts = result["ordered"]["anchor_evidence"]["0925"]["facts_by_symbol"]
+    assert facts["000001"]["metrics"]["price_delta_milli"] is None
+    assert facts["000001"]["changes"]["price"] == "PRICE_UNKNOWN"
+    assert facts["600000"]["metrics"]["price_delta_milli"] is not None
     for tag in ("0920", "0924"):
         prior = result["ordered"]["anchor_evidence"][tag]["auction_revision"]
         assert prior["recovery_required"] is False
