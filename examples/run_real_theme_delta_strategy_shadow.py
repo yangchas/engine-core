@@ -45,14 +45,35 @@ def run_real_theme_delta_strategy_shadow(
     trade_date: str,
     symbols: Sequence[str] = (),
 ) -> Mapping[str, Any]:
-    observed_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     projections = read_redis_auction_projection(
         client,
         trade_date=trade_date,
-        observed_at_ms=observed_at_ms,
         tags=("0924", "0925"),
         symbols=tuple(symbols),
     )
+    return build_real_theme_delta_strategy_shadow_from_projections(
+        client=client,
+        trade_date=trade_date,
+        projections=projections,
+        symbols=symbols,
+    )
+
+
+def build_real_theme_delta_strategy_shadow_from_projections(
+    *,
+    client: Any,
+    trade_date: str,
+    projections: Sequence[Any],
+    symbols: Sequence[str] = (),
+) -> Mapping[str, Any]:
+    """Build the legacy-compatibility result from one already-read cohort.
+
+    This lets a caller bind the exact same immutable Redis projection cohort
+    to Engine and to the compatibility fact builder without rereading auction
+    keys.  Redis theme mappings are read once by this function and remain
+    source evidence, not a historical availability claim.
+    """
+
     by_tag = {projection.tag: projection for projection in projections}
     previous = by_tag.get("0924")
     current = by_tag.get("0925")
@@ -61,8 +82,17 @@ def run_real_theme_delta_strategy_shadow(
             "status": "UNAVAILABLE",
             "reason": "0924_or_0925_projection_missing_or_invalid",
             "trade_date": trade_date,
-            "observed_at_ms": observed_at_ms,
+            "observed_at_ms": max(
+                (projection.observed_at_ms for projection in projections),
+                default=int(datetime.now(timezone.utc).timestamp() * 1000),
+            ),
             "projection_status": {tag: by_tag[tag].status for tag in sorted(by_tag)},
+            "projection_content_hashes": {
+                tag: by_tag[tag].content_hash for tag in sorted(by_tag)
+            },
+            "projection_evidence_hashes": {
+                tag: by_tag[tag].evidence_hash for tag in sorted(by_tag)
+            },
             "facts": (),
             "read_only": True,
         }
@@ -98,9 +128,19 @@ def run_real_theme_delta_strategy_shadow(
     return {
         "status": "OBSERVED" if output_facts else "UNAVAILABLE",
         "trade_date": trade_date,
-        "observed_at_ms": observed_at_ms,
+        # This records when the complete adapter result was available to this
+        # process, not when the upstream Redis values first became available.
+        "observed_at_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
         "scope": "REDIS_TOP_AMOUNT_INTERSECTION",
         "projection_status": {"0924": previous.status, "0925": current.status},
+        "projection_content_hashes": {
+            "0924": previous.content_hash,
+            "0925": current.content_hash,
+        },
+        "projection_evidence_hashes": {
+            "0924": previous.evidence_hash,
+            "0925": current.evidence_hash,
+        },
         "row_count": len(rows),
         "mapping_count": sum(bool(value) for value in weights_by_symbol.values()),
         "mapping_missing_count": sum(not value for value in weights_by_symbol.values()),
