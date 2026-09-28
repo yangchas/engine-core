@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
-from .auction_timeline import AuctionAnchorRevisionV1, AuctionTimeline
+from .auction_timeline import AuctionAnchorRevisionV2, AuctionTimeline
 from .calendar import parse_trade_date
 from .contracts import evidence_hash, semantic_hash
 from .replay_frames import FrameManifestV1, MarketFrameV1
@@ -234,7 +234,7 @@ class ReplaySessionTimeline:
         observed_at_ms: Optional[int] = None,
         source_layers: tuple[str, ...] = (),
         recovery_state: str = "NOT_REQUESTED",
-    ) -> AuctionAnchorRevisionV1:
+    ) -> AuctionAnchorRevisionV2:
         """Record an auction revision from already-observed rows."""
 
         revision = self.auction_timeline.observe(

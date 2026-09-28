@@ -145,9 +145,15 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
     assert anchors["0925"]["first_observable_ms"] == _epoch_ms("09:25:06.000")
     for tag, clock in (("0920", "09:20:03.000"), ("0924", "09:24:10.000")):
         revision = anchors[tag]["auction_revision"]
-        assert revision["contract"] == "AuctionAnchorRevisionV1"
+        assert revision["contract"] == "AuctionAnchorRevisionV2"
         assert revision["revision"] == 1
         assert revision["state"] == "READY"
+        assert revision["source_observed_symbol_count"] == 2
+        assert revision["source_missing_symbol_count"] == 0
+        assert revision["source_coverage"] == 1.0
+        assert revision["anchor_available_symbol_count"] == 2
+        assert revision["missing_anchor_symbol_count"] == 0
+        assert revision["anchor_coverage"] == 1.0
         assert revision["freeze_time_ms"] == _epoch_ms(clock)
         assert revision["observed_at_ms"] is None
     assert anchors["0925"]["last_raw_update_time_ms"] == _epoch_ms("09:25:06.999")
@@ -159,9 +165,15 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
     )
 
     revision = anchors["0925"]["auction_revision"]
-    assert revision["contract"] == "AuctionAnchorRevisionV1"
+    assert revision["contract"] == "AuctionAnchorRevisionV2"
     assert revision["revision"] == 1
     assert revision["state"] == "READY"
+    assert revision["source_observed_symbol_count"] == 2
+    assert revision["source_missing_symbol_count"] == 0
+    assert revision["source_coverage"] == 1.0
+    assert revision["anchor_available_symbol_count"] == 2
+    assert revision["missing_anchor_symbol_count"] == 0
+    assert revision["anchor_coverage"] == 1.0
     assert revision["first_observable_ms"] == _epoch_ms("09:25:06.000")
     assert revision["freeze_time_ms"] == _epoch_ms("09:25:06.000")
     assert revision["observed_at_ms"] is None
@@ -171,6 +183,46 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
     assert revision["late_execution"] is False
     assert revision["content_hash"]
     assert revision["evidence_hash"]
+
+
+def test_real_q2frame_shape_surfaces_partial_0925_recovery_targets(tmp_path: Path):
+    frames = [_frame(seq, clock) for seq, clock in (
+        (1, "09:15:00.000"),
+        (2, "09:20:02.999"),
+        (3, "09:20:03.197"),
+        (4, "09:24:09.999"),
+        (5, "09:24:10.250"),
+        (6, "09:25:04.999"),
+        (7, "09:25:06.197"),
+        (8, "09:25:06.999"),
+    )]
+    for frame in frames[-2:]:
+        next(update for update in frame["q2_updates"] if update["symbol"] == "000001")["a25"] = 0
+    source = tmp_path / "q2frame-partial-anchor.jsonl"
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+
+    result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+    )
+
+    revision = result["ordered"]["anchor_evidence"]["0925"]["auction_revision"]
+    assert revision["state"] == "PARTIAL"
+    assert revision["source_coverage"] == 1.0
+    assert revision["anchor_coverage"] == 0.5
+    assert revision["recovery_required"] is True
+    assert revision["recovery_plan"]["contract"] == "RecoveryPlanV1"
+    assert revision["recovery_plan"]["requested_symbols"] == ["000001"]
+    assert revision["recovery_plan"]["missing_fields"] == ["anchor"]
+    assert revision["recovery_plan"]["recovery_state"] == "REQUESTED"
+    assert revision["recovery_execution"] == "NOT_RUN_BY_CORE"
+    for tag in ("0920", "0924"):
+        prior = result["ordered"]["anchor_evidence"][tag]["auction_revision"]
+        assert prior["recovery_required"] is False
+        assert prior["recovery_plan"] is None
 
 
 def test_q2frame_session_reaches_opening_with_one_engine_and_symbol_source_times(tmp_path: Path):

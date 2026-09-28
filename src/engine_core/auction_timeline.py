@@ -12,8 +12,8 @@ from .q2 import normalize_symbol
 
 
 AUCTION_TIMING_POLICY_CONTRACT_VERSION = "AuctionTimingPolicyV1"
-AUCTION_ANCHOR_REVISION_CONTRACT_VERSION = "AuctionAnchorRevisionV1"
-AUCTION_TIMELINE_CONTRACT_VERSION = "AuctionTimelineV1"
+AUCTION_ANCHOR_REVISION_CONTRACT_VERSION = "AuctionAnchorRevisionV2"
+AUCTION_TIMELINE_CONTRACT_VERSION = "AuctionTimelineV2"
 
 OBSERVING = "OBSERVING"
 READY = "READY"
@@ -80,7 +80,8 @@ class AuctionTimingPolicyV1:
 
 
 @dataclass(frozen=True)
-class AuctionAnchorRevisionV1:
+class AuctionAnchorRevisionV2:
+    """Versioned anchor-field cohort plus independent source-row coverage."""
     trade_date: str
     tag: str
     revision: int
@@ -90,9 +91,12 @@ class AuctionAnchorRevisionV1:
     soft_deadline_ms: int
     state: str
     expected_symbols: Tuple[str, ...]
-    observed_symbols: Tuple[str, ...]
-    missing_symbols: Tuple[str, ...]
-    coverage: float
+    available_anchor_symbols: Tuple[str, ...]
+    missing_anchor_symbols: Tuple[str, ...]
+    anchor_coverage: Optional[float]
+    source_observed_symbols: Tuple[str, ...]
+    source_missing_symbols: Tuple[str, ...]
+    source_coverage: Optional[float]
     source_layers: Tuple[str, ...]
     observed_at_ms: Optional[int]
     evaluation_time_ms: int
@@ -114,17 +118,49 @@ class AuctionAnchorRevisionV1:
         if self.state not in {OBSERVING, READY, PARTIAL, MISSING}:
             raise ValueError("unsupported auction revision state")
         expected = tuple(sorted({normalize_symbol(item) for item in self.expected_symbols}))
-        observed = tuple(sorted({normalize_symbol(item) for item in self.observed_symbols}))
-        missing = tuple(sorted({normalize_symbol(item) for item in self.missing_symbols}))
-        if set(observed) - set(expected) or set(missing) - set(expected):
-            raise ValueError("auction symbol sets must be subsets of expected_symbols")
-        if set(observed) & set(missing) or set(observed) | set(missing) != set(expected):
-            raise ValueError("observed/missing symbols must partition expected_symbols")
-        if not 0.0 <= self.coverage <= 1.0:
-            raise ValueError("coverage must be between zero and one")
+        available = tuple(
+            sorted({normalize_symbol(item) for item in self.available_anchor_symbols})
+        )
+        missing_anchor = tuple(
+            sorted({normalize_symbol(item) for item in self.missing_anchor_symbols})
+        )
+        source_observed = tuple(
+            sorted({normalize_symbol(item) for item in self.source_observed_symbols})
+        )
+        source_missing = tuple(
+            sorted({normalize_symbol(item) for item in self.source_missing_symbols})
+        )
+        for name, values in (
+            ("available_anchor_symbols", available),
+            ("missing_anchor_symbols", missing_anchor),
+            ("source_observed_symbols", source_observed),
+            ("source_missing_symbols", source_missing),
+        ):
+            if set(values) - set(expected):
+                raise ValueError("%s must be a subset of expected_symbols" % name)
+        if set(available) & set(missing_anchor) or (
+            expected and set(available) | set(missing_anchor) != set(expected)
+        ):
+            raise ValueError(
+                "available/missing anchor symbols must partition expected_symbols"
+            )
+        if set(source_observed) & set(source_missing) or (
+            expected and set(source_observed) | set(source_missing) != set(expected)
+        ):
+            raise ValueError(
+                "source observed/missing symbols must partition expected_symbols"
+            )
+        for name, value in (
+            ("anchor_coverage", self.anchor_coverage),
+            ("source_coverage", self.source_coverage),
+        ):
+            if value is not None and not 0.0 <= value <= 1.0:
+                raise ValueError("%s must be between zero and one or unknown" % name)
         object.__setattr__(self, "expected_symbols", expected)
-        object.__setattr__(self, "observed_symbols", observed)
-        object.__setattr__(self, "missing_symbols", missing)
+        object.__setattr__(self, "available_anchor_symbols", available)
+        object.__setattr__(self, "missing_anchor_symbols", missing_anchor)
+        object.__setattr__(self, "source_observed_symbols", source_observed)
+        object.__setattr__(self, "source_missing_symbols", source_missing)
         object.__setattr__(self, "source_layers", tuple(self.source_layers))
         object.__setattr__(self, "content_hash", semantic_hash({
             "contract": AUCTION_ANCHOR_REVISION_CONTRACT_VERSION,
@@ -132,9 +168,12 @@ class AuctionAnchorRevisionV1:
             "tag": self.tag,
             "business_anchor_ms": self.business_anchor_ms,
             "expected_symbols": expected,
-            "observed_symbols": observed,
-            "missing_symbols": missing,
-            "coverage": self.coverage,
+            "available_anchor_symbols": available,
+            "missing_anchor_symbols": missing_anchor,
+            "anchor_coverage": self.anchor_coverage,
+            "source_observed_symbols": source_observed,
+            "source_missing_symbols": source_missing,
+            "source_coverage": self.source_coverage,
             "observations_hash": self.observations_hash,
         }))
         object.__setattr__(self, "evidence_hash", evidence_hash({
@@ -151,12 +190,35 @@ class AuctionAnchorRevisionV1:
         }))
 
     @property
+    def observed_symbols(self) -> Tuple[str, ...]:
+        """Compatibility alias: symbols with this tag's usable anchor field."""
+
+        return self.available_anchor_symbols
+
+    @property
+    def missing_symbols(self) -> Tuple[str, ...]:
+        """Compatibility alias: expected symbols without this tag's anchor."""
+
+        return self.missing_anchor_symbols
+
+    @property
+    def coverage(self) -> Optional[float]:
+        """Compatibility alias for anchor-field coverage, not row coverage."""
+
+        return self.anchor_coverage
+
+    @property
     def business_anchor(self) -> int:
         return self.business_anchor_ms
 
     @property
     def source_time_ms(self) -> Optional[int]:
         return self.source_time_max_ms
+
+
+# Keep Python imports source-compatible while serialized evidence advances to
+# the explicit field-coverage contract.
+AuctionAnchorRevisionV1 = AuctionAnchorRevisionV2
 
 
 def _rows_by_symbol(rows: Mapping[str, Mapping[str, Any]] | Iterable[Mapping[str, Any]]) -> Mapping[str, Mapping[str, Any]]:
@@ -183,25 +245,51 @@ def build_auction_anchor_revision(
     supersedes_revision: Optional[int] = None,
     recovery_state: str = "NOT_REQUESTED",
     policy: Optional[AuctionTimingPolicyV1] = None,
-) -> AuctionAnchorRevisionV1:
+) -> AuctionAnchorRevisionV2:
     policy = policy or AuctionTimingPolicyV1.default(tag)
     times = policy.at(trade_date)
     by_symbol = _rows_by_symbol(rows)
     expected = tuple(sorted({normalize_symbol(item) for item in expected_symbols}))
-    observed = tuple(sorted(symbol for symbol in by_symbol if not expected or symbol in set(expected)))
-    if not expected:
-        # Unknown denominator is represented as PARTIAL, never as READY.
-        missing = ()
-        coverage = 1.0 if observed else 0.0
-    else:
-        observed = tuple(symbol for symbol in observed if symbol in set(expected))
-        missing = tuple(symbol for symbol in expected if symbol not in set(observed))
-        coverage = len(observed) / float(len(expected))
+    expected_set = set(expected)
+    source_observed = tuple(
+        sorted(symbol for symbol in by_symbol if not expected or symbol in expected_set)
+    )
+    source_missing = (
+        tuple(symbol for symbol in expected if symbol not in set(source_observed))
+        if expected
+        else ()
+    )
+    anchor_field = "auction_anchor_%s_price_milli" % tag
+    anchor_values = {
+        symbol: by_symbol[symbol].get(anchor_field)
+        for symbol in source_observed
+    }
+    anchor_available = tuple(
+        sorted(
+            symbol
+            for symbol, value in anchor_values.items()
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+        )
+    )
+    missing_anchor = (
+        tuple(symbol for symbol in expected if symbol not in set(anchor_available))
+        if expected
+        else ()
+    )
+    anchor_coverage = (
+        len(anchor_available) / float(len(expected)) if expected else None
+    )
+    source_coverage = (
+        len(source_observed) / float(len(expected)) if expected else None
+    )
     if evaluation_time_ms < times["first_observable_ms"]:
         state = OBSERVING
-    elif not observed:
+    elif not expected:
+        # An unknown denominator cannot establish field completeness.
+        state = PARTIAL
+    elif not anchor_available:
         state = MISSING if evaluation_time_ms >= times["soft_deadline_ms"] else PARTIAL
-    elif expected and not missing:
+    elif not missing_anchor and recovery_state != "APPLIED":
         state = READY
     else:
         state = PARTIAL
@@ -218,7 +306,7 @@ def build_auction_anchor_revision(
     ]
     event_times = [int(item) for item in event_times]
     observations_hash = semantic_hash(by_symbol)
-    return AuctionAnchorRevisionV1(
+    return AuctionAnchorRevisionV2(
         trade_date=trade_date,
         tag=tag,
         revision=revision,
@@ -228,9 +316,12 @@ def build_auction_anchor_revision(
         soft_deadline_ms=times["soft_deadline_ms"],
         state=state,
         expected_symbols=expected,
-        observed_symbols=observed,
-        missing_symbols=missing,
-        coverage=coverage,
+        available_anchor_symbols=anchor_available,
+        missing_anchor_symbols=missing_anchor,
+        anchor_coverage=anchor_coverage,
+        source_observed_symbols=source_observed,
+        source_missing_symbols=source_missing,
+        source_coverage=source_coverage,
         source_layers=tuple(source_layers),
         observed_at_ms=observed_at_ms,
         evaluation_time_ms=evaluation_time_ms,
@@ -250,12 +341,12 @@ class AuctionTimeline:
     def __init__(self, trade_date: str, policies: Optional[Mapping[str, AuctionTimingPolicyV1]] = None) -> None:
         self.trade_date = trade_date
         self.policies = dict(policies or {tag: AuctionTimingPolicyV1.default(tag) for tag in ("0920", "0924", "0925")})
-        self._history: dict[str, list[AuctionAnchorRevisionV1]] = {tag: [] for tag in self.policies}
+        self._history: dict[str, list[AuctionAnchorRevisionV2]] = {tag: [] for tag in self.policies}
         # ``_history`` is a content-revision ledger.  ``_latest`` also tracks
         # the newest observation/evaluation evidence for the current revision;
         # identical rows observed after a soft cutoff must advance timing
         # state without fabricating a new content revision.
-        self._latest: dict[str, AuctionAnchorRevisionV1] = {}
+        self._latest: dict[str, AuctionAnchorRevisionV2] = {}
 
     def observe(
         self,
@@ -267,7 +358,7 @@ class AuctionTimeline:
         observed_at_ms: Optional[int] = None,
         source_layers: Sequence[str] = (),
         recovery_state: str = "NOT_REQUESTED",
-    ) -> AuctionAnchorRevisionV1:
+    ) -> AuctionAnchorRevisionV2:
         if tag not in self.policies:
             raise ValueError("unsupported auction tag")
         history = self._history.setdefault(tag, [])
@@ -297,7 +388,7 @@ class AuctionTimeline:
         self._latest[tag] = candidate
         return candidate
 
-    def latest(self, tag: str) -> Optional[AuctionAnchorRevisionV1]:
+    def latest(self, tag: str) -> Optional[AuctionAnchorRevisionV2]:
         return self._latest.get(tag)
 
     def apply_recovery(
@@ -308,7 +399,7 @@ class AuctionTimeline:
         evaluation_time_ms: int,
         observed_at_ms: Optional[int] = None,
         source: str = "wencai",
-    ) -> AuctionAnchorRevisionV1:
+    ) -> AuctionAnchorRevisionV2:
         """Apply an already merged recovery cohort as a new fact revision.
 
         The external recovery owner is responsible for fetching and merging
@@ -332,7 +423,7 @@ class AuctionTimeline:
             recovery_state="APPLIED",
         )
 
-    def revisions(self, tag: str) -> Tuple[AuctionAnchorRevisionV1, ...]:
+    def revisions(self, tag: str) -> Tuple[AuctionAnchorRevisionV2, ...]:
         return tuple(self._history.get(tag, ()))
 
     def build_analysis_bundle(self, tag: str = "0925") -> Mapping[str, Any]:
@@ -362,9 +453,20 @@ class AuctionTimeline:
         prior_deltas = {}
         if tag == "0925":
             for prior in ("0920", "0924"):
-                prior_deltas[prior] = "UNKNOWN" if self.latest(prior) is None else "AVAILABLE"
+                prior_revision = self.latest(prior)
+                if prior_revision is None or not prior_revision.observed_symbols:
+                    prior_deltas[prior] = "UNKNOWN"
+                elif prior_revision.state == READY:
+                    prior_deltas[prior] = "AVAILABLE"
+                else:
+                    prior_deltas[prior] = "PARTIAL"
         recovery_plan = None
-        if current.state in {PARTIAL, MISSING}:
+        recovery_required = (
+            tag == "0925"
+            and current.state in {PARTIAL, MISSING}
+            and current.recovery_state != "APPLIED"
+        )
+        if recovery_required:
             from .recovery import build_recovery_plan
 
             recovery_plan = build_recovery_plan(
@@ -382,7 +484,13 @@ class AuctionTimeline:
             "fact_status": FACT_ONLY,
             "anchor": current,
             "prior_deltas": prior_deltas,
-            "recovery_required": current.state in {PARTIAL, MISSING},
+            "recovery_required": recovery_required,
+            "anchor_available_symbols": current.available_anchor_symbols,
+            "missing_anchor_symbols": current.missing_anchor_symbols,
+            "anchor_coverage": current.anchor_coverage,
+            "source_observed_symbols": current.source_observed_symbols,
+            "source_missing_symbols": current.source_missing_symbols,
+            "source_coverage": current.source_coverage,
             "source_layers": current.source_layers,
             "revision": current.revision,
             "content_hash": current.content_hash,

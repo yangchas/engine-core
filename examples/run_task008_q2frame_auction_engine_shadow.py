@@ -476,8 +476,27 @@ def _run_once(
             observed_at_ms=None,
             source_layers=("t1_v2_q2frame_event_time_replay",),
         )
+        analysis_bundle = auction_timeline.build_analysis_bundle(tag)
+        recovery_plan = analysis_bundle["recovery_plan"]
+        recovery_plan_summary = (
+            None
+            if recovery_plan is None
+            else {
+                "contract": "RecoveryPlanV1",
+                "plan_id": recovery_plan.plan_id,
+                "requested_symbols": list(recovery_plan.requested_symbols),
+                "missing_fields": list(recovery_plan.missing_fields),
+                "current_revision": recovery_plan.current_revision,
+                "requested_at_ms": recovery_plan.requested_at_ms,
+                "preferred_sources": list(recovery_plan.preferred_sources),
+                "idempotency_key": recovery_plan.idempotency_key,
+                "soft_deadline_ms": recovery_plan.soft_deadline_ms,
+                "content_hash": recovery_plan.content_hash,
+                "recovery_state": recovery_plan.recovery_state,
+            }
+        )
         return {
-            "contract": "AuctionAnchorRevisionV1",
+            "contract": "AuctionAnchorRevisionV2",
             "revision": revision.revision,
             "state": revision.state,
             "business_anchor_ms": revision.business_anchor_ms,
@@ -485,9 +504,22 @@ def _run_once(
             "preferred_finalize_ms": revision.preferred_finalize_ms,
             "soft_deadline_ms": revision.soft_deadline_ms,
             "expected_symbol_count": len(revision.expected_symbols),
-            "observed_symbol_count": len(revision.observed_symbols),
-            "missing_symbol_count": len(revision.missing_symbols),
-            "coverage": revision.coverage,
+            "source_observed_symbol_count": len(revision.source_observed_symbols),
+            "source_missing_symbol_count": len(revision.source_missing_symbols),
+            "source_coverage": revision.source_coverage,
+            "anchor_available_symbol_count": len(revision.available_anchor_symbols),
+            "missing_anchor_symbol_count": len(revision.missing_anchor_symbols),
+            "anchor_coverage": revision.anchor_coverage,
+            # Compatibility field retains the V1 name, now explicitly scoped
+            # to required anchor-field coverage by the V2 contract.
+            "coverage": revision.anchor_coverage,
+            "recovery_required": analysis_bundle["recovery_required"],
+            "recovery_plan": recovery_plan_summary,
+            "recovery_execution": (
+                "NOT_RUN_BY_CORE"
+                if recovery_plan is not None
+                else "NOT_REQUIRED"
+            ),
             "source_layers": revision.source_layers,
             "observed_at_ms": revision.observed_at_ms,
             "evaluation_time_ms": revision.evaluation_time_ms,
