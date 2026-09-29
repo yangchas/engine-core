@@ -282,6 +282,11 @@ class _AllSymbolAuctionShadow:
             "logical_time_ms": snapshot.logical_time_ms,
             "snapshot_hash": snapshot.content_hash,
             "fact_status_counts": dict(sorted(status_counts.items())),
+            "fact_status_scope": (
+                "change_pct_and_source_time"
+                if is_opening
+                else "adjacent_auction_comparison"
+            ),
             "expected_q2frame_symbol_count": len(strategies),
             "observed_symbol_count": len(snapshot.symbol_states),
             "coverage": snapshot.coverage,
@@ -293,6 +298,7 @@ class _AllSymbolAuctionShadow:
             trace["facts_by_symbol"] = facts_by_symbol
             trace["facts_by_symbol_hash"] = semantic_hash(facts_by_symbol)
         if anchor_facts_by_symbol:
+            trace["anchor_fact_status_scope"] = "standalone_current_anchor"
             trace["auction_anchor_facts_by_symbol"] = anchor_facts_by_symbol
             trace["auction_anchor_facts_by_symbol_hash"] = semantic_hash(
                 anchor_facts_by_symbol
@@ -423,6 +429,10 @@ def _run_once(
             "last_raw_update_time_ms": last_raw_update_ms,
             "strategy_result_hash": strategy_result.content_hash,
             "fact_status_counts": strategy_result.trace.get("fact_status_counts", {}),
+            "fact_status_scope": strategy_result.trace.get("fact_status_scope"),
+            "anchor_fact_status_scope": strategy_result.trace.get(
+                "anchor_fact_status_scope"
+            ),
             "facts_by_symbol_hash": strategy_result.trace.get("facts_by_symbol_hash"),
             "facts_by_symbol": strategy_result.trace.get("facts_by_symbol", {}),
             "auction_anchor_facts_by_symbol_hash": strategy_result.trace.get(
@@ -527,6 +537,7 @@ def _run_once(
             "preferred_finalize_ms": revision.preferred_finalize_ms,
             "soft_deadline_ms": revision.soft_deadline_ms,
             "expected_symbol_count": len(revision.expected_symbols),
+            "prior_deltas": analysis_bundle["prior_deltas"],
             "source_observed_symbol_count": len(revision.source_observed_symbols),
             "source_missing_symbol_count": len(revision.source_missing_symbols),
             "source_coverage": revision.source_coverage,

@@ -275,6 +275,9 @@ def test_0925_anchor_fact_is_available_when_0924_anchor_and_delta_are_unknown(
     fact = anchors["0925"]["auction_anchor_facts_by_symbol"]["000001"]
     adjacent = anchors["0925"]["facts_by_symbol"]["000001"]
 
+    assert anchors["0925"]["fact_status_scope"] == "adjacent_auction_comparison"
+    assert anchors["0925"]["anchor_fact_status_scope"] == "standalone_current_anchor"
+    assert anchors["0925"]["auction_revision"]["prior_deltas"]["0924"] == "UNKNOWN"
     assert fact["status"] == "AVAILABLE"
     assert fact["price_milli"] == 12_000
     assert fact["historical_available_at_status"] == "UNKNOWN"
