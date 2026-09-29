@@ -30,6 +30,7 @@ from engine_core import (  # noqa: E402
     AuctionShadowStrategy,
     AuctionTimeline,
     AuctionTimingPolicyV1,
+    CrossSectionStateV1,
     DeterministicEngine,
     EngineSignal,
     FreshnessPolicy,
@@ -44,6 +45,7 @@ from engine_core import (  # noqa: E402
     WindowSpec,
     canonical_hash,
     canonical_json,
+    build_cross_section_facts,
     semantic_hash,
 )
 from engine_core.contracts import StrategyResult  # noqa: E402
@@ -449,9 +451,70 @@ def _run_once(
             "virtual_clock_ms": int(clock.now_utc().timestamp() * 1000),
         }
         if tag == OPENING_TAG:
+            expected_symbols = tuple(sorted(symbols))
+            observed_symbols = tuple(
+                sorted(set(snapshot.symbol_states).intersection(expected_symbols))
+            )
+            missing_symbols = tuple(
+                symbol
+                for symbol in expected_symbols
+                if symbol not in set(observed_symbols)
+            )
+            frame_completeness = (
+                "EMPTY"
+                if not observed_symbols
+                else "PARTIAL"
+                if missing_symbols
+                else "COMPLETE"
+            )
+            source_metadata = snapshot.source_observation_metadata
+            cohort_state = CrossSectionStateV1(
+                trade_date=trade_date,
+                frame_no=max(0, frame_count - 1),
+                logical_ts_ms=logical_ms,
+                expected_symbols=expected_symbols,
+                updated_symbols=observed_symbols,
+                missing_symbols=missing_symbols,
+                symbol_states={
+                    symbol: snapshot.symbol_states[symbol]
+                    for symbol in observed_symbols
+                },
+                frame_completeness=frame_completeness,
+                coverage=(
+                    len(observed_symbols) / float(len(expected_symbols))
+                    if expected_symbols
+                    else 0.0
+                ),
+                source_time_min_ms=source_metadata.get("oldest_source_time_ms"),
+                source_time_max_ms=source_metadata.get("newest_source_time_ms"),
+            )
+            cross_section = build_cross_section_facts(
+                cohort_state,
+                scope="OBSERVED_COHORT",
+                source_layers=("t1_v2_q2frame_event_time_replay",),
+            )
+            cross_section_evidence = {
+                "contract": "CrossSectionFactsV1",
+                "frame_no": cross_section.frame_no,
+                "logical_ts_ms": cross_section.logical_ts_ms,
+                "scope": cross_section.scope,
+                "scope_authority": "Q2FRAME_INPUT_COHORT_ONLY_NOT_FULL_MARKET",
+                "expected_count": cross_section.expected_count,
+                "observed_count": cross_section.observed_count,
+                "missing_count": cross_section.missing_count,
+                "coverage": cross_section.coverage,
+                "field_denominators": dict(cross_section.field_denominators),
+                "market_breadth": dict(cross_section.market_breadth),
+                "source_layers": list(cross_section.source_layers),
+                "stale_symbol_count": len(source_metadata.get("stale_symbols", ())),
+                "breadth_includes_stale_observed_quotes": True,
+                "content_hash": cross_section.content_hash,
+                "fact_only": cross_section.fact_only,
+            }
             base.update(
                 {
                     "contract": "OpeningFactV1",
+                    "cross_section_facts": cross_section_evidence,
                     "fact_status_scope": strategy_result.trace.get(
                         "fact_status_scope"
                     ),
