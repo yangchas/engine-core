@@ -231,6 +231,7 @@ from .replay_frames import (
     replay_cross_section,
 )
 from .auction_timeline import (
+    AUCTION_ANCHOR_FACT_CONTRACT_VERSION,
     AUCTION_ANCHOR_REVISION_CONTRACT_VERSION,
     AUCTION_TIMELINE_CONTRACT_VERSION,
     AUCTION_TIMING_POLICY_CONTRACT_VERSION,
@@ -241,8 +242,10 @@ from .auction_timeline import (
     READY,
     AuctionAnchorRevisionV1,
     AuctionAnchorRevisionV2,
+    AuctionAnchorFactV1,
     AuctionTimeline,
     AuctionTimingPolicyV1,
+    build_auction_anchor_fact_v1,
     build_auction_anchor_revision,
 )
 from .replay_session import (
@@ -273,6 +276,7 @@ from .recovery import (
 )
 from .q2 import (
     FreshnessPolicy,
+    Q2_PROJECTION_CONTRACT_VERSION,
     Q2FieldSpec,
     Q2ProjectionSnapshot,
     IncrementalQ2Projection,
@@ -452,6 +456,7 @@ __all__ = [
     "IncrementalQ2Projection",
     "RedisQ2ProjectionAdapter",
     "FreshnessPolicy",
+    "Q2_PROJECTION_CONTRACT_VERSION",
     "Q2FieldSpec",
     "build_q2_projection",
     "classify_equity",
@@ -554,6 +559,7 @@ __all__ = [
     "build_cross_section_facts",
     "ReplayVerificationLevel",
     "AUCTION_TIMING_POLICY_CONTRACT_VERSION",
+    "AUCTION_ANCHOR_FACT_CONTRACT_VERSION",
     "AUCTION_ANCHOR_REVISION_CONTRACT_VERSION",
     "AUCTION_TIMELINE_CONTRACT_VERSION",
     "OBSERVING",
@@ -562,9 +568,11 @@ __all__ = [
     "MISSING",
     "FACT_ONLY",
     "AuctionTimingPolicyV1",
+    "AuctionAnchorFactV1",
     "AuctionAnchorRevisionV1",
     "AuctionAnchorRevisionV2",
     "AuctionTimeline",
+    "build_auction_anchor_fact_v1",
     "build_auction_anchor_revision",
     "RECOVERY_PLAN_CONTRACT_VERSION",
     "RECOVERY_RESULT_CONTRACT_VERSION",

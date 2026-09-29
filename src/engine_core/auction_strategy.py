@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .auction_shadow import build_auction_fact_shadow_from_snapshots
+from .auction_timeline import build_auction_anchor_fact_v1
 from .contracts import (
     DataStatus,
     EVIDENCE_HASH_CONTRACT_VERSION,
@@ -143,6 +144,35 @@ class AuctionShadowStrategy:
         }
         if self.price_fields is not None:
             trace["price_fields"] = self.price_fields
+
+        # Emit the current anchor as a standalone fact before checking whether
+        # adjacent snapshots are available.  In particular, a usable 0925
+        # anchor must not wait for 0920/0924 or be confused with their deltas.
+        if snapshot.trigger_id in self.required_trigger_ids:
+            trigger_index = self.required_trigger_ids.index(snapshot.trigger_id)
+            tag = snapshot.trigger_id.removeprefix("AUCTION_")
+            expected_anchor_field = "auction_anchor_%s_price_milli" % tag
+            if (
+                tag in {"0920", "0924", "0925"}
+                and self.price_fields is not None
+                and self.price_fields[trigger_index] == expected_anchor_field
+            ):
+                values = snapshot.symbol_states.get(self.scope_id)
+                metadata = snapshot.source_observation_metadata
+                source_layer = metadata.get("source_id") or "UNKNOWN_SOURCE"
+                anchor_fact = build_auction_anchor_fact_v1(
+                    trade_date=snapshot.session_id,
+                    tag=tag,
+                    symbol=self.scope_id,
+                    row=values,
+                    evaluation_time_ms=snapshot.logical_time_ms,
+                    freeze_time_ms=snapshot.logical_time_ms,
+                    source_layer=str(source_layer),
+                    # Q2Frame logical/observation fields are replay clocks,
+                    # not historical wall-clock availability evidence.
+                    observed_at_ms=None,
+                )
+                trace["auction_anchor_fact"] = anchor_fact.as_trace()
 
         missing = [
             trigger_id

@@ -12,6 +12,7 @@ from .q2 import normalize_symbol
 
 
 AUCTION_TIMING_POLICY_CONTRACT_VERSION = "AuctionTimingPolicyV1"
+AUCTION_ANCHOR_FACT_CONTRACT_VERSION = "AuctionAnchorFactV1"
 AUCTION_ANCHOR_REVISION_CONTRACT_VERSION = "AuctionAnchorRevisionV2"
 AUCTION_TIMELINE_CONTRACT_VERSION = "AuctionTimelineV2"
 
@@ -20,6 +21,16 @@ READY = "READY"
 PARTIAL = "PARTIAL"
 MISSING = "MISSING"
 FACT_ONLY = "FACT_ONLY"
+AVAILABLE = "AVAILABLE"
+UNKNOWN = "UNKNOWN"
+INVALID = "INVALID"
+
+_ANCHOR_PRICE_FIELDS = {
+    "0920": "auction_anchor_0920_price_milli",
+    "0924": "auction_anchor_0924_price_milli",
+    "0925": "auction_anchor_0925_price_milli",
+}
+_ANCHOR_RAW_FIELDS = {"0920": "a20", "0924": "a24", "0925": "a25"}
 
 
 @dataclass(frozen=True)
@@ -77,6 +88,223 @@ class AuctionTimingPolicyV1:
 
     def timestamps(self, trade_date: str) -> Mapping[str, int]:
         return self.at(trade_date)
+
+
+@dataclass(frozen=True)
+class AuctionAnchorFactV1:
+    """One symbol's standalone, captured auction anchor fact.
+
+    This fact is intentionally independent of adjacent-anchor comparisons.
+    A missing 09:20/09:24 anchor therefore cannot suppress an available 09:25
+    anchor. Historical availability remains explicit and is never inferred
+    from event/source time.
+    """
+
+    trade_date: str
+    tag: str
+    symbol: str
+    business_anchor_ms: int
+    status: str
+    price_milli: Optional[int]
+    reason_code: Optional[str]
+    source_time_ms: Optional[int]
+    source_layer: str
+    observed_at_ms: Optional[int]
+    evaluation_time_ms: int
+    freeze_time_ms: Optional[int]
+    late_execution: bool
+    historical_available_at_ms: Optional[int] = None
+    historical_available_at_status: str = "UNKNOWN"
+    content_hash: str = field(init=False)
+    evidence_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.tag not in _ANCHOR_PRICE_FIELDS:
+            raise ValueError("unsupported auction anchor tag")
+        policy_times = AuctionTimingPolicyV1.default(self.tag).at(self.trade_date)
+        if self.business_anchor_ms != policy_times["business_anchor_ms"]:
+            raise ValueError("business_anchor_ms does not match the tag policy")
+        object.__setattr__(self, "symbol", normalize_symbol(self.symbol))
+        if self.status not in {AVAILABLE, MISSING, UNKNOWN, INVALID}:
+            raise ValueError("unsupported standalone anchor fact status")
+        if self.status == AVAILABLE:
+            if type(self.price_milli) is not int or self.price_milli <= 0:
+                raise ValueError("AVAILABLE anchor fact requires a positive integer price")
+            if self.reason_code is not None:
+                raise ValueError("AVAILABLE anchor fact cannot have a reason_code")
+        elif self.price_milli is not None:
+            raise ValueError("non-available anchor facts must have a null price")
+        if self.status == INVALID and not self.reason_code:
+            raise ValueError("INVALID anchor fact requires a reason_code")
+        if not isinstance(self.source_layer, str) or not self.source_layer:
+            raise ValueError("source_layer is required")
+        if self.evaluation_time_ms <= 0:
+            raise ValueError("evaluation_time_ms must be positive")
+        for name, value in (
+            ("source_time_ms", self.source_time_ms),
+            ("observed_at_ms", self.observed_at_ms),
+            ("freeze_time_ms", self.freeze_time_ms),
+            ("historical_available_at_ms", self.historical_available_at_ms),
+        ):
+            if value is not None and type(value) is not int:
+                raise TypeError("%s must be an integer or None" % name)
+        if self.historical_available_at_status not in {"KNOWN", "UNKNOWN"}:
+            raise ValueError("historical_available_at_status must be KNOWN or UNKNOWN")
+        if self.historical_available_at_status == "KNOWN" and self.historical_available_at_ms is None:
+            raise ValueError("KNOWN historical availability requires its timestamp")
+        if self.historical_available_at_status == "UNKNOWN" and self.historical_available_at_ms is not None:
+            raise ValueError("UNKNOWN historical availability cannot carry a timestamp")
+        object.__setattr__(self, "content_hash", semantic_hash({
+            "contract": AUCTION_ANCHOR_FACT_CONTRACT_VERSION,
+            "trade_date": self.trade_date,
+            "tag": self.tag,
+            "symbol": self.symbol,
+            "business_anchor_ms": self.business_anchor_ms,
+            "status": self.status,
+            "price_milli": self.price_milli,
+            "reason_code": self.reason_code,
+        }))
+        object.__setattr__(self, "evidence_hash", evidence_hash({
+            "content_hash": self.content_hash,
+            "source_time_ms": self.source_time_ms,
+            "source_layer": self.source_layer,
+            "observed_at_ms": self.observed_at_ms,
+            "evaluation_time_ms": self.evaluation_time_ms,
+            "freeze_time_ms": self.freeze_time_ms,
+            "late_execution": self.late_execution,
+            "historical_available_at_ms": self.historical_available_at_ms,
+            "historical_available_at_status": self.historical_available_at_status,
+        }))
+
+    def as_trace(self) -> Mapping[str, Any]:
+        return {
+            "contract": AUCTION_ANCHOR_FACT_CONTRACT_VERSION,
+            "trade_date": self.trade_date,
+            "tag": self.tag,
+            "symbol": self.symbol,
+            "business_anchor_ms": self.business_anchor_ms,
+            "status": self.status,
+            "price_milli": self.price_milli,
+            "reason_code": self.reason_code,
+            "source_time_ms": self.source_time_ms,
+            "source_layer": self.source_layer,
+            "observed_at_ms": self.observed_at_ms,
+            "evaluation_time_ms": self.evaluation_time_ms,
+            "freeze_time_ms": self.freeze_time_ms,
+            "late_execution": self.late_execution,
+            "historical_available_at_ms": self.historical_available_at_ms,
+            "historical_available_at_status": self.historical_available_at_status,
+            "content_hash": self.content_hash,
+            "evidence_hash": self.evidence_hash,
+        }
+
+
+def build_auction_anchor_fact_v1(
+    *,
+    trade_date: str,
+    tag: str,
+    symbol: str,
+    row: Optional[Mapping[str, Any]],
+    evaluation_time_ms: int,
+    source_layer: str,
+    freeze_time_ms: Optional[int] = None,
+    observed_at_ms: Optional[int] = None,
+) -> AuctionAnchorFactV1:
+    """Build a standalone per-symbol anchor from an already-observed Q2 row."""
+
+    try:
+        field_name = _ANCHOR_PRICE_FIELDS[tag]
+    except KeyError as exc:
+        raise ValueError("unsupported auction anchor tag") from exc
+    policy_times = AuctionTimingPolicyV1.default(tag).at(trade_date)
+    if row is None:
+        status, price, reason = UNKNOWN, None, "SYMBOL_STATE_NOT_OBSERVED"
+        source_time = None
+    else:
+        if not isinstance(row, Mapping):
+            raise TypeError("anchor source row must be a mapping or None")
+        row_symbol = row.get("symbol")
+        if row_symbol is not None and normalize_symbol(row_symbol) != normalize_symbol(symbol):
+            raise ValueError("row symbol does not match requested symbol")
+        raw_price = row.get(field_name)
+        quality_map = row.get("auction_anchor_field_quality")
+        raw_fields = row.get("raw_fields")
+        raw_field_name = _ANCHOR_RAW_FIELDS[tag]
+        raw_present = isinstance(raw_fields, Mapping) and raw_field_name in raw_fields
+        raw_wire_value = raw_fields.get(raw_field_name) if raw_present else None
+        field_errors = row.get("field_errors", ()) or ()
+        declared_quality = (
+            quality_map.get(raw_field_name)
+            if isinstance(quality_map, Mapping)
+            else None
+        )
+        if declared_quality == "PRESENT_VALUE":
+            if type(raw_price) is int and raw_price > 0:
+                status, price, reason = AVAILABLE, raw_price, None
+            else:
+                status, price, reason = INVALID, None, "ANCHOR_QUALITY_VALUE_MISMATCH"
+        elif declared_quality == "MISSING":
+            if raw_price is None or raw_price == 0:
+                status, price, reason = MISSING, None, "ANCHOR_FIELD_UNAVAILABLE"
+            else:
+                status, price, reason = INVALID, None, "ANCHOR_QUALITY_VALUE_MISMATCH"
+        elif declared_quality == "UNKNOWN":
+            if raw_price is None:
+                status, price, reason = UNKNOWN, None, "ANCHOR_QUALITY_UNKNOWN"
+            else:
+                status, price, reason = INVALID, None, "ANCHOR_QUALITY_VALUE_MISMATCH"
+        elif declared_quality == "INVALID":
+            status, price, reason = INVALID, None, "ANCHOR_SOURCE_VALUE_INVALID"
+        elif declared_quality is not None:
+            status, price, reason = INVALID, None, "ANCHOR_QUALITY_UNSUPPORTED"
+        elif raw_price is None:
+            if raw_field_name + "_non_positive" in field_errors:
+                status, price, reason = INVALID, None, "ANCHOR_PRICE_NON_POSITIVE"
+            elif not raw_present:
+                status, price, reason = UNKNOWN, None, "ANCHOR_RAW_FIELD_NOT_PRESENT"
+            elif type(raw_wire_value) is int and raw_wire_value == 0:
+                status, price, reason = MISSING, None, "ANCHOR_ZERO_UNAVAILABLE"
+            elif isinstance(raw_wire_value, str) and raw_wire_value.strip() == "0":
+                status, price, reason = MISSING, None, "ANCHOR_ZERO_UNAVAILABLE"
+            elif raw_wire_value is None:
+                status, price, reason = UNKNOWN, None, "ANCHOR_RAW_VALUE_NULL"
+            else:
+                status, price, reason = INVALID, None, "CANONICAL_ANCHOR_VALUE_MISMATCH"
+        elif type(raw_price) is not int:
+            status, price, reason = INVALID, None, "ANCHOR_PRICE_NOT_INTEGER"
+        elif raw_price < 0:
+            status, price, reason = INVALID, None, "ANCHOR_PRICE_NEGATIVE"
+        elif raw_price == 0:
+            status, price, reason = MISSING, None, "ANCHOR_ZERO_UNAVAILABLE"
+        else:
+            if raw_present:
+                try:
+                    parsed_raw = int(raw_wire_value)
+                except (TypeError, ValueError):
+                    parsed_raw = None
+                if parsed_raw != raw_price:
+                    status, price, reason = INVALID, None, "CANONICAL_ANCHOR_VALUE_MISMATCH"
+                else:
+                    status, price, reason = AVAILABLE, raw_price, None
+            else:
+                status, price, reason = AVAILABLE, raw_price, None
+        raw_source_time = row.get("source_record_time_ms")
+        source_time = raw_source_time if type(raw_source_time) is int else None
+    return AuctionAnchorFactV1(
+        trade_date=trade_date,
+        tag=tag,
+        symbol=symbol,
+        business_anchor_ms=policy_times["business_anchor_ms"],
+        status=status,
+        price_milli=price,
+        reason_code=reason,
+        source_time_ms=source_time,
+        source_layer=source_layer,
+        observed_at_ms=observed_at_ms,
+        evaluation_time_ms=evaluation_time_ms,
+        freeze_time_ms=freeze_time_ms,
+        late_execution=(evaluation_time_ms > policy_times["preferred_finalize_ms"]),
+    )
 
 
 @dataclass(frozen=True)

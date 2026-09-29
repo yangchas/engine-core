@@ -1,16 +1,83 @@
 from engine_core import (
+    AuctionAnchorFactV1,
     AuctionTimeline,
     AuctionTimingPolicyV1,
     FACT_ONLY,
     OBSERVING,
     PARTIAL,
     READY,
+    build_auction_anchor_fact_v1,
     local_datetime_ms,
 )
 
 
 def _row(symbol, ts, **fields):
     return {"symbol": symbol, "ts": ts, **fields}
+
+
+def test_standalone_0925_anchor_fact_does_not_depend_on_prior_anchors():
+    evaluation_ms = local_datetime_ms("2026-09-18", "09:25:06")
+    fact = build_auction_anchor_fact_v1(
+        trade_date="2026-09-18",
+        tag="0925",
+        symbol="600519",
+        row={
+            "symbol": "600519",
+            "price_milli": 12_300,
+            "auction_anchor_0925_price_milli": 12_250,
+            "source_record_time_ms": evaluation_ms - 1_000,
+        },
+        evaluation_time_ms=evaluation_ms,
+        freeze_time_ms=evaluation_ms,
+        source_layer="t1_v2_q2frame_event_time_replay",
+    )
+
+    assert isinstance(fact, AuctionAnchorFactV1)
+    assert fact.status == "AVAILABLE"
+    assert fact.price_milli == 12_250
+    assert fact.source_time_ms == evaluation_ms - 1_000
+    assert fact.business_anchor_ms == local_datetime_ms("2026-09-18", "09:25:00")
+    assert fact.historical_available_at_status == "UNKNOWN"
+    assert fact.content_hash and fact.evidence_hash
+
+
+def test_missing_0925_anchor_is_not_filled_from_latest_quote_price():
+    evaluation_ms = local_datetime_ms("2026-09-18", "09:25:06")
+    fact = build_auction_anchor_fact_v1(
+        trade_date="2026-09-18",
+        tag="0925",
+        symbol="600519",
+        row={
+            "symbol": "600519",
+            "price_milli": 12_300,
+            "auction_anchor_0925_price_milli": None,
+            "raw_fields": {"a25": 0},
+        },
+        evaluation_time_ms=evaluation_ms,
+        freeze_time_ms=evaluation_ms,
+        source_layer="t1_v2_q2frame_event_time_replay",
+    )
+
+    assert fact.status == "MISSING"
+    assert fact.price_milli is None
+    assert fact.reason_code == "ANCHOR_ZERO_UNAVAILABLE"
+
+
+def test_absent_raw_0925_field_is_unknown_not_confirmed_missing():
+    evaluation_ms = local_datetime_ms("2026-09-18", "09:25:06")
+    fact = build_auction_anchor_fact_v1(
+        trade_date="2026-09-18",
+        tag="0925",
+        symbol="600519",
+        row={"symbol": "600519", "auction_anchor_0925_price_milli": None},
+        evaluation_time_ms=evaluation_ms,
+        freeze_time_ms=evaluation_ms,
+        source_layer="t1_v2_q2frame_event_time_replay",
+    )
+
+    assert fact.status == "UNKNOWN"
+    assert fact.price_milli is None
+    assert fact.reason_code == "ANCHOR_RAW_FIELD_NOT_PRESENT"
 
 
 def test_default_auction_policy_has_adaptive_0925_grace():

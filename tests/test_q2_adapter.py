@@ -9,6 +9,7 @@ from engine_core.q2 import (
     FreshnessPolicy,
     IncrementalQ2Projection,
     Q2_FIELD_CONTRACT,
+    Q2_PROJECTION_CONTRACT_VERSION,
     RedisQ2ProjectionAdapter,
     build_q2_projection,
     classify_equity,
@@ -51,6 +52,22 @@ def test_q2_contract_keeps_verified_legacy_units_explicit():
     assert specs["a20"].canonical_name == "auction_anchor_0920_price_milli"
     assert specs["a24"].canonical_name == "auction_anchor_0924_price_milli"
     assert specs["a25"].canonical_name == "auction_anchor_0925_price_milli"
+
+
+def test_q2_projection_contract_v2_carries_anchor_quality_without_relabeling_source():
+    projection = build_q2_projection(
+        "2026-09-04",
+        datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc),
+        ("000001",),
+        {"000001": {"px": "12345", "a25": "0", "ts": "1788484800000"}},
+    )
+
+    assert projection.envelope.schema_version == 2
+    assert projection.envelope.payload["contract"] == Q2_PROJECTION_CONTRACT_VERSION
+    assert projection.envelope.provenance.source_schema == "Q2RedisHashV1"
+    assert projection.quotes["000001"].to_mapping()["auction_anchor_field_quality"][
+        "a25"
+    ] == "MISSING"
 
 
 def test_q2_adapter_preserves_verified_rolling_metrics():
@@ -96,6 +113,30 @@ def test_q2_adapter_preserves_t1_v2_auction_anchor_prices_and_zero_as_unavailabl
     assert quote.to_mapping()["auction_anchor_0920_price_milli"] == 12000
     assert quote.to_mapping()["auction_anchor_0924_price_milli"] == 12100
     assert quote.to_mapping()["auction_anchor_0925_price_milli"] is None
+    assert quote.to_mapping()["auction_anchor_field_quality"] == {
+        "a20": "PRESENT_VALUE",
+        "a24": "PRESENT_VALUE",
+        "a25": "MISSING",
+    }
+
+
+def test_q2_anchor_field_quality_distinguishes_absent_invalid_and_present():
+    quote = normalize_q2(
+        "000001",
+        {"a20": "12000", "a24": "bad", "a25": "-1"},
+    )
+
+    assert quote.to_mapping()["auction_anchor_field_quality"] == {
+        "a20": "PRESENT_VALUE",
+        "a24": "INVALID",
+        "a25": "INVALID",
+    }
+    absent = normalize_q2("000001", {"px": "12345"})
+    assert absent.to_mapping()["auction_anchor_field_quality"] == {
+        "a20": "MISSING",
+        "a24": "MISSING",
+        "a25": "MISSING",
+    }
 
 
 def test_q2_adapter_rejects_negative_auction_anchor_price_without_coercing_it():

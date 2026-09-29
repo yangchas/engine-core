@@ -18,6 +18,8 @@ from .contracts import (
     semantic_hash,
 )
 
+Q2_PROJECTION_CONTRACT_VERSION = "Q2CanonicalProjectionV2"
+
 
 @dataclass(frozen=True)
 class FreshnessPolicy:
@@ -158,10 +160,16 @@ class Q2Quote:
     auction_anchor_0924_price_milli: Optional[int] = None
     auction_anchor_0925_price_milli: Optional[int] = None
     field_errors: Tuple[str, ...] = ()
+    auction_anchor_field_quality: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "raw_fields", deep_freeze(self.raw_fields))
         object.__setattr__(self, "field_errors", tuple(self.field_errors))
+        object.__setattr__(
+            self,
+            "auction_anchor_field_quality",
+            deep_freeze(self.auction_anchor_field_quality),
+        )
 
     def to_mapping(self) -> Dict[str, Any]:
         return {
@@ -186,6 +194,7 @@ class Q2Quote:
             "auction_anchor_0920_price_milli": self.auction_anchor_0920_price_milli,
             "auction_anchor_0924_price_milli": self.auction_anchor_0924_price_milli,
             "auction_anchor_0925_price_milli": self.auction_anchor_0925_price_milli,
+            "auction_anchor_field_quality": self.auction_anchor_field_quality,
             "field_errors": self.field_errors,
         }
 
@@ -219,6 +228,19 @@ def normalize_q2(symbol: str, raw_hash: Mapping[Any, Any]) -> Q2Quote:
             return None
         return value
 
+    def auction_anchor_quality(name: str) -> str:
+        if name not in raw:
+            return "MISSING"
+        raw_value = raw[name]
+        if raw_value in (None, ""):
+            return "MISSING"
+        parsed = _to_int(raw_value)
+        if parsed is None or parsed < 0:
+            return "INVALID"
+        if parsed == 0:
+            return "MISSING"
+        return "PRESENT_VALUE"
+
     timestamp_raw = int_field("ts")
     timestamp_ms = _epoch_ms(timestamp_raw)
     if timestamp_raw is not None and timestamp_ms is None:
@@ -247,6 +269,9 @@ def normalize_q2(symbol: str, raw_hash: Mapping[Any, Any]) -> Q2Quote:
         auction_anchor_0924_price_milli=auction_anchor_price("a24"),
         auction_anchor_0925_price_milli=auction_anchor_price("a25"),
         field_errors=tuple(sorted(set(errors))),
+        auction_anchor_field_quality={
+            name: auction_anchor_quality(name) for name in ("a20", "a24", "a25")
+        },
     )
     return quote
 
@@ -414,13 +439,14 @@ def build_q2_projection(
         for symbol in sorted(quotes)
     }
     content = {
+        "contract": Q2_PROJECTION_CONTRACT_VERSION,
         "trade_date": trade_date,
         "expected_symbols": expected,
         "missing_symbols": tuple(missing),
         "stale_symbols": tuple(sorted(stale)),
         "quotes": quote_payload,
     }
-    content_digest = semantic_hash(content, schema_version=1)
+    content_digest = semantic_hash(content, schema_version=2)
     provenance = Provenance(
         source_id=source_id,
         source_kind="redis_projection",
@@ -439,11 +465,11 @@ def build_q2_projection(
                 "observed_ms": observed_ms,
                 "content_hash": content_digest,
             },
-            schema_version=1,
+            schema_version=2,
         ),
         payload_kind=PayloadKind.L2_PROJECTION_SNAPSHOT,
         source_id=source_id,
-        schema_version=1,
+        schema_version=2,
         effective_time_ms=newest,
         observed_time_ms=observed_ms,
         generation=None,
@@ -637,21 +663,23 @@ class IncrementalQ2Projection:
         quote_payload = {symbol: quotes[symbol].to_mapping() for symbol in sorted(quotes)}
         if full_hash:
             content_digest = semantic_hash({
+                "contract": Q2_PROJECTION_CONTRACT_VERSION,
                 "trade_date": self.trade_date,
                 "expected_symbols": self.expected_symbols,
                 "missing_symbols": tuple(missing),
                 "stale_symbols": tuple(sorted(stale)),
                 "quotes": quote_payload,
-            }, schema_version=1)
+            }, schema_version=2)
         else:
             content_digest = semantic_hash({
-                "contract": "Q2ProjectionIncrementalV1",
+                "contract": "Q2ProjectionIncrementalV2",
+                "projection_contract": Q2_PROJECTION_CONTRACT_VERSION,
                 "trade_date": self.trade_date,
                 "observed_ms": observed_ms,
                 "missing_symbols": tuple(missing),
                 "stale_symbols": tuple(sorted(stale)),
                 "quote_hashes": tuple(sorted(current_quote_hashes.items())),
-            })
+            }, schema_version=2)
         provenance = Provenance(
             source_id=self.source_id,
             source_kind="redis_projection",
@@ -662,6 +690,7 @@ class IncrementalQ2Projection:
             notes=(consistency,),
         )
         envelope_payload = {
+            "contract": Q2_PROJECTION_CONTRACT_VERSION,
             "trade_date": self.trade_date,
             "expected_symbols": self.expected_symbols,
             "missing_symbols": tuple(missing),
@@ -675,10 +704,10 @@ class IncrementalQ2Projection:
                 "effective_ms": max(source_times) if source_times else None,
                 "observed_ms": observed_ms,
                 "content_hash": content_digest,
-            }, schema_version=1),
+            }, schema_version=2),
             payload_kind=PayloadKind.L2_PROJECTION_SNAPSHOT,
             source_id=self.source_id,
-            schema_version=1,
+            schema_version=2,
             effective_time_ms=max(source_times) if source_times else None,
             observed_time_ms=observed_ms,
             generation=None,

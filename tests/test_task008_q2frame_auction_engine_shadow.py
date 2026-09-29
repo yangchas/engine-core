@@ -123,7 +123,7 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
     )
 
     assert result["deterministic"] is True
-    assert result["contract_version"] == "Task008Q2FrameAuctionEngineShadowV3"
+    assert result["contract_version"] == "Task008Q2FrameAuctionEngineShadowV4"
     assert result["auction_price_field_policy"] == {
         "0920": "auction_anchor_0920_price_milli",
         "0924": "auction_anchor_0924_price_milli",
@@ -159,6 +159,13 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
     assert anchors["0925"]["last_raw_update_time_ms"] == _epoch_ms("09:25:06.999")
     assert anchors["0925"]["facts_by_symbol_hash"]
     assert len(anchors["0925"]["facts_by_symbol"]) == 2
+    anchor_facts = anchors["0925"]["auction_anchor_facts_by_symbol"]
+    assert anchor_facts["000001"]["contract"] == "AuctionAnchorFactV1"
+    assert anchor_facts["000001"]["status"] == "AVAILABLE"
+    assert anchor_facts["000001"]["price_milli"] == 12_000
+    assert anchor_facts["000001"]["observed_at_ms"] is None
+    assert anchor_facts["000001"]["historical_available_at_status"] == "UNKNOWN"
+    assert anchors["0925"]["auction_anchor_facts_by_symbol_hash"]
     assert (
         anchors["0925"]["facts_by_symbol"]["000001"]["metrics"]["price_delta_milli"]
         == 1_000
@@ -223,10 +230,56 @@ def test_real_q2frame_shape_surfaces_partial_0925_recovery_targets(tmp_path: Pat
     assert facts["000001"]["metrics"]["price_delta_milli"] is None
     assert facts["000001"]["changes"]["price"] == "PRICE_UNKNOWN"
     assert facts["600000"]["metrics"]["price_delta_milli"] is not None
+    anchor_facts = result["ordered"]["anchor_evidence"]["0925"][
+        "auction_anchor_facts_by_symbol"
+    ]
+    assert anchor_facts["000001"]["status"] == "MISSING"
+    assert anchor_facts["000001"]["price_milli"] is None
+    assert anchor_facts["600000"]["status"] == "AVAILABLE"
     for tag in ("0920", "0924"):
         prior = result["ordered"]["anchor_evidence"][tag]["auction_revision"]
         assert prior["recovery_required"] is False
         assert prior["recovery_plan"] is None
+
+
+def test_0925_anchor_fact_is_available_when_0924_anchor_and_delta_are_unknown(
+    tmp_path: Path,
+):
+    frames = [_frame(seq, clock) for seq, clock in (
+        (1, "09:15:00.000"),
+        (2, "09:20:03.000"),
+        (3, "09:21:00.000"),
+        (4, "09:24:10.000"),
+        (5, "09:24:11.000"),
+        (6, "09:25:04.000"),
+        (7, "09:25:06.197"),
+        (8, "09:25:06.999"),
+    )]
+    # The 0924 anchor is unavailable at its own barrier and remains unavailable
+    # in subsequent Q2 snapshots, while 0925 is independently captured.
+    for frame in frames:
+        if frame["seq_no"] >= 5:
+            for update in frame["q2_updates"]:
+                update["a24"] = 0
+    source = tmp_path / "q2frame-0925-standalone-anchor.jsonl"
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+
+    result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+    )
+    anchors = result["ordered"]["anchor_evidence"]
+    fact = anchors["0925"]["auction_anchor_facts_by_symbol"]["000001"]
+    adjacent = anchors["0925"]["facts_by_symbol"]["000001"]
+
+    assert fact["status"] == "AVAILABLE"
+    assert fact["price_milli"] == 12_000
+    assert fact["historical_available_at_status"] == "UNKNOWN"
+    assert adjacent["metrics"]["price_delta_milli"] is None
+    assert adjacent["changes"]["price"] == "PRICE_UNKNOWN"
 
 
 def test_q2frame_session_reaches_opening_with_one_engine_and_symbol_source_times(tmp_path: Path):

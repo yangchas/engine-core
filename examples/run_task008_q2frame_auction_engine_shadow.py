@@ -238,6 +238,8 @@ class _AllSymbolAuctionShadow:
         }
         status_counts: Counter[str] = Counter()
         facts_by_symbol: dict[str, Any] = {}
+        anchor_facts_by_symbol: dict[str, Any] = {}
+        anchor_fact_status_counts: Counter[str] = Counter()
         opening_field_status_by_symbol: dict[str, Any] = {}
         opening_field_status_counts: dict[str, Counter[str]] = {}
         child_hashes: dict[str, str] = {}
@@ -247,6 +249,10 @@ class _AllSymbolAuctionShadow:
             evidence_refs.update(result.evidence_refs)
             status = result.trace.get("fact_status", "UNKNOWN")
             status_counts[getattr(status, "value", str(status))] += 1
+            anchor_fact = result.trace.get("auction_anchor_fact")
+            if isinstance(anchor_fact, Mapping):
+                anchor_facts_by_symbol[symbol] = anchor_fact
+                anchor_fact_status_counts[str(anchor_fact.get("status", "UNKNOWN"))] += 1
             fact = (
                 result.trace.get("opening_fact")
                 if is_opening
@@ -286,6 +292,14 @@ class _AllSymbolAuctionShadow:
         if trigger_id == "AUCTION_0925":
             trace["facts_by_symbol"] = facts_by_symbol
             trace["facts_by_symbol_hash"] = semantic_hash(facts_by_symbol)
+        if anchor_facts_by_symbol:
+            trace["auction_anchor_facts_by_symbol"] = anchor_facts_by_symbol
+            trace["auction_anchor_facts_by_symbol_hash"] = semantic_hash(
+                anchor_facts_by_symbol
+            )
+            trace["auction_anchor_fact_status_counts"] = dict(
+                sorted(anchor_fact_status_counts.items())
+            )
         if is_opening:
             trace["fact_status_scope"] = "change_pct_and_source_time"
             trace["facts_by_symbol"] = facts_by_symbol
@@ -411,6 +425,15 @@ def _run_once(
             "fact_status_counts": strategy_result.trace.get("fact_status_counts", {}),
             "facts_by_symbol_hash": strategy_result.trace.get("facts_by_symbol_hash"),
             "facts_by_symbol": strategy_result.trace.get("facts_by_symbol", {}),
+            "auction_anchor_facts_by_symbol_hash": strategy_result.trace.get(
+                "auction_anchor_facts_by_symbol_hash"
+            ),
+            "auction_anchor_fact_status_counts": strategy_result.trace.get(
+                "auction_anchor_fact_status_counts", {}
+            ),
+            "auction_anchor_facts_by_symbol": strategy_result.trace.get(
+                "auction_anchor_facts_by_symbol", {}
+            ),
             "processed_signals": result.processed_signals,
             "reducer_revision": engine._reducer.state.revision,
             "virtual_clock_ms": int(clock.now_utc().timestamp() * 1000),
@@ -712,7 +735,7 @@ def run_q2frame_auction_engine_shadow(
         "contract_version": (
             "Task008Q2FrameSessionEngineShadowV2"
             if include_opening
-            else "Task008Q2FrameAuctionEngineShadowV3"
+            else "Task008Q2FrameAuctionEngineShadowV4"
         ),
         "trade_date": trade_date,
         "run_mode": "REAL_T1V2_Q2FRAME_EVENT_TIME_REPLAY",
