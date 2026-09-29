@@ -67,6 +67,28 @@ def test_old_quote_not_promoted_to_today():
     assert result["universe_authority"] == "NOT_PROVEN_BY_ACTIVE_SET"
 
 
+def test_live_observation_uses_read_completion_time_and_states_its_scope():
+    row = {"px": "1000", "pc": "1000", "amt": "0", "ts": str(int(NOW.timestamp()*1000))}
+    result = probe.observe(ReadClient(("000001",), row), "2026-09-09", None, None)
+
+    started = datetime.fromisoformat(result["read_started_at"])
+    completed = datetime.fromisoformat(result["read_completed_at"])
+    assert started <= completed
+    assert result["observed_at"] == result["read_completed_at"]
+    assert result["observation_time_mode"] == "LIVE_READ_COMPLETION"
+    assert result["freshness_policy_stale_after_ms"] is None
+    assert result["universe_authority"] == "NOT_PROVEN_BY_ACTIVE_SET"
+    assert "does not prove full-market coverage" in result["status_scope"]
+
+
+def test_source_record_age_preserves_future_timestamp_direction():
+    row = {"px": "1000", "pc": "1000", "amt": "0", "ts": str(int(NOW.timestamp()*1000)+5000)}
+    result = probe.observe(ReadClient(("000001",), row), "2026-09-09", NOW, None)
+
+    assert result["newest_source_record_age_seconds"] == -5.0
+    assert result["field_error_counts"]["future_ts"] == 1
+
+
 def test_volume_unit_diagnostic_exposes_both_hypotheses_without_deciding_contract():
     row = {
         "px": "12000",
