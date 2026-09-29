@@ -329,6 +329,31 @@ def test_q2frame_session_reaches_opening_with_one_engine_and_symbol_source_times
     opening = result["ordered"]["opening_evidence"]["OPENING_0932"]
     assert opening["evaluation_time_ms"] == _epoch_ms("09:32:10.000")
     assert opening["input_frames_included"] == 11
+    cross_section = opening["cross_section_facts"]
+    assert cross_section["contract"] == "CrossSectionFactsV1"
+    assert cross_section["scope"] == "OBSERVED_COHORT"
+    assert cross_section["scope_authority"] == (
+        "Q2FRAME_INPUT_COHORT_ONLY_NOT_FULL_MARKET"
+    )
+    assert cross_section["expected_count"] == 2
+    assert cross_section["observed_count"] == 2
+    assert cross_section["missing_count"] == 0
+    assert cross_section["coverage"] == 1.0
+    assert cross_section["field_denominators"] == {
+        "price_milli": 2,
+        "pre_close_milli": 2,
+    }
+    assert cross_section["market_breadth"] == {
+        "up_count": 1,
+        "down_count": 0,
+        "flat_count": 1,
+        "unknown_count": 0,
+    }
+    assert cross_section["source_layers"] == [
+        "t1_v2_q2frame_event_time_replay"
+    ]
+    assert cross_section["content_hash"]
+    assert cross_section["fact_only"] is True
     assert opening["fact_status_counts"] == {"READY": 2}
     assert opening["facts_by_symbol"]["000001"]["timestamp_ms"] == _epoch_ms(
         "09:32:10.999"
