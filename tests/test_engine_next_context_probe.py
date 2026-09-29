@@ -345,7 +345,7 @@ def test_read_only_context_builder_disables_refresh_and_recovery_and_reads_0925_
     assert hub.snapshot_calls == [("2026-09-29", ("0920", "0924", "0925"))]
     assert profile["hot_rank_refresh"] == "DISABLED"
     assert profile["auction_recovery"] == "DISABLED"
-    assert profile["auction_input"] == "REDIS_TOP_AMOUNT_TOP_N_ONLY"
+    assert profile["auction_input"] == "REDIS_LATEST_TIME_ELIGIBLE_TOP_AMOUNT_TOP_N_ONLY"
     assert profile["auction_timing"] == "WHOLE_SECOND_0920_09:20:03_0924_09:24:10_0925_09:25:06"
     assert blocked_external_calls == ["hot_rank_refresh", "auction_anchor_recovery"]
 

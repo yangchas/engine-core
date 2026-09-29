@@ -460,7 +460,7 @@ def _configure_read_only_context_builder(builder: Any, hub: Any) -> tuple[dict[s
         "redis_mutations": "DENIED_BY_GUARD",
         "hot_rank_refresh": "DISABLED",
         "auction_recovery": "DISABLED",
-        "auction_input": "REDIS_TOP_AMOUNT_TOP_N_ONLY",
+        "auction_input": "REDIS_LATEST_TIME_ELIGIBLE_TOP_AMOUNT_TOP_N_ONLY",
         "auction_timing": "WHOLE_SECOND_0920_09:20:03_0924_09:24:10_0925_09:25:06",
         "td_fallback": "DISABLED",
         "wencai_fallback": "DISABLED",
@@ -607,7 +607,8 @@ def probe(
             "side_effect_boundary": (
                 side_effect_boundary
                 + "; hot-rank refresh/recovery/TD/Wencai/F10/cache writes/sector-flow update disabled; "
-                + "auction rows read from existing Redis 0925 projection only"
+                + "auction rows read from "
+                + read_only_profile["auction_input"]
             ),
         }
     finally:
