@@ -90,15 +90,21 @@ def build_real_opening_facts(
             "previous_close_milli": quote.pre_close_milli,
             "amount_2m_yuan": quote.amount_2m_yuan,
             "limit_state": quote.limit_state,
+            # Match engine-next's existing Q2 boundary conversion:
+            # integer basis points become a decimal ratio for speed_1m.
+            "speed_1m": (
+                quote.speed_1m_bp / 10000.0
+                if quote.speed_1m_bp is not None
+                else None
+            ),
             "name": quote.name,
         }
         facts[symbol] = build_open_fact(row)
         source_meta[symbol] = {
             "source_record_time_ms": quote.source_record_time_ms,
-            # Preserve the observed Q2 field under its proven unit.  The
-            # opening wheel's generic ``speed_1m`` unit is not proven equal,
-            # so the source value must not be injected into the fact.
+            # Preserve both source and mapped values for auditability.
             "speed_1m_bp": quote.speed_1m_bp,
+            "speed_1m_conversion": "basis_point / 10000 -> decimal_ratio",
             "field_errors": list(quote.field_errors),
             "raw_field_names": sorted(quote.raw_fields),
             "source_mapping_fields": sorted(mapping),

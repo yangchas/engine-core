@@ -315,7 +315,7 @@ def test_q2frame_session_reaches_opening_with_one_engine_and_symbol_source_times
         include_opening=True,
     )
 
-    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV2"
+    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV3"
     assert result["deterministic"] is True
     assert result["ordered"]["engine_instances"] == 1
     assert result["ordered"]["input_frames_processed"] == 11
@@ -338,7 +338,7 @@ def test_q2frame_session_reaches_opening_with_one_engine_and_symbol_source_times
         "amount_2m_yuan": {"AVAILABLE": 2},
         "change_pct": {"AVAILABLE": 2},
         "limit_state": {"AVAILABLE": 2},
-        "speed_1m": {"UNKNOWN_UNIT_MAPPING": 2},
+        "speed_1m": {"UNAVAILABLE": 2},
     }
     assert opening["opening_fact_field_status_hash"]
 
@@ -393,6 +393,7 @@ def test_q2frame_opening_aggregates_auxiliary_field_quality_without_stopping(tmp
         ]
     frames[-1]["q2_updates"][0]["amt2m"] = "bad"
     frames[-1]["q2_updates"][0]["ls"] = 7
+    frames[-1]["q2_updates"][0]["spd1m"] = "bad"
 
     source = tmp_path / "q2frame-opening-field-quality.jsonl"
     source.write_text(
@@ -412,12 +413,12 @@ def test_q2frame_opening_aggregates_auxiliary_field_quality_without_stopping(tmp
         "change_pct": "AVAILABLE",
         "amount_2m_yuan": "INVALID",
         "limit_state": "INVALID",
-        "speed_1m": "UNKNOWN_UNIT_MAPPING",
+        "speed_1m": "INVALID",
     }
     assert opening["opening_fact_field_status_counts"] == {
         "amount_2m_yuan": {"INVALID": 1},
         "change_pct": {"AVAILABLE": 1},
         "limit_state": {"INVALID": 1},
-        "speed_1m": {"UNKNOWN_UNIT_MAPPING": 1},
+        "speed_1m": {"INVALID": 1},
     }
     assert result["ordered"]["engine_instances"] == 1

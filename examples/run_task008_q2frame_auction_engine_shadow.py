@@ -733,7 +733,7 @@ def run_q2frame_auction_engine_shadow(
     deterministic = all(determinism.values())
     return {
         "contract_version": (
-            "Task008Q2FrameSessionEngineShadowV2"
+            "Task008Q2FrameSessionEngineShadowV3"
             if include_opening
             else "Task008Q2FrameAuctionEngineShadowV4"
         ),

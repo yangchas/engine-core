@@ -34,7 +34,7 @@ def _snapshot(values):
     )
 
 
-def test_opening_shadow_wraps_verified_fact_only_without_reinterpreting_speed_units():
+def test_opening_shadow_maps_q2_basis_points_to_legacy_speed_ratio():
     snapshot = _snapshot(
         {
             "price_milli": 10500,
@@ -54,14 +54,14 @@ def test_opening_shadow_wraps_verified_fact_only_without_reinterpreting_speed_un
     assert result.trace["decision_status"] == "FACT_ONLY"
     assert result.trace["fact_status"] == "READY"
     assert result.trace["opening_fact"]["change_pct"] == 5.000000000000004
-    assert result.trace["opening_fact"]["speed_1m"] is None
+    assert result.trace["opening_fact"]["speed_1m"] == 0.025
     assert result.trace["opening_fact"]["timestamp_ms"] == 1050
     assert result.trace["fact_status_scope"] == "change_pct_and_source_time"
     assert result.trace["opening_fact_field_status"] == {
         "change_pct": "AVAILABLE",
         "amount_2m_yuan": "AVAILABLE",
         "limit_state": "AVAILABLE",
-        "speed_1m": "UNKNOWN_UNIT_MAPPING",
+        "speed_1m": "AVAILABLE",
     }
     assert result.evidence_refs == ("fixture://opening/600519",)
 
@@ -151,5 +151,26 @@ def test_opening_primary_ready_does_not_hide_unavailable_or_invalid_auxiliary_fi
         "change_pct": "AVAILABLE",
         "amount_2m_yuan": "INVALID",
         "limit_state": "INVALID",
-        "speed_1m": "UNKNOWN_UNIT_MAPPING",
+        "speed_1m": "UNAVAILABLE",
     }
+
+
+def test_opening_shadow_marks_invalid_q2_speed_without_failing_primary_fact():
+    snapshot = _snapshot(
+        {
+            "price_milli": 10500,
+            "pre_close_milli": 10000,
+            "amount_2m_yuan": 1200000,
+            "limit_state": 0,
+            "speed_1m_bp": None,
+            "source_record_time_ms": 1050,
+            "field_errors": ("spd1m",),
+        }
+    )
+    result = OpeningShadowStrategy(scope_id="600519").evaluate(
+        snapshot, FrozenDataBundle.empty("opening-invalid-speed", 2000)
+    )
+
+    assert result.trace["fact_status"] == "READY"
+    assert result.trace["opening_fact"]["speed_1m"] is None
+    assert result.trace["opening_fact_field_status"]["speed_1m"] == "INVALID"

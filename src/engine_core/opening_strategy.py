@@ -81,8 +81,27 @@ class OpeningShadowStrategy:
                 }
             )
         else:
-            # Q2's ``speed_1m_bp`` is deliberately not mapped to the opening
-            # wheel's ``speed_1m`` field: the units are not proven identical.
+            field_errors = values.get("field_errors", ()) or ()
+            if isinstance(field_errors, str):
+                field_errors = (field_errors,)
+            field_errors = tuple(sorted({str(item) for item in field_errors}))
+            raw_speed_1m_bp = values.get("speed_1m_bp")
+            if "spd1m" in field_errors:
+                speed_1m = None
+                speed_1m_status = "INVALID"
+            elif raw_speed_1m_bp is None:
+                speed_1m = None
+                speed_1m_status = "UNAVAILABLE"
+            elif isinstance(raw_speed_1m_bp, int) and not isinstance(
+                raw_speed_1m_bp, bool
+            ):
+                # t1-v2 publishes spd1m as basis points; engine-next's
+                # strategy-facing speed_1m is a decimal ratio.
+                speed_1m = raw_speed_1m_bp / 10000.0
+                speed_1m_status = "AVAILABLE"
+            else:
+                speed_1m = None
+                speed_1m_status = "INVALID"
             row = {
                 "symbol": self.scope_id,
                 # Every symbol can advance on a different source tick.  The
@@ -93,6 +112,7 @@ class OpeningShadowStrategy:
                 "previous_close_milli": values.get("pre_close_milli"),
                 "amount_2m_yuan": values.get("amount_2m_yuan"),
                 "limit_state": values.get("limit_state"),
+                "speed_1m": speed_1m,
                 "name": values.get("name"),
             }
             fact = build_open_fact(row)
@@ -101,10 +121,6 @@ class OpeningShadowStrategy:
             source_time_valid = (
                 isinstance(source_time, int) and not isinstance(source_time, bool)
             )
-            field_errors = values.get("field_errors", ()) or ()
-            if isinstance(field_errors, str):
-                field_errors = (field_errors,)
-            field_errors = tuple(sorted({str(item) for item in field_errors}))
             time_quality_errors = {"ts", "future_ts", "trade_date", "stale"}
             relevant_time_errors = tuple(
                 sorted(time_quality_errors.intersection(field_errors))
@@ -135,7 +151,7 @@ class OpeningShadowStrategy:
                         ),
                         "amount_2m_yuan": amount_2m_status,
                         "limit_state": str(fact["limit_state_status"]).upper(),
-                        "speed_1m": "UNKNOWN_UNIT_MAPPING",
+                        "speed_1m": speed_1m_status,
                     },
                     "symbol_source_quality": {
                         "source_record_time_ms": source_time,
