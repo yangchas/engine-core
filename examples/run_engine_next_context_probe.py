@@ -4,9 +4,9 @@ This is an external migration audit tool, not a core dependency.  It imports a
 specified engine_next release, injects a Redis write guard, disables hot-rank
 refresh and auction recovery, and runs the existing context builder plus the
 existing auction plate fact function for a small symbol set. Auction context
-is sourced only from the existing Redis 0925 projection; TD/Wencai recovery is
-not attempted. No Rabbit consumer, notification, or strategy action is
-assembled.
+is sourced only from time-eligible existing Redis top-amount projections;
+TD/Wencai recovery is not attempted. No Rabbit consumer, notification, or
+strategy action is assembled.
 """
 
 from __future__ import annotations
@@ -286,6 +286,27 @@ def _parse_now(value: str, *, timezone_name: str) -> datetime:
     return parsed.replace(tzinfo=ZoneInfo(timezone_name))
 
 
+def _eligible_auction_projection_tags(now: datetime | None) -> tuple[str, ...]:
+    """Return auction projection anchors observable by the supplied local time.
+
+    The seconds component is the contract boundary; subsecond values are
+    intentionally discarded (for example, 09:25:06.197 is in the 09:25:06
+    bucket). Unknown observation time yields no auction projection input.
+    """
+
+    if now is None:
+        return ()
+    shanghai = ZoneInfo("Asia/Shanghai")
+    local_now = now.replace(tzinfo=shanghai) if now.tzinfo is None else now.astimezone(shanghai)
+    second_of_day = local_now.hour * 3600 + local_now.minute * 60 + local_now.second
+    observable_at = (
+        ("0920", 9 * 3600 + 20 * 60 + 3),
+        ("0924", 9 * 3600 + 24 * 60 + 10),
+        ("0925", 9 * 3600 + 25 * 60 + 6),
+    )
+    return tuple(tag for tag, cutoff in observable_at if second_of_day >= cutoff)
+
+
 def _phase_for_request(legacy: Mapping[str, Any], now: datetime) -> Any:
     """Delegate phase selection to the audited legacy phase authority."""
 
@@ -385,9 +406,9 @@ def _configure_read_only_context_builder(builder: Any, hub: Any) -> tuple[dict[s
 
     The deployed context builder's normal path may refresh hot-rank data and
     recover an auction anchor through TD/Wencai, including Redis writeback.
-    This probe instead consumes only the already-persisted 0925 Redis
-    top-amount projection. Missing projection data remains missing; no fallback
-    is run.
+    This probe instead consumes only the latest time-eligible already-persisted
+    Redis top-amount projection. Missing projection data remains missing; no
+    TD/Wencai fallback is run.
     """
 
     blocked_external_calls: list[str] = []
@@ -407,17 +428,30 @@ def _configure_read_only_context_builder(builder: Any, hub: Any) -> tuple[dict[s
     # still loaded by prime_runtime_state below.
     builder._ensure_hot_rank_cache = lambda *_args, **_kwargs: None
 
-    def load_existing_0925_topn_projection(request: Any, symbols: tuple[str, ...]) -> list[dict[str, Any]]:
-        result = hub.load_auction_snapshots(request.trade_date, tags=("0925",))
-        symbol_set = {str(symbol) for symbol in symbols}
-        return [
+    def load_timed_topn_projection(request: Any, symbols: tuple[str, ...]) -> list[dict[str, Any]]:
+        eligible_tags = _eligible_auction_projection_tags(getattr(request, "now", None))
+        if not eligible_tags:
+            return []
+        result = hub.load_auction_snapshots(request.trade_date, tags=eligible_tags)
+        projection_rows = [
             dict(row)
             for row in (getattr(result, "rows", ()) or ())
-            if str(row.get("tag") or "") == "0925"
+            if str(row.get("tag") or "") in eligible_tags
+        ]
+        tag_order = {tag: index for index, tag in enumerate(("0920", "0924", "0925"))}
+        observed_tags = {str(row.get("tag") or "") for row in projection_rows}
+        if not observed_tags:
+            return []
+        selected_tag = max(observed_tags, key=tag_order.__getitem__)
+        symbol_set = {str(symbol) for symbol in symbols}
+        return [
+            row
+            for row in projection_rows
+            if str(row.get("tag") or "") == selected_tag
             and str(row.get("symbol") or "") in symbol_set
         ]
 
-    builder._load_auction_rows = load_existing_0925_topn_projection
+    builder._load_auction_rows = load_timed_topn_projection
     builder._write_cached_session_facts = lambda **_kwargs: None
     builder._load_fallback_stock_names = lambda _requested: {}
     builder._sector_flow_tracker.update_and_evaluate = lambda *_args, **_kwargs: {}
@@ -426,7 +460,8 @@ def _configure_read_only_context_builder(builder: Any, hub: Any) -> tuple[dict[s
         "redis_mutations": "DENIED_BY_GUARD",
         "hot_rank_refresh": "DISABLED",
         "auction_recovery": "DISABLED",
-        "auction_input": "REDIS_0925_TOP_AMOUNT_TOP_N_ONLY",
+        "auction_input": "REDIS_TOP_AMOUNT_TOP_N_ONLY",
+        "auction_timing": "WHOLE_SECOND_0920_09:20:03_0924_09:24:10_0925_09:25:06",
         "td_fallback": "DISABLED",
         "wencai_fallback": "DISABLED",
         "f10_name_fallback": "DISABLED",
@@ -524,6 +559,16 @@ def probe(
                 }
                 for row in context.stock_snapshots
             ],
+            "auction_projection_tags_selected": tuple(
+                sorted(
+                    {
+                        str(row.get("tag") or "")
+                        for row in context.auction_map.values()
+                        if str(row.get("tag") or "")
+                    }
+                )
+            ),
+            "historical_available_at": "UNKNOWN",
             "legacy_fact_rows": [
                 {
                     "plate": row.plate_name,

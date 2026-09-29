@@ -5,6 +5,7 @@ import pytest
 from examples.run_engine_next_context_probe import (
     GuardRedis,
     _configure_read_only_context_builder,
+    _eligible_auction_projection_tags,
     _parse_now,
     _phase_for_request,
     _opening_behavior_rows,
@@ -280,8 +281,8 @@ def test_read_only_context_builder_disables_refresh_and_recovery_and_reads_0925_
             self.snapshot_calls.append((trade_date, tags))
             return SimpleNamespace(
                 rows=(
-                    {"symbol": "000001", "tag": "0925", "source": "redis_0925"},
                     {"symbol": "000001", "tag": "0924", "source": "redis_0924"},
+                    {"symbol": "000001", "tag": "0925", "source": "redis_0925"},
                     {"symbol": "000002", "tag": "0925", "source": "redis_0925"},
                 )
             )
@@ -316,8 +317,20 @@ def test_read_only_context_builder_disables_refresh_and_recovery_and_reads_0925_
 
     profile, blocked_external_calls = _configure_read_only_context_builder(builder, hub)
     builder._ensure_hot_rank_cache("2026-09-29", object(), now=None)
+    before_anchor_rows = builder._load_auction_rows(
+        SimpleNamespace(
+            trade_date="2026-09-29",
+            now=_parse_now("2026-09-29T09:20:02.999", timezone_name="Asia/Shanghai"),
+        ),
+        ("000001",),
+    )
+    assert before_anchor_rows == []
+    assert hub.snapshot_calls == []
     rows = builder._load_auction_rows(
-        SimpleNamespace(trade_date="2026-09-29"),
+        SimpleNamespace(
+            trade_date="2026-09-29",
+            now=_parse_now("2026-09-29T09:31:00", timezone_name="Asia/Shanghai"),
+        ),
         ("000001",),
     )
     builder._write_cached_session_facts()
@@ -329,8 +342,59 @@ def test_read_only_context_builder_disables_refresh_and_recovery_and_reads_0925_
         hub.recover_auction_anchor("2026-09-29", object())
 
     assert rows == [{"symbol": "000001", "tag": "0925", "source": "redis_0925"}]
-    assert hub.snapshot_calls == [("2026-09-29", ("0925",))]
+    assert hub.snapshot_calls == [("2026-09-29", ("0920", "0924", "0925"))]
     assert profile["hot_rank_refresh"] == "DISABLED"
     assert profile["auction_recovery"] == "DISABLED"
-    assert profile["auction_input"] == "REDIS_0925_TOP_AMOUNT_TOP_N_ONLY"
+    assert profile["auction_input"] == "REDIS_TOP_AMOUNT_TOP_N_ONLY"
+    assert profile["auction_timing"] == "WHOLE_SECOND_0920_09:20:03_0924_09:24:10_0925_09:25:06"
     assert blocked_external_calls == ["hot_rank_refresh", "auction_anchor_recovery"]
+
+
+@pytest.mark.parametrize(
+    ("now", "expected"),
+    (
+        ("2026-09-29T09:20:02.999", ()),
+        ("2026-09-29T09:20:03.000", ("0920",)),
+        ("2026-09-29T09:24:09.999", ("0920",)),
+        ("2026-09-29T09:24:10.000", ("0920", "0924")),
+        ("2026-09-29T09:25:05.999", ("0920", "0924")),
+        ("2026-09-29T09:25:06.000", ("0920", "0924", "0925")),
+        ("2026-09-29T09:25:06.197", ("0920", "0924", "0925")),
+    ),
+)
+def test_auction_projection_visibility_uses_whole_second_cutoffs(now, expected):
+    parsed = _parse_now(now, timezone_name="Asia/Shanghai")
+    assert _eligible_auction_projection_tags(parsed) == expected
+
+
+def test_auction_projection_visibility_is_empty_without_known_observation_time():
+    assert _eligible_auction_projection_tags(None) == ()
+
+
+def test_read_only_auction_projection_does_not_fallback_per_symbol_to_older_topn():
+    from types import SimpleNamespace
+
+    class FakeHub:
+        def load_auction_snapshots(self, trade_date, *, tags):
+            assert trade_date == "2026-09-29"
+            assert tags == ("0920", "0924", "0925")
+            return SimpleNamespace(
+                rows=(
+                    {"symbol": "000001", "tag": "0924", "source": "redis_0924"},
+                    {"symbol": "000002", "tag": "0925", "source": "redis_0925"},
+                )
+            )
+
+    hub = FakeHub()
+    builder = SimpleNamespace(hub=hub, _sector_flow_tracker=SimpleNamespace())
+    _configure_read_only_context_builder(builder, hub)
+
+    rows = builder._load_auction_rows(
+        SimpleNamespace(
+            trade_date="2026-09-29",
+            now=_parse_now("2026-09-29T09:31:00", timezone_name="Asia/Shanghai"),
+        ),
+        ("000001",),
+    )
+
+    assert rows == []
