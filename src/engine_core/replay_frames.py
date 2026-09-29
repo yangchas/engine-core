@@ -390,8 +390,8 @@ class CrossSectionFactsV1:
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.scope not in {"FULL_MARKET", "TOP_N"}:
-            raise ValueError("scope must be FULL_MARKET or TOP_N")
+        if self.scope not in {"FULL_MARKET", "TOP_N", "OBSERVED_COHORT"}:
+            raise ValueError("scope must be FULL_MARKET, TOP_N, or OBSERVED_COHORT")
         if self.fact_only is not True:
             raise ValueError("cross-sectional aggregate is fact-only")
         if self.expected_count < 0 or self.observed_count < 0 or self.missing_count < 0:
