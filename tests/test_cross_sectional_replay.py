@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from engine_core import (
     CrossSectionReplaySource,
+    CrossSectionStateV1,
     IncrementalCrossSectionState,
     DeterministicEngine,
     MarketStateReducer,
@@ -10,6 +11,7 @@ from engine_core import (
     VirtualClock,
     WindowManager,
     WindowSpec,
+    build_cross_section_facts,
     deep_freeze,
     local_datetime_ms,
 )
@@ -202,3 +204,45 @@ def test_cross_section_projection_is_not_rebuilt_by_deep_freeze():
     frame = source.frame_from_events(0, [_row(start + 100)])
     signal = source.signal_for_frame(frame, {})
     assert deep_freeze(signal.payload) is signal.payload
+
+
+def test_cross_section_facts_can_label_a_source_cohort_without_claiming_full_market():
+    state = CrossSectionStateV1(
+        trade_date="2026-09-29",
+        frame_no=7,
+        logical_ts_ms=1_790_650_000_000,
+        expected_symbols=("000001", "000002", "000003"),
+        updated_symbols=("000001", "000002"),
+        missing_symbols=("000003",),
+        symbol_states={
+            "000001": {"price_milli": 10_100, "pre_close_milli": 10_000},
+            "000002": {"price_milli": 9_900, "pre_close_milli": None},
+        },
+        frame_completeness="PARTIAL",
+        coverage=2 / 3,
+        source_time_min_ms=1_790_649_997_000,
+        source_time_max_ms=1_790_650_000_000,
+    )
+
+    facts = build_cross_section_facts(
+        state,
+        scope="OBSERVED_COHORT",
+        source_layers=("t1_v2_q2frame_event_time_replay",),
+    )
+
+    assert facts.scope == "OBSERVED_COHORT"
+    assert facts.expected_count == 3
+    assert facts.observed_count == 2
+    assert facts.missing_count == 1
+    assert facts.coverage == 2 / 3
+    assert facts.field_denominators == {
+        "price_milli": 2,
+        "pre_close_milli": 1,
+    }
+    assert facts.market_breadth == {
+        "up_count": 1,
+        "down_count": 0,
+        "flat_count": 0,
+        "unknown_count": 1,
+    }
+    assert facts.fact_only is True
