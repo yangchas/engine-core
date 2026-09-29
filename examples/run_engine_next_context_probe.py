@@ -1,10 +1,12 @@
 """Bounded, read-only probe of the deployed engine_next context/fact path.
 
 This is an external migration audit tool, not a core dependency.  It imports a
-specified engine_next release, injects a Redis write guard, disables known
-network/write hooks, and runs the existing context builder plus the existing
-auction plate fact function for a small symbol set.  No Rabbit consumer,
-recovery, writer, notification, or strategy action is assembled.
+specified engine_next release, injects a Redis write guard, disables hot-rank
+refresh and auction recovery, and runs the existing context builder plus the
+existing auction plate fact function for a small symbol set. Auction context
+is sourced only from the existing Redis 0925 projection; TD/Wencai recovery is
+not attempted. No Rabbit consumer, notification, or strategy action is
+assembled.
 """
 
 from __future__ import annotations
@@ -378,6 +380,62 @@ def _opening_behavior_rows(
     return tuple(rows)
 
 
+def _configure_read_only_context_builder(builder: Any, hub: Any) -> tuple[dict[str, str], list[str]]:
+    """Disable builder hooks that refresh, recover, cache, or update state.
+
+    The deployed context builder's normal path may refresh hot-rank data and
+    recover an auction anchor through TD/Wencai, including Redis writeback.
+    This probe instead consumes only the already-persisted 0925 Redis
+    top-amount projection. Missing projection data remains missing; no fallback
+    is run.
+    """
+
+    blocked_external_calls: list[str] = []
+
+    def block_external(source: str):
+        def blocked(*_args: Any, **_kwargs: Any) -> None:
+            blocked_external_calls.append(source)
+            raise RuntimeError("read-only context probe blocked external source: " + source)
+
+        return blocked
+
+    # Fail closed if future engine_next changes call either active refresh path.
+    hub.fetch_hot_rank = block_external("hot_rank_refresh")
+    hub.recover_auction_anchor = block_external("auction_anchor_recovery")
+
+    # Do not even attempt refresh. The source data already present in Redis is
+    # still loaded by prime_runtime_state below.
+    builder._ensure_hot_rank_cache = lambda *_args, **_kwargs: None
+
+    def load_existing_0925_topn_projection(request: Any, symbols: tuple[str, ...]) -> list[dict[str, Any]]:
+        result = hub.load_auction_snapshots(request.trade_date, tags=("0925",))
+        symbol_set = {str(symbol) for symbol in symbols}
+        return [
+            dict(row)
+            for row in (getattr(result, "rows", ()) or ())
+            if str(row.get("tag") or "") == "0925"
+            and str(row.get("symbol") or "") in symbol_set
+        ]
+
+    builder._load_auction_rows = load_existing_0925_topn_projection
+    builder._write_cached_session_facts = lambda **_kwargs: None
+    builder._load_fallback_stock_names = lambda _requested: {}
+    builder._sector_flow_tracker.update_and_evaluate = lambda *_args, **_kwargs: {}
+
+    profile = {
+        "redis_mutations": "DENIED_BY_GUARD",
+        "hot_rank_refresh": "DISABLED",
+        "auction_recovery": "DISABLED",
+        "auction_input": "REDIS_0925_TOP_AMOUNT_TOP_N_ONLY",
+        "td_fallback": "DISABLED",
+        "wencai_fallback": "DISABLED",
+        "f10_name_fallback": "DISABLED",
+        "session_fact_cache_write": "DISABLED",
+        "sector_flow_update": "DISABLED",
+    }
+    return profile, blocked_external_calls
+
+
 def probe(
     *,
     legacy_root: Path,
@@ -409,11 +467,7 @@ def probe(
     try:
         hub = legacy["IntradayDataHub"](redis_client=guarded)
         builder = legacy["IntradayContextBuilder"](intraday_hub=hub)
-        # These hooks are intentionally disabled: the probe audits the read
-        # assembly path, not the legacy cache/recovery/network side effects.
-        builder._write_cached_session_facts = lambda **kwargs: None
-        builder._load_fallback_stock_names = lambda requested: {}
-        builder._sector_flow_tracker.update_and_evaluate = lambda *args, **kwargs: {}
+        read_only_profile, blocked_external_calls = _configure_read_only_context_builder(builder, hub)
         # Use engine_next's own phase authority.  A diagnostic probe must not
         # label an opening-time read as POSTMARKET merely because the old
         # context request constructor accepts an explicit phase.
@@ -502,8 +556,14 @@ def probe(
                 )
             ),
             "guard_writes": blocked_writes,
-            "read_only": not blocked_writes,
-            "side_effect_boundary": side_effect_boundary,
+            "blocked_external_calls": tuple(blocked_external_calls),
+            "read_only_profile": read_only_profile,
+            "read_only": not blocked_writes and not blocked_external_calls,
+            "side_effect_boundary": (
+                side_effect_boundary
+                + "; hot-rank refresh/recovery/TD/Wencai/F10/cache writes/sector-flow update disabled; "
+                + "auction rows read from existing Redis 0925 projection only"
+            ),
         }
     finally:
         inner.close()
