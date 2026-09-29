@@ -1,5 +1,5 @@
 import importlib.util
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -67,12 +67,26 @@ def test_old_quote_not_promoted_to_today():
     assert result["universe_authority"] == "NOT_PROVEN_BY_ACTIVE_SET"
 
 
-def test_live_observation_uses_read_completion_time_and_states_its_scope():
+def test_live_observation_uses_read_completion_time_and_states_its_scope(monkeypatch):
     row = {"px": "1000", "pc": "1000", "amt": "0", "ts": str(int(NOW.timestamp()*1000))}
+
+    fixed_start = (
+        datetime.now(timezone.utc).replace(microsecond=0)
+        - timedelta(milliseconds=70)
+        + timedelta(microseconds=7)
+    )
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_start
+
+    monkeypatch.setattr(probe, "datetime", FixedDateTime)
     result = probe.observe(ReadClient(("000001",), row), "2026-09-09", None, None)
 
     started = datetime.fromisoformat(result["read_started_at"])
     completed = datetime.fromisoformat(result["read_completed_at"])
+    assert started.microsecond % 1000 == 0
     assert started <= completed
     assert result["observed_at"] == result["read_completed_at"]
     assert result["observation_time_mode"] == "LIVE_READ_COMPLETION"

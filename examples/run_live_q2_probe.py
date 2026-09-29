@@ -126,7 +126,16 @@ def build_volume_unit_diagnostics(reads, symbols):
 
 def observe(client, trade_date, observed_at=None, stale_after_ms=None, diagnostic_symbols=()):
     capture = ReadOnlyCapture(client)
-    read_started_at = datetime.now(timezone.utc) if observed_at is None else None
+    if observed_at is None:
+        started_at = datetime.now(timezone.utc)
+        # Q2ProjectionSnapshot stores observation time in integer milliseconds.
+        # Use the same precision for the start boundary so a same-millisecond
+        # read cannot appear to complete before it started after serialization.
+        read_started_at = started_at.replace(
+            microsecond=(started_at.microsecond // 1000) * 1000
+        )
+    else:
+        read_started_at = None
     projection = RedisQ2ProjectionAdapter(capture).read(
         trade_date, observed_at, freshness_policy=FreshnessPolicy(stale_after_ms=stale_after_ms))
     observed_ms = projection.envelope.observed_time_ms
