@@ -19,6 +19,7 @@ from engine_core.q2 import (
     normalize_symbol,
     validate_q2,
 )
+from engine_core.state import MarketStateReducer
 
 
 class FakeRedis:
@@ -228,6 +229,55 @@ def test_real_q2frame_t1_delta_fields_survive_q2_projection_hash():
         {raw["symbol"]: {**raw_hash, "ln": raw_hash["ln"] + 1}},
     )
     assert changed_projection.content_hash != projection.content_hash
+
+
+def test_real_q2frame_delta_fields_reach_engine_snapshot_and_hash():
+    fixture = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures/q2/q2frame_opening_consumer_real_20260929.json"
+        ).read_text(encoding="utf-8")
+    )
+    raw = fixture["q2_update"]
+    source = fixture["source"]
+    observed_at = datetime.fromtimestamp(
+        source["logical_ts_ms"] / 1000.0,
+        timezone.utc,
+    )
+    raw_hash = {key: value for key, value in raw.items() if key != "symbol"}
+
+    def engine_snapshot(q2_hash):
+        projection = build_q2_projection(
+            fixture["trade_date"],
+            observed_at,
+            (raw["symbol"],),
+            {raw["symbol"]: q2_hash},
+        )
+        reducer = MarketStateReducer()
+        reducer.apply_snapshot(
+            projection,
+            logical_time_ms=source["logical_ts_ms"],
+            session_id="TASK-008-Q2FRAME",
+            phase="REPLAY",
+        )
+        return reducer.build_snapshot("real-q2frame-delta-check")
+
+    snapshot = engine_snapshot(raw_hash)
+    changed_snapshot = engine_snapshot({**raw_hash, "ln": raw_hash["ln"] + 1})
+    symbol_state = snapshot.symbol_states[raw["symbol"]]
+
+    assert (
+        symbol_state["instant_volume_lots"]
+        == fixture["engine_next_q2_view"]["instant_volume"]
+    )
+    assert (
+        symbol_state["instant_amount_yuan"]
+        == fixture["engine_next_q2_view"]["instant_amount_yuan"]
+    )
+    assert symbol_state["large_net_yuan"] == fixture["engine_next_q2_view"][
+        "large_net_yuan"
+    ]
+    assert changed_snapshot.content_hash != snapshot.content_hash
 
 
 def test_q2_adapter_preserves_t1_v2_auction_anchor_prices_and_zero_as_unavailable():
