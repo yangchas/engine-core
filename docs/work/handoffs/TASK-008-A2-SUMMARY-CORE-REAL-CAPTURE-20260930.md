@@ -11,8 +11,9 @@ Status: bounded real-payload adapter verification; `TASK-008=PARTIAL_EVIDENCE`.
 - It is the `summary` field of Redis hash
   `market:auction:20260930:0925`, read at
   `2026-09-30T09:25:20.028057+08:00`; the summary itself records snapshot time
-  `09:25:06.026`. The few-second read/snapshot difference is recorded, not a
-  failure gate.
+  `09:25:06.026`, a 14.002-second difference. This observed lag is recorded,
+  not used as a failure gate, and does not establish when the value first
+  became visible.
 - The repository fixture was compared field-for-field against the captured
   Redis payload. `normalize_auction_market_summary()` was then run on that
   fixture using the Core package and the captured source/observation metadata.
