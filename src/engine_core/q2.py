@@ -18,7 +18,7 @@ from .contracts import (
     semantic_hash,
 )
 
-Q2_PROJECTION_CONTRACT_VERSION = "Q2CanonicalProjectionV2"
+Q2_PROJECTION_CONTRACT_VERSION = "Q2CanonicalProjectionV3"
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,25 @@ Q2_FIELD_CONTRACT: Tuple[Q2FieldSpec, ...] = (
     Q2FieldSpec("pc", "pre_close_milli", "int", "milli_price", "previous close", True),
     Q2FieldSpec("amt", "amount_yuan", "int", "yuan", "cumulative trading amount", True),
     Q2FieldSpec("vol", "volume_lots", "int", "lots", "cumulative board-lot volume", False),
+    Q2FieldSpec(
+        "iv",
+        "instant_volume_lots",
+        "int",
+        "lots",
+        "t1-emitted event-level volume delta; same unit as vol",
+        False,
+    ),
+    Q2FieldSpec(
+        "ia", "instant_amount_yuan", "int", "yuan", "t1-emitted event-level amount delta", False
+    ),
+    Q2FieldSpec(
+        "ln",
+        "large_net_yuan",
+        "int",
+        "yuan",
+        "signed t1-emitted event-level large-net amount",
+        False,
+    ),
     Q2FieldSpec("ts", "source_record_time_ms", "epoch_ms", "epoch_ms", "upstream record or batch snapshot time", True),
     Q2FieldSpec("ph", "phase", "int", "code", "market phase", False),
     Q2FieldSpec("br", "auction_bid_amount_yuan", "int", "yuan", "derived level-2 resting bid amount", False),
@@ -161,6 +180,9 @@ class Q2Quote:
     auction_anchor_0925_price_milli: Optional[int] = None
     field_errors: Tuple[str, ...] = ()
     auction_anchor_field_quality: Mapping[str, str] = field(default_factory=dict)
+    instant_volume_lots: Optional[int] = None
+    instant_amount_yuan: Optional[int] = None
+    large_net_yuan: Optional[int] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "raw_fields", deep_freeze(self.raw_fields))
@@ -180,6 +202,9 @@ class Q2Quote:
             "pre_close_milli": self.pre_close_milli,
             "amount_yuan": self.amount_yuan,
             "volume_lots": self.volume_lots,
+            "instant_volume_lots": self.instant_volume_lots,
+            "instant_amount_yuan": self.instant_amount_yuan,
+            "large_net_yuan": self.large_net_yuan,
             "source_record_time_ms": self.source_record_time_ms,
             "phase": self.phase,
             "limit_state": self.limit_state,
@@ -253,6 +278,9 @@ def normalize_q2(symbol: str, raw_hash: Mapping[Any, Any]) -> Q2Quote:
         pre_close_milli=int_field("pc"),
         amount_yuan=int_field("amt"),
         volume_lots=int_field("vol"),
+        instant_volume_lots=int_field("iv"),
+        instant_amount_yuan=int_field("ia"),
+        large_net_yuan=int_field("ln"),
         source_record_time_ms=timestamp_ms,
         phase=int_field("ph"),
         limit_state=int_field("ls"),
