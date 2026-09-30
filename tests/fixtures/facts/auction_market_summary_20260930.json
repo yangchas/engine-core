@@ -1,0 +1,26 @@
+{
+  "source_capture": {
+    "capture_path": "/home/exedev/validation/task008-live-freeze-20260930-0925/capture_summary.json",
+    "capture_sha256": "90a0f5b83aaabc69c762936d4e0454b84b89192e9b72549c5deb0be41d1fe2dc",
+    "redis_key": "market:auction:20260930:0925",
+    "hash_field": "summary",
+    "source_id": "redis-capture://2026-09-30/market:auction:20260930:0925#summary",
+    "source_table": "redis:market:auction:20260930:0925#summary",
+    "observation_time": "2026-09-30T09:25:20.028057+08:00",
+    "observation_time_ms": 1790731520028
+  },
+  "summary": {
+    "ts": 1790731506026,
+    "tag": "0925",
+    "total_stocks": 5210,
+    "valid_stock_count": 5030,
+    "unavailable_stock_count": 180,
+    "high_open_count": 3534,
+    "low_open_count": 785,
+    "flat_open_count": 711,
+    "limit_up_count": 10,
+    "limit_down_count": 4,
+    "total_auction_amount_yuan": 11881094371,
+    "total_limit_up_bid_amount_yuan": 15056893
+  }
+}
