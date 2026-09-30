@@ -54,7 +54,7 @@ SHA-256: a655ea9cd9296b51d60f5b641f5437301587ade7b7cdc1620562d25efa2a458d
 ### 逐 symbol 对照补充
 
 随后对同一冻结输入流式保留每个 symbol 的最新 Q2 更新，并与冻结 A2 archive 按 symbol 比较：候选成员 `5,210/5,210` 完全一致；每个成员的 Q2 `am` 与 A2 `amount` 均 `5,210/5,210` 一致，Q2 `br` 与 A2 `bid_amount` 也 `5,210/5,210` 一致。十项汇总字段仍全部一致。复核结果已固化在
-`/home/exedev/validation/task008-q2frame-engine-summary-20261001T021513+0800/per_symbol_a2_parity.json`（SHA-256 `5d33bac78c9c78a5ab1f492d4f45fcc8ae947b59e3170b9f604de1f4122a4afb`；checksums 已复核）。
+`/home/exedev/validation/task008-q2frame-engine-summary-20261001T021513+0800/per_symbol_a2_parity.json`（SHA-256 `b8c16beb178d79112a42fc03fc550b7dda916ef493b4997dcfdb91ac9f57ccf2`；checksums 已复核）。
 
 这项精确对照仍然只适用于 2026-09-30 这份冻结数据。2026-09-29 使用同一生产 release binary 的真实回放与当日冻结 archive 曾观察到不同 cohort：回放 archive 5,205 个成员、live freeze 5,200 个成员；共享成员中 `amount` 有 467 个差异、`bid_amount` 有 473 个差异，另有 480 个 `change_pct` 值在 live freeze 不可用但在 replay 可用。该结果详见
 `/home/exedev/validation/task008-q2-replay-20260929T150654+0800/live-freeze-per-symbol-reconciliation_20260929T171941+0800.md`。
