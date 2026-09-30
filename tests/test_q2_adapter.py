@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 
@@ -118,6 +119,45 @@ def test_q2_adapter_preserves_t1_v2_auction_anchor_prices_and_zero_as_unavailabl
         "a24": "PRESENT_VALUE",
         "a25": "MISSING",
     }
+
+
+def test_real_q2frame_missing_0925_price_keeps_independent_auction_fields():
+    fixture = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures/q2/q2frame_null_a25_live_rows_20260930.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert fixture["q2frame_sha256"] == (
+        "10264d0a6b6251e0c757f2113fd41e8e9e0669fade4ba05a145b78340a886ec0"
+    )
+    assert fixture["trade_date"] == "2026-09-30"
+    source = fixture["source_provenance"]
+    assert source["jsonl_line_number"] == 598
+    assert source["logical_ts_ms"] == 1790731497000
+    assert source["seq_no"] == 598
+    for raw in fixture["q2_updates"]:
+        symbol = raw["symbol"]
+        canonical_row = json.dumps(
+            raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        assert hashlib.sha256(canonical_row).hexdigest() == source[
+            "canonical_update_sha256_by_symbol"
+        ][symbol]
+        quote = normalize_q2(
+            symbol,
+            {key: value for key, value in raw.items() if key != "symbol"},
+        )
+
+        assert raw["a25"] == 0
+        assert quote.auction_anchor_0925_price_milli is None
+        assert quote.auction_anchor_field_quality["a25"] == "MISSING"
+        assert quote.price_milli == raw["px"] > 0
+        assert quote.auction_amount_yuan == raw["am"] > 0
+        assert quote.auction_bid_amount_yuan == raw["br"]
+        assert quote.auction_ask_amount_yuan == raw["ar"]
+        assert quote.source_record_time_ms == raw["ts"]
 
 
 def test_q2_anchor_field_quality_distinguishes_absent_invalid_and_present():

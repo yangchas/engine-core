@@ -1,0 +1,73 @@
+{
+  "source": "real_t1_v2_q2frame_event_time_replay",
+  "trade_date": "2026-09-30",
+  "q2frame_sha256": "10264d0a6b6251e0c757f2113fd41e8e9e0669fade4ba05a145b78340a886ec0",
+  "source_provenance": {
+    "path": "/home/exedev/validation/task008-same-day-release-replay-20260930T1018+0800/q2frame.jsonl",
+    "jsonl_line_number": 598,
+    "seq_no": 598,
+    "logical_ts_ms": 1790731497000,
+    "record_hash": "SHA-256 of UTF-8 compact JSON with recursively sorted object keys",
+    "canonical_update_sha256_by_symbol": {
+      "300165": "fc9f456088344a6189c244dbd422de32dd38689c5f04d8f250269982f3435e88",
+      "300175": "f78fd5bda24b7dddc3b373c2650dd8d6400c57bc17cb82fa7d48601b590d5088"
+    }
+  },
+  "selection": "latest recorded Q2Frame update for two live-anchor symbols whose Core 09:25 price fact was MISSING",
+  "q2_updates": [
+    {
+      "a20": 5020,
+      "a24": 0,
+      "a25": 0,
+      "am": 35784,
+      "amt": 0,
+      "amt2m": 0,
+      "amt5m": 0,
+      "ar": 3528,
+      "br": 0,
+      "ia": 0,
+      "iv": 0,
+      "ln": 0,
+      "ls": 0,
+      "mk": "sz",
+      "mn": 5010,
+      "mx": 5040,
+      "pc": 5010,
+      "ph": 1,
+      "px": 5040,
+      "spd1m": 0,
+      "symbol": "300165",
+      "ts": 1790731497000,
+      "vec3m": 39,
+      "vec5m": 0,
+      "vol": 0
+    },
+    {
+      "a20": 5400,
+      "a24": 0,
+      "a25": 0,
+      "am": 39493,
+      "amt": 0,
+      "amt2m": 0,
+      "amt5m": 0,
+      "ar": 0,
+      "br": 33542,
+      "ia": 0,
+      "iv": 0,
+      "ln": 0,
+      "ls": 0,
+      "mk": "sz",
+      "mn": 4360,
+      "mx": 5410,
+      "pc": 5450,
+      "ph": 1,
+      "px": 5410,
+      "spd1m": 0,
+      "symbol": "300175",
+      "ts": 1790731497000,
+      "vec3m": 18,
+      "vec5m": 0,
+      "vol": 0
+    }
+  ]
+}
