@@ -57,6 +57,10 @@ phase-gated generic auction values remain distinct by design.
   occurred.
 - This proves mapping compatibility for this recorded Q2Frame corpus; it does
   not prove live/replay equivalence or production behavior.
+- The pinned positive-delta row also passes through
+  `build_q2_projection`; changing only its `ln` value changes the projection
+  content hash, confirming the newly typed delta facts participate in replay
+  projection identity.
 
 ## Verification
 

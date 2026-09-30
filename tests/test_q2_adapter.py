@@ -173,7 +173,7 @@ def test_q2quote_preserves_pre_v3_positional_anchor_arguments():
     assert quote.large_net_yuan is None
 
 
-def test_real_q2frame_t1_delta_fields_match_pinned_engine_next_q2_view():
+def test_real_q2frame_t1_delta_fields_survive_q2_projection_hash():
     fixture = json.loads(
         (
             Path(__file__).parent
@@ -189,11 +189,20 @@ def test_real_q2frame_t1_delta_fields_match_pinned_engine_next_q2_view():
     assert hashlib.sha256(canonical_row).hexdigest() == source[
         "q2_update_sha256"
     ]
-    quote = normalize_q2(
-        raw["symbol"],
-        {key: value for key, value in raw.items() if key != "symbol"},
+    raw_hash = {key: value for key, value in raw.items() if key != "symbol"}
+    observed_at = datetime.fromtimestamp(
+        source["logical_ts_ms"] / 1000.0,
+        timezone.utc,
     )
+    projection = build_q2_projection(
+        fixture["trade_date"],
+        observed_at,
+        (raw["symbol"],),
+        {raw["symbol"]: raw_hash},
+    )
+    quote = projection.quotes[raw["symbol"]]
 
+    assert projection.status.value == "READY"
     assert (
         quote.instant_volume_lots
         == fixture["engine_next_q2_view"]["instant_volume"]
@@ -211,6 +220,14 @@ def test_real_q2frame_t1_delta_fields_match_pinned_engine_next_q2_view():
     assert quote.auction_amount_yuan == raw["am"]
     assert fixture["engine_next_q2_view"]["auction_amount_yuan"] == 0.0
     assert fixture["engine_next_q2_view"]["q2_auction_amount_yuan"] == raw["am"]
+
+    changed_projection = build_q2_projection(
+        fixture["trade_date"],
+        observed_at,
+        (raw["symbol"],),
+        {raw["symbol"]: {**raw_hash, "ln": raw_hash["ln"] + 1}},
+    )
+    assert changed_projection.content_hash != projection.content_hash
 
 
 def test_q2_adapter_preserves_t1_v2_auction_anchor_prices_and_zero_as_unavailable():
