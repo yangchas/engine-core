@@ -333,7 +333,11 @@ from .reporting import (
 )
 from .market_summary import (
     AUCTION_MARKET_SUMMARY_CONTRACT_VERSION,
+    Q2_AUCTION_CANDIDATE_RULE,
+    Q2_AUCTION_SUMMARY_CONTRACT_VERSION,
     AuctionMarketSummaryFact,
+    Q2AuctionSummaryProjection,
+    derive_q2_auction_summary,
     normalize_auction_market_summary,
 )
 from .auction_projection import (
@@ -603,7 +607,11 @@ __all__ = [
     "REPORT_CONTRACT_VERSION",
     "build_auction_fact_report",
     "AUCTION_MARKET_SUMMARY_CONTRACT_VERSION",
+    "Q2_AUCTION_CANDIDATE_RULE",
+    "Q2_AUCTION_SUMMARY_CONTRACT_VERSION",
     "AuctionMarketSummaryFact",
+    "Q2AuctionSummaryProjection",
+    "derive_q2_auction_summary",
     "normalize_auction_market_summary",
     "DEFAULT_AUCTION_TAGS",
     "REDIS_AUCTION_PROJECTION_CONTRACT_VERSION",
