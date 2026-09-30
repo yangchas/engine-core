@@ -95,3 +95,45 @@ This reconciles the apparent `5220` versus `5210` count difference as two
 different cohort scopes, not a failed 09:25 data read. It does not make either
 cohort a claimed full-market denominator. The 14.002-second snapshot/read
 difference remains observation metadata only, not a gate.
+
+## Same-day numeric parity and limit-state edge cases
+
+A follow-up compared the frozen Q2Frame, the Core 09:25 anchor facts, the
+TD `auction_snapshot_v2` SELECT capture, and the actual Redis A2 anchor and
+summary. The machine-readable results and source hashes are in
+`/home/exedev/validation/task008-same-day-release-replay-20260930T1018+0800/q2_core_anchor_numeric_parity_20260930.json`.
+
+- The 5,220 Core 09:25 anchor values and availability states match Core's
+  `normalize_q2(a25)` result for all 5,220 symbols.
+- For the 5,030 available A25 prices, Core and TD `px_milli` match exactly;
+  their other 190 A25 values are unavailable (TD encodes them as zero/null).
+- Applying the pinned producer integer formula
+  `trunc_toward_zero((a25_milli - pc_milli) * 10000 / pc_milli)` reproduces
+  TD `chg_bp` for all 5,030 available prices. Redis `change_pct` also equals
+  `TD chg_bp / 10000` for all 5,030 non-null Redis values; 180 are null.
+- Re-deriving all 10 A2 summary fields over the captured 5,210 Redis A2
+  members, using that same price-change formula and the release's Q2 `ls` / `am`
+  / `br` fields, matches the captured Redis summary exactly. This closes the
+  cohort-level arithmetic and mapping check; it is not an independent market
+  oracle or an independent reconstruction of `ls` from original ticks.
+- The captured cohort has 10 producer `ls=+1` and 4 `ls=-1` rows. Real cases
+  include `600241` classified UP at `+995 bp` and `002285` classified DOWN at
+  `-996 bp`. Do not infer limit state from a fixed +/-10% threshold. A compact
+  fixture retains the full source Q2 rows and per-row hashes, and a regression
+  test checks that Core preserves `ls` and the A25 values rather than
+  reclassifying them.
+
+The A2 payload timestamp is `09:25:06.026`. Redis observation 1 found the A2
+hash absent at `09:25:08.192892`; observation 2 found it present at
+`09:25:20.028057`. This bounds observed absence/presence across those reads,
+but does not identify the exact write or first-availability time. The 14.002
+second gap is recorded as evidence, not treated as failure: the intended
+purpose is to verify the stored auction snapshot and its content, not impose a
+subsecond storage deadline. Historical `available_at` remains UNKNOWN.
+
+This follow-up uses frozen local evidence only; it made no live Redis/TD/Rabbit
+connections or writes, and did not change a producer or service. It proves
+same-day consistency for this release and observed cohorts only. The Redis A2
+set (5,210) and replay Q2 set (5,220) are not asserted to be the full-market
+universe, Rabbit delivery membership/order remains UNKNOWN, and
+`NORMAL_OPENING_ACCEPTANCE` remains NOT EVALUATED.

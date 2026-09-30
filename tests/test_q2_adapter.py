@@ -160,6 +160,51 @@ def test_real_q2frame_missing_0925_price_keeps_independent_auction_fields():
         assert quote.source_record_time_ms == raw["ts"]
 
 
+def test_real_0925_limit_states_preserve_producer_state_not_fixed_ten_percent_rule():
+    fixture = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures/q2/q2frame_0925_real_limit_states_20260930.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert fixture["source"] == "real_t1_v2_q2frame_event_time_replay"
+    assert fixture["trade_date"] == "2026-09-30"
+    assert fixture["q2frame_sha256"] == (
+        "10264d0a6b6251e0c757f2113fd41e8e9e0669fade4ba05a145b78340a886ec0"
+    )
+    limit_states = {}
+    change_by_symbol = {}
+    for record in fixture["records"]:
+        raw = record["q2_update"]
+        canonical_row = json.dumps(
+            raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        assert hashlib.sha256(canonical_row).hexdigest() == record[
+            "canonical_update_sha256"
+        ]
+
+        quote = normalize_q2(
+            raw["symbol"], {key: value for key, value in raw.items() if key != "symbol"}
+        )
+        assert quote.limit_state == raw["ls"]
+        assert quote.auction_anchor_0925_price_milli == raw["a25"]
+
+        numerator = (raw["a25"] - raw["pc"]) * 10_000
+        change_bp = (abs(numerator) // raw["pc"]) * (1 if numerator >= 0 else -1)
+        assert change_bp == record["producer_change_bp"]
+        limit_states[raw["symbol"]] = quote.limit_state
+        change_by_symbol[raw["symbol"]] = change_bp
+
+    assert len(fixture["records"]) == 14
+    assert sum(state == 1 for state in limit_states.values()) == 10
+    assert sum(state == -1 for state in limit_states.values()) == 4
+    # Real producer classifications include limit-up below +10% and limit-down
+    # above -10%; a fixed percentage threshold would misclassify these rows.
+    assert limit_states["600241"] == 1 and change_by_symbol["600241"] == 995
+    assert limit_states["002285"] == -1 and change_by_symbol["002285"] == -996
+
+
 def test_q2_anchor_field_quality_distinguishes_absent_invalid_and_present():
     quote = normalize_q2(
         "000001",
