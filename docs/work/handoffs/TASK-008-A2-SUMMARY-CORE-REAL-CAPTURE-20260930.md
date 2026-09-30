@@ -64,3 +64,34 @@ Regression:
 Verification on the resulting worktree: full Core suite `743 passed` (three
 protobuf deprecation warnings), `compileall` passed, and `git diff --check`
 passed. No business implementation or production path changed.
+
+## Same-day Q2/A2 cohort reconciliation
+
+The frozen Q2Frame was streamed in recorded order, retaining only the latest
+row per symbol, then each row was passed through Core `normalize_q2`. Its 5,220
+symbols were compared with the actual 5,210-member Redis 0925 anchor and the
+same-date Core engine shadow's 0925 anchor-fact status counts. Inputs and
+derived counts are recorded in
+`/home/exedev/validation/task008-same-day-release-replay-20260930T1018+0800/q2_a2_core_cohort_reconciliation.json`.
+
+| Cohort / fact | Present | Missing or unavailable | Total |
+| --- | ---: | ---: | ---: |
+| Core Q2 `a25`, all replay symbols | 5,030 | 190 | 5,220 |
+| Core Q2 `a25`, Redis A2 members only | 5,030 | 180 | 5,210 |
+| Captured Redis A2 `change_pct` | 5,030 | 180 NULL | 5,210 |
+| Captured A2 summary valid / unavailable | 5,030 | 180 | 5,210 |
+
+All 5,210 Redis A2 members exist in the Q2 set; none exist only in Redis.
+Within that shared producer cohort, Core's `a25` presence status matches
+Redis's `change_pct` present/NULL status for all symbols. The 10 Q2-only rows
+are `000016`, `300082`, `300716`, `300753`, `300901`, `600293`, `601059`,
+`601198`, `603183`, and `688496`; each has `a25=0` and `am=br=ar=0`. The pinned
+producer source builds A2 candidates only when at least one of those auction
+amounts is positive (and an auction timestamp exists), so their absence from
+the A2 candidate cohort is consistent with the observed amounts. Q2 `ts` is
+not treated as the producer's separate auction timestamp.
+
+This reconciles the apparent `5220` versus `5210` count difference as two
+different cohort scopes, not a failed 09:25 data read. It does not make either
+cohort a claimed full-market denominator. The 14.002-second snapshot/read
+difference remains observation metadata only, not a gate.
