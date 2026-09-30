@@ -123,7 +123,7 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
     )
 
     assert result["deterministic"] is True
-    assert result["contract_version"] == "Task008Q2FrameAuctionEngineShadowV4"
+    assert result["contract_version"] == "Task008Q2FrameAuctionEngineShadowV5"
     assert result["auction_price_field_policy"] == {
         "0920": "auction_anchor_0920_price_milli",
         "0924": "auction_anchor_0924_price_milli",
@@ -190,6 +190,16 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
     assert revision["late_execution"] is False
     assert revision["content_hash"]
     assert revision["evidence_hash"]
+
+    summary = anchors["0925"]["q2_auction_summary"]
+    assert summary["status"].value == "READY"
+    assert summary["input_symbol_count"] == 2
+    assert summary["candidate_count"] == 2
+    assert summary["metrics"]["stock_count"] == 2
+    assert summary["metrics"]["auction_amount_yuan"] == 1_000_161
+    assert summary["market_universe_coverage_status"] == "UNKNOWN"
+    assert summary["q2_input_coverage"] is None
+    assert summary["input_content_hash"] == result["q2frame"]["sha256"]
 
 
 def test_real_q2frame_shape_surfaces_partial_0925_recovery_targets(tmp_path: Path):
@@ -318,7 +328,7 @@ def test_q2frame_session_reaches_opening_with_one_engine_and_symbol_source_times
         include_opening=True,
     )
 
-    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV3"
+    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV4"
     assert result["deterministic"] is True
     assert result["ordered"]["engine_instances"] == 1
     assert result["ordered"]["input_frames_processed"] == 11

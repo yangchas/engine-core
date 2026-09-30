@@ -49,6 +49,8 @@ from engine_core import (  # noqa: E402
     semantic_hash,
 )
 from engine_core.contracts import StrategyResult  # noqa: E402
+from engine_core.market_summary import derive_q2_auction_summary  # noqa: E402
+from engine_core.q2 import normalize_q2  # noqa: E402
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -361,6 +363,7 @@ def _run_once(
     *,
     trade_date: str,
     inventory: Mapping[str, Any],
+    input_sha256: str,
     include_opening: bool = False,
 ) -> dict[str, Any]:
     symbols = tuple(inventory["symbols"])
@@ -402,6 +405,7 @@ def _run_once(
     anchor_evidence: dict[str, dict[str, Any]] = {}
     opening_evidence: dict[str, dict[str, Any]] = {}
     frame_count = update_count = 0
+    latest_q2_update_by_symbol: dict[str, Mapping[str, Any]] = {}
     last_raw_frame_ms = None
     last_raw_update_ms = None
     first_excluded_frame: dict[str, Any] | None = None
@@ -550,6 +554,24 @@ def _run_once(
                 snapshot,
                 logical_ms,
             )
+            if tag == "0925":
+                q2_quotes = {
+                    symbol: normalize_q2(symbol, update)
+                    for symbol, update in latest_q2_update_by_symbol.items()
+                }
+                q2_summary = derive_q2_auction_summary(
+                    q2_quotes,
+                    trade_date=trade_date,
+                    source_id=f"q2frame-sha256:{input_sha256}",
+                    source_table="Q2FrameV1:event_time_replay",
+                    # The frozen artifact's observed symbols are not an
+                    # authoritative full-market universe at this barrier.
+                    expected_symbols=None,
+                    observation_time_ms=None,
+                    input_content_hash=input_sha256,
+                    evidence_refs=(input_sha256,),
+                )
+                base["q2_auction_summary"] = q2_summary.as_mapping()
             anchor_evidence[tag] = base
 
     def auction_revision_summary(
@@ -685,6 +707,10 @@ def _run_once(
             engine.submit(replay_signal)
             frame_count += 1
             update_count += len(frame.q2_updates)
+            for update in frame.q2_updates:
+                symbol = str(update.get("symbol", "")).strip()
+                if symbol:
+                    latest_q2_update_by_symbol[symbol] = update
             last_raw_frame_ms = frame.logical_ts_ms
             update_times = [
                 int(update["ts"])
@@ -776,6 +802,7 @@ def run_q2frame_auction_engine_shadow(
         q2frame_path,
         trade_date=trade_date,
         inventory=inventory,
+        input_sha256=initial_sha,
         include_opening=include_opening,
     )
     between_runs_sha = _file_sha256(q2frame_path)
@@ -783,6 +810,7 @@ def run_q2frame_auction_engine_shadow(
         q2frame_path,
         trade_date=trade_date,
         inventory=inventory,
+        input_sha256=initial_sha,
         include_opening=include_opening,
     )
     final_sha = _file_sha256(q2frame_path)
@@ -807,9 +835,9 @@ def run_q2frame_auction_engine_shadow(
     deterministic = all(determinism.values())
     return {
         "contract_version": (
-            "Task008Q2FrameSessionEngineShadowV3"
+            "Task008Q2FrameSessionEngineShadowV4"
             if include_opening
-            else "Task008Q2FrameAuctionEngineShadowV4"
+            else "Task008Q2FrameAuctionEngineShadowV5"
         ),
         "trade_date": trade_date,
         "run_mode": "REAL_T1V2_Q2FRAME_EVENT_TIME_REPLAY",
