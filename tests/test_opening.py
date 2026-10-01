@@ -6,15 +6,18 @@ from engine_core import (
     OPENING_FACT_CONTRACT_VERSION,
     OPENING_AMOUNT_SUMMARY_CONTRACT_VERSION,
     OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION,
+    OPENING_PLATE_AMOUNT_CONTEXT_CONTRACT_VERSION,
     OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION,
     OPENING_TRANSITION_FACT_CONTRACT_VERSION,
     build_open_fact,
     build_opening_amount_summary,
     build_opening_limit_state_summary,
+    build_opening_plate_amount_context,
     build_opening_plate_amount_summary,
     build_opening_transition_fact,
     classify_delta,
     classify_sign_state,
+    validate_opening_plate_amount_context,
     compute_change_delta_bp,
     compute_delta,
     compute_open_change_pct,
@@ -372,6 +375,53 @@ def test_opening_plate_amount_summary_is_order_independent_and_keeps_zero_total_
     assert plate["open_top1_amount_ratio"] is None
     assert plate["concentration_state"] == "unavailable"
     assert OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION == "OpeningPlateAmountSummaryV1"
+
+
+def test_opening_plate_amount_context_is_versioned_stable_and_trade_date_pinned():
+    context = build_opening_plate_amount_context(
+        trade_date="2026-09-29",
+        source_provenance={
+            "mapping_snapshot_sha256": "a" * 64,
+            "auction_rows_sha256": "b" * 64,
+        },
+        mapped_symbols_by_plate={"AI": ("600000", "000001", "600000")},
+        auction_symbols_by_plate={"AI": ("000001",)},
+        auction_top1_amount_ratio_by_plate={"AI": 0.5},
+        selected_plates=("AI", "AI"),
+    )
+
+    validated = validate_opening_plate_amount_context(
+        context, trade_date="2026-09-29"
+    )
+    assert context["contract"] == OPENING_PLATE_AMOUNT_CONTEXT_CONTRACT_VERSION
+    assert context["mapped_symbols_by_plate"] == {"AI": ["000001", "600000"]}
+    assert context["selected_plates"] == ["AI"]
+    assert validated == context
+    with pytest.raises(ValueError, match="trade_date"):
+        validate_opening_plate_amount_context(context, trade_date="2026-09-30")
+
+
+def test_opening_plate_amount_context_rejects_tampered_hash_and_invalid_date():
+    context = build_opening_plate_amount_context(
+        trade_date="2026-09-29",
+        source_provenance={},
+        mapped_symbols_by_plate={},
+        auction_symbols_by_plate={},
+        auction_top1_amount_ratio_by_plate={},
+        selected_plates=(),
+    )
+    tampered = {**context, "selected_plates": ["FORGED"]}
+    with pytest.raises(ValueError, match="content_hash"):
+        validate_opening_plate_amount_context(tampered, trade_date="2026-09-29")
+    with pytest.raises(ValueError, match="trade_date"):
+        build_opening_plate_amount_context(
+            trade_date="2026-09-31",
+            source_provenance={},
+            mapped_symbols_by_plate={},
+            auction_symbols_by_plate={},
+            auction_top1_amount_ratio_by_plate={},
+            selected_plates=(),
+        )
 
 
 def test_build_opening_transition_fact_is_fact_only_and_unit_explicit():

@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from engine_core import build_opening_plate_amount_context
 from examples.run_task008_q2frame_auction_engine_shadow import (
     _inventory,
     run_q2frame_auction_engine_shadow,
@@ -493,3 +494,74 @@ def test_q2frame_opening_aggregates_auxiliary_field_quality_without_stopping(tmp
     assert limit_summary["cohort_field_status"] == "unavailable"
     assert limit_summary["full_market_coverage"] == "UNPROVEN"
     assert result["ordered"]["engine_instances"] == 1
+
+
+def test_q2frame_opening_report_includes_explicit_plate_context_deterministically(
+    tmp_path: Path,
+):
+    frames = (
+        _frame(1, "09:15:00.000"),
+        _frame(2, "09:20:03.000"),
+        _frame(3, "09:24:10.000"),
+        _frame(4, "09:25:06.000"),
+        _frame(5, "09:32:09.000"),
+    )
+    source = tmp_path / "q2frame-opening-with-plate-context.jsonl"
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+    context = build_opening_plate_amount_context(
+        trade_date="2026-09-18",
+        source_provenance={
+            "mapping_snapshot_sha256": "a" * 64,
+            "auction_rows_sha256": "b" * 64,
+        },
+        mapped_symbols_by_plate={"AI": ("000001", "600000")},
+        auction_symbols_by_plate={"AI": ("000001", "600000")},
+        auction_top1_amount_ratio_by_plate={"AI": 0.5},
+        selected_plates=("AI",),
+    )
+
+    result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+        plate_amount_context=context,
+    )
+
+    opening = result["ordered"]["opening_evidence"]["OPENING_0932"]
+    repeated = result["repeat"]["opening_evidence"]["OPENING_0932"]
+    plate = opening["plate_amount_summary"]["plates"][0]
+    assert result["deterministic"] is True
+    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV7"
+    assert opening["plate_amount_context"]["content_hash"] == context["content_hash"]
+    assert plate["plate"] == "AI"
+    assert plate["open_window_amount_yuan"] == 21_001
+    assert plate["open_valid_count"] == 2
+    assert plate["comparison_valid_count"] == 2
+    assert opening["plate_amount_summary"] == repeated["plate_amount_summary"]
+
+
+def test_q2frame_rejects_plate_context_without_opening_barrier(tmp_path: Path):
+    source = tmp_path / "q2frame-auction-only.jsonl"
+    source.write_text(
+        json.dumps(_frame(1, "09:15:00.000"), separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    context = build_opening_plate_amount_context(
+        trade_date="2026-09-18",
+        source_provenance={},
+        mapped_symbols_by_plate={},
+        auction_symbols_by_plate={},
+        auction_top1_amount_ratio_by_plate={},
+        selected_plates=(),
+    )
+    import pytest
+
+    with pytest.raises(ValueError, match="include_opening"):
+        run_q2frame_auction_engine_shadow(
+            q2frame_path=source,
+            trade_date="2026-09-18",
+            plate_amount_context=context,
+        )

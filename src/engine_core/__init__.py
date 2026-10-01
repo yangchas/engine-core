@@ -156,11 +156,13 @@ from .opening import (
     OPENING_FACT_CONTRACT_VERSION,
     OPENING_AMOUNT_SUMMARY_CONTRACT_VERSION,
     OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION,
+    OPENING_PLATE_AMOUNT_CONTEXT_CONTRACT_VERSION,
     OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION,
     OPENING_TRANSITION_FACT_CONTRACT_VERSION,
     build_open_fact,
     build_opening_amount_summary,
     build_opening_limit_state_summary,
+    build_opening_plate_amount_context,
     build_opening_plate_amount_summary,
     build_opening_transition_fact,
     classify_delta,
@@ -168,6 +170,7 @@ from .opening import (
     compute_change_delta_bp,
     compute_delta,
     compute_open_change_pct,
+    validate_opening_plate_amount_context,
 )
 from .opening_strategy import OpeningShadowStrategy
 from .replay import (

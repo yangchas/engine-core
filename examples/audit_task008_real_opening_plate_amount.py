@@ -25,8 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from engine_core import (  # noqa: E402
-    build_opening_plate_amount_summary,
+    build_opening_plate_amount_context,
     canonical_json,
+    semantic_hash,
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -142,6 +143,28 @@ def _connect_and_read_td_rows(*, trade_date: str, database: str) -> list[dict[st
     return rows
 
 
+def _load_captured_td_rows(path: Path, *, expected_sha256: str) -> list[dict[str, Any]]:
+    """Load only a hash-pinned JSONL capture previously made by a TD SELECT."""
+
+    actual_sha256 = _sha256(path)
+    if actual_sha256 != expected_sha256:
+        raise ValueError("captured TD rows do not match the pinned SHA-256")
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if not isinstance(row, Mapping):
+                raise ValueError(f"captured TD row {line_no} is not an object")
+            copied = dict(row)
+            timestamp = copied.get("ts")
+            if isinstance(timestamp, str):
+                copied["ts"] = datetime.fromisoformat(timestamp)
+            rows.append(copied)
+    return rows
+
+
 def _frame_rows(path: Path):
     with path.open("r", encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, 1):
@@ -227,6 +250,8 @@ def run_audit(
     q2frame_path: Path,
     core_report_path: Path,
     database: str,
+    captured_td_rows_path: Path | None = None,
+    expected_captured_td_rows_sha256: str | None = None,
 ) -> dict[str, Any]:
     trade_date = _safe_trade_date(trade_date)
     if output_dir.exists() and any(output_dir.iterdir()):
@@ -255,8 +280,27 @@ def run_audit(
     if frozen_mapping is None:
         raise ValueError("the exact-date runtime stock-to-plate snapshot is missing")
     mapping = dict(frozen_mapping["mapping"])
-    rows = _connect_and_read_td_rows(trade_date=trade_date, database=database)
+    if (captured_td_rows_path is None) != (expected_captured_td_rows_sha256 is None):
+        raise ValueError(
+            "captured TD rows require both a path and its expected SHA-256"
+        )
+    if captured_td_rows_path is None:
+        rows = _connect_and_read_td_rows(trade_date=trade_date, database=database)
+        td_access_kind = "SELECT_ONLY"
+    else:
+        rows = _load_captured_td_rows(
+            captured_td_rows_path,
+            expected_sha256=str(expected_captured_td_rows_sha256),
+        )
+        td_access_kind = "REUSED_HASH_PINNED_SELECT_EVIDENCE"
     row_counts = Counter(row["auction_tag"] for row in rows)
+    td_input_path = output_dir / "td_auction_snapshot_rows.jsonl"
+    with td_input_path.open("x", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            serializable = dict(row)
+            if isinstance(serializable.get("ts"), datetime):
+                serializable["ts"] = serializable["ts"].isoformat()
+            handle.write(canonical_json(serializable) + "\n")
     normalized = [
         normalize_td_auction_row(row, tag=row["auction_tag"])
         for row in rows
@@ -283,9 +327,8 @@ def run_audit(
         raise ValueError("Core report trade_date does not match TD snapshot")
     if core_report.get("q2frame", {}).get("sha256") != q2frame_sha256:
         raise ValueError("Core report does not identify the supplied Q2Frame")
-    opening = core_report["ordered"]["opening_evidence"]["OPENING_0932"]
-    facts_by_symbol = opening["facts_by_symbol"]
-    evaluation_ms = int(opening["evaluation_time_ms"])
+    pinned_opening = core_report["ordered"]["opening_evidence"]["OPENING_0932"]
+    evaluation_ms = int(pinned_opening["evaluation_time_ms"])
     cutoff = datetime.fromtimestamp(evaluation_ms / 1000, tz=timezone.utc).astimezone(SHANGHAI)
 
     auction_evidence = {
@@ -319,25 +362,74 @@ def run_audit(
         for row in auction_view.get("plate_rows", [])
         if row.get("plate")
     }
-    core_summary = build_opening_plate_amount_summary(
-        facts_by_symbol,
+    context = build_opening_plate_amount_context(
+        trade_date=trade_date,
+        source_provenance={
+            "data_origin": "captured_real_historical_source_evidence",
+            "mapping_trade_date": trade_date,
+            "mapping_source": "market:stock_plate",
+            "mapping_snapshot_sha256": _sha256(mapping_snapshot_path),
+            "mapping_data_sha256": frozen_mapping.get("sha256"),
+            "mapping_effective_time": frozen_mapping.get("effective_time"),
+            "mapping_record_count": frozen_mapping.get("record_count"),
+            "auction_source_table": f"{database}.auction_snapshot_v2",
+            "auction_rows_sha256": _sha256(td_input_path),
+            "auction_row_count": len(rows),
+            "auction_rows_by_tag": dict(sorted(row_counts.items())),
+            "auction_projection_code_sha256": _sha256(
+                engine_next_release / "engine_next/runtime/auction_shadow.py"
+            ),
+            "auction_report_code_sha256": _sha256(
+                engine_next_release / "engine_next/runtime/auction_email_report.py"
+            ),
+        },
         mapped_symbols_by_plate=_mapped_symbols_by_plate(shadow),
         auction_symbols_by_plate=_auction_symbols_by_plate(shadow),
         auction_top1_amount_ratio_by_plate=auction_ratios,
         selected_plates=selected_plates,
     )
-    comparison = _compare_plates(legacy.get("plates", []), core_summary["plates"])
 
-    td_input_path = output_dir / "td_auction_snapshot_rows.jsonl"
-    with td_input_path.open("x", encoding="utf-8", newline="\n") as handle:
-        for row in rows:
-            handle.write(canonical_json(row) + "\n")
+    if __package__:
+        from .run_task008_q2frame_auction_engine_shadow import (
+            run_q2frame_auction_engine_shadow,
+        )
+    else:
+        from run_task008_q2frame_auction_engine_shadow import (
+            run_q2frame_auction_engine_shadow,
+        )
+
+    integrated_core_report = run_q2frame_auction_engine_shadow(
+        q2frame_path=q2frame_path,
+        trade_date=trade_date,
+        expected_sha256=q2frame_sha256,
+        include_opening=True,
+        plate_amount_context=context,
+    )
+    integrated_opening = integrated_core_report["ordered"]["opening_evidence"][
+        "OPENING_0932"
+    ]
+    integrated_facts_hash = semantic_hash(integrated_opening["facts_by_symbol"])
+    pinned_facts_hash = semantic_hash(pinned_opening["facts_by_symbol"])
+    core_facts_match = integrated_facts_hash == pinned_facts_hash
+    core_summary = integrated_opening["plate_amount_summary"]
+    comparison = _compare_plates(legacy.get("plates", []), core_summary["plates"])
+    comparison["integrated_core_replay"] = {
+        "contract_version": integrated_core_report["contract_version"],
+        "deterministic": integrated_core_report["deterministic"],
+        "facts_match_pinned_core_report": core_facts_match,
+        "integrated_facts_hash": integrated_facts_hash,
+        "pinned_core_report_facts_hash": pinned_facts_hash,
+        "plate_amount_summary_hash": core_summary["content_hash"],
+    }
+
     mapping_copy_path = output_dir / "stock_plate_snapshot.json"
     mapping_copy_path.write_text(
         mapping_snapshot_path.read_text(encoding="utf-8"), encoding="utf-8", newline="\n"
     )
     _write_json(output_dir / "legacy_open_confirmation.json", legacy)
     _write_json(output_dir / "core_opening_plate_amount_summary.json", core_summary)
+    _write_json(output_dir / "opening_plate_amount_context.json", context)
+    _write_json(output_dir / "integrated_core_q2frame_report.json", integrated_core_report)
 
     anchor_stats: dict[str, Any] = {}
     for tag in ("0920", "0924", "0925"):
@@ -352,9 +444,12 @@ def run_audit(
             "mapping_overlap": len(symbols & set(mapping)),
         }
 
-    comparison["status"] = (
-        "PASS_WITH_LIMITS" if comparison["classification"] == "STRICT_VALUE_MATCH" else "VALUE_MISMATCH"
+    all_parity_checks = (
+        comparison["classification"] == "STRICT_VALUE_MATCH"
+        and integrated_core_report["deterministic"]
+        and core_facts_match
     )
+    comparison["status"] = "PASS_WITH_LIMITS" if all_parity_checks else "UNPROVEN_OR_MISMATCH"
     comparison["trade_date"] = trade_date
     comparison["observation_cutoff"] = cutoff.isoformat()
     comparison["data_origin"] = "historical event-time replay with real TD auction rows and frozen mapping"
@@ -365,7 +460,11 @@ def run_audit(
     ]
     comparison["inputs"] = {
         "td_source": "market_data1.auction_snapshot_v2",
-        "td_query_kind": "SELECT_ONLY",
+        "td_query_kind": td_access_kind,
+        "captured_td_rows_path": (
+            str(captured_td_rows_path) if captured_td_rows_path is not None else None
+        ),
+        "captured_td_rows_expected_sha256": expected_captured_td_rows_sha256,
         "td_row_count": len(rows),
         "td_rows_by_tag": dict(sorted(row_counts.items())),
         "td_rows_sha256": _sha256(td_input_path),
@@ -384,7 +483,7 @@ def run_audit(
         "anchor_inventory": anchor_stats,
     }
     comparison["side_effects"] = {
-        "td": "SELECT_ONLY",
+        "td": td_access_kind,
         "redis_writes": 0,
         "rabbit_consume_or_ack": False,
         "service_changes": False,
@@ -414,6 +513,8 @@ def main() -> int:
     parser.add_argument("--q2frame", type=Path, default=DEFAULT_Q2FRAME)
     parser.add_argument("--core-report", type=Path, default=DEFAULT_CORE_REPORT)
     parser.add_argument("--td-database", default=os.environ.get("TDENGINE_DATABASE", "market_data1"))
+    parser.add_argument("--captured-td-rows", type=Path)
+    parser.add_argument("--expected-captured-td-rows-sha256")
     args = parser.parse_args()
     result = run_audit(
         trade_date=args.trade_date,
@@ -423,6 +524,8 @@ def main() -> int:
         q2frame_path=args.q2frame,
         core_report_path=args.core_report,
         database=args.td_database,
+        captured_td_rows_path=args.captured_td_rows,
+        expected_captured_td_rows_sha256=args.expected_captured_td_rows_sha256,
     )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0

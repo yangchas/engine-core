@@ -48,7 +48,9 @@ from engine_core import (  # noqa: E402
     build_cross_section_facts,
     build_opening_amount_summary,
     build_opening_limit_state_summary,
+    build_opening_plate_amount_summary,
     semantic_hash,
+    validate_opening_plate_amount_context,
 )
 from engine_core.contracts import StrategyResult  # noqa: E402
 from engine_core.market_summary import derive_q2_auction_summary  # noqa: E402
@@ -367,6 +369,7 @@ def _run_once(
     inventory: Mapping[str, Any],
     input_sha256: str,
     include_opening: bool = False,
+    plate_amount_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     symbols = tuple(inventory["symbols"])
     policies = {tag: AuctionTimingPolicyV1.default(tag) for tag in AUCTION_TAGS}
@@ -559,6 +562,27 @@ def _run_once(
                     "availability_status": "UNKNOWN_NOT_INFERRED",
                 }
             )
+            if plate_amount_context is not None:
+                base["plate_amount_context"] = {
+                    "contract": plate_amount_context["contract"],
+                    "trade_date": plate_amount_context["trade_date"],
+                    "content_hash": plate_amount_context["content_hash"],
+                    "source_provenance": plate_amount_context["source_provenance"],
+                    "selected_plates": plate_amount_context["selected_plates"],
+                }
+                base["plate_amount_summary"] = build_opening_plate_amount_summary(
+                    strategy_result.trace.get("facts_by_symbol", {}),
+                    mapped_symbols_by_plate=plate_amount_context[
+                        "mapped_symbols_by_plate"
+                    ],
+                    auction_symbols_by_plate=plate_amount_context[
+                        "auction_symbols_by_plate"
+                    ],
+                    auction_top1_amount_ratio_by_plate=plate_amount_context[
+                        "auction_top1_amount_ratio_by_plate"
+                    ],
+                    selected_plates=plate_amount_context["selected_plates"],
+                )
             opening_evidence[tag] = base
         else:
             base["auction_revision"] = auction_revision_summary(
@@ -802,8 +826,17 @@ def run_q2frame_auction_engine_shadow(
     trade_date: str,
     expected_sha256: str | None = None,
     include_opening: bool = False,
+    plate_amount_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run a pinned Q2Frame auction replay, optionally through opening, twice."""
+
+    if plate_amount_context is not None:
+        if not include_opening:
+            raise ValueError("plate amount context requires include_opening=True")
+        plate_amount_context = validate_opening_plate_amount_context(
+            plate_amount_context,
+            trade_date=trade_date,
+        )
 
     initial_sha = _file_sha256(q2frame_path)
     if expected_sha256 is not None and initial_sha != expected_sha256:
@@ -816,6 +849,7 @@ def run_q2frame_auction_engine_shadow(
         inventory=inventory,
         input_sha256=initial_sha,
         include_opening=include_opening,
+        plate_amount_context=plate_amount_context,
     )
     between_runs_sha = _file_sha256(q2frame_path)
     repeat = _run_once(
@@ -824,6 +858,7 @@ def run_q2frame_auction_engine_shadow(
         inventory=inventory,
         input_sha256=initial_sha,
         include_opening=include_opening,
+        plate_amount_context=plate_amount_context,
     )
     final_sha = _file_sha256(q2frame_path)
     input_stable = len(
@@ -847,6 +882,9 @@ def run_q2frame_auction_engine_shadow(
     deterministic = all(determinism.values())
     return {
         "contract_version": (
+            "Task008Q2FrameSessionEngineShadowV7"
+            if plate_amount_context is not None
+            else
             "Task008Q2FrameSessionEngineShadowV6"
             if include_opening
             else "Task008Q2FrameAuctionEngineShadowV5"
@@ -886,6 +924,17 @@ def run_q2frame_auction_engine_shadow(
             if include_opening
             else None
         ),
+        "plate_amount_context": (
+            {
+                "contract": plate_amount_context["contract"],
+                "trade_date": plate_amount_context["trade_date"],
+                "content_hash": plate_amount_context["content_hash"],
+                "source_provenance": plate_amount_context["source_provenance"],
+                "selected_plates": plate_amount_context["selected_plates"],
+            }
+            if plate_amount_context is not None
+            else None
+        ),
         "auction_price_field_policy": {
             tag: field for tag, field in zip(AUCTION_TAGS, AUCTION_PRICE_FIELDS)
         },
@@ -913,13 +962,24 @@ def main() -> int:
         action="store_true",
         help="continue the same Engine/Q2Frame replay through 09:32:10",
     )
+    parser.add_argument(
+        "--plate-amount-context",
+        type=Path,
+        help="date-pinned OpeningPlateAmountContextV1 JSON input",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    plate_amount_context = (
+        json.loads(args.plate_amount_context.read_text(encoding="utf-8"))
+        if args.plate_amount_context is not None
+        else None
+    )
     result = run_q2frame_auction_engine_shadow(
         q2frame_path=args.q2frame,
         trade_date=args.trade_date,
         expected_sha256=args.expected_sha256,
         include_opening=args.include_opening,
+        plate_amount_context=plate_amount_context,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as output:

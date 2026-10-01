@@ -7,6 +7,7 @@ fetch Q2, infer a limit state, impose a run gate, or make a strategy decision.
 from __future__ import annotations
 
 import math
+from datetime import date
 from typing import Any, Mapping, Optional, Sequence
 
 from .contracts import semantic_hash
@@ -15,6 +16,7 @@ OPENING_FACT_CONTRACT_VERSION = "OpeningFactV1"
 OPENING_TRANSITION_FACT_CONTRACT_VERSION = "OpeningTransitionFactV1"
 OPENING_AMOUNT_SUMMARY_CONTRACT_VERSION = "OpeningAmountSummaryV1"
 OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION = "OpeningLimitStateSummaryV1"
+OPENING_PLATE_AMOUNT_CONTEXT_CONTRACT_VERSION = "OpeningPlateAmountContextV1"
 OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION = "OpeningPlateAmountSummaryV1"
 _VALID_LIMIT_STATES = {-1, 0, 1}
 _OPENING_COHORT_SCOPES = {
@@ -469,6 +471,117 @@ def build_opening_plate_amount_summary(
     }
     summary["content_hash"] = semantic_hash(summary)
     return summary
+
+
+def build_opening_plate_amount_context(
+    *,
+    trade_date: str,
+    source_provenance: Mapping[str, Any],
+    mapped_symbols_by_plate: Mapping[str, Sequence[str]],
+    auction_symbols_by_plate: Mapping[str, Sequence[str]],
+    auction_top1_amount_ratio_by_plate: Mapping[str, Any],
+    selected_plates: Sequence[str],
+) -> dict[str, Any]:
+    """Build a deterministic, date-pinned sidecar for plate opening facts.
+
+    This is explicit replay input: Core does not discover the current mapping,
+    query TD, or infer auction membership. The context is versioned and hashed
+    so a replay report can identify the exact external plate cohort it used.
+    Missing ratios remain ``None`` and do not block the rest of the replay.
+    """
+
+    try:
+        parsed_date = date.fromisoformat(trade_date)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("trade_date must use strict YYYY-MM-DD form") from exc
+    if parsed_date.isoformat() != trade_date:
+        raise ValueError("trade_date must use strict YYYY-MM-DD form")
+    if not isinstance(source_provenance, Mapping):
+        raise TypeError("source_provenance must be a mapping")
+    if source_provenance.get("trade_date", trade_date) != trade_date:
+        raise ValueError("source provenance trade_date must match context trade_date")
+
+    def normalize_memberships(
+        groups: Mapping[str, Sequence[str]],
+        name: str,
+    ) -> dict[str, list[str]]:
+        if not isinstance(groups, Mapping):
+            raise TypeError(f"{name} must be a mapping")
+        normalized: dict[str, list[str]] = {}
+        for raw_plate, raw_symbols in groups.items():
+            plate = str(raw_plate).strip()
+            if not plate:
+                raise ValueError(f"{name} plate names must be non-empty")
+            if isinstance(raw_symbols, (str, bytes)):
+                raise TypeError(f"{name} values must be symbol sequences")
+            symbols = sorted(
+                {
+                    str(symbol).strip()
+                    for symbol in raw_symbols
+                    if str(symbol).strip()
+                }
+            )
+            normalized[plate] = symbols
+        return {plate: normalized[plate] for plate in sorted(normalized)}
+
+    if not isinstance(auction_top1_amount_ratio_by_plate, Mapping):
+        raise TypeError("auction_top1_amount_ratio_by_plate must be a mapping")
+    ratios: dict[str, float | None] = {}
+    for raw_plate, raw_ratio in auction_top1_amount_ratio_by_plate.items():
+        plate = str(raw_plate).strip()
+        if not plate:
+            raise ValueError("auction ratio plate names must be non-empty")
+        ratios[plate] = _number(raw_ratio)
+    ratios = {plate: ratios[plate] for plate in sorted(ratios)}
+
+    if isinstance(selected_plates, (str, bytes)):
+        raise TypeError("selected_plates must be a sequence of plate names")
+    selected = sorted({str(plate).strip() for plate in selected_plates if str(plate).strip()})
+    payload = {
+        "contract": OPENING_PLATE_AMOUNT_CONTEXT_CONTRACT_VERSION,
+        "trade_date": trade_date,
+        "source_provenance": dict(source_provenance),
+        "mapped_symbols_by_plate": normalize_memberships(
+            mapped_symbols_by_plate, "mapped_symbols_by_plate"
+        ),
+        "auction_symbols_by_plate": normalize_memberships(
+            auction_symbols_by_plate, "auction_symbols_by_plate"
+        ),
+        "auction_top1_amount_ratio_by_plate": ratios,
+        "selected_plates": selected,
+    }
+    return {**payload, "content_hash": semantic_hash(payload)}
+
+
+def validate_opening_plate_amount_context(
+    context: Mapping[str, Any],
+    *,
+    trade_date: str,
+) -> dict[str, Any]:
+    """Validate the sidecar contract, date binding, and canonical content hash."""
+
+    if not isinstance(context, Mapping):
+        raise TypeError("plate amount context must be a mapping")
+    if context.get("contract") != OPENING_PLATE_AMOUNT_CONTEXT_CONTRACT_VERSION:
+        raise ValueError("unsupported plate amount context contract")
+    if context.get("trade_date") != trade_date:
+        raise ValueError("plate amount context trade_date does not match replay")
+    try:
+        normalized = build_opening_plate_amount_context(
+            trade_date=str(context.get("trade_date")),
+            source_provenance=context["source_provenance"],
+            mapped_symbols_by_plate=context["mapped_symbols_by_plate"],
+            auction_symbols_by_plate=context["auction_symbols_by_plate"],
+            auction_top1_amount_ratio_by_plate=context[
+                "auction_top1_amount_ratio_by_plate"
+            ],
+            selected_plates=context["selected_plates"],
+        )
+    except KeyError as exc:
+        raise ValueError(f"plate amount context is missing {exc.args[0]}") from exc
+    if normalized != dict(context):
+        raise ValueError("plate amount context content_hash or canonical fields mismatch")
+    return normalized
 
 
 def build_opening_transition_fact(
