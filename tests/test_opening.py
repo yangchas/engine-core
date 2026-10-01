@@ -6,10 +6,12 @@ from engine_core import (
     OPENING_FACT_CONTRACT_VERSION,
     OPENING_AMOUNT_SUMMARY_CONTRACT_VERSION,
     OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION,
+    OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION,
     OPENING_TRANSITION_FACT_CONTRACT_VERSION,
     build_open_fact,
     build_opening_amount_summary,
     build_opening_limit_state_summary,
+    build_opening_plate_amount_summary,
     build_opening_transition_fact,
     classify_delta,
     classify_sign_state,
@@ -280,6 +282,96 @@ def test_opening_amount_summary_hash_is_order_independent_and_scope_explicit():
     assert left == right
     with pytest.raises(ValueError, match="observed Q2 cohort"):
         build_opening_amount_summary(first, scope="FULL_MARKET")
+
+
+def test_opening_plate_amount_summary_keeps_open_and_common_denominators_separate():
+    summary = build_opening_plate_amount_summary(
+        {
+            "A": {"status": "available", "amount_2m_yuan": 10},
+            "B": {"status": "available", "amount_2m_yuan": 30},
+            "C": {"status": "available", "amount_2m_yuan": 20},
+            "NO_PRICE": {"status": "unavailable", "amount_2m_yuan": 900},
+            "OUTSIDE": {"status": "available", "amount_2m_yuan": 500},
+        },
+        mapped_symbols_by_plate={"AI": ("A", "B", "C", "NO_PRICE")},
+        auction_symbols_by_plate={"AI": ("A", "C")},
+        auction_top1_amount_ratio_by_plate={"AI": 0.5},
+        selected_plates=("AI",),
+    )
+
+    plate = summary["plates"][0]
+    assert summary["contract"] == "OpeningPlateAmountSummaryV1"
+    assert summary["scope_authority"] == "FROZEN_MAPPING_AND_OBSERVED_Q2_COHORT"
+    assert summary["full_market_coverage"] == "UNPROVEN"
+    assert plate["mapped_symbol_count"] == 4
+    assert plate["auction_symbol_count"] == 2
+    assert plate["open_valid_count"] == 3
+    assert plate["common_symbol_count"] == 2
+    assert plate["comparison_valid_count"] == 2
+    assert plate["open_window_amount_yuan"] == 60
+    assert plate["open_window_amount_status"] == "available"
+    assert plate["open_amount_total_count"] == 3
+    assert plate["comparison_amount_total_count"] == 2
+    assert plate["open_top1_amount_ratio"] == pytest.approx(2 / 3)
+    assert plate["open_top3_amount_ratio"] == pytest.approx(1)
+    assert plate["auction_top1_amount_ratio"] == pytest.approx(0.5)
+    assert plate["top1_amount_ratio_delta"] == pytest.approx(1 / 6)
+    assert plate["concentration_state"] == "expanded"
+    assert plate["open_symbols"] == ["A", "B", "C"]
+
+
+def test_opening_plate_amount_summary_missing_is_not_zero_and_empty_is_unavailable():
+    summary = build_opening_plate_amount_summary(
+        {
+            "ZERO": {"status": "available", "amount_2m_yuan": 0},
+            "MISSING": {"status": "available", "amount_2m_yuan": None},
+            "NO_PRICE": {"status": "unavailable", "amount_2m_yuan": 100},
+        },
+        mapped_symbols_by_plate={"PARTIAL": ("ZERO", "MISSING", "NO_PRICE"), "EMPTY": ()},
+        auction_symbols_by_plate={"PARTIAL": ("ZERO", "MISSING")},
+        auction_top1_amount_ratio_by_plate={"PARTIAL": 0.4},
+        selected_plates=("PARTIAL", "EMPTY"),
+    )
+
+    partial, empty = summary["plates"]
+    assert partial["open_window_amount_status"] == "partial"
+    assert partial["open_window_amount_yuan"] is None
+    assert partial["open_amount_present_count"] == 1
+    assert partial["open_amount_total_count"] == 2
+    assert partial["comparison_amount_status"] == "partial"
+    assert partial["open_top1_amount_ratio"] is None
+    assert partial["top1_amount_ratio_delta"] is None
+    assert empty["open_window_amount_status"] == "unavailable"
+    assert empty["comparison_amount_status"] == "unavailable"
+    assert empty["open_top1_amount_ratio"] is None
+
+
+def test_opening_plate_amount_summary_is_order_independent_and_keeps_zero_total_unavailable():
+    args = {
+        "facts_by_symbol": {
+            "A": {"status": "available", "amount_2m_yuan": 0},
+            "B": {"status": "available", "amount_2m_yuan": 0},
+        },
+        "mapped_symbols_by_plate": {"P": ("A", "B")},
+        "auction_symbols_by_plate": {"P": ("A", "B")},
+        "auction_top1_amount_ratio_by_plate": {"P": 0.2},
+        "selected_plates": ("P",),
+    }
+    left = build_opening_plate_amount_summary(**args)
+    reversed_args = {
+        **args,
+        "facts_by_symbol": dict(reversed(tuple(args["facts_by_symbol"].items()))),
+        "mapped_symbols_by_plate": {"P": ("B", "A")},
+        "auction_symbols_by_plate": {"P": ("B", "A")},
+    }
+    right = build_opening_plate_amount_summary(**reversed_args)
+
+    assert left == right
+    plate = left["plates"][0]
+    assert plate["open_window_amount_yuan"] == 0
+    assert plate["open_top1_amount_ratio"] is None
+    assert plate["concentration_state"] == "unavailable"
+    assert OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION == "OpeningPlateAmountSummaryV1"
 
 
 def test_build_opening_transition_fact_is_fact_only_and_unit_explicit():

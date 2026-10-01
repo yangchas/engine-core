@@ -15,6 +15,7 @@ OPENING_FACT_CONTRACT_VERSION = "OpeningFactV1"
 OPENING_TRANSITION_FACT_CONTRACT_VERSION = "OpeningTransitionFactV1"
 OPENING_AMOUNT_SUMMARY_CONTRACT_VERSION = "OpeningAmountSummaryV1"
 OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION = "OpeningLimitStateSummaryV1"
+OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION = "OpeningPlateAmountSummaryV1"
 _VALID_LIMIT_STATES = {-1, 0, 1}
 _OPENING_COHORT_SCOPES = {
     "OBSERVED_COHORT",
@@ -328,6 +329,143 @@ def build_opening_amount_summary(
         ),
         "amount_2m_yuan_sum": amount_sum,
         "amount_2m_yuan_status": status,
+    }
+    summary["content_hash"] = semantic_hash(summary)
+    return summary
+
+
+def build_opening_plate_amount_summary(
+    facts_by_symbol: Mapping[str, Mapping[str, Any]],
+    *,
+    mapped_symbols_by_plate: Mapping[str, Sequence[str]],
+    auction_symbols_by_plate: Mapping[str, Sequence[str]],
+    auction_top1_amount_ratio_by_plate: Mapping[str, Any],
+    selected_plates: Optional[Sequence[str]] = None,
+) -> dict[str, Any]:
+    """Aggregate the deployed per-plate opening amount/concentration facts.
+
+    ``mapped_symbols_by_plate`` comes from the date-frozen canonical stock to
+    plate mapping carried by the auction detail snapshot. ``auction_symbols``
+    is its subset with a usable 09:25 price/amount fact. The legacy consumer
+    intentionally used two cohorts: total opening amount covers every mapped
+    symbol with an available opening fact, while Top1/Top3 concentration uses
+    only the intersection with valid 09:25 auction symbols. Keep both counts
+    visible; they are not interchangeable denominators.
+
+    ``auction_top1_amount_ratio_by_plate`` is an already-computed auction fact,
+    not a strategy input. Partial opening amounts remain visible as partial
+    coverage but do not yield a complete sum or concentration ratio. The
+    function is pure and does not determine plate membership, data freshness,
+    selection ranking, or full-market authority.
+    """
+
+    def normalize_memberships(
+        values_by_plate: Mapping[str, Sequence[str]],
+    ) -> dict[str, set[str]]:
+        return {
+            str(plate): {
+                str(symbol).strip()
+                for symbol in symbols
+                if str(symbol).strip()
+            }
+            for plate, symbols in values_by_plate.items()
+        }
+
+    mapped_by_plate = normalize_memberships(mapped_symbols_by_plate)
+    auction_by_plate = normalize_memberships(auction_symbols_by_plate)
+    if selected_plates is None:
+        selected = sorted(set(mapped_by_plate) | set(auction_top1_amount_ratio_by_plate))
+    else:
+        selected = list(dict.fromkeys(str(plate).strip() for plate in selected_plates if str(plate).strip()))
+
+    plate_summaries: list[dict[str, Any]] = []
+    for plate in selected:
+        mapped_symbols = mapped_by_plate.get(plate, set())
+        observed_open_symbols = mapped_symbols & {str(symbol) for symbol in facts_by_symbol}
+        common_symbols = auction_by_plate.get(plate, set()) & observed_open_symbols
+        valid_open = tuple(
+            facts_by_symbol[symbol]
+            for symbol in sorted(observed_open_symbols)
+            if facts_by_symbol[symbol].get("status") == "available"
+        )
+        valid_comparison = tuple(
+            facts_by_symbol[symbol]
+            for symbol in sorted(common_symbols)
+            if facts_by_symbol[symbol].get("status") == "available"
+        )
+
+        def complete_sum(
+            rows: Sequence[Mapping[str, Any]],
+        ) -> tuple[float | None, str, int, int]:
+            if not rows:
+                return None, "unavailable", 0, 0
+            values = tuple(_number(row.get("amount_2m_yuan")) for row in rows)
+            present_count = sum(value is not None for value in values)
+            if present_count == len(rows):
+                return sum(value for value in values if value is not None), "available", present_count, len(rows)
+            status = "partial" if present_count else "unavailable"
+            return None, status, present_count, len(rows)
+
+        open_total, open_status, open_present, open_count = complete_sum(valid_open)
+        comparison_total, comparison_status, comparison_present, comparison_count = complete_sum(valid_comparison)
+        comparison_amounts = tuple(
+            value
+            for value in (_number(row.get("amount_2m_yuan")) for row in valid_comparison)
+            if value is not None and value >= 0
+        )
+        ordered_amounts = sorted(comparison_amounts, reverse=True)
+        open_top1 = (
+            ordered_amounts[0] / comparison_total
+            if comparison_total not in (None, 0) and ordered_amounts
+            else None
+        )
+        open_top3 = (
+            sum(ordered_amounts[:3]) / comparison_total
+            if comparison_total not in (None, 0) and ordered_amounts
+            else None
+        )
+        auction_top1 = _number(auction_top1_amount_ratio_by_plate.get(plate))
+        top1_delta = compute_delta(open_top1, auction_top1)
+
+        plate_summaries.append(
+            {
+                "plate": plate,
+                "mapped_symbol_count": len(mapped_symbols),
+                "auction_symbol_count": len(auction_by_plate.get(plate, set())),
+                "open_valid_count": len(valid_open),
+                "common_symbol_count": len(common_symbols),
+                "comparison_valid_count": len(valid_comparison),
+                "comparison_scope": "COMMON_VALID_AUCTION_AND_OPEN_SYMBOLS",
+                "open_window_amount_yuan": open_total,
+                "open_window_amount_status": open_status,
+                "open_amount_present_count": open_present,
+                "open_amount_total_count": open_count,
+                "comparison_amount_status": comparison_status,
+                "comparison_amount_present_count": comparison_present,
+                "comparison_amount_total_count": comparison_count,
+                "open_top1_amount_ratio": open_top1,
+                "open_top3_amount_ratio": open_top3,
+                "auction_top1_amount_ratio": auction_top1,
+                "top1_amount_ratio_delta": top1_delta,
+                "concentration_state": classify_delta(top1_delta),
+                "open_symbols": [
+                    symbol
+                    for symbol in sorted(observed_open_symbols)
+                    if facts_by_symbol[symbol].get("status") == "available"
+                ],
+            }
+        )
+
+    summary: dict[str, Any] = {
+        "contract": OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION,
+        "scope": "FROZEN_MAPPING_AND_OBSERVED_Q2_COHORT",
+        "scope_authority": "FROZEN_MAPPING_AND_OBSERVED_Q2_COHORT",
+        "full_market_coverage": "UNPROVEN",
+        "status_scope": "MAPPED_OPEN_FACTS_AND_VALID_COMMON_SYMBOLS",
+        "source_field": "Q2.amount_2m_yuan",
+        "aggregation": "LEGACY_OPEN_AMOUNT_AND_COMMON_SYMBOL_TOP1_TOP3",
+        "selected_plate_count": len(plate_summaries),
+        "plates": plate_summaries,
     }
     summary["content_hash"] = semantic_hash(summary)
     return summary
