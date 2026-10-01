@@ -328,7 +328,7 @@ def test_q2frame_session_reaches_opening_with_one_engine_and_symbol_source_times
         include_opening=True,
     )
 
-    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV5"
+    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV6"
     assert result["deterministic"] is True
     assert result["ordered"]["engine_instances"] == 1
     assert result["ordered"]["input_frames_processed"] == 11
@@ -379,6 +379,14 @@ def test_q2frame_session_reaches_opening_with_one_engine_and_symbol_source_times
         "speed_1m": {"UNAVAILABLE": 2},
     }
     assert opening["opening_fact_field_status_hash"]
+    amount_summary = opening["amount_2m_summary"]
+    assert amount_summary["contract"] == "OpeningAmountSummaryV1"
+    assert amount_summary["scope"] == "OBSERVED_COHORT"
+    assert amount_summary["full_market_coverage"] == "UNPROVEN"
+    assert amount_summary["amount_2m_yuan_total_count"] == 2
+    assert amount_summary["amount_2m_yuan_present_count"] == 2
+    assert amount_summary["amount_2m_yuan_sum"] == 22_201
+    assert amount_summary["amount_2m_yuan_status"] == "available"
     limit_summary = opening["limit_state_summary"]
     assert limit_summary["contract"] == "OpeningLimitStateSummaryV1"
     assert limit_summary["scope"] == "OBSERVED_COHORT"

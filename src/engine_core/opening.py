@@ -13,9 +13,10 @@ from .contracts import semantic_hash
 
 OPENING_FACT_CONTRACT_VERSION = "OpeningFactV1"
 OPENING_TRANSITION_FACT_CONTRACT_VERSION = "OpeningTransitionFactV1"
+OPENING_AMOUNT_SUMMARY_CONTRACT_VERSION = "OpeningAmountSummaryV1"
 OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION = "OpeningLimitStateSummaryV1"
 _VALID_LIMIT_STATES = {-1, 0, 1}
-_OPENING_LIMIT_STATE_SCOPES = {
+_OPENING_COHORT_SCOPES = {
     "OBSERVED_COHORT",
     "FRESH_OBSERVED_COHORT",
     "STALE_OBSERVED_COHORT",
@@ -182,7 +183,7 @@ def build_opening_limit_state_summary(
     market universe, so its output always keeps that authority UNPROVEN.
     """
 
-    if scope not in _OPENING_LIMIT_STATE_SCOPES:
+    if scope not in _OPENING_COHORT_SCOPES:
         raise ValueError("scope must identify an observed Q2 cohort")
 
     observed_symbols = {str(symbol) for symbol in facts_by_symbol}
@@ -251,6 +252,82 @@ def build_opening_limit_state_summary(
         "valid_count_denominator": valid_count,
         "valid_coverage": valid_count / total_count if total_count else None,
         "cohort_field_status": status,
+    }
+    summary["content_hash"] = semantic_hash(summary)
+    return summary
+
+
+def build_opening_amount_summary(
+    facts_by_symbol: Mapping[str, Mapping[str, Any]],
+    *,
+    expected_symbols: Optional[Sequence[str]] = None,
+    scope: str = "OBSERVED_COHORT",
+) -> dict[str, Any]:
+    """Aggregate Q2 two-minute amounts over price-valid opening facts.
+
+    This follows the deployed ``open_confirmation`` market sum: only rows with
+    an available price-based opening fact enter the denominator, and the sum
+    is exposed only when every eligible row has a finite amount.  A numeric
+    zero is present data; a missing or malformed amount is not zero.  The
+    status describes this observed cohort only and never gates processing or
+    claims full-market coverage.
+    """
+
+    if scope not in _OPENING_COHORT_SCOPES:
+        raise ValueError("scope must identify an observed Q2 cohort")
+
+    observed_symbols = {str(symbol) for symbol in facts_by_symbol}
+    expected = (
+        observed_symbols
+        if expected_symbols is None
+        else {str(symbol) for symbol in expected_symbols}
+    )
+    if observed_symbols - expected:
+        raise ValueError("facts contain symbols outside expected_symbols")
+
+    eligible = tuple(
+        fact
+        for fact in facts_by_symbol.values()
+        if fact.get("status") == "available"
+    )
+    values = tuple(_number(fact.get("amount_2m_yuan")) for fact in eligible)
+    total_count = len(eligible)
+    present_count = sum(value is not None for value in values)
+    missing_count = total_count - present_count
+    if total_count and present_count == total_count:
+        status = "available"
+        amount_sum = sum(value for value in values if value is not None)
+    elif present_count:
+        status = "partial"
+        amount_sum = None
+    else:
+        status = "unavailable"
+        amount_sum = None
+
+    summary: dict[str, Any] = {
+        "contract": OPENING_AMOUNT_SUMMARY_CONTRACT_VERSION,
+        "scope": scope,
+        "scope_authority": "Q2_COHORT_ONLY_NOT_FULL_MARKET",
+        "full_market_coverage": "UNPROVEN",
+        "status_scope": "PRICE_VALID_OPENING_FACTS",
+        "source_field": "Q2.amount_2m_yuan",
+        "aggregation": "SUM_WHEN_ALL_PRICE_VALID_COHORT_VALUES_PRESENT",
+        "expected_count": len(expected),
+        "observed_count": len(observed_symbols),
+        "missing_symbol_count": len(expected - observed_symbols),
+        "symbol_coverage": (
+            len(observed_symbols) / len(expected) if expected else None
+        ),
+        "price_eligible_count": total_count,
+        "price_ineligible_count": len(observed_symbols) - total_count,
+        "amount_2m_yuan_total_count": total_count,
+        "amount_2m_yuan_present_count": present_count,
+        "amount_2m_yuan_missing_count": missing_count,
+        "amount_2m_yuan_coverage": (
+            present_count / total_count if total_count else None
+        ),
+        "amount_2m_yuan_sum": amount_sum,
+        "amount_2m_yuan_status": status,
     }
     summary["content_hash"] = semantic_hash(summary)
     return summary

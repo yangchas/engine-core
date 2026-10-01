@@ -4,9 +4,11 @@ import pytest
 
 from engine_core import (
     OPENING_FACT_CONTRACT_VERSION,
+    OPENING_AMOUNT_SUMMARY_CONTRACT_VERSION,
     OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION,
     OPENING_TRANSITION_FACT_CONTRACT_VERSION,
     build_open_fact,
+    build_opening_amount_summary,
     build_opening_limit_state_summary,
     build_opening_transition_fact,
     classify_delta,
@@ -201,6 +203,83 @@ def test_opening_limit_state_summary_rejects_unverified_scope_labels():
             {"A": {"status": "available", "limit_state": 1}},
             scope="FULL_MARKET",
         )
+
+
+def test_opening_amount_summary_matches_legacy_complete_sum_and_price_cohort():
+    summary = build_opening_amount_summary(
+        {
+            "A": {"status": "available", "amount_2m_yuan": 0},
+            "B": {"status": "available", "amount_2m_yuan": 50},
+            # The legacy opening consumer excludes price-ineligible rows from
+            # its market amount denominator, even if the amount is present.
+            "NO_PRICE": {"status": "unavailable", "amount_2m_yuan": 900},
+        },
+        expected_symbols=("A", "B", "NO_PRICE", "NOT_OBSERVED"),
+    )
+
+    assert summary["contract"] == "OpeningAmountSummaryV1"
+    assert summary["scope"] == "OBSERVED_COHORT"
+    assert summary["scope_authority"] == "Q2_COHORT_ONLY_NOT_FULL_MARKET"
+    assert summary["full_market_coverage"] == "UNPROVEN"
+    assert summary["expected_count"] == 4
+    assert summary["observed_count"] == 3
+    assert summary["missing_symbol_count"] == 1
+    assert summary["price_eligible_count"] == 2
+    assert summary["amount_2m_yuan_total_count"] == 2
+    assert summary["amount_2m_yuan_present_count"] == 2
+    assert summary["amount_2m_yuan_missing_count"] == 0
+    assert summary["amount_2m_yuan_sum"] == 50
+    assert summary["amount_2m_yuan_status"] == "available"
+    assert summary["content_hash"]
+    assert OPENING_AMOUNT_SUMMARY_CONTRACT_VERSION == "OpeningAmountSummaryV1"
+
+
+def test_opening_amount_summary_keeps_partial_and_missing_distinct_from_zero():
+    summary = build_opening_amount_summary(
+        {
+            "ZERO": {"status": "available", "amount_2m_yuan": 0},
+            "MISSING": {"status": "available", "amount_2m_yuan": None},
+            "NO_PRICE": {"status": "unavailable", "amount_2m_yuan": 100},
+        }
+    )
+
+    assert summary["price_eligible_count"] == 2
+    assert summary["amount_2m_yuan_total_count"] == 2
+    assert summary["amount_2m_yuan_present_count"] == 1
+    assert summary["amount_2m_yuan_missing_count"] == 1
+    assert summary["amount_2m_yuan_sum"] is None
+    assert summary["amount_2m_yuan_status"] == "partial"
+    assert summary["amount_2m_yuan_coverage"] == 0.5
+
+
+def test_opening_amount_summary_is_unavailable_for_empty_or_all_missing_cohorts():
+    empty = build_opening_amount_summary({})
+    missing = build_opening_amount_summary(
+        {"A": {"status": "available", "amount_2m_yuan": None}}
+    )
+
+    assert empty["amount_2m_yuan_sum"] is None
+    assert empty["amount_2m_yuan_status"] == "unavailable"
+    assert missing["amount_2m_yuan_sum"] is None
+    assert missing["amount_2m_yuan_status"] == "unavailable"
+    assert missing["amount_2m_yuan_missing_count"] == 1
+
+
+def test_opening_amount_summary_hash_is_order_independent_and_scope_explicit():
+    first = {
+        "A": {"status": "available", "amount_2m_yuan": 10},
+        "B": {"status": "available", "amount_2m_yuan": 20},
+    }
+    second = dict(reversed(tuple(first.items())))
+
+    left = build_opening_amount_summary(first, scope="FRESH_OBSERVED_COHORT")
+    right = build_opening_amount_summary(
+        second, scope="FRESH_OBSERVED_COHORT"
+    )
+
+    assert left == right
+    with pytest.raises(ValueError, match="observed Q2 cohort"):
+        build_opening_amount_summary(first, scope="FULL_MARKET")
 
 
 def test_build_opening_transition_fact_is_fact_only_and_unit_explicit():

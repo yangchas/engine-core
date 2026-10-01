@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from engine_core import (  # noqa: E402
+    build_opening_amount_summary,
+    build_open_fact,
     build_opening_limit_state_summary,
     canonical_json,
 )
@@ -175,6 +177,11 @@ def audit(
         expected_symbols=tuple(unclassified),
         scope="UNCLASSIFIED_TIME_OBSERVED_COHORT",
     )
+    fresh_amount_summary = build_opening_amount_summary(
+        fresh,
+        expected_symbols=tuple(fresh),
+        scope="FRESH_OBSERVED_COHORT",
+    )
 
     producer_key = f"market:opening:cutoff:{trade_date.replace('-', '')}:0932:payload"
     command = _read_jsonl_record(producer_journal_path, key=producer_key)
@@ -185,6 +192,23 @@ def audit(
     producer_fields = dict(command.get("fields") or {})
     producer_counts = _known_limit_state_counts(producer_rows)
     producer_quality = _limit_state_quality(producer_rows)
+    producer_open_facts = {
+        symbol: build_open_fact(
+            {
+                "symbol": symbol,
+                "timestamp_ms": row.get("source_ts_ms"),
+                "price_milli": row.get("px_milli"),
+                "previous_close_milli": row.get("pc_milli"),
+                "amount_2m_yuan": row.get("amount_2m_yuan"),
+            }
+        )
+        for symbol, row in producer_rows.items()
+    }
+    producer_amounts = {
+        symbol: fact.get("amount_2m_yuan")
+        for symbol, fact in producer_open_facts.items()
+        if fact.get("status") == "available"
+    }
     core_fresh_state = {
         symbol: fact.get("limit_state") for symbol, fact in fresh.items()
     }
@@ -196,6 +220,44 @@ def audit(
         1
         for symbol in set(fresh) & set(producer_rows)
         if core_fresh_state[symbol] != producer_state[symbol]
+    )
+    core_fresh_amount = {
+        symbol: fact.get("amount_2m_yuan")
+        for symbol, fact in fresh.items()
+        if fact.get("status") == "available"
+    }
+    amount_mismatches = sum(
+        1
+        for symbol in set(core_fresh_amount) & set(producer_amounts)
+        if core_fresh_amount[symbol] != producer_amounts[symbol]
+    )
+    producer_amount_values = [
+        value
+        for value in producer_amounts.values()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    producer_amount_present = len(producer_amount_values)
+    producer_amount_total = len(producer_amounts)
+    if producer_amount_total and producer_amount_present == producer_amount_total:
+        producer_amount_status = "available"
+        producer_amount_sum = sum(producer_amount_values)
+    elif producer_amount_present:
+        producer_amount_status = "partial"
+        producer_amount_sum = None
+    else:
+        producer_amount_status = "unavailable"
+        producer_amount_sum = None
+    amount_summary_matches_producer = (
+        fresh_amount_summary["price_eligible_count"] == producer_amount_total
+        and fresh_amount_summary["amount_2m_yuan_total_count"]
+        == producer_amount_total
+        and fresh_amount_summary["amount_2m_yuan_present_count"]
+        == producer_amount_present
+        and fresh_amount_summary["amount_2m_yuan_missing_count"]
+        == producer_amount_total - producer_amount_present
+        and fresh_amount_summary["amount_2m_yuan_status"]
+        == producer_amount_status
+        and fresh_amount_summary["amount_2m_yuan_sum"] == producer_amount_sum
     )
     summary_matches_producer = (
         fresh_summary["limit_state_present_count"]
@@ -218,6 +280,10 @@ def audit(
         "fresh_membership_matches_producer": membership_equal,
         "fresh_limit_state_per_symbol_mismatches_zero": state_mismatches == 0,
         "fresh_limit_state_summary_matches_producer": summary_matches_producer,
+        "fresh_amount_membership_matches_producer": set(core_fresh_amount)
+        == set(producer_amounts),
+        "fresh_amount_2m_per_symbol_mismatches_zero": amount_mismatches == 0,
+        "fresh_amount_2m_summary_matches_producer": amount_summary_matches_producer,
     }
     return {
         "status": "PASS_WITH_LIMITS" if all(checks.values()) else "MISMATCH",
@@ -233,6 +299,7 @@ def audit(
             "stale": stale_summary,
             "time_unclassified": unclassified_summary,
         },
+        "fresh_amount_2m_summary": fresh_amount_summary,
         "producer": {
             "row_count": len(producer_rows),
             "limit_state_present_count": int(
@@ -247,6 +314,10 @@ def audit(
             "limit_state_missing_count": producer_quality["missing_count"],
             "cohort_field_status": producer_quality["status"],
             "limit_state_counts": producer_counts,
+            "amount_2m_present_count": producer_amount_present,
+            "amount_2m_total_count": producer_amount_total,
+            "amount_2m_sum": producer_amount_sum,
+            "amount_2m_status": producer_amount_status,
             "snapshot_integrity_status": producer_fields.get(
                 "snapshot_integrity_status"
             ),
