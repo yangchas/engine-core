@@ -1,37 +1,85 @@
+import json
 from dataclasses import replace
+from pathlib import Path
 
-from engine_core import FrozenDataBundle, OpeningShadowStrategy
+from engine_core import FrozenDataBundle, OpeningShadowStrategy, normalize_q2
 from engine_core.contracts import EngineSnapshot, semantic_hash
 
 
-def _snapshot(values):
-    metadata = {
+def _snapshot(
+    values,
+    *,
+    symbol="600519",
+    logical_time_ms=2000,
+    session_id="2026-09-16",
+    source_time_range=None,
+):
+    metadata = source_time_range or {
         "oldest_source_time_ms": 1000,
         "newest_source_time_ms": 1100,
     }
     content = {
         "trigger_id": "OPENING_0932",
-        "logical_time_ms": 2000,
-        "symbol": "600519",
+        "logical_time_ms": logical_time_ms,
+        "symbol": symbol,
         "state": values,
     }
     return EngineSnapshot(
         snapshot_id="snapshot-opening",
         trigger_id="OPENING_0932",
-        logical_time_ms=2000,
-        session_id="2026-09-16",
+        logical_time_ms=logical_time_ms,
+        session_id=session_id,
         phase="OPENING",
         market_state_revision=1,
         source_observation_metadata=metadata,
-        symbol_states={"600519": values},
+        symbol_states={symbol: values},
         raw_market_cross_section={},
         raw_theme_cross_section={},
         windows={},
         coverage=1.0,
         completeness="READY",
         content_hash=semantic_hash(content),
-        evidence_refs=("fixture://opening/600519",),
+        evidence_refs=(f"fixture://opening/{symbol}",),
     )
+
+
+def test_real_q2frame_speed_basis_points_map_to_opening_ratio():
+    fixture = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures/q2/q2frame_opening_consumer_real_20260929.json"
+        ).read_text(encoding="utf-8")
+    )
+    raw = fixture["q2_update"]
+    source = fixture["source"]
+    quote = normalize_q2(
+        raw["symbol"],
+        {key: value for key, value in raw.items() if key != "symbol"},
+    )
+    snapshot = _snapshot(
+        quote.to_mapping(),
+        symbol=raw["symbol"],
+        logical_time_ms=source["logical_ts_ms"],
+        session_id=fixture["trade_date"],
+        source_time_range={
+            "oldest_source_time_ms": quote.source_record_time_ms,
+            "newest_source_time_ms": quote.source_record_time_ms,
+        },
+    )
+
+    result = OpeningShadowStrategy(scope_id=raw["symbol"]).evaluate(
+        snapshot,
+        FrozenDataBundle.empty("real-q2-speed-opening", source["logical_ts_ms"]),
+    )
+
+    assert raw["spd1m"] == 26  # source Q2 unit: basis points
+    assert quote.speed_1m_bp == 26
+    assert result.trace["opening_fact"]["speed_1m"] == 0.0026
+    assert result.trace["opening_fact"]["speed_1m"] == fixture[
+        "engine_next_q2_view"
+    ]["speed_1m"]
+    assert result.trace["opening_fact"]["speed_1m"] != raw["spd1m"]
+    assert result.trace["opening_fact_field_status"]["speed_1m"] == "AVAILABLE"
 
 
 def test_opening_shadow_maps_q2_basis_points_to_legacy_speed_ratio():
