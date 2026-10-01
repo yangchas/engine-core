@@ -276,7 +276,7 @@ def test_real_q2frame_shape_surfaces_partial_0925_recovery_targets(tmp_path: Pat
     assert revision["recovery_required"] is True
     assert revision["recovery_plan"]["contract"] == "RecoveryPlanV1"
     assert revision["recovery_plan"]["requested_symbols"] == ["000001"]
-    assert revision["recovery_plan"]["missing_fields"] == ["anchor"]
+    assert revision["recovery_plan"]["missing_fields"] == ["auction_anchor_0925_price_milli"]
     assert revision["recovery_plan"]["recovery_state"] == "REQUESTED"
     assert revision["recovery_execution"] == "NOT_RUN_BY_CORE"
     facts = result["ordered"]["anchor_evidence"]["0925"]["facts_by_symbol"]

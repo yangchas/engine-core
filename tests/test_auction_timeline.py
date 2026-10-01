@@ -182,6 +182,7 @@ def test_auction_timeline_accepts_0925_without_optional_prior_anchors():
     assert bundle["prior_deltas"] == {"0920": "UNKNOWN", "0924": "UNKNOWN"}
     assert bundle["recovery_plan"] is not None
     assert bundle["recovery_plan"].recovery_state == "REQUESTED"
+    assert bundle["recovery_plan"].missing_fields == ("auction_anchor_0925_price_milli",)
 
 
 def test_all_source_rows_do_not_make_missing_0925_anchor_ready():
@@ -207,7 +208,7 @@ def test_all_source_rows_do_not_make_missing_0925_anchor_ready():
     bundle = timeline.build_analysis_bundle("0925")
     assert bundle["recovery_required"] is True
     assert bundle["recovery_plan"].requested_symbols == ("000001",)
-    assert bundle["recovery_plan"].missing_fields == ("anchor",)
+    assert bundle["recovery_plan"].missing_fields == ("auction_anchor_0925_price_milli",)
 
 
 def test_0925_can_be_ready_without_optional_0920_or_0924_anchors():
