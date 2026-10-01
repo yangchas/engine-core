@@ -7,7 +7,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from engine_core import build_opening_plate_amount_context
+from engine_core import (
+    build_opening_plate_amount_context,
+    build_opening_plate_price_reference_context,
+)
 from examples.run_task008_q2frame_auction_engine_shadow import (
     _inventory,
     run_q2frame_auction_engine_shadow,
@@ -601,13 +604,72 @@ def test_q2frame_opening_report_includes_explicit_plate_context_deterministicall
     assert plate["comparison_valid_count"] == 2
     assert opening["plate_amount_summary"] == repeated["plate_amount_summary"]
     price_plate = opening["plate_price_summary"]["plates"][0]
-    assert opening["plate_price_summary"]["contract"] == "OpeningPlatePriceSummaryV1"
+    assert opening["plate_price_summary"]["contract"] == "OpeningPlatePriceSummaryV2"
     assert price_plate["comparison_valid_count"] == 2
     assert price_plate["price_change_value_count"] == 2
     assert price_plate["open_up_count"] == 1
     assert price_plate["open_flat_count"] == 1
     assert price_plate["open_positive_ratio"] == pytest.approx(0.5)
     assert price_plate["open_median_change_pct"] == pytest.approx(0.5)
+    assert opening["plate_price_summary"] == repeated["plate_price_summary"]
+
+
+def test_q2frame_opening_report_compares_date_pinned_auction_price_reference(
+    tmp_path: Path,
+):
+    frames = (
+        _frame(1, "09:15:00.000"),
+        _frame(2, "09:20:03.000"),
+        _frame(3, "09:24:10.000"),
+        _frame(4, "09:25:06.000"),
+        _frame(5, "09:32:09.000"),
+    )
+    source = tmp_path / "q2frame-opening-with-price-reference.jsonl"
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+    amount_context = build_opening_plate_amount_context(
+        trade_date="2026-09-18",
+        source_provenance={"mapping_snapshot_sha256": "a" * 64},
+        mapped_symbols_by_plate={"AI": ("000001", "600000")},
+        auction_symbols_by_plate={"AI": ("000001", "600000")},
+        auction_top1_amount_ratio_by_plate={"AI": 0.5},
+        selected_plates=("AI",),
+    )
+    price_reference = build_opening_plate_price_reference_context(
+        trade_date="2026-09-18",
+        source_provenance={"trade_date": "2026-09-18", "source_sha256": "b" * 64},
+        auction_price_stats_by_plate={
+            "AI": {"positive_ratio": 0.25, "median_change_pct": -1.0}
+        },
+        selected_plates=("AI",),
+    )
+
+    result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+        plate_amount_context=amount_context,
+        plate_price_reference_context=price_reference,
+    )
+
+    assert result["deterministic"] is True
+    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV10"
+    opening = result["ordered"]["opening_evidence"]["OPENING_0932"]
+    repeated = result["repeat"]["opening_evidence"]["OPENING_0932"]
+    price_summary = opening["plate_price_summary"]
+    plate = price_summary["plates"][0]
+    assert price_summary["contract"] == "OpeningPlatePriceSummaryV2"
+    assert plate["auction_positive_ratio"] == pytest.approx(0.25)
+    assert plate["positive_ratio_delta"] == pytest.approx(0.25)
+    assert plate["price_breadth_state"] == "expanded"
+    assert plate["auction_median_change_pct"] == pytest.approx(-1.0)
+    assert plate["median_change_pct_delta"] == pytest.approx(1.5)
+    assert plate["median_change_state"] == "reversed"
+    assert opening["plate_price_reference_context"]["content_hash"] == price_reference[
+        "content_hash"
+    ]
     assert opening["plate_price_summary"] == repeated["plate_price_summary"]
 
 

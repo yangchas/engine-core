@@ -9,6 +9,7 @@ from engine_core import (
     OPENING_PLATE_AMOUNT_CONTEXT_CONTRACT_VERSION,
     OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION,
     OPENING_PLATE_PRICE_SUMMARY_CONTRACT_VERSION,
+    OPENING_PLATE_PRICE_REFERENCE_CONTEXT_CONTRACT_VERSION,
     OPENING_TRANSITION_FACT_CONTRACT_VERSION,
     OPENING_TRANSITION_SUMMARY_CONTRACT_VERSION,
     build_open_fact,
@@ -17,11 +18,13 @@ from engine_core import (
     build_opening_plate_amount_context,
     build_opening_plate_amount_summary,
     build_opening_plate_price_summary,
+    build_opening_plate_price_reference_context,
     build_opening_transition_fact,
     build_opening_transition_summary,
     classify_delta,
     classify_sign_state,
     validate_opening_plate_amount_context,
+    validate_opening_plate_price_reference_context,
     compute_change_delta_bp,
     compute_delta,
     compute_open_change_pct,
@@ -442,6 +445,88 @@ def test_opening_plate_price_summary_is_order_independent_and_keeps_empty_plate_
     assert by_plate["P"]["open_median_change_pct"] == pytest.approx(0.0)
     assert by_plate["EMPTY"]["open_median_change_pct"] is None
     assert by_plate["EMPTY"]["price_change_status"] == "unavailable"
+
+
+def test_opening_plate_price_summary_compares_only_explicit_auction_reference_facts():
+    reference_context = build_opening_plate_price_reference_context(
+        trade_date="2026-09-29",
+        source_provenance={"trade_date": "2026-09-29", "source_sha256": "a" * 64},
+        auction_price_stats_by_plate={
+            "P": {"positive_ratio": 0.5, "median_change_pct": -1.0},
+            "Q": {"positive_ratio": 2.0, "median_change_pct": None},
+        },
+        selected_plates=("P", "Q", "NOT_REPORTED"),
+    )
+    assert reference_context["contract"] == OPENING_PLATE_PRICE_REFERENCE_CONTEXT_CONTRACT_VERSION
+    assert validate_opening_plate_price_reference_context(
+        reference_context,
+        trade_date="2026-09-29",
+        selected_plates=("P", "Q", "NOT_REPORTED"),
+    ) == reference_context
+    assert reference_context["auction_price_stats_by_plate"]["P"] == {
+        "auction_positive_ratio": 0.5,
+        "auction_positive_ratio_status": "AVAILABLE",
+        "auction_median_change_pct": -1.0,
+        "auction_median_change_pct_status": "AVAILABLE",
+    }
+    assert reference_context["auction_price_stats_by_plate"]["Q"][
+        "auction_positive_ratio_status"
+    ] == "INVALID"
+    assert reference_context["auction_price_stats_by_plate"]["NOT_REPORTED"][
+        "auction_positive_ratio_status"
+    ] == "NOT_REPORTED"
+
+    summary = build_opening_plate_price_summary(
+        {
+            "A": {"status": "available", "change_pct": 2.0},
+            "B": {"status": "available", "change_pct": 1.0},
+            "C": {"status": "available", "change_pct": 3.0},
+        },
+        mapped_symbols_by_plate={"P": ("A", "B", "C")},
+        auction_symbols_by_plate={"P": ("A", "B", "C")},
+        selected_plates=("P",),
+        auction_price_reference_by_plate=reference_context[
+            "auction_price_stats_by_plate"
+        ],
+    )
+    plate = summary["plates"][0]
+    assert summary["contract"] == OPENING_PLATE_PRICE_SUMMARY_CONTRACT_VERSION
+    assert plate["auction_positive_ratio"] == pytest.approx(0.5)
+    assert plate["positive_ratio_delta"] == pytest.approx(0.5)
+    assert plate["price_breadth_state"] == "expanded"
+    assert plate["auction_median_change_pct"] == pytest.approx(-1.0)
+    assert plate["median_change_pct_delta"] == pytest.approx(3.0)
+    assert plate["median_change_state"] == "reversed"
+
+    without_reference = build_opening_plate_price_summary(
+        {"A": {"status": "available", "change_pct": 0.0}},
+        mapped_symbols_by_plate={"P": ("A",)},
+        auction_symbols_by_plate={"P": ("A",)},
+        selected_plates=("P",),
+    )["plates"][0]
+    assert without_reference["auction_positive_ratio_status"] == "NOT_PROVIDED"
+    assert without_reference["positive_ratio_delta"] is None
+    assert without_reference["price_breadth_state"] == "unavailable"
+
+
+def test_opening_plate_price_reference_context_is_date_and_cohort_pinned():
+    context = build_opening_plate_price_reference_context(
+        trade_date="2026-09-29",
+        source_provenance={},
+        auction_price_stats_by_plate={"P": {"positive_ratio": 0.0, "median_change_pct": 0.0}},
+        selected_plates=("P",),
+    )
+    assert context["auction_price_stats_by_plate"]["P"][
+        "auction_positive_ratio_status"
+    ] == "AVAILABLE"
+    with pytest.raises(ValueError, match="trade_date does not match"):
+        validate_opening_plate_price_reference_context(
+            context, trade_date="2026-09-30", selected_plates=("P",)
+        )
+    with pytest.raises(ValueError, match="selected_plates do not match"):
+        validate_opening_plate_price_reference_context(
+            context, trade_date="2026-09-29", selected_plates=("Q",)
+        )
 
 
 def test_opening_plate_amount_context_is_versioned_stable_and_trade_date_pinned():

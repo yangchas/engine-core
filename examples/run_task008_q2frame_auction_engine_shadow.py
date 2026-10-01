@@ -53,6 +53,7 @@ from engine_core import (  # noqa: E402
     build_opening_transition_summary,
     semantic_hash,
     validate_opening_plate_amount_context,
+    validate_opening_plate_price_reference_context,
 )
 from engine_core.contracts import StrategyResult  # noqa: E402
 from engine_core.market_summary import derive_q2_auction_summary  # noqa: E402
@@ -372,6 +373,7 @@ def _run_once(
     input_sha256: str,
     include_opening: bool = False,
     plate_amount_context: Mapping[str, Any] | None = None,
+    plate_price_reference_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     symbols = tuple(inventory["symbols"])
     policies = {tag: AuctionTimingPolicyV1.default(tag) for tag in AUCTION_TAGS}
@@ -633,7 +635,24 @@ def _run_once(
                         "auction_symbols_by_plate"
                     ],
                     selected_plates=plate_amount_context["selected_plates"],
+                    auction_price_reference_by_plate=(
+                        plate_price_reference_context["auction_price_stats_by_plate"]
+                        if plate_price_reference_context is not None
+                        else None
+                    ),
                 )
+                if plate_price_reference_context is not None:
+                    base["plate_price_reference_context"] = {
+                        "contract": plate_price_reference_context["contract"],
+                        "trade_date": plate_price_reference_context["trade_date"],
+                        "content_hash": plate_price_reference_context["content_hash"],
+                        "source_provenance": plate_price_reference_context[
+                            "source_provenance"
+                        ],
+                        "selected_plates": plate_price_reference_context[
+                            "selected_plates"
+                        ],
+                    }
             opening_evidence[tag] = base
         else:
             base["auction_revision"] = auction_revision_summary(
@@ -882,6 +901,7 @@ def run_q2frame_auction_engine_shadow(
     expected_sha256: str | None = None,
     include_opening: bool = False,
     plate_amount_context: Mapping[str, Any] | None = None,
+    plate_price_reference_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run a pinned Q2Frame auction replay, optionally through opening, twice."""
 
@@ -891,6 +911,16 @@ def run_q2frame_auction_engine_shadow(
         plate_amount_context = validate_opening_plate_amount_context(
             plate_amount_context,
             trade_date=trade_date,
+        )
+    if plate_price_reference_context is not None:
+        if not include_opening:
+            raise ValueError("plate price reference context requires include_opening=True")
+        if plate_amount_context is None:
+            raise ValueError("plate price reference context requires plate amount context")
+        plate_price_reference_context = validate_opening_plate_price_reference_context(
+            plate_price_reference_context,
+            trade_date=trade_date,
+            selected_plates=plate_amount_context["selected_plates"],
         )
 
     initial_sha = _file_sha256(q2frame_path)
@@ -905,6 +935,7 @@ def run_q2frame_auction_engine_shadow(
         input_sha256=initial_sha,
         include_opening=include_opening,
         plate_amount_context=plate_amount_context,
+        plate_price_reference_context=plate_price_reference_context,
     )
     between_runs_sha = _file_sha256(q2frame_path)
     repeat = _run_once(
@@ -914,6 +945,7 @@ def run_q2frame_auction_engine_shadow(
         input_sha256=initial_sha,
         include_opening=include_opening,
         plate_amount_context=plate_amount_context,
+        plate_price_reference_context=plate_price_reference_context,
     )
     final_sha = _file_sha256(q2frame_path)
     input_stable = len(
@@ -937,7 +969,9 @@ def run_q2frame_auction_engine_shadow(
     deterministic = all(determinism.values())
     return {
         "contract_version": (
-            "Task008Q2FrameSessionEngineShadowV9"
+            "Task008Q2FrameSessionEngineShadowV10"
+            if plate_price_reference_context is not None
+            else "Task008Q2FrameSessionEngineShadowV9"
             if plate_amount_context is not None
             else "Task008Q2FrameSessionEngineShadowV7"
             if include_opening
@@ -989,6 +1023,19 @@ def run_q2frame_auction_engine_shadow(
             if plate_amount_context is not None
             else None
         ),
+        "plate_price_reference_context": (
+            {
+                "contract": plate_price_reference_context["contract"],
+                "trade_date": plate_price_reference_context["trade_date"],
+                "content_hash": plate_price_reference_context["content_hash"],
+                "source_provenance": plate_price_reference_context[
+                    "source_provenance"
+                ],
+                "selected_plates": plate_price_reference_context["selected_plates"],
+            }
+            if plate_price_reference_context is not None
+            else None
+        ),
         "auction_price_field_policy": {
             tag: field for tag, field in zip(AUCTION_TAGS, AUCTION_PRICE_FIELDS)
         },
@@ -1021,11 +1068,21 @@ def main() -> int:
         type=Path,
         help="date-pinned OpeningPlateAmountContextV1 JSON input",
     )
+    parser.add_argument(
+        "--plate-price-reference-context",
+        type=Path,
+        help="date-pinned OpeningPlatePriceReferenceV1 JSON input",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     plate_amount_context = (
         json.loads(args.plate_amount_context.read_text(encoding="utf-8"))
         if args.plate_amount_context is not None
+        else None
+    )
+    plate_price_reference_context = (
+        json.loads(args.plate_price_reference_context.read_text(encoding="utf-8"))
+        if args.plate_price_reference_context is not None
         else None
     )
     result = run_q2frame_auction_engine_shadow(
@@ -1034,6 +1091,7 @@ def main() -> int:
         expected_sha256=args.expected_sha256,
         include_opening=args.include_opening,
         plate_amount_context=plate_amount_context,
+        plate_price_reference_context=plate_price_reference_context,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as output:

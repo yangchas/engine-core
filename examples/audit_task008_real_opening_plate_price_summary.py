@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from engine_core import (  # noqa: E402
+    build_opening_plate_price_reference_context,
     build_opening_plate_price_summary,
     validate_opening_plate_amount_context,
 )
@@ -34,9 +35,11 @@ EXPECTED_INPUT_SHA256 = {
     "legacy_open_confirmation.json": "9c338e2b2f53675f488c5bac714806692e3b15f0d12533a218e8e57d70474704",
     "opening_plate_amount_context.json": "7c5f01017174f96689ab3d0f3e8cf3cdfbd8da57eb4546eec17fb1b256e3f1c6",
     "opening_plate_amount_parity.json": "b289f95751b29fe6935ffc2ae61ec0573729185e51a217bfab00aa7876f4117a",
+    "stock_plate_snapshot.json": "c88eb9339fb1a30dbf6c82da41eebca12f8128a399bd045eaa3da4fbf1a4553b",
+    "td_auction_snapshot_rows.jsonl": "b66b78971f6453ad0ab48e5fc818ce7b1e9799afc03bf3e2e9adffae7d44332b",
 }
 EXPECTED_Q2FRAME_SHA256 = "5a2afae406e5a66ea63bb04c10e071de308dbb4bd608e8d4d7a774ea6e9f6bb9"
-COMPARE_FIELDS = (
+OPENING_COMPARE_FIELDS = (
     "open_valid_count",
     "common_symbol_count",
     "comparison_valid_count",
@@ -47,6 +50,14 @@ COMPARE_FIELDS = (
     "open_negative_ratio",
     "open_median_change_pct",
     "open_symbols",
+)
+AUCTION_COMPARE_FIELDS = (
+    "auction_positive_ratio",
+    "positive_ratio_delta",
+    "price_breadth_state",
+    "auction_median_change_pct",
+    "median_change_pct_delta",
+    "median_change_state",
 )
 
 
@@ -101,12 +112,71 @@ def run_audit(*, input_dir: Path, q2frame_path: Path, output_dir: Path) -> dict[
     if legacy_report.get("trade_date") != core_report.get("trade_date"):
         raise ValueError("legacy report and Core report trade dates differ")
 
+    observations = legacy_report.get("observations")
+    if not isinstance(observations, list):
+        raise ValueError("legacy report must contain per-plate observations")
+    auction_stats_by_plate: dict[str, dict[str, Any]] = {}
+    legacy_evidence_by_plate: dict[str, dict[str, Any]] = {}
+    for observation in observations:
+        if not isinstance(observation, Mapping) or not isinstance(
+            observation.get("evidence_values"), Mapping
+        ):
+            raise ValueError("legacy observation is missing evidence_values")
+        plate = str(observation.get("plate") or "").strip()
+        if not plate or plate in auction_stats_by_plate:
+            raise ValueError("legacy observations contain an empty or duplicate plate")
+        evidence = dict(observation["evidence_values"])
+        if str(evidence.get("plate") or plate) != plate:
+            raise ValueError(f"legacy observation plate identity mismatch: {plate}")
+        legacy_evidence_by_plate[plate] = evidence
+        auction_stats_by_plate[plate] = {
+            "positive_ratio": evidence.get("auction_positive_ratio"),
+            "median_change_pct": evidence.get("auction_median_change_pct"),
+        }
+
+    captured_auction = _load_object(input_dir / "opening_plate_amount_context.json")[
+        "source_provenance"
+    ]
+    if captured_auction.get("auction_rows_sha256") != EXPECTED_INPUT_SHA256[
+        "td_auction_snapshot_rows.jsonl"
+    ]:
+        raise ValueError("plate context does not identify the pinned TD auction rows")
+    reference_context = build_opening_plate_price_reference_context(
+        trade_date=str(core_report["trade_date"]),
+        source_provenance={
+            "trade_date": str(core_report["trade_date"]),
+            "source": "legacy_open_confirmation.observations.evidence_values",
+            "legacy_report_sha256": _sha256(input_dir / "legacy_open_confirmation.json"),
+            "legacy_data_origin": legacy_report.get("data_origin"),
+            "auction_report_id": legacy_report.get("auction_source", {}).get(
+                "report_id"
+            ),
+            "auction_observation_time": legacy_report.get("auction_source", {}).get(
+                "observation_time"
+            ),
+            "auction_source_table": captured_auction.get("auction_source_table"),
+            "auction_rows_sha256": captured_auction.get("auction_rows_sha256"),
+            "auction_projection_code_sha256": captured_auction.get(
+                "auction_projection_code_sha256"
+            ),
+            "mapping_snapshot_sha256": captured_auction.get(
+                "mapping_snapshot_sha256"
+            ),
+        },
+        auction_price_stats_by_plate=auction_stats_by_plate,
+        selected_plates=context["selected_plates"],
+    )
+    reference_stats_by_plate = reference_context["auction_price_stats_by_plate"]
+    if set(reference_stats_by_plate) != set(legacy_evidence_by_plate):
+        raise ValueError("legacy auction price references do not match selected plate cohort")
+
     opening = core_report["ordered"]["opening_evidence"]["OPENING_0932"]
     summary = build_opening_plate_price_summary(
         opening["facts_by_symbol"],
         mapped_symbols_by_plate=context["mapped_symbols_by_plate"],
         auction_symbols_by_plate=context["auction_symbols_by_plate"],
         selected_plates=context["selected_plates"],
+        auction_price_reference_by_plate=reference_stats_by_plate,
     )
     legacy_by_plate = {
         str(row["plate"]): row for row in legacy_report.get("plates", [])
@@ -124,8 +194,10 @@ def run_audit(*, input_dir: Path, q2frame_path: Path, output_dir: Path) -> dict[
                 }
             )
             continue
-        for field in COMPARE_FIELDS:
-            legacy_value = legacy_by_plate[plate].get(field)
+        for field in OPENING_COMPARE_FIELDS + AUCTION_COMPARE_FIELDS:
+            legacy_value = legacy_evidence_by_plate[plate].get(
+                field, legacy_by_plate[plate].get(field)
+            )
             core_value = core_by_plate[plate].get(field)
             if legacy_value != core_value:
                 mismatches.append(
@@ -143,10 +215,20 @@ def run_audit(*, input_dir: Path, q2frame_path: Path, output_dir: Path) -> dict[
         "trade_date": core_report["trade_date"],
         "evaluation_time_ms": opening["evaluation_time_ms"],
         "compared_plate_count": len(set(legacy_by_plate) & set(core_by_plate)),
-        "compared_fields_per_plate": list(COMPARE_FIELDS),
+        "compared_fields_per_plate": list(OPENING_COMPARE_FIELDS + AUCTION_COMPARE_FIELDS),
         "mismatch_count": len(mismatches),
         "mismatches": mismatches,
         "core_summary_hash": summary["content_hash"],
+        "auction_reference_context_hash": reference_context["content_hash"],
+        "auction_reference_derivation": {
+            "source_fields": [
+                "legacy_open_confirmation.observations[].evidence_values.auction_positive_ratio",
+                "legacy_open_confirmation.observations[].evidence_values.auction_median_change_pct",
+            ],
+            "legacy_report_data_origin": legacy_report.get("data_origin"),
+            "captured_td_rows_sha256": captured_auction.get("auction_rows_sha256"),
+            "independently_recomputed_from_td_rows": False,
+        },
         "inputs": {
             "core_report_sha256": _sha256(input_dir / "integrated_core_q2frame_report.json"),
             "legacy_report_sha256": _sha256(input_dir / "legacy_open_confirmation.json"),
@@ -155,17 +237,22 @@ def run_audit(*, input_dir: Path, q2frame_path: Path, output_dir: Path) -> dict[
             "q2frame_path": str(q2frame_path),
             "q2frame_sha256": q2frame_sha256,
             "context_source_provenance": context["source_provenance"],
+            "auction_reference_source_provenance": reference_context[
+                "source_provenance"
+            ],
         },
         "limits": [
             "The Q2Frame is real t1-v2 event-time replay, not original Rabbit delivery order.",
             "Historical available_at and Rabbit arrival order remain unknown.",
             "Plate membership uses a frozen mapping and frozen auction cohort; full-market coverage is unproven.",
-            "The comparison covers opening-side price facts only; auction-to-open deltas are not added by this contract.",
+            "Auction reference values are copied from the hash-pinned legacy report; TD rows are hash-pinned but this small audit does not independently regenerate the auction projection.",
+            "The legacy report identifies its data_origin as replay_fixture_only and auction observation_time as unavailable; this comparison is a same-artifact calculation/parity check, not proof of historical availability or live-source timing.",
         ],
         "side_effects": "NONE; pinned local artifacts and pure calculations only",
     }
 
     for filename, payload in (
+        ("opening_plate_price_reference_context.json", reference_context),
         ("opening_plate_price_summary.json", summary),
         ("audit_summary.json", audit),
     ):

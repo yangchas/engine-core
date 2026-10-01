@@ -19,7 +19,8 @@ OPENING_AMOUNT_SUMMARY_CONTRACT_VERSION = "OpeningAmountSummaryV1"
 OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION = "OpeningLimitStateSummaryV1"
 OPENING_PLATE_AMOUNT_CONTEXT_CONTRACT_VERSION = "OpeningPlateAmountContextV1"
 OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION = "OpeningPlateAmountSummaryV1"
-OPENING_PLATE_PRICE_SUMMARY_CONTRACT_VERSION = "OpeningPlatePriceSummaryV1"
+OPENING_PLATE_PRICE_SUMMARY_CONTRACT_VERSION = "OpeningPlatePriceSummaryV2"
+OPENING_PLATE_PRICE_REFERENCE_CONTEXT_CONTRACT_VERSION = "OpeningPlatePriceReferenceV1"
 OPENING_TRANSITION_SUMMARY_CONTRACT_VERSION = "OpeningTransitionSummaryV1"
 _VALID_LIMIT_STATES = {-1, 0, 1}
 _OPENING_COHORT_SCOPES = {
@@ -482,6 +483,7 @@ def build_opening_plate_price_summary(
     mapped_symbols_by_plate: Mapping[str, Sequence[str]],
     auction_symbols_by_plate: Mapping[str, Sequence[str]],
     selected_plates: Optional[Sequence[str]] = None,
+    auction_price_reference_by_plate: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> dict[str, Any]:
     """Aggregate observed opening price breadth and median by frozen plate.
 
@@ -551,6 +553,43 @@ def build_opening_plate_price_summary(
             if value_count == comparison_valid_count
             else "partial"
         )
+        reference = (
+            None
+            if auction_price_reference_by_plate is None
+            else auction_price_reference_by_plate.get(plate)
+        )
+        if auction_price_reference_by_plate is None:
+            positive_reference_status = median_reference_status = "NOT_PROVIDED"
+            auction_positive_ratio = auction_median_change_pct = None
+        elif reference is None:
+            positive_reference_status = median_reference_status = "NOT_REPORTED"
+            auction_positive_ratio = auction_median_change_pct = None
+        else:
+            positive_reference_status = str(
+                reference.get("auction_positive_ratio_status") or "UNAVAILABLE"
+            ).upper()
+            median_reference_status = str(
+                reference.get("auction_median_change_pct_status") or "UNAVAILABLE"
+            ).upper()
+            auction_positive_ratio = (
+                _number(reference.get("auction_positive_ratio"))
+                if positive_reference_status == "AVAILABLE"
+                else None
+            )
+            auction_median_change_pct = (
+                _number(reference.get("auction_median_change_pct"))
+                if median_reference_status == "AVAILABLE"
+                else None
+            )
+        positive_ratio_delta = compute_delta(
+            up_count / float(value_count) if value_count else None,
+            auction_positive_ratio,
+        )
+        open_median_change_pct = median(changes) if changes else None
+        median_change_pct_delta = compute_delta(
+            open_median_change_pct,
+            auction_median_change_pct,
+        )
         plate_summaries.append(
             {
                 "plate": plate,
@@ -573,8 +612,19 @@ def build_opening_plate_price_summary(
                 "open_flat_count": flat_count,
                 "open_positive_ratio": up_count / float(value_count) if value_count else None,
                 "open_negative_ratio": down_count / float(value_count) if value_count else None,
-                "open_median_change_pct": median(changes) if changes else None,
+                "open_median_change_pct": open_median_change_pct,
                 "open_symbols": sorted(valid_open_symbols),
+                "auction_positive_ratio": auction_positive_ratio,
+                "auction_positive_ratio_status": positive_reference_status,
+                "positive_ratio_delta": positive_ratio_delta,
+                "price_breadth_state": classify_delta(positive_ratio_delta),
+                "auction_median_change_pct": auction_median_change_pct,
+                "auction_median_change_pct_status": median_reference_status,
+                "median_change_pct_delta": median_change_pct_delta,
+                "median_change_state": classify_sign_state(
+                    auction_median_change_pct,
+                    open_median_change_pct,
+                ),
                 "comparison_symbols": [
                     symbol
                     for symbol in sorted(common_symbols)
@@ -589,13 +639,181 @@ def build_opening_plate_price_summary(
         "scope_authority": "FROZEN_MAPPING_AND_OBSERVED_Q2_COHORT",
         "full_market_coverage": "UNPROVEN",
         "source_field": "OpeningFactV1.change_pct",
-        "aggregation": "LEGACY_COMMON_VALID_OPENING_PRICE_BREADTH_AND_MEDIAN",
+        "aggregation": "LEGACY_COMMON_VALID_OPENING_PRICE_BREADTH_MEDIAN_AND_DELTAS",
         "decision_status": "FACT_ONLY",
         "selected_plate_count": len(plate_summaries),
         "plates": plate_summaries,
     }
     summary["content_hash"] = semantic_hash(summary)
     return summary
+
+
+def build_opening_plate_price_reference_context(
+    *,
+    trade_date: str,
+    source_provenance: Mapping[str, Any],
+    auction_price_stats_by_plate: Mapping[str, Mapping[str, Any]],
+    selected_plates: Sequence[str],
+) -> dict[str, Any]:
+    """Build a hash-pinned, date-specific reference for auction plate prices.
+
+    This sidecar carries only already-computed auction positive ratio and
+    median change. Missing or malformed values remain explicitly unavailable
+    or invalid; they do not block opening calculations.
+    """
+
+    try:
+        parsed_date = date.fromisoformat(trade_date)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("trade_date must use strict YYYY-MM-DD form") from exc
+    if parsed_date.isoformat() != trade_date:
+        raise ValueError("trade_date must use strict YYYY-MM-DD form")
+    if not isinstance(source_provenance, Mapping):
+        raise TypeError("source_provenance must be a mapping")
+    if source_provenance.get("trade_date", trade_date) != trade_date:
+        raise ValueError("source provenance trade_date must match context trade_date")
+    if not isinstance(auction_price_stats_by_plate, Mapping):
+        raise TypeError("auction_price_stats_by_plate must be a mapping")
+    if isinstance(selected_plates, (str, bytes)):
+        raise TypeError("selected_plates must be a sequence of plate names")
+
+    selected = sorted(
+        {str(plate).strip() for plate in selected_plates if str(plate).strip()}
+    )
+    raw_stats_by_plate: dict[str, Mapping[str, Any]] = {}
+    for raw_plate, raw_stats in auction_price_stats_by_plate.items():
+        plate = str(raw_plate).strip()
+        if not plate:
+            raise ValueError("auction price reference plate names must be non-empty")
+        if plate in raw_stats_by_plate:
+            raise ValueError("auction price reference plate names must be unique after normalization")
+        if plate not in selected:
+            raise ValueError("auction price reference contains a plate outside selected_plates")
+        if not isinstance(raw_stats, Mapping):
+            raise TypeError("each auction price reference must be a mapping")
+        raw_stats_by_plate[plate] = raw_stats
+
+    def normalize_metric(
+        raw_stats: Optional[Mapping[str, Any]],
+        field: str,
+        *,
+        ratio: bool = False,
+    ) -> tuple[Optional[float], str]:
+        if raw_stats is None:
+            return None, "NOT_REPORTED"
+        if field not in raw_stats or raw_stats[field] is None:
+            return None, "UNAVAILABLE"
+        raw_value = raw_stats[field]
+        value = _number(raw_value)
+        if isinstance(raw_value, bool) or value is None:
+            return None, "INVALID"
+        if ratio and not 0.0 <= value <= 1.0:
+            return None, "INVALID"
+        return value, "AVAILABLE"
+
+    normalized_stats: dict[str, dict[str, Any]] = {}
+    for plate in selected:
+        raw_stats = raw_stats_by_plate.get(plate)
+        positive_ratio, positive_status = normalize_metric(
+            raw_stats, "positive_ratio", ratio=True
+        )
+        median_change, median_status = normalize_metric(
+            raw_stats, "median_change_pct"
+        )
+        normalized_stats[plate] = {
+            "auction_positive_ratio": positive_ratio,
+            "auction_positive_ratio_status": positive_status,
+            "auction_median_change_pct": median_change,
+            "auction_median_change_pct_status": median_status,
+        }
+
+    payload = {
+        "contract": OPENING_PLATE_PRICE_REFERENCE_CONTEXT_CONTRACT_VERSION,
+        "trade_date": trade_date,
+        "source_provenance": dict(source_provenance),
+        "selected_plates": selected,
+        "auction_price_stats_by_plate": normalized_stats,
+    }
+    return {**payload, "content_hash": semantic_hash(payload)}
+
+
+def validate_opening_plate_price_reference_context(
+    context: Mapping[str, Any],
+    *,
+    trade_date: str,
+    selected_plates: Sequence[str],
+) -> dict[str, Any]:
+    """Validate a frozen auction price reference and its date/cohort binding."""
+
+    if not isinstance(context, Mapping):
+        raise TypeError("plate price reference context must be a mapping")
+    try:
+        parsed_date = date.fromisoformat(trade_date)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("trade_date must use strict YYYY-MM-DD form") from exc
+    if parsed_date.isoformat() != trade_date:
+        raise ValueError("trade_date must use strict YYYY-MM-DD form")
+    required_keys = {
+        "contract",
+        "trade_date",
+        "source_provenance",
+        "selected_plates",
+        "auction_price_stats_by_plate",
+        "content_hash",
+    }
+    if set(context) != required_keys:
+        raise ValueError("plate price reference context has unsupported fields")
+    if context.get("contract") != OPENING_PLATE_PRICE_REFERENCE_CONTEXT_CONTRACT_VERSION:
+        raise ValueError("unsupported plate price reference context contract")
+    if context.get("trade_date") != trade_date:
+        raise ValueError("plate price reference context trade_date does not match replay")
+    if isinstance(selected_plates, (str, bytes)):
+        raise TypeError("selected_plates must be a sequence of plate names")
+    expected_selected = sorted(
+        {str(plate).strip() for plate in selected_plates if str(plate).strip()}
+    )
+    if context.get("selected_plates") != expected_selected:
+        raise ValueError("plate price reference context selected_plates do not match")
+    provenance = context.get("source_provenance")
+    if not isinstance(provenance, Mapping):
+        raise TypeError("source_provenance must be a mapping")
+    if provenance.get("trade_date", trade_date) != trade_date:
+        raise ValueError("source provenance trade_date must match context trade_date")
+    stats_by_plate = context.get("auction_price_stats_by_plate")
+    if not isinstance(stats_by_plate, Mapping) or set(stats_by_plate) != set(expected_selected):
+        raise ValueError("auction price reference plates do not match selected_plates")
+
+    allowed_statuses = {"AVAILABLE", "UNAVAILABLE", "INVALID", "NOT_REPORTED"}
+    entry_keys = {
+        "auction_positive_ratio",
+        "auction_positive_ratio_status",
+        "auction_median_change_pct",
+        "auction_median_change_pct_status",
+    }
+    for plate, entry in stats_by_plate.items():
+        if not isinstance(entry, Mapping) or set(entry) != entry_keys:
+            raise ValueError(f"auction price reference fields are invalid for {plate}")
+        for value_key, status_key in (
+            ("auction_positive_ratio", "auction_positive_ratio_status"),
+            ("auction_median_change_pct", "auction_median_change_pct_status"),
+        ):
+            status = entry[status_key]
+            value = entry[value_key]
+            if status not in allowed_statuses:
+                raise ValueError(f"unsupported auction price reference status for {plate}")
+            if status == "AVAILABLE":
+                number = _number(value)
+                if number is None or isinstance(value, bool):
+                    raise ValueError(f"available auction reference value is invalid for {plate}")
+                if value_key == "auction_positive_ratio" and not 0.0 <= number <= 1.0:
+                    raise ValueError(f"auction positive ratio is out of range for {plate}")
+            elif value is not None:
+                raise ValueError(f"unavailable auction reference must be null for {plate}")
+
+    payload = {key: value for key, value in context.items() if key != "content_hash"}
+    if semantic_hash(payload) != context.get("content_hash"):
+        raise ValueError("plate price reference context content_hash mismatch")
+    return dict(context)
 
 
 def build_opening_plate_amount_context(
