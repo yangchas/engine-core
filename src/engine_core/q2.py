@@ -43,6 +43,9 @@ class Q2FieldSpec:
     unit: str
     semantic: str
     required: bool
+    source_event_time_window: Optional[Tuple[str, str]] = None
+    candidate_update_order: Optional[str] = None
+    snapshot_trigger_not_before: Optional[str] = None
 
 
 Q2_FIELD_CONTRACT: Tuple[Q2FieldSpec, ...] = (
@@ -71,12 +74,56 @@ Q2_FIELD_CONTRACT: Tuple[Q2FieldSpec, ...] = (
     ),
     Q2FieldSpec("ts", "source_record_time_ms", "epoch_ms", "epoch_ms", "upstream record or batch snapshot time", True),
     Q2FieldSpec("ph", "phase", "int", "code", "market phase", False),
-    Q2FieldSpec("br", "auction_bid_amount_yuan", "int", "yuan", "derived level-2 resting bid amount", False),
-    Q2FieldSpec("ar", "auction_ask_amount_yuan", "int", "yuan", "derived level-2 resting ask amount", False),
+    Q2FieldSpec(
+        "br",
+        "auction_bid_amount_yuan",
+        "int",
+        "yuan",
+        "auction-only derived notional: level-1 bid/reference price multiplied by level-2 unmatched bid volume in board lots, converted to yuan by integer floor (price_milli * lots * 100) // 1000; not level-2 price times level-2 volume",
+        False,
+    ),
+    Q2FieldSpec(
+        "ar",
+        "auction_ask_amount_yuan",
+        "int",
+        "yuan",
+        "auction-only derived notional: level-1 ask/reference price multiplied by level-2 unmatched ask volume in board lots, converted to yuan by integer floor (price_milli * lots * 100) // 1000; not level-2 price times level-2 volume",
+        False,
+    ),
     Q2FieldSpec("am", "auction_amount_yuan", "int", "yuan", "current auction matched amount", False),
-    Q2FieldSpec("a20", "auction_anchor_0920_price_milli", "int", "milli_price", "captured 09:20 matching-price anchor; zero means unavailable", False),
-    Q2FieldSpec("a24", "auction_anchor_0924_price_milli", "int", "milli_price", "captured 09:24 matching-price anchor; zero means unavailable", False),
-    Q2FieldSpec("a25", "auction_anchor_0925_price_milli", "int", "milli_price", "captured 09:25 matching-price anchor; zero means unavailable", False),
+    Q2FieldSpec(
+        "a20",
+        "auction_anchor_0920_price_milli",
+        "int",
+        "milli_price",
+        "matching-price candidate overwritten by each qualifying source-event tick in processing order; source time is Shanghai whole-second truncated and qualifies in the half-open window; this Q2 field may be present before the scheduled snapshot trigger; replay event-time order does not prove production processing order or historical available_at; zero means unavailable",
+        False,
+        ("09:20:00", "09:20:21"),
+        "LAST_PROCESSED_QUALIFYING_TICK",
+        "09:20:03",
+    ),
+    Q2FieldSpec(
+        "a24",
+        "auction_anchor_0924_price_milli",
+        "int",
+        "milli_price",
+        "matching-price candidate overwritten by each qualifying source-event tick in processing order; source time is Shanghai whole-second truncated and qualifies in the half-open window; this Q2 field may be present before the scheduled snapshot trigger; replay event-time order does not prove production processing order or historical available_at; zero means unavailable",
+        False,
+        ("09:24:00", "09:24:21"),
+        "LAST_PROCESSED_QUALIFYING_TICK",
+        "09:24:10",
+    ),
+    Q2FieldSpec(
+        "a25",
+        "auction_anchor_0925_price_milli",
+        "int",
+        "milli_price",
+        "matching-price candidate overwritten by each qualifying source-event tick in processing order; source time is Shanghai whole-second truncated and qualifies in the half-open window; this Q2 field may be present before the scheduled snapshot trigger; replay event-time order does not prove production processing order or historical available_at; zero means unavailable",
+        False,
+        ("09:25:00", "09:25:21"),
+        "LAST_PROCESSED_QUALIFYING_TICK",
+        "09:25:06",
+    ),
     Q2FieldSpec("spd1m", "speed_1m_bp", "int", "basis_point", "exact one-minute price change", False),
     Q2FieldSpec("amt2m", "amount_2m_yuan", "int", "yuan", "cumulative amount delta within two minutes", False),
     Q2FieldSpec("amt5m", "amount_5m_yuan", "int", "yuan", "cumulative amount delta within five minutes", False),

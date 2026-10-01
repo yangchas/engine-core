@@ -61,6 +61,32 @@ def test_q2_contract_keeps_verified_legacy_units_explicit():
     assert specs["a20"].canonical_name == "auction_anchor_0920_price_milli"
     assert specs["a24"].canonical_name == "auction_anchor_0924_price_milli"
     assert specs["a25"].canonical_name == "auction_anchor_0925_price_milli"
+    for name, event_window, trigger_not_before in (
+        ("a20", ("09:20:00", "09:20:21"), "09:20:03"),
+        ("a24", ("09:24:00", "09:24:21"), "09:24:10"),
+        ("a25", ("09:25:00", "09:25:21"), "09:25:06"),
+    ):
+        assert specs[name].source_event_time_window == event_window
+        assert specs[name].candidate_update_order == "LAST_PROCESSED_QUALIFYING_TICK"
+        assert specs[name].snapshot_trigger_not_before == trigger_not_before
+        assert "may be present before the scheduled snapshot trigger" in specs[name].semantic
+        assert "does not prove production processing order" in specs[name].semantic
+
+
+def test_q2_auction_rest_amount_contract_matches_t1_level_and_unit_formula():
+    specs = {spec.raw_name: spec for spec in Q2_FIELD_CONTRACT}
+
+    assert "auction-only" in specs["br"].semantic
+    assert "level-1 bid/reference price" in specs["br"].semantic
+    assert "level-2 unmatched bid volume in board lots" in specs["br"].semantic
+    assert "(price_milli * lots * 100) // 1000" in specs["br"].semantic
+    assert "not level-2 price times level-2 volume" in specs["br"].semantic
+
+    assert "auction-only" in specs["ar"].semantic
+    assert "level-1 ask/reference price" in specs["ar"].semantic
+    assert "level-2 unmatched ask volume in board lots" in specs["ar"].semantic
+    assert "(price_milli * lots * 100) // 1000" in specs["ar"].semantic
+    assert "not level-2 price times level-2 volume" in specs["ar"].semantic
 
 
 def test_q2_projection_contract_v3_carries_anchor_quality_without_relabeling_source():
@@ -229,6 +255,28 @@ def test_real_q2frame_t1_delta_fields_survive_q2_projection_hash():
         {raw["symbol"]: {**raw_hash, "ln": raw_hash["ln"] + 1}},
     )
     assert changed_projection.content_hash != projection.content_hash
+
+
+def test_real_later_q2_a25_row_does_not_claim_the_original_freeze_cohort():
+    fixture = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures/q2/q2frame_opening_consumer_real_20260929.json"
+        ).read_text(encoding="utf-8")
+    )
+    raw = fixture["q2_update"]
+    source = fixture["source"]
+    a25_spec = next(spec for spec in Q2_FIELD_CONTRACT if spec.raw_name == "a25")
+    first_observable_ms = int(
+        datetime(2026, 9, 29, 1, 25, 6, tzinfo=timezone.utc).timestamp() * 1000
+    )
+
+    assert source["logical_ts_ms"] > first_observable_ms
+    assert raw["a25"] > 0
+    assert a25_spec.source_event_time_window == ("09:25:00", "09:25:21")
+    assert a25_spec.snapshot_trigger_not_before == "09:25:06"
+    assert a25_spec.candidate_update_order == "LAST_PROCESSED_QUALIFYING_TICK"
+    assert "may be present before the scheduled snapshot trigger" in a25_spec.semantic
 
 
 def test_real_q2frame_delta_fields_reach_engine_snapshot_and_hash():
