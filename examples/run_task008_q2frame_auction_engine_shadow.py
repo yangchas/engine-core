@@ -46,6 +46,7 @@ from engine_core import (  # noqa: E402
     canonical_hash,
     canonical_json,
     build_cross_section_facts,
+    build_opening_limit_state_summary,
     semantic_hash,
 )
 from engine_core.contracts import StrategyResult  # noqa: E402
@@ -539,6 +540,11 @@ def _run_once(
                     "opening_fact_field_status_hash": strategy_result.trace.get(
                         "opening_fact_field_status_hash"
                     ),
+                    "limit_state_summary": build_opening_limit_state_summary(
+                        strategy_result.trace.get("facts_by_symbol", {}),
+                        expected_symbols=expected_symbols,
+                        scope="OBSERVED_COHORT",
+                    ),
                     "freshness_policy": {
                         "stale_after_ms": OPENING_STALE_AFTER_MS,
                         "max_future_skew_ms": 999,
@@ -835,7 +841,7 @@ def run_q2frame_auction_engine_shadow(
     deterministic = all(determinism.values())
     return {
         "contract_version": (
-            "Task008Q2FrameSessionEngineShadowV4"
+            "Task008Q2FrameSessionEngineShadowV5"
             if include_opening
             else "Task008Q2FrameAuctionEngineShadowV5"
         ),

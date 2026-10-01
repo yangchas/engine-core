@@ -1,19 +1,26 @@
-"""Small, side-effect-free opening facts extracted from ``engine_next``.
+"""Side-effect-free opening facts and cohort summaries extracted from ``engine_next``.
 
-The first migration slice deliberately contains only the single-stock facts
-that are already defined by the deployed opening reader.  It does not fetch
-Q2, infer a limit state, or make a strategy decision.
+These helpers operate only on already-read/normalized values.  They do not
+fetch Q2, infer a limit state, impose a run gate, or make a strategy decision.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
+from .contracts import semantic_hash
 
 OPENING_FACT_CONTRACT_VERSION = "OpeningFactV1"
 OPENING_TRANSITION_FACT_CONTRACT_VERSION = "OpeningTransitionFactV1"
+OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION = "OpeningLimitStateSummaryV1"
 _VALID_LIMIT_STATES = {-1, 0, 1}
+_OPENING_LIMIT_STATE_SCOPES = {
+    "OBSERVED_COHORT",
+    "FRESH_OBSERVED_COHORT",
+    "STALE_OBSERVED_COHORT",
+    "UNCLASSIFIED_TIME_OBSERVED_COHORT",
+}
 
 
 def _number(value: Any) -> Optional[float]:
@@ -153,6 +160,100 @@ def build_open_fact(row: Mapping[str, Any]) -> dict[str, Any]:
         "speed_1m": _number(row.get("speed_1m")),
         "status": "available" if valid else "unavailable",
     }
+
+
+def build_opening_limit_state_summary(
+    facts_by_symbol: Mapping[str, Mapping[str, Any]],
+    *,
+    expected_symbols: Optional[Sequence[str]] = None,
+    scope: str = "OBSERVED_COHORT",
+) -> dict[str, Any]:
+    """Aggregate producer ``limit_state`` facts without turning them into a gate.
+
+    The input is the per-symbol result of :func:`build_open_fact`.  As in the
+    deployed opening consumer, the limit-state denominator contains rows with
+    a price-valid opening fact (``status == "available"``).  Quality counts
+    are independent of price breadth: a missing state is not a normal state,
+    and an invalid state is not missing.  Known enum counts are always retained
+    with their valid-value denominator, even for a partial cohort.
+
+    ``scope`` describes the caller-selected cohort; only observed/fresh/stale
+    Q2 cohorts are accepted here.  This function cannot establish a full
+    market universe, so its output always keeps that authority UNPROVEN.
+    """
+
+    if scope not in _OPENING_LIMIT_STATE_SCOPES:
+        raise ValueError("scope must identify an observed Q2 cohort")
+
+    observed_symbols = {str(symbol) for symbol in facts_by_symbol}
+    expected = (
+        observed_symbols
+        if expected_symbols is None
+        else {str(symbol) for symbol in expected_symbols}
+    )
+    if observed_symbols - expected:
+        raise ValueError("facts contain symbols outside expected_symbols")
+
+    eligible = tuple(
+        (str(symbol), fact)
+        for symbol, fact in facts_by_symbol.items()
+        if fact.get("status") == "available"
+    )
+    present_count = valid_count = invalid_count = 0
+    counts = {"up_count": 0, "normal_count": 0, "down_count": 0}
+    for _symbol, fact in eligible:
+        value = fact.get("limit_state")
+        if value is None:
+            continue
+        present_count += 1
+        if not _limit_state_valid(value):
+            invalid_count += 1
+            continue
+        valid_count += 1
+        state = int(_number(value))
+        if state == 1:
+            counts["up_count"] += 1
+        elif state == -1:
+            counts["down_count"] += 1
+        else:
+            counts["normal_count"] += 1
+
+    total_count = len(eligible)
+    missing_count = total_count - present_count
+    if total_count and valid_count == total_count:
+        status = "available"
+    elif valid_count:
+        status = "partial"
+    else:
+        status = "unavailable"
+
+    summary: dict[str, Any] = {
+        "contract": OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION,
+        "scope": scope,
+        "scope_authority": "Q2_COHORT_ONLY_NOT_FULL_MARKET",
+        "full_market_coverage": "UNPROVEN",
+        "status_scope": "PRICE_VALID_OPENING_FACTS",
+        "source_field": "Q2.limit_state",
+        "expected_count": len(expected),
+        "observed_count": len(observed_symbols),
+        "missing_symbol_count": len(expected - observed_symbols),
+        "symbol_coverage": (
+            len(observed_symbols) / len(expected) if expected else None
+        ),
+        "price_eligible_count": total_count,
+        "price_ineligible_count": len(observed_symbols) - total_count,
+        "limit_state_total_count": total_count,
+        "limit_state_present_count": present_count,
+        "limit_state_valid_count": valid_count,
+        "limit_state_missing_count": missing_count,
+        "limit_state_invalid_count": invalid_count,
+        "limit_state_counts": counts,
+        "valid_count_denominator": valid_count,
+        "valid_coverage": valid_count / total_count if total_count else None,
+        "cohort_field_status": status,
+    }
+    summary["content_hash"] = semantic_hash(summary)
+    return summary
 
 
 def build_opening_transition_fact(

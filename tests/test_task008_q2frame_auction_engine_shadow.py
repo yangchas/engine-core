@@ -328,7 +328,7 @@ def test_q2frame_session_reaches_opening_with_one_engine_and_symbol_source_times
         include_opening=True,
     )
 
-    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV4"
+    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV5"
     assert result["deterministic"] is True
     assert result["ordered"]["engine_instances"] == 1
     assert result["ordered"]["input_frames_processed"] == 11
@@ -379,6 +379,19 @@ def test_q2frame_session_reaches_opening_with_one_engine_and_symbol_source_times
         "speed_1m": {"UNAVAILABLE": 2},
     }
     assert opening["opening_fact_field_status_hash"]
+    limit_summary = opening["limit_state_summary"]
+    assert limit_summary["contract"] == "OpeningLimitStateSummaryV1"
+    assert limit_summary["scope"] == "OBSERVED_COHORT"
+    assert limit_summary["full_market_coverage"] == "UNPROVEN"
+    assert limit_summary["expected_count"] == 2
+    assert limit_summary["observed_count"] == 2
+    assert limit_summary["limit_state_valid_count"] == 2
+    assert limit_summary["limit_state_counts"] == {
+        "up_count": 0,
+        "normal_count": 2,
+        "down_count": 0,
+    }
+    assert limit_summary["content_hash"]
 
 
 def test_q2frame_opening_emits_partial_facts_instead_of_stopping_on_stale_symbol(tmp_path: Path):
@@ -414,6 +427,11 @@ def test_q2frame_opening_emits_partial_facts_instead_of_stopping_on_stale_symbol
     assert opening["fact_status_counts"] == {"PARTIAL": 1, "READY": 1}
     assert opening["stale_symbol_count"] == 1
     assert opening["expected_symbol_count"] == 2
+    # The older quote is retained as an observed fact and is identified by the
+    # separate stale count; aggregation does not silently discard it.
+    assert opening["limit_state_summary"]["observed_count"] == 2
+    assert opening["limit_state_summary"]["missing_symbol_count"] == 0
+    assert opening["limit_state_summary"]["scope"] == "OBSERVED_COHORT"
     assert result["ordered"]["engine_instances"] == 1
 
 
@@ -459,4 +477,11 @@ def test_q2frame_opening_aggregates_auxiliary_field_quality_without_stopping(tmp
         "limit_state": {"INVALID": 1},
         "speed_1m": {"INVALID": 1},
     }
+    limit_summary = opening["limit_state_summary"]
+    assert limit_summary["limit_state_total_count"] == 1
+    assert limit_summary["limit_state_present_count"] == 1
+    assert limit_summary["limit_state_valid_count"] == 0
+    assert limit_summary["limit_state_invalid_count"] == 1
+    assert limit_summary["cohort_field_status"] == "unavailable"
+    assert limit_summary["full_market_coverage"] == "UNPROVEN"
     assert result["ordered"]["engine_instances"] == 1

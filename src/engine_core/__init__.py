@@ -154,8 +154,10 @@ from .auction import (
 )
 from .opening import (
     OPENING_FACT_CONTRACT_VERSION,
+    OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION,
     OPENING_TRANSITION_FACT_CONTRACT_VERSION,
     build_open_fact,
+    build_opening_limit_state_summary,
     build_opening_transition_fact,
     classify_delta,
     classify_sign_state,

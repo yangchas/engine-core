@@ -4,8 +4,10 @@ import pytest
 
 from engine_core import (
     OPENING_FACT_CONTRACT_VERSION,
+    OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION,
     OPENING_TRANSITION_FACT_CONTRACT_VERSION,
     build_open_fact,
+    build_opening_limit_state_summary,
     build_opening_transition_fact,
     classify_delta,
     classify_sign_state,
@@ -88,6 +90,117 @@ def test_build_open_fact_does_not_infer_limit_state_from_change():
     assert result["status"] == "available"
     assert result["limit_state"] == "unknown"
     assert result["limit_state_status"] == "invalid"
+
+
+def test_opening_limit_state_summary_keeps_enum_counts_separate_from_price_breadth():
+    summary = build_opening_limit_state_summary(
+        {
+            "UP": {"status": "available", "limit_state": 1},
+            "NORMAL": {"status": "available", "limit_state": 0},
+            "DOWN": {"status": "available", "limit_state": -1},
+            # Price-ineligible rows are not in the legacy open comparison
+            # denominator, even if they happen to carry an ls value.
+            "NO_PRICE": {"status": "unavailable", "limit_state": 1},
+        },
+        expected_symbols=("UP", "NORMAL", "DOWN", "NO_PRICE", "NO_ROW"),
+    )
+
+    assert summary["contract"] == "OpeningLimitStateSummaryV1"
+    assert summary["scope"] == "OBSERVED_COHORT"
+    assert summary["full_market_coverage"] == "UNPROVEN"
+    assert summary["expected_count"] == 5
+    assert summary["observed_count"] == 4
+    assert summary["missing_symbol_count"] == 1
+    assert summary["symbol_coverage"] == pytest.approx(0.8)
+    assert summary["price_eligible_count"] == 3
+    assert summary["limit_state_total_count"] == 3
+    assert summary["limit_state_present_count"] == 3
+    assert summary["limit_state_valid_count"] == 3
+    assert summary["limit_state_missing_count"] == 0
+    assert summary["limit_state_invalid_count"] == 0
+    assert summary["limit_state_counts"] == {
+        "up_count": 1,
+        "normal_count": 1,
+        "down_count": 1,
+    }
+    assert summary["cohort_field_status"] == "available"
+    assert summary["valid_coverage"] == 1.0
+    assert summary["content_hash"]
+    assert OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION == "OpeningLimitStateSummaryV1"
+
+
+def test_opening_limit_state_summary_distinguishes_missing_invalid_and_known_values():
+    summary = build_opening_limit_state_summary(
+        {
+            "UP": {"status": "available", "limit_state": 1},
+            "MISSING": {"status": "available", "limit_state": None},
+            "INVALID": {"status": "available", "limit_state": 2},
+            "NO_PRICE": {"status": "unavailable", "limit_state": None},
+        }
+    )
+
+    assert summary["observed_count"] == 4
+    assert summary["price_eligible_count"] == 3
+    assert summary["limit_state_total_count"] == 3
+    assert summary["limit_state_present_count"] == 2
+    assert summary["limit_state_valid_count"] == 1
+    assert summary["limit_state_missing_count"] == 1
+    assert summary["limit_state_invalid_count"] == 1
+    assert summary["limit_state_counts"] == {
+        "up_count": 1,
+        "normal_count": 0,
+        "down_count": 0,
+    }
+    assert summary["cohort_field_status"] == "partial"
+    assert summary["valid_coverage"] == pytest.approx(1 / 3)
+
+
+def test_opening_limit_state_summary_empty_or_all_unknown_is_unavailable_not_zero():
+    empty = build_opening_limit_state_summary({})
+    unknown = build_opening_limit_state_summary(
+        {"A": {"status": "available", "limit_state": None}}
+    )
+
+    assert empty["cohort_field_status"] == "unavailable"
+    assert empty["limit_state_total_count"] == 0
+    assert empty["valid_coverage"] is None
+    assert empty["limit_state_counts"] == {
+        "up_count": 0,
+        "normal_count": 0,
+        "down_count": 0,
+    }
+    assert unknown["cohort_field_status"] == "unavailable"
+    assert unknown["limit_state_missing_count"] == 1
+    assert unknown["limit_state_counts"] == {
+        "up_count": 0,
+        "normal_count": 0,
+        "down_count": 0,
+    }
+
+
+def test_opening_limit_state_summary_hash_is_order_independent_and_scope_explicit():
+    first = {
+        "A": {"status": "available", "limit_state": 1},
+        "B": {"status": "available", "limit_state": 0},
+    }
+    reversed_order = dict(reversed(tuple(first.items())))
+
+    left = build_opening_limit_state_summary(first, scope="FRESH_OBSERVED_COHORT")
+    right = build_opening_limit_state_summary(
+        reversed_order, scope="FRESH_OBSERVED_COHORT"
+    )
+
+    assert left == right
+    assert left["scope"] == "FRESH_OBSERVED_COHORT"
+    assert left["full_market_coverage"] == "UNPROVEN"
+
+
+def test_opening_limit_state_summary_rejects_unverified_scope_labels():
+    with pytest.raises(ValueError, match="scope"):
+        build_opening_limit_state_summary(
+            {"A": {"status": "available", "limit_state": 1}},
+            scope="FULL_MARKET",
+        )
 
 
 def test_build_opening_transition_fact_is_fact_only_and_unit_explicit():
