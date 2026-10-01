@@ -144,7 +144,10 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
     assert anchors["0920"]["first_observable_ms"] == _epoch_ms("09:20:03.000")
     assert anchors["0924"]["first_observable_ms"] == _epoch_ms("09:24:10.000")
     assert anchors["0925"]["first_observable_ms"] == _epoch_ms("09:25:06.000")
-    for tag, clock in (("0920", "09:20:03.000"), ("0924", "09:24:10.000")):
+    for tag, clock, observed_clock in (
+        ("0920", "09:20:03.000", "09:20:03.197"),
+        ("0924", "09:24:10.000", "09:24:10.250"),
+    ):
         revision = anchors[tag]["auction_revision"]
         assert revision["contract"] == "AuctionAnchorRevisionV2"
         assert revision["revision"] == 1
@@ -156,7 +159,7 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
         assert revision["missing_anchor_symbol_count"] == 0
         assert revision["anchor_coverage"] == 1.0
         assert revision["freeze_time_ms"] == _epoch_ms(clock)
-        assert revision["observed_at_ms"] is None
+        assert revision["observed_at_ms"] == _epoch_ms(observed_clock)
     assert anchors["0925"]["last_raw_update_time_ms"] == _epoch_ms("09:25:06.999")
     assert anchors["0925"]["facts_by_symbol_hash"]
     assert len(anchors["0925"]["facts_by_symbol"]) == 2
@@ -164,7 +167,7 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
     assert anchor_facts["000001"]["contract"] == "AuctionAnchorFactV1"
     assert anchor_facts["000001"]["status"] == "AVAILABLE"
     assert anchor_facts["000001"]["price_milli"] == 12_000
-    assert anchor_facts["000001"]["observed_at_ms"] is None
+    assert anchor_facts["000001"]["observed_at_ms"] == _epoch_ms("09:25:06.999")
     assert anchor_facts["000001"]["historical_available_at_status"] == "UNKNOWN"
     assert anchors["0925"]["auction_anchor_facts_by_symbol_hash"]
     assert (
@@ -184,7 +187,7 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
     assert revision["anchor_coverage"] == 1.0
     assert revision["first_observable_ms"] == _epoch_ms("09:25:06.000")
     assert revision["freeze_time_ms"] == _epoch_ms("09:25:06.000")
-    assert revision["observed_at_ms"] is None
+    assert revision["observed_at_ms"] == _epoch_ms("09:25:06.999")
     assert revision["source_layers"] == ("t1_v2_q2frame_event_time_replay",)
     assert revision["source_time_min_ms"] == _epoch_ms("09:25:06.999")
     assert revision["source_time_max_ms"] == _epoch_ms("09:25:06.999")
@@ -200,7 +203,46 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
     assert summary["metrics"]["auction_amount_yuan"] == 1_000_161
     assert summary["market_universe_coverage_status"] == "UNKNOWN"
     assert summary["q2_input_coverage"] is None
+    assert summary["observation_time_ms"] == _epoch_ms("09:25:06.999")
     assert summary["input_content_hash"] == result["q2frame"]["sha256"]
+
+
+def test_0925_observation_stays_at_last_frame_across_empty_time_gap(tmp_path: Path):
+    frames = [
+        _frame(1, "09:15:00.000"),
+        _frame(2, "09:20:03.250"),
+        _frame(3, "09:24:10.500"),
+        _frame(4, "09:25:02.750"),
+    ]
+    for update in frames[-1]["q2_updates"]:
+        update["a25"] = 12_000
+
+    source = tmp_path / "q2frame-empty-gap-before-0925.jsonl"
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+
+    result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+    )
+
+    anchor = result["ordered"]["anchor_evidence"]["0925"]
+    observed_at_ms = _epoch_ms("09:25:02.750")
+    freeze_time_ms = _epoch_ms("09:25:06.000")
+    assert anchor["auction_revision"]["observed_at_ms"] == observed_at_ms
+    assert anchor["auction_revision"]["evaluation_time_ms"] == freeze_time_ms
+    assert anchor["auction_revision"]["freeze_time_ms"] == freeze_time_ms
+    assert anchor["auction_anchor_facts_by_symbol"]["000001"]["observed_at_ms"] == observed_at_ms
+    assert (
+        anchor["auction_anchor_facts_by_symbol"]["000001"][
+            "historical_available_at_status"
+        ]
+        == "UNKNOWN"
+    )
+    assert anchor["q2_auction_summary"]["observation_time_ms"] == observed_at_ms
+    assert anchor["last_raw_frame_time_ms"] == observed_at_ms
 
 
 def test_real_q2frame_shape_surfaces_partial_0925_recovery_targets(tmp_path: Path):

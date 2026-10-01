@@ -168,9 +168,10 @@ class AuctionShadowStrategy:
                     evaluation_time_ms=snapshot.logical_time_ms,
                     freeze_time_ms=snapshot.logical_time_ms,
                     source_layer=str(source_layer),
-                    # Q2Frame logical/observation fields are replay clocks,
-                    # not historical wall-clock availability evidence.
-                    observed_at_ms=None,
+                    # Keep this run's source-observation clock distinct from
+                    # historical availability, which remains UNKNOWN unless
+                    # the source provides direct evidence for it.
+                    observed_at_ms=metadata.get("observation_time_ms"),
                 )
                 trace["auction_anchor_fact"] = anchor_fact.as_trace()
 

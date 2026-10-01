@@ -603,7 +603,9 @@ def _run_once(
                     # The frozen artifact's observed symbols are not an
                     # authoritative full-market universe at this barrier.
                     expected_symbols=None,
-                    observation_time_ms=None,
+                    observation_time_ms=snapshot.source_observation_metadata.get(
+                        "observation_time_ms"
+                    ),
                     input_content_hash=input_sha256,
                     evidence_refs=(input_sha256,),
                 )
@@ -627,7 +629,9 @@ def _run_once(
             rows,
             evaluation_time_ms=evaluation_time_ms,
             expected_symbols=symbols,
-            observed_at_ms=None,
+            observed_at_ms=snapshot.source_observation_metadata.get(
+                "observation_time_ms"
+            ),
             source_layers=("t1_v2_q2frame_event_time_replay",),
         )
         analysis_bundle = auction_timeline.build_analysis_bundle(tag)
