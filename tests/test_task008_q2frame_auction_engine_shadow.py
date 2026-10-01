@@ -149,7 +149,7 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
         ("0924", "09:24:10.000", "09:24:10.250"),
     ):
         revision = anchors[tag]["auction_revision"]
-        assert revision["contract"] == "AuctionAnchorRevisionV2"
+        assert revision["contract"] == "AuctionAnchorRevisionV3"
         assert revision["revision"] == 1
         assert revision["state"] == "READY"
         assert revision["source_observed_symbol_count"] == 2
@@ -176,7 +176,7 @@ def test_q2frame_auction_engine_uses_whole_second_barriers_and_all_symbols(tmp_p
     )
 
     revision = anchors["0925"]["auction_revision"]
-    assert revision["contract"] == "AuctionAnchorRevisionV2"
+    assert revision["contract"] == "AuctionAnchorRevisionV3"
     assert revision["revision"] == 1
     assert revision["state"] == "READY"
     assert revision["source_observed_symbol_count"] == 2

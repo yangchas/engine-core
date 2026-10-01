@@ -227,6 +227,82 @@ def test_identical_cohort_advances_soft_cutoff_timing_without_new_revision():
     assert timeline.latest("0925") == finalized
 
 
+def test_non_anchor_q2_updates_do_not_create_an_auction_anchor_revision():
+    timeline = AuctionTimeline("2026-09-18")
+    first_time = local_datetime_ms("2026-09-18", "09:25:06")
+    first = timeline.observe(
+        "0925",
+        [
+            _row(
+                "600519",
+                first_time,
+                auction_anchor_0925_price_milli=10000,
+                price_milli=10000,
+                amount_2m_yuan=1000,
+            )
+        ],
+        evaluation_time_ms=first_time,
+        expected_symbols=("600519",),
+    )
+
+    later_time = local_datetime_ms("2026-09-18", "09:25:10")
+    same_anchor = timeline.observe(
+        "0925",
+        [
+            _row(
+                "600519",
+                first_time,
+                auction_anchor_0925_price_milli=10000,
+                price_milli=10100,
+                amount_2m_yuan=1200,
+            )
+        ],
+        evaluation_time_ms=later_time,
+        expected_symbols=("600519",),
+    )
+
+    assert same_anchor.revision == first.revision
+    assert same_anchor.content_hash == first.content_hash
+    assert same_anchor.evidence_hash != first.evidence_hash
+    assert len(timeline.revisions("0925")) == 1
+
+
+def test_anchor_quality_change_is_revision_content_even_if_anchor_is_unavailable():
+    timeline = AuctionTimeline("2026-09-18")
+    at_first = local_datetime_ms("2026-09-18", "09:25:06")
+    missing = timeline.observe(
+        "0925",
+        [
+            _row(
+                "600519",
+                at_first,
+                auction_anchor_0925_price_milli=None,
+                auction_anchor_field_quality={"a25": "MISSING"},
+            )
+        ],
+        evaluation_time_ms=at_first,
+        expected_symbols=("600519",),
+    )
+    unknown = timeline.observe(
+        "0925",
+        [
+            _row(
+                "600519",
+                at_first,
+                auction_anchor_0925_price_milli=None,
+                auction_anchor_field_quality={"a25": "UNKNOWN"},
+            )
+        ],
+        evaluation_time_ms=local_datetime_ms("2026-09-18", "09:25:10"),
+        expected_symbols=("600519",),
+    )
+
+    assert missing.anchor_coverage == unknown.anchor_coverage == 0.0
+    assert unknown.revision == missing.revision + 1
+    assert unknown.supersedes_revision == missing.revision
+    assert len(timeline.revisions("0925")) == 2
+
+
 def test_recovery_cohort_is_idempotent_and_does_not_promote_fact_status():
     timeline = AuctionTimeline("2026-09-18")
     t = local_datetime_ms("2026-09-18", "09:25:10")

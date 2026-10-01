@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Iterable, Iterator, Mapping, Optional, Tuple
 
-from .auction_timeline import AuctionAnchorRevisionV2, AuctionTimeline
+from .auction_timeline import AuctionAnchorRevisionV3, AuctionTimeline
 from .clock import VirtualClock
 from .contracts import semantic_hash
 from .replay import TDEventV1
@@ -477,7 +477,7 @@ class OfflineCanonicalReplay:
             pending_reasons.clear()
             pending_projections.clear()
 
-    def observe_auction(self, tag: str, rows: Any, **kwargs: Any) -> AuctionAnchorRevisionV2:
+    def observe_auction(self, tag: str, rows: Any, **kwargs: Any) -> AuctionAnchorRevisionV3:
         """Record already-observed auction facts through the existing timeline."""
 
         if self.session_timeline is not None:

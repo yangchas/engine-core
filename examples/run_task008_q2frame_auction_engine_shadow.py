@@ -654,7 +654,7 @@ def _run_once(
             }
         )
         return {
-            "contract": "AuctionAnchorRevisionV2",
+            "contract": "AuctionAnchorRevisionV3",
             "revision": revision.revision,
             "state": revision.state,
             "business_anchor_ms": revision.business_anchor_ms,

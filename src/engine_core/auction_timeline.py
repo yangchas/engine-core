@@ -13,8 +13,8 @@ from .q2 import normalize_symbol
 
 AUCTION_TIMING_POLICY_CONTRACT_VERSION = "AuctionTimingPolicyV1"
 AUCTION_ANCHOR_FACT_CONTRACT_VERSION = "AuctionAnchorFactV1"
-AUCTION_ANCHOR_REVISION_CONTRACT_VERSION = "AuctionAnchorRevisionV2"
-AUCTION_TIMELINE_CONTRACT_VERSION = "AuctionTimelineV2"
+AUCTION_ANCHOR_REVISION_CONTRACT_VERSION = "AuctionAnchorRevisionV3"
+AUCTION_TIMELINE_CONTRACT_VERSION = "AuctionTimelineV3"
 
 OBSERVING = "OBSERVING"
 READY = "READY"
@@ -308,8 +308,14 @@ def build_auction_anchor_fact_v1(
 
 
 @dataclass(frozen=True)
-class AuctionAnchorRevisionV2:
-    """Versioned anchor-field cohort plus independent source-row coverage."""
+class AuctionAnchorRevisionV3:
+    """Versioned auction-anchor content plus separate observation evidence.
+
+    Revision identity is scoped to this tag's per-symbol anchor value and
+    quality. Unrelated Q2 quote changes may advance evidence time, but do not
+    create a new auction-anchor content revision. Source/evaluation metadata
+    remains available in ``evidence_hash``.
+    """
     trade_date: str
     tag: str
     revision: int
@@ -334,6 +340,8 @@ class AuctionAnchorRevisionV2:
     late_execution: bool
     supersedes_revision: Optional[int] = None
     recovery_state: str = "NOT_REQUESTED"
+    # Hashes only this anchor's per-symbol value/quality, not unrelated Q2
+    # quote fields. Source/evaluation times remain in evidence_hash.
     observations_hash: str = ""
     content_hash: str = field(init=False)
     evidence_hash: str = field(init=False)
@@ -445,8 +453,9 @@ class AuctionAnchorRevisionV2:
 
 
 # Keep Python imports source-compatible while serialized evidence advances to
-# the explicit field-coverage contract.
-AuctionAnchorRevisionV1 = AuctionAnchorRevisionV2
+# the anchor-scoped content-hash contract.
+AuctionAnchorRevisionV2 = AuctionAnchorRevisionV3
+AuctionAnchorRevisionV1 = AuctionAnchorRevisionV3
 
 
 def _rows_by_symbol(rows: Mapping[str, Mapping[str, Any]] | Iterable[Mapping[str, Any]]) -> Mapping[str, Mapping[str, Any]]:
@@ -473,7 +482,7 @@ def build_auction_anchor_revision(
     supersedes_revision: Optional[int] = None,
     recovery_state: str = "NOT_REQUESTED",
     policy: Optional[AuctionTimingPolicyV1] = None,
-) -> AuctionAnchorRevisionV2:
+) -> AuctionAnchorRevisionV3:
     policy = policy or AuctionTimingPolicyV1.default(tag)
     times = policy.at(trade_date)
     by_symbol = _rows_by_symbol(rows)
@@ -490,6 +499,22 @@ def build_auction_anchor_revision(
     anchor_field = "auction_anchor_%s_price_milli" % tag
     anchor_values = {
         symbol: by_symbol[symbol].get(anchor_field)
+        for symbol in source_observed
+    }
+    raw_anchor_field = _ANCHOR_RAW_FIELDS[tag]
+    anchor_observations = {
+        symbol: {
+            "price_milli": anchor_values[symbol],
+            "quality": (
+                by_symbol[symbol].get("auction_anchor_field_quality", {}).get(
+                    raw_anchor_field
+                )
+                if isinstance(
+                    by_symbol[symbol].get("auction_anchor_field_quality"), Mapping
+                )
+                else None
+            ),
+        }
         for symbol in source_observed
     }
     anchor_available = tuple(
@@ -533,8 +558,8 @@ def build_auction_anchor_revision(
         if value.get("source_time_ms", value.get("ts")) is not None
     ]
     event_times = [int(item) for item in event_times]
-    observations_hash = semantic_hash(by_symbol)
-    return AuctionAnchorRevisionV2(
+    observations_hash = semantic_hash(anchor_observations)
+    return AuctionAnchorRevisionV3(
         trade_date=trade_date,
         tag=tag,
         revision=revision,
@@ -569,12 +594,12 @@ class AuctionTimeline:
     def __init__(self, trade_date: str, policies: Optional[Mapping[str, AuctionTimingPolicyV1]] = None) -> None:
         self.trade_date = trade_date
         self.policies = dict(policies or {tag: AuctionTimingPolicyV1.default(tag) for tag in ("0920", "0924", "0925")})
-        self._history: dict[str, list[AuctionAnchorRevisionV2]] = {tag: [] for tag in self.policies}
+        self._history: dict[str, list[AuctionAnchorRevisionV3]] = {tag: [] for tag in self.policies}
         # ``_history`` is a content-revision ledger.  ``_latest`` also tracks
         # the newest observation/evaluation evidence for the current revision;
         # identical rows observed after a soft cutoff must advance timing
         # state without fabricating a new content revision.
-        self._latest: dict[str, AuctionAnchorRevisionV2] = {}
+        self._latest: dict[str, AuctionAnchorRevisionV3] = {}
 
     def observe(
         self,
@@ -586,7 +611,7 @@ class AuctionTimeline:
         observed_at_ms: Optional[int] = None,
         source_layers: Sequence[str] = (),
         recovery_state: str = "NOT_REQUESTED",
-    ) -> AuctionAnchorRevisionV2:
+    ) -> AuctionAnchorRevisionV3:
         if tag not in self.policies:
             raise ValueError("unsupported auction tag")
         history = self._history.setdefault(tag, [])
@@ -616,7 +641,7 @@ class AuctionTimeline:
         self._latest[tag] = candidate
         return candidate
 
-    def latest(self, tag: str) -> Optional[AuctionAnchorRevisionV2]:
+    def latest(self, tag: str) -> Optional[AuctionAnchorRevisionV3]:
         return self._latest.get(tag)
 
     def apply_recovery(
@@ -627,7 +652,7 @@ class AuctionTimeline:
         evaluation_time_ms: int,
         observed_at_ms: Optional[int] = None,
         source: str = "wencai",
-    ) -> AuctionAnchorRevisionV2:
+    ) -> AuctionAnchorRevisionV3:
         """Apply an already merged recovery cohort as a new fact revision.
 
         The external recovery owner is responsible for fetching and merging
@@ -651,7 +676,7 @@ class AuctionTimeline:
             recovery_state="APPLIED",
         )
 
-    def revisions(self, tag: str) -> Tuple[AuctionAnchorRevisionV2, ...]:
+    def revisions(self, tag: str) -> Tuple[AuctionAnchorRevisionV3, ...]:
         return tuple(self._history.get(tag, ()))
 
     def build_analysis_bundle(self, tag: str = "0925") -> Mapping[str, Any]:
