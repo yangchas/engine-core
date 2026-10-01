@@ -5,11 +5,13 @@ import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 
 from examples.audit_task008_real_opening_plate_amount import (
     _compare_plates,
     _load_captured_td_rows,
     _td_connection_settings,
+    _write_json,
 )
 
 
@@ -66,3 +68,21 @@ def test_captured_td_rows_require_matching_hash_and_restore_timestamp_type(tmp_p
     assert rows[0]["ts"] == datetime.fromisoformat("2026-09-29T09:25:00+08:00")
     with pytest.raises(ValueError, match="SHA-256"):
         _load_captured_td_rows(source, expected_sha256="0" * 64)
+
+
+def test_write_json_serializes_read_only_engine_mappings_as_json_objects(tmp_path: Path):
+    destination = tmp_path / "report.json"
+    payload = MappingProxyType(
+        {
+            "facts_by_symbol": MappingProxyType(
+                {"000001": MappingProxyType({"amount_2m_yuan": 12.5})}
+            )
+        }
+    )
+
+    _write_json(destination, payload)
+
+    report = json.loads(destination.read_text(encoding="utf-8"))
+    assert report == {
+        "facts_by_symbol": {"000001": {"amount_2m_yuan": 12.5}}
+    }

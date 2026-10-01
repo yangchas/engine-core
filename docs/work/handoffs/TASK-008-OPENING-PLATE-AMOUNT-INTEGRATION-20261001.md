@@ -8,6 +8,7 @@ Date: 2026-10-01 (Asia/Shanghai)
 CORE_OPENING_PLATE_AMOUNT_IN_Q2FRAME_REPORT=PASS
 REAL_SAME_DATE_LEGACY_PARITY=PASS_WITH_LIMITS
 Q2FRAME_REPEAT_DETERMINISM=PASS
+REPORT_EVIDENCE_JSON=PASS
 TASK-008=IN_PROGRESS
 ```
 
@@ -33,8 +34,8 @@ the pre-existing pinned Core report.
 
 ## Historical evidence
 
-Output directory:
-`/home/exedev/validation/task008-opening-plate-amount-integrated-20261001T105700+0800/`
+Final verified output directory:
+`/home/exedev/validation/task008-opening-plate-amount-integrated-20261001T1142+0800/`
 
 The captured real TD SELECT input was reused by SHA-256, not queried again in
 this integration run:
@@ -54,8 +55,23 @@ The integrated replay inventory found 5,223 symbols and 735 input frames.
 It processed 734 frames / 418,759 updates through the `09:32:10` opening
 evaluation; the next frame (`09:32:11`, 774 updates) was excluded by that
 existing cutoff. There were no duplicate symbol occurrences within a frame.
-The report's source-time/frame-time differences are event-time diagnostics,
-not Rabbit arrival latency or proof of delivery order.
+
+A streamed inspection of the saved Q2Frame found that frame `09:30:00`
+(`seq_no=604`) carried one update for each of 5,223 symbols: 2,435 had source
+time `09:30:00`, while 2,788 retained earlier per-symbol source times between
+`09:15:00` and `09:25:02`. By the `09:32:10` Core evaluation, 5,211 symbols
+were `READY`, 12 were `PARTIAL/stale`, and none were missing; all 5,223 had an
+`amt2m` value. This was not made a pass/fail gate: it is a concrete example of
+the cross-section containing per-symbol times, including retained latest
+values, rather than one universal tick timestamp.
+
+These are source-event-time/frame-time facts, not Rabbit arrival latency or
+proof of delivery order. The legacy Q2Frame observation adapter stamps its
+normalized row with the frame logical time, while Core's input retains each
+Q2 update's source time. The 10-plate parity comparison deliberately does not
+compare per-symbol timestamp/freshness fields; therefore `STRICT_VALUE_MATCH`
+means equality of the listed amount/cohort/status/symbol outputs, not complete
+temporal-semantic equivalence.
 
 ## Comparison
 
@@ -73,7 +89,20 @@ not Rabbit arrival latency or proof of delivery order.
 `PASS_WITH_LIMITS` is deliberate: the ten-plate result is the legacy-selected
 cohort, not a full-market assertion; the Q2Frame is t1-v2 event-time replay,
 not the original Rabbit consume/processing sequence. Historical
-`available_at` and Rabbit arrival order remain `UNKNOWN`.
+`available_at` and Rabbit arrival order remain `UNKNOWN`. The small stale
+cohort is preserved and reported, not converted to zero or used to block the
+calculation.
+
+The first completed integration output at
+`/home/exedev/validation/task008-opening-plate-amount-integrated-20261001T105700+0800/`
+is preserved but superseded: Python read-only mappings had been serialized as
+repr strings in its large Core report. `_write_json` now converts nested
+`Mapping`/tuple values to JSON objects/arrays, a regression test covers nested
+`MappingProxyType`, and the final rerun above contains `facts_by_symbol` as a
+machine-readable object with 5,223 entries. Its artifact checksum manifest
+verifies. The earlier failed module-import launch at
+`/home/exedev/validation/task008-opening-plate-amount-integrated-20261001T105606+0800/`
+is also retained as a failed harness attempt, not replay evidence.
 
 ## Side effects and verification
 
@@ -86,7 +115,8 @@ fixed before the successful run.
 
 ```text
 Targeted tests: 43 passed
-Full suite: 783 passed, 3 upstream protobuf deprecation warnings
+Serializer regression: 7 passed
+Full suite after serializer correction: 784 passed, 3 upstream protobuf deprecation warnings
 compileall: PASS
 git diff --check: PASS
 ```

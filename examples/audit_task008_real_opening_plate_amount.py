@@ -66,8 +66,28 @@ def _sha256(path: Path) -> str:
 
 
 def _write_json(path: Path, payload: Any) -> None:
+    def json_compatible(value: Any) -> Any:
+        # Engine evidence contains MappingProxyType objects by design. Convert
+        # mappings recursively instead of default=str, which would write a
+        # Python repr and make the report's facts unusable to downstream tools.
+        if isinstance(value, Mapping):
+            return {str(key): json_compatible(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [json_compatible(item) for item in value]
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, Path):
+            return str(value)
+        return value
+
     path.write_text(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2, default=str)
+        json.dumps(
+            json_compatible(payload),
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+            default=str,
+        )
         + "\n",
         encoding="utf-8",
     )
