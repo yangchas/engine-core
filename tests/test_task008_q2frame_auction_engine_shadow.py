@@ -593,13 +593,22 @@ def test_q2frame_opening_report_includes_explicit_plate_context_deterministicall
     repeated = result["repeat"]["opening_evidence"]["OPENING_0932"]
     plate = opening["plate_amount_summary"]["plates"][0]
     assert result["deterministic"] is True
-    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV8"
+    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV9"
     assert opening["plate_amount_context"]["content_hash"] == context["content_hash"]
     assert plate["plate"] == "AI"
     assert plate["open_window_amount_yuan"] == 21_001
     assert plate["open_valid_count"] == 2
     assert plate["comparison_valid_count"] == 2
     assert opening["plate_amount_summary"] == repeated["plate_amount_summary"]
+    price_plate = opening["plate_price_summary"]["plates"][0]
+    assert opening["plate_price_summary"]["contract"] == "OpeningPlatePriceSummaryV1"
+    assert price_plate["comparison_valid_count"] == 2
+    assert price_plate["price_change_value_count"] == 2
+    assert price_plate["open_up_count"] == 1
+    assert price_plate["open_flat_count"] == 1
+    assert price_plate["open_positive_ratio"] == pytest.approx(0.5)
+    assert price_plate["open_median_change_pct"] == pytest.approx(0.5)
+    assert opening["plate_price_summary"] == repeated["plate_price_summary"]
 
 
 def test_q2frame_rejects_plate_context_without_opening_barrier(tmp_path: Path):

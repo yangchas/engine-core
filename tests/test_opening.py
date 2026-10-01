@@ -8,6 +8,7 @@ from engine_core import (
     OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION,
     OPENING_PLATE_AMOUNT_CONTEXT_CONTRACT_VERSION,
     OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION,
+    OPENING_PLATE_PRICE_SUMMARY_CONTRACT_VERSION,
     OPENING_TRANSITION_FACT_CONTRACT_VERSION,
     OPENING_TRANSITION_SUMMARY_CONTRACT_VERSION,
     build_open_fact,
@@ -15,6 +16,7 @@ from engine_core import (
     build_opening_limit_state_summary,
     build_opening_plate_amount_context,
     build_opening_plate_amount_summary,
+    build_opening_plate_price_summary,
     build_opening_transition_fact,
     build_opening_transition_summary,
     classify_delta,
@@ -377,6 +379,69 @@ def test_opening_plate_amount_summary_is_order_independent_and_keeps_zero_total_
     assert plate["open_top1_amount_ratio"] is None
     assert plate["concentration_state"] == "unavailable"
     assert OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION == "OpeningPlateAmountSummaryV1"
+
+
+def test_opening_plate_price_summary_uses_common_valid_price_cohort():
+    summary = build_opening_plate_price_summary(
+        {
+            "A": {"status": "available", "change_pct": 2.0},
+            "B": {"status": "available", "change_pct": -1.0},
+            "C": {"status": "available", "change_pct": 0.0},
+            "D": {"status": "available", "change_pct": 50.0},
+            "NO_CHANGE": {"status": "available", "change_pct": None},
+            "NO_PRICE": {"status": "unavailable", "change_pct": 99.0},
+        },
+        mapped_symbols_by_plate={"AI": ("A", "B", "C", "D", "NO_CHANGE", "NO_PRICE")},
+        auction_symbols_by_plate={"AI": ("A", "B", "C", "NO_CHANGE", "NO_PRICE")},
+        selected_plates=("AI",),
+    )
+
+    plate = summary["plates"][0]
+    assert summary["contract"] == OPENING_PLATE_PRICE_SUMMARY_CONTRACT_VERSION
+    assert summary["full_market_coverage"] == "UNPROVEN"
+    assert summary["decision_status"] == "FACT_ONLY"
+    assert plate["open_valid_count"] == 5
+    assert plate["common_symbol_count"] == 5
+    assert plate["comparison_valid_count"] == 4
+    assert plate["price_change_value_count"] == 3
+    assert plate["price_change_missing_count"] == 1
+    assert plate["price_change_status"] == "partial"
+    assert plate["open_up_count"] == 1
+    assert plate["open_down_count"] == 1
+    assert plate["open_flat_count"] == 1
+    assert plate["open_positive_ratio"] == pytest.approx(1 / 3)
+    assert plate["open_negative_ratio"] == pytest.approx(1 / 3)
+    assert plate["open_median_change_pct"] == pytest.approx(0.0)
+    assert plate["comparison_symbols"] == ["A", "B", "C", "NO_CHANGE"]
+
+
+def test_opening_plate_price_summary_is_order_independent_and_keeps_empty_plate_visible():
+    facts = {
+        "A": {"status": "available", "change_pct": 1.0},
+        "B": {"status": "available", "change_pct": -1.0},
+    }
+    kwargs = {
+        "facts_by_symbol": facts,
+        "mapped_symbols_by_plate": {"P": ("A", "B"), "EMPTY": ("C",)},
+        "auction_symbols_by_plate": {"P": ("A", "B"), "EMPTY": ()},
+        "selected_plates": ("P", "EMPTY"),
+    }
+    left = build_opening_plate_price_summary(**kwargs)
+    right = build_opening_plate_price_summary(
+        **{
+            **kwargs,
+            "facts_by_symbol": dict(reversed(tuple(facts.items()))),
+            "mapped_symbols_by_plate": dict(reversed(tuple(kwargs["mapped_symbols_by_plate"].items()))),
+            "auction_symbols_by_plate": dict(reversed(tuple(kwargs["auction_symbols_by_plate"].items()))),
+            "selected_plates": ("EMPTY", "P"),
+        }
+    )
+
+    assert left == right
+    by_plate = {row["plate"]: row for row in left["plates"]}
+    assert by_plate["P"]["open_median_change_pct"] == pytest.approx(0.0)
+    assert by_plate["EMPTY"]["open_median_change_pct"] is None
+    assert by_plate["EMPTY"]["price_change_status"] == "unavailable"
 
 
 def test_opening_plate_amount_context_is_versioned_stable_and_trade_date_pinned():

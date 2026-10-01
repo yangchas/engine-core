@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 from datetime import date
+from statistics import median
 from typing import Any, Mapping, Optional, Sequence
 
 from .contracts import semantic_hash
@@ -18,6 +19,7 @@ OPENING_AMOUNT_SUMMARY_CONTRACT_VERSION = "OpeningAmountSummaryV1"
 OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION = "OpeningLimitStateSummaryV1"
 OPENING_PLATE_AMOUNT_CONTEXT_CONTRACT_VERSION = "OpeningPlateAmountContextV1"
 OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION = "OpeningPlateAmountSummaryV1"
+OPENING_PLATE_PRICE_SUMMARY_CONTRACT_VERSION = "OpeningPlatePriceSummaryV1"
 OPENING_TRANSITION_SUMMARY_CONTRACT_VERSION = "OpeningTransitionSummaryV1"
 _VALID_LIMIT_STATES = {-1, 0, 1}
 _OPENING_COHORT_SCOPES = {
@@ -467,6 +469,128 @@ def build_opening_plate_amount_summary(
         "status_scope": "MAPPED_OPEN_FACTS_AND_VALID_COMMON_SYMBOLS",
         "source_field": "Q2.amount_2m_yuan",
         "aggregation": "LEGACY_OPEN_AMOUNT_AND_COMMON_SYMBOL_TOP1_TOP3",
+        "selected_plate_count": len(plate_summaries),
+        "plates": plate_summaries,
+    }
+    summary["content_hash"] = semantic_hash(summary)
+    return summary
+
+
+def build_opening_plate_price_summary(
+    facts_by_symbol: Mapping[str, Mapping[str, Any]],
+    *,
+    mapped_symbols_by_plate: Mapping[str, Sequence[str]],
+    auction_symbols_by_plate: Mapping[str, Sequence[str]],
+    selected_plates: Optional[Sequence[str]] = None,
+) -> dict[str, Any]:
+    """Aggregate observed opening price breadth and median by frozen plate.
+
+    The comparison cohort follows the legacy opening reader: symbols must be
+    present in the frozen plate mapping, belong to the plate's valid auction
+    cohort, and have an available opening fact. ``change_pct`` values that are
+    missing or invalid are excluded from the price-statistic denominator and
+    reported separately. This is descriptive cohort evidence; it is not a
+    strategy decision or proof of full-market coverage.
+    """
+
+    def normalize_memberships(
+        values_by_plate: Mapping[str, Sequence[str]],
+    ) -> dict[str, set[str]]:
+        return {
+            str(plate): {
+                str(symbol).strip()
+                for symbol in symbols
+                if str(symbol).strip()
+            }
+            for plate, symbols in values_by_plate.items()
+        }
+
+    mapped_by_plate = normalize_memberships(mapped_symbols_by_plate)
+    auction_by_plate = normalize_memberships(auction_symbols_by_plate)
+    if selected_plates is None:
+        selected = sorted(set(mapped_by_plate) | set(auction_by_plate))
+    else:
+        if isinstance(selected_plates, (str, bytes)):
+            raise TypeError("selected_plates must be a sequence of plate names")
+        selected = sorted(
+            {str(plate).strip() for plate in selected_plates if str(plate).strip()}
+        )
+
+    plate_summaries: list[dict[str, Any]] = []
+    for plate in selected:
+        mapped_symbols = mapped_by_plate.get(plate, set())
+        auction_symbols = auction_by_plate.get(plate, set())
+        observed_open_symbols = mapped_symbols & {
+            str(symbol) for symbol in facts_by_symbol
+        }
+        common_symbols = auction_symbols & observed_open_symbols
+        valid_open_symbols = {
+            symbol
+            for symbol in observed_open_symbols
+            if facts_by_symbol[symbol].get("status") == "available"
+        }
+        valid_comparison = tuple(
+            facts_by_symbol[symbol]
+            for symbol in sorted(common_symbols)
+            if facts_by_symbol[symbol].get("status") == "available"
+        )
+        changes = tuple(
+            value
+            for value in (_number(row.get("change_pct")) for row in valid_comparison)
+            if value is not None
+        )
+        up_count = sum(value > 0 for value in changes)
+        down_count = sum(value < 0 for value in changes)
+        flat_count = sum(value == 0 for value in changes)
+        comparison_valid_count = len(valid_comparison)
+        value_count = len(changes)
+        price_change_status = (
+            "unavailable"
+            if value_count == 0
+            else "available"
+            if value_count == comparison_valid_count
+            else "partial"
+        )
+        plate_summaries.append(
+            {
+                "plate": plate,
+                "mapped_symbol_count": len(mapped_symbols),
+                "auction_symbol_count": len(auction_symbols),
+                "open_valid_count": len(valid_open_symbols),
+                "common_symbol_count": len(common_symbols),
+                "comparison_valid_count": comparison_valid_count,
+                "comparison_scope": "COMMON_VALID_AUCTION_AND_OPEN_SYMBOLS",
+                "price_change_value_count": value_count,
+                "price_change_missing_count": comparison_valid_count - value_count,
+                "price_change_coverage": (
+                    value_count / float(comparison_valid_count)
+                    if comparison_valid_count
+                    else None
+                ),
+                "price_change_status": price_change_status,
+                "open_up_count": up_count,
+                "open_down_count": down_count,
+                "open_flat_count": flat_count,
+                "open_positive_ratio": up_count / float(value_count) if value_count else None,
+                "open_negative_ratio": down_count / float(value_count) if value_count else None,
+                "open_median_change_pct": median(changes) if changes else None,
+                "open_symbols": sorted(valid_open_symbols),
+                "comparison_symbols": [
+                    symbol
+                    for symbol in sorted(common_symbols)
+                    if facts_by_symbol[symbol].get("status") == "available"
+                ],
+            }
+        )
+
+    summary: dict[str, Any] = {
+        "contract": OPENING_PLATE_PRICE_SUMMARY_CONTRACT_VERSION,
+        "scope": "FROZEN_MAPPING_AND_OBSERVED_Q2_COHORT",
+        "scope_authority": "FROZEN_MAPPING_AND_OBSERVED_Q2_COHORT",
+        "full_market_coverage": "UNPROVEN",
+        "source_field": "OpeningFactV1.change_pct",
+        "aggregation": "LEGACY_COMMON_VALID_OPENING_PRICE_BREADTH_AND_MEDIAN",
+        "decision_status": "FACT_ONLY",
         "selected_plate_count": len(plate_summaries),
         "plates": plate_summaries,
     }

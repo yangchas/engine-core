@@ -49,6 +49,7 @@ from engine_core import (  # noqa: E402
     build_opening_amount_summary,
     build_opening_limit_state_summary,
     build_opening_plate_amount_summary,
+    build_opening_plate_price_summary,
     build_opening_transition_summary,
     semantic_hash,
     validate_opening_plate_amount_context,
@@ -623,6 +624,16 @@ def _run_once(
                     ],
                     selected_plates=plate_amount_context["selected_plates"],
                 )
+                base["plate_price_summary"] = build_opening_plate_price_summary(
+                    strategy_result.trace.get("facts_by_symbol", {}),
+                    mapped_symbols_by_plate=plate_amount_context[
+                        "mapped_symbols_by_plate"
+                    ],
+                    auction_symbols_by_plate=plate_amount_context[
+                        "auction_symbols_by_plate"
+                    ],
+                    selected_plates=plate_amount_context["selected_plates"],
+                )
             opening_evidence[tag] = base
         else:
             base["auction_revision"] = auction_revision_summary(
@@ -926,7 +937,7 @@ def run_q2frame_auction_engine_shadow(
     deterministic = all(determinism.values())
     return {
         "contract_version": (
-            "Task008Q2FrameSessionEngineShadowV8"
+            "Task008Q2FrameSessionEngineShadowV9"
             if plate_amount_context is not None
             else "Task008Q2FrameSessionEngineShadowV7"
             if include_opening
