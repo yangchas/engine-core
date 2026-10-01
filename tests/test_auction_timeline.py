@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from engine_core import (
     AuctionAnchorFactV1,
     AuctionTimeline,
@@ -8,6 +11,7 @@ from engine_core import (
     READY,
     build_auction_anchor_fact_v1,
     local_datetime_ms,
+    normalize_q2,
 )
 
 
@@ -86,6 +90,77 @@ def test_default_auction_policy_has_adaptive_0925_grace():
     assert times["first_observable_ms"] == local_datetime_ms("2026-09-18", "09:25:06")
     assert times["preferred_finalize_ms"] == local_datetime_ms("2026-09-18", "09:25:10")
     assert times["soft_deadline_ms"] == local_datetime_ms("2026-09-18", "09:25:30")
+
+
+def test_anchor_fact_truncates_subseconds_for_preferred_finalize_status():
+    fixture = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures/q2/q2frame_0925_real_limit_states_20260930.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert fixture["q2frame_sha256"] == (
+        "10264d0a6b6251e0c757f2113fd41e8e9e0669fade4ba05a145b78340a886ec0"
+    )
+    record = next(
+        item
+        for item in fixture["records"]
+        if item["seq_no"] == 601
+        and item["q2_update"]["symbol"] == "000560"
+    )
+    row = normalize_q2("000560", record["q2_update"]).to_mapping()
+    trade_date = fixture["trade_date"]
+    preferred_finalize_ms = local_datetime_ms(trade_date, "09:25:10")
+    assert row["auction_anchor_0925_price_milli"] == 3_380
+    assert row["source_record_time_ms"] == local_datetime_ms(trade_date, "09:25:00")
+
+    within_same_second = build_auction_anchor_fact_v1(
+        trade_date=trade_date,
+        tag="0925",
+        symbol="000560",
+        row=row,
+        evaluation_time_ms=preferred_finalize_ms + 197,
+        source_layer="real_q2frame_event_time_replay",
+    )
+    following_second = build_auction_anchor_fact_v1(
+        trade_date=trade_date,
+        tag="0925",
+        symbol="000560",
+        row=row,
+        evaluation_time_ms=preferred_finalize_ms + 1_000,
+        source_layer="real_q2frame_event_time_replay",
+    )
+
+    assert within_same_second.status == "AVAILABLE"
+    assert within_same_second.late_execution is False
+    assert following_second.late_execution is True
+
+
+def test_revision_truncates_subseconds_for_soft_deadline_lateness():
+    soft_deadline_ms = local_datetime_ms("2026-09-18", "09:25:30")
+    timeline = AuctionTimeline("2026-09-18")
+    unavailable_row = _row(
+        "600519",
+        soft_deadline_ms,
+        auction_anchor_0925_price_milli=0,
+    )
+
+    at_deadline_second = timeline.observe(
+        "0925",
+        [unavailable_row],
+        evaluation_time_ms=soft_deadline_ms + 999,
+        expected_symbols=("600519",),
+    )
+    after_deadline_second = timeline.observe(
+        "0925",
+        [unavailable_row],
+        evaluation_time_ms=soft_deadline_ms + 1_000,
+        expected_symbols=("600519",),
+    )
+
+    assert at_deadline_second.state == "MISSING"
+    assert at_deadline_second.late_execution is False
+    assert after_deadline_second.late_execution is True
 
 
 def test_auction_timeline_accepts_0925_without_optional_prior_anchors():

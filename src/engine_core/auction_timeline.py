@@ -33,6 +33,12 @@ _ANCHOR_PRICE_FIELDS = {
 _ANCHOR_RAW_FIELDS = {"0920": "a20", "0924": "a24", "0925": "a25"}
 
 
+def _whole_second_ms(value: int) -> int:
+    """Drop subsecond precision for business-time comparisons."""
+
+    return (value // 1_000) * 1_000
+
+
 @dataclass(frozen=True)
 class AuctionTimingPolicyV1:
     """Versioned business-anchor timing policy with adaptive grace."""
@@ -303,7 +309,10 @@ def build_auction_anchor_fact_v1(
         observed_at_ms=observed_at_ms,
         evaluation_time_ms=evaluation_time_ms,
         freeze_time_ms=freeze_time_ms,
-        late_execution=(evaluation_time_ms > policy_times["preferred_finalize_ms"]),
+        late_execution=(
+            _whole_second_ms(evaluation_time_ms)
+            > _whole_second_ms(policy_times["preferred_finalize_ms"])
+        ),
     )
 
 
@@ -535,13 +544,18 @@ def build_auction_anchor_revision(
     source_coverage = (
         len(source_observed) / float(len(expected)) if expected else None
     )
-    if evaluation_time_ms < times["first_observable_ms"]:
+    evaluation_second_ms = _whole_second_ms(evaluation_time_ms)
+    if evaluation_second_ms < _whole_second_ms(times["first_observable_ms"]):
         state = OBSERVING
     elif not expected:
         # An unknown denominator cannot establish field completeness.
         state = PARTIAL
     elif not anchor_available:
-        state = MISSING if evaluation_time_ms >= times["soft_deadline_ms"] else PARTIAL
+        state = (
+            MISSING
+            if evaluation_second_ms >= _whole_second_ms(times["soft_deadline_ms"])
+            else PARTIAL
+        )
     elif not missing_anchor and recovery_state != "APPLIED":
         state = READY
     else:
@@ -551,7 +565,11 @@ def build_auction_anchor_revision(
     # adaptive-grace reference for later observations; it is not a hard
     # prerequisite for the first immutable anchor.  Late cohorts create a
     # new content revision without moving the original freeze barrier.
-    freeze = times["first_observable_ms"] if evaluation_time_ms >= times["first_observable_ms"] else None
+    freeze = (
+        times["first_observable_ms"]
+        if evaluation_second_ms >= _whole_second_ms(times["first_observable_ms"])
+        else None
+    )
     event_times = [
         value.get("source_time_ms", value.get("ts"))
         for value in by_symbol.values()
@@ -581,7 +599,9 @@ def build_auction_anchor_revision(
         freeze_time_ms=freeze,
         source_time_min_ms=min(event_times) if event_times else None,
         source_time_max_ms=max(event_times) if event_times else None,
-        late_execution=evaluation_time_ms > times["soft_deadline_ms"],
+        late_execution=(
+            evaluation_second_ms > _whole_second_ms(times["soft_deadline_ms"])
+        ),
         supersedes_revision=supersedes_revision,
         recovery_state=recovery_state,
         observations_hash=observations_hash,
