@@ -11,6 +11,9 @@ from engine_core import (
     build_opening_plate_amount_context,
     build_opening_plate_price_reference_context,
 )
+from examples.audit_task008_real_opening_plate_price_summary import (
+    derive_auction_price_stats_from_rows,
+)
 from examples.run_task008_q2frame_auction_engine_shadow import (
     _inventory,
     run_q2frame_auction_engine_shadow,
@@ -671,6 +674,75 @@ def test_q2frame_opening_report_compares_date_pinned_auction_price_reference(
         "content_hash"
     ]
     assert opening["plate_price_summary"] == repeated["plate_price_summary"]
+
+
+def test_td_auction_price_audit_uses_basis_points_as_percentage_points():
+    rows = (
+        {
+            "auction_tag": "0925",
+            "trade_date": "20260929",
+            "symbol": "000001",
+            "px_milli": 11000,
+            "chg_bp": 1000,
+        },
+        {
+            "auction_tag": "0925",
+            "trade_date": "20260929",
+            "symbol": "600000",
+            "px_milli": 9900,
+            "chg_bp": -100,
+        },
+        {
+            "auction_tag": "0925",
+            "trade_date": "20260929",
+            "symbol": "000003",
+            "px_milli": 10001,
+            "chg_bp": 1,
+        },
+        {
+            "auction_tag": "0925",
+            "trade_date": "20260929",
+            "symbol": "000004",
+            "px_milli": 10002,
+            "chg_bp": 2,
+        },
+        {
+            "auction_tag": "0925",
+            "trade_date": "20260929",
+            "symbol": "000002",
+            "px_milli": 0,
+            "chg_bp": 250,
+        },
+    )
+
+    stats, diagnostics = derive_auction_price_stats_from_rows(
+        rows,
+        stock_plate={
+            "000001": "P",
+            "600000": "P",
+            "000002": "P",
+            "000003": "P",
+            "000004": "P",
+        },
+        selected_plates=("P",),
+        trade_date="2026-09-29",
+        previous_close_by_symbol={
+            "000001": 10000,
+            "600000": 10000,
+            "000002": 10000,
+            "000003": 10000,
+            "000004": 10000,
+        },
+    )
+
+    plate = stats["P"]
+    assert plate["valid_count"] == 4
+    assert plate["positive_ratio"] == pytest.approx(0.75)
+    assert plate["median_change_pct"] == pytest.approx(0.015)
+    assert plate["median_change_bp"] == pytest.approx(1.5)
+    assert plate["unavailable_count"] == 1
+    assert diagnostics["chg_bp_reconstruction"]["checked_count"] == 4
+    assert diagnostics["chg_bp_reconstruction"]["mismatch_count"] == 0
 
 
 def test_q2frame_rejects_plate_context_without_opening_barrier(tmp_path: Path):
