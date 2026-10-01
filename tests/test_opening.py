@@ -9,12 +9,14 @@ from engine_core import (
     OPENING_PLATE_AMOUNT_CONTEXT_CONTRACT_VERSION,
     OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION,
     OPENING_TRANSITION_FACT_CONTRACT_VERSION,
+    OPENING_TRANSITION_SUMMARY_CONTRACT_VERSION,
     build_open_fact,
     build_opening_amount_summary,
     build_opening_limit_state_summary,
     build_opening_plate_amount_context,
     build_opening_plate_amount_summary,
     build_opening_transition_fact,
+    build_opening_transition_summary,
     classify_delta,
     classify_sign_state,
     validate_opening_plate_amount_context,
@@ -459,3 +461,83 @@ def test_build_opening_transition_fact_does_not_fill_missing_delta(
     assert result["delta_state"] == "unavailable"
     assert result["sign_state"] == "unavailable"
     assert result["status"] == "unavailable"
+
+
+def test_opening_transition_summary_uses_observed_0925_anchors_without_zero_fill():
+    auction_anchors = {
+        "000001": {"status": "AVAILABLE", "price_milli": 12_000, "source_time_ms": 10},
+        "000002": {"status": "MISSING", "price_milli": None, "source_time_ms": 10},
+        "000003": {"status": "AVAILABLE", "price_milli": 9_000, "source_time_ms": 10},
+    }
+    opening_rows = {
+        "000001": {
+            "symbol": "000001",
+            "timestamp_ms": 20,
+            "price_milli": 10_200,
+            "previous_close_milli": 10_000,
+        },
+        "000002": {
+            "symbol": "000002",
+            "timestamp_ms": 20,
+            "price_milli": 10_100,
+            "previous_close_milli": 10_000,
+        },
+        "000003": {
+            "symbol": "000003",
+            "timestamp_ms": 20,
+            "price_milli": 10_000,
+            "previous_close_milli": 10_000,
+        },
+        "000004": {
+            "symbol": "000004",
+            "timestamp_ms": 20,
+            "price_milli": 10_000,
+            "previous_close_milli": 10_000,
+        },
+    }
+
+    summary = build_opening_transition_summary(
+        auction_anchors,
+        opening_rows,
+        expected_symbols=("000001", "000002", "000003", "000004"),
+    )
+
+    assert summary["contract"] == OPENING_TRANSITION_SUMMARY_CONTRACT_VERSION
+    assert summary["scope"] == "OBSERVED_COHORT"
+    assert summary["expected_count"] == 4
+    assert summary["auction_anchor_price_available_count"] == 2
+    assert summary["opening_change_available_count"] == 4
+    assert summary["transition_comparable_count"] == 2
+    assert summary["transition_unavailable_count"] == 2
+    assert summary["facts_by_symbol"]["000001"]["auction_change_pct"] == pytest.approx(20.0)
+    assert summary["facts_by_symbol"]["000001"]["opening_change_pct"] == pytest.approx(2.0)
+    assert summary["facts_by_symbol"]["000001"]["delta_change_pct"] == pytest.approx(-18.0)
+    assert summary["facts_by_symbol"]["000001"]["auction_source_time_ms"] == 10
+    assert summary["facts_by_symbol"]["000001"]["opening_source_time_ms"] == 20
+    assert summary["facts_by_symbol"]["000002"]["auction_change_pct"] is None
+    assert summary["facts_by_symbol"]["000002"]["status"] == "unavailable"
+    assert summary["facts_by_symbol"]["000004"]["auction_change_pct"] is None
+    assert summary["facts_by_symbol_hash"]
+    assert summary["full_market_coverage"] == "UNPROVEN"
+
+
+def test_opening_transition_summary_is_order_independent_and_rejects_out_of_cohort_rows():
+    anchors = {
+        "A": {"status": "AVAILABLE", "price_milli": 10_500, "source_time_ms": 10},
+        "B": {"status": "AVAILABLE", "price_milli": 9_500, "source_time_ms": 10},
+    }
+    rows = {
+        "A": {"symbol": "A", "timestamp_ms": 20, "price_milli": 10_200, "previous_close_milli": 10_000},
+        "B": {"symbol": "B", "timestamp_ms": 20, "price_milli": 9_800, "previous_close_milli": 10_000},
+    }
+
+    left = build_opening_transition_summary(anchors, rows, expected_symbols=("A", "B"))
+    right = build_opening_transition_summary(
+        dict(reversed(tuple(anchors.items()))),
+        dict(reversed(tuple(rows.items()))),
+        expected_symbols=("B", "A"),
+    )
+
+    assert left == right
+    with pytest.raises(ValueError, match="outside expected_symbols"):
+        build_opening_transition_summary(anchors, rows, expected_symbols=("A",))

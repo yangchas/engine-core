@@ -49,6 +49,7 @@ from engine_core import (  # noqa: E402
     build_opening_amount_summary,
     build_opening_limit_state_summary,
     build_opening_plate_amount_summary,
+    build_opening_transition_summary,
     semantic_hash,
     validate_opening_plate_amount_context,
 )
@@ -562,6 +563,45 @@ def _run_once(
                     "availability_status": "UNKNOWN_NOT_INFERRED",
                 }
             )
+            q2_0925_evidence = anchor_evidence.get("0925", {})
+            opening_rows_by_symbol: dict[str, dict[str, Any]] = {}
+            for symbol, raw_update in latest_q2_update_by_symbol.items():
+                quote = normalize_q2(symbol, raw_update)
+                opening_rows_by_symbol[symbol] = {
+                    "symbol": symbol,
+                    "timestamp_ms": quote.source_record_time_ms,
+                    "price_milli": quote.price_milli,
+                    "previous_close_milli": quote.pre_close_milli,
+                }
+            transition_summary = build_opening_transition_summary(
+                q2_0925_evidence.get("auction_anchor_facts_by_symbol", {}),
+                opening_rows_by_symbol,
+                expected_symbols=expected_symbols,
+                scope="OBSERVED_COHORT",
+            )
+            base["opening_transition_summary"] = {
+                "contract": "OpeningTransitionSummaryV1",
+                "baseline": {
+                    "tag": "0925",
+                    "business_anchor_ms": q2_0925_evidence.get(
+                        "auction_revision", {}
+                    ).get("business_anchor_ms"),
+                    "evaluation_time_ms": q2_0925_evidence.get(
+                        "auction_revision", {}
+                    ).get("evaluation_time_ms"),
+                    "freeze_time_ms": q2_0925_evidence.get(
+                        "auction_revision", {}
+                    ).get("freeze_time_ms"),
+                    "source_layer": "t1_v2_q2frame_event_time_replay",
+                },
+                "opening_evaluation_time_ms": logical_ms,
+                "opening_source_layer": "t1_v2_q2frame_event_time_replay",
+                "stale_opening_symbol_count": base.get("stale_symbol_count", 0),
+                "historical_available_at": "UNKNOWN_NOT_INFERRED",
+                "rabbit_arrival_order": "UNKNOWN_NOT_INFERRED",
+                "decision_status": "FACT_ONLY",
+                "facts": transition_summary,
+            }
             if plate_amount_context is not None:
                 base["plate_amount_context"] = {
                     "contract": plate_amount_context["contract"],
@@ -886,10 +926,9 @@ def run_q2frame_auction_engine_shadow(
     deterministic = all(determinism.values())
     return {
         "contract_version": (
-            "Task008Q2FrameSessionEngineShadowV7"
+            "Task008Q2FrameSessionEngineShadowV8"
             if plate_amount_context is not None
-            else
-            "Task008Q2FrameSessionEngineShadowV6"
+            else "Task008Q2FrameSessionEngineShadowV7"
             if include_opening
             else "Task008Q2FrameAuctionEngineShadowV5"
         ),

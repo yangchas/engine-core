@@ -18,6 +18,7 @@ OPENING_AMOUNT_SUMMARY_CONTRACT_VERSION = "OpeningAmountSummaryV1"
 OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION = "OpeningLimitStateSummaryV1"
 OPENING_PLATE_AMOUNT_CONTEXT_CONTRACT_VERSION = "OpeningPlateAmountContextV1"
 OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION = "OpeningPlateAmountSummaryV1"
+OPENING_TRANSITION_SUMMARY_CONTRACT_VERSION = "OpeningTransitionSummaryV1"
 _VALID_LIMIT_STATES = {-1, 0, 1}
 _OPENING_COHORT_SCOPES = {
     "OBSERVED_COHORT",
@@ -611,3 +612,129 @@ def build_opening_transition_fact(
         "sign_state": classify_sign_state(auction, opening_change),
         "status": "available" if delta_pct is not None else "unavailable",
     }
+
+
+def build_opening_transition_summary(
+    auction_anchor_facts_by_symbol: Mapping[str, Mapping[str, Any]],
+    opening_rows_by_symbol: Mapping[str, Mapping[str, Any]],
+    *,
+    expected_symbols: Optional[Sequence[str]] = None,
+    scope: str = "OBSERVED_COHORT",
+) -> dict[str, Any]:
+    """Summarize 09:25 anchor-to-opening changes over an observed Q2 cohort.
+
+    The auction-side percentage is derived from an available frozen anchor
+    price and the opening row's previous-close price.  Missing anchors, prices,
+    or previous closes remain unavailable; they are never replaced by zero.
+    This is a descriptive fact summary, not a market-universe or strategy gate.
+    """
+
+    if scope not in _OPENING_COHORT_SCOPES:
+        raise ValueError("scope must identify an observed Q2 cohort")
+
+    anchors = {str(symbol): value for symbol, value in auction_anchor_facts_by_symbol.items()}
+    opening_rows = {str(symbol): value for symbol, value in opening_rows_by_symbol.items()}
+    observed_symbols = set(anchors) | set(opening_rows)
+    expected = (
+        observed_symbols
+        if expected_symbols is None
+        else {str(symbol) for symbol in expected_symbols}
+    )
+    if observed_symbols - expected:
+        raise ValueError("transition inputs contain symbols outside expected_symbols")
+
+    facts_by_symbol: dict[str, dict[str, Any]] = {}
+    delta_state_counts = {
+        "expanded": 0,
+        "contracted": 0,
+        "unchanged": 0,
+        "unavailable": 0,
+    }
+    sign_state_counts = {
+        "reversed": 0,
+        "expanded": 0,
+        "contracted": 0,
+        "unchanged": 0,
+        "unavailable": 0,
+    }
+    anchor_price_available_count = 0
+    auction_change_available_count = 0
+    opening_change_available_count = 0
+    transition_comparable_count = 0
+
+    for symbol in sorted(expected):
+        anchor = anchors.get(symbol, {})
+        opening_row = dict(opening_rows.get(symbol, {}))
+        opening_row.setdefault("symbol", symbol)
+
+        anchor_status = str(anchor.get("status") or "MISSING").upper()
+        anchor_price = _number(anchor.get("price_milli"))
+        anchor_price_available = (
+            anchor_status == "AVAILABLE" and anchor_price is not None and anchor_price > 0
+        )
+        if anchor_price_available:
+            anchor_price_available_count += 1
+        auction_change_pct = (
+            compute_open_change_pct(
+                anchor_price,
+                opening_row.get("previous_close_milli"),
+            )
+            if anchor_price_available
+            else None
+        )
+        if auction_change_pct is not None:
+            auction_change_available_count += 1
+
+        fact = build_opening_transition_fact(auction_change_pct, opening_row)
+        if fact["opening_change_pct"] is not None:
+            opening_change_available_count += 1
+        if fact["status"] == "available":
+            transition_comparable_count += 1
+        delta_state = str(fact["delta_state"])
+        sign_state = str(fact["sign_state"])
+        delta_state_counts[delta_state] = delta_state_counts.get(delta_state, 0) + 1
+        sign_state_counts[sign_state] = sign_state_counts.get(sign_state, 0) + 1
+        fact.update(
+            {
+                "auction_anchor_status": anchor_status,
+                "auction_source_time_ms": anchor.get("source_time_ms"),
+                "opening_source_time_ms": opening_row.get("timestamp_ms"),
+            }
+        )
+        facts_by_symbol[symbol] = fact
+
+    status = (
+        "UNAVAILABLE"
+        if transition_comparable_count == 0
+        else "READY"
+        if expected and transition_comparable_count == len(expected)
+        else "PARTIAL"
+    )
+    summary: dict[str, Any] = {
+        "contract": OPENING_TRANSITION_SUMMARY_CONTRACT_VERSION,
+        "scope": scope,
+        "scope_authority": "Q2FRAME_INPUT_COHORT_ONLY_NOT_FULL_MARKET",
+        "full_market_coverage": "UNPROVEN",
+        "auction_source_field": "AuctionAnchorFactV1.price_milli",
+        "opening_source_fields": ["Q2.px", "Q2.pc"],
+        "auction_change_calculation": (
+            "((frozen_0925_anchor_price_milli / opening_pre_close_milli) - 1) * 100; "
+            "percentage points"
+        ),
+        "expected_count": len(expected),
+        "observed_count": len(observed_symbols),
+        "missing_symbol_count": len(expected - observed_symbols),
+        "symbol_coverage": len(observed_symbols) / float(len(expected)) if expected else None,
+        "auction_anchor_price_available_count": anchor_price_available_count,
+        "auction_change_available_count": auction_change_available_count,
+        "opening_change_available_count": opening_change_available_count,
+        "transition_comparable_count": transition_comparable_count,
+        "transition_unavailable_count": len(expected) - transition_comparable_count,
+        "delta_state_counts": delta_state_counts,
+        "sign_state_counts": sign_state_counts,
+        "status": status,
+        "facts_by_symbol": facts_by_symbol,
+        "facts_by_symbol_hash": semantic_hash(facts_by_symbol),
+    }
+    summary["content_hash"] = semantic_hash(summary)
+    return summary

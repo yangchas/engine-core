@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from engine_core import build_opening_plate_amount_context
 from examples.run_task008_q2frame_auction_engine_shadow import (
     _inventory,
@@ -371,7 +373,7 @@ def test_q2frame_session_reaches_opening_with_one_engine_and_symbol_source_times
         include_opening=True,
     )
 
-    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV6"
+    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV7"
     assert result["deterministic"] is True
     assert result["ordered"]["engine_instances"] == 1
     assert result["ordered"]["input_frames_processed"] == 11
@@ -408,6 +410,21 @@ def test_q2frame_session_reaches_opening_with_one_engine_and_symbol_source_times
     assert cross_section["content_hash"]
     assert cross_section["fact_only"] is True
     assert opening["fact_status_counts"] == {"READY": 2}
+    transition = opening["opening_transition_summary"]
+    assert transition["contract"] == "OpeningTransitionSummaryV1"
+    assert transition["baseline"]["tag"] == "0925"
+    assert transition["baseline"]["freeze_time_ms"] == _epoch_ms("09:25:06.000")
+    assert transition["opening_evaluation_time_ms"] == _epoch_ms("09:32:10.000")
+    assert transition["historical_available_at"] == "UNKNOWN_NOT_INFERRED"
+    assert transition["rabbit_arrival_order"] == "UNKNOWN_NOT_INFERRED"
+    assert transition["facts"]["status"] == "READY"
+    assert transition["facts"]["transition_comparable_count"] == 2
+    first_transition = transition["facts"]["facts_by_symbol"]["000001"]
+    assert first_transition["auction_change_pct"] == pytest.approx(20.0)
+    assert first_transition["opening_change_pct"] == pytest.approx(0.0)
+    assert first_transition["delta_change_pct"] == pytest.approx(-20.0)
+    assert first_transition["auction_source_time_ms"] == _epoch_ms("09:25:06.999")
+    assert first_transition["opening_source_time_ms"] == _epoch_ms("09:32:10.999")
     assert opening["facts_by_symbol"]["000001"]["timestamp_ms"] == _epoch_ms(
         "09:32:10.999"
     )
@@ -576,7 +593,7 @@ def test_q2frame_opening_report_includes_explicit_plate_context_deterministicall
     repeated = result["repeat"]["opening_evidence"]["OPENING_0932"]
     plate = opening["plate_amount_summary"]["plates"][0]
     assert result["deterministic"] is True
-    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV7"
+    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV8"
     assert opening["plate_amount_context"]["content_hash"] == context["content_hash"]
     assert plate["plate"] == "AI"
     assert plate["open_window_amount_yuan"] == 21_001
