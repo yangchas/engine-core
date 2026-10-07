@@ -139,6 +139,63 @@ def test_q2frame_replay_feeds_the_same_engine_queue():
     assert engine._reducer.state.symbol_states["600519"]["price_milli"] == 1297540
 
 
+def test_q2frame_replay_streams_frames_with_only_one_frame_of_lookahead():
+    source, _ = _source()
+    first_time = 1788398108000
+    engine = _CaptureEngine()
+
+    def frame(seq_no, logical_ts_ms):
+        return {
+            "version": "Q2FrameV1",
+            "seq_no": seq_no,
+            "logical_ts_ms": logical_ts_ms,
+            "q2_updates": [],
+        }
+
+    def frames():
+        yield frame(1, first_time)
+        yield frame(2, first_time)
+        yield frame(3, first_time + 3_000)
+        # The third frame reveals the end of the first same-time group. It is
+        # the only frame of lookahead; the group must drain before the source
+        # iterator is asked for a fourth frame.
+        assert engine.processed_ids == [
+            "q2frame:1",
+            "q2frame:2",
+        ]
+        yield frame(4, first_time + 6_000)
+        assert engine.processed_ids == [
+            "q2frame:1",
+            "q2frame:2",
+            "q2frame:3",
+        ]
+
+    replay_q2frames(frames(), source, engine)
+
+    assert engine.processed_ids == [
+        "q2frame:1",
+        "q2frame:2",
+        "q2frame:3",
+        "q2frame:4",
+    ]
+    assert engine.group_sizes == [2, 1, 1]
+
+
+class _CaptureEngine:
+    def __init__(self):
+        self.pending = []
+        self.processed_ids = []
+        self.group_sizes = []
+
+    def submit(self, signal):
+        self.pending.append(signal)
+
+    def run_until_empty(self):
+        self.processed_ids.extend(signal.signal_id for signal in self.pending)
+        self.group_sizes.append(len(self.pending))
+        self.pending.clear()
+
+
 def test_q2frame_replay_engine_output_matches_fixture_projection_engine():
     frames = _frames()
 

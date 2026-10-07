@@ -182,16 +182,37 @@ def replay_q2frames(
     *,
     signal_prefix: str = "q2frame",
 ) -> None:
-    """Submit frame-derived updates to an existing Engine, in frame order."""
+    """Stream frame-derived updates into an existing Engine.
 
-    signals = [source.signal_for(frame, signal_prefix=signal_prefix) for frame in frames]
-    index = 0
-    while index < len(signals):
-        logical_time = signals[index].logical_time_ms
-        source.advance_before_consume(signals[index])
-        while index < len(signals) and signals[index].logical_time_ms == logical_time:
-            engine.submit(signals[index])
-            index += 1
+    Frames sharing one logical timestamp are submitted as a group before the
+    Engine drains that timestamp, preserving the existing same-time ordering
+    contract. Only that timestamp's queued signals are retained by the Engine;
+    the replay helper does not materialize the complete Q2Frame stream.
+    """
+
+    active_logical_time: Optional[int] = None
+    for raw_frame in frames:
+        # Parse one frame of lookahead so the prior same-time group can be
+        # drained before applying the next frame to Q2FrameReplaySource.
+        frame = (
+            raw_frame
+            if isinstance(raw_frame, Q2FrameV1)
+            else Q2FrameV1.from_mapping(raw_frame)
+        )
+        if (
+            active_logical_time is not None
+            and frame.logical_ts_ms != active_logical_time
+        ):
+            engine.run_until_empty()
+            active_logical_time = None
+
+        signal = source.signal_for(frame, signal_prefix=signal_prefix)
+        if active_logical_time is None:
+            source.advance_before_consume(signal)
+            active_logical_time = signal.logical_time_ms
+        engine.submit(signal)
+
+    if active_logical_time is not None:
         engine.run_until_empty()
 
 
