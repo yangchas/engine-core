@@ -186,6 +186,29 @@ def _market_cross_section(symbol_states: Mapping[str, Mapping[str, Any]]) -> Dic
             excluded += 1
             continue
         observed += 1
+        field_errors = values.get("field_errors", ()) or ()
+        if isinstance(field_errors, str):
+            field_errors = (field_errors,)
+        field_errors = set(field_errors)
+        # Keep the raw per-symbol observation in state, but do not present a
+        # cross-date, stale, future-dated, or malformed price pair as current
+        # market breadth. This is a per-observation quality downgrade, not a
+        # projection/run gate: the symbol remains observed and counts as
+        # unknown until a usable price pair arrives.
+        if field_errors.intersection(
+            {
+                "ts",
+                "future_ts",
+                "trade_date",
+                "stale",
+                "px",
+                "px_non_positive",
+                "pc",
+                "pc_non_positive",
+            }
+        ):
+            unknown += 1
+            continue
         price = values.get("price_milli")
         pre_close = values.get("pre_close_milli")
         if price is None or pre_close is None:
