@@ -532,6 +532,7 @@ class OfflineCanonicalReplay:
                         missing_symbols=result.frame.missing_symbols,
                         completeness=result.frame.completeness,
                         coverage=result.frame.coverage,
+                        out_of_scope_symbols=result.frame.out_of_scope_symbols,
                     )
                 symbol_states_already_frozen = True
             signal = self.source.signal_for_frame(

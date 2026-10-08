@@ -646,9 +646,14 @@ class IncrementalQ2Projection:
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("observed_at must be timezone-aware")
         observed_ms = int(observed_at.astimezone(timezone.utc).timestamp() * 1000)
-        changed = set(changed_symbols)
+        expected_set = set(self.expected_symbols)
+        changed = set()
+        for item in changed_symbols:
+            symbol = normalize_symbol(item)
+            if symbol in expected_set:
+                changed.add(symbol)
         if not self._quotes and raw_hashes:
-            changed.update(raw_hashes)
+            changed.update(symbol for symbol in raw_hashes if normalize_symbol(symbol) in expected_set)
         for symbol in changed:
             normalized = normalize_symbol(symbol)
             raw = raw_hashes.get(normalized)

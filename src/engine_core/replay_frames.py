@@ -78,7 +78,7 @@ def _event_local_date(event: TDEventV1, source_timezone: tzinfo) -> str:
 
 @dataclass(frozen=True)
 class MarketFrameV1:
-    """One complete 3-second market cross-section interval."""
+    """One 3-second market cross-section interval and its source events."""
 
     trade_date: str
     frame_no: int
@@ -100,6 +100,7 @@ class MarketFrameV1:
     same_event_order_ambiguity: bool = False
     source_batch_ids: Tuple[str, ...] = ()
     source_sequences: Tuple[str, ...] = ()
+    out_of_scope_symbols: Tuple[str, ...] = ()
     logical_ts_ms: int = field(init=False)
     coverage: float = field(init=False)
     content_hash: str = field(init=False)
@@ -114,10 +115,15 @@ class MarketFrameV1:
         expected = tuple(sorted({normalize_symbol(symbol) for symbol in self.expected_symbols}))
         updated = tuple(sorted({normalize_symbol(symbol) for symbol in self.updated_symbols}))
         missing = tuple(sorted({normalize_symbol(symbol) for symbol in self.missing_symbols}))
+        out_of_scope = tuple(sorted({normalize_symbol(symbol) for symbol in self.out_of_scope_symbols}))
         if set(updated) - set(expected) or set(missing) - set(expected):
             raise ValueError("updated/missing symbols must be in expected_symbols")
         if set(updated) & set(missing) or set(updated) | set(missing) != set(expected):
             raise ValueError("updated and missing symbols must partition expected_symbols")
+        if set(out_of_scope) & set(expected):
+            raise ValueError("out_of_scope_symbols must not be in expected_symbols")
+        if out_of_scope and self.completeness == FRAME_COMPLETE:
+            raise ValueError("a frame with out-of-scope events cannot be COMPLETE")
         if self.completeness not in {FRAME_COMPLETE, FRAME_PARTIAL, FRAME_EMPTY}:
             raise ValueError("unsupported frame completeness")
         events = tuple(self.events)
@@ -126,11 +132,12 @@ class MarketFrameV1:
         if any(event.event_time_ms < self.start_ms or event.event_time_ms >= self.end_exclusive_ms for event in events):
             raise ValueError("event is outside the half-open frame")
         event_symbols = {event.symbol for event in events}
-        if event_symbols - set(updated):
-            raise ValueError("updated_symbols must include every event symbol")
+        if event_symbols - set(updated) != set(out_of_scope):
+            raise ValueError("out_of_scope_symbols must identify every event outside updated_symbols")
         object.__setattr__(self, "expected_symbols", expected)
         object.__setattr__(self, "updated_symbols", updated)
         object.__setattr__(self, "missing_symbols", missing)
+        object.__setattr__(self, "out_of_scope_symbols", out_of_scope)
         object.__setattr__(self, "events", events)
         object.__setattr__(self, "source_batch_ids", tuple(sorted(set(self.source_batch_ids))))
         object.__setattr__(
@@ -155,6 +162,8 @@ class MarketFrameV1:
             "events": tuple(event.content_hash for event in events),
             "completeness": self.completeness,
         }
+        if out_of_scope:
+            semantic["out_of_scope_symbols"] = out_of_scope
         object.__setattr__(self, "content_hash", semantic_hash(semantic))
         object.__setattr__(
             self,
@@ -211,6 +220,7 @@ class FrameManifestV1:
     source_sequence_status: str = SOURCE_SEQUENCE_UNKNOWN
     rabbit_arrival_order: str = RABBIT_ARRIVAL_UNKNOWN
     historical_available_at: str = HISTORICAL_AVAILABLE_AT_UNKNOWN
+    out_of_scope_symbols: Tuple[str, ...] = ()
     content_hash: str = field(init=False)
     evidence_hash: str = field(init=False)
 
@@ -224,8 +234,13 @@ class FrameManifestV1:
             raise ValueError("frame_count does not match interval")
         if self.frame_count <= 0 or self.event_count < 0:
             raise ValueError("manifest counts are invalid")
-        object.__setattr__(self, "expected_symbols", tuple(sorted({normalize_symbol(item) for item in self.expected_symbols})))
-        object.__setattr__(self, "content_hash", semantic_hash({
+        expected = tuple(sorted({normalize_symbol(item) for item in self.expected_symbols}))
+        out_of_scope = tuple(sorted({normalize_symbol(item) for item in self.out_of_scope_symbols}))
+        if set(out_of_scope) & set(expected):
+            raise ValueError("manifest out_of_scope_symbols must not be expected_symbols")
+        object.__setattr__(self, "expected_symbols", expected)
+        object.__setattr__(self, "out_of_scope_symbols", out_of_scope)
+        manifest_content = {
             "contract": FRAME_MANIFEST_CONTRACT_VERSION,
             "trade_date": self.trade_date,
             "source_timezone": self.source_timezone,
@@ -238,7 +253,10 @@ class FrameManifestV1:
             "source_table": self.source_table,
             "query_hash": self.query_hash,
             "input_hash": self.input_hash,
-        }))
+        }
+        if out_of_scope:
+            manifest_content["out_of_scope_symbols"] = out_of_scope
+        object.__setattr__(self, "content_hash", semantic_hash(manifest_content))
         object.__setattr__(self, "evidence_hash", evidence_hash({
             "source_sequence_status": self.source_sequence_status,
             "rabbit_arrival_order": self.rabbit_arrival_order,
@@ -256,7 +274,11 @@ class FrameManifestV1:
 
 @dataclass(frozen=True)
 class CrossSectionStateV1:
-    """Reducer input describing the current all-symbol observation facts."""
+    """Reducer input describing the current all-symbol observation facts.
+
+    ``out_of_scope_symbols`` is cumulative over retained ``symbol_states``;
+    :class:`MarketFrameV1` carries the frame-local occurrence list.
+    """
 
     trade_date: str
     frame_no: int
@@ -283,6 +305,7 @@ class CrossSectionStateV1:
     skipped_symbols: Tuple[str, ...] = ()
     content_hash_override: Optional[str] = field(default=None, repr=False, compare=False)
     symbol_states_already_frozen: bool = field(default=False, repr=False, compare=False)
+    out_of_scope_symbols: Tuple[str, ...] = ()
     content_hash: str = field(init=False)
     evidence_hash: str = field(init=False)
 
@@ -295,8 +318,11 @@ class CrossSectionStateV1:
         expected = tuple(sorted({normalize_symbol(item) for item in self.expected_symbols}))
         updated = tuple(sorted({normalize_symbol(item) for item in self.updated_symbols}))
         missing = tuple(sorted({normalize_symbol(item) for item in self.missing_symbols}))
+        out_of_scope = tuple(sorted({normalize_symbol(item) for item in self.out_of_scope_symbols}))
         if set(updated) | set(missing) != set(expected) or set(updated) & set(missing):
             raise ValueError("updated/missing symbols must partition expected_symbols")
+        if set(out_of_scope) & set(expected):
+            raise ValueError("out_of_scope_symbols must not be in expected_symbols")
         if self.frame_completeness not in {FRAME_COMPLETE, FRAME_PARTIAL, FRAME_EMPTY}:
             raise ValueError("unsupported frame completeness")
         if not 0.0 <= self.coverage <= 1.0:
@@ -305,9 +331,14 @@ class CrossSectionStateV1:
             normalize_symbol(symbol): values if self.symbol_states_already_frozen else dict(values)
             for symbol, values in self.symbol_states.items()
         }
+        if not set(out_of_scope).issubset(states):
+            raise ValueError("out_of_scope_symbols must be retained in symbol_states")
+        if out_of_scope and self.frame_completeness == FRAME_COMPLETE:
+            raise ValueError("a state with out-of-scope events cannot be COMPLETE")
         object.__setattr__(self, "expected_symbols", expected)
         object.__setattr__(self, "updated_symbols", updated)
         object.__setattr__(self, "missing_symbols", missing)
+        object.__setattr__(self, "out_of_scope_symbols", out_of_scope)
         object.__setattr__(self, "source_batch_ids", tuple(sorted(set(self.source_batch_ids))))
         object.__setattr__(
             self,
@@ -325,7 +356,7 @@ class CrossSectionStateV1:
             "symbol_states",
             MappingProxyType(states) if self.symbol_states_already_frozen else deep_freeze(states),
         )
-        object.__setattr__(self, "content_hash", self.content_hash_override or semantic_hash({
+        state_content = {
             "contract": CROSS_SECTION_STATE_CONTRACT_VERSION,
             "trade_date": self.trade_date,
             "frame_no": self.frame_no,
@@ -341,7 +372,10 @@ class CrossSectionStateV1:
             "replay_status": self.replay_status,
             "replay_reasons": self.replay_reasons,
             "skipped_symbols": self.skipped_symbols,
-        }))
+        }
+        if out_of_scope:
+            state_content["out_of_scope_symbols"] = out_of_scope
+        object.__setattr__(self, "content_hash", self.content_hash_override or semantic_hash(state_content))
         object.__setattr__(self, "evidence_hash", evidence_hash({
             "source_time_min_ms": self.source_time_min_ms,
             "source_time_max_ms": self.source_time_max_ms,
@@ -387,6 +421,7 @@ class CrossSectionFactsV1:
     market_breadth: Mapping[str, int]
     source_layers: Tuple[str, ...]
     fact_only: bool = True
+    out_of_scope_symbols: Tuple[str, ...] = ()
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -403,7 +438,8 @@ class CrossSectionFactsV1:
         object.__setattr__(self, "field_denominators", deep_freeze(dict(self.field_denominators)))
         object.__setattr__(self, "market_breadth", deep_freeze(dict(self.market_breadth)))
         object.__setattr__(self, "source_layers", tuple(self.source_layers))
-        object.__setattr__(self, "content_hash", semantic_hash({
+        object.__setattr__(self, "out_of_scope_symbols", tuple(sorted(set(self.out_of_scope_symbols))))
+        facts_content = {
             "contract": CROSS_SECTION_FACTS_CONTRACT_VERSION,
             "trade_date": self.trade_date,
             "frame_no": self.frame_no,
@@ -415,7 +451,10 @@ class CrossSectionFactsV1:
             "coverage": self.coverage,
             "field_denominators": self.field_denominators,
             "market_breadth": self.market_breadth,
-        }))
+        }
+        if self.out_of_scope_symbols:
+            facts_content["out_of_scope_symbols"] = self.out_of_scope_symbols
+        object.__setattr__(self, "content_hash", semantic_hash(facts_content))
 
 
 def build_cross_section_facts(
@@ -461,6 +500,7 @@ def build_cross_section_facts(
         field_denominators=field_denominators,
         market_breadth=breadth,
         source_layers=source_layers,
+        out_of_scope_symbols=state.out_of_scope_symbols,
     )
 
 
@@ -485,6 +525,7 @@ class IncrementalCrossSectionState:
         self._symbol_indexes = {symbol: index for index, symbol in enumerate(self.expected_symbols)}
         self._leaf_hashes = [self._leaf_hash(symbol, None) for symbol in self.expected_symbols]
         self._aggregate_xor = 0
+        self._out_of_scope_states: dict[str, str] = {}
         for digest in self._leaf_hashes:
             self._aggregate_xor ^= int(digest, 16)
 
@@ -513,10 +554,23 @@ class IncrementalCrossSectionState:
             self.latest_raw[event.symbol] = frozen_raw
             pending_raw[event.symbol] = raw
         for symbol, raw in pending_raw.items():
-            self._update_leaf(symbol, raw)
+            if symbol in self._symbol_indexes:
+                self._update_leaf(symbol, raw)
+            else:
+                self._out_of_scope_states[symbol] = semantic_hash({
+                    "contract": "CrossSectionOutOfScopeSymbolV1",
+                    "symbol": symbol,
+                    "state": raw,
+                })
 
     @property
     def merkle_root(self) -> str:
+        if self._out_of_scope_states:
+            digest = hashlib.sha256()
+            digest.update(b"CrossSectionAggregateWithOutOfScopeV1\0")
+            digest.update(self._aggregate_xor.to_bytes(32, "big"))
+            digest.update(semantic_hash(tuple(sorted(self._out_of_scope_states.items()))).encode("ascii"))
+            return digest.hexdigest()
         digest = hashlib.sha256()
         digest.update(self._AGGREGATE_CONTRACT.encode("utf-8"))
         digest.update(b"\0")
@@ -527,6 +581,10 @@ class IncrementalCrossSectionState:
     def aggregate_state_hash(self) -> str:
         return self.merkle_root
 
+    @property
+    def out_of_scope_symbols(self) -> Tuple[str, ...]:
+        return tuple(sorted(self._out_of_scope_states))
+
     def full_state_hash(
         self,
         *,
@@ -536,11 +594,13 @@ class IncrementalCrossSectionState:
         missing_symbols: Sequence[str],
         completeness: str,
         coverage: float,
+        out_of_scope_symbols: Sequence[str] = (),
         source_time_min_ms: Optional[int] = None,
         source_time_max_ms: Optional[int] = None,
     ) -> str:
         """Build the public FULL hash once for final parity verification."""
 
+        cumulative_out_of_scope = tuple(sorted(set(self.latest_raw) - set(self.expected_symbols)))
         return CrossSectionStateV1(
             trade_date=self.trade_date,
             frame_no=frame_no,
@@ -548,6 +608,7 @@ class IncrementalCrossSectionState:
             expected_symbols=self.expected_symbols,
             updated_symbols=updated_symbols,
             missing_symbols=missing_symbols,
+            out_of_scope_symbols=tuple(sorted(set(out_of_scope_symbols) | set(cumulative_out_of_scope))),
             symbol_states=self.latest_raw,
             frame_completeness=completeness,
             coverage=coverage,
@@ -565,8 +626,9 @@ class IncrementalCrossSectionState:
         missing_symbols: Sequence[str],
         completeness: str,
         coverage: float,
+        out_of_scope_symbols: Sequence[str] = (),
     ) -> str:
-        return semantic_hash({
+        identity = {
             "contract": CROSS_SECTION_STATE_CONTRACT_VERSION,
             "trade_date": self.trade_date,
             "frame_no": frame_no,
@@ -577,7 +639,12 @@ class IncrementalCrossSectionState:
             "merkle_root": self.merkle_root,
             "frame_completeness": completeness,
             "coverage": coverage,
-        })
+        }
+        cumulative_out_of_scope = tuple(sorted(set(self.latest_raw) - set(self.expected_symbols)))
+        out_of_scope = tuple(sorted(set(out_of_scope_symbols) | set(cumulative_out_of_scope)))
+        if out_of_scope:
+            identity["out_of_scope_symbols"] = out_of_scope
+        return semantic_hash(identity)
 
 
 @dataclass(frozen=True)
@@ -649,6 +716,10 @@ class CrossSectionProjectionV1:
     @property
     def skipped_symbols(self) -> Tuple[str, ...]:
         return self.cross_section.skipped_symbols
+
+    @property
+    def out_of_scope_symbols(self) -> Tuple[str, ...]:
+        return self.cross_section.out_of_scope_symbols
 
     @property
     def batch_quality(self) -> str:
@@ -758,8 +829,6 @@ class CrossSectionReplaySource:
         for event in events:
             if _event_local_date(event, self.source_timezone) != self.trade_date:
                 raise ValueError("TD tick event date does not match trade_date")
-            if event.symbol not in expected_set:
-                raise ValueError("TD tick symbol is outside expected_symbols")
             if event.event_time_ms < start or event.event_time_ms >= end:
                 raise ValueError("TD tick is outside the bounded replay interval")
             frame_no = (event.event_time_ms - start) // self.slice_ms
@@ -769,12 +838,14 @@ class CrossSectionReplaySource:
             frame_start = start + frame_no * self.slice_ms
             frame_end = frame_start + self.slice_ms
             frame_events = tuple(grouped.get(frame_no, ()))
-            updated = tuple(sorted({event.symbol for event in frame_events}))
+            event_symbols = {event.symbol for event in frame_events}
+            updated = tuple(sorted(event_symbols & expected_set))
+            out_of_scope = tuple(sorted(event_symbols - expected_set))
             updated_set = set(updated)
             missing = tuple(symbol for symbol in self.expected_symbols if symbol not in updated_set)
             if not frame_events:
                 completeness = FRAME_EMPTY
-            elif missing:
+            elif missing or out_of_scope:
                 completeness = FRAME_PARTIAL
             else:
                 completeness = FRAME_COMPLETE
@@ -789,6 +860,7 @@ class CrossSectionReplaySource:
                 missing_symbols=missing,
                 events=frame_events,
                 completeness=completeness,
+                out_of_scope_symbols=out_of_scope,
                 source_time_min_ms=min(times) if times else None,
                 source_time_max_ms=max(times) if times else None,
             ))
@@ -807,7 +879,8 @@ class CrossSectionReplaySource:
         query one half-open interval at a time and never materialize the full
         trading window in memory. ``presorted`` is safe only when the source
         guarantees ``event_time_ms, symbol, content_hash`` order; bounds and
-        symbol membership are still validated here.
+        symbol membership is reported as out-of-scope evidence rather than
+        aborting the frame; invalid dates and frame bounds remain errors.
         """
 
         if frame_no < 0 or frame_no >= self.frame_count:
@@ -822,16 +895,16 @@ class CrossSectionReplaySource:
             normalized.sort(key=lambda event: (event.event_time_ms, event.symbol, event.content_hash))
         expected_set = set(self.expected_symbols)
         for event in normalized:
-            if event.symbol not in expected_set:
-                raise ValueError("TD tick symbol is outside expected_symbols")
             if event.event_time_ms < frame_start or event.event_time_ms >= frame_end:
                 raise ValueError("TD tick is outside the frame interval")
             if _event_local_date(event, self.source_timezone) != self.trade_date:
                 raise ValueError("TD tick event date does not match trade_date")
-        updated = tuple(sorted({event.symbol for event in normalized}))
+        event_symbols = {event.symbol for event in normalized}
+        updated = tuple(sorted(event_symbols & expected_set))
+        out_of_scope = tuple(sorted(event_symbols - expected_set))
         updated_set = set(updated)
         missing = tuple(symbol for symbol in self.expected_symbols if symbol not in updated_set)
-        completeness = FRAME_EMPTY if not normalized else FRAME_COMPLETE if not missing else FRAME_PARTIAL
+        completeness = FRAME_EMPTY if not normalized else FRAME_COMPLETE if not missing and not out_of_scope else FRAME_PARTIAL
         times = [event.event_time_ms for event in normalized]
         return MarketFrameV1(
             trade_date=self.trade_date,
@@ -843,6 +916,7 @@ class CrossSectionReplaySource:
             missing_symbols=missing,
             events=tuple(normalized),
             completeness=completeness,
+            out_of_scope_symbols=out_of_scope,
             source_time_min_ms=min(times) if times else None,
             source_time_max_ms=max(times) if times else None,
         )
@@ -862,6 +936,7 @@ class CrossSectionReplaySource:
             source_table=source_table,
             query_hash=query_hash,
             input_hash=semantic_hash(tuple(event.content_hash for frame in frames for event in frame.events)),
+            out_of_scope_symbols=tuple(sorted({symbol for frame in frames for symbol in frame.out_of_scope_symbols})),
         )
 
     def iter_signals(self, frames: Sequence[MarketFrameV1], *, signal_prefix: str = "cross-section") -> Iterable[EngineSignal]:
@@ -880,6 +955,7 @@ class CrossSectionReplaySource:
                 freshness_policy=self.freshness_policy,
                 source_id=self.source_id,
             )
+            cumulative_out_of_scope = tuple(sorted(set(latest_raw) - set(self.expected_symbols)))
             state = CrossSectionStateV1(
                 trade_date=self.trade_date,
                 frame_no=frame.frame_no,
@@ -887,6 +963,7 @@ class CrossSectionReplaySource:
                 expected_symbols=self.expected_symbols,
                 updated_symbols=frame.updated_symbols,
                 missing_symbols=frame.missing_symbols,
+                out_of_scope_symbols=cumulative_out_of_scope,
                 symbol_states=latest_raw,
                 frame_completeness=frame.completeness,
                 coverage=frame.coverage,
@@ -974,6 +1051,7 @@ class CrossSectionReplaySource:
             replay_status=replay_status,
             replay_reasons=tuple(replay_reasons),
             skipped_symbols=tuple(skipped_symbols),
+            out_of_scope_symbols=tuple(sorted(set(latest_raw) - set(self.expected_symbols))),
             content_hash_override=state_content_hash_override,
             symbol_states_already_frozen=symbol_states_already_frozen,
         )

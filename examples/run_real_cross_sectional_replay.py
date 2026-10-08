@@ -252,6 +252,7 @@ def _run_pass(
                 missing_symbols=frame.missing_symbols,
                 completeness=frame.completeness,
                 coverage=frame.coverage,
+                out_of_scope_symbols=frame.out_of_scope_symbols,
             )
         signal = source.signal_for_frame(
             frame,
@@ -378,6 +379,7 @@ def _run_pass(
             missing_symbols=last_frame_for_parity.missing_symbols,
             completeness=last_frame_for_parity.completeness,
             coverage=last_frame_for_parity.coverage,
+            out_of_scope_symbols=last_frame_for_parity.out_of_scope_symbols,
             source_time_min_ms=last_frame_for_parity.source_time_min_ms,
             source_time_max_ms=last_frame_for_parity.source_time_max_ms,
         )
@@ -388,6 +390,7 @@ def _run_pass(
             missing_symbols=last_frame_for_parity.missing_symbols,
             completeness=last_frame_for_parity.completeness,
             coverage=last_frame_for_parity.coverage,
+            out_of_scope_symbols=last_frame_for_parity.out_of_scope_symbols,
         )
     return {
         "shuffled": shuffled,

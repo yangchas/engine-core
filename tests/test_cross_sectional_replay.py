@@ -4,6 +4,7 @@ from engine_core import (
     CrossSectionReplaySource,
     CrossSectionStateV1,
     IncrementalCrossSectionState,
+    IncrementalQ2Projection,
     DeterministicEngine,
     MarketStateReducer,
     ProbeStrategy,
@@ -202,7 +203,11 @@ def test_cross_section_projection_is_not_rebuilt_by_deep_freeze():
         end_exclusive_ms=start + 3_000,
     )
     frame = source.frame_from_events(0, [_row(start + 100)])
-    signal = source.signal_for_frame(frame, {})
+    signal = source.signal_for_frame(
+        frame,
+        {},
+        projection_builder=IncrementalQ2Projection("2026-09-18", source.expected_symbols),
+    )
     assert deep_freeze(signal.payload) is signal.payload
 
 
@@ -246,3 +251,114 @@ def test_cross_section_facts_can_label_a_source_cohort_without_claiming_full_mar
         "unknown_count": 1,
     }
     assert facts.fact_only is True
+
+
+def test_out_of_scope_tick_is_retained_without_aborting_or_inflating_cohort():
+    start = local_datetime_ms("2026-09-18", "09:15:00")
+    source = CrossSectionReplaySource(
+        "2026-09-18",
+        ("600519",),
+        VirtualClock(datetime.fromtimestamp(start / 1000, timezone.utc)),
+        slice_anchor_ms=start,
+        end_exclusive_ms=start + 3_000,
+    )
+    frame = source.frame_from_events(
+        0,
+        [
+            _row(start + 100, "600519", 100_000),
+            _row(start + 200, "000001", 101_000),
+        ],
+    )
+
+    assert {event.symbol for event in frame.events} == {"600519", "000001"}
+    assert frame.updated_symbols == ("600519",)
+    assert frame.missing_symbols == ()
+    assert frame.out_of_scope_symbols == ("000001",)
+    assert frame.coverage == 1.0
+    assert frame.completeness == "PARTIAL"
+
+    signal = source.signal_for_frame(
+        frame,
+        {},
+        projection_builder=IncrementalQ2Projection("2026-09-18", source.expected_symbols),
+    )
+    projection = signal.payload
+    assert projection.out_of_scope_symbols == ("000001",)
+    assert set(projection.quotes) == {"600519"}
+    assert projection.status.value == "PARTIAL"
+    assert projection.cross_section.symbol_states["000001"]["px"] == 101_000
+
+    facts = build_cross_section_facts(projection.cross_section)
+    assert facts.expected_count == 1
+    assert facts.observed_count == 1
+    assert facts.out_of_scope_symbols == ("000001",)
+
+    manifest = source.manifest((frame,))
+    assert manifest.event_count == 2
+    assert manifest.expected_symbol_count == 1
+    assert manifest.out_of_scope_symbols == ("000001",)
+
+
+def test_incremental_state_retains_out_of_scope_ticks_and_matches_full_hash():
+    start = local_datetime_ms("2026-09-18", "09:15:00")
+    source = CrossSectionReplaySource(
+        "2026-09-18",
+        ("600519",),
+        VirtualClock(datetime.fromtimestamp(start / 1000, timezone.utc)),
+        slice_anchor_ms=start,
+        end_exclusive_ms=start + 3_000,
+    )
+    frame = source.frame_from_events(
+        0,
+        [
+            _row(start + 100, "600519", 100_000),
+            _row(start + 200, "000001", 101_000),
+        ],
+    )
+    left = IncrementalCrossSectionState(source.expected_symbols, trade_date="2026-09-18")
+    right = IncrementalCrossSectionState(source.expected_symbols, trade_date="2026-09-18")
+    left.apply(frame.events)
+    right.apply(tuple(reversed(frame.events)))
+
+    identity_args = {
+        "frame_no": frame.frame_no,
+        "logical_ts_ms": frame.logical_ts_ms,
+        "updated_symbols": frame.updated_symbols,
+        "missing_symbols": frame.missing_symbols,
+        "completeness": frame.completeness,
+        "coverage": frame.coverage,
+        "out_of_scope_symbols": frame.out_of_scope_symbols,
+    }
+    assert left.latest_raw == right.latest_raw
+    assert left.identity_hash(**identity_args) == right.identity_hash(**identity_args)
+
+    signal = source.signal_for_frame(frame, left.latest_raw, latest_raw_already_updated=True)
+    assert left.full_state_hash(
+        frame_no=frame.frame_no,
+        logical_ts_ms=frame.logical_ts_ms,
+        updated_symbols=frame.updated_symbols,
+        missing_symbols=frame.missing_symbols,
+        completeness=frame.completeness,
+        coverage=frame.coverage,
+        out_of_scope_symbols=frame.out_of_scope_symbols,
+        source_time_min_ms=frame.source_time_min_ms,
+        source_time_max_ms=frame.source_time_max_ms,
+    ) == signal.payload.cross_section.content_hash
+
+
+def test_out_of_scope_symbol_remains_reported_after_its_frame():
+    start = local_datetime_ms("2026-09-18", "09:15:00")
+    source = CrossSectionReplaySource(
+        "2026-09-18",
+        ("600519",),
+        VirtualClock(datetime.fromtimestamp(start / 1000, timezone.utc)),
+        slice_anchor_ms=start,
+        end_exclusive_ms=start + 6_000,
+    )
+    frames = source.frames([_row(start + 200, "000001", 101_000)])
+    signals = list(source.iter_signals(frames))
+
+    assert frames[0].out_of_scope_symbols == ("000001",)
+    assert frames[1].out_of_scope_symbols == ()
+    assert signals[1].payload.out_of_scope_symbols == ("000001",)
+    assert signals[1].payload.cross_section.symbol_states["000001"]["px"] == 101_000
