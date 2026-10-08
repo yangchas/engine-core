@@ -123,6 +123,39 @@ symbols; the later archive read proves neither the key's first visibility
 time nor Rabbit arrival order. The captured active set still does not prove
 authoritative full-market coverage.
 
+## 09:25 Q2-to-TD persisted-value comparison
+
+A subsequent read-only `SELECT` queried
+`market_data1.auction_snapshot_v2` for `trade_date=20261008` and
+`auction_tag=0925`, ordered by symbol. It returned 5,224 rows and 5,224 unique
+symbols. The deterministic sorted-row SHA-256 was
+`6cab4bf3acbed57e1801d1cfae41a4350df3acdfd934cd43c190cf5e60bc5217`.
+Compared fields were TD `px_milli`, `chg_bp`, `match_amt_yuan`, and
+`rest_bid_amt_yuan` against Q2 `a25`, the producer's `a25`/`pc` basis-point
+calculation, `am`, and `br` respectively:
+
+- The 5,209 Q2 symbols with positive `a25` all had a corresponding TD row.
+- Q2 `a25` versus TD `px_milli`: 5,209/5,209 equal.
+- Q2-derived change versus TD `chg_bp`: 5,209/5,209 equal.
+- Q2 `am` versus TD `match_amt_yuan`: 5,209/5,209 equal.
+- Q2 `br` versus TD `rest_bid_amt_yuan`: 5,209/5,209 equal.
+- The Q2 active set had 5,226 symbols; TD had 5,224. Two active Q2 symbols
+  had no TD row. Of the 17 Q2 hashes without a positive `a25`, 15 had a TD
+  row and two did not.
+- The 15 TD rows outside the positive-price archive candidate cohort all had
+  null/nonpositive price, null change, and zero `match_amt_yuan`,
+  `rest_bid_amt_yuan`, and `rest_ask_amt_yuan`; each also had a Q2 hash with
+  unavailable `a25`. This is consistent with unavailable auction facts, not
+  positive-price data silently omitted from the archive.
+
+These reads were not simultaneous: Q2 was captured at 09:25:20.871–09:25:22.071
++08, while the archive and TD checks happened later. They establish persisted
+value agreement for the observed 5,209-symbol candidate cohort, not the exact
+first-availability time, an atomic market-wide snapshot, historical Rabbit
+arrival order, or authoritative universe completeness. The two active Q2
+symbols without TD rows and the 15 unavailable-price TD rows remain visible
+partial data, not reasons to stop processing unrelated symbols.
+
 ## Timestamp and auction-trigger source audit
 
 The checked t1-v2 source at commit
@@ -223,6 +256,7 @@ LIVE_Q2_0915_INGESTION=PASS_WITH_LIMITS
 LIVE_Q2_0920_0924_0925_CAPTURE_REPLAY=PASS_WITH_LIMITS
 OPENING_FACT_PROJECTION_ON_CAPTURE=PASS_WITH_LIMITS
 LIVE_0925_ARCHIVE_Q2_SYMBOL_FIELD_RECONCILIATION=PASS_WITH_LIMITS
+LIVE_0925_Q2_TD_SYMBOL_FIELD_RECONCILIATION=PASS_WITH_LIMITS
 SAME_CAPTURE_CORE_DETERMINISM=PASS
 CAPTURED_ACTIVE_SET_FULL_MARKET_COVERAGE=UNPROVEN
 RABBIT_ARRIVAL_ORDER=UNKNOWN
@@ -234,7 +268,9 @@ NORMAL_OPENING_ACCEPTANCE=UNPROVEN
 No Redis/TD write, Rabbit operation, service restart, deployment, or
 production-directory modification was performed. The feature-specific Core
 opening fact projection has now been exercised on the captured Q2 cohort. The
-symbol-level archive comparison now matches for the captured candidate cohort
-and the three shared fields listed above. Direct price parity, first key
-visibility, authoritative universe coverage, and NORMAL acceptance remain
-unproven. Keep TASK-008 partial; do not impose a seconds-only rejection gate.
+symbol-level Redis archive and TD comparisons match the captured positive-price
+candidate cohort for the fields listed above. Q2/TD direct price parity is now
+checked; first key visibility, authoritative universe coverage, completeness
+of the two Q2-only symbols, and NORMAL acceptance remain unproven. Keep
+TASK-008 partial; do not impose a seconds-only rejection gate or stop the
+otherwise usable replay for these isolated unavailable rows.
