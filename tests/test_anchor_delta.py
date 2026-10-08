@@ -8,8 +8,10 @@ import pytest
 from examples.run_anchor_delta_shadow import build_shadow_from_td_rows, normalize_td_rows
 from engine_core import (
     ANCHOR_DELTA_CONTRACT_VERSION,
+    ANCHOR_FIELD_DELTA_CONTRACT_VERSION,
     amount_reference_bucket,
     build_anchor_delta_evidence,
+    build_anchor_field_delta_evidence,
     build_anchor_shadow_evidence,
 )
 
@@ -116,6 +118,215 @@ def test_anchor_delta_supports_audited_aliases_and_balanced_state():
     assert result["labels"] == []
     assert result["amount_reference_bucket"] == "lt_500k"
     assert result["reference_labels"] == ["small_volume_unconfirmed"]
+
+
+def test_anchor_field_delta_keeps_independent_amount_and_book_facts_when_price_is_missing():
+    previous = {
+        "symbol": "300170",
+        "tag": "0924",
+        "px_milli": 15570,
+        "match_amt_yuan": 1_753_182,
+        "rest_bid_amt_yuan": 0,
+        "rest_ask_amt_yuan": 390_807,
+    }
+    current = {
+        "symbol": "300170",
+        "tag": "0925",
+        "px_milli": None,
+        "match_amt_yuan": 6_640_200,
+        "rest_bid_amt_yuan": 0,
+        "rest_ask_amt_yuan": 4_160_200,
+    }
+
+    result = build_anchor_field_delta_evidence(
+        previous, current, symbol="300170", from_tag="0924", to_tag="0925"
+    )
+    legacy = build_anchor_delta_evidence(
+        {
+            "symbol": "300170",
+            "tag": "0924",
+            "price_milli": 15570,
+            "auction_amount_yuan": 1_753_182,
+            "bid_amount_yuan": 0,
+            "ask_amount_yuan": 390_807,
+        },
+        {
+            "symbol": "300170",
+            "tag": "0925",
+            "price_milli": None,
+            "auction_amount_yuan": 6_640_200,
+            "bid_amount_yuan": 0,
+            "ask_amount_yuan": 4_160_200,
+        },
+        symbol="300170",
+        from_tag="0924",
+        to_tag="0925",
+    )
+
+    assert result["contract"] == "AnchorFieldDeltaFactV1"
+    assert ANCHOR_FIELD_DELTA_CONTRACT_VERSION == "AnchorFieldDeltaFactV1"
+    assert result["decision_status"] == "FACT_ONLY"
+    assert legacy["status"] == "unavailable"
+    assert legacy["amount_delta_yuan"] is None
+    assert result["fields"]["price_milli"] == {
+        "unit": "milli_yuan_per_share",
+        "previous_value": 15570.0,
+        "current_value": None,
+        "delta": None,
+        "status": "MISSING",
+    }
+    assert result["fields"]["amount_yuan"]["delta"] == 4_887_018.0
+    assert result["fields"]["amount_yuan"]["status"] == "AVAILABLE"
+    assert result["fields"]["rest_bid_yuan"]["delta"] == 0.0
+    assert result["fields"]["rest_ask_yuan"]["delta"] == 3_769_393.0
+    assert result["fields"]["book_pressure_yuan"]["delta"] == -3_769_393.0
+    assert result["fields"]["book_pressure_yuan"]["status"] == "AVAILABLE"
+    assert "direction" not in result
+
+    complete_new = build_anchor_field_delta_evidence(
+        previous,
+        {**current, "px_milli": 15600},
+        symbol="300170",
+        from_tag="0924",
+        to_tag="0925",
+    )
+    complete_old = build_anchor_delta_evidence(
+        {
+            "symbol": "300170",
+            "tag": "0924",
+            "price_milli": 15570,
+            "auction_amount_yuan": 1_753_182,
+            "bid_amount_yuan": 0,
+            "ask_amount_yuan": 390_807,
+        },
+        {
+            "symbol": "300170",
+            "tag": "0925",
+            "price_milli": 15600,
+            "auction_amount_yuan": 6_640_200,
+            "bid_amount_yuan": 0,
+            "ask_amount_yuan": 4_160_200,
+        },
+        symbol="300170",
+        from_tag="0924",
+        to_tag="0925",
+    )
+    assert (
+        complete_new["fields"]["price_milli"]["delta"]
+        == complete_old["price_delta_milli"]
+    )
+    assert (
+        complete_new["fields"]["amount_yuan"]["delta"]
+        == complete_old["amount_delta_yuan"]
+    )
+    assert (
+        complete_new["fields"]["rest_bid_yuan"]["delta"]
+        == complete_old["rest_bid_delta_yuan"]
+    )
+    assert (
+        complete_new["fields"]["rest_ask_yuan"]["delta"]
+        == complete_old["rest_ask_delta_yuan"]
+    )
+    assert (
+        complete_new["fields"]["book_pressure_yuan"]["delta"]
+        == complete_old["pressure_delta_yuan"]
+    )
+
+
+def test_anchor_field_delta_distinguishes_null_unknown_and_invalid_without_zero_fill():
+    previous = {
+        "symbol": "600519",
+        "tag": "0924",
+        "price_milli": 10000,
+        "auction_amount_yuan": 100,
+        "bid_amount_yuan": 10,
+        "ask_amount_yuan": 20,
+    }
+    current = {
+        "symbol": "600519",
+        "tag": "0925",
+        "price_milli": None,
+        "bid_amount_yuan": 0,
+        "ask_amount_yuan": 0,
+    }
+
+    result = build_anchor_field_delta_evidence(previous, current, symbol="600519")
+
+    assert result["fields"]["price_milli"]["status"] == "MISSING"
+    assert result["fields"]["amount_yuan"]["status"] == "UNKNOWN"
+    assert result["fields"]["amount_yuan"]["delta"] is None
+    assert result["fields"]["rest_bid_yuan"]["status"] == "AVAILABLE"
+    assert result["fields"]["rest_bid_yuan"]["delta"] == -10.0
+
+    invalid = build_anchor_field_delta_evidence(
+        {**previous, "auction_amount_yuan": -1},
+        {**current, "auction_amount_yuan": 10},
+        symbol="600519",
+    )
+    assert invalid["fields"]["amount_yuan"]["status"] == "INVALID"
+    assert invalid["fields"]["amount_yuan"]["delta"] is None
+
+
+def test_anchor_field_delta_zero_is_valid_and_identical_results_have_stable_hashes():
+    previous = _row("0924", price=10000, amount=0, bid=0, ask=0)
+    current = _row("0925", price=10000, amount=0, bid=0, ask=0)
+
+    left = build_anchor_field_delta_evidence(previous, current, symbol="600519")
+    right = build_anchor_field_delta_evidence(previous, current, symbol="600519")
+
+    assert left["fields"]["amount_yuan"]["status"] == "AVAILABLE"
+    assert left["fields"]["amount_yuan"]["delta"] == 0.0
+    assert left["content_hash"] == right["content_hash"]
+
+
+def test_anchor_field_delta_supports_yuan_price_alias_and_marks_zero_price_invalid():
+    result = build_anchor_field_delta_evidence(
+        {
+            "symbol": "600519",
+            "tag": "0924",
+            "price": 100.0,
+            "amount": 10,
+            "bid_amount": 3,
+            "ask_amount": 2,
+        },
+        {
+            "symbol": "600519",
+            "tag": "0925",
+            "price": 100.1,
+            "amount": 11,
+            "bid_amount": 4,
+            "ask_amount": 2,
+        },
+        symbol="600519",
+    )
+
+    assert result["fields"]["price_milli"]["delta"] == pytest.approx(100.0)
+    assert result["fields"]["price_milli"]["status"] == "AVAILABLE"
+
+    invalid = build_anchor_field_delta_evidence(
+        _row("0924", price=10000), _row("0925", price=0), symbol="600519"
+    )
+    assert invalid["fields"]["price_milli"]["status"] == "INVALID"
+    assert invalid["fields"]["price_milli"]["delta"] is None
+
+
+def test_anchor_field_delta_missing_anchor_is_not_zero_filled():
+    result = build_anchor_field_delta_evidence(
+        None,
+        {
+            "symbol": "600519",
+            "tag": "0925",
+            "px_milli": 10000,
+            "match_amt_yuan": 0,
+            "rest_bid_amt_yuan": 0,
+            "rest_ask_amt_yuan": 0,
+        },
+        symbol="600519",
+    )
+
+    for name in ("price_milli", "amount_yuan", "rest_bid_yuan", "rest_ask_yuan"):
+        assert result["fields"][name]["status"] == "MISSING"
+        assert result["fields"][name]["delta"] is None
 
 
 def test_td_adapter_keeps_native_timestamp_as_evidence_only():

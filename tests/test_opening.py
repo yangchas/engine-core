@@ -10,11 +10,17 @@ from engine_core import (
     OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION,
     OPENING_PLATE_PRICE_SUMMARY_CONTRACT_VERSION,
     OPENING_PLATE_PRICE_REFERENCE_CONTEXT_CONTRACT_VERSION,
+    OPENING_PLATE_AUCTION_PRESSURE_CONTEXT_CONTRACT_VERSION,
+    OPENING_PLATE_FIELD_DELTA_CONTEXT_CONTRACT_VERSION,
     OPENING_TRANSITION_FACT_CONTRACT_VERSION,
     OPENING_TRANSITION_SUMMARY_CONTRACT_VERSION,
     build_open_fact,
     build_opening_amount_summary,
     build_opening_limit_state_summary,
+    build_opening_plate_auction_pressure_summary,
+    build_opening_plate_field_delta_context,
+    build_opening_plate_field_delta_summary,
+    build_opening_plate_auction_pressure_context,
     build_opening_plate_amount_context,
     build_opening_plate_amount_summary,
     build_opening_plate_price_summary,
@@ -25,6 +31,8 @@ from engine_core import (
     classify_sign_state,
     validate_opening_plate_amount_context,
     validate_opening_plate_price_reference_context,
+    validate_opening_plate_auction_pressure_context,
+    validate_opening_plate_field_delta_context,
     compute_change_delta_bp,
     compute_delta,
     compute_open_change_pct,
@@ -447,6 +455,10 @@ def test_opening_plate_price_summary_uses_common_valid_price_cohort():
     assert plate["open_valid_count"] == 5
     assert plate["common_symbol_count"] == 5
     assert plate["comparison_valid_count"] == 4
+    assert plate["open_limit_state_total_count"] == 4
+    assert plate["open_limit_state_valid_count"] == 0
+    assert plate["open_limit_state_status"] == "unavailable"
+    assert plate["open_limit_up_count"] is None
     assert plate["price_change_value_count"] == 3
     assert plate["price_change_missing_count"] == 1
     assert plate["price_change_status"] == "partial"
@@ -457,6 +469,396 @@ def test_opening_plate_price_summary_uses_common_valid_price_cohort():
     assert plate["open_negative_ratio"] == pytest.approx(1 / 3)
     assert plate["open_median_change_pct"] == pytest.approx(0.0)
     assert plate["comparison_symbols"] == ["A", "B", "C", "NO_CHANGE"]
+
+
+def test_opening_plate_price_summary_reports_partial_limit_state_without_blocking():
+    summary = build_opening_plate_price_summary(
+        {
+            "A": {"status": "available", "change_pct": 1.0, "limit_state": 1},
+            "B": {"status": "available", "change_pct": -1.0, "limit_state": None},
+            "C": {"status": "available", "change_pct": 0.0, "limit_state": 7},
+            "NOT_PRICE_VALID": {
+                "status": "unavailable",
+                "change_pct": 5.0,
+                "limit_state": -1,
+            },
+        },
+        mapped_symbols_by_plate={"P": ("A", "B", "C", "NOT_PRICE_VALID")},
+        auction_symbols_by_plate={"P": ("A", "B", "C", "NOT_PRICE_VALID")},
+        selected_plates=("P",),
+    )
+
+    plate = summary["plates"][0]
+    assert summary["decision_status"] == "FACT_ONLY"
+    assert plate["comparison_valid_count"] == 3
+    assert plate["open_limit_state_total_count"] == 3
+    assert plate["open_limit_state_present_count"] == 2
+    assert plate["open_limit_state_valid_count"] == 1
+    assert plate["open_limit_state_missing_count"] == 1
+    assert plate["open_limit_state_invalid_count"] == 1
+    assert plate["open_limit_state_coverage"] == pytest.approx(1 / 3)
+    assert plate["open_limit_state_status"] == "partial"
+    assert plate["open_limit_up_count"] == 1
+    assert plate["open_limit_normal_count"] == 0
+    assert plate["open_limit_down_count"] == 0
+
+
+def test_opening_plate_auction_pressure_keeps_partial_values_and_quality_counts():
+    summary = build_opening_plate_auction_pressure_summary(
+        {
+            "A": {
+                "status": "resolved",
+                "auction_directional_pressure_yuan": -25,
+            },
+            "B": {
+                "status": "balanced",
+                "auction_directional_pressure_yuan": 0,
+            },
+            "C": {
+                "status": "unavailable",
+                "auction_directional_pressure_yuan": 0,
+            },
+            "D": {
+                "status": "invalid",
+                "auction_directional_pressure_yuan": 99,
+            },
+            "UNMAPPED": {
+                "status": "resolved",
+                "auction_directional_pressure_yuan": 500,
+            },
+        },
+        mapped_symbols_by_plate={"P": ("A", "B", "C", "D", "MISSING"), "EMPTY": ()},
+        trade_date="2026-09-29",
+        selected_plates=("P", "EMPTY"),
+    )
+
+    by_plate = {row["plate"]: row for row in summary["plates"]}
+    plate = by_plate["P"]
+    assert summary["decision_status"] == "FACT_ONLY"
+    assert summary["full_market_coverage"] == "UNPROVEN"
+    assert plate["auction_pressure_yuan"] == -25
+    assert plate["auction_pressure_status"] == "partial"
+    assert plate["pressure_total_count"] == 5
+    assert plate["pressure_usable_count"] == 2
+    assert plate["pressure_unavailable_count"] == 1
+    assert plate["pressure_invalid_count"] == 1
+    assert plate["missing_symbol_count"] == 1
+    assert plate["pressure_coverage"] == pytest.approx(0.4)
+    assert by_plate["EMPTY"]["auction_pressure_yuan"] is None
+    assert by_plate["EMPTY"]["auction_pressure_status"] == "unavailable"
+
+
+def test_opening_plate_auction_pressure_zero_is_valid_and_complete_cohort_available():
+    summary = build_opening_plate_auction_pressure_summary(
+        {
+            "A": {
+                "status": "balanced",
+                "auction_directional_pressure_yuan": 0,
+            },
+            "B": {
+                "status": "resolved",
+                "auction_directional_pressure_yuan": 12.5,
+            },
+        },
+        mapped_symbols_by_plate={"P": ("A", "B")},
+        trade_date="2026-09-29",
+    )
+
+    plate = summary["plates"][0]
+    assert plate["auction_pressure_yuan"] == 12.5
+    assert plate["auction_pressure_status"] == "available"
+    assert plate["pressure_total_count"] == 2
+    assert plate["pressure_usable_count"] == 2
+    assert plate["pressure_unavailable_count"] == 0
+    assert plate["pressure_invalid_count"] == 0
+    assert plate["pressure_coverage"] == 1.0
+
+
+def test_opening_plate_field_delta_uses_independent_field_quality_denominators():
+    field_facts = {
+        "A": {
+            "contract": "AnchorFieldDeltaFactV1",
+            "symbol": "A",
+            "from_anchor": "0924",
+            "to_anchor": "0925",
+            "fields": {
+                "amount_yuan": {"delta": 0, "status": "AVAILABLE"},
+                "rest_bid_yuan": {"delta": 10, "status": "AVAILABLE"},
+                "rest_ask_yuan": {"delta": 0, "status": "AVAILABLE"},
+                "book_pressure_yuan": {"delta": 10, "status": "AVAILABLE"},
+            },
+        },
+        "B": {
+            "contract": "AnchorFieldDeltaFactV1",
+            "symbol": "B",
+            "from_anchor": "0924",
+            "to_anchor": "0925",
+            "fields": {
+                "amount_yuan": {"delta": -5, "status": "AVAILABLE"},
+                "rest_bid_yuan": {"delta": None, "status": "MISSING"},
+                "rest_ask_yuan": {"delta": None, "status": "UNKNOWN"},
+                "book_pressure_yuan": {"delta": None, "status": "MISSING"},
+            },
+        },
+        "C": {
+            "contract": "AnchorFieldDeltaFactV1",
+            "symbol": "C",
+            "from_anchor": "0924",
+            "to_anchor": "0925",
+            "fields": {
+                "amount_yuan": {"delta": None, "status": "INVALID"},
+                "rest_bid_yuan": {"delta": 0, "status": "AVAILABLE"},
+                "rest_ask_yuan": {"delta": 7, "status": "AVAILABLE"},
+                "book_pressure_yuan": {"delta": -7, "status": "AVAILABLE"},
+            },
+        },
+    }
+
+    summary = build_opening_plate_field_delta_summary(
+        field_facts,
+        mapped_symbols_by_plate={"P": ("A", "B", "C", "C", "ABSENT"), "EMPTY": ()},
+        trade_date="2026-09-29",
+    )
+    by_plate = {row["plate"]: row for row in summary["plates"]}
+    fields = by_plate["P"]["fields"]
+
+    assert summary["decision_status"] == "FACT_ONLY"
+    assert summary["full_market_coverage"] == "UNPROVEN"
+    assert summary["scope_authority"] == "FROZEN_MAPPING_ONLY_NOT_FULL_MARKET"
+    assert fields["amount_yuan"] == {
+        "expected_count": 4,
+        "observed_count": 3,
+        "available_count": 2,
+        "missing_count": 0,
+        "unknown_count": 0,
+        "invalid_count": 1,
+        "missing_symbol_count": 1,
+        "coverage": pytest.approx(0.5),
+        "zero_value_count": 1,
+        "sum_yuan": -5,
+        "status": "partial",
+    }
+    assert fields["rest_bid_yuan"]["sum_yuan"] == 10
+    assert fields["rest_bid_yuan"]["missing_count"] == 1
+    assert fields["rest_bid_yuan"]["coverage"] == pytest.approx(0.5)
+    assert fields["rest_ask_yuan"]["sum_yuan"] == 7
+    assert fields["rest_ask_yuan"]["unknown_count"] == 1
+    assert fields["book_pressure_yuan"]["sum_yuan"] == 3
+    assert fields["book_pressure_yuan"]["missing_count"] == 1
+    assert by_plate["EMPTY"]["fields"]["amount_yuan"]["coverage"] is None
+    assert by_plate["EMPTY"]["fields"]["amount_yuan"]["sum_yuan"] is None
+    assert by_plate["EMPTY"]["fields"]["amount_yuan"]["status"] == "unavailable"
+    assert "direction" not in summary
+
+
+def test_opening_plate_field_delta_hash_is_independent_of_input_mapping_order():
+    fact_a = {
+        "contract": "AnchorFieldDeltaFactV1",
+        "symbol": "A",
+        "from_anchor": "0924",
+        "to_anchor": "0925",
+        "fields": {
+            name: {"delta": value, "status": "AVAILABLE"}
+            for name, value in (
+                ("amount_yuan", 1),
+                ("rest_bid_yuan", 2),
+                ("rest_ask_yuan", 3),
+                ("book_pressure_yuan", -1),
+            )
+        },
+    }
+    left = build_opening_plate_field_delta_summary(
+        {"A": fact_a},
+        mapped_symbols_by_plate={"P": ("A",)},
+        trade_date="2026-09-29",
+    )
+    right = build_opening_plate_field_delta_summary(
+        {"A": fact_a},
+        mapped_symbols_by_plate={"P": ("A", "A")},
+        trade_date="2026-09-29",
+    )
+    assert left["content_hash"] == right["content_hash"]
+
+
+def test_opening_plate_field_delta_isolates_bad_and_out_of_scope_rows():
+    valid_fact = {
+        "contract": "AnchorFieldDeltaFactV1",
+        "symbol": "A",
+        "from_anchor": "0924",
+        "to_anchor": "0925",
+        "fields": {
+            name: {"delta": 10, "status": "AVAILABLE"}
+            for name in (
+                "amount_yuan",
+                "rest_bid_yuan",
+                "rest_ask_yuan",
+                "book_pressure_yuan",
+            )
+        },
+    }
+    wrong_anchor_fact = {
+        **valid_fact,
+        "symbol": "B",
+        "from_anchor": "0920",
+    }
+    summary = build_opening_plate_field_delta_summary(
+        {
+            "A": valid_fact,
+            "B": wrong_anchor_fact,
+            # These rows cannot contribute to selected plate P. Even a bad
+            # source contract outside the selected cohort must not abort it.
+            "OUTSIDE": {"contract": "wrong", "symbol": "OUTSIDE"},
+            "OUTSIDE-UNPARSEABLE": None,
+        },
+        mapped_symbols_by_plate={
+            "P": ("A", "B"),
+            "NOT_SELECTED": ("OUTSIDE",),
+        },
+        selected_plates=("P",),
+        trade_date="2026-09-29",
+    )
+
+    field = summary["plates"][0]["fields"]["amount_yuan"]
+    assert field["expected_count"] == 2
+    assert field["observed_count"] == 2
+    assert field["available_count"] == 1
+    assert field["invalid_count"] == 1
+    assert field["sum_yuan"] == 10
+    assert field["status"] == "partial"
+    assert summary["invalid_fact_rows"] == [
+        {"symbol": "B", "reason": "ANCHOR_MISMATCH"}
+    ]
+    assert summary["out_of_scope_symbol_count"] == 2
+    assert summary["out_of_scope_symbols"] == ["OUTSIDE", "OUTSIDE-UNPARSEABLE"]
+
+    context = build_opening_plate_field_delta_context(
+        field_delta_summary=summary,
+        source_provenance={"trade_date": "2026-09-29"},
+    )
+    assert validate_opening_plate_field_delta_context(
+        context, trade_date="2026-09-29", selected_plates=("P",)
+    ) == context
+
+
+def test_opening_plate_field_delta_marks_cross_date_or_anchor_facts_invalid():
+    bad_fact = {
+        "contract": "AnchorFieldDeltaFactV1",
+        "symbol": "A",
+        "from_anchor": "0920",
+        "to_anchor": "0925",
+        "fields": {},
+    }
+    summary = build_opening_plate_field_delta_summary(
+        {"A": bad_fact},
+        mapped_symbols_by_plate={"P": ("A",)},
+        trade_date="2026-09-29",
+        from_anchor="0924",
+        to_anchor="0925",
+    )
+
+    field = summary["plates"][0]["fields"]["amount_yuan"]
+    assert field["expected_count"] == 1
+    assert field["observed_count"] == 1
+    assert field["invalid_count"] == 1
+    assert field["available_count"] == 0
+    assert field["sum_yuan"] is None
+    assert summary["invalid_fact_rows"] == [
+        {"symbol": "A", "reason": "ANCHOR_MISMATCH"}
+    ]
+
+
+def test_opening_plate_field_delta_context_pins_summary_and_source_provenance():
+    summary = build_opening_plate_field_delta_summary(
+        {
+            "A": {
+                "contract": "AnchorFieldDeltaFactV1",
+                "symbol": "A",
+                "from_anchor": "0924",
+                "to_anchor": "0925",
+                "fields": {
+                    name: {"delta": 0, "status": "AVAILABLE"}
+                    for name in (
+                        "amount_yuan",
+                        "rest_bid_yuan",
+                        "rest_ask_yuan",
+                        "book_pressure_yuan",
+                    )
+                },
+            }
+        },
+        mapped_symbols_by_plate={"P": ("A",)},
+        trade_date="2026-09-29",
+        selected_plates=("P",),
+    )
+    context = build_opening_plate_field_delta_context(
+        field_delta_summary=summary,
+        source_provenance={
+            "trade_date": "2026-09-29",
+            "source_rows_sha256": "a" * 64,
+            "mapping_snapshot_sha256": "b" * 64,
+            "historical_available_at": "UNKNOWN",
+        },
+    )
+
+    assert context["contract"] == OPENING_PLATE_FIELD_DELTA_CONTEXT_CONTRACT_VERSION
+    assert validate_opening_plate_field_delta_context(
+        context, trade_date="2026-09-29", selected_plates=("P",)
+    ) == context
+    with pytest.raises(ValueError, match="selected_plates"):
+        validate_opening_plate_field_delta_context(
+            context, trade_date="2026-09-29", selected_plates=("OTHER",)
+        )
+    tampered = {
+        **context,
+        "field_delta_summary": {
+            **summary,
+            "plates": [{**summary["plates"][0], "expected_symbol_count": 0}],
+        },
+    }
+    with pytest.raises(ValueError, match="denominator|content_hash"):
+        validate_opening_plate_field_delta_context(tampered, trade_date="2026-09-29")
+
+
+def test_opening_plate_auction_pressure_context_pins_summary_date_scope_and_provenance():
+    summary = build_opening_plate_auction_pressure_summary(
+        {
+            "A": {
+                "status": "resolved",
+                "auction_directional_pressure_yuan": 12.5,
+            }
+        },
+        mapped_symbols_by_plate={"P": ("A",)},
+        trade_date="2026-09-29",
+        selected_plates=("P",),
+    )
+    context = build_opening_plate_auction_pressure_context(
+        auction_pressure_summary=summary,
+        source_provenance={
+            "trade_date": "2026-09-29",
+            "source": "market_data1.auction_snapshot_v2.0924_to_0925",
+            "source_rows_sha256": "a" * 64,
+            "historical_available_at": "UNKNOWN",
+        },
+    )
+
+    assert context["contract"] == OPENING_PLATE_AUCTION_PRESSURE_CONTEXT_CONTRACT_VERSION
+    assert validate_opening_plate_auction_pressure_context(
+        context, trade_date="2026-09-29", selected_plates=("P",)
+    ) == context
+    with pytest.raises(ValueError, match="trade_date"):
+        validate_opening_plate_auction_pressure_context(
+            context, trade_date="2026-09-30"
+        )
+    with pytest.raises(ValueError, match="selected_plates"):
+        validate_opening_plate_auction_pressure_context(
+            context, trade_date="2026-09-29", selected_plates=("Q",)
+        )
+
+    tampered = {**context, "source_provenance": {**context["source_provenance"], "source_rows_sha256": "b" * 64}}
+    with pytest.raises(ValueError, match="content_hash"):
+        validate_opening_plate_auction_pressure_context(
+            tampered, trade_date="2026-09-29"
+        )
 
 
 def test_opening_plate_price_summary_is_order_independent_and_keeps_empty_plate_visible():

@@ -11,8 +11,11 @@ from __future__ import annotations
 import math
 from typing import Any, Iterable, Mapping
 
+from .contracts import semantic_hash
+
 
 ANCHOR_DELTA_CONTRACT_VERSION = "AnchorDeltaFactV1"
+ANCHOR_FIELD_DELTA_CONTRACT_VERSION = "AnchorFieldDeltaFactV1"
 _REFERENCE_BUCKETS = (
     (500_000.0, "lt_500k"),
     (2_000_000.0, "500k_2m"),
@@ -153,6 +156,183 @@ def build_anchor_delta_evidence(
     if result["amount_reference_bucket"] == "lt_500k":
         result["reference_labels"] = ["small_volume_unconfirmed"]
     return result
+
+
+def build_anchor_field_delta_evidence(
+    previous: Mapping[str, Any] | None,
+    current: Mapping[str, Any] | None,
+    *,
+    symbol: str = "",
+    from_tag: str = "0924",
+    to_tag: str = "0925",
+) -> dict[str, Any]:
+    """Expose independent numeric deltas without applying legacy direction rules.
+
+    ``AnchorDeltaFactV1`` intentionally remains the legacy-compatible oracle:
+    its directional result requires a complete price/amount/book tuple. This
+    parallel fact projection preserves independently computable amount and
+    book deltas when another field (commonly price) is missing. It is
+    descriptive, field-scoped evidence only; it does not infer direction or
+    authorize a strategy.
+    """
+
+    if not str(from_tag).strip() or not str(to_tag).strip() or from_tag == to_tag:
+        raise ValueError("anchor field delta tags must be non-empty and distinct")
+
+    specs = {
+        "price_milli": {
+            "unit": "milli_yuan_per_share",
+            "aliases": ("price_milli", "px_milli", "px", "price"),
+            "positive": True,
+        },
+        "amount_yuan": {
+            "unit": "yuan",
+            "aliases": (
+                "auction_amount_yuan",
+                "amount",
+                "am",
+                "match_amt_yuan",
+            ),
+            "positive": False,
+        },
+        "rest_bid_yuan": {
+            "unit": "yuan",
+            "aliases": (
+                "bid_amount_yuan",
+                "bid_amount",
+                "br",
+                "rest_bid_amt_yuan",
+            ),
+            "positive": False,
+        },
+        "rest_ask_yuan": {
+            "unit": "yuan",
+            "aliases": (
+                "ask_amount_yuan",
+                "ask_amount",
+                "ar",
+                "rest_ask_amt_yuan",
+            ),
+            "positive": False,
+        },
+    }
+    fields: dict[str, dict[str, Any]] = {}
+    for field_name, spec in specs.items():
+        previous_value, previous_status = _read_anchor_field(
+            previous,
+            spec["aliases"],
+            positive=spec["positive"],
+            field_name=field_name,
+        )
+        current_value, current_status = _read_anchor_field(
+            current,
+            spec["aliases"],
+            positive=spec["positive"],
+            field_name=field_name,
+        )
+        value, status = _subtract_observed_values(
+            previous_value,
+            previous_status,
+            current_value,
+            current_status,
+        )
+        fields[field_name] = {
+            "unit": spec["unit"],
+            "previous_value": previous_value,
+            "current_value": current_value,
+            "delta": value,
+            "status": status,
+        }
+
+    bid = fields["rest_bid_yuan"]
+    ask = fields["rest_ask_yuan"]
+    pressure_status = _combined_status((bid["status"], ask["status"]))
+    fields["book_pressure_yuan"] = {
+        "unit": "yuan",
+        "previous_value": None,
+        "current_value": None,
+        "delta": (
+            bid["delta"] - ask["delta"]
+            if pressure_status == "AVAILABLE"
+            else None
+        ),
+        "status": pressure_status,
+        "formula": "delta(rest_bid_yuan) - delta(rest_ask_yuan)",
+    }
+
+    payload = {
+        "contract": ANCHOR_FIELD_DELTA_CONTRACT_VERSION,
+        "symbol": _symbol(symbol) or str(symbol).strip(),
+        "from_anchor": str(from_tag),
+        "to_anchor": str(to_tag),
+        "fields": fields,
+        "decision_status": "FACT_ONLY",
+    }
+    return {**payload, "content_hash": semantic_hash(payload)}
+
+
+def _read_anchor_field(
+    row: Mapping[str, Any] | None,
+    aliases: tuple[str, ...],
+    *,
+    positive: bool,
+    field_name: str,
+) -> tuple[float | None, str]:
+    if row is None:
+        return None, "MISSING"
+    if field_name == "rest_ask_yuan" and row.get("ask_amount_present", True) is False:
+        return None, "MISSING"
+
+    present = False
+    invalid = False
+    for name in aliases:
+        if name not in row:
+            continue
+        present = True
+        raw = row[name]
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            continue
+        if isinstance(raw, bool):
+            invalid = True
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            invalid = True
+            continue
+        if not math.isfinite(value) or value < 0 or (positive and value <= 0):
+            invalid = True
+            continue
+        if name == "price" and field_name == "price_milli":
+            value *= 1000.0
+        return value, "AVAILABLE"
+
+    if invalid:
+        return None, "INVALID"
+    return None, "MISSING" if present else "UNKNOWN"
+
+
+def _subtract_observed_values(
+    previous_value: float | None,
+    previous_status: str,
+    current_value: float | None,
+    current_status: str,
+) -> tuple[float | None, str]:
+    status = _combined_status((previous_status, current_status))
+    if status != "AVAILABLE":
+        return None, status
+    return current_value - previous_value, "AVAILABLE"
+
+
+def _combined_status(statuses: Iterable[str]) -> str:
+    values = set(statuses)
+    if "INVALID" in values:
+        return "INVALID"
+    if "UNKNOWN" in values:
+        return "UNKNOWN"
+    if "MISSING" in values:
+        return "MISSING"
+    return "AVAILABLE"
 
 
 def amount_reference_bucket(amount_yuan: Any) -> str:
