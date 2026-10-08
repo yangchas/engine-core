@@ -33,6 +33,61 @@ _OPENING_COHORT_SCOPES = {
     "STALE_OBSERVED_COHORT",
     "UNCLASSIFIED_TIME_OBSERVED_COHORT",
 }
+_FACT_INPUT_ANOMALY_CODES = {"EMPTY_SYMBOL_KEY", "NON_STRING_SYMBOL_KEY"}
+
+
+def _fact_input_symbol(
+    raw_symbol: Any, anomaly_counts: dict[str, int]
+) -> Optional[str]:
+    """Normalize only the mapping key shape; isolate a malformed fact row."""
+
+    if not isinstance(raw_symbol, str):
+        code = "NON_STRING_SYMBOL_KEY"
+    else:
+        symbol = raw_symbol.strip()
+        if symbol:
+            return symbol
+        code = "EMPTY_SYMBOL_KEY"
+    anomaly_counts[code] = anomaly_counts.get(code, 0) + 1
+    return None
+
+
+def _input_anomaly_diagnostics(counts: Mapping[str, int]) -> dict[str, Any]:
+    return {
+        "count": sum(counts.values()),
+        "codes": [
+            {"code": code, "count": counts[code]}
+            for code in sorted(counts)
+        ],
+    }
+
+
+def _validate_input_anomaly_diagnostics(value: Any) -> None:
+    if not isinstance(value, Mapping) or set(value) != {"count", "codes"}:
+        raise ValueError("input anomaly diagnostics are invalid")
+    total = value.get("count")
+    codes = value.get("codes")
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+        raise ValueError("input anomaly diagnostics are invalid")
+    if not isinstance(codes, Sequence) or isinstance(codes, (str, bytes)):
+        raise ValueError("input anomaly diagnostics are invalid")
+    names: list[str] = []
+    subtotal = 0
+    for entry in codes:
+        if (
+            not isinstance(entry, Mapping)
+            or set(entry) != {"code", "count"}
+            or not isinstance(entry.get("code"), str)
+            or entry.get("code") not in _FACT_INPUT_ANOMALY_CODES
+        ):
+            raise ValueError("input anomaly diagnostics are invalid")
+        count = entry.get("count")
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            raise ValueError("input anomaly diagnostics are invalid")
+        names.append(entry["code"])
+        subtotal += count
+    if names != sorted(set(names)) or subtotal != total or total == 0:
+        raise ValueError("input anomaly diagnostics are invalid")
 
 
 def _cohort_scope(
@@ -340,10 +395,11 @@ def build_opening_plate_auction_pressure_summary(
     ) if selected else set()
     fact_candidates: dict[str, list[Any]] = {}
     out_of_scope_symbols: set[str] = set()
+    input_anomaly_counts: dict[str, int] = {}
     for raw_symbol, raw_fact in anchor_facts_by_symbol.items():
-        symbol = str(raw_symbol).strip()
-        if not symbol:
-            raise ValueError("anchor fact symbol keys must be non-empty")
+        symbol = _fact_input_symbol(raw_symbol, input_anomaly_counts)
+        if symbol is None:
+            continue
         if symbol not in selected_symbols:
             out_of_scope_symbols.add(symbol)
             continue
@@ -438,6 +494,8 @@ def build_opening_plate_auction_pressure_summary(
     if out_of_scope_symbols:
         summary["out_of_scope_symbol_count"] = len(out_of_scope_symbols)
         summary["out_of_scope_symbols"] = sorted(out_of_scope_symbols)
+    if input_anomaly_counts:
+        summary["input_anomalies"] = _input_anomaly_diagnostics(input_anomaly_counts)
     summary["content_hash"] = semantic_hash(summary)
     return summary
 
@@ -502,10 +560,11 @@ def build_opening_plate_field_delta_summary(
     ) if selected else set()
     fact_candidates: dict[str, list[Any]] = {}
     out_of_scope_symbols: set[str] = set()
+    input_anomaly_counts: dict[str, int] = {}
     for raw_symbol, raw_fact in field_deltas_by_symbol.items():
-        symbol = str(raw_symbol).strip()
-        if not symbol:
-            raise ValueError("field delta symbol keys must be non-empty")
+        symbol = _fact_input_symbol(raw_symbol, input_anomaly_counts)
+        if symbol is None:
+            continue
         if symbol not in selected_symbols:
             out_of_scope_symbols.add(symbol)
             continue
@@ -641,6 +700,8 @@ def build_opening_plate_field_delta_summary(
     if out_of_scope_symbols:
         summary["out_of_scope_symbol_count"] = len(out_of_scope_symbols)
         summary["out_of_scope_symbols"] = sorted(out_of_scope_symbols)
+    if input_anomaly_counts:
+        summary["input_anomalies"] = _input_anomaly_diagnostics(input_anomaly_counts)
     summary["content_hash"] = semantic_hash(summary)
     return summary
 
@@ -669,10 +730,13 @@ def _validate_opening_plate_field_delta_summary(
         "invalid_fact_rows",
         "out_of_scope_symbol_count",
         "out_of_scope_symbols",
+        "input_anomalies",
     }
     summary_keys = set(summary)
     if not required_keys.issubset(summary_keys) or summary_keys - required_keys - optional_diagnostics:
         raise ValueError("field delta summary has unsupported fields")
+    if "input_anomalies" in summary_keys:
+        _validate_input_anomaly_diagnostics(summary.get("input_anomalies"))
     if ("out_of_scope_symbol_count" in summary_keys) != (
         "out_of_scope_symbols" in summary_keys
     ):
@@ -962,10 +1026,13 @@ def _validate_opening_plate_auction_pressure_summary(
         "invalid_fact_rows",
         "out_of_scope_symbol_count",
         "out_of_scope_symbols",
+        "input_anomalies",
     }
     summary_keys = set(summary)
     if not required_keys.issubset(summary_keys) or summary_keys - required_keys - optional_diagnostics:
         raise ValueError("auction pressure summary has unsupported fields")
+    if "input_anomalies" in summary_keys:
+        _validate_input_anomaly_diagnostics(summary.get("input_anomalies"))
     if ("out_of_scope_symbol_count" in summary_keys) != (
         "out_of_scope_symbols" in summary_keys
     ):

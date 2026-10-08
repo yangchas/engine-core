@@ -669,6 +669,38 @@ def test_opening_plate_auction_pressure_isolates_bad_and_out_of_scope_rows():
     ) == context
 
 
+def test_opening_plate_auction_pressure_skips_empty_symbol_key_and_keeps_cohort():
+    summary = build_opening_plate_auction_pressure_summary(
+        {
+            "A": {
+                "status": "resolved",
+                "auction_directional_pressure_yuan": 7.0,
+            },
+            " ": {"status": "invalid"},
+        },
+        mapped_symbols_by_plate={"P": ("A", "B")},
+        trade_date="2026-09-29",
+    )
+
+    plate = summary["plates"][0]
+    assert plate["pressure_usable_count"] == 1
+    assert plate["missing_symbol_count"] == 1
+    assert plate["auction_pressure_yuan"] == 7.0
+    assert plate["auction_pressure_status"] == "partial"
+    assert summary["input_anomalies"] == {
+        "count": 1,
+        "codes": [{"code": "EMPTY_SYMBOL_KEY", "count": 1}],
+    }
+
+    context = build_opening_plate_auction_pressure_context(
+        auction_pressure_summary=summary,
+        source_provenance={"trade_date": "2026-09-29"},
+    )
+    assert validate_opening_plate_auction_pressure_context(
+        context, trade_date="2026-09-29", selected_plates=("P",)
+    ) == context
+
+
 def test_opening_plate_field_delta_uses_independent_field_quality_denominators():
     field_facts = {
         "A": {
@@ -825,6 +857,54 @@ def test_opening_plate_field_delta_isolates_bad_and_out_of_scope_rows():
     ]
     assert summary["out_of_scope_symbol_count"] == 2
     assert summary["out_of_scope_symbols"] == ["OUTSIDE", "OUTSIDE-UNPARSEABLE"]
+
+    context = build_opening_plate_field_delta_context(
+        field_delta_summary=summary,
+        source_provenance={"trade_date": "2026-09-29"},
+    )
+    assert validate_opening_plate_field_delta_context(
+        context, trade_date="2026-09-29", selected_plates=("P",)
+    ) == context
+
+
+def test_opening_plate_field_delta_skips_bad_symbol_keys_without_stopping_valid_cohort():
+    valid_fact = {
+        "contract": "AnchorFieldDeltaFactV1",
+        "symbol": "A",
+        "from_anchor": "0924",
+        "to_anchor": "0925",
+        "fields": {
+            name: {"delta": 5, "status": "AVAILABLE"}
+            for name in (
+                "amount_yuan",
+                "rest_bid_yuan",
+                "rest_ask_yuan",
+                "book_pressure_yuan",
+            )
+        },
+    }
+    summary = build_opening_plate_field_delta_summary(
+        {
+            "A": valid_fact,
+            "  ": {"contract": "ignored", "symbol": "A"},
+            None: {"contract": "ignored", "symbol": "A"},
+        },
+        mapped_symbols_by_plate={"P": ("A", "B")},
+        trade_date="2026-09-29",
+    )
+
+    field = summary["plates"][0]["fields"]["amount_yuan"]
+    assert field["available_count"] == 1
+    assert field["missing_symbol_count"] == 1
+    assert field["sum_yuan"] == 5
+    assert field["status"] == "partial"
+    assert summary["input_anomalies"] == {
+        "count": 2,
+        "codes": [
+            {"code": "EMPTY_SYMBOL_KEY", "count": 1},
+            {"code": "NON_STRING_SYMBOL_KEY", "count": 1},
+        ],
+    }
 
     context = build_opening_plate_field_delta_context(
         field_delta_summary=summary,
