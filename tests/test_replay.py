@@ -181,6 +181,248 @@ def test_q2frame_replay_streams_frames_with_only_one_frame_of_lookahead():
     assert engine.group_sizes == [2, 1, 1]
 
 
+@pytest.mark.parametrize("timer_offset_ms", [1_000, 3_000, 6_000])
+def test_q2frame_replay_does_not_drain_timer_ahead_of_market_frames(timer_offset_ms):
+    source, clock = _source()
+    first_time = 1788398108000
+    observed_clock_ms = []
+
+    class ClockProbeStrategy(ProbeStrategy):
+        def evaluate(self, snapshot, bundle):
+            observed_clock_ms.append(int(clock.now_utc().timestamp() * 1000))
+            return super().evaluate(snapshot, bundle)
+
+    engine = DeterministicEngine(
+        MarketStateReducer(),
+        WindowManager((WindowSpec("wide", 0, 10**15),)),
+        ClockProbeStrategy(),
+        session_id="2026-09-03",
+        phase="REPLAY",
+    )
+    engine.submit(
+        EngineSignal(
+            "auction-timer",
+            first_time + timer_offset_ms,
+            100,
+            SignalKind.TIMER,
+            {"trigger_id": "probe"},
+        )
+    )
+
+    def frame(seq_no, logical_ts_ms, price):
+        return {
+            "version": "Q2FrameV1",
+            "seq_no": seq_no,
+            "logical_ts_ms": logical_ts_ms,
+            "q2_updates": [
+                {
+                    "symbol": "600519",
+                    "px": price,
+                    "pc": 99000,
+                    "ts": logical_ts_ms,
+                }
+            ],
+        }
+
+    replay_q2frames(
+        [
+            frame(1, first_time, 100000),
+            frame(2, first_time + 3_000, 101000),
+        ],
+        source,
+        engine,
+    )
+
+    # The frame at +3s must be reduced before a timer at +3s, while a timer at
+    # +6s must stay queued until the replay reaches that logical time. A timer
+    # between frame times must observe the clock at its own logical time.
+    assert engine._reducer.state.revision == 2
+    assert engine._reducer.state.symbol_states["600519"]["price_milli"] == 101000
+    assert clock.now_utc() == datetime.fromtimestamp(
+        (first_time + 3_000) / 1000,
+        timezone.utc,
+    )
+    if timer_offset_ms == 1_000:
+        assert len(engine._strategy_results) == 1
+        assert engine._strategy_results[-1].trace["logical_time_ms"] == first_time + 1_000
+        assert engine._strategy_results[-1].trace["market_state_revision"] == 1
+        assert observed_clock_ms == [first_time + 1_000]
+    elif timer_offset_ms == 3_000:
+        assert len(engine._strategy_results) == 1
+        assert engine._strategy_results[-1].trace["logical_time_ms"] == first_time + 3_000
+        assert engine._strategy_results[-1].trace["market_state_revision"] == 2
+        assert observed_clock_ms == [first_time + 3_000]
+    else:
+        assert len(engine._strategy_results) == 0
+        engine.run_through(
+            first_time + 6_000,
+            before_consume=source.advance_before_consume,
+        )
+        assert len(engine._strategy_results) == 1
+        assert engine._strategy_results[-1].trace["market_state_revision"] == 2
+        assert observed_clock_ms == [first_time + 6_000]
+
+
+@pytest.mark.parametrize("end_offset_ms", [6_000, 6_999])
+def test_q2frame_replay_advances_explicit_end_after_last_market_frame(end_offset_ms):
+    source, clock = _source()
+    first_time = 1788398108000
+    engine = DeterministicEngine(
+        MarketStateReducer(),
+        WindowManager((WindowSpec("wide", 0, 10**15),)),
+        ProbeStrategy(),
+        session_id="2026-09-03",
+        phase="REPLAY",
+    )
+    engine.submit(
+        EngineSignal(
+            "auction-timer",
+            first_time + 6_000,
+            100,
+            SignalKind.TIMER,
+            {"trigger_id": "probe"},
+        )
+    )
+
+    replay_q2frames(
+        [
+            {
+                "version": "Q2FrameV1",
+                "seq_no": 1,
+                "logical_ts_ms": first_time,
+                "q2_updates": [
+                    {"symbol": "600519", "px": 100000, "pc": 99000, "ts": first_time}
+                ],
+            },
+            {
+                "version": "Q2FrameV1",
+                "seq_no": 2,
+                "logical_ts_ms": first_time + 3_000,
+                "q2_updates": [
+                    {
+                        "symbol": "600519",
+                        "px": 101000,
+                        "pc": 99000,
+                        "ts": first_time + 3_000,
+                    }
+                ],
+            },
+            {
+                "version": "Q2FrameV1",
+                "seq_no": 3,
+                "logical_ts_ms": first_time + 9_000,
+                "q2_updates": [
+                    {
+                        "symbol": "600519",
+                        "px": 102000,
+                        "pc": 99000,
+                        "ts": first_time + 9_000,
+                    }
+                ],
+            },
+        ],
+        source,
+        engine,
+        end_logical_time_ms=first_time + end_offset_ms,
+    )
+
+    assert source.last_seq_no == 2
+    assert engine._reducer.state.revision == 2
+    assert len(engine._strategy_results) == 1
+    assert engine._strategy_results[0].trace["logical_time_ms"] == first_time + 6_000
+    assert engine._strategy_results[0].trace["market_state_revision"] == 2
+    assert clock.now_utc() == datetime.fromtimestamp(
+        (first_time + 6_000) / 1000,
+        timezone.utc,
+    )
+
+
+def test_q2frame_replay_truncates_subseconds_before_timer_grouping():
+    source, clock = _source()
+    first_time = 1788398108000
+    observed_clock_ms = []
+
+    class ClockProbeStrategy(ProbeStrategy):
+        def evaluate(self, snapshot, bundle):
+            observed_clock_ms.append(int(clock.now_utc().timestamp() * 1000))
+            return super().evaluate(snapshot, bundle)
+
+    engine = DeterministicEngine(
+        MarketStateReducer(),
+        WindowManager((WindowSpec("wide", 0, 10**15),)),
+        ClockProbeStrategy(),
+        session_id="2026-09-03",
+        phase="REPLAY",
+    )
+    engine.submit(
+        EngineSignal(
+            "auction-timer",
+            first_time + 6_000,
+            100,
+            SignalKind.TIMER,
+            {"trigger_id": "probe"},
+        )
+    )
+    replay_q2frames(
+        [
+            {
+                "version": "Q2FrameV1",
+                "seq_no": 1,
+                "logical_ts_ms": first_time + 6_197,
+                "q2_updates": [
+                    {
+                        "symbol": "600519",
+                        "px": 100000,
+                        "pc": 99000,
+                        "ts": first_time + 6_197,
+                    }
+                ],
+            },
+            {
+                "version": "Q2FrameV1",
+                "seq_no": 2,
+                "logical_ts_ms": first_time + 6_999,
+                "q2_updates": [
+                    {
+                        "symbol": "600519",
+                        "px": 101000,
+                        "pc": 99000,
+                        "ts": first_time + 6_999,
+                    }
+                ],
+            },
+        ],
+        source,
+        engine,
+    )
+
+    assert engine._reducer.state.revision == 2
+    assert engine._reducer.state.symbol_states["600519"]["price_milli"] == 101000
+    assert source._raw_hashes["600519"]["ts"] == first_time + 6_999
+    assert len(engine._strategy_results) == 1
+    assert engine._strategy_results[0].trace["logical_time_ms"] == first_time + 6_000
+    assert engine._strategy_results[0].trace["market_state_revision"] == 2
+    assert observed_clock_ms == [first_time + 6_000]
+    assert clock.now_utc() == datetime.fromtimestamp(
+        (first_time + 6_000) / 1000,
+        timezone.utc,
+    )
+
+
+@pytest.mark.parametrize("end_logical_time_ms", [0, -1, True, 1.5, "6000"])
+def test_q2frame_replay_rejects_invalid_explicit_end_time(end_logical_time_ms):
+    source, _ = _source()
+    engine = _CaptureEngine()
+
+    with pytest.raises(ValueError, match="end_logical_time_ms"):
+        replay_q2frames(
+            [],
+            source,
+            engine,
+            end_logical_time_ms=end_logical_time_ms,
+        )
+
+
 class _CaptureEngine:
     def __init__(self):
         self.pending = []
@@ -190,7 +432,10 @@ class _CaptureEngine:
     def submit(self, signal):
         self.pending.append(signal)
 
-    def run_until_empty(self):
+    def run_through(self, logical_time_ms, *, before_consume=None):
+        if before_consume is not None:
+            for signal in self.pending:
+                before_consume(signal)
         self.processed_ids.extend(signal.signal_id for signal in self.pending)
         self.group_sizes.append(len(self.pending))
         self.pending.clear()

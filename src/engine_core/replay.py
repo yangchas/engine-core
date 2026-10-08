@@ -181,14 +181,35 @@ def replay_q2frames(
     engine: Any,
     *,
     signal_prefix: str = "q2frame",
+    end_logical_time_ms: Optional[int] = None,
 ) -> None:
     """Stream frame-derived updates into an existing Engine.
 
-    Frames sharing one logical timestamp are submitted as a group before the
-    Engine drains that timestamp, preserving the existing same-time ordering
-    contract. Only that timestamp's queued signals are retained by the Engine;
-    the replay helper does not materialize the complete Q2Frame stream.
+    Frames whose logical timestamps truncate to the same whole second are
+    submitted as a group before the Engine drains that second, preserving the
+    same-time ordering contract after subsecond normalization. Only that
+    second's queued signals are retained by the Engine;
+    the replay helper does not materialize the complete Q2Frame stream. When
+    ``end_logical_time_ms`` is supplied, later input frames are excluded and
+    pending Engine signals are drained through that inclusive replay horizon.
+    This allows scheduled timers to run even when the final market frame is
+    earlier than the requested replay end. Replay logical time is truncated to
+    whole seconds; source timestamps retained in each Q2 update are unchanged.
+    The supplied VirtualClock should start at or before the first frame's
+    truncated logical time (normally at the replay-window start).
     """
+
+    if end_logical_time_ms is not None and (
+        isinstance(end_logical_time_ms, bool)
+        or not isinstance(end_logical_time_ms, int)
+        or end_logical_time_ms <= 0
+    ):
+        raise ValueError("end_logical_time_ms must be a positive integer")
+    replay_end_ms = (
+        None
+        if end_logical_time_ms is None
+        else end_logical_time_ms - end_logical_time_ms % 1000
+    )
 
     active_logical_time: Optional[int] = None
     for raw_frame in frames:
@@ -199,21 +220,44 @@ def replay_q2frames(
             if isinstance(raw_frame, Q2FrameV1)
             else Q2FrameV1.from_mapping(raw_frame)
         )
+        frame_logical_time = frame.logical_ts_ms - frame.logical_ts_ms % 1000
+        if (
+            replay_end_ms is not None
+            and frame_logical_time > replay_end_ms
+        ):
+            break
         if (
             active_logical_time is not None
-            and frame.logical_ts_ms != active_logical_time
+            and frame_logical_time != active_logical_time
         ):
-            engine.run_until_empty()
+            engine.run_through(
+                active_logical_time,
+                before_consume=source.advance_before_consume,
+            )
             active_logical_time = None
 
-        signal = source.signal_for(frame, signal_prefix=signal_prefix)
+        source_signal = source.signal_for(frame, signal_prefix=signal_prefix)
+        signal = EngineSignal(
+            signal_id=source_signal.signal_id,
+            logical_time_ms=frame_logical_time,
+            signal_seq=source_signal.signal_seq,
+            signal_kind=source_signal.signal_kind,
+            payload=source_signal.payload,
+        )
         if active_logical_time is None:
-            source.advance_before_consume(signal)
             active_logical_time = signal.logical_time_ms
         engine.submit(signal)
 
     if active_logical_time is not None:
-        engine.run_until_empty()
+        engine.run_through(
+            active_logical_time,
+            before_consume=source.advance_before_consume,
+        )
+    if replay_end_ms is not None:
+        engine.run_through(
+            replay_end_ms,
+            before_consume=source.advance_before_consume,
+        )
 
 
 def _td_timestamp_ms(value: Any, *, source_timezone: tzinfo) -> int:

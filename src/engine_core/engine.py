@@ -5,7 +5,7 @@ from __future__ import annotations
 import heapq
 from collections import OrderedDict, deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, List, Mapping, Optional, Protocol, Tuple
+from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Protocol, Tuple
 
 from .contracts import (
     EngineSignal,
@@ -231,10 +231,45 @@ class DeterministicEngine:
         heapq.heappush(self._queue, (queued_signal.sort_key, queued_signal))
 
     def run_until_empty(self) -> EngineRunResult:
-        """Drain signals in deterministic time groups and causal generations."""
+        """Drain all pending signals in deterministic time groups."""
+
+        return self._run_through(None)
+
+    def run_through(
+        self,
+        logical_time_ms: int,
+        *,
+        before_consume: Optional[Callable[[EngineSignal], None]] = None,
+    ) -> EngineRunResult:
+        """Drain signals through an inclusive logical-time boundary.
+
+        Signals later than the boundary remain queued. This lets streaming
+        sources interleave input with timers without consuming future work
+        before its market data has arrived. ``before_consume`` runs immediately
+        before each consumed signal, allowing a replay-owned virtual clock to
+        advance in Engine order; it is not called for signals left queued.
+        """
+
+        if isinstance(logical_time_ms, bool) or not isinstance(logical_time_ms, int):
+            raise ValueError("logical_time_ms must be an integer")
+        return self._run_through(
+            logical_time_ms,
+            before_consume=before_consume,
+        )
+
+    def _run_through(
+        self,
+        max_logical_time_ms: Optional[int],
+        *,
+        before_consume: Optional[Callable[[EngineSignal], None]] = None,
+    ) -> EngineRunResult:
+        """Drain queued time groups up to the inclusive boundary, if any."""
 
         try:
-            while self._queue:
+            while self._queue and (
+                max_logical_time_ms is None
+                or self._queue[0][1].logical_time_ms <= max_logical_time_ms
+            ):
                 _, first = heapq.heappop(self._queue)
                 logical_time = first.logical_time_ms
                 generation = [first]
@@ -244,6 +279,8 @@ class DeterministicEngine:
                 while generation:
                     self._active_logical_time = logical_time
                     for signal in sorted(generation, key=lambda item: item.sort_key):
+                        if before_consume is not None:
+                            before_consume(signal)
                         self._processed += 1
                         self._handle(signal)
                     self._active_logical_time = None
