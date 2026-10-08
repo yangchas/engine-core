@@ -85,7 +85,43 @@ time and at least one positive match/rest amount; the `top_amt`, `top_br`, and
 `top_chg` fields are configured top-N lists, not the full market. The effective
 top-N setting and full candidate membership were not read in this audit.
 `a2` metadata `n` and Core's count of available `a25` values are both 5,209,
-but no symbol-set equality is claimed.
+but this metadata-only check did not establish symbol-set equality. A later
+read-only comparison against the full per-symbol archive is recorded below.
+
+## 09:25 archive and Q2 symbol/field comparison
+
+At 09:25:20.871–09:25:22.071 +08, the saved Q2 read capture contained all
+5,226 active hashes. Its file SHA-256 is
+`771ea94fe3c6a7f3444d70e13bb8dc815048ad5fa14f81530d386718732d9cfb`; the
+canonical hash of the read transcript is
+`863cc4c8f5c8d8711fcec9702212ed8167ad896ee4d1380ddcc35b40f6f8adb9`.
+
+The Redis archive key `market:auction:anchor:20261008` was read with `GET` at
+11:06:43.101–11:06:43.106 +08. It contained 5,209 symbol rows, 539,995 bytes,
+with SHA-256
+`c245862668184c6c2dabe6dab7f31e3e45e46ec77187a46df793bfd400352966`.
+The read was read-only. The t1-v2 writer contract at
+`b2aa169c3dddf5d5c7c452f4893dcc01848e358f` stores per-symbol
+`change_pct`, `amount`, and `bid_amount` in this archive. They correspond to
+Q2 `a25`/`pc`-derived change, `am`, and `br` respectively; `change_pct` uses
+the producer's integer basis-point calculation and six-decimal serialization.
+
+Results:
+
+- Q2 `a25 > 0` symbols: 5,209; archive symbols: 5,209; intersection: 5,209;
+  either-side-only symbols: 0.
+- Archive `amount` versus Q2 `am`: 5,209/5,209 equal.
+- Archive `bid_amount` versus Q2 `br`: 5,209/5,209 equal.
+- Archive `change_pct` versus the producer formula applied to captured Q2
+  `a25` and `pc`: 5,209/5,209 equal at six decimal places.
+
+This closes symbol-membership and these three shared-field checks for the
+saved Q2 capture and producer archive. The archive does not store the raw
+anchor price, so it cannot establish direct `a25` price parity. The Q2 capture
+was taken after the 09:25:06.025 logical trigger and is non-atomic across
+symbols; the later archive read proves neither the key's first visibility
+time nor Rabbit arrival order. The captured active set still does not prove
+authoritative full-market coverage.
 
 ## Timestamp and auction-trigger source audit
 
@@ -186,6 +222,7 @@ protobuf dependency deprecation warnings are non-failing.
 LIVE_Q2_0915_INGESTION=PASS_WITH_LIMITS
 LIVE_Q2_0920_0924_0925_CAPTURE_REPLAY=PASS_WITH_LIMITS
 OPENING_FACT_PROJECTION_ON_CAPTURE=PASS_WITH_LIMITS
+LIVE_0925_ARCHIVE_Q2_SYMBOL_FIELD_RECONCILIATION=PASS_WITH_LIMITS
 SAME_CAPTURE_CORE_DETERMINISM=PASS
 CAPTURED_ACTIVE_SET_FULL_MARKET_COVERAGE=UNPROVEN
 RABBIT_ARRIVAL_ORDER=UNKNOWN
@@ -197,7 +234,7 @@ NORMAL_OPENING_ACCEPTANCE=UNPROVEN
 No Redis/TD write, Rabbit operation, service restart, deployment, or
 production-directory modification was performed. The feature-specific Core
 opening fact projection has now been exercised on the captured Q2 cohort. The
-remaining bounded comparison is symbol-level parity against the producer's
-0925 archive/declared candidate scope; the large archive payload was not read,
-so count equality is not set-level parity. Keep TASK-008 partial; do not call
-this NORMAL acceptance or impose a seconds-only rejection gate.
+symbol-level archive comparison now matches for the captured candidate cohort
+and the three shared fields listed above. Direct price parity, first key
+visibility, authoritative universe coverage, and NORMAL acceptance remain
+unproven. Keep TASK-008 partial; do not impose a seconds-only rejection gate.
