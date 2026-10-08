@@ -1315,31 +1315,49 @@ def build_opening_plate_amount_summary(
         mapped_symbols = mapped_by_plate.get(plate, set())
         observed_open_symbols = mapped_symbols & {str(symbol) for symbol in facts_by_symbol}
         common_symbols = auction_by_plate.get(plate, set()) & observed_open_symbols
+        invalid_fact_symbols = tuple(
+            sorted(
+                symbol
+                for symbol in observed_open_symbols
+                if not isinstance(facts_by_symbol[symbol], Mapping)
+            )
+        )
+        invalid_comparison_symbols = set(invalid_fact_symbols) & common_symbols
+
+        def is_available_fact(symbol: str) -> bool:
+            fact = facts_by_symbol[symbol]
+            return isinstance(fact, Mapping) and fact.get("status") == "available"
+
         valid_open = tuple(
             facts_by_symbol[symbol]
             for symbol in sorted(observed_open_symbols)
-            if facts_by_symbol[symbol].get("status") == "available"
+            if is_available_fact(symbol)
         )
         valid_comparison = tuple(
             facts_by_symbol[symbol]
             for symbol in sorted(common_symbols)
-            if facts_by_symbol[symbol].get("status") == "available"
+            if is_available_fact(symbol)
         )
 
         def complete_sum(
             rows: Sequence[Mapping[str, Any]],
+            invalid_count: int = 0,
         ) -> tuple[float | None, str, int, int]:
             if not rows:
-                return None, "unavailable", 0, 0
+                return None, "partial" if invalid_count else "unavailable", 0, 0
             values = tuple(_number(row.get("amount_2m_yuan")) for row in rows)
             present_count = sum(value is not None for value in values)
-            if present_count == len(rows):
+            if present_count == len(rows) and not invalid_count:
                 return sum(value for value in values if value is not None), "available", present_count, len(rows)
-            status = "partial" if present_count else "unavailable"
+            status = "partial" if present_count or invalid_count else "unavailable"
             return None, status, present_count, len(rows)
 
-        open_total, open_status, open_present, open_count = complete_sum(valid_open)
-        comparison_total, comparison_status, comparison_present, comparison_count = complete_sum(valid_comparison)
+        open_total, open_status, open_present, open_count = complete_sum(
+            valid_open, len(invalid_fact_symbols)
+        )
+        comparison_total, comparison_status, comparison_present, comparison_count = complete_sum(
+            valid_comparison, len(invalid_comparison_symbols)
+        )
         comparison_amounts = tuple(
             value
             for value in (_number(row.get("amount_2m_yuan")) for row in valid_comparison)
@@ -1359,34 +1377,39 @@ def build_opening_plate_amount_summary(
         auction_top1 = _number(auction_top1_amount_ratio_by_plate.get(plate))
         top1_delta = compute_delta(open_top1, auction_top1)
 
-        plate_summaries.append(
-            {
-                "plate": plate,
-                "mapped_symbol_count": len(mapped_symbols),
-                "auction_symbol_count": len(auction_by_plate.get(plate, set())),
-                "open_valid_count": len(valid_open),
-                "common_symbol_count": len(common_symbols),
-                "comparison_valid_count": len(valid_comparison),
-                "comparison_scope": "COMMON_VALID_AUCTION_AND_OPEN_SYMBOLS",
-                "open_window_amount_yuan": open_total,
-                "open_window_amount_status": open_status,
-                "open_amount_present_count": open_present,
-                "open_amount_total_count": open_count,
-                "comparison_amount_status": comparison_status,
-                "comparison_amount_present_count": comparison_present,
-                "comparison_amount_total_count": comparison_count,
-                "open_top1_amount_ratio": open_top1,
-                "open_top3_amount_ratio": open_top3,
-                "auction_top1_amount_ratio": auction_top1,
-                "top1_amount_ratio_delta": top1_delta,
-                "concentration_state": classify_delta(top1_delta),
-                "open_symbols": [
-                    symbol
-                    for symbol in sorted(observed_open_symbols)
-                    if facts_by_symbol[symbol].get("status") == "available"
-                ],
-            }
-        )
+        plate_summary = {
+            "plate": plate,
+            "mapped_symbol_count": len(mapped_symbols),
+            "auction_symbol_count": len(auction_by_plate.get(plate, set())),
+            "open_valid_count": len(valid_open),
+            "common_symbol_count": len(common_symbols),
+            "comparison_valid_count": len(valid_comparison),
+            "comparison_scope": "COMMON_VALID_AUCTION_AND_OPEN_SYMBOLS",
+            "open_window_amount_yuan": open_total,
+            "open_window_amount_status": open_status,
+            "open_amount_present_count": open_present,
+            "open_amount_total_count": open_count,
+            "comparison_amount_status": comparison_status,
+            "comparison_amount_present_count": comparison_present,
+            "comparison_amount_total_count": comparison_count,
+            "open_top1_amount_ratio": open_top1,
+            "open_top3_amount_ratio": open_top3,
+            "auction_top1_amount_ratio": auction_top1,
+            "top1_amount_ratio_delta": top1_delta,
+            "concentration_state": classify_delta(top1_delta),
+            "open_symbols": [
+                symbol
+                for symbol in sorted(observed_open_symbols)
+                if is_available_fact(symbol)
+            ],
+        }
+        if invalid_fact_symbols:
+            plate_summary["open_invalid_fact_count"] = len(invalid_fact_symbols)
+            plate_summary["comparison_invalid_fact_count"] = len(
+                invalid_comparison_symbols
+            )
+            plate_summary["invalid_fact_symbols"] = list(invalid_fact_symbols)
+        plate_summaries.append(plate_summary)
 
     summary: dict[str, Any] = {
         "contract": OPENING_PLATE_AMOUNT_SUMMARY_CONTRACT_VERSION,

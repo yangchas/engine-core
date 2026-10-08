@@ -405,6 +405,33 @@ def test_opening_plate_amount_summary_missing_is_not_zero_and_empty_is_unavailab
     assert empty["open_top1_amount_ratio"] is None
 
 
+def test_opening_plate_amount_summary_isolates_malformed_selected_fact():
+    summary = build_opening_plate_amount_summary(
+        {
+            "GOOD": {"status": "available", "amount_2m_yuan": 10},
+            "BAD": None,
+            "OUTSIDE": ["malformed but not selected"],
+        },
+        mapped_symbols_by_plate={"P": ("GOOD", "BAD")},
+        auction_symbols_by_plate={"P": ("GOOD", "BAD")},
+        auction_top1_amount_ratio_by_plate={"P": 0.5},
+        selected_plates=("P",),
+    )
+
+    plate = summary["plates"][0]
+    assert plate["open_valid_count"] == 1
+    assert plate["common_symbol_count"] == 2
+    assert plate["comparison_valid_count"] == 1
+    assert plate["open_invalid_fact_count"] == 1
+    assert plate["comparison_invalid_fact_count"] == 1
+    assert plate["invalid_fact_symbols"] == ["BAD"]
+    assert plate["open_window_amount_status"] == "partial"
+    assert plate["open_window_amount_yuan"] is None
+    assert plate["comparison_amount_status"] == "partial"
+    assert plate["open_top1_amount_ratio"] is None
+    assert plate["concentration_state"] == "unavailable"
+
+
 def test_opening_plate_amount_summary_is_order_independent_and_keeps_zero_total_unavailable():
     args = {
         "facts_by_symbol": {
