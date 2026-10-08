@@ -121,12 +121,36 @@ class OpeningShadowStrategy:
             source_time_valid = (
                 isinstance(source_time, int) and not isinstance(source_time, bool)
             )
+            observation_time = metadata.get("observation_time_ms")
+            observation_time_valid = (
+                isinstance(observation_time, int)
+                and not isinstance(observation_time, bool)
+            )
+            source_time_age_ms = (
+                observation_time - source_time
+                if source_time_valid and observation_time_valid
+                else None
+            )
             time_quality_errors = {"ts", "future_ts", "trade_date", "stale"}
             relevant_time_errors = tuple(
                 sorted(time_quality_errors.intersection(field_errors))
             )
+            if "stale" in relevant_time_errors:
+                freshness_assessment = "STALE"
+            elif (
+                relevant_time_errors
+                or (source_time_age_ms is not None and source_time_age_ms < 0)
+            ):
+                freshness_assessment = "INVALID"
+            else:
+                # No policy is carried into this fact-only strategy, so a
+                # valid timestamp is not evidence that the quote is fresh.
+                freshness_assessment = "UNASSESSED"
             fact_quality_ready = (
-                fact_available and source_time_valid and not relevant_time_errors
+                fact_available
+                and source_time_valid
+                and not relevant_time_errors
+                and (source_time_age_ms is None or source_time_age_ms >= 0)
             )
             amount_2m_status = (
                 "AVAILABLE"
@@ -155,6 +179,8 @@ class OpeningShadowStrategy:
                     },
                     "symbol_source_quality": {
                         "source_record_time_ms": source_time,
+                        "source_time_age_ms_at_observation": source_time_age_ms,
+                        "freshness_assessment": freshness_assessment,
                         "field_errors": field_errors,
                         "time_quality_errors": relevant_time_errors,
                     },

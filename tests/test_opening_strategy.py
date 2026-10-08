@@ -175,6 +175,65 @@ def test_opening_shadow_marks_stale_target_symbol_partial_without_erasing_its_fa
 
     assert result.trace["opening_fact"]["status"] == "available"
     assert result.trace["fact_status"] == "PARTIAL"
+    assert result.trace["symbol_source_quality"]["freshness_assessment"] == "STALE"
+
+
+def test_ready_opening_fact_reports_age_without_claiming_freshness():
+    snapshot = _snapshot(
+        {
+            "price_milli": 10500,
+            "pre_close_milli": 10000,
+            "amount_2m_yuan": 1200000,
+            "limit_state": 0,
+            "source_record_time_ms": 9000,
+            "field_errors": (),
+        },
+        source_time_range={
+            "observation_time_ms": 100000,
+            "oldest_source_time_ms": 9000,
+            "newest_source_time_ms": 9000,
+        },
+    )
+    result = OpeningShadowStrategy(scope_id="600519").evaluate(
+        snapshot, FrozenDataBundle.empty("opening-age-unassessed", 100000)
+    )
+
+    # READY is scoped to fact/source-time availability. Without an explicit
+    # freshness policy, the value remains available but age is diagnostic.
+    assert result.trace["fact_status"] == "READY"
+    assert result.trace["opening_fact"]["status"] == "available"
+    assert result.trace["symbol_source_quality"] == {
+        "source_record_time_ms": 9000,
+        "source_time_age_ms_at_observation": 91000,
+        "freshness_assessment": "UNASSESSED",
+        "field_errors": (),
+        "time_quality_errors": (),
+    }
+
+
+def test_future_source_time_is_invalid_even_without_precomputed_field_error():
+    snapshot = _snapshot(
+        {
+            "price_milli": 10500,
+            "pre_close_milli": 10000,
+            "amount_2m_yuan": 1200000,
+            "limit_state": 0,
+            "source_record_time_ms": 110000,
+            "field_errors": (),
+        },
+        source_time_range={"observation_time_ms": 100000},
+    )
+    result = OpeningShadowStrategy(scope_id="600519").evaluate(
+        snapshot, FrozenDataBundle.empty("opening-future-source-time", 100000)
+    )
+
+    assert result.trace["fact_status"] == "PARTIAL"
+    assert result.trace["opening_fact"]["status"] == "available"
+    assert (
+        result.trace["symbol_source_quality"]["source_time_age_ms_at_observation"]
+        == -10000
+    )
+    assert result.trace["symbol_source_quality"]["freshness_assessment"] == "INVALID"
 
 
 def test_opening_primary_ready_does_not_hide_unavailable_or_invalid_auxiliary_fields():
