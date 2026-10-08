@@ -1478,15 +1478,28 @@ def build_opening_plate_price_summary(
             str(symbol) for symbol in facts_by_symbol
         }
         common_symbols = auction_symbols & observed_open_symbols
+        invalid_fact_symbols = tuple(
+            sorted(
+                symbol
+                for symbol in observed_open_symbols
+                if not isinstance(facts_by_symbol[symbol], Mapping)
+            )
+        )
+        invalid_comparison_symbols = set(invalid_fact_symbols) & common_symbols
+
+        def is_available_fact(symbol: str) -> bool:
+            fact = facts_by_symbol[symbol]
+            return isinstance(fact, Mapping) and fact.get("status") == "available"
+
         valid_open_symbols = {
             symbol
             for symbol in observed_open_symbols
-            if facts_by_symbol[symbol].get("status") == "available"
+            if is_available_fact(symbol)
         }
         limit_state_facts = {
             symbol: facts_by_symbol[symbol]
             for symbol in sorted(common_symbols)
-            if facts_by_symbol[symbol].get("status") == "available"
+            if is_available_fact(symbol)
         }
         valid_comparison = tuple(limit_state_facts.values())
         limit_state_summary = build_opening_limit_state_summary(
@@ -1508,12 +1521,17 @@ def build_opening_plate_price_summary(
         comparison_valid_count = len(valid_comparison)
         value_count = len(changes)
         price_change_status = (
-            "unavailable"
+            "partial"
+            if invalid_comparison_symbols
+            else "unavailable"
             if value_count == 0
             else "available"
             if value_count == comparison_valid_count
             else "partial"
         )
+        limit_state_status = limit_state_summary["cohort_field_status"]
+        if invalid_comparison_symbols and limit_state_status != "partial":
+            limit_state_status = "partial"
         reference = (
             None
             if auction_price_reference_by_plate is None
@@ -1551,82 +1569,88 @@ def build_opening_plate_price_summary(
             open_median_change_pct,
             auction_median_change_pct,
         )
-        plate_summaries.append(
-            {
-                "plate": plate,
-                "mapped_symbol_count": len(mapped_symbols),
-                "auction_symbol_count": len(auction_symbols),
-                "open_valid_count": len(valid_open_symbols),
-                "common_symbol_count": len(common_symbols),
-                "comparison_valid_count": comparison_valid_count,
-                "comparison_scope": "COMMON_VALID_AUCTION_AND_OPEN_SYMBOLS",
-                "open_limit_up_count": (
-                    limit_state_counts["up_count"]
-                    if limit_state_count_denominator
-                    else None
-                ),
-                "open_limit_normal_count": (
-                    limit_state_counts["normal_count"]
-                    if limit_state_count_denominator
-                    else None
-                ),
-                "open_limit_down_count": (
-                    limit_state_counts["down_count"]
-                    if limit_state_count_denominator
-                    else None
-                ),
-                "open_limit_state_total_count": limit_state_summary[
-                    "limit_state_total_count"
-                ],
-                "open_limit_state_present_count": limit_state_summary[
-                    "limit_state_present_count"
-                ],
-                "open_limit_state_valid_count": limit_state_count_denominator,
-                "open_limit_state_missing_count": limit_state_summary[
-                    "limit_state_missing_count"
-                ],
-                "open_limit_state_invalid_count": limit_state_summary[
-                    "limit_state_invalid_count"
-                ],
-                "open_limit_state_coverage": limit_state_summary[
-                    "valid_coverage"
-                ],
-                "open_limit_state_status": limit_state_summary[
-                    "cohort_field_status"
-                ],
-                "price_change_value_count": value_count,
-                "price_change_missing_count": comparison_valid_count - value_count,
-                "price_change_coverage": (
-                    value_count / float(comparison_valid_count)
-                    if comparison_valid_count
-                    else None
-                ),
-                "price_change_status": price_change_status,
-                "open_up_count": up_count,
-                "open_down_count": down_count,
-                "open_flat_count": flat_count,
-                "open_positive_ratio": up_count / float(value_count) if value_count else None,
-                "open_negative_ratio": down_count / float(value_count) if value_count else None,
-                "open_median_change_pct": open_median_change_pct,
-                "open_symbols": sorted(valid_open_symbols),
-                "auction_positive_ratio": auction_positive_ratio,
-                "auction_positive_ratio_status": positive_reference_status,
-                "positive_ratio_delta": positive_ratio_delta,
-                "price_breadth_state": classify_delta(positive_ratio_delta),
-                "auction_median_change_pct": auction_median_change_pct,
-                "auction_median_change_pct_status": median_reference_status,
-                "median_change_pct_delta": median_change_pct_delta,
-                "median_change_state": classify_sign_state(
-                    auction_median_change_pct,
-                    open_median_change_pct,
-                ),
-                "comparison_symbols": [
-                    symbol
-                    for symbol in sorted(common_symbols)
-                    if facts_by_symbol[symbol].get("status") == "available"
-                ],
-            }
-        )
+        plate_summary = {
+            "plate": plate,
+            "mapped_symbol_count": len(mapped_symbols),
+            "auction_symbol_count": len(auction_symbols),
+            "open_valid_count": len(valid_open_symbols),
+            "common_symbol_count": len(common_symbols),
+            "comparison_valid_count": comparison_valid_count,
+            "comparison_scope": "COMMON_VALID_AUCTION_AND_OPEN_SYMBOLS",
+            "open_limit_up_count": (
+                limit_state_counts["up_count"]
+                if limit_state_count_denominator
+                else None
+            ),
+            "open_limit_normal_count": (
+                limit_state_counts["normal_count"]
+                if limit_state_count_denominator
+                else None
+            ),
+            "open_limit_down_count": (
+                limit_state_counts["down_count"]
+                if limit_state_count_denominator
+                else None
+            ),
+            "open_limit_state_total_count": limit_state_summary[
+                "limit_state_total_count"
+            ],
+            "open_limit_state_present_count": limit_state_summary[
+                "limit_state_present_count"
+            ],
+            "open_limit_state_valid_count": limit_state_count_denominator,
+            "open_limit_state_missing_count": limit_state_summary[
+                "limit_state_missing_count"
+            ],
+            "open_limit_state_invalid_count": limit_state_summary[
+                "limit_state_invalid_count"
+            ],
+            "open_limit_state_coverage": limit_state_summary[
+                "valid_coverage"
+            ],
+            "open_limit_state_status": limit_state_status,
+            "price_change_value_count": value_count,
+            "price_change_missing_count": comparison_valid_count - value_count,
+            "price_change_coverage": (
+                value_count / float(comparison_valid_count)
+                if comparison_valid_count
+                else None
+            ),
+            "price_change_status": price_change_status,
+            "open_up_count": up_count,
+            "open_down_count": down_count,
+            "open_flat_count": flat_count,
+            "open_positive_ratio": up_count / float(value_count) if value_count else None,
+            "open_negative_ratio": down_count / float(value_count) if value_count else None,
+            "open_median_change_pct": open_median_change_pct,
+            "open_symbols": sorted(valid_open_symbols),
+            "auction_positive_ratio": auction_positive_ratio,
+            "auction_positive_ratio_status": positive_reference_status,
+            "positive_ratio_delta": positive_ratio_delta,
+            "price_breadth_state": classify_delta(positive_ratio_delta),
+            "auction_median_change_pct": auction_median_change_pct,
+            "auction_median_change_pct_status": median_reference_status,
+            "median_change_pct_delta": median_change_pct_delta,
+            "median_change_state": classify_sign_state(
+                auction_median_change_pct,
+                open_median_change_pct,
+            ),
+            "comparison_symbols": [
+                symbol
+                for symbol in sorted(common_symbols)
+                if is_available_fact(symbol)
+            ],
+        }
+        if invalid_fact_symbols:
+            plate_summary["open_invalid_fact_count"] = len(invalid_fact_symbols)
+            plate_summary["comparison_invalid_fact_count"] = len(
+                invalid_comparison_symbols
+            )
+            plate_summary["price_change_invalid_fact_count"] = len(
+                invalid_comparison_symbols
+            )
+            plate_summary["invalid_fact_symbols"] = list(invalid_fact_symbols)
+        plate_summaries.append(plate_summary)
 
     summary: dict[str, Any] = {
         "contract": OPENING_PLATE_PRICE_SUMMARY_CONTRACT_VERSION,

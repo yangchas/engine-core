@@ -498,6 +498,32 @@ def test_opening_plate_price_summary_uses_common_valid_price_cohort():
     assert plate["comparison_symbols"] == ["A", "B", "C", "NO_CHANGE"]
 
 
+def test_opening_plate_price_summary_isolates_malformed_selected_fact():
+    summary = build_opening_plate_price_summary(
+        {
+            "A": {"status": "available", "change_pct": 2.0, "limit_state": 1},
+            "B": {"status": "available", "change_pct": -1.0, "limit_state": 0},
+            "BAD": None,
+            "OUTSIDE": ["malformed but not selected"],
+        },
+        mapped_symbols_by_plate={"P": ("A", "B", "BAD")},
+        auction_symbols_by_plate={"P": ("A", "B", "BAD")},
+        selected_plates=("P",),
+    )
+
+    plate = summary["plates"][0]
+    assert plate["open_valid_count"] == 2
+    assert plate["common_symbol_count"] == 3
+    assert plate["comparison_valid_count"] == 2
+    assert plate["open_invalid_fact_count"] == 1
+    assert plate["comparison_invalid_fact_count"] == 1
+    assert plate["invalid_fact_symbols"] == ["BAD"]
+    assert plate["price_change_value_count"] == 2
+    assert plate["price_change_status"] == "partial"
+    assert plate["open_symbols"] == ["A", "B"]
+    assert plate["comparison_symbols"] == ["A", "B"]
+
+
 def test_opening_plate_price_summary_reports_partial_limit_state_without_blocking():
     summary = build_opening_plate_price_summary(
         {
