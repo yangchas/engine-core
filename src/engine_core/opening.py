@@ -31,6 +31,27 @@ _OPENING_COHORT_SCOPES = {
 }
 
 
+def _cohort_scope(
+    observed_symbols: Sequence[str] | set[str],
+    expected_symbols: Optional[Sequence[str]],
+) -> tuple[set[str], set[str], list[str]]:
+    """Return the declared cohort, its observed members, and extras.
+
+    A stray row must not abort a fact summary for the declared cohort. Keep it
+    visible in diagnostics and exclude it from the cohort's denominator and
+    aggregates. Missing expected symbols remain represented separately by the
+    caller's existing coverage fields.
+    """
+
+    observed = {str(symbol) for symbol in observed_symbols}
+    expected = (
+        observed
+        if expected_symbols is None
+        else {str(symbol) for symbol in expected_symbols}
+    )
+    return expected, observed & expected, sorted(observed - expected)
+
+
 def _number(value: Any) -> Optional[float]:
     """Return a finite number using the legacy reader's coercion rule."""
 
@@ -193,19 +214,14 @@ def build_opening_limit_state_summary(
     if scope not in _OPENING_COHORT_SCOPES:
         raise ValueError("scope must identify an observed Q2 cohort")
 
-    observed_symbols = {str(symbol) for symbol in facts_by_symbol}
-    expected = (
-        observed_symbols
-        if expected_symbols is None
-        else {str(symbol) for symbol in expected_symbols}
+    expected, observed_symbols, out_of_scope_symbols = _cohort_scope(
+        {str(symbol) for symbol in facts_by_symbol}, expected_symbols
     )
-    if observed_symbols - expected:
-        raise ValueError("facts contain symbols outside expected_symbols")
 
     eligible = tuple(
         (str(symbol), fact)
         for symbol, fact in facts_by_symbol.items()
-        if fact.get("status") == "available"
+        if str(symbol) in observed_symbols and fact.get("status") == "available"
     )
     present_count = valid_count = invalid_count = 0
     counts = {"up_count": 0, "normal_count": 0, "down_count": 0}
@@ -260,6 +276,9 @@ def build_opening_limit_state_summary(
         "valid_coverage": valid_count / total_count if total_count else None,
         "cohort_field_status": status,
     }
+    if out_of_scope_symbols:
+        summary["out_of_scope_symbol_count"] = len(out_of_scope_symbols)
+        summary["out_of_scope_symbols"] = out_of_scope_symbols
     summary["content_hash"] = semantic_hash(summary)
     return summary
 
@@ -283,19 +302,14 @@ def build_opening_amount_summary(
     if scope not in _OPENING_COHORT_SCOPES:
         raise ValueError("scope must identify an observed Q2 cohort")
 
-    observed_symbols = {str(symbol) for symbol in facts_by_symbol}
-    expected = (
-        observed_symbols
-        if expected_symbols is None
-        else {str(symbol) for symbol in expected_symbols}
+    expected, observed_symbols, out_of_scope_symbols = _cohort_scope(
+        {str(symbol) for symbol in facts_by_symbol}, expected_symbols
     )
-    if observed_symbols - expected:
-        raise ValueError("facts contain symbols outside expected_symbols")
 
     eligible = tuple(
         fact
-        for fact in facts_by_symbol.values()
-        if fact.get("status") == "available"
+        for symbol, fact in facts_by_symbol.items()
+        if str(symbol) in observed_symbols and fact.get("status") == "available"
     )
     values = tuple(_number(fact.get("amount_2m_yuan")) for fact in eligible)
     total_count = len(eligible)
@@ -336,6 +350,9 @@ def build_opening_amount_summary(
         "amount_2m_yuan_sum": amount_sum,
         "amount_2m_yuan_status": status,
     }
+    if out_of_scope_symbols:
+        summary["out_of_scope_symbol_count"] = len(out_of_scope_symbols)
+        summary["out_of_scope_symbols"] = out_of_scope_symbols
     summary["content_hash"] = semantic_hash(summary)
     return summary
 
@@ -976,14 +993,10 @@ def build_opening_transition_summary(
 
     anchors = {str(symbol): value for symbol, value in auction_anchor_facts_by_symbol.items()}
     opening_rows = {str(symbol): value for symbol, value in opening_rows_by_symbol.items()}
-    observed_symbols = set(anchors) | set(opening_rows)
-    expected = (
-        observed_symbols
-        if expected_symbols is None
-        else {str(symbol) for symbol in expected_symbols}
+    input_symbols = set(anchors) | set(opening_rows)
+    expected, observed_symbols, out_of_scope_symbols = _cohort_scope(
+        input_symbols, expected_symbols
     )
-    if observed_symbols - expected:
-        raise ValueError("transition inputs contain symbols outside expected_symbols")
 
     facts_by_symbol: dict[str, dict[str, Any]] = {}
     delta_state_counts = {
@@ -1078,5 +1091,8 @@ def build_opening_transition_summary(
         "facts_by_symbol": facts_by_symbol,
         "facts_by_symbol_hash": semantic_hash(facts_by_symbol),
     }
+    if out_of_scope_symbols:
+        summary["out_of_scope_symbol_count"] = len(out_of_scope_symbols)
+        summary["out_of_scope_symbols"] = out_of_scope_symbols
     summary["content_hash"] = semantic_hash(summary)
     return summary

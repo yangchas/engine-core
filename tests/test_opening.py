@@ -139,6 +139,7 @@ def test_opening_limit_state_summary_keeps_enum_counts_separate_from_price_bread
     }
     assert summary["cohort_field_status"] == "available"
     assert summary["valid_coverage"] == 1.0
+    assert "out_of_scope_symbol_count" not in summary
     assert summary["content_hash"]
     assert OPENING_LIMIT_STATE_SUMMARY_CONTRACT_VERSION == "OpeningLimitStateSummaryV1"
 
@@ -217,6 +218,27 @@ def test_opening_limit_state_summary_rejects_unverified_scope_labels():
         )
 
 
+def test_opening_limit_state_summary_excludes_and_reports_out_of_scope_symbols():
+    summary = build_opening_limit_state_summary(
+        {
+            "IN_SCOPE": {"status": "available", "limit_state": 1},
+            "OUT_OF_SCOPE": {"status": "available", "limit_state": -1},
+        },
+        expected_symbols=("IN_SCOPE", "NOT_OBSERVED"),
+    )
+
+    assert summary["expected_count"] == 2
+    assert summary["observed_count"] == 1
+    assert summary["missing_symbol_count"] == 1
+    assert summary["out_of_scope_symbol_count"] == 1
+    assert summary["out_of_scope_symbols"] == ["OUT_OF_SCOPE"]
+    assert summary["limit_state_counts"] == {
+        "up_count": 1,
+        "normal_count": 0,
+        "down_count": 0,
+    }
+
+
 def test_opening_amount_summary_matches_legacy_complete_sum_and_price_cohort():
     summary = build_opening_amount_summary(
         {
@@ -242,6 +264,7 @@ def test_opening_amount_summary_matches_legacy_complete_sum_and_price_cohort():
     assert summary["amount_2m_yuan_missing_count"] == 0
     assert summary["amount_2m_yuan_sum"] == 50
     assert summary["amount_2m_yuan_status"] == "available"
+    assert "out_of_scope_symbol_count" not in summary
     assert summary["content_hash"]
     assert OPENING_AMOUNT_SUMMARY_CONTRACT_VERSION == "OpeningAmountSummaryV1"
 
@@ -275,6 +298,24 @@ def test_opening_amount_summary_is_unavailable_for_empty_or_all_missing_cohorts(
     assert missing["amount_2m_yuan_sum"] is None
     assert missing["amount_2m_yuan_status"] == "unavailable"
     assert missing["amount_2m_yuan_missing_count"] == 1
+
+
+def test_opening_amount_summary_excludes_and_reports_out_of_scope_symbols():
+    summary = build_opening_amount_summary(
+        {
+            "IN_SCOPE": {"status": "available", "amount_2m_yuan": 10},
+            "OUT_OF_SCOPE": {"status": "available", "amount_2m_yuan": 900},
+        },
+        expected_symbols=("IN_SCOPE", "NOT_OBSERVED"),
+    )
+
+    assert summary["expected_count"] == 2
+    assert summary["observed_count"] == 1
+    assert summary["missing_symbol_count"] == 1
+    assert summary["out_of_scope_symbol_count"] == 1
+    assert summary["out_of_scope_symbols"] == ["OUT_OF_SCOPE"]
+    assert summary["amount_2m_yuan_sum"] == 10
+    assert summary["amount_2m_yuan_status"] == "available"
 
 
 def test_opening_amount_summary_hash_is_order_independent_and_scope_explicit():
@@ -669,9 +710,10 @@ def test_opening_transition_summary_uses_observed_0925_anchors_without_zero_fill
     assert summary["facts_by_symbol"]["000004"]["auction_change_pct"] is None
     assert summary["facts_by_symbol_hash"]
     assert summary["full_market_coverage"] == "UNPROVEN"
+    assert "out_of_scope_symbol_count" not in summary
 
 
-def test_opening_transition_summary_is_order_independent_and_rejects_out_of_cohort_rows():
+def test_opening_transition_summary_is_order_independent_and_excludes_out_of_cohort_rows():
     anchors = {
         "A": {"status": "AVAILABLE", "price_milli": 10_500, "source_time_ms": 10},
         "B": {"status": "AVAILABLE", "price_milli": 9_500, "source_time_ms": 10},
@@ -689,5 +731,30 @@ def test_opening_transition_summary_is_order_independent_and_rejects_out_of_coho
     )
 
     assert left == right
-    with pytest.raises(ValueError, match="outside expected_symbols"):
-        build_opening_transition_summary(anchors, rows, expected_symbols=("A",))
+    summary = build_opening_transition_summary(
+        {
+            "A": anchors["A"],
+            "OUT_OF_SCOPE": {
+                "status": "AVAILABLE",
+                "price_milli": 12_000,
+                "source_time_ms": 10,
+            },
+        },
+        {
+            "A": rows["A"],
+            "OUT_OF_SCOPE": {
+                "symbol": "OUT_OF_SCOPE",
+                "timestamp_ms": 20,
+                "price_milli": 12_100,
+                "previous_close_milli": 10_000,
+            },
+        },
+        expected_symbols=("A",),
+    )
+
+    assert summary["expected_count"] == 1
+    assert summary["observed_count"] == 1
+    assert summary["missing_symbol_count"] == 0
+    assert summary["out_of_scope_symbol_count"] == 1
+    assert summary["out_of_scope_symbols"] == ["OUT_OF_SCOPE"]
+    assert set(summary["facts_by_symbol"]) == {"A"}
