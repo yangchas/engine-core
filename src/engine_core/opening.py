@@ -335,14 +335,29 @@ def build_opening_plate_auction_pressure_summary(
             {str(plate).strip() for plate in selected_plates if str(plate).strip()}
         )
 
-    normalized_facts: dict[str, Mapping[str, Any]] = {}
+    selected_symbols = set().union(
+        *(members_by_plate.get(plate, set()) for plate in selected)
+    ) if selected else set()
+    fact_candidates: dict[str, list[Any]] = {}
+    out_of_scope_symbols: set[str] = set()
     for raw_symbol, raw_fact in anchor_facts_by_symbol.items():
         symbol = str(raw_symbol).strip()
         if not symbol:
             raise ValueError("anchor fact symbol keys must be non-empty")
-        if not isinstance(raw_fact, Mapping):
-            raise TypeError("each anchor fact must be a mapping")
-        normalized_facts[symbol] = raw_fact
+        if symbol not in selected_symbols:
+            out_of_scope_symbols.add(symbol)
+            continue
+        fact_candidates.setdefault(symbol, []).append(raw_fact)
+
+    normalized_facts: dict[str, Mapping[str, Any]] = {}
+    invalid_fact_reasons: dict[str, str] = {}
+    for symbol, candidates in fact_candidates.items():
+        if len(candidates) != 1:
+            invalid_fact_reasons[symbol] = "DUPLICATE_NORMALIZED_SYMBOL"
+        elif not isinstance(candidates[0], Mapping):
+            invalid_fact_reasons[symbol] = "FACT_NOT_A_MAPPING"
+        else:
+            normalized_facts[symbol] = candidates[0]
 
     plate_summaries: list[dict[str, Any]] = []
     usable_statuses = {"resolved", "balanced", "unresolved"}
@@ -352,6 +367,9 @@ def build_opening_plate_auction_pressure_summary(
         usable_values: list[float] = []
         unavailable_count = invalid_count = missing_count = 0
         for symbol in sorted(members):
+            if symbol in invalid_fact_reasons:
+                invalid_count += 1
+                continue
             fact = normalized_facts.get(symbol)
             if fact is None:
                 missing_count += 1
@@ -412,6 +430,14 @@ def build_opening_plate_auction_pressure_summary(
         "selected_plate_count": len(plate_summaries),
         "plates": plate_summaries,
     }
+    if invalid_fact_reasons:
+        summary["invalid_fact_rows"] = [
+            {"symbol": symbol, "reason": invalid_fact_reasons[symbol]}
+            for symbol in sorted(invalid_fact_reasons)
+        ]
+    if out_of_scope_symbols:
+        summary["out_of_scope_symbol_count"] = len(out_of_scope_symbols)
+        summary["out_of_scope_symbols"] = sorted(out_of_scope_symbols)
     summary["content_hash"] = semantic_hash(summary)
     return summary
 
@@ -917,6 +943,73 @@ def _validate_opening_plate_auction_pressure_summary(
 ) -> dict[str, Any]:
     if not isinstance(summary, Mapping):
         raise TypeError("auction pressure summary must be a mapping")
+    required_keys = {
+        "contract",
+        "trade_date",
+        "scope",
+        "scope_authority",
+        "full_market_coverage",
+        "from_anchor",
+        "to_anchor",
+        "source_field",
+        "pressure_semantics",
+        "decision_status",
+        "selected_plate_count",
+        "plates",
+        "content_hash",
+    }
+    optional_diagnostics = {
+        "invalid_fact_rows",
+        "out_of_scope_symbol_count",
+        "out_of_scope_symbols",
+    }
+    summary_keys = set(summary)
+    if not required_keys.issubset(summary_keys) or summary_keys - required_keys - optional_diagnostics:
+        raise ValueError("auction pressure summary has unsupported fields")
+    if ("out_of_scope_symbol_count" in summary_keys) != (
+        "out_of_scope_symbols" in summary_keys
+    ):
+        raise ValueError("out-of-scope diagnostics must include count and symbols")
+    if "out_of_scope_symbols" in summary_keys:
+        symbols = summary.get("out_of_scope_symbols")
+        count = summary.get("out_of_scope_symbol_count")
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 0
+            or not isinstance(symbols, Sequence)
+            or isinstance(symbols, (str, bytes))
+            or any(not isinstance(symbol, str) or not symbol for symbol in symbols)
+            or list(symbols) != sorted(set(symbols))
+            or count != len(symbols)
+        ):
+            raise ValueError("out-of-scope diagnostics are invalid")
+    if "invalid_fact_rows" in summary_keys:
+        invalid_rows = summary.get("invalid_fact_rows")
+        allowed_reasons = {
+            "DUPLICATE_NORMALIZED_SYMBOL",
+            "FACT_NOT_A_MAPPING",
+            "UNSUPPORTED_CONTRACT",
+            "SYMBOL_MISMATCH",
+            "ANCHOR_MISMATCH",
+            "FIELDS_NOT_A_MAPPING",
+        }
+        if not isinstance(invalid_rows, Sequence) or isinstance(invalid_rows, (str, bytes)):
+            raise ValueError("invalid fact diagnostics are invalid")
+        invalid_symbols: list[str] = []
+        for row in invalid_rows:
+            if (
+                not isinstance(row, Mapping)
+                or set(row) != {"symbol", "reason"}
+                or not isinstance(row.get("symbol"), str)
+                or not row.get("symbol")
+                or not isinstance(row.get("reason"), str)
+                or row.get("reason") not in allowed_reasons
+            ):
+                raise ValueError("invalid fact diagnostics are invalid")
+            invalid_symbols.append(row["symbol"])
+        if invalid_symbols != sorted(set(invalid_symbols)):
+            raise ValueError("invalid fact diagnostics must be unique and sorted")
     expected_contract = OPENING_PLATE_AUCTION_PRESSURE_SUMMARY_CONTRACT_VERSION
     if summary.get("contract") != expected_contract:
         raise ValueError("unsupported auction pressure summary contract")

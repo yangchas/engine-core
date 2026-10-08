@@ -152,3 +152,56 @@ input. It is per-row fault isolation, not a blanket acceptance gate.
 This closes only a report-level cohort robustness defect. TASK-008 remains
 `PARTIAL_EVIDENCE`; full-market coverage, NORMAL opening acceptance, Rabbit
 arrival order, and historical `available_at` remain unproven.
+
+## Follow-up — isolate auction-pressure row failures — 2026-10-08
+
+### Finding and repair
+
+`build_opening_plate_auction_pressure_summary` previously checked that every
+fact in the input was a mapping before limiting work to the selected plate
+cohort. One malformed, unrelated row could therefore stop otherwise usable
+FACT_ONLY output. It now:
+
+- selects the symbol union of the requested plates before inspecting payloads;
+- keeps malformed selected rows out of the sum and counts them as invalid for
+  their symbol;
+- reports sorted out-of-scope symbols without validating their payloads; and
+- validates the optional diagnostics when a summary is wrapped in a context.
+
+Trade-date, mapping-container, and selected-plate structure errors still fail
+clearly. This isolates row-quality failures without weakening source or
+business semantics.
+
+### Verification
+
+- Regression reproduced the previous `TypeError` and now confirms one invalid
+  selected symbol does not prevent the other selected symbol from contributing.
+- Full Core suite: `895 passed`; compileall and diff-check pass.
+- File-only parity audit used hash-pinned 2026-09-29 TD rows, a frozen plate
+  map, and hash-pinned engine-next release helper source. Strict per-symbol
+  formula comparison: 5,223/5,223; plate pressure value mismatches: 0; status
+  mismatches: 0; denominator mismatches: 8. Overall remains
+  `VALUE_PARITY_WITH_DENOMINATOR_DIFFERENCE` because 91 selected mapping
+  members are not present in the captured TD cohort. This is not live-source,
+  producer-binary, or full production-assembly proof.
+- Recomputed selected-cohort pressure summary reports 3,902 input facts
+  outside the ten selected plates; they do not enter plate denominators or
+  pressure values. Audit output:
+  `/home/exedev/validation/task008-auction-pressure-row-robustness-20261008T115319+0800/`.
+  `audit_summary.json` SHA-256:
+  `9f2c3f2ca4decb501af60021ebc77ddb74e4e3ef12efdeb5fe1a996fd3b83fb6`;
+  recomputed summary SHA-256:
+  `dff981df009c54bebc8523a1aad6bdd56ef0c8b746e1e39576a53d72b4b93833`.
+- TD capture SHA-256:
+  `b66b78971f6453ad0ab48e5fc818ce7b1e9799afc03bf3e2e9adffae7d44332b`;
+  frozen plate map SHA-256:
+  `c88eb9339fb1a30dbf6c82da41eebca12f8128a399bd045eaa3da4fbf1a4553b`.
+- Audit declared TDengine, Redis, and RabbitMQ `NOT_CONNECTED`, with no
+  production service effects. It read only retained files and pinned source.
+
+### Alignment
+
+The failure path now degrades by symbol, not by whole summary. Numerical
+parity is preserved on the captured real cohort, while the denominator
+difference remains visible and is not converted into a strict pass or a run
+gate. TASK-008 remains `PARTIAL_EVIDENCE`.

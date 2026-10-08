@@ -574,6 +574,48 @@ def test_opening_plate_auction_pressure_zero_is_valid_and_complete_cohort_availa
     assert plate["pressure_coverage"] == 1.0
 
 
+def test_opening_plate_auction_pressure_isolates_bad_and_out_of_scope_rows():
+    summary = build_opening_plate_auction_pressure_summary(
+        {
+            "A": {
+                "status": "resolved",
+                "auction_directional_pressure_yuan": 12.5,
+            },
+            "B": None,
+            # Neither row belongs to the selected plate cohort; malformed row
+            # payloads there must not stop the usable selected observations.
+            "OUTSIDE": None,
+            "OUTSIDE-BAD": {"status": "not-a-contract"},
+        },
+        mapped_symbols_by_plate={
+            "P": ("A", "B"),
+            "NOT_SELECTED": ("OUTSIDE",),
+        },
+        trade_date="2026-09-29",
+        selected_plates=("P",),
+    )
+
+    plate = summary["plates"][0]
+    assert plate["pressure_total_count"] == 2
+    assert plate["pressure_usable_count"] == 1
+    assert plate["pressure_invalid_count"] == 1
+    assert plate["auction_pressure_yuan"] == 12.5
+    assert plate["auction_pressure_status"] == "partial"
+    assert summary["invalid_fact_rows"] == [
+        {"symbol": "B", "reason": "FACT_NOT_A_MAPPING"}
+    ]
+    assert summary["out_of_scope_symbol_count"] == 2
+    assert summary["out_of_scope_symbols"] == ["OUTSIDE", "OUTSIDE-BAD"]
+
+    context = build_opening_plate_auction_pressure_context(
+        auction_pressure_summary=summary,
+        source_provenance={"trade_date": "2026-09-29"},
+    )
+    assert validate_opening_plate_auction_pressure_context(
+        context, trade_date="2026-09-29", selected_plates=("P",)
+    ) == context
+
+
 def test_opening_plate_field_delta_uses_independent_field_quality_denominators():
     field_facts = {
         "A": {
