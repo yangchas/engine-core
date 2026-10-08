@@ -567,6 +567,55 @@ def test_q2_adapter_rejects_invalid_symbol_and_naive_observation():
         )
 
 
+def test_q2_adapter_isolates_invalid_active_member_and_keeps_valid_quotes():
+    observed = datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc)
+    hashes = {
+        "q2:000001": {
+            b"px": b"1000",
+            b"pc": b"990",
+            b"amt": b"10",
+            b"ts": b"1788484799000",
+        }
+    }
+    mixed = RedisQ2ProjectionAdapter(
+        FakeRedis({"q2:active:20260904": {b"000001", b"not-a-symbol"}}, hashes)
+    ).read("2026-09-04", observed)
+    clean = RedisQ2ProjectionAdapter(
+        FakeRedis({"q2:active:20260904": {b"000001"}}, hashes)
+    ).read("2026-09-04", observed)
+
+    assert mixed.quotes["000001"].price_milli == 1000
+    assert mixed.expected_symbols == ("000001",)
+    assert mixed.missing_symbols == ()
+    assert mixed.coverage == 1.0
+    assert mixed.status is DataStatus.PARTIAL
+    assert len(mixed.source_anomaly_hashes) == 1
+    assert mixed.content_hash == clean.content_hash
+    assert mixed.evidence_hash != clean.evidence_hash
+
+
+def test_q2_adapter_invalid_member_diagnostics_are_order_independent():
+    observed = datetime(2026, 9, 4, 1, 20, tzinfo=timezone.utc)
+    members = [b"000001", b"bad-a", b"bad-b"]
+    hashes = {
+        "q2:000001": {
+            b"px": b"1000",
+            b"pc": b"990",
+            b"amt": b"10",
+            b"ts": b"1788484799000",
+        }
+    }
+    first = RedisQ2ProjectionAdapter(
+        FakeRedis({"q2:active:20260904": members}, hashes)
+    ).read("2026-09-04", observed)
+    second = RedisQ2ProjectionAdapter(
+        FakeRedis({"q2:active:20260904": list(reversed(members))}, hashes)
+    ).read("2026-09-04", observed)
+
+    assert first.source_anomaly_hashes == second.source_anomaly_hashes
+    assert first.evidence_hash == second.evidence_hash
+
+
 @pytest.mark.parametrize("trade_date", ["2026-9-4", "2026-09-4", "bad"])
 def test_q2_projection_rejects_non_strict_trade_date_before_classifying_data(trade_date):
     redis = FakeRedis({"q2:active:" + trade_date: set()}, {})

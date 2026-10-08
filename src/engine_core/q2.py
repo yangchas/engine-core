@@ -436,6 +436,7 @@ class Q2ProjectionSnapshot:
     out_of_scope_symbols: Tuple[str, ...] = ()
     out_of_scope_event_hashes: Tuple[str, ...] = ()
     out_of_scope_events: Tuple[Mapping[str, Any], ...] = ()
+    source_anomaly_hashes: Tuple[str, ...] = ()
 
     __deep_frozen_contract__ = True
 
@@ -447,6 +448,7 @@ class Q2ProjectionSnapshot:
         object.__setattr__(self, "out_of_scope_symbols", tuple(sorted(set(self.out_of_scope_symbols))))
         object.__setattr__(self, "out_of_scope_event_hashes", tuple(self.out_of_scope_event_hashes))
         object.__setattr__(self, "out_of_scope_events", tuple(deep_freeze(item) for item in self.out_of_scope_events))
+        object.__setattr__(self, "source_anomaly_hashes", tuple(sorted(self.source_anomaly_hashes)))
         if self.content_hash_override is not None:
             object.__setattr__(self, "content_hash", self.content_hash_override)
 
@@ -459,6 +461,7 @@ class Q2ProjectionSnapshot:
             "out_of_scope_symbols": self.out_of_scope_symbols,
             "out_of_scope_event_hashes": self.out_of_scope_event_hashes,
             "out_of_scope_events": self.out_of_scope_events,
+            "source_anomaly_hashes": self.source_anomaly_hashes,
         })
 
 
@@ -470,6 +473,7 @@ def build_q2_projection(
     *,
     freshness_policy: FreshnessPolicy = FreshnessPolicy(),
     source_id: str = "redis_q2_projection",
+    source_anomaly_hashes: Sequence[str] = (),
 ) -> Q2ProjectionSnapshot:
     """Build a projection from already-read hashes; no Redis access occurs."""
 
@@ -478,6 +482,7 @@ def build_q2_projection(
         raise ValueError("observed_at must be timezone-aware")
     observed_ms = int(observed_at.astimezone(timezone.utc).timestamp() * 1000)
     expected = tuple(sorted({normalize_symbol(item) for item in expected_symbols}))
+    source_anomalies = tuple(sorted(source_anomaly_hashes))
     quotes: Dict[str, Q2Quote] = {}
     missing = []
     stale = []
@@ -514,7 +519,7 @@ def build_q2_projection(
     if not expected:
         status = DataStatus.MISSING
         consistency = "EMPTY_UNIVERSE"
-    elif missing or has_non_stale_errors:
+    elif missing or has_non_stale_errors or source_anomalies:
         status = DataStatus.PARTIAL
         consistency = "BEST_EFFORT_PARTIAL"
     elif stale and len(stale) == len(quotes):
@@ -583,7 +588,22 @@ def build_q2_projection(
         oldest_source_time_ms=oldest,
         newest_source_time_ms=newest,
         content_hash=content_digest,
+        source_anomaly_hashes=source_anomalies,
     )
+
+
+def _invalid_active_member_hash(value: Any) -> str:
+    """Return stable, non-reversible evidence for one malformed Redis member."""
+
+    if isinstance(value, bytes):
+        member = {"type": "bytes", "hex": value.hex()}
+    elif isinstance(value, str):
+        member = {"type": "str", "value": value}
+    else:
+        member = {
+            "type": "%s.%s" % (type(value).__module__, type(value).__qualname__),
+        }
+    return evidence_hash({"kind": "invalid_q2_active_member", "member": member})
 
 
 class IncrementalQ2Projection:
@@ -878,7 +898,16 @@ class RedisQ2ProjectionAdapter:
         policy = freshness_policy or FreshnessPolicy(stale_after_ms=stale_after_ms)
 
         raw_symbols = self._read_active_symbols(trade_date)
-        expected = tuple(sorted({normalize_symbol(item) for item in raw_symbols}))
+        normalized_symbols = set()
+        source_anomaly_hashes = []
+        for item in raw_symbols:
+            try:
+                normalized_symbols.add(normalize_symbol(item))
+            except (TypeError, ValueError):
+                # An invalid set member must not discard valid symbols in the
+                # same read cohort. Keep only stable evidence, not raw input.
+                source_anomaly_hashes.append(_invalid_active_member_hash(item))
+        expected = tuple(sorted(normalized_symbols))
         raw_hashes = {}
         for symbol in expected:
             raw_hash = self._client.hgetall(self._q2_prefix + symbol)
@@ -892,6 +921,7 @@ class RedisQ2ProjectionAdapter:
             raw_hashes,
             freshness_policy=policy,
             source_id=self._source_id,
+            source_anomaly_hashes=source_anomaly_hashes,
         )
 
     def _read_active_symbols(self, trade_date: str) -> Sequence[Any]:
