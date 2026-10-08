@@ -7,8 +7,12 @@ Read-only observation of the current Redis Q2 projection before and after the
 the existing Core adapter and probe Engine. This is a live-source ingestion
 check, not historical replay equivalence or NORMAL opening acceptance.
 
-Core revision: `9b905db3ea07164f46240ef8b60f72b1ce74d02f` on
-`codex/feature-session-engine-integration`.
+The market-breadth quality fix was introduced in Core commit
+`9b905db3ea07164f46240ef8b60f72b1ce74d02f` on
+`codex/feature-session-engine-integration`. The 09:15 probe ran on that
+revision; the 09:20/09:24/09:25+ probes ran on `8bb65fda9ed12345f32d3d2b9474cee54cb1aa18`
+(the intervening commit only recorded the earlier probe handoff). The later
+opening-fact diagnostic used Core commit `c774ba5`.
 The read-only producer enum/writer source was checked at t1-v2 commit
 `b2aa169c3dddf5d5c7c452f4893dcc01848e358f`; its worktree was clean.
 
@@ -39,6 +43,71 @@ one `SMEMBERS` and 5,226 `HGETALL` operations. Results:
 - Core market cross-section over the captured cohort: 2,059 up, 1,483 down,
   1,683 flat, 0 unknown, and 1 excluded non-equity symbol.
 
+Further read-only captures followed the evolving live Q2 values:
+
+| Observation | Read interval (Asia/Shanghai) | `a20` nonzero | `a24` nonzero | `a25` nonzero | Core status |
+|---|---|---:|---:|---:|---|
+| 09:20 | 09:20:16.576–09:20:18.066 | 3,282 | 0 | 0 | READY for captured active set |
+| 09:24 | 09:24:18.635–09:24:20.078 | 3,713 | 4,307 | 0 | READY for captured active set |
+| 09:25+ | 09:25:20.871–09:25:22.071 | 3,713 | 4,329 | 5,209 | READY for captured active set |
+
+All three projections had 5,226 quotes and no configured age cutoff. The
+09:25+ read's source-time distribution was not uniformly fresh: 5,209 `ts`
+values were in the 09:25 minute; 17 were at 00:00 local time. Those same 17
+had `a20=a24=a25=0`, `ls=0`, and `px=pc`. Core normalization represents the
+17 zero `a25` values as `MISSING`; it represents the other 5,209 as
+`PRESENT_VALUE`. This is a small missing cohort, not a reason to stop analysis.
+The `READY` projection status did not apply a freshness threshold and must not
+be read as “all 5,226 rows are fresh.”
+
+The 09:25+ raw Q2 observation had latest `ts=09:25:02.000`, while the separate
+Redis snapshot metadata recorded `tag=0925`, `n=5209`, and logical `ts=
+09:25:06.025`. A read-only Redis metadata check around 09:28 found:
+
+- `a2:20261008:0925`: hash exists, four fields; metadata tag/time/count match
+  `0925` / `09:25:06.025` / `5209`.
+- `market:auction:20261008:0925`: compatibility hash exists, three fields;
+  same metadata.
+- `market:auction:20261008:latest`: tag is `0925`, timestamp is
+  `09:25:06.025`.
+- `market:auction:anchor:20261008`: archive string exists (539,995 bytes); its
+  full payload was not read.
+
+A metadata-only Redis read was repeated at `2026-10-08T01:29:00.264220Z`
+(`09:29:00.264220 Asia/Shanghai`) and completed at
+`2026-10-08T01:29:00.269916Z`; it found the same keys and metadata.
+
+This proves that by the 09:28 observation the producer had persisted a 0925
+snapshot carrying the 09:25:06.025 logical trigger time. It does not prove the
+key became externally visible at exactly 09:25:06; the first availability time
+was not captured. In the checked writer source, `n` counts states with auction
+time and at least one positive match/rest amount; the `top_amt`, `top_br`, and
+`top_chg` fields are configured top-N lists, not the full market. The effective
+top-N setting and full candidate membership were not read in this audit.
+`a2` metadata `n` and Core's count of available `a25` values are both 5,209,
+but no symbol-set equality is claimed.
+
+## Timestamp and auction-trigger source audit
+
+The checked t1-v2 source at commit
+`b2aa169c3dddf5d5c7c452f4893dcc01848e358f` separates event and envelope time:
+
+- Protobuf `DataRecord.tss` maps to `SourceTickRecord.tss`, then
+  `RawTick.ts_ms`, then Q2 `ts`.
+- Rabbit outer `view.header.timestamp` is stored separately in
+  `TickBatch.wall_ts_ms`.
+- Therefore Q2 `ts` is the record/tick event timestamp, not the outer Rabbit
+  header timestamp. The checked code does not prove whether that outer header
+  timestamp means publisher-send time or broker-arrival time.
+- `AuctionCalculator` captures the a25 candidate from tick timestamps in
+  `[09:25:00, 09:25:20]`; `SnapshotTrigger` emits the a25 snapshot when its
+  logical time reaches truncated second 09:25:06. These are separate clocks.
+
+The live observation is consistent with that separation: Q2 source timestamps
+for the 5,209 available a25 values were in the 09:25 minute (latest observed
+09:25:02), while the stored snapshot metadata carries 09:25:06.025. This does
+not reconstruct historical first-visibility or Rabbit arrival order.
+
 ## Determinism and artifacts
 
 The online probe ran the same captured projection twice through one Engine per
@@ -56,6 +125,18 @@ hashes.
 - 09:15 capture SHA-256: `b179ce25ec62ba138756bbd9c8874fad1e0b403b2dc5f6e6636b79943cb2491f`
 - Offline replay report: `/home/exedev/validation/task008-live-q2-open-replay-20261008T091510+0800.json`
 - 09:15 canonical input SHA-256: `6ff637cf4fd3f9a375ecabeca0932d28f35789b3ad16a7f04d79769246746ba9`
+- 09:20 capture: `/home/exedev/validation/task008-live-q2-0920-20261008T092012+0800-read-capture.json`
+- 09:20 capture SHA-256: `4ba921ad451acec87cac67c9f68065e4cb762f4f2ec2193798ef0d445cf94748`
+- 09:20 offline replay: `/home/exedev/validation/task008-live-q2-0920-replay-20261008T092012+0800.json`
+- 09:20 replay report SHA-256: `e276997a6c920b49cb65493297d6fea6d59549311b588fdb49b6aaf81170b0cd`
+- 09:24 capture: `/home/exedev/validation/task008-live-q2-0924-20261008T092410+0800-read-capture.json`
+- 09:24 capture SHA-256: `6488bf924a6b1003ad768a703b5fc5f81bfab95a699dc2066ba0f1be4f6284bf`
+- 09:24 offline replay: `/home/exedev/validation/task008-live-q2-0924-replay-20261008T092410+0800.json`
+- 09:24 replay report SHA-256: `81aeeb800bf08c91dfa0c6faa8bbc75750a14bd2f1ccc3b3e382606a7ccab1a0`
+- 09:25+ capture: `/home/exedev/validation/task008-live-q2-0925-plus-20261008T092515+0800-read-capture.json`
+- 09:25+ capture SHA-256: `771ea94fe3c6a7f3444d70e13bb8dc815048ad5fa14f81530d386718732d9cfb`
+- 09:25+ offline replay: `/home/exedev/validation/task008-live-q2-0925-plus-replay-20261008T092515+0800.json`
+- 09:25+ replay report SHA-256: `f67f4cd2af1411f78565d849cd8391dc77d1f783085dedabf7dfe7ad4318a278`
 
 The read is non-atomic across symbols. `q2:active` membership does not prove
 authoritative full-market coverage. `ts` is source-record time, not Redis
@@ -72,10 +153,39 @@ This changes no global readiness gate. The pre-open capture now reports 528 up,
 same-date rows remain directionally counted because freshness policy is
 unset, so they are not thereby proven fresh.
 
+## Feature-specific opening fact diagnostic
+
+The frozen 09:25+ real Redis capture was then loaded offline through
+`RedisQ2ProjectionAdapter`, reduced to one Core `EngineSnapshot`, and passed to
+`OpeningShadowStrategy` for each of 5,225 equity symbols. This directly checks
+the strategy's fact projection on real Q2 input; it is not a complete
+`DeterministicEngine` session or NORMAL acceptance.
+
+- All 5,225 opening change facts were numerically available and scoped
+  `fact_status=READY`.
+- The new per-symbol trace field reports
+  `freshness_assessment=UNASSESSED` for all 5,225 because the capture supplied
+  no freshness policy. It also exposes
+  `source_time_age_ms_at_observation`; freshness is not inferred from a valid
+  timestamp.
+- Seventeen symbols had source time more than one hour before observation and
+  `a25=MISSING`; 5,208 equity symbols had `a25=PRESENT_VALUE` and source age at
+  most one hour. The one-hour split is descriptive only, not a gate.
+- A regression confirms a precomputed stale error remains `STALE`, while a
+  future source timestamp is `INVALID`/`PARTIAL` even if an adapter omitted its
+  precomputed `future_ts` error. Numeric facts remain visible with their
+  quality status; no global stop was added.
+
+Commit `c774ba5` adds the source-age/freshness trace and regressions. Full suite
+after this change: `887 passed`; compileall and diff-check passed. The 3
+protobuf dependency deprecation warnings are non-failing.
+
 ## Status
 
 ```text
 LIVE_Q2_0915_INGESTION=PASS_WITH_LIMITS
+LIVE_Q2_0920_0924_0925_CAPTURE_REPLAY=PASS_WITH_LIMITS
+OPENING_FACT_PROJECTION_ON_CAPTURE=PASS_WITH_LIMITS
 SAME_CAPTURE_CORE_DETERMINISM=PASS
 CAPTURED_ACTIVE_SET_FULL_MARKET_COVERAGE=UNPROVEN
 RABBIT_ARRIVAL_ORDER=UNKNOWN
@@ -84,7 +194,10 @@ TASK-008=PARTIAL_EVIDENCE
 NORMAL_OPENING_ACCEPTANCE=UNPROVEN
 ```
 
-No Redis/TD write, Rabbit operation, service restart, or production code change
-was performed. The next useful live check is a read-only capture around the
-09:25 auction freeze, retaining the actual observation interval and source
-times; seconds-level differences are evidence, not a hard rejection gate.
+No Redis/TD write, Rabbit operation, service restart, deployment, or
+production-directory modification was performed. The feature-specific Core
+opening fact projection has now been exercised on the captured Q2 cohort. The
+remaining bounded comparison is symbol-level parity against the producer's
+0925 archive/declared candidate scope; the large archive payload was not read,
+so count equality is not set-level parity. Keep TASK-008 partial; do not call
+this NORMAL acceptance or impose a seconds-only rejection gate.
