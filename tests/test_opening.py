@@ -690,16 +690,18 @@ def test_opening_transition_summary_uses_observed_0925_anchors_without_zero_fill
     summary = build_opening_transition_summary(
         auction_anchors,
         opening_rows,
-        expected_symbols=("000001", "000002", "000003", "000004"),
+        expected_symbols=("000001", "000002", "000003", "000004", "000005"),
     )
 
     assert summary["contract"] == OPENING_TRANSITION_SUMMARY_CONTRACT_VERSION
     assert summary["scope"] == "OBSERVED_COHORT"
-    assert summary["expected_count"] == 4
+    assert summary["expected_count"] == 5
+    assert summary["observed_count"] == 4
+    assert summary["missing_symbol_count"] == 1
     assert summary["auction_anchor_price_available_count"] == 2
     assert summary["opening_change_available_count"] == 4
     assert summary["transition_comparable_count"] == 2
-    assert summary["transition_unavailable_count"] == 2
+    assert summary["transition_unavailable_count"] == 3
     assert summary["facts_by_symbol"]["000001"]["auction_change_pct"] == pytest.approx(20.0)
     assert summary["facts_by_symbol"]["000001"]["opening_change_pct"] == pytest.approx(2.0)
     assert summary["facts_by_symbol"]["000001"]["delta_change_pct"] == pytest.approx(-18.0)
@@ -708,6 +710,10 @@ def test_opening_transition_summary_uses_observed_0925_anchors_without_zero_fill
     assert summary["facts_by_symbol"]["000002"]["auction_change_pct"] is None
     assert summary["facts_by_symbol"]["000002"]["status"] == "unavailable"
     assert summary["facts_by_symbol"]["000004"]["auction_change_pct"] is None
+    assert summary["facts_by_symbol"]["000002"]["auction_anchor_status"] == "MISSING"
+    assert summary["facts_by_symbol"]["000004"]["auction_anchor_status"] == "UNKNOWN"
+    assert summary["facts_by_symbol"]["000005"]["auction_anchor_status"] == "UNKNOWN"
+    assert summary["facts_by_symbol"]["000005"]["status"] == "unavailable"
     assert summary["facts_by_symbol_hash"]
     assert summary["full_market_coverage"] == "UNPROVEN"
     assert "out_of_scope_symbol_count" not in summary

@@ -1022,7 +1022,11 @@ def build_opening_transition_summary(
         opening_row = dict(opening_rows.get(symbol, {}))
         opening_row.setdefault("symbol", symbol)
 
-        anchor_status = str(anchor.get("status") or "MISSING").upper()
+        # An absent anchor row does not prove the producer explicitly observed
+        # this symbol and declared its anchor missing. Preserve MISSING only
+        # when the source fact says so; otherwise leave source availability
+        # UNKNOWN while the rest of the opening cohort continues to compute.
+        anchor_status = str(anchor.get("status") or "UNKNOWN").upper()
         anchor_price = _number(anchor.get("price_milli"))
         anchor_price_available = (
             anchor_status == "AVAILABLE" and anchor_price is not None and anchor_price > 0
