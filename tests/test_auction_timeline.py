@@ -92,6 +92,149 @@ def test_default_auction_policy_has_adaptive_0925_grace():
     assert times["soft_deadline_ms"] == local_datetime_ms("2026-09-18", "09:25:30")
 
 
+def test_observe_isolates_one_malformed_row_and_keeps_valid_anchor_facts():
+    timeline = AuctionTimeline("2026-09-18")
+    evaluation_ms = local_datetime_ms("2026-09-18", "09:25:10")
+
+    revision = timeline.observe(
+        "0925",
+        [
+            _row(
+                "600519",
+                evaluation_ms - 1_000,
+                auction_anchor_0925_price_milli=10_000,
+            ),
+            "malformed source member",
+        ],
+        evaluation_time_ms=evaluation_ms,
+        expected_symbols=("600519", "000001"),
+    )
+
+    assert revision.state == PARTIAL
+    assert revision.available_anchor_symbols == ("600519",)
+    assert revision.missing_anchor_symbols == ("000001",)
+    assert revision.source_anomaly_count == 1
+    assert revision.source_anomaly_codes == ("ROW_NOT_MAPPING",)
+    assert revision.invalid_source_symbols == ()
+    bundle = timeline.build_analysis_bundle("0925")
+    assert bundle["source_anomalies"] == {
+        "count": 1,
+        "codes": ("ROW_NOT_MAPPING",),
+        "invalid_symbols": (),
+    }
+
+
+def test_clean_anchor_bundle_keeps_legacy_shape_without_anomaly_diagnostics():
+    timeline = AuctionTimeline("2026-09-18")
+    evaluation_ms = local_datetime_ms("2026-09-18", "09:25:10")
+    timeline.observe(
+        "0925",
+        {
+            "600519": {
+                "auction_anchor_0925_price_milli": 10_000,
+                "source_record_time_ms": evaluation_ms,
+            }
+        },
+        evaluation_time_ms=evaluation_ms,
+        expected_symbols=("600519",),
+    )
+
+    bundle = timeline.build_analysis_bundle("0925")
+
+    assert "source_anomalies" not in bundle
+
+
+def test_observe_discards_only_ambiguous_duplicate_symbol_rows():
+    timeline = AuctionTimeline("2026-09-18")
+    evaluation_ms = local_datetime_ms("2026-09-18", "09:25:10")
+
+    revision = timeline.observe(
+        "0925",
+        [
+            _row("600519", evaluation_ms, auction_anchor_0925_price_milli=10_000),
+            _row("600519", evaluation_ms + 1, auction_anchor_0925_price_milli=10_100),
+            _row("000001", evaluation_ms, auction_anchor_0925_price_milli=20_000),
+        ],
+        evaluation_time_ms=evaluation_ms,
+        expected_symbols=("600519", "000001"),
+    )
+
+    assert revision.state == PARTIAL
+    assert revision.available_anchor_symbols == ("000001",)
+    assert revision.missing_anchor_symbols == ("600519",)
+    assert revision.invalid_source_symbols == ("600519",)
+    assert revision.source_anomaly_count == 1
+    assert revision.source_anomaly_codes == ("DUPLICATE_NORMALIZED_SYMBOL",)
+
+    reversed_timeline = AuctionTimeline("2026-09-18")
+    reversed_revision = reversed_timeline.observe(
+        "0925",
+        [
+            _row("000001", evaluation_ms, auction_anchor_0925_price_milli=20_000),
+            _row("600519", evaluation_ms + 1, auction_anchor_0925_price_milli=10_100),
+            _row("600519", evaluation_ms, auction_anchor_0925_price_milli=10_000),
+        ],
+        evaluation_time_ms=evaluation_ms,
+        expected_symbols=("600519", "000001"),
+    )
+    assert reversed_revision.content_hash == revision.content_hash
+
+
+def test_observe_isolates_non_mapping_symbol_value_without_dropping_siblings():
+    timeline = AuctionTimeline("2026-09-18")
+    evaluation_ms = local_datetime_ms("2026-09-18", "09:25:10")
+
+    revision = timeline.observe(
+        "0925",
+        {
+            "600519": None,
+            "000001": {
+                "auction_anchor_0925_price_milli": 20_000,
+                "source_record_time_ms": evaluation_ms,
+            },
+        },
+        evaluation_time_ms=evaluation_ms,
+        expected_symbols=("600519", "000001"),
+    )
+
+    assert revision.state == PARTIAL
+    assert revision.available_anchor_symbols == ("000001",)
+    assert revision.missing_anchor_symbols == ("600519",)
+    assert revision.invalid_source_symbols == ("600519",)
+    assert revision.source_anomaly_count == 1
+    assert revision.source_anomaly_codes == ("ROW_NOT_MAPPING",)
+
+
+def test_invalid_timestamp_only_degrades_time_bounds_not_valid_anchor_facts():
+    timeline = AuctionTimeline("2026-09-18")
+    evaluation_ms = local_datetime_ms("2026-09-18", "09:25:10")
+
+    revision = timeline.observe(
+        "0925",
+        {
+            "600519": {
+                "auction_anchor_0925_price_milli": 10_000,
+                "source_record_time_ms": "bad timestamp",
+            },
+            "000001": {
+                "auction_anchor_0925_price_milli": 20_000,
+                "source_record_time_ms": evaluation_ms,
+            },
+        },
+        evaluation_time_ms=evaluation_ms,
+        expected_symbols=("600519", "000001"),
+    )
+
+    assert revision.state == READY
+    assert revision.available_anchor_symbols == ("000001", "600519")
+    assert revision.source_time_min_ms == evaluation_ms
+    assert revision.source_time_max_ms == evaluation_ms
+    assert revision.invalid_source_symbols == ()
+    assert revision.source_anomaly_count == 1
+    assert revision.source_anomaly_codes == ("INVALID_SOURCE_TIME",)
+
+
+
 def test_anchor_fact_truncates_subseconds_for_preferred_finalize_status():
     fixture = json.loads(
         (

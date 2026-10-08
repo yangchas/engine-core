@@ -352,6 +352,9 @@ class AuctionAnchorRevisionV3:
     # Hashes only this anchor's per-symbol value/quality, not unrelated Q2
     # quote fields. Source/evaluation times remain in evidence_hash.
     observations_hash: str = ""
+    invalid_source_symbols: Tuple[str, ...] = ()
+    source_anomaly_count: int = 0
+    source_anomaly_codes: Tuple[str, ...] = ()
     content_hash: str = field(init=False)
     evidence_hash: str = field(init=False)
 
@@ -375,6 +378,16 @@ class AuctionAnchorRevisionV3:
         source_missing = tuple(
             sorted({normalize_symbol(item) for item in self.source_missing_symbols})
         )
+        invalid_source = tuple(
+            sorted({normalize_symbol(item) for item in self.invalid_source_symbols})
+        )
+        anomaly_codes = tuple(sorted(str(item) for item in self.source_anomaly_codes))
+        if type(self.source_anomaly_count) is not int or self.source_anomaly_count < 0:
+            raise ValueError("source_anomaly_count must be a non-negative integer")
+        if self.source_anomaly_count != len(anomaly_codes):
+            raise ValueError("source_anomaly_count must match source_anomaly_codes")
+        if invalid_source and not anomaly_codes:
+            raise ValueError("invalid_source_symbols require source anomaly diagnostics")
         for name, values in (
             ("available_anchor_symbols", available),
             ("missing_anchor_symbols", missing_anchor),
@@ -406,8 +419,10 @@ class AuctionAnchorRevisionV3:
         object.__setattr__(self, "missing_anchor_symbols", missing_anchor)
         object.__setattr__(self, "source_observed_symbols", source_observed)
         object.__setattr__(self, "source_missing_symbols", source_missing)
+        object.__setattr__(self, "invalid_source_symbols", invalid_source)
+        object.__setattr__(self, "source_anomaly_codes", anomaly_codes)
         object.__setattr__(self, "source_layers", tuple(self.source_layers))
-        object.__setattr__(self, "content_hash", semantic_hash({
+        content = {
             "contract": AUCTION_ANCHOR_REVISION_CONTRACT_VERSION,
             "trade_date": self.trade_date,
             "tag": self.tag,
@@ -420,7 +435,14 @@ class AuctionAnchorRevisionV3:
             "source_missing_symbols": source_missing,
             "source_coverage": self.source_coverage,
             "observations_hash": self.observations_hash,
-        }))
+        }
+        if anomaly_codes:
+            content.update({
+                "invalid_source_symbols": invalid_source,
+                "source_anomaly_count": self.source_anomaly_count,
+                "source_anomaly_codes": anomaly_codes,
+            })
+        object.__setattr__(self, "content_hash", semantic_hash(content))
         object.__setattr__(self, "evidence_hash", evidence_hash({
             "revision": self.revision,
             "source_layers": self.source_layers,
@@ -467,6 +489,71 @@ AuctionAnchorRevisionV2 = AuctionAnchorRevisionV3
 AuctionAnchorRevisionV1 = AuctionAnchorRevisionV3
 
 
+def _normalize_observed_rows(
+    rows: Mapping[str, Mapping[str, Any]] | Iterable[Mapping[str, Any]],
+) -> tuple[Mapping[str, Mapping[str, Any]], Tuple[str, ...], Tuple[str, ...]]:
+    """Keep usable anchor rows while isolating malformed source members.
+
+    A normalized-symbol collision is ambiguous, so all rows for that symbol
+    are excluded rather than choosing whichever happened to arrive last.
+    Other symbols remain usable; diagnostics are carried by the revision.
+    """
+
+    normalized: dict[str, Mapping[str, Any]] = {}
+    invalid_symbols: set[str] = set()
+    anomaly_codes: list[str] = []
+
+    def add(symbol: str, values: Mapping[str, Any]) -> None:
+        if symbol in invalid_symbols:
+            anomaly_codes.append("DUPLICATE_NORMALIZED_SYMBOL")
+            return
+        if symbol in normalized:
+            normalized.pop(symbol, None)
+            invalid_symbols.add(symbol)
+            anomaly_codes.append("DUPLICATE_NORMALIZED_SYMBOL")
+            return
+        normalized[symbol] = dict(values)
+
+    if isinstance(rows, Mapping):
+        for raw_symbol, values in rows.items():
+            try:
+                symbol = normalize_symbol(raw_symbol)
+            except (TypeError, ValueError, UnicodeError):
+                anomaly_codes.append("INVALID_SYMBOL")
+                continue
+            if not isinstance(values, Mapping):
+                if symbol in normalized:
+                    normalized.pop(symbol, None)
+                    anomaly_codes.append("DUPLICATE_NORMALIZED_SYMBOL")
+                invalid_symbols.add(symbol)
+                anomaly_codes.append("ROW_NOT_MAPPING")
+                continue
+            add(symbol, values)
+    else:
+        if isinstance(rows, (str, bytes)) or not isinstance(rows, Iterable):
+            raise TypeError("auction rows must be a mapping or iterable of rows")
+        for row in rows:
+            if not isinstance(row, Mapping):
+                anomaly_codes.append("ROW_NOT_MAPPING")
+                continue
+            raw_symbol = row.get("symbol")
+            if not raw_symbol:
+                anomaly_codes.append("MISSING_SYMBOL")
+                continue
+            try:
+                symbol = normalize_symbol(raw_symbol)
+            except (TypeError, ValueError, UnicodeError):
+                anomaly_codes.append("INVALID_SYMBOL")
+                continue
+            add(symbol, row)
+
+    return (
+        normalized,
+        tuple(sorted(invalid_symbols)),
+        tuple(sorted(anomaly_codes)),
+    )
+
+
 def _rows_by_symbol(rows: Mapping[str, Mapping[str, Any]] | Iterable[Mapping[str, Any]]) -> Mapping[str, Mapping[str, Any]]:
     if isinstance(rows, Mapping):
         return {normalize_symbol(symbol): dict(values) for symbol, values in rows.items()}
@@ -494,7 +581,7 @@ def build_auction_anchor_revision(
 ) -> AuctionAnchorRevisionV3:
     policy = policy or AuctionTimingPolicyV1.default(tag)
     times = policy.at(trade_date)
-    by_symbol = _rows_by_symbol(rows)
+    by_symbol, invalid_symbols, anomaly_codes = _normalize_observed_rows(rows)
     expected = tuple(sorted({normalize_symbol(item) for item in expected_symbols}))
     expected_set = set(expected)
     source_observed = tuple(
@@ -570,12 +657,22 @@ def build_auction_anchor_revision(
         if evaluation_second_ms >= _whole_second_ms(times["first_observable_ms"])
         else None
     )
-    event_times = [
-        value.get("source_time_ms", value.get("ts"))
-        for value in by_symbol.values()
-        if value.get("source_time_ms", value.get("ts")) is not None
-    ]
-    event_times = [int(item) for item in event_times]
+    event_times = []
+    all_anomaly_codes = list(anomaly_codes)
+    for value in by_symbol.values():
+        source_time = value.get("source_time_ms")
+        if source_time is None:
+            source_time = value.get("source_record_time_ms")
+        if source_time is None:
+            source_time = value.get("ts")
+        if source_time is None:
+            continue
+        if type(source_time) is not int or source_time <= 0:
+            # A bad per-symbol timestamp weakens time bounds, not the other
+            # valid fields in that symbol's anchor row or the rest of the batch.
+            all_anomaly_codes.append("INVALID_SOURCE_TIME")
+            continue
+        event_times.append(source_time)
     observations_hash = semantic_hash(anchor_observations)
     return AuctionAnchorRevisionV3(
         trade_date=trade_date,
@@ -635,10 +732,11 @@ class AuctionTimeline:
         if tag not in self.policies:
             raise ValueError("unsupported auction tag")
         history = self._history.setdefault(tag, [])
+        normalized_rows, invalid_symbols, anomaly_codes = _normalize_observed_rows(rows)
         candidate = build_auction_anchor_revision(
             self.trade_date,
             tag,
-            rows,
+            normalized_rows,
             evaluation_time_ms=evaluation_time_ms,
             expected_symbols=expected_symbols,
             observed_at_ms=observed_at_ms,
@@ -648,6 +746,16 @@ class AuctionTimeline:
             recovery_state=recovery_state,
             policy=self.policies[tag],
         )
+        combined_anomaly_codes = tuple(
+            sorted((*candidate.source_anomaly_codes, *anomaly_codes))
+        )
+        if combined_anomaly_codes or invalid_symbols:
+            candidate = replace(
+                candidate,
+                invalid_source_symbols=invalid_symbols,
+                source_anomaly_count=len(combined_anomaly_codes),
+                source_anomaly_codes=combined_anomaly_codes,
+            )
         if history and history[-1].content_hash == candidate.content_hash:
             previous = history[-1]
             candidate = replace(
@@ -752,7 +860,7 @@ class AuctionTimeline:
                 reason="partial auction cohort; fill missing symbols/fields asynchronously",
                 soft_deadline_ms=current.soft_deadline_ms,
             )
-        return {
+        bundle = {
             "status": current.state,
             "fact_status": FACT_ONLY,
             "anchor": current,
@@ -769,3 +877,10 @@ class AuctionTimeline:
             "content_hash": current.content_hash,
             "recovery_plan": recovery_plan,
         }
+        if current.source_anomaly_count:
+            bundle["source_anomalies"] = {
+                "count": current.source_anomaly_count,
+                "codes": current.source_anomaly_codes,
+                "invalid_symbols": current.invalid_source_symbols,
+            }
+        return bundle
