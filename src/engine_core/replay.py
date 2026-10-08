@@ -8,7 +8,7 @@ from typing import Any, Iterable, Mapping, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from .clock import VirtualClock
-from .contracts import DataStatus, EngineSignal, SignalKind, deep_freeze, semantic_hash
+from .contracts import DataStatus, EngineSignal, SignalKind, deep_freeze, evidence_hash, semantic_hash
 from .q2 import (
     FreshnessPolicy,
     Q2ProjectionSnapshot,
@@ -28,6 +28,10 @@ class Q2FrameV1:
     logical_ts_ms: int
     q2_updates: Tuple[Mapping[str, Any], ...]
     phase: Any = None
+    source_anomaly_hashes: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_anomaly_hashes", tuple(self.source_anomaly_hashes))
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "Q2FrameV1":
@@ -48,10 +52,20 @@ class Q2FrameV1:
         if not isinstance(updates, list):
             raise ValueError("Q2Frame q2_updates must be a list")
         normalized = []
+        anomaly_hashes = []
         for update in updates:
             if not isinstance(update, Mapping):
-                raise ValueError("Q2Frame update must be an object")
-            symbol = normalize_symbol(update.get("symbol", ""))
+                anomaly_hashes.append(
+                    _invalid_q2frame_update_hash(update, reason="UPDATE_NOT_OBJECT")
+                )
+                continue
+            try:
+                symbol = normalize_symbol(update.get("symbol", ""))
+            except (TypeError, ValueError):
+                anomaly_hashes.append(
+                    _invalid_q2frame_update_hash(update, reason="INVALID_SYMBOL")
+                )
+                continue
             values = {
                 str(key): value
                 for key, value in update.items()
@@ -64,7 +78,24 @@ class Q2FrameV1:
             logical_ts_ms=logical_ts_ms,
             q2_updates=tuple(normalized),
             phase=raw.get("phase"),
+            source_anomaly_hashes=tuple(anomaly_hashes),
         )
+
+
+def _invalid_q2frame_update_hash(update: Any, *, reason: str) -> str:
+    """Keep a stable fingerprint for one skipped row without retaining its payload."""
+
+    try:
+        row_hash = semantic_hash(update)
+    except (TypeError, ValueError):
+        row_hash = evidence_hash({
+            "type": "%s.%s" % (type(update).__module__, type(update).__qualname__),
+        })
+    return evidence_hash({
+        "kind": "invalid_q2frame_update",
+        "reason": reason,
+        "row_hash": row_hash,
+    })
 
 
 class Q2FrameReplaySource:
@@ -102,6 +133,7 @@ class Q2FrameReplaySource:
         self._freshness_policy = freshness_policy
         self._source_id = source_id
         self._raw_hashes: dict[str, dict[str, Any]] = {}
+        self._source_anomaly_hashes: list[str] = []
         self._last_seq_no = 0
         self._last_logical_ts_ms = 0
 
@@ -127,6 +159,7 @@ class Q2FrameReplaySource:
         target = datetime.fromtimestamp(frame.logical_ts_ms / 1000.0, tz=timezone.utc)
         if advance_clock:
             self._clock.advance_to(target)
+        self._source_anomaly_hashes.extend(frame.source_anomaly_hashes)
         for update in frame.q2_updates:
             symbol = str(update["symbol"])
             values = {
@@ -145,6 +178,7 @@ class Q2FrameReplaySource:
             self._raw_hashes,
             freshness_policy=self._freshness_policy,
             source_id=self._source_id,
+            source_anomaly_hashes=self._source_anomaly_hashes,
         )
 
     def apply(self, raw_frame: Mapping[str, Any] | Q2FrameV1) -> Q2ProjectionSnapshot:

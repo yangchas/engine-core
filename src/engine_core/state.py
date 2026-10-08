@@ -85,6 +85,18 @@ class MarketStateReducer:
             "stale_symbols": projection.stale_symbols,
             "content_hash": projection.content_hash,
         }
+        source_anomaly_hashes = tuple(
+            getattr(projection, "source_anomaly_hashes", ())
+        )
+        if source_anomaly_hashes:
+            # A malformed member is evidence of a partial source cohort, not a
+            # reason to discard valid sibling quotes or stop the Engine.
+            # Keep only stable hashes in state; never copy malformed payloads.
+            self.state.source_observation_metadata.update({
+                "source_anomaly_count": len(source_anomaly_hashes),
+                "source_anomaly_hashes": source_anomaly_hashes,
+                "source_evidence_hash": getattr(projection, "evidence_hash", ""),
+            })
         out_of_scope_symbols = tuple(getattr(projection, "out_of_scope_symbols", ()))
         if out_of_scope_symbols:
             self.state.source_observation_metadata.update({

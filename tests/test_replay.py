@@ -24,6 +24,7 @@ from engine_core.windows import local_time_ms
 
 
 FIXTURE = Path(__file__).parent / "fixtures/replay/q2frame_600519_20260903.jsonl"
+REAL_Q2_UPDATE_FIXTURE = Path(__file__).parent / "fixtures/q2/q2frame_source_time_real_20260929.json"
 
 
 def _frames():
@@ -53,6 +54,65 @@ def test_q2frame_replay_is_virtual_clock_driven_and_repeatable():
     assert source.last_logical_ts_ms == 1788398650000
     assert clock.now_ns() == (1788398650000 - 1788398108000) * 1_000_000
     assert all(projection.status.value == "READY" for projection in projections)
+
+
+def test_q2frame_isolates_bad_update_and_keeps_real_sibling_quote_running(
+    tmp_path: Path,
+):
+    """A malformed member must degrade this projection, not discard its frame.
+
+    The valid update is an unchanged, hash-pinned producer capture. The two
+    invalid members are explicit fault injection, not claimed market data.
+    """
+    captured = json.loads(REAL_Q2_UPDATE_FIXTURE.read_text(encoding="utf-8"))
+    update = captured["q2_update"]
+    frame_time_ms = captured["source"]["frame_logical_ts_ms"]
+    frame = {
+        "version": "Q2FrameV1",
+        "seq_no": 1,
+        "logical_ts_ms": frame_time_ms,
+        "q2_updates": [
+            update,
+            {"symbol": "not-a-market-symbol", "px": 1, "ts": frame_time_ms},
+            None,
+        ],
+    }
+    clock = VirtualClock(datetime.fromtimestamp(frame_time_ms / 1000, timezone.utc))
+    reducer = MarketStateReducer()
+    source = Q2FrameReplaySource(
+        captured["trade_date"],
+        (update["symbol"],),
+        clock,
+    )
+    engine = DeterministicEngine(
+        reducer,
+        WindowManager((WindowSpec("wide", 0, 10**15),)),
+        ProbeStrategy(),
+        session_id=captured["trade_date"],
+        phase="REPLAY",
+    )
+
+    signal = source.signal_for(frame)
+    engine.submit(signal)
+    result = engine.run_until_empty()
+
+    assert result.processed_signals == 1
+    assert source.last_seq_no == 1
+    assert reducer.state.revision == 1
+    assert reducer.state.symbol_states[update["symbol"]]["price_milli"] == update["px"]
+    assert reducer.state.completeness == "PARTIAL"
+    assert reducer.state.source_observation_metadata["source_anomaly_count"] == 2
+    assert len(reducer.state.source_observation_metadata["source_anomaly_hashes"]) == 2
+
+    from examples.run_task008_q2frame_auction_engine_shadow import _inventory
+
+    q2frame_path = tmp_path / "fault-injected-real-q2frame.jsonl"
+    q2frame_path.write_text(json.dumps(frame) + "\n", encoding="utf-8")
+    inventory = _inventory(q2frame_path, captured["trade_date"])
+    assert inventory["update_count"] == 1
+    assert inventory["symbol_count"] == 1
+    assert inventory["skipped_update_count"] == 2
+    assert len(inventory["source_anomaly_hashes"]) == 2
 
 
 def test_empty_q2frame_advances_timeline_without_inventing_universe():
@@ -523,7 +583,7 @@ def test_q2frame_replay_rejects_bad_version_sequence_and_time():
         source.apply({**_frames()[1], "seq_no": 2, "logical_ts_ms": 1788398000000})
 
 
-def test_q2frame_parser_rejects_qualified_symbol_and_non_list_updates():
+def test_q2frame_parser_rejects_bad_frame_shape_but_isolates_bad_member():
     with pytest.raises(ValueError):
         Q2FrameV1.from_mapping({
             "version": "Q2FrameV1",
@@ -531,13 +591,14 @@ def test_q2frame_parser_rejects_qualified_symbol_and_non_list_updates():
             "logical_ts_ms": 1,
             "q2_updates": {"symbol": "600519"},
         })
-    with pytest.raises(ValueError):
-        Q2FrameV1.from_mapping({
-            "version": "Q2FrameV1",
-            "seq_no": 1,
-            "logical_ts_ms": 1,
-            "q2_updates": [{"symbol": "600519.SH"}],
-        })
+    parsed = Q2FrameV1.from_mapping({
+        "version": "Q2FrameV1",
+        "seq_no": 1,
+        "logical_ts_ms": 1,
+        "q2_updates": [{"symbol": "600519.SH"}],
+    })
+    assert parsed.q2_updates == ()
+    assert len(parsed.source_anomaly_hashes) == 1
 
 
 def _td_rows():

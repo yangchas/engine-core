@@ -120,6 +120,7 @@ def _inventory(path: Path, trade_date: str) -> dict[str, Any]:
         "max": None,
     }
     symbols: set[str] = set()
+    source_anomaly_hashes: list[str] = []
     first_raw_ms = last_raw_ms = None
     previous_seq = 0
     previous_raw_ms = 0
@@ -133,6 +134,7 @@ def _inventory(path: Path, trade_date: str) -> dict[str, Any]:
             raise ValueError("Q2Frame logical time is outside requested trade_date")
         previous_seq = frame.seq_no
         previous_raw_ms = frame.logical_ts_ms
+        source_anomaly_hashes.extend(frame.source_anomaly_hashes)
         frame_count += 1
         update_count += len(frame.q2_updates)
         if not frame.q2_updates:
@@ -175,7 +177,7 @@ def _inventory(path: Path, trade_date: str) -> dict[str, Any]:
             )
     if frame_count == 0:
         raise ValueError("Q2Frame artifact is empty")
-    return {
+    inventory = {
         "frame_count": frame_count,
         "update_count": update_count,
         "empty_frame_count": empty_frame_count,
@@ -197,6 +199,10 @@ def _inventory(path: Path, trade_date: str) -> dict[str, Any]:
         },
         "universe_basis": "UNIQUE_SYMBOLS_IN_FROZEN_Q2FRAME_ONLY",
     }
+    if source_anomaly_hashes:
+        inventory["skipped_update_count"] = len(source_anomaly_hashes)
+        inventory["source_anomaly_hashes"] = tuple(sorted(source_anomaly_hashes))
+    return inventory
 
 
 def _groups_by_replay_second(path: Path) -> Iterable[tuple[int, tuple[Q2FrameV1, ...]]]:
@@ -463,6 +469,12 @@ def _run_once(
             "reducer_revision": engine._reducer.state.revision,
             "virtual_clock_ms": int(clock.now_utc().timestamp() * 1000),
         }
+        source_anomaly_hashes = tuple(
+            snapshot.source_observation_metadata.get("source_anomaly_hashes", ())
+        )
+        if source_anomaly_hashes:
+            base["source_anomaly_count"] = len(source_anomaly_hashes)
+            base["source_anomaly_hashes"] = source_anomaly_hashes
         if tag == OPENING_TAG:
             expected_symbols = tuple(sorted(symbols))
             observed_symbols = tuple(
