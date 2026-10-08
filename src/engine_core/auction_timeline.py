@@ -702,6 +702,9 @@ def build_auction_anchor_revision(
         supersedes_revision=supersedes_revision,
         recovery_state=recovery_state,
         observations_hash=observations_hash,
+        invalid_source_symbols=invalid_symbols,
+        source_anomaly_count=len(all_anomaly_codes),
+        source_anomaly_codes=tuple(all_anomaly_codes),
     )
 
 
