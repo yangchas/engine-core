@@ -607,7 +607,7 @@ def test_q2frame_opening_report_includes_explicit_plate_context_deterministicall
     assert plate["comparison_valid_count"] == 2
     assert opening["plate_amount_summary"] == repeated["plate_amount_summary"]
     price_plate = opening["plate_price_summary"]["plates"][0]
-    assert opening["plate_price_summary"]["contract"] == "OpeningPlatePriceSummaryV2"
+    assert opening["plate_price_summary"]["contract"] == "OpeningPlatePriceSummaryV3"
     assert price_plate["comparison_valid_count"] == 2
     assert price_plate["price_change_value_count"] == 2
     assert price_plate["open_up_count"] == 1
@@ -663,7 +663,7 @@ def test_q2frame_opening_report_compares_date_pinned_auction_price_reference(
     repeated = result["repeat"]["opening_evidence"]["OPENING_0932"]
     price_summary = opening["plate_price_summary"]
     plate = price_summary["plates"][0]
-    assert price_summary["contract"] == "OpeningPlatePriceSummaryV2"
+    assert price_summary["contract"] == "OpeningPlatePriceSummaryV3"
     assert plate["auction_positive_ratio"] == pytest.approx(0.25)
     assert plate["positive_ratio_delta"] == pytest.approx(0.25)
     assert plate["price_breadth_state"] == "expanded"
