@@ -310,7 +310,7 @@ def test_anchor_field_delta_supports_yuan_price_alias_and_marks_zero_price_inval
     assert invalid["fields"]["price_milli"]["delta"] is None
 
 
-def test_anchor_field_delta_missing_anchor_is_not_zero_filled():
+def test_anchor_field_delta_missing_anchor_is_unknown_not_source_missing():
     result = build_anchor_field_delta_evidence(
         None,
         {
@@ -325,7 +325,30 @@ def test_anchor_field_delta_missing_anchor_is_not_zero_filled():
     )
 
     for name in ("price_milli", "amount_yuan", "rest_bid_yuan", "rest_ask_yuan"):
-        assert result["fields"][name]["status"] == "MISSING"
+        assert result["fields"][name]["status"] == "UNKNOWN"
+        assert result["fields"][name]["delta"] is None
+    assert result["fields"]["book_pressure_yuan"]["status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize(
+    ("previous", "current"),
+    [
+        (None, _row("0925", price=10000, amount=100, bid=10, ask=20)),
+        (_row("0924", price=10000, amount=100, bid=10, ask=20), None),
+    ],
+    ids=["previous-row-not-captured", "current-row-not-captured"],
+)
+def test_anchor_field_delta_absent_source_row_degrades_only_to_unknown(previous, current):
+    result = build_anchor_field_delta_evidence(previous, current, symbol="600519")
+
+    for name in (
+        "price_milli",
+        "amount_yuan",
+        "rest_bid_yuan",
+        "rest_ask_yuan",
+        "book_pressure_yuan",
+    ):
+        assert result["fields"][name]["status"] == "UNKNOWN"
         assert result["fields"][name]["delta"] is None
 
 

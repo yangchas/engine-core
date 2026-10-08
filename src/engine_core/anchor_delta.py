@@ -279,7 +279,10 @@ def _read_anchor_field(
     field_name: str,
 ) -> tuple[float | None, str]:
     if row is None:
-        return None, "MISSING"
+        # No row for this symbol/anchor means the field's source value was not
+        # observed; it does not prove that the source explicitly omitted the
+        # field. Keep this distinct from a NULL field in an observed row.
+        return None, "UNKNOWN"
     if field_name == "rest_ask_yuan" and row.get("ask_amount_present", True) is False:
         return None, "MISSING"
 
