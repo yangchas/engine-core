@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional
 
-from .contracts import EngineSnapshot, canonical_hash
+from .contracts import EngineSnapshot, canonical_hash, semantic_hash
 from .q2 import Q2ProjectionSnapshot, classify_equity
 from .windows import WindowManager
 
@@ -47,6 +47,9 @@ class MarketStateReducer:
     ) -> CurrentMarketState:
         """Apply a Q2 projection without producing a strategy conclusion."""
 
+        previous_session_id = self.state.session_id
+        previous_observation_metadata = dict(self.state.source_observation_metadata)
+        same_session = previous_session_id == session_id
         if logical_time_ms is None and projection.envelope.effective_time_ms is None:
             raise ValueError(
                 "logical_time_ms is required when source effective time is unavailable"
@@ -82,6 +85,83 @@ class MarketStateReducer:
             "stale_symbols": projection.stale_symbols,
             "content_hash": projection.content_hash,
         }
+        out_of_scope_symbols = tuple(getattr(projection, "out_of_scope_symbols", ()))
+        if out_of_scope_symbols:
+            self.state.source_observation_metadata.update({
+                "out_of_scope_symbols": out_of_scope_symbols,
+                "out_of_scope_event_hashes": tuple(
+                    getattr(projection, "out_of_scope_event_hashes", ())
+                ),
+                "out_of_scope_events": tuple(
+                    getattr(projection, "out_of_scope_events", ())
+                ),
+                "evidence_hash": getattr(
+                    projection,
+                    "evidence_hash",
+                    getattr(getattr(projection, "cross_section", None), "evidence_hash", ""),
+                ),
+            })
+        previous_out_of_scope_symbols = set(
+            previous_observation_metadata.get("out_of_scope_symbols", ())
+        ) if same_session else set()
+        current_out_of_scope_symbols = set(out_of_scope_symbols)
+        accumulated_out_of_scope_symbols = previous_out_of_scope_symbols | current_out_of_scope_symbols
+        if accumulated_out_of_scope_symbols:
+            event_evidence_by_symbol = {}
+            if same_session:
+                for item in previous_observation_metadata.get("out_of_scope_event_evidence", ()):
+                    symbol = item.get("symbol")
+                    if symbol:
+                        event_evidence_by_symbol[symbol] = dict(item)
+            current_event_hashes = tuple(getattr(projection, "out_of_scope_event_hashes", ()))
+            current_events = tuple(getattr(projection, "out_of_scope_events", ()))
+            for index, event in enumerate(current_events):
+                symbol = event.get("symbol") if isinstance(event, Mapping) else None
+                if not symbol and len(current_out_of_scope_symbols) == 1:
+                    symbol = next(iter(current_out_of_scope_symbols))
+                if symbol:
+                    event_evidence_by_symbol[symbol] = {
+                        "symbol": symbol,
+                        "event_hash": current_event_hashes[index] if index < len(current_event_hashes) else "",
+                        "event": event,
+                    }
+            ordered_event_evidence = tuple(
+                event_evidence_by_symbol[symbol]
+                for symbol in sorted(event_evidence_by_symbol)
+            )
+            prior_event_count = (
+                int(previous_observation_metadata.get("out_of_scope_event_count", 0))
+                if same_session
+                else 0
+            )
+            prior_chain_hash = (
+                previous_observation_metadata.get("out_of_scope_evidence_hash", "")
+                if same_session
+                else ""
+            )
+            new_symbols = current_out_of_scope_symbols - previous_out_of_scope_symbols
+            if current_event_hashes or new_symbols:
+                chain_hash = semantic_hash({
+                    "contract": "OutOfScopeEvidenceChainV1",
+                    "previous_hash": prior_chain_hash,
+                    "source_id": projection.envelope.source_id,
+                    "new_symbols": tuple(sorted(new_symbols)),
+                    "event_hashes": current_event_hashes,
+                })
+            else:
+                chain_hash = prior_chain_hash
+            self.state.source_observation_metadata.update({
+                "out_of_scope_symbols": tuple(sorted(accumulated_out_of_scope_symbols)),
+                "out_of_scope_event_hashes": tuple(
+                    item["event_hash"] for item in ordered_event_evidence if item.get("event_hash")
+                ),
+                "out_of_scope_events": tuple(
+                    item["event"] for item in ordered_event_evidence if item.get("event") is not None
+                ),
+                "out_of_scope_event_evidence": ordered_event_evidence,
+                "out_of_scope_event_count": prior_event_count + len(current_event_hashes),
+                "out_of_scope_evidence_hash": chain_hash,
+            })
         cross_section = getattr(projection, "cross_section", None)
         if cross_section is not None:
             self.state.source_observation_metadata.update(

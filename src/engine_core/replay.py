@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone, tzinfo
 from typing import Any, Iterable, Mapping, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from .clock import VirtualClock
-from .contracts import EngineSignal, SignalKind, deep_freeze, semantic_hash
+from .contracts import DataStatus, EngineSignal, SignalKind, deep_freeze, semantic_hash
 from .q2 import (
     FreshnessPolicy,
     Q2ProjectionSnapshot,
@@ -381,13 +381,14 @@ class TDEventV1:
 
 @dataclass(frozen=True)
 class TDEventSlice:
-    """A three-second transport batch that preserves every normalized tick."""
+    """A three-second event-time slice; not an original Rabbit delivery batch."""
 
     slice_no: int
     start_ms: int
     end_exclusive_ms: int
     events: Tuple[TDEventV1, ...]
     content_hash: str
+    out_of_scope_symbols: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.slice_no < 0:
@@ -395,6 +396,11 @@ class TDEventSlice:
         if self.start_ms >= self.end_exclusive_ms:
             raise ValueError("slice must use a positive half-open interval")
         object.__setattr__(self, "events", tuple(self.events))
+        out_of_scope = tuple(sorted(set(self.out_of_scope_symbols)))
+        event_symbols = {event.symbol for event in self.events}
+        if not set(out_of_scope).issubset(event_symbols):
+            raise ValueError("out_of_scope_symbols must be present in slice events")
+        object.__setattr__(self, "out_of_scope_symbols", out_of_scope)
         if any(
             event.event_time_ms < self.start_ms
             or event.event_time_ms >= self.end_exclusive_ms
@@ -468,11 +474,6 @@ class TDEventTimeReplaySource:
         )
         grouped: dict[int, list[TDEventV1]] = {}
         for event in events:
-            if (
-                self._expected_symbol_set
-                and event.symbol not in self._expected_symbol_set
-            ):
-                raise ValueError("TD tick symbol is outside expected_symbols")
             event_date = datetime.fromtimestamp(
                 event.event_time_ms / 1000.0,
                 tz=timezone.utc,
@@ -488,20 +489,25 @@ class TDEventTimeReplaySource:
             start_ms = self._slice_anchor_ms + slice_no * self._slice_ms
             end_ms = start_ms + self._slice_ms
             slice_events = tuple(grouped[slice_no])
+            out_of_scope = tuple(sorted(
+                {event.symbol for event in slice_events} - self._expected_symbol_set
+            )) if self._expected_symbol_set else ()
+            slice_content = {
+                "slice_no": slice_no,
+                "start_ms": start_ms,
+                "end_exclusive_ms": end_ms,
+                "events": [event.content_hash for event in slice_events],
+            }
+            if out_of_scope:
+                slice_content["out_of_scope_symbols"] = out_of_scope
             slices.append(
                 TDEventSlice(
                     slice_no=slice_no,
                     start_ms=start_ms,
                     end_exclusive_ms=end_ms,
                     events=slice_events,
-                    content_hash=semantic_hash(
-                        {
-                            "slice_no": slice_no,
-                            "start_ms": start_ms,
-                            "end_exclusive_ms": end_ms,
-                            "events": [event.content_hash for event in slice_events],
-                        }
-                    ),
+                    content_hash=semantic_hash(slice_content),
+                    out_of_scope_symbols=out_of_scope,
                 )
             )
         return tuple(slices)
@@ -529,6 +535,23 @@ class TDEventTimeReplaySource:
                     freshness_policy=self._freshness_policy,
                     source_id=self._source_id,
                 )
+                if event.symbol in event_slice.out_of_scope_symbols:
+                    status = (
+                        DataStatus.PARTIAL
+                        if projection.status == DataStatus.READY
+                        else projection.status
+                    )
+                    consistency = projection.consistency_status
+                    if "OUT_OF_SCOPE_SYMBOLS" not in consistency:
+                        consistency = f"{consistency}+OUT_OF_SCOPE_SYMBOLS"
+                    projection = replace(
+                        projection,
+                        status=status,
+                        consistency_status=consistency,
+                        out_of_scope_symbols=(event.symbol,),
+                        out_of_scope_event_hashes=(event.content_hash,),
+                        out_of_scope_events=(event.raw_fields,),
+                    )
                 signal_seq += 1
                 signals.append(
                     EngineSignal(

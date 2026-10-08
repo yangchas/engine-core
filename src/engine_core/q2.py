@@ -15,6 +15,7 @@ from .contracts import (
     PayloadKind,
     Provenance,
     deep_freeze,
+    evidence_hash,
     semantic_hash,
 )
 
@@ -432,6 +433,9 @@ class Q2ProjectionSnapshot:
     newest_source_time_ms: Optional[int]
     content_hash: str
     content_hash_override: Optional[str] = field(default=None, repr=False, compare=False)
+    out_of_scope_symbols: Tuple[str, ...] = ()
+    out_of_scope_event_hashes: Tuple[str, ...] = ()
+    out_of_scope_events: Tuple[Mapping[str, Any], ...] = ()
 
     __deep_frozen_contract__ = True
 
@@ -440,8 +444,22 @@ class Q2ProjectionSnapshot:
         object.__setattr__(self, "expected_symbols", tuple(self.expected_symbols))
         object.__setattr__(self, "missing_symbols", tuple(self.missing_symbols))
         object.__setattr__(self, "stale_symbols", tuple(self.stale_symbols))
+        object.__setattr__(self, "out_of_scope_symbols", tuple(sorted(set(self.out_of_scope_symbols))))
+        object.__setattr__(self, "out_of_scope_event_hashes", tuple(self.out_of_scope_event_hashes))
+        object.__setattr__(self, "out_of_scope_events", tuple(deep_freeze(item) for item in self.out_of_scope_events))
         if self.content_hash_override is not None:
             object.__setattr__(self, "content_hash", self.content_hash_override)
+
+    @property
+    def evidence_hash(self) -> str:
+        """Hash the projection plus source anomalies without redefining its values."""
+
+        return evidence_hash({
+            "content_hash": self.content_hash,
+            "out_of_scope_symbols": self.out_of_scope_symbols,
+            "out_of_scope_event_hashes": self.out_of_scope_event_hashes,
+            "out_of_scope_events": self.out_of_scope_events,
+        })
 
 
 def build_q2_projection(

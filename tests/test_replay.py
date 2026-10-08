@@ -686,6 +686,48 @@ def test_td_event_replay_signals_are_repeatable_and_virtual_clock_driven():
     assert clock.now_utc() == right_clock.now_utc()
 
 
+def test_td_event_replay_keeps_out_of_scope_tick_and_reports_partial_evidence():
+    source, _, _ = _td_source()
+    extra_row = {**_td_rows()[0], "symbol": "000001"}
+
+    slices = source.event_slices([extra_row])
+    assert len(slices) == 1
+    assert len(slices[0].events) == 1
+    assert slices[0].events[0].symbol == "000001"
+    assert slices[0].out_of_scope_symbols == ("000001",)
+
+    signal = source.signals_for([extra_row])[0]
+    assert signal.payload.status.value == "PARTIAL"
+    assert signal.payload.out_of_scope_symbols == ("000001",)
+    assert signal.payload.out_of_scope_event_hashes == (slices[0].events[0].content_hash,)
+    assert signal.payload.out_of_scope_events[0]["symbol"] == "000001"
+    assert "000001" not in signal.payload.quotes
+
+    replay_source, _, _ = _td_source()
+    replay_rows = [
+        {**_td_rows()[0], "ts": "2026-09-03 09:20:00", "symbol": "000001"},
+        {**_td_rows()[1], "ts": "2026-09-03 09:20:02", "symbol": "600519"},
+    ]
+    engine = DeterministicEngine(
+        MarketStateReducer(),
+        WindowManager((WindowSpec("wide", 0, 10**15),)),
+        ProbeStrategy(),
+        session_id="2026-09-03-out-of-scope",
+        phase="REPLAY",
+    )
+    replay_td_event_time(replay_rows, replay_source, engine)
+    result = engine.run_until_empty()
+
+    assert result.processed_signals == 2
+    metadata = engine._reducer.state.source_observation_metadata
+    assert metadata["out_of_scope_symbols"] == ("000001",)
+    assert metadata["out_of_scope_event_hashes"]
+    assert metadata["out_of_scope_events"][0]["symbol"] == "000001"
+    assert metadata["out_of_scope_event_count"] == 1
+    assert metadata["out_of_scope_evidence_hash"]
+    assert engine._reducer.state.completeness == "READY"
+
+
 def test_td_event_replay_rejects_missing_fields_and_pre_anchor_rows():
     source, _, anchor = _td_source()
     with pytest.raises(ValueError, match="px_milli"):
@@ -708,18 +750,6 @@ def test_td_event_replay_rejects_missing_fields_and_pre_anchor_rows():
                     "pc_milli": 1297500,
                     "amt_yuan": 50,
                     "symbol": "600519",
-                }
-            ]
-        )
-    with pytest.raises(ValueError, match="outside expected"):
-        source.event_slices(
-            [
-                {
-                    "ts": "2026-09-03 09:20:00",
-                    "px_milli": 1299500,
-                    "pc_milli": 1297500,
-                    "amt_yuan": 50,
-                    "symbol": "000001",
                 }
             ]
         )
