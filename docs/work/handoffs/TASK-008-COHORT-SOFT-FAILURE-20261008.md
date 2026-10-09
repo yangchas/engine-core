@@ -205,3 +205,192 @@ The failure path now degrades by symbol, not by whole summary. Numerical
 parity is preserved on the captured real cohort, while the denominator
 difference remains visible and is not converted into a strict pass or a run
 gate. TASK-008 remains `PARTIAL_EVIDENCE`.
+
+## Follow-up — recovery duplicate and transition-row isolation — 2026-10-08
+
+### Finding and repair
+
+Recovery normalization previously selected the last row when different aliases
+normalized to the same symbol, making the accepted value depend on source
+iteration order. It now collapses identical normalized rows and quarantines a
+conflicting symbol while retaining valid sibling recovery fills. Direct
+row-list recovery also accepts a matching embedded `symbol` as identity
+metadata when the existing primary cohort was keyed by symbol; an identity
+which disagrees with the normalized key remains a hard error. The opening
+transition summary now isolates a non-mapping anchor or opening row to that
+symbol, records an invalid-row diagnostic, and continues the rest of the
+cohort. A response which misdeclares one zero-valued anchor or omits one
+declared filled symbol now leaves that symbol unavailable and keeps other
+valid fills; an `APPLIED` envelope with no actual fills remains an error.
+
+Follow-up audit found one uncovered encoding pair: the real Q2 adapter maps
+`a25=0` to `None`, while a recovery response may return `0` for that member
+beside valid sibling fills. The timeline now restores the primary `None`
+rather than treating the default as a source rewrite; a zero-only member with
+no primary row is excluded from the applied cohort. The regression also retries
+the same result to check idempotency.
+
+### Verification
+
+- Focused recovery/timeline/opening tests: 103 passed.
+- Full suite: 920 passed; `compileall` and `git diff --check` pass.
+- The primary `None` comes from the hash-pinned fixture
+  `tests/fixtures/q2/q2frame_null_a25_live_rows_20260930.json` (Q2Frame SHA-256
+  `10264d0a6b6251e0c757f2113fd41e8e9e0669fade4ba05a145b78340a886ec0`). The
+  default-zero recovery response is a contract edge test, not a real Wencai
+  response.
+- Recalculation from the pinned real 2026-09-30 Q2Frame through 09:32:10
+  reproduced the existing clean transition summary exactly: 5,030 comparable
+  symbols, same summary hash. This validates the clean path against retained
+  historical input; it is not live-source or runtime-timing proof.
+- No Redis/TD/Rabbit connection or write, service action, producer change, or
+  deployment occurred.
+
+### Alignment
+
+The repair degrades by symbol for malformed/ambiguous members, but still
+rejects wrong symbol identity and recovery attempts that rewrite observed
+primary facts. It adds no run-level completeness or performance gate.
+TASK-008 remains `PARTIAL_EVIDENCE`; NORMAL opening acceptance remains
+`UNPROVEN`. Explicit feature-scoped work may continue; this state is not a
+project-wide development stop.
+
+## Follow-up — sparse recovery response completion — 2026-10-08
+
+### Finding and repair
+
+A plan-bound `APPLIED` recovery response can contain valid fills while omitting
+unchanged members or old fields already observed in the primary cohort. The
+timeline previously rejected that entire response. It now completes the
+response from the saved primary rows for that exact base revision and emits
+restoration anomaly codes. At this point in the work, rewrites of observed
+values still rejected the whole response; the following audit follow-up
+supersedes that behavior with per-symbol quarantine. Invalid identity,
+unrequested fields/fills, and out-of-scope new facts remain hard errors. A new
+member with no usable requested value is omitted with a diagnostic; recovery
+does not promote completeness or change `FACT_ONLY` semantics.
+
+### Verification and limits
+
+- The primary `None`/source rows are from pinned fixture
+  `tests/fixtures/q2/q2frame_null_a25_live_rows_20260930.json`, Q2Frame SHA-256
+  `10264d0a6b6251e0c757f2113fd41e8e9e0669fade4ba05a145b78340a886ec0`.
+- Focused recovery/timeline/opening suite: 105 passed; full suite: 922 passed;
+  compileall and `git diff --check` pass.
+- Ordered/idempotent sparse response and hard-rejection cases are covered.
+  The recovery response is a contract test, not captured Wencai output; no live
+  Redis/TD/Rabbit source, production service, or write path was exercised.
+- The prior 35-minute replay was not rerun because the patch changes only the
+  recovery-result application seam. TASK-008 remains `PARTIAL_EVIDENCE` and
+  NORMAL opening acceptance remains `UNPROVEN`.
+
+## Follow-up — conflicting recovery member isolation — 2026-10-08
+
+### Finding and repair
+
+Audit reproduced a cohort-wide rejection when one returned member changed an
+already-observed source field or anchor, even when sibling members contained
+valid requested fills. Validation now quarantines only the conflicting symbol,
+restores its exact primary row, and applies valid sibling fills. Invalid
+embedded identity and out-of-plan new fields/symbols remain hard errors. If
+all reported fills are quarantined, Core records `recovery_state=ERROR`, keeps
+missing anchors missing, and leaves recovery required. Idempotent retry retains
+the quarantine diagnostics.
+
+### Verification and limits
+
+- TDD reproduced the original failure on a single-symbol conflict with a
+  valid sibling fill; regression now proves sibling application and primary
+  value retention.
+- Additional tests cover an all-conflicting response, anchor and source-field
+  conflicts, direct recovery, idempotent retry, and preserved identity/scope
+  rejection.
+- Recovery/timeline tests: 55 passed; full suite: 924 passed; compileall and
+  diff-check pass.
+- Inputs are synthetic contract responses paired with hash-pinned real
+  Q2Frame primary rows; this does not verify actual Wencai response shape or
+  live provider behavior. No Redis/TD/Rabbit connection or production effect.
+- TASK-008 remains `PARTIAL_EVIDENCE`; NORMAL opening remains `UNPROVEN`.
+
+## Follow-up — isolate embedded symbol identity mismatch — 2026-10-08
+
+Audit found that one recovery row whose embedded `symbol` disagreed with its
+mapping key still aborted otherwise valid sibling fills. Plan-bound and direct
+recovery now quarantine that member, never reassign its values to the embedded
+symbol, restore its exact saved primary row when one exists, and continue valid
+sibling fills. If no usable fill survives, recovery is recorded as `ERROR`
+and remains required. Plan/date/revision envelope mismatches stay hard errors.
+
+Red/green regressions cover both recovery entry points, a mismatched member
+beside a valid sibling, retention of the primary value, idempotent plan-bound
+retry, and a mismatch-only response. The recovery rows are contract inputs
+paired with a pinned real Q2Frame primary baseline; they are not live Wencai
+evidence. Full Core suite: 927 passed; compileall and diff-check pass. No live
+data source, production service, or write path was used.
+
+## Follow-up — quarantine malformed recovery member declarations — 2026-10-08
+
+### Finding and repair
+
+`RecoveryResultV1` normalized declared fill and invalid-symbol tokens as a
+whole-set operation. One malformed token such as `BAD` therefore raised before
+valid sibling fills could be used. Member tokens are now normalized
+individually; invalid ones are excluded and represented by stable anomaly
+codes. A diagnosed response with no surviving fill can reach the timeline,
+which records an `ERROR` revision, leaves primary facts `PARTIAL`, and keeps
+recovery required. An otherwise clean empty `APPLIED` response remains a hard
+contract error.
+
+### Verification and limits
+
+- RED reproduced the exception for both malformed `filled_symbols` and
+  malformed `invalid_symbols`; GREEN confirms valid siblings survive.
+- A bad-only response based on the pinned real 2026-09-30 Q2Frame primary
+  fixture records `ERROR`/`PARTIAL` and remains retryable. The recovery
+  response itself is contract input, not captured Wencai output.
+- Recovery/timeline/opening tests: 71 passed; full Core suite: 931 passed;
+  compileall and `git diff --check` pass.
+- No live Wencai/Redis/TD/Rabbit access, service action, or production write
+  occurred. TASK-008 remains `PARTIAL_EVIDENCE`; NORMAL opening remains
+  `UNPROVEN`.
+
+## Integration boundary — static engine-next source audit — 2026-10-08
+
+The inspected active `engine-next` release is
+`/home/exedev/services/engine-next/releases/20260903_e272842`. Its
+`IntradayDataHub` defines an optional `wencai_auction_fetcher`, but the
+constructor defaults it to `None`; no injection call site was found in the
+searched active-release tree. The static mapping retains symbol,
+`change_pct`, and amount fields, but not the Core 09:25 anchor price or
+historical `available_at`. Thus this inspection does not establish a usable
+or active Wencai recovery path for the Core 09:25 anchor. It is a source-only
+finding: no Wencai request, Redis/TD/Rabbit operation, or production write was
+performed, and no engine-next source was changed. A production recovery
+integration remains separate work and must be verified against its actual
+owner and payload before claiming availability.
+
+## Follow-up — isolate malformed expected auction-universe members — 2026-10-08
+
+### Finding and repair
+
+`build_auction_anchor_revision()` previously normalized the entire expected
+universe in one set comprehension. A single malformed symbol could therefore
+throw away valid observed anchor rows. Expected symbols are now normalized
+individually; malformed members are quarantined as `INVALID_EXPECTED_SYMBOL`.
+Valid observed anchor facts remain available, while anchor/source coverage is
+withheld and the revision stays `PARTIAL` because the declared denominator is
+not trustworthy. If all expected members are invalid, observed facts remain
+visible but the universe and coverage stay unknown, and recovery remains
+available.
+
+### Verification and limits
+
+- RED reproduced `ValueError` using the pinned real 2026-09-30 Q2Frame primary
+  row and a malformed expected member; GREEN verifies the fact is retained,
+  coverage is not asserted, and the revision is `PARTIAL`.
+- Both valid-plus-invalid and all-invalid universe cases pass. Full Core suite:
+  933 passed; compileall and `git diff --check` pass.
+- The source row is a hash-pinned fixture, not a live read in this run. No
+  Redis/TD/Rabbit access, production service action, or production write
+  occurred. TASK-008 remains `PARTIAL_EVIDENCE`; NORMAL opening remains
+  `UNPROVEN`.

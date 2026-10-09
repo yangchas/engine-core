@@ -26,7 +26,10 @@ sys.path.insert(0, str(ROOT / "src"))
 from engine_core import (  # noqa: E402
     classify_delta,
     classify_sign_state,
+    build_anchor_shadow_evidence,
+    build_opening_plate_auction_pressure_context,
     build_opening_plate_price_reference_context,
+    build_opening_plate_auction_pressure_summary,
     build_opening_plate_price_summary,
     validate_opening_plate_amount_context,
 )
@@ -50,6 +53,13 @@ OPENING_COMPARE_FIELDS = (
     "open_valid_count",
     "common_symbol_count",
     "comparison_valid_count",
+    "open_limit_up_count",
+    "open_limit_down_count",
+    "open_limit_state_status",
+    "open_limit_state_total_count",
+    "open_limit_state_valid_count",
+    "open_limit_state_present_count",
+    "open_limit_state_invalid_count",
     "open_up_count",
     "open_down_count",
     "open_flat_count",
@@ -72,6 +82,10 @@ SOURCE_CODE_EVIDENCE = {
     "engine_next_open_confirmation_consumer": {
         "path": "/home/exedev/services/engine-next/releases/20260903_e272842/engine_next/runtime/open_confirmation.py",
         "sha256": "73453f5caaf27636c9ad6aa57b2e609da0ad1867ebc1ff06906eca46921405b6",
+    },
+    "engine_next_auction_pressure_status": {
+        "path": "/home/exedev/services/engine-next/releases/20260903_e272842/engine_next/runtime/auction_email_report.py",
+        "sha256": "b33b173cad109e793bc9aa949cbe5c31a0ef3393876b8b89ec01af01c3807a33",
     },
     "t1_v2_auction_calculator_source_checkout": {
         "path": "/home/exedev/repos/stock-situation-runtime/C/t1_v2/auction_calculator.cpp",
@@ -488,6 +502,54 @@ def run_audit(*, input_dir: Path, q2frame_path: Path, output_dir: Path) -> dict[
         trade_date=str(core_report["trade_date"]),
         previous_close_by_symbol=previous_close_by_symbol,
     )
+    normalized_anchor_rows = []
+    for raw in iter_rows():
+        tag = str(raw.get("auction_tag") or "").strip()
+        if tag not in {"0924", "0925"}:
+            continue
+        normalized_anchor_rows.append(
+            {
+                "symbol": raw.get("symbol"),
+                "tag": tag,
+                "price_milli": raw.get("px_milli"),
+                "auction_amount_yuan": raw.get("match_amt_yuan"),
+                "bid_amount_yuan": raw.get("rest_bid_amt_yuan"),
+                "ask_amount_yuan": raw.get("rest_ask_amt_yuan"),
+            }
+        )
+    anchor_facts = build_anchor_shadow_evidence(
+        normalized_anchor_rows,
+        from_tag="0924",
+        to_tag="0925",
+    )
+    pressure_summary = build_opening_plate_auction_pressure_summary(
+        {str(row["symbol"]): row for row in anchor_facts},
+        # Auction pressure is assembled from the runtime-owned source mapping,
+        # not the narrower open/auction comparison cohort in the price context.
+        mapped_symbols_by_plate=mapped_symbols_by_plate,
+        trade_date=str(core_report["trade_date"]),
+        selected_plates=context["selected_plates"],
+    )
+    pressure_context = build_opening_plate_auction_pressure_context(
+        auction_pressure_summary=pressure_summary,
+        source_provenance={
+            "trade_date": str(core_report["trade_date"]),
+            "source": "market_data1.auction_snapshot_v2.0924_to_0925.captured_rows",
+            "data_origin": "CAPTURED_REAL_HISTORICAL_SOURCE_EVIDENCE",
+            "auction_source_table": captured_auction["auction_source_table"],
+            "auction_rows_sha256": _sha256(rows_path),
+            "auction_row_count": len(normalized_anchor_rows),
+            "mapping_source": "market:stock_plate frozen stock_plate_snapshot.json",
+            "mapping_snapshot_sha256": _sha256(
+                input_dir / "stock_plate_snapshot.json"
+            ),
+            "source_code_sha256": SOURCE_CODE_EVIDENCE[
+                "engine_next_auction_pressure_status"
+            ]["sha256"],
+            "producer_build_attestation": "UNVERIFIED",
+            "historical_available_at": "UNKNOWN",
+        },
+    )
     source_code_checks = {
         name: Path(evidence["path"]).is_file()
         and _sha256(Path(evidence["path"])) == evidence["sha256"]
@@ -591,6 +653,7 @@ def run_audit(*, input_dir: Path, q2frame_path: Path, output_dir: Path) -> dict[
         auction_price_reference_by_plate=reference_stats_by_plate,
     )
     core_by_plate = {str(row["plate"]): row for row in summary["plates"]}
+    pressure_by_plate = {str(row["plate"]): row for row in pressure_summary["plates"]}
     mismatches: list[dict[str, Any]] = []
     for plate in sorted(set(legacy_by_plate) | set(core_by_plate)):
         if plate not in legacy_by_plate or plate not in core_by_plate:
@@ -610,6 +673,27 @@ def run_audit(*, input_dir: Path, q2frame_path: Path, output_dir: Path) -> dict[
             core_value = core_by_plate[plate].get(field)
             if legacy_value != core_value:
                 mismatches.append(
+                    {
+                        "plate": plate,
+                        "field": field,
+                        "legacy": legacy_value,
+                        "core": core_value,
+                    }
+                )
+
+    pressure_mismatches: list[dict[str, Any]] = []
+    for plate in sorted(legacy_evidence_by_plate):
+        observed = pressure_by_plate.get(plate)
+        if observed is None:
+            pressure_mismatches.append(
+                {"plate": plate, "field": "plate_membership", "core_present": False}
+            )
+            continue
+        for field in ("auction_pressure_yuan", "auction_pressure_status"):
+            legacy_value = legacy_evidence_by_plate[plate].get(field)
+            core_value = observed.get(field)
+            if legacy_value != core_value:
+                pressure_mismatches.append(
                     {
                         "plate": plate,
                         "field": field,
@@ -677,6 +761,7 @@ def run_audit(*, input_dir: Path, q2frame_path: Path, output_dir: Path) -> dict[
     core_raw_mismatch_count = len(mismatches) + len(core_formula_mismatches)
     audit_pass = (
         core_raw_mismatch_count == 0
+        and not pressure_mismatches
         and not count_ratio_mismatches
         and legacy_unit_relation_proven
         and all(source_code_checks.values())
@@ -693,6 +778,27 @@ def run_audit(*, input_dir: Path, q2frame_path: Path, output_dir: Path) -> dict[
         "core_raw_formula_mismatch_count": len(core_formula_mismatches),
         "core_raw_formula_mismatches": core_formula_mismatches,
         "core_raw_mismatch_count": core_raw_mismatch_count,
+        "auction_pressure_mismatch_count": len(pressure_mismatches),
+        "auction_pressure_mismatches": pressure_mismatches,
+        "auction_pressure_summary_hash": pressure_summary["content_hash"],
+        "auction_pressure_context_hash": pressure_context["content_hash"],
+        "auction_pressure_source_rows": len(normalized_anchor_rows),
+        "auction_pressure_anchor_fact_count": len(anchor_facts),
+        "auction_pressure_derivation": {
+            "source_fields_by_tag": {
+                "0924_and_0925": [
+                    "px_milli",
+                    "match_amt_yuan",
+                    "rest_bid_amt_yuan",
+                    "rest_ask_amt_yuan",
+                ]
+            },
+            "mapping_source": "hash-pinned stock_plate_snapshot.json full selected-plate mapping",
+            "pressure_formula": "sum(AnchorDeltaFactV1.auction_directional_pressure_yuan for usable 0924->0925 facts)",
+            "pressure_status_formula": "available if all mapped symbols usable; partial if some usable; unavailable if none",
+            "meaning": "legacy directional amount-delta fact; not net capital flow",
+            "historical_available_at": "UNKNOWN",
+        },
         "legacy_valid_count_or_ratio_mismatch_count": len(count_ratio_mismatches),
         "legacy_valid_count_or_ratio_mismatches": count_ratio_mismatches,
         "legacy_unit_mismatch_count": len(legacy_unit_mismatches),
@@ -726,6 +832,13 @@ def run_audit(*, input_dir: Path, q2frame_path: Path, output_dir: Path) -> dict[
             "q2frame_sha256": q2frame_sha256,
             "context_source_provenance": context["source_provenance"],
             "auction_reference_source_provenance": reference_context["source_provenance"],
+            "auction_pressure_rows_sha256": _sha256(rows_path),
+            "auction_pressure_mapping_snapshot_sha256": _sha256(
+                input_dir / "stock_plate_snapshot.json"
+            ),
+            "auction_pressure_source_code_sha256": SOURCE_CODE_EVIDENCE[
+                "engine_next_auction_pressure_status"
+            ]["sha256"],
         },
         "limits": [
             "The Q2Frame is real t1-v2 event-time replay, not original Rabbit delivery order.",
@@ -743,6 +856,8 @@ def run_audit(*, input_dir: Path, q2frame_path: Path, output_dir: Path) -> dict[
         ("auction_price_stats_from_td.json", {"trade_date": core_report["trade_date"], "source": captured_auction["auction_source_table"], "source_rows_sha256": _sha256(rows_path), "diagnostics": td_diagnostics, "stats_by_plate": auction_stats_by_plate}),
         ("opening_plate_price_reference_context.json", reference_context),
         ("opening_plate_price_summary.json", summary),
+        ("opening_plate_auction_pressure_summary.json", pressure_summary),
+        ("opening_plate_auction_pressure_context.json", pressure_context),
         ("audit_summary.json", audit),
     ):
         (output_dir / filename).write_text(

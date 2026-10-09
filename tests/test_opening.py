@@ -1341,3 +1341,52 @@ def test_opening_transition_summary_is_order_independent_and_excludes_out_of_coh
     assert summary["out_of_scope_symbol_count"] == 1
     assert summary["out_of_scope_symbols"] == ["OUT_OF_SCOPE"]
     assert set(summary["facts_by_symbol"]) == {"A"}
+
+
+@pytest.mark.parametrize(
+    ("bad_anchor", "bad_opening", "reason", "anchor_status"),
+    (
+        (True, False, "ANCHOR_FACT_NOT_A_MAPPING", "INVALID"),
+        (False, True, "OPENING_ROW_NOT_A_MAPPING", "AVAILABLE"),
+    ),
+)
+def test_opening_transition_summary_isolates_one_malformed_symbol_row(
+    bad_anchor, bad_opening, reason, anchor_status
+):
+    anchors = {
+        "A": {"status": "AVAILABLE", "price_milli": 10_500, "source_time_ms": 10},
+        "B": (
+            "malformed-anchor"
+            if bad_anchor
+            else {"status": "AVAILABLE", "price_milli": 9_500, "source_time_ms": 10}
+        ),
+    }
+    opening_rows = {
+        "A": {
+            "symbol": "A",
+            "timestamp_ms": 20,
+            "price_milli": 10_200,
+            "previous_close_milli": 10_000,
+        },
+        "B": (
+            "malformed-opening"
+            if bad_opening
+            else {
+                "symbol": "B",
+                "timestamp_ms": 20,
+                "price_milli": 9_800,
+                "previous_close_milli": 10_000,
+            }
+        ),
+    }
+
+    summary = build_opening_transition_summary(
+        anchors, opening_rows, expected_symbols=("A", "B")
+    )
+
+    assert summary["status"] == "PARTIAL"
+    assert summary["transition_comparable_count"] == 1
+    assert summary["facts_by_symbol"]["A"]["status"] == "available"
+    assert summary["facts_by_symbol"]["B"]["status"] == "unavailable"
+    assert summary["facts_by_symbol"]["B"]["auction_anchor_status"] == anchor_status
+    assert summary["invalid_fact_rows"] == [{"symbol": "B", "reason": reason}]

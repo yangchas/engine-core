@@ -2085,17 +2085,43 @@ def build_opening_transition_summary(
     auction_change_available_count = 0
     opening_change_available_count = 0
     transition_comparable_count = 0
+    invalid_fact_rows: list[dict[str, str]] = []
 
     for symbol in sorted(expected):
-        anchor = anchors.get(symbol, {})
-        opening_row = dict(opening_rows.get(symbol, {}))
+        raw_anchor = anchors.get(symbol)
+        anchor_invalid = raw_anchor is not None and not isinstance(raw_anchor, Mapping)
+        anchor = raw_anchor if isinstance(raw_anchor, Mapping) else {}
+        raw_opening_row = opening_rows.get(symbol)
+        opening_invalid = (
+            raw_opening_row is not None
+            and not isinstance(raw_opening_row, Mapping)
+        )
+        opening_row = (
+            dict(raw_opening_row)
+            if isinstance(raw_opening_row, Mapping)
+            else {}
+        )
         opening_row.setdefault("symbol", symbol)
+        if anchor_invalid:
+            invalid_fact_rows.append({
+                "symbol": symbol,
+                "reason": "ANCHOR_FACT_NOT_A_MAPPING",
+            })
+        if opening_invalid:
+            invalid_fact_rows.append({
+                "symbol": symbol,
+                "reason": "OPENING_ROW_NOT_A_MAPPING",
+            })
 
         # An absent anchor row does not prove the producer explicitly observed
         # this symbol and declared its anchor missing. Preserve MISSING only
         # when the source fact says so; otherwise leave source availability
         # UNKNOWN while the rest of the opening cohort continues to compute.
-        anchor_status = str(anchor.get("status") or "UNKNOWN").upper()
+        anchor_status = (
+            "INVALID"
+            if anchor_invalid
+            else str(anchor.get("status") or "UNKNOWN").upper()
+        )
         anchor_price = _number(anchor.get("price_milli"))
         anchor_price_available = (
             anchor_status == "AVAILABLE" and anchor_price is not None and anchor_price > 0
@@ -2167,5 +2193,9 @@ def build_opening_transition_summary(
     if out_of_scope_symbols:
         summary["out_of_scope_symbol_count"] = len(out_of_scope_symbols)
         summary["out_of_scope_symbols"] = out_of_scope_symbols
+    if invalid_fact_rows:
+        summary["invalid_fact_rows"] = sorted(
+            invalid_fact_rows, key=lambda row: (row["symbol"], row["reason"])
+        )
     summary["content_hash"] = semantic_hash(summary)
     return summary
