@@ -1,4 +1,7 @@
 import importlib.util
+import builtins
+import json
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -123,3 +126,140 @@ def test_volume_unit_diagnostic_exposes_both_hypotheses_without_deciding_contrac
     assert diagnostic["implied_average_price_yuan_if_lots"] == 12.0
     assert diagnostic["implied_average_price_yuan_if_shares"] == 1200.0
     assert "volume_unit" not in diagnostic
+
+
+def test_q2_read_capture_can_replay_the_exact_observed_redis_input():
+    row = {
+        "px": "1000",
+        "pc": "990",
+        "amt": "0",
+        "vol": "0",
+        "ts": str(int(NOW.timestamp() * 1000)),
+    }
+    live = probe.observe(
+        ReadClient(("000001",), row),
+        "2026-09-09",
+        NOW,
+        60000,
+        ("000001", "300750", "600519"),
+        include_raw_capture=True,
+    )
+    reads = live.pop("_raw_read_capture")
+    artifact = probe.build_q2_read_capture_artifact("2026-09-09", live, reads)
+
+    assert artifact["contract_version"] == "RedisQ2ReadCaptureV1"
+    assert artifact["input_canonical_sha256"] == live["input_canonical_sha256"]
+    assert artifact["reads"] == reads
+    assert artifact["freshness_policy_stale_after_ms"] == 60000
+    assert artifact["volume_unit_diagnostic_symbols"] == [
+        "000001",
+        "300750",
+        "600519",
+    ]
+    assert all(item["operation"] in {"smembers", "hgetall"} for item in reads)
+    assert "redis_password" not in str(artifact).lower()
+
+    replay_client = probe.CapturedQ2ReadClient(artifact)
+    replayed = probe.observe(
+        replay_client,
+        "2026-09-09",
+        datetime.fromisoformat(artifact["read_completed_at"]),
+        60000,
+        tuple(artifact["volume_unit_diagnostic_symbols"]),
+    )
+    replay_client.assert_consumed()
+
+    assert replayed["input_canonical_sha256"] == live["input_canonical_sha256"]
+    assert replayed["projection_hash"] == live["projection_hash"]
+    assert replayed["engine_run1"] == live["engine_run1"]
+    assert replayed["engine_run2"] == live["engine_run2"]
+    assert replayed["volume_unit_diagnostics"] == live["volume_unit_diagnostics"]
+
+
+def test_q2_read_capture_cli_replays_offline_without_importing_redis(
+    monkeypatch, tmp_path, capsys
+):
+    row = {
+        "px": "12000",
+        "pc": "11900",
+        "amt": "60000000",
+        "vol": "50000",
+        "ts": str(int(NOW.timestamp() * 1000)),
+    }
+    live = probe.observe(
+        ReadClient(("000001",), row),
+        "2026-09-09",
+        NOW,
+        60000,
+        ("000001",),
+        include_raw_capture=True,
+    )
+    reads = live.pop("_raw_read_capture")
+    artifact = probe.build_q2_read_capture_artifact("2026-09-09", live, reads)
+    capture_path = tmp_path / "q2-read-capture.json"
+    capture_path.write_text(json.dumps(artifact), encoding="utf-8")
+    output_path = tmp_path / "offline-replay-report.json"
+    real_import = builtins.__import__
+
+    def reject_redis_import(name, *args, **kwargs):
+        if name == "redis":
+            raise AssertionError("offline replay attempted to import Redis")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_redis_import)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_live_q2_probe.py",
+            "--trade-date",
+            "2026-09-09",
+            "--replay-input",
+            str(capture_path),
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    probe.main()
+
+    stdout_report = json.loads(capsys.readouterr().out)
+    stored_report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert stdout_report["projection_hash"] == live["projection_hash"]
+    assert stdout_report["engine_run1"] == live["engine_run1"]
+    assert stdout_report["volume_unit_diagnostics"] == live["volume_unit_diagnostics"]
+    assert stdout_report["captured_source_observation"]["capture_input_sha256"] == (
+        live["input_canonical_sha256"]
+    )
+    assert stored_report["input_canonical_sha256"] == live["input_canonical_sha256"]
+    assert "reads" not in stored_report
+    assert output_path.with_name(output_path.name + ".sha256").exists()
+
+
+def test_q2_read_capture_rejects_tampered_payload_or_non_read_operation():
+    row = {"px": "1000", "pc": "990", "amt": "0", "ts": str(int(NOW.timestamp() * 1000))}
+    live = probe.observe(
+        ReadClient(("000001",), row),
+        "2026-09-09",
+        NOW,
+        60000,
+        include_raw_capture=True,
+    )
+    reads = live.pop("_raw_read_capture")
+    artifact = probe.build_q2_read_capture_artifact("2026-09-09", live, reads)
+
+    tampered_reads = [dict(item) for item in artifact["reads"]]
+    tampered_reads[-1] = {
+        **tampered_reads[-1],
+        "value": {**tampered_reads[-1]["value"], "px": "1"},
+    }
+    tampered = {**artifact, "reads": tampered_reads}
+    with pytest.raises(ValueError, match="hash"):
+        probe.CapturedQ2ReadClient(tampered)
+
+    with pytest.raises(ValueError, match="read-only"):
+        probe.build_q2_read_capture_artifact(
+            "2026-09-09",
+            live,
+            [{"operation": "set", "key": "x", "value": "y"}],
+        )

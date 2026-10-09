@@ -19,6 +19,7 @@ from engine_core import (
 )
 
 REPORT_CONTRACT = "LiveQ2CoreProbeV2"
+READ_CAPTURE_CONTRACT = "RedisQ2ReadCaptureV1"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -73,6 +74,127 @@ class ReadOnlyCapture:
         return value
 
 
+def _canonical_read_bytes(reads):
+    return json.dumps(
+        reads,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def build_q2_read_capture_artifact(trade_date, report, reads):
+    """Build a credential-free, hash-pinned transcript of actual Redis reads."""
+
+    if _date_text(trade_date) != report.get("trade_date"):
+        raise ValueError("capture trade_date does not match report")
+    if any(
+        not isinstance(item, dict)
+        or item.get("operation") not in {"smembers", "hgetall"}
+        or not isinstance(item.get("key"), str)
+        or (
+            item.get("operation") == "smembers"
+            and not isinstance(item.get("value"), list)
+        )
+        or (
+            item.get("operation") == "hgetall"
+            and not isinstance(item.get("value"), dict)
+        )
+        for item in reads
+    ):
+        raise ValueError("capture supports read-only SMEMBERS/HGETALL operations only")
+    reads_hash = hashlib.sha256(_canonical_read_bytes(reads)).hexdigest()
+    if reads_hash != report.get("input_canonical_sha256"):
+        raise ValueError("capture reads do not match report input hash")
+    return {
+        "contract_version": READ_CAPTURE_CONTRACT,
+        "trade_date": trade_date,
+        "read_started_at": report.get("read_started_at"),
+        "read_completed_at": report.get("read_completed_at"),
+        "observation_time_mode": report.get("observation_time_mode"),
+        "freshness_policy_stale_after_ms": report.get(
+            "freshness_policy_stale_after_ms"
+        ),
+        "volume_unit_diagnostic_symbols": report.get(
+            "volume_unit_diagnostic_symbols", []
+        ),
+        "operations": ["smembers", "hgetall"],
+        "input_canonical_sha256": reads_hash,
+        "reads": reads,
+        "limitations": [
+            "best_effort_non_atomic_redis_read",
+            "source_record_time_is_not_redis_available_at",
+            "active_membership_does_not_prove_full_market_coverage",
+        ],
+    }
+
+
+class CapturedQ2ReadClient:
+    """Replay a saved Redis read transcript through the existing Q2 adapter."""
+
+    def __init__(self, artifact):
+        if not isinstance(artifact, dict) or artifact.get("contract_version") != READ_CAPTURE_CONTRACT:
+            raise ValueError("unsupported Q2 read capture contract")
+        _date_text(artifact.get("trade_date", ""))
+        reads = artifact.get("reads")
+        if not isinstance(reads, list):
+            raise ValueError("capture reads must be a list")
+        if any(
+            not isinstance(item, dict)
+            or item.get("operation") not in {"smembers", "hgetall"}
+            or not isinstance(item.get("key"), str)
+            or (
+                item.get("operation") == "smembers"
+                and not isinstance(item.get("value"), list)
+            )
+            or (
+                item.get("operation") == "hgetall"
+                and not isinstance(item.get("value"), dict)
+            )
+            for item in reads
+        ):
+            raise ValueError("capture supports read-only SMEMBERS/HGETALL operations only")
+        reads_hash = hashlib.sha256(_canonical_read_bytes(reads)).hexdigest()
+        if reads_hash != artifact.get("input_canonical_sha256"):
+            raise ValueError("capture input hash mismatch")
+        completed_at = artifact.get("read_completed_at")
+        try:
+            parsed_completed_at = datetime.fromisoformat(completed_at)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("capture read_completed_at must be ISO datetime") from exc
+        if parsed_completed_at.tzinfo is None or parsed_completed_at.utcoffset() is None:
+            raise ValueError("capture read_completed_at must include a timezone")
+        self.trade_date = artifact["trade_date"]
+        self.read_completed_at = parsed_completed_at
+        self._reads = reads
+        self._index = 0
+
+    def _next(self, operation, key):
+        if self._index >= len(self._reads):
+            raise ValueError("capture ended before requested Redis read")
+        item = self._reads[self._index]
+        if item["operation"] != operation or item["key"] != key:
+            raise ValueError("capture read order/key mismatch")
+        self._index += 1
+        return item["value"]
+
+    def smembers(self, key):
+        value = self._next("smembers", key)
+        if not isinstance(value, list):
+            raise ValueError("captured SMEMBERS value must be a list")
+        return value
+
+    def hgetall(self, key):
+        value = self._next("hgetall", key)
+        if not isinstance(value, dict):
+            raise ValueError("captured HGETALL value must be an object")
+        return value
+
+    def assert_consumed(self):
+        if self._index != len(self._reads):
+            raise ValueError("capture contains unused Redis reads")
+
+
 def run_engine(projection, now):
     engine = DeterministicEngine(
         MarketStateReducer(), WindowManager((WindowSpec("observation", now, now + 1),)),
@@ -124,7 +246,15 @@ def build_volume_unit_diagnostics(reads, symbols):
     return sorted(diagnostics, key=lambda item: item["symbol"])
 
 
-def observe(client, trade_date, observed_at=None, stale_after_ms=None, diagnostic_symbols=()):
+def observe(
+    client,
+    trade_date,
+    observed_at=None,
+    stale_after_ms=None,
+    diagnostic_symbols=(),
+    *,
+    include_raw_capture=False,
+):
     capture = ReadOnlyCapture(client)
     if observed_at is None:
         started_at = datetime.now(timezone.utc)
@@ -177,7 +307,7 @@ def observe(client, trade_date, observed_at=None, stale_after_ms=None, diagnosti
         "maximum_ms": source_ages_ms[-1] if source_ages_ms else None,
         "future_source_time_count": sum(age < 0 for age in source_ages_ms),
     }
-    return {
+    result = {
         "report_contract": REPORT_CONTRACT,
         "trade_date": trade_date,
         "read_started_at": read_started_at.isoformat() if read_started_at else None,
@@ -221,6 +351,7 @@ def observe(client, trade_date, observed_at=None, stale_after_ms=None, diagnosti
         "raw_value_counts": value_counts,
         "volume_unit_diagnostics": build_volume_unit_diagnostics(
             capture.reads, diagnostic_symbols),
+        "volume_unit_diagnostic_symbols": list(diagnostic_symbols),
         "core_validation_scope": (
             "Q2 projection ingestion and same-input ProbeStrategy repeatability only; "
             "not a business strategy, tick-batch, Rabbit, or production-equivalence test."
@@ -231,6 +362,9 @@ def observe(client, trade_date, observed_at=None, stale_after_ms=None, diagnosti
                         "not historical replay or live deployment acceptance"],
         "side_effect_proof": "only smembers/hgetall exposed; TD/claim/notification/SMTP not assembled",
     }
+    if include_raw_capture:
+        result["_raw_read_capture"] = capture.reads
+    return result
 
 
 def main():
@@ -241,50 +375,141 @@ def main():
         help="optional source-time age classification; omitted means freshness is descriptive only",
     )
     parser.add_argument("--output", type=Path, required=True)
+    capture_group = parser.add_mutually_exclusive_group()
+    capture_group.add_argument(
+        "--capture-input",
+        type=Path,
+        help="optionally save exact read-only Redis results to a separate validation artifact",
+    )
+    capture_group.add_argument(
+        "--replay-input",
+        type=Path,
+        help="replay a RedisQ2ReadCaptureV1 artifact without connecting to Redis",
+    )
     parser.add_argument(
         "--diagnostic-symbols",
-        default="000001,300750,600519",
+        default=None,
         help="bounded comma-separated symbols for audit-only volume dimensional evidence",
     )
     args = parser.parse_args()
     trade_date = _date_text(args.trade_date)
     if args.stale_after_ms is not None and args.stale_after_ms < 0:
         parser.error("stale-after-ms must be nonnegative")
-    import redis  # Linux runtime dependency only; no connection during imports/tests.
-    client = redis.Redis(host=os.environ.get("REDIS_HOST", "127.0.0.1"),
-                         port=int(os.environ.get("REDIS_PORT", "6379")),
-                         db=int(os.environ.get("REDIS_DB", "0")),
-                         password=os.environ.get("REDIS_PASSWORD"),
-                         decode_responses=True, socket_timeout=5, socket_connect_timeout=5)
-    try:
-        diagnostic_symbols = tuple(
-            symbol.strip() for symbol in args.diagnostic_symbols.split(",") if symbol.strip()
+    if args.capture_input and args.capture_input.resolve() == args.output.resolve():
+        parser.error("capture-input and output paths must differ")
+    if args.output.exists() or args.output.with_name(args.output.name + ".sha256").exists():
+        parser.error("output and checksum paths must not already exist")
+    if args.capture_input and args.capture_input.exists():
+        parser.error("capture-input path must not already exist")
+
+    if args.replay_input:
+        try:
+            artifact = json.loads(args.replay_input.read_text(encoding="utf-8"))
+            client = CapturedQ2ReadClient(artifact)
+            if client.trade_date != trade_date:
+                raise ValueError("capture trade_date does not match requested trade_date")
+            diagnostic_symbols = (
+                tuple(
+                    symbol.strip()
+                    for symbol in args.diagnostic_symbols.split(",")
+                    if symbol.strip()
+                )
+                if args.diagnostic_symbols is not None
+                else tuple(artifact.get("volume_unit_diagnostic_symbols", ()))
+            )
+            stale_after_ms = (
+                args.stale_after_ms
+                if args.stale_after_ms is not None
+                else artifact.get("freshness_policy_stale_after_ms")
+            )
+            result = observe(
+                client,
+                trade_date,
+                client.read_completed_at,
+                stale_after_ms,
+                diagnostic_symbols,
+            )
+            client.assert_consumed()
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            parser.error(f"cannot replay Q2 read capture: {exc}")
+        result["observation_time_mode"] = "FIXED_CAPTURED_READ_COMPLETION"
+        result["captured_source_observation"] = {
+            "read_started_at": artifact.get("read_started_at"),
+            "read_completed_at": artifact["read_completed_at"],
+            "capture_input_sha256": artifact["input_canonical_sha256"],
+            "capture_file_sha256": hashlib.sha256(args.replay_input.read_bytes()).hexdigest(),
+            "capture_contract_version": READ_CAPTURE_CONTRACT,
+            "freshness_policy_stale_after_ms": artifact.get(
+                "freshness_policy_stale_after_ms"
+            ),
+            "freshness_policy_overridden": (
+                args.stale_after_ms is not None
+                and args.stale_after_ms
+                != artifact.get("freshness_policy_stale_after_ms")
+            ),
+        }
+    else:
+        diagnostic_symbols = (
+            tuple(
+                symbol.strip()
+                for symbol in args.diagnostic_symbols.split(",")
+                if symbol.strip()
+            )
+            if args.diagnostic_symbols is not None
+            else ("000001", "300750", "600519")
         )
-        result = observe(
-            client,
-            trade_date,
-            None,
-            args.stale_after_ms,
-            diagnostic_symbols,
-        )
-        result["runtime"] = _revision_metadata()
-        result["report_generated_at"] = datetime.now(timezone.utc).isoformat()
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        content = json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
-        with args.output.open("x", encoding="utf-8") as output:
-            output.write(content)
-            output.flush()
-            os.fsync(output.fileno())
-        output_sha256 = hashlib.sha256(args.output.read_bytes()).hexdigest()
-        checksum_path = args.output.with_name(args.output.name + ".sha256")
-        with checksum_path.open("x", encoding="utf-8") as checksum:
-            checksum.write(f"{output_sha256}  {args.output.name}\n")
-            checksum.flush()
-            os.fsync(checksum.fileno())
-        result["output_sha256"] = output_sha256
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    finally:
-        client.close()
+        import redis  # Linux runtime dependency only; no connection during imports/tests.
+        client = redis.Redis(host=os.environ.get("REDIS_HOST", "127.0.0.1"),
+                             port=int(os.environ.get("REDIS_PORT", "6379")),
+                             db=int(os.environ.get("REDIS_DB", "0")),
+                             password=os.environ.get("REDIS_PASSWORD"),
+                             decode_responses=True, socket_timeout=5, socket_connect_timeout=5)
+        try:
+            result = observe(
+                client,
+                trade_date,
+                None,
+                args.stale_after_ms,
+                diagnostic_symbols,
+                include_raw_capture=args.capture_input is not None,
+            )
+        finally:
+            client.close()
+        if args.capture_input:
+            reads = result.pop("_raw_read_capture")
+            artifact = build_q2_read_capture_artifact(trade_date, result, reads)
+            capture_content = (
+                json.dumps(artifact, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+            )
+            args.capture_input.parent.mkdir(parents=True, exist_ok=True)
+            with args.capture_input.open("x", encoding="utf-8") as capture_output:
+                capture_output.write(capture_content)
+                capture_output.flush()
+                os.fsync(capture_output.fileno())
+            result["input_capture"] = {
+                "path": str(args.capture_input),
+                "contract_version": READ_CAPTURE_CONTRACT,
+                "file_sha256": hashlib.sha256(capture_content.encode("utf-8")).hexdigest(),
+                "input_canonical_sha256": artifact["input_canonical_sha256"],
+                "read_operation_count": len(reads),
+            }
+
+    result["runtime"] = _revision_metadata()
+    result["report_generated_at"] = datetime.now(timezone.utc).isoformat()
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    content = json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    with args.output.open("x", encoding="utf-8") as output:
+        output.write(content)
+        output.flush()
+        os.fsync(output.fileno())
+    output_sha256 = hashlib.sha256(args.output.read_bytes()).hexdigest()
+    checksum_path = args.output.with_name(args.output.name + ".sha256")
+    with checksum_path.open("x", encoding="utf-8") as checksum:
+        checksum.write(f"{output_sha256}  {args.output.name}\n")
+        checksum.flush()
+        os.fsync(checksum.fileno())
+    result["output_sha256"] = output_sha256
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 
 if __name__ == "__main__":
