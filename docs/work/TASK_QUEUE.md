@@ -16,6 +16,158 @@
 - audit: `docs/work/handoffs/TASK-008-AUDIT-20260920.md`
 - replay_handoff: `docs/work/handoffs/TASK-008-REPLAY-REAL-DATA-20260920.md`
 - validation_dir: `/home/exedev/validation/task008-opening-validation-20260920T183000+0800/`
+- latest_current_code_replay:
+  `/home/exedev/validation/task008-current-source-replay-20261008T173904+0800/core_q2frame_report.json`
+- latest_full_window_current_source_replay:
+  `/home/exedev/validation/task008-current-source-full-window-20261008T181726+0800/core_full_window_report.json`
+  Replayed the pinned 2026-09-23 producer artifact through the complete
+  `[09:15:00,09:40:00)` timeline: 500 frames / 1,209,672 updates, 5,222
+  symbols, ordered/repeat fully deterministic, final hash unchanged from the
+  earlier full-window run. This is current Core consumption of captured
+  t1-v2 output, not a new TD/Rabbit or upstream t1-v2 execution. 09:32/09:40
+  producer cutoff snapshots are absent; TASK-008 remains partial.
+- post_open_live_observation_20261009:
+  `/home/exedev/validation/open-live-followup-20261009T094227+0800/`
+  Read-only capture executed at 09:42:27, after the open. It observed stale
+  Q2 data, stable `a20/a24/a25` values between 09:30 and 09:42, and t1-v2
+  `wall_lag_ms=188800` by 09:42:59 (`ack_fail=0`); lag cause and TD write
+  health remain UNKNOWN/UNPROVEN. Same-input local Core projection and probe
+  hashes repeated, but this is not Rabbit parity or NORMAL opening acceptance.
+  See the offline transition audit below for the earlier full-cohort changes
+  and the sampling/causality limits.
+  The replay process stayed stopped; after-close action is to revalidate its
+  PID/offset, input hashes, source mtimes, and t1-v2 lag before deciding
+  resume versus restart. Related scope notes:
+  `docs/work/handoffs/TASK-008-FRAME-GAP-SCOPE-ROBUSTNESS-20261009.md` and
+  `docs/work/handoffs/TASK-008-PARTIAL-REASON-DIAGNOSTICS-20261009.md`.
+  Offline audit of the nine 09:14–09:30 real Redis captures found positive
+  `a20` rewrites (212) and positive `a24` rewrites (708), alongside fills;
+  five-way full observed-cohort counts show zero positive-to-empty clears.
+  All `a20/a24/a25` values were identical by symbol from 09:25:06 to 09:30 and
+  from 09:30 to 09:42; the 09:30:13–09:42:27 interval itself was unsampled.
+  These observations do not locate changes before/after event-window close or
+  prove late arrival. The 20-symbol all-Shenzhen capture fixture's before/after
+  rows and source hashes were independently verified; it covers revision
+  update behavior, not market-wide rates. Focused regression, timeline file,
+  and opening-strategy file pass (1, 53, and 10 tests). The paused replay was
+  rechecked at 10:43 (PID 3831221, still T; offset 339,845,120 / 342,636,341;
+  input hashes unchanged) and was not resumed during market hours. This does
+  not provide NORMAL acceptance. Full counts, hashes, freeze timestamps,
+  runtime/source caveats, and limitations are in
+  `/home/exedev/validation/open-live-followup-20261009T094227+0800/offline_anchor_transition_audit.md`.
+- previous_field_delta_current_code_replay:
+  `/home/exedev/validation/task008-field-delta-same-date-audit-20261008T044210+0800/core_q2frame_with_pressure_and_field_delta_20260930.json`
+- prior_current_code_replay_without_field_delta:
+  `/home/exedev/validation/task008-0930-current-core-replay-20261008T015810+0800/core_q2frame_report.json`
+- latest_replay_handoff:
+  `docs/work/handoffs/TASK-008-CURRENT-WORKTREE-ROBUSTNESS-RERUN-20261008.md`
+- previous_feature_handoff:
+  `docs/work/handoffs/TASK-008-PLATE-FIELD-DELTA-Q2FRAME-INTEGRATION-20261008.md`
+- generic_q2frame_streaming_repeat_audit:
+  `docs/work/handoffs/TASK-008-GENERIC-Q2FRAME-STREAMING-REPEAT-20261008.md`
+  The generic helper now drains only through the current whole-second frame
+  group and supports an explicit end horizon for pending timers. The frozen
+  2026-09-30 artifact repeated deterministically (758 frames / 434,188
+  updates); this closes only the helper subtask and does not change TASK-008's
+  `PARTIAL_EVIDENCE` or NORMAL acceptance status.
+- previous_current_same_date_q2frame_handoff:
+  `docs/work/handoffs/TASK-008-CURRENT-SAME-DATE-Q2FRAME-REPLAY-20261008.md`
+- previous_full_context_current_code_replay:
+  `/home/exedev/validation/task008-0929-current-core-replay-20261008T005739+0800/core_q2frame_report.json`
+- previous_full_context_handoff:
+  `docs/work/handoffs/TASK-008-CURRENT-CODE-FULL-REPLAY-20261008.md`
+- latest_replay_result: current Core source completed two deterministic
+  one-Engine passes through 09:32:10 on hash-pinned real 2026-09-30 Q2Frame,
+  same-date pressure context, and field-delta context. The input, final state
+  hash, and the common pre-existing fact/count/status fields match the previous
+  same-date baseline. The report contract changed V12→V16 and this run adds a
+  field-delta context absent from that baseline. Engine snapshot/result and
+  per-symbol evidence hash/reference fields differ; their exact cause is not
+  inferred. The deterministic field-delta summary is
+  `FACT_ONLY`. Producer cutoff metadata also reports
+  5,213 accepted rows at 09:32:10, matching Core's aggregate READY count, but
+  payload rows are absent, so this is not per-symbol value parity. Core's 7
+  PARTIAL facts are exactly the 7 symbols older than its 60-second freshness
+  policy at that cutoff; the count agreement is consistent with excluding the
+  stale tail but does not prove identical producer membership. 09:20/09:24
+  adjacent-delta `fact_status_counts` are `PENDING`, but standalone anchor
+  facts are present (09:20: 1,197 available; 09:24: 3,309 available). Direct
+  same-date TD comparison finds observed differences for those optional tags;
+  the 09:25 anchor matches 5,030/5,030 positive prices and 190/190 missing
+  rows. These differences are not hard gates on 09:25 analysis. Rabbit arrival,
+  historical `available_at`, producer barrier parity, and full-market coverage
+  remain unproven.
+- current_worktree_robustness_rerun: matching 2026-09-30 real Q2Frame,
+  pressure context, and field-delta context were rerun from current HEAD
+  `06c3366` plus the recorded dirty source diff. Two passes completed
+  deterministically (754 frames / 428,586 updates); 09:32 produced 5,213 READY
+  and 7 PARTIAL facts, and standalone 09:25 anchors were 5,030 AVAILABLE /
+  190 MISSING. Common pre-existing non-hash outputs match the previous
+  same-date report; its V12 contract and lack of field-delta context are
+  explicit scope differences. Evidence hash/reference fields differ and are
+  not claimed equivalent. Runtime was about 35 minutes, recorded but not a
+  gate. Subsequent recovery fixes cover unknown-universe fills and isolate a
+  default-zero response against a `None` primary anchor; the latter uses the
+  pinned real Q2Frame fixture for the primary row, but the recovery response is
+  a contract test rather than captured Wencai output. Sparse recovery responses
+  now restore omitted old symbols/fields from the saved primary cohort, with
+  diagnostics. Conflicting rows are quarantined per symbol and do not discard
+  valid sibling fills; if all fills are quarantined, recovery remains required
+  and is recorded as `ERROR`. A follow-up isolates out-of-plan symbols/fields
+  and unreported fills while retaining valid siblings. Plan/date/revision
+  envelope errors remain hard failures; an embedded symbol/key mismatch is
+  quarantined only for that member. A stale idempotent retry now returns the
+  current timeline revision instead of an older result
+  revision. Embedded identity mismatch now quarantines one member; the latest
+  malformed fill/diagnostic symbol declarations are now quarantined as
+  member-level anomalies instead of aborting valid siblings. If all declared
+  members are invalid, a diagnosed response records `ERROR`/`PARTIAL` and
+  remains retryable; clean empty `APPLIED` still fails validation. A malformed
+  expected-universe symbol is likewise quarantined without losing valid
+  observed anchors; its denominator stays unknown and revision stays PARTIAL.
+  Full Core suite is now 933 passed. Recovery remains
+  contract-tested only; no live Wencai
+  response or Redis/TD/Rabbit integration was tested. The current-source
+  Q2Frame replay has since been rerun after these source changes. Its new report
+  is byte-identical to the preceding same-input report, SHA-256
+  `5330060220fb47998d78030725698289befe3ba36072911febf73c11831c7d0e`; both
+  reports record 754 frames / 428,586 updates, identical final state hash, and
+  all deterministic checks true. This confirms no regression on that real
+  captured input, not execution of recovery edge cases or live integration.
+  Rerun report:
+  `/home/exedev/validation/task008-current-source-replay-20261008T173904+0800/core_q2frame_report.json`.
+  Handoff:
+  `docs/work/handoffs/TASK-008-CURRENT-WORKTREE-ROBUSTNESS-RERUN-20261008.md`.
+- latest_field_delta_raw_audit:
+  `/home/exedev/validation/task008-field-delta-same-date-audit-20261008T044210+0800/raw_audit_20260930.json`
+- latest_same_date_anchor_timing_audit:
+  `docs/work/handoffs/TASK-008-ANCHOR-TIMING-REAL-DATA-20260930-20261008.md`
+- latest_same_date_anchor_timing_artifacts:
+  `/home/exedev/validation/task008-anchor-candidate-alignment-20260930-20261008T060542+0800/`
+  and `/home/exedev/validation/task008-anchor-revision-scope-20260930-20261008T060542+0800/`
+- latest_direct_core_anchor_td_reconciliation_all_tags:
+  `examples/audit_task008_core_anchor_td_snapshot.py` compares all three
+  current-Core anchors to same-date TD rows. 09:20: 925 equal positive values,
+  11 positive-value differences, and 260 Core-positive/TD-NULL cases; 09:24:
+  3,163 equal positive values, 66 positive-value differences, and 80
+  Core-positive/TD-NULL cases; 09:25: 5,030/5,030 positive values and
+  190/190 missing rows match exactly. Early-tag differences are diagnostic,
+  not a gate on 09:25; timestamp semantics and arrival latency are not inferred.
+  Evidence: `/home/exedev/validation/task008-core-anchor-td-snapshot-all-tags-20260930-20261008T064902+0800/`.
+- latest_same_date_anchor_q2_field_alignment:
+  handoff `docs/work/handoffs/TASK-008-ANCHOR-Q2-FIELD-ALIGNMENT-20261008.md`;
+  source-time candidate output
+  `/home/exedev/validation/task008-anchor-q2-field-alignment-final-20260930-20261008T062642+0800/`;
+  plate-impact sensitivity output
+  `/home/exedev/validation/task008-anchor-q2-plate-impact-final-20260930-20261008T063147-v2/`;
+  per-plate partitions reconcile within the mapped cohort, but each anchor has
+  69 unmapped TD symbols and full-market/production plate parity remains
+  unproven; active release uses weighted multi-plate IntradayContext inputs
+  that are absent from the sealed Q2Frame/map, so this is not production
+  auction-bucket parity; diagnostics only, not timing or coverage gates
+- same_date_0932_producer_command_capture:
+  `/home/exedev/validation/task008-same-day-t1-q2frame-20260930-to-0932-20261002T055725+0800/deployed_release_auction_commands_to_0932.jsonl`
+- same_date_0940_producer_snapshot: `NOT_FOUND_IN_RETAINED_2026-09-30_ARTIFACTS`
 - result: live Redis read was `PARTIAL`/`STALE_OR_MIXED`; target-date
   2026-09-18 frozen Q2 replay completed with ordered/shuffled deterministic
   hashes equal, but 5,219 source rows are future relative to 09:32:10, so
@@ -186,7 +338,13 @@
   equal ordered/shuffled projection hashes and equal sampled Engine hashes.
   Core classified it as `REPLAY_PARTIAL` because 68 quotes were stale under
   the explicit 10-second freshness policy; this is deterministic real-data
-  evidence, not NORMAL opening acceptance.
+  evidence, not NORMAL opening acceptance. This aggregate quality label does
+  not stop replay or discard the other quotes: stale symbols remain identified
+  individually and unaffected facts continue to be produced.
+  The Core readback's 1,209,672 updates come from a separately retained Q2Frame
+  artifact whose upstream build identity is unknown; it is not proven to be
+  the output of this Phase L run. Do not compare its update count to Phase L's
+  1,204,178 source rows as a same-run loss/gain check or a blocking gate.
 - strict_q2frame_validation_dir:
   `/home/exedev/validation/task008-q2frame-real-20260923/`
 - phase_m_audit:
@@ -313,7 +471,10 @@
   `/home/exedev/validation/task007-real-shuffled-20260920T161558+0800/`
 - production_side_effects: `NONE_OBSERVED`
 - merge_recommendation: `MERGE`
-- next_task: no further task is auto-started until TASK-008 evidence is closed
+- next_task: TASK-008 remains the current mainline; feature-scoped Core work may
+  continue by explicit invocation when its own inputs are available. Unproven
+  NORMAL/live evidence is not a project-wide development gate, and no task is
+  auto-started.
 
 Merge gate (all satisfied):
 
