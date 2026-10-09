@@ -8,13 +8,20 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from engine_core import (
+    build_anchor_field_delta_evidence,
     build_opening_plate_amount_context,
+    build_opening_plate_auction_pressure_context,
+    build_opening_plate_auction_pressure_summary,
+    build_opening_plate_field_delta_context,
+    build_opening_plate_field_delta_summary,
     build_opening_plate_price_reference_context,
 )
 from examples.audit_task008_real_opening_plate_price_summary import (
     derive_auction_price_stats_from_rows,
 )
 from examples.run_task008_q2frame_auction_engine_shadow import (
+    _AllSymbolAuctionShadow,
+    _build_partial_reason_diagnostics,
     _inventory,
     run_q2frame_auction_engine_shadow,
 )
@@ -468,6 +475,68 @@ def test_q2frame_session_reaches_opening_with_one_engine_and_symbol_source_times
     assert limit_summary["content_hash"]
 
 
+def test_q2frame_can_continue_same_engine_after_opening_through_final_input_frame(
+    tmp_path: Path,
+):
+    frames = [
+        _frame(1, "09:15:00.000"),
+        _frame(2, "09:20:03.000"),
+        _frame(3, "09:24:10.000"),
+        _frame(4, "09:25:06.000"),
+        _frame(5, "09:32:10.999"),
+        _frame(6, "09:32:11.000"),
+    ]
+    source = tmp_path / "q2frame-opening-continuation.jsonl"
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+
+    opening_only = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+    )
+    continued = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+        continue_through_input=True,
+    )
+
+    assert continued["contract_version"] == "Task008Q2FrameSessionEngineShadowV14"
+    assert continued["replay_termination_policy"] == "THROUGH_FINAL_INPUT_FRAME"
+    assert continued["deterministic"] is True
+    assert continued["ordered"]["engine_instances"] == 1
+    assert continued["ordered"]["input_frames_processed"] == len(frames)
+    assert continued["ordered"]["first_excluded_frame"] is None
+    assert continued["ordered"]["virtual_clock_ms"] == _epoch_ms("09:32:11.000")
+
+    # The 09:32:10 facts are captured at their barrier and are not rewritten
+    # by later frames consumed by the same Engine session. The Engine snapshot
+    # hash may differ because its WindowView describes the longer replay end.
+    continued_opening = continued["ordered"]["opening_evidence"]["OPENING_0932"]
+    original_opening = opening_only["ordered"]["opening_evidence"]["OPENING_0932"]
+    assert continued_opening["evaluation_time_ms"] == original_opening[
+        "evaluation_time_ms"
+    ]
+    assert continued_opening["input_frames_included"] == original_opening[
+        "input_frames_included"
+    ]
+    for field in (
+        "facts_by_symbol_hash",
+        "opening_fact_field_status_hash",
+        "cross_section_facts",
+        "opening_transition_summary",
+        "amount_2m_summary",
+        "limit_state_summary",
+    ):
+        assert continued_opening[field] == original_opening[field]
+    assert continued["ordered"]["final_state_hash"] != opening_only["ordered"][
+        "final_state_hash"
+    ]
+
+
 def test_q2frame_opening_emits_partial_facts_instead_of_stopping_on_stale_symbol(tmp_path: Path):
     frames = [_frame(1, "09:15:00.000")]
     for seq_no, clock in enumerate(
@@ -599,7 +668,7 @@ def test_q2frame_opening_report_includes_explicit_plate_context_deterministicall
     repeated = result["repeat"]["opening_evidence"]["OPENING_0932"]
     plate = opening["plate_amount_summary"]["plates"][0]
     assert result["deterministic"] is True
-    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV9"
+    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV10"
     assert opening["plate_amount_context"]["content_hash"] == context["content_hash"]
     assert plate["plate"] == "AI"
     assert plate["open_window_amount_yuan"] == 21_001
@@ -609,6 +678,11 @@ def test_q2frame_opening_report_includes_explicit_plate_context_deterministicall
     price_plate = opening["plate_price_summary"]["plates"][0]
     assert opening["plate_price_summary"]["contract"] == "OpeningPlatePriceSummaryV3"
     assert price_plate["comparison_valid_count"] == 2
+    assert price_plate["open_limit_up_count"] == 0
+    assert price_plate["open_limit_normal_count"] == 2
+    assert price_plate["open_limit_down_count"] == 0
+    assert price_plate["open_limit_state_valid_count"] == 2
+    assert price_plate["open_limit_state_status"] == "available"
     assert price_plate["price_change_value_count"] == 2
     assert price_plate["open_up_count"] == 1
     assert price_plate["open_flat_count"] == 1
@@ -658,7 +732,7 @@ def test_q2frame_opening_report_compares_date_pinned_auction_price_reference(
     )
 
     assert result["deterministic"] is True
-    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV10"
+    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV11"
     opening = result["ordered"]["opening_evidence"]["OPENING_0932"]
     repeated = result["repeat"]["opening_evidence"]["OPENING_0932"]
     price_summary = opening["plate_price_summary"]
@@ -674,6 +748,135 @@ def test_q2frame_opening_report_compares_date_pinned_auction_price_reference(
         "content_hash"
     ]
     assert opening["plate_price_summary"] == repeated["plate_price_summary"]
+
+
+def test_q2frame_opening_report_carries_hash_pinned_td_auction_pressure_context(
+    tmp_path: Path,
+):
+    frames = (
+        _frame(1, "09:15:00.000"),
+        _frame(2, "09:20:03.000"),
+        _frame(3, "09:24:10.000"),
+        _frame(4, "09:25:06.000"),
+        _frame(5, "09:32:09.000"),
+    )
+    source = tmp_path / "q2frame-opening-with-auction-pressure.jsonl"
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+    amount_context = build_opening_plate_amount_context(
+        trade_date="2026-09-18",
+        source_provenance={"mapping_snapshot_sha256": "a" * 64},
+        mapped_symbols_by_plate={"AI": ("000001", "600000")},
+        auction_symbols_by_plate={"AI": ("000001", "600000")},
+        auction_top1_amount_ratio_by_plate={"AI": 0.5},
+        selected_plates=("AI",),
+    )
+    pressure_summary = build_opening_plate_auction_pressure_summary(
+        {
+            "000001": {
+                "status": "resolved",
+                "auction_directional_pressure_yuan": 125.0,
+            },
+            "600000": {
+                "status": "unavailable",
+                "auction_directional_pressure_yuan": 0.0,
+            },
+        },
+        mapped_symbols_by_plate={"AI": ("000001", "600000")},
+        trade_date="2026-09-18",
+        selected_plates=("AI",),
+    )
+    pressure_context = build_opening_plate_auction_pressure_context(
+        auction_pressure_summary=pressure_summary,
+        source_provenance={
+            "trade_date": "2026-09-18",
+            "source": "market_data1.auction_snapshot_v2.0924_to_0925",
+            "auction_rows_sha256": "b" * 64,
+            "historical_available_at": "UNKNOWN",
+        },
+    )
+    field_facts = {
+        symbol: build_anchor_field_delta_evidence(
+            {
+                "symbol": symbol,
+                "price_milli": 10_000,
+                "auction_amount_yuan": 100,
+                "bid_amount_yuan": 200,
+                "ask_amount_yuan": 300,
+            },
+            {
+                "symbol": symbol,
+                "price_milli": 10_100,
+                "auction_amount_yuan": 120,
+                "bid_amount_yuan": 220,
+                "ask_amount_yuan": 290,
+            },
+            symbol=symbol,
+        )
+        for symbol in ("000001", "600000")
+    }
+    field_delta_context = build_opening_plate_field_delta_context(
+        field_delta_summary=build_opening_plate_field_delta_summary(
+            field_facts,
+            mapped_symbols_by_plate={"AI": ("000001", "600000")},
+            trade_date="2026-09-18",
+            selected_plates=("AI",),
+        ),
+        source_provenance={
+            "trade_date": "2026-09-18",
+            "source": "captured_td_auction_snapshot_rows",
+            "source_rows_sha256": "c" * 64,
+            "historical_available_at": "UNKNOWN",
+        },
+    )
+
+    result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+        plate_amount_context=amount_context,
+        plate_auction_pressure_context=pressure_context,
+        plate_field_delta_context=field_delta_context,
+    )
+    baseline = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+        plate_amount_context=amount_context,
+    )
+
+    opening = result["ordered"]["opening_evidence"]["OPENING_0932"]
+    repeated = result["repeat"]["opening_evidence"]["OPENING_0932"]
+    plate = opening["plate_auction_pressure_summary"]["plates"][0]
+    assert result["deterministic"] is True
+    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV16"
+    assert opening["plate_auction_pressure_context"]["content_hash"] == pressure_context[
+        "content_hash"
+    ]
+    assert plate["auction_pressure_yuan"] == 125.0
+    assert plate["auction_pressure_status"] == "partial"
+    assert opening["plate_auction_pressure_summary"] == repeated[
+        "plate_auction_pressure_summary"
+    ]
+    assert opening["plate_field_delta_context"]["content_hash"] == field_delta_context[
+        "content_hash"
+    ]
+    assert opening["plate_field_delta_summary"]["decision_status"] == "FACT_ONLY"
+    assert opening["plate_field_delta_summary"]["full_market_coverage"] == "UNPROVEN"
+    assert opening["plate_field_delta_summary"] == repeated["plate_field_delta_summary"]
+    assert result["ordered"]["final_state_hash"] == baseline["ordered"][
+        "final_state_hash"
+    ]
+    baseline_opening = baseline["ordered"]["opening_evidence"]["OPENING_0932"]
+    assert result["ordered"]["anchor_evidence"] == baseline["ordered"][
+        "anchor_evidence"
+    ]
+    assert result["ordered"]["final_state_hash"] == baseline["ordered"][
+        "final_state_hash"
+    ]
+    assert opening["facts_by_symbol_hash"] == baseline_opening["facts_by_symbol_hash"]
 
 
 def test_td_auction_price_audit_uses_basis_points_as_percentage_points():
@@ -767,3 +970,337 @@ def test_q2frame_rejects_plate_context_without_opening_barrier(tmp_path: Path):
             trade_date="2026-09-18",
             plate_amount_context=context,
         )
+
+
+def test_auxiliary_barrier_sidecar_compares_passive_core_q2_state_without_injection(
+    tmp_path: Path,
+):
+    frames = (
+        _frame(1, "09:25:06.000"),
+        _frame(2, "09:26:00.000"),
+    )
+    frames[-1]["q2_updates"][1]["ts"] = _epoch_ms("09:24:59.000")
+    source = tmp_path / "q2frame-0926-checkpoint.jsonl"
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+    barrier = {
+        "version": "Q2FrameV1",
+        "contract_version": 2,
+        "seq_no": 1,
+        "logical_ts_ms": _epoch_ms("09:26:00.000"),
+        "phase": 1,
+        "record_kind": "barrier_snapshot",
+        "barrier_tag": "0926",
+        "q2_updates": frames[-1]["q2_updates"],
+    }
+    barrier_path = tmp_path / "barrier-0926.jsonl"
+    barrier_path.write_text(
+        json.dumps(barrier, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    baseline = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+        continue_through_input=True,
+    )
+    compared = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        barrier_q2frame_path=barrier_path,
+        include_opening=True,
+        continue_through_input=True,
+    )
+
+    checkpoint = compared["ordered"]["barrier_snapshot_comparison_by_tag"]["0926"]
+    assert checkpoint["status"] == "CANONICAL_Q2_VALUES_EQUAL"
+    assert checkpoint["capture_policy"] == "PASSIVE_AFTER_EVENT_SECOND_NO_ENGINE_SIGNAL"
+    assert checkpoint["core_symbol_count"] == 2
+    assert checkpoint["sidecar_symbol_count"] == 2
+    assert checkpoint["value_mismatch_count"] == 0
+    assert checkpoint["core_value_hash"] == checkpoint["sidecar_value_hash"]
+    assert checkpoint["core_observer_time_error_counts"] == {"stale": 1}
+    assert checkpoint["sidecar_observer_time_error_counts"] == {}
+    assert compared["ordered"]["barrier_snapshot_update_count"] == 0
+    assert compared["ordered"]["processed_signals"] == baseline["ordered"][
+        "processed_signals"
+    ]
+    assert compared["ordered"]["final_state_hash"] == baseline["ordered"][
+        "final_state_hash"
+    ]
+
+    barrier["q2_updates"][0]["px"] += 1
+    barrier["q2_updates"].append(dict(barrier["q2_updates"][0]))
+    barrier_path.write_text(
+        json.dumps(barrier, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    mismatch = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        barrier_q2frame_path=barrier_path,
+        include_opening=True,
+        continue_through_input=True,
+    )
+    mismatch_checkpoint = mismatch["ordered"][
+        "barrier_snapshot_comparison_by_tag"
+    ]["0926"]
+    assert mismatch_checkpoint["status"] == "VALUE_MISMATCH"
+    assert mismatch_checkpoint["value_mismatch_count"] == 1
+    assert mismatch_checkpoint["field_mismatch_counts"] == {"price_milli": 1}
+    assert mismatch_checkpoint["duplicate_sidecar_symbol_count"] == 1
+
+
+def test_auxiliary_barrier_checkpoint_missing_from_stream_is_not_synthesized(
+    tmp_path: Path,
+):
+    frames = (
+        _frame(1, "09:25:06.000"),
+        _frame(2, "09:26:03.000"),
+    )
+    source = tmp_path / "q2frame-missing-0926-checkpoint.jsonl"
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+    barrier = {
+        "version": "Q2FrameV1",
+        "contract_version": 2,
+        "seq_no": 1,
+        "logical_ts_ms": _epoch_ms("09:26:00.000"),
+        "phase": 1,
+        "record_kind": "barrier_snapshot",
+        "barrier_tag": "0926",
+        "q2_updates": frames[-1]["q2_updates"],
+    }
+    barrier_path = tmp_path / "barrier-0926-missing.jsonl"
+    barrier_path.write_text(
+        json.dumps(barrier, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    baseline = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        continue_through_input=True,
+    )
+    compared = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        barrier_q2frame_path=barrier_path,
+        continue_through_input=True,
+    )
+
+    checkpoint = compared["ordered"]["barrier_snapshot_comparison_by_tag"]["0926"]
+    assert checkpoint["status"] == "NOT_OBSERVED_IN_REPLAY_STREAM"
+    assert checkpoint["core_value_hash"] is None
+    assert compared["ordered"]["final_state_hash"] == baseline["ordered"][
+        "final_state_hash"
+    ]
+
+
+def test_partial_reason_diagnostics_primary_priority_and_unknowns():
+    facts = {
+        "invalid": {
+            "status": "PARTIAL",
+            "quality_status": "INVALID",
+            "coverage_status": "PARTIAL",
+            "changes": {"breadth": "BREADTH_UNAVAILABLE"},
+        },
+        "missing": {
+            "status": "PARTIAL",
+            "quality_status": "MISSING",
+            "coverage_status": "READY",
+            "changes": {},
+        },
+        "neighbor": {
+            "status": "PARTIAL",
+            "quality_status": "PARTIAL",
+            "coverage_status": "READY",
+            "changes": {"price": "PRICE_STRONGER"},
+        },
+        "current": {
+            "status": "PARTIAL",
+            "quality_status": "PARTIAL",
+            "coverage_status": "READY",
+            "changes": {"price": "PRICE_WEAKER"},
+        },
+        "coverage": {
+            "status": "PARTIAL",
+            "quality_status": "PARTIAL",
+            "coverage_status": "PARTIAL",
+            "changes": {"price": "PRICE_STABLE"},
+        },
+        "volume": {
+            "status": "PARTIAL",
+            "quality_status": "PARTIAL",
+            "coverage_status": "READY",
+            "changes": {"price": "PRICE_STRONGER"},
+        },
+        "scope": {
+            "status": "PARTIAL",
+            "quality_status": "PARTIAL",
+            "coverage_status": "READY",
+            "changes": {
+                "breadth": "BREADTH_UNAVAILABLE",
+                "theme": "THEME_UNAVAILABLE",
+                "price": "PRICE_WEAKER",
+            },
+        },
+        "unknown": {
+            "status": "PARTIAL",
+            "quality_status": "UNAVAILABLE",
+            "coverage_status": "READY",
+            "changes": {},
+        },
+        "ready": {
+            "status": "READY",
+            "quality_status": "READY",
+            "coverage_status": "READY",
+            "changes": {},
+        },
+    }
+    anchor_facts = {
+        tag: {symbol: {"status": "AVAILABLE"} for symbol in facts}
+        for tag in ("0920", "0924", "0925")
+    }
+    anchor_facts["0920"]["neighbor"] = {"status": "MISSING"}
+    anchor_facts["0925"]["current"] = {"status": "MISSING"}
+
+    report = _build_partial_reason_diagnostics(
+        facts,
+        auction_anchor_facts_by_tag=anchor_facts,
+        volume_semantics_unknown=True,
+    )
+
+    assert report["contract"] == "PartialReasonDiagnosticsV1"
+    assert report["interpretation"] == "OBSERVED_COOCCURRENCE_NOT_CAUSAL"
+    assert report["symbol_count"] == 9
+    assert report["partial_symbol_count"] == 8
+    assert sum(report["primary_reason_counts"].values()) == 9
+    assert report["primary_reason_counts"] == {
+        "AUCTION_ANCHOR_ABSENT_COOCCURRENCE": 2,
+        "INVALID_FACT_QUALITY": 1,
+        "MISSING_FACT_QUALITY": 1,
+        "NOT_PARTIAL": 1,
+        "STRUCTURAL_ONLY_COMPARABLE": 3,
+        "UNKNOWN_FACT_QUALITY": 1,
+    }
+    assert report["by_symbol"]["invalid"]["primary_reason"] == "INVALID_FACT_QUALITY"
+    assert report["by_symbol"]["missing"]["primary_reason"] == "MISSING_FACT_QUALITY"
+    assert report["by_symbol"]["neighbor"]["primary_reason"] == (
+        "AUCTION_ANCHOR_ABSENT_COOCCURRENCE"
+    )
+    assert report["by_symbol"]["neighbor"]["auction_anchor_statuses"]["0920"] == (
+        "MISSING"
+    )
+    assert report["by_symbol"]["current"]["primary_reason"] == (
+        "AUCTION_ANCHOR_ABSENT_COOCCURRENCE"
+    )
+    assert report["by_symbol"]["current"]["auction_anchor_statuses"]["0925"] == (
+        "MISSING"
+    )
+    assert report["by_symbol"]["coverage"]["primary_reason"] == (
+        "STRUCTURAL_ONLY_COMPARABLE"
+    )
+    assert report["by_symbol"]["volume"]["primary_reason"] == (
+        "STRUCTURAL_ONLY_COMPARABLE"
+    )
+    assert report["by_symbol"]["scope"]["primary_reason"] == (
+        "STRUCTURAL_ONLY_COMPARABLE"
+    )
+    assert report["by_symbol"]["unknown"]["primary_reason"] == (
+        "UNKNOWN_FACT_QUALITY"
+    )
+    assert report["by_symbol"]["ready"]["reason_flags"] == []
+    assert report["reason_flag_counts"]["BREADTH_UNAVAILABLE_OUT_OF_SCOPE"] == 2
+    assert report["reason_flag_counts"]["VOLUME_SEMANTICS_UNKNOWN"] == 8
+
+    without_volume_uncertainty = _build_partial_reason_diagnostics(
+        {"scope": facts["scope"], "unknown": facts["unknown"]},
+        auction_anchor_facts_by_tag={},
+        volume_semantics_unknown=False,
+    )
+    assert without_volume_uncertainty["primary_reason_counts"] == {
+        "OUT_OF_SCOPE_ONLY": 1,
+        "UNKNOWN_FACT_QUALITY": 1,
+    }
+
+
+def test_partial_reason_diagnostics_empty_input_is_stable():
+    report = _build_partial_reason_diagnostics(
+        {},
+        auction_anchor_facts_by_tag={},
+        volume_semantics_unknown=False,
+    )
+
+    assert report["symbol_count"] == 0
+    assert report["partial_symbol_count"] == 0
+    assert report["primary_reason_counts"] == {}
+    assert report["reason_flag_counts"] == {}
+    assert report["by_symbol"] == {}
+
+
+def test_partial_reason_diagnostics_reads_volume_semantics_from_strategy_objects():
+    strategy = _AllSymbolAuctionShadow(("000001", "600000"))
+
+    expected = any(
+        child.volume_semantics == "UNKNOWN"
+        for child in strategy._strategies.values()
+    )
+    assert strategy.volume_semantics_unknown is expected
+
+
+def test_partial_reason_diagnostics_are_opt_in_report_only(tmp_path: Path):
+    frames = (
+        _frame(1, "09:15:00.000"),
+        _frame(2, "09:20:03.000"),
+        _frame(3, "09:24:10.000"),
+        _frame(4, "09:25:06.000"),
+    )
+    source = tmp_path / "q2frame-partial-diagnostics.jsonl"
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+
+    baseline = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+    )
+    diagnosed = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_partial_reason_diagnostics=True,
+    )
+
+    assert baseline["contract_version"] == diagnosed["contract_version"]
+    assert "partial_reason_diagnostics_contract" not in baseline
+    assert diagnosed["partial_reason_diagnostics_contract"] == (
+        "PartialReasonDiagnosticsV1"
+    )
+    assert set(diagnosed) - set(baseline) == {"partial_reason_diagnostics_contract"}
+    assert diagnosed["deterministic"] is True
+    assert diagnosed["ordered"]["final_state_hash"] == baseline["ordered"][
+        "final_state_hash"
+    ]
+    assert diagnosed["repeat"]["final_state_hash"] == baseline["repeat"][
+        "final_state_hash"
+    ]
+    assert diagnosed["ordered"]["input_frames_processed"] == baseline["ordered"][
+        "input_frames_processed"
+    ]
+    assert diagnosed["ordered"]["input_updates_processed"] == baseline["ordered"][
+        "input_updates_processed"
+    ]
+    baseline_0925 = baseline["ordered"]["anchor_evidence"]["0925"]
+    diagnosed_0925 = diagnosed["ordered"]["anchor_evidence"]["0925"]
+    assert set(diagnosed_0925) - set(baseline_0925) == {"partial_reason_diagnostics"}
+    report = diagnosed_0925["partial_reason_diagnostics"]
+    assert sum(report["primary_reason_counts"].values()) == report["symbol_count"]
+    assert report == diagnosed["repeat"]["anchor_evidence"]["0925"][
+        "partial_reason_diagnostics"
+    ]
