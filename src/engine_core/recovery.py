@@ -20,6 +20,66 @@ RECOVERY_APPLIED = "APPLIED"
 RECOVERY_NO_DATA = "NO_DATA"
 RECOVERY_ERROR = "ERROR"
 
+# Source-specific exception, not a general zero policy: the pinned t1-v2
+# Q2 writer zero-initializes these three auction anchors until each is
+# captured. TD snapshots encode the corresponding unavailable price as NULL.
+# Keep this translation limited to these fields; other numeric zeroes remain
+# ordinary values.
+_ZERO_MEANS_MISSING_FIELDS = frozenset({
+    "auction_anchor_0920_price_milli",
+    "auction_anchor_0924_price_milli",
+    "auction_anchor_0925_price_milli",
+})
+
+
+def _recovery_field_value_available(field_name: str, value: Any) -> bool:
+    if field_name in _ZERO_MEANS_MISSING_FIELDS:
+        return isinstance(value, int) and not isinstance(value, bool) and value > 0
+    return value is not None
+
+
+def _normalize_recovery_mapping(
+    rows: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, Mapping[str, Any]], tuple[str, ...], tuple[str, ...]]:
+    """Normalize a recovery mapping without choosing a conflicting duplicate.
+
+    Identical aliases are harmless duplicates and collapse to one row. If two
+    rows normalize to the same symbol but carry different content, that symbol
+    is quarantined while other rows remain usable.
+    """
+
+    if not isinstance(rows, Mapping):
+        raise TypeError("recovery rows must be a mapping")
+    normalized: dict[str, Mapping[str, Any]] = {}
+    invalid_symbols: set[str] = set()
+    anomaly_codes: set[str] = set()
+    for raw_symbol, raw_values in rows.items():
+        try:
+            symbol = normalize_symbol(raw_symbol)
+        except (TypeError, ValueError, UnicodeError):
+            anomaly_codes.add("INVALID_SYMBOL")
+            continue
+        if not isinstance(raw_values, Mapping):
+            normalized.pop(symbol, None)
+            invalid_symbols.add(symbol)
+            anomaly_codes.add("ROW_NOT_MAPPING")
+            continue
+        if symbol in invalid_symbols:
+            continue
+        values = dict(raw_values)
+        previous = normalized.get(symbol)
+        if previous is None:
+            normalized[symbol] = values
+        elif semantic_hash(previous) != semantic_hash(values):
+            normalized.pop(symbol, None)
+            invalid_symbols.add(symbol)
+            anomaly_codes.add("DUPLICATE_NORMALIZED_SYMBOL")
+    return (
+        {symbol: normalized[symbol] for symbol in sorted(normalized)},
+        tuple(sorted(invalid_symbols)),
+        tuple(sorted(anomaly_codes)),
+    )
+
 
 @dataclass(frozen=True)
 class RecoveryPlanV1:
@@ -80,6 +140,20 @@ class RecoveryPlanV1:
 
 @dataclass(frozen=True)
 class RecoveryResultV1:
+    """External recovery outcome carrying returned recovery rows.
+
+    ``rows`` may be a sparse provider response. When applied to an
+    ``AuctionTimeline``, omitted primary symbols/fields are restored from the
+    exact observed base cohort; recovered values may fill requested missing
+    fields only. A conflicting row is quarantined at symbol scope by the
+    timeline; out-of-plan members/fields are quarantined at the smallest useful
+    scope and reported as anomalies. Invalid plan identity remains an error;
+    a row whose embedded symbol disagrees with its normalized key is
+    quarantined at member scope and is never reassigned to another symbol.
+    ``filled_symbols`` and ``filled_fields`` describe usable returned fills,
+    not restored primary facts.
+    """
+
     plan_id: str
     idempotency_key: str
     source: str
@@ -92,6 +166,8 @@ class RecoveryResultV1:
     base_revision: int
     resulting_revision: Optional[int]
     notes: Tuple[str, ...] = ()
+    invalid_symbols: Tuple[str, ...] = ()
+    source_anomaly_codes: Tuple[str, ...] = ()
     content_hash: str = field(init=False)
     evidence_hash: str = field(init=False)
 
@@ -105,15 +181,126 @@ class RecoveryResultV1:
             RECOVERY_IN_FLIGHT,
         }:
             raise ValueError("unsupported recovery state")
-        normalized = {
-            normalize_symbol(symbol): dict(values)
-            for symbol, values in self.rows.items()
-        }
+        normalized, row_invalid_symbols, row_anomaly_codes = _normalize_recovery_mapping(
+            self.rows
+        )
         object.__setattr__(self, "rows", deep_freeze(normalized))
-        object.__setattr__(self, "filled_symbols", tuple(sorted({normalize_symbol(item) for item in self.filled_symbols})))
-        object.__setattr__(self, "filled_fields", tuple(sorted({str(item) for item in self.filled_fields})))
+        anomaly_code_set = (
+            {str(item) for item in self.source_anomaly_codes if str(item)}
+            | set(row_anomaly_codes)
+        )
+        declared_filled_symbols: set[str] = set()
+        for item in self.filled_symbols:
+            try:
+                declared_filled_symbols.add(normalize_symbol(item))
+            except (TypeError, ValueError, UnicodeError):
+                # A malformed member declaration must not discard other valid
+                # fills in this response. Keep a stable diagnostic, not the raw
+                # malformed token, in canonical evidence.
+                anomaly_code_set.add("INVALID_FILLED_SYMBOL_DECLARATION")
+        supplied_invalid_symbols: set[str] = set()
+        for item in self.invalid_symbols:
+            try:
+                supplied_invalid_symbols.add(normalize_symbol(item))
+            except (TypeError, ValueError, UnicodeError):
+                anomaly_code_set.add("INVALID_DIAGNOSTIC_SYMBOL")
+        declared_filled_fields = {str(item) for item in self.filled_fields if str(item)}
+        missing_filled_symbols = (
+            declared_filled_symbols
+            - set(normalized)
+            - set(row_invalid_symbols)
+            - supplied_invalid_symbols
+        )
+        invalid_symbols = tuple(
+            sorted(
+                supplied_invalid_symbols
+                | set(row_invalid_symbols)
+                | missing_filled_symbols
+            )
+        )
+        if missing_filled_symbols:
+            anomaly_code_set.add("FILLED_SYMBOL_NOT_RETURNED")
+        if invalid_symbols and not anomaly_code_set:
+            anomaly_code_set.add("INVALID_RECOVERY_SYMBOL")
+        candidate_filled_symbols = declared_filled_symbols - set(invalid_symbols)
+        filled_symbols = tuple(sorted(
+            symbol
+            for symbol in candidate_filled_symbols
+            if symbol in normalized
+            and any(
+                field_name in normalized[symbol]
+                and _recovery_field_value_available(
+                    field_name, normalized[symbol][field_name]
+                )
+                for field_name in declared_filled_fields
+            )
+        ))
+        if set(filled_symbols) != candidate_filled_symbols:
+            anomaly_code_set.add("DECLARED_FILL_NOT_AVAILABLE")
+        filled_fields = tuple(sorted(
+            field_name
+            for field_name in declared_filled_fields
+            if any(
+                symbol in normalized
+                and field_name in normalized[symbol]
+                and _recovery_field_value_available(
+                    field_name, normalized[symbol][field_name]
+                )
+                for symbol in filled_symbols
+            )
+        ))
+        if set(filled_fields) != declared_filled_fields:
+            anomaly_code_set.add("DECLARED_FIELD_NOT_AVAILABLE")
+        anomaly_codes = tuple(sorted(anomaly_code_set))
+        if self.base_revision < 0:
+            raise ValueError("base_revision must be non-negative")
+        if self.resulting_revision is not None and self.resulting_revision <= self.base_revision:
+            raise ValueError("resulting_revision must be greater than base_revision")
+        if self.recovery_state == RECOVERY_APPLIED:
+            if not filled_symbols or not filled_fields:
+                # Keep the clean contract strict, but let a response whose
+                # declared members were explicitly quarantined reach the
+                # timeline. It can then record an ERROR revision and preserve
+                # the PARTIAL primary facts/retry requirement instead of
+                # turning one malformed member into an exception for the
+                # entire recovery pass.
+                quarantined_fill_anomalies = {
+                    "INVALID_SYMBOL",
+                    "ROW_NOT_MAPPING",
+                    "DUPLICATE_NORMALIZED_SYMBOL",
+                    "INVALID_FILLED_SYMBOL_DECLARATION",
+                    "INVALID_DIAGNOSTIC_SYMBOL",
+                    "FILLED_SYMBOL_NOT_RETURNED",
+                    "DECLARED_FILL_NOT_AVAILABLE",
+                    "DECLARED_FIELD_NOT_AVAILABLE",
+                }
+                if not quarantined_fill_anomalies.intersection(anomaly_codes):
+                    raise ValueError("APPLIED result must identify filled symbols and fields")
+            else:
+                if any(
+                    not any(
+                        field_name in normalized[symbol]
+                        and normalized[symbol][field_name] is not None
+                        for field_name in filled_fields
+                    )
+                    for symbol in filled_symbols
+                ):
+                    raise ValueError("each filled symbol must contain a filled field value")
+                if any(
+                    not any(
+                        field_name in normalized[symbol]
+                        and normalized[symbol][field_name] is not None
+                        for symbol in filled_symbols
+                    )
+                    for field_name in filled_fields
+                ):
+                    raise ValueError("each filled field must have a non-null result value")
+        object.__setattr__(self, "filled_symbols", filled_symbols)
+        object.__setattr__(self, "filled_fields", filled_fields)
         object.__setattr__(self, "notes", tuple(self.notes))
-        object.__setattr__(self, "content_hash", semantic_hash({
+        object.__setattr__(self, "invalid_symbols", invalid_symbols)
+        object.__setattr__(self, "source_anomaly_codes", anomaly_codes)
+        content_payload = {
             "contract": RECOVERY_RESULT_CONTRACT_VERSION,
             "plan_id": self.plan_id,
             "idempotency_key": self.idempotency_key,
@@ -124,18 +311,38 @@ class RecoveryResultV1:
             "filled_fields": self.filled_fields,
             "base_revision": self.base_revision,
             "resulting_revision": self.resulting_revision,
-        }))
-        object.__setattr__(self, "evidence_hash", evidence_hash({
+        }
+        if invalid_symbols or anomaly_codes:
+            content_payload["invalid_symbols"] = invalid_symbols
+            content_payload["source_anomaly_codes"] = anomaly_codes
+        object.__setattr__(self, "content_hash", semantic_hash(content_payload))
+        evidence_payload = {
             "observed_at_ms": self.observed_at_ms,
             "available_at_ms": self.available_at_ms,
             "notes": self.notes,
-        }))
+        }
+        if invalid_symbols or anomaly_codes:
+            evidence_payload["invalid_symbols"] = invalid_symbols
+            evidence_payload["source_anomaly_codes"] = anomaly_codes
+        object.__setattr__(self, "evidence_hash", evidence_hash(evidence_payload))
 
-    @property
-    def historical_cutoff_safe(self) -> bool:
-        """Available-at is required before a result can enter cutoff replay."""
+    def is_available_by(self, cutoff_ms: int) -> bool:
+        """Compare the declared availability time to an explicit cutoff.
 
-        return self.available_at_ms is not None
+        This comparison does not authenticate the availability metadata; the
+        source owner must still establish that ``available_at_ms`` is factual.
+        """
+
+        if isinstance(cutoff_ms, bool) or not isinstance(cutoff_ms, int) or cutoff_ms < 0:
+            raise ValueError("cutoff_ms must be a non-negative integer timestamp")
+        available_at_ms = self.available_at_ms
+        if (
+            isinstance(available_at_ms, bool)
+            or not isinstance(available_at_ms, int)
+            or available_at_ms < 0
+        ):
+            return False
+        return available_at_ms <= cutoff_ms
 
     @property
     def source_layers(self) -> Tuple[str, ...]:
@@ -155,24 +362,49 @@ class RecoveryMergeResultV1:
     filled_fields: Tuple[str, ...]
     source_layers: Tuple[str, ...]
     recovery_state: str
+    invalid_symbols: Tuple[str, ...] = ()
+    source_anomaly_codes: Tuple[str, ...] = ()
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        normalized = {normalize_symbol(symbol): dict(values) for symbol, values in self.rows.items()}
+        normalized, row_invalid_symbols, row_anomaly_codes = _normalize_recovery_mapping(
+            self.rows
+        )
         object.__setattr__(self, "rows", deep_freeze(normalized))
-        object.__setattr__(self, "filled_symbols", tuple(sorted(set(self.filled_symbols))))
-        object.__setattr__(self, "filled_fields", tuple(sorted(set(self.filled_fields))))
+        invalid_symbols = tuple(sorted(
+            {normalize_symbol(item) for item in self.invalid_symbols}
+            | set(row_invalid_symbols)
+        ))
+        anomaly_codes = tuple(sorted(
+            {str(item) for item in self.source_anomaly_codes if str(item)}
+            | set(row_anomaly_codes)
+        ))
+        if invalid_symbols and not anomaly_codes:
+            anomaly_codes = ("INVALID_RECOVERY_SYMBOL",)
+        filled_symbols = tuple(sorted(
+            {normalize_symbol(item) for item in self.filled_symbols}
+            - set(invalid_symbols)
+        ))
+        filled_fields = tuple(sorted({str(item) for item in self.filled_fields}))
+        object.__setattr__(self, "filled_symbols", filled_symbols)
+        object.__setattr__(self, "filled_fields", filled_fields)
         object.__setattr__(self, "source_layers", tuple(self.source_layers))
+        object.__setattr__(self, "invalid_symbols", invalid_symbols)
+        object.__setattr__(self, "source_anomaly_codes", anomaly_codes)
         if self.recovery_state != RECOVERY_APPLIED:
             raise ValueError("merge result must be APPLIED")
-        object.__setattr__(self, "content_hash", semantic_hash({
+        content_payload = {
             "contract": RECOVERY_MERGE_CONTRACT_VERSION,
             "rows": normalized,
             "filled_symbols": self.filled_symbols,
             "filled_fields": self.filled_fields,
             "source_layers": self.source_layers,
             "recovery_state": self.recovery_state,
-        }))
+        }
+        if invalid_symbols or anomaly_codes:
+            content_payload["invalid_symbols"] = invalid_symbols
+            content_payload["source_anomaly_codes"] = anomaly_codes
+        object.__setattr__(self, "content_hash", semantic_hash(content_payload))
 
 
 def build_recovery_plan(
@@ -215,14 +447,40 @@ def merge_recovery_rows(
 ) -> RecoveryMergeResultV1:
     """Fill only missing fields; never overwrite an observed primary value."""
 
-    merged = {normalize_symbol(symbol): dict(values) for symbol, values in primary.items()}
+    normalized_primary, invalid_primary, primary_anomalies = _normalize_recovery_mapping(
+        primary
+    )
+    normalized_recovery, invalid_recovery, recovery_anomalies = _normalize_recovery_mapping(
+        recovery
+    )
+    invalid_symbols = set(invalid_primary) | set(invalid_recovery)
+    anomaly_codes = set(primary_anomalies) | set(recovery_anomalies)
+    merged = {symbol: dict(values) for symbol, values in normalized_primary.items()}
     filled_symbols: set[str] = set()
     filled_fields: set[str] = set()
-    for raw_symbol, raw_values in recovery.items():
-        symbol = normalize_symbol(raw_symbol)
+    for symbol, raw_values in normalized_recovery.items():
+        if symbol in invalid_symbols:
+            continue
         target = merged.setdefault(symbol, {})
         for field_name, value in raw_values.items():
-            if field_name not in target or target[field_name] is None:
+            current_value = target.get(field_name)
+            zero_is_missing = (
+                field_name in _ZERO_MEANS_MISSING_FIELDS
+                and isinstance(current_value, (int, float))
+                and not isinstance(current_value, bool)
+                and current_value == 0
+            )
+            recovered_value_available = (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and value > 0
+                if field_name in _ZERO_MEANS_MISSING_FIELDS
+                else value is not None
+            )
+            if (
+                (field_name not in target or current_value is None or zero_is_missing)
+                and recovered_value_available
+            ):
                 target[field_name] = value
                 filled_symbols.add(symbol)
                 filled_fields.add(str(field_name))
@@ -232,4 +490,6 @@ def merge_recovery_rows(
         filled_fields=tuple(sorted(filled_fields)),
         source_layers=tuple(source_layers),
         recovery_state=RECOVERY_APPLIED,
+        invalid_symbols=tuple(sorted(invalid_symbols)),
+        source_anomaly_codes=tuple(sorted(anomaly_codes)),
     )

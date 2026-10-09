@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 from .clock import local_datetime_ms
-from .contracts import evidence_hash, semantic_hash
+from .contracts import deep_freeze, evidence_hash, semantic_hash
 from .q2 import normalize_symbol
 
 
@@ -59,8 +59,14 @@ class AuctionTimingPolicyV1:
             self.preferred_finalize_time,
             self.soft_deadline_time,
         ):
-            if len(value) != 8 or value[2] != ":" or value[5] != ":":
-                raise ValueError("auction timing values must be HH:MM:SS")
+            if not isinstance(value, str):
+                raise TypeError("auction timing values must be strings in HH:MM:SS form")
+            try:
+                parsed = datetime.strptime(value, "%H:%M:%S")
+            except ValueError as exc:
+                raise ValueError("auction timing values must be valid HH:MM:SS") from exc
+            if parsed.strftime("%H:%M:%S") != value:
+                raise ValueError("auction timing values must be valid HH:MM:SS")
         if not (
             self.business_time <= self.first_observable_time
             <= self.preferred_finalize_time <= self.soft_deadline_time
@@ -394,7 +400,7 @@ class AuctionAnchorRevisionV3:
             ("source_observed_symbols", source_observed),
             ("source_missing_symbols", source_missing),
         ):
-            if set(values) - set(expected):
+            if expected and set(values) - set(expected):
                 raise ValueError("%s must be a subset of expected_symbols" % name)
         if set(available) & set(missing_anchor) or (
             expected and set(available) | set(missing_anchor) != set(expected)
@@ -582,7 +588,17 @@ def build_auction_anchor_revision(
     policy = policy or AuctionTimingPolicyV1.default(tag)
     times = policy.at(trade_date)
     by_symbol, invalid_symbols, anomaly_codes = _normalize_observed_rows(rows)
-    expected = tuple(sorted({normalize_symbol(item) for item in expected_symbols}))
+    expected_values: set[str] = set()
+    invalid_expected_count = 0
+    for item in expected_symbols:
+        try:
+            expected_values.add(normalize_symbol(item))
+        except (TypeError, ValueError, UnicodeError):
+            # An invalid member in the declared universe must not discard
+            # valid observed anchors. Drop only that member and withhold
+            # coverage/completeness claims for the affected revision.
+            invalid_expected_count += 1
+    expected = tuple(sorted(expected_values))
     expected_set = set(expected)
     source_observed = tuple(
         sorted(symbol for symbol in by_symbol if not expected or symbol in expected_set)
@@ -626,16 +642,24 @@ def build_auction_anchor_revision(
         else ()
     )
     anchor_coverage = (
-        len(anchor_available) / float(len(expected)) if expected else None
+        len(anchor_available) / float(len(expected))
+        if expected and not invalid_expected_count
+        else None
     )
     source_coverage = (
-        len(source_observed) / float(len(expected)) if expected else None
+        len(source_observed) / float(len(expected))
+        if expected and not invalid_expected_count
+        else None
     )
     evaluation_second_ms = _whole_second_ms(evaluation_time_ms)
     if evaluation_second_ms < _whole_second_ms(times["first_observable_ms"]):
         state = OBSERVING
     elif not expected:
         # An unknown denominator cannot establish field completeness.
+        state = PARTIAL
+    elif invalid_expected_count:
+        # The valid subset may be usable, but it cannot establish that the
+        # declared source universe was complete.
         state = PARTIAL
     elif not anchor_available:
         state = (
@@ -659,6 +683,9 @@ def build_auction_anchor_revision(
     )
     event_times = []
     all_anomaly_codes = list(anomaly_codes)
+    all_anomaly_codes.extend(
+        "INVALID_EXPECTED_SYMBOL" for _ in range(invalid_expected_count)
+    )
     for value in by_symbol.values():
         source_time = value.get("source_time_ms")
         if source_time is None:
@@ -715,6 +742,13 @@ class AuctionTimeline:
         self.trade_date = trade_date
         self.policies = dict(policies or {tag: AuctionTimingPolicyV1.default(tag) for tag in ("0920", "0924", "0925")})
         self._history: dict[str, list[AuctionAnchorRevisionV3]] = {tag: [] for tag in self.policies}
+        self._anchor_values: dict[str, dict[str, Any]] = {tag: {} for tag in self.policies}
+        self._source_rows: dict[str, Mapping[str, Mapping[str, Any]]] = {
+            tag: {} for tag in self.policies
+        }
+        self._applied_recovery_results: dict[
+            str, tuple[str, str, AuctionAnchorRevisionV3]
+        ] = {}
         # ``_history`` is a content-revision ledger.  ``_latest`` also tracks
         # the newest observation/evaluation evidence for the current revision;
         # identical rows observed after a soft cutoff must advance timing
@@ -731,6 +765,8 @@ class AuctionTimeline:
         observed_at_ms: Optional[int] = None,
         source_layers: Sequence[str] = (),
         recovery_state: str = "NOT_REQUESTED",
+        source_anomaly_codes: Sequence[str] = (),
+        invalid_source_symbols: Sequence[str] = (),
     ) -> AuctionAnchorRevisionV3:
         if tag not in self.policies:
             raise ValueError("unsupported auction tag")
@@ -749,16 +785,36 @@ class AuctionTimeline:
             recovery_state=recovery_state,
             policy=self.policies[tag],
         )
-        combined_anomaly_codes = tuple(
-            sorted((*candidate.source_anomaly_codes, *anomaly_codes))
-        )
-        if combined_anomaly_codes or invalid_symbols:
+        external_invalid_symbols: set[str] = set()
+        external_anomaly_codes = {str(item) for item in source_anomaly_codes if str(item)}
+        for raw_symbol in invalid_source_symbols:
+            try:
+                external_invalid_symbols.add(normalize_symbol(raw_symbol))
+            except (TypeError, ValueError, UnicodeError):
+                external_anomaly_codes.add("INVALID_DIAGNOSTIC_SYMBOL")
+        combined_anomaly_codes = tuple(sorted((
+            *candidate.source_anomaly_codes,
+            *anomaly_codes,
+            *sorted(external_anomaly_codes),
+        )))
+        combined_invalid_symbols = tuple(sorted(
+            set(candidate.invalid_source_symbols)
+            | set(invalid_symbols)
+            | external_invalid_symbols
+        ))
+        if combined_anomaly_codes or combined_invalid_symbols:
             candidate = replace(
                 candidate,
-                invalid_source_symbols=invalid_symbols,
+                invalid_source_symbols=combined_invalid_symbols,
                 source_anomaly_count=len(combined_anomaly_codes),
                 source_anomaly_codes=combined_anomaly_codes,
             )
+        self._source_rows[tag] = deep_freeze(normalized_rows)
+        anchor_field = _ANCHOR_PRICE_FIELDS[tag]
+        self._anchor_values[tag] = {
+            symbol: values.get(anchor_field)
+            for symbol, values in normalized_rows.items()
+        }
         if history and history[-1].content_hash == candidate.content_hash:
             previous = history[-1]
             candidate = replace(
@@ -772,6 +828,627 @@ class AuctionTimeline:
         self._latest[tag] = candidate
         return candidate
 
+    def apply_recovery_result(
+        self,
+        plan: Any,
+        result: Any,
+        *,
+        evaluation_time_ms: int,
+    ) -> AuctionAnchorRevisionV3:
+        """Apply one plan-bound recovery result.
+
+        Omitted primary members and fields are restored from the exact observed
+        base cohort before validation. This safely tolerates a sparse provider
+        response without treating omissions as deletions. A row conflicting
+        with an observed fact is quarantined by symbol while valid sibling
+        fills continue. Out-of-plan members/fields are quarantined at their
+        smallest useful scope; stale plans and invalid identities remain hard
+        errors. The return value is the timeline's current revision after the
+        operation. A retry for an older idempotency key returns the newer
+        current revision without reapplying old facts; the original result
+        revision remains available in revision history.
+        """
+
+        from .recovery import (
+            RECOVERY_APPLIED,
+            RECOVERY_ERROR,
+            RecoveryPlanV1,
+            RecoveryResultV1,
+        )
+
+        if not isinstance(plan, RecoveryPlanV1):
+            raise TypeError("plan must be RecoveryPlanV1")
+        if not isinstance(result, RecoveryResultV1):
+            raise TypeError("result must be RecoveryResultV1")
+        if plan.trade_date != self.trade_date:
+            raise ValueError("recovery plan trade_date does not match timeline")
+        if result.plan_id != plan.plan_id or result.idempotency_key != plan.idempotency_key:
+            raise ValueError("recovery result plan identity does not match request")
+        if result.base_revision != plan.current_revision:
+            raise ValueError("recovery result base_revision does not match request")
+        if (
+            result.resulting_revision is not None
+            and result.resulting_revision != plan.current_revision + 1
+        ):
+            raise ValueError("recovery result resulting_revision does not match next revision")
+        if result.recovery_state != RECOVERY_APPLIED:
+            raise ValueError("only APPLIED recovery results can create a revision")
+
+        current = self.latest(plan.tag)
+        if current is None:
+            raise ValueError("recovery result has no observed base revision")
+
+        previously_applied = self._applied_recovery_results.get(result.idempotency_key)
+        if previously_applied is not None:
+            previous_hash, previous_tag, previous_revision = previously_applied
+            if previous_hash != result.content_hash or previous_tag != plan.tag:
+                raise ValueError("idempotency key was reused with a different recovery result")
+            if current.revision != previous_revision.revision:
+                # A newer content revision already exists. A retry of an old
+                # result must not move the timeline backwards or make the old
+                # result revision look like the current timeline state.
+                return current
+            primary_rows = self._source_rows.get(plan.tag, {})
+            (
+                merged_rows,
+                candidate_symbols,
+                candidate_fields,
+                scope_anomalies,
+                quarantined_symbols,
+            ) = self._prepare_recovery_result_scope(
+                plan, current, result, primary_rows
+            )
+            merged_rows, completion_anomalies = self._complete_recovery_rows(
+                plan, merged_rows, primary_rows
+            )
+            conflicting_symbols = set(self._validate_recovery_source_rows(
+                plan,
+                merged_rows,
+                allowed_symbols=candidate_symbols,
+                allowed_fields=candidate_fields,
+            ))
+            for symbol in conflicting_symbols:
+                merged_rows[symbol] = dict(primary_rows[symbol])
+            if evaluation_time_ms < current.evaluation_time_ms:
+                # Keep the latest evidence monotonic even when a delayed retry
+                # arrives after a newer evaluation of the same revision.
+                return current
+
+            observed_at_ms = result.observed_at_ms
+            if current.observed_at_ms is not None and (
+                observed_at_ms is None or observed_at_ms < current.observed_at_ms
+            ):
+                observed_at_ms = current.observed_at_ms
+            refreshed = self.apply_recovery(
+                plan,
+                merged_rows,
+                evaluation_time_ms=evaluation_time_ms,
+                observed_at_ms=observed_at_ms,
+                source=result.source,
+                # This is a retry of an already-applied idempotency key. The
+                # current primary cohort includes the prior fill, so comparing
+                # it as though it were the original base would incorrectly
+                # turn a successful retry into ERROR.
+                recovery_state=previous_revision.recovery_state,
+                source_anomaly_codes=(
+                    *result.source_anomaly_codes,
+                    *scope_anomalies,
+                    *completion_anomalies,
+                    *(
+                        ("RECOVERY_CONFLICTING_SOURCE_ROW_QUARANTINED",)
+                        if conflicting_symbols
+                        else ()
+                    ),
+                ),
+                invalid_source_symbols=tuple(
+                    sorted(
+                        set(result.invalid_symbols)
+                        | quarantined_symbols
+                        | conflicting_symbols
+                    )
+                ),
+            )
+            if (
+                refreshed.revision != previous_revision.revision
+                or refreshed.content_hash != previous_revision.content_hash
+            ):
+                raise ValueError("idempotent recovery changed anchor content")
+            self._applied_recovery_results[result.idempotency_key] = (
+                result.content_hash,
+                plan.tag,
+                refreshed,
+            )
+            return refreshed
+        if plan.current_revision != current.revision:
+            raise ValueError("stale recovery plan; request against the current revision")
+
+        primary_rows = self._source_rows.get(plan.tag, {})
+        (
+            merged_rows,
+            candidate_symbols,
+            candidate_fields,
+            scope_anomalies,
+            quarantined_symbols,
+        ) = self._prepare_recovery_result_scope(
+            plan, current, result, primary_rows
+        )
+        # A conflicting recovery duplicate is quarantined by the result
+        # contract. Keep the previously observed primary row for that symbol
+        # so one bad recovered member neither erases old facts nor blocks other
+        # valid recovery fills.
+        for symbol in result.invalid_symbols:
+            if symbol in primary_rows:
+                merged_rows[symbol] = dict(primary_rows[symbol])
+        merged_rows, completion_anomalies = self._complete_recovery_rows(
+            plan, merged_rows, primary_rows
+        )
+        dropped_source_symbols = set(current.source_observed_symbols) - set(merged_rows)
+        if dropped_source_symbols:
+            raise ValueError("merged recovery cohort dropped existing source symbols")
+        conflicting_symbols = set(self._validate_recovery_source_rows(
+            plan,
+            merged_rows,
+            allowed_symbols=candidate_symbols,
+            allowed_fields=candidate_fields,
+        ))
+        for symbol in conflicting_symbols:
+            merged_rows[symbol] = dict(primary_rows[symbol])
+        accepted_filled_symbols, accepted_filled_fields = self._accepted_recovery_fills(
+            candidate_symbols - conflicting_symbols,
+            candidate_fields,
+            merged_rows,
+            primary_rows,
+        )
+        if conflicting_symbols:
+            completion_anomalies = tuple(sorted({
+                *completion_anomalies,
+                "RECOVERY_CONFLICTING_SOURCE_ROW_QUARANTINED",
+            }))
+        for symbol in current.available_anchor_symbols:
+            old_value = self._anchor_values.get(plan.tag, {}).get(symbol)
+            new_row = merged_rows.get(symbol)
+            if new_row is None:
+                raise ValueError("merged recovery cohort dropped an existing anchor symbol")
+            if new_row.get(_ANCHOR_PRICE_FIELDS[plan.tag]) != old_value:
+                raise ValueError("merged recovery cohort overwrites an existing anchor")
+        self._validate_recovery_source_rows(
+            plan,
+            merged_rows,
+            allowed_symbols=accepted_filled_symbols,
+            allowed_fields=accepted_filled_fields,
+        )
+
+        anchor_field = _ANCHOR_PRICE_FIELDS[plan.tag]
+        old_anchor_values = self._anchor_values.get(plan.tag, {})
+        recovery_scope_symbols = set(current.expected_symbols) or set(merged_rows)
+        newly_available_symbols = {
+            symbol
+            for symbol in recovery_scope_symbols
+            if self._is_recovered_field_value(
+                anchor_field,
+                merged_rows.get(symbol, {}).get(anchor_field),
+            )
+            and not self._is_recovered_field_value(
+                anchor_field, old_anchor_values.get(symbol)
+            )
+        }
+        if newly_available_symbols != accepted_filled_symbols:
+            raise ValueError(
+                "filled_symbols must match anchors newly available in the merged cohort"
+            )
+
+        for symbol in accepted_filled_symbols:
+            row = merged_rows[symbol]
+            if not any(
+                self._is_recovered_field_value(field_name, row.get(field_name))
+                for field_name in accepted_filled_fields
+            ):
+                raise ValueError("filled symbol has no available recovered field value")
+        for field_name in accepted_filled_fields:
+            if not any(
+                self._is_recovered_field_value(
+                    field_name, merged_rows[symbol].get(field_name)
+                )
+                for symbol in accepted_filled_symbols
+            ):
+                raise ValueError("filled field has no available recovered value")
+
+        applied = self.apply_recovery(
+            plan,
+            merged_rows,
+            evaluation_time_ms=evaluation_time_ms,
+            observed_at_ms=result.observed_at_ms,
+            source=result.source,
+            recovery_state=(
+                RECOVERY_APPLIED if accepted_filled_symbols else RECOVERY_ERROR
+            ),
+            source_anomaly_codes=(
+                *result.source_anomaly_codes,
+                *scope_anomalies,
+                *completion_anomalies,
+            ),
+            invalid_source_symbols=tuple(
+                sorted(
+                    set(result.invalid_symbols)
+                    | quarantined_symbols
+                    | conflicting_symbols
+                )
+            ),
+        )
+        self._applied_recovery_results[result.idempotency_key] = (
+            result.content_hash,
+            plan.tag,
+            applied,
+        )
+        return applied
+
+    def _prepare_recovery_result_scope(
+        self,
+        plan: Any,
+        current: AuctionAnchorRevisionV3,
+        result: Any,
+        primary_rows: Mapping[str, Mapping[str, Any]],
+    ) -> tuple[dict[str, dict[str, Any]], set[str], set[str], tuple[str, ...], set[str]]:
+        """Quarantine out-of-plan result data without discarding valid siblings.
+
+        Plan/date/revision identity is validated by the caller. A row whose
+        embedded symbol disagrees with its normalized key is quarantined as an
+        invalid member; it is never reassigned to either symbol. Other valid
+        declared members continue through the same recovery operation.
+        """
+
+        declared_symbols = set(result.filled_symbols)
+        requested_symbols = set(plan.requested_symbols)
+        known_symbols = set(current.expected_symbols)
+        allowed_symbols = requested_symbols or known_symbols or declared_symbols
+        requested_fields = set(plan.missing_fields)
+        candidate_symbols = declared_symbols & allowed_symbols
+        candidate_fields = set(result.filled_fields) & requested_fields
+        anomaly_codes: set[str] = set()
+        quarantined_symbols: set[str] = set(result.invalid_symbols)
+
+        out_of_scope_symbols = declared_symbols - allowed_symbols
+        if out_of_scope_symbols:
+            anomaly_codes.add("RECOVERY_OUT_OF_SCOPE_SYMBOL_QUARANTINED")
+            quarantined_symbols.update(out_of_scope_symbols)
+        for field_name in set(result.filled_fields) - requested_fields:
+            anomaly_codes.add(
+                f"RECOVERY_OUT_OF_SCOPE_FIELD_QUARANTINED:{field_name}"
+            )
+
+        merged_rows = {
+            symbol: dict(values)
+            for symbol, values in _rows_by_symbol(result.rows).items()
+        }
+        for symbol in result.invalid_symbols:
+            if symbol in primary_rows:
+                # RecoveryResultV1 already excluded this ambiguous member;
+                # retain the base row so completion diagnostics stay stable
+                # across idempotent retries.
+                merged_rows[symbol] = dict(primary_rows[symbol])
+        for symbol, row in tuple(merged_rows.items()):
+            if "symbol" in row and not self._row_symbol_matches(row["symbol"], symbol):
+                # The mapping key cannot safely be reassigned to the embedded
+                # identity, but one malformed provider member must not discard
+                # valid sibling fills. Retain the exact primary row when one
+                # exists; otherwise omit this new member and report it.
+                candidate_symbols.discard(symbol)
+                quarantined_symbols.add(symbol)
+                anomaly_codes.add(
+                    "RECOVERY_EMBEDDED_SYMBOL_MISMATCH_QUARANTINED"
+                )
+                merged_rows.pop(symbol, None)
+                if symbol in primary_rows:
+                    merged_rows[symbol] = dict(primary_rows[symbol])
+                continue
+
+            primary = primary_rows.get(symbol, {})
+            for field_name in tuple(row):
+                if field_name == "symbol" or field_name in primary:
+                    continue
+                if field_name not in requested_fields:
+                    row.pop(field_name)
+                    anomaly_codes.add(
+                        f"RECOVERY_OUT_OF_SCOPE_FIELD_QUARANTINED:{field_name}"
+                    )
+
+            for field_name in requested_fields:
+                if symbol in candidate_symbols and field_name in candidate_fields:
+                    continue
+                recovered_value = row.get(field_name)
+                primary_value = primary.get(field_name)
+                if not (
+                    self._is_recovered_field_value(field_name, recovered_value)
+                    and not self._is_recovered_field_value(field_name, primary_value)
+                ):
+                    continue
+                if field_name in primary:
+                    row[field_name] = primary_value
+                else:
+                    row.pop(field_name, None)
+                anomaly_codes.add(
+                    f"RECOVERY_UNDECLARED_FILL_QUARANTINED:{symbol}.{field_name}"
+                )
+                if symbol not in primary_rows:
+                    quarantined_symbols.add(symbol)
+
+            if symbol not in primary_rows and symbol not in candidate_symbols:
+                merged_rows.pop(symbol)
+                if symbol not in quarantined_symbols:
+                    anomaly_codes.add("RECOVERY_OUT_OF_SCOPE_SYMBOL_QUARANTINED")
+                    quarantined_symbols.add(symbol)
+                continue
+
+            if symbol not in allowed_symbols:
+                # Preserve an already-observed row through normal completion;
+                # keep its returned existing fields for conflict detection,
+                # but do not accept new fields from an unrequested member.
+                if symbol not in primary_rows:
+                    merged_rows.pop(symbol)
+                    quarantined_symbols.add(symbol)
+                else:
+                    for field_name in tuple(merged_rows[symbol]):
+                        if field_name not in primary_rows[symbol]:
+                            merged_rows[symbol].pop(field_name)
+                            anomaly_codes.add(
+                                f"RECOVERY_OUT_OF_SCOPE_FIELD_QUARANTINED:{field_name}"
+                            )
+                    if symbol in declared_symbols:
+                        quarantined_symbols.add(symbol)
+                anomaly_codes.add("RECOVERY_OUT_OF_SCOPE_SYMBOL_QUARANTINED")
+                continue
+
+        return (
+            merged_rows,
+            candidate_symbols,
+            candidate_fields,
+            tuple(sorted(anomaly_codes)),
+            quarantined_symbols,
+        )
+
+    def _accepted_recovery_fills(
+        self,
+        candidate_symbols: set[str],
+        candidate_fields: set[str],
+        merged_rows: Mapping[str, Mapping[str, Any]],
+        primary_rows: Mapping[str, Mapping[str, Any]],
+    ) -> tuple[set[str], set[str]]:
+        """Return only declared fills that add a usable value to the base."""
+
+        accepted_fields = {
+            field_name
+            for field_name in candidate_fields
+            if any(
+                symbol in merged_rows
+                and self._is_recovered_field_value(
+                    field_name, merged_rows[symbol].get(field_name)
+                )
+                and not self._is_recovered_field_value(
+                    field_name, primary_rows.get(symbol, {}).get(field_name)
+                )
+                for symbol in candidate_symbols
+            )
+        }
+        accepted_symbols = {
+            symbol
+            for symbol in candidate_symbols
+            if any(
+                self._is_recovered_field_value(
+                    field_name, merged_rows.get(symbol, {}).get(field_name)
+                )
+                and not self._is_recovered_field_value(
+                    field_name, primary_rows.get(symbol, {}).get(field_name)
+                )
+                for field_name in accepted_fields
+            )
+        }
+        accepted_fields = {
+            field_name
+            for field_name in accepted_fields
+            if any(
+                self._is_recovered_field_value(
+                    field_name, merged_rows.get(symbol, {}).get(field_name)
+                )
+                for symbol in accepted_symbols
+            )
+        }
+        return accepted_symbols, accepted_fields
+
+    @staticmethod
+    def _is_recovered_field_value(field_name: str, value: Any) -> bool:
+        if field_name in _ANCHOR_PRICE_FIELDS.values():
+            return isinstance(value, int) and not isinstance(value, bool) and value > 0
+        return value is not None
+
+    @classmethod
+    def _complete_recovery_rows(
+        cls,
+        plan: Any,
+        rows: Mapping[str, Mapping[str, Any]],
+        primary_rows: Mapping[str, Mapping[str, Any]],
+    ) -> tuple[dict[str, dict[str, Any]], tuple[str, ...]]:
+        """Complete sparse recovery rows without replacing observed primary facts.
+
+        Missing old symbols and fields are copied from the saved primary
+        cohort. An unavailable requested value also preserves the primary
+        value (including explicit missing/zero semantics). New symbols with no
+        usable requested value are omitted. Plan-bound result application
+        removes/quarantines out-of-scope facts before calling this helper;
+        direct lower-level recovery continues to validate its explicit scope.
+        """
+
+        merged = {symbol: dict(values) for symbol, values in rows.items()}
+        requested_fields = tuple(plan.missing_fields)
+        anomaly_codes: set[str] = set()
+
+        for symbol, primary in primary_rows.items():
+            row = merged.get(symbol)
+            if row is None:
+                merged[symbol] = dict(primary)
+                anomaly_codes.add("RECOVERY_SOURCE_SYMBOL_RESTORED")
+                continue
+            missing_primary_fields = tuple(
+                field_name for field_name in primary if field_name not in row
+            )
+            if missing_primary_fields:
+                for field_name in missing_primary_fields:
+                    row[field_name] = primary[field_name]
+                anomaly_codes.add("RECOVERY_SOURCE_FIELD_RESTORED")
+
+        for symbol, row in tuple(merged.items()):
+            primary = primary_rows.get(symbol)
+            if primary is None:
+                # A new member with no usable requested value contributes no
+                # recovery fact. Do not let its default-only row block valid
+                # members in the same cohort.
+                has_unrequested_facts = any(
+                    field_name != "symbol" and field_name not in requested_fields
+                    for field_name in row
+                )
+                has_usable_requested_value = any(
+                    cls._is_recovered_field_value(field_name, row.get(field_name))
+                    for field_name in requested_fields
+                )
+                if not has_unrequested_facts and not has_usable_requested_value:
+                    merged.pop(symbol)
+                    anomaly_codes.add("RECOVERY_UNAVAILABLE_NEW_SYMBOL_OMITTED")
+                continue
+
+            for field_name in requested_fields:
+                if cls._is_recovered_field_value(field_name, row.get(field_name)):
+                    continue
+                if field_name in primary:
+                    if field_name in row and row[field_name] != primary[field_name]:
+                        anomaly_codes.add("RECOVERY_UNAVAILABLE_FIELD_RESTORED")
+                    row[field_name] = primary[field_name]
+                else:
+                    row.pop(field_name, None)
+        return merged, tuple(sorted(anomaly_codes))
+
+    def _validate_recovery_source_rows(
+        self,
+        plan: Any,
+        merged_rows: Mapping[str, Mapping[str, Any]],
+        *,
+        allowed_symbols: set[str],
+        allowed_fields: set[str],
+    ) -> Tuple[str, ...]:
+        """Validate recovery scope and return conflicting existing members.
+
+        A changed previously observed value quarantines only that symbol. This
+        validator remains strict for any out-of-scope data not already
+        quarantined by plan-bound result handling. Callers preserve the primary
+        row for each returned symbol before applying sibling fills.
+        """
+
+        primary_rows = self._source_rows.get(plan.tag, {})
+        conflicting_symbols: set[str] = set()
+        dropped_symbols = set(primary_rows) - set(merged_rows)
+        if dropped_symbols:
+            raise ValueError("merged recovery cohort dropped existing source symbols")
+
+        requested_symbols = set(plan.requested_symbols)
+        if not requested_symbols:
+            current = self.latest(plan.tag)
+            known_universe = set(current.expected_symbols) if current is not None else set()
+            # With no declared universe, a full-cohort recovery plan has no
+            # symbol list to constrain. The result's explicit allowed_symbols
+            # is then the scope; apply_recovery_result supplies filled_symbols
+            # so undeclared additions are still rejected.
+            requested_symbols = known_universe or set(allowed_symbols)
+        requested_fields = set(plan.missing_fields)
+
+        for symbol, primary_row in primary_rows.items():
+            merged_row = merged_rows[symbol]
+            for field_name, primary_value in primary_row.items():
+                if field_name not in merged_row:
+                    raise ValueError(
+                        "merged recovery cohort dropped existing source field "
+                        f"{symbol}.{field_name}"
+                    )
+                recovered_value = merged_row[field_name]
+                if field_name == "symbol":
+                    if self._row_symbol_matches(primary_value, symbol) and self._row_symbol_matches(
+                        recovered_value, symbol
+                    ):
+                        continue
+                    raise ValueError(
+                        "recovery row symbol does not match its normalized key"
+                    )
+                if semantic_hash(primary_value) == semantic_hash(recovered_value):
+                    continue
+
+                is_declared_fill = (
+                    symbol in requested_symbols
+                    and symbol in allowed_symbols
+                    and field_name in requested_fields
+                    and field_name in allowed_fields
+                    and not self._is_recovered_field_value(field_name, primary_value)
+                    and self._is_recovered_field_value(field_name, recovered_value)
+                )
+                if is_declared_fill:
+                    continue
+                if (
+                    field_name in _ANCHOR_PRICE_FIELDS.values()
+                    and self._is_recovered_field_value(field_name, primary_value)
+                ):
+                    conflicting_symbols.add(symbol)
+                    continue
+                if (
+                    field_name in _ANCHOR_PRICE_FIELDS.values()
+                    and not self._is_recovered_field_value(field_name, primary_value)
+                    and self._is_recovered_field_value(field_name, recovered_value)
+                ):
+                    raise ValueError(
+                        "filled_symbols must match anchors newly available in the merged cohort"
+                    )
+                conflicting_symbols.add(symbol)
+
+            for field_name, recovered_value in merged_row.items():
+                if field_name in primary_row:
+                    continue
+                if field_name == "symbol":
+                    if self._row_symbol_matches(recovered_value, symbol):
+                        continue
+                    raise ValueError(
+                        "recovery row symbol does not match its normalized key"
+                    )
+                is_declared_addition = (
+                    symbol in requested_symbols
+                    and symbol in allowed_symbols
+                    and field_name in requested_fields
+                    and field_name in allowed_fields
+                    and self._is_recovered_field_value(field_name, recovered_value)
+                )
+                if not is_declared_addition:
+                    raise ValueError(
+                        "merged recovery cohort adds unrequested source field "
+                        f"{symbol}.{field_name}"
+                    )
+
+        for symbol in set(merged_rows) - set(primary_rows):
+            if symbol not in requested_symbols or symbol not in allowed_symbols:
+                raise ValueError(
+                    "merged recovery cohort added an unrequested source symbol"
+                )
+            if not any(
+                field_name in requested_fields
+                and field_name in allowed_fields
+                and self._is_recovered_field_value(field_name, value)
+                for field_name, value in merged_rows[symbol].items()
+            ):
+                raise ValueError(
+                    "new recovery symbol has no requested recovered field"
+                )
+        return tuple(sorted(conflicting_symbols))
+
+    @staticmethod
+    def _row_symbol_matches(value: Any, expected_symbol: str) -> bool:
+        try:
+            return normalize_symbol(value) == expected_symbol
+        except (TypeError, ValueError, UnicodeError):
+            return False
+
     def latest(self, tag: str) -> Optional[AuctionAnchorRevisionV3]:
         return self._latest.get(tag)
 
@@ -783,28 +1460,112 @@ class AuctionTimeline:
         evaluation_time_ms: int,
         observed_at_ms: Optional[int] = None,
         source: str = "wencai",
+        recovery_state: str = "APPLIED",
+        source_anomaly_codes: Sequence[str] = (),
+        invalid_source_symbols: Sequence[str] = (),
     ) -> AuctionAnchorRevisionV3:
-        """Apply an already merged recovery cohort as a new fact revision.
+        """Apply recovery rows as a new fact revision.
 
-        The external recovery owner is responsible for fetching and merging
-        only missing fields.  Core records the source layer and remains
-        fact-only; repeated cohorts with the same semantic content are
-        idempotent because ``observe`` compares content hashes.
+        The source owner fetches missing fields. Core safely completes omitted
+        members/fields from its saved primary cohort, quarantines a row that
+        conflicts with observed facts while preserving valid sibling fills,
+        and rejects invalid identity or out-of-plan additions. Recovery and
+        anomaly provenance are recorded, and output remains fact-only.
+        Repeated cohorts with the same semantic content are idempotent because
+        ``observe`` compares content hashes.
         """
 
+        from .recovery import RecoveryPlanV1
+
+        if not isinstance(plan, RecoveryPlanV1):
+            raise TypeError("plan must be RecoveryPlanV1")
         tag = getattr(plan, "tag", None)
         if not isinstance(tag, str):
             raise ValueError("recovery plan must expose tag")
+        if plan.trade_date != self.trade_date:
+            raise ValueError("recovery plan trade_date does not match timeline")
         current = self.latest(tag)
+        if current is None:
+            raise ValueError("recovery cohort has no observed base revision")
+        merged_rows, row_invalid_symbols, row_anomaly_codes = _normalize_observed_rows(rows)
+        primary_rows = self._source_rows.get(tag, {})
+        invalid_symbols = set(row_invalid_symbols)
+        anomaly_codes = set(row_anomaly_codes)
+        anomaly_codes.update(str(item) for item in source_anomaly_codes if str(item))
+        for raw_symbol in invalid_source_symbols:
+            try:
+                invalid_symbols.add(normalize_symbol(raw_symbol))
+            except (TypeError, ValueError, UnicodeError):
+                anomaly_codes.add("INVALID_DIAGNOSTIC_SYMBOL")
+        for symbol in invalid_symbols:
+            if symbol in primary_rows:
+                merged_rows[symbol] = dict(primary_rows[symbol])
+        for symbol, row in tuple(merged_rows.items()):
+            if "symbol" not in row or self._row_symbol_matches(row["symbol"], symbol):
+                continue
+            # A mismatched embedded identity makes this member unusable; do
+            # not guess which symbol owns it. Preserve prior facts for a known
+            # member and continue applying any valid sibling rows.
+            invalid_symbols.add(symbol)
+            anomaly_codes.add("RECOVERY_EMBEDDED_SYMBOL_MISMATCH_QUARANTINED")
+            merged_rows.pop(symbol, None)
+            if symbol in primary_rows:
+                merged_rows[symbol] = dict(primary_rows[symbol])
+        merged_rows, completion_anomalies = self._complete_recovery_rows(
+            plan, merged_rows, primary_rows
+        )
+        anomaly_codes.update(completion_anomalies)
+        expected_revision = plan.current_revision
+        allowed_symbols = (
+            set(plan.requested_symbols)
+            or set(current.expected_symbols)
+            or set(merged_rows)
+        )
+        conflicting_symbols = set(self._validate_recovery_source_rows(
+            plan,
+            merged_rows,
+            allowed_symbols=allowed_symbols,
+            allowed_fields=set(plan.missing_fields),
+        ))
+        for symbol in conflicting_symbols:
+            merged_rows[symbol] = dict(primary_rows[symbol])
+        if conflicting_symbols:
+            invalid_symbols.update(conflicting_symbols)
+            anomaly_codes.add("RECOVERY_CONFLICTING_SOURCE_ROW_QUARANTINED")
+        anchor_field = _ANCHOR_PRICE_FIELDS[tag]
+        old_anchor_values = self._anchor_values.get(tag, {})
+        has_recovered_anchor = any(
+            self._is_recovered_field_value(anchor_field, row.get(anchor_field))
+            and not self._is_recovered_field_value(
+                anchor_field, old_anchor_values.get(symbol)
+            )
+            for symbol, row in merged_rows.items()
+        )
+        if (conflicting_symbols or invalid_symbols) and not has_recovered_anchor:
+            recovery_state = "ERROR"
+        is_identical_retry = (
+            current.revision == expected_revision + 1
+            and semantic_hash(merged_rows)
+            == semantic_hash(self._source_rows.get(tag, {}))
+        )
+        if current.revision != expected_revision and not is_identical_retry:
+            raise ValueError("stale recovery plan; request against the current revision")
         expected = current.expected_symbols if current is not None and current.expected_symbols else getattr(plan, "requested_symbols", ())
+        source_layers = tuple(
+            dict.fromkeys(
+                (*(current.source_layers if current is not None else ()), source)
+            )
+        )
         return self.observe(
             tag,
-            rows,
+            merged_rows,
             evaluation_time_ms=evaluation_time_ms,
             expected_symbols=expected,
             observed_at_ms=observed_at_ms,
-            source_layers=(source,),
-            recovery_state="APPLIED",
+            source_layers=source_layers,
+            recovery_state=recovery_state,
+            source_anomaly_codes=tuple(sorted(anomaly_codes)),
+            invalid_source_symbols=tuple(sorted(invalid_symbols)),
         )
 
     def revisions(self, tag: str) -> Tuple[AuctionAnchorRevisionV3, ...]:
@@ -845,10 +1606,23 @@ class AuctionTimeline:
                 else:
                     prior_deltas[prior] = "PARTIAL"
         recovery_plan = None
+        # A successful recovery attempt can still leave some symbols or fields
+        # unavailable. Keep the initial partial result usable, and expose a
+        # follow-up plan only for the residual missing set. If all expected
+        # anchors are present, the fact remains PARTIAL after recovery (it is
+        # not promoted to READY), but no further recovery is required.
+        residual_expected_symbols_missing = bool(current.missing_anchor_symbols)
+        unresolved_universe_needs_initial_recovery = (
+            not current.expected_symbols
+            and current.recovery_state != "APPLIED"
+        )
         recovery_required = (
             tag == "0925"
             and current.state in {PARTIAL, MISSING}
-            and current.recovery_state != "APPLIED"
+            and (
+                residual_expected_symbols_missing
+                or unresolved_universe_needs_initial_recovery
+            )
         )
         if recovery_required:
             from .recovery import build_recovery_plan

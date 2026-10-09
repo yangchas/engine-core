@@ -1,0 +1,85 @@
+{
+  "contract_version": "RealCapturedQ2AnchorRevisionFixtureV1",
+  "trade_date": "2026-10-09",
+  "tag": "0924",
+  "raw_field": "a24",
+  "canonical_field": "auction_anchor_0924_price_milli",
+  "source_layer": "REDIS_Q2_CAPTURED",
+  "source_evidence": {
+    "before_capture": {
+      "file": "probe_0924_capture.json",
+      "file_sha256": "78fa0acf874bc9271d0b7b3755292700a1b06b6904c24278c58de311db2ea398",
+      "input_canonical_sha256": "74b45b31be4ddf223484defd578f63fb6d815fd437af350334eef275f7470526",
+      "read_started_at": "2026-10-09T01:24:12.441000+00:00",
+      "read_completed_at": "2026-10-09T01:24:13.702000+00:00"
+    },
+    "after_capture": {
+      "file": "probe_0925_06_capture.json",
+      "file_sha256": "a11aa7e5be852a05055d7e288e0f3f738dda02baa7ab8b567ae3406ce2c67e25",
+      "input_canonical_sha256": "a84698c2a5936feeaf01629d26891c5079d4d08151f4f5c0b63ba00366837374",
+      "read_started_at": "2026-10-09T01:25:06.323000+00:00",
+      "read_completed_at": "2026-10-09T01:25:08.429000+00:00"
+    },
+    "rows_canonical_sha256": "23b850076d01a27040811a662f1fb7351564490889df9d83c88d4741abf517c0",
+    "rows_canonicalization": "UTF-8 JSON of {before_rows,after_rows}, sorted object keys, compact separators, ensure_ascii=false",
+    "limitations": [
+      "The Redis captures are best-effort and non-atomic.",
+      "Q2 ts is the per-symbol latest quote event timestamp, not this anchor's event time or Redis available_at.",
+      "The 20 symbols are a stratified behavior sample from this observed cohort, not a full-market sample.",
+      "All 20 selected symbols are Shenzhen-prefixed codes; they are a behavior sample, not an exchange-representative or market-wide sample.",
+      "The inspected source compares whole-second event time inclusively (hms >= 92400 && hms <= 92420 after truncation), so the full 09:24:20 second is eligible; the before capture completed at 09:24:13.702 within that window, and the observed changes may be normal in-window updates rather than late event arrival.",
+      "The inspected release source snapshot and deployed binary identity are not independently proven byte-for-byte; interpret this boundary as source evidence, not a claim about every running build.",
+      "The comparison proves later Q2 observations changed; it does not prove the cause or historical Rabbit arrival order."
+    ]
+  },
+  "symbol_groups": {
+    "filled_from_zero": ["000010", "000014", "000025", "000027", "000035"],
+    "rewritten_positive": ["000011", "000020", "000021", "000065", "000078"],
+    "stable_positive": ["000001", "000002", "000006", "000009", "000017"],
+    "remained_zero": ["000007", "000008", "000012", "000016", "000026"]
+  },
+  "before_rows": [
+    {"symbol": "000001", "a24": "11780", "ts": "1791509043000"},
+    {"symbol": "000002", "a24": "3950", "ts": "1791509043000"},
+    {"symbol": "000006", "a24": "7300", "ts": "1791509043000"},
+    {"symbol": "000007", "a24": "0", "ts": "1791508953000"},
+    {"symbol": "000008", "a24": "0", "ts": "1791509025000"},
+    {"symbol": "000009", "a24": "6870", "ts": "1791509043000"},
+    {"symbol": "000010", "a24": "0", "ts": "1791508980000"},
+    {"symbol": "000011", "a24": "11500", "ts": "1791509043000"},
+    {"symbol": "000012", "a24": "0", "ts": "1791508962000"},
+    {"symbol": "000014", "a24": "0", "ts": "1791509034000"},
+    {"symbol": "000016", "a24": "0", "ts": "1791508500000"},
+    {"symbol": "000017", "a24": "7470", "ts": "1791509043000"},
+    {"symbol": "000020", "a24": "14190", "ts": "1791509043000"},
+    {"symbol": "000021", "a24": "32300", "ts": "1791509043000"},
+    {"symbol": "000025", "a24": "0", "ts": "1791508989000"},
+    {"symbol": "000026", "a24": "0", "ts": "1791509016000"},
+    {"symbol": "000027", "a24": "0", "ts": "1791509025000"},
+    {"symbol": "000035", "a24": "0", "ts": "1791509025000"},
+    {"symbol": "000065", "a24": "9510", "ts": "1791509043000"},
+    {"symbol": "000078", "a24": "1470", "ts": "1791509043000"}
+  ],
+  "after_rows": [
+    {"symbol": "000001", "a24": "11780", "ts": "1791509100000"},
+    {"symbol": "000002", "a24": "3950", "ts": "1791509100000"},
+    {"symbol": "000006", "a24": "7300", "ts": "1791509100000"},
+    {"symbol": "000007", "a24": "0", "ts": "1791509100000"},
+    {"symbol": "000008", "a24": "0", "ts": "1791509100000"},
+    {"symbol": "000009", "a24": "6870", "ts": "1791509100000"},
+    {"symbol": "000010", "a24": "1420", "ts": "1791509100000"},
+    {"symbol": "000011", "a24": "11510", "ts": "1791509100000"},
+    {"symbol": "000012", "a24": "0", "ts": "1791509100000"},
+    {"symbol": "000014", "a24": "11600", "ts": "1791509100000"},
+    {"symbol": "000016", "a24": "0", "ts": "1791508500000"},
+    {"symbol": "000017", "a24": "7470", "ts": "1791509100000"},
+    {"symbol": "000020", "a24": "14200", "ts": "1791509100000"},
+    {"symbol": "000021", "a24": "32280", "ts": "1791509100000"},
+    {"symbol": "000025", "a24": "15320", "ts": "1791509100000"},
+    {"symbol": "000026", "a24": "0", "ts": "1791509100000"},
+    {"symbol": "000027", "a24": "6370", "ts": "1791509100000"},
+    {"symbol": "000035", "a24": "4850", "ts": "1791509100000"},
+    {"symbol": "000065", "a24": "9540", "ts": "1791509100000"},
+    {"symbol": "000078", "a24": "1460", "ts": "1791509100000"}
+  ]
+}
