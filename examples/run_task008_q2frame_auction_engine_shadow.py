@@ -60,10 +60,16 @@ from engine_core import (  # noqa: E402
 from engine_core.contracts import StrategyResult  # noqa: E402
 from engine_core.market_summary import derive_q2_auction_summary  # noqa: E402
 from engine_core.q2 import normalize_q2  # noqa: E402
+from engine_core.auction_universe_reconciliation import (  # noqa: E402
+    attribute_opening_stale_symbols,
+)
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 AUCTION_TAGS = ("0920", "0924", "0925")
+Q2FRAME_EVENT_REPLAY_LAYER = "t1_v2_q2frame_event_time_replay"
+Q2FRAME_BARRIER_SIDECAR_LAYER = "t1_v2_q2frame_barrier_sidecar"
+AUCTION_RAW_FIELDS = {"0920": "a20", "0924": "a24", "0925": "a25"}
 OPENING_TAG = "OPENING_0932"
 OPENING_EVALUATION_LOCAL = "09:32:10"
 OPENING_STALE_AFTER_MS = 60_000
@@ -75,6 +81,7 @@ AUCTION_PRICE_FIELDS = (
     "auction_anchor_0925_price_milli",
 )
 PARTIAL_REASON_DIAGNOSTICS_CONTRACT = "PartialReasonDiagnosticsV1"
+OPENING_STALE_UNIVERSE_SIDECAR_CONTRACT = "OpeningStaleAuctionUniverseSidecarV1"
 _PARTIAL_REASON_PRIORITY = (
     "INVALID_FACT_QUALITY",
     "MISSING_FACT_QUALITY",
@@ -274,6 +281,97 @@ def _file_sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _sha256_text(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _prepare_opening_stale_universe_sidecar(
+    sidecar: Mapping[str, Any] | None,
+    *,
+    trade_date: str,
+    include_opening: bool,
+    unavailable_reason: str | None = None,
+) -> tuple[Mapping[str, Any] | None, dict[str, Any] | None]:
+    if sidecar is None and unavailable_reason is None:
+        return None, None
+    if unavailable_reason is not None:
+        return None, {
+            "contract": "OpeningStaleAuctionUniverseAttributionSidecarV1",
+            "status": "UNAVAILABLE",
+            "reason_code": unavailable_reason,
+            "diagnostic_only": True,
+            "blocks_downstream": False,
+        }
+    if not include_opening:
+        return None, {
+            "contract": "OpeningStaleAuctionUniverseAttributionSidecarV1",
+            "status": "NOT_RUN",
+            "reason_code": "OPENING_BARRIER_NOT_ENABLED",
+            "diagnostic_only": True,
+            "blocks_downstream": False,
+        }
+    try:
+        if not isinstance(sidecar, Mapping):
+            raise ValueError("sidecar must be an object")
+        if sidecar.get("contract") != OPENING_STALE_UNIVERSE_SIDECAR_CONTRACT:
+            raise ValueError("wrong sidecar contract")
+        expected_date = str(trade_date).replace("-", "")
+        if str(sidecar.get("trade_date", "")).replace("-", "") != expected_date:
+            raise ValueError("sidecar trade date mismatch")
+        if sidecar.get("auction_tag") != "0925":
+            raise ValueError("sidecar must describe the 0925 auction anchor")
+        source_artifacts = sidecar.get("source_artifacts")
+        if not isinstance(source_artifacts, Mapping):
+            raise ValueError("source_artifacts must be an object")
+        for path_key, hash_key in (
+            ("anchor_path", "anchor_sha256"),
+            ("td_path", "td_sha256"),
+        ):
+            if not isinstance(source_artifacts.get(path_key), str) or not source_artifacts[
+                path_key
+            ].strip():
+                raise ValueError("source artifact path is missing")
+            if not _sha256_text(source_artifacts.get(hash_key)):
+                raise ValueError("source artifact SHA-256 is invalid")
+        if "anchor_snapshot" not in sidecar:
+            raise ValueError("anchor_snapshot key is required; value may be null")
+        anchor_snapshot = sidecar["anchor_snapshot"]
+        td_rows = sidecar.get("td_rows")
+        if not isinstance(td_rows, list):
+            raise ValueError("td_rows must be an array")
+        # Reuse the pure contract validator before making the sidecar part of
+        # the replay report. No I/O or Core state changes occur here.
+        attribute_opening_stale_symbols(
+            {},
+            td_rows,
+            trade_date=trade_date,
+            auction_tag="0925",
+            evaluation_time_ms=0,
+            stale_after_ms=0,
+            anchor_snapshot=anchor_snapshot,
+        )
+        canonical_hash(sidecar)
+        return sidecar, None
+    except (KeyError, TypeError, ValueError):
+        return None, {
+            "contract": "OpeningStaleAuctionUniverseAttributionSidecarV1",
+            "status": "UNAVAILABLE",
+            "reason_code": "INVALID_SIDECAR_CONTRACT",
+            "diagnostic_only": True,
+            "blocks_downstream": False,
+        }
+
+
+def _unavailable_opening_stale_universe_diagnostic(
+    unavailable: Mapping[str, Any],
+) -> dict[str, Any]:
+    return dict(unavailable)
 
 
 def _read_barrier_q2frames(
@@ -833,9 +931,13 @@ class _AllSymbolAuctionShadow:
         opening_field_status_counts: dict[str, Counter[str]] = {}
         child_hashes: dict[str, str] = {}
         evidence_refs: set[str] = set()
+        revision_state_by_symbol: dict[str, Mapping[str, Any]] = {}
         for symbol, result in child_results.items():
             child_hashes[symbol] = result.content_hash
             evidence_refs.update(result.evidence_refs)
+            revision_state = result.trace.get("auction_revision_state")
+            if isinstance(revision_state, Mapping):
+                revision_state_by_symbol[symbol] = revision_state
             status = result.trace.get("fact_status", "UNKNOWN")
             status_counts[getattr(status, "value", str(status))] += 1
             anchor_fact = result.trace.get("auction_anchor_fact")
@@ -895,6 +997,22 @@ class _AllSymbolAuctionShadow:
             trace["auction_anchor_fact_status_counts"] = dict(
                 sorted(anchor_fact_status_counts.items())
             )
+        if revision_state_by_symbol:
+            first_revision_state = next(iter(revision_state_by_symbol.values()))
+            trace["auction_revision_state"] = dict(first_revision_state)
+            revision_state_hashes = {
+                semantic_hash(value) for value in revision_state_by_symbol.values()
+            }
+            if len(revision_state_hashes) > 1:
+                trace["auction_revision_state"]["diagnostics"] = tuple(
+                    sorted(
+                        set(trace["auction_revision_state"].get("diagnostics", ()))
+                        | {"PER_SYMBOL_REVISION_STATE_DIVERGENCE"}
+                    )
+                )
+                trace["auction_revision_state"][
+                    "symbol_state_divergence_count"
+                ] = len(revision_state_hashes) - 1
         if is_opening:
             trace["fact_status_scope"] = "change_pct_and_source_time"
             trace["facts_by_symbol"] = facts_by_symbol
@@ -958,6 +1076,8 @@ def _run_once(
     plate_auction_pressure_context: Mapping[str, Any] | None = None,
     plate_field_delta_context: Mapping[str, Any] | None = None,
     plate_price_reference_context: Mapping[str, Any] | None = None,
+    auction_universe_sidecar: Mapping[str, Any] | None = None,
+    auction_universe_sidecar_unavailable: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     symbols = tuple(inventory["symbols"])
     policies = {tag: AuctionTimingPolicyV1.default(tag) for tag in AUCTION_TAGS}
@@ -1001,9 +1121,16 @@ def _run_once(
     )
     auction_timeline = AuctionTimeline(trade_date)
     anchor_evidence: dict[str, dict[str, Any]] = {}
+    auction_revision_history_by_tag: dict[str, list[dict[str, Any]]] = {
+        tag: [] for tag in AUCTION_TAGS
+    }
     opening_evidence: dict[str, dict[str, Any]] = {}
     frame_count = update_count = 0
     latest_q2_update_by_symbol: dict[str, Mapping[str, Any]] = {}
+    latest_q2_row_layer_by_symbol: dict[str, str] = {}
+    latest_anchor_field_layer_by_tag: dict[str, dict[str, str]] = {
+        tag: {} for tag in AUCTION_TAGS
+    }
     last_raw_frame_ms = None
     last_raw_update_ms = None
     first_excluded_frame: dict[str, Any] | None = None
@@ -1016,6 +1143,41 @@ def _run_once(
         for tag, snapshot in (barrier_snapshots or {}).items()
         if tag not in AUCTION_TAGS
     }
+
+    def record_update_source_layer(
+        update: Mapping[str, Any], source_layer: str
+    ) -> None:
+        symbol = str(update.get("symbol", "")).strip()
+        if not symbol:
+            return
+        latest_q2_row_layer_by_symbol[symbol] = source_layer
+        for tag, raw_field in AUCTION_RAW_FIELDS.items():
+            # Q2FrameReplaySource merges omitted keys with the prior symbol
+            # state. Keep the previous field owner on omission, but attribute
+            # an explicit value (including zero/NULL) to this update's layer.
+            if raw_field in update:
+                latest_anchor_field_layer_by_tag[tag][symbol] = source_layer
+
+    def source_layer_attribution(tag: str) -> dict[str, Any]:
+        row_counts = Counter(latest_q2_row_layer_by_symbol.values())
+        anchor_counts = Counter(latest_anchor_field_layer_by_tag[tag].values())
+        layers = tuple(sorted(set(row_counts) | set(anchor_counts)))
+        return {
+            "contract": "AuctionSourceLayerAttributionV1",
+            "source_layers": layers,
+            "latest_q2_row_symbol_counts": dict(sorted(row_counts.items())),
+            "latest_explicit_anchor_field_symbol_counts": dict(
+                sorted(anchor_counts.items())
+            ),
+            "anchor_raw_field": AUCTION_RAW_FIELDS[tag],
+            "scope": (
+                "coarse event-path attribution from each symbol's latest Q2 row "
+                "and latest explicit raw anchor-field update; not producer-build, "
+                "Rabbit-arrival, or historical-availability provenance"
+            ),
+            "diagnostic_only": True,
+            "blocks_downstream": False,
+        }
 
     # A bounded Q2Frame may begin after one or more auction observation times.
     # Do not move VirtualClock backwards to manufacture those earlier Engine
@@ -1041,6 +1203,20 @@ def _run_once(
             "decision_status": "FACT_ONLY",
         }
         if tag == OPENING_TAG:
+            if auction_universe_sidecar is not None:
+                not_observed["auction_universe_attribution"] = {
+                    "contract": "OpeningStaleAuctionUniverseAttributionSidecarV1",
+                    "status": "NOT_RUN",
+                    "reason_code": "OPENING_NOT_OBSERVED_IN_REPLAY_WINDOW",
+                    "diagnostic_only": True,
+                    "blocks_downstream": False,
+                }
+            elif auction_universe_sidecar_unavailable is not None:
+                not_observed["auction_universe_attribution"] = (
+                    _unavailable_opening_stale_universe_diagnostic(
+                        auction_universe_sidecar_unavailable
+                    )
+                )
             opening_evidence[tag] = not_observed
         else:
             anchor_evidence[tag] = not_observed
@@ -1050,12 +1226,18 @@ def _run_once(
         }
         barrier_index += 1
 
-    def capture_barrier(tag: str, logical_ms: int, result: Any) -> None:
+    def capture_barrier(
+        tag: str,
+        logical_ms: int,
+        result: Any,
+        timeline_revision: Any = None,
+    ) -> None:
         snapshot = result.snapshots[-1]
         strategy_result = result.strategy_results[-1]
         base = {
             "first_observable_ms": logical_ms,
             "first_observable_local": _local_datetime(logical_ms).isoformat(),
+            "evaluation_time_ms": logical_ms,
             "engine_snapshot_hash": snapshot.content_hash,
             "engine_revision": snapshot.market_state_revision,
             "engine_completeness": snapshot.completeness,
@@ -1073,6 +1255,9 @@ def _run_once(
             "last_raw_frame_time_ms": last_raw_frame_ms,
             "last_raw_update_time_ms": last_raw_update_ms,
             "strategy_result_hash": strategy_result.content_hash,
+            "auction_revision_state": strategy_result.trace.get(
+                "auction_revision_state", {}
+            ),
             "fact_status_counts": strategy_result.trace.get("fact_status_counts", {}),
             "fact_status_scope": strategy_result.trace.get("fact_status_scope"),
             "anchor_fact_status_scope": strategy_result.trace.get(
@@ -1093,6 +1278,12 @@ def _run_once(
             "reducer_revision": engine._reducer.state.revision,
             "virtual_clock_ms": int(clock.now_utc().timestamp() * 1000),
         }
+        if tag in AUCTION_TAGS:
+            first_observable_ms = policies[tag].at(trade_date)["first_observable_ms"]
+            base["first_observable_ms"] = first_observable_ms
+            base["first_observable_local"] = _local_datetime(
+                first_observable_ms
+            ).isoformat()
         source_anomaly_hashes = tuple(
             snapshot.source_observation_metadata.get("source_anomaly_hashes", ())
         )
@@ -1336,13 +1527,71 @@ def _run_once(
                 base["plate_field_delta_summary"] = plate_field_delta_context[
                     "field_delta_summary"
                 ]
+            if auction_universe_sidecar_unavailable is not None:
+                base["auction_universe_attribution"] = (
+                    _unavailable_opening_stale_universe_diagnostic(
+                        auction_universe_sidecar_unavailable
+                    )
+                )
+            elif auction_universe_sidecar is not None:
+                try:
+                    attribution = attribute_opening_stale_symbols(
+                        base.get("facts_by_symbol", {}),
+                        auction_universe_sidecar["td_rows"],
+                        trade_date=trade_date,
+                        auction_tag="0925",
+                        evaluation_time_ms=logical_ms,
+                        stale_after_ms=OPENING_STALE_AFTER_MS,
+                        anchor_snapshot=auction_universe_sidecar["anchor_snapshot"],
+                    )
+                    source_artifacts = auction_universe_sidecar["source_artifacts"]
+                    base["auction_universe_attribution"] = {
+                        "contract": "OpeningStaleAuctionUniverseAttributionSidecarV1",
+                        "status": "AVAILABLE",
+                        "source_artifacts": dict(source_artifacts),
+                        "result": attribution,
+                        "diagnostic_only": True,
+                        "blocks_downstream": False,
+                    }
+                except (KeyError, TypeError, ValueError):
+                    # This optional cross-source diagnostic must never suppress
+                    # or alter the opening facts produced by the replay.
+                    base["auction_universe_attribution"] = {
+                        "contract": "OpeningStaleAuctionUniverseAttributionSidecarV1",
+                        "status": "UNAVAILABLE",
+                        "reason_code": "INVALID_SIDECAR_CONTRACT",
+                        "diagnostic_only": True,
+                        "blocks_downstream": False,
+                    }
+                except Exception as error:
+                    # Keep unexpected failures inside this optional diagnostic;
+                    # the replay facts and engine progression remain authoritative.
+                    base["auction_universe_attribution"] = {
+                        "contract": "OpeningStaleAuctionUniverseAttributionSidecarV1",
+                        "status": "UNAVAILABLE",
+                        "reason_code": "SIDECAR_ATTRIBUTION_FAILED",
+                        "error_type": type(error).__name__,
+                        "diagnostic_only": True,
+                        "blocks_downstream": False,
+                    }
             opening_evidence[tag] = base
         else:
             base["auction_revision"] = auction_revision_summary(
                 tag,
                 snapshot,
                 logical_ms,
+                timeline_revision,
             )
+            base["auction_revision_ref"] = (
+                snapshot.source_observation_metadata.get("auction_revision_ref")
+            )
+            history = auction_revision_history_by_tag.setdefault(tag, [])
+            if not history or (
+                history[-1].get("revision") != base["auction_revision"].get("revision")
+                or history[-1].get("content_hash")
+                != base["auction_revision"].get("content_hash")
+            ):
+                history.append(dict(base["auction_revision"]))
             if tag == "0925":
                 q2_quotes = {
                     symbol: normalize_q2(symbol, update)
@@ -1369,26 +1618,46 @@ def _run_once(
         tag: str,
         snapshot: Any,
         evaluation_time_ms: int,
+        revision: Any,
     ) -> dict[str, Any]:
-        rows = {
-            symbol: {
-                **dict(values),
-                "source_time_ms": values.get("source_record_time_ms"),
-            }
-            for symbol, values in snapshot.symbol_states.items()
-        }
-        revision = auction_timeline.observe(
-            tag,
-            rows,
-            evaluation_time_ms=evaluation_time_ms,
-            expected_symbols=symbols,
-            observed_at_ms=snapshot.source_observation_metadata.get(
-                "observation_time_ms"
-            ),
-            source_layers=("t1_v2_q2frame_event_time_replay",),
-        )
+        if revision is None:
+            raise ValueError("auction timeline revision must be observed before capture")
+        if revision.tag != tag or revision.evaluation_time_ms != evaluation_time_ms:
+            raise ValueError("auction timeline revision does not match capture")
         analysis_bundle = auction_timeline.build_analysis_bundle(tag)
         recovery_plan = analysis_bundle["recovery_plan"]
+        prior_revision = next(
+            (
+                item
+                for item in auction_timeline.revisions(tag)
+                if item.revision == revision.revision - 1
+            ),
+            None,
+        )
+        if prior_revision is None:
+            availability_transition = {
+                "contract": "AuctionRevisionAvailabilityTransitionV1",
+                "status": "BASELINE",
+                "from_revision": None,
+                "to_revision": revision.revision,
+                "became_available_symbols": None,
+                "became_missing_symbols": None,
+            }
+        else:
+            availability_transition = {
+                "contract": "AuctionRevisionAvailabilityTransitionV1",
+                "status": "COMPARED",
+                "from_revision": prior_revision.revision,
+                "to_revision": revision.revision,
+                "became_available_symbols": sorted(
+                    set(revision.available_anchor_symbols)
+                    - set(prior_revision.available_anchor_symbols)
+                ),
+                "became_missing_symbols": sorted(
+                    set(revision.missing_anchor_symbols)
+                    - set(prior_revision.missing_anchor_symbols)
+                ),
+            }
         recovery_plan_summary = (
             None
             if recovery_plan is None
@@ -1421,6 +1690,7 @@ def _run_once(
             "source_coverage": revision.source_coverage,
             "anchor_available_symbol_count": len(revision.available_anchor_symbols),
             "missing_anchor_symbol_count": len(revision.missing_anchor_symbols),
+            "availability_transition": availability_transition,
             "anchor_coverage": revision.anchor_coverage,
             # Compatibility field retains the V1 name, now explicitly scoped
             # to required anchor-field coverage by the V2 contract.
@@ -1433,6 +1703,7 @@ def _run_once(
                 else "NOT_REQUIRED"
             ),
             "source_layers": revision.source_layers,
+            "source_layer_attribution": source_layer_attribution(tag),
             "observed_at_ms": revision.observed_at_ms,
             "evaluation_time_ms": revision.evaluation_time_ms,
             "freeze_time_ms": revision.freeze_time_ms,
@@ -1445,6 +1716,36 @@ def _run_once(
             "content_hash": revision.content_hash,
             "evidence_hash": revision.evidence_hash,
         }
+
+    def observe_auction_revision(tag: str, evaluation_time_ms: int) -> Any:
+        state = engine._reducer.state
+        rows = {
+            symbol: {
+                **dict(values),
+                "source_time_ms": values.get("source_record_time_ms"),
+            }
+            for symbol, values in state.symbol_states.items()
+        }
+        revision = auction_timeline.observe(
+            tag,
+            rows,
+            evaluation_time_ms=evaluation_time_ms,
+            expected_symbols=symbols,
+            observed_at_ms=state.source_observation_metadata.get(
+                "observation_time_ms"
+            ),
+            source_layers=source_layer_attribution(tag)["source_layers"],
+        )
+        state.source_observation_metadata["auction_revision_ref"] = {
+            "contract": "AuctionAnchorRevisionRefV1",
+            "tag": tag,
+            "revision": revision.revision,
+            "content_hash": revision.content_hash,
+            "supersedes_revision": revision.supersedes_revision,
+            "evaluation_time_ms": revision.evaluation_time_ms,
+            "evidence_hash": revision.evidence_hash,
+        }
+        return revision
 
     def enqueue_barrier_snapshot(tag: str, logical_ms: int) -> None:
         nonlocal barrier_snapshot_update_count, last_raw_update_ms
@@ -1507,6 +1808,7 @@ def _run_once(
             symbol = str(update.get("symbol", "")).strip()
             if symbol:
                 latest_q2_update_by_symbol[symbol] = update
+            record_update_source_layer(update, Q2FRAME_BARRIER_SIDECAR_LAYER)
             source_ms = update.get("ts")
             if isinstance(source_ms, int) and not isinstance(source_ms, bool):
                 last_raw_update_ms = (
@@ -1526,6 +1828,13 @@ def _run_once(
         nonlocal barrier_index
         clock.advance_to(datetime.fromtimestamp(logical_ms / 1000, timezone.utc))
         enqueue_barrier_snapshot(tag, logical_ms)
+        # Freeze the same-time market cohort before creating its revision ref.
+        engine.run_until_empty()
+        timeline_revision = (
+            observe_auction_revision(tag, logical_ms)
+            if tag in AUCTION_TAGS
+            else None
+        )
         trigger_id = OPENING_TAG if tag == OPENING_TAG else f"AUCTION_{tag}"
         engine.submit(
             EngineSignal(
@@ -1537,8 +1846,42 @@ def _run_once(
             )
         )
         result = engine.run_until_empty()
-        capture_barrier(tag, logical_ms, result)
+        capture_barrier(tag, logical_ms, result, timeline_revision)
         barrier_index += 1
+
+    def fire_late_auction_revisions(logical_ms: int) -> None:
+        """Re-evaluate 0920/0924 when the observed anchor content changes."""
+
+        for tag_index, tag in enumerate(AUCTION_TAGS):
+            current = anchor_evidence.get(tag, {}).get("auction_revision")
+            if not isinstance(current, Mapping):
+                continue
+            if logical_ms < policies[tag].at(trade_date)["first_observable_ms"]:
+                continue
+            previous_revision = current.get("revision")
+            timeline_revision = observe_auction_revision(tag, logical_ms)
+            if not isinstance(previous_revision, int):
+                continue
+            if timeline_revision.revision <= previous_revision:
+                continue
+            engine.submit(
+                EngineSignal(
+                    signal_id=(
+                        f"q2frame-revision-timer:{tag}:"
+                        f"{timeline_revision.revision}"
+                    ),
+                    logical_time_ms=logical_ms,
+                    signal_seq=(
+                        2_000_000_000
+                        + tag_index * 1_000_000
+                        + timeline_revision.revision
+                    ),
+                    signal_kind=SignalKind.TIMER,
+                    payload={"trigger_id": f"AUCTION_{tag}"},
+                )
+            )
+            result = engine.run_until_empty()
+            capture_barrier(tag, logical_ms, result, timeline_revision)
 
     for replay_second, group in _groups_by_replay_second(path):
         if replay_second > final_ms:
@@ -1594,6 +1937,7 @@ def _run_once(
                 symbol = str(update.get("symbol", "")).strip()
                 if symbol:
                     latest_q2_update_by_symbol[symbol] = update
+                record_update_source_layer(update, Q2FRAME_EVENT_REPLAY_LAYER)
             last_raw_frame_ms = frame.logical_ts_ms
             update_times = [
                 int(update["ts"])
@@ -1614,12 +1958,24 @@ def _run_once(
             if barrier_index < len(ordered_barriers)
             else None
         )
+        timeline_revision = None
         if matching_barrier is not None and matching_barrier[1] == replay_second:
             tag, logical_ms = matching_barrier
             # Engine signal priority applies every Q2Frame update in this whole
             # second before the same-time auction timer.
             clock.advance_to(datetime.fromtimestamp(logical_ms / 1000, timezone.utc))
             enqueue_barrier_snapshot(tag, logical_ms)
+        # Drain all source frames for this replay second before observing the
+        # anchor. This mirrors the queue cohort boundary rather than firing a
+        # timer after an arbitrary individual symbol update.
+        engine.run_until_empty()
+        if matching_barrier is not None and matching_barrier[1] == replay_second:
+            tag, logical_ms = matching_barrier
+            timeline_revision = (
+                observe_auction_revision(tag, logical_ms)
+                if tag in AUCTION_TAGS
+                else None
+            )
             trigger_id = OPENING_TAG if tag == OPENING_TAG else f"AUCTION_{tag}"
             engine.submit(
                 EngineSignal(
@@ -1633,8 +1989,10 @@ def _run_once(
         result = engine.run_until_empty()
         if matching_barrier is not None and matching_barrier[1] == replay_second:
             tag, logical_ms = matching_barrier
-            capture_barrier(tag, logical_ms, result)
+            capture_barrier(tag, logical_ms, result, timeline_revision)
             barrier_index += 1
+        else:
+            fire_late_auction_revisions(replay_second)
         for tag, sidecar in auxiliary_barrier_snapshots.items():
             checkpoint_ms = _floor_second(sidecar.logical_ts_ms)
             if checkpoint_ms == replay_second and tag not in barrier_snapshot_comparison_by_tag:
@@ -1697,6 +2055,7 @@ def _run_once(
     final_state = engine._reducer.state
     result = {
         "anchor_evidence": anchor_evidence,
+        "auction_revision_history_by_tag": auction_revision_history_by_tag,
         "opening_evidence": opening_evidence,
         "first_excluded_frame": first_excluded_frame,
         "input_frames_processed": frame_count,
@@ -1739,6 +2098,9 @@ def run_q2frame_auction_engine_shadow(
     plate_auction_pressure_context: Mapping[str, Any] | None = None,
     plate_field_delta_context: Mapping[str, Any] | None = None,
     plate_price_reference_context: Mapping[str, Any] | None = None,
+    auction_universe_sidecar: Mapping[str, Any] | None = None,
+    auction_universe_sidecar_file_sha256: str | None = None,
+    auction_universe_sidecar_error: str | None = None,
 ) -> dict[str, Any]:
     """Run a pinned Q2Frame auction replay, optionally through opening, twice."""
 
@@ -1782,6 +2144,27 @@ def run_q2frame_auction_engine_shadow(
                 if plate_amount_context is not None
                 else None
             ),
+        )
+
+    if auction_universe_sidecar_file_sha256 is not None and not _sha256_text(
+        auction_universe_sidecar_file_sha256
+    ):
+        auction_universe_sidecar_error = "SIDECAR_FILE_SHA256_INVALID"
+        auction_universe_sidecar = None
+    prepared_auction_universe_sidecar, auction_universe_sidecar_unavailable = (
+        _prepare_opening_stale_universe_sidecar(
+            auction_universe_sidecar,
+            trade_date=trade_date,
+            include_opening=include_opening,
+            unavailable_reason=auction_universe_sidecar_error,
+        )
+    )
+    if (
+        auction_universe_sidecar_unavailable is not None
+        and auction_universe_sidecar_file_sha256 is not None
+    ):
+        auction_universe_sidecar_unavailable["file_sha256"] = (
+            auction_universe_sidecar_file_sha256
         )
 
     initial_sha = _file_sha256(q2frame_path)
@@ -1846,6 +2229,8 @@ def run_q2frame_auction_engine_shadow(
         plate_auction_pressure_context=plate_auction_pressure_context,
         plate_field_delta_context=plate_field_delta_context,
         plate_price_reference_context=plate_price_reference_context,
+        auction_universe_sidecar=prepared_auction_universe_sidecar,
+        auction_universe_sidecar_unavailable=auction_universe_sidecar_unavailable,
     )
     between_runs_sha = _file_sha256(q2frame_path)
     barrier_between_runs_sha = (
@@ -1866,6 +2251,8 @@ def run_q2frame_auction_engine_shadow(
         plate_auction_pressure_context=plate_auction_pressure_context,
         plate_field_delta_context=plate_field_delta_context,
         plate_price_reference_context=plate_price_reference_context,
+        auction_universe_sidecar=prepared_auction_universe_sidecar,
+        auction_universe_sidecar_unavailable=auction_universe_sidecar_unavailable,
     )
     final_sha = _file_sha256(q2frame_path)
     barrier_final_sha = (
@@ -1878,6 +2265,7 @@ def run_q2frame_auction_engine_shadow(
     ) == 1
     compared_fields = (
         "anchor_evidence",
+        "auction_revision_history_by_tag",
         "opening_evidence",
         "input_frames_processed",
         "input_updates_processed",
@@ -1915,7 +2303,12 @@ def run_q2frame_auction_engine_shadow(
     if barrier_q2frame_path is not None:
         determinism["barrier_input_sha256_stable"] = barrier_input_stable is True
     deterministic = all(determinism.values())
-    if plate_field_delta_context is not None:
+    if (
+        prepared_auction_universe_sidecar is not None
+        or auction_universe_sidecar_unavailable is not None
+    ):
+        contract_version = "Task008Q2FrameSessionEngineShadowV17"
+    elif plate_field_delta_context is not None:
         contract_version = "Task008Q2FrameSessionEngineShadowV16"
     elif any(tag not in AUCTION_TAGS for tag in barrier_snapshots):
         contract_version = "Task008Q2FrameSessionEngineShadowV15"
@@ -1942,6 +2335,31 @@ def run_q2frame_auction_engine_shadow(
         ),
         "trade_date": trade_date,
         "run_mode": "REAL_T1V2_Q2FRAME_EVENT_TIME_REPLAY",
+        **(
+            {
+                "auction_universe_sidecar": {
+                    "contract": "OpeningStaleAuctionUniverseSidecarV1",
+                    "status": "AVAILABLE",
+                    "file_sha256": auction_universe_sidecar_file_sha256,
+                    "input_content_hash": canonical_hash(
+                        prepared_auction_universe_sidecar
+                    ),
+                    "source_artifacts": dict(
+                        prepared_auction_universe_sidecar["source_artifacts"]
+                    ),
+                    "diagnostic_only": True,
+                    "blocks_downstream": False,
+                }
+            }
+            if prepared_auction_universe_sidecar is not None
+            else {
+                "auction_universe_sidecar": dict(
+                    auction_universe_sidecar_unavailable
+                )
+            }
+            if auction_universe_sidecar_unavailable is not None
+            else {}
+        ),
         "q2frame": {
             "path": str(q2frame_path),
             "sha256": final_sha,
@@ -2122,6 +2540,15 @@ def main() -> int:
         type=Path,
         help="hash-pinned captured TD 0924→0925 field delta sidecar JSON input",
     )
+    parser.add_argument(
+        "--auction-universe-sidecar",
+        type=Path,
+        help="optional hash-pinned 0925 anchor/TD input for opening stale diagnostics",
+    )
+    parser.add_argument(
+        "--expected-auction-universe-sidecar-sha256",
+        help="expected SHA-256 for the optional auction-universe sidecar file",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     plate_amount_context = (
@@ -2144,6 +2571,33 @@ def main() -> int:
         if args.plate_field_delta_context is not None
         else None
     )
+    auction_universe_sidecar = None
+    auction_universe_sidecar_file_sha256 = None
+    auction_universe_sidecar_error = None
+    if args.auction_universe_sidecar is not None:
+        try:
+            auction_universe_sidecar_file_sha256 = _file_sha256(
+                args.auction_universe_sidecar
+            )
+            if not _sha256_text(args.expected_auction_universe_sidecar_sha256):
+                auction_universe_sidecar_error = "SIDECAR_SHA256_REQUIRED_OR_INVALID"
+            elif (
+                auction_universe_sidecar_file_sha256
+                != args.expected_auction_universe_sidecar_sha256
+            ):
+                auction_universe_sidecar_error = "SIDECAR_SHA256_MISMATCH"
+            else:
+                loaded_sidecar = json.loads(
+                    args.auction_universe_sidecar.read_text(encoding="utf-8")
+                )
+                if isinstance(loaded_sidecar, Mapping):
+                    auction_universe_sidecar = loaded_sidecar
+                else:
+                    auction_universe_sidecar_error = "INVALID_SIDECAR_CONTRACT"
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            auction_universe_sidecar_error = "SIDECAR_UNREADABLE"
+    elif args.expected_auction_universe_sidecar_sha256 is not None:
+        auction_universe_sidecar_error = "SIDECAR_PATH_REQUIRED"
     result = run_q2frame_auction_engine_shadow(
         q2frame_path=args.q2frame,
         trade_date=args.trade_date,
@@ -2157,6 +2611,9 @@ def main() -> int:
         plate_auction_pressure_context=plate_auction_pressure_context,
         plate_field_delta_context=plate_field_delta_context,
         plate_price_reference_context=plate_price_reference_context,
+        auction_universe_sidecar=auction_universe_sidecar,
+        auction_universe_sidecar_file_sha256=auction_universe_sidecar_file_sha256,
+        auction_universe_sidecar_error=auction_universe_sidecar_error,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as output:

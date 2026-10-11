@@ -1,9 +1,10 @@
 """Deterministic per-symbol auction-anchor delta facts.
 
-The implementation mirrors the audited, pure ``engine_next`` helper for the
-smallest Gate-B migration slice.  It accepts already-normalized anchor rows;
-it does not read a provider, infer arrival order, fill missing values, or make
-a strategy decision.
+This is an independent Core implementation. A bounded field-level comparison
+against the audited legacy helper is recorded in
+``docs/evidence/gate_b_anchor_delta_20260914.md``. It accepts already-normalized
+anchor rows; it does not read a provider, infer arrival order, fill missing
+values, or make a strategy decision.
 """
 
 from __future__ import annotations

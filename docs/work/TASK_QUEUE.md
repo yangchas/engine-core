@@ -9,6 +9,44 @@
 - state: `PARTIAL_EVIDENCE`
 - replay_for_development: `USABLE_WITH_LIMITS`
 - normal_opening_acceptance: `UNPROVEN`
+- 008A Core 0925 anchor replay: `PASS_WITH_LIMITS` for the single real
+  2026-10-09 t1-v2 Q2Frame through standalone 0925 anchor facts and the Core
+  timeline. On 2026-10-09,
+  603 frames / 195,421 updates produced 5,224 facts (4,872 AVAILABLE, 352
+  MISSING); omitting 0920/0924 timeline observations left all 5,224 fact
+  content/evidence hashes and the 0925 revision content hash unchanged. Both
+  prior deltas became UNKNOWN; 0925 remained PARTIAL with a recovery plan.
+  Removing only `a20/a24` fields from the captured in-memory Q2 state also
+  preserved every 0925 fact and revision hash as designed. The two paths
+  share Core calculation code and input, so this does not establish
+  independent value correctness or multi-day generalization.
+  Evidence: `/home/exedev/validation/task008-anchor-only-20261011/REPORT.md`.
+- 008B cross-implementation field parity: `PARTIAL_EVIDENCE`; each feature
+  uses only fields with matching source meaning and unit. Existing 10-09 a25
+  comparisons are usable for the anchor path; other Q2 field differences and
+  plate no-usable-fact `0.0` versus `null` remain explicit, feature-scoped work.
+- 008C live/Rabbit/NORMAL equivalence: `UNPROVEN`. Its arrival, historical
+  availability, and production cohort questions do not block 008A or other
+  Core features whose actual inputs have been checked. `M3_1_NORMAL=BLOCKED`
+  and `TD_WRITE_HEALTH=UNPROVEN` remain production claims only.
+- latest late-auction revision replay: the pinned real 2026-10-09 t1-v2
+  Q2Frame completed ordered/repeat through 09:25:06 (603 frames / 195,421
+  updates / 5,224 observed symbols); all emitted determinism checks matched.
+  It recorded 18 0920 revisions, 11 0924 revisions, and one 0925 revision.
+  Observed availability grew 1,192→3,360 at 0920 and 3,229→4,094 at 0924,
+  with zero available→missing transitions in this input; 0925 was 4,872
+  AVAILABLE / 352 MISSING. Input ends at 09:25:02, so later 0925 corrections
+  are outside scope. Explicit-zero MISSING and sparse omission remain fixture
+  behavior, not observed real transitions. The runner now reports per-revision
+  symbol transitions and per-symbol source-path counts. The real run used only
+  the rolling event-time Q2Frame path; no sidecar was present. A focused test
+  verifies sidecar-vs-rolling labels, not producer/Rabbit provenance. Compared
+  with the prior real run, Engine/fact/revision content hashes and counts were
+  unchanged. Evidence:
+  `/home/exedev/validation/task008-auction-revision-attribution-20261011T222144+0800/revision_attribution_audit.md`.
+  Two-pass duration was about 64 minutes (observation, not a gate); production
+  side effects were NONE. TASK-008 remains partial and live/NORMAL acceptance
+  remains unproven.
 - branch: `codex/feature-session-engine-integration`
 - worktree: current development worktree
 - plan: `docs/work/plans/TASK-008-opening-validation.md`
@@ -26,6 +64,36 @@
   earlier full-window run. This is current Core consumption of captured
   t1-v2 output, not a new TD/Rabbit or upstream t1-v2 execution. 09:32/09:40
   producer cutoff snapshots are absent; TASK-008 remains partial.
+- latest_full_window_recheck_after_close:
+  `/home/exedev/validation/task008-c1-current-full-recheck-20261009T084908+0800/core_full_window_report.json`
+  The same paused PID was resumed after input/hash/offset/output/resource
+  preflight; no parallel replay was started. The pinned 2026-09-23 input
+  completed 500 frames / 1,209,672 updates with matching ordered/repeat final
+  hashes. The report carries the final C.1 frame-gap scope diagnostics; no gaps
+  were found. The optional partial-reason report flag was not passed; its
+  corrected report remains separate:
+  `/home/exedev/validation/task008-partial-reason-diagnostics-final-20261009T015518+0800/core_full_window_report.json`
+  (SHA-256 `8fdb34fe80f67babe54c337403ff12b8b45981ab32c37ffdc9e015ca761701e5`).
+  `OPENING_0932` is still `PARTIAL` (12
+  stale); 09:32/09:40 producer cutoff snapshots remain absent. Rabbit arrival /
+  delivery membership and full-market coverage remain unproven. The process
+  exit code was not retained. Execution-side report checks support complete
+  FACT_ONLY evidence for this frozen input; CC reviewed the supplied summary,
+  not the validation files directly. `TASK-008` remains `PARTIAL_EVIDENCE`,
+  NORMAL acceptance `UNPROVEN`, `M3_1_NORMAL=BLOCKED`, and
+  `TD_WRITE_HEALTH=UNPROVEN`.
+  Audit: `/home/exedev/validation/task008-c1-current-full-recheck-20261009T084908+0800/replay_completion_audit.md`.
+  Code provenance and deferred-import caveat: see `docs/work/CURRENT_TASK.md` §31.
+- evidence_update_20261010: see `docs/work/CURRENT_TASK.md` §32 for scoped
+  auction-universe, cross-date stale, offline live-node-composition, and
+  diagnostic sidecar A/B evidence, limits, and unchanged task statuses.
+  Detailed reconciliation/A-B report:
+  `docs/evidence/task008-auction-universe-reconciliation-20261010.md`;
+  cross-date cohort review:
+  `docs/evidence/task008_opening_stale_symbols_crossdate_20261010.md`;
+  sealed replay artifacts:
+  `/home/exedev/validation/task008-auction-universe-sidecar-e2e-20261010T092626+0800/`
+  and `/home/exedev/validation/task008-live-node-replay-parity-20261010T072241+0800/`.
 - post_open_live_observation_20261009:
   `/home/exedev/validation/open-live-followup-20261009T094227+0800/`
   Read-only capture executed at 09:42:27, after the open. It observed stale
@@ -35,9 +103,11 @@
   hashes repeated, but this is not Rabbit parity or NORMAL opening acceptance.
   See the offline transition audit below for the earlier full-cohort changes
   and the sampling/causality limits.
-  The replay process stayed stopped; after-close action is to revalidate its
-  PID/offset, input hashes, source mtimes, and t1-v2 lag before deciding
-  resume versus restart. Related scope notes:
+  The replay process stayed stopped during market hours. After close, the same
+  PID was revalidated (input hashes/mtimes unchanged, offset stable, report
+  target absent, resources adequate) and resumed; it completed without a
+  second replay process. See `latest_full_window_recheck_after_close` above.
+  Related scope notes:
   `docs/work/handoffs/TASK-008-FRAME-GAP-SCOPE-ROBUSTNESS-20261009.md` and
   `docs/work/handoffs/TASK-008-PARTIAL-REASON-DIAGNOSTICS-20261009.md`.
   Offline audit of the nine 09:14–09:30 real Redis captures found positive
@@ -49,8 +119,9 @@
   prove late arrival. The 20-symbol all-Shenzhen capture fixture's before/after
   rows and source hashes were independently verified; it covers revision
   update behavior, not market-wide rates. Focused regression, timeline file,
-  and opening-strategy file pass (1, 53, and 10 tests). The paused replay was
-  rechecked at 10:43 (PID 3831221, still T; offset 339,845,120 / 342,636,341;
+  and opening-strategy file pass (1, 53, and 10 tests). Historical pre-close
+  observation (superseded by the after-close completion above): the paused
+  replay was rechecked at 10:43 (PID 3831221, still T; offset 339,845,120 / 342,636,341;
   input hashes unchanged) and was not resumed during market hours. This does
   not provide NORMAL acceptance. Full counts, hashes, freeze timestamps,
   runtime/source caveats, and limitations are in

@@ -1,5 +1,85 @@
 # Project Knowledge
 
+- `[VERIFIED BY REAL FROZEN Q2FRAME REPLAY 2026-10-11 — auction revisions]`
+  The hash-pinned 2026-10-09 Q2Frame (SHA-256
+  `6cfc969ce408ab859eab91a5a12f6fd5c37c565cd0be6ae2f646b1114d5e8934`)
+  completed ordered/repeat through the 09:25:06 barrier: 603 frames, 195,421
+  updates, and 5,224 observed symbols; all emitted determinism fields matched.
+  Core recorded 18 0920 revisions and 11 0924 revisions. Available symbols
+  grew 1,192→3,360 and 3,229→4,094 respectively; no availability regression
+  occurred in this input. 0925 recorded one revision at 4,872 AVAILABLE / 352
+  MISSING; the source ends at 09:25:02, so later 0925 corrections were not
+  tested. Per-revision symbol transition lists and event-path attribution were
+  added as diagnostics; the real run used only rolling Q2Frame, while the
+  sidecar path is covered by a focused fixture. These source-layer labels do
+  not establish producer-build, Rabbit arrival, historical `available_at`, or
+  full-market completeness. Execution used only the frozen local file and an
+  in-memory Core Engine; no production side effects. TASK-008 remains
+  `PARTIAL_EVIDENCE`, NORMAL acceptance `UNPROVEN`. Audit:
+  `/home/exedev/validation/task008-auction-revision-attribution-20261011T222144+0800/revision_attribution_audit.md`.
+
+- `[VERIFIED BY REAL Q2FRAME CHECK 2026-10-11 — 0925 anchor without prior timeline anchors]`
+  The frozen 2026-10-09 t1-v2 Q2Frame (603 frames, 195,421 updates) yielded
+  5,224 Core standalone 0925 facts: 4,872 AVAILABLE and 352 MISSING/null.
+  When only 0925 was observed by `AuctionTimeline`, every per-symbol content
+  and evidence hash and the 0925 revision content hash matched the complete
+  Core replay; 0920/0924 prior deltas were UNKNOWN, and PARTIAL analysis plus
+  recovery plan continued. Removing only `a20/a24` from the captured
+  in-memory Q2 state left every 0925 fact and revision hash unchanged as
+  designed. The paths share Core calculation code and frozen input; hash
+  equality confirms no dependency on the earlier anchors for this input, not
+  independent value correctness or multi-day generalization. This is
+  feature-scoped development evidence, not live 09:25:06 arrival parity. The
+  same-day Q2Frame/live capture matched
+  comparable `a25` values but has separate `mk`, `mx`, `mn`, and `ts` field
+  differences; those fields need consumer-specific checks. Evidence:
+  `/home/exedev/validation/task008-anchor-only-20261011/REPORT.md`.
+
+- `[VERIFIED BY EXECUTION-SIDE CHECKS 2026-10-11 — 2026-09-23 opening-node offline composition parity]`
+  Against the retained 2026-10-07 `Task008Q2FrameSessionEngineShadowV14`
+  report and sealed t1-v2 Q2Frame, the current-worktree live-shadow composition
+  matched all nine opening-fact fields and four compared field-quality
+  statuses for 5,222 cohort symbols. An independent-process repeat matched the
+  planned 312-symbol sample. Both paths share Core calculation code, so this
+  is not independent formula verification. The projection is `PARTIAL` (12
+  stale/partial); its last consumed `Q2FrameV1.logical_ts_ms` is 09:32:08
+  versus the 09:32:10 evaluation anchor, a frame-label cutoff difference, not
+  a failure gate. The Q2Frame SHA matches the 500-frame/1,209,672-update
+  artifact used by the 2026-10-08 full-window replay; this node pass consumed
+  its 343-frame/436,327-update prefix. The producer build is `UNKNOWN`. This
+  does not rerun t1-v2 or prove producer/Redis/Rabbit/NORMAL equivalence,
+  historical availability, or full-market completeness. CC reviewed the
+  documentation but could not read the validation artifacts; JSON and hash
+  verification were performed execution-side. See
+  `docs/evidence/task008-live-node-parity-20260923-20261011.md` and
+  `/home/exedev/validation/task008-live-node-parity-20260923-20261011T020642+0800/`.
+
+- `[CORRECTION 2026-10-09 — repository ownership and release provenance]`
+  `engine_core` is an independent Python kernel; selected behavior has only the
+  bounded comparisons named by individual evidence records. Source references
+  to an `engine_next` release do not prove byte identity with the deployed
+  executable: the recorded deployed t1-v2 binary SHA-256 is
+  `363685f830c62aa3a2a8321eb93f91c5c7babccbd74c5e67b1e5b4c2dad1ab56`, while
+  the available release source rebuilt to `bb0ff933…`; the original producer
+  build identity/toolchain was not preserved. Do not describe Core as a
+  complete extraction/mirror or the available source as the exact deployed
+  binary. Historical dated records below retain their original scope and
+  evidence; this note corrects their interpretation, not their contents.
+  The producing build for the captured 2026-09-23 Q2Frame, and its relationship
+  to Runtime development commits including `98f65f4`, are UNKNOWN; do not equate
+  that artifact with the current Runtime branch or a deployed binary.
+
+- `[VERIFIED 2026-10-09 — Runtime repository ownership boundary]`
+  `/home/exedev/repos/stock-situation-runtime` is a separate runtime-source
+  repository, initially captured from the Linux runtime on 2026-08-22 and later
+  updated by development commits. Its current HEAD does not prove the deployed
+  source or binary. Runtime owns service integration, Rabbit consumption/ACK,
+  and Redis/TDengine I/O; `engine_core` remains an independent computation and
+  replay kernel. Core may adopt selected Runtime semantics only through
+  versioned contracts, hash-pinned real-derived evidence, and parity tests; do
+  not wholesale merge, copy, or import Runtime production modules. This is a
+  migration-phase boundary, not a claim of live or Rabbit equivalence.
+
 - `[VERIFIED 2026-10-08 — current-source complete 09:15–09:40 Core replay]`
   Current Core source replayed the hash-pinned 2026-09-23 producer artifact
   from the real TD→t1-v2 replay path: 500 three-second frames (422 non-empty,

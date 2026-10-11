@@ -10,8 +10,11 @@ venv/
 dist/
 build/
 *.egg-info/
-docs/evidence/*
-!docs/evidence/.gitkeep
+# Raw evidence belongs under dated /home/exedev/validation directories.
+# Concise Markdown/JSON summaries may be versioned.
+docs/evidence/**/*.jsonl
+docs/evidence/**/*.csv
+docs/evidence/**/*.gz
 *.log
 *.sqlite
 *.sqlite-wal

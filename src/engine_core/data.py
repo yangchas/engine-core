@@ -124,9 +124,9 @@ def canonical_daily_kline_cache_payload_hash(
 ) -> str:
     """Hash the existing date-bucketed Redis kline view by symbol.
 
-    This small contract mirrors the legacy writer's metadata payload hash.
-    It intentionally hashes the persisted row fields exactly as read back;
-    source identity and temporal metadata live in the sidecar metadata key.
+    It hashes the supplied persisted-row projection exactly as read back;
+    source identity and temporal metadata are outside this payload hash. This
+    local hash contract does not by itself claim parity with any writer.
     """
 
     canonical = {

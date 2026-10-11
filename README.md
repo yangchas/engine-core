@@ -25,9 +25,9 @@ engine_core 是独立的行情驱动确定性计算内核。
 - Window：半开区间、空窗口质量、单一 revision、`finality/origin`。
 - Data：`PreviousDayStatsFunction`、薄 `ProviderResult` 包装、`TemporalDataGuard`。
 - Facts：纯盘口压力、`SegmentFrame`、相邻段比较；不包含策略结论。
-- Opening：从已部署 `engine_next` 提取的单股开盘涨幅、delta、符号状态和独立
-  limit-state 事实，并提供 `build_opening_transition_fact` 组合竞价/开盘变化；仍不包含
-  策略阈值或外部 I/O。
+- Opening：基于经审查的 `engine_next` release 源码有限对照，实现单股开盘涨幅、delta、
+  符号状态和独立 limit-state 事实，并提供 `build_opening_transition_fact` 组合竞价/开盘变化；
+  证据只覆盖已记录的字段与样例，不宣称与部署二进制等价，也不包含策略阈值或外部 I/O。
 
 这些轮子均可不启动 Engine、不连接 Redis/TD 单独测试。当前版本新增版本化交易日快照：
 运行时只读取离线生成的快照，`PreviousDayStatsFunction` 从请求交易日通过唯一日历
@@ -126,6 +126,20 @@ calendar/session identity，调用既有 readiness/timer 纯轮子，返回可�
 只证明跨节点状态连续性；当前仍是单股票、只读 Shadow，不代表全市场生产接管。
 
 ## 开发
+
+`run_engine_next_context_probe.py` 和
+`run_engine_next_auction_loader_probe.py` 是明确指定 `--legacy-root` 后才会调用的
+legacy 只读审计例外，不是 `src/engine_core` 的运行依赖。前者通过 `GuardRedis`
+阻止已识别的 Redis 写命令；后者复用相同 guard 读取旧快照 loader。它们的读范围和
+限制以各自脚本及独立 evidence 为准，不代表完整生产等价。`run_live_morning_shadow.py`
+只有配置 `--legacy-root` 时才延迟导入 auction loader probe；默认路径不加载旧 runtime。
+此外，`audit_task008_real_opening_plate_amount.py`、`run_opening_differential.py` 和
+`run_real_reference_probe.py` 是已知的 legacy-import 迁移例外；它们不属于 Core 运行时依赖，
+各自的读取边界与证据应单独审查，不能据此宣称旧系统已完整迁入。
+其中 `run_opening_differential.py` 的 `--legacy-root` 默认指向
+`/home/exedev/services/engine-next/current`；`audit_task008_real_opening_plate_amount.py`
+的 `--engine-next-release` 默认指向一个历史 release 目录。运行前应检查并显式确认这些
+路径参数，默认路径不是当前部署版本或数据时效性的证明。
 
     python -m pytest -q
     python examples/run_vertical_slice.py

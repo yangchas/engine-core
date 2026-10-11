@@ -5,7 +5,8 @@
 - 开始任务前先读 docs/PROJECT_KNOWLEDGE.md。
 - 已标记 VERIFIED 的事实原则上不重复探查。
 - UNKNOWN 可以探查；OBSERVED、INFERRED 不得当成 VERIFIED。
-- 新发现的长期知识必须沉淀；大体积原始证据放 docs/evidence/。
+- 新发现的长期知识必须沉淀；`docs/evidence/` 保存可审阅的摘要、索引、清单和哈希，
+  大体积原始数据保存在带日期的 `/home/exedev/validation/` 目录，并从证据文档引用。
 - 任务结束前检查是否需要更新长期知识。
 
 ## 固定红线

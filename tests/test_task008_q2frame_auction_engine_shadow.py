@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import examples.run_task008_q2frame_auction_engine_shadow as shadow_runner
 from engine_core import (
     build_anchor_field_delta_evidence,
     build_opening_plate_amount_context,
@@ -1304,3 +1305,278 @@ def test_partial_reason_diagnostics_are_opt_in_report_only(tmp_path: Path):
     assert report == diagnosed["repeat"]["anchor_evidence"]["0925"][
         "partial_reason_diagnostics"
     ]
+
+
+def test_auction_universe_attribution_is_opt_in_and_does_not_change_opening_facts(
+    tmp_path: Path,
+):
+    source = tmp_path / "q2frame-auction-universe-sidecar.jsonl"
+    frames = (
+        _frame(1, "09:15:00.000"),
+        _frame(2, "09:20:03.000"),
+        _frame(3, "09:24:10.000"),
+        _frame(4, "09:25:06.000"),
+    )
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+    sidecar = {
+        "contract": "OpeningStaleAuctionUniverseSidecarV1",
+        "trade_date": "20260918",
+        "auction_tag": "0925",
+        "source_artifacts": {
+            "anchor_path": "captured-anchor.json",
+            "anchor_sha256": "a" * 64,
+            "td_path": "captured-td.json",
+            "td_sha256": "b" * 64,
+        },
+        "anchor_snapshot": {
+            "trade_date": "20260918",
+            "auction_tag": "0925",
+            "symbols": ["000001", "600000"],
+        },
+        "td_rows": [
+            {
+                "trade_date": "20260918",
+                "auction_tag": "0925",
+                "symbol": "000001",
+                "match_amt_yuan": 0,
+                "rest_bid_amt_yuan": 0,
+                "rest_ask_amt_yuan": 0,
+                "chg_bp": None,
+            },
+            {
+                "trade_date": "20260918",
+                "auction_tag": "0925",
+                "symbol": "600000",
+                "match_amt_yuan": 10,
+                "rest_bid_amt_yuan": 2,
+                "rest_ask_amt_yuan": 3,
+                "chg_bp": 1,
+            },
+        ],
+    }
+
+    baseline = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+    )
+    diagnosed = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+        auction_universe_sidecar=sidecar,
+    )
+
+    baseline_opening = baseline["ordered"]["opening_evidence"]["OPENING_0932"]
+    opening = diagnosed["ordered"]["opening_evidence"]["OPENING_0932"]
+    attribution = opening["auction_universe_attribution"]
+    result = attribution["result"]
+    assert diagnosed["deterministic"] is True
+    assert attribution["diagnostic_only"] is True
+    assert attribution["blocks_downstream"] is False
+    assert result["causal_attribution"] == "NOT_ESTABLISHED"
+    assert result["stale_symbol_count"] == 2
+    assert result["td_row_status_counts"] == {
+        "TD_ROW_PRESENT_OTHER": 1,
+        "TD_ROW_ZERO_AMOUNT_NULL_CHANGE": 1,
+    }
+    assert opening["facts_by_symbol_hash"] == baseline_opening["facts_by_symbol_hash"]
+    assert opening["strategy_result_hash"] == baseline_opening["strategy_result_hash"]
+    assert opening["engine_snapshot_hash"] == baseline_opening["engine_snapshot_hash"]
+    assert diagnosed["ordered"]["final_state_hash"] == baseline["ordered"][
+        "final_state_hash"
+    ]
+    assert diagnosed["ordered"]["anchor_evidence"] == baseline["ordered"][
+        "anchor_evidence"
+    ]
+    assert attribution == diagnosed["repeat"]["opening_evidence"]["OPENING_0932"][
+        "auction_universe_attribution"
+    ]
+
+
+def test_invalid_auction_universe_sidecar_is_reported_without_blocking_opening(
+    tmp_path: Path,
+):
+    source = tmp_path / "q2frame-auction-universe-invalid-sidecar.jsonl"
+    frames = (_frame(1, "09:15:00.000"),)
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+    baseline = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+    )
+    diagnosed = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+        auction_universe_sidecar={"contract": "wrong"},
+    )
+
+    opening = diagnosed["ordered"]["opening_evidence"]["OPENING_0932"]
+    assert opening["auction_universe_attribution"] == {
+        "contract": "OpeningStaleAuctionUniverseAttributionSidecarV1",
+        "status": "UNAVAILABLE",
+        "reason_code": "INVALID_SIDECAR_CONTRACT",
+        "diagnostic_only": True,
+        "blocks_downstream": False,
+    }
+    assert diagnosed["ordered"]["final_state_hash"] == baseline["ordered"][
+        "final_state_hash"
+    ]
+    assert opening["facts_by_symbol_hash"] == baseline["ordered"][
+        "opening_evidence"
+    ]["OPENING_0932"]["facts_by_symbol_hash"]
+
+
+def test_auction_universe_sidecar_missing_anchor_key_is_consistently_unavailable(
+    tmp_path: Path,
+):
+    source = tmp_path / "q2frame-auction-universe-missing-anchor.jsonl"
+    frames = (_frame(1, "09:15:00.000"),)
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+    sidecar = {
+        "contract": "OpeningStaleAuctionUniverseSidecarV1",
+        "trade_date": "20260918",
+        "auction_tag": "0925",
+        "source_artifacts": {
+            "anchor_path": "captured-anchor.json",
+            "anchor_sha256": "a" * 64,
+            "td_path": "captured-td.json",
+            "td_sha256": "b" * 64,
+        },
+        "td_rows": [],
+    }
+
+    diagnosed = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+        auction_universe_sidecar=sidecar,
+    )
+
+    assert diagnosed["auction_universe_sidecar"]["status"] == "UNAVAILABLE"
+    assert diagnosed["auction_universe_sidecar"]["reason_code"] == (
+        "INVALID_SIDECAR_CONTRACT"
+    )
+    assert diagnosed["ordered"]["opening_evidence"]["OPENING_0932"][
+        "auction_universe_attribution"
+    ]["status"] == "UNAVAILABLE"
+
+
+def test_auction_universe_diagnostic_unexpected_error_does_not_suppress_opening(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source = tmp_path / "q2frame-auction-universe-diagnostic-error.jsonl"
+    frames = (_frame(1, "09:15:00.000"),)
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+    sidecar = {
+        "contract": "OpeningStaleAuctionUniverseSidecarV1",
+        "trade_date": "20260918",
+        "auction_tag": "0925",
+        "source_artifacts": {
+            "anchor_path": "captured-anchor.json",
+            "anchor_sha256": "a" * 64,
+            "td_path": "captured-td.json",
+            "td_sha256": "b" * 64,
+        },
+        "anchor_snapshot": {
+            "trade_date": "20260918",
+            "auction_tag": "0925",
+            "symbols": [],
+        },
+        "td_rows": [],
+    }
+
+    baseline = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+    )
+
+    original_attribution = shadow_runner.attribute_opening_stale_symbols
+    calls = 0
+
+    def fail_runtime_attribution(
+        *args: object, **kwargs: object
+    ) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return original_attribution(*args, **kwargs)
+        raise RuntimeError("unexpected diagnostic failure")
+
+    monkeypatch.setattr(
+        shadow_runner, "attribute_opening_stale_symbols", fail_runtime_attribution
+    )
+    diagnosed = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+        auction_universe_sidecar=sidecar,
+    )
+
+    baseline_opening = baseline["ordered"]["opening_evidence"]["OPENING_0932"]
+    opening = diagnosed["ordered"]["opening_evidence"]["OPENING_0932"]
+    attribution = opening["auction_universe_attribution"]
+    assert attribution["status"] == "UNAVAILABLE"
+    assert attribution["reason_code"] == "SIDECAR_ATTRIBUTION_FAILED"
+    assert attribution["error_type"] == "RuntimeError"
+    assert opening["facts_by_symbol_hash"] == baseline_opening["facts_by_symbol_hash"]
+    assert opening["strategy_result_hash"] == baseline_opening["strategy_result_hash"]
+    assert opening["engine_snapshot_hash"] == baseline_opening["engine_snapshot_hash"]
+    assert diagnosed["ordered"]["final_state_hash"] == baseline["ordered"][
+        "final_state_hash"
+    ]
+
+
+def test_auction_universe_explicit_null_anchor_is_available_without_membership_claim(
+    tmp_path: Path,
+):
+    source = tmp_path / "q2frame-auction-universe-null-anchor.jsonl"
+    source.write_text(
+        json.dumps(_frame(1, "09:15:00.000"), separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    sidecar = {
+        "contract": "OpeningStaleAuctionUniverseSidecarV1",
+        "trade_date": "20260918",
+        "auction_tag": "0925",
+        "source_artifacts": {
+            "anchor_path": "captured-anchor.json",
+            "anchor_sha256": "a" * 64,
+            "td_path": "captured-td.json",
+            "td_sha256": "b" * 64,
+        },
+        "anchor_snapshot": None,
+        "td_rows": [],
+    }
+
+    diagnosed = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        include_opening=True,
+        auction_universe_sidecar=sidecar,
+    )
+
+    assert diagnosed["auction_universe_sidecar"]["status"] == "AVAILABLE"
+    opening_attribution = diagnosed["ordered"]["opening_evidence"][
+        "OPENING_0932"
+    ]["auction_universe_attribution"]
+    assert opening_attribution["status"] == "AVAILABLE"
+    assert opening_attribution["result"]["stale_symbol_count"] == 2
+    assert opening_attribution["result"]["anchor_status_counts"] == {
+        "ANCHOR_NOT_PROVIDED": 2
+    }

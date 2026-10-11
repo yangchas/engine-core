@@ -375,6 +375,263 @@ def test_strategy_rejects_cross_session_and_conflicting_anchor_snapshots():
         )
 
 
+def test_strategy_uses_later_timeline_revision_and_preserves_revision_history():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    start = _snapshot(fixture, "auction_0920")
+    middle = _snapshot(fixture, "auction_0924")
+    end = replace(
+        middle,
+        snapshot_id="auction-0925",
+        trigger_id="AUCTION_0925",
+        logical_time_ms=middle.logical_time_ms + 66_000,
+    )
+
+    def revision_snapshot(snapshot, *, revision, logical_time_ms, content_hash):
+        metadata = dict(snapshot.source_observation_metadata)
+        metadata["auction_revision_ref"] = {
+            "contract": "AuctionAnchorRevisionRefV1",
+            "tag": snapshot.trigger_id.removeprefix("AUCTION_"),
+            "revision": revision,
+            "content_hash": content_hash,
+            "supersedes_revision": revision - 1 if revision > 1 else None,
+            "evaluation_time_ms": logical_time_ms,
+        }
+        return replace(
+            snapshot,
+            logical_time_ms=logical_time_ms,
+            source_observation_metadata=metadata,
+            content_hash=semantic_hash(
+                {
+                    "snapshot": snapshot.content_hash,
+                    "revision": revision,
+                    "logical_time_ms": logical_time_ms,
+                }
+            ),
+        )
+
+    start = revision_snapshot(
+        start,
+        revision=18,
+        logical_time_ms=start.logical_time_ms + 20_000,
+        content_hash="e" * 64,
+    )
+    first = revision_snapshot(
+        middle,
+        revision=10,
+        logical_time_ms=middle.logical_time_ms,
+        content_hash="a" * 64,
+    )
+    late = revision_snapshot(
+        middle,
+        revision=11,
+        logical_time_ms=middle.logical_time_ms + 1_000,
+        content_hash="b" * 64,
+    )
+    end = revision_snapshot(
+        end,
+        revision=1,
+        logical_time_ms=end.logical_time_ms,
+        content_hash="f" * 64,
+    )
+    strategy = AuctionShadowStrategy(
+        scope_id=fixture["symbol"],
+        start_trigger_id="AUCTION_0920",
+        middle_trigger_id="AUCTION_0924",
+        end_trigger_id="AUCTION_0925",
+    )
+
+    for index, snapshot in enumerate((start, first, late, end)):
+        strategy.evaluate(
+            snapshot,
+            FrozenDataBundle.empty("revision-%d" % index, snapshot.logical_time_ms),
+        )
+
+    result = strategy.evaluate(
+        end,
+        FrozenDataBundle.empty("revision-final", end.logical_time_ms),
+    )
+    revision_state = result.trace["auction_revision_state"]
+    assert revision_state["consumed_revision_refs"]["AUCTION_0924"]["revision"] == 11
+    assert revision_state["consumed_revision_refs"]["AUCTION_0920"]["revision"] == 18
+    assert revision_state["consumed_revision_refs"]["AUCTION_0925"]["revision"] == 1
+    assert revision_state["consumed_revision_refs"]["AUCTION_0924"]["content_hash"] == "b" * 64
+    assert [
+        item["timeline_revision_ref"]["revision"]
+        for item in revision_state["revision_history"]["AUCTION_0924"]
+    ] == [10, 11]
+    assert revision_state["revision_history"]["AUCTION_0924"][1][
+        "timeline_revision_ref"
+    ]["supersedes_revision"] == 10
+    assert result.trace["auction_fact_shadow"]["status"] in {"READY", "PARTIAL"}
+
+
+def test_strategy_reports_revision_reference_mismatch_without_blocking_later_snapshot():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    middle = _snapshot(fixture, "auction_0924")
+    first_metadata = dict(middle.source_observation_metadata)
+    first_metadata["auction_revision_ref"] = {
+        "contract": "AuctionAnchorRevisionRefV1",
+        "tag": "0924",
+        "revision": 4,
+        "content_hash": "c" * 64,
+        "supersedes_revision": 3,
+    }
+    first = replace(middle, source_observation_metadata=first_metadata)
+    next_metadata = dict(first_metadata)
+    next_metadata["auction_revision_ref"] = {
+        **first_metadata["auction_revision_ref"],
+        "revision": 4,
+        "content_hash": "d" * 64,
+        "supersedes_revision": 4,
+    }
+    later = replace(
+        first,
+        logical_time_ms=first.logical_time_ms + 1_000,
+        source_observation_metadata=next_metadata,
+        content_hash=semantic_hash({"later": True}),
+    )
+    strategy = AuctionShadowStrategy(
+        scope_id=fixture["symbol"],
+        start_trigger_id="AUCTION_0920",
+        middle_trigger_id="AUCTION_0924",
+        end_trigger_id="AUCTION_0925",
+    )
+
+    strategy.evaluate(first, FrozenDataBundle.empty("first", first.logical_time_ms))
+    result = strategy.evaluate(
+        later,
+        FrozenDataBundle.empty("later", later.logical_time_ms),
+    )
+
+    assert any(
+        item.startswith("REVISION_REF_MISMATCH")
+        for item in result.trace["auction_revision_state"]["diagnostics"]
+    )
+    assert result.trace["auction_revision_state"]["consumed_revision_refs"][
+        "AUCTION_0924"
+    ]["revision"] == 4
+
+
+def test_strategy_rejects_revision_reference_regression():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    middle = _snapshot(fixture, "auction_0924")
+    first_metadata = dict(middle.source_observation_metadata)
+    first_metadata["auction_revision_ref"] = {
+        "contract": "AuctionAnchorRevisionRefV1",
+        "tag": "0924",
+        "revision": 2,
+        "content_hash": "e" * 64,
+    }
+    first = replace(middle, source_observation_metadata=first_metadata)
+    regressed_metadata = dict(first_metadata)
+    regressed_metadata["auction_revision_ref"] = {
+        "contract": "AuctionAnchorRevisionRefV1",
+        "tag": "0924",
+        "revision": 1,
+        "content_hash": "f" * 64,
+    }
+    later = replace(
+        first,
+        logical_time_ms=first.logical_time_ms + 1_000,
+        source_observation_metadata=regressed_metadata,
+        content_hash=semantic_hash({"regressed": True}),
+    )
+    strategy = AuctionShadowStrategy(
+        scope_id=fixture["symbol"],
+        start_trigger_id="AUCTION_0920",
+        middle_trigger_id="AUCTION_0924",
+        end_trigger_id="AUCTION_0925",
+    )
+
+    strategy.evaluate(first, FrozenDataBundle.empty("first", first.logical_time_ms))
+    with pytest.raises(ValueError, match="revision regressed"):
+        strategy.evaluate(
+            later,
+            FrozenDataBundle.empty("later", later.logical_time_ms),
+        )
+
+
+def test_late_0920_revision_keeps_real_observation_order_and_partial_pair_facts():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    start = _snapshot(fixture, "auction_0920")
+    middle = _snapshot(fixture, "auction_0924")
+    end = replace(
+        middle,
+        snapshot_id="auction-0925-late-order",
+        trigger_id="AUCTION_0925",
+        logical_time_ms=middle.logical_time_ms + 66_000,
+    )
+
+    def with_revision(snapshot, revision, logical_time_ms, content_hash):
+        metadata = dict(snapshot.source_observation_metadata)
+        metadata["auction_revision_ref"] = {
+            "contract": "AuctionAnchorRevisionRefV1",
+            "tag": snapshot.trigger_id.removeprefix("AUCTION_"),
+            "revision": revision,
+            "content_hash": content_hash,
+            "supersedes_revision": revision - 1 if revision > 1 else None,
+        }
+        return replace(
+            snapshot,
+            logical_time_ms=logical_time_ms,
+            source_observation_metadata=metadata,
+            content_hash=semantic_hash(
+                {
+                    "base": snapshot.content_hash,
+                    "revision": revision,
+                    "logical_time_ms": logical_time_ms,
+                }
+            ),
+        )
+
+    first_start = with_revision(start, 1, start.logical_time_ms, "a" * 64)
+    first_middle = with_revision(middle, 1, middle.logical_time_ms, "b" * 64)
+    late_start = with_revision(
+        start,
+        2,
+        middle.logical_time_ms + 20_000,
+        "c" * 64,
+    )
+    final = with_revision(end, 1, end.logical_time_ms, "d" * 64)
+    strategy = AuctionShadowStrategy(
+        scope_id=fixture["symbol"],
+        start_trigger_id="AUCTION_0920",
+        middle_trigger_id="AUCTION_0924",
+        end_trigger_id="AUCTION_0925",
+        price_fields=(
+            "auction_anchor_0920_price_milli",
+            "auction_anchor_0924_price_milli",
+            "auction_anchor_0925_price_milli",
+        ),
+    )
+
+    for index, snapshot in enumerate(
+        (first_start, first_middle, late_start, final)
+    ):
+        result = strategy.evaluate(
+            snapshot,
+            FrozenDataBundle.empty("late-order-%d" % index, snapshot.logical_time_ms),
+        )
+
+    assert result.trace["decision_status"] == "FACT_ONLY"
+    assert result.trace["fact_status"] == "PARTIAL"
+    assert (
+        result.trace["auction_order_diagnostics"]["diagnostic_code"]
+        == "ANCHOR_OBSERVATION_ORDER_NOT_COMPARABLE"
+    )
+    assert result.trace["auction_order_diagnostics"]["invalid_pairs"][0][
+        "start_logical_time_ms"
+    ] > result.trace["auction_order_diagnostics"]["invalid_pairs"][0][
+        "end_logical_time_ms"
+    ]
+    assert "0924_to_0925" in result.trace["auction_fact_shadow"][
+        "available_adjacent_segments"
+    ]
+    assert result.trace["auction_revision_state"]["consumed_revision_refs"][
+        "AUCTION_0920"
+    ]["revision"] == 2
+
+
 def test_strategy_retains_only_declared_anchor_snapshots():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     start = _snapshot(fixture, "pre_auction_0915")

@@ -1,4 +1,4 @@
-"""Small auction-field transformations extracted from the legacy read path."""
+"""Pure auction-field normalization helpers for already-observed values."""
 
 from __future__ import annotations
 
@@ -16,11 +16,11 @@ AUCTION_0925_FINALIZATION_DELAY_MS = 6_000
 def normalize_auction_change_ratio(value: Any) -> Optional[float]:
     """Normalize a valid auction change value to ratio units.
 
-    The deployed legacy reader accepts ratio values (``0.0997``), percentage
-    points (``9.97``), and basis points (``997``) using the same thresholds.
-    This wheel preserves that formula for valid finite numbers while keeping
-    missing or malformed input as ``None``; the core contract never converts
-    an unknown value into a factual zero.
+    This compatibility helper accepts ratio values (``0.0997``), percentage
+    points (``9.97``), and basis points (``997``) using documented thresholds.
+    It keeps missing or malformed input as ``None``; the Core contract never
+    converts an unknown value into a factual zero. This helper alone does not
+    establish full legacy-path or production equivalence.
     """
 
     if value is None or isinstance(value, bool):

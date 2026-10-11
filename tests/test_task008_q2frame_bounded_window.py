@@ -639,9 +639,99 @@ def test_barrier_sidecar_is_consumed_inside_the_real_slice_timeline(tmp_path: Pa
     applied = result["ordered"]["barrier_snapshot_applied_by_tag"]["0924"]
     assert applied["status"] == "APPLIED"
     assert applied["update_count"] == 1
-    anchor = result["ordered"]["anchor_evidence"]["0924"]["auction_revision"]
-    assert anchor["anchor_available_symbol_count"] == 1
+    revisions = result["ordered"]["auction_revision_history_by_tag"]["0924"]
+    assert revisions[0]["evaluation_time_ms"] == _epoch_ms("09:24:10.000")
+    assert revisions[0]["anchor_available_symbol_count"] == 1
+    assert revisions[0]["source_layers"] == (
+        "t1_v2_q2frame_barrier_sidecar",
+    )
+    assert revisions[0]["source_layer_attribution"][
+        "latest_q2_row_symbol_counts"
+    ] == {"t1_v2_q2frame_barrier_sidecar": 1}
+    assert revisions[0]["source_layer_attribution"][
+        "latest_explicit_anchor_field_symbol_counts"
+    ] == {"t1_v2_q2frame_barrier_sidecar": 1}
+    assert revisions[0]["availability_transition"]["status"] == "BASELINE"
+    assert revisions[0]["content_hash"] == (
+        "fed38b9422b7e4a5077a9e9ad7ce19d16847143ad0409f9a73b0da727f2b4ea3"
+    )
+    # The later 09:24:11 Q2Frame has a24=0 and can create a newer revision,
+    # but must not overwrite the sidecar snapshot's historical evidence.
+    latest = result["ordered"]["anchor_evidence"]["0924"]["auction_revision"]
+    assert latest["revision"] == 2
+    assert latest["supersedes_revision"] == revisions[0]["revision"]
+    assert latest["anchor_available_symbol_count"] == 0
+    assert latest["source_layers"] == ("t1_v2_q2frame_event_time_replay",)
+    assert latest["source_layer_attribution"][
+        "latest_q2_row_symbol_counts"
+    ] == {"t1_v2_q2frame_event_time_replay": 1}
+    assert latest["source_layer_attribution"][
+        "latest_explicit_anchor_field_symbol_counts"
+    ] == {"t1_v2_q2frame_event_time_replay": 1}
+    assert latest["availability_transition"] == {
+        "contract": "AuctionRevisionAvailabilityTransitionV1",
+        "status": "COMPARED",
+        "from_revision": 1,
+        "to_revision": 2,
+        "became_available_symbols": [],
+        "became_missing_symbols": ["600519"],
+    }
+    latest_fact = result["ordered"]["anchor_evidence"]["0924"][
+        "auction_anchor_facts_by_symbol"
+    ]["600519"]
+    assert latest_fact["status"] == "MISSING"
+    assert latest_fact["price_milli"] is None
     assert result["ordered"]["input_frames_processed"] == 1
+
+
+def test_sparse_late_q2frame_omission_preserves_the_last_anchor_value(
+    tmp_path: Path,
+):
+    source = tmp_path / "sparse-slice-q2frames.jsonl"
+    frame = _frame(1, "09:24:11.000")
+    frame["slice_start_ms"] = _epoch_ms("09:24:09.000")
+    frame["slice_end_ms"] = _epoch_ms("09:24:12.000")
+    frame["q2_updates"][0].pop("a24")
+    source.write_text(
+        json.dumps(frame, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    barrier_path = tmp_path / "sparse-barrier-q2frames.jsonl"
+    barrier_update = dict(frame["q2_updates"][0])
+    barrier_update["px"] = 10_010
+    barrier_update["a24"] = 10_010
+    barrier_update["ts"] = _epoch_ms("09:24:10.000")
+    barrier_record = {
+        "version": "Q2FrameV1",
+        "record_kind": "barrier_snapshot",
+        "barrier_tag": "0924",
+        "seq_no": 1,
+        "logical_ts_ms": _epoch_ms("09:24:10.000"),
+        "phase": 1,
+        "q2_updates": [barrier_update],
+    }
+    barrier_path.write_text(
+        json.dumps(barrier_record, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    barrier_sha = hashlib.sha256(barrier_path.read_bytes()).hexdigest()
+
+    result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-23",
+        expected_sha256=source_sha,
+        barrier_q2frame_path=barrier_path,
+        expected_barrier_q2frame_sha256=barrier_sha,
+    )
+
+    anchor = result["ordered"]["anchor_evidence"]["0924"]
+    assert anchor["auction_revision"]["revision"] == 1
+    assert anchor["auction_revision"]["anchor_available_symbol_count"] == 1
+    assert anchor["auction_anchor_facts_by_symbol"]["600519"]["status"] == "AVAILABLE"
+    assert anchor["auction_anchor_facts_by_symbol"]["600519"]["price_milli"] == 10_010
+    assert len(result["ordered"]["auction_revision_history_by_tag"]["0924"]) == 1
 
 
 def test_barrier_sidecar_at_exclusive_slice_end_is_not_consumed(tmp_path: Path):
@@ -685,3 +775,118 @@ def test_barrier_sidecar_at_exclusive_slice_end_is_not_consumed(tmp_path: Path):
     applied = result["ordered"]["barrier_snapshot_applied_by_tag"]["0924"]
     assert applied["status"] == "OUTSIDE_REPLAY_WINDOW"
     assert result["ordered"]["barrier_snapshot_update_count"] == 0
+
+
+def test_opening_before_bounded_window_handles_available_universe_sidecar(
+    tmp_path: Path,
+):
+    source = tmp_path / "opening-after-window-start.jsonl"
+    _write_frames(source, (_slice_frame(1, "09:32:11.000"),))
+    sidecar = {
+        "contract": "OpeningStaleAuctionUniverseSidecarV1",
+        "trade_date": "20260923",
+        "auction_tag": "0925",
+        "source_artifacts": {
+            "anchor_path": "captured-anchor.json",
+            "anchor_sha256": "a" * 64,
+            "td_path": "captured-td.json",
+            "td_sha256": "b" * 64,
+        },
+        "anchor_snapshot": {
+            "trade_date": "20260923",
+            "auction_tag": "0925",
+            "symbols": ["600519"],
+        },
+        "td_rows": [],
+    }
+
+    result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-23",
+        include_opening=True,
+        continue_through_input=True,
+        auction_universe_sidecar=sidecar,
+    )
+
+    opening = result["ordered"]["opening_evidence"]["OPENING_0932"]
+    assert opening["status"] == "NOT_OBSERVED_IN_REPLAY_WINDOW"
+    assert opening["auction_universe_attribution"] == {
+        "contract": "OpeningStaleAuctionUniverseAttributionSidecarV1",
+        "status": "NOT_RUN",
+        "reason_code": "OPENING_NOT_OBSERVED_IN_REPLAY_WINDOW",
+        "diagnostic_only": True,
+        "blocks_downstream": False,
+    }
+    assert result["deterministic"] is True
+
+
+def test_0925_late_q2frame_supersedes_first_freeze_and_default_stays_bounded(
+    tmp_path: Path,
+):
+    first = _frame(1, "09:25:06.000", a25=10_006)
+    first_update = dict(first["q2_updates"][0])
+    late_update = dict(first_update)
+    late_update.update(
+        {
+            "symbol": "000001",
+            "px": 9_000,
+            "pc": 8_900,
+            "ts": _epoch_ms("09:25:07.000"),
+            "a25": 10_007,
+        }
+    )
+    late = _frame(2, "09:25:07.000", a25=10_006)
+    late["q2_updates"] = [first_update, late_update]
+    repeat_late = {
+        "version": "Q2FrameV1",
+        "seq_no": 3,
+        "logical_ts_ms": _epoch_ms("09:25:08.000"),
+        "phase": 1,
+        "q2_updates": [dict(first_update), dict(late_update)],
+    }
+    source = tmp_path / "q2frame-0925-late-revision.jsonl"
+    _write_frames(source, (first, late, repeat_late))
+
+    continued = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-23",
+        continue_through_input=True,
+    )
+    bounded = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-23",
+    )
+
+    ordered = continued["ordered"]
+    history = ordered["auction_revision_history_by_tag"]["0925"]
+    assert [revision["revision"] for revision in history] == [1, 2]
+    assert history[0]["supersedes_revision"] is None
+    assert history[0]["anchor_available_symbol_count"] == 1
+    assert history[1]["supersedes_revision"] == 1
+    assert history[1]["anchor_available_symbol_count"] == 2
+    assert history[0]["content_hash"] != history[1]["content_hash"]
+    assert history == continued["repeat"]["auction_revision_history_by_tag"]["0925"]
+    assert ordered["anchor_evidence"]["0925"]["auction_revision"]["revision"] == 2
+    engine_revision_state = ordered["anchor_evidence"]["0925"][
+        "auction_revision_state"
+    ]
+    engine_history = engine_revision_state["revision_history"]["AUCTION_0925"]
+    assert [item["timeline_revision_ref"]["revision"] for item in engine_history] == [
+        1,
+        2,
+    ]
+    assert engine_history[0]["timeline_revision_ref"]["content_hash"] == history[0][
+        "content_hash"
+    ]
+    assert engine_history[1]["timeline_revision_ref"]["content_hash"] == history[1][
+        "content_hash"
+    ]
+    assert engine_revision_state["consumed_revision_refs"]["AUCTION_0925"][
+        "revision"
+    ] == 2
+    assert ordered["input_frames_processed"] == 3
+    assert continued["deterministic"] is True
+
+    bounded_history = bounded["ordered"]["auction_revision_history_by_tag"]["0925"]
+    assert [revision["revision"] for revision in bounded_history] == [1]
+    assert bounded["ordered"]["first_excluded_frame"]["seq_no"] == 2

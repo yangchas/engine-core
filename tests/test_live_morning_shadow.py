@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import ast
+import builtins
 import json
+import sys
 from datetime import datetime, time
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -24,6 +27,210 @@ from examples import run_live_morning_shadow as live
 
 
 TZ = ZoneInfo("Asia/Shanghai")
+
+
+class _ImportScopeCollector(ast.NodeVisitor):
+    """Collect legacy probe imports and whether they are inside a function."""
+
+    def __init__(self):
+        self.function_stack = []
+        self.matches = []
+
+    @staticmethod
+    def _is_legacy_probe(module_name: str) -> bool:
+        return module_name.endswith("run_engine_next_auction_loader_probe")
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            if self._is_legacy_probe(alias.name):
+                self.matches.append((alias.name, tuple(self.function_stack), node.lineno))
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node):
+        module_name = node.module or ""
+        if self._is_legacy_probe(module_name):
+            self.matches.append((module_name, tuple(self.function_stack), node.lineno))
+        elif module_name == "examples":
+            for alias in node.names:
+                if self._is_legacy_probe(alias.name):
+                    self.matches.append(
+                        (f"{module_name}.{alias.name}", tuple(self.function_stack), node.lineno)
+                    )
+        self.generic_visit(node)
+
+    def _visit_function(self, node):
+        # Decorators and defaults are evaluated while defining the function,
+        # so inspect them outside the function body scope.
+        for child in (*node.decorator_list, *node.args.defaults, *node.args.kw_defaults):
+            if child is not None:
+                self.visit(child)
+        self.function_stack.append(node.name)
+        for statement in node.body:
+            self.visit(statement)
+        self.function_stack.pop()
+
+    def visit_FunctionDef(self, node):
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node):
+        self._visit_function(node)
+
+
+def _legacy_probe_import_scopes(source: str):
+    collector = _ImportScopeCollector()
+    collector.visit(ast.parse(source))
+    return collector.matches
+
+
+def test_legacy_loader_probe_imports_are_function_local_and_unconfigured_call_is_lazy(
+    monkeypatch,
+):
+    source = Path(live.__file__).read_text(encoding="utf-8")
+    imports = _legacy_probe_import_scopes(source)
+    assert len(imports) == 2
+    assert {module for module, _, _ in imports} == {
+        "run_engine_next_auction_loader_probe",
+        "examples.run_engine_next_auction_loader_probe",
+    }
+    assert all(scope == ("_legacy_loader_evidence",) for _, scope, _ in imports)
+
+    original_import = builtins.__import__
+
+    def reject_legacy_probe_import(name, *args, **kwargs):
+        if name.endswith("run_engine_next_auction_loader_probe"):
+            raise AssertionError("unconfigured live shadow imported a legacy probe")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_legacy_probe_import)
+    assert live._legacy_loader_evidence(
+        None,
+        trade_date="2026-09-14",
+        symbols=("600519",),
+    ) == {"status": "NOT_CONFIGURED"}
+
+
+def test_legacy_probe_scope_collector_distinguishes_function_and_eager_imports():
+    source = """
+try:
+    from run_engine_next_auction_loader_probe import probe
+except ModuleNotFoundError:
+    pass
+
+def configured_probe():
+    from run_engine_next_auction_loader_probe import probe
+
+if TYPE_CHECKING:
+    from examples import run_engine_next_auction_loader_probe
+
+class EagerProbe:
+    from examples.run_engine_next_auction_loader_probe import probe
+
+def _legacy_loader_evidence():
+    return None
+"""
+
+    imports = _legacy_probe_import_scopes(source)
+    assert [(module, scope) for module, scope, _ in imports] == [
+        ("run_engine_next_auction_loader_probe", ()),
+        ("run_engine_next_auction_loader_probe", ("configured_probe",)),
+        ("examples.run_engine_next_auction_loader_probe", ()),
+        ("examples.run_engine_next_auction_loader_probe", ()),
+    ]
+
+
+def test_legacy_loader_probe_imports_when_explicitly_configured(monkeypatch, tmp_path):
+    module_name = "run_engine_next_auction_loader_probe"
+    fake_module = ModuleType(module_name)
+    calls = []
+    expected_result = {"status": "FAKE_PROBE", "evidence": "configured"}
+
+    def fake_probe(**kwargs):
+        calls.append(kwargs)
+        return expected_result
+
+    fake_module.probe = fake_probe
+    monkeypatch.setitem(sys.modules, module_name, fake_module)
+
+    result = live._legacy_loader_evidence(
+        tmp_path,
+        trade_date="2026-09-14",
+        symbols=["600519", "000001"],
+    )
+
+    assert result is expected_result
+    assert calls == [
+        {
+            "legacy_root": tmp_path,
+            "trade_date": "2026-09-14",
+            "tags": ("0920", "0924", "0925"),
+            "symbols": ("600519", "000001"),
+        }
+    ]
+
+
+def test_legacy_loader_probe_uses_package_import_fallback(monkeypatch, tmp_path):
+    bare_module_name = "run_engine_next_auction_loader_probe"
+    package_module_name = "examples.run_engine_next_auction_loader_probe"
+    fake_module = ModuleType(package_module_name)
+    calls = []
+    expected_result = {"status": "FAKE_PACKAGE_PROBE"}
+
+    def fake_probe(**kwargs):
+        calls.append(kwargs)
+        return expected_result
+
+    fake_module.probe = fake_probe
+    monkeypatch.setitem(sys.modules, bare_module_name, None)
+    monkeypatch.setitem(sys.modules, package_module_name, fake_module)
+
+    result = live._legacy_loader_evidence(
+        tmp_path,
+        trade_date="2026-09-14",
+        symbols=["600519"],
+    )
+
+    assert result is expected_result
+    assert calls == [
+        {
+            "legacy_root": tmp_path,
+            "trade_date": "2026-09-14",
+            "tags": ("0920", "0924", "0925"),
+            "symbols": ("600519",),
+        }
+    ]
+
+
+def test_legacy_loader_probe_does_not_mask_missing_transitive_dependency(
+    monkeypatch, tmp_path
+):
+    bare_module_name = "run_engine_next_auction_loader_probe"
+    package_module_name = "examples.run_engine_next_auction_loader_probe"
+    package_imports = []
+    original_import = builtins.__import__
+
+    def import_with_missing_dependency(name, *args, **kwargs):
+        if name == bare_module_name:
+            raise ModuleNotFoundError("No module named 'redis'", name="redis")
+        if name == package_module_name:
+            package_imports.append(name)
+            module = ModuleType(package_module_name)
+            module.probe = lambda **_kwargs: {"status": "FALLBACK_SHOULD_NOT_RUN"}
+            return module
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_with_missing_dependency)
+
+    with pytest.raises(ModuleNotFoundError) as exc_info:
+        live._legacy_loader_evidence(
+            tmp_path,
+            trade_date="2026-09-14",
+            symbols=("600519",),
+        )
+
+    assert exc_info.value.name == "redis"
+    assert package_imports == []
+
+
 CALENDAR = build_calendar_snapshot(
     ["2026-09-14"],
     calendar_id="test-calendar",

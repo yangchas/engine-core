@@ -1,5 +1,60 @@
 # Current Task
 
+## 2026-10-11 — TASK-008 late auction revision replay
+
+The hash-pinned 2026-10-09 t1-v2 Q2Frame was replayed twice through one Core
+Engine per pass: 603 frames / 195,421 updates / 5,224 observed symbols through
+the 09:25:06 barrier. All emitted determinism fields matched. Core recorded 18
+0920 revisions, 11 0924 revisions, and the first 0925 revision. Real observed
+availability grew from 1,192 to 3,360 at 0920 and from 3,229 to 4,094 at 0924;
+there were zero symbol transitions from available to missing in this input.
+0925 was 4,872 available / 352 missing. Because the frozen input ends at
+09:25:02, this run does not cover later 0925 corrections. Explicit-zero-to-
+MISSING and sparse-omission preservation remain separately verified by focused
+sidecar fixtures, not claimed as real observed regressions.
+
+The runner now reports per-revision symbol availability transitions and
+per-symbol latest-row / explicit-anchor-field event-path attribution. The real
+run used only `t1_v2_q2frame_event_time_replay`; no barrier sidecar was present.
+A focused test verifies sidecar versus rolling-layer labels. These labels do
+not establish producer build, Rabbit arrival, or historical availability.
+Compared with the preceding real run, Engine final hash, per-symbol anchor fact
+hashes, revision content hashes, counts, and coverage were unchanged.
+
+Full verification: `1006 passed`, compileall PASS, diff-check PASS; checksums
+verify. The two-pass run took about 64 minutes, recorded as an observation, not
+a functional gate. No Redis/TD/Rabbit/service/effect was touched.
+TASK-008 remains `PARTIAL_EVIDENCE`; 008A is `PASS_WITH_LIMITS`, 008B remains
+partial, 008C and normal-opening acceptance remain `UNPROVEN`. Rabbit
+arrival/delivery membership, historical `available_at`, producer build
+identity, and full-market completeness remain unknown or unproven. Evidence:
+`/home/exedev/validation/task008-auction-revision-attribution-20261011T222144+0800/revision_attribution_audit.md`.
+
+## 2026-10-11 — TASK-008 development path separated from live acceptance
+
+The real 2026-10-09 t1-v2 Q2Frame exercised the Core 0925 standalone fact and
+timeline with no earlier timeline anchors: 5,224/5,224
+facts matched the complete replay's content and evidence hashes, 4,872 were
+AVAILABLE, 352 remained MISSING with null price, and the 0925 revision hash
+matched. A controlled absence of the real Q2 state's `a20/a24` fields left
+every 0925 fact and revision hash unchanged, as designed. Both checks use the
+same Core calculation code and frozen Q2Frame, so hash equality confirms this
+input path's independence from earlier anchors, not independent value
+correctness. The fact path continued as PARTIAL and emitted a plan for the
+asynchronous recovery owner; 0920/0924 deltas became UNKNOWN. The 2026-09-23
+complete replay also accounts
+for all 5,222 observed symbols at each anchor. Evidence and source limits:
+`/home/exedev/validation/task008-anchor-only-20261011/REPORT.md`.
+
+Feature-scoped 008A Core anchor replay is `PASS_WITH_LIMITS` for this one
+2026-10-09 input. TASK-008 remains `PARTIAL_EVIDENCE` overall because 008B
+field parity is partial and 008C
+live/Rabbit/NORMAL equivalence is unproven. The latter does not gate verified
+Core replay development. Next migration work should consume an already checked
+real-data field path and deliver a runnable Core behavior; additional parity
+checks require a concrete consumer or observed mismatch. No next trading day
+is a prerequisite for 008A or other feature-scoped Core work.
+
 ## 主线对齐 — 回放用于开发（2026-09-25）
 
 回放的工程目标是复现真实 tick 经 t1-v2 产生 Q2、再由 Core 消费的计算
@@ -1413,3 +1468,218 @@ unproven. Runtime ~26.5 minutes is observational only. TASK-008 remains
 Report:
 `/home/exedev/validation/task008-current-source-full-window-20261008T181726+0800/core_full_window_report.json`
 (SHA-256 `accf5d294809dcfb1b246c914bcf80fe0b39656b843b4c494e1d06533347c65d`).
+
+## 31. Complete the paused C.1 full-window replay — 2026-10-09 after close
+
+After preflight confirmed the same process, frozen Q2Frame/sidecar hashes and
+mtimes, stable input offset, absent output target, and adequate host resources,
+resumed PID `3831221`; no second replay was launched. It produced a complete,
+valid JSON report for the pinned 2026-09-23 `[09:15:00,09:40:00)` event-time
+input. Ordered and repeat passes each processed 500 frames / 1,209,672 updates
+across 5,222 observed symbols (78 empty frames), with one Engine instance per
+pass and identical final hash
+`7dae28bd7e409e4f4196a8aba5cf54386a6a8deecdcdd31abd5be43172317e2d`.
+All determinism assertions are true. C.1 diagnostics report 500/500 complete
+slice metadata, zero missing slices/gaps/source-sequence gaps, and `CONTINUE`.
+
+The current report SHA-256 is
+`0ed20e575021ce39fc1db927aa5c46d38163dd014db90ec3d2217aeb0d2ad22f`.
+Compared with prior C.1 report
+`/home/exedev/validation/task008-frame-gap-final-20261009T074139+0800/core_full_window_report.json`
+(SHA-256 `3c8d2dd1d21badeb354305cdda77f5c08745bb2fd4fc919cc96eec81ae270585`),
+the execution-side sorted-JSON diff was empty after excluding the updated
+`frame_gap_diagnostics`, the optional `partial_reason_diagnostics_contract`,
+and the ordered/repeat 09:25 `PartialReasonDiagnosticsV1` objects. Separately
+checked final-state/fact hashes and anchor/opening counts match. The execution
+side inspected the current frame-gap diagnostics: complete 500-frame metadata,
+zero gap counts, `CONTINUE`. The optional partial-reason CLI flag was not
+passed; its corrected report is
+`/home/exedev/validation/task008-partial-reason-diagnostics-final-20261009T015518+0800/core_full_window_report.json`
+(SHA-256 `8fdb34fe80f67babe54c337403ff12b8b45981ab32c37ffdc9e015ca761701e5`).
+CC reviewed the supplied
+summary but could not directly read the validation artifacts, so this report
+comparison is an execution-side result, not an independent CC comparison. The
+09:32 opening remains `PARTIAL` (5,210 READY / 12 PARTIAL; 12 stale), with
+full-market coverage unproven; 09:32/09:40 producer cutoff snapshots remain
+absent and `NORMAL_OPENING_ACCEPTANCE` is `NOT_EVALUATED`. Rabbit arrival,
+delivery membership, and historical `available_at` remain
+`UNKNOWN_NOT_INFERRED`. Before resume, process-descriptor inspection found no
+socket; the runner/report identify local frozen-input and in-memory execution,
+and no production side effect was observed. See `resume_preflight.md` and the
+report's `production_side_effects` field. The
+process exit code was not retained, so completion is supported by the closed,
+parseable report and full input counts rather than a captured zero exit code.
+
+CC's decision, based on the execution-side field summary rather than direct
+access to the report, was to accept this as a complete full-window
+`FACT_ONLY` replay of the pinned input. Determinism is established by ordered
+and repeat passes within this process; comparison with a prior run was done by
+the execution side. This does not claim cross-machine or general
+reproducibility. `TASK-008=PARTIAL_EVIDENCE`,
+`NORMAL_OPENING_ACCEPTANCE=UNPROVEN`, `M3_1_NORMAL=BLOCKED`, and
+`TD_WRITE_HEALTH=UNPROVEN` remain unchanged.
+
+Code provenance: the replay process started at `08:49:24 +08:00` and imported
+its Python modules at startup. At audit, Core HEAD was
+`f7535d18b623fb73211ef507eeae6635d68fb28c`; the runner SHA-256 was
+`644eb3b0bad3c1c71774cedca56f2e81de99d576947874d509d207ccfa2df386`, with
+mtime `07:55:46 +08:00` (before process start). The post-start worktree diff
+contained only docstring/documentation edits in the reviewed source paths; no
+executable logic change was found. At replay process start, the runner and the
+source modules modified after start contained no function-local or dynamic
+imports. A later working-tree correction moved an optional legacy-loader
+import in `examples/run_live_morning_shadow.py` into
+`_legacy_loader_evidence`; that file was not part of this replay runner or its
+imported modules, and this correction changes no replay report or task status.
+Other Core modules did contain deferred local imports, and whether every such
+path was exercised was not instrumented. Those other files had no post-start
+diff. Exact imported module bytes were not captured as a runtime manifest.
+One-Engine-per-pass is from the replay report; host resource checks are in
+`resume_preflight.md`.
+
+Evidence:
+`/home/exedev/validation/task008-c1-current-full-recheck-20261009T084908+0800/replay_completion_audit.md`
+and
+`/home/exedev/validation/task008-c1-current-full-recheck-20261009T084908+0800/core_full_window_report.json`.
+
+## 32. Register 2026-10-10 auction-universe and live-node evidence
+
+The 2026-09-30 09:25 frozen capture has 5,210 Redis anchor symbols and 5,220
+TD auction rows: 5,210 shared, no anchor-only rows, and ten TD-only rows. All
+ten TD-only rows have zero amount fields and null change; this profile does
+not prove inactivity or delisting. The reconciliation is deterministic,
+diagnostic-only, and nonblocking. Details and input hashes are in
+`docs/evidence/task008-auction-universe-reconciliation-20261010.md` and its
+paired JSON.
+
+An offline cross-date review of three sealed Q2Frame/Core reports recomputed
+their recorded 60-second stale counts as 12/12/7 for 2026-09-23/29/30. The
+contracts and observed universes differ; this is a descriptive cohort
+comparison, not a same-build regression or a causal explanation. See
+`docs/evidence/task008_opening_stale_symbols_crossdate_20261010.md`.
+
+A separate same-input composition comparison ran the live shadow's
+`build_node_evidence` and Core replay against the sealed 2026-09-30 Q2Frame.
+All 5,220 opening facts and compared fields matched; both sides reported 5,213
+READY and seven PARTIAL facts. The repeat check was sampled at 300 symbols.
+This is offline composition parity on one frozen input, not a fresh live
+Redis/TD observation, exact t1-v2 producer cutoff parity, Rabbit delivery
+parity, or full-market proof. Evidence:
+`/home/exedev/validation/task008-live-node-replay-parity-20261010T072241+0800/task008_live_node_replay_parity.json`
+(SHA-256 `f1096ad0739751a3a9dbfc2e4f46d40be8f5e2156ac871fba9187ea3a5e04ea9`).
+
+The captured 09:25 universe reconciliation was supplied as a diagnostic
+sidecar to the full current-worktree Q2Frame replay and compared against a
+no-sidecar control. Both used Q2Frame SHA-256
+`1f712b200fc22ab1dec7d328ee96d23799f3179521c455c39a1944589374d38a` and the
+same pressure-context content hash. After excluding only report contract
+version and the sidecar-specific fields, all remaining sorted JSON outputs
+matched. Both runs processed 754 frames / 428,586 updates, emitted 758 signals,
+and had reducer revision 754 and final state hash
+`78fe99285be0a6b60a455ea7f15d9b37568fdf62bf6c5675734b5ed3fc4f0dc4`.
+The sidecar attributed seven stale observed symbols as TD-only with the
+zero-amount/null-change profile; three more TD-only rows with that profile
+were not stale, so causality remains unestablished. The first control attempt
+was interrupted without a report; only the completed second attempt counts.
+The replay used sealed local files and in-memory Core; there were no
+Redis/TD/Rabbit accesses, production writes, or service restarts observed.
+The replay was lowered to `nice 19` after CPU contention. Full A/B report
+hashes, exact normalization exclusions, test record and limits are recorded
+in `docs/evidence/task008-auction-universe-reconciliation-20261010.md` and
+`/home/exedev/validation/task008-auction-universe-sidecar-e2e-20261010T092626+0800/`.
+
+These are scoped evidence additions only. No task or acceptance state changed:
+`TASK-008=PARTIAL_EVIDENCE`, `REPLAY_FOR_DEVELOPMENT=USABLE_WITH_LIMITS`,
+`NORMAL_OPENING_ACCEPTANCE=UNPROVEN`, `M3_1_NORMAL=BLOCKED`, and
+`TD_WRITE_HEALTH=UNPROVEN`.
+
+## 33. Latest CC owner-only decisions — 2026-10-10 session
+
+The latest reused CC session recommends keeping production and repository
+ownership choices with the owner. This is a decision snapshot from that
+session; the underlying Runtime/release facts were not independently
+re-verified in this turn, and no item below is authorization to act.
+
+| Decision | CC recommendation | Owner input needed before action |
+|---|---|---|
+| Runtime backup/remote | Preserve the bundle plus uncommitted files at a second location first; defer remote setup. | Choose the second location and whether to configure a remote. |
+| Runtime `main` | Keep `main` as the baseline; do not advance it from the development branch yet. | Decide if/when baseline identity should move. |
+| 09:45 TD cutoff patch | Keep with Runtime ownership; do not change or deploy it; recover exact release-source provenance read-only. | Identify owner and authorize source retrieval. |
+| Auction summary semantics | Keep the already adopted local semantics; do not deploy or force Redis/TD predicate parity. | Approval is needed for any release patch/deployment. |
+| `make.sh` mode | Keep Git mode `100644`; use the documented `bash make.sh` invocation. | None unless changing the file mode is desired. |
+| `run_real_reference_probe.py` | CC recommends moving it to validation tooling and leaving Core with normalization tests. | Choose migration versus retaining the documented Core exception. |
+| TD `valid/unavailable` schema | Do not change TD schema now; document that the current total-minus-buckets difference is not recoverable as `valid`. | Before DDL, identify external consumers and approve schema change. |
+| TD read-only credentials | Owner should provide a read-only account and secure injection method; do not inspect service credentials. | Provide the credential source/injection instructions, not the secret in chat. |
+| 2026-10-12 live opening observation | CC proposes a bounded 09:14–09:45 read-only observation, no Redis writes, restart, or new consumer. | Explicitly authorize the observation and window. |
+| Dirty-worktree commits | Group and commit locally only after authorization; do not push. | Explicit commit authorization and grouping approval. |
+
+The one immediately executable, owner-independent action from that decision
+was the 2026-09-29 sealed-input opening-node parity run. It completed and is
+recorded in `docs/evidence/task008-live-node-parity-20260929-20261011.md`.
+This does not change TASK-008 or production acceptance states.
+
+## 34. 2026-09-29 opening-node offline parity — 2026-10-11
+
+The current Core worktree and sealed 2026-09-29 Q2Frame were run through the
+offline `OPENING_0932` live-shadow composition. All 5,223 observed-cohort
+symbols and all nine opening-fact fields plus four field-quality statuses
+matched the retained 2026-10-08 `Task008Q2FrameSessionEngineShadowV12` Core
+report; this is an earlier-code baseline, not a report generated by the current
+worktree. The independent-process repeat matched for the 312-symbol planned
+sample under a different Python hash seed. Both processes exited 0 under
+`nice 19`. The projection remains `PARTIAL` with 12 stale symbols; the compared
+paths share Core fact/strategy implementations, so this is composition parity,
+not independent formula verification or producer, Redis, Rabbit, full-market,
+or NORMAL parity. Report, input hashes, run fingerprint, and limits are recorded in
+`docs/evidence/task008-live-node-parity-20260929-20261011.md` and
+`/home/exedev/validation/task008-live-node-parity-20261011T001756+0800/`.
+No live source or production side effect occurred; task statuses remain
+unchanged.
+
+A read-only audit by the same resumed CC session confirmed that the execution
+followed its recommendation and found no blocking issue. It emphasized that
+the V12 baseline is from 2026-10-08 and that both paths share Core calculation
+code; those limits are now explicit above. CC could not recompute file hashes
+without shell access; the execution-side checksum verification is recorded in
+the validation directory.
+
+## 35. 2026-09-23 opening-node offline parity — 2026-10-11
+
+Following the same resumed CC session's recommendation, the current-worktree
+live-shadow composition was run against the sealed 2026-09-23 Q2Frame and its
+retained 2026-10-07 `Task008Q2FrameSessionEngineShadowV14` report. All 5,222
+cohort symbols matched across nine opening-fact fields and four compared
+field-quality statuses. A different-process, different-hash-seed repeat
+matched the planned 312-symbol sample with zero mismatches; it is not a full
+cohort repeat. Both runs exited 0 at `nice 19`; elapsed time is observational,
+not a gate.
+
+The projection is `PARTIAL` (5,210 READY / 12 PARTIAL). Report field
+`projection.last_frame_time_ms` is 09:32:08: it is the last consumed
+`Q2FrameV1.logical_ts_ms`, while the evaluation anchor is 09:32:10. The
+two-second cutoff difference is not a failure condition. In the pinned file,
+seq 343 is 09:32:08 for `[09:32:06,09:32:09)` and seq 344 is 09:32:11 for
+`[09:32:09,09:32:12)`; the runner includes the former and excludes the latter
+at the 09:32:10 cutoff. This does not prove source availability at the
+evaluation instant. This Q2Frame has the same SHA as the 500-frame/1,209,672-
+update artifact used by the 2026-10-08 full-window replay; this node pass used
+its 343-frame/436,327-update prefix. The source artifact's producer build
+remains `UNKNOWN`. This run consumes sealed Q2Frame data, not raw TD ticks,
+and does not rerun the producer; it cannot establish producer/Redis/Rabbit/
+NORMAL equivalence or full-market completeness. Evidence and exact input/report
+hashes are in
+`docs/evidence/task008-live-node-parity-20260923-20261011.md` and
+`/home/exedev/validation/task008-live-node-parity-20260923-20261011T020642+0800/`.
+
+The same resumed CC session's closeout audit found no blocker and recommended
+wording clarifications, now applied; its subsequent documentation-only review
+confirmed them complete with no new blocker. CC could review the documentation
+but could not read the validation directory due its read-root restriction;
+JSON and checksum verification are execution-side results. No task or
+acceptance state changes here: `TASK-008=PARTIAL_EVIDENCE`,
+`REPLAY_FOR_DEVELOPMENT=USABLE_WITH_LIMITS`,
+`NORMAL_OPENING_ACCEPTANCE=UNPROVEN`, `M3_1_NORMAL=BLOCKED`, and
+`TD_WRITE_HEALTH=UNPROVEN` remain unchanged. Per CC's decision, further
+offline date repetitions have diminishing value; the next material evidence
+requires owner-authorized live observation or owner-provided read-only data
+access.

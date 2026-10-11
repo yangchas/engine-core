@@ -1,7 +1,10 @@
-"""Side-effect-free opening facts and cohort summaries extracted from ``engine_next``.
+"""Side-effect-free Core opening facts and cohort summaries.
 
-These helpers operate only on already-read/normalized values.  They do not
-fetch Q2, infer a limit state, impose a run gate, or make a strategy decision.
+These independent helpers operate only on already-read/normalized values.
+Selected helper behavior has bounded differential evidence (for example,
+``docs/evidence/opening_differential_real_20260916.md``); that does not
+establish full ``engine_next`` parity. They do not fetch Q2, infer a limit
+state, impose a run gate, or make a strategy decision.
 """
 
 from __future__ import annotations
@@ -157,10 +160,10 @@ def compute_change_delta_bp(
 ) -> Optional[int]:
     """Convert an opening-minus-auction percentage delta to basis points.
 
-    Both inputs use the deployed reader's percentage-point unit (``5.0`` is
-    five percent).  The explicit ``* 100`` conversion therefore yields basis
-    points, matching ``engine_next._change_bp``.  Missing or malformed values
-    remain unavailable.
+    Both inputs use percentage-point units (``5.0`` is five percent). The
+    explicit ``* 100`` conversion therefore yields basis points. Missing or
+    malformed values remain unavailable; full legacy-path parity is not
+    implied by this pure conversion.
     """
 
     delta = compute_delta(opening_change_pct, auction_change_pct)
@@ -181,7 +184,7 @@ def classify_delta(delta: Any) -> str:
 
 
 def classify_sign_state(before: Any, after: Any) -> str:
-    """Classify sign reversal using the deployed opening rule.
+    """Classify sign reversal for bounded comparison with the reviewed release source.
 
     Touching zero is not a reversal; it is classified by the ordinary delta
     state.  Missing or malformed operands remain ``unavailable``.
@@ -206,7 +209,7 @@ def _limit_state_valid(value: Any) -> bool:
 
 
 def build_open_fact(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Build the deployed single-stock opening fact without I/O.
+    """Build a single-stock opening fact for bounded release-source comparison.
 
     ``change_pct`` is a percentage-point value.  ``limit_state`` is kept as a
     separate field and receives its own availability status; it is never
@@ -259,7 +262,7 @@ def build_opening_limit_state_summary(
     """Aggregate producer ``limit_state`` facts without turning them into a gate.
 
     The input is the per-symbol result of :func:`build_open_fact`.  As in the
-    deployed opening consumer, the limit-state denominator contains rows with
+    reviewed release-source consumer, the limit-state denominator contains rows with
     a price-valid opening fact (``status == "available"``).  Quality counts
     are independent of price breadth: a missing state is not a normal state,
     and an invalid state is not missing.  Known enum counts are always retained
@@ -1267,7 +1270,7 @@ def build_opening_amount_summary(
 ) -> dict[str, Any]:
     """Aggregate Q2 two-minute amounts over price-valid opening facts.
 
-    This follows the deployed ``open_confirmation`` market sum: only rows with
+    This bounded comparison follows the reviewed ``open_confirmation`` release-source rule: only rows with
     an available price-based opening fact enter the denominator, and the sum
     is exposed only when every eligible row has a finite amount.  A numeric
     zero is present data; a missing or malformed amount is not zero.  The
@@ -1341,7 +1344,7 @@ def build_opening_plate_amount_summary(
     auction_top1_amount_ratio_by_plate: Mapping[str, Any],
     selected_plates: Optional[Sequence[str]] = None,
 ) -> dict[str, Any]:
-    """Aggregate the deployed per-plate opening amount/concentration facts.
+    """Aggregate per-plate opening facts for bounded release-source comparison.
 
     ``mapped_symbols_by_plate`` comes from the date-frozen canonical stock to
     plate mapping carried by the auction detail snapshot. ``auction_symbols``

@@ -36,6 +36,15 @@ untracked generated JSON artifacts (`core_repeat_report.json` and
 `q2frame_summary.json`). They were left untouched and are not included in this
 audit commit because they are unrelated historical evidence, not source edits.
 
+### Archive location update (2026-10-09)
+
+The historical path above no longer exists after worktree cleanup. The retained
+Q2 replay report and summary were moved to
+`/home/exedev/validation/runtime-worktree-archive-20261009-8G4vEE/q2-source-abc0fff/`.
+The archive-level `MANIFEST.md` and `sha256sums.txt` distinguish current-copy
+integrity from original-source provenance; the original checksums were not
+persisted, so these copied files remain `COPIED_NO_PERSISTED_BASELINE`.
+
 ## Contract and code review
 
 The patch matches the current replay contract for this boundary:
