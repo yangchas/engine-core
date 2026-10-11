@@ -45,7 +45,7 @@ def test_same_ts_newer_older_and_value_difference_are_classified_separately(tmp_
     capture = tmp_path / "c.json"
     _capture(capture, [_update("000001", TS), _update("000002", TS, px=200),
                        _update("000003", TS), _update("000004", TS)])
-    out = runner.run(q2frame=frames, capture_path=capture, trade_date="2026-10-09", out_dir=tmp_path / "o")
+    out = runner.run(q2frame=frames, capture_path=capture, trade_date="2026-10-09", out_dir=tmp_path / "o", repeat_determinism=True)
     comparison = out["comparison"]
     assert comparison["relation_counts"] == {
         "SAME_TS": 2, "REPLAY_SOURCE_NEWER": 1, "REPLAY_SOURCE_OLDER": 1,
@@ -75,3 +75,17 @@ def test_symbol_without_replay_state_is_listed_not_dropped(tmp_path):
     comparison = out["comparison"]
     assert comparison["relation_counts"]["NO_REPLAY_STATE"] == 1
     assert comparison["no_replay_state_symbols"] == ["000009"]
+
+
+def test_determinism_check_is_opt_in_and_hash_is_streamed(tmp_path):
+    frames = tmp_path / "f.jsonl"
+    _frames(frames, [(TS, [_update("000001", TS)])])
+    capture = tmp_path / "c.json"
+    _capture(capture, [_update("000001", TS)])
+    out = runner.run(q2frame=frames, capture_path=capture, trade_date="2026-10-09", out_dir=tmp_path / "o")
+    comparison = out["comparison"]
+    assert comparison["determinism_check"] == "NOT_RUN"
+    assert comparison["projection_deterministic_on_repeat"] is None
+    import hashlib
+    assert out["manifest"]["q2frame"]["sha256"] == hashlib.sha256(frames.read_bytes()).hexdigest()
+    assert runner.sha256_file(frames, chunk_size=7) == out["manifest"]["q2frame"]["sha256"]

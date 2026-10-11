@@ -33,6 +33,16 @@ CONTRACT_VERSION = "Q2FrameVsCaptureFieldsV1"
 SAMPLE_LIMIT = 20
 
 
+def sha256_file(path: Path, chunk_size: int = 1 << 20) -> str:
+    """Streaming SHA-256 so large Q2Frame files are never read into memory."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def load_capture_hashes(path: Path) -> tuple[dict[str, Any], dict[str, Mapping[str, str]]]:
     capture = json.loads(path.read_text(encoding="utf-8"))
     hashes: dict[str, Mapping[str, str]] = {}
@@ -142,20 +152,27 @@ def compare_fields(projection: Any, hashes: Mapping[str, Mapping[str, str]]) -> 
     }
 
 
-def run(*, q2frame: Path, capture_path: Path, trade_date: str, out_dir: Path) -> dict[str, Any]:
+def run(
+    *, q2frame: Path, capture_path: Path, trade_date: str, out_dir: Path, repeat_determinism: bool = False,
+) -> dict[str, Any]:
     started = time.time()
     capture, hashes = load_capture_hashes(capture_path)
     projection, frame_info = replay_final_projection(q2frame, trade_date, sorted(hashes))
-    again, _ = replay_final_projection(q2frame, trade_date, sorted(hashes))
+    again = None
+    if repeat_determinism:
+        again, _ = replay_final_projection(q2frame, trade_date, sorted(hashes))
     comparison = compare_fields(projection, hashes)
     comparison["projection_content_hash"] = projection.content_hash
-    comparison["projection_deterministic_on_repeat"] = projection.content_hash == again.content_hash
+    comparison["determinism_check"] = "RUN" if again is not None else "NOT_RUN"
+    comparison["projection_deterministic_on_repeat"] = (
+        None if again is None else projection.content_hash == again.content_hash
+    )
     out_dir.mkdir(parents=True, exist_ok=False)
     manifest = {
         "contract_version": CONTRACT_VERSION, "trade_date": trade_date,
-        "q2frame": {"path": str(q2frame), "sha256": hashlib.sha256(q2frame.read_bytes()).hexdigest(), **frame_info},
+        "q2frame": {"path": str(q2frame), "sha256": sha256_file(q2frame), **frame_info},
         "capture": {
-            "path": str(capture_path), "sha256": hashlib.sha256(capture_path.read_bytes()).hexdigest(),
+            "path": str(capture_path), "sha256": sha256_file(capture_path),
             "wall_read_observed": [capture.get("read_started_at"), capture.get("read_completed_at")],
             "wall_time_policy": "OBSERVED_ONLY",
         },
@@ -183,8 +200,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--capture", type=Path, required=True)
     parser.add_argument("--trade-date", required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--repeat-determinism", action="store_true",
+                        help="replay the Q2Frame a second time and compare projection hashes")
     args = parser.parse_args(argv)
-    result = run(q2frame=args.q2frame, capture_path=args.capture, trade_date=args.trade_date, out_dir=args.out_dir)
+    result = run(
+        q2frame=args.q2frame, capture_path=args.capture, trade_date=args.trade_date,
+        out_dir=args.out_dir, repeat_determinism=args.repeat_determinism,
+    )
     print(canonical_json({
         "relations": result["comparison"]["relation_counts"],
         "fields": result["comparison"]["field_status_counts"],
