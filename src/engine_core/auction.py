@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 
 # The business timer remains anchored at 09:25:00.  The deployed t1-v2
@@ -58,3 +58,37 @@ def normalize_auction_change_bp_to_pct(value: Any) -> Optional[float]:
     if not math.isfinite(raw):
         return None
     return raw / 100.0
+
+
+TD_AUCTION_INACTIVITY_FIELDS = (
+    "match_amt_yuan",
+    "chg_bp",
+    "rest_bid_amt_yuan",
+    "rest_ask_amt_yuan",
+)
+
+
+def classify_td_auction_inactivity(row: Mapping[str, Any]) -> str:
+    """Classify activity evidence for one TD auction row.
+
+    This mirrors the existing producer-side per-row diagnostic: all four
+    finite activity fields must be explicitly zero for ``INACTIVE``. Any
+    missing, malformed, or non-finite value yields ``UNKNOWN``; any finite
+    non-zero value yields ``NON_INACTIVE``. This does not determine whether a
+    symbol belongs to the effective universe, which also depends on Redis
+    anchor membership in the production assembler.
+    """
+
+    values: list[float] = []
+    for field in TD_AUCTION_INACTIVITY_FIELDS:
+        value = row.get(field)
+        if value is None or isinstance(value, bool):
+            return "UNKNOWN"
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return "UNKNOWN"
+        if not math.isfinite(number):
+            return "UNKNOWN"
+        values.append(number)
+    return "INACTIVE" if all(value == 0.0 for value in values) else "NON_INACTIVE"

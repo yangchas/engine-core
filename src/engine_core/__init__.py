@@ -151,6 +151,7 @@ from .theme_weights import (
 )
 from .auction import (
     AUCTION_0925_FINALIZATION_DELAY_MS,
+    classify_td_auction_inactivity,
     normalize_auction_change_bp_to_pct,
     normalize_auction_change_ratio,
 )
@@ -471,6 +472,7 @@ __all__ = [
     "split_theme_tokens",
     "normalize_auction_change_ratio",
     "normalize_auction_change_bp_to_pct",
+    "classify_td_auction_inactivity",
     "AUCTION_0925_FINALIZATION_DELAY_MS",
     "OPENING_FACT_CONTRACT_VERSION",
     "OPENING_PLATE_AUCTION_PRESSURE_SUMMARY_CONTRACT_VERSION",

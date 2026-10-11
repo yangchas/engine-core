@@ -4,7 +4,11 @@ import math
 
 import pytest
 
-from engine_core import normalize_auction_change_bp_to_pct, normalize_auction_change_ratio
+from engine_core import (
+    classify_td_auction_inactivity,
+    normalize_auction_change_bp_to_pct,
+    normalize_auction_change_ratio,
+)
 
 
 @pytest.mark.parametrize(
@@ -43,3 +47,33 @@ def test_normalize_typed_td_change_bp_to_percentage_points(raw, expected):
 @pytest.mark.parametrize("raw", [None, "", "bad", True, False, math.nan, math.inf, -math.inf])
 def test_normalize_typed_td_change_bp_keeps_unknown_as_missing(raw):
     assert normalize_auction_change_bp_to_pct(raw) is None
+
+
+def test_td_auction_inactivity_requires_all_four_explicit_zero_fields():
+    row = {
+        "match_amt_yuan": 0,
+        "chg_bp": 0,
+        "rest_bid_amt_yuan": 0,
+        "rest_ask_amt_yuan": 0,
+    }
+    assert classify_td_auction_inactivity(row) == "INACTIVE"
+    assert classify_td_auction_inactivity({**row, "rest_bid_amt_yuan": 1}) == "NON_INACTIVE"
+
+
+@pytest.mark.parametrize(
+    "field_update",
+    [
+        {"match_amt_yuan": None},
+        {"chg_bp": "invalid"},
+        {"rest_bid_amt_yuan": math.nan},
+        {"rest_ask_amt_yuan": math.inf},
+    ],
+)
+def test_td_auction_inactivity_keeps_missing_or_invalid_evidence_unknown(field_update):
+    row = {
+        "match_amt_yuan": 0,
+        "chg_bp": 0,
+        "rest_bid_amt_yuan": 0,
+        "rest_ask_amt_yuan": 0,
+    }
+    assert classify_td_auction_inactivity({**row, **field_update}) == "UNKNOWN"
