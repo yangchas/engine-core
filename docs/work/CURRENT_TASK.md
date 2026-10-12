@@ -1,5 +1,22 @@
 # Current Task
 
+## 2026-10-12 — full frozen Q2Frame repeat replay
+
+The 2026-10-09 hash-pinned t1-v2 Q2Frame was replayed through all 1,190 frames
+and 1,146,352 updates in `ordered` and `repeat` passes. Both reached
+09:39:26, returned the same final state hash
+`61316993dfb529dc900debd25ea79dd52eebe7e917178b5e7e68809d21e5960a`, and
+reported `deterministic=true`. Both recorded 18 0920 revisions, 11 0924
+revisions, and one 0925 revision. The input SHA-256 is
+`7474de28bfc60e8777cef0f359b4f6d2ab1b4f1ab6bcdf4fee5211a721483467`.
+This confirms repeat determinism for this captured Q2Frame only; no later 0925
+content revision was observed, so late 0925 correction and live/Rabbit
+equivalence remain unproven. The run used the local captured file, not a fresh
+TD/Redis/Rabbit read. Full evidence:
+`docs/evidence/task008-q2frame-core-repeat-20261012.md` and its JSON summary.
+Full suite: 1008 passed; compileall and diff-check pass. TASK-008 remains
+`PARTIAL_EVIDENCE`; normal-opening acceptance remains `UNPROVEN`.
+
 ## 2026-10-11 — TASK-008 late auction revision replay
 
 The hash-pinned 2026-10-09 t1-v2 Q2Frame was replayed twice through one Core

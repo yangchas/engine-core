@@ -1,5 +1,19 @@
 # Project Knowledge
 
+- `[VERIFIED BY REAL FROZEN Q2FRAME REPEAT REPLAY 2026-10-12]` The hash-pinned
+  2026-10-09 t1-v2 Q2Frame (`7474de28…483467`) replayed through Core in ordered
+  and repeat passes: 1,190 frames / 1,146,352 updates, ending at 09:39:26.
+  Both passes produced final state hash
+  `61316993dfb529dc900debd25ea79dd52eebe7e917178b5e7e68809d21e5960a` and
+  matching 0920/0924/0925 revision counts of 18/11/1. This proves repeat
+  determinism for this captured Q2Frame, not Rabbit arrival or fresh
+  TD/Redis/Rabbit equivalence. No distinct later 0925 content revision was
+  observed, so late 0925 correction remains unproven. TASK-008 remains
+  `PARTIAL_EVIDENCE`; normal-opening acceptance remains `UNPROVEN`. The Core
+  suite passed 1008 tests. Evidence:
+  `docs/evidence/task008-q2frame-core-repeat-20261012.md` and
+  `docs/evidence/task008-q2frame-core-repeat-20261012.json`.
+
 - `[VERIFIED BY REAL FROZEN Q2FRAME REPLAY 2026-10-11 — auction revisions]`
   The hash-pinned 2026-10-09 Q2Frame (SHA-256
   `6cfc969ce408ab859eab91a5a12f6fd5c37c565cd0be6ae2f646b1114d5e8934`)
