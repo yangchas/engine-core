@@ -60,6 +60,7 @@ from engine_core import (  # noqa: E402
 from engine_core.contracts import StrategyResult  # noqa: E402
 from engine_core.market_summary import derive_q2_auction_summary  # noqa: E402
 from engine_core.q2 import normalize_q2  # noqa: E402
+from engine_core.replay_fidelity import replay_fidelity_metadata_for_input_kind  # noqa: E402
 from engine_core.auction_universe_reconciliation import (  # noqa: E402
     attribute_opening_stale_symbols,
 )
@@ -2451,7 +2452,7 @@ def run_q2frame_auction_engine_shadow(
         contract_version = "Task008Q2FrameSessionEngineShadowV7"
     else:
         contract_version = "Task008Q2FrameAuctionEngineShadowV5"
-    return {
+    result = {
         "contract_version": contract_version,
         **(
             {"partial_reason_diagnostics_contract": PARTIAL_REASON_DIAGNOSTICS_CONTRACT}
@@ -2612,6 +2613,15 @@ def run_q2frame_auction_engine_shadow(
         "decision_status": "FACT_ONLY",
         "production_side_effects": "NONE; local Q2Frame read and in-memory Core Engine only",
     }
+    replay_fidelity = replay_fidelity_metadata_for_input_kind(
+        input_kind,
+        run_trade_date=trade_date,
+        run_input_sha256=final_sha,
+    )
+    if replay_fidelity is not None:
+        result["contract_version"] = "Task008Q2FrameSessionEngineShadowV19"
+        result["replay_fidelity"] = replay_fidelity
+    return result
 
 
 def main() -> int:
@@ -2619,6 +2629,13 @@ def main() -> int:
     parser.add_argument("--q2frame", type=Path, required=True)
     parser.add_argument("--trade-date", required=True)
     parser.add_argument("--expected-sha256")
+    parser.add_argument(
+        "--input-kind",
+        help=(
+            "explicit input provenance label; TD fidelity diagnostics are attached "
+            "only for TD_RETAINED_EVENT_REPLAY"
+        ),
+    )
     parser.add_argument(
         "--barrier-q2frame",
         type=Path,
@@ -2728,6 +2745,7 @@ def main() -> int:
         q2frame_path=args.q2frame,
         trade_date=args.trade_date,
         expected_sha256=args.expected_sha256,
+        input_kind=args.input_kind,
         barrier_q2frame_path=args.barrier_q2frame,
         expected_barrier_q2frame_sha256=args.expected_barrier_q2frame_sha256,
         include_opening=args.include_opening,

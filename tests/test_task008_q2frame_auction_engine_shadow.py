@@ -478,6 +478,7 @@ def test_late_start_snapshot_generates_current_anchor_facts_without_backdating(
     assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV18"
     assert result["run_mode"] == "TEST_LATE_START_SNAPSHOT"
     assert result["input_kind"] == "TEST_SNAPSHOT"
+    assert "replay_fidelity" not in result
     assert result["q2frame"]["source"] == "sealed test snapshot"
     for tag, anchor_price in (
         ("0920", 10_100),
@@ -502,6 +503,39 @@ def test_late_start_snapshot_generates_current_anchor_facts_without_backdating(
         assert facts["600000"]["status"] == "MISSING"
         assert facts["600000"]["price_milli"] is None
         assert facts["600000"]["price_milli"] != missing["px"]
+
+
+def test_td_retained_fidelity_is_attached_only_for_explicit_input_kind(
+    tmp_path: Path,
+):
+    source = tmp_path / "one-frame.jsonl"
+    source.write_text(
+        json.dumps(_frame(1, "09:15:00.000"), separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    default_result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+    )
+    td_result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        input_kind="TD_RETAINED_EVENT_REPLAY",
+    )
+
+    assert "input_kind" not in default_result
+    assert "replay_fidelity" not in default_result
+    assert td_result["input_kind"] == "TD_RETAINED_EVENT_REPLAY"
+    assert td_result["contract_version"] == "Task008Q2FrameSessionEngineShadowV19"
+    assert td_result["replay_fidelity"]["contract"] == "TDRetainedEventReplayFidelityV1"
+    assert td_result["replay_fidelity"]["blocks_downstream"] is False
+    assert td_result["replay_fidelity"]["evidence_cohort_matches_run_input"][
+        "status"
+    ] == "DOES_NOT_MATCH"
+    assert td_result["replay_fidelity"]["evidence_cohort_matches_run_input"][
+        "blocks_downstream"
+    ] is False
 
 
 def test_late_start_without_an_explicit_anchor_field_keeps_not_observed_status(

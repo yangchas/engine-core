@@ -28,6 +28,7 @@ from engine_core.clock import local_datetime_ms  # noqa: E402
 from engine_core.contracts import canonical_hash, semantic_hash  # noqa: E402
 from engine_core.q2 import normalize_q2, normalize_symbol  # noqa: E402
 from engine_core.replay import Q2FrameV1  # noqa: E402
+from engine_core.replay_fidelity import replay_fidelity_metadata_for_input_kind  # noqa: E402
 from engine_core.replay_arrival import (  # noqa: E402
     ArrivalLagModelV1,
     iter_hypothetical_reads,
@@ -292,6 +293,13 @@ def main() -> int:
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--expected-sha256", default=DEFAULT_SHA256)
     parser.add_argument("--trade-date", default=DEFAULT_TRADE_DATE)
+    parser.add_argument(
+        "--input-kind",
+        help=(
+            "explicit input provenance label; TD fidelity diagnostics are attached "
+            "only for TD_RETAINED_EVENT_REPLAY"
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--lags-ms", type=int, nargs="+", default=LAGS_MS)
     parser.add_argument("--cadences-ms", type=int, nargs="+", default=CADENCES_MS)
@@ -336,11 +344,21 @@ def main() -> int:
                 flush=True,
             )
 
+    replay_fidelity = replay_fidelity_metadata_for_input_kind(
+        args.input_kind,
+        run_trade_date=args.trade_date,
+        run_input_sha256=input_sha,
+    )
     summary = {
-        "contract": "ArrivalLagSensitivityRunV1",
+        "contract": (
+            "ArrivalLagSensitivityRunV2"
+            if replay_fidelity is not None
+            else "ArrivalLagSensitivityRunV1"
+        ),
         "run_mode": "HYPOTHETICAL_ARRIVAL_LAG_SENSITIVITY",
         "result_status": "DIAGNOSTIC_ONLY",
         "trade_date": args.trade_date,
+        **({"input_kind": args.input_kind} if args.input_kind is not None else {}),
         "input": {
             "path": str(args.input),
             "sha256": input_sha,
@@ -368,6 +386,8 @@ def main() -> int:
             "not a claim that constant lag values are empirically realistic",
         ],
     }
+    if replay_fidelity is not None:
+        summary["replay_fidelity"] = replay_fidelity
     summary_path = output_dir / "arrival_lag_sensitivity.json"
     summary_path.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",

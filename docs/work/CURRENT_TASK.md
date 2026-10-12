@@ -1734,3 +1734,34 @@ acceptance state changes here: `TASK-008=PARTIAL_EVIDENCE`,
 offline date repetitions have diminishing value; the next material evidence
 requires owner-authorized live observation or owner-provided read-only data
 access.
+
+## 36. 2026-10-12 — source-density audit and TD replay fidelity metadata
+
+TASK-009-J compared real t1-v2 progress counters and read-only TD retained-row
+counts for 2026-10-09. It observed 2,402,250 accepted engine ticks versus
+1,147,924 retained TD rows over approximately aligned windows, with partial
+cause attribution only. Writer statement counts do not prove committed row
+counts; Rabbit batch membership, same-key collision count, arrival order, and
+historical availability remain UNKNOWN. Evidence:
+`docs/evidence/task009-j-t1-td-input-density-audit-20261012.md`.
+
+The Core Q2Frame and hypothetical arrival-lag summaries now support an
+opt-in `TDRetainedEventReplayFidelityV1` field table. It is attached only when
+the caller explicitly sets `input_kind=TD_RETAINED_EVENT_REPLAY`; the label is
+caller-declared, and the table is diagnostic-only/non-blocking. It describes
+one real TD→t1-v2→Q2 comparison, leaves unreviewed fields `UNASSESSED`, and does
+not alter replay calculations or infer Rabbit arrival/available-at. The
+`Task008Q2FrameSessionEngineShadowV19` and `ArrivalLagSensitivityRunV2`
+versions mean only that this opt-in `replay_fidelity` output block is present;
+replay calculations and default output remain unchanged. The table carries a
+soft input-cohort comparison; a mismatch is diagnostic and does not block the
+run. `iv`/`ia` counters were corrected against the mainline field-comparison
+artifact and are pinned by tests. Targeted tests: 7 passed; full suite: 1,048
+passed; compileall, both runner `--help` smoke checks, and diff-check passed.
+The same resumed CC session re-reviewed the current diff: no blocking findings.
+
+No new TD/Redis/Rabbit query, write, service action, or Runtime repository
+change occurred while adding this metadata. Status remains
+`TASK-008=PARTIAL_EVIDENCE`, `REPLAY_FOR_DEVELOPMENT=USABLE_WITH_LIMITS`,
+`NORMAL_OPENING_ACCEPTANCE=UNPROVEN`, `M3_1_NORMAL=BLOCKED`, and
+`TD_WRITE_HEALTH=UNPROVEN`.

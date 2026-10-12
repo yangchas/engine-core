@@ -34,6 +34,11 @@
   availability, and production cohort questions do not block 008A or other
   Core features whose actual inputs have been checked. `M3_1_NORMAL=BLOCKED`
   and `TD_WRITE_HEALTH=UNPROVEN` remain production claims only.
+- related source-density audit (TASK-009-J):
+  `DENSITY_DIFFERENCE=OBSERVED`, `CAUSE_ATTRIBUTION=PARTIAL`; real t1-v2
+  counters and read-only TD row counts were compared for one date/window,
+  but exact Rabbit event/batch reconstruction remains unproven. Evidence:
+  `docs/evidence/task009-j-t1-td-input-density-audit-20261012.md`.
 - latest late-auction revision replay: the pinned real 2026-10-09 t1-v2
   Q2Frame completed ordered/repeat through 09:25:06 (603 frames / 195,421
   updates / 5,224 observed symbols); all emitted determinism checks matched.
