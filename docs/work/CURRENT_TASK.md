@@ -1,5 +1,25 @@
 # Current Task
 
+## 2026-10-13 — data-fetch audit vs legacy engine-next (read-only)
+
+Compared legacy `IntradayDataHub`/`auction_runtime_controller` with Core.
+Legacy triggers: `auction_finalize_0925` (minute 09:25: yesterday pool, hot
+plates, anchor, summary) and `auction_followup_0926` (re-reads anchor only if
+`market:auction:anchor:{date}` is absent, so late Shenzhen finals are never
+patched; missing change_pct defaults to 0.0). Real read-only probes (new dir
+`/home/exedev/validation/real-hot-plates-20261013/`):
+- `cache:hot_plates:2026-10-12`: 50 rows, written once 17:40; previously
+  UNAVAILABLE for HISTORICAL mode and for unknown units. Now LIVE probe mode
+  and a soft unit gate: unknown-unit fields (`hot`, `strength`,
+  `net_inflow_yi`) are withheld as None, `rank`/`change_pct` stay; PARTIAL,
+  completeness 0.4. Today's (10-13) cache is absent before 09:25 — the
+  legacy writer owns that timing.
+- `cache:hot_rank:2026-10-12`: 100 rows READY, single refresh at 14:51.
+- `cache:limit_truth:{2026-10-08..10-13}`: key absent (legacy Wencai path is
+  not producing it); Core must not depend on it.
+No Redis/TD writes. Status labels unchanged.
+
+
 ## 2026-10-12 — hypothetical arrival-lag sensitivity
 
 Added `ArrivalLagModelV1` and streamed the complete pinned 2026-10-09 Q2Frame
