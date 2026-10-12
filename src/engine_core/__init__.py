@@ -202,6 +202,14 @@ from .replay import (
     replay_q2frames,
     replay_td_event_time,
 )
+from .replay_arrival import (
+    ARRIVAL_MODEL_KIND,
+    RUN_MODE as ARRIVAL_LAG_RUN_MODE,
+    SLOT_CONVENTION as ARRIVAL_SLOT_CONVENTION,
+    ArrivalLagModelV1,
+    HypotheticalReadV1,
+    iter_hypothetical_reads,
+)
 from .canonical_ticks import (
     CANONICAL_BATCH_CONTRACT_VERSION,
     CANONICAL_HASH_ENCODING_VERSION,
@@ -503,6 +511,12 @@ __all__ = [
     "validate_opening_plate_auction_pressure_context",
     "Q2FrameReplaySource",
     "Q2FrameV1",
+    "ArrivalLagModelV1",
+    "HypotheticalReadV1",
+    "iter_hypothetical_reads",
+    "ARRIVAL_MODEL_KIND",
+    "ARRIVAL_LAG_RUN_MODE",
+    "ARRIVAL_SLOT_CONVENTION",
     "TDEventSlice",
     "TDEventTimeReplaySource",
     "TDEventV1",

@@ -7,6 +7,11 @@
 - title: Real opening validation (production read-only; isolated replay allowed)
 - owner: `replay-investigator`
 - state: `PARTIAL_EVIDENCE`
+- hypothetical_arrival_lag_sensitivity: `DIAGNOSTIC_ONLY`; the recorded
+  zero-lag 1s/3s exact-milestone hash self-check matched on the pinned
+  2026-10-09 Q2Frame prefix. Constant lag translates the cutoff along one
+  captured availability curve; it is not Rabbit arrival or NORMAL proof.
+  Details: `docs/evidence/task008-hypothetical-arrival-lag-sensitivity-20261012.md`.
 - replay_for_development: `USABLE_WITH_LIMITS`
 - normal_opening_acceptance: `UNPROVEN`
 - 008A Core 0925 anchor replay: `PASS_WITH_LIMITS` for the single real

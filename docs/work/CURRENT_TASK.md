@@ -1,5 +1,31 @@
 # Current Task
 
+## 2026-10-12 — hypothetical arrival-lag sensitivity
+
+Added `ArrivalLagModelV1` and streamed the complete pinned 2026-10-09 Q2Frame
+prefix through 09:25:30 under constant assumed lags of 0/3/6/10/30 seconds and
+1s/3s read cadences. Each of the 10 runs consumed the same 603 Q2Frames and
+195,421 updates with input/delivery fingerprints matching. The recorded
+zero-lag 1s/3s exact-milestone hash check matched; constant lag shifts the read
+cutoff along one captured availability curve, not five independent delay
+distributions. With zero assumed lag, 09:25:06 had 4,872/5,224 observed-capture symbols available; at assumed
+6s it had 3,342, at 10s it had 0, and at 30s the 09:25:30 soft deadline had
+3,342 before rising to 4,872 at the 30s convergence read. These are sensitivity
+results from Q2Frame logical time, not measured Rabbit latency or historical
+availability. The input is t1-v2 output produced from a real TD prefix, not a
+captured Rabbit batch. No symbols were sampled and source `ts` values were not
+modified. No Redis/TD/Rabbit/service/effect was accessed. Full evidence:
+`docs/evidence/task008-hypothetical-arrival-lag-sensitivity-20261012.md` and
+`/home/exedev/validation/task008-arrival-lag-sensitivity-20261012T150426+0800/`.
+The runner uses a local latest-per-symbol merge and the Core anchor-revision
+builder only; it does not execute `Q2FrameReplaySource`, Engine, the
+`AuctionTimeline` revision chain, or `AuctionShadowStrategy`.
+
+Status remains `TASK-008=PARTIAL_EVIDENCE`,
+`NORMAL_OPENING_ACCEPTANCE=UNPROVEN`, `M3_1_NORMAL=BLOCKED`, and
+`TD_WRITE_HEALTH=UNPROVEN`. The model helps assess soft/partial anchor handling;
+it does not prove live or Rabbit equivalence.
+
 ## 2026-10-12 — full frozen Q2Frame repeat replay
 
 The 2026-10-09 hash-pinned t1-v2 Q2Frame was replayed through all 1,190 frames
