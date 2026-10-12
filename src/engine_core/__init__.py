@@ -286,6 +286,10 @@ from .auction_timeline import (
     build_auction_anchor_fact_v1,
     build_auction_anchor_revision,
 )
+from .previous_day_limit_current_rows import (
+    Current0925Rows,
+    build_current_0925_rows,
+)
 from .auction_session import (
     AuctionAnchorSessionV1,
     AuctionSessionObservationV1,
@@ -645,6 +649,8 @@ __all__ = [
     "AuctionAnchorRevisionV2",
     "AuctionAnchorRevisionV3",
     "AuctionTimeline",
+    "Current0925Rows",
+    "build_current_0925_rows",
     "AuctionAnchorSessionV1",
     "AuctionSessionObservationV1",
     "build_auction_anchor_fact_v1",
