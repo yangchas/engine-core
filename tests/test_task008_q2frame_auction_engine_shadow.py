@@ -261,6 +261,98 @@ def test_0925_observation_stays_at_last_frame_across_empty_time_gap(tmp_path: Pa
     assert anchor["last_raw_frame_time_ms"] == observed_at_ms
 
 
+def test_0925_late_q2frame_update_supersedes_first_revision_end_to_end(
+    tmp_path: Path,
+):
+    """Exercise late-revision plumbing; this synthetic case is not live evidence."""
+    frames = [
+        _frame(1, "09:15:00.000"),
+        _frame(2, "09:20:03.000"),
+        _frame(3, "09:24:10.000"),
+        _frame(4, "09:25:06.000"),
+        _frame(5, "09:25:07.000"),
+    ]
+    for update in frames[3]["q2_updates"]:
+        update["a25"] = 12_000 if update["symbol"] == "000001" else 0
+    late_update = next(
+        update
+        for update in frames[4]["q2_updates"]
+        if update["symbol"] == "600000"
+    )
+    late_update["a25"] = 12_500
+    first_available_update = next(
+        update
+        for update in frames[4]["q2_updates"]
+        if update["symbol"] == "000001"
+    )
+    first_available_update["a25"] = 12_000
+
+    first_only_source = tmp_path / "q2frame-0925-first-revision.jsonl"
+    continued_source = tmp_path / "q2frame-0925-late-revision.jsonl"
+    first_only_source.write_text(
+        "".join(
+            json.dumps(frame, separators=(",", ":")) + "\n"
+            for frame in frames[:-1]
+        ),
+        encoding="utf-8",
+    )
+    continued_source.write_text(
+        "".join(
+            json.dumps(frame, separators=(",", ":")) + "\n"
+            for frame in frames
+        ),
+        encoding="utf-8",
+    )
+
+    first_only = run_q2frame_auction_engine_shadow(
+        q2frame_path=first_only_source,
+        trade_date="2026-09-18",
+    )
+    continued = run_q2frame_auction_engine_shadow(
+        q2frame_path=continued_source,
+        trade_date="2026-09-18",
+        continue_through_input=True,
+    )
+
+    assert continued["deterministic"] is True
+    assert (
+        continued["ordered"]["final_state_hash"]
+        == continued["repeat"]["final_state_hash"]
+    )
+    history = continued["ordered"]["auction_revision_history_by_tag"]["0925"]
+    first_only_history = first_only["ordered"]["auction_revision_history_by_tag"][
+        "0925"
+    ]
+    first_only_facts = first_only["ordered"]["anchor_evidence"]["0925"][
+        "auction_anchor_facts_by_symbol"
+    ]
+    assert first_only_facts["600000"]["status"] == "MISSING"
+    assert first_only_facts["600000"]["price_milli"] is None
+    assert [item["revision"] for item in history] == [1, 2]
+    assert history[0]["content_hash"] == first_only_history[0]["content_hash"]
+    assert history[1]["content_hash"] != history[0]["content_hash"]
+    assert history[1]["supersedes_revision"] == 1
+
+    anchor = continued["ordered"]["anchor_evidence"]["0925"]
+    assert anchor["auction_revision"]["revision"] == 2
+    assert anchor["auction_revision"]["supersedes_revision"] == 1
+    assert anchor["auction_anchor_facts_by_symbol"]["000001"]["price_milli"] == 12_000
+    assert anchor["auction_anchor_facts_by_symbol"]["600000"]["price_milli"] == 12_500
+    strategy_revision_state = anchor["auction_revision_state"]
+    assert (
+        strategy_revision_state["consumed_revision_refs"]["AUCTION_0925"]["revision"]
+        == 2
+    )
+    assert [
+        item["timeline_revision_ref"]["revision"]
+        for item in strategy_revision_state["revision_history"]["AUCTION_0925"]
+    ] == [1, 2]
+    assert not any(
+        item.startswith("REVISION_REF_MISMATCH")
+        for item in strategy_revision_state["diagnostics"]
+    )
+
+
 def test_real_q2frame_shape_surfaces_partial_0925_recovery_targets(tmp_path: Path):
     frames = [_frame(seq, clock) for seq, clock in (
         (1, "09:15:00.000"),

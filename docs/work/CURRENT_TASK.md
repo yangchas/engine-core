@@ -17,6 +17,14 @@ TD/Redis/Rabbit read. Full evidence:
 Full suite: 1008 passed; compileall and diff-check pass. TASK-008 remains
 `PARTIAL_EVIDENCE`; normal-opening acceptance remains `UNPROVEN`.
 
+The synthetic regression path now exercises 0925 revision 1 at 09:25:06 and a
+newly available symbol in revision 2 at 09:25:07 through runner, Engine, and
+strategy consumption. It also checks supersession history and rejects a
+same-time content change and revision rollback. This is mechanism coverage
+only: the real 2026-10-09 input emitted one 0925 revision and did not show a
+late correction. Full suite after these tests: 1010 passed; TASK-008 status is
+unchanged.
+
 ## 2026-10-11 — TASK-008 late auction revision replay
 
 The hash-pinned 2026-10-09 t1-v2 Q2Frame was replayed twice through one Core

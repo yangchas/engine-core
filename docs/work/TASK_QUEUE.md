@@ -46,7 +46,10 @@
   `/home/exedev/validation/task008-auction-revision-attribution-20261011T222144+0800/revision_attribution_audit.md`.
   Two-pass duration was about 64 minutes (observation, not a gate); production
   side effects were NONE. TASK-008 remains partial and live/NORMAL acceptance
-  remains unproven.
+  remains unproven. A separate synthetic regression exercises 0925 revision
+  1→2 through runner/Engine/strategy and invalid revision progression; the
+  real 2026-10-09 input still contains only one 0925 revision, so late
+  production correction remains unproven.
 - branch: `codex/feature-session-engine-integration`
 - worktree: current development worktree
 - plan: `docs/work/plans/TASK-008-opening-validation.md`

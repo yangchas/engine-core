@@ -1850,7 +1850,7 @@ def _run_once(
         barrier_index += 1
 
     def fire_late_auction_revisions(logical_ms: int) -> None:
-        """Re-evaluate 0920/0924 when the observed anchor content changes."""
+        """Re-evaluate an auction anchor when its observed content changes."""
 
         for tag_index, tag in enumerate(AUCTION_TAGS):
             current = anchor_evidence.get(tag, {}).get("auction_revision")
