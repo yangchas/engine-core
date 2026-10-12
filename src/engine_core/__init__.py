@@ -286,6 +286,11 @@ from .auction_timeline import (
     build_auction_anchor_fact_v1,
     build_auction_anchor_revision,
 )
+from .theme_auction_delta_rows import (
+    ThemeDeltaRows,
+    build_theme_delta_rows,
+    theme_weights_from_plate_mapping,
+)
 from .previous_day_limit_current_rows import (
     Current0925Rows,
     build_current_0925_rows,
@@ -649,6 +654,9 @@ __all__ = [
     "AuctionAnchorRevisionV2",
     "AuctionAnchorRevisionV3",
     "AuctionTimeline",
+    "ThemeDeltaRows",
+    "build_theme_delta_rows",
+    "theme_weights_from_plate_mapping",
     "Current0925Rows",
     "build_current_0925_rows",
     "AuctionAnchorSessionV1",
