@@ -39,7 +39,10 @@
   snapshots: valid 4,872 -> 5,207), market summary, previous-day limit
   structure/feedback, theme auction deltas and a deterministic fact report
   (`examples/run_task008_auction_report_replay.py`). Verified on short real
-  windows only; live read-only shadow runs scheduled for 2026-10-13. Not
+  windows only; live read-only shadow runs scheduled for 2026-10-13. Also:
+  opening report, shadow script `--pool` per-poll report, and plate
+  price/auction-pressure sanity (independent recompute, 0 mismatches over
+  451 plates; `examples/sanity_task008_plate_price_pressure.py`). Not
   NORMAL/live/Rabbit proof. Details: `docs/work/CURRENT_TASK.md` section 37.
 - related source-density audit (TASK-009-J):
   `DENSITY_DIFFERENCE=OBSERVED`, `CAUSE_ATTRIBUTION=PARTIAL`; real t1-v2
