@@ -592,6 +592,7 @@ def test_bounded_q2frame_start_skips_prior_auction_barriers_without_clock_rewind
     assert anchors["0925"]["auction_revision"]["state"] == "READY"
     assert result["ordered"]["virtual_clock_ms"] == _epoch_ms("09:25:06.000")
     assert result["ordered"]["first_excluded_frame"]["seq_no"] == 4
+    assert "replay_final_ms" not in result["ordered"]["first_excluded_frame"]
 
 
 def test_barrier_sidecar_is_consumed_inside_the_real_slice_timeline(tmp_path: Path):

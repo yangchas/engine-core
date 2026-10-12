@@ -1078,6 +1078,10 @@ def _run_once(
     plate_price_reference_context: Mapping[str, Any] | None = None,
     auction_universe_sidecar: Mapping[str, Any] | None = None,
     auction_universe_sidecar_unavailable: Mapping[str, Any] | None = None,
+    q2frame_source_id: str = "t1_v2_q2frame",
+    q2frame_source_layer: str = Q2FRAME_EVENT_REPLAY_LAYER,
+    q2frame_signal_prefix: str = "t1-v2-q2frame-source",
+    observe_persistent_anchors_on_late_start: bool = False,
 ) -> dict[str, Any]:
     symbols = tuple(inventory["symbols"])
     policies = {tag: AuctionTimingPolicyV1.default(tag) for tag in AUCTION_TAGS}
@@ -1092,7 +1096,23 @@ def _run_once(
         inventory.get("replay_window_start_ms") or inventory["first_logical_ts_ms"]
     )
     first_ms = _floor_second(replay_window_start_ms)
+    late_start_tags = (
+        tuple(
+            tag
+            for tag in AUCTION_TAGS
+            if barriers[tag] < first_ms
+        )
+        if observe_persistent_anchors_on_late_start
+        else ()
+    )
     final_ms = ordered_barriers[-1][1]
+    if late_start_tags:
+        # A late-start run still needs the first complete input second to
+        # observe persistent Q2 anchors, but should not consume the full file.
+        final_ms = max(
+            final_ms,
+            _floor_second(int(inventory["first_logical_ts_ms"])),
+        )
     if continue_through_input:
         final_ms = max(final_ms, _floor_second(int(inventory["last_logical_ts_ms"])))
     initial_clock = datetime.fromtimestamp(first_ms / 1000, timezone.utc)
@@ -1110,7 +1130,7 @@ def _run_once(
         symbols,
         clock,
         freshness_policy=freshness_policy,
-        source_id="t1_v2_q2frame",
+        source_id=q2frame_source_id,
     )
     engine, auction_strategy = _new_engine(
         trade_date,
@@ -1138,6 +1158,16 @@ def _run_once(
     barrier_snapshot_update_count = 0
     barrier_snapshot_applied_by_tag: dict[str, dict[str, Any]] = {}
     barrier_snapshot_comparison_by_tag: dict[str, dict[str, Any]] = {}
+    late_start_observation_by_tag: dict[str, dict[str, Any]] = {
+        tag: {
+            "status": "PENDING_FIRST_INPUT_GROUP",
+            "anchor_raw_field": AUCTION_RAW_FIELDS[tag],
+            "first_observable_ms": barriers[tag],
+            "replay_window_start_ms": replay_window_start_ms,
+        }
+        for tag in late_start_tags
+    }
+    late_start_observation_group_processed = False
     auxiliary_barrier_snapshots = {
         tag: snapshot
         for tag, snapshot in (barrier_snapshots or {}).items()
@@ -1231,6 +1261,8 @@ def _run_once(
         logical_ms: int,
         result: Any,
         timeline_revision: Any = None,
+        *,
+        late_start_observation: bool = False,
     ) -> None:
         snapshot = result.snapshots[-1]
         strategy_result = result.strategy_results[-1]
@@ -1284,6 +1316,8 @@ def _run_once(
             base["first_observable_local"] = _local_datetime(
                 first_observable_ms
             ).isoformat()
+        if late_start_observation:
+            base["late_start_observation"] = True
         source_anomaly_hashes = tuple(
             snapshot.source_observation_metadata.get("source_anomaly_hashes", ())
         )
@@ -1346,7 +1380,7 @@ def _run_once(
             cross_section = build_cross_section_facts(
                 cohort_state,
                 scope="OBSERVED_COHORT",
-                source_layers=("t1_v2_q2frame_event_time_replay",),
+                source_layers=(q2frame_source_layer,),
             )
             cross_section_evidence = {
                 "contract": "CrossSectionFactsV1",
@@ -1437,10 +1471,10 @@ def _run_once(
                     "freeze_time_ms": q2_0925_evidence.get(
                         "auction_revision", {}
                     ).get("freeze_time_ms"),
-                    "source_layer": "t1_v2_q2frame_event_time_replay",
+                    "source_layer": q2frame_source_layer,
                 },
                 "opening_evaluation_time_ms": logical_ms,
-                "opening_source_layer": "t1_v2_q2frame_event_time_replay",
+                "opening_source_layer": q2frame_source_layer,
                 "stale_opening_symbol_count": base.get("stale_symbol_count", 0),
                 "historical_available_at": "UNKNOWN_NOT_INFERRED",
                 "rabbit_arrival_order": "UNKNOWN_NOT_INFERRED",
@@ -1883,6 +1917,63 @@ def _run_once(
             result = engine.run_until_empty()
             capture_barrier(tag, logical_ms, result, timeline_revision)
 
+    def fire_late_start_auction_observations(logical_ms: int) -> None:
+        """Observe persistent auction fields from the first late-start cohort."""
+
+        for tag in late_start_tags:
+            tag_index = AUCTION_TAGS.index(tag)
+            if not latest_anchor_field_layer_by_tag[tag]:
+                late_start_observation_by_tag[tag] = {
+                    "status": "ANCHOR_FIELD_NOT_PRESENT_IN_FIRST_INPUT_GROUP",
+                    "anchor_raw_field": AUCTION_RAW_FIELDS[tag],
+                    "first_observable_ms": barriers[tag],
+                    "evaluation_time_ms": logical_ms,
+                    "historical_available_at": "UNKNOWN_NOT_INFERRED",
+                }
+                continue
+
+            timeline_revision = observe_auction_revision(tag, logical_ms)
+            engine.submit(
+                EngineSignal(
+                    signal_id=(
+                        f"q2frame-late-start-timer:{tag}:"
+                        f"{timeline_revision.revision}"
+                    ),
+                    logical_time_ms=logical_ms,
+                    signal_seq=(
+                        2_000_000_000
+                        + tag_index * 1_000_000
+                        + timeline_revision.revision
+                    ),
+                    signal_kind=SignalKind.TIMER,
+                    payload={"trigger_id": f"AUCTION_{tag}"},
+                )
+            )
+            result = engine.run_until_empty()
+            capture_barrier(
+                tag,
+                logical_ms,
+                result,
+                timeline_revision,
+                late_start_observation=True,
+            )
+            barrier_snapshot_applied_by_tag[tag] = {
+                "status": "LATE_START_OBSERVED",
+                "record_kind": "current_q2_snapshot_observation",
+                "logical_ts_ms": logical_ms,
+                "source_layer": q2frame_source_layer,
+                "snapshot_equivalence": "NOT_A_HISTORICAL_CUTOFF_SNAPSHOT",
+            }
+            late_start_observation_by_tag[tag] = {
+                "status": "APPLIED",
+                "anchor_raw_field": AUCTION_RAW_FIELDS[tag],
+                "first_observable_ms": barriers[tag],
+                "evaluation_time_ms": logical_ms,
+                "revision": timeline_revision.revision,
+                "content_hash": timeline_revision.content_hash,
+                "historical_available_at": "UNKNOWN_NOT_INFERRED",
+            }
+
     for replay_second, group in _groups_by_replay_second(path):
         if replay_second > final_ms:
             first = group[0]
@@ -1893,11 +1984,15 @@ def _run_once(
                 "replay_second_ms": replay_second,
                 "update_count": len(first.q2_updates),
                 "excluded_reason": (
-                    "AFTER_OPENING_0932_EVALUATION_SECOND"
+                    "AFTER_LATE_START_FIRST_INPUT_SECOND"
+                    if late_start_tags
+                    else "AFTER_OPENING_0932_EVALUATION_SECOND"
                     if include_opening
                     else "AFTER_0925_FIRST_OBSERVABLE_SECOND"
                 ),
             }
+            if late_start_tags:
+                first_excluded_frame["replay_final_ms"] = final_ms
             break
 
         while (
@@ -1920,7 +2015,7 @@ def _run_once(
             )
             raw_signal = source.signal_for(
                 replay_frame,
-                signal_prefix=f"t1-v2-q2frame-source-{frame.seq_no}",
+                signal_prefix=f"{q2frame_signal_prefix}-{frame.seq_no}",
             )
             replay_signal = EngineSignal(
                 signal_id=raw_signal.signal_id,
@@ -1937,7 +2032,7 @@ def _run_once(
                 symbol = str(update.get("symbol", "")).strip()
                 if symbol:
                     latest_q2_update_by_symbol[symbol] = update
-                record_update_source_layer(update, Q2FRAME_EVENT_REPLAY_LAYER)
+                record_update_source_layer(update, q2frame_source_layer)
             last_raw_frame_ms = frame.logical_ts_ms
             update_times = [
                 int(update["ts"])
@@ -1969,6 +2064,12 @@ def _run_once(
         # anchor. This mirrors the queue cohort boundary rather than firing a
         # timer after an arbitrary individual symbol update.
         engine.run_until_empty()
+        first_late_start_group = (
+            bool(late_start_tags) and not late_start_observation_group_processed
+        )
+        if first_late_start_group:
+            fire_late_start_auction_observations(replay_second)
+            late_start_observation_group_processed = True
         if matching_barrier is not None and matching_barrier[1] == replay_second:
             tag, logical_ms = matching_barrier
             timeline_revision = (
@@ -1991,7 +2092,7 @@ def _run_once(
             tag, logical_ms = matching_barrier
             capture_barrier(tag, logical_ms, result, timeline_revision)
             barrier_index += 1
-        else:
+        elif not first_late_start_group:
             fire_late_auction_revisions(replay_second)
         for tag, sidecar in auxiliary_barrier_snapshots.items():
             checkpoint_ms = _floor_second(sidecar.logical_ts_ms)
@@ -2063,6 +2164,11 @@ def _run_once(
         "barrier_snapshot_update_count": barrier_snapshot_update_count,
         "barrier_snapshot_applied_by_tag": barrier_snapshot_applied_by_tag,
         "barrier_snapshot_comparison_by_tag": barrier_snapshot_comparison_by_tag,
+        **(
+            {"late_start_observation_by_tag": late_start_observation_by_tag}
+            if late_start_observation_by_tag
+            else {}
+        ),
         "processed_signals": engine.run_until_empty().processed_signals,
         "reducer_revision": final_state.revision,
         "final_state_hash": canonical_hash(
@@ -2101,6 +2207,13 @@ def run_q2frame_auction_engine_shadow(
     auction_universe_sidecar: Mapping[str, Any] | None = None,
     auction_universe_sidecar_file_sha256: str | None = None,
     auction_universe_sidecar_error: str | None = None,
+    q2frame_source: str = "t1-v2 exact-release local Q2Frame output",
+    input_kind: str | None = None,
+    q2frame_source_id: str = "t1_v2_q2frame",
+    q2frame_source_layer: str = Q2FRAME_EVENT_REPLAY_LAYER,
+    q2frame_signal_prefix: str = "t1-v2-q2frame-source",
+    observe_persistent_anchors_on_late_start: bool = False,
+    run_mode: str = "REAL_T1V2_Q2FRAME_EVENT_TIME_REPLAY",
 ) -> dict[str, Any]:
     """Run a pinned Q2Frame auction replay, optionally through opening, twice."""
 
@@ -2231,6 +2344,10 @@ def run_q2frame_auction_engine_shadow(
         plate_price_reference_context=plate_price_reference_context,
         auction_universe_sidecar=prepared_auction_universe_sidecar,
         auction_universe_sidecar_unavailable=auction_universe_sidecar_unavailable,
+        q2frame_source_id=q2frame_source_id,
+        q2frame_source_layer=q2frame_source_layer,
+        q2frame_signal_prefix=q2frame_signal_prefix,
+        observe_persistent_anchors_on_late_start=observe_persistent_anchors_on_late_start,
     )
     between_runs_sha = _file_sha256(q2frame_path)
     barrier_between_runs_sha = (
@@ -2253,6 +2370,10 @@ def run_q2frame_auction_engine_shadow(
         plate_price_reference_context=plate_price_reference_context,
         auction_universe_sidecar=prepared_auction_universe_sidecar,
         auction_universe_sidecar_unavailable=auction_universe_sidecar_unavailable,
+        q2frame_source_id=q2frame_source_id,
+        q2frame_source_layer=q2frame_source_layer,
+        q2frame_signal_prefix=q2frame_signal_prefix,
+        observe_persistent_anchors_on_late_start=observe_persistent_anchors_on_late_start,
     )
     final_sha = _file_sha256(q2frame_path)
     barrier_final_sha = (
@@ -2277,6 +2398,8 @@ def run_q2frame_auction_engine_shadow(
         "final_state_hash",
         "virtual_clock_ms",
     )
+    if "late_start_observation_by_tag" in first:
+        compared_fields += ("late_start_observation_by_tag",)
     determinism = {
         field: first[field] == repeat[field]
         for field in compared_fields
@@ -2303,7 +2426,9 @@ def run_q2frame_auction_engine_shadow(
     if barrier_q2frame_path is not None:
         determinism["barrier_input_sha256_stable"] = barrier_input_stable is True
     deterministic = all(determinism.values())
-    if (
+    if first.get("late_start_observation_by_tag"):
+        contract_version = "Task008Q2FrameSessionEngineShadowV18"
+    elif (
         prepared_auction_universe_sidecar is not None
         or auction_universe_sidecar_unavailable is not None
     ):
@@ -2334,7 +2459,8 @@ def run_q2frame_auction_engine_shadow(
             else {}
         ),
         "trade_date": trade_date,
-        "run_mode": "REAL_T1V2_Q2FRAME_EVENT_TIME_REPLAY",
+        "run_mode": run_mode,
+        **({"input_kind": input_kind} if input_kind is not None else {}),
         **(
             {
                 "auction_universe_sidecar": {
@@ -2364,7 +2490,7 @@ def run_q2frame_auction_engine_shadow(
             "path": str(q2frame_path),
             "sha256": final_sha,
             "expected_sha256": expected_sha256,
-            "source": "t1-v2 exact-release local Q2Frame output",
+            "source": q2frame_source,
         },
         "barrier_q2frame": (
             {

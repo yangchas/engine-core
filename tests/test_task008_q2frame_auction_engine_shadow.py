@@ -446,6 +446,147 @@ def test_0925_anchor_fact_is_available_when_0924_anchor_and_delta_are_unknown(
     assert adjacent["changes"]["price"] == "PRICE_UNKNOWN"
 
 
+def test_late_start_snapshot_generates_current_anchor_facts_without_backdating(
+    tmp_path: Path,
+):
+    frame = _frame(1, "09:39:26.000")
+    available = next(
+        update for update in frame["q2_updates"] if update["symbol"] == "000001"
+    )
+    available.update({"px": 13_000, "a20": 10_100, "a24": 11_100, "a25": 12_100})
+    missing = next(
+        update for update in frame["q2_updates"] if update["symbol"] == "600000"
+    )
+    missing.update({"px": 14_000, "a20": 0, "a24": 0, "a25": 0})
+    source = tmp_path / "q2frame-late-start-snapshot.jsonl"
+    source.write_text(json.dumps(frame, separators=(",", ":")) + "\n", encoding="utf-8")
+
+    result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        q2frame_source="sealed test snapshot",
+        input_kind="TEST_SNAPSHOT",
+        q2frame_source_id="test_snapshot",
+        q2frame_source_layer="test_sealed_snapshot",
+        q2frame_signal_prefix="test-snapshot",
+        observe_persistent_anchors_on_late_start=True,
+        run_mode="TEST_LATE_START_SNAPSHOT",
+    )
+
+    assert result["deterministic"] is True
+    assert result["ordered"]["input_frames_processed"] == 1
+    assert result["contract_version"] == "Task008Q2FrameSessionEngineShadowV18"
+    assert result["run_mode"] == "TEST_LATE_START_SNAPSHOT"
+    assert result["input_kind"] == "TEST_SNAPSHOT"
+    assert result["q2frame"]["source"] == "sealed test snapshot"
+    for tag, anchor_price in (
+        ("0920", 10_100),
+        ("0924", 11_100),
+        ("0925", 12_100),
+    ):
+        anchor = result["ordered"]["anchor_evidence"][tag]
+        revision = anchor["auction_revision"]
+        facts = anchor["auction_anchor_facts_by_symbol"]
+        assert anchor["late_start_observation"] is True
+        assert revision["late_execution"] is True
+        assert revision["first_observable_ms"] < revision["evaluation_time_ms"]
+        assert revision["evaluation_time_ms"] == _epoch_ms("09:39:26.000")
+        assert revision["source_layers"] == ("test_sealed_snapshot",)
+        assert result["ordered"]["late_start_observation_by_tag"][tag][
+            "historical_available_at"
+        ] == "UNKNOWN_NOT_INFERRED"
+        assert facts["000001"]["status"] == "AVAILABLE"
+        assert facts["000001"]["price_milli"] == anchor_price
+        assert facts["000001"]["source_layer"] == "test_snapshot"
+        assert facts["000001"]["historical_available_at_status"] == "UNKNOWN"
+        assert facts["600000"]["status"] == "MISSING"
+        assert facts["600000"]["price_milli"] is None
+        assert facts["600000"]["price_milli"] != missing["px"]
+
+
+def test_late_start_without_an_explicit_anchor_field_keeps_not_observed_status(
+    tmp_path: Path,
+):
+    frame = _frame(1, "09:39:26.000")
+    for update in frame["q2_updates"]:
+        update.pop("a25")
+    source = tmp_path / "q2frame-late-start-no-a25.jsonl"
+    source.write_text(json.dumps(frame, separators=(",", ":")) + "\n", encoding="utf-8")
+
+    result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        observe_persistent_anchors_on_late_start=True,
+    )
+
+    assert result["ordered"]["input_frames_processed"] == 1
+    assert result["ordered"]["anchor_evidence"]["0925"]["status"] == (
+        "NOT_OBSERVED_IN_REPLAY_WINDOW"
+    )
+    assert "auction_revision" not in result["ordered"]["anchor_evidence"]["0925"]
+    assert result["ordered"]["anchor_evidence"]["0920"].get(
+        "late_start_observation"
+    ) is True
+
+
+def test_late_start_without_any_anchor_fields_does_not_crash_or_invent_facts(
+    tmp_path: Path,
+):
+    frame = _frame(1, "09:39:26.000")
+    for update in frame["q2_updates"]:
+        for field in ("a20", "a24", "a25"):
+            update.pop(field)
+    source = tmp_path / "q2frame-late-start-no-anchor-fields.jsonl"
+    source.write_text(json.dumps(frame, separators=(",", ":")) + "\n", encoding="utf-8")
+
+    result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        observe_persistent_anchors_on_late_start=True,
+    )
+
+    assert result["ordered"]["input_frames_processed"] == 1
+    assert result["deterministic"] is True
+    for tag in ("0920", "0924", "0925"):
+        anchor = result["ordered"]["anchor_evidence"][tag]
+        assert anchor["status"] == "NOT_OBSERVED_IN_REPLAY_WINDOW"
+        assert "auction_revision" not in anchor
+        assert result["ordered"]["late_start_observation_by_tag"][tag][
+            "status"
+        ] == "ANCHOR_FIELD_NOT_PRESENT_IN_FIRST_INPUT_GROUP"
+
+
+def test_late_start_tag_uses_whole_second_boundary_for_0925_barrier(tmp_path: Path):
+    frame = _frame(1, "09:25:06.197")
+    source = tmp_path / "q2frame-late-start-same-barrier-second.jsonl"
+    source.write_text(json.dumps(frame, separators=(",", ":")) + "\n", encoding="utf-8")
+
+    result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        observe_persistent_anchors_on_late_start=True,
+    )
+
+    assert "0925" not in result["ordered"]["late_start_observation_by_tag"]
+    anchor = result["ordered"]["anchor_evidence"]["0925"]
+    assert anchor["auction_revision"]["evaluation_time_ms"] == _epoch_ms("09:25:06.000")
+    assert anchor.get("late_start_observation") is not True
+
+
+def test_late_start_snapshot_observation_is_opt_in(tmp_path: Path):
+    frame = _frame(1, "09:39:26.000")
+    source = tmp_path / "q2frame-late-start-opt-in-required.jsonl"
+    source.write_text(json.dumps(frame, separators=(",", ":")) + "\n", encoding="utf-8")
+
+    # This pins today's pre-existing default behavior. A later independent
+    # empty-window handling fix may legitimately change this assertion.
+    with pytest.raises(ValueError, match="window must be non-empty"):
+        run_q2frame_auction_engine_shadow(
+            q2frame_path=source,
+            trade_date="2026-09-18",
+        )
+
+
 def test_q2frame_session_reaches_opening_with_one_engine_and_symbol_source_times(tmp_path: Path):
     frames = [
         _frame(1, "09:15:00.000"),
