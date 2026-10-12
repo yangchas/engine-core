@@ -286,6 +286,10 @@ from .auction_timeline import (
     build_auction_anchor_fact_v1,
     build_auction_anchor_revision,
 )
+from .auction_session import (
+    AuctionAnchorSessionV1,
+    AuctionSessionObservationV1,
+)
 from .replay_session import (
     NODE_AUCTION,
     NODE_CHECKPOINT,
@@ -641,6 +645,8 @@ __all__ = [
     "AuctionAnchorRevisionV2",
     "AuctionAnchorRevisionV3",
     "AuctionTimeline",
+    "AuctionAnchorSessionV1",
+    "AuctionSessionObservationV1",
     "build_auction_anchor_fact_v1",
     "build_auction_anchor_revision",
     "RECOVERY_PLAN_CONTRACT_VERSION",

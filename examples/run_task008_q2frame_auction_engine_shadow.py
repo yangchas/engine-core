@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from engine_core import (  # noqa: E402
     AuctionShadowStrategy,
-    AuctionTimeline,
+    AuctionAnchorSessionV1,
     AuctionTimingPolicyV1,
     CrossSectionStateV1,
     DeterministicEngine,
@@ -1140,7 +1140,13 @@ def _run_once(
         final_ms,
         include_opening=include_opening,
     )
-    auction_timeline = AuctionTimeline(trade_date)
+    auction_session = AuctionAnchorSessionV1(
+        trade_date,
+        symbols,
+        policies=policies,
+        signal_prefix="q2frame",
+    )
+    auction_timeline = auction_session.timeline
     anchor_evidence: dict[str, dict[str, Any]] = {}
     auction_revision_history_by_tag: dict[str, list[dict[str, Any]]] = {
         tag: [] for tag in AUCTION_TAGS
@@ -1752,25 +1758,19 @@ def _run_once(
             "evidence_hash": revision.evidence_hash,
         }
 
-    def observe_auction_revision(tag: str, evaluation_time_ms: int) -> Any:
+    def auction_rows() -> dict[str, dict[str, Any]]:
         state = engine._reducer.state
-        rows = {
+        return {
             symbol: {
                 **dict(values),
                 "source_time_ms": values.get("source_record_time_ms"),
             }
             for symbol, values in state.symbol_states.items()
         }
-        revision = auction_timeline.observe(
-            tag,
-            rows,
-            evaluation_time_ms=evaluation_time_ms,
-            expected_symbols=symbols,
-            observed_at_ms=state.source_observation_metadata.get(
-                "observation_time_ms"
-            ),
-            source_layers=source_layer_attribution(tag)["source_layers"],
-        )
+
+    def remember_auction_revision(revision: Any) -> None:
+        state = engine._reducer.state
+        tag = revision.tag
         state.source_observation_metadata["auction_revision_ref"] = {
             "contract": "AuctionAnchorRevisionRefV1",
             "tag": tag,
@@ -1780,6 +1780,19 @@ def _run_once(
             "evaluation_time_ms": revision.evaluation_time_ms,
             "evidence_hash": revision.evidence_hash,
         }
+
+    def observe_auction_revision(tag: str, evaluation_time_ms: int) -> Any:
+        state = engine._reducer.state
+        revision = auction_session.observe(
+            tag,
+            auction_rows(),
+            evaluation_time_ms=evaluation_time_ms,
+            observed_at_ms=state.source_observation_metadata.get(
+                "observation_time_ms"
+            ),
+            source_layers=source_layer_attribution(tag)["source_layers"],
+        )
+        remember_auction_revision(revision)
         return revision
 
     def enqueue_barrier_snapshot(tag: str, logical_ms: int) -> None:
@@ -1871,8 +1884,10 @@ def _run_once(
             else None
         )
         trigger_id = OPENING_TAG if tag == OPENING_TAG else f"AUCTION_{tag}"
-        engine.submit(
-            EngineSignal(
+        timer_signal = (
+            auction_session.barrier_timer_signal(tag, logical_ms, barrier_index)
+            if tag in AUCTION_TAGS
+            else EngineSignal(
                 signal_id=f"q2frame-timer:{tag}",
                 logical_time_ms=logical_ms,
                 signal_seq=1_000_000_000 + barrier_index,
@@ -1880,6 +1895,7 @@ def _run_once(
                 payload={"trigger_id": trigger_id},
             )
         )
+        engine.submit(timer_signal)
         result = engine.run_until_empty()
         capture_barrier(tag, logical_ms, result, timeline_revision)
         barrier_index += 1
@@ -1887,34 +1903,29 @@ def _run_once(
     def fire_late_auction_revisions(logical_ms: int) -> None:
         """Re-evaluate an auction anchor when its observed content changes."""
 
-        for tag_index, tag in enumerate(AUCTION_TAGS):
+        for tag in AUCTION_TAGS:
             current = anchor_evidence.get(tag, {}).get("auction_revision")
             if not isinstance(current, Mapping):
                 continue
             if logical_ms < policies[tag].at(trade_date)["first_observable_ms"]:
                 continue
-            previous_revision = current.get("revision")
-            timeline_revision = observe_auction_revision(tag, logical_ms)
-            if not isinstance(previous_revision, int):
-                continue
-            if timeline_revision.revision <= previous_revision:
-                continue
-            engine.submit(
-                EngineSignal(
-                    signal_id=(
-                        f"q2frame-revision-timer:{tag}:"
-                        f"{timeline_revision.revision}"
-                    ),
-                    logical_time_ms=logical_ms,
-                    signal_seq=(
-                        2_000_000_000
-                        + tag_index * 1_000_000
-                        + timeline_revision.revision
-                    ),
-                    signal_kind=SignalKind.TIMER,
-                    payload={"trigger_id": f"AUCTION_{tag}"},
-                )
+            state = engine._reducer.state
+            observation = auction_session.observe_late_revision(
+                tag,
+                auction_rows(),
+                logical_time_ms=logical_ms,
+                observed_at_ms=state.source_observation_metadata.get(
+                    "observation_time_ms"
+                ),
+                source_layers=source_layer_attribution(tag)["source_layers"],
             )
+            timeline_revision = observation.revision
+            if timeline_revision is None:
+                continue
+            remember_auction_revision(timeline_revision)
+            if observation.timer_signal is None:
+                continue
+            engine.submit(observation.timer_signal)
             result = engine.run_until_empty()
             capture_barrier(tag, logical_ms, result, timeline_revision)
 
@@ -1922,7 +1933,6 @@ def _run_once(
         """Observe persistent auction fields from the first late-start cohort."""
 
         for tag in late_start_tags:
-            tag_index = AUCTION_TAGS.index(tag)
             if not latest_anchor_field_layer_by_tag[tag]:
                 late_start_observation_by_tag[tag] = {
                     "status": "ANCHOR_FIELD_NOT_PRESENT_IN_FIRST_INPUT_GROUP",
@@ -1933,23 +1943,22 @@ def _run_once(
                 }
                 continue
 
-            timeline_revision = observe_auction_revision(tag, logical_ms)
-            engine.submit(
-                EngineSignal(
-                    signal_id=(
-                        f"q2frame-late-start-timer:{tag}:"
-                        f"{timeline_revision.revision}"
-                    ),
-                    logical_time_ms=logical_ms,
-                    signal_seq=(
-                        2_000_000_000
-                        + tag_index * 1_000_000
-                        + timeline_revision.revision
-                    ),
-                    signal_kind=SignalKind.TIMER,
-                    payload={"trigger_id": f"AUCTION_{tag}"},
-                )
+            state = engine._reducer.state
+            observation = auction_session.observe_late_start(
+                tag,
+                auction_rows(),
+                logical_time_ms=logical_ms,
+                anchor_field_observed=bool(latest_anchor_field_layer_by_tag[tag]),
+                observed_at_ms=state.source_observation_metadata.get(
+                    "observation_time_ms"
+                ),
+                source_layers=source_layer_attribution(tag)["source_layers"],
             )
+            timeline_revision = observation.revision
+            if timeline_revision is None or observation.timer_signal is None:
+                raise RuntimeError("late-start auction observation was not emitted")
+            remember_auction_revision(timeline_revision)
+            engine.submit(observation.timer_signal)
             result = engine.run_until_empty()
             capture_barrier(
                 tag,
