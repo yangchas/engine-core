@@ -351,6 +351,7 @@ class DataRequest:
     # Historical/replay remains the fail-closed default. LIVE is an explicit
     # mode for facts obtained at the live adapter boundary.
     temporal_mode: str = "HISTORICAL"
+    allow_unverified_previous_day_availability: bool = False
 
     def __post_init__(self) -> None:
         """Freeze caller-provided request sequences at the contract boundary.

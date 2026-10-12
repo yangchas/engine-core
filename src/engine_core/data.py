@@ -425,6 +425,25 @@ class TemporalDataGuard:
                     reasons.append("live_fetch_completion_unknown")
                 elif result.fetch_completed_at_ms > request.knowledge_as_of_ms:
                     reasons.append("live_fetch_completion_after_cutoff")
+            elif (
+                request.allow_unverified_previous_day_availability
+                and request.temporal_mode in {"HISTORICAL", "REPLAY"}
+                and (result.effective_at_ms is None or result.effective_at_ms <= request.effective_as_of_ms)
+                and TemporalDataGuard._is_strictly_previous_trade_date(
+                    result.actual_trade_date, request.trade_date
+                )
+            ):
+                marker = Provenance(
+                    result.actual_source or "unknown", "temporal_guard",
+                    "TemporalDataGuardV1", result.actual_trade_date,
+                    result.effective_at_ms, result.observed_at_ms, None,
+                    ("available_at_unknown_previous_day_data", "not_historical_availability_evidence"),
+                )
+                return replace(
+                    result,
+                    status=DataStatus.PARTIAL if result.status is DataStatus.READY else result.status,
+                    provenance=result.provenance if any(item.source_kind == marker.source_kind and item.notes == marker.notes for item in result.provenance) else result.provenance + (marker,),
+                )
             else:
                 reasons.append("available_at_unknown")
         elif result.available_at_ms > request.knowledge_as_of_ms:
@@ -470,6 +489,17 @@ class TemporalDataGuard:
             completeness=0.0,
             missing_fields=tuple(sorted(set(result.missing_fields + tuple(reasons)))),
         )
+
+    @staticmethod
+    def _is_strictly_previous_trade_date(
+        actual_trade_date: Optional[str], request_trade_date: str
+    ) -> bool:
+        if actual_trade_date is None:
+            return False
+        try:
+            return parse_trade_date(actual_trade_date) < parse_trade_date(request_trade_date)
+        except (TypeError, ValueError):
+            return False
 
 
 class PreviousDayStatsFunction:
