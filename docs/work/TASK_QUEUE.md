@@ -34,6 +34,13 @@
   availability, and production cohort questions do not block 008A or other
   Core features whose actual inputs have been checked. `M3_1_NORMAL=BLOCKED`
   and `TD_WRITE_HEALTH=UNPROVEN` remain production claims only.
+- independent_auction_chain_2026_10_13: Core now builds, from frozen real
+  inputs, the 0925 anchors (opt-in recovery of 336 late `ph==0` final
+  snapshots: valid 4,872 -> 5,207), market summary, previous-day limit
+  structure/feedback, theme auction deltas and a deterministic fact report
+  (`examples/run_task008_auction_report_replay.py`). Verified on short real
+  windows only; live read-only shadow runs scheduled for 2026-10-13. Not
+  NORMAL/live/Rabbit proof. Details: `docs/work/CURRENT_TASK.md` section 37.
 - related source-density audit (TASK-009-J):
   `DENSITY_DIFFERENCE=OBSERVED`, `CAUSE_ATTRIBUTION=PARTIAL`; real t1-v2
   counters and read-only TD row counts were compared for one date/window,

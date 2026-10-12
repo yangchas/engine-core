@@ -1765,3 +1765,35 @@ change occurred while adding this metadata. Status remains
 `TASK-008=PARTIAL_EVIDENCE`, `REPLAY_FOR_DEVELOPMENT=USABLE_WITH_LIMITS`,
 `NORMAL_OPENING_ACCEPTANCE=UNPROVEN`, `M3_1_NORMAL=BLOCKED`, and
 `TD_WRITE_HEALTH=UNPROVEN`.
+
+## 37. 2026-10-13 — independent Core auction chain, final-snapshot recovery, short-window validation
+
+Policy (user, 2026-10-12): verify that functions compute correctly and trigger
+reasonably on short real windows; full-length replays are milestone-only.
+Short windows: `/home/exedev/validation/short-windows-20261012/`.
+
+Delivered (all opt-in or additive; default behaviour unchanged):
+`AuctionAnchorSessionV1` (source-independent revision/timer orchestration);
+read-only Redis shadow script (`ReadOnlyQ2Client`, live needs confirmation,
+sanitized errors; first live read ran 2026-10-13 00:37 on the previous
+session); previous-day limit pool with `allow_unverified_previous_day_availability`;
+`build_current_0925_rows`, `build_theme_delta_rows`,
+`theme_weights_from_plate_mapping`, `build_market_auction_report`; result-JSON
+sanity checkers (values, aggregates, plates, previous-day feedback).
+
+Observed 2026-10-09 auction mechanics (real data): during 09:15-09:25 `px/am`
+are indicative and `br/ar` are one-sided unmatched amounts with `vol/amt=0`;
+the final-match snapshot is `ph==0` with real `vol/amt` and `px` = opening
+price. 4,872 symbols deliver it at 09:25:00-09:25:02; 336 (almost all
+Shenzhen) deliver it at 09:26:00-09:26:57 (~20 per 3 s), outside the
+producer's a25 window; 16 had no auction activity. The last indicative price
+equals the final price for only 38.7% of symbols. Recovery
+(`--recover-final-from-phase-zero`, default off): 0925 valid 4,872 -> 5,207.
+Legacy zero-fills a missing opening change; Core keeps it missing.
+
+Fixed: runner auction summary used each symbol's latest sparse update instead
+of merged state. Status unchanged: `TASK-008=PARTIAL_EVIDENCE`,
+`REPLAY_FOR_DEVELOPMENT=USABLE_WITH_LIMITS`, `NORMAL_OPENING_ACCEPTANCE=UNPROVEN`,
+`M3_1_NORMAL=BLOCKED`, `TD_WRITE_HEALTH=UNPROVEN`. Rabbit arrival,
+`available_at`, vol upstream unit, the upstream cause of delayed Shenzhen final
+snapshots, and live/NORMAL parity remain UNKNOWN/UNPROVEN.
