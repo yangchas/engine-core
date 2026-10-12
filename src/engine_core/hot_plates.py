@@ -175,6 +175,30 @@ def normalize_hot_plates_rows(
     }
 
 
+_VALUE_FIELDS = ("rank", "strength", "hot", "change_pct", "net_inflow_yi")
+
+
+def _known_field_fraction(unit_uncertainties: Iterable[str]) -> float:
+    unknown = {field for field in unit_uncertainties if field in _VALUE_FIELDS}
+    return (len(_VALUE_FIELDS) - len(unknown)) / float(len(_VALUE_FIELDS))
+
+
+def _mask_unknown_unit_fields(
+    data: Mapping[str, Any], unit_uncertainties: Iterable[str]
+) -> Mapping[str, Any]:
+    unknown = {field for field in unit_uncertainties if field in _VALUE_FIELDS}
+
+    def mask(row: Mapping[str, Any]) -> dict[str, Any]:
+        return {key: (None if key in unknown else value) for key, value in row.items()}
+
+    rows = [mask(row) for row in data.get("rows", ())]
+    return {
+        **dict(data),
+        "rows": rows,
+        "by_plate": {row["plate_name"]: row for row in rows},
+    }
+
+
 class HotPlatesProvider(Protocol):
     def fetch(self, request: DataRequest, *, trade_date: str) -> ProviderResult:
         ...
@@ -385,12 +409,16 @@ class HotPlatesFunction:
         result = TemporalDataGuard.check(result, request)
         if result.status in (DataStatus.UNAVAILABLE, DataStatus.INVALID, DataStatus.ERROR):
             return result
-        unit_uncertainties = result.data.get("unit_uncertainties", ())
+        unit_uncertainties = tuple(result.data.get("unit_uncertainties", ()))
         if unit_uncertainties:
+            # Soft gate: a field whose unit is not verified is withheld (None,
+            # never zero), while rank/name/verified fields stay usable.
+            masked = _mask_unknown_unit_fields(result.data, unit_uncertainties)
             return replace(
                 result,
-                status=DataStatus.UNAVAILABLE,
-                completeness=0.0,
+                data=masked,
+                status=DataStatus.PARTIAL,
+                completeness=_known_field_fraction(unit_uncertainties),
                 missing_fields=tuple(
                     sorted(
                         set(result.missing_fields)

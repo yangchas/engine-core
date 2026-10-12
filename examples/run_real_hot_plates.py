@@ -112,6 +112,7 @@ def run_real_hot_plates(
     calendar_trading_dates: Iterable[str] | None = None,
     calendar_source_id: str = "explicit_probe_calendar",
     calendar_evidence_ref: str | None = None,
+    temporal_mode: str = "HISTORICAL",
 ) -> dict[str, Any]:
     trade_date = _date(trade_date)
     observed_at_ms = int(observed_at.timestamp() * 1000)
@@ -169,6 +170,7 @@ def run_real_hot_plates(
         effective_as_of_ms=observed_at_ms,
         knowledge_as_of_ms=observed_at_ms,
         purpose="read_only_m2_probe",
+        temporal_mode=temporal_mode,
     )
     result = HotPlatesFunction(provider, calendar).execute(
         DataContext("real-hot-plates", "READ_ONLY", observed_at_ms),
@@ -201,6 +203,11 @@ def main() -> int:
     parser.add_argument("--redis-port", type=int, default=int(os.environ.get("REDIS_PORT", "6379")))
     parser.add_argument("--redis-db", type=int, default=int(os.environ.get("REDIS_DB", "0")))
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--temporal-mode", choices=("HISTORICAL", "REPLAY", "LIVE"), default="LIVE",
+        help="LIVE accepts the adapter-completion exception (a read made now); "
+        "HISTORICAL requires a verified available_at",
+    )
     args = parser.parse_args()
     observed_at = datetime.now(timezone.utc)
     result = run_real_hot_plates(
@@ -212,6 +219,7 @@ def main() -> int:
             "db": args.redis_db,
             "password": os.environ.get("REDIS_PASSWORD"),
         },
+        temporal_mode=args.temporal_mode,
     )
     result["observed_at"] = observed_at.isoformat()
     content = json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2, default=str) + "\n"

@@ -269,3 +269,26 @@ def test_empty_verified_snapshot_is_missing_not_ready():
 
     assert result.status is DataStatus.MISSING
     assert result.completeness == 0.0
+
+
+def test_unknown_units_mask_fields_and_keep_rank_and_change_pct_partial():
+    provider = RedisHotPlatesProvider(
+        lambda trade_date: _rows(),
+        observed_at_ms=lambda: 1789080000000,
+        metadata=lambda trade_date: _verified_metadata_without_units(),
+    )
+    result = HotPlatesFunction(provider, CALENDAR).execute(_context(), _request())
+
+    assert result.status is DataStatus.PARTIAL
+    assert result.completeness == pytest.approx(0.4)
+    first = result.data["rows"][0]
+    assert first["rank"] >= 1 and first["change_pct"] is not None
+    assert first["hot"] is None and first["net_inflow_yi"] is None and first["strength"] is None
+    assert "unit_unknown:hot" in result.missing_fields
+    assert result.data["by_plate"][first["plate_name"]]["hot"] is None
+
+
+def _verified_metadata_without_units():
+    meta = dict(_verified_metadata())
+    meta.pop("field_units")
+    return meta
