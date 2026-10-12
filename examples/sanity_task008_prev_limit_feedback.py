@@ -7,13 +7,18 @@ import json
 import math
 import sys
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from engine_core.contracts import DataResult, DataStatus, Provenance  # noqa: E402
+from engine_core.calendar import build_calendar_snapshot  # noqa: E402
+from engine_core.contracts import DataRequest, DataResult  # noqa: E402
+from engine_core.data import DataContext, ProviderResult  # noqa: E402
+from engine_core.previous_day_limit_pool import PreviousDayLimitPoolFunction  # noqa: E402
 from engine_core.previous_day_limit_feedback import build_previous_day_limit_feedback  # noqa: E402
 from engine_core.previous_day_limit_structure import build_previous_day_limit_structure  # noqa: E402
 
@@ -25,46 +30,76 @@ def finite_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 
-def rebuild_previous(raw: Mapping[str, Any]) -> DataResult:
-    provenance = tuple(
-        Provenance(
-            source_id=str(item.get("source_id") or "unknown"),
-            source_kind=str(item.get("source_kind") or "unknown"),
-            source_schema=str(item.get("source_schema") or "unknown"),
-            source_trade_date=item.get("source_trade_date"),
-            effective_at_ms=item.get("effective_at_ms"),
-            observed_at_ms=item.get("observed_at_ms"),
-            evidence_ref=item.get("evidence_ref"),
-            notes=tuple(item.get("notes") or ()),
+class MemoryPreviousDayLimitPoolProvider:
+    def __init__(self, payload: Mapping[str, Any], *, observed_at_ms: int) -> None:
+        self._payload = payload
+        self._observed_at_ms = observed_at_ms
+
+    def fetch(self, request: DataRequest, *, previous_trade_date: str) -> ProviderResult:
+        if previous_trade_date != self._payload.get("previous_trade_date"):
+            raise ValueError("calendar-derived previous trade date mismatch")
+        return ProviderResult(
+            raw_data=self._payload,
+            source_id="sealed_previous_day_limit_pool_json",
+            source_schema="PreviousDayLimitPoolV1",
+            effective_at_ms=None,
+            available_at_ms=None,
+            observed_at_ms=self._observed_at_ms,
+            availability_status="OBSERVED",
+            evidence_ref=str(POOL_PATH),
         )
-        for item in raw.get("provenance", ())
-        if isinstance(item, Mapping)
+
+
+def execute_previous_pool(raw: Mapping[str, Any]) -> DataResult:
+    source_data = raw["data"]
+    rows = tuple(source_data["rows"])
+    previous_trade_date = str(raw["actual_trade_date"])
+    payload = dict(source_data)
+    payload.update(
+        previous_trade_date=previous_trade_date,
+        rows=rows,
+        by_symbol={str(row["symbol"]): row for row in rows},
+        row_count=len(rows),
     )
-    return DataResult(
+    cutoff_ms = int(
+        datetime(2026, 10, 9, 9, 25, 6, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp()
+        * 1000
+    )
+    calendar = build_calendar_snapshot(
+        ("2026-10-08", "2026-10-09"),
+        version="sealed-two-session-sanity-v1",
+        declared_valid_from="2026-10-08",
+        declared_valid_to="2026-10-09",
+        source_guard_valid_from="2026-10-08",
+        source_guard_valid_to="2026-10-09",
+        observed_at_ms=int(raw["observed_at_ms"]),
+        evidence_ref="injected sanity calendar: 2026-10-08 and 2026-10-09",
+    )
+    request = DataRequest(
         request_id="sanity-task008-prev-limit-feedback",
         function_id="previous_day_limit_pool",
-        status=DataStatus(str(raw["result_status"]).rsplit(".", 1)[-1]),
-        data=raw.get("data"),
-        actual_source=raw.get("actual_source"),
-        requested_trade_date=str(raw["requested_trade_date"]),
-        actual_trade_date=raw.get("actual_trade_date"),
-        effective_at_ms=raw.get("effective_at_ms"),
-        available_at_ms=raw.get("available_at_ms"),
-        observed_at_ms=int(raw["observed_at_ms"]),
-        schema_version=1,
-        completeness=float(raw.get("completeness") or 0.0),
-        missing_fields=tuple(raw.get("missing_fields") or ()),
-        missing_symbols=tuple(raw.get("missing_symbols") or ()),
-        provenance=provenance,
-        temporal_mode=str(raw.get("temporal_mode") or "HISTORICAL"),
-        fetch_completed_at_ms=raw.get("fetch_completed_at_ms", raw.get("observed_at_ms")),
+        trade_date="2026-10-09",
+        effective_as_of_ms=cutoff_ms,
+        knowledge_as_of_ms=cutoff_ms,
+        temporal_mode="HISTORICAL",
+        allow_unverified_previous_day_availability=True,
     )
+    context = DataContext(
+        evaluation_id="sanity-task008-prev-limit-feedback",
+        phase="historical-sanity",
+        observed_at_ms=int(raw["observed_at_ms"]),
+        temporal_mode="HISTORICAL",
+    )
+    provider = MemoryPreviousDayLimitPoolProvider(
+        payload, observed_at_ms=int(raw["observed_at_ms"])
+    )
+    return PreviousDayLimitPoolFunction(provider, calendar).execute(context, request)
 
 
 def main() -> int:
     pool_artifact = json.loads(POOL_PATH.read_text(encoding="utf-8"))
     anchor_artifact = json.loads(ANCHOR_PATH.read_text(encoding="utf-8"))
-    previous = rebuild_previous(pool_artifact)
+    previous = execute_previous_pool(pool_artifact)
     rows = previous.data.get("rows", ())
     anchor = anchor_artifact["ordered"]["anchor_evidence"]["0925"]
     facts = anchor["auction_anchor_facts_by_symbol"]
@@ -116,8 +151,6 @@ def main() -> int:
     independent_amount = sum(explicit_amounts) if explicit_amounts else None
     function_amount = sum(output_amounts) if output_amounts else None
 
-    # The sealed DataResult intentionally remains UNAVAILABLE: historical
-    # available_at is unknown. Never upgrade it just to expose its rows to facts.
     checks = [
         ("pool_rows", len(rows), structure.row_count, structure.row_count is not None),
         ("lb_days_distribution", dict(sorted(dist.items())), dict(structure.board_height_distribution), structure.row_count is not None),
@@ -146,6 +179,15 @@ def main() -> int:
     print("SUMMARY checks=%d OK=%d MISMATCH=%d UNAVAILABLE=%d annotations=%d" % (
         len(checks), len(checks) - mismatch_count - unavailable_count, mismatch_count,
         unavailable_count, len(annotations)
+    ))
+    temporal_markers = sorted({
+        note
+        for item in previous.provenance
+        for note in item.notes
+        if note == "available_at_unknown_previous_day_data"
+    })
+    print("POOL status=%s rows=%s markers=%s" % (
+        previous.status.value, len(rows), temporal_markers
     ))
     print("STRUCTURE status=%s rows=%s highest=%s distribution=%s" % (
         structure.status, structure.row_count, structure.highest_board_height,

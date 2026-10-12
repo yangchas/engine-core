@@ -179,3 +179,21 @@ def test_phase_zero_recovery_ignores_other_phases_zero_volume_and_existing_ancho
     )
     present.observe("0925", _final_tick_rows(anchor=12_900), evaluation_time_ms=at)
     assert present.phase_zero_recoveries == {}
+
+
+def test_phase_zero_final_recovery_helper_marks_only_late_final_snapshots():
+    from engine_core.auction_final_recovery import PhaseZeroFinalRecovery
+
+    helper = PhaseZeroFinalRecovery("2026-10-09")
+    stamp = lambda hhmmss: local_datetime_ms("2026-10-09", hhmmss)
+    updates = [
+        {"symbol": "000001", "ph": 0, "vol": 10, "px": 12_950, "a25": 0, "ts": stamp("09:26:33")},
+        {"symbol": "000002", "ph": 0, "vol": 10, "px": 5_000, "a25": 5_000, "ts": stamp("09:25:00")},
+        {"symbol": "000003", "ph": 1, "vol": 0, "px": 7_000, "a25": 0, "ts": stamp("09:24:57")},
+        {"symbol": "000004", "ph": 0, "vol": 0, "px": 7_000, "a25": 0, "ts": stamp("09:26:10")},
+    ]
+    out = helper.apply(updates)
+    assert out[0]["a25"] == 12_950 and out[1]["a25"] == 5_000
+    assert out[2]["a25"] == 0 and out[3]["a25"] == 0
+    assert set(helper.recovered) == {"000001"}
+    assert helper.recovered["000001"]["source_time_ms"] == stamp("09:26:33")

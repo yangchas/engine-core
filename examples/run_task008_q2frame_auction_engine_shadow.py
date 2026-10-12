@@ -61,6 +61,7 @@ from engine_core.contracts import StrategyResult  # noqa: E402
 from engine_core.market_summary import derive_q2_auction_summary  # noqa: E402
 from engine_core.q2 import normalize_q2  # noqa: E402
 from engine_core.replay_fidelity import replay_fidelity_metadata_for_input_kind  # noqa: E402
+from engine_core.auction_final_recovery import PhaseZeroFinalRecovery  # noqa: E402
 from engine_core.auction_universe_reconciliation import (  # noqa: E402
     attribute_opening_stale_symbols,
 )
@@ -1083,6 +1084,7 @@ def _run_once(
     q2frame_source_layer: str = Q2FRAME_EVENT_REPLAY_LAYER,
     q2frame_signal_prefix: str = "t1-v2-q2frame-source",
     observe_persistent_anchors_on_late_start: bool = False,
+    recover_final_from_phase_zero: bool = False,
 ) -> dict[str, Any]:
     symbols = tuple(inventory["symbols"])
     policies = {tag: AuctionTimingPolicyV1.default(tag) for tag in AUCTION_TAGS}
@@ -1160,6 +1162,9 @@ def _run_once(
     }
     last_raw_frame_ms = None
     last_raw_update_ms = None
+    phase_zero_recovery = (
+        PhaseZeroFinalRecovery(trade_date) if recover_final_from_phase_zero else None
+    )
     first_excluded_frame: dict[str, Any] | None = None
     barrier_index = 0
     barrier_snapshot_update_count = 0
@@ -2017,10 +2022,15 @@ def _run_once(
             # snapshots are additional events in the merged replay stream, so
             # assign an internal continuous sequence without rewriting source
             # evidence or depending on the artifact's local seq_no.
+            frame_updates = (
+                phase_zero_recovery.apply(frame.q2_updates)
+                if phase_zero_recovery is not None
+                else frame.q2_updates
+            )
             replay_frame = Q2FrameV1(
                 seq_no=source.last_seq_no + 1,
                 logical_ts_ms=frame.logical_ts_ms,
-                q2_updates=frame.q2_updates,
+                q2_updates=frame_updates,
                 phase=frame.phase,
             )
             raw_signal = source.signal_for(
@@ -2038,10 +2048,17 @@ def _run_once(
             engine.submit(replay_signal)
             frame_count += 1
             update_count += len(frame.q2_updates)
-            for update in frame.q2_updates:
+            for update in frame_updates:
                 symbol = str(update.get("symbol", "")).strip()
                 if symbol:
-                    latest_q2_update_by_symbol[symbol] = update
+                    # Q2Frame updates are sparse: an omitted field keeps its
+                    # previous value (as in Q2FrameReplaySource).  Merge so a
+                    # field-less final snapshot cannot turn a known zero into
+                    # an unknown value in the auction summary.
+                    latest_q2_update_by_symbol[symbol] = {
+                        **latest_q2_update_by_symbol.get(symbol, {}),
+                        **update,
+                    }
                 record_update_source_layer(update, q2frame_source_layer)
             last_raw_frame_ms = frame.logical_ts_ms
             update_times = [
@@ -2179,6 +2196,18 @@ def _run_once(
             if late_start_observation_by_tag
             else {}
         ),
+        **(
+            {
+                "phase_zero_final_recovery": {
+                    "contract": "PhaseZeroFinalRecoveryV1",
+                    "recovered_count": len(phase_zero_recovery.recovered),
+                    "recovered": dict(sorted(phase_zero_recovery.recovered.items())),
+                    "semantic": "a25 synthesized from a ph==0 snapshot with vol>0 inside [09:25:00,09:30:00); source time kept, not 09:25:00",
+                }
+            }
+            if phase_zero_recovery is not None
+            else {}
+        ),
         "processed_signals": engine.run_until_empty().processed_signals,
         "reducer_revision": final_state.revision,
         "final_state_hash": canonical_hash(
@@ -2223,6 +2252,7 @@ def run_q2frame_auction_engine_shadow(
     q2frame_source_layer: str = Q2FRAME_EVENT_REPLAY_LAYER,
     q2frame_signal_prefix: str = "t1-v2-q2frame-source",
     observe_persistent_anchors_on_late_start: bool = False,
+    recover_final_from_phase_zero: bool = False,
     run_mode: str = "REAL_T1V2_Q2FRAME_EVENT_TIME_REPLAY",
 ) -> dict[str, Any]:
     """Run a pinned Q2Frame auction replay, optionally through opening, twice."""
@@ -2358,6 +2388,7 @@ def run_q2frame_auction_engine_shadow(
         q2frame_source_layer=q2frame_source_layer,
         q2frame_signal_prefix=q2frame_signal_prefix,
         observe_persistent_anchors_on_late_start=observe_persistent_anchors_on_late_start,
+        recover_final_from_phase_zero=recover_final_from_phase_zero,
     )
     between_runs_sha = _file_sha256(q2frame_path)
     barrier_between_runs_sha = (
@@ -2384,6 +2415,7 @@ def run_q2frame_auction_engine_shadow(
         q2frame_source_layer=q2frame_source_layer,
         q2frame_signal_prefix=q2frame_signal_prefix,
         observe_persistent_anchors_on_late_start=observe_persistent_anchors_on_late_start,
+        recover_final_from_phase_zero=recover_final_from_phase_zero,
     )
     final_sha = _file_sha256(q2frame_path)
     barrier_final_sha = (
@@ -2410,6 +2442,8 @@ def run_q2frame_auction_engine_shadow(
     )
     if "late_start_observation_by_tag" in first:
         compared_fields += ("late_start_observation_by_tag",)
+    if "phase_zero_final_recovery" in first:
+        compared_fields += ("phase_zero_final_recovery",)
     determinism = {
         field: first[field] == repeat[field]
         for field in compared_fields
@@ -2646,6 +2680,11 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--recover-final-from-phase-zero",
+        action="store_true",
+        help="opt-in: use a late ph==0 final-match snapshot as a25 when a25 is missing",
+    )
+    parser.add_argument(
         "--barrier-q2frame",
         type=Path,
         help="optional t1-v2 captured in-slice barrier Q2Frame JSONL",
@@ -2755,6 +2794,7 @@ def main() -> int:
         trade_date=args.trade_date,
         expected_sha256=args.expected_sha256,
         input_kind=args.input_kind,
+        recover_final_from_phase_zero=args.recover_final_from_phase_zero,
         barrier_q2frame_path=args.barrier_q2frame,
         expected_barrier_q2frame_sha256=args.expected_barrier_q2frame_sha256,
         include_opening=args.include_opening,

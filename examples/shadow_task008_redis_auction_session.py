@@ -162,6 +162,7 @@ def run_shadow(
     live_client: Any | None = None, trade_date: str | None = None,
     poll_seconds: float = 1.0, max_polls: int = 1,
     confirm_read_only: bool = False,
+    recover_final_from_phase_zero: bool = False,
 ) -> dict[str, Any]:
     if source == "live" and not confirm_read_only:
         raise RuntimeError("live source requires confirm_read_only=True")
@@ -171,6 +172,7 @@ def run_shadow(
             live_client=live_client, trade_date=trade_date,
             poll_seconds=poll_seconds, max_polls=max_polls,
             confirm_read_only=confirm_read_only,
+            recover_final_from_phase_zero=recover_final_from_phase_zero,
         )
     try:
         return _run_shadow_impl(
@@ -178,6 +180,7 @@ def run_shadow(
             live_client=live_client, trade_date=trade_date,
             poll_seconds=poll_seconds, max_polls=max_polls,
             confirm_read_only=confirm_read_only,
+            recover_final_from_phase_zero=recover_final_from_phase_zero,
         )
     except Exception as exc:
         raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None
@@ -188,6 +191,7 @@ def _run_shadow_impl(
     live_client: Any | None = None, trade_date: str | None = None,
     poll_seconds: float = 1.0, max_polls: int = 1,
     confirm_read_only: bool = False,
+    recover_final_from_phase_zero: bool = False,
 ) -> dict[str, Any]:
     if out_dir.exists():
         raise FileExistsError(f"output directory already exists: {out_dir}")
@@ -228,6 +232,7 @@ def _run_shadow_impl(
                     session = AuctionAnchorSessionV1(
                         trade_date, snapshot.expected_symbols,
                         signal_prefix="redis-q2-shadow",
+                        recover_final_from_phase_zero=recover_final_from_phase_zero,
                     )
                 rows = _rows(snapshot)
                 for event in _observe_snapshot(
@@ -235,6 +240,10 @@ def _run_shadow_impl(
                     first_read=first_read, wall_started=wall_started,
                     wall_completed=wall_completed,
                 ):
+                    if recover_final_from_phase_zero:
+                        event["phase_zero_recovered_count"] = len(
+                            session.phase_zero_recoveries
+                        )
                     events_file.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
                 events_file.flush()
                 if poll + 1 < max_polls:
@@ -252,6 +261,16 @@ def _run_shadow_impl(
         "poll_seconds": poll_seconds,
         "max_polls": max_polls,
         "event_count": max_polls * len(ANCHOR_FIELDS),
+        **(
+            {
+                "recover_final_from_phase_zero": True,
+                "phase_zero_recovered_count": len(session.phase_zero_recoveries)
+                if session is not None
+                else 0,
+            }
+            if recover_final_from_phase_zero
+            else {}
+        ),
     }
     (out_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
@@ -269,6 +288,8 @@ def main() -> int:
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("--max-polls", type=int, default=1)
     parser.add_argument("--confirm-read-only", action="store_true")
+    parser.add_argument("--recover-final-from-phase-zero", action="store_true",
+                        help="opt-in: use a late ph==0 final-match snapshot as the 0925 anchor when a25 is missing")
     args = parser.parse_args()
     if args.poll_seconds < 0 or args.max_polls < 1:
         parser.error("poll-seconds must be non-negative and max-polls must be positive")
@@ -298,6 +319,7 @@ def main() -> int:
                 poll_seconds=args.poll_seconds,
                 max_polls=args.max_polls,
                 confirm_read_only=args.confirm_read_only,
+                recover_final_from_phase_zero=args.recover_final_from_phase_zero,
             )
         except Exception as exc:
             raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None
@@ -308,6 +330,7 @@ def main() -> int:
         poll_seconds=args.poll_seconds,
         max_polls=args.max_polls,
         confirm_read_only=args.confirm_read_only,
+        recover_final_from_phase_zero=args.recover_final_from_phase_zero,
     )
     return 0
 
