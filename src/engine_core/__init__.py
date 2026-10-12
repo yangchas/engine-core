@@ -286,6 +286,10 @@ from .auction_timeline import (
     build_auction_anchor_fact_v1,
     build_auction_anchor_revision,
 )
+from .market_auction_report import (
+    MarketAuctionReport,
+    build_market_auction_report,
+)
 from .theme_auction_delta_rows import (
     ThemeDeltaRows,
     build_theme_delta_rows,
@@ -654,6 +658,8 @@ __all__ = [
     "AuctionAnchorRevisionV2",
     "AuctionAnchorRevisionV3",
     "AuctionTimeline",
+    "MarketAuctionReport",
+    "build_market_auction_report",
     "ThemeDeltaRows",
     "build_theme_delta_rows",
     "theme_weights_from_plate_mapping",
