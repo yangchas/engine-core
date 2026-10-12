@@ -299,6 +299,7 @@ from .theme_auction_delta_rows import (
     build_theme_delta_rows,
     theme_weights_from_plate_mapping,
 )
+from .symbol_cache_rows import SymbolCacheRows, normalize_symbol_cache_rows
 from .previous_day_limit_current_rows import (
     Current0925Rows,
     build_current_0925_rows,
@@ -671,6 +672,8 @@ __all__ = [
     "build_theme_delta_rows",
     "theme_weights_from_plate_mapping",
     "Current0925Rows",
+    "SymbolCacheRows",
+    "normalize_symbol_cache_rows",
     "build_current_0925_rows",
     "build_current_0925_rows_from_q2",
     "AuctionAnchorSessionV1",
