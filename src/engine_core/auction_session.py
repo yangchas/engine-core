@@ -17,10 +17,15 @@ from .auction_timeline import (
     AuctionTimeline,
     AuctionTimingPolicyV1,
 )
+from .clock import local_datetime_ms
 from .contracts import EngineSignal, SignalKind
 
 
 AUCTION_TAGS = ("0920", "0924", "0925")
+
+
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 @dataclass(frozen=True)
@@ -49,6 +54,7 @@ class AuctionAnchorSessionV1:
         *,
         policies: Optional[Mapping[str, AuctionTimingPolicyV1]] = None,
         signal_prefix: str = "q2frame",
+        recover_final_from_phase_zero: bool = False,
     ) -> None:
         if not isinstance(signal_prefix, str) or not signal_prefix.strip():
             raise ValueError("signal_prefix must be a non-empty string")
@@ -60,6 +66,14 @@ class AuctionAnchorSessionV1:
         )
         self.timeline = AuctionTimeline(trade_date, self.policies)
         self.signal_prefix = signal_prefix.strip()
+        # Opt-in: the Shenzhen final-match snapshot (ph==0, vol>0) can arrive
+        # long after 09:25:00 (observed 09:26:00-09:26:57), outside the
+        # producer's a25 window.  When enabled, such a snapshot is remembered
+        # per symbol and used as the 0925 anchor only where a25 is missing.
+        self.recover_final_from_phase_zero = bool(recover_final_from_phase_zero)
+        self._phase_zero_final: dict = {}
+        self._final_lower_ms = local_datetime_ms(trade_date, "09:25:00")
+        self._final_upper_ms = local_datetime_ms(trade_date, "09:30:00")
 
     def first_observable_ms(self, tag: str) -> int:
         try:
@@ -79,6 +93,8 @@ class AuctionAnchorSessionV1:
     ) -> AuctionAnchorRevisionV3:
         """Create or reuse a content revision from already-read source rows."""
 
+        if tag == "0925" and self.recover_final_from_phase_zero:
+            rows = self._rows_with_phase_zero_final(rows)
         return self.timeline.observe(
             tag,
             rows,
@@ -182,6 +198,57 @@ class AuctionAnchorSessionV1:
             tag=tag,
         )
         return AuctionSessionObservationV1("LATE_START_OBSERVED", revision, signal)
+
+    @property
+    def phase_zero_recoveries(self) -> Mapping[str, Mapping[str, Any]]:
+        """Symbols whose 0925 anchor came from a late ph==0 snapshot."""
+
+        return {
+            symbol: dict(value)
+            for symbol, value in self._phase_zero_final.items()
+            if value.get("used")
+        }
+
+    def _rows_with_phase_zero_final(
+        self, rows: Mapping[str, Mapping[str, Any]]
+    ) -> Mapping[str, Mapping[str, Any]]:
+        enriched: dict = {}
+        for symbol, row in rows.items():
+            if not isinstance(row, Mapping):
+                enriched[symbol] = row
+                continue
+            price = row.get("price_milli")
+            volume = row.get("volume_lots")
+            when = row.get("source_record_time_ms", row.get("source_time_ms"))
+            if (
+                row.get("phase") == 0
+                and _positive_int(price)
+                and _positive_int(volume)
+                and isinstance(when, int)
+                and not isinstance(when, bool)
+                and self._final_lower_ms <= when < self._final_upper_ms
+                and symbol not in self._phase_zero_final
+            ):
+                self._phase_zero_final[symbol] = {
+                    "price_milli": int(price),
+                    "volume_lots": int(volume),
+                    "amount_yuan": row.get("amount_yuan"),
+                    "source_time_ms": when,
+                    "used": False,
+                }
+            recorded = self._phase_zero_final.get(symbol)
+            anchor = row.get("auction_anchor_0925_price_milli")
+            if recorded is not None and not _positive_int(anchor):
+                patched = dict(row)
+                patched["auction_anchor_0925_price_milli"] = recorded["price_milli"]
+                quality = dict(row.get("auction_anchor_field_quality") or {})
+                quality["a25"] = "PRESENT_VALUE"
+                patched["auction_anchor_field_quality"] = quality
+                recorded["used"] = True
+                enriched[symbol] = patched
+            else:
+                enriched[symbol] = row
+        return enriched
 
     def _validate_tag(self, tag: str) -> int:
         try:

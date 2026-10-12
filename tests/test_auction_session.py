@@ -125,3 +125,57 @@ def test_same_q2_rows_have_same_content_revision_across_source_sessions():
 
     assert q2frame_revision.content_hash == redis_revision.content_hash
     assert q2frame_revision.evidence_hash != redis_revision.evidence_hash
+
+
+def _final_tick_rows(*, when: str = "09:26:33", anchor=None, phase=0, volume=120):
+    source_time = local_datetime_ms("2026-10-09", when)
+    quality = {"a25": "PRESENT_VALUE"} if anchor else {}
+    return {
+        "000001": {
+            "symbol": "000001",
+            "phase": phase,
+            "price_milli": 12_950,
+            "volume_lots": volume,
+            "amount_yuan": 1_554_000,
+            "auction_anchor_0925_price_milli": anchor,
+            "auction_anchor_field_quality": quality,
+            "source_record_time_ms": source_time,
+            "source_time_ms": source_time,
+        }
+    }
+
+
+def test_phase_zero_final_snapshot_recovers_missing_0925_anchor_only_when_enabled():
+    at = local_datetime_ms("2026-10-09", "09:26:40")
+    off = AuctionAnchorSessionV1("2026-10-09", ("000001",))
+    on = AuctionAnchorSessionV1(
+        "2026-10-09", ("000001",), recover_final_from_phase_zero=True
+    )
+    rows = _final_tick_rows()
+    assert off.observe("0925", rows, evaluation_time_ms=at).available_anchor_symbols == ()
+    revision = on.observe("0925", rows, evaluation_time_ms=at)
+    assert revision.available_anchor_symbols == ("000001",)
+    recovered = on.phase_zero_recoveries["000001"]
+    assert recovered["price_milli"] == 12_950
+    assert recovered["source_time_ms"] == local_datetime_ms("2026-10-09", "09:26:33")
+
+
+def test_phase_zero_recovery_ignores_other_phases_zero_volume_and_existing_anchor():
+    at = local_datetime_ms("2026-10-09", "09:26:40")
+    for rows in (
+        _final_tick_rows(phase=1),
+        _final_tick_rows(volume=0),
+        _final_tick_rows(when="09:24:57"),
+        _final_tick_rows(when="09:30:03"),
+    ):
+        session = AuctionAnchorSessionV1(
+            "2026-10-09", ("000001",), recover_final_from_phase_zero=True
+        )
+        revision = session.observe("0925", rows, evaluation_time_ms=at)
+        assert revision.available_anchor_symbols == ()
+        assert session.phase_zero_recoveries == {}
+    present = AuctionAnchorSessionV1(
+        "2026-10-09", ("000001",), recover_final_from_phase_zero=True
+    )
+    present.observe("0925", _final_tick_rows(anchor=12_900), evaluation_time_ms=at)
+    assert present.phase_zero_recoveries == {}
