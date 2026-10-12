@@ -70,3 +70,29 @@ def test_string_and_datetime_timestamps_agree_and_naive_means_shanghai():
     from_dt = build_current_0925_rows(DATE, [_row("000001", ts=datetime(2026, 10, 9, 9, 25, 6))])
     assert from_text.rows[0]["source_record_time_ms"] == expected
     assert from_dt.content_hash == from_text.content_hash
+
+
+def test_current_rows_from_q2_truncates_and_keeps_missing_none():
+    from types import SimpleNamespace
+    from engine_core.previous_day_limit_current_rows import build_current_0925_rows_from_q2
+
+    quotes = {
+        "000001.SZ": SimpleNamespace(
+            auction_anchor_0925_price_milli=10_999, pre_close_milli=10_000,
+            auction_amount_yuan=5_000_000, source_record_time_ms=1,
+        ),
+        "000002.SZ": SimpleNamespace(
+            auction_anchor_0925_price_milli=None, pre_close_milli=10_000,
+            auction_amount_yuan=None, source_record_time_ms=None,
+        ),
+        "000003.SZ": SimpleNamespace(
+            auction_anchor_0925_price_milli=9_001, pre_close_milli=10_000,
+            auction_amount_yuan=0, source_record_time_ms=2,
+        ),
+    }
+    result = build_current_0925_rows_from_q2("2026-10-09", quotes)
+    by = {row["symbol"]: row for row in result.rows}
+    assert by["000001.SZ"]["change_pct"] == 9.99
+    assert by["000002.SZ"]["change_pct"] is None
+    assert by["000002.SZ"]["auction_amount_yuan"] is None
+    assert by["000003.SZ"]["change_pct"] == -9.99

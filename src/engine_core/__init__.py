@@ -286,6 +286,10 @@ from .auction_timeline import (
     build_auction_anchor_fact_v1,
     build_auction_anchor_revision,
 )
+from .market_opening_report import (
+    MarketOpeningReport,
+    build_market_opening_report,
+)
 from .market_auction_report import (
     MarketAuctionReport,
     build_market_auction_report,
@@ -298,6 +302,7 @@ from .theme_auction_delta_rows import (
 from .previous_day_limit_current_rows import (
     Current0925Rows,
     build_current_0925_rows,
+    build_current_0925_rows_from_q2,
 )
 from .auction_session import (
     AuctionAnchorSessionV1,
@@ -658,6 +663,8 @@ __all__ = [
     "AuctionAnchorRevisionV2",
     "AuctionAnchorRevisionV3",
     "AuctionTimeline",
+    "MarketOpeningReport",
+    "build_market_opening_report",
     "MarketAuctionReport",
     "build_market_auction_report",
     "ThemeDeltaRows",
@@ -665,6 +672,7 @@ __all__ = [
     "theme_weights_from_plate_mapping",
     "Current0925Rows",
     "build_current_0925_rows",
+    "build_current_0925_rows_from_q2",
     "AuctionAnchorSessionV1",
     "AuctionSessionObservationV1",
     "build_auction_anchor_fact_v1",

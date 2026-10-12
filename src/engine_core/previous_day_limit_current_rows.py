@@ -167,8 +167,58 @@ def build_current_0925_rows(
     )
 
 
+def build_current_0925_rows_from_q2(
+    trade_date: str, quotes: Mapping[str, Any]
+) -> Current0925Rows:
+    """Build 0925 current rows from Q2 quotes (no TD rows needed).
+
+    ``change_pct`` is ``trunc((a25 - pc) * 10000 / pc) / 100``: on 2026-10-09
+    this reproduced the TD ``chg_bp`` for all 4,872 symbols with a 0925 anchor.
+    A missing anchor or pre-close leaves the value ``None`` (never zero).
+    """
+
+    requested = _dashed_date(trade_date)
+    if requested is None:
+        raise ValueError("trade_date must be strict YYYY-MM-DD")
+    rows = []
+    invalid = 0
+    for symbol in sorted(quotes):
+        quote = quotes[symbol]
+        anchor = getattr(quote, "auction_anchor_0925_price_milli", None)
+        pre_close = getattr(quote, "pre_close_milli", None)
+        change_pct = None
+        if (
+            isinstance(anchor, int) and not isinstance(anchor, bool) and anchor > 0
+            and isinstance(pre_close, int) and not isinstance(pre_close, bool) and pre_close > 0
+        ):
+            change_pct = int((anchor - pre_close) * 10000 / pre_close) / 100.0
+        amount = getattr(quote, "auction_amount_yuan", None)
+        rows.append(
+            {
+                "symbol": symbol,
+                "trade_date": requested,
+                "tag": _TAG,
+                "change_pct": change_pct,
+                "auction_amount_yuan": _amount_yuan(amount),
+                "source_record_time_ms": getattr(quote, "source_record_time_ms", None),
+            }
+        )
+    rows_t = tuple(rows)
+    return Current0925Rows(
+        trade_date=requested,
+        rows=rows_t,
+        input_row_count=len(rows_t),
+        other_tag_count=0,
+        invalid_row_count=invalid,
+        date_mismatch_count=0,
+        duplicate_symbols=(),
+        content_hash=canonical_hash({"trade_date": requested, "rows": rows_t}),
+    )
+
+
 __all__ = [
     "CURRENT_ROWS_CONTRACT_VERSION",
     "Current0925Rows",
     "build_current_0925_rows",
+    "build_current_0925_rows_from_q2",
 ]
