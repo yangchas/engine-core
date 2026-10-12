@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from engine_core import AuctionAnchorSessionV1, FreshnessPolicy, RedisQ2ProjectionAdapter  # noqa: E402
+from engine_core.auction_shadow_report import build_shadow_auction_report  # noqa: E402
+from engine_core.previous_day_limit_replay import previous_day_limit_pool_from_artifact  # noqa: E402
 
 ANCHOR_FIELDS = {"0920": "a20", "0924": "a24", "0925": "a25"}
 SOURCE_LAYER = "redis_q2_shadow"
@@ -126,6 +128,31 @@ def _observe_snapshot(
     return events
 
 
+def _write_report(
+    out_dir: Path, poll: int, snapshot: Any, session: AuctionAnchorSessionV1,
+    pool_artifact: Mapping[str, Any], trade_date: str, wall_completed: datetime,
+    data_origin: str,
+) -> None:
+    times = [q.source_record_time_ms for q in snapshot.quotes.values()
+             if q.source_record_time_ms is not None]
+    observed = max(times) if times else int(wall_completed.timestamp() * 1000)
+    cutoff = observed
+    pool = previous_day_limit_pool_from_artifact(
+        pool_artifact, trade_date=trade_date, cutoff_ms=cutoff,
+        evidence_ref="sealed_previous_day_limit_pool_json",
+    )
+    report = build_shadow_auction_report(
+        trade_date=trade_date, quotes=snapshot.quotes, observation_time_ms=observed,
+        recoveries=session.phase_zero_recoveries, previous_pool=pool,
+        data_origin=data_origin,
+    )
+    (out_dir / ("report_%03d.txt" % poll)).write_text(report.text, encoding="utf-8")
+    with (out_dir / "report_status.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(
+            {"poll": poll, "source_time_max": observed, **report.as_mapping()},
+            ensure_ascii=False, sort_keys=True) + "\n")
+
+
 def _capture_client(capture: Mapping[str, Any]) -> ReadOnlyQ2Client:
     reads = capture.get("reads")
     if not isinstance(reads, list):
@@ -163,6 +190,7 @@ def run_shadow(
     poll_seconds: float = 1.0, max_polls: int = 1,
     confirm_read_only: bool = False,
     recover_final_from_phase_zero: bool = False,
+    pool_path: Path | None = None,
 ) -> dict[str, Any]:
     if source == "live" and not confirm_read_only:
         raise RuntimeError("live source requires confirm_read_only=True")
@@ -173,6 +201,7 @@ def run_shadow(
             poll_seconds=poll_seconds, max_polls=max_polls,
             confirm_read_only=confirm_read_only,
             recover_final_from_phase_zero=recover_final_from_phase_zero,
+            pool_path=pool_path,
         )
     try:
         return _run_shadow_impl(
@@ -181,6 +210,7 @@ def run_shadow(
             poll_seconds=poll_seconds, max_polls=max_polls,
             confirm_read_only=confirm_read_only,
             recover_final_from_phase_zero=recover_final_from_phase_zero,
+            pool_path=pool_path,
         )
     except Exception as exc:
         raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None
@@ -192,6 +222,7 @@ def _run_shadow_impl(
     poll_seconds: float = 1.0, max_polls: int = 1,
     confirm_read_only: bool = False,
     recover_final_from_phase_zero: bool = False,
+    pool_path: Path | None = None,
 ) -> dict[str, Any]:
     if out_dir.exists():
         raise FileExistsError(f"output directory already exists: {out_dir}")
@@ -216,6 +247,9 @@ def _run_shadow_impl(
     if not trade_date:
         raise ValueError("trade date is required for Q2 projection")
 
+    pool_artifact = None
+    if pool_path is not None:
+        pool_artifact = json.loads(pool_path.read_bytes())
     out_dir.mkdir(parents=True, exist_ok=False)
     events_path = out_dir / "shadow_events.jsonl"
     session = None
@@ -246,6 +280,12 @@ def _run_shadow_impl(
                         )
                     events_file.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
                 events_file.flush()
+                if pool_artifact is not None:
+                    _write_report(
+                        out_dir, poll, snapshot, session, pool_artifact, trade_date,
+                        wall_completed,
+                        "LIVE_REDIS_READ_ONLY" if source == "live" else "SEALED_REDIS_CAPTURE",
+                    )
                 if poll + 1 < max_polls:
                     time.sleep(poll_seconds)
     finally:
@@ -290,6 +330,8 @@ def main() -> int:
     parser.add_argument("--confirm-read-only", action="store_true")
     parser.add_argument("--recover-final-from-phase-zero", action="store_true",
                         help="opt-in: use a late ph==0 final-match snapshot as the 0925 anchor when a25 is missing")
+    parser.add_argument("--pool", type=Path,
+                        help="sealed previous-day limit pool JSON; enables a report_NNN.txt per poll")
     args = parser.parse_args()
     if args.poll_seconds < 0 or args.max_polls < 1:
         parser.error("poll-seconds must be non-negative and max-polls must be positive")
@@ -320,6 +362,7 @@ def main() -> int:
                 max_polls=args.max_polls,
                 confirm_read_only=args.confirm_read_only,
                 recover_final_from_phase_zero=args.recover_final_from_phase_zero,
+                pool_path=args.pool,
             )
         except Exception as exc:
             raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None
@@ -331,6 +374,7 @@ def main() -> int:
         max_polls=args.max_polls,
         confirm_read_only=args.confirm_read_only,
         recover_final_from_phase_zero=args.recover_final_from_phase_zero,
+        pool_path=args.pool,
     )
     return 0
 
