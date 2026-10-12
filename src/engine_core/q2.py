@@ -53,17 +53,29 @@ Q2_FIELD_CONTRACT: Tuple[Q2FieldSpec, ...] = (
     Q2FieldSpec("px", "price_milli", "int", "milli_price", "current price", True),
     Q2FieldSpec("pc", "pre_close_milli", "int", "milli_price", "previous close", True),
     Q2FieldSpec("amt", "amount_yuan", "int", "yuan", "cumulative trading amount", True),
-    Q2FieldSpec("vol", "volume_lots", "int", "lots", "cumulative board-lot volume", False),
+    Q2FieldSpec(
+        "vol",
+        "volume_lots",
+        "int",
+        "lots",
+        "cumulative volume snapshot; observed scale is consistent with board lots, but upstream unit provenance is UNKNOWN because production C++ comments say shares while the converter and Redis writer pass the value through",
+        False,
+    ),
     Q2FieldSpec(
         "iv",
         "instant_volume_lots",
         "int",
         "lots",
-        "t1-emitted event-level volume delta; same unit as vol",
+        "t1-emitted latest-event volume delta, not a window sum; same observed unit as vol, with upstream unit provenance UNKNOWN",
         False,
     ),
     Q2FieldSpec(
-        "ia", "instant_amount_yuan", "int", "yuan", "t1-emitted event-level amount delta", False
+        "ia",
+        "instant_amount_yuan",
+        "int",
+        "yuan",
+        "t1-emitted latest-event amount delta, not a window sum",
+        False,
     ),
     Q2FieldSpec(
         "ln",

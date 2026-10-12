@@ -705,9 +705,12 @@ def test_td_event_public_projection_contract_keeps_units_and_slice_size():
         "px": event.price_milli,
         "pc": event.pre_close_milli,
         "amt": event.amount_yuan,
+        "vol": event.volume_units,
         "ts": event.event_time_ms,
     }
-    assert "vol" not in event.to_q2_raw()
+    missing_volume = dict(_td_rows()[0])
+    del missing_volume["vol_units"]
+    assert "vol" not in TDEventV1.from_mapping(missing_volume).to_q2_raw()
     assert event.event_time_ms >= anchor
 
 

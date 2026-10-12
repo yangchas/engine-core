@@ -403,14 +403,26 @@ class TDEventV1:
         )
 
     def to_q2_raw(self) -> Mapping[str, Any]:
-        """Map only verified shared fields; ``vol_units`` is not relabeled."""
+        """Pass through shared TD/Q2 values without applying unit conversion.
 
-        return {
+        A same-timestamp 2026-10-09 TD/Q2 capture comparison found ``vol`` and
+        ``vol_units`` numerically equal. The Q2 value is observed at a scale
+        consistent with board lots, while production C++ comments describe
+        ``vol_units`` as shares; upstream unit provenance therefore remains
+        UNKNOWN. Missing TD volume stays absent. ``iv``/``ia``/``ln`` are not
+        derived from a TD row because they represent t1-emitted latest-event
+        state, not a reconstructible window sum.
+        """
+
+        raw = {
             "px": self.price_milli,
             "pc": self.pre_close_milli,
             "amt": self.amount_yuan,
             "ts": self.event_time_ms,
         }
+        if self.volume_units is not None:
+            raw["vol"] = self.volume_units
+        return raw
 
 
 @dataclass(frozen=True)
