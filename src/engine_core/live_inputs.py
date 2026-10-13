@@ -1,0 +1,184 @@
+"""Read-only live input layer for the legacy Redis caches.
+
+One place for the Redis shapes that the real probes used to re-implement:
+hash caches (``cache:hot_plates``, ``cache:hot_rank``, ``cache:limit_truth``,
+``cache:yest_limit_pool``, ``market:stock_plate``, ``config:plate_mapping:s2p``)
+and the JSON anchor archive (``market:auction:anchor``).  The reader calls only
+``type``/``hlen``/``hscan_iter``/``get``/``ttl`` on an injected client and never
+writes, repairs or interprets rows; row semantics stay in the data functions.
+
+``LiveInputCache.refresh`` keeps the last non-empty read when a later read is
+empty or the scan was inconsistent: an empty response is "no information", not
+"the data is gone" (the legacy writers refresh these keys once or twice a day).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
+
+LIVE_INPUT_CONTRACT_VERSION = "LiveInputReadV1"
+
+FRESH = "FRESH"
+MISSING = "MISSING"
+PRESERVED_PREVIOUS = "PRESERVED_PREVIOUS"
+
+_HASH_INPUTS = {
+    "hot_plates": "cache:hot_plates:{date}",
+    "hot_rank": "cache:hot_rank:{date}",
+    "limit_truth": "cache:limit_truth:{date}",
+    "yest_limit_pool": "cache:yest_limit_pool:{previous_date}",
+    "stock_plate": "market:stock_plate",
+    "s2p": "config:plate_mapping:s2p",
+}
+
+
+def _text(value: Any) -> str:
+    return value.decode("utf-8") if isinstance(value, bytes) else str(value)
+
+
+@dataclass(frozen=True)
+class LiveInputRead:
+    """One read of one key.  ``rows`` are raw (field, text) pairs, or empty."""
+
+    name: str
+    key: str
+    kind: str  # "hash" | "json"
+    redis_type: str
+    rows: Tuple[Tuple[str, str], ...]
+    payload: Any
+    scan_consistent: bool
+    ttl_seconds: Optional[int]
+    content_sha256: str
+    observed_at_ms: int
+
+    @property
+    def is_empty(self) -> bool:
+        if self.kind == "hash":
+            return len(self.rows) == 0
+        return self.payload is None
+
+    @property
+    def usable(self) -> bool:
+        return (not self.is_empty) and self.scan_consistent
+
+
+@dataclass(frozen=True)
+class LiveInputState:
+    """The value a consumer should use plus why it is (or is not) current."""
+
+    name: str
+    status: str
+    read: Optional[LiveInputRead]
+    reason: Optional[str]
+    last_refreshed_ms: Optional[int]
+    last_attempt_ms: int
+
+    def as_trace(self) -> Mapping[str, Any]:
+        read = self.read
+        return {
+            "contract": LIVE_INPUT_CONTRACT_VERSION,
+            "name": self.name,
+            "status": self.status,
+            "reason": self.reason,
+            "key": read.key if read else None,
+            "row_count": (len(read.rows) if read and read.kind == "hash" else None),
+            "content_sha256": read.content_sha256 if read else None,
+            "last_refreshed_ms": self.last_refreshed_ms,
+            "last_attempt_ms": self.last_attempt_ms,
+        }
+
+
+class LiveInputReader:
+    """Bounded read-only access to the legacy Redis caches."""
+
+    def __init__(self, client: Any, *, now_ms: Callable[[], int]) -> None:
+        self._client = client
+        self._now_ms = now_ms
+
+    def key_for(self, name: str, *, trade_date: str, previous_trade_date: Optional[str] = None) -> str:
+        if name == "anchor_archive":
+            return "market:auction:anchor:" + trade_date.replace("-", "")
+        try:
+            template = _HASH_INPUTS[name]
+        except KeyError as exc:
+            raise ValueError("unknown live input: %s" % name) from exc
+        if "{previous_date}" in template and not previous_trade_date:
+            raise ValueError("%s needs previous_trade_date" % name)
+        return template.format(date=trade_date, previous_date=previous_trade_date)
+
+    def read(self, name: str, *, trade_date: str, previous_trade_date: Optional[str] = None) -> LiveInputRead:
+        key = self.key_for(name, trade_date=trade_date, previous_trade_date=previous_trade_date)
+        if name == "anchor_archive":
+            return self._read_json(name, key)
+        return self._read_hash(name, key)
+
+    def _read_hash(self, name: str, key: str) -> LiveInputRead:
+        client = self._client
+        redis_type = _text(client.type(key))
+        rows: Tuple[Tuple[str, str], ...] = ()
+        consistent = True
+        if redis_type == "hash":
+            before = int(client.hlen(key))
+            items = sorted((_text(k), _text(v)) for k, v in client.hscan_iter(key))
+            after = int(client.hlen(key))
+            rows = tuple(items)
+            consistent = before == after == len(items)
+        digest = hashlib.sha256()
+        for field, raw in rows:
+            digest.update(field.encode() + b"\0" + raw.encode() + b"\n")
+        return LiveInputRead(
+            name=name, key=key, kind="hash", redis_type=redis_type, rows=rows,
+            payload=None, scan_consistent=consistent, ttl_seconds=None,
+            content_sha256=digest.hexdigest(), observed_at_ms=self._now_ms(),
+        )
+
+    def _read_json(self, name: str, key: str) -> LiveInputRead:
+        client = self._client
+        raw = client.get(key)
+        ttl = client.ttl(key) if raw is not None else None
+        payload = None
+        consistent = True
+        text = _text(raw) if raw is not None else ""
+        if raw is not None:
+            try:
+                payload = json.loads(text)
+            except ValueError:
+                consistent = False
+        return LiveInputRead(
+            name=name, key=key, kind="json", redis_type="string" if raw is not None else "none",
+            rows=(), payload=payload, scan_consistent=consistent,
+            ttl_seconds=int(ttl) if isinstance(ttl, int) else None,
+            content_sha256=hashlib.sha256(text.encode()).hexdigest(), observed_at_ms=self._now_ms(),
+        )
+
+
+class LiveInputCache:
+    """Last-good store: an empty or inconsistent read never replaces data."""
+
+    def __init__(self) -> None:
+        self._good: Dict[str, Tuple[LiveInputRead, int]] = {}
+
+    def refresh(self, read: LiveInputRead) -> LiveInputState:
+        now = read.observed_at_ms
+        if read.usable:
+            self._good[read.name] = (read, now)
+            return LiveInputState(read.name, FRESH, read, None, now, now)
+        reason = "scan_inconsistent" if (not read.scan_consistent and not read.is_empty) else (
+            "invalid_json" if (read.kind == "json" and not read.scan_consistent) else "empty_response"
+        )
+        previous = self._good.get(read.name)
+        if previous is not None:
+            return LiveInputState(read.name, PRESERVED_PREVIOUS, previous[0], reason, previous[1], now)
+        return LiveInputState(read.name, MISSING, None, reason, None, now)
+
+    def state(self, name: str) -> Optional[Tuple[LiveInputRead, int]]:
+        return self._good.get(name)
+
+
+__all__ = [
+    "FRESH", "LIVE_INPUT_CONTRACT_VERSION", "LiveInputCache", "LiveInputRead",
+    "LiveInputReader", "LiveInputState", "MISSING", "PRESERVED_PREVIOUS",
+]

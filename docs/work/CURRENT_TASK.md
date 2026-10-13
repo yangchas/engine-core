@@ -1,5 +1,18 @@
 # Current Task
 
+## 2026-10-13 unified read-only live input layer
+
+`engine_core.live_inputs` (`LiveInputReader`, `LiveInputCache`): one place for
+the legacy Redis shapes (hot_plates, hot_rank, limit_truth, yest_limit_pool,
+stock_plate, s2p, anchor archive). Redis TYPE/HLEN/HSCAN/GET/TTL only.
+An empty response or inconsistent scan keeps the last non-empty read
+(`PRESERVED_PREVIOUS`, with reason and last refresh time); with no prior read
+the state is `MISSING`, never empty data. Probe: `examples/run_real_live_inputs.py`
+(needs an allow-list entry for `run_real_live_inputs.py --trade-date`).
+Live check 2026-10-13 ~09:35: hot_plates 50, hot_rank 100, yest_limit_pool 46,
+stock_plate 5967, s2p 3010, anchor archive present, limit_truth missing.
+Existing per-source probes are unchanged.
+
 ## 2026-10-13 live auction validation (read-only, 09:15-09:30)
 
 - Core 0925 summary at the 09:25:12 read equals legacy `market:auction:*:0925`
