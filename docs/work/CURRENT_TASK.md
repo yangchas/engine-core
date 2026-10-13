@@ -19,6 +19,25 @@ patched; missing change_pct defaults to 0.0). Real read-only probes (new dir
   not producing it); Core must not depend on it.
 No Redis/TD writes. Status labels unchanged.
 
+Premarket (08:00-08:20) read-only validation, no wait for triggers:
+- PreviousDayStats (TD SELECT, 3 symbols): UNAVAILABLE only because
+  `available_at` is unknown; data complete. Probe now uses the generic
+  previous-day exception (PARTIAL). TD float32 close artifacts rounded
+  (11.7299995 -> 11.73); `volume==0` with positive amount is withheld (TD
+  daily volume column is unpopulated), never reported as 0.
+- Status upgrade bug: symbol-scope branch turned a guard PARTIAL back into
+  READY; fixed.
+- Reference readiness (LIVE): the probe's default cutoff predated its own
+  fetches (all LIVE results "completed after cutoff"). With a forward cutoff
+  previous_day_stats/pool are READY; the only remaining BLOCKED reasons are
+  genuine premarket states (Q2 empty, today's hot plates not yet written).
+- Plate mapping: `market:stock_plate` 5,967 (34 changed since 10-09),
+  `config:plate_mapping:s2p` 3,010; 5,157/5,224 universe symbols mapped
+  (67 none); `theme_weights_from_plate_mapping` runs on real data.
+- Shadow poll no longer crashes on an empty premarket Q2 (records
+  NO_SOURCE_TIMESTAMPS / MISSING); failure cause saved to failure.json;
+  UNAVAILABLE market summary renders `unavailable`, not 0.
+
 
 ## 2026-10-12 — hypothetical arrival-lag sensitivity
 
