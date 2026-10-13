@@ -13,8 +13,8 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
-from typing import Any, Mapping, Sequence
+from datetime import date, datetime
+from typing import Any, Collection, Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -73,16 +73,6 @@ def _is_limit_up(row: Sequence[Any], symbol: str, tolerance_pct: float):
     return pct >= _limit_pct(symbol) - tolerance_pct and abs(close - high) < 1e-3, False
 
 
-def _weekday_gap(previous: date, current: date) -> bool:
-    """Detect omitted weekdays; weekends are not trading-session gaps."""
-    day = previous + timedelta(days=1)
-    while day < current:
-        if day.weekday() < 5:
-            return True
-        day += timedelta(days=1)
-    return False
-
-
 def derive_limit_up_pool_from_daily_klines(
     klines_by_symbol: Mapping[str, Sequence[Sequence[Any]]],
     trade_date: str,
@@ -90,6 +80,7 @@ def derive_limit_up_pool_from_daily_klines(
     names_by_symbol: Mapping[str, str] | None = None,
     plate_by_symbol: Mapping[str, str | None] | None = None,
     tolerance_pct: float = 0.6,
+    trading_dates: Collection[str] | None = None,
 ) -> LimitUpPoolDerivation:
     target = _strict_date(trade_date)
     tolerance = _finite_or_none(tolerance_pct)
@@ -97,23 +88,42 @@ def derive_limit_up_pool_from_daily_klines(
         raise ValueError("tolerance_pct must be a finite nonnegative number")
     names_by_symbol = names_by_symbol or {}
     plate_by_symbol = plate_by_symbol or {}
+    rows_by_symbol: dict[str, dict[date, Sequence[Any]]] = {}
+    symbols_by_date: dict[date, set[str]] = {}
+    for symbol, supplied_rows in klines_by_symbol.items():
+        dated_rows: dict[date, Sequence[Any]] = {}
+        for row in supplied_rows:
+            if len(row) != 9:
+                continue
+            row_day = _row_date(row[0])
+            if row_day is None:
+                continue
+            dated_rows[row_day] = row
+            symbols_by_date.setdefault(row_day, set()).add(symbol)
+        rows_by_symbol[symbol] = dated_rows
+
+    if trading_dates is None:
+        symbol_count = len(klines_by_symbol)
+        session_dates = {
+            row_day for row_day, symbols in symbols_by_date.items()
+            if symbol_count and 2 * len(symbols) >= symbol_count
+        }
+    else:
+        session_dates = {_strict_date(value) for value in trading_dates}
+    ordered_sessions = sorted(session_dates)
+    trade_date_in_sessions = target in session_dates
+
     excluded = {"no_row_for_trade_date": 0, "unknown_pct_or_price": 0, "not_limit_up": 0}
     name_fallbacks = 0
     output: list[dict[str, Any]] = []
 
     for symbol, supplied_rows in klines_by_symbol.items():
-        dated: list[tuple[date, Sequence[Any]]] = []
-        for row in supplied_rows:
-            if len(row) == 9:
-                row_day = _row_date(row[0])
-                if row_day is not None:
-                    dated.append((row_day, row))
-        dated.sort(key=lambda item: item[0])
-        current = next((i for i in range(len(dated) - 1, -1, -1) if dated[i][0] == target), None)
-        if current is None:
+        dated = rows_by_symbol[symbol]
+        current_row = dated.get(target)
+        if current_row is None:
             excluded["no_row_for_trade_date"] += 1
             continue
-        is_up, unknown = _is_limit_up(dated[current][1], symbol, tolerance)
+        is_up, unknown = _is_limit_up(current_row, symbol, tolerance)
         if unknown:
             excluded["unknown_pct_or_price"] += 1
             continue
@@ -122,24 +132,24 @@ def derive_limit_up_pool_from_daily_klines(
             continue
 
         lb_days = 1
-        cursor = current - 1
-        next_day = target
-        while cursor >= 0:
-            previous_day, previous_row = dated[cursor]
-            if previous_day >= next_day or _weekday_gap(previous_day, next_day):
+        if trade_date_in_sessions:
+            prior_sessions = (day for day in reversed(ordered_sessions) if day < target)
+        else:
+            prior_sessions = ()
+        for previous_day in prior_sessions:
+            previous_row = dated.get(previous_day)
+            if previous_row is None:
                 break
             prior_up, prior_unknown = _is_limit_up(previous_row, symbol, tolerance)
             if prior_unknown or not prior_up:
                 break
             lb_days += 1
-            next_day = previous_day
-            cursor -= 1
 
         name = names_by_symbol.get(symbol)
         if not isinstance(name, str) or not name:
             name = symbol
             name_fallbacks += 1
-        row = dated[current][1]
+        row = current_row
         output.append({
             "trade_date": trade_date,
             "symbol": symbol,
@@ -155,10 +165,13 @@ def derive_limit_up_pool_from_daily_klines(
     output.sort(key=lambda item: item["symbol"])
     payload = json.dumps(output, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    notes = {"name_fallback_symbols": name_fallbacks}
+    if not trade_date_in_sessions:
+        notes["trade_date_not_in_trading_dates"] = True
     return LimitUpPoolDerivation(
         rows=tuple(output),
         input_symbol_count=len(klines_by_symbol),
         excluded_counts=excluded,
-        notes={"name_fallback_symbols": name_fallbacks},
+        notes=notes,
         content_hash=digest,
     )

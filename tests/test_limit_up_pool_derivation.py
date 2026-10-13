@@ -61,3 +61,47 @@ def test_missing_prior_day_breaks_streak_and_none_is_unknown():
     assert result.excluded_counts["unknown_pct_or_price"] == 1
     assert result.excluded_counts["no_row_for_trade_date"] == 1
     assert result.notes["name_fallback_symbols"] == 1
+
+
+def test_streak_skips_weekends_and_holiday_dates_without_any_rows():
+    result = derive_limit_up_pool_from_daily_klines({
+        "600001": [_row("2026-09-30"), _row("2026-10-08")],
+        "600002": [_row("2026-09-30"), _row("2026-10-08")],
+    }, "2026-10-08")
+    assert result.rows[0]["lb_days"] == 2
+
+
+def test_missing_symbol_row_on_an_inferred_trading_date_breaks_streak():
+    result = derive_limit_up_pool_from_daily_klines({
+        "600001": [_row("2026-09-29"), _row("2026-10-08")],
+        "600002": [_row("2026-09-30"), _row("2026-10-08")],
+    }, "2026-10-08")
+    assert result.rows[0]["lb_days"] == 1
+
+
+def test_explicit_trading_dates_override_cross_section_inference():
+    result = derive_limit_up_pool_from_daily_klines({
+        "600001": [_row("2026-09-30"), _row("2026-10-08")],
+        "600002": [_row("2026-09-30"), _row("2026-10-08")],
+    }, "2026-10-08", trading_dates=["2026-09-30", "2026-10-01", "2026-10-08"])
+    assert result.rows[0]["lb_days"] == 1
+
+    outside_calendar = derive_limit_up_pool_from_daily_klines({
+        "600001": [_row("2026-09-30"), _row("2026-10-08")],
+    }, "2026-10-08", trading_dates=["2026-09-30"])
+    assert outside_calendar.rows[0]["lb_days"] == 1
+    assert outside_calendar.notes["trade_date_not_in_trading_dates"] is True
+
+
+def test_inferred_trading_date_threshold_is_at_least_half_the_symbols():
+    below_half = {f"600{i:03d}": [_row("2026-10-08")] for i in range(100)}
+    for i in range(49):
+        below_half[f"600{i:03d}"].append(_row("2026-09-30"))
+    below_half_result = derive_limit_up_pool_from_daily_klines(below_half, "2026-10-08")
+    assert below_half_result.rows[0]["lb_days"] == 1
+
+    at_half = {f"600{i:03d}": [_row("2026-10-08")] for i in range(100)}
+    for i in range(50):
+        at_half[f"600{i:03d}"].append(_row("2026-09-30"))
+    at_half_result = derive_limit_up_pool_from_daily_klines(at_half, "2026-10-08")
+    assert at_half_result.rows[0]["lb_days"] == 2
