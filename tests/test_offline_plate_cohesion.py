@@ -3,7 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from examples.run_offline_plate_cohesion import _memberships, ensure_empty_output_dir, select_top_plates, write_outputs
+from examples.run_offline_plate_cohesion import (
+    _memberships, _read_td, ensure_empty_output_dir, select_top_plates, write_outputs,
+)
 from engine_core.plate_cohesion import PlateCohesionResult
 from engine_core.plate_membership import PlateHierarchy
 
@@ -45,7 +47,9 @@ def test_writer_emits_phase_named_outputs(tmp_path):
     output = tmp_path / "out"
     phase_result = SimpleNamespace(
         by_phase={"AUCTION": ()}, affinities_by_phase={"AUCTION": ()},
-        flags={"phase_sample_counts": {"AUCTION": 3}, "gap_skipped_points": 100, "gap": "GAP"},
+        flags={"phase_sample_counts": {"AUCTION": 3}, "gap_skipped_points": 100, "gap": "GAP",
+               "snapshot_crosscheck": {"0920": {"compared": 4, "equal": 3}},
+               "auction_sub_phases": {"CANCELLABLE": ["09:15:00", "09:20:00"]}},
         content_hash="abc",
     )
     write_outputs(output, trade_date="2026-01-02", snapshot_path=tmp_path / "snap.json",
@@ -56,3 +60,36 @@ def test_writer_emits_phase_named_outputs(tmp_path):
         "cohesion_auction.json", "affinity_auction.json", "manifest.json"}
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["phase_sample_counts"] == {"AUCTION": 3}
+    assert manifest["snapshot_crosscheck"]["0920"] == {"compared": 4, "equal": 3}
+
+
+def test_td_reader_selects_and_derives_auction_book_fields(monkeypatch):
+    memberships, hierarchy = _memberships({"stock_plate": {}, "s2p": {"000001": ["人工智能"]}})
+    stamp = __import__("datetime").datetime.fromisoformat("2026-10-13T09:20:00+08:00")
+
+    class Cursor:
+        query = ""
+        def execute(self, query):
+            self.query = query
+        def fetchall(self):
+            if "auction_snapshot_v2" in self.query:
+                return [("000001", 774100, 18423580)] if '"0920"' in self.query else []
+            if "LAST(pc_milli)" in self.query:
+                return [(774100, "000001")]
+            return [(stamp, 760000, 774100, 0, 0, 774100, 774100,
+                     238, 238, 0, 50, "000001")]
+
+    class Connection:
+        def cursor(self):
+            self.cursor_value = Cursor()
+            return self.cursor_value
+        def close(self):
+            pass
+
+    connection = Connection()
+    monkeypatch.setattr("examples.run_offline_plate_cohesion._td_connect",
+                        lambda host: (connection, "market_data1"))
+    _, series, _, _, _, _, _ = _read_td("local", "2026-10-13", "09:15:00", "09:25:00",
+                                         memberships, hierarchy, 1)
+    assert "ap1_milli" in connection.cursor_value.query and "bv2" in connection.cursor_value.query
+    assert series["000001"][0][1:3] == (774.1, 18423580.0)

@@ -18,18 +18,22 @@ def setup():
     return symbols, memberships, PlateHierarchy({}, {})
 
 
-def test_auction_ignores_tick_amount_and_uses_snapshot_progress():
+def test_auction_uses_book_derived_tick_amount_and_counts_snapshot_crosscheck():
     symbols, memberships, hierarchy = setup()
-    series = {s: [(ms("09:20:03"), 10.0 + i / 100, 0.0, 10.0) for i, s in enumerate(symbols)]
+    series = {s: [(ms("09:20:00"), 10.0, 100.0, 10.0, 0.0, 50.0, "ASK", "LOCKED")]
               for s in symbols}
-    snapshots = {"0920": {s: 10.0 for s in symbols}, "0924": {s: 20.0 for s in symbols},
-                 "0925": {s: 15.0 for s in symbols}}
+    snapshots = {"0920": {s: 100.0 for s in symbols}}
+    prices = {"0920": {s: 10.0 for s in symbols}}
     result = compute_phase_cohesion(series, {s: 10.0 for s in symbols}, memberships, hierarchy,
-                                    amount_snapshots=snapshots, phases=("AUCTION",), min_members=1,
-                                    min_points=1)
+                                    amount_snapshots=snapshots, price_snapshots=prices,
+                                    phases=("AUCTION",), min_members=1, min_points=1)
     row = result.by_phase["AUCTION"][0]
-    assert row.amount_progress == {"0920": 50.0, "0924": 100.0, "0925": 75.0}
-    assert row.amount_delta_up_share == 0.5
+    assert row.amount_progress == {"matched_amount_sum": 500.0}
+    assert row.matched_amount_sum == ((ms("09:20:00"), 500.0),)
+    assert row.rest_ask_amount_sum == 250.0
+    assert row.net_unmatched_direction["ASK"] == 1.0
+    assert row.sub_phase_amounts == {"CANCELLABLE": None, "LOCKED": 500.0}
+    assert result.flags["snapshot_crosscheck"]["0920"] == {"compared": 5, "equal": 5}
 
 
 def test_open_amount_delta_uses_first_open_observation_as_baseline():

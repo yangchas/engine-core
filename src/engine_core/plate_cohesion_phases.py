@@ -34,6 +34,11 @@ class PhasePlateCohesion:
     speed_same_direction_share: float | None
     amount_progress: Mapping[str, float | None] | None
     flags: tuple[str, ...] = ()
+    matched_amount_sum: tuple[tuple[int, float], ...] = ()
+    rest_bid_amount_sum: float | None = None
+    rest_ask_amount_sum: float | None = None
+    net_unmatched_direction: Mapping[str, float] | None = None
+    sub_phase_amounts: Mapping[str, float | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +107,7 @@ def compute_phase_cohesion(
     reference = min(refs)
     start_auction, end_auction = _clock_ms(reference, "09:15:00"), _clock_ms(reference, "09:25:00")
     call_result = end_auction
+    end_call_result = end_auction + 60_000
     open_start, end_open = _clock_ms(reference, "09:30:00"), _clock_ms(reference, open_end)
     gap_points = len(range(end_auction, open_start, grid_ms))
     eligible = {s: tuple(r for r in rows if classify_plate_kind(r.plate) in ("THEME", "GENERIC"))
@@ -133,8 +139,8 @@ def compute_phase_cohesion(
             phase_rows = {
                 s: [(r[0], *r[1:]) for r in series_by_symbol.get(s, ())
                     if ((phase == "OPEN" and r[0] >= open_start)
-                        or (phase in ("AUCTION", "CALL_RESULT")
-                            and start_auction <= r[0] < end_auction))]
+                        or (phase == "AUCTION" and start_auction <= r[0] < end_auction)
+                        or (phase == "CALL_RESULT" and end_auction <= r[0] < end_call_result))]
                 for s in symbols
             }
             sampled = {s: _sample(phase_rows[s], points) for s in symbols}
@@ -168,24 +174,58 @@ def compute_phase_cohesion(
             interval_up: list[float] = []
             interval_down: list[float] = []
             latest_amounts: list[float] = []
+            matched_amount_sum: tuple[tuple[int, float], ...] = ()
+            rest_bid_amount_sum = rest_ask_amount_sum = 0.0
+            book_rows = 0
+            net_unmatched_direction = None
+            sub_phase_amounts = None
             if phase == "AUCTION":
-                amount_progress = {}
-                for tag in ("0920", "0924", "0925"):
-                    vals = snapshots.get(tag, {})
-                    present = [float(vals[s]) for s in set(symbols)
-                               if vals.get(s) is not None and math.isfinite(float(vals[s]))]
-                    amount_progress[tag] = sum(present) if present else None
-                for earlier, later in (("0920", "0924"), ("0924", "0925")):
-                    left, right = snapshots.get(earlier, {}), snapshots.get(later, {})
-                    interval = [float(right[s]) - float(left[s]) for s in set(symbols)
-                                if left.get(s) is not None and right.get(s) is not None]
-                    changes.extend(interval)
-                    if interval:
-                        interval_up.append(sum(v > 0 for v in interval) / len(interval))
-                        interval_down.append(sum(v < 0 for v in interval) / len(interval))
-                latest_amounts = [float(snapshots["0925"][s]) for s in set(symbols)
-                                  if snapshots.get("0925", {}).get(s) is not None
-                                  and math.isfinite(float(snapshots["0925"][s]))]
+                event_amounts: dict[int, float] = {}
+                sub_phase_amounts = {"CANCELLABLE": 0.0, "LOCKED": 0.0}
+                sub_phase_counts = {"CANCELLABLE": 0, "LOCKED": 0}
+                bid_more = ask_more = balanced = 0
+                directional = 0
+                for symbol in symbols:
+                    for raw in phase_rows[symbol]:
+                        ts = raw[0]
+                        amount = (float(raw[2]) if raw[2] is not None and math.isfinite(float(raw[2]))
+                                  else 0.0)
+                        event_amounts[ts] = event_amounts.get(ts, 0.0) + amount
+                        if ts < _clock_ms(reference, "09:20:00"):
+                            sub_phase_amounts["CANCELLABLE"] += amount
+                            sub_phase_counts["CANCELLABLE"] += 1
+                        else:
+                            sub_phase_amounts["LOCKED"] += amount
+                            sub_phase_counts["LOCKED"] += 1
+                        if len(raw) > 6 and raw[6] in ("BID", "ASK", "BALANCED"):
+                            directional += 1
+                            bid_more += raw[6] == "BID"
+                            ask_more += raw[6] == "ASK"
+                            balanced += raw[6] == "BALANCED"
+                        if len(raw) > 4:
+                            rest_bid_amount_sum += float(raw[4] or 0)
+                        if len(raw) > 5:
+                            rest_ask_amount_sum += float(raw[5] or 0)
+                        if len(raw) > 5:
+                            book_rows += 1
+                sub_phase_amounts = {key: value if sub_phase_counts[key] else None
+                                     for key, value in sub_phase_amounts.items()}
+                rest_bid_amount_sum = rest_bid_amount_sum if book_rows else None
+                rest_ask_amount_sum = rest_ask_amount_sum if book_rows else None
+                matched_amount_sum = tuple(sorted(event_amounts.items()))
+                amount_progress = {"matched_amount_sum": sum(event_amounts.values()) if event_amounts else None}
+                if len(points) >= 2:
+                    for symbol in symbols:
+                        values = [float(raw[2]) for raw in phase_rows[symbol]
+                                  if raw[2] is not None and math.isfinite(float(raw[2]))]
+                        changes.extend(b - a for a, b in zip(values, values[1:]) if a != b)
+                if changes:
+                    interval_up.append(sum(v > 0 for v in changes) / len(changes))
+                    interval_down.append(sum(v < 0 for v in changes) / len(changes))
+                latest_amounts = [amount for _, amount in matched_amount_sum]
+                net_unmatched_direction = ({"BID": bid_more / directional, "ASK": ask_more / directional,
+                                            "BALANCED": balanced / directional}
+                                           if directional else None)
             elif phase == "CALL_RESULT":
                 snap = snapshots.get("0925", {})
                 latest_amounts = [float(snap[s]) for s in set(symbols)
@@ -227,7 +267,9 @@ def compute_phase_cohesion(
                 speed_direction = max(_direction(speeds).values()) if speeds else None
             plate_rows.append(PhasePlateCohesion(
                 phase, plate, len(symbols), covered, direction, dispersion, pct_mid, concentration,
-                amount_up, amount_down, speed, speed_direction, amount_progress, tuple(dict.fromkeys(row_flags))))
+                amount_up, amount_down, speed, speed_direction, amount_progress, tuple(dict.fromkeys(row_flags)),
+                matched_amount_sum, rest_bid_amount_sum, rest_ask_amount_sum, net_unmatched_direction,
+                sub_phase_amounts))
             if phase == "CALL_RESULT":
                 continue
             for symbol in symbols:
@@ -247,7 +289,28 @@ def compute_phase_cohesion(
                                                      lag * grid_ms if lag is not None else None, corr, role))
         by_phase[phase] = tuple(plate_rows)
         affinities_by_phase[phase] = tuple(affinities)
-    flags = {"gap": "GAP", "gap_skipped_points": gap_points, "phase_sample_counts": phase_sample_counts}
+    snapshot_crosscheck = {}
+    for tag, clock in (("0920", "09:20:03"), ("0924", "09:24:10"), ("0925", "09:25:06")):
+        target = _clock_ms(reference, clock)
+        compared = equal = 0
+        for symbol, rows in series_by_symbol.items():
+            candidates = [r for r in rows if target - 3000 <= r[0] <= target]
+            if not candidates:
+                continue
+            row = max(candidates, key=lambda r: r[0])
+            snap_amt = (snapshots.get(tag, {}).get(symbol))
+            snap_px = prices.get(tag, {}).get(symbol)
+            if snap_amt is None or snap_px is None or row[1] is None or row[2] is None:
+                continue
+            compared += 1
+            if math.isclose(float(row[1]), float(snap_px), abs_tol=1e-9) and math.isclose(
+                    float(row[2]), float(snap_amt), abs_tol=1e-9):
+                equal += 1
+        snapshot_crosscheck[tag] = {"compared": compared, "equal": equal}
+    flags = {"gap": "GAP", "gap_skipped_points": gap_points, "phase_sample_counts": phase_sample_counts,
+             "snapshot_crosscheck": snapshot_crosscheck,
+             "auction_sub_phases": {"CANCELLABLE": ["09:15:00", "09:20:00"],
+                                    "LOCKED": ["09:20:00", "09:25:00"]}}
     payload = {"by_phase": {p: [asdict(row) for row in rows] for p, rows in by_phase.items()},
                "affinities_by_phase": {p: [asdict(row) for row in rows] for p, rows in affinities_by_phase.items()},
                "flags": flags}

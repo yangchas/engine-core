@@ -14,6 +14,7 @@ import re
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
+from engine_core.auction_book import AuctionBookTick, derive_auction_book
 from engine_core.plate_cohesion import calculate_plate_cohesion, to_dict
 from engine_core.plate_cohesion_phases import compute_phase_cohesion
 from engine_core.plate_kind import classify_plate_kind
@@ -106,7 +107,7 @@ def _read_td(host: str, trade_date: str, window_start: str, window_end: str,
                         for symbol, amount in amount_snapshots["0925"].items()}
         plates = select_top_plates(memberships, hierarchy, auction_rows, max_plates)
         symbols = sorted({symbol for plate in plates for symbol in members_of(plate, memberships, hierarchy)})
-        series: dict[str, list[tuple[int, float | None, float | None, float | None]]] = {symbol: [] for symbol in symbols}
+        series: dict[str, list[tuple]] = {symbol: [] for symbol in symbols}
         pre_close: dict[str, float | None] = {}
         start_ms = int(datetime.strptime(start, "%Y-%m-%d %H:%M:%S").replace(
             tzinfo=ZoneInfo("Asia/Shanghai")).timestamp() * 1000)
@@ -125,16 +126,26 @@ def _read_td(host: str, trade_date: str, window_start: str, window_end: str,
                 if pc is not None:
                     pre_close[str(symbol)] = float(pc) / 1000
             cursor.execute(
-                "SELECT ts, px_milli, pc_milli, amt_yuan, symbol "
+                "SELECT ts, px_milli, pc_milli, amt_yuan, vol_units, "
+                "bp1_milli, ap1_milli, bv1, av1, bv2, av2, symbol "
                 f"FROM {database}.stock_tick_v2 WHERE ts >= '{start}' AND ts <= '{end}' "
                 f"AND symbol IN ({quoted}) ORDER BY ts, symbol"
             )
-            for ts, px, pc, amount, symbol in cursor.fetchall():
+            for ts, px, pc, amount, volume, bp1, ap1, bv1, av1, bv2, av2, symbol in cursor.fetchall():
                 symbol = str(symbol)
                 ts_ms = int(ts.replace(tzinfo=ZoneInfo("Asia/Shanghai")).timestamp() * 1000) if hasattr(ts, "replace") else int(ts)
-                price = float(px) / 1000 if px is not None else None
+                state = derive_auction_book(AuctionBookTick(
+                    ts_ms, px, bp1, ap1, bv1, av1, bv2, av2, amount, volume,
+                ))
+                price = state.effective_price_milli / 1000 if state.effective_price_milli > 0 else None
                 close = float(pc) / 1000 if pc is not None else None
-                series[symbol].append((ts_ms, price, float(amount) if amount is not None else None, close))
+                local = datetime.fromtimestamp(ts_ms / 1000, ZoneInfo("Asia/Shanghai"))
+                sub_phase = ("CANCELLABLE" if (local.hour, local.minute) < (9, 20) else "LOCKED") \
+                    if state.phase == "CALL" else None
+                series[symbol].append((ts_ms, price, float(state.match_amt_yuan), close,
+                                       state.rest_bid_amt_yuan, state.rest_ask_amt_yuan,
+                                       state.imbalance_side, sub_phase, state.matched_volume,
+                                       state.phase, state.flags))
         return (plates, series, pre_close, len(auction_rows), sum(map(len, series.values())),
                 amount_snapshots, price_snapshots)
     finally:
@@ -190,6 +201,8 @@ def write_outputs(
         manifest["gap_skipped_points"] = phase_result.flags["gap_skipped_points"]
         manifest["gap"] = phase_result.flags["gap"]
         manifest["content_hash"] = phase_result.content_hash
+        manifest["snapshot_crosscheck"] = phase_result.flags.get("snapshot_crosscheck", {})
+        manifest["auction_sub_phases"] = phase_result.flags.get("auction_sub_phases", {})
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True,
                                             indent=2, allow_nan=False) + "\n", encoding="utf-8")
     else:
