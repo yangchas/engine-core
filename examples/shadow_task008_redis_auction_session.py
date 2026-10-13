@@ -219,6 +219,7 @@ def run_shadow(
     confirm_read_only: bool = False,
     recover_final_from_phase_zero: bool = False,
     pool_path: Path | None = None,
+    read_times: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     if source == "live" and not confirm_read_only:
         raise RuntimeError("live source requires confirm_read_only=True")
@@ -229,7 +230,7 @@ def run_shadow(
             poll_seconds=poll_seconds, max_polls=max_polls,
             confirm_read_only=confirm_read_only,
             recover_final_from_phase_zero=recover_final_from_phase_zero,
-            pool_path=pool_path,
+            pool_path=pool_path, read_times=read_times,
         )
     try:
         return _run_shadow_impl(
@@ -238,10 +239,20 @@ def run_shadow(
             poll_seconds=poll_seconds, max_polls=max_polls,
             confirm_read_only=confirm_read_only,
             recover_final_from_phase_zero=recover_final_from_phase_zero,
-            pool_path=pool_path,
+            pool_path=pool_path, read_times=read_times,
         )
     except Exception as exc:
         raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None
+
+
+def _sleep_until_local(trade_date: str, hms: str) -> None:
+    """Sleep until ``trade_date`` ``HH:MM:SS`` Asia/Shanghai; return at once if past."""
+    from zoneinfo import ZoneInfo
+
+    target = datetime.fromisoformat(f"{trade_date}T{hms}").replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+    delay = (target - datetime.now(timezone.utc)).total_seconds()
+    if delay > 0:
+        time.sleep(delay)
 
 
 def _record_failure(out_dir: Path, exc: BaseException) -> None:
@@ -263,6 +274,7 @@ def _run_shadow_impl(
     confirm_read_only: bool = False,
     recover_final_from_phase_zero: bool = False,
     pool_path: Path | None = None,
+    read_times: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     if out_dir.exists():
         raise FileExistsError(f"output directory already exists: {out_dir}")
@@ -296,7 +308,11 @@ def _run_shadow_impl(
     first_read: set[str] = set()
     try:
         with events_path.open("w", encoding="utf-8") as events_file:
+            if read_times:
+                max_polls = len(read_times)
             for poll in range(max_polls):
+                if read_times and source == "live":
+                    _sleep_until_local(trade_date, read_times[poll])
                 wall_started = _aware_now()
                 snapshot = RedisQ2ProjectionAdapter(client).read(
                     trade_date, freshness_policy=FreshnessPolicy()
@@ -326,7 +342,7 @@ def _run_shadow_impl(
                         wall_completed,
                         "LIVE_REDIS_READ_ONLY" if source == "live" else "SEALED_REDIS_CAPTURE",
                     )
-                if poll + 1 < max_polls:
+                if poll + 1 < max_polls and not read_times:
                     time.sleep(poll_seconds)
     except Exception as exc:
         _record_failure(out_dir, exc)
@@ -362,6 +378,15 @@ def _run_shadow_impl(
     return manifest
 
 
+def _parse_times(text: str | None) -> list[str] | None:
+    if not text:
+        return None
+    times = [item.strip() for item in text.split(",") if item.strip()]
+    for item in times:
+        datetime.strptime(item, "%H:%M:%S")
+    return times
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", choices=("capture", "live"), required=True)
@@ -373,6 +398,9 @@ def main() -> int:
     parser.add_argument("--confirm-read-only", action="store_true")
     parser.add_argument("--recover-final-from-phase-zero", action="store_true",
                         help="opt-in: use a late ph==0 final-match snapshot as the 0925 anchor when a25 is missing")
+    parser.add_argument("--read-times",
+                        help="live only: comma-separated local HH:MM:SS read times in one session "
+                        "(replaces --max-polls/--poll-seconds)")
     parser.add_argument("--pool", type=Path,
                         help="sealed previous-day limit pool JSON; enables a report_NNN.txt per poll")
     args = parser.parse_args()
@@ -406,6 +434,7 @@ def main() -> int:
                 confirm_read_only=args.confirm_read_only,
                 recover_final_from_phase_zero=args.recover_final_from_phase_zero,
                 pool_path=args.pool,
+                read_times=_parse_times(args.read_times),
             )
         except Exception as exc:
             raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None
@@ -418,6 +447,7 @@ def main() -> int:
         confirm_read_only=args.confirm_read_only,
         recover_final_from_phase_zero=args.recover_final_from_phase_zero,
         pool_path=args.pool,
+        read_times=_parse_times(args.read_times),
     )
     return 0
 
