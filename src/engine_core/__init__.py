@@ -300,6 +300,7 @@ from .theme_auction_delta_rows import (
     build_theme_delta_rows,
     theme_weights_from_plate_mapping,
 )
+from .report_render import build_report_eml, render_report_html
 from .f10_market_cap import F10MarketCaps, market_cap_unit_check, normalize_f10_market_caps
 from .stock_extremes import StockExtremes, derive_stock_extremes
 from .cold_start import ColdStartAssessment, assess_cold_start, classify_start
@@ -693,6 +694,8 @@ __all__ = [
     "normalize_symbol_cache_rows",
     "ColdStartAssessment",
     "F10MarketCaps",
+    "build_report_eml",
+    "render_report_html",
     "market_cap_unit_check",
     "normalize_f10_market_caps",
     "StockExtremes",
