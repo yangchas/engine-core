@@ -56,7 +56,7 @@ def _width(lo, hi):
 
 def fetch_segmented(
     fetch, base_query, *, loop=True, cap=1000,
-    edges_yi=(0, 10, 20, 30, 50, 80, 120, 200, 500, None),
+    edges_yi=(0, 10, 20, 30, 40, 50, 80, 120, 200, 500, None),
     min_width_yi=1.0, max_queries=80, sleep_s=4,
 ):
     """Fetch adjacent [lo, hi) intervals, splitting capped ranges as needed.
