@@ -88,6 +88,11 @@ from .plate_rules import (
     prioritize_core_themes,
     split_plate_tokens,
 )
+from .stock_plate_assignment import (
+    PlateAssignments,
+    StockPlateAssignment,
+    build_stock_plate_assignments,
+)
 from .previous_day_limit_structure import (
     PREVIOUS_DAY_LIMIT_STRUCTURE_CONTRACT_VERSION,
     PreviousDayLimitStructureFact,
