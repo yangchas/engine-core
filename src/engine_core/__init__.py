@@ -70,6 +70,12 @@ from .limit_up_pool_derivation import (
     LimitUpPoolDerivation,
     derive_limit_up_pool_from_daily_klines,
 )
+from .auction_limit_facts import (
+    PlateAuctionLimitFact,
+    StockAuctionLimitFact,
+    aggregate_plate_auction_limit_facts,
+    derive_stock_auction_limit_fact,
+)
 from .first_board_reason_requests import (
     FIRST_BOARD_REASON_REQUESTS_CONTRACT_VERSION,
     ReasonRequestPlan,
@@ -590,6 +596,10 @@ __all__ = [
     "normalize_previous_day_limit_pool_rows",
     "LimitUpPoolDerivation",
     "derive_limit_up_pool_from_daily_klines",
+    "StockAuctionLimitFact",
+    "PlateAuctionLimitFact",
+    "derive_stock_auction_limit_fact",
+    "aggregate_plate_auction_limit_facts",
     "PLATE_RULES_VERSION",
     "normalize_plate_name",
     "is_generic_plate",
