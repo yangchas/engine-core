@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Mapping, Optional
 
+from .clock import local_datetime_ms
 from .contracts import DataResult
 from .market_auction_report import MarketAuctionReport, build_market_auction_report
 from .market_summary import derive_q2_auction_summary
@@ -54,6 +55,11 @@ def build_shadow_auction_report(
         "theme delta omitted: needs the 0924 snapshot (not supplied to the shadow reader)",
         "0925 anchors include %d symbols recovered from late ph==0 snapshots" % len(recoveries),
     ]
+    if observation_time_ms < local_datetime_ms(trade_date, "09:25:00"):
+        notes.append(
+            "observed before 09:25:00: a25 is not produced yet, so valid/unavailable "
+            "counts and prior-day returns describe the collecting phase, not the final auction"
+        )
     structure = feedback = None
     if previous_pool is not None:
         current = build_current_0925_rows_from_q2(trade_date, patched)

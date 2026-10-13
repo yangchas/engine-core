@@ -1,5 +1,6 @@
 from dataclasses import replace
 
+from engine_core.clock import local_datetime_ms
 from engine_core.auction_shadow_report import build_shadow_auction_report
 from engine_core.q2 import normalize_q2
 
@@ -21,3 +22,14 @@ def test_report_without_pool_notes_it_and_applies_recovery():
     assert "previous-day pool not supplied" in report.text
     assert "recovered from late ph==0 snapshots" in report.text
     assert report.component_status["market_summary"] in ("READY", "PARTIAL")
+
+
+def test_report_notes_collecting_phase_before_0925():
+    early = build_shadow_auction_report(
+        trade_date="2026-10-12", quotes={}, observation_time_ms=local_datetime_ms("2026-10-12", "09:17:40"),
+    )
+    late = build_shadow_auction_report(
+        trade_date="2026-10-12", quotes={}, observation_time_ms=local_datetime_ms("2026-10-12", "09:25:30"),
+    )
+    assert "observed before 09:25:00" in early.text
+    assert "observed before 09:25:00" not in late.text
