@@ -308,6 +308,7 @@ from .dataset_refresh import DATASET_SCHEDULE, summarize_dataset_state
 from .report_render import build_report_eml, render_report_html
 from .f10_market_cap import F10MarketCaps, market_cap_unit_check, normalize_f10_market_caps
 from .stock_extremes import StockExtremes, derive_stock_extremes
+from .core_cache_writer import CoreCacheWriter, verify_core_cache
 from .cold_start import ColdStartAssessment, assess_cold_start, classify_start
 from .live_input_adapters import (
     json_rows_from_state,
@@ -769,4 +770,6 @@ __all__ = [
     "RedisAuctionProjection",
     "RedisAuctionProjectionClient",
     "read_redis_auction_projection",
+    "CoreCacheWriter",
+    "verify_core_cache",
 ]
