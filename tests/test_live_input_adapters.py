@@ -94,3 +94,43 @@ def test_all_rows_bad_is_missing_with_rejections_visible():
     result = _pool(_state({POOL_KEY: {b"000001": b"[1]"}}))
     assert result.status.value == "MISSING"
     assert result.data["rejected_count"] == 1
+
+
+def test_rejected_pool_rows_mark_feedback_structure_and_report_as_lower_bound():
+    from engine_core.facts import FactStatus
+    from engine_core.market_auction_report import build_market_auction_report
+    from engine_core.previous_day_limit_feedback import build_previous_day_limit_feedback
+    from engine_core.previous_day_limit_structure import build_previous_day_limit_structure
+
+    bad = {b"000002": b"{broken"}
+    pool = _pool(_state({POOL_KEY: {b"000001": _row("000001", 3).encode(),
+                                    b"600000": _row("600000").encode(), **bad}}))
+    current = [
+        {"symbol": "000001", "trade_date": "2026-10-13", "tag": "0925",
+         "change_pct": 1.5, "auction_amount_yuan": 10, "source_record_time_ms": 1},
+        {"symbol": "600000", "trade_date": "2026-10-13", "tag": "0925",
+         "change_pct": -0.5, "auction_amount_yuan": 10, "source_record_time_ms": 1},
+    ]
+    feedback = build_previous_day_limit_feedback(pool, current, current_trade_date="2026-10-13")
+    structure = build_previous_day_limit_structure(pool)
+    for fact in (feedback, structure):
+        assert fact.status is FactStatus.PARTIAL
+        assert fact.excluded_row_count == 1
+        assert fact.as_mapping()["counts_are_lower_bound"] is True
+    assert feedback.prior_limit_up_count == 2
+    assert "previous.excluded_rows:1" in feedback.missing_fields
+    report = build_market_auction_report(
+        trade_date="2026-10-13", event_id="E", data_origin="T",
+        previous_limit_structure=structure, previous_limit_feedback=feedback,
+    )
+    assert report.text.count("下限, 另有 1 行被拒绝") == 2
+    assert "≥3" in report.text
+
+
+def test_no_rejected_rows_keeps_exact_counts_and_hash_inputs_unchanged():
+    from engine_core.previous_day_limit_structure import build_previous_day_limit_structure
+
+    pool = _pool(_state({POOL_KEY: {b"000001": _row("000001").encode()}}))
+    structure = build_previous_day_limit_structure(pool)
+    assert structure.excluded_row_count == 0
+    assert structure.as_mapping()["counts_are_lower_bound"] is False

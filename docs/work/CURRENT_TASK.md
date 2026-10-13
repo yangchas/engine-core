@@ -21,6 +21,12 @@
   missing_fields `rejected_rows`), never upgraded to READY by a complete
   requested-symbol set; all rows bad -> MISSING. Strict default unchanged.
   Real 10-12 pool: 46 rows, 0 rejected.
+- Feedback and structure facts carry `excluded_row_count` (source rows the pool
+  rejected). When > 0 the fact cannot be READY, `counts_are_lower_bound` is
+  true, feedback `missing_fields` gains `previous.excluded_rows:N`, and the
+  report prints counts as "(下限, 另有 N 行被拒绝)" and the highest board as
+  "≥H". The key is omitted from the semantic hash when 0, so existing hashes
+  are unchanged.
 
 ## 2026-10-13 unified read-only live input layer
 

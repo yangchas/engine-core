@@ -133,8 +133,12 @@ def build_market_auction_report(
             "## 昨日涨停结构",
             "- status: %s" % _status_value(s.status),
             "- previous_trade_date: %s" % _show(s.previous_trade_date),
-            "- row_count: %s" % _show(s.row_count),
-            "- highest_board_height: %s (%s)" % (
+            "- row_count: %s%s" % (
+                _show(s.row_count),
+                " (下限, 另有 %d 行被拒绝)" % s.excluded_row_count if s.excluded_row_count else "",
+            ),
+            "- highest_board_height: %s%s (%s)" % (
+                "≥" if s.excluded_row_count else "",
                 _show(s.highest_board_height),
                 ",".join(s.highest_board_symbols) or "unavailable",
             ),
@@ -147,7 +151,10 @@ def build_market_auction_report(
             "",
             "## 昨日涨停今日竞价表现",
             "- status: %s" % _status_value(f.status),
-            "- prior_limit_up_count: %s" % _show(f.prior_limit_up_count),
+            "- prior_limit_up_count: %s%s" % (
+                _show(f.prior_limit_up_count),
+                " (下限, 另有 %d 行被拒绝)" % f.excluded_row_count if f.excluded_row_count else "",
+            ),
             "- valid_return/unavailable_return: %s/%s" % (
                 _show(f.valid_return_count), _show(f.return_unavailable_count)
             ),

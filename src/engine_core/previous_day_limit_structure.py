@@ -33,6 +33,8 @@ class PreviousDayLimitStructureFact:
     board_height_distribution: Mapping[str, int]
     missing_fields: Tuple[str, ...] = ()
     invalid_fields: Tuple[str, ...] = ()
+    # Source rows rejected as invalid: row_count/board heights are lower bounds.
+    excluded_row_count: int = 0
     source_content_hash: Optional[str] = None
     source_evidence_hash: Optional[str] = None
     evidence_refs: Tuple[str, ...] = ()
@@ -60,6 +62,14 @@ class PreviousDayLimitStructureFact:
         distribution = {str(key): int(value) for key, value in self.board_height_distribution.items()}
         if any(value < 0 for value in distribution.values()):
             raise ValueError("board height counts must be non-negative")
+        if (
+            isinstance(self.excluded_row_count, bool)
+            or not isinstance(self.excluded_row_count, int)
+            or self.excluded_row_count < 0
+        ):
+            raise ValueError("excluded_row_count must be a non-negative integer")
+        if self.excluded_row_count and self.status is FactStatus.READY:
+            raise ValueError("a structure fact with excluded rows cannot be READY")
         object.__setattr__(self, "highest_board_symbols", symbols)
         object.__setattr__(
             self,
@@ -81,6 +91,8 @@ class PreviousDayLimitStructureFact:
             "missing_fields": self.missing_fields,
             "invalid_fields": self.invalid_fields,
         }
+        if self.excluded_row_count:
+            semantic_payload["excluded_row_count"] = self.excluded_row_count
         evidence_payload = {
             "contract_version": PREVIOUS_DAY_LIMIT_STRUCTURE_CONTRACT_VERSION,
             "previous_trade_date": self.previous_trade_date,
@@ -104,6 +116,8 @@ class PreviousDayLimitStructureFact:
             "board_height_distribution": self.board_height_distribution,
             "missing_fields": self.missing_fields,
             "invalid_fields": self.invalid_fields,
+            "excluded_row_count": self.excluded_row_count,
+            "counts_are_lower_bound": self.excluded_row_count > 0,
             "source_content_hash": self.source_content_hash,
             "source_evidence_hash": self.source_evidence_hash,
             "evidence_refs": self.evidence_refs,
@@ -211,8 +225,15 @@ def build_previous_day_limit_structure(
         distribution[key] = distribution.get(key, 0) + 1
     highest = max((height for _, height in heights), default=None)
     highest_symbols = tuple(sorted(symbol for symbol, height in heights if height == highest))
+    excluded = data.get("rejected_count")
+    excluded = excluded if isinstance(excluded, int) and not isinstance(excluded, bool) and excluded > 0 else 0
     return PreviousDayLimitStructureFact(
-        status=FactStatus.PARTIAL if result.status is DataStatus.PARTIAL else FactStatus.READY,
+        status=(
+            FactStatus.PARTIAL
+            if result.status is DataStatus.PARTIAL or excluded
+            else FactStatus.READY
+        ),
+        excluded_row_count=excluded,
         row_count=len(heights),
         highest_board_height=highest,
         highest_board_symbols=highest_symbols,
