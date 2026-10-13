@@ -66,6 +66,10 @@ from .previous_day_limit_pool import (
     canonical_previous_day_limit_pool_payload_hash,
     normalize_previous_day_limit_pool_rows,
 )
+from .limit_up_pool_derivation import (
+    LimitUpPoolDerivation,
+    derive_limit_up_pool_from_daily_klines,
+)
 from .previous_day_limit_structure import (
     PREVIOUS_DAY_LIMIT_STRUCTURE_CONTRACT_VERSION,
     PreviousDayLimitStructureFact,
@@ -482,6 +486,8 @@ __all__ = [
     "canonical_previous_day_limit_pool_payload_hash",
     "RedisPreviousDayLimitPoolProvider",
     "normalize_previous_day_limit_pool_rows",
+    "LimitUpPoolDerivation",
+    "derive_limit_up_pool_from_daily_klines",
     "PREVIOUS_DAY_LIMIT_STRUCTURE_CONTRACT_VERSION",
     "PreviousDayLimitStructureFact",
     "build_previous_day_limit_structure",
