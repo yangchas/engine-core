@@ -74,6 +74,7 @@ def _fetch_td_rows(
     try:
         cursor = connection.cursor()
         rows: list[dict[str, Any]] = []
+        failed_symbols: list[str] = []
         for symbol in symbols:
             symbol = _symbol(symbol)
             table = "d_" + symbol
@@ -84,8 +85,16 @@ def _fetch_td_rows(
                 f"FROM {table} WHERE ts >= '{previous_trade_date}' "
                 f"AND ts <= '{previous_trade_date}' ORDER BY ts"
             )
-            cursor.execute(sql)
-            for row in cursor.fetchall():
+            try:
+                cursor.execute(sql)
+                fetched = cursor.fetchall()
+            except Exception:
+                # A missing child table (new listing, BJ code, delisted) must
+                # not discard every other symbol; it surfaces as a missing
+                # symbol in the function result.
+                failed_symbols.append(symbol)
+                continue
+            for row in fetched:
                 rows.append(
                     {
                         "symbol": symbol,
