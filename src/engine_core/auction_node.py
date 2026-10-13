@@ -88,6 +88,8 @@ def run_auction_node(
     shadow_dir = out_dir / ("shadow_run_%03d" % run_index)
     first_observation: int | None = None
     acknowledged: list[str] = []
+    timers_pending: set[str] = set()
+    readiness_delayed: set[str] = set()
     polls = 0
 
     def on_poll(record: Mapping[str, Any]) -> None:
@@ -101,11 +103,15 @@ def run_auction_node(
         runtime_poll = coordinator.poll(
             as_of_ms=observed_at_ms, q2=record["snapshot"], origin=origin,
         )
+        timers_pending.update(runtime_poll.deferred_timer_ids)
+        readiness_delayed.update(runtime_poll.deferred_timer_ids)
         for firing in runtime_poll.dispatchable_firings:
             if (
                 firing.timer_id == "OPENING_0932"
                 and runtime_poll.readiness.status != "READY"
             ):
+                timers_pending.add(firing.timer_id)
+                readiness_delayed.add(firing.timer_id)
                 continue
             anchor_name = "anchor_table_%03d.json" % int(record["poll"])
             anchor_path = Path(record["out_dir"]) / anchor_name
@@ -114,23 +120,29 @@ def run_auction_node(
             artifact = {
                 **_firing_mapping(firing),
                 "poll": int(record["poll"]),
+                "executed_at_ms": observed_at_ms,
+                "executed_poll": int(record["poll"]),
                 # Keep the durable artifact stable across shadow_run_NNN restarts.
                 "anchor_table_file": anchor_path.name,
                 "anchor_table_sha256": anchor_digest,
                 "cutoff_fidelity": (
                     "AT_CUTOFF"
-                    if firing.late_by_ms <= 30000 and firing.origin == "NORMAL"
+                    if (
+                        observed_at_ms - firing.scheduled_time_ms <= 30000
+                        and firing.origin == "NORMAL"
+                        and firing.timer_id not in readiness_delayed
+                    )
                     else "AFTER_CUTOFF_CURRENT_STATE"
                 ),
+                "q2_readiness": runtime_poll.readiness.status,
             }
-            if firing.timer_id == "AUCTION_0926":
-                artifact["q2_readiness"] = runtime_poll.readiness.status
             temporary = timer_path.with_suffix(".json.tmp")
             temporary.write_text(json.dumps(artifact, sort_keys=True, indent=2) + "\n", encoding="utf-8")
             os.replace(temporary, timer_path)
             ledger.record(trade_date, firing)
             coordinator.acknowledge(firing)
             acknowledged.append(firing.timer_id)
+            timers_pending.discard(firing.timer_id)
 
     from examples.shadow_task008_redis_auction_session import run_shadow
 
@@ -149,7 +161,8 @@ def run_auction_node(
         "timers_acknowledged": acknowledged,
         "timers_restored_from_ledger": restored_ids,
         "ledger_path": str(Path(ledger_path)),
-        "status": "DONE",
+        "timers_pending": sorted(timers_pending),
+        "status": "DONE" if not timers_pending else "DONE_WITH_PENDING",
         "shadow_dir": str(shadow_dir),
         "shadow_status": "DONE",
     }

@@ -111,7 +111,7 @@ def test_auction_node_dispatches_timers_and_restores_them_on_restart(tmp_path, m
         if timer_id == "AUCTION_0926":
             assert row["q2_readiness"] == "READY"
         else:
-            assert "q2_readiness" not in row
+            assert row["q2_readiness"] == "READY"
         assert row["anchor_table_sha256"]
         assert any((tmp_path / "node").glob("shadow_run_*" + "/" + row["anchor_table_file"]))
     ledger_lines = ledger.read_text().splitlines()
@@ -173,6 +173,45 @@ def test_opening_timer_waits_for_fresh_q2_then_dispatches(tmp_path, monkeypatch)
     assert opening["cutoff_fidelity"] == "AFTER_CUTOFF_CURRENT_STATE"
 
 
+def test_opening_cutoff_uses_actual_execution_poll_after_readiness_delay(tmp_path, monkeypatch):
+    class PartialThenReadyClient(FreshAuctionClient):
+        def __init__(self):
+            super().__init__(("09:25:00", "09:32:00", "09:40:00"))
+
+        def hgetall(self, key):
+            row = super().hgetall(key)
+            if self.current_time == "09:32:00":
+                row["ts"] = str(local_datetime_ms("2026-10-12", "09:00:00"))
+            return row
+
+    _use_q2_observation_times(monkeypatch, ("09:25:00", "09:32:05", "09:40:00"))
+    result = _node(
+        tmp_path, PartialThenReadyClient(), tmp_path / "ledger.jsonl",
+        ("09:25:00", "09:32:05", "09:40:00"),
+        lambda day, hms: local_datetime_ms(day, hms),
+    )
+    opening = json.loads((tmp_path / "node" / "timer_OPENING_0932.json").read_text())
+    assert result["timers_acknowledged"] == ["AUCTION_0926", "OPENING_0932"]
+    assert opening["cutoff_fidelity"] == "AFTER_CUTOFF_CURRENT_STATE"
+    assert opening["executed_at_ms"] == local_datetime_ms("2026-10-13", "09:40:00")
+    assert opening["executed_poll"] == 2
+    assert opening["q2_readiness"] == "READY"
+
+
+def test_opening_ready_on_first_cutoff_poll_is_at_cutoff(tmp_path, monkeypatch):
+    _use_q2_observation_times(monkeypatch, ("09:25:00", "09:26:05", "09:32:05"))
+    _node(
+        tmp_path, FreshAuctionClient(("09:25:00", "09:26:00", "09:32:00")),
+        tmp_path / "ledger.jsonl", ("09:25:00", "09:26:05", "09:32:05"),
+        lambda day, hms: local_datetime_ms(day, hms),
+    )
+    opening = json.loads((tmp_path / "node" / "timer_OPENING_0932.json").read_text())
+    assert opening["cutoff_fidelity"] == "AT_CUTOFF"
+    assert opening["executed_at_ms"] == local_datetime_ms("2026-10-13", "09:32:05")
+    assert opening["executed_poll"] == 2
+    assert opening["q2_readiness"] == "READY"
+
+
 def test_opening_timer_waits_for_q2_when_snapshot_is_empty(tmp_path, monkeypatch):
     class EmptyQ2Client(StrictAuctionClient):
         def smembers(self, key):
@@ -187,6 +226,8 @@ def test_opening_timer_waits_for_q2_when_snapshot_is_empty(tmp_path, monkeypatch
     )
     node_run = json.loads((tmp_path / "node" / "node_run.json").read_text())
     assert node_run["timers_acknowledged"] == ["AUCTION_0926"]
+    assert node_run["status"] == "DONE_WITH_PENDING"
+    assert node_run["timers_pending"] == ["OPENING_0932"]
     assert "OPENING_0932" not in ledger.read_text()
     assert not (tmp_path / "node" / "timer_OPENING_0932.json").exists()
 
