@@ -98,6 +98,11 @@ from .stock_plate_assignment import (
     StockPlateAssignment,
     build_stock_plate_assignments,
 )
+from .wencai_fallback import (
+    FallbackResult,
+    fetch_auction_fallback,
+    fetch_limit_up_fallback,
+)
 from .previous_day_limit_structure import (
     PREVIOUS_DAY_LIMIT_STRUCTURE_CONTRACT_VERSION,
     PreviousDayLimitStructureFact,
@@ -497,6 +502,9 @@ from .auction_projection import (
 )
 
 __all__ = [
+    "FallbackResult",
+    "fetch_auction_fallback",
+    "fetch_limit_up_fallback",
     "MEMBERSHIP_POLICY_LEGACY_V1",
     "MEMBERSHIP_POLICY_USER_PRIORITY_V1",
     "PlateHierarchy",
