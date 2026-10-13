@@ -145,12 +145,12 @@ def _final_tick_rows(*, when: str = "09:26:33", anchor=None, phase=0, volume=120
     }
 
 
-def test_phase_zero_final_snapshot_recovers_missing_0925_anchor_only_when_enabled():
+def test_phase_zero_final_snapshot_recovers_by_default_and_can_be_disabled():
     at = local_datetime_ms("2026-10-09", "09:26:40")
-    off = AuctionAnchorSessionV1("2026-10-09", ("000001",))
-    on = AuctionAnchorSessionV1(
-        "2026-10-09", ("000001",), recover_final_from_phase_zero=True
+    off = AuctionAnchorSessionV1(
+        "2026-10-09", ("000001",), recover_final_from_phase_zero=False
     )
+    on = AuctionAnchorSessionV1("2026-10-09", ("000001",))
     rows = _final_tick_rows()
     assert off.observe("0925", rows, evaluation_time_ms=at).available_anchor_symbols == ()
     revision = on.observe("0925", rows, evaluation_time_ms=at)
@@ -158,6 +158,7 @@ def test_phase_zero_final_snapshot_recovers_missing_0925_anchor_only_when_enable
     recovered = on.phase_zero_recoveries["000001"]
     assert recovered["price_milli"] == 12_950
     assert recovered["source_time_ms"] == local_datetime_ms("2026-10-09", "09:26:33")
+    assert recovered["used"] is True
 
 
 def test_phase_zero_recovery_ignores_other_phases_zero_volume_and_existing_anchor():

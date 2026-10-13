@@ -40,6 +40,11 @@ class AuctionSessionObservationV1:
 class AuctionAnchorSessionV1:
     """Shared auction-anchor revision and timer logic for any Q2 source.
 
+    Late ph==0 final snapshots are enabled by default; pass
+    ``recover_final_from_phase_zero=False`` to disable recovery. The supported
+    window is [09:25:00,09:30:00), based on recovered-price/open checks for
+    2026-10-09 (335/335) and 2026-09-23 (140/140).
+
     ``rows`` must already be a symbol-keyed mapping of canonical Q2 row
     mappings. Source adapters may provide Q2Frame-accumulated state or a
     read-only Redis Q2 projection; this class does not distinguish or fetch
@@ -54,7 +59,7 @@ class AuctionAnchorSessionV1:
         *,
         policies: Optional[Mapping[str, AuctionTimingPolicyV1]] = None,
         signal_prefix: str = "q2frame",
-        recover_final_from_phase_zero: bool = False,
+        recover_final_from_phase_zero: bool = True,
     ) -> None:
         if not isinstance(signal_prefix, str) or not signal_prefix.strip():
             raise ValueError("signal_prefix must be a non-empty string")
@@ -66,10 +71,8 @@ class AuctionAnchorSessionV1:
         )
         self.timeline = AuctionTimeline(trade_date, self.policies)
         self.signal_prefix = signal_prefix.strip()
-        # Opt-in: the Shenzhen final-match snapshot (ph==0, vol>0) can arrive
-        # long after 09:25:00 (observed 09:26:00-09:26:57), outside the
-        # producer's a25 window.  When enabled, such a snapshot is remembered
-        # per symbol and used as the 0925 anchor only where a25 is missing.
+        # Shenzhen final-match snapshots (ph==0, vol>0) may arrive after the
+        # producer's a25 window. Use them only where a25 is missing.
         self.recover_final_from_phase_zero = bool(recover_final_from_phase_zero)
         self._phase_zero_final: dict = {}
         self._final_lower_ms = local_datetime_ms(trade_date, "09:25:00")

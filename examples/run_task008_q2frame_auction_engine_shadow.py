@@ -1084,7 +1084,7 @@ def _run_once(
     q2frame_source_layer: str = Q2FRAME_EVENT_REPLAY_LAYER,
     q2frame_signal_prefix: str = "t1-v2-q2frame-source",
     observe_persistent_anchors_on_late_start: bool = False,
-    recover_final_from_phase_zero: bool = False,
+    recover_final_from_phase_zero: bool = True,
 ) -> dict[str, Any]:
     symbols = tuple(inventory["symbols"])
     policies = {tag: AuctionTimingPolicyV1.default(tag) for tag in AUCTION_TAGS}
@@ -2182,6 +2182,7 @@ def _run_once(
         raise RuntimeError("OPENING_0932 did not produce an Engine snapshot")
     final_state = engine._reducer.state
     result = {
+        "recover_final_from_phase_zero": bool(recover_final_from_phase_zero),
         "anchor_evidence": anchor_evidence,
         "auction_revision_history_by_tag": auction_revision_history_by_tag,
         "opening_evidence": opening_evidence,
@@ -2252,7 +2253,7 @@ def run_q2frame_auction_engine_shadow(
     q2frame_source_layer: str = Q2FRAME_EVENT_REPLAY_LAYER,
     q2frame_signal_prefix: str = "t1-v2-q2frame-source",
     observe_persistent_anchors_on_late_start: bool = False,
-    recover_final_from_phase_zero: bool = False,
+    recover_final_from_phase_zero: bool = True,
     run_mode: str = "REAL_T1V2_Q2FRAME_EVENT_TIME_REPLAY",
 ) -> dict[str, Any]:
     """Run a pinned Q2Frame auction replay, optionally through opening, twice."""
@@ -2667,7 +2668,7 @@ def run_q2frame_auction_engine_shadow(
     return result
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--q2frame", type=Path, required=True)
     parser.add_argument("--trade-date", required=True)
@@ -2681,8 +2682,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--recover-final-from-phase-zero",
-        action="store_true",
-        help="opt-in: use a late ph==0 final-match snapshot as a25 when a25 is missing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="use a late ph==0 final-match snapshot as a25 when a25 is missing",
     )
     parser.add_argument(
         "--barrier-q2frame",
@@ -2741,6 +2743,11 @@ def main() -> int:
         help="expected SHA-256 for the optional auction-universe sidecar file",
     )
     parser.add_argument("--output", type=Path, required=True)
+    return parser
+
+
+def main() -> int:
+    parser = _build_parser()
     args = parser.parse_args()
     plate_amount_context = (
         json.loads(args.plate_amount_context.read_text(encoding="utf-8"))

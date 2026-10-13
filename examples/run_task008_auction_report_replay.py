@@ -38,7 +38,7 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trade-date", required=True)
     parser.add_argument("--q2frame", type=Path, required=True)
@@ -46,10 +46,14 @@ def main() -> int:
     parser.add_argument("--td-rows", type=Path, required=True)
     parser.add_argument("--plate-snapshot", type=Path, required=True)
     parser.add_argument("--pool", type=Path, required=True)
-    parser.add_argument("--recover-final-from-phase-zero", action="store_true")
+    parser.add_argument("--recover-final-from-phase-zero", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--event-id", default="AUCTION_0925")
     parser.add_argument("--out-dir", type=Path, required=True)
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = _build_parser().parse_args()
 
     cutoff = int(datetime.fromisoformat(f"{args.trade_date}T{args.cutoff}").replace(
         tzinfo=ZoneInfo("Asia/Shanghai")).timestamp() * 1000)

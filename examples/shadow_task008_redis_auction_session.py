@@ -352,7 +352,7 @@ def run_shadow(
     live_client: Any | None = None, trade_date: str | None = None,
     poll_seconds: float = 1.0, max_polls: int = 1,
     confirm_read_only: bool = False,
-    recover_final_from_phase_zero: bool = False,
+    recover_final_from_phase_zero: bool = True,
     pool_path: Path | None = None,
     read_times: Sequence[str] | None = None,
     live_pool_previous_date: str | None = None,
@@ -417,7 +417,7 @@ def _run_shadow_impl(
     live_client: Any | None = None, trade_date: str | None = None,
     poll_seconds: float = 1.0, max_polls: int = 1,
     confirm_read_only: bool = False,
-    recover_final_from_phase_zero: bool = False,
+    recover_final_from_phase_zero: bool = True,
     pool_path: Path | None = None,
     read_times: Sequence[str] | None = None,
     live_pool_previous_date: str | None = None,
@@ -551,6 +551,9 @@ def _run_shadow_impl(
                     first_read=first_read, wall_started=wall_started,
                     wall_completed=wall_completed,
                 ):
+                    event["recover_final_from_phase_zero"] = bool(
+                        recover_final_from_phase_zero
+                    )
                     if recover_final_from_phase_zero:
                         event["phase_zero_recovered_count"] = len(
                             session.phase_zero_recoveries
@@ -607,16 +610,10 @@ def _run_shadow_impl(
         "poll_seconds": poll_seconds,
         "max_polls": max_polls,
         "event_count": max_polls * len(ANCHOR_FIELDS),
-        **(
-            {
-                "recover_final_from_phase_zero": True,
-                "phase_zero_recovered_count": len(session.phase_zero_recoveries)
-                if session is not None
-                else 0,
-            }
-            if recover_final_from_phase_zero
-            else {}
-        ),
+        "recover_final_from_phase_zero": bool(recover_final_from_phase_zero),
+        "phase_zero_recovered_count": len(session.phase_zero_recoveries)
+        if session is not None and recover_final_from_phase_zero
+        else 0,
     }
     (out_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
@@ -634,7 +631,7 @@ def _parse_times(text: str | None) -> list[str] | None:
     return times
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", choices=("capture", "live"), required=True)
     parser.add_argument("--capture", type=Path)
@@ -645,8 +642,9 @@ def main() -> int:
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("--max-polls", type=int, default=1)
     parser.add_argument("--confirm-read-only", action="store_true")
-    parser.add_argument("--recover-final-from-phase-zero", action="store_true",
-                        help="opt-in: use a late ph==0 final-match snapshot as the 0925 anchor when a25 is missing")
+    parser.add_argument("--recover-final-from-phase-zero", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="use a late ph==0 final-match snapshot as the 0925 anchor when a25 is missing")
     parser.add_argument("--read-times",
                         help="live only: comma-separated local HH:MM:SS read times in one session "
                         "(replaces --max-polls/--poll-seconds)")
@@ -661,6 +659,11 @@ def main() -> int:
                         "through the live input layer instead of --pool")
     parser.add_argument("--pool", type=Path,
                         help="sealed previous-day limit pool JSON; enables a report_NNN.txt per poll")
+    return parser
+
+
+def main() -> int:
+    parser = _build_parser()
     args = parser.parse_args()
     if args.capture is not None and args.capture_dir is not None:
         parser.error("--capture and --capture-dir are mutually exclusive")
