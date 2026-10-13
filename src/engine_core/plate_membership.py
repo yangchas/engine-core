@@ -19,6 +19,7 @@ from .plate_rules import (
     order_runtime_theme_candidates,
     split_plate_tokens,
 )
+from .plate_kind import classify_plate_kind
 
 MEMBERSHIP_POLICY_USER_PRIORITY_V1 = "USER_PRIORITY_V1"
 MEMBERSHIP_POLICY_LEGACY_V1 = "LEGACY_V1"
@@ -35,6 +36,7 @@ class PlateMembership:
     hard_generic: bool
     ancestors: tuple[str, ...] = ()
     flags: tuple[str, ...] = ()
+    kind: str = "THEME"
 
 
 @dataclass(frozen=True)
@@ -69,7 +71,7 @@ def _membership_payload(
                 {
                     "plate": row.plate, "tier": row.tier, "rank_in_stock": row.rank_in_stock,
                     "source": row.source, "generic": row.generic, "hard_generic": row.hard_generic,
-                    "ancestors": list(row.ancestors), "flags": list(row.flags),
+                    "ancestors": list(row.ancestors), "flags": list(row.flags), "kind": row.kind,
                 }
                 for row in rows
             ]
@@ -159,11 +161,25 @@ def build_memberships(
                 entries[name]["sources"].append("hot_plate")
 
         names = list(entries)
-        # Specific plates rank before generic labels. Within each class the tier
-        # and source encounter order remain stable.
-        ordered = sorted(names, key=lambda name: (is_generic_plate(name), entries[name]["tier"], names.index(name)))
-        if ordered and all(is_generic_plate(name) for name in ordered):
-            ordered = sorted(names, key=lambda name: (entries[name]["tier"], names.index(name)))
+        if policy == MEMBERSHIP_POLICY_USER_PRIORITY_V1:
+            # User-priority ranks semantic plate kinds before source tier. Keep
+            # the first source encounter stable within each kind and tier.
+            kind_order = {"THEME": 0, "GENERIC": 1, "EVENT": 2, "NOISE": 3}
+            ordered = sorted(
+                names,
+                key=lambda name: (
+                    kind_order[classify_plate_kind(name)], entries[name]["tier"], names.index(name),
+                ),
+            )
+        else:
+            # Keep the legacy fallback order byte-for-byte equivalent to the
+            # pre-kind implementation; the dedicated legacy order is applied
+            # below and retains its historical weights.
+            ordered = sorted(
+                names, key=lambda name: (is_generic_plate(name), entries[name]["tier"], names.index(name)),
+            )
+            if ordered and all(is_generic_plate(name) for name in ordered):
+                ordered = sorted(names, key=lambda name: (entries[name]["tier"], names.index(name)))
 
         if policy == MEMBERSHIP_POLICY_LEGACY_V1:
             legacy_order = _legacy_theme_names(pool, reasons, static)
@@ -184,6 +200,7 @@ def build_memberships(
                 symbol=symbol, plate=name, tier=entries[name]["tier"], rank_in_stock=index,
                 source=",".join(entries[name]["sources"]), generic=is_generic_plate(name),
                 hard_generic=is_hard_generic_plate(name),
+                kind=classify_plate_kind(name),
             )
             for index, name in enumerate(ordered, start=1)
         )

@@ -52,6 +52,32 @@ def test_generic_members_rank_after_specific_members():
     assert rows[0].rank_in_stock == 1
 
 
+def test_user_priority_orders_by_kind_before_source_tier_and_keeps_events():
+    result = build_memberships(
+        symbols=["s"], pool_plate_by_symbol={"s": "昨日涨停"},
+        reason_candidates_by_symbol={"s": ["中报增长"]},
+        static_themes_by_symbol={"s": ["基础建设"]},
+    )
+    rows = result.by_symbol["s"]
+    assert [(row.plate, row.kind, row.rank_in_stock) for row in rows] == [
+        ("基础建设", "THEME", 1),
+        ("昨日涨停", "GENERIC", 2),
+        ("中报增长", "EVENT", 3),
+    ]
+
+
+def test_user_priority_allows_event_primary_when_no_theme_or_generic_exists():
+    result = build_memberships(
+        symbols=["s"], pool_plate_by_symbol={},
+        reason_candidates_by_symbol={"s": ["中报增长", "合同"]},
+        static_themes_by_symbol={},
+    )
+    rows = result.by_symbol["s"]
+    assert rows[0].plate == "中报增长"
+    assert rows[0].kind == "EVENT"
+    assert rows[0].rank_in_stock == 1
+
+
 def test_legacy_weights_match_old_two_theme_weighting():
     result = build_memberships(
         symbols=["s"], pool_plate_by_symbol={},
