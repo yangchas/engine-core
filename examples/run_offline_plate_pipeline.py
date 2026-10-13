@@ -258,8 +258,10 @@ def _load_reasons(path: Path | None) -> dict[str, list[dict[str, Any]]]:
         return {}
     raw = _read_json(path)
     if isinstance(raw, Mapping):
-        return {str(symbol): list(rows) if isinstance(rows, list) else [rows]
-                for symbol, rows in raw.items()}
+        def _rows(value: Any) -> list[dict[str, Any]]:
+            items = value if isinstance(value, list) else [value]
+            return [dict(i) if isinstance(i, Mapping) else {"reason": str(i)} for i in items]
+        return {str(symbol): _rows(rows) for symbol, rows in raw.items()}
     result: dict[str, list[dict[str, Any]]] = {}
     for row in raw:
         if not isinstance(row, Mapping):
@@ -304,11 +306,14 @@ def _read_td( host: str, database: str, symbols: Sequence[str], kline_start: str
             if not re.fullmatch(r"\d{6}", symbol):
                 continue
             table = "d_" + symbol
-            cursor.execute(
-                f"SELECT ts, open, high, low, close, volume, amount, turnover, pct_chg FROM {table} "
-                f"WHERE ts >= '{kline_start}' AND ts <= '{kline_end}' ORDER BY ts"
-            )
-            klines[symbol] = list(cursor.fetchall())
+            try:
+                cursor.execute(
+                    f"SELECT ts, open, high, low, close, volume, amount, turnover, pct_chg FROM {table} "
+                    f"WHERE ts >= '{kline_start}' AND ts <= '{kline_end}' ORDER BY ts"
+                )
+                klines[symbol] = list(cursor.fetchall())
+            except Exception:  # missing per-symbol table (e.g. new listing): leave absent, never zero-fill
+                continue
         auction: dict[str, dict[str, dict[str, Any]]] = {}
         previous: dict[str, dict[str, dict[str, Any]]] = {}
         for day in auction_dates:
