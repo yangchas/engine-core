@@ -177,6 +177,17 @@ from .theme_weights import (
     resolve_legacy_theme_weights,
     split_theme_tokens,
 )
+from .plate_membership import (
+    MEMBERSHIP_POLICY_LEGACY_V1,
+    MEMBERSHIP_POLICY_USER_PRIORITY_V1,
+    PlateHierarchy,
+    PlateMembership,
+    StockPlateMemberships,
+    apply_hierarchy,
+    build_memberships,
+    default_alias_hierarchy,
+    members_of,
+)
 from .auction import (
     AUCTION_0925_FINALIZATION_DELAY_MS,
     classify_td_auction_inactivity,
@@ -461,6 +472,15 @@ from .auction_projection import (
 )
 
 __all__ = [
+    "MEMBERSHIP_POLICY_LEGACY_V1",
+    "MEMBERSHIP_POLICY_USER_PRIORITY_V1",
+    "PlateHierarchy",
+    "PlateMembership",
+    "StockPlateMemberships",
+    "apply_hierarchy",
+    "build_memberships",
+    "default_alias_hierarchy",
+    "members_of",
     "BreadthFacts",
     "CALENDAR_CONTRACT_VERSION",
     "CalendarCoverageError",
