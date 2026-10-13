@@ -70,6 +70,11 @@ from .limit_up_pool_derivation import (
     LimitUpPoolDerivation,
     derive_limit_up_pool_from_daily_klines,
 )
+from .first_board_reason_requests import (
+    FIRST_BOARD_REASON_REQUESTS_CONTRACT_VERSION,
+    ReasonRequestPlan,
+    plan_first_board_reason_requests,
+)
 from .plate_rules import (
     PLATE_RULES_VERSION,
     build_plate_candidates_from_reason,
