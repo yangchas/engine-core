@@ -10,8 +10,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+import time
 from collections import Counter
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from engine_core import LiveInputReader  # noqa: E402
 
 
 def main() -> int:
@@ -21,21 +27,24 @@ def main() -> int:
     args = parser.parse_args()
     import redis  # type: ignore[import-not-found]
 
-    key = "market:auction:anchor:" + args.trade_date.replace("-", "")
     client = redis.Redis(host=os.environ.get("REDIS_HOST", "127.0.0.1"),
                          port=int(os.environ.get("REDIS_PORT", "6379")),
                          db=int(os.environ.get("REDIS_DB", "0")),
                          password=os.environ.get("REDIS_PASSWORD"),
                          socket_timeout=5, socket_connect_timeout=5)
+    reader = LiveInputReader(client, now_ms=lambda: int(time.time() * 1000))
     try:
-        raw = client.get(key)
-        ttl = client.ttl(key)
+        read = reader.read("anchor_archive", trade_date=args.trade_date)
     finally:
         client.close()
+    key, ttl = read.key, read.ttl_seconds
+    if read.redis_type != "none" and not read.scan_consistent:
+        raise ValueError("anchor archive is not valid JSON")
+    raw = None if read.redis_type == "none" else True
     out = {"contract": "RealAuctionAnchorArchiveProbeV1", "key": key, "ttl_seconds": ttl,
            "present": raw is not None}
     if raw is not None:
-        payload = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+        payload = read.payload
         if isinstance(payload, dict) and isinstance(payload.get("rows"), list):
             rows = payload["rows"]
         elif isinstance(payload, dict):  # symbol -> row mapping (legacy archive)

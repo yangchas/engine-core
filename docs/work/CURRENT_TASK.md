@@ -1,5 +1,16 @@
 # Current Task
 
+## 2026-10-13 legacy probes migrated to the live input layer
+
+`run_real_hot_plates`, `run_real_previous_day_limit_pool`,
+`run_real_symbol_cache`, `run_real_plate_mapping` and
+`run_real_auction_anchor_archive` now read through `LiveInputReader`
+(`probe_rows_and_summary` reproduces the old `redis` summary shape). Old vs new
+outputs were compared on the same live keys (2026-10-13): identical apart from
+timestamps for all 6 runs (hot_plates, pool, plate mapping, anchor archive,
+hot_rank, limit_truth-absent). `run_real_cache_inventory` stays as is (generic
+arbitrary-key inventory, not a named input).
+
 ## 2026-10-13 live input layer wired, per-tag summaries
 
 - `LiveInputCache(max_age_ms=...)`: a preserved read older than its bound is

@@ -302,6 +302,7 @@ from .theme_auction_delta_rows import (
 from .live_input_adapters import (
     json_rows_from_state,
     plate_mapping_from_states,
+    probe_rows_and_summary,
     previous_day_limit_pool_from_state,
 )
 from .live_inputs import (
@@ -688,6 +689,7 @@ __all__ = [
     "LiveInputCache",
     "json_rows_from_state",
     "plate_mapping_from_states",
+    "probe_rows_and_summary",
     "previous_day_limit_pool_from_state",
     "LiveInputRead",
     "LiveInputReader",

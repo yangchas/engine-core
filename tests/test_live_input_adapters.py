@@ -134,3 +134,21 @@ def test_no_rejected_rows_keeps_exact_counts_and_hash_inputs_unchanged():
     structure = build_previous_day_limit_structure(pool)
     assert structure.excluded_row_count == 0
     assert structure.as_mapping()["counts_are_lower_bound"] is False
+
+
+def test_probe_summary_matches_legacy_probe_shape_and_keeps_rows_as_stored():
+    from engine_core.live_input_adapters import probe_rows_and_summary
+
+    key = "cache:hot_plates:2026-10-13"
+    reader = LiveInputReader(StrictClient(hashes={key: {
+        b"AI": b'{"plate_name":"AI","rank":1}', b"bad": b"[1]", b"broken": b"{x",
+    }}), now_ms=lambda: 1)
+    rows, summary = probe_rows_and_summary(reader.read("hot_plates", trade_date="2026-10-13"))
+    assert rows == [{"plate_name": "AI", "rank": 1}]  # no symbol injected
+    assert summary["decode_errors"] == 2 and summary["row_count"] == 1
+    assert summary["hlen_before_scan"] == summary["hlen_after_scan"] == 3
+    assert summary["scan_item_count"] == 3 and summary["scan_consistent"] is True
+    assert len(summary["payload_value_sha256"]) == 64
+    none_rows, none_summary = probe_rows_and_summary(
+        LiveInputReader(StrictClient(), now_ms=lambda: 1).read("hot_plates", trade_date="2026-10-13"))
+    assert none_rows == [] and none_summary["redis_type"] == "none" and none_summary["meta"] is None

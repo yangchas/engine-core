@@ -60,7 +60,7 @@ def test_hash_read_keys_and_only_read_ops():
     assert read.key == "cache:hot_rank:2026-10-13"
     assert read.rows == (("600000", '{"rank":1}'),)
     assert read.usable
-    assert set(client.calls) <= {"type", "hlen", "hscan_iter"}
+    assert set(client.calls) <= {"type", "hlen", "hscan_iter", "get"}
 
 
 def test_pool_uses_previous_trade_date_and_requires_it():
@@ -122,3 +122,15 @@ def test_preserved_read_expires_after_max_age():
     late = cache.refresh(_reader(StrictClient(), 1500).read("hot_rank", trade_date="2026-10-13"))
     assert soon.status == PRESERVED_PREVIOUS
     assert late.status == EXPIRED_PREVIOUS and late.read is not None
+
+
+def test_meta_key_is_read_for_hash_inputs_only_when_hash_and_decoded():
+    key = "cache:hot_plates:2026-10-13"
+    meta_key = "cache:hot_plates_meta:2026-10-13"
+    ok = StrictClient(hashes={key: {b"a": b"{}"}}, strings={meta_key: '{"row_count": 1}'})
+    read = _reader(ok).read("hot_plates", trade_date="2026-10-13")
+    assert read.meta == {"row_count": 1} and read.meta_key == meta_key
+    bad = StrictClient(hashes={key: {b"a": b"{}"}}, strings={meta_key: "{nope"})
+    assert _reader(bad).read("hot_plates", trade_date="2026-10-13").meta == {"valid_json": False}
+    absent = StrictClient(strings={meta_key: '{"row_count": 1}'})  # key itself not a hash
+    assert _reader(absent).read("hot_plates", trade_date="2026-10-13").meta is None

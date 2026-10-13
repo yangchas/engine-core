@@ -8,10 +8,10 @@ source timestamp or universe denominator is invented.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -19,6 +19,8 @@ from typing import Any, Iterable, Mapping
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core import (
+    LiveInputReader,
+    probe_rows_and_summary,
     DataContext,
     DataRequest,
     PreviousDayLimitPoolFunction,
@@ -40,65 +42,12 @@ def _read_redis_rows(
     client: Any,
     previous_trade_date: str,
 ) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
-    key = "cache:yest_limit_pool:" + previous_trade_date
-    meta_key = "cache:yest_limit_pool_meta:" + previous_trade_date
-    raw_key_type = client.type(key)
-    key_type = (
-        raw_key_type.decode("utf-8")
-        if isinstance(raw_key_type, bytes)
-        else str(raw_key_type)
+    reader = LiveInputReader(client, now_ms=lambda: int(time.time() * 1000))
+    read = reader.read(
+        "yest_limit_pool", trade_date=previous_trade_date,
+        previous_trade_date=previous_trade_date,
     )
-    if key_type != "hash":
-        return [], {
-            "key": key,
-            "meta_key": meta_key,
-            "redis_type": key_type,
-            "row_count": 0,
-            "scan_consistent": True,
-            "meta": None,
-        }
-    hlen_before = int(client.hlen(key))
-    raw_items = list(client.hscan_iter(key))
-    hlen_after = int(client.hlen(key))
-    rows: list[Mapping[str, Any]] = []
-    payload_hash = hashlib.sha256()
-    decode_errors = 0
-    for field, raw in sorted(raw_items, key=lambda item: str(item[0])):
-        field_text = field.decode("utf-8") if isinstance(field, bytes) else str(field)
-        raw_text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-        payload_hash.update(field_text.encode("utf-8"))
-        payload_hash.update(b"\0")
-        payload_hash.update(raw_text.encode("utf-8"))
-        payload_hash.update(b"\n")
-        try:
-            value = json.loads(raw_text)
-        except (TypeError, ValueError):
-            decode_errors += 1
-            continue
-        if isinstance(value, Mapping):
-            rows.append(value)
-        else:
-            decode_errors += 1
-    raw_meta = client.get(meta_key)
-    if isinstance(raw_meta, bytes):
-        raw_meta = raw_meta.decode("utf-8")
-    try:
-        meta = json.loads(raw_meta) if raw_meta else None
-    except (TypeError, ValueError):
-        meta = {"valid_json": False}
-    return rows, {
-        "key": key,
-        "meta_key": meta_key,
-        "redis_type": key_type,
-        "hlen_before_scan": hlen_before,
-        "hlen_after_scan": hlen_after,
-        "scan_item_count": len(raw_items),
-        "scan_consistent": hlen_before == hlen_after == len(raw_items),
-        "row_count": len(rows),
-        "decode_errors": decode_errors,
-        "payload_value_sha256": payload_hash.hexdigest(),
-        "meta": meta,
-    }
+    return probe_rows_and_summary(read)
 
 
 def run_real_previous_day_limit_pool(

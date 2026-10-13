@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from .calendar import build_calendar_snapshot
 from .contracts import DataRequest, DataResult
 from .data import DataContext
-from .live_inputs import EXPIRED_PREVIOUS, MISSING, LiveInputState
+from .live_inputs import EXPIRED_PREVIOUS, MISSING, LiveInputRead, LiveInputState
 from .previous_day_limit_pool import (
     PreviousDayLimitPoolFunction,
     RedisPreviousDayLimitPoolProvider,
@@ -48,6 +48,44 @@ def json_rows_from_state(
             if keep_undecodable:
                 rows.append({"symbol": field, "_undecodable": True})
     return rows, errors
+
+
+def probe_rows_and_summary(
+    read: LiveInputRead,
+) -> Tuple[List[Mapping[str, Any]], Dict[str, Any]]:
+    """Rows (JSON objects, as stored) and the legacy probe ``redis`` summary.
+
+    Reproduces the summary shape the per-source probes always wrote
+    (``hlen_before_scan``, ``payload_value_sha256`` ...), so sealed outputs
+    from before and after the migration are comparable.  Rows are returned
+    exactly as stored: unlike ``json_rows_from_state`` no ``symbol`` is added.
+    """
+
+    key, meta_key = read.key, read.meta_key
+    if read.redis_type != "hash":
+        return [], {
+            "key": key, "meta_key": meta_key, "redis_type": read.redis_type,
+            "row_count": 0, "scan_consistent": True, "meta": None,
+        }
+    rows: List[Mapping[str, Any]] = []
+    errors = 0
+    for _field, raw in read.rows:
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError):
+            errors += 1
+            continue
+        if isinstance(value, Mapping):
+            rows.append(value)
+        else:
+            errors += 1
+    return rows, {
+        "key": key, "meta_key": meta_key, "redis_type": read.redis_type,
+        "hlen_before_scan": read.hlen_before, "hlen_after_scan": read.hlen_after,
+        "scan_item_count": len(read.rows), "scan_consistent": read.scan_consistent,
+        "row_count": len(rows), "decode_errors": errors,
+        "payload_value_sha256": read.content_sha256, "meta": read.meta,
+    }
 
 
 def previous_day_limit_pool_from_state(
@@ -133,6 +171,7 @@ def plate_mapping_from_states(
 
 __all__ = [
     "json_rows_from_state",
+    "probe_rows_and_summary",
     "plate_mapping_from_states",
     "previous_day_limit_pool_from_state",
 ]

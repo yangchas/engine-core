@@ -7,10 +7,10 @@ as observation metadata but is never promoted to historical availability.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -18,6 +18,8 @@ from typing import Any, Iterable, Mapping
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core import (
+    LiveInputReader,
+    probe_rows_and_summary,
     DataContext,
     DataRequest,
     HotPlatesFunction,
@@ -34,72 +36,12 @@ def _date(value: str) -> str:
     return value
 
 
-def _text(value: Any) -> str:
-    if isinstance(value, bytes):
-        return value.decode("utf-8")
-    return str(value)
-
-
 def _read_redis_rows(
     client: Any,
     trade_date: str,
 ) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
-    key = "cache:hot_plates:" + trade_date
-    meta_key = "cache:hot_plates_meta:" + trade_date
-    key_type = _text(client.type(key))
-    if key_type != "hash":
-        return [], {
-            "key": key,
-            "meta_key": meta_key,
-            "redis_type": key_type,
-            "row_count": 0,
-            "scan_consistent": True,
-            "meta": None,
-        }
-
-    hlen_before = int(client.hlen(key))
-    raw_items = list(client.hscan_iter(key))
-    hlen_after = int(client.hlen(key))
-    rows: list[Mapping[str, Any]] = []
-    payload_hash = hashlib.sha256()
-    decode_errors = 0
-    for field, raw in sorted(raw_items, key=lambda item: _text(item[0])):
-        field_text = _text(field)
-        raw_text = _text(raw)
-        payload_hash.update(field_text.encode("utf-8"))
-        payload_hash.update(b"\0")
-        payload_hash.update(raw_text.encode("utf-8"))
-        payload_hash.update(b"\n")
-        try:
-            value = json.loads(raw_text)
-        except (TypeError, ValueError):
-            decode_errors += 1
-            continue
-        if isinstance(value, Mapping):
-            rows.append(value)
-        else:
-            decode_errors += 1
-
-    raw_meta = client.get(meta_key)
-    if isinstance(raw_meta, bytes):
-        raw_meta = raw_meta.decode("utf-8")
-    try:
-        meta = json.loads(raw_meta) if raw_meta else None
-    except (TypeError, ValueError):
-        meta = {"valid_json": False}
-    return rows, {
-        "key": key,
-        "meta_key": meta_key,
-        "redis_type": key_type,
-        "hlen_before_scan": hlen_before,
-        "hlen_after_scan": hlen_after,
-        "scan_item_count": len(raw_items),
-        "scan_consistent": hlen_before == hlen_after == len(raw_items),
-        "row_count": len(rows),
-        "decode_errors": decode_errors,
-        "payload_value_sha256": payload_hash.hexdigest(),
-        "meta": meta,
-    }
+    reader = LiveInputReader(client, now_ms=lambda: int(time.time() * 1000))
+    return probe_rows_and_summary(reader.read("hot_plates", trade_date=trade_date))
 
 
 def run_real_hot_plates(

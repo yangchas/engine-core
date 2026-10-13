@@ -26,6 +26,13 @@ MISSING = "MISSING"
 PRESERVED_PREVIOUS = "PRESERVED_PREVIOUS"
 EXPIRED_PREVIOUS = "EXPIRED_PREVIOUS"
 
+_META_KEYS = {
+    "hot_plates": "cache:hot_plates_meta:{date}",
+    "hot_rank": "cache:hot_rank_meta:{date}",
+    "limit_truth": "cache:limit_truth_meta:{date}",
+    "yest_limit_pool": "cache:yest_limit_pool_meta:{previous_date}",
+}
+
 _HASH_INPUTS = {
     "hot_plates": "cache:hot_plates:{date}",
     "hot_rank": "cache:hot_rank:{date}",
@@ -54,6 +61,10 @@ class LiveInputRead:
     ttl_seconds: Optional[int]
     content_sha256: str
     observed_at_ms: int
+    hlen_before: Optional[int] = None
+    hlen_after: Optional[int] = None
+    meta_key: Optional[str] = None
+    meta: Any = None  # parsed JSON, {"valid_json": False} when undecodable, None when absent
 
     @property
     def is_empty(self) -> bool:
@@ -114,19 +125,35 @@ class LiveInputReader:
         key = self.key_for(name, trade_date=trade_date, previous_trade_date=previous_trade_date)
         if name == "anchor_archive":
             return self._read_json(name, key)
-        return self._read_hash(name, key)
+        meta_key = None
+        if name in _META_KEYS:
+            meta_key = _META_KEYS[name].format(date=trade_date, previous_date=previous_trade_date)
+        return self._read_hash(name, key, meta_key)
 
-    def _read_hash(self, name: str, key: str) -> LiveInputRead:
+    def _read_meta(self, meta_key: str) -> Any:
+        raw = self._client.get(meta_key)
+        if raw is None or raw == "" or raw == b"":
+            return None
+        try:
+            return json.loads(_text(raw))
+        except (TypeError, ValueError):
+            return {"valid_json": False}
+
+    def _read_hash(self, name: str, key: str, meta_key: Optional[str] = None) -> LiveInputRead:
         client = self._client
         redis_type = _text(client.type(key))
         rows: Tuple[Tuple[str, str], ...] = ()
         consistent = True
+        before = after = None
+        meta: Any = None
         if redis_type == "hash":
             before = int(client.hlen(key))
             items = sorted((_text(k), _text(v)) for k, v in client.hscan_iter(key))
             after = int(client.hlen(key))
             rows = tuple(items)
             consistent = before == after == len(items)
+            if meta_key is not None:
+                meta = self._read_meta(meta_key)
         digest = hashlib.sha256()
         for field, raw in rows:
             digest.update(field.encode() + b"\0" + raw.encode() + b"\n")
@@ -134,6 +161,7 @@ class LiveInputReader:
             name=name, key=key, kind="hash", redis_type=redis_type, rows=rows,
             payload=None, scan_consistent=consistent, ttl_seconds=None,
             content_sha256=digest.hexdigest(), observed_at_ms=self._now_ms(),
+            hlen_before=before, hlen_after=after, meta_key=meta_key, meta=meta,
         )
 
     def _read_json(self, name: str, key: str) -> LiveInputRead:

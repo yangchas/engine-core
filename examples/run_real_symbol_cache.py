@@ -7,20 +7,16 @@ Redis TYPE/HLEN/HSCAN/GET only.  The rows go through the pure
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from engine_core import normalize_symbol_cache_rows  # noqa: E402
-
-
-def _text(value):
-    return value.decode("utf-8") if isinstance(value, bytes) else str(value)
+from engine_core import LiveInputReader, normalize_symbol_cache_rows  # noqa: E402
 
 
 def main() -> int:
@@ -38,38 +34,29 @@ def main() -> int:
     client = redis.Redis(host=args.redis_host, port=args.redis_port, db=args.redis_db,
                          password=os.environ.get("REDIS_PASSWORD"),
                          socket_timeout=5, socket_connect_timeout=5)
-    key = "cache:%s:%s" % (args.dataset, args.trade_date)
-    meta_key = "cache:%s_meta:%s" % (args.dataset, args.trade_date)
-    rows, decode_errors = [], 0
-    digest = hashlib.sha256()
+    reader = LiveInputReader(client, now_ms=lambda: int(time.time() * 1000))
     try:
-        key_type = _text(client.type(key))
-        if key_type == "hash":
-            n_before = int(client.hlen(key))
-            items = sorted(client.hscan_iter(key), key=lambda kv: _text(kv[0]))
-            n_after = int(client.hlen(key))
-            for field, raw in items:
-                digest.update(_text(field).encode() + b"\0" + _text(raw).encode() + b"\n")
-                try:
-                    value = json.loads(_text(raw))
-                except ValueError:
-                    decode_errors += 1
-                    continue
-                if isinstance(value, dict):
-                    value.setdefault("symbol", _text(field))
-                    rows.append(value)
-                else:
-                    decode_errors += 1
-        else:
-            n_before = n_after = 0
-            items = []
-        raw_meta = client.get(meta_key)
+        read = reader.read(args.dataset, trade_date=args.trade_date)
     finally:
         client.close()
-    try:
-        meta = json.loads(_text(raw_meta)) if raw_meta else None
-    except ValueError:
-        meta = {"valid_json": False}
+    key, meta_key = read.key, read.meta_key
+    key_type = read.redis_type
+    n_before, n_after = read.hlen_before or 0, read.hlen_after or 0
+    items = read.rows
+    decode_errors = 0
+    rows = []
+    for field, raw in items:
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            decode_errors += 1
+            continue
+        if isinstance(value, dict):
+            value.setdefault("symbol", field)
+            rows.append(value)
+        else:
+            decode_errors += 1
+    meta = read.meta
     result = normalize_symbol_cache_rows(args.dataset, args.trade_date, rows)
     out = {
         "contract": "RealSymbolCacheProbeV1",
@@ -77,7 +64,7 @@ def main() -> int:
         "key": key, "meta_key": meta_key, "redis_type": key_type,
         "hlen_before": n_before, "hlen_after": n_after, "scan_items": len(items),
         "scan_consistent": n_before == n_after == len(items),
-        "decode_errors": decode_errors, "payload_value_sha256": digest.hexdigest(),
+        "decode_errors": decode_errors, "payload_value_sha256": read.content_sha256,
         "meta": meta, "result": result.as_trace(),
         "rows": list(result.rows),
         "side_effect_boundary": "Redis TYPE/HLEN/HSCAN/GET only; no write/repair",

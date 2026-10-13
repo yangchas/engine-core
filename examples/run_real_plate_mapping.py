@@ -11,19 +11,14 @@ import argparse
 import hashlib
 import json
 import os
+import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-def _text(value):
-    return value.decode("utf-8") if isinstance(value, bytes) else str(value)
-
-
-def _scan(client, key):
-    before = int(client.hlen(key))
-    items = sorted(((_text(k), _text(v)) for k, v in client.hscan_iter(key)))
-    after = int(client.hlen(key))
-    return items, before == after == len(items)
+from engine_core import LiveInputReader  # noqa: E402
 
 
 def main() -> int:
@@ -38,11 +33,14 @@ def main() -> int:
                          db=int(os.environ.get("REDIS_DB", "0")),
                          password=os.environ.get("REDIS_PASSWORD"),
                          socket_timeout=10, socket_connect_timeout=5)
+    reader = LiveInputReader(client, now_ms=lambda: int(time.time() * 1000))
     try:
-        plate_items, plate_ok = _scan(client, "market:stock_plate")
-        s2p_items, s2p_ok = _scan(client, "config:plate_mapping:s2p")
+        plate_read = reader.read("stock_plate", trade_date=args.trade_date)
+        s2p_read = reader.read("s2p", trade_date=args.trade_date)
     finally:
         client.close()
+    plate_items, plate_ok = list(plate_read.rows), plate_read.scan_consistent
+    s2p_items, s2p_ok = list(s2p_read.rows), s2p_read.scan_consistent
     s2p, bad = {}, 0
     for symbol, raw in s2p_items:
         try:
