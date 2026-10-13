@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))  # the node reuses examples.shadow_task008_redis_auction_session
 
 from engine_core.auction_node import run_auction_node  # noqa: E402
 
