@@ -347,6 +347,7 @@ def _capture_observed_at(capture: Mapping[str, Any]) -> datetime:
 
 def run_shadow(
     *, source: str, out_dir: Path, capture_path: Path | None = None,
+    capture_dir: Path | None = None,
     live_client: Any | None = None, trade_date: str | None = None,
     poll_seconds: float = 1.0, max_polls: int = 1,
     confirm_read_only: bool = False,
@@ -361,7 +362,7 @@ def run_shadow(
         raise RuntimeError("live source requires confirm_read_only=True")
     if source != "live":
         return _run_shadow_impl(
-            source=source, out_dir=out_dir, capture_path=capture_path,
+            source=source, out_dir=out_dir, capture_path=capture_path, capture_dir=capture_dir,
             live_client=live_client, trade_date=trade_date,
             poll_seconds=poll_seconds, max_polls=max_polls,
             confirm_read_only=confirm_read_only,
@@ -373,7 +374,7 @@ def run_shadow(
         )
     try:
         return _run_shadow_impl(
-            source=source, out_dir=out_dir, capture_path=capture_path,
+            source=source, out_dir=out_dir, capture_path=capture_path, capture_dir=capture_dir,
             live_client=live_client, trade_date=trade_date,
             poll_seconds=poll_seconds, max_polls=max_polls,
             confirm_read_only=confirm_read_only,
@@ -411,6 +412,7 @@ def _record_failure(out_dir: Path, exc: BaseException) -> None:
 
 def _run_shadow_impl(
     *, source: str, out_dir: Path, capture_path: Path | None = None,
+    capture_dir: Path | None = None,
     live_client: Any | None = None, trade_date: str | None = None,
     poll_seconds: float = 1.0, max_polls: int = 1,
     confirm_read_only: bool = False,
@@ -424,18 +426,36 @@ def _run_shadow_impl(
     if out_dir.exists():
         raise FileExistsError(f"output directory already exists: {out_dir}")
     capture_sha256 = None
+    capture_records: list[tuple[Path, Mapping[str, Any], str]] = []
     recorder = None
     if source == "capture":
-        if capture_path is None:
-            raise ValueError("capture source requires --capture")
-        capture_bytes = capture_path.read_bytes()
-        capture_sha256 = _sha256(capture_bytes)
-        capture = json.loads(capture_bytes)
-        if capture.get("contract_version") != "RedisQ2ReadCaptureV1":
-            raise ValueError("unsupported sealed Redis capture contract")
-        trade_date = str(capture.get("trade_date", ""))
-        client = _capture_client(capture)
-        capture_observed_at = _capture_observed_at(capture)
+        if (capture_path is None) == (capture_dir is None):
+            raise ValueError("capture source requires exactly one of --capture or --capture-dir")
+        if capture_dir is not None:
+            capture_paths = sorted(capture_dir.glob("capture_*.json"), key=lambda item: item.name)
+            if not capture_paths:
+                raise ValueError("capture directory contains no capture_*.json files")
+            for path in capture_paths:
+                content = path.read_bytes()
+                item = json.loads(content)
+                if item.get("contract_version") != "RedisQ2ReadCaptureV1":
+                    raise ValueError("unsupported sealed Redis capture contract")
+                capture_records.append((path, item, _sha256(content)))
+            trade_date = str(capture_records[0][1].get("trade_date", ""))
+            capture_sha256 = None
+            capture = capture_records[0][1]
+            client = _capture_client(capture)
+            capture_observed_at = _capture_observed_at(capture)
+            max_polls = len(capture_records)
+        else:
+            capture_bytes = capture_path.read_bytes()
+            capture_sha256 = _sha256(capture_bytes)
+            capture = json.loads(capture_bytes)
+            if capture.get("contract_version") != "RedisQ2ReadCaptureV1":
+                raise ValueError("unsupported sealed Redis capture contract")
+            trade_date = str(capture.get("trade_date", ""))
+            client = _capture_client(capture)
+            capture_observed_at = _capture_observed_at(capture)
     elif source == "live":
         if live_client is None:
             raise ValueError("live source requires a Redis client")
@@ -465,9 +485,13 @@ def _run_shadow_impl(
     first_read: set[str] = set()
     try:
         with events_path.open("w", encoding="utf-8") as events_file:
-            if read_times:
+            if read_times and source == "live":
                 max_polls = len(read_times)
             for poll in range(max_polls):
+                if capture_records:
+                    _, capture, _ = capture_records[poll]
+                    client = _capture_client(capture)
+                    capture_observed_at = _capture_observed_at(capture)
                 if read_times and source == "live":
                     _sleep_until_local(trade_date, read_times[poll])
                 wall_started = _aware_now()
@@ -480,13 +504,15 @@ def _run_shadow_impl(
                     sealed = {
                         "contract_version": "RedisQ2ReadCaptureV1",
                         "trade_date": trade_date,
-                        "read_completed_at": wall_completed.isoformat(),
+                        "read_completed_at": datetime.fromtimestamp(
+                            snapshot.envelope.observed_time_ms / 1000, tz=timezone.utc
+                        ).isoformat(),
                         "reads": recorder.drain(),
                     }
                     with (out_dir / ("capture_%03d.json" % poll)).open("x", encoding="utf-8") as sealed_file:
                         json.dump(sealed, sealed_file, ensure_ascii=False, sort_keys=True,
                                   separators=(",", ":"))
-                if session is None and source == "live":
+                if session is None and (source == "live" or capture_dir is not None):
                     record = _write_cold_start(out_dir, trade_date, snapshot.envelope.observed_time_ms)
                     needs_td = "TD_RECONSTRUCTION_REQUIRED" in (
                         record.get("theme_amount_delta_0924_0925"), record.get("opening_0932"))
@@ -549,6 +575,11 @@ def _run_shadow_impl(
         "source": source,
         "trade_date": trade_date,
         "capture_sha256": capture_sha256 if source == "capture" else "未记录凭据",
+        **(
+            {"captures": [{"file": path.name, "sha256": digest}
+                          for path, _, digest in capture_records]}
+            if capture_dir is not None else {}
+        ),
         "read_only": True,
         "redis_network_access": "NONE_SEALED_CAPTURE_ONLY" if source == "capture" else "LIVE_READS_ONLY",
         "poll_seconds": poll_seconds,
@@ -585,6 +616,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", choices=("capture", "live"), required=True)
     parser.add_argument("--capture", type=Path)
+    parser.add_argument("--capture-dir", type=Path,
+                        help="capture only: replay capture_NNN.json files in filename order as one session")
     parser.add_argument("--trade-date", help="required for live source (YYYY-MM-DD)")
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--poll-seconds", type=float, default=1.0)
@@ -607,6 +640,10 @@ def main() -> int:
     parser.add_argument("--pool", type=Path,
                         help="sealed previous-day limit pool JSON; enables a report_NNN.txt per poll")
     args = parser.parse_args()
+    if args.capture is not None and args.capture_dir is not None:
+        parser.error("--capture and --capture-dir are mutually exclusive")
+    if args.capture_dir is not None and args.source != "capture":
+        parser.error("--capture-dir requires --source capture")
     if args.poll_seconds < 0 or args.max_polls < 1:
         parser.error("poll-seconds must be non-negative and max-polls must be positive")
     live_client = None
@@ -630,7 +667,7 @@ def main() -> int:
                 socket_connect_timeout=5,
             )
             run_shadow(
-                source=args.source, capture_path=args.capture, out_dir=args.out_dir,
+                source=args.source, capture_path=args.capture, capture_dir=args.capture_dir, out_dir=args.out_dir,
                 live_client=live_client, trade_date=args.trade_date,
                 poll_seconds=args.poll_seconds,
                 max_polls=args.max_polls,
@@ -646,7 +683,7 @@ def main() -> int:
             raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None
         return 0
     run_shadow(
-        source=args.source, capture_path=args.capture, out_dir=args.out_dir,
+        source=args.source, capture_path=args.capture, capture_dir=args.capture_dir, out_dir=args.out_dir,
         live_client=live_client, trade_date=args.trade_date,
         poll_seconds=args.poll_seconds,
         max_polls=args.max_polls,

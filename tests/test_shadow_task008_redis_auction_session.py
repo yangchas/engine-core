@@ -299,6 +299,88 @@ def test_sealed_live_capture_replays_to_the_same_anchor_events(tmp_path: Path):
     assert anchors(tmp_path / "live") == anchors(tmp_path / "replay")
 
 
+def test_capture_dir_replays_three_live_polls_as_one_session(tmp_path: Path, monkeypatch):
+    from datetime import datetime
+    import examples.shadow_task008_redis_auction_session as module
+    from engine_core.clock import local_datetime_ms
+
+    date = "2026-10-09"
+    times = ["09:25:12", "09:25:40", "09:26:05"]
+    current = 0
+    base = {"px": "1000", "pc": "990", "amt": "0", "vol": "0", "am": "5000",
+            "br": "0", "ar": "0", "a20": "1000", "a24": "1000"}
+    states = [
+        {"000001": dict(base, ts=str(local_datetime_ms(date, "09:25:03")), ph="1", a25="0"),
+         "000002": dict(base, ts=str(local_datetime_ms(date, "09:25:03")), ph="1", a25="0")},
+        {"000001": dict(base, ts=str(local_datetime_ms(date, "09:25:03")), ph="1", a25="1000"),
+         "000002": dict(base, ts=str(local_datetime_ms(date, "09:25:03")), ph="1", a25="0")},
+        {"000001": dict(base, ts=str(local_datetime_ms(date, "09:25:03")), ph="1", a25="1000"),
+         "000002": dict(base, ts=str(local_datetime_ms(date, "09:26:03")), ph="0", a25="0",
+                         px="1012", amt="500000", vol="400")},
+    ]
+
+    class TimelineClient:
+        def smembers(self, key):
+            nonlocal current
+            if key == "q2:active:20261009":
+                result = ["000001", "000002"]
+                current += 1
+                return result
+            return []
+
+        def hgetall(self, key):
+            return states[min(current - 1, 2)].get(key.removeprefix("q2:"), {})
+
+        def close(self):
+            pass
+
+    def clock():
+        value = times[min(max(current - 1, 0), 2)]
+        from zoneinfo import ZoneInfo
+        return datetime.fromisoformat(f"{date}T{value}").replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+    monkeypatch.setattr(module, "_aware_now", clock)
+    adapter = module.RedisQ2ProjectionAdapter
+    class TimedAdapter(adapter):
+        def read(self, trade_date, observed_at=None, **kwargs):
+            return super().read(trade_date, observed_at=observed_at or clock(), **kwargs)
+    monkeypatch.setattr(module, "RedisQ2ProjectionAdapter", TimedAdapter)
+    live_dir = tmp_path / "live-many"
+    run_shadow(source="live", live_client=TimelineClient(), out_dir=live_dir,
+               trade_date=date, confirm_read_only=True, max_polls=3,
+               recover_final_from_phase_zero=True, seal_captures=True)
+
+    replay_dir = tmp_path / "replay-many"
+    run_shadow(source="capture", capture_dir=live_dir, out_dir=replay_dir,
+               recover_final_from_phase_zero=True)
+
+    def events(path):
+        rows = [json.loads(line) for line in (path / "shadow_events.jsonl").read_text().splitlines()]
+        for row in rows:
+            row.pop("wall_read_started", None)
+            row.pop("wall_read_completed", None)
+        return rows
+
+    assert events(live_dir) == events(replay_dir)
+    final = [row for row in events(replay_dir) if row["tag"] == "0925"][-1]
+    assert final["available_count"] == 2 and final["phase_zero_recovered_count"] == 1
+    manifest = json.loads((replay_dir / "manifest.json").read_text())
+    assert [item["file"] for item in manifest["captures"]] == [
+        "capture_000.json", "capture_001.json", "capture_002.json"]
+    assert all(len(item["sha256"]) == 64 for item in manifest["captures"])
+
+
+def test_capture_dir_rejects_empty_directory_and_conflicting_cli_args(tmp_path: Path, monkeypatch):
+    from examples.shadow_task008_redis_auction_session import main
+
+    with pytest.raises(ValueError, match="no capture_.*json"):
+        run_shadow(source="capture", capture_dir=tmp_path / "empty", out_dir=tmp_path / "empty-out")
+    import sys
+    monkeypatch.setattr(sys, "argv", ["shadow", "--source", "capture", "--capture", "a.json",
+                                      "--capture-dir", "captures", "--out-dir", "out"])
+    with pytest.raises(SystemExit):
+        main()
+
+
 def test_live_session_records_cold_start_assessment(tmp_path: Path, monkeypatch):
     import examples.shadow_task008_redis_auction_session as module
 
