@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+from dataclasses import replace
 from collections import Counter
 from datetime import date, timedelta
 from pathlib import Path
@@ -86,7 +87,7 @@ def _kaipan_reasons_for_day(
                     excluded_future += 1
                     continue
                 eligible.append((row_date, dict(raw)))
-            eligible.sort(key=lambda item: item[0], reverse=True)
+            eligible.sort(key=lambda item: (str(item[1].get("Type", "1")) != "0", -item[0].toordinal()))
             if eligible:
                 selected[str(symbol)] = [{
                     **row,
@@ -98,7 +99,59 @@ def _kaipan_reasons_for_day(
     return selected, {
         "used": used, "excluded_future": excluded_future, "excluded_no_date": excluded_no_date,
         "symbol_count_used": len(selected), "asof_enabled": dated_mode,
+        "type0": sum(str(row.get("Type", "")) == "0" for items in selected.values() for row in items),
+        "type1": sum(str(row.get("Type", "")) == "1" for items in selected.values() for row in items),
     }
+
+
+def _reason_pool_for_day(
+    rows: Mapping[str, Sequence[Mapping[str, Any]]], prior_day: str | None,
+    td_pool_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, PoolRow]:
+    if prior_day is None:
+        return {}
+    td_by_symbol = {str(row["symbol"]): row for row in td_pool_rows}
+    output: dict[str, PoolRow] = {}
+    for symbol, items in rows.items():
+        matching = [row for row in items if row.get("Date", row.get("date")) == prior_day
+                    and str(row.get("Type", row.get("type", ""))) == "0"]
+        if not matching:
+            continue
+        row = matching[0]
+        candidates = build_plate_candidates_from_reason(reason=str(row.get("Reason", row.get("reason", ""))))
+        td_row = td_by_symbol.get(str(symbol), {})
+        try:
+            lb_days = int(td_row["lb_days"]) if td_row.get("lb_days") is not None else None
+        except (TypeError, ValueError, OverflowError):
+            lb_days = None
+        output[str(symbol)] = PoolRow(candidates[0] if candidates else "", lb_days)
+    return output
+
+
+def _tag_reason_memberships(memberships: Any, reasons: Mapping[str, Sequence[Mapping[str, Any]]]) -> Any:
+    by_symbol: dict[str, tuple[Any, ...]] = {}
+    for symbol, rows in memberships.by_symbol.items():
+        candidates_by_type: dict[str, set[str]] = {"0": set(), "1": set()}
+        for reason in reasons.get(symbol, ()):
+            reason_type = "0" if str(reason.get("Type", "")) == "0" else "1"
+            candidates_by_type[reason_type].update(_reason_candidates({symbol: [reason]}).get(symbol, ()))
+        tagged = []
+        for row in rows:
+            sources = row.source.split(",")
+            if "reason" in sources:
+                if row.plate in candidates_by_type["0"]:
+                    label = "reason_limit_up"
+                elif row.plate in candidates_by_type["1"]:
+                    label = "reason_move"
+                else:
+                    tagged.append(row)
+                    continue
+                tagged.append(replace(row, source=",".join(label if source == "reason" else source
+                                                           for source in sources)))
+            else:
+                tagged.append(row)
+        by_symbol[symbol] = tuple(tagged)
+    return replace(memberships, by_symbol=by_symbol)
 
 
 def _kline_by_day(klines: Mapping[str, Sequence[Sequence[Any]]]) -> dict[str, dict[str, Sequence[Any]]]:
@@ -178,16 +231,25 @@ def build_day(
         td_pool_symbols = {str(row["symbol"]) for row in td_pool_rows}
         derivation_hash = derivation.content_hash
 
-    if kaipan_pool_rows is None:
+    reason_pool_rows = _reason_pool_for_day(kaipan_reasons_by_symbol or {}, prior_day, td_pool_rows)
+    if kaipan_pool_rows is not None:
+        selected_pool_rows = kaipan_pool_rows
+        pool_source = "kaipan_pool"
+    elif reason_pool_rows:
+        selected_pool_rows = reason_pool_rows
+        pool_source = "kaipan_reasons"
+    else:
+        selected_pool_rows = None
+
+    if selected_pool_rows is None:
         pool_symbols = td_pool_symbols
         pool_plates = {str(row["symbol"]): row.get("plate") for row in td_pool_rows if row.get("plate")}
         pool_lb_days = {str(row["symbol"]): row.get("lb_days") for row in td_pool_rows}
-        pool_source = "td_daily_kline"
+        pool_source = "td_kline"
     else:
-        pool_symbols = set(kaipan_pool_rows)
-        pool_plates = {symbol: row.plate for symbol, row in kaipan_pool_rows.items() if row.plate}
-        pool_lb_days = {symbol: row.lb_days for symbol, row in kaipan_pool_rows.items()}
-        pool_source = "kaipan"
+        pool_symbols = set(selected_pool_rows)
+        pool_plates = {symbol: row.plate for symbol, row in selected_pool_rows.items() if row.plate}
+        pool_lb_days = {symbol: row.lb_days for symbol, row in selected_pool_rows.items()}
 
     static_assignment = build_stock_plate_assignments(
         trade_date=trade_date,
@@ -243,16 +305,18 @@ def build_day(
     for child in default_hierarchy.parent_by_child:
         evidence_by_child.pop(child, None)
     hierarchy = PlateHierarchy(parent_by_child, source_by_child, evidence_by_child)
-    memberships = apply_hierarchy(build_memberships(
+    memberships = _tag_reason_memberships(build_memberships(
         symbols=symbols, pool_plate_by_symbol=pool_plates,
         reason_candidates_by_symbol=reason_candidates,
         static_themes_by_symbol=static_themes, policy=MEMBERSHIP_POLICY_USER_PRIORITY_V1,
-    ), hierarchy)
-    legacy = build_memberships(
+    ), kaipan_reason_rows)
+    memberships = apply_hierarchy(memberships, hierarchy)
+    legacy = _tag_reason_memberships(build_memberships(
         symbols=symbols, pool_plate_by_symbol=pool_plates,
         reason_candidates_by_symbol=reason_candidates,
         static_themes_by_symbol=static_themes, policy=MEMBERSHIP_POLICY_LEGACY_V1,
-    )
+    ), kaipan_reason_rows)
+    legacy = apply_hierarchy(legacy, hierarchy)
 
     facts: dict[str, StockFact] = {}
     missing = Counter()
@@ -296,13 +360,18 @@ def build_day(
         "missing_counts": dict(sorted(missing.items())),
         "skipped_kline_table_symbol_count": skipped_kline_table_symbol_count,
         "previous_kline_date": prior_day, "pool_derivation_hash": derivation_hash,
-        "pool_source": pool_source, "kaipan_pool_member_count": len(kaipan_pool_rows or {}),
+        "pool_source": pool_source,
+        "kaipan_pool_member_count": len(selected_pool_rows) if pool_source.startswith("kaipan_") else 0,
         "td_pool_member_difference_count": len(pool_symbols ^ td_pool_symbols),
+        "kaipan_reasons_only": len(set(reason_pool_rows) - td_pool_symbols),
+        "td_only": len(td_pool_symbols - set(reason_pool_rows)),
         "hierarchy_edge_count": len(kaipan_hierarchy.parent_by_child),
         "hierarchy_items_used": hierarchy_counts["used"],
         "hierarchy_items_excluded_future": hierarchy_counts["excluded_future"],
         "hierarchy_items_excluded_no_date": hierarchy_counts["excluded_no_date"],
         "reason_item_count_used": reason_counts["used"],
+        "reason_item_count_type0": reason_counts["type0"],
+        "reason_item_count_type1": reason_counts["type1"],
         "reason_item_count_excluded_future": reason_counts["excluded_future"],
         "reason_item_count_excluded_no_date": reason_counts["excluded_no_date"],
         "reason_symbol_count_used": reason_counts["symbol_count_used"],

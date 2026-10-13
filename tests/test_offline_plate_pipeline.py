@@ -99,7 +99,7 @@ def test_kaipan_pool_input_owns_tier_one_membership(tmp_path):
     value = result["days"][0][1]
     assert value["memberships"].by_symbol["000001"][0].plate == "Kaipan板"
     assert value["memberships"].by_symbol["000001"][0].tier == 1
-    assert value["quality"]["pool_source"] == "kaipan"
+    assert value["quality"]["pool_source"] == "kaipan_pool"
 
 
 def test_kaipan_reasons_are_filtered_as_of_and_recent_candidates_are_first():
@@ -113,7 +113,69 @@ def test_kaipan_reasons_are_filtered_as_of_and_recent_candidates_are_first():
     assert [row["reason"] for row in reasons["000001"]] == ["新板(新题材)", "旧板(旧题材)"]
     assert _reason_candidates(reasons)["000001"][:2] == ["新板", "旧板"]
     assert stats == {"used": 2, "excluded_future": 1, "excluded_no_date": 0,
-                     "symbol_count_used": 1, "asof_enabled": True}
+                     "symbol_count_used": 1, "asof_enabled": True, "type0": 0, "type1": 0}
+
+
+def test_kaipan_type_zero_candidates_precede_type_one_and_are_labeled():
+    result = build_day(
+        trade_date="2026-01-05", klines_by_symbol={},
+        auction_rows={"000001": {"px_milli": 10000}},
+        snapshot={"stock_plate": {}, "s2p": {}}, reasons_by_symbol={},
+        reason_asof_unknown=False, min_auction_rows=1,
+        kaipan_reasons_by_symbol={"000001": [
+            {"Date": "2026-01-05", "Type": "1", "Reason": "异动板(异动主题)"},
+            {"Date": "2026-01-04", "Type": "0", "Reason": "涨停板(涨停主题)"},
+        ]},
+    )
+    rows = result["memberships"].by_symbol["000001"]
+    reason_rows = [row for row in rows if row.tier == 2]
+    assert [row.plate for row in reason_rows][:2] == ["涨停板", "异动板"]
+    assert "reason_limit_up" in reason_rows[0].source
+    assert any("reason_move" in row.source for row in reason_rows)
+    assert result["quality"]["reason_item_count_type0"] == 1
+    assert result["quality"]["reason_item_count_type1"] == 1
+
+
+def test_previous_day_type_zero_reasons_rebuild_pool_when_no_pool_file():
+    from examples.run_offline_plate_pipeline import run_pipeline
+
+    result = run_pipeline(
+        dates=["2026-01-05"], klines_by_symbol={"000001": [
+            _kline("000001", "2026-01-02", 10, 0), _kline("000001", "2026-01-05", 10, 0)]},
+        auction_by_date={"2026-01-05": {"000001": {"px_milli": 10000}}},
+        snapshot={"stock_plate": {}, "s2p": {}}, reasons_by_symbol={},
+        start_date="2026-01-05", end_date="2026-01-05", min_auction_rows=1,
+        kaipan_reasons_by_symbol={"000001": [
+            {"Date": "2026-01-02", "Type": "0", "Reason": "新材料(固态电池)"},
+            {"Date": "2026-01-02", "Type": "1", "Reason": "异动板(异动题材)"},
+        ]},
+    )["days"][0][1]
+    assert result["quality"]["pool_source"] == "kaipan_reasons"
+    assert result["yest_pool_symbols"] == {"000001"}
+    assert result["yest_pool_members"]["000001"]["plate"] == "新材料"
+    assert result["yest_pool_members"]["000001"]["lb_days"] is None
+    assert result["quality"]["kaipan_reasons_only"] == 1
+    assert result["quality"]["td_only"] == 0
+
+
+def test_existing_kaipan_pool_file_wins_over_reason_reconstruction():
+    from engine_core.plate_hierarchy_kaipan import PoolRow
+    from examples.run_offline_plate_pipeline import run_pipeline
+
+    result = run_pipeline(
+        dates=["2026-01-05"], klines_by_symbol={"000001": [
+            _kline("000001", "2026-01-02", 10, 0), _kline("000001", "2026-01-05", 10, 0)]},
+        auction_by_date={"2026-01-05": {"000001": {"px_milli": 10000}}},
+        snapshot={"stock_plate": {}, "s2p": {}}, reasons_by_symbol={},
+        start_date="2026-01-05", end_date="2026-01-05", min_auction_rows=1,
+        kaipan_pool_by_day={"2026-01-02": {"000001": PoolRow("文件板", 2)}},
+        kaipan_reasons_by_symbol={"000002": [
+            {"Date": "2026-01-02", "Type": "0", "Reason": "原因板(原因题材)"},
+        ]},
+    )["days"][0][1]
+    assert result["quality"]["pool_source"] == "kaipan_pool"
+    assert result["yest_pool_symbols"] == {"000001"}
+    assert result["yest_pool_members"]["000001"]["plate"] == "文件板"
 
 
 def test_kaipan_reasons_without_valid_date_are_excluded_and_counted():
@@ -125,7 +187,7 @@ def test_kaipan_reasons_without_valid_date_are_excluded_and_counted():
     ]}, "2026-01-06", {"000001"})
     assert reasons == {}
     assert stats == {"used": 0, "excluded_future": 0, "excluded_no_date": 2,
-                     "symbol_count_used": 0, "asof_enabled": True}
+                     "symbol_count_used": 0, "asof_enabled": True, "type0": 0, "type1": 0}
 
 
 def test_kaipan_reason_asof_applies_to_symbols_outside_yesterday_pool(tmp_path):
