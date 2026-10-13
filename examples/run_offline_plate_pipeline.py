@@ -61,8 +61,8 @@ def _kline_by_day(klines: Mapping[str, Sequence[Sequence[Any]]]) -> dict[str, di
     output: dict[str, dict[str, Sequence[Any]]] = {}
     for symbol, rows in klines.items():
         for row in rows:
-            if len(row) == 9 and isinstance(row[0], str):
-                day = row[0][:10]
+            if len(row) == 9 and isinstance(row[0], (str, date)):  # taos returns datetime for ts
+                day = str(row[0].isoformat() if isinstance(row[0], date) else row[0])[:10]
                 try:
                     date.fromisoformat(day)
                 except ValueError:

@@ -73,3 +73,11 @@ def test_insufficient_day_is_recorded_as_skipped(tmp_path):
     )
     assert days["skipped"] == [{"date": "2026-01-05", "reason": "auction_row_count_below_minimum", "auction_row_count": 0}]
 
+
+
+def test_kline_by_day_accepts_datetime_ts():
+    import datetime as _dt
+    from examples.run_offline_plate_pipeline import _kline_by_day
+
+    row = (_dt.datetime(2026, 10, 12), 1, 1, 1, 1, 1, 1, 1, 0)
+    assert _kline_by_day({"000001": [row]}) == {"2026-10-12": {"000001": row}}
