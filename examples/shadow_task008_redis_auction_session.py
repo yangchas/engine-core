@@ -83,7 +83,24 @@ def _observe_snapshot(
         if quote.source_record_time_ms is not None
     ]
     if not source_times:
-        raise ValueError("Q2 projection has no source timestamps")
+        # Pre-open Q2 rows can carry no source time; there is no logical time
+        # to evaluate at, so record the observation instead of failing the poll.
+        return [{
+            "wall_read_started": wall_started.isoformat(),
+            "wall_read_completed": wall_completed.isoformat(),
+            "source_time_max": None,
+            "evaluation_time_ms": None,
+            "observed_at_ms": snapshot.envelope.observed_time_ms,
+            "projection_status": snapshot.status.value,
+            "symbol_count": len(snapshot.expected_symbols),
+            "quote_count": len(snapshot.quotes),
+            "tag": "ALL",
+            "revision": None,
+            "available_count": 0,
+            "missing_count": 0,
+            "late_execution": {"status": "NO_SOURCE_TIMESTAMPS",
+                               "timer_signal_id": None, "timer_logical_time_ms": None},
+        }]
     source_time_max = max(source_times)
     evaluation_time_ms = source_time_max - source_time_max % 1000
     observed_at_ms = snapshot.envelope.observed_time_ms
@@ -227,6 +244,18 @@ def run_shadow(
         raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None
 
 
+def _record_failure(out_dir: Path, exc: BaseException) -> None:
+    """Keep the cause for diagnosis; Core adapters never see the password."""
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "failure.json").write_text(
+            json.dumps({"type": type(exc).__name__, "message": str(exc)[:300]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
 def _run_shadow_impl(
     *, source: str, out_dir: Path, capture_path: Path | None = None,
     live_client: Any | None = None, trade_date: str | None = None,
@@ -299,6 +328,9 @@ def _run_shadow_impl(
                     )
                 if poll + 1 < max_polls:
                     time.sleep(poll_seconds)
+    except Exception as exc:
+        _record_failure(out_dir, exc)
+        raise
     finally:
         client.close()
 

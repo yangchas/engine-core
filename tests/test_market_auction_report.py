@@ -32,3 +32,20 @@ def test_report_without_any_component_is_unavailable_and_date_is_strict():
     assert report.status == "UNAVAILABLE"
     with pytest.raises(ValueError):
         build_market_auction_report(trade_date="20261009", event_id="E", data_origin="TEST")
+
+
+def test_unavailable_summary_renders_metrics_as_unavailable_not_zero():
+    from types import SimpleNamespace
+    from engine_core.facts import FactStatus
+    from engine_core.market_auction_report import build_market_auction_report
+
+    summary = SimpleNamespace(
+        status=FactStatus.UNAVAILABLE,
+        metrics={"stock_count": 0, "auction_amount_yuan": 0},
+        market_universe_coverage_status="UNKNOWN",
+    )
+    report = build_market_auction_report(
+        trade_date="2026-10-13", event_id="E", data_origin="T", market_summary=summary
+    )
+    assert "- stock_count: unavailable" in report.text
+    assert "- auction_amount_yuan: unavailable" in report.text

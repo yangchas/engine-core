@@ -102,6 +102,9 @@ def build_market_auction_report(
     if market_summary is not None:
         components["market_summary"] = market_summary.status
         metrics = market_summary.metrics
+        if market_summary.status in (FactStatus.UNAVAILABLE, FactStatus.MISSING, FactStatus.INVALID):
+            # No observation: show every metric as unavailable, never as 0.
+            metrics = {}
         lines += [
             "",
             "## 市场竞价摘要",
