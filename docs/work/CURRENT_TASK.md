@@ -1,5 +1,21 @@
 # Current Task
 
+## 2026-10-13 live input layer wired, per-tag summaries
+
+- `LiveInputCache(max_age_ms=...)`: a preserved read older than its bound is
+  `EXPIRED_PREVIOUS`; adapters then serve no rows (pool -> MISSING), never a
+  guess. `live_input_adapters`: pool state -> `PreviousDayLimitPoolFunction`,
+  stock_plate/s2p states -> mapping.
+- Shadow script `--live-pool-previous-date` reads the pool through the layer
+  each poll and writes `live_inputs.jsonl`. Live check: 46 rows FRESH, 42
+  valid returns.
+- `derive_q2_auction_summary(anchor_tag=0920|0924|0925)`; shadow writes
+  `tag_summaries.jsonl`. Legacy 0920/0924 summaries are frozen at 09:20:03 and
+  09:24:10, so a field-by-field comparison needs reads at those instants
+  (next trade day). Same-day final Q2 values (a20 3318, a24 4315) are not a
+  like-for-like comparison.
+- Known gap: one malformed pool row fails the whole pool (46 rows lost).
+
 ## 2026-10-13 unified read-only live input layer
 
 `engine_core.live_inputs` (`LiveInputReader`, `LiveInputCache`): one place for
