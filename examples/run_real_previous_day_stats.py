@@ -101,6 +101,8 @@ def _fetch_td_rows(
                         "close": row[4],
                         "amount": row[6],
                         "volume": row[5],
+                        # evidence only (opening auction price); not in the Core data contract
+                        "open": row[1],
                     }
                 )
         return rows
@@ -171,6 +173,9 @@ def run_real_previous_day_stats(
         "previous_trade_date": previous_trade_date,
         "symbols": tuple(sorted(symbols)),
         "rows_seen": len(rows_seen),
+        "open_by_symbol": {
+            row["symbol"]: row["open"] for row in rows_seen if row.get("open") is not None
+        },
         "result_status": result.status,
         "actual_source": result.actual_source,
         "actual_trade_date": result.actual_trade_date,
