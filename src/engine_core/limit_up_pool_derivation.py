@@ -14,6 +14,7 @@ import json
 import math
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Collection, Mapping, Optional, Sequence
 
 
@@ -65,13 +66,81 @@ def _limit_pct(symbol: str) -> float:
     return 10.0
 
 
-def _is_limit_up(row: Sequence[Any], symbol: str, tolerance_pct: float):
+_CENT = Decimal("0.01")
+_PCT_TOLERANCE = Decimal("0.05")
+
+
+def _decimal_or_none(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return result if result.is_finite() else None
+
+
+def _round_cent(value: Decimal) -> Decimal:
+    return value.quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
+def _previous_session_row(
+    dated_rows: Mapping[date, Sequence[Any]], day: date, ordered_sessions: Sequence[date]
+) -> Sequence[Any] | None:
+    for previous_day in reversed(ordered_sessions):
+        if previous_day < day:
+            return dated_rows.get(previous_day)
+    return None
+
+
+def _pre_close(
+    row: Sequence[Any], previous_row: Sequence[Any] | None
+) -> tuple[Decimal | None, str | None]:
+    close = _decimal_or_none(row[4])
+    pct = _decimal_or_none(row[8])
+    if close is None:
+        return None, None
+    close = _round_cent(close)
+
+    previous_close = _decimal_or_none(previous_row[4]) if previous_row is not None else None
+    if previous_close is not None:
+        previous_close = _round_cent(previous_close)
+        if pct is not None:
+            if previous_close > 0:
+                observed_pct = (close / previous_close - Decimal(1)) * Decimal(100)
+            else:
+                observed_pct = None
+            if observed_pct is None or abs(observed_pct - pct) > _PCT_TOLERANCE:
+                denominator = Decimal(1) + pct / Decimal(100)
+                if denominator <= 0:
+                    return None, None
+                return _round_cent(close / denominator), "FROM_PCT_CHG"
+        return previous_close, "PREV_CLOSE"
+
+    if pct is None:
+        return None, None
+    denominator = Decimal(1) + pct / Decimal(100)
+    if denominator <= 0:
+        return None, None
+    return _round_cent(close / denominator), "FROM_PCT_CHG"
+
+
+def _is_limit_up(
+    row: Sequence[Any], symbol: str, previous_row: Sequence[Any] | None
+) -> tuple[bool, bool, str | None]:
     if len(row) != 9:
-        return False, True
-    high, close, pct = (_finite_or_none(row[index]) for index in (2, 4, 8))
-    if high is None or close is None or pct is None:
-        return False, True
-    return pct >= _limit_pct(symbol) - tolerance_pct and abs(close - high) < 1e-3, False
+        return False, True, None
+    close = _decimal_or_none(row[4])
+    if close is None:
+        return False, True, None
+    close = _round_cent(close)
+    pre_close, basis = _pre_close(row, previous_row)
+    if pre_close is None:
+        return False, False, None
+    limit_up_price = _round_cent(
+        pre_close * (Decimal(1) + Decimal(str(_limit_pct(symbol))) / Decimal(100))
+    )
+    return close == limit_up_price and close > pre_close, False, basis
 
 
 def derive_limit_up_pool_from_daily_klines(
@@ -80,14 +149,10 @@ def derive_limit_up_pool_from_daily_klines(
     *,
     names_by_symbol: Mapping[str, str] | None = None,
     plate_by_symbol: Mapping[str, str | None] | None = None,
-    tolerance_pct: float = 0.6,
     trading_dates: Collection[str] | None = None,
     close_limit_state_by_symbol: Optional[Mapping[str, int]] = None,
 ) -> LimitUpPoolDerivation:
     target = _strict_date(trade_date)
-    tolerance = _finite_or_none(tolerance_pct)
-    if tolerance is None or tolerance < 0:
-        raise ValueError("tolerance_pct must be a finite nonnegative number")
     names_by_symbol = names_by_symbol or {}
     plate_by_symbol = plate_by_symbol or {}
     rows_by_symbol: dict[str, dict[date, Sequence[Any]]] = {}
@@ -117,7 +182,7 @@ def derive_limit_up_pool_from_daily_klines(
 
     excluded = {
         "no_row_for_trade_date": 0, "unknown_pct_or_price": 0,
-        "not_limit_up": 0, "limit_price_without_seal": 0,
+        "no_pre_close": 0, "not_limit_up": 0, "limit_price_without_seal": 0,
     }
     name_fallbacks = 0
     no_seal_symbols: list[str] = []
@@ -129,9 +194,15 @@ def derive_limit_up_pool_from_daily_klines(
         if current_row is None:
             excluded["no_row_for_trade_date"] += 1
             continue
-        is_up, unknown = _is_limit_up(current_row, symbol, tolerance)
+        current_previous_row = _previous_session_row(dated, target, ordered_sessions)
+        is_up, unknown, pre_close_basis = _is_limit_up(
+            current_row, symbol, current_previous_row
+        )
         if unknown:
             excluded["unknown_pct_or_price"] += 1
+            continue
+        if pre_close_basis is None:
+            excluded["no_pre_close"] += 1
             continue
         if not is_up:
             excluded["not_limit_up"] += 1
@@ -156,7 +227,10 @@ def derive_limit_up_pool_from_daily_klines(
             previous_row = dated.get(previous_day)
             if previous_row is None:
                 break
-            prior_up, prior_unknown = _is_limit_up(previous_row, symbol, tolerance)
+            prior_previous_row = _previous_session_row(dated, previous_day, ordered_sessions)
+            prior_up, prior_unknown, _ = _is_limit_up(
+                previous_row, symbol, prior_previous_row
+            )
             if prior_unknown or not prior_up:
                 break
             lb_days += 1
@@ -175,6 +249,7 @@ def derive_limit_up_pool_from_daily_klines(
             "seal_time": None,
             "turnover": _finite_or_none(row[6]),
             "close_pct": _finite_or_none(row[8]),
+            "pre_close_basis": pre_close_basis,
             "source": "core_td_kline",
             "seal_basis": seal_basis,
             "lb_days_seal_basis": lb_days_seal_basis,

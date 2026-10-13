@@ -11,14 +11,14 @@ def _row(day, *, high=11.0, close=11.0, pct=10.0, amount=123.0):
 
 def test_main_board_counts_consecutive_limit_ups_and_uses_legacy_turnover_field():
     result = derive_limit_up_pool_from_daily_klines(
-        {"600001": [_row("2026-10-09"), _row("2026-10-12", pct=9.5)]},
+        {"600001": [_row("2026-10-09", high=10, close=10), _row("2026-10-12", pct=10.0)]},
         "2026-10-12",
         names_by_symbol={"600001": "样本"},
     )
     assert result.rows == ({
         "trade_date": "2026-10-12", "symbol": "600001", "name": "样本",
         "lb_days": 2, "plate": None, "seal_time": None, "turnover": 123.0,
-        "close_pct": 9.5, "source": "core_td_kline",
+        "close_pct": 10.0, "pre_close_basis": "PREV_CLOSE", "source": "core_td_kline",
         "seal_basis": "KLINE_CLOSE_AT_LIMIT_NO_SEAL_EVIDENCE",
         "lb_days_seal_basis": "KLINE_ONLY",
     },)
@@ -27,7 +27,7 @@ def test_main_board_counts_consecutive_limit_ups_and_uses_legacy_turnover_field(
 
 def test_growth_board_limit_and_st_name_uses_normal_board_limit():
     result = derive_limit_up_pool_from_daily_klines({
-        "300001": [_row("2026-10-12", high=12, close=12, pct=19.5)],
+        "300001": [_row("2026-10-12", high=12, close=12, pct=20.0)],
         "600002": [_row("2026-10-12", high=11, close=11, pct=10.0)],
     }, "2026-10-12", names_by_symbol={"600002": "ST样本"})
     assert [r["symbol"] for r in result.rows] == ["300001", "600002"]
@@ -48,7 +48,7 @@ def test_derivation_api_has_no_st_symbols_override():
 
 def test_30_percent_board_is_supported():
     result = derive_limit_up_pool_from_daily_klines(
-        {"830001": [_row("2026-10-12", high=13, close=13, pct=29.5)]}, "2026-10-12"
+        {"830001": [_row("2026-10-12", high=13, close=13, pct=30.0)]}, "2026-10-12"
     )
     assert len(result.rows) == 1
 
@@ -56,7 +56,7 @@ def test_30_percent_board_is_supported():
 def test_missing_prior_day_breaks_streak_and_none_is_unknown():
     result = derive_limit_up_pool_from_daily_klines({
         "600001": [_row("2026-10-08"), _row("2026-10-12")],
-        "600002": [["2026-10-12 15:00:00", 10, None, 9, 10, 1, 2, 3, None]],
+        "600002": [["2026-10-12 15:00:00", 10, None, 9, None, 1, 2, 3, None]],
         "600003": [_row("2026-10-09")],
     }, "2026-10-12")
     assert result.rows[0]["lb_days"] == 1
@@ -148,3 +148,53 @@ def test_no_seal_mapping_marks_all_rows_as_unverified():
     assert result.rows[0]["seal_basis"] == "KLINE_CLOSE_AT_LIMIT_NO_SEAL_EVIDENCE"
     assert result.rows[0]["lb_days_seal_basis"] == "KLINE_ONLY"
     assert result.seal_evidence_mode == "NONE"
+
+
+def test_daily_limit_price_uses_half_up_cent_rounding_and_not_high():
+    rows = {
+        "600001": [
+            ["2026-10-09", 0, 3.65, 0, 3.65, 1, 2, 3, None],
+            ["2026-10-12", 0, 4.01, 0, 4.02, 1, 2, 3, 10.0],
+        ],
+        "600002": [
+            ["2026-10-09", 0, 3.65, 0, 3.65, 1, 2, 3, None],
+            ["2026-10-12", 0, 4.02, 0, 4.01, 1, 2, 3, 10.0],
+        ],
+    }
+    result = derive_limit_up_pool_from_daily_klines(rows, "2026-10-12")
+    assert [row["symbol"] for row in result.rows] == ["600001"]
+
+
+def test_exact_limit_prices_cover_20_and_30_percent_boards():
+    result = derive_limit_up_pool_from_daily_klines({
+        "300001": [["2026-10-12", 0, 12.00, 0, 12.00, 1, 2, 3, 20.0]],
+        "830001": [["2026-10-12", 0, 13.00, 0, 13.00, 1, 2, 3, 30.0]],
+    }, "2026-10-12")
+    assert [row["symbol"] for row in result.rows] == ["300001", "830001"]
+
+
+def test_pct_change_repairs_unreliable_previous_close_and_marks_basis():
+    result = derive_limit_up_pool_from_daily_klines({
+        "600001": [
+            ["2026-10-09", 0, 10.20, 0, 10.20, 1, 2, 3, 10.0],
+            ["2026-10-12", 0, 11.00, 0, 11.00, 1, 2, 3, 10.0],
+        ],
+    }, "2026-10-12")
+    assert len(result.rows) == 1
+    assert result.rows[0]["pre_close_basis"] == "FROM_PCT_CHG"
+    assert result.rows[0]["lb_days"] == 2
+
+
+def test_missing_previous_close_and_pct_change_is_counted():
+    result = derive_limit_up_pool_from_daily_klines({
+        "600001": [["2026-10-12", 0, 11.00, 0, 11.00, 1, 2, 3, None]],
+    }, "2026-10-12")
+    assert result.rows == ()
+    assert result.excluded_counts["no_pre_close"] == 1
+
+
+def test_exact_limit_price_does_not_require_close_equal_high():
+    result = derive_limit_up_pool_from_daily_klines({
+        "600001": [["2026-10-12", 0, 11.20, 0, 11.00, 1, 2, 3, 10.0]],
+    }, "2026-10-12")
+    assert [row["symbol"] for row in result.rows] == ["600001"]
