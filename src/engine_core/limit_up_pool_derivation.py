@@ -1,4 +1,11 @@
-"""Pure derivation of a previous-day limit-up pool from TD daily klines."""
+"""Pure derivation of a previous-day limit-up pool from TD daily klines.
+
+ST and ordinary stocks currently share the same limit percentages: TD data
+from 2026-06-26 through 2026-10-12 showed 125 ST symbols reaching roughly
+10% daily gains and losses. Earlier dates have not been verified; streak
+counts reaching before 2026-06-26 may be affected by historical 5% rules and
+must not be treated as historically correct.
+"""
 
 from __future__ import annotations
 
@@ -49,9 +56,7 @@ def _finite_or_none(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
-def _limit_pct(symbol: str, st_symbols: frozenset[str]) -> float:
-    if symbol in st_symbols and not symbol.startswith(("30", "688")):
-        return 5.0
+def _limit_pct(symbol: str) -> float:
     if symbol.startswith(("688", "689", "30")):
         return 20.0
     if symbol.startswith(("8", "4", "92")):
@@ -59,13 +64,13 @@ def _limit_pct(symbol: str, st_symbols: frozenset[str]) -> float:
     return 10.0
 
 
-def _is_limit_up(row: Sequence[Any], symbol: str, st_symbols: frozenset[str], tolerance_pct: float):
+def _is_limit_up(row: Sequence[Any], symbol: str, tolerance_pct: float):
     if len(row) != 9:
         return False, True
     high, close, pct = (_finite_or_none(row[index]) for index in (2, 4, 8))
     if high is None or close is None or pct is None:
         return False, True
-    return pct >= _limit_pct(symbol, st_symbols) - tolerance_pct and abs(close - high) < 1e-3, False
+    return pct >= _limit_pct(symbol) - tolerance_pct and abs(close - high) < 1e-3, False
 
 
 def _weekday_gap(previous: date, current: date) -> bool:
@@ -84,15 +89,12 @@ def derive_limit_up_pool_from_daily_klines(
     *,
     names_by_symbol: Mapping[str, str] | None = None,
     plate_by_symbol: Mapping[str, str | None] | None = None,
-    st_symbols: frozenset[str] = frozenset(),
     tolerance_pct: float = 0.6,
 ) -> LimitUpPoolDerivation:
     target = _strict_date(trade_date)
     tolerance = _finite_or_none(tolerance_pct)
     if tolerance is None or tolerance < 0:
         raise ValueError("tolerance_pct must be a finite nonnegative number")
-    if not isinstance(st_symbols, (set, frozenset)):
-        raise TypeError("st_symbols must be a set or frozenset")
     names_by_symbol = names_by_symbol or {}
     plate_by_symbol = plate_by_symbol or {}
     excluded = {"no_row_for_trade_date": 0, "unknown_pct_or_price": 0, "not_limit_up": 0}
@@ -111,7 +113,7 @@ def derive_limit_up_pool_from_daily_klines(
         if current is None:
             excluded["no_row_for_trade_date"] += 1
             continue
-        is_up, unknown = _is_limit_up(dated[current][1], symbol, st_symbols, tolerance)
+        is_up, unknown = _is_limit_up(dated[current][1], symbol, tolerance)
         if unknown:
             excluded["unknown_pct_or_price"] += 1
             continue
@@ -126,7 +128,7 @@ def derive_limit_up_pool_from_daily_klines(
             previous_day, previous_row = dated[cursor]
             if previous_day >= next_day or _weekday_gap(previous_day, next_day):
                 break
-            prior_up, prior_unknown = _is_limit_up(previous_row, symbol, st_symbols, tolerance)
+            prior_up, prior_unknown = _is_limit_up(previous_row, symbol, tolerance)
             if prior_unknown or not prior_up:
                 break
             lb_days += 1

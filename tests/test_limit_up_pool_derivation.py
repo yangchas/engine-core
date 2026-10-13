@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from inspect import signature
+
 from engine_core.limit_up_pool_derivation import derive_limit_up_pool_from_daily_klines
 
 
@@ -21,13 +23,25 @@ def test_main_board_counts_consecutive_limit_ups_and_uses_legacy_turnover_field(
     assert result.content_hash
 
 
-def test_growth_board_limits_and_st_only_changes_limit_pct():
+def test_growth_board_limit_and_st_name_uses_normal_board_limit():
     result = derive_limit_up_pool_from_daily_klines({
         "300001": [_row("2026-10-12", high=12, close=12, pct=19.5)],
-        "600002": [_row("2026-10-12", pct=5.0)],
-        "600003": [_row("2026-10-12", pct=4.5)],
-    }, "2026-10-12", st_symbols=frozenset({"600002"}))
+        "600002": [_row("2026-10-12", high=11, close=11, pct=10.0)],
+    }, "2026-10-12", names_by_symbol={"600002": "ST样本"})
     assert [r["symbol"] for r in result.rows] == ["300001", "600002"]
+
+
+def test_five_percent_st_name_is_not_a_limit_up():
+    result = derive_limit_up_pool_from_daily_klines(
+        {"600002": [_row("2026-10-12", high=11, close=11, pct=5.0)]},
+        "2026-10-12",
+        names_by_symbol={"600002": "ST样本"},
+    )
+    assert result.rows == ()
+
+
+def test_derivation_api_has_no_st_symbols_override():
+    assert "st_symbols" not in signature(derive_limit_up_pool_from_daily_klines).parameters
 
 
 def test_30_percent_board_is_supported():
