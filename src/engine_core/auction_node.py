@@ -1,0 +1,141 @@
+"""Read-only live auction node composed from the existing session components."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import date
+from pathlib import Path
+from typing import Any, Callable, Mapping, Sequence
+
+from .calendar import build_calendar_snapshot
+from .clock import local_datetime_ms
+from .execution_ledger import ExecutionLedger
+from .session import build_a_share_session_plan
+from .session_runtime import SessionRuntimeCoordinator
+from .timers import TimerFiring, TimerSpec
+
+
+AUCTION_NODE_TIMERS = (
+    TimerSpec("AUCTION_0926", "09:26:00"),
+    TimerSpec("OPENING_0932", "09:32:00"),
+)
+
+
+def _single_day_session(trade_date: str):
+    day = date.fromisoformat(trade_date)
+    calendar = build_calendar_snapshot(
+        (day,), version="explicit-single-day-v1", declared_valid_from=day,
+        declared_valid_to=day, source_guard_valid_from=day,
+        source_guard_valid_to=day, source_id="auction_node_explicit_trade_date",
+    )
+    return calendar, build_a_share_session_plan(trade_date, calendar)
+
+
+def _firing_mapping(firing: TimerFiring) -> dict[str, Any]:
+    return {
+        "timer_id": firing.timer_id,
+        "scheduled_time_ms": firing.scheduled_time_ms,
+        "fired_time_ms": firing.fired_time_ms,
+        "trigger_basis": firing.trigger_basis,
+        "origin": firing.origin,
+        "late_by_ms": firing.late_by_ms,
+        "session_plan_hash": firing.session_plan_hash,
+        "content_hash": firing.content_hash,
+    }
+
+
+def run_auction_node(
+    *, trade_date: str, out_dir: Path, live_client: Any, ledger_path: Path,
+    read_times: Sequence[str], live_pool_previous_date: str | None = None,
+    td_rows_path: Path | None = None, confirm_read_only: bool = False,
+    sleep_until: Callable[[str, str], Any] | None = None,
+) -> dict[str, Any]:
+    """Run one live, read-only auction session and persist timer dispatches locally.
+
+    A test sleeper may return an explicit epoch millisecond value for the
+    read's observation clock; a normal sleeper returns ``None``.
+    """
+    if not confirm_read_only:
+        raise RuntimeError("live source requires confirm_read_only=True")
+    if not isinstance(trade_date, str) or len(trade_date) != 10:
+        raise ValueError("trade_date must be strict YYYY-MM-DD")
+    calendar, session_plan = _single_day_session(trade_date)
+    coordinator = SessionRuntimeCoordinator(
+        trade_date=trade_date, calendar=calendar, session_plan=session_plan,
+        timer_specs=AUCTION_NODE_TIMERS,
+        q2_optional_timer_ids=tuple(item.timer_id for item in AUCTION_NODE_TIMERS),
+    )
+    ledger = ExecutionLedger(ledger_path)
+    restored_firings = ledger.firings(trade_date)
+    coordinator.restore_completed(restored_firings)
+    restored_ids = sorted(item.timer_id for item in restored_firings)
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    run_index = 0
+    while (out_dir / ("shadow_run_%03d" % run_index)).exists():
+        run_index += 1
+    shadow_dir = out_dir / ("shadow_run_%03d" % run_index)
+    first_observation: int | None = None
+    acknowledged: list[str] = []
+    polls = 0
+
+    def on_poll(record: Mapping[str, Any]) -> None:
+        nonlocal first_observation, polls
+        polls += 1
+        observed_at_ms = int(record["observed_at_ms"])
+        if first_observation is None:
+            first_observation = observed_at_ms
+        late_start = first_observation > local_datetime_ms(trade_date, "09:26:00")
+        origin = "RECOVERY_CATCHUP" if late_start else "NORMAL"
+        runtime_poll = coordinator.poll(
+            as_of_ms=observed_at_ms, q2=record["snapshot"], origin=origin,
+        )
+        for firing in runtime_poll.dispatchable_firings:
+            anchor_name = "anchor_table_%03d.json" % int(record["poll"])
+            anchor_path = Path(record["out_dir"]) / anchor_name
+            anchor_digest = hashlib.sha256(anchor_path.read_bytes()).hexdigest()
+            timer_path = out_dir / ("timer_%s.json" % firing.timer_id)
+            artifact = {
+                **_firing_mapping(firing),
+                "poll": int(record["poll"]),
+                "anchor_table_file": str(anchor_path.relative_to(out_dir)),
+                "anchor_table_sha256": anchor_digest,
+            }
+            temporary = timer_path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(artifact, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(timer_path)
+            coordinator.acknowledge(firing)
+            ledger.record(trade_date, firing)
+            acknowledged.append(firing.timer_id)
+
+    from examples.shadow_task008_redis_auction_session import run_shadow
+
+    run_shadow(
+        source="live", out_dir=shadow_dir, live_client=live_client,
+        trade_date=trade_date, confirm_read_only=True, read_times=read_times,
+        poll_callback=on_poll, seal_captures=True,
+        live_pool_previous_date=live_pool_previous_date, td_rows_path=td_rows_path,
+        sleep_until=sleep_until,
+    )
+    cold_start = json.loads((shadow_dir / "cold_start.json").read_text(encoding="utf-8"))
+    result = {
+        "trade_date": trade_date,
+        "start_class": cold_start.get("start_class"),
+        "polls": polls,
+        "timers_acknowledged": acknowledged,
+        "timers_restored_from_ledger": restored_ids,
+        "ledger_path": str(Path(ledger_path)),
+        "status": "DONE",
+        "shadow_dir": str(shadow_dir),
+        "shadow_status": "DONE",
+    }
+    (out_dir / "node_run.json").write_text(
+        json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return result
+
+
+__all__ = ["AUCTION_NODE_TIMERS", "run_auction_node"]

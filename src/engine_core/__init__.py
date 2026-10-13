@@ -303,6 +303,7 @@ from .theme_auction_delta_rows import (
 from .td_auction_reconstruction import TdAuctionReconstruction, reconstruct_auction_from_td
 from .td_auction_summary import derive_td_auction_summary
 from .execution_ledger import ExecutionLedger
+from .auction_node import run_auction_node
 from .report_render import build_report_eml, render_report_html
 from .f10_market_cap import F10MarketCaps, market_cap_unit_check, normalize_f10_market_caps
 from .stock_extremes import StockExtremes, derive_stock_extremes
@@ -697,6 +698,7 @@ __all__ = [
     "normalize_symbol_cache_rows",
     "ColdStartAssessment",
     "ExecutionLedger",
+    "run_auction_node",
     "TdAuctionReconstruction",
     "reconstruct_auction_from_td",
     "derive_td_auction_summary",

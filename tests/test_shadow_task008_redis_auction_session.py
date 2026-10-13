@@ -36,6 +36,26 @@ def test_read_only_client_only_exposes_projection_reads():
             getattr(readonly, name)
 
 
+def test_live_poll_callback_runs_after_anchor_and_events_are_written(tmp_path: Path):
+    from engine_core.clock import local_datetime_ms
+
+    output = tmp_path / "callback"
+    received = []
+    run_shadow(
+        source="live", out_dir=output, live_client=FakeClient(),
+        trade_date="2026-10-09", confirm_read_only=True,
+        read_times=("09:25:12",),
+        sleep_until=lambda day, hms: local_datetime_ms(day, hms),
+        poll_callback=received.append,
+    )
+    assert len(received) == 1
+    record = received[0]
+    assert set(record) == {"poll", "observed_at_ms", "snapshot", "events", "out_dir"}
+    assert record["poll"] == 0 and record["events"]
+    assert (output / "anchor_table_000.json").is_file()
+    assert (output / "shadow_events.jsonl").read_text().strip()
+
+
 def test_synthetic_capture_emits_three_anchor_events(tmp_path: Path):
     capture = {
         "contract_version": "RedisQ2ReadCaptureV1",

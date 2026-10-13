@@ -358,6 +358,8 @@ def run_shadow(
     live_pool_previous_date: str | None = None,
     seal_captures: bool = False,
     td_rows_path: Path | None = None,
+    poll_callback: Any | None = None,
+    sleep_until: Any | None = None,
 ) -> dict[str, Any]:
     if source == "live" and not confirm_read_only:
         raise RuntimeError("live source requires confirm_read_only=True")
@@ -372,6 +374,7 @@ def run_shadow(
             live_pool_previous_date=live_pool_previous_date,
             seal_captures=seal_captures,
             td_rows_path=td_rows_path,
+            poll_callback=poll_callback, sleep_until=sleep_until,
         )
     try:
         return _run_shadow_impl(
@@ -384,6 +387,7 @@ def run_shadow(
             live_pool_previous_date=live_pool_previous_date,
             seal_captures=seal_captures,
             td_rows_path=td_rows_path,
+            poll_callback=poll_callback, sleep_until=sleep_until,
         )
     except Exception as exc:
         raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None
@@ -423,6 +427,8 @@ def _run_shadow_impl(
     live_pool_previous_date: str | None = None,
     seal_captures: bool = False,
     td_rows_path: Path | None = None,
+    poll_callback: Any | None = None,
+    sleep_until: Any | None = None,
 ) -> dict[str, Any]:
     if out_dir.exists():
         raise FileExistsError(f"output directory already exists: {out_dir}")
@@ -509,12 +515,16 @@ def _run_shadow_impl(
             if read_times and source == "live":
                 max_polls = len(read_times)
             for poll in range(max_polls):
+                read_time_override = None
                 if capture_records:
                     _, capture, _ = capture_records[poll]
                     client = _capture_client(capture)
                     capture_observed_at = _capture_observed_at(capture)
                 if read_times and source == "live":
-                    _sleep_until_local(trade_date, read_times[poll])
+                    sleeper = sleep_until or _sleep_until_local
+                    returned_time = sleeper(trade_date, read_times[poll])
+                    if isinstance(returned_time, int) and not isinstance(returned_time, bool):
+                        read_time_override = returned_time
                 wall_started = _aware_now()
                 snapshot = RedisQ2ProjectionAdapter(client).read(
                     trade_date, observed_at=capture_observed_at,
@@ -546,6 +556,7 @@ def _run_shadow_impl(
                         recover_final_from_phase_zero=recover_final_from_phase_zero,
                     )
                 rows = _rows(snapshot)
+                poll_events = []
                 for event in _observe_snapshot(
                     snapshot=snapshot, session=session, rows=rows,
                     first_read=first_read, wall_started=wall_started,
@@ -559,6 +570,7 @@ def _run_shadow_impl(
                             session.phase_zero_recoveries
                         )
                     events_file.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+                    poll_events.append(event)
                 events_file.flush()
                 _write_tag_summaries(out_dir, poll, snapshot, trade_date)
                 pool = None
@@ -586,6 +598,40 @@ def _run_shadow_impl(
                         wall_completed,
                         "LIVE_REDIS_READ_ONLY" if source == "live" else "SEALED_REDIS_CAPTURE",
                     )
+                if poll_callback is not None:
+                    anchor_table = {}
+                    recovered = session.phase_zero_recoveries
+                    for symbol, quote in snapshot.quotes.items():
+                        anchor = quote.auction_anchor_0925_price_milli
+                        anchor_source = "a25" if isinstance(anchor, int) and anchor > 0 else None
+                        if anchor_source is None and symbol in recovered:
+                            anchor, anchor_source = recovered[symbol]["price_milli"], "ph0_recovered"
+                        anchor_table[symbol] = {
+                            "a25": anchor if anchor_source else None,
+                            "src": anchor_source,
+                            "pc": quote.pre_close_milli,
+                            "amt": quote.auction_amount_yuan,
+                            "px": getattr(quote, "price_milli", None),
+                        }
+                        if anchor_source == "ph0_recovered":
+                            anchor_table[symbol]["rec_lots"] = recovered[symbol].get("volume_lots")
+                            anchor_table[symbol]["rec_amt"] = recovered[symbol].get("amount_yuan")
+                    anchor_path = out_dir / ("anchor_table_%03d.json" % poll)
+                    anchor_path.write_text(
+                        json.dumps(anchor_table, sort_keys=True, separators=(",", ":")),
+                        encoding="utf-8",
+                    )
+                    observed_at_ms = max(
+                        _report_observed_ms(snapshot, wall_completed),
+                        read_time_override or int(wall_completed.timestamp() * 1000),
+                    )
+                    poll_callback({
+                        "poll": poll,
+                        "observed_at_ms": observed_at_ms,
+                        "snapshot": snapshot,
+                        "events": poll_events,
+                        "out_dir": out_dir,
+                    })
                 if poll + 1 < max_polls and not read_times:
                     time.sleep(poll_seconds)
     except Exception as exc:
