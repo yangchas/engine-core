@@ -108,6 +108,9 @@ def test_auction_node_dispatches_timers_and_restores_them_on_restart(tmp_path, m
         row = json.loads((tmp_path / "node" / f"timer_{timer_id}.json").read_text())
         assert row["origin"] == "NORMAL"
         assert row["cutoff_fidelity"] == "AT_CUTOFF"
+        assert row["executed_late_by_ms"] == row["executed_at_ms"] - row["scheduled_time_ms"]
+        assert row["late_by_ms"] == row["fired_time_ms"] - row["scheduled_time_ms"]
+        assert row["late_by_ms_semantics"] == "first_firing_delay"
         if timer_id == "AUCTION_0926":
             assert row["q2_readiness"] == "READY"
         else:
@@ -196,6 +199,70 @@ def test_opening_cutoff_uses_actual_execution_poll_after_readiness_delay(tmp_pat
     assert opening["executed_at_ms"] == local_datetime_ms("2026-10-13", "09:40:00")
     assert opening["executed_poll"] == 2
     assert opening["q2_readiness"] == "READY"
+
+
+def test_timer_over_30_seconds_late_on_first_evaluation_is_after_cutoff(tmp_path, monkeypatch):
+    _use_q2_observation_times(monkeypatch, ("09:25:00", "09:27:00"))
+    _node(
+        tmp_path, FreshAuctionClient(("09:25:00", "09:27:00")),
+        tmp_path / "ledger.jsonl", ("09:25:00", "09:27:00"),
+        lambda day, hms: local_datetime_ms(day, hms),
+    )
+    auction = json.loads((tmp_path / "node" / "timer_AUCTION_0926.json").read_text())
+    assert auction["executed_at_ms"] - auction["scheduled_time_ms"] > 30000
+    assert auction["executed_poll"] == 1
+    assert auction["cutoff_fidelity"] == "AFTER_CUTOFF_CURRENT_STATE"
+
+
+def test_opening_readiness_delay_is_after_cutoff_even_within_30_seconds(tmp_path, monkeypatch):
+    class PartialThenReadyWithinCutoffClient(FreshAuctionClient):
+        def __init__(self):
+            super().__init__(("09:25:00", "09:32:00", "09:32:10"))
+
+        def hgetall(self, key):
+            row = super().hgetall(key)
+            if self.current_time == "09:32:00":
+                row["ts"] = str(local_datetime_ms("2026-10-12", "09:00:00"))
+            return row
+
+    _use_q2_observation_times(monkeypatch, ("09:25:00", "09:32:05", "09:32:10"))
+    _node(
+        tmp_path, PartialThenReadyWithinCutoffClient(), tmp_path / "ledger.jsonl",
+        ("09:25:00", "09:32:05", "09:32:10"),
+        lambda day, hms: local_datetime_ms(day, hms),
+    )
+    opening = json.loads((tmp_path / "node" / "timer_OPENING_0932.json").read_text())
+    assert opening["executed_at_ms"] - opening["scheduled_time_ms"] <= 30000
+    assert opening["executed_poll"] == 2
+    assert opening["cutoff_fidelity"] == "AFTER_CUTOFF_CURRENT_STATE"
+
+
+def test_callback_exception_replaces_existing_node_run_with_failed(tmp_path, monkeypatch):
+    import examples.shadow_task008_redis_auction_session as shadow
+
+    node_dir = tmp_path / "node"
+    node_dir.mkdir()
+    node_run_path = node_dir / "node_run.json"
+    node_run_path.write_text(json.dumps({"status": "DONE", "old_result": True}))
+
+    def fail_from_callback(**kwargs):
+        running = json.loads(node_run_path.read_text())
+        assert running == {"status": "RUNNING", "trade_date": "2026-10-13"}
+        kwargs["poll_callback"]({})
+
+    monkeypatch.setattr(shadow, "run_shadow", fail_from_callback)
+    with pytest.raises(KeyError, match="observed_at_ms"):
+        _node(
+            tmp_path, StrictAuctionClient(), tmp_path / "ledger.jsonl", (),
+            lambda day, hms: local_datetime_ms(day, hms),
+        )
+
+    node_run = json.loads(node_run_path.read_text())
+    assert node_run == {
+        "exception_type": "KeyError",
+        "status": "FAILED",
+        "trade_date": "2026-10-13",
+    }
 
 
 def test_opening_ready_on_first_cutoff_poll_is_at_cutoff(tmp_path, monkeypatch):

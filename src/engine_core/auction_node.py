@@ -54,6 +54,16 @@ def _firing_mapping(firing: TimerFiring) -> dict[str, Any]:
     }
 
 
+def _write_node_run(out_dir: Path, value: Mapping[str, Any]) -> None:
+    path = out_dir / "node_run.json"
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
 def run_auction_node(
     *, trade_date: str, out_dir: Path, live_client: Any, ledger_path: Path,
     read_times: Sequence[str], live_pool_previous_date: str | None = None,
@@ -82,6 +92,7 @@ def run_auction_node(
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    _write_node_run(out_dir, {"status": "RUNNING", "trade_date": trade_date})
     run_index = 0
     while (out_dir / ("shadow_run_%03d" % run_index)).exists():
         run_index += 1
@@ -121,7 +132,9 @@ def run_auction_node(
                 **_firing_mapping(firing),
                 "poll": int(record["poll"]),
                 "executed_at_ms": observed_at_ms,
+                "executed_late_by_ms": observed_at_ms - firing.scheduled_time_ms,
                 "executed_poll": int(record["poll"]),
+                "late_by_ms_semantics": "first_firing_delay",
                 # Keep the durable artifact stable across shadow_run_NNN restarts.
                 "anchor_table_file": anchor_path.name,
                 "anchor_table_sha256": anchor_digest,
@@ -144,32 +157,37 @@ def run_auction_node(
             acknowledged.append(firing.timer_id)
             timers_pending.discard(firing.timer_id)
 
-    from examples.shadow_task008_redis_auction_session import run_shadow
+    try:
+        from examples.shadow_task008_redis_auction_session import run_shadow
 
-    run_shadow(
-        source="live", out_dir=shadow_dir, live_client=live_client,
-        trade_date=trade_date, confirm_read_only=True, read_times=read_times,
-        poll_callback=on_poll, seal_captures=True,
-        live_pool_previous_date=live_pool_previous_date, td_rows_path=td_rows_path,
-        sleep_until=sleep_until,
-    )
-    cold_start = json.loads((shadow_dir / "cold_start.json").read_text(encoding="utf-8"))
-    result = {
-        "trade_date": trade_date,
-        "start_class": cold_start.get("start_class"),
-        "polls": polls,
-        "timers_acknowledged": acknowledged,
-        "timers_restored_from_ledger": restored_ids,
-        "ledger_path": str(Path(ledger_path)),
-        "timers_pending": sorted(timers_pending),
-        "status": "DONE" if not timers_pending else "DONE_WITH_PENDING",
-        "shadow_dir": str(shadow_dir),
-        "shadow_status": "DONE",
-    }
-    (out_dir / "node_run.json").write_text(
-        json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
-    )
+        run_shadow(
+            source="live", out_dir=shadow_dir, live_client=live_client,
+            trade_date=trade_date, confirm_read_only=True, read_times=read_times,
+            poll_callback=on_poll, seal_captures=True,
+            live_pool_previous_date=live_pool_previous_date, td_rows_path=td_rows_path,
+            sleep_until=sleep_until,
+        )
+        cold_start = json.loads((shadow_dir / "cold_start.json").read_text(encoding="utf-8"))
+        result = {
+            "trade_date": trade_date,
+            "start_class": cold_start.get("start_class"),
+            "polls": polls,
+            "timers_acknowledged": acknowledged,
+            "timers_restored_from_ledger": restored_ids,
+            "ledger_path": str(Path(ledger_path)),
+            "timers_pending": sorted(timers_pending),
+            "status": "DONE" if not timers_pending else "DONE_WITH_PENDING",
+            "shadow_dir": str(shadow_dir),
+            "shadow_status": "DONE",
+        }
+        _write_node_run(out_dir, result)
+    except Exception as error:
+        _write_node_run(out_dir, {
+            "status": "FAILED",
+            "trade_date": trade_date,
+            "exception_type": type(error).__name__,
+        })
+        raise
     return result
 
 
