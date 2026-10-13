@@ -3,6 +3,7 @@ import json
 import pytest
 
 from engine_core.live_inputs import (
+    EXPIRED_PREVIOUS,
     FRESH,
     MISSING,
     PRESERVED_PREVIOUS,
@@ -111,3 +112,13 @@ def test_inconsistent_scan_does_not_replace_good_data():
     state = cache.refresh(_reader(flapping, 2).read("hot_rank", trade_date="2026-10-13"))
     assert state.status == PRESERVED_PREVIOUS and state.reason == "scan_inconsistent"
     assert len(state.read.rows) == 1
+
+
+def test_preserved_read_expires_after_max_age():
+    key = "cache:hot_rank:2026-10-13"
+    cache = LiveInputCache(max_age_ms={"hot_rank": 1000})
+    cache.refresh(_reader(StrictClient(hashes={key: {b"a": b"1"}}), 0).read("hot_rank", trade_date="2026-10-13"))
+    soon = cache.refresh(_reader(StrictClient(), 900).read("hot_rank", trade_date="2026-10-13"))
+    late = cache.refresh(_reader(StrictClient(), 1500).read("hot_rank", trade_date="2026-10-13"))
+    assert soon.status == PRESERVED_PREVIOUS
+    assert late.status == EXPIRED_PREVIOUS and late.read is not None

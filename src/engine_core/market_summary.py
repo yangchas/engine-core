@@ -292,8 +292,12 @@ def derive_q2_auction_summary(
     observation_time_ms: Optional[int] = None,
     input_content_hash: Optional[str] = None,
     evidence_refs: Tuple[str, ...] = (),
+    anchor_tag: str = "0925",
 ) -> Q2AuctionSummaryProjection:
-    """Derive fact-only 09:25 aggregates from an already-read Q2 cohort.
+    """Derive fact-only auction aggregates from an already-read Q2 cohort.
+
+    ``anchor_tag`` selects the anchor field (0920->a20, 0924->a24, 0925->a25);
+    the aggregate semantics are the same for each tag.
 
     This function has no Redis/TD/Rabbit access. Candidate membership is
     inferred from non-zero Q2 ``am``/``br``/``ar`` values. When these fields
@@ -304,6 +308,9 @@ def derive_q2_auction_summary(
     """
 
     _validate_trade_date(trade_date)
+    anchor_field = {"0920": "a20", "0924": "a24", "0925": "a25"}.get(anchor_tag)
+    if anchor_field is None:
+        raise ValueError("anchor_tag must be 0920, 0924 or 0925")
     if not isinstance(source_id, str) or not source_id.strip():
         raise ValueError("source_id is required")
     if not isinstance(source_table, str) or not source_table.strip():
@@ -347,9 +354,9 @@ def derive_q2_auction_summary(
             source_date_mismatch.append(symbol)
             continue
         parsed[symbol] = {}
-        for field_name in ("am", "br", "ar", "a25", "pc", "ls"):
+        for field_name in ("am", "br", "ar", anchor_field, "pc", "ls"):
             value, quality = _q2_integer_field(quote, field_name)
-            parsed[symbol][field_name] = (value, quality)
+            parsed[symbol]["anchor" if field_name == anchor_field else field_name] = (value, quality)
             if quality == "INVALID":
                 invalid_fields.append("%s.%s" % (symbol, field_name))
 
@@ -401,8 +408,8 @@ def derive_q2_auction_summary(
 
     set_metric("stock_count", len(candidates))
 
-    anchor_unknown = sum(fields["a25"][1] != "PRESENT_VALUE" for fields in rows)
-    anchor_values = [fields["a25"][0] for fields in rows]
+    anchor_unknown = sum(fields["anchor"][1] != "PRESENT_VALUE" for fields in rows)
+    anchor_values = [fields["anchor"][0] for fields in rows]
     if any(value is not None and value < 0 for value in anchor_values):
         anchor_unknown += sum(value is not None and value < 0 for value in anchor_values)
     valid_count = sum(value is not None and value > 0 for value in anchor_values)
@@ -413,7 +420,7 @@ def derive_q2_auction_summary(
     breadth_unknown = anchor_unknown
     positive = negative = flat = 0
     for fields in rows:
-        price, price_quality = fields["a25"]
+        price, price_quality = fields["anchor"]
         if price_quality != "PRESENT_VALUE" or price is None or price < 0:
             continue
         if price == 0:
@@ -517,7 +524,7 @@ def _q2_integer_field(quote: Q2Quote, name: str) -> Tuple[Optional[int], str]:
     if not re.fullmatch(r"[+-]?\d+", text):
         return None, "INVALID"
     value = int(text)
-    if name in ("am", "br", "ar", "a25", "pc") and value < 0:
+    if name in ("am", "br", "ar", "a20", "a24", "a25", "pc") and value < 0:
         return None, "INVALID"
     if name == "ls" and value not in (-1, 0, 1):
         return None, "INVALID"

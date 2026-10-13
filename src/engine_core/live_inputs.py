@@ -24,6 +24,7 @@ LIVE_INPUT_CONTRACT_VERSION = "LiveInputReadV1"
 FRESH = "FRESH"
 MISSING = "MISSING"
 PRESERVED_PREVIOUS = "PRESERVED_PREVIOUS"
+EXPIRED_PREVIOUS = "EXPIRED_PREVIOUS"
 
 _HASH_INPUTS = {
     "hot_plates": "cache:hot_plates:{date}",
@@ -158,7 +159,11 @@ class LiveInputReader:
 class LiveInputCache:
     """Last-good store: an empty or inconsistent read never replaces data."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_age_ms: Optional[Mapping[str, int]] = None) -> None:
+        # Per-input bound on how long a preserved read may be used as current.
+        # Beyond it the state is EXPIRED_PREVIOUS: the data stays visible as
+        # evidence but a consumer must treat it as degraded, not current.
+        self._max_age_ms = dict(max_age_ms or {})
         self._good: Dict[str, Tuple[LiveInputRead, int]] = {}
 
     def refresh(self, read: LiveInputRead) -> LiveInputState:
@@ -171,7 +176,12 @@ class LiveInputCache:
         )
         previous = self._good.get(read.name)
         if previous is not None:
-            return LiveInputState(read.name, PRESERVED_PREVIOUS, previous[0], reason, previous[1], now)
+            limit = self._max_age_ms.get(read.name)
+            expired = limit is not None and now - previous[1] > limit
+            return LiveInputState(
+                read.name, EXPIRED_PREVIOUS if expired else PRESERVED_PREVIOUS,
+                previous[0], reason, previous[1], now,
+            )
         return LiveInputState(read.name, MISSING, None, reason, None, now)
 
     def state(self, name: str) -> Optional[Tuple[LiveInputRead, int]]:
@@ -179,6 +189,6 @@ class LiveInputCache:
 
 
 __all__ = [
-    "FRESH", "LIVE_INPUT_CONTRACT_VERSION", "LiveInputCache", "LiveInputRead",
+    "EXPIRED_PREVIOUS", "FRESH", "LIVE_INPUT_CONTRACT_VERSION", "LiveInputCache", "LiveInputRead",
     "LiveInputReader", "LiveInputState", "MISSING", "PRESERVED_PREVIOUS",
 ]

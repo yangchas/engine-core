@@ -110,3 +110,34 @@ def test_live_barrier_opens_when_source_time_stalls_before_first_observable(tmp_
     anchor = next(event for event in events if event["tag"] == "0925")
     assert anchor["late_execution"]["status"] == "LATE_START_OBSERVED"
     assert anchor["available_count"] == 2
+
+
+def test_live_pool_through_live_input_layer_writes_report_and_trace(tmp_path: Path):
+    class PoolClient(FakeClient):
+        def type(self, key):
+            return b"hash" if key == "cache:yest_limit_pool:2026-10-08" else b"none"
+
+        def hlen(self, key):
+            return 1
+
+        def hscan_iter(self, key):
+            row = {"symbol": "000001", "name": "n", "trade_date": "2026-10-08",
+                   "close_pct": 10.0, "lb_days": 1, "turnover": 1.0e8,
+                   "plate": "x", "seal_time": "", "source": "kaipan"}
+            return iter([(b"000001", json.dumps(row).encode())])
+
+        def get(self, key):
+            return None
+
+        def ttl(self, key):
+            return -1
+
+    run_shadow(
+        source="live", live_client=PoolClient(), out_dir=tmp_path / "livepool",
+        trade_date="2026-10-09", confirm_read_only=True,
+        live_pool_previous_date="2026-10-08",
+    )
+    out = tmp_path / "livepool"
+    assert "昨日涨停结构" in (out / "report_000.txt").read_text(encoding="utf-8")
+    trace = json.loads((out / "live_inputs.jsonl").read_text().splitlines()[0])
+    assert trace["status"] == "FRESH" and trace["row_count"] == 1

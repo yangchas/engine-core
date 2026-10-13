@@ -218,3 +218,32 @@ def test_invalid_q2_source_time_is_reported_as_invalid_and_kept_unknown():
     assert fact.candidate_membership_unknown_symbols == (row["symbol"],)
     assert row["symbol"] + ".ts" in fact.invalid_fields
     assert fact.metrics["stock_count"] is None
+
+
+def _anchor_rows():
+    def row(symbol, a20, a24, a25, px=1000, pc=1000):
+        return {
+            "symbol": symbol, "px": px, "pc": pc, "amt": 0, "vol": 0, "ts": 1791509106000,
+            "ph": 1, "ls": 0, "am": 5000, "br": 0, "ar": 0, "a20": a20, "a24": a24, "a25": a25,
+        }
+    return [
+        row("000001", 1010, 1020, 0),     # a20, a24 present, a25 not yet
+        row("000002", 0, 990, 0),         # only a24
+        row("000003", 0, 0, 0),           # candidate with no anchors
+    ]
+
+
+def test_anchor_tag_selects_anchor_field_for_valid_unavailable_and_breadth():
+    quotes = _quotes(_anchor_rows())
+    common = dict(source_id="t", source_table="t", trade_date="2026-10-09",
+                  expected_symbols=tuple(quotes))
+    s20 = derive_q2_auction_summary(quotes, anchor_tag="0920", **common)
+    s24 = derive_q2_auction_summary(quotes, anchor_tag="0924", **common)
+    s25 = derive_q2_auction_summary(quotes, **common)
+    assert (s20.metrics["valid_stock_count"], s20.metrics["unavailable_stock_count"]) == (1, 2)
+    assert (s24.metrics["valid_stock_count"], s24.metrics["unavailable_stock_count"]) == (2, 1)
+    assert (s25.metrics["valid_stock_count"], s25.metrics["unavailable_stock_count"]) == (0, 3)
+    assert (s24.metrics["positive_count"], s24.metrics["negative_count"]) == (1, 1)
+    import pytest
+    with pytest.raises(ValueError):
+        derive_q2_auction_summary(quotes, anchor_tag="0930", **common)

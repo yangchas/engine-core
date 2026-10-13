@@ -17,6 +17,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from engine_core import AuctionAnchorSessionV1, FreshnessPolicy, RedisQ2ProjectionAdapter  # noqa: E402
 from engine_core.auction_shadow_report import build_shadow_auction_report  # noqa: E402
+from engine_core.live_input_adapters import previous_day_limit_pool_from_state  # noqa: E402
+from engine_core.live_inputs import LiveInputCache, LiveInputReader  # noqa: E402
 from engine_core.previous_day_limit_replay import previous_day_limit_pool_from_artifact  # noqa: E402
 
 ANCHOR_FIELDS = {"0920": "a20", "0924": "a24", "0925": "a25"}
@@ -150,19 +152,43 @@ def _observe_snapshot(
     return events
 
 
+def _write_tag_summaries(out_dir: Path, poll: int, snapshot: Any, trade_date: str) -> None:
+    """Per-tag (0920/0924/0925) Q2 summary metrics, comparable with the legacy
+    ``market:auction:{date}:{tag}`` summaries when read at their timestamps."""
+
+    from engine_core.market_summary import derive_q2_auction_summary
+
+    times = [q.source_record_time_ms for q in snapshot.quotes.values()
+             if q.source_record_time_ms is not None]
+    if not times:
+        return
+    observed = max(times)
+    record: dict[str, Any] = {"poll": poll, "source_time_max": observed}
+    for tag in ("0920", "0924", "0925"):
+        summary = derive_q2_auction_summary(
+            snapshot.quotes, trade_date=trade_date, source_id="redis_q2_shadow",
+            source_table="Q2:redis_projection", observation_time_ms=observed,
+            anchor_tag=tag,
+        )
+        record[tag] = {"status": summary.status.value, **summary.metrics}
+    with (out_dir / "tag_summaries.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _report_observed_ms(snapshot: Any, wall_completed: datetime) -> int:
+    times = [q.source_record_time_ms for q in snapshot.quotes.values()
+             if q.source_record_time_ms is not None]
+    return max(times) if times else int(wall_completed.timestamp() * 1000)
+
+
 def _write_report(
     out_dir: Path, poll: int, snapshot: Any, session: AuctionAnchorSessionV1,
-    pool_artifact: Mapping[str, Any], trade_date: str, wall_completed: datetime,
+    pool: Any, trade_date: str, wall_completed: datetime,
     data_origin: str,
 ) -> None:
     times = [q.source_record_time_ms for q in snapshot.quotes.values()
              if q.source_record_time_ms is not None]
     observed = max(times) if times else int(wall_completed.timestamp() * 1000)
-    cutoff = observed
-    pool = previous_day_limit_pool_from_artifact(
-        pool_artifact, trade_date=trade_date, cutoff_ms=cutoff,
-        evidence_ref="sealed_previous_day_limit_pool_json",
-    )
     report = build_shadow_auction_report(
         trade_date=trade_date, quotes=snapshot.quotes, observation_time_ms=observed,
         recoveries=session.phase_zero_recoveries, previous_pool=pool,
@@ -230,6 +256,7 @@ def run_shadow(
     recover_final_from_phase_zero: bool = False,
     pool_path: Path | None = None,
     read_times: Sequence[str] | None = None,
+    live_pool_previous_date: str | None = None,
 ) -> dict[str, Any]:
     if source == "live" and not confirm_read_only:
         raise RuntimeError("live source requires confirm_read_only=True")
@@ -241,6 +268,7 @@ def run_shadow(
             confirm_read_only=confirm_read_only,
             recover_final_from_phase_zero=recover_final_from_phase_zero,
             pool_path=pool_path, read_times=read_times,
+            live_pool_previous_date=live_pool_previous_date,
         )
     try:
         return _run_shadow_impl(
@@ -250,6 +278,7 @@ def run_shadow(
             confirm_read_only=confirm_read_only,
             recover_final_from_phase_zero=recover_final_from_phase_zero,
             pool_path=pool_path, read_times=read_times,
+            live_pool_previous_date=live_pool_previous_date,
         )
     except Exception as exc:
         raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None
@@ -285,6 +314,7 @@ def _run_shadow_impl(
     recover_final_from_phase_zero: bool = False,
     pool_path: Path | None = None,
     read_times: Sequence[str] | None = None,
+    live_pool_previous_date: str | None = None,
 ) -> dict[str, Any]:
     if out_dir.exists():
         raise FileExistsError(f"output directory already exists: {out_dir}")
@@ -312,6 +342,14 @@ def _run_shadow_impl(
     pool_artifact = None
     if pool_path is not None:
         pool_artifact = json.loads(pool_path.read_bytes())
+    pool_reader = pool_cache = None
+    if live_pool_previous_date is not None:
+        if source != "live" or pool_artifact is not None:
+            raise ValueError("--live-pool-previous-date needs live source and no --pool")
+        # Raw client on purpose: the Q2 wrapper only allows projection reads;
+        # the layer itself only calls type/hlen/hscan_iter/get/ttl.
+        pool_reader = LiveInputReader(live_client, now_ms=lambda: int(time.time() * 1000))
+        pool_cache = LiveInputCache(max_age_ms={"yest_limit_pool": 6 * 3600 * 1000})
     out_dir.mkdir(parents=True, exist_ok=False)
     events_path = out_dir / "shadow_events.jsonl"
     session = None
@@ -346,9 +384,29 @@ def _run_shadow_impl(
                         )
                     events_file.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
                 events_file.flush()
+                _write_tag_summaries(out_dir, poll, snapshot, trade_date)
+                pool = None
                 if pool_artifact is not None:
+                    pool = previous_day_limit_pool_from_artifact(
+                        pool_artifact, trade_date=trade_date,
+                        cutoff_ms=_report_observed_ms(snapshot, wall_completed),
+                        evidence_ref="sealed_previous_day_limit_pool_json",
+                    )
+                elif pool_reader is not None:
+                    state = pool_cache.refresh(pool_reader.read(
+                        "yest_limit_pool", trade_date=trade_date,
+                        previous_trade_date=live_pool_previous_date,
+                    ))
+                    with (out_dir / "live_inputs.jsonl").open("a", encoding="utf-8") as trace:
+                        trace.write(json.dumps({"poll": poll, **state.as_trace()}, sort_keys=True) + "\n")
+                    pool = previous_day_limit_pool_from_state(
+                        state, trade_date=trade_date,
+                        previous_trade_date=live_pool_previous_date,
+                        cutoff_ms=_report_observed_ms(snapshot, wall_completed),
+                    )
+                if pool is not None:
                     _write_report(
-                        out_dir, poll, snapshot, session, pool_artifact, trade_date,
+                        out_dir, poll, snapshot, session, pool, trade_date,
                         wall_completed,
                         "LIVE_REDIS_READ_ONLY" if source == "live" else "SEALED_REDIS_CAPTURE",
                     )
@@ -411,6 +469,9 @@ def main() -> int:
     parser.add_argument("--read-times",
                         help="live only: comma-separated local HH:MM:SS read times in one session "
                         "(replaces --max-polls/--poll-seconds)")
+    parser.add_argument("--live-pool-previous-date",
+                        help="read the previous-day limit pool live (YYYY-MM-DD of the previous session) "
+                        "through the live input layer instead of --pool")
     parser.add_argument("--pool", type=Path,
                         help="sealed previous-day limit pool JSON; enables a report_NNN.txt per poll")
     args = parser.parse_args()
@@ -445,6 +506,7 @@ def main() -> int:
                 recover_final_from_phase_zero=args.recover_final_from_phase_zero,
                 pool_path=args.pool,
                 read_times=_parse_times(args.read_times),
+                live_pool_previous_date=args.live_pool_previous_date,
             )
         except Exception as exc:
             raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None
