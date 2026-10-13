@@ -188,6 +188,14 @@ from .plate_membership import (
     default_alias_hierarchy,
     members_of,
 )
+from .plate_aggregation import (
+    StockFact,
+    MarketSummary,
+    PlateStat,
+    PlateAggregation,
+    market_summary,
+    aggregate_plates,
+)
 from .auction import (
     AUCTION_0925_FINALIZATION_DELAY_MS,
     classify_td_auction_inactivity,
@@ -481,6 +489,12 @@ __all__ = [
     "build_memberships",
     "default_alias_hierarchy",
     "members_of",
+    "StockFact",
+    "MarketSummary",
+    "PlateStat",
+    "PlateAggregation",
+    "market_summary",
+    "aggregate_plates",
     "BreadthFacts",
     "CALENDAR_CONTRACT_VERSION",
     "CalendarCoverageError",
