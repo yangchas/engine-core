@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -431,10 +432,30 @@ def _run_shadow_impl(
     if source == "capture":
         if (capture_path is None) == (capture_dir is None):
             raise ValueError("capture source requires exactly one of --capture or --capture-dir")
+        ignored_capture_files: list[str] = []
         if capture_dir is not None:
-            capture_paths = sorted(capture_dir.glob("capture_*.json"), key=lambda item: item.name)
+            sequence_by_path: list[tuple[int, Path]] = []
+            seen_sequences: dict[int, Path] = {}
+            ignored_capture_files = []
+            for path in capture_dir.iterdir() if capture_dir.exists() else ():
+                if not path.is_file():
+                    continue
+                match = re.fullmatch(r"capture_(\d+)\.json", path.name)
+                if match is None:
+                    ignored_capture_files.append(path.name)
+                    continue
+                sequence = int(match.group(1))
+                if sequence in seen_sequences:
+                    raise ValueError(
+                        f"duplicate capture sequence {sequence}: "
+                        f"{seen_sequences[sequence].name} and {path.name}"
+                    )
+                seen_sequences[sequence] = path
+                sequence_by_path.append((sequence, path))
+            capture_paths = [path for _, path in sorted(sequence_by_path, key=lambda item: item[0])]
+            ignored_capture_files.sort()
             if not capture_paths:
-                raise ValueError("capture directory contains no capture_*.json files")
+                raise ValueError("capture directory contains no capture_<integer>.json files")
             for path in capture_paths:
                 content = path.read_bytes()
                 item = json.loads(content)
@@ -577,7 +598,8 @@ def _run_shadow_impl(
         "capture_sha256": capture_sha256 if source == "capture" else "未记录凭据",
         **(
             {"captures": [{"file": path.name, "sha256": digest}
-                          for path, _, digest in capture_records]}
+                          for path, _, digest in capture_records],
+             "ignored_files": ignored_capture_files}
             if capture_dir is not None else {}
         ),
         "read_only": True,

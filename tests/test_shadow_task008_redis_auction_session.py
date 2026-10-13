@@ -381,6 +381,45 @@ def test_capture_dir_rejects_empty_directory_and_conflicting_cli_args(tmp_path: 
         main()
 
 
+def test_capture_dir_sorts_numeric_sequences_ignores_other_names_and_lists_them(tmp_path: Path):
+    capture_dir = tmp_path / "captures"
+    capture_dir.mkdir()
+    capture = {
+        "contract_version": "RedisQ2ReadCaptureV1",
+        "trade_date": "2026-10-09",
+        "read_completed_at": "2026-10-09T09:25:12+08:00",
+        "reads": [
+            {"operation": "smembers", "key": "q2:active:20261009", "value": ["000001"]},
+            {"operation": "hgetall", "key": "q2:000001", "value": {
+                "px": "1000", "pc": "990", "amt": "100", "ts": "1791509103000",
+                "a20": "990", "a24": "995", "a25": "1000",
+            }},
+        ],
+    }
+    for sequence in (2, 10, 101, 1000):
+        (capture_dir / f"capture_{sequence}.json").write_text(json.dumps(capture), encoding="utf-8")
+    (capture_dir / "capture_notes.json").write_text("{}", encoding="utf-8")
+    (capture_dir / "other.json").write_text("{}", encoding="utf-8")
+
+    out_dir = tmp_path / "replay"
+    run_shadow(source="capture", capture_dir=capture_dir, out_dir=out_dir)
+
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert [item["file"] for item in manifest["captures"]] == [
+        "capture_2.json", "capture_10.json", "capture_101.json", "capture_1000.json"]
+    assert manifest["ignored_files"] == ["capture_notes.json", "other.json"]
+
+
+def test_capture_dir_rejects_duplicate_numeric_sequences(tmp_path: Path):
+    capture_dir = tmp_path / "captures"
+    capture_dir.mkdir()
+    for name in ("capture_1.json", "capture_001.json"):
+        (capture_dir / name).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate capture sequence.*1"):
+        run_shadow(source="capture", capture_dir=capture_dir, out_dir=tmp_path / "replay")
+
+
 def test_live_session_records_cold_start_assessment(tmp_path: Path, monkeypatch):
     import examples.shadow_task008_redis_auction_session as module
 
