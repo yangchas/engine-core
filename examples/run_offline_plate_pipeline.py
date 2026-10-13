@@ -212,9 +212,11 @@ def build_day(
     reason_asof_unknown: bool, auction_0924_rows: Mapping[str, Mapping[str, Any]] | None = None,
     min_auction_rows: int = 4000, skipped_kline_table_symbol_count: int = 0,
     kaipan_pool_rows: Mapping[str, PoolRow] | None = None,
+    kaipan_pool_partial: bool = False,
     kaipan_hierarchy: PlateHierarchy | None = None,
     kaipan_reasons_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     hot_plate_input: Mapping[str, Any] | None = None,
+    snapshot_asof: str | None = None,
 ) -> dict[str, Any]:
     """Pure daily composition; accepts loaded data and performs no I/O."""
     if not isinstance(snapshot.get("stock_plate"), Mapping) or not isinstance(snapshot.get("s2p"), Mapping):
@@ -242,7 +244,8 @@ def build_day(
         derivation_hash = derivation.content_hash
 
     reason_pool_rows = _reason_pool_for_day(kaipan_reasons_by_symbol or {}, prior_day, td_pool_rows)
-    if kaipan_pool_rows is not None:
+    valid_kaipan_pool = kaipan_pool_rows is not None and not kaipan_pool_partial
+    if valid_kaipan_pool:
         selected_pool_rows = kaipan_pool_rows
         pool_source = "kaipan_pool"
     elif reason_pool_rows:
@@ -251,15 +254,18 @@ def build_day(
     else:
         selected_pool_rows = None
 
-    if selected_pool_rows is None:
+    if selected_pool_rows is None and td_pool_symbols:
         pool_symbols = td_pool_symbols
         pool_plates = {str(row["symbol"]): row.get("plate") for row in td_pool_rows if row.get("plate")}
         pool_lb_days = {str(row["symbol"]): row.get("lb_days") for row in td_pool_rows}
         pool_source = "td_kline"
-    else:
+    elif selected_pool_rows is not None:
         pool_symbols = set(selected_pool_rows)
         pool_plates = {symbol: row.plate for symbol, row in selected_pool_rows.items() if row.plate}
         pool_lb_days = {symbol: row.lb_days for symbol, row in selected_pool_rows.items()}
+    else:
+        pool_symbols, pool_plates, pool_lb_days = set(), {}, {}
+        pool_source = "missing"
 
     static_assignment = build_stock_plate_assignments(
         trade_date=trade_date,
@@ -360,8 +366,41 @@ def build_day(
     equal_count = sum(membership_primary[symbol] == legacy_primary[symbol] for symbol in comparable)
     no_plate = sum(not memberships.by_symbol.get(str(symbol)) for symbol in auction_rows)
     generic_count = sum(row.generic for row in aggregation.stats)
+    symbol_flags: dict[str, list[str]] = {}
+    for symbol in sorted(symbols):
+        flags: set[str] = set()
+        if not pool_symbols and not valid_kaipan_pool:
+            flags.add("POOL_MISSING")
+        if pool_source == "td_kline" and symbol in pool_symbols:
+            flags.add("PRICE_ONLY_UNSEALED")
+        if kaipan_pool_partial:
+            flags.add("SOURCE_PARTIAL")
+        if symbol not in kaipan_asof_candidates and symbol not in legacy_reason_candidates:
+            flags.add("REASON_MISSING")
+        if snapshot_asof is None or (reason_asof_unknown and symbol in legacy_reason_candidates):
+            flags.add("ASOF_UNKNOWN")
+        if not hot_plate_names:
+            flags.add("HOT_MISSING")
+        if symbol not in static_themes:
+            flags.add("STATIC_MISSING")
+        if symbol in pool_symbols and pool_lb_days.get(symbol) is None:
+            flags.add("LB_UNKNOWN")
+        symbol_flags[symbol] = sorted(flags)
+    degradation: dict[str, Any] = {
+        "POOL_MISSING": not pool_symbols and not valid_kaipan_pool,
+        "PRICE_ONLY_UNSEALED": sum("PRICE_ONLY_UNSEALED" in flags for flags in symbol_flags.values()),
+        "REASON_MISSING": sum("REASON_MISSING" in flags for flags in symbol_flags.values()),
+        "ASOF_UNKNOWN": sum("ASOF_UNKNOWN" in flags for flags in symbol_flags.values()),
+        "HOT_MISSING": sum("HOT_MISSING" in flags for flags in symbol_flags.values()),
+        "STATIC_MISSING": sum("STATIC_MISSING" in flags for flags in symbol_flags.values()),
+        "SOURCE_PARTIAL": bool(kaipan_pool_partial),
+        "LB_UNKNOWN": sum("LB_UNKNOWN" in flags for flags in symbol_flags.values()),
+    }
     quality = {
         "trade_date": trade_date,
+        "asof_semantics": "REPLAY_FROM_DATED_REASONS_NOT_AVAILABLE_AT",
+        "snapshot_asof": snapshot_asof,
+        "degradation": degradation,
         "hot_plate_source": "kaipan_his_plates" if hot_plate_input else "missing",
         "hot_plate_count": len(hot_plate_rows),
         "hot_plate_matched_member_count": len({
@@ -434,7 +473,8 @@ def build_day(
             "yest_pool_symbols": pool_symbols,
             "yest_pool_members": yest_pool_members,
             "hot_plates": [{**row, "asof_date": prior_day} for row in hot_plate_rows],
-            "hot_plate_metadata_by_name": hot_plate_metadata_by_name}
+            "hot_plate_metadata_by_name": hot_plate_metadata_by_name,
+            "symbol_flags": symbol_flags}
 
 
 def run_pipeline(
@@ -444,9 +484,11 @@ def run_pipeline(
     reason_asof_unknown: bool = False, auction_0924_by_date: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
     min_auction_rows: int = 4000, skipped_kline_table_symbol_count: int = 0,
     kaipan_pool_by_day: Mapping[str, Mapping[str, PoolRow]] | None = None,
+    kaipan_pool_partial_dates: set[str] | None = None,
     kaipan_hierarchy: PlateHierarchy | None = None,
     kaipan_reasons_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     kaipan_hot_plates_by_day: Mapping[str, Mapping[str, Any]] | None = None,
+    snapshot_asof: str | None = None,
 ) -> dict[str, Any]:
     included, skipped = [], []
     for day in dates:
@@ -463,10 +505,12 @@ def run_pipeline(
             auction_0924_rows=(auction_0924_by_date or {}).get(day, {}), min_auction_rows=min_auction_rows,
             skipped_kline_table_symbol_count=skipped_kline_table_symbol_count,
             kaipan_pool_rows=(kaipan_pool_by_day or {}).get(
-                max((session for session in _kline_by_day(klines_by_symbol) if session < day), default=""),
+                prior_day,
             ), kaipan_hierarchy=kaipan_hierarchy,
+            kaipan_pool_partial=prior_day in (kaipan_pool_partial_dates or set()),
             kaipan_reasons_by_symbol=kaipan_reasons_by_symbol,
             hot_plate_input=(kaipan_hot_plates_by_day or {}).get(prior_day),
+            snapshot_asof=snapshot_asof,
         )))
     return {"days": included, "skipped": skipped}
 
@@ -520,21 +564,67 @@ def _load_reasons(path: Path | None) -> dict[str, list[dict[str, Any]]]:
 
 
 def _load_kaipan_inputs(path: Path) -> tuple[dict[str, dict[str, PoolRow]], PlateHierarchy]:
-    pools: dict[str, dict[str, PoolRow]] = {}
+    pools, hierarchy, _partial_dates = _load_kaipan_inputs_with_status(path)
+    return pools, hierarchy
+
+
+def _load_kaipan_inputs_with_status(
+    path: Path,
+) -> tuple[dict[str, dict[str, PoolRow]], PlateHierarchy, set[str]]:
+    candidates: dict[str, dict[str, PoolRow]] = {}
+    files_by_date: dict[str, set[int]] = {}
+    invalid_dates: set[str] = set()
     pool_dir = path / "pools"
     if pool_dir.is_dir():
         for source in sorted(pool_dir.glob("*_ban*.json")):
-            trade_date = source.name.split("_ban", 1)[0]
-            parsed = parse_kaipan_pool(_read_json(source))
-            current = pools.setdefault(trade_date, {})
+            match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})_ban([1-5])\.json", source.name)
+            if not match:
+                continue
+            trade_date, level_text = match.groups()
+            files_by_date.setdefault(trade_date, set()).add(int(level_text))
+            try:
+                raw_pool = _read_json(source)
+            except (OSError, ValueError):
+                invalid_dates.add(trade_date)
+                continue
+            if not isinstance(raw_pool, Mapping) or not isinstance(raw_pool.get("info"), (list, tuple)):
+                invalid_dates.add(trade_date)
+                continue
+            parsed = parse_kaipan_pool(raw_pool)
+            current = candidates.setdefault(trade_date, {})
             for symbol, row in parsed.items():
                 existing = current.get(symbol)
                 if existing is None or (row.lb_days is not None and
                                         (existing.lb_days is None or row.lb_days > existing.lb_days)):
                     current[symbol] = row
+    manifest: Mapping[str, Any] = {}
+    manifest_path = path / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            raw_manifest = _read_json(manifest_path)
+        except (OSError, ValueError):
+            raw_manifest = {}
+        if isinstance(raw_manifest, Mapping):
+            manifest = raw_manifest
+    pool_complete_by_date = manifest.get("pool_complete_by_date", {})
+    successful_dates = {trade_date for trade_date, complete in pool_complete_by_date.items() if complete is True} \
+        if isinstance(pool_complete_by_date, Mapping) else set()
+    requested_dates = set(manifest.get("parameters", {}).get("dates", ())) \
+        if isinstance(manifest.get("parameters"), Mapping) else set()
+    pools: dict[str, dict[str, PoolRow]] = {}
+    partial_dates: set[str] = set()
+    for trade_date, candidate_rows in candidates.items():
+        files_complete_with_data = (files_by_date.get(trade_date) == {1, 2, 3, 4, 5}
+                                    and bool(candidate_rows) and trade_date not in invalid_dates)
+        manifest_confirms = trade_date in successful_dates and trade_date not in invalid_dates
+        if files_complete_with_data or manifest_confirms:
+            pools[trade_date] = candidate_rows
+        else:
+            partial_dates.add(trade_date)
+    partial_dates.update((files_by_date.keys() | requested_dates) - pools.keys())
     reason_responses = [_read_json(source) for source in sorted((path / "reasons").glob("*.json"))] \
         if (path / "reasons").is_dir() else []
-    return pools, parse_kaipan_reason_hierarchy(reason_responses)
+    return pools, parse_kaipan_reason_hierarchy(reason_responses), partial_dates
 
 
 def _load_kaipan_reasons(path: Path) -> dict[str, list[dict[str, Any]]]:
@@ -587,6 +677,30 @@ def _load_kaipan_hot_plates(path: Path) -> dict[str, dict[str, Any]]:
                          "strength": _number(row[2]), "change_pct": _number(row[3])})
         result[source.stem] = {"rows": rows, "invalid_rows": invalid, "empty_names": empty_names}
     return result
+
+
+def _snapshot_asof(path: Path, explicit: str | None, snapshot: Mapping[str, Any]) -> str | None:
+    if explicit:
+        try:
+            return date.fromisoformat(explicit).isoformat()
+        except ValueError as exc:
+            raise ValueError("snapshot-asof must be YYYY-MM-DD") from exc
+    for key in ("snapshot_asof", "asof_date", "trade_date"):
+        value = snapshot.get(key)
+        if isinstance(value, str):
+            try:
+                return date.fromisoformat(value).isoformat()
+            except ValueError:
+                pass
+    sources = list(path.iterdir()) if path.is_dir() else [path]
+    for source in [path, *sources]:
+        match = re.search(r"(?<!\d)(20\d{2}-\d{2}-\d{2})(?!\d)", source.name)
+        if match:
+            try:
+                return date.fromisoformat(match.group(1)).isoformat()
+            except ValueError:
+                pass
+    return None
 
 
 def _connect_td(host: str):
@@ -699,6 +813,7 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
         membership_payload["legacy_v1_primary_by_symbol"] = value["legacy_v1_primary_by_symbol"]
         membership_payload["yest_pool_symbols"] = sorted(value["yest_pool_symbols"])
         membership_payload["yest_pool_members"] = value["yest_pool_members"]
+        membership_payload["symbol_flags"] = value["symbol_flags"]
         membership_payload["engine_membership_content_hash"] = membership_payload["content_hash"]
         canonical_membership_payload = json.dumps(
             membership_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -744,6 +859,8 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
         "unmapped_auction_symbol_count_by_date": unmapped,
         "skipped_kline_table_symbol_count_by_date": skipped_kline_symbols,
         "legacy_pool_comparison": legacy_pool_comparison if getattr(args, "legacy_pool_dir", None) else None,
+        "asof_semantics": "REPLAY_FROM_DATED_REASONS_NOT_AVAILABLE_AT",
+        "snapshot_asof": getattr(args, "snapshot_asof", None),
         "interpretation": "离线事实, 非策略结论",
         "reason_asof_unknown": bool(args.reasons),
     }
@@ -753,6 +870,7 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", type=Path, required=True)
+    parser.add_argument("--snapshot-asof", help="static snapshot date YYYY-MM-DD when its name does not include one")
     parser.add_argument("--reasons", type=Path)
     parser.add_argument("--kline-range", required=True, help="bounded TD date range YYYY-MM-DD:YYYY-MM-DD")
     parser.add_argument("--start-date", required=True)
@@ -773,7 +891,8 @@ def main(argv: list[str] | None = None) -> int:
     ensure_empty_output_dir(args.output_dir)
     snapshot = _load_snapshot(args.snapshot)
     reasons = _load_reasons(args.reasons)
-    kaipan_pools, kaipan_hierarchy = _load_kaipan_inputs(args.kaipan_dir) if args.kaipan_dir else ({}, None)
+    kaipan_pools, kaipan_hierarchy, kaipan_pool_partial_dates = \
+        _load_kaipan_inputs_with_status(args.kaipan_dir) if args.kaipan_dir else ({}, None, set())
     kaipan_reasons = _load_kaipan_reasons(args.kaipan_dir) if args.kaipan_dir else None
     kaipan_hot_plates = _load_kaipan_hot_plates(args.kaipan_dir) if args.kaipan_dir else {}
     symbols = sorted(set(map(str, snapshot["stock_plate"])) | set(map(str, snapshot["s2p"])) | set(reasons))
@@ -781,15 +900,19 @@ def main(argv: list[str] | None = None) -> int:
     # Confirm database value before opening and reuse that same value for the query.
     klines, auctions, previous, skipped_kline_symbols = _read_td(args.td_host, os.environ.get("TDENGINE_DATABASE", "market_data1"),
                                            symbols, kline_start.isoformat(), kline_end.isoformat(), auction_dates)
+    snapshot_asof = _snapshot_asof(args.snapshot, args.snapshot_asof, snapshot)
     result = run_pipeline(
         dates=auction_dates, klines_by_symbol=klines, auction_by_date=auctions, snapshot=snapshot,
         reasons_by_symbol=reasons, start_date=args.start_date, end_date=args.end_date,
         reason_asof_unknown=args.reasons is not None, auction_0924_by_date=previous,
         skipped_kline_table_symbol_count=skipped_kline_symbols,
         kaipan_pool_by_day=kaipan_pools, kaipan_hierarchy=kaipan_hierarchy,
+        kaipan_pool_partial_dates=kaipan_pool_partial_dates,
         kaipan_reasons_by_symbol=kaipan_reasons,
         kaipan_hot_plates_by_day=kaipan_hot_plates,
+        snapshot_asof=snapshot_asof,
     )
+    args.snapshot_asof = snapshot_asof
     _emit(args.output_dir, result, args)
     return 0
 

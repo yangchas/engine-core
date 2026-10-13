@@ -235,3 +235,35 @@ def test_manifest_is_incrementally_written_at_configured_interval(tmp_path):
               sleep_s=0, sleep_fn=lambda _: None)
     assert observed_request_counts == [None, 2, 2]
     assert json.loads((out / "manifest.json").read_text())["request_count"] == 4
+
+
+def test_manifest_complete_requires_all_five_pool_tiers_and_cli_returns_failure(tmp_path, monkeypatch):
+    row = ["600001", "测试", *([None] * 14)]
+    pool = {"info": [[row]], "errcode": "0"}
+    analyzer = FakeAnalyzer({("2026-10-12", str(level)): pool for level in range(1, 6)},
+                            {"600001": {"List": []}})
+    manifest = fetch_all(analyzer, ["2026-10-12"], output_dir=tmp_path / "complete",
+                         max_ban=5, sleep_s=0, sleep_fn=lambda _: None)
+    assert manifest["complete"] is True
+
+    partial = fetch_all(FakeAnalyzer({("2026-10-12", "1"): pool}), ["2026-10-12"],
+                        output_dir=tmp_path / "partial", max_ban=1,
+                        sleep_s=0, sleep_fn=lambda _: None)
+    assert partial["complete"] is False
+
+    import sys
+    import types
+    import examples.fetch_kaipan_snapshot as fetch_module
+    monkeypatch.setattr(fetch_module, "fetch_all", lambda *args, **kwargs: {
+        "request_count": 1, "truncated": False, "aborted": False, "complete": False,
+        "failures": [{"error_type": "EmptyResponse"}],
+    })
+    package = types.ModuleType("ai")
+    api = types.ModuleType("ai.API")
+    stock_analyzer = types.ModuleType("ai.API.StockAnalyzer")
+    stock_analyzer.StockAnalyzer = lambda: FakeAnalyzer()
+    monkeypatch.setitem(sys.modules, "ai", package)
+    monkeypatch.setitem(sys.modules, "ai.API", api)
+    monkeypatch.setitem(sys.modules, "ai.API.StockAnalyzer", stock_analyzer)
+    assert fetch_module.main(["--legacy-root", str(tmp_path), "--output-dir", str(tmp_path / "cli"),
+                              "--dates", "2026-10-12", "--sleep-s", "0"]) == 2

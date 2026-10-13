@@ -210,6 +210,12 @@ def fetch_all(
         reason_fetcher = _make_reason_fetcher(analyzer, reason_page_size)
 
     def build_manifest(ended_at: str | None = None) -> dict[str, Any]:
+        pool_complete_by_date = {
+            trade_date: {"1", "2", "3", "4", "5"} <= set(pool_counts.get(trade_date, {}))
+            for trade_date in dates
+        }
+        complete = (not failures and not truncated and not aborted
+                    and all(pool_complete_by_date.values()))
         return {
             "parameters": {
                 "dates": dates, "max_ban": max_ban, "size": size,
@@ -222,6 +228,8 @@ def fetch_all(
             },
             "request_count": request_count,
             "pool_counts": pool_counts,
+            "pool_complete_by_date": pool_complete_by_date,
+            "complete": complete,
             "hot_plate_counts": hot_plate_counts,
             "pool_symbol_counts": {date: len(values) for date, values in pool_symbol_sets.items()},
             "failures": failures,
@@ -374,8 +382,9 @@ def main(argv: list[str] | None = None) -> int:
         reason_symbols_from_pool=args.reason_symbols_from_pool,
         extra_symbols=[item.strip() for item in args.extra_symbols.split(",") if item.strip()],
     )
-    print(f"requests={manifest['request_count']} truncated={manifest['truncated']} aborted={manifest['aborted']}")
-    return 0
+    print(f"requests={manifest['request_count']} truncated={manifest['truncated']} aborted={manifest['aborted']} "
+          f"complete={manifest['complete']}")
+    return 0 if manifest["complete"] else 2
 
 
 if __name__ == "__main__":

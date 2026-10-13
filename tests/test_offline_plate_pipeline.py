@@ -80,10 +80,11 @@ def test_kaipan_pool_input_owns_tier_one_membership(tmp_path):
     pool_dir = tmp_path / "kaipan" / "pools"
     pool_dir.mkdir(parents=True)
     row = ["000001", "平安银行"] + [None] * 10 + ["Kaipan板"] + [None, None, 3]
-    (pool_dir / "2026-01-02_ban1.json").write_text(
-        json.dumps({"info": [[row], ["2026-01-02", "metadata"]], "errcode": "0"}),
-        encoding="utf-8",
-    )
+    for level in range(1, 6):
+        (pool_dir / f"2026-01-02_ban{level}.json").write_text(
+            json.dumps({"info": [[row], ["2026-01-02", "metadata"]], "errcode": "0"}),
+            encoding="utf-8",
+        )
     pools, hierarchy = _load_kaipan_inputs(tmp_path / "kaipan")
     result = run_pipeline(
         dates=["2026-01-05"], klines_by_symbol={
@@ -313,6 +314,86 @@ def test_missing_kaipan_reason_file_falls_back_to_legacy_snapshot_and_counts_unk
     }
     assert result["quality"]["reason_asof_unknown_symbol_count"] == 1
     assert result["reason_asof_unknown"] is True
+
+
+def test_td_pool_fallback_is_labeled_price_only_unsealed():
+    result = build_day(
+        trade_date="2026-01-05",
+        klines_by_symbol={"a": [_kline("a", "2026-01-02", 11, 10),
+                                 _kline("a", "2026-01-05", 11, 0)]},
+        auction_rows={"a": {"px_milli": 11000}},
+        snapshot={"stock_plate": {"a": "静态板"}, "s2p": {"a": ["静态板"]}},
+        reasons_by_symbol={}, reason_asof_unknown=False, min_auction_rows=1,
+    )
+    assert result["quality"]["pool_source"] == "td_kline"
+    assert result["quality"]["degradation"]["PRICE_ONLY_UNSEALED"] == 1
+    assert "PRICE_ONLY_UNSEALED" in result["symbol_flags"]["a"]
+
+
+def test_incomplete_empty_kaipan_pool_does_not_override_reason_fallback(tmp_path):
+    from examples.run_offline_plate_pipeline import _load_kaipan_inputs_with_status, run_pipeline
+
+    pool_dir = tmp_path / "kaipan" / "pools"
+    pool_dir.mkdir(parents=True)
+    (pool_dir / "2026-01-02_ban1.json").write_text(json.dumps({"info": [[]]}), encoding="utf-8")
+    pools, hierarchy, partial_dates = _load_kaipan_inputs_with_status(tmp_path / "kaipan")
+    result = run_pipeline(
+        dates=["2026-01-05"], klines_by_symbol={
+            "a": [_kline("a", "2026-01-02", 10, 0), _kline("a", "2026-01-05", 10, 0)]},
+        auction_by_date={"2026-01-05": {"a": {"px_milli": 10000}}},
+        snapshot={"stock_plate": {"a": "静态板"}, "s2p": {"a": ["静态板"]}},
+        reasons_by_symbol={}, start_date="2026-01-05", end_date="2026-01-05",
+        min_auction_rows=1, kaipan_pool_by_day=pools, kaipan_hierarchy=hierarchy,
+        kaipan_pool_partial_dates=partial_dates,
+        kaipan_reasons_by_symbol={"a": [{"Date": "2026-01-02", "Type": "0",
+                                           "Reason": "主题(原因板)"}]},
+    )
+    value = result["days"][0][1]
+    assert value["quality"]["pool_source"] == "kaipan_reasons"
+    assert value["quality"]["degradation"]["SOURCE_PARTIAL"] is True
+    assert value["memberships"].by_symbol["a"][0].plate == "主题"
+
+    complete_empty = tmp_path / "complete_empty"
+    (complete_empty / "pools").mkdir(parents=True)
+    for level in range(1, 6):
+        (complete_empty / "pools" / f"2026-01-02_ban{level}.json").write_text(
+            json.dumps({"info": [[]]}), encoding="utf-8",
+        )
+    (complete_empty / "manifest.json").write_text(json.dumps({
+        "pool_complete_by_date": {"2026-01-02": True},
+    }), encoding="utf-8")
+    empty_pools, _empty_hierarchy, empty_partial = _load_kaipan_inputs_with_status(complete_empty)
+    empty_result = run_pipeline(
+        dates=["2026-01-05"], klines_by_symbol={
+            "a": [_kline("a", "2026-01-02", 10, 0), _kline("a", "2026-01-05", 10, 0)]},
+        auction_by_date={"2026-01-05": {"a": {"px_milli": 10000}}},
+        snapshot={"stock_plate": {"a": "静态板"}, "s2p": {"a": ["静态板"]}},
+        reasons_by_symbol={}, start_date="2026-01-05", end_date="2026-01-05",
+        min_auction_rows=1, kaipan_pool_by_day=empty_pools,
+        kaipan_pool_partial_dates=empty_partial,
+        kaipan_reasons_by_symbol={"a": [{"Date": "2026-01-02", "Type": "0",
+                                           "Reason": "主题(原因板)"}]},
+    )["days"][0][1]
+    assert empty_result["quality"]["pool_source"] == "kaipan_pool"
+    assert empty_result["quality"]["degradation"]["POOL_MISSING"] is False
+
+
+def test_quality_and_memberships_report_replay_semantics_and_missing_sources():
+    result = build_day(
+        trade_date="2026-01-05", klines_by_symbol={},
+        auction_rows={"a": {"px_milli": 10000}},
+        snapshot={"stock_plate": {}, "s2p": {}}, reasons_by_symbol={},
+        reason_asof_unknown=False, min_auction_rows=1,
+    )
+    quality = result["quality"]
+    assert quality["asof_semantics"] == "REPLAY_FROM_DATED_REASONS_NOT_AVAILABLE_AT"
+    assert quality["snapshot_asof"] is None
+    assert quality["degradation"]["POOL_MISSING"] is True
+    assert quality["degradation"]["HOT_MISSING"] > 0
+    assert quality["degradation"]["ASOF_UNKNOWN"] > 0
+    assert {"POOL_MISSING", "HOT_MISSING", "STATIC_MISSING", "REASON_MISSING", "ASOF_UNKNOWN"} <= set(
+        result["symbol_flags"]["a"]
+    )
 
 
 
