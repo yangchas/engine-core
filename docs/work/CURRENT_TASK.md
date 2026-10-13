@@ -1,5 +1,22 @@
 # Current Task
 
+## 2026-10-14 prepared: time-aligned 0920/0924 summary comparison
+
+Legacy 0920/0924/0925 summaries are frozen at ts 09:20:03 / 09:24:10 /
+09:25:06 (10-13: 4931 valid 1123 / 5121 valid 3486 / 5210 valid 4853); a
+same-day final Q2 is not comparable (a20 3318, a24 4315). The shadow script
+now writes `tag_summaries.jsonl` per poll; `examples/compare_task008_tag_summaries_vs_legacy.py`
+picks, per tag, the poll whose `source_time_max` is nearest the legacy `ts`
+and reports gap and per-field differences (`NOT_TIME_ALIGNED` beyond 6 s).
+A background session (`scratchpad/tomorrow_session.sh`, started 2026-10-13
+~12:00) sleeps to 2026-10-14 09:19:45, then runs one live session with
+`--seal-captures --recover-final-from-phase-zero --live-pool-previous-date`
+at dense reads 09:20:00-09:20:24, 09:24:06-09:24:18 and sparse reads to
+09:29:50, outputs to `/home/exedev/validation/shadow-live-auction-20261014`;
+at 09:31 it reads the legacy projection/anchor archive into
+`real-hot-plates-20261014/` and writes `compare-tag-summaries-20261014.json`.
+Dry run on 10-13 data: all three tags reported 1200-1500 s apart, as expected.
+
 ## 2026-10-13 hot_plates units, max-age defaults, sealed captures
 
 - hot_plates (cache updated 09:27:29, phase=auction, 50 rows): `change_pct` is
