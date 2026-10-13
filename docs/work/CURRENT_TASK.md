@@ -1,5 +1,16 @@
 # Current Task
 
+## 2026-10-13 M4 per-stock auction extremes (`engine_core.stock_extremes`)
+
+Legacy `【竞价极值榜】` is a composite score with hand-set weights plus a
+trading conclusion (`_extreme_score`, `_extreme_type_label`): strategy output,
+not migrated as a fact. Core provides single-measure rankings only: auction
+amount, 0925 gain/drop in bp (`trunc((a25-pc)*1e4/pc)`), limit-up seal amount
+(`br` where `ls==1`) and, when 0924 amounts are supplied, the amount delta.
+A stock lacking the measure is excluded and counted (never ranked as zero), so
+a ranking with exclusions is PARTIAL. Rendered in the auction report; 11:48
+sealed capture: 5211 candidates, 358 excluded from gain/drop (no a25).
+
 ## 2026-10-13 M3 cold-start strategy (`engine_core.cold_start`)
 
 `assess_cold_start(plan, start_ms)` classifies a start (PREMARKET,
