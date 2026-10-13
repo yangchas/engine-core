@@ -108,3 +108,54 @@ def test_exception_messages_and_sensitive_terms_are_not_serialized(tmp_path):
     assert manifest["failures"] == [{"error_type": "RuntimeError", "date": "2026-10-09", "lvl": 1}]
     assert "secret" not in serialized and "private" not in serialized
     assert "Token" not in serialized and "DeviceID" not in serialized
+
+
+def test_injected_reason_fetcher_uses_page_size_and_writes_raw_response(tmp_path):
+    pool = {"info": [[ ["600001", "甲", *([None] * 14)] ]]}
+    raw_reason = {"StockID": "600001", "List": [{"Date": "2026-10-12", "Reason": "原始"}]}
+    calls = []
+    analyzer = FakeAnalyzer({("2026-10-09", "1"): pool})
+
+    def fetcher(code, page_size):
+        calls.append((code, page_size))
+        return raw_reason
+
+    out = tmp_path / "out"
+    fetch_all(analyzer, ["2026-10-09"], output_dir=out, max_ban=1,
+              reason_page_size=40, reason_fetcher=fetcher,
+              sleep_s=0, sleep_fn=lambda _: None)
+    assert calls == [("600001", 40)]
+    assert json.loads((out / "reasons/600001.json").read_text()) == raw_reason
+    assert not [call for call in analyzer.calls if call[0] == "reason"]
+
+
+def test_reason_response_equal_to_page_size_is_marked_possibly_truncated(tmp_path):
+    raw_reason = {"List": [{"Date": "2026-10-12"}, {"Date": "2026-10-11"}]}
+    analyzer = FakeAnalyzer({("2026-10-09", "1"): {"info": [[
+        ["600001", "甲", *([None] * 14)]
+    ]]}})
+    manifest = fetch_all(analyzer, ["2026-10-09"], output_dir=tmp_path / "out",
+                         max_ban=1, reason_page_size=2,
+                         reason_fetcher=lambda _code, _page_size: raw_reason,
+                         sleep_s=0, sleep_fn=lambda _: None)
+    assert manifest["possibly_truncated_symbols"] == ["600001"]
+
+
+def test_manifest_is_incrementally_written_at_configured_interval(tmp_path):
+    pool_rows = [[f"60000{i}", f"甲{i}", *([None] * 14)] for i in range(1, 4)]
+    analyzer = FakeAnalyzer({("2026-10-09", "1"): {"info": [pool_rows]}})
+    out = tmp_path / "out"
+    observed_request_counts = []
+
+    def fetcher(code, _page_size):
+        manifest_path = out / "manifest.json"
+        observed_request_counts.append(
+            json.loads(manifest_path.read_text())["request_count"] if manifest_path.exists() else None
+        )
+        return {"List": [{"Date": "2026-10-12"}]}
+
+    fetch_all(analyzer, ["2026-10-09"], output_dir=out, max_ban=1,
+              reason_fetcher=fetcher, manifest_every=2,
+              sleep_s=0, sleep_fn=lambda _: None)
+    assert observed_request_counts == [None, 2, 2]
+    assert json.loads((out / "manifest.json").read_text())["request_count"] == 4

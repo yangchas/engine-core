@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import re
 import sys
@@ -27,6 +28,39 @@ def _write_json(path: Path, value: Any) -> str:
     with path.open("xb") as handle:
         handle.write(payload)
     return hashlib.sha256(payload).hexdigest()
+
+
+def _write_manifest(path: Path, value: Any) -> None:
+    payload = (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("wb") as handle:
+        handle.write(payload)
+        handle.flush()
+    temporary.replace(path)
+
+
+def _make_reason_fetcher(analyzer: Any, page_size: int) -> Callable[[str, int], Any]:
+    if page_size == 1:
+        return lambda code, _page_size: analyzer.get_ban_reasons(code)
+
+    def fetch(code: str, requested_page_size: int) -> Any:
+        # Import at call time so the offline/injected path does not load legacy SDK code.
+        kaipan = importlib.import_module("pykaipan")
+        config = kaipan.config
+        reques = kaipan.reques
+        params = {
+            "StockID": code,
+            "st": requested_page_size,
+        }
+        # Match the legacy SDK request envelope while overriding only the page size.
+        params.update({key: config[key] for key in ("DeviceID", "Token") if key in config})
+        base_url = config.get("url") or config.get("URL")
+        if not isinstance(base_url, str):
+            raise TypeError("invalid Kaipan configuration")
+        url = base_url.rstrip("/") + "/GetDayZhangTing/HisLimitResumption"
+        return reques(url, params)
+
+    return fetch
 
 
 def _pool_code(value: Any) -> str | None:
@@ -80,6 +114,9 @@ def fetch_all(
     max_requests: int = 400,
     reason_symbols_from_pool: bool = True,
     extra_symbols: Iterable[str] = (),
+    reason_page_size: int = 1,
+    reason_fetcher: Callable[[str, int], Any] | None = None,
+    manifest_every: int = 50,
     sleep_fn: Callable[[float], None] = time.sleep,
     now_fn: Callable[[], str] = _utc_now,
 ) -> dict[str, Any]:
@@ -90,6 +127,10 @@ def fetch_all(
         raise FileExistsError("output directory must not exist or must be empty")
     if max_requests < 0:
         raise ValueError("max_requests must be non-negative")
+    if reason_page_size <= 0:
+        raise ValueError("reason_page_size must be positive")
+    if manifest_every <= 0:
+        raise ValueError("manifest_every must be positive")
     if target.exists():
         target.rmdir()
     target.mkdir(parents=True)
@@ -104,11 +145,36 @@ def fetch_all(
     truncated = False
     aborted = False
     failures: list[dict[str, Any]] = []
+    possibly_truncated_symbols: list[str] = []
     checksums: dict[str, str] = {}
     pool_counts: dict[str, dict[str, int]] = {date: {} for date in dates}
     pool_symbol_sets: dict[str, set[str]] = {date: set() for date in dates}
     symbols: list[str] = []
     seen_symbols: set[str] = set()
+    if reason_fetcher is None:
+        reason_fetcher = _make_reason_fetcher(analyzer, reason_page_size)
+
+    def build_manifest(ended_at: str | None = None) -> dict[str, Any]:
+        return {
+            "parameters": {
+                "dates": dates, "max_ban": max_ban, "size": size,
+                "sleep_s": sleep_s, "max_requests": max_requests,
+                "reason_symbols_from_pool": reason_symbols_from_pool,
+                "extra_symbols": list(extra_symbols),
+                "reason_page_size": reason_page_size,
+                "manifest_every": manifest_every,
+            },
+            "request_count": request_count,
+            "pool_counts": pool_counts,
+            "pool_symbol_counts": {date: len(values) for date, values in pool_symbol_sets.items()},
+            "failures": failures,
+            "possibly_truncated_symbols": possibly_truncated_symbols,
+            "started_at_utc": started_at,
+            "ended_at_utc": ended_at,
+            "sha256": checksums,
+            "truncated": truncated,
+            "aborted": aborted,
+        }
 
     def request(kind: str, *, date: str | None = None, lvl: int | None = None,
                 symbol: str | None = None) -> bool:
@@ -121,7 +187,7 @@ def fetch_all(
             if kind == "pool":
                 response = analyzer._call_api("getHisBans", date=date, ban=str(lvl), size=size)
             else:
-                response = analyzer.get_ban_reasons(symbol)
+                response = reason_fetcher(symbol or "", reason_page_size)
         except Exception as exc:
             entry: dict[str, Any] = {"error_type": type(exc).__name__}
             if date is not None:
@@ -160,8 +226,13 @@ def fetch_all(
                 pool_counts[date][str(lvl)] = _response_rows(response)
             else:
                 relative = f"reasons/{_filename_symbol(symbol or '')}.json"
+                rows = response.get("List") if isinstance(response, dict) else None
+                if isinstance(rows, list) and len(rows) == reason_page_size:
+                    possibly_truncated_symbols.append(symbol or "")
             checksums[relative] = _write_json(target / relative, response)
         sleep_fn(sleep_s)
+        if request_count % manifest_every == 0:
+            _write_manifest(target / "manifest.json", build_manifest())
         if consecutive_bad >= 8:
             aborted = True
         return not aborted
@@ -189,24 +260,8 @@ def fetch_all(
             if aborted:
                 break
 
-    manifest = {
-        "parameters": {
-            "dates": dates, "max_ban": max_ban, "size": size,
-            "sleep_s": sleep_s, "max_requests": max_requests,
-            "reason_symbols_from_pool": reason_symbols_from_pool,
-        "extra_symbols": list(extra_symbols),
-        },
-        "request_count": request_count,
-        "pool_counts": pool_counts,
-        "pool_symbol_counts": {date: len(values) for date, values in pool_symbol_sets.items()},
-        "failures": failures,
-        "started_at_utc": started_at,
-        "ended_at_utc": now_fn(),
-        "sha256": checksums,
-        "truncated": truncated,
-        "aborted": aborted,
-    }
-    _write_json(target / "manifest.json", manifest)
+    manifest = build_manifest(ended_at=now_fn())
+    _write_manifest(target / "manifest.json", manifest)
     return manifest
 
 
@@ -225,6 +280,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--size", type=int, default=200)
     parser.add_argument("--sleep-s", type=float, default=0.7)
     parser.add_argument("--max-requests", type=int, default=400)
+    parser.add_argument("--reason-page-size", type=int, default=1)
+    parser.add_argument("--manifest-every", type=int, default=50)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--reason-symbols-from-pool", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--extra-symbols", default="")
@@ -237,6 +294,8 @@ def main(argv: list[str] | None = None) -> int:
         StockAnalyzer(), args.dates, output_dir=args.output_dir,
         max_ban=args.max_ban, size=args.size, sleep_s=args.sleep_s,
         max_requests=args.max_requests,
+        reason_page_size=args.reason_page_size,
+        manifest_every=args.manifest_every,
         reason_symbols_from_pool=args.reason_symbols_from_pool,
         extra_symbols=[item.strip() for item in args.extra_symbols.split(",") if item.strip()],
     )
