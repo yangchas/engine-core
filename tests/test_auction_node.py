@@ -340,3 +340,43 @@ def test_auction_node_requires_read_only_confirmation(tmp_path):
             live_client=StrictAuctionClient(), ledger_path=tmp_path / "ledger.jsonl",
             read_times=("09:33:05",),
         )
+
+
+def test_dataset_checkpoints_are_deduplicated_and_read_errors_are_isolated(
+    tmp_path, monkeypatch,
+):
+    from engine_core.live_inputs import LiveInputReader
+
+    original_read = LiveInputReader.read
+
+    def fail_anchor_once(self, name, **kwargs):
+        if name == "anchor_archive":
+            raise OSError("injected read failure")
+        return original_read(self, name, **kwargs)
+
+    monkeypatch.setattr(LiveInputReader, "read", fail_anchor_once)
+    _use_q2_observation_times(monkeypatch, ("09:25:00", "09:26:05", "09:26:05"))
+    client = FreshAuctionClient(("09:25:00", "09:26:00", "09:26:00"))
+    result = _node(
+        tmp_path, client,
+        tmp_path / "ledger.jsonl", ("09:25:00", "09:26:05", "09:26:05"),
+        lambda day, hms: local_datetime_ms(day, hms),
+    )
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "node" / "datasets.jsonl").read_text().splitlines()
+    ]
+    checkpoint_rows = [row for row in rows if row["read_at"] == "09:26:05"]
+    assert {row["summary"]["name"] for row in checkpoint_rows} == {
+        "hot_plates", "hot_rank", "yest_limit_pool", "stock_plate", "s2p",
+        "anchor_archive",
+    }
+    assert len(checkpoint_rows) == 6
+    anchor = next(row["summary"] for row in checkpoint_rows if row["summary"]["name"] == "anchor_archive")
+    assert anchor["status"] == "READ_ERROR"
+    assert anchor["exception_type"] == "OSError"
+    assert result["timers_acknowledged"] == ["AUCTION_0926"]
+    assert set(client.calls) <= {
+        "smembers", "hgetall", "type", "hlen", "hscan_iter", "get", "ttl",
+    }

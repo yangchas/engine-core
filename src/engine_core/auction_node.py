@@ -19,7 +19,9 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .calendar import build_calendar_snapshot
 from .clock import local_datetime_ms
+from .dataset_refresh import DATASET_SCHEDULE, summarize_dataset_state
 from .execution_ledger import ExecutionLedger
+from .live_inputs import LiveInputCache, LiveInputReader, LiveInputState
 from .session import build_a_share_session_plan
 from .session_runtime import SessionRuntimeCoordinator
 from .timers import TimerFiring, TimerSpec
@@ -102,11 +104,48 @@ def run_auction_node(
     timers_pending: set[str] = set()
     readiness_delayed: set[str] = set()
     polls = 0
+    dataset_reader_now_ms = 0
+    dataset_reader = LiveInputReader(
+        live_client, now_ms=lambda: dataset_reader_now_ms,
+    )
+    dataset_cache = LiveInputCache()
+    dataset_read_at_done: set[tuple[str, str]] = set()
+    dataset_latest: dict[str, dict[str, Any]] = {}
 
     def on_poll(record: Mapping[str, Any]) -> None:
-        nonlocal first_observation, polls
+        nonlocal first_observation, polls, dataset_reader_now_ms
         polls += 1
         observed_at_ms = int(record["observed_at_ms"])
+        dataset_reader_now_ms = observed_at_ms
+        due_datasets = []
+        for item in DATASET_SCHEDULE:
+            for read_at in item["read_at"]:
+                identity = (item["name"], read_at)
+                scheduled_ms = local_datetime_ms(trade_date, read_at)
+                if identity not in dataset_read_at_done and observed_at_ms >= scheduled_ms:
+                    due_datasets.append((scheduled_ms, item["name"], read_at))
+        for _, name, read_at in sorted(due_datasets):
+            dataset_read_at_done.add((name, read_at))
+            try:
+                state = dataset_cache.refresh(dataset_reader.read(
+                    name, trade_date=trade_date,
+                    previous_trade_date=live_pool_previous_date,
+                ))
+                summary = summarize_dataset_state(state, observed_at_ms)
+            except Exception as error:
+                summary = {
+                    "name": name, "status": "READ_ERROR", "row_count": None,
+                    "key": None, "last_refreshed_ms": None, "meta_phase": None,
+                    "meta_updated_at": None, "meta_updated_at_ts": None,
+                    "writer_age_ms": None, "reason": None,
+                    "exception_type": type(error).__name__,
+                }
+            dataset_latest[name] = summary
+            with (out_dir / "datasets.jsonl").open("a", encoding="utf-8") as datasets_file:
+                datasets_file.write(json.dumps({
+                    "poll": int(record["poll"]), "read_at": read_at,
+                    "summary": summary,
+                }, ensure_ascii=False, sort_keys=True) + "\n")
         if first_observation is None:
             first_observation = observed_at_ms
         late_start = first_observation > local_datetime_ms(trade_date, "09:26:00")
@@ -177,6 +216,7 @@ def run_auction_node(
             "ledger_path": str(Path(ledger_path)),
             "timers_pending": sorted(timers_pending),
             "status": "DONE" if not timers_pending else "DONE_WITH_PENDING",
+            "datasets": dataset_latest,
             "shadow_dir": str(shadow_dir),
             "shadow_status": "DONE",
         }
