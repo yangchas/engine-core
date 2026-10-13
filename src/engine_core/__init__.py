@@ -197,6 +197,16 @@ from .plate_aggregation import (
     aggregate_plates,
 )
 from .plate_kind import EVENT_KEYWORDS, classify_plate_kind
+from .plate_cohesion import (
+    ActivePlateEvidence,
+    PlateCohesion,
+    PlateCohesionResult,
+    StockAffinity,
+    active_plates_for_stock,
+    align_asof_grid,
+    calculate_plate_cohesion,
+    lead_lag,
+)
 from .auction import (
     AUCTION_0925_FINALIZATION_DELAY_MS,
     classify_td_auction_inactivity,
@@ -498,6 +508,14 @@ __all__ = [
     "aggregate_plates",
     "EVENT_KEYWORDS",
     "classify_plate_kind",
+    "ActivePlateEvidence",
+    "PlateCohesion",
+    "PlateCohesionResult",
+    "StockAffinity",
+    "active_plates_for_stock",
+    "align_asof_grid",
+    "calculate_plate_cohesion",
+    "lead_lag",
     "BreadthFacts",
     "CALENDAR_CONTRACT_VERSION",
     "CalendarCoverageError",
