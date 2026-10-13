@@ -14,7 +14,7 @@ import json
 import math
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Collection, Mapping, Sequence
+from typing import Any, Collection, Mapping, Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,7 @@ class LimitUpPoolDerivation:
     excluded_counts: Mapping[str, int]
     notes: Mapping[str, Any]
     content_hash: str
+    seal_evidence_mode: str
 
 
 def _strict_date(value: str) -> date:
@@ -81,6 +82,7 @@ def derive_limit_up_pool_from_daily_klines(
     plate_by_symbol: Mapping[str, str | None] | None = None,
     tolerance_pct: float = 0.6,
     trading_dates: Collection[str] | None = None,
+    close_limit_state_by_symbol: Optional[Mapping[str, int]] = None,
 ) -> LimitUpPoolDerivation:
     target = _strict_date(trade_date)
     tolerance = _finite_or_none(tolerance_pct)
@@ -113,8 +115,12 @@ def derive_limit_up_pool_from_daily_klines(
     ordered_sessions = sorted(session_dates)
     trade_date_in_sessions = target in session_dates
 
-    excluded = {"no_row_for_trade_date": 0, "unknown_pct_or_price": 0, "not_limit_up": 0}
+    excluded = {
+        "no_row_for_trade_date": 0, "unknown_pct_or_price": 0,
+        "not_limit_up": 0, "limit_price_without_seal": 0,
+    }
     name_fallbacks = 0
+    no_seal_symbols: list[str] = []
     output: list[dict[str, Any]] = []
 
     for symbol, supplied_rows in klines_by_symbol.items():
@@ -130,6 +136,16 @@ def derive_limit_up_pool_from_daily_klines(
         if not is_up:
             excluded["not_limit_up"] += 1
             continue
+        if close_limit_state_by_symbol is not None and symbol in close_limit_state_by_symbol:
+            if close_limit_state_by_symbol[symbol] != 1:
+                excluded["limit_price_without_seal"] += 1
+                no_seal_symbols.append(symbol)
+                continue
+            seal_basis = "Q2_LS_AT_CLOSE"
+            lb_days_seal_basis = "TODAY_Q2_LS_HISTORY_KLINE"
+        else:
+            seal_basis = "KLINE_CLOSE_AT_LIMIT_NO_SEAL_EVIDENCE"
+            lb_days_seal_basis = "KLINE_ONLY"
 
         lb_days = 1
         if trade_date_in_sessions:
@@ -160,12 +176,16 @@ def derive_limit_up_pool_from_daily_klines(
             "turnover": _finite_or_none(row[6]),
             "close_pct": _finite_or_none(row[8]),
             "source": "core_td_kline",
+            "seal_basis": seal_basis,
+            "lb_days_seal_basis": lb_days_seal_basis,
         })
 
     output.sort(key=lambda item: item["symbol"])
     payload = json.dumps(output, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     notes = {"name_fallback_symbols": name_fallbacks}
+    if no_seal_symbols:
+        notes["limit_price_without_seal_symbols"] = sorted(no_seal_symbols)
     if not trade_date_in_sessions:
         notes["trade_date_not_in_trading_dates"] = True
     return LimitUpPoolDerivation(
@@ -174,4 +194,5 @@ def derive_limit_up_pool_from_daily_klines(
         excluded_counts=excluded,
         notes=notes,
         content_hash=digest,
+        seal_evidence_mode="Q2_LS" if close_limit_state_by_symbol is not None else "NONE",
     )

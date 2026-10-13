@@ -19,6 +19,8 @@ def test_main_board_counts_consecutive_limit_ups_and_uses_legacy_turnover_field(
         "trade_date": "2026-10-12", "symbol": "600001", "name": "样本",
         "lb_days": 2, "plate": None, "seal_time": None, "turnover": 123.0,
         "close_pct": 9.5, "source": "core_td_kline",
+        "seal_basis": "KLINE_CLOSE_AT_LIMIT_NO_SEAL_EVIDENCE",
+        "lb_days_seal_basis": "KLINE_ONLY",
     },)
     assert result.content_hash
 
@@ -105,3 +107,44 @@ def test_inferred_trading_date_threshold_is_at_least_half_the_symbols():
         at_half[f"600{i:03d}"].append(_row("2026-09-30"))
     at_half_result = derive_limit_up_pool_from_daily_klines(at_half, "2026-10-08")
     assert at_half_result.rows[0]["lb_days"] == 2
+
+
+def test_q2_limit_state_proves_seal_and_marks_history_as_kline_only():
+    result = derive_limit_up_pool_from_daily_klines(
+        {"600001": [_row("2026-10-09"), _row("2026-10-12")]},
+        "2026-10-12",
+        close_limit_state_by_symbol={"600001": 1},
+    )
+    assert result.rows[0]["seal_basis"] == "Q2_LS_AT_CLOSE"
+    assert result.rows[0]["lb_days_seal_basis"] == "TODAY_Q2_LS_HISTORY_KLINE"
+    assert result.seal_evidence_mode == "Q2_LS"
+
+
+def test_unsealed_or_missing_q2_limit_state_is_not_treated_as_seal():
+    klines = {
+        "600001": [_row("2026-10-12")],
+        "600002": [_row("2026-10-12")],
+    }
+    unsealed = derive_limit_up_pool_from_daily_klines(
+        klines, "2026-10-12", close_limit_state_by_symbol={"600001": 0}
+    )
+    assert [row["symbol"] for row in unsealed.rows] == ["600002"]
+    assert unsealed.excluded_counts["limit_price_without_seal"] == 1
+    assert unsealed.notes["limit_price_without_seal_symbols"] == ["600001"]
+
+    missing_symbol = derive_limit_up_pool_from_daily_klines(
+        klines, "2026-10-12", close_limit_state_by_symbol={"600001": 1}
+    )
+    assert [row["symbol"] for row in missing_symbol.rows] == ["600001", "600002"]
+    assert missing_symbol.rows[1]["seal_basis"] == "KLINE_CLOSE_AT_LIMIT_NO_SEAL_EVIDENCE"
+    assert missing_symbol.rows[1]["lb_days_seal_basis"] == "KLINE_ONLY"
+    assert missing_symbol.seal_evidence_mode == "Q2_LS"
+
+
+def test_no_seal_mapping_marks_all_rows_as_unverified():
+    result = derive_limit_up_pool_from_daily_klines(
+        {"600001": [_row("2026-10-12")]}, "2026-10-12"
+    )
+    assert result.rows[0]["seal_basis"] == "KLINE_CLOSE_AT_LIMIT_NO_SEAL_EVIDENCE"
+    assert result.rows[0]["lb_days_seal_basis"] == "KLINE_ONLY"
+    assert result.seal_evidence_mode == "NONE"

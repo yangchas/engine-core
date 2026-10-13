@@ -15,8 +15,13 @@ def compare_pools(
     klines_by_symbol: Mapping[str, Sequence[Sequence[Any]]],
     legacy_rows: Sequence[Mapping[str, Any]],
     trade_date: str,
+    *, close_limit_state_by_symbol: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
-    core_rows = derive_limit_up_pool_from_daily_klines(klines_by_symbol, trade_date).rows
+    derivation = derive_limit_up_pool_from_daily_klines(
+        klines_by_symbol, trade_date,
+        close_limit_state_by_symbol=close_limit_state_by_symbol,
+    )
+    core_rows = derivation.rows
     core = {row["symbol"]: row for row in core_rows}
     legacy = {str(row["symbol"]): row for row in legacy_rows if row.get("symbol") is not None}
     core_symbols, legacy_symbols = set(core), set(legacy)
@@ -34,6 +39,12 @@ def compare_pools(
         "trade_date": trade_date,
         "n_core": len(core),
         "n_legacy": len(legacy),
+        "seal_evidence_mode": derivation.seal_evidence_mode,
+        "core_seal_verified_count": sum(row.get("seal_basis") == "Q2_LS_AT_CLOSE" for row in core_rows),
+        "core_no_seal_evidence_count": sum(
+            row.get("seal_basis") == "KLINE_CLOSE_AT_LIMIT_NO_SEAL_EVIDENCE" for row in core_rows
+        ),
+        "excluded_limit_price_without_seal": derivation.notes.get("limit_price_without_seal_symbols", []),
         "both": len(both),
         "core_only": [{"symbol": s, "lb_days": core[s]["lb_days"], "close_pct": core[s]["close_pct"]} for s in core_only],
         "legacy_only": [{"symbol": s, "lb_days": legacy[s].get("lb_days"), "close_pct": legacy[s].get("close_pct")} for s in legacy_only],

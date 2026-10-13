@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from examples.run_core_limit_up_pool_cache import run_probe
+from examples.run_core_limit_up_pool_cache import _load_eod_capture, run_probe
 
 
 class FakeCursor:
@@ -104,6 +104,9 @@ def test_default_dry_run_does_not_create_write_client_and_reports_comparison():
     )
     assert clients == []
     assert result["core_count"] == 1
+    assert result["seal_evidence_mode"] == "NONE"
+    assert result["core_no_seal_evidence_count"] == 1
+    assert result["excluded_limit_price_without_seal"] == 0
     assert result["legacy_count"] == 1
     assert result["both"] == 1
     assert result["core_only"] == []
@@ -134,7 +137,7 @@ def test_confirmed_write_uses_only_core_cache_keys_and_records_meta():
     assert result["write"]["rows"] == 1
     assert result["write"]["ttl_seconds"] == 3 * 86400
     assert result["write"]["meta_key"] == "core:cache:meta:yest_limit_pool:2026-10-13"
-    assert result["write"]["meta"]["source"] == "core_td_kline;name_fallback"
+    assert result["write"]["meta"]["source"] == "core_td_kline;name_fallback;no_seal_evidence"
 
 
 def test_missing_td_tables_are_counted_without_discarding_available_symbols():
@@ -151,3 +154,16 @@ def test_empty_derivation_does_not_write_or_replace_previous_cache():
     assert result["core_count"] == 0
     assert result["write"]["status"] == "EMPTY_ROWS_PRESERVES_PREVIOUS"
     assert clients == []
+
+
+def test_eod_capture_loads_integer_ls_only_from_q2_hash_reads(tmp_path):
+    capture = tmp_path / "eod.json"
+    capture.write_text(json.dumps({
+        "contract_version": "RedisQ2ReadCaptureV1",
+        "reads": [
+            {"operation": "hgetall", "key": "q2:600001", "value": {"ls": "1"}},
+            {"operation": "hgetall", "key": "q2:600002", "value": {"ls": "bad"}},
+            {"operation": "hgetall", "key": "q2:active:20261012", "value": {"ls": "1"}},
+        ],
+    }), encoding="utf-8")
+    assert _load_eod_capture(capture) == {"600001": 1}

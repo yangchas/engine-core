@@ -22,3 +22,13 @@ def test_comparison_reports_recall_precision_and_lb_days_difference():
     assert result["precision"] == 0.5
     assert result["lb_days_diff"] == [{"symbol": "600001", "core": 2, "legacy": 1}]
     assert result["legacy_only"][0]["close_pct"] is None
+
+
+def test_comparison_reports_seal_evidence_and_excluded_unsealed_limit_prices():
+    result = compare_pools(
+        {"600001": [_row("2026-10-12")], "600002": [_row("2026-10-12")]},
+        [], "2026-10-12", close_limit_state_by_symbol={"600001": 1, "600002": 0},
+    )
+    assert result["core_seal_verified_count"] == 1
+    assert result["core_no_seal_evidence_count"] == 0
+    assert result["excluded_limit_price_without_seal"] == ["600002"]

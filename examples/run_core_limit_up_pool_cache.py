@@ -35,6 +35,39 @@ def _symbol(value: str) -> str:
     return value
 
 
+def _load_eod_capture(path: Path) -> dict[str, int]:
+    capture = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(capture, Mapping) or capture.get("contract_version") != "RedisQ2ReadCaptureV1":
+        raise ValueError("unsupported sealed Redis capture contract")
+    reads = capture.get("reads")
+    if not isinstance(reads, list):
+        raise ValueError("sealed Redis capture reads must be a list")
+    states: dict[str, int] = {}
+    for item in reads:
+        if not isinstance(item, Mapping) or item.get("operation") != "hgetall":
+            continue
+        key = item.get("key")
+        if not isinstance(key, str) or not re.fullmatch(r"q2:\d{6}", key):
+            continue
+        symbol = key[3:]
+        value = item.get("value")
+        if not isinstance(value, Mapping):
+            continue
+        raw_state = value.get("ls")
+        if isinstance(raw_state, bool):
+            continue
+        try:
+            state = int(raw_state)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if isinstance(raw_state, float) and not raw_state.is_integer():
+            continue
+        if isinstance(raw_state, str) and str(state) != raw_state.strip():
+            continue
+        states[symbol] = state
+    return states
+
+
 def _fetch_td_klines(
     symbols: Sequence[str], *, lookback_start: str, previous_trade_date: str,
     td_connect: Callable[..., Any], td_kwargs: Mapping[str, Any],
@@ -96,6 +129,7 @@ def run_probe(
     td_kwargs: Mapping[str, Any] | None = None, names_by_symbol: Mapping[str, str] | None = None,
     apply: bool = False, confirm_write_core_cache: bool = False,
     now_ms: int | None = None, ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    close_limit_state_by_symbol: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     trade_date, previous_trade_date, lookback_start = map(
         _date, (trade_date, previous_trade_date, lookback_start)
@@ -115,6 +149,7 @@ def run_probe(
     )
     derivation = derive_limit_up_pool_from_daily_klines(
         klines_by_symbol, previous_trade_date, names_by_symbol=names_by_symbol or {},
+        close_limit_state_by_symbol=close_limit_state_by_symbol,
     )
     reader = LiveInputReader(redis_read_client, now_ms=lambda: int(time.time() * 1000))
     legacy_read = reader.read(
@@ -140,6 +175,12 @@ def run_probe(
         "td_rows_symbol_count": len(klines_by_symbol),
         "missing_table_symbols": missing_table_symbols,
         "core_count": len(derivation.rows),
+        "seal_evidence_mode": derivation.seal_evidence_mode,
+        "core_seal_verified_count": sum(row.get("seal_basis") == "Q2_LS_AT_CLOSE" for row in derivation.rows),
+        "core_no_seal_evidence_count": sum(
+            row.get("seal_basis") == "KLINE_CLOSE_AT_LIMIT_NO_SEAL_EVIDENCE" for row in derivation.rows
+        ),
+        "excluded_limit_price_without_seal": dict(derivation.excluded_counts).get("limit_price_without_seal", 0),
         "legacy_count": 0,
         "both": 0,
         "core_only": [],
@@ -169,7 +210,12 @@ def run_probe(
         if redis_write_client_factory is None:
             raise ValueError("a Redis writer factory is required for --apply")
         write_client = redis_write_client_factory()
-        source = "core_td_kline;name_fallback" if derivation.notes.get("name_fallback_symbols") else "core_td_kline"
+        source_parts = ["core_td_kline"]
+        if derivation.notes.get("name_fallback_symbols"):
+            source_parts.append("name_fallback")
+        if derivation.seal_evidence_mode == "NONE":
+            source_parts.append("no_seal_evidence")
+        source = ";".join(source_parts)
         writer = CoreCacheWriter(
             write_client, now_ms=now_ms if now_ms is not None else int(time.time() * 1000),
         )
@@ -206,6 +252,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--previous-trade-date", required=True)
     parser.add_argument("--universe-symbols-file", required=True, type=Path)
     parser.add_argument("--lookback-start")
+    parser.add_argument("--eod-capture", type=Path, help="sealed RedisQ2ReadCaptureV1 Q2 snapshot at close")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm-write-core-cache", action="store_true")
     parser.add_argument("--output", required=True, type=Path)
@@ -253,6 +300,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "timezone": os.environ.get("TDENGINE_TIMEZONE", "Asia/Shanghai"),
             },
             apply=args.apply, confirm_write_core_cache=args.confirm_write_core_cache,
+            close_limit_state_by_symbol=_load_eod_capture(args.eod_capture) if args.eod_capture else None,
         )
     finally:
         close = getattr(read_client, "close", None)
