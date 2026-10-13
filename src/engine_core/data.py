@@ -89,6 +89,7 @@ def normalize_previous_day_stats_rows(
     close_by_symbol = {}
     amount_by_symbol = {}
     volume_by_symbol = {}
+    volume_zero_withheld = []
     for index, row in enumerate(rows):
         if not isinstance(row, Mapping):
             raise TypeError("daily-kline row %d must be a mapping" % index)
@@ -102,13 +103,22 @@ def normalize_previous_day_stats_rows(
                 raise ValueError(
                     "daily-kline row %d has invalid %s" % (index, field)
                 )
-        close_by_symbol[symbol] = row["close"]
+        # TD stores close as float32 (11.73 reads back as 11.729999542...);
+        # prices have at most 3 decimals, so 4 places removes the artifact.
+        close_by_symbol[symbol] = (
+            round(row["close"], 4) if isinstance(row["close"], float) else row["close"]
+        )
         amount_by_symbol[symbol] = row["amount"]
         if "volume" in row and row["volume"] is not None:
             if not _finite_number(row["volume"]):
                 raise ValueError(
                     "daily-kline row %d has invalid volume" % index
                 )
+            if row["volume"] == 0 and row["amount"] > 0:
+                # Positive turnover with zero volume is impossible: the volume
+                # column is unpopulated.  Withhold it instead of reporting 0.
+                volume_zero_withheld.append(symbol)
+                continue
             volume_by_symbol[symbol] = row["volume"]
     return {
         "previous_trade_date": actual_trade_date,
@@ -116,6 +126,11 @@ def normalize_previous_day_stats_rows(
         "amount_by_symbol": dict(sorted(amount_by_symbol.items())),
         "volume_by_symbol": dict(sorted(volume_by_symbol.items())),
         "row_count": len(close_by_symbol),
+        **(
+            {"volume_zero_with_positive_amount_symbols": tuple(sorted(volume_zero_withheld))}
+            if volume_zero_withheld
+            else {}
+        ),
     }
 
 
@@ -667,6 +682,10 @@ class PreviousDayStatsFunction:
             if present_count == 0:
                 status = DataStatus.MISSING
             elif missing_symbols:
+                status = DataStatus.PARTIAL
+            elif result.status is DataStatus.PARTIAL:
+                # keep a PARTIAL set earlier (e.g. unverified previous-day
+                # availability); symbol coverage alone must not upgrade it
                 status = DataStatus.PARTIAL
             else:
                 status = DataStatus.READY

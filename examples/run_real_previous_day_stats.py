@@ -107,6 +107,7 @@ def run_real_previous_day_stats(
     observed_at: datetime,
     td_kwargs: dict[str, Any],
     fetch_rows_override: Any = None,
+    allow_unverified_previous_day_availability: bool = False,
 ) -> dict[str, Any]:
     """Execute the core data function with real TD rows and a fixed calendar."""
 
@@ -150,6 +151,7 @@ def run_real_previous_day_stats(
         effective_as_of_ms=observed_at_ms,
         knowledge_as_of_ms=observed_at_ms,
         symbols=tuple(sorted(symbols)),
+        allow_unverified_previous_day_availability=allow_unverified_previous_day_availability,
     )
     result = function.execute(
         DataContext("real-previous-day-probe", "READ_ONLY", observed_at_ms),
@@ -183,6 +185,10 @@ def main() -> int:
     parser.add_argument("--previous-trade-date", required=True)
     parser.add_argument("--symbols", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--strict-availability", action="store_true",
+        help="do not accept previous-day data without a verified available_at",
+    )
     args = parser.parse_args()
     trade_date = _date(args.trade_date)
     previous_trade_date = _date(args.previous_trade_date)
@@ -202,6 +208,7 @@ def main() -> int:
             "config": os.environ.get("TDENGINE_CONFIG", "/etc/taos"),
             "timezone_name": os.environ.get("TDENGINE_TIMEZONE", "Asia/Shanghai"),
         },
+        allow_unverified_previous_day_availability=not args.strict_availability,
     )
     result["observed_at"] = observed_at.isoformat()
     with args.output.open("x", encoding="utf-8") as output:

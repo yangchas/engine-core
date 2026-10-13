@@ -852,3 +852,15 @@ def test_empty_legacy_daily_rows_are_missing_not_ready():
     )
     assert result.status is DataStatus.MISSING
     assert result.completeness == 0.0
+
+
+def test_daily_kline_rounds_float32_close_and_withholds_impossible_zero_volume():
+    from engine_core.data import normalize_previous_day_stats_rows as normalize_daily_kline_rows
+
+    payload = normalize_daily_kline_rows(
+        [{"symbol": "000001", "close": 11.729999542236328, "amount": 1.2e9, "volume": 0}],
+        actual_trade_date="2026-10-12",
+    )
+    assert payload["close_by_symbol"]["000001"] == 11.73
+    assert "000001" not in payload["volume_by_symbol"]
+    assert payload["volume_zero_with_positive_amount_symbols"] == ("000001",)
