@@ -102,6 +102,53 @@ def test_kaipan_pool_input_owns_tier_one_membership(tmp_path):
     assert value["quality"]["pool_source"] == "kaipan_pool"
 
 
+def test_kaipan_hot_plates_use_previous_session_and_tag_existing_members(tmp_path):
+    from examples.run_offline_plate_pipeline import _load_kaipan_hot_plates, run_pipeline
+
+    hot_dir = tmp_path / "kaipan" / "hot_plates"
+    hot_dir.mkdir(parents=True)
+    (hot_dir / "2026-01-02.json").write_text(json.dumps({
+        "list": [["801660", "通信(设备)", 6780, 1.113, 0.529, 508556800205,
+                  None, None, None, None, None, None, None, None, None, None, None, None, None]],
+        "Time": "2026-01-02", "Count": 50,
+    }), encoding="utf-8")
+    (hot_dir / "2026-01-05.json").write_text(json.dumps({
+        "list": [["999999", "当日板", 1, 2.0]], "Count": 1,
+    }), encoding="utf-8")
+    hot_by_day = _load_kaipan_hot_plates(tmp_path / "kaipan")
+    result = run_pipeline(
+        dates=["2026-01-05"], klines_by_symbol={
+            "a": [_kline("a", "2026-01-02", 10, 0), _kline("a", "2026-01-05", 10, 0)]},
+        auction_by_date={"2026-01-05": {"a": {"px_milli": 10000}}},
+        snapshot={"stock_plate": {"a": "通信"}, "s2p": {}}, reasons_by_symbol={},
+        start_date="2026-01-05", end_date="2026-01-05", min_auction_rows=1,
+        kaipan_hot_plates_by_day=hot_by_day,
+    )
+
+    value = result["days"][0][1]
+    member = next(row for row in value["memberships"].by_symbol["a"] if row.plate == "通信")
+    assert value["quality"]["hot_plate_source"] == "kaipan_his_plates"
+    assert value["quality"]["hot_plate_count"] == 1
+    assert value["quality"]["hot_plate_matched_member_count"] == 1
+    assert member.source == "static,hot_plate"
+    assert value["hot_plates"][0]["asof_date"] == "2026-01-02"
+    assert value["hot_plate_metadata_by_name"] == {"通信": {"hot_rank": 1, "hot_code": "801660"}}
+
+    from argparse import Namespace
+    from examples.run_offline_plate_pipeline import _emit
+
+    output = tmp_path / "out"
+    output.mkdir()
+    _emit(output, result, Namespace(start_date="2026-01-05", end_date="2026-01-05",
+                                     reasons=None, legacy_pool_dir=None))
+    hot_artifact = json.loads((output / "2026-01-05" / "hot_plates.json").read_text())
+    membership_artifact = json.loads((output / "2026-01-05" / "memberships.json").read_text())
+    assert hot_artifact["asof_date"] == "2026-01-02"
+    assert hot_artifact["rows"][0]["change_pct"] == 1.113
+    assert membership_artifact["by_symbol"]["a"][0]["hot_rank"] == 1
+    assert membership_artifact["by_symbol"]["a"][0]["hot_code"] == "801660"
+
+
 def test_kaipan_reasons_are_filtered_as_of_and_recent_candidates_are_first():
     from examples.run_offline_plate_pipeline import _kaipan_reasons_for_day, _reason_candidates
 

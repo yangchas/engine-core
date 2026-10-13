@@ -29,6 +29,7 @@ from engine_core.plate_hierarchy_kaipan import (
     PoolRow, parse_kaipan_pool, parse_kaipan_reason_hierarchy,
 )
 from engine_core.plate_rules import build_plate_candidates_from_reason
+from engine_core.plate_rules import normalize_plate_name
 from engine_core.stock_plate_assignment import build_stock_plate_assignments
 
 
@@ -168,7 +169,10 @@ def _kline_by_day(klines: Mapping[str, Sequence[Sequence[Any]]]) -> dict[str, di
     return output
 
 
-def _jsonable_memberships(memberships: Any) -> dict[str, Any]:
+def _jsonable_memberships(
+    memberships: Any, hot_plate_metadata_by_name: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    hot_plate_metadata_by_name = hot_plate_metadata_by_name or {}
     return {
         "policy": memberships.policy,
         "rule_version": memberships.rule_version,
@@ -178,7 +182,9 @@ def _jsonable_memberships(memberships: Any) -> dict[str, Any]:
                 {"plate": row.plate, "kind": classify_plate_kind(row.plate),
                  "tier": row.tier, "rank_in_stock": row.rank_in_stock,
                  "source": row.source, "generic": row.generic, "hard_generic": row.hard_generic,
-                 "ancestors": list(row.ancestors), "flags": list(row.flags)}
+                 "ancestors": list(row.ancestors), "flags": list(row.flags),
+                 "hot_rank": hot_plate_metadata_by_name.get(row.plate, {}).get("hot_rank"),
+                 "hot_code": hot_plate_metadata_by_name.get(row.plate, {}).get("hot_code")}
                 for row in rows
             ] for symbol, rows in sorted(memberships.by_symbol.items())
         },
@@ -208,6 +214,7 @@ def build_day(
     kaipan_pool_rows: Mapping[str, PoolRow] | None = None,
     kaipan_hierarchy: PlateHierarchy | None = None,
     kaipan_reasons_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    hot_plate_input: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Pure daily composition; accepts loaded data and performs no I/O."""
     if not isinstance(snapshot.get("stock_plate"), Mapping) or not isinstance(snapshot.get("s2p"), Mapping):
@@ -217,6 +224,9 @@ def build_day(
     sessions = sorted(daily_rows)
     prior_sessions = [day for day in sessions if day < trade_date]
     prior_day = prior_sessions[-1] if prior_sessions else None
+    hot_plate_input = hot_plate_input if prior_day and hot_plate_input else None
+    hot_plate_rows = list(hot_plate_input.get("rows", ())) if hot_plate_input else []
+    hot_plate_names = [row["name"] for row in hot_plate_rows]
     prior_close_rows = daily_rows.get(prior_day, {}) if prior_day else {}
     current_to_previous = {symbol: row for symbol, row in prior_close_rows.items()}
 
@@ -308,13 +318,15 @@ def build_day(
     memberships = _tag_reason_memberships(build_memberships(
         symbols=symbols, pool_plate_by_symbol=pool_plates,
         reason_candidates_by_symbol=reason_candidates,
-        static_themes_by_symbol=static_themes, policy=MEMBERSHIP_POLICY_USER_PRIORITY_V1,
+        static_themes_by_symbol=static_themes, hot_plate_names=hot_plate_names,
+        policy=MEMBERSHIP_POLICY_USER_PRIORITY_V1,
     ), kaipan_reason_rows)
     memberships = apply_hierarchy(memberships, hierarchy)
     legacy = _tag_reason_memberships(build_memberships(
         symbols=symbols, pool_plate_by_symbol=pool_plates,
         reason_candidates_by_symbol=reason_candidates,
-        static_themes_by_symbol=static_themes, policy=MEMBERSHIP_POLICY_LEGACY_V1,
+        static_themes_by_symbol=static_themes, hot_plate_names=hot_plate_names,
+        policy=MEMBERSHIP_POLICY_LEGACY_V1,
     ), kaipan_reason_rows)
     legacy = apply_hierarchy(legacy, hierarchy)
 
@@ -350,6 +362,14 @@ def build_day(
     generic_count = sum(row.generic for row in aggregation.stats)
     quality = {
         "trade_date": trade_date,
+        "hot_plate_source": "kaipan_his_plates" if hot_plate_input else "missing",
+        "hot_plate_count": len(hot_plate_rows),
+        "hot_plate_matched_member_count": len({
+            row.plate for rows in memberships.by_symbol.values() for row in rows
+            if row.plate in set(hot_plate_names)
+        }),
+        "invalid_hot_plate_rows": int(hot_plate_input.get("invalid_rows", 0)) if hot_plate_input else 0,
+        "empty_hot_plate_name_count": int(hot_plate_input.get("empty_names", 0)) if hot_plate_input else 0,
         "auction_row_count": len(auction_rows), "membership_symbol_count": len(memberships.by_symbol),
         "yest_pool_member_count": len(pool_symbols), "mapped_auction_symbol_count": len(auction_rows) - no_plate,
         "unmapped_auction_symbol_count": no_plate,
@@ -404,12 +424,17 @@ def build_day(
                  "lb_days": pool_lb_days.get(symbol)}
         for symbol in sorted(pool_symbols)
     }
+    hot_plate_metadata_by_name = {}
+    for rank, row in enumerate(hot_plate_rows, start=1):
+        hot_plate_metadata_by_name.setdefault(row["name"], {"hot_rank": rank, "hot_code": row["code"]})
     return {"memberships": memberships, "legacy_v1_primary_by_symbol": legacy_primary,
             "aggregation": aggregation, "quality": quality,
             "reason_asof_unknown": (reason_asof_unknown if kaipan_reasons_by_symbol is None else
                                      bool(quality["reason_source_counts"]["legacy_snapshot"])),
             "yest_pool_symbols": pool_symbols,
-            "yest_pool_members": yest_pool_members}
+            "yest_pool_members": yest_pool_members,
+            "hot_plates": [{**row, "asof_date": prior_day} for row in hot_plate_rows],
+            "hot_plate_metadata_by_name": hot_plate_metadata_by_name}
 
 
 def run_pipeline(
@@ -421,6 +446,7 @@ def run_pipeline(
     kaipan_pool_by_day: Mapping[str, Mapping[str, PoolRow]] | None = None,
     kaipan_hierarchy: PlateHierarchy | None = None,
     kaipan_reasons_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    kaipan_hot_plates_by_day: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     included, skipped = [], []
     for day in dates:
@@ -430,6 +456,7 @@ def run_pipeline(
         if len(auction) < min_auction_rows:
             skipped.append({"date": day, "reason": "auction_row_count_below_minimum", "auction_row_count": len(auction)})
             continue
+        prior_day = max((session for session in _kline_by_day(klines_by_symbol) if session < day), default="")
         included.append((day, build_day(
             trade_date=day, klines_by_symbol=klines_by_symbol, auction_rows=auction, snapshot=snapshot,
             reasons_by_symbol=reasons_by_symbol, reason_asof_unknown=reason_asof_unknown,
@@ -439,6 +466,7 @@ def run_pipeline(
                 max((session for session in _kline_by_day(klines_by_symbol) if session < day), default=""),
             ), kaipan_hierarchy=kaipan_hierarchy,
             kaipan_reasons_by_symbol=kaipan_reasons_by_symbol,
+            hot_plate_input=(kaipan_hot_plates_by_day or {}).get(prior_day),
         )))
     return {"days": included, "skipped": skipped}
 
@@ -525,6 +553,39 @@ def _load_kaipan_reasons(path: Path) -> dict[str, list[dict[str, Any]]]:
             result[symbol] = [dict(item) for item in items if isinstance(item, Mapping)]
         else:
             result[symbol] = []
+    return result
+
+
+def _load_kaipan_hot_plates(path: Path) -> dict[str, dict[str, Any]]:
+    """Load normalized Kaipan historical hot-plate rows partitioned by date."""
+    result: dict[str, dict[str, Any]] = {}
+    hot_dir = path / "hot_plates"
+    if not hot_dir.is_dir():
+        return result
+    for source in sorted(hot_dir.glob("*.json")):
+        try:
+            date.fromisoformat(source.stem)
+        except ValueError:
+            continue
+        raw = _read_json(source)
+        raw_rows = raw.get("list") if isinstance(raw, Mapping) else None
+        if not isinstance(raw_rows, list):
+            result[source.stem] = {"rows": [], "invalid_rows": 1, "empty_names": 0}
+            continue
+        rows, invalid, empty_names = [], 0, 0
+        for row in raw_rows:
+            if (not isinstance(row, Sequence) or isinstance(row, (str, bytes)) or len(row) < 4
+                    or not isinstance(row[0], (str, int)) or isinstance(row[0], bool)
+                    or _number(row[2]) is None or _number(row[3]) is None):
+                invalid += 1
+                continue
+            name = normalize_plate_name(row[1])
+            if not name:
+                empty_names += 1
+                continue
+            rows.append({"rank": len(rows) + 1, "code": str(row[0]), "name": name,
+                         "strength": _number(row[2]), "change_pct": _number(row[3])})
+        result[source.stem] = {"rows": rows, "invalid_rows": invalid, "empty_names": empty_names}
     return result
 
 
@@ -632,7 +693,9 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
     for day, value in daily_rows:
         folder = output_dir / day
         folder.mkdir()
-        membership_payload = _jsonable_memberships(value["memberships"])
+        membership_payload = _jsonable_memberships(
+            value["memberships"], value.get("hot_plate_metadata_by_name"),
+        )
         membership_payload["legacy_v1_primary_by_symbol"] = value["legacy_v1_primary_by_symbol"]
         membership_payload["yest_pool_symbols"] = sorted(value["yest_pool_symbols"])
         membership_payload["yest_pool_members"] = value["yest_pool_members"]
@@ -646,6 +709,11 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
         quality = dict(value["quality"])
         quality["reason_asof_unknown"] = value["reason_asof_unknown"]
         _write_json(folder / "day_quality.json", quality)
+        _write_json(folder / "hot_plates.json", {
+            "asof_date": (value["hot_plates"][0]["asof_date"] if value["hot_plates"] else
+                          quality.get("previous_kline_date")),
+            "rows": value["hot_plates"],
+        })
         hashes[day] = membership_payload["content_hash"]
         unmapped[day] = quality["unmapped_auction_symbol_count"]
         skipped_kline_symbols[day] = quality["skipped_kline_table_symbol_count"]
@@ -707,6 +775,7 @@ def main(argv: list[str] | None = None) -> int:
     reasons = _load_reasons(args.reasons)
     kaipan_pools, kaipan_hierarchy = _load_kaipan_inputs(args.kaipan_dir) if args.kaipan_dir else ({}, None)
     kaipan_reasons = _load_kaipan_reasons(args.kaipan_dir) if args.kaipan_dir else None
+    kaipan_hot_plates = _load_kaipan_hot_plates(args.kaipan_dir) if args.kaipan_dir else {}
     symbols = sorted(set(map(str, snapshot["stock_plate"])) | set(map(str, snapshot["s2p"])) | set(reasons))
     auction_dates = [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
     # Confirm database value before opening and reuse that same value for the query.
@@ -719,6 +788,7 @@ def main(argv: list[str] | None = None) -> int:
         skipped_kline_table_symbol_count=skipped_kline_symbols,
         kaipan_pool_by_day=kaipan_pools, kaipan_hierarchy=kaipan_hierarchy,
         kaipan_reasons_by_symbol=kaipan_reasons,
+        kaipan_hot_plates_by_day=kaipan_hot_plates,
     )
     _emit(args.output_dir, result, args)
     return 0
