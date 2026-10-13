@@ -1,5 +1,22 @@
 # Current Task
 
+## 2026-10-13 M3 cold-start strategy (`engine_core.cold_start`)
+
+`assess_cold_start(plan, start_ms)` classifies a start (PREMARKET,
+AUCTION_COLLECTING, AUCTION_FINAL, OPENING_FORMING, MORNING_SESSION,
+LUNCH_BREAK, AFTERNOON_SESSION, POSTMARKET) and states per item what is still
+observable, TD-reconstruction-only, or lost: a20/a24/a25 are readable at
+start (observation time = start, never backdated); late ph==0 finals are
+recoverable while the row is visible (window open 09:25:00-09:30:00, expected
+none afterwards except rows with no later tick); the 0924->0925 amount delta
+and the 09:32 opening cutoff need TD (`TD_RECONSTRUCTION_REQUIRED`); due Core
+timers are listed as RECOVERY_CATCHUP. Status is READY only when nothing is
+lost (premarket / before 09:24). The window boundaries are tested against
+`AuctionAnchorSessionV1`. The shadow script writes `cold_start.json` at the
+first live read (`START_DATE_MISMATCH` when the read date is not the session
+date). Still open for M3: durable cross-restart idempotency and source freeze
+ownership; TD reconstruction for opening facts is not wired to the live node.
+
 ## 2026-10-14 prepared: time-aligned 0920/0924 summary comparison
 
 Legacy 0920/0924/0925 summaries are frozen at ts 09:20:03 / 09:24:10 /

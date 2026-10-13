@@ -204,6 +204,33 @@ def _write_tag_summaries(out_dir: Path, poll: int, snapshot: Any, trade_date: st
         handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
+def _write_cold_start(out_dir: Path, trade_date: str, start_ms: int) -> None:
+    """Record what this session start can and cannot rebuild (``cold_start.json``)."""
+
+    from engine_core import (
+        assess_cold_start, build_a_share_session_plan, build_calendar_snapshot,
+    )
+
+    calendar = build_calendar_snapshot(
+        [trade_date], version="shadow-one-day", declared_valid_from=trade_date,
+        declared_valid_to=trade_date, source_guard_valid_from=trade_date,
+        source_guard_valid_to=trade_date, source_id="explicit_shadow_trade_date",
+        observed_at_ms=start_ms, evidence_ref="shadow://explicit-trade-date",
+    )
+    plan = build_a_share_session_plan(trade_date, calendar)
+    try:
+        record = dict(assess_cold_start(plan, start_ms).as_mapping())
+    except ValueError:
+        # The read happened on another local date than the requested session
+        # (e.g. a post-hoc read of an earlier day): no phase can be assigned.
+        record = {"contract": "ColdStartAssessmentV1", "trade_date": trade_date,
+                  "start_ms": start_ms, "status": "START_DATE_MISMATCH"}
+    (out_dir / "cold_start.json").write_text(
+        json.dumps(record, ensure_ascii=False, sort_keys=True, indent=1) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _report_observed_ms(snapshot: Any, wall_completed: datetime) -> int:
     times = [q.source_record_time_ms for q in snapshot.quotes.values()
              if q.source_record_time_ms is not None]
@@ -411,6 +438,8 @@ def _run_shadow_impl(
                     with (out_dir / ("capture_%03d.json" % poll)).open("x", encoding="utf-8") as sealed_file:
                         json.dump(sealed, sealed_file, ensure_ascii=False, sort_keys=True,
                                   separators=(",", ":"))
+                if session is None and source == "live":
+                    _write_cold_start(out_dir, trade_date, snapshot.envelope.observed_time_ms)
                 if session is None:
                     session = AuctionAnchorSessionV1(
                         trade_date, snapshot.expected_symbols,

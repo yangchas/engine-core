@@ -218,3 +218,25 @@ def test_sealed_live_capture_replays_to_the_same_anchor_events(tmp_path: Path):
         ]
 
     assert anchors(tmp_path / "live") == anchors(tmp_path / "replay")
+
+
+def test_live_session_records_cold_start_assessment(tmp_path: Path, monkeypatch):
+    import examples.shadow_task008_redis_auction_session as module
+
+    # the fake client's rows are from 2026-10-09; "now" is another date
+    run_shadow(
+        source="live", live_client=FakeClient(), out_dir=tmp_path / "cs",
+        trade_date="2026-10-09", confirm_read_only=True,
+    )
+    record = json.loads((tmp_path / "cs" / "cold_start.json").read_text(encoding="utf-8"))
+    assert record["status"] == "START_DATE_MISMATCH" and record["trade_date"] == "2026-10-09"
+
+    # same-date start: assessed
+    from engine_core.clock import local_datetime_ms
+
+    out = tmp_path / "cs2"
+    out.mkdir()
+    module._write_cold_start(out, "2026-10-09", local_datetime_ms("2026-10-09", "09:27:00"))
+    record = json.loads((out / "cold_start.json").read_text(encoding="utf-8"))
+    assert record["start_class"] == "AUCTION_FINAL"
+    assert record["late_final_recovery"] == "WINDOW_OPEN"

@@ -300,6 +300,7 @@ from .theme_auction_delta_rows import (
     build_theme_delta_rows,
     theme_weights_from_plate_mapping,
 )
+from .cold_start import ColdStartAssessment, assess_cold_start, classify_start
 from .live_input_adapters import (
     json_rows_from_state,
     plate_mapping_from_states,
@@ -688,6 +689,9 @@ __all__ = [
     "Current0925Rows",
     "SymbolCacheRows",
     "normalize_symbol_cache_rows",
+    "ColdStartAssessment",
+    "assess_cold_start",
+    "classify_start",
     "LiveInputCache",
     "json_rows_from_state",
     "plate_mapping_from_states",
