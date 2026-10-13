@@ -134,3 +134,20 @@ def test_meta_key_is_read_for_hash_inputs_only_when_hash_and_decoded():
     assert _reader(bad).read("hot_plates", trade_date="2026-10-13").meta == {"valid_json": False}
     absent = StrictClient(strings={meta_key: '{"row_count": 1}'})  # key itself not a hash
     assert _reader(absent).read("hot_plates", trade_date="2026-10-13").meta is None
+
+
+def test_every_named_input_has_a_default_max_age_and_expires():
+    from engine_core.live_inputs import DEFAULT_MAX_AGE_MS
+
+    names = {"hot_plates", "hot_rank", "limit_truth", "yest_limit_pool",
+             "stock_plate", "s2p", "anchor_archive"}
+    assert names <= set(DEFAULT_MAX_AGE_MS)
+    cache = LiveInputCache()
+    key = "market:stock_plate"
+    cache.refresh(_reader(StrictClient(hashes={key: {b"000001": b"AI"}}), 0).read(
+        "stock_plate", trade_date="2026-10-13"))
+    ok = cache.refresh(_reader(StrictClient(), DEFAULT_MAX_AGE_MS["stock_plate"]).read(
+        "stock_plate", trade_date="2026-10-13"))
+    gone = cache.refresh(_reader(StrictClient(), DEFAULT_MAX_AGE_MS["stock_plate"] + 1).read(
+        "stock_plate", trade_date="2026-10-13"))
+    assert ok.status == PRESERVED_PREVIOUS and gone.status == EXPIRED_PREVIOUS

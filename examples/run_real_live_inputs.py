@@ -29,7 +29,14 @@ def main() -> int:
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--interval-seconds", type=float, default=0.0)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--include-rows", default="",
+                        help="comma-separated input names whose raw (field, text) rows are stored")
     args = parser.parse_args()
+    include_rows = {item.strip() for item in args.include_rows.split(",") if item.strip()}
+    unknown = include_rows - set(INPUTS)
+    if unknown:
+        parser.error("unknown inputs: " + ",".join(sorted(unknown)))
+    raw_rows = {}
 
     import redis  # type: ignore[import-not-found]
 
@@ -50,6 +57,8 @@ def main() -> int:
                 read = reader.read(name, trade_date=args.trade_date,
                                    previous_trade_date=args.previous_trade_date)
                 trace = dict(cache.refresh(read).as_trace())
+                if name in include_rows and read.kind == "hash":
+                    raw_rows[name] = [list(item) for item in read.rows]
                 trace.update({"redis_type": read.redis_type, "scan_consistent": read.scan_consistent,
                               "ttl_seconds": read.ttl_seconds})
                 states.append(trace)
@@ -62,6 +71,7 @@ def main() -> int:
         "previous_trade_date": args.previous_trade_date,
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "rounds": rounds,
+        "raw_rows": raw_rows,
         "side_effect_boundary": "Redis TYPE/HLEN/HSCAN/GET/TTL only; no write/repair",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

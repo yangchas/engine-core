@@ -26,6 +26,20 @@ MISSING = "MISSING"
 PRESERVED_PREVIOUS = "PRESERVED_PREVIOUS"
 EXPIRED_PREVIOUS = "EXPIRED_PREVIOUS"
 
+# Per-input bound on how long a preserved (last non-empty) read may be used
+# as current.  Date-keyed caches are written once or twice a day, so the
+# bounds are hours; the anchor archive is rewritten around the auction, so its
+# bound is short.  Beyond the bound a read is EXPIRED_PREVIOUS (degraded).
+DEFAULT_MAX_AGE_MS: Mapping[str, int] = {
+    "hot_plates": 6 * 3600 * 1000,
+    "hot_rank": 6 * 3600 * 1000,
+    "limit_truth": 6 * 3600 * 1000,
+    "yest_limit_pool": 6 * 3600 * 1000,
+    "stock_plate": 24 * 3600 * 1000,
+    "s2p": 24 * 3600 * 1000,
+    "anchor_archive": 30 * 60 * 1000,
+}
+
 _META_KEYS = {
     "hot_plates": "cache:hot_plates_meta:{date}",
     "hot_rank": "cache:hot_rank_meta:{date}",
@@ -191,7 +205,8 @@ class LiveInputCache:
         # Per-input bound on how long a preserved read may be used as current.
         # Beyond it the state is EXPIRED_PREVIOUS: the data stays visible as
         # evidence but a consumer must treat it as degraded, not current.
-        self._max_age_ms = dict(max_age_ms or {})
+        self._max_age_ms = dict(DEFAULT_MAX_AGE_MS)
+        self._max_age_ms.update(max_age_ms or {})
         self._good: Dict[str, Tuple[LiveInputRead, int]] = {}
 
     def refresh(self, read: LiveInputRead) -> LiveInputState:
@@ -217,6 +232,6 @@ class LiveInputCache:
 
 
 __all__ = [
-    "EXPIRED_PREVIOUS", "FRESH", "LIVE_INPUT_CONTRACT_VERSION", "LiveInputCache", "LiveInputRead",
+    "DEFAULT_MAX_AGE_MS", "EXPIRED_PREVIOUS", "FRESH", "LIVE_INPUT_CONTRACT_VERSION", "LiveInputCache", "LiveInputRead",
     "LiveInputReader", "LiveInputState", "MISSING", "PRESERVED_PREVIOUS",
 ]

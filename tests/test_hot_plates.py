@@ -292,3 +292,24 @@ def _verified_metadata_without_units():
     meta = dict(_verified_metadata())
     meta.pop("field_units")
     return meta
+
+
+def test_observed_legacy_units_unmask_fields_and_guard_yuan_magnitudes():
+    from engine_core import LEGACY_KAIPAN_OBSERVED_FIELD_UNITS
+
+    rows = _rows()
+    out = normalize_hot_plates_rows(
+        rows, actual_trade_date="2026-09-10",
+        verified_field_units=LEGACY_KAIPAN_OBSERVED_FIELD_UNITS,
+    )
+    assert out["unit_uncertainties"] == ()
+    assert out["field_units"]["net_inflow_yi"] == "yi"
+    assert out["field_units"]["strength"] == "score"
+
+    big = [dict(row, net_inflow_yi=1.2e8) for row in rows]  # yuan under a yi name
+    out = normalize_hot_plates_rows(
+        big, actual_trade_date="2026-09-10",
+        verified_field_units=LEGACY_KAIPAN_OBSERVED_FIELD_UNITS,
+    )
+    assert out["field_units"]["net_inflow_yi"] == "UNKNOWN"
+    assert out["unit_uncertainties"] == ("net_inflow_yi",)

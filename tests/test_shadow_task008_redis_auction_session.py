@@ -141,3 +141,60 @@ def test_live_pool_through_live_input_layer_writes_report_and_trace(tmp_path: Pa
     assert "昨日涨停结构" in (out / "report_000.txt").read_text(encoding="utf-8")
     trace = json.loads((out / "live_inputs.jsonl").read_text().splitlines()[0])
     assert trace["status"] == "FRESH" and trace["row_count"] == 1
+
+
+def test_stalled_source_time_then_late_final_timeline(tmp_path: Path):
+    """2026-10-13 live shape: Q2 stamps stall at 09:25:03 until 09:26:00, a
+    Shenzhen symbol's a25 is never set, its ph==0 final arrives at 09:26:03."""
+    from datetime import datetime, timedelta, timezone
+
+    from engine_core import AuctionAnchorSessionV1, FreshnessPolicy, RedisQ2ProjectionAdapter
+    from engine_core.clock import local_datetime_ms
+    from examples.shadow_task008_redis_auction_session import _observe_snapshot, _rows
+
+    date = "2026-10-13"
+    ms = lambda hms: local_datetime_ms(date, hms)  # noqa: E731
+    cst = timezone(timedelta(hours=8))
+
+    def clock(hms):
+        return datetime.fromtimestamp(ms(hms) / 1000, tz=cst)
+
+    class TimelineClient:
+        def __init__(self, state):
+            self.state = state
+
+        def smembers(self, key):
+            return ["600000", "000001"] if key == "q2:active:20261013" else []
+
+        def hgetall(self, key):
+            return self.state.get(key.removeprefix("q2:"), {})
+
+    base = {"px": "1000", "pc": "990", "amt": "0", "vol": "0", "am": "5000", "br": "0", "ar": "0",
+            "a20": "1000", "a24": "1000"}
+    state = {
+        "600000": dict(base, ts=str(ms("09:25:03")), ph="0", a25="1000", amt="1000000", vol="1000"),
+        "000001": dict(base, ts=str(ms("09:25:03")), ph="1", a25="0"),
+    }
+    session = AuctionAnchorSessionV1(date, ("000001", "600000"), recover_final_from_phase_zero=True)
+    first_read: set = set()
+
+    def poll(hms):
+        client = TimelineClient(state)
+        snap = RedisQ2ProjectionAdapter(client).read(
+            date, freshness_policy=FreshnessPolicy(), observed_at=clock(hms))
+        events = _observe_snapshot(
+            snapshot=snap, session=session, rows=_rows(snap), first_read=first_read,
+            wall_started=clock(hms), wall_completed=clock(hms))
+        return next(e for e in events if e["tag"] == "0925")
+
+    early = poll("09:25:12")
+    assert early["late_execution"]["status"] == "LATE_START_OBSERVED"
+    assert (early["available_count"], early["missing_count"]) == (1, 1)
+    same = poll("09:25:40")  # source time still 09:25:03: no new content
+    assert same["late_execution"]["status"] == "UNCHANGED"
+    state["000001"] = dict(base, ts=str(ms("09:26:03")), ph="0", a25="0",
+                           px="1012", amt="500000", vol="400")
+    late = poll("09:26:05")
+    assert late["late_execution"]["status"] == "REVISION_EMITTED"
+    assert (late["available_count"], late["missing_count"]) == (2, 0)
+    assert set(session.phase_zero_recoveries) == {"000001"}

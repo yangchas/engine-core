@@ -18,6 +18,7 @@ from typing import Any, Iterable, Mapping
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core import (
+    LEGACY_KAIPAN_OBSERVED_FIELD_UNITS,
     LiveInputReader,
     probe_rows_and_summary,
     DataContext,
@@ -55,6 +56,7 @@ def run_real_hot_plates(
     calendar_source_id: str = "explicit_probe_calendar",
     calendar_evidence_ref: str | None = None,
     temporal_mode: str = "HISTORICAL",
+    observed_units: bool = False,
 ) -> dict[str, Any]:
     trade_date = _date(trade_date)
     observed_at_ms = int(observed_at.timestamp() * 1000)
@@ -104,6 +106,9 @@ def run_real_hot_plates(
         source_id="redis_hot_plates",
         source_schema="HotPlatesV1",
         evidence_ref="redis://cache:hot_plates/" + trade_date,
+        verified_field_units=(
+            dict(LEGACY_KAIPAN_OBSERVED_FIELD_UNITS) if observed_units else None
+        ),
     )
     request = DataRequest(
         request_id="real-hot-plates-" + trade_date,
@@ -150,6 +155,11 @@ def main() -> int:
         help="LIVE accepts the adapter-completion exception (a read made now); "
         "HISTORICAL requires a verified available_at",
     )
+    parser.add_argument(
+        "--observed-units", action="store_true",
+        help="apply the units established from the legacy Kaipan path "
+        "(strength/hot=score, net_inflow_yi=yi) instead of masking them",
+    )
     args = parser.parse_args()
     observed_at = datetime.now(timezone.utc)
     result = run_real_hot_plates(
@@ -162,6 +172,7 @@ def main() -> int:
             "password": os.environ.get("REDIS_PASSWORD"),
         },
         temporal_mode=args.temporal_mode,
+        observed_units=args.observed_units,
     )
     result["observed_at"] = observed_at.isoformat()
     content = json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2, default=str) + "\n"

@@ -349,7 +349,7 @@ def _run_shadow_impl(
         # Raw client on purpose: the Q2 wrapper only allows projection reads;
         # the layer itself only calls type/hlen/hscan_iter/get/ttl.
         pool_reader = LiveInputReader(live_client, now_ms=lambda: int(time.time() * 1000))
-        pool_cache = LiveInputCache(max_age_ms={"yest_limit_pool": 6 * 3600 * 1000})
+        pool_cache = LiveInputCache()
     out_dir.mkdir(parents=True, exist_ok=False)
     events_path = out_dir / "shadow_events.jsonl"
     session = None

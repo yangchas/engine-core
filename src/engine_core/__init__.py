@@ -77,6 +77,7 @@ from .previous_day_limit_feedback import (
     build_previous_day_limit_feedback,
 )
 from .hot_plates import (
+    LEGACY_KAIPAN_OBSERVED_FIELD_UNITS,
     HOT_PLATES_CONTRACT_VERSION,
     HotPlatesFunction,
     HotPlatesProvider,
@@ -480,6 +481,7 @@ __all__ = [
     "HOT_PLATES_CONTRACT_VERSION",
     "HotPlatesFunction",
     "HotPlatesProvider",
+    "LEGACY_KAIPAN_OBSERVED_FIELD_UNITS",
     "canonical_hot_plates_payload_hash",
     "RedisHotPlatesProvider",
     "normalize_hot_plates_rows",
