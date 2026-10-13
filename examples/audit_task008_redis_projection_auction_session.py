@@ -163,6 +163,8 @@ def run_audit(
         trade_date,
         snapshot.expected_symbols,
         signal_prefix="redis-q2-sealed-snapshot",
+        # This audit compares against the default phase-zero final recovery.
+        recover_final_from_phase_zero=True,
     )
     legacy = json.loads(legacy_bytes)
     legacy_anchors = legacy.get("ordered", {}).get("anchor_evidence", {})

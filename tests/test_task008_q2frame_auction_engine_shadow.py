@@ -353,6 +353,64 @@ def test_0925_late_q2frame_update_supersedes_first_revision_end_to_end(
     )
 
 
+@pytest.mark.parametrize(
+    ("recover_final_from_phase_zero", "expected_status", "expected_recovered_count"),
+    [(False, "MISSING", 0), (True, "AVAILABLE", 1)],
+)
+def test_phase_zero_recovery_switch_controls_helper_and_auction_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recover_final_from_phase_zero: bool,
+    expected_status: str,
+    expected_recovered_count: int,
+):
+    original_session = shadow_runner.AuctionAnchorSessionV1
+    created_sessions = []
+
+    def recording_session(*args, **kwargs):
+        session = original_session(*args, **kwargs)
+        created_sessions.append(session)
+        return session
+
+    monkeypatch.setattr(shadow_runner, "AuctionAnchorSessionV1", recording_session)
+    frames = [_frame(seq, clock) for seq, clock in (
+        (1, "09:15:00.000"),
+        (2, "09:25:06.000"),
+        (3, "09:26:03.000"),
+    )]
+    for update in frames[1]["q2_updates"]:
+        update["a25"] = 0
+    late_update = next(
+        update for update in frames[2]["q2_updates"] if update["symbol"] == "000001"
+    )
+    late_update.update({"ph": 0, "vol": 120, "px": 12_950, "a25": 0})
+    source = tmp_path / f"q2frame-phase-zero-recovery-{recover_final_from_phase_zero}.jsonl"
+    source.write_text(
+        "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+        encoding="utf-8",
+    )
+
+    result = run_q2frame_auction_engine_shadow(
+        q2frame_path=source,
+        trade_date="2026-09-18",
+        continue_through_input=True,
+        recover_final_from_phase_zero=recover_final_from_phase_zero,
+    )
+
+    ordered = result["ordered"]
+    assert created_sessions[0].recover_final_from_phase_zero is recover_final_from_phase_zero
+    assert ordered["anchor_evidence"]["0925"][
+        "auction_anchor_facts_by_symbol"
+    ]["000001"]["status"] == expected_status
+    if recover_final_from_phase_zero:
+        assert ordered["phase_zero_final_recovery"]["recovered_count"] == expected_recovered_count
+        assert "000001" in ordered["phase_zero_final_recovery"]["recovered"]
+    else:
+        recovery = ordered.get("phase_zero_final_recovery", {})
+        assert recovery.get("recovered_count", 0) == 0
+        assert recovery.get("recovered", {}) == {}
+
+
 def test_real_q2frame_shape_surfaces_partial_0925_recovery_targets(tmp_path: Path):
     frames = [_frame(seq, clock) for seq, clock in (
         (1, "09:15:00.000"),

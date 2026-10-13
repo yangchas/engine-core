@@ -1147,6 +1147,7 @@ def _run_once(
         symbols,
         policies=policies,
         signal_prefix="q2frame",
+        recover_final_from_phase_zero=recover_final_from_phase_zero,
     )
     auction_timeline = auction_session.timeline
     anchor_evidence: dict[str, dict[str, Any]] = {}

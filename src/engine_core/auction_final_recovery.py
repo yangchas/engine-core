@@ -3,9 +3,11 @@
 The producer sets ``a25`` only from snapshots stamped 09:25:00-09:25:20, yet
 on 2026-10-09 336 Shenzhen symbols delivered their final-match snapshot
 (``ph==0``, ``vol>0``, ``px`` = opening price) at 09:26:00-09:26:57.  This
-pure, opt-in helper adds ``a25`` to such an update when the symbol has no
+pure helper adds ``a25`` to such an update when the symbol has no
 positive ``a25`` yet.  Every synthesized value is recorded with its snapshot
-time; nothing is invented when the snapshot is absent.
+time; nothing is invented when the snapshot is absent. Recovery is enabled by
+default in AuctionAnchorSessionV1 and the replay/shadow scripts (explicitly
+disabled with --no-recover-final-from-phase-zero).
 """
 
 from __future__ import annotations
