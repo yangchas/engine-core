@@ -64,13 +64,14 @@ def _reason_candidates(rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[
 def _kaipan_reasons_for_day(
     rows: Mapping[str, Sequence[Mapping[str, Any]]], trade_date: str, pool_symbols: set[str],
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
-    """Select pool-member reasons available on the requested trade date."""
-    dated_mode = any("Date" in row for symbol in pool_symbols for row in rows.get(symbol, ()))
+    """Select dated reasons for every Kaipan file available by the requested date."""
+    del pool_symbols  # Kaipan reason coverage is independent of yesterday's limit-up pool.
+    dated_mode = bool(rows)
     selected: dict[str, list[dict[str, Any]]] = {}
     used = excluded_future = excluded_no_date = 0
     if dated_mode:
         cutoff = date.fromisoformat(trade_date)
-        for symbol in pool_symbols:
+        for symbol in rows:
             eligible: list[tuple[date, dict[str, Any]]] = []
             for raw in rows.get(symbol, ()):
                 raw_date = raw.get("Date")
@@ -205,12 +206,22 @@ def build_day(
     kaipan_reason_rows, reason_counts = _kaipan_reasons_for_day(
         kaipan_reasons_by_symbol or {}, trade_date, set(map(str, pool_symbols)),
     )
-    legacy_reason_rows = {
-        str(symbol): rows for symbol, rows in reasons_by_symbol.items()
-        if str(symbol) not in pool_symbols
-    }
-    reason_candidates = _reason_candidates(legacy_reason_rows)
-    reason_candidates.update(_reason_candidates(kaipan_reason_rows))
+    if kaipan_reasons_by_symbol is None:
+        legacy_reason_rows = {str(symbol): rows for symbol, rows in reasons_by_symbol.items()}
+        kaipan_asof_candidates: dict[str, list[str]] = {}
+        unavailable_symbols: set[str] = set()
+    else:
+        kaipan_symbols = set(map(str, kaipan_reasons_by_symbol))
+        legacy_reason_rows = {
+            str(symbol): rows for symbol, rows in reasons_by_symbol.items()
+            if str(symbol) not in kaipan_symbols
+        }
+        kaipan_asof_candidates = _reason_candidates(kaipan_reason_rows)
+        unavailable_symbols = kaipan_symbols - set(kaipan_reason_rows)
+    legacy_reason_candidates = _reason_candidates(legacy_reason_rows)
+    reason_candidates = dict(legacy_reason_candidates)
+    reason_candidates.update(kaipan_asof_candidates if kaipan_reasons_by_symbol is not None
+                             else _reason_candidates(kaipan_reason_rows))
     symbols = set(map(str, auction_rows)) | set(static_assignment.assignments) | set(pool_symbols) | set(reason_candidates)
     default_hierarchy = default_alias_hierarchy()
     kaipan_hierarchy = kaipan_hierarchy or PlateHierarchy({}, {})
@@ -283,10 +294,18 @@ def build_day(
         "reason_item_count_excluded_future": reason_counts["excluded_future"],
         "reason_item_count_excluded_no_date": reason_counts["excluded_no_date"],
         "reason_symbol_count_used": reason_counts["symbol_count_used"],
+        "reason_symbol_count_asof_unavailable": len(unavailable_symbols),
         "reason_source_counts": {
-            "kaipan_asof": len(_reason_candidates(kaipan_reason_rows)),
-            "legacy_snapshot": len(reason_candidates) - len(_reason_candidates(kaipan_reason_rows)),
+            "kaipan_asof": (len(kaipan_reason_rows)
+                             if kaipan_reasons_by_symbol is not None else
+                             len(_reason_candidates(kaipan_reason_rows))),
+            "kaipan_unavailable_asof": len(unavailable_symbols),
+            "legacy_snapshot": (len(legacy_reason_candidates) if kaipan_reasons_by_symbol is not None
+                                else len(legacy_reason_candidates)),
         },
+        "reason_asof_unknown_symbol_count": (len(legacy_reason_candidates)
+                                              if kaipan_reasons_by_symbol is not None else
+                                              (len(legacy_reason_candidates) if reason_asof_unknown else 0)),
         "hierarchy_static_conflict_count": len(set(kaipan_hierarchy.parent_by_child) & set(default_hierarchy.parent_by_child)),
         "hierarchy_static_conflicts": {
             child: {"kaipan_parent": kaipan_hierarchy.parent_by_child[child],
@@ -305,8 +324,7 @@ def build_day(
     }
     return {"memberships": memberships, "aggregation": aggregation, "quality": quality,
             "reason_asof_unknown": (reason_asof_unknown if kaipan_reasons_by_symbol is None else
-                                     bool(reason_counts["asof_enabled"] is False or
-                                          quality["reason_source_counts"]["legacy_snapshot"])),
+                                     bool(quality["reason_source_counts"]["legacy_snapshot"])),
             "yest_pool_symbols": pool_symbols,
             "yest_pool_members": yest_pool_members}
 
@@ -416,11 +434,14 @@ def _load_kaipan_reasons(path: Path) -> dict[str, list[dict[str, Any]]]:
     for source in sorted(reason_dir.glob("*.json")):
         raw = _read_json(source)
         if not isinstance(raw, Mapping):
+            result[source.stem] = []
             continue
         symbol = str(raw.get("StockID") or raw.get("symbol") or source.stem)
         items = raw.get("List", raw.get("list", []))
         if isinstance(items, Sequence) and not isinstance(items, (str, bytes)):
             result[symbol] = [dict(item) for item in items if isinstance(item, Mapping)]
+        else:
+            result[symbol] = []
     return result
 
 

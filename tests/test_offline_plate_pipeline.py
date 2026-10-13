@@ -128,6 +128,68 @@ def test_kaipan_reasons_without_valid_date_are_excluded_and_counted():
                      "symbol_count_used": 0, "asof_enabled": True}
 
 
+def test_kaipan_reason_asof_applies_to_symbols_outside_yesterday_pool(tmp_path):
+    from examples.run_offline_plate_pipeline import _load_kaipan_reasons
+
+    reason_dir = tmp_path / "kaipan" / "reasons"
+    reason_dir.mkdir(parents=True)
+    (reason_dir / "a.json").write_text(json.dumps({
+        "StockID": "a", "List": [{"Date": "2026-01-04", "Reason": "新材料(固态电池)"}],
+    }), encoding="utf-8")
+    result = build_day(
+        trade_date="2026-01-05", klines_by_symbol={},
+        auction_rows={"a": {"px_milli": 10000}},
+        snapshot={"stock_plate": {}, "s2p": {}}, reasons_by_symbol={},
+        reason_asof_unknown=False, min_auction_rows=1,
+        kaipan_reasons_by_symbol=_load_kaipan_reasons(tmp_path / "kaipan"),
+    )
+    assert any(row.tier == 2 and row.plate == "新材料" for row in result["memberships"].by_symbol["a"])
+    assert result["quality"]["reason_source_counts"] == {
+        "kaipan_asof": 1, "kaipan_unavailable_asof": 0, "legacy_snapshot": 0,
+    }
+
+
+def test_future_only_kaipan_reason_does_not_fall_back_to_legacy_snapshot(tmp_path):
+    from examples.run_offline_plate_pipeline import _load_kaipan_reasons
+
+    reason_dir = tmp_path / "kaipan" / "reasons"
+    reason_dir.mkdir(parents=True)
+    (reason_dir / "a.json").write_text(json.dumps({
+        "StockID": "a", "List": [{"Date": "2026-01-06", "Reason": "未来板(未来题材)"}],
+    }), encoding="utf-8")
+    result = build_day(
+        trade_date="2026-01-05", klines_by_symbol={},
+        auction_rows={"a": {"px_milli": 10000}},
+        snapshot={"stock_plate": {}, "s2p": {}},
+        reasons_by_symbol={"a": [{"reason": "未来不可用"}]},
+        reason_asof_unknown=True, min_auction_rows=1,
+        kaipan_reasons_by_symbol=_load_kaipan_reasons(tmp_path / "kaipan"),
+    )
+    assert not any(row.tier == 2 for row in result["memberships"].by_symbol["a"])
+    assert result["quality"]["reason_source_counts"] == {
+        "kaipan_asof": 0, "kaipan_unavailable_asof": 1, "legacy_snapshot": 0,
+    }
+    assert result["quality"]["reason_symbol_count_asof_unavailable"] == 1
+    assert result["reason_asof_unknown"] is False
+
+
+def test_missing_kaipan_reason_file_falls_back_to_legacy_snapshot_and_counts_unknown():
+    result = build_day(
+        trade_date="2026-01-05", klines_by_symbol={},
+        auction_rows={"a": {"px_milli": 10000}},
+        snapshot={"stock_plate": {}, "s2p": {}},
+        reasons_by_symbol={"a": [{"reason": "旧快照主题"}]},
+        reason_asof_unknown=False, min_auction_rows=1,
+        kaipan_reasons_by_symbol={},
+    )
+    assert any(row.tier == 2 and row.plate == "旧快照主题" for row in result["memberships"].by_symbol["a"])
+    assert result["quality"]["reason_source_counts"] == {
+        "kaipan_asof": 0, "kaipan_unavailable_asof": 0, "legacy_snapshot": 1,
+    }
+    assert result["quality"]["reason_asof_unknown_symbol_count"] == 1
+    assert result["reason_asof_unknown"] is True
+
+
 
 def test_kline_by_day_accepts_datetime_ts():
     import datetime as _dt
