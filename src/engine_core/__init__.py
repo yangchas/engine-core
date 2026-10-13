@@ -196,6 +196,7 @@ from .plate_aggregation import (
     market_summary,
     aggregate_plates,
 )
+from .plate_kind import EVENT_KEYWORDS, classify_plate_kind
 from .auction import (
     AUCTION_0925_FINALIZATION_DELAY_MS,
     classify_td_auction_inactivity,
@@ -495,6 +496,8 @@ __all__ = [
     "PlateAggregation",
     "market_summary",
     "aggregate_plates",
+    "EVENT_KEYWORDS",
+    "classify_plate_kind",
     "BreadthFacts",
     "CALENDAR_CONTRACT_VERSION",
     "CalendarCoverageError",

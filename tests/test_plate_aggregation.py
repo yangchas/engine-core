@@ -101,6 +101,18 @@ def test_generic_plates_are_sorted_after_specific_but_still_aggregated():
     assert generic["昨日涨停"].member_count == 1
 
 
+def test_kind_is_exposed_and_rows_sort_theme_event_generic_noise():
+    memberships = build_memberships(
+        symbols=["a", "b", "c", "d"],
+        pool_plate_by_symbol={"a": ["机器人"], "b": ["业绩增长"], "c": ["人工智能"], "d": ["320万元"]},
+        reason_candidates_by_symbol={}, static_themes_by_symbol={},
+    )
+    rows = aggregate_plates(memberships, PlateHierarchy({}, {}), {}, include_ancestors=False).stats
+    assert [(row.plate, row.kind) for row in rows] == [
+        ("人工智能", "THEME"), ("业绩增长", "EVENT"), ("机器人", "GENERIC"), ("320万元", "NOISE")
+    ]
+
+
 def test_empty_input_and_market_summary():
     empty = market_summary({})
     assert empty.covered_count == 0

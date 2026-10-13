@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from .plate_membership import PlateHierarchy, StockPlateMemberships, members_of
+from .plate_kind import classify_plate_kind
 from .plate_rules import PLATE_RULES_VERSION, is_generic_plate, is_hard_generic_plate
 
 
@@ -33,6 +34,7 @@ class MarketSummary:
 @dataclass(frozen=True)
 class PlateStat:
     plate: str
+    kind: str
     generic: bool
     hard_generic: bool
     member_count: int
@@ -88,7 +90,8 @@ def market_summary(facts: Mapping[str, StockFact]) -> MarketSummary:
 
 def _payload(stat: PlateStat) -> dict:
     return {
-        "plate": stat.plate, "generic": stat.generic, "hard_generic": stat.hard_generic,
+        "plate": stat.plate, "kind": stat.kind,
+        "generic": stat.generic, "hard_generic": stat.hard_generic,
         "member_count": stat.member_count, "covered_count": stat.covered_count,
         "amount_sum": stat.amount_sum, "amount_share_of_market": stat.amount_share_of_market,
         "pct_equal_weight": stat.pct_equal_weight, "pct_amount_weighted": stat.pct_amount_weighted,
@@ -158,7 +161,8 @@ def aggregate_plates(
         deltas = [fact.amount - fact.amount_prev for fact, _ in covered
                   if fact.amount is not None and fact.amount_prev is not None]
         rows.append(PlateStat(
-            plate=plate, generic=is_generic_plate(plate), hard_generic=is_hard_generic_plate(plate),
+            plate=plate, kind=classify_plate_kind(plate),
+            generic=is_generic_plate(plate), hard_generic=is_hard_generic_plate(plate),
             member_count=len(symbols), covered_count=len(covered), amount_sum=total_amount,
             amount_share_of_market=(total_amount / market.amount_sum
                                     if total_amount is not None and market.amount_sum not in (None, 0) else None),
@@ -177,7 +181,8 @@ def aggregate_plates(
             reason_hit_count=tiers[2], tier_counts=tiers,
             amount_delta_sum=_amount_sum(deltas), flags=(),
         ))
-    rows.sort(key=lambda row: (row.generic, row.amount_sum is None,
+    kind_order = {"THEME": 0, "EVENT": 1, "GENERIC": 2, "NOISE": 3}
+    rows.sort(key=lambda row: (kind_order[row.kind], row.amount_sum is None,
                                -(row.amount_sum or 0.0), row.plate))
     payload = {"rule_version": PLATE_RULES_VERSION, "market": market.__dict__,
                "stats": [_payload(row) for row in rows]}
