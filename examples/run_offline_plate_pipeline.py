@@ -61,6 +61,45 @@ def _reason_candidates(rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[
     return result
 
 
+def _kaipan_reasons_for_day(
+    rows: Mapping[str, Sequence[Mapping[str, Any]]], trade_date: str, pool_symbols: set[str],
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """Select pool-member reasons available on the requested trade date."""
+    dated_mode = any("Date" in row for symbol in pool_symbols for row in rows.get(symbol, ()))
+    selected: dict[str, list[dict[str, Any]]] = {}
+    used = excluded_future = excluded_no_date = 0
+    if dated_mode:
+        cutoff = date.fromisoformat(trade_date)
+        for symbol in pool_symbols:
+            eligible: list[tuple[date, dict[str, Any]]] = []
+            for raw in rows.get(symbol, ()):
+                raw_date = raw.get("Date")
+                try:
+                    if not isinstance(raw_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_date):
+                        raise ValueError("Date must use YYYY-MM-DD")
+                    row_date = date.fromisoformat(str(raw_date))
+                except (TypeError, ValueError):
+                    excluded_no_date += 1
+                    continue
+                if row_date > cutoff:
+                    excluded_future += 1
+                    continue
+                eligible.append((row_date, dict(raw)))
+            eligible.sort(key=lambda item: item[0], reverse=True)
+            if eligible:
+                selected[str(symbol)] = [{
+                    **row,
+                    "reason": row.get("Reason", row.get("reason", "")),
+                    "group_str": row.get("Group_Str", row.get("group_str", "")),
+                    "gnsm": row.get("GNSM", row.get("gnsm", "")),
+                } for _, row in eligible]
+                used += len(eligible)
+    return selected, {
+        "used": used, "excluded_future": excluded_future, "excluded_no_date": excluded_no_date,
+        "symbol_count_used": len(selected), "asof_enabled": dated_mode,
+    }
+
+
 def _kline_by_day(klines: Mapping[str, Sequence[Sequence[Any]]]) -> dict[str, dict[str, Sequence[Any]]]:
     output: dict[str, dict[str, Sequence[Any]]] = {}
     for symbol, rows in klines.items():
@@ -114,6 +153,7 @@ def build_day(
     min_auction_rows: int = 4000, skipped_kline_table_symbol_count: int = 0,
     kaipan_pool_rows: Mapping[str, PoolRow] | None = None,
     kaipan_hierarchy: PlateHierarchy | None = None,
+    kaipan_reasons_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Pure daily composition; accepts loaded data and performs no I/O."""
     if not isinstance(snapshot.get("stock_plate"), Mapping) or not isinstance(snapshot.get("s2p"), Mapping):
@@ -162,7 +202,15 @@ def build_day(
             ([assignment.primary_plate] if assignment.primary_plate else []) + list(assignment.themes)
         ))
 
-    reason_candidates = _reason_candidates(reasons_by_symbol)
+    kaipan_reason_rows, reason_counts = _kaipan_reasons_for_day(
+        kaipan_reasons_by_symbol or {}, trade_date, set(map(str, pool_symbols)),
+    )
+    legacy_reason_rows = {
+        str(symbol): rows for symbol, rows in reasons_by_symbol.items()
+        if str(symbol) not in pool_symbols
+    }
+    reason_candidates = _reason_candidates(legacy_reason_rows)
+    reason_candidates.update(_reason_candidates(kaipan_reason_rows))
     symbols = set(map(str, auction_rows)) | set(static_assignment.assignments) | set(pool_symbols) | set(reason_candidates)
     default_hierarchy = default_alias_hierarchy()
     kaipan_hierarchy = kaipan_hierarchy or PlateHierarchy({}, {})
@@ -231,6 +279,14 @@ def build_day(
         "pool_source": pool_source, "kaipan_pool_member_count": len(kaipan_pool_rows or {}),
         "td_pool_member_difference_count": len(pool_symbols ^ td_pool_symbols),
         "hierarchy_edge_count": len(kaipan_hierarchy.parent_by_child),
+        "reason_item_count_used": reason_counts["used"],
+        "reason_item_count_excluded_future": reason_counts["excluded_future"],
+        "reason_item_count_excluded_no_date": reason_counts["excluded_no_date"],
+        "reason_symbol_count_used": reason_counts["symbol_count_used"],
+        "reason_source_counts": {
+            "kaipan_asof": len(_reason_candidates(kaipan_reason_rows)),
+            "legacy_snapshot": len(reason_candidates) - len(_reason_candidates(kaipan_reason_rows)),
+        },
         "hierarchy_static_conflict_count": len(set(kaipan_hierarchy.parent_by_child) & set(default_hierarchy.parent_by_child)),
         "hierarchy_static_conflicts": {
             child: {"kaipan_parent": kaipan_hierarchy.parent_by_child[child],
@@ -248,7 +304,10 @@ def build_day(
         for symbol in sorted(pool_symbols)
     }
     return {"memberships": memberships, "aggregation": aggregation, "quality": quality,
-            "reason_asof_unknown": reason_asof_unknown, "yest_pool_symbols": pool_symbols,
+            "reason_asof_unknown": (reason_asof_unknown if kaipan_reasons_by_symbol is None else
+                                     bool(reason_counts["asof_enabled"] is False or
+                                          quality["reason_source_counts"]["legacy_snapshot"])),
+            "yest_pool_symbols": pool_symbols,
             "yest_pool_members": yest_pool_members}
 
 
@@ -260,6 +319,7 @@ def run_pipeline(
     min_auction_rows: int = 4000, skipped_kline_table_symbol_count: int = 0,
     kaipan_pool_by_day: Mapping[str, Mapping[str, PoolRow]] | None = None,
     kaipan_hierarchy: PlateHierarchy | None = None,
+    kaipan_reasons_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     included, skipped = [], []
     for day in dates:
@@ -277,6 +337,7 @@ def run_pipeline(
             kaipan_pool_rows=(kaipan_pool_by_day or {}).get(
                 max((session for session in _kline_by_day(klines_by_symbol) if session < day), default=""),
             ), kaipan_hierarchy=kaipan_hierarchy,
+            kaipan_reasons_by_symbol=kaipan_reasons_by_symbol,
         )))
     return {"days": included, "skipped": skipped}
 
@@ -345,6 +406,22 @@ def _load_kaipan_inputs(path: Path) -> tuple[dict[str, dict[str, PoolRow]], Plat
     reason_responses = [_read_json(source) for source in sorted((path / "reasons").glob("*.json"))] \
         if (path / "reasons").is_dir() else []
     return pools, parse_kaipan_reason_hierarchy(reason_responses)
+
+
+def _load_kaipan_reasons(path: Path) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {}
+    reason_dir = path / "reasons"
+    if not reason_dir.is_dir():
+        return result
+    for source in sorted(reason_dir.glob("*.json")):
+        raw = _read_json(source)
+        if not isinstance(raw, Mapping):
+            continue
+        symbol = str(raw.get("StockID") or raw.get("symbol") or source.stem)
+        items = raw.get("List", raw.get("list", []))
+        if isinstance(items, Sequence) and not isinstance(items, (str, bytes)):
+            result[symbol] = [dict(item) for item in items if isinstance(item, Mapping)]
+    return result
 
 
 def _connect_td(host: str):
@@ -524,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:
     snapshot = _load_snapshot(args.snapshot)
     reasons = _load_reasons(args.reasons)
     kaipan_pools, kaipan_hierarchy = _load_kaipan_inputs(args.kaipan_dir) if args.kaipan_dir else ({}, None)
+    kaipan_reasons = _load_kaipan_reasons(args.kaipan_dir) if args.kaipan_dir else None
     symbols = sorted(set(map(str, snapshot["stock_plate"])) | set(map(str, snapshot["s2p"])) | set(reasons))
     auction_dates = [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
     # Confirm database value before opening and reuse that same value for the query.
@@ -535,6 +613,7 @@ def main(argv: list[str] | None = None) -> int:
         reason_asof_unknown=args.reasons is not None, auction_0924_by_date=previous,
         skipped_kline_table_symbol_count=skipped_kline_symbols,
         kaipan_pool_by_day=kaipan_pools, kaipan_hierarchy=kaipan_hierarchy,
+        kaipan_reasons_by_symbol=kaipan_reasons,
     )
     _emit(args.output_dir, result, args)
     return 0

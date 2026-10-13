@@ -102,6 +102,32 @@ def test_kaipan_pool_input_owns_tier_one_membership(tmp_path):
     assert value["quality"]["pool_source"] == "kaipan"
 
 
+def test_kaipan_reasons_are_filtered_as_of_and_recent_candidates_are_first():
+    from examples.run_offline_plate_pipeline import _kaipan_reasons_for_day, _reason_candidates
+
+    reasons, stats = _kaipan_reasons_for_day({"000001": [
+        {"Date": "2026-01-05", "Reason": "旧板(旧题材)"},
+        {"Date": "2026-01-07", "Reason": "未来板(未来题材)"},
+        {"Date": "2026-01-06", "Reason": "新板(新题材)"},
+    ]}, "2026-01-06", {"000001"})
+    assert [row["reason"] for row in reasons["000001"]] == ["新板(新题材)", "旧板(旧题材)"]
+    assert _reason_candidates(reasons)["000001"][:2] == ["新板", "旧板"]
+    assert stats == {"used": 2, "excluded_future": 1, "excluded_no_date": 0,
+                     "symbol_count_used": 1, "asof_enabled": True}
+
+
+def test_kaipan_reasons_without_valid_date_are_excluded_and_counted():
+    from examples.run_offline_plate_pipeline import _kaipan_reasons_for_day
+
+    reasons, stats = _kaipan_reasons_for_day({"000001": [
+        {"Date": "not-a-date", "Reason": "坏日期(题材甲)"},
+        {"Reason": "缺日期(题材乙)"},
+    ]}, "2026-01-06", {"000001"})
+    assert reasons == {}
+    assert stats == {"used": 0, "excluded_future": 0, "excluded_no_date": 2,
+                     "symbol_count_used": 0, "asof_enabled": True}
+
+
 
 def test_kline_by_day_accepts_datetime_ts():
     import datetime as _dt
