@@ -1,5 +1,17 @@
 # Current Task
 
+## 2026-10-13 M4 market-cap fact (`engine_core.f10_market_cap`)
+
+`normalize_f10_market_caps(rows, as_of=...)`: F10 CSV rows -> per-symbol total
+and circulating market cap in yuan (and shares); missing/non-positive is None,
+duplicates rejected, PARTIAL unless `as_of` is provided and rows are complete.
+`market_cap_unit_check` is evidence only: on the 2026-09-14 CSV total cap /
+(shares * Q2 pre-close) has median 1.04 over 5,159 symbols (yuan, not 10k-yuan).
+The ">= 300 yi" class and the "style" labels (观察盘/兑现盘/主攻盘...) are
+strategy thresholds in legacy and are not facts; not migrated. Core has no
+live F10 source yet (legacy `web.services.f10_service` must not be imported);
+the CSV capture is the only authority seen, as-of unknown inside the file.
+
 ## 2026-10-13 M4 per-stock auction extremes (`engine_core.stock_extremes`)
 
 Legacy `【竞价极值榜】` is a composite score with hand-set weights plus a
