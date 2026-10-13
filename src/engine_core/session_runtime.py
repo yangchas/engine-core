@@ -265,6 +265,35 @@ class SessionRuntimeCoordinator:
         self._deferred.discard(firing.timer_id)
         self._frontier_ms = max(self._frontier_ms or firing.fired_time_ms, firing.fired_time_ms)
 
+    def restore_completed(self, firings: Iterable[TimerFiring]) -> int:
+        """Seed already-acknowledged firings after a restart; returns the count added.
+
+        Only firings of this session plan and of known timer ids are accepted;
+        a firing that conflicts with an already completed one raises.  This
+        does not dispatch anything and moves the frontier only forward.
+        """
+
+        known_ids = {item.timer_id for item in self.timer_specs}
+        added = 0
+        for firing in firings:
+            if not isinstance(firing, TimerFiring):
+                raise TypeError("firing must be TimerFiring")
+            if firing.session_plan_hash != self.session_plan.content_hash:
+                raise ValueError("restored firing session plan does not match coordinator")
+            if firing.timer_id not in known_ids:
+                raise ValueError("restored firing has an unknown timer_id")
+            existing = self._fired.get(firing.timer_id)
+            if existing is not None:
+                if existing.content_hash != firing.content_hash:
+                    raise ValueError("conflicting restored firing for completed timer")
+                continue
+            self._fired[firing.timer_id] = firing
+            self._pending.pop(firing.timer_id, None)
+            self._deferred.discard(firing.timer_id)
+            self._frontier_ms = max(self._frontier_ms or firing.fired_time_ms, firing.fired_time_ms)
+            added += 1
+        return added
+
     def state_hash(self) -> str:
         """Return a deterministic diagnostic identity for current memory state."""
 

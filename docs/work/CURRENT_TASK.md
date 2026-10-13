@@ -1,5 +1,15 @@
 # Current Task
 
+## 2026-10-13 M3 restart idempotency (`engine_core.execution_ledger`)
+
+`ExecutionLedger(path)`: append-only JSONL of acknowledged timer firings
+(flock + fsync). Identical record = no-op; conflicting firing for a completed
+timer raises; unparseable lines are skipped and counted, never repaired;
+record hashes are verified on read. `SessionRuntimeCoordinator.restore_completed`
+seeds a restarted coordinator from the ledger so completed timers are not due
+again. Library only: no production store is touched and no runtime owner uses
+it yet (owner wiring is the remaining M3 step).
+
 ## 2026-10-13 M4 market-cap fact (`engine_core.f10_market_cap`)
 
 `normalize_f10_market_caps(rows, as_of=...)`: F10 CSV rows -> per-symbol total
