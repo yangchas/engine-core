@@ -18,6 +18,7 @@ from .market_summary import derive_q2_auction_summary
 from .previous_day_limit_current_rows import build_current_0925_rows_from_q2
 from .previous_day_limit_feedback import build_previous_day_limit_feedback
 from .previous_day_limit_structure import build_previous_day_limit_structure
+from .stock_extremes import derive_stock_extremes
 
 
 def build_shadow_auction_report(
@@ -75,10 +76,11 @@ def build_shadow_auction_report(
             )
     else:
         notes.append("previous-day pool not supplied")
+    extremes = derive_stock_extremes(patched, trade_date=trade_date, top_n=top_n)
     return build_market_auction_report(
         trade_date=trade_date, event_id=event_id, data_origin=data_origin,
         market_summary=summary, previous_limit_structure=structure,
-        previous_limit_feedback=feedback, top_n=top_n, notes=notes,
+        previous_limit_feedback=feedback, stock_extremes=extremes, top_n=top_n, notes=notes,
     )
 
 

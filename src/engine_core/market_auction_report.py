@@ -19,6 +19,7 @@ from .facts import FactStatus
 from .market_summary import Q2AuctionSummaryProjection
 from .previous_day_limit_feedback import PreviousDayLimitFeedbackFact
 from .previous_day_limit_structure import PreviousDayLimitStructureFact
+from .stock_extremes import StockExtremes
 from .theme_auction_delta import ThemeAuctionDeltaFact
 
 MARKET_REPORT_CONTRACT_VERSION = "MarketAuctionFactReportV1"
@@ -78,6 +79,7 @@ def build_market_auction_report(
     previous_limit_structure: Optional[PreviousDayLimitStructureFact] = None,
     previous_limit_feedback: Optional[PreviousDayLimitFeedbackFact] = None,
     theme_facts: Sequence[ThemeAuctionDeltaFact] = (),
+    stock_extremes: Optional[StockExtremes] = None,
     top_n: int = 10,
     notes: Sequence[str] = (),
 ) -> MarketAuctionReport:
@@ -192,6 +194,31 @@ def build_market_auction_report(
                         _show(item.amount_ratio_avg),
                     )
                 )
+    if stock_extremes is not None:
+        components["stock_extremes"] = stock_extremes.status
+        lines += [
+            "",
+            "## 个股竞价极值（单一指标排序，无评分、无结论）",
+            "- status: %s | candidates: %s" % (
+                _status_value(stock_extremes.status), _show(stock_extremes.candidate_count)),
+        ]
+        titles = {
+            "auction_amount_top": "竞价额",
+            "auction_gain_top": "竞价涨幅(bp)",
+            "auction_drop_top": "竞价跌幅(bp)",
+            "limit_up_seal_top": "涨停封单额",
+            "amount_delta_top": "竞价额增量(0924→0925)",
+        }
+        for key, rows in stock_extremes.rankings.items():
+            excluded = stock_extremes.excluded_counts.get(key, 0)
+            lines.append("### %s%s" % (
+                titles.get(key, key), " (排除缺值 %d)" % excluded if excluded else ""))
+            if not rows:
+                lines.append("- unavailable")
+            for row in rows:
+                lines.append("%d. %s %s | %s %s" % (
+                    row["rank"], row["symbol"], row.get("name") or "",
+                    _show(row["value"]), stock_extremes.units.get(key, "")))
     if notes:
         lines += ["", "## 备注"] + ["- %s" % str(item) for item in notes]
     if components:
