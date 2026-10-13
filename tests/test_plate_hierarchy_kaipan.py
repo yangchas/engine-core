@@ -46,3 +46,14 @@ def test_reason_hierarchy_records_codes_and_ignores_zero_parent():
         "symbols_count": 2, "conflict": True,
     }
     assert "物业服务" not in hierarchy.parent_by_child
+
+
+def test_reason_hierarchy_as_of_excludes_future_and_missing_dates():
+    responses = [{"StockID": "000001", "List": [
+        {"Date": "2026-01-06", "ZSCode": ["801001"], "Reason": "未来(未来板)", "PZSCode": "803001"},
+        {"ZSCode": ["801002"], "Reason": "无日期(无日期板)", "PZSCode": "803002"},
+    ]}]
+    counts = {}
+    hierarchy = parse_kaipan_reason_hierarchy(responses, as_of_date="2026-01-05", counts=counts)
+    assert hierarchy.parent_by_child == {}
+    assert counts == {"used": 0, "excluded_future": 1, "excluded_no_date": 1}

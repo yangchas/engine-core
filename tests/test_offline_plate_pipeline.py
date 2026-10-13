@@ -173,6 +173,22 @@ def test_future_only_kaipan_reason_does_not_fall_back_to_legacy_snapshot(tmp_pat
     assert result["reason_asof_unknown"] is False
 
 
+def test_kaipan_hierarchy_is_rebuilt_as_of_each_day():
+    result = build_day(
+        trade_date="2026-01-05", klines_by_symbol={},
+        auction_rows={"000001": {"px_milli": 10000, "match_amt_yuan": 1}},
+        snapshot={"stock_plate": {}, "s2p": {}}, reasons_by_symbol={},
+        reason_asof_unknown=False, min_auction_rows=1,
+        kaipan_reasons_by_symbol={"000001": [{
+            "Date": "2026-01-06", "Reason": "未来(未来板)",
+            "ZSCode": ["801001"], "PZSCode": "803001",
+        }]},
+    )
+    assert result["quality"]["hierarchy_edge_count"] == 0
+    assert result["quality"]["hierarchy_items_used"] == 0
+    assert result["quality"]["hierarchy_items_excluded_future"] == 1
+
+
 def test_missing_kaipan_reason_file_falls_back_to_legacy_snapshot_and_counts_unknown():
     result = build_day(
         trade_date="2026-01-05", klines_by_symbol={},

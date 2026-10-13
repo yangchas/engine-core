@@ -71,6 +71,18 @@ def test_unexpected_pool_shapes_are_counted_without_raising(tmp_path, response):
     assert manifest["failures"] == [{"error_type": "UnexpectedShape", "date": "2026-10-09", "lvl": 1}]
 
 
+def test_metadata_only_pool_page_is_unexpected_and_keeps_failure_streak(tmp_path):
+    analyzer = FakeAnalyzer({
+        ("2026-10-09", str(level)): {"info": ["metadata"]}
+        for level in range(1, 9)
+    })
+    manifest = fetch_all(analyzer, ["2026-10-09"], output_dir=tmp_path / "out", max_ban=8,
+                         sleep_s=0, sleep_fn=lambda _: None)
+    assert manifest["request_count"] == 8
+    assert manifest["aborted"] is True
+    assert [failure["error_type"] for failure in manifest["failures"]] == ["UnexpectedShape"] * 8
+
+
 def test_max_requests_truncates_before_next_request(tmp_path):
     analyzer = FakeAnalyzer({("2026-10-09", "1"): [{"code": "600001"}]})
     manifest = fetch_all(analyzer, ["2026-10-09"], output_dir=tmp_path / "out",
@@ -127,6 +139,20 @@ def test_injected_reason_fetcher_uses_page_size_and_writes_raw_response(tmp_path
     assert calls == [("600001", 40)]
     assert json.loads((out / "reasons/600001.json").read_text()) == raw_reason
     assert not [call for call in analyzer.calls if call[0] == "reason"]
+
+
+def test_response_echoing_runtime_credentials_is_redacted_before_write(tmp_path):
+    config = {"Token": "test-token-value", "DeviceID": "test-device-value"}
+    response = {"info": [[ ["600001", "甲", *([None] * 14)] ]],
+                "echo": {"token": config["Token"], "nested": [config["DeviceID"]]}}
+    analyzer = FakeAnalyzer({("2026-10-09", "1"): response})
+    out = tmp_path / "out"
+    manifest = fetch_all(analyzer, ["2026-10-09"], output_dir=out, max_ban=1,
+                         credential_config=config, sleep_s=0, sleep_fn=lambda _: None)
+    serialized = (out / "pools/2026-10-09_ban1.json").read_text()
+    assert "test-token-value" not in serialized and "test-device-value" not in serialized
+    assert manifest["redacted_response_count"] == 2
+    assert json.loads(serialized)["echo"] == {"token": "<redacted>", "nested": ["<redacted>"]}
 
 
 def test_reason_response_equal_to_page_size_is_marked_possibly_truncated(tmp_path):

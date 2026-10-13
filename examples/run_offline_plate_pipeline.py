@@ -206,6 +206,15 @@ def build_day(
     kaipan_reason_rows, reason_counts = _kaipan_reasons_for_day(
         kaipan_reasons_by_symbol or {}, trade_date, set(map(str, pool_symbols)),
     )
+    hierarchy_counts = {"used": 0, "excluded_future": 0, "excluded_no_date": 0}
+    if kaipan_reasons_by_symbol is not None:
+        hierarchy_responses = [
+            {"StockID": str(symbol), "List": list(rows)}
+            for symbol, rows in kaipan_reasons_by_symbol.items()
+        ]
+        kaipan_hierarchy = parse_kaipan_reason_hierarchy(
+            hierarchy_responses, as_of_date=trade_date, counts=hierarchy_counts,
+        )
     if kaipan_reasons_by_symbol is None:
         legacy_reason_rows = {str(symbol): rows for symbol, rows in reasons_by_symbol.items()}
         kaipan_asof_candidates: dict[str, list[str]] = {}
@@ -290,6 +299,9 @@ def build_day(
         "pool_source": pool_source, "kaipan_pool_member_count": len(kaipan_pool_rows or {}),
         "td_pool_member_difference_count": len(pool_symbols ^ td_pool_symbols),
         "hierarchy_edge_count": len(kaipan_hierarchy.parent_by_child),
+        "hierarchy_items_used": hierarchy_counts["used"],
+        "hierarchy_items_excluded_future": hierarchy_counts["excluded_future"],
+        "hierarchy_items_excluded_no_date": hierarchy_counts["excluded_no_date"],
         "reason_item_count_used": reason_counts["used"],
         "reason_item_count_excluded_future": reason_counts["excluded_future"],
         "reason_item_count_excluded_no_date": reason_counts["excluded_no_date"],

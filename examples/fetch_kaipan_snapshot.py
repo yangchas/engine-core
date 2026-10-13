@@ -11,7 +11,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import quote
 
 
@@ -80,7 +80,48 @@ def _pool_records(value: Any) -> list[list[Any] | tuple[Any, ...]]:
 
 
 def _valid_pool_shape(value: Any) -> bool:
-    return isinstance(value, dict) and isinstance(value.get("info"), (list, tuple))
+    if not isinstance(value, dict) or not isinstance(value.get("info"), (list, tuple)):
+        return False
+    for page in value["info"]:
+        if not isinstance(page, (list, tuple)):
+            continue
+        if not page or any(
+            isinstance(row, Mapping) or
+            (isinstance(row, (list, tuple)) and len(row) >= 16 and _pool_code(row[0]) is not None)
+            for row in page
+        ):
+            return True
+    return False
+
+
+def _redact_response(value: Any, secrets: set[str]) -> tuple[Any, int]:
+    if isinstance(value, str):
+        return ("<redacted>", 1) if value in secrets else (value, 0)
+    if isinstance(value, Mapping):
+        cleaned, count = {}, 0
+        for key, child in value.items():
+            cleaned_child, child_count = _redact_response(child, secrets)
+            cleaned[key] = cleaned_child
+            count += child_count
+        return cleaned, count
+    if isinstance(value, (list, tuple)):
+        cleaned, count = [], 0
+        for child in value:
+            cleaned_child, child_count = _redact_response(child, secrets)
+            cleaned.append(cleaned_child)
+            count += child_count
+        return cleaned, count
+    return value, 0
+
+
+def _runtime_credentials(config: Mapping[str, Any] | None) -> set[str]:
+    if config is None:
+        try:
+            config = importlib.import_module("pykaipan.pykaipan").config
+        except (ImportError, AttributeError):
+            return set()
+    return {value for key in ("Token", "DeviceID")
+            if isinstance((value := config.get(key)), str) and value}
 
 
 def _response_rows(value: Any) -> int:
@@ -111,6 +152,7 @@ def fetch_all(
     extra_symbols: Iterable[str] = (),
     reason_page_size: int = 1,
     reason_fetcher: Callable[[str, int], Any] | None = None,
+    credential_config: Mapping[str, Any] | None = None,
     manifest_every: int = 50,
     sleep_fn: Callable[[float], None] = time.sleep,
     now_fn: Callable[[], str] = _utc_now,
@@ -142,6 +184,8 @@ def fetch_all(
     failures: list[dict[str, Any]] = []
     possibly_truncated_symbols: list[str] = []
     checksums: dict[str, str] = {}
+    redacted_response_count = 0
+    credentials = _runtime_credentials(credential_config)
     pool_counts: dict[str, dict[str, int]] = {date: {} for date in dates}
     pool_symbol_sets: dict[str, set[str]] = {date: set() for date in dates}
     symbols: list[str] = []
@@ -167,13 +211,14 @@ def fetch_all(
             "started_at_utc": started_at,
             "ended_at_utc": ended_at,
             "sha256": checksums,
+            "redacted_response_count": redacted_response_count,
             "truncated": truncated,
             "aborted": aborted,
         }
 
     def request(kind: str, *, date: str | None = None, lvl: int | None = None,
                 symbol: str | None = None) -> bool:
-        nonlocal request_count, consecutive_bad, truncated, aborted
+        nonlocal request_count, consecutive_bad, truncated, aborted, redacted_response_count
         if request_count >= max_requests:
             truncated = True
             return False
@@ -195,6 +240,8 @@ def fetch_all(
             consecutive_bad += 1
             response = None
         else:
+            response, redacted = _redact_response(response, credentials)
+            redacted_response_count += redacted
             pool_shape_error = kind == "pool" and not _valid_pool_shape(response)
             if pool_shape_error or response is None or response == "" or response == [] or response == {}:
                 entry = {"error_type": "UnexpectedShape" if pool_shape_error else "EmptyResponse"}

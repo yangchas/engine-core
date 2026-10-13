@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from datetime import date
+from typing import Any, Mapping, MutableMapping, Sequence
 
 from .plate_membership import PlateHierarchy
 from .plate_rules import normalize_plate_name
@@ -75,10 +76,28 @@ def _reason_records(response: Any) -> list[tuple[str, Mapping[str, Any]]]:
     return [(symbol, row) for row in rows if isinstance(row, Mapping)]
 
 
-def parse_kaipan_reason_hierarchy(reason_responses: Any) -> PlateHierarchy:
+def parse_kaipan_reason_hierarchy(
+    reason_responses: Any, *, as_of_date: str | None = None,
+    counts: MutableMapping[str, int] | None = None,
+) -> PlateHierarchy:
     """Extract parent edges from ``主(细)`` reasons with source code evidence."""
     candidates: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    cutoff = date.fromisoformat(as_of_date) if as_of_date is not None else None
+    used = excluded_future = excluded_no_date = 0
     for symbol, row in _reason_records(reason_responses):
+        if cutoff is not None:
+            raw_date = row.get("Date", row.get("date"))
+            try:
+                if not isinstance(raw_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_date):
+                    raise ValueError("Date must use YYYY-MM-DD")
+                row_date = date.fromisoformat(raw_date)
+            except ValueError:
+                excluded_no_date += 1
+                continue
+            if row_date > cutoff:
+                excluded_future += 1
+                continue
+            used += 1
         reason = str(row.get("Reason") or row.get("reason") or "")
         match = re.search(r"([^()（）;；]+)[(（]([^()（）]+)[)）]", reason)
         if not match:
@@ -119,4 +138,6 @@ def parse_kaipan_reason_hierarchy(reason_responses: Any) -> PlateHierarchy:
         if len(by_parent) > 1:
             row_evidence["conflict"] = True
         evidence[child] = row_evidence
+    if counts is not None:
+        counts.update(used=used, excluded_future=excluded_future, excluded_no_date=excluded_no_date)
     return PlateHierarchy(parents, sources, evidence)
