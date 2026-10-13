@@ -56,6 +56,23 @@ def test_live_poll_callback_runs_after_anchor_and_events_are_written(tmp_path: P
     assert (output / "shadow_events.jsonl").read_text().strip()
 
 
+def test_live_failure_artifact_omits_exception_message(tmp_path: Path):
+    class SecretFailureClient(FakeClient):
+        def hgetall(self, key):
+            raise RuntimeError("connection failed at secret-host-123")
+
+    output = tmp_path / "secret-failure"
+    with pytest.raises(RuntimeError, match="live shadow failed: RuntimeError"):
+        run_shadow(
+            source="live", out_dir=output, live_client=SecretFailureClient(),
+            trade_date="2026-10-09", confirm_read_only=True,
+            read_times=("09:25:12",),
+        )
+    failure_text = (output / "failure.json").read_text(encoding="utf-8")
+    assert json.loads(failure_text) == {"type": "RuntimeError", "stage": "live_shadow"}
+    assert "secret-host-123" not in failure_text
+
+
 def test_synthetic_capture_emits_three_anchor_events(tmp_path: Path):
     capture = {
         "contract_version": "RedisQ2ReadCaptureV1",

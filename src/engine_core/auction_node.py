@@ -1,9 +1,16 @@
-"""Read-only live auction node composed from the existing session components."""
+"""Read-only live auction node composed from the existing session components.
+
+Timer artifacts are written atomically before ledger recording and coordinator
+acknowledgement. If the process crashes before ``ledger.record``, restart
+dispatches the timer again and rewrites the same deterministic artifact
+(at-least-once dispatch with idempotent artifact content).
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -64,7 +71,7 @@ def run_auction_node(
     coordinator = SessionRuntimeCoordinator(
         trade_date=trade_date, calendar=calendar, session_plan=session_plan,
         timer_specs=AUCTION_NODE_TIMERS,
-        q2_optional_timer_ids=tuple(item.timer_id for item in AUCTION_NODE_TIMERS),
+        q2_optional_timer_ids=("AUCTION_0926",),
     )
     ledger = ExecutionLedger(ledger_path)
     restored_firings = ledger.firings(trade_date)
@@ -100,14 +107,15 @@ def run_auction_node(
             artifact = {
                 **_firing_mapping(firing),
                 "poll": int(record["poll"]),
-                "anchor_table_file": str(anchor_path.relative_to(out_dir)),
+                # Keep the durable artifact stable across shadow_run_NNN restarts.
+                "anchor_table_file": anchor_path.name,
                 "anchor_table_sha256": anchor_digest,
             }
             temporary = timer_path.with_suffix(".json.tmp")
             temporary.write_text(json.dumps(artifact, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-            temporary.replace(timer_path)
-            coordinator.acknowledge(firing)
+            os.replace(temporary, timer_path)
             ledger.record(trade_date, firing)
+            coordinator.acknowledge(firing)
             acknowledged.append(firing.timer_id)
 
     from examples.shadow_task008_redis_auction_session import run_shadow

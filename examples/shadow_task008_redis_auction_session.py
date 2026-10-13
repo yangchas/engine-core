@@ -403,12 +403,12 @@ def _sleep_until_local(trade_date: str, hms: str) -> None:
         time.sleep(delay)
 
 
-def _record_failure(out_dir: Path, exc: BaseException) -> None:
+def _record_failure(out_dir: Path, exc: BaseException, *, stage: str) -> None:
     """Keep the cause for diagnosis; Core adapters never see the password."""
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "failure.json").write_text(
-            json.dumps({"type": type(exc).__name__, "message": str(exc)[:300]}, ensure_ascii=False),
+            json.dumps({"type": type(exc).__name__, "stage": stage}, ensure_ascii=False),
             encoding="utf-8",
         )
     except OSError:
@@ -635,7 +635,7 @@ def _run_shadow_impl(
                 if poll + 1 < max_polls and not read_times:
                     time.sleep(poll_seconds)
     except Exception as exc:
-        _record_failure(out_dir, exc)
+        _record_failure(out_dir, exc, stage="live_shadow")
         raise
     finally:
         client.close()
