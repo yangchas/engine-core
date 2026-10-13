@@ -2,8 +2,10 @@
 
 Timer artifacts are written atomically before ledger recording and coordinator
 acknowledgement. If the process crashes before ``ledger.record``, restart
-dispatches the timer again and rewrites the same deterministic artifact
-(at-least-once dispatch with idempotent artifact content).
+dispatches the timer again. After restart, ``fired_time_ms``, ``late_by_ms``,
+and the artifact hash depend on the restart polling time; identical rewritten
+bytes are guaranteed only for identical observed inputs (at-least-once
+dispatch with idempotent artifact content under the same inputs).
 """
 
 from __future__ import annotations
@@ -100,6 +102,11 @@ def run_auction_node(
             as_of_ms=observed_at_ms, q2=record["snapshot"], origin=origin,
         )
         for firing in runtime_poll.dispatchable_firings:
+            if (
+                firing.timer_id == "OPENING_0932"
+                and runtime_poll.readiness.status != "READY"
+            ):
+                continue
             anchor_name = "anchor_table_%03d.json" % int(record["poll"])
             anchor_path = Path(record["out_dir"]) / anchor_name
             anchor_digest = hashlib.sha256(anchor_path.read_bytes()).hexdigest()
@@ -110,7 +117,14 @@ def run_auction_node(
                 # Keep the durable artifact stable across shadow_run_NNN restarts.
                 "anchor_table_file": anchor_path.name,
                 "anchor_table_sha256": anchor_digest,
+                "cutoff_fidelity": (
+                    "AT_CUTOFF"
+                    if firing.late_by_ms <= 30000 and firing.origin == "NORMAL"
+                    else "AFTER_CUTOFF_CURRENT_STATE"
+                ),
             }
+            if firing.timer_id == "AUCTION_0926":
+                artifact["q2_readiness"] = runtime_poll.readiness.status
             temporary = timer_path.with_suffix(".json.tmp")
             temporary.write_text(json.dumps(artifact, sort_keys=True, indent=2) + "\n", encoding="utf-8")
             os.replace(temporary, timer_path)

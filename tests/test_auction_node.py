@@ -107,6 +107,11 @@ def test_auction_node_dispatches_timers_and_restores_them_on_restart(tmp_path, m
     for timer_id in first["timers_acknowledged"]:
         row = json.loads((tmp_path / "node" / f"timer_{timer_id}.json").read_text())
         assert row["origin"] == "NORMAL"
+        assert row["cutoff_fidelity"] == "AT_CUTOFF"
+        if timer_id == "AUCTION_0926":
+            assert row["q2_readiness"] == "READY"
+        else:
+            assert "q2_readiness" not in row
         assert row["anchor_table_sha256"]
         assert any((tmp_path / "node").glob("shadow_run_*" + "/" + row["anchor_table_file"]))
     ledger_lines = ledger.read_text().splitlines()
@@ -132,6 +137,40 @@ def test_late_first_poll_marks_both_timers_as_recovery_catchup(tmp_path, monkeyp
         == "RECOVERY_CATCHUP"
         for timer_id in result["timers_acknowledged"]
     )
+    assert all(
+        json.loads((tmp_path / "node" / f"timer_{timer_id}.json").read_text())[
+            "cutoff_fidelity"
+        ] == "AFTER_CUTOFF_CURRENT_STATE"
+        for timer_id in result["timers_acknowledged"]
+    )
+
+
+def test_opening_timer_waits_for_fresh_q2_then_dispatches(tmp_path, monkeypatch):
+    class StaleThenFreshClient(FreshAuctionClient):
+        def __init__(self):
+            super().__init__(("09:00:00", "09:33:06"))
+
+        def hgetall(self, key):
+            row = super().hgetall(key)
+            if self.current_time == "09:00:00":
+                row["ts"] = str(local_datetime_ms("2026-10-12", "09:00:00"))
+            return row
+
+    ledger = tmp_path / "ledger.jsonl"
+    _use_q2_observation_times(monkeypatch, ("09:33:05", "09:33:06"))
+    result = _node(
+        tmp_path, StaleThenFreshClient(), ledger, ("09:33:05", "09:33:06"),
+        lambda day, hms: local_datetime_ms(day, hms),
+    )
+
+    node_run = json.loads((tmp_path / "node" / "node_run.json").read_text())
+    assert result["timers_acknowledged"] == ["AUCTION_0926", "OPENING_0932"]
+    assert node_run["timers_acknowledged"] == ["AUCTION_0926", "OPENING_0932"]
+    opening = json.loads((tmp_path / "node" / "timer_OPENING_0932.json").read_text())
+    auction = json.loads((tmp_path / "node" / "timer_AUCTION_0926.json").read_text())
+    assert auction["q2_readiness"] == "PARTIAL"
+    assert opening["poll"] == 1
+    assert opening["cutoff_fidelity"] == "AFTER_CUTOFF_CURRENT_STATE"
 
 
 def test_opening_timer_waits_for_q2_when_snapshot_is_empty(tmp_path, monkeypatch):
@@ -160,7 +199,7 @@ def test_timer_artifact_is_rewritten_identically_after_ledger_failure(tmp_path, 
 
     def fail_once(self, trade_date, firing):
         nonlocal failed
-        if not failed:
+        if firing.timer_id == "OPENING_0932" and not failed:
             failed = True
             raise OSError("injected ledger failure")
         return original_record(self, trade_date, firing)
@@ -172,17 +211,17 @@ def test_timer_artifact_is_rewritten_identically_after_ledger_failure(tmp_path, 
     _use_q2_observation_times(monkeypatch, ("09:25:12", "09:26:05", "09:32:05") * 2)
     with pytest.raises(RuntimeError, match="live shadow failed"):
         _node(
-            tmp_path, FreshAuctionClient(("09:25:00", "09:26:00", "09:32:00")),
+            tmp_path, FreshAuctionClient(("09:25:12", "09:26:05", "09:32:05")),
             ledger, times, clock,
         )
-    timer_path = tmp_path / "node" / "timer_AUCTION_0926.json"
+    timer_path = tmp_path / "node" / "timer_OPENING_0932.json"
     first_contents = timer_path.read_bytes()
 
     result = _node(
-        tmp_path, FreshAuctionClient(("09:25:00", "09:26:00", "09:32:00")),
+        tmp_path, FreshAuctionClient(("09:25:12", "09:26:05", "09:32:05")),
         ledger, times, clock,
     )
-    assert result["timers_acknowledged"] == ["AUCTION_0926", "OPENING_0932"]
+    assert result["timers_acknowledged"] == ["OPENING_0932"]
     assert timer_path.read_bytes() == first_contents
 
 
