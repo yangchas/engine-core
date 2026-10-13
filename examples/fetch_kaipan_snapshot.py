@@ -45,20 +45,15 @@ def _make_reason_fetcher(analyzer: Any, page_size: int) -> Callable[[str, int], 
 
     def fetch(code: str, requested_page_size: int) -> Any:
         # Import at call time so the offline/injected path does not load legacy SDK code.
-        kaipan = importlib.import_module("pykaipan")
+        kaipan = importlib.import_module("pykaipan.pykaipan")
         config = kaipan.config
-        reques = kaipan.reques
-        params = {
-            "StockID": code,
-            "st": requested_page_size,
-        }
-        # Match the legacy SDK request envelope while overriding only the page size.
-        params.update({key: config[key] for key in ("DeviceID", "Token") if key in config})
-        base_url = config.get("url") or config.get("URL")
-        if not isinstance(base_url, str):
-            raise TypeError("invalid Kaipan configuration")
-        url = base_url.rstrip("/") + "/GetDayZhangTing/HisLimitResumption"
-        return reques(url, params)
+        # Same envelope as pykaipan.getBanReasons; only st (page size) differs.
+        query = (
+            f"a=GetDayZhangTing&st={int(requested_page_size)}&c=HisLimitResumption&PhoneOSNew=1"
+            f"&DeviceID={config['DeviceID']}&VerSion=5.19.0.0&Token={config['Token']}"
+            f"&Index=0&apiv=w40&StockID={code}&UserID={config['UserID']}&"
+        )
+        return kaipan.reques("https://apphis.longhuvip.com/w1/api/index.php?" + query)
 
     return fetch
 
