@@ -300,6 +300,7 @@ from .theme_auction_delta_rows import (
     build_theme_delta_rows,
     theme_weights_from_plate_mapping,
 )
+from .td_auction_reconstruction import TdAuctionReconstruction, reconstruct_auction_from_td
 from .td_auction_summary import derive_td_auction_summary
 from .execution_ledger import ExecutionLedger
 from .report_render import build_report_eml, render_report_html
@@ -696,6 +697,8 @@ __all__ = [
     "normalize_symbol_cache_rows",
     "ColdStartAssessment",
     "ExecutionLedger",
+    "TdAuctionReconstruction",
+    "reconstruct_auction_from_td",
     "derive_td_auction_summary",
     "F10MarketCaps",
     "build_report_eml",

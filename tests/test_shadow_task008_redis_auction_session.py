@@ -240,3 +240,25 @@ def test_live_session_records_cold_start_assessment(tmp_path: Path, monkeypatch)
     record = json.loads((out / "cold_start.json").read_text(encoding="utf-8"))
     assert record["start_class"] == "AUCTION_FINAL"
     assert record["late_final_recovery"] == "WINDOW_OPEN"
+
+
+def test_td_reconstruction_written_when_cold_start_needs_it(tmp_path: Path):
+    import examples.shadow_task008_redis_auction_session as module
+    from engine_core.clock import local_datetime_ms
+
+    rows = [
+        {"symbol": "000001", "auction_tag": tag, "px_milli": 10000, "chg_bp": 10,
+         "match_amt_yuan": amt, "rest_bid_amt_yuan": 0, "rest_ask_amt_yuan": 0,
+         "limit_state": 0, "trade_date": "20261009", "ts": "2026-10-09 09:25:06"}
+        for tag, amt in (("0920", 1), ("0924", 2), ("0925", 3))
+    ]
+    td = tmp_path / "td.jsonl"
+    td.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    out = tmp_path / "o"
+    out.mkdir()
+    record = module._write_cold_start(out, "2026-10-09", local_datetime_ms("2026-10-09", "10:00:00"))
+    assert record["theme_amount_delta_0924_0925"] == "TD_RECONSTRUCTION_REQUIRED"
+    module._write_td_reconstruction(out, "2026-10-09", td)
+    trace = json.loads((out / "td_reconstruction.json").read_text(encoding="utf-8"))
+    assert trace["status"] == "READY" and trace["summaries"]["0925"]["auction_amount_yuan"] == 3
+    assert len(trace["td_rows_sha256"]) == 64

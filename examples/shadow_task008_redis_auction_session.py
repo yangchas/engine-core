@@ -204,7 +204,21 @@ def _write_tag_summaries(out_dir: Path, poll: int, snapshot: Any, trade_date: st
         handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
-def _write_cold_start(out_dir: Path, trade_date: str, start_ms: int) -> None:
+def _write_td_reconstruction(out_dir: Path, trade_date: str, td_rows_path: Path) -> None:
+    """Rebuild the missed auction facts from sealed TD rows (``td_reconstruction.json``)."""
+
+    from engine_core import reconstruct_auction_from_td
+
+    rows = [json.loads(line) for line in td_rows_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    trace = dict(reconstruct_auction_from_td(trade_date, rows).as_trace())
+    trace["td_rows_sha256"] = _sha256(td_rows_path.read_bytes())
+    (out_dir / "td_reconstruction.json").write_text(
+        json.dumps(trace, ensure_ascii=False, sort_keys=True, indent=1, default=str) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_cold_start(out_dir: Path, trade_date: str, start_ms: int) -> dict:
     """Record what this session start can and cannot rebuild (``cold_start.json``)."""
 
     from engine_core import (
@@ -229,6 +243,7 @@ def _write_cold_start(out_dir: Path, trade_date: str, start_ms: int) -> None:
         json.dumps(record, ensure_ascii=False, sort_keys=True, indent=1) + "\n",
         encoding="utf-8",
     )
+    return record
 
 
 def _report_observed_ms(snapshot: Any, wall_completed: datetime) -> int:
@@ -314,6 +329,7 @@ def run_shadow(
     read_times: Sequence[str] | None = None,
     live_pool_previous_date: str | None = None,
     seal_captures: bool = False,
+    td_rows_path: Path | None = None,
 ) -> dict[str, Any]:
     if source == "live" and not confirm_read_only:
         raise RuntimeError("live source requires confirm_read_only=True")
@@ -327,6 +343,7 @@ def run_shadow(
             pool_path=pool_path, read_times=read_times,
             live_pool_previous_date=live_pool_previous_date,
             seal_captures=seal_captures,
+            td_rows_path=td_rows_path,
         )
     try:
         return _run_shadow_impl(
@@ -338,6 +355,7 @@ def run_shadow(
             pool_path=pool_path, read_times=read_times,
             live_pool_previous_date=live_pool_previous_date,
             seal_captures=seal_captures,
+            td_rows_path=td_rows_path,
         )
     except Exception as exc:
         raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None
@@ -375,6 +393,7 @@ def _run_shadow_impl(
     read_times: Sequence[str] | None = None,
     live_pool_previous_date: str | None = None,
     seal_captures: bool = False,
+    td_rows_path: Path | None = None,
 ) -> dict[str, Any]:
     if out_dir.exists():
         raise FileExistsError(f"output directory already exists: {out_dir}")
@@ -439,7 +458,11 @@ def _run_shadow_impl(
                         json.dump(sealed, sealed_file, ensure_ascii=False, sort_keys=True,
                                   separators=(",", ":"))
                 if session is None and source == "live":
-                    _write_cold_start(out_dir, trade_date, snapshot.envelope.observed_time_ms)
+                    record = _write_cold_start(out_dir, trade_date, snapshot.envelope.observed_time_ms)
+                    needs_td = "TD_RECONSTRUCTION_REQUIRED" in (
+                        record.get("theme_amount_delta_0924_0925"), record.get("opening_0932"))
+                    if td_rows_path is not None and needs_td:
+                        _write_td_reconstruction(out_dir, trade_date, td_rows_path)
                 if session is None:
                     session = AuctionAnchorSessionV1(
                         trade_date, snapshot.expected_symbols,
@@ -543,6 +566,9 @@ def main() -> int:
     parser.add_argument("--read-times",
                         help="live only: comma-separated local HH:MM:SS read times in one session "
                         "(replaces --max-polls/--poll-seconds)")
+    parser.add_argument("--td-rows", type=Path,
+                        help="sealed auction_snapshot_v2 JSONL; when the cold start needs TD "
+                        "reconstruction, write td_reconstruction.json from it")
     parser.add_argument("--seal-captures", action="store_true",
                         help="live only: write each poll's Q2 reads as capture_NNN.json "
                         "(RedisQ2ReadCaptureV1) so the poll can be replayed with --source capture")
@@ -585,6 +611,7 @@ def main() -> int:
                 read_times=_parse_times(args.read_times),
                 live_pool_previous_date=args.live_pool_previous_date,
                 seal_captures=args.seal_captures,
+                td_rows_path=args.td_rows,
             )
         except Exception as exc:
             raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None

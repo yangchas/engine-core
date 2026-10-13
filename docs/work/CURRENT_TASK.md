@@ -1,5 +1,16 @@
 # Current Task
 
+## 2026-10-13 TD reconstruction wired into cold start
+
+`reconstruct_auction_from_td(trade_date, td_rows)` stitches the TD summaries
+(0920/0924/0925), the 0925 current rows and the 0924->0925 theme delta rows;
+a tag without rows is UNAVAILABLE (never an all-zero summary). On the sealed
+2026-10-13 rows: READY, valid 1123 / 3486 / 4853, 5225 current rows and 5225
+delta rows. The shadow script takes `--td-rows` and writes
+`td_reconstruction.json` when `cold_start.json` reports
+`TD_RECONSTRUCTION_REQUIRED`. Still open: the 09:32 opening cutoff rebuild
+from TD ticks, and wiring `ExecutionLedger` into a runtime owner.
+
 ## 2026-10-13 legacy auction summary == TD aggregation (exact)
 
 `derive_td_auction_summary` over TD `auction_snapshot_v2` rows (sealed with
