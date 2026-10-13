@@ -74,6 +74,34 @@ def test_insufficient_day_is_recorded_as_skipped(tmp_path):
     assert days["skipped"] == [{"date": "2026-01-05", "reason": "auction_row_count_below_minimum", "auction_row_count": 0}]
 
 
+def test_kaipan_pool_input_owns_tier_one_membership(tmp_path):
+    from examples.run_offline_plate_pipeline import _load_kaipan_inputs, run_pipeline
+
+    pool_dir = tmp_path / "kaipan" / "pools"
+    pool_dir.mkdir(parents=True)
+    row = ["000001", "平安银行"] + [None] * 10 + ["Kaipan板"] + [None, None, 3]
+    (pool_dir / "2026-01-02_ban1.json").write_text(
+        json.dumps({"info": [[row], ["2026-01-02", "metadata"]], "errcode": "0"}),
+        encoding="utf-8",
+    )
+    pools, hierarchy = _load_kaipan_inputs(tmp_path / "kaipan")
+    result = run_pipeline(
+        dates=["2026-01-05"], klines_by_symbol={
+            "000001": [_kline("000001", "2026-01-02", 11, 10),
+                       _kline("000001", "2026-01-05", 11, 0)]},
+        auction_by_date={"2026-01-05": {"000001": {"px_milli": 11000,
+                                                       "match_amt_yuan": 50,
+                                                       "limit_state": 1}}},
+        snapshot={"stock_plate": {"000001": "静态板"}, "s2p": {}},
+        reasons_by_symbol={}, start_date="2026-01-05", end_date="2026-01-05",
+        min_auction_rows=1, kaipan_pool_by_day=pools, kaipan_hierarchy=hierarchy,
+    )
+    value = result["days"][0][1]
+    assert value["memberships"].by_symbol["000001"][0].plate == "Kaipan板"
+    assert value["memberships"].by_symbol["000001"][0].tier == 1
+    assert value["quality"]["pool_source"] == "kaipan"
+
+
 
 def test_kline_by_day_accepts_datetime_ts():
     import datetime as _dt

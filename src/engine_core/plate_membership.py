@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping
 
 from .plate_rules import (
@@ -43,6 +43,7 @@ class PlateMembership:
 class PlateHierarchy:
     parent_by_child: Mapping[str, str]
     source_by_child: Mapping[str, str]
+    evidence_by_child: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

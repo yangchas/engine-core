@@ -188,6 +188,7 @@ from .plate_membership import (
     default_alias_hierarchy,
     members_of,
 )
+from .plate_hierarchy_kaipan import PoolRow, parse_kaipan_pool, parse_kaipan_reason_hierarchy
 from .plate_aggregation import (
     StockFact,
     MarketSummary,
@@ -500,6 +501,9 @@ __all__ = [
     "build_memberships",
     "default_alias_hierarchy",
     "members_of",
+    "PoolRow",
+    "parse_kaipan_pool",
+    "parse_kaipan_reason_hierarchy",
     "StockFact",
     "MarketSummary",
     "PlateStat",

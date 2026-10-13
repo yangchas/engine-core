@@ -24,6 +24,9 @@ from engine_core.plate_membership import (
     build_memberships,
     default_alias_hierarchy,
 )
+from engine_core.plate_hierarchy_kaipan import (
+    PoolRow, parse_kaipan_pool, parse_kaipan_reason_hierarchy,
+)
 from engine_core.plate_rules import build_plate_candidates_from_reason
 from engine_core.stock_plate_assignment import build_stock_plate_assignments
 
@@ -109,6 +112,8 @@ def build_day(
     reasons_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
     reason_asof_unknown: bool, auction_0924_rows: Mapping[str, Mapping[str, Any]] | None = None,
     min_auction_rows: int = 4000, skipped_kline_table_symbol_count: int = 0,
+    kaipan_pool_rows: Mapping[str, PoolRow] | None = None,
+    kaipan_hierarchy: PlateHierarchy | None = None,
 ) -> dict[str, Any]:
     """Pure daily composition; accepts loaded data and performs no I/O."""
     if not isinstance(snapshot.get("stock_plate"), Mapping) or not isinstance(snapshot.get("s2p"), Mapping):
@@ -121,16 +126,27 @@ def build_day(
     prior_close_rows = daily_rows.get(prior_day, {}) if prior_day else {}
     current_to_previous = {symbol: row for symbol, row in prior_close_rows.items()}
 
-    pool_rows: tuple[dict[str, Any], ...] = ()
-    pool_symbols: set[str] = set()
+    td_pool_rows: tuple[dict[str, Any], ...] = ()
+    td_pool_symbols: set[str] = set()
     derivation_hash = None
     if prior_day:
         derivation = derive_limit_up_pool_from_daily_klines(
             klines_by_symbol, prior_day, trading_dates=sessions,
         )
-        pool_rows = derivation.rows
-        pool_symbols = {str(row["symbol"]) for row in pool_rows}
+        td_pool_rows = derivation.rows
+        td_pool_symbols = {str(row["symbol"]) for row in td_pool_rows}
         derivation_hash = derivation.content_hash
+
+    if kaipan_pool_rows is None:
+        pool_symbols = td_pool_symbols
+        pool_plates = {str(row["symbol"]): row.get("plate") for row in td_pool_rows if row.get("plate")}
+        pool_lb_days = {str(row["symbol"]): row.get("lb_days") for row in td_pool_rows}
+        pool_source = "td_daily_kline"
+    else:
+        pool_symbols = set(kaipan_pool_rows)
+        pool_plates = {symbol: row.plate for symbol, row in kaipan_pool_rows.items() if row.plate}
+        pool_lb_days = {symbol: row.lb_days for symbol, row in kaipan_pool_rows.items()}
+        pool_source = "kaipan"
 
     static_assignment = build_stock_plate_assignments(
         trade_date=trade_date,
@@ -147,9 +163,18 @@ def build_day(
         ))
 
     reason_candidates = _reason_candidates(reasons_by_symbol)
-    pool_plates = {str(row["symbol"]): row["plate"] for row in pool_rows if row.get("plate")}
     symbols = set(map(str, auction_rows)) | set(static_assignment.assignments) | set(pool_symbols) | set(reason_candidates)
-    hierarchy = default_alias_hierarchy()
+    default_hierarchy = default_alias_hierarchy()
+    kaipan_hierarchy = kaipan_hierarchy or PlateHierarchy({}, {})
+    # Static alias edges are canonical and take precedence over Kaipan evidence.
+    parent_by_child = dict(kaipan_hierarchy.parent_by_child)
+    source_by_child = dict(kaipan_hierarchy.source_by_child)
+    evidence_by_child = dict(kaipan_hierarchy.evidence_by_child)
+    parent_by_child.update(default_hierarchy.parent_by_child)
+    source_by_child.update(default_hierarchy.source_by_child)
+    for child in default_hierarchy.parent_by_child:
+        evidence_by_child.pop(child, None)
+    hierarchy = PlateHierarchy(parent_by_child, source_by_child, evidence_by_child)
     memberships = apply_hierarchy(build_memberships(
         symbols=symbols, pool_plate_by_symbol=pool_plates,
         reason_candidates_by_symbol=reason_candidates,
@@ -180,7 +205,7 @@ def build_day(
                 missing[key] += 1
         facts[str(symbol)] = StockFact(
             symbol=str(symbol), pre_close=pre_close, price=price, amount=amount,
-            limit_state=state, lb_days=None, in_yest_pool=str(symbol) in pool_symbols,
+            limit_state=state, lb_days=pool_lb_days.get(str(symbol)), in_yest_pool=str(symbol) in pool_symbols,
             amount_prev=amount_prev,
         )
 
@@ -203,12 +228,28 @@ def build_day(
         "missing_counts": dict(sorted(missing.items())),
         "skipped_kline_table_symbol_count": skipped_kline_table_symbol_count,
         "previous_kline_date": prior_day, "pool_derivation_hash": derivation_hash,
+        "pool_source": pool_source, "kaipan_pool_member_count": len(kaipan_pool_rows or {}),
+        "td_pool_member_difference_count": len(pool_symbols ^ td_pool_symbols),
+        "hierarchy_edge_count": len(kaipan_hierarchy.parent_by_child),
+        "hierarchy_static_conflict_count": len(set(kaipan_hierarchy.parent_by_child) & set(default_hierarchy.parent_by_child)),
+        "hierarchy_static_conflicts": {
+            child: {"kaipan_parent": kaipan_hierarchy.parent_by_child[child],
+                    "static_parent": default_hierarchy.parent_by_child[child]}
+            for child in sorted(set(kaipan_hierarchy.parent_by_child) & set(default_hierarchy.parent_by_child))
+        },
+        "kaipan_hierarchy_evidence": dict(kaipan_hierarchy.evidence_by_child),
         "legacy_v1_primary_match_count": equal_count,
         "legacy_v1_primary_comparable_count": len(comparable),
         "legacy_v1_primary_match_rate": equal_count / len(comparable) if comparable else None,
     }
+    yest_pool_members = {
+        symbol: {"tier": 1, "source": pool_source, "plate": pool_plates.get(symbol),
+                 "lb_days": pool_lb_days.get(symbol)}
+        for symbol in sorted(pool_symbols)
+    }
     return {"memberships": memberships, "aggregation": aggregation, "quality": quality,
-            "reason_asof_unknown": reason_asof_unknown, "yest_pool_symbols": pool_symbols}
+            "reason_asof_unknown": reason_asof_unknown, "yest_pool_symbols": pool_symbols,
+            "yest_pool_members": yest_pool_members}
 
 
 def run_pipeline(
@@ -217,6 +258,8 @@ def run_pipeline(
     reasons_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]], start_date: str, end_date: str,
     reason_asof_unknown: bool = False, auction_0924_by_date: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
     min_auction_rows: int = 4000, skipped_kline_table_symbol_count: int = 0,
+    kaipan_pool_by_day: Mapping[str, Mapping[str, PoolRow]] | None = None,
+    kaipan_hierarchy: PlateHierarchy | None = None,
 ) -> dict[str, Any]:
     included, skipped = [], []
     for day in dates:
@@ -231,6 +274,9 @@ def run_pipeline(
             reasons_by_symbol=reasons_by_symbol, reason_asof_unknown=reason_asof_unknown,
             auction_0924_rows=(auction_0924_by_date or {}).get(day, {}), min_auction_rows=min_auction_rows,
             skipped_kline_table_symbol_count=skipped_kline_table_symbol_count,
+            kaipan_pool_rows=(kaipan_pool_by_day or {}).get(
+                max((session for session in _kline_by_day(klines_by_symbol) if session < day), default=""),
+            ), kaipan_hierarchy=kaipan_hierarchy,
         )))
     return {"days": included, "skipped": skipped}
 
@@ -281,6 +327,24 @@ def _load_reasons(path: Path | None) -> dict[str, list[dict[str, Any]]]:
                 row = decoded if isinstance(decoded, Mapping) else {"reason": value}
             result.setdefault(str(symbol), []).append(dict(row))
     return result
+
+
+def _load_kaipan_inputs(path: Path) -> tuple[dict[str, dict[str, PoolRow]], PlateHierarchy]:
+    pools: dict[str, dict[str, PoolRow]] = {}
+    pool_dir = path / "pools"
+    if pool_dir.is_dir():
+        for source in sorted(pool_dir.glob("*_ban*.json")):
+            trade_date = source.name.split("_ban", 1)[0]
+            parsed = parse_kaipan_pool(_read_json(source))
+            current = pools.setdefault(trade_date, {})
+            for symbol, row in parsed.items():
+                existing = current.get(symbol)
+                if existing is None or (row.lb_days is not None and
+                                        (existing.lb_days is None or row.lb_days > existing.lb_days)):
+                    current[symbol] = row
+    reason_responses = [_read_json(source) for source in sorted((path / "reasons").glob("*.json"))] \
+        if (path / "reasons").is_dir() else []
+    return pools, parse_kaipan_reason_hierarchy(reason_responses)
 
 
 def _connect_td(host: str):
@@ -389,10 +453,7 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
         folder.mkdir()
         membership_payload = _jsonable_memberships(value["memberships"])
         membership_payload["yest_pool_symbols"] = sorted(value["yest_pool_symbols"])
-        membership_payload["yest_pool_members"] = {
-            symbol: {"tier": 1, "source": "td_daily_kline", "plate": None}
-            for symbol in sorted(value["yest_pool_symbols"])
-        }
+        membership_payload["yest_pool_members"] = value["yest_pool_members"]
         membership_payload["engine_membership_content_hash"] = membership_payload["content_hash"]
         canonical_membership_payload = json.dumps(
             membership_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -449,6 +510,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--td-host", default="127.0.0.1")
     parser.add_argument("--legacy-pool-dir", type=Path, help="optional read-only comparison input (reserved)")
+    parser.add_argument("--kaipan-dir", type=Path, help="optional sealed Kaipan pools/ and reasons/ input")
     args = parser.parse_args(argv)
     start, end = date.fromisoformat(args.start_date), date.fromisoformat(args.end_date)
     try:
@@ -461,6 +523,7 @@ def main(argv: list[str] | None = None) -> int:
     ensure_empty_output_dir(args.output_dir)
     snapshot = _load_snapshot(args.snapshot)
     reasons = _load_reasons(args.reasons)
+    kaipan_pools, kaipan_hierarchy = _load_kaipan_inputs(args.kaipan_dir) if args.kaipan_dir else ({}, None)
     symbols = sorted(set(map(str, snapshot["stock_plate"])) | set(map(str, snapshot["s2p"])) | set(reasons))
     auction_dates = [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
     # Confirm database value before opening and reuse that same value for the query.
@@ -471,6 +534,7 @@ def main(argv: list[str] | None = None) -> int:
         reasons_by_symbol=reasons, start_date=args.start_date, end_date=args.end_date,
         reason_asof_unknown=args.reasons is not None, auction_0924_by_date=previous,
         skipped_kline_table_symbol_count=skipped_kline_symbols,
+        kaipan_pool_by_day=kaipan_pools, kaipan_hierarchy=kaipan_hierarchy,
     )
     _emit(args.output_dir, result, args)
     return 0
