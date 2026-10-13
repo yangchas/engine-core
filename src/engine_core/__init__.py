@@ -93,6 +93,12 @@ from .plate_rules import (
     prioritize_core_themes,
     split_plate_tokens,
 )
+from .plate_cohesion_phases import (
+    PhaseCohesionResult,
+    PhasePlateCohesion,
+    PhaseStockAffinity,
+    compute_phase_cohesion,
+)
 from .stock_plate_assignment import (
     PlateAssignments,
     StockPlateAssignment,

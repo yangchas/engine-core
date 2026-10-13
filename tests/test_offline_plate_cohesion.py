@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,3 +38,21 @@ def test_writer_emits_facts_manifest(tmp_path):
     assert manifest["interpretation"] == "离线事实, 非策略结论"
     assert manifest["missing_counts"]["symbols_without_tick_rows"] == 1
     assert manifest["window_ms"] == 30000 and manifest["max_lag_points"] == 10
+    assert manifest["legacy_window_semantics"] == "PHASE_MIXED_LEGACY_WINDOW"
+
+
+def test_writer_emits_phase_named_outputs(tmp_path):
+    output = tmp_path / "out"
+    phase_result = SimpleNamespace(
+        by_phase={"AUCTION": ()}, affinities_by_phase={"AUCTION": ()},
+        flags={"phase_sample_counts": {"AUCTION": 3}, "gap_skipped_points": 100, "gap": "GAP"},
+        content_hash="abc",
+    )
+    write_outputs(output, trade_date="2026-01-02", snapshot_path=tmp_path / "snap.json",
+                  window_start="09:15:00", window_end="09:45:00", max_plates=30,
+                  result=None, selected_plates=[], auction_row_count=0, tick_row_count=0,
+                  series={}, pre_close={}, phase_result=phase_result, phases=("AUCTION",))
+    assert {path.name for path in output.iterdir()} == {
+        "cohesion_auction.json", "affinity_auction.json", "manifest.json"}
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["phase_sample_counts"] == {"AUCTION": 3}
