@@ -1,5 +1,28 @@
 # Current Task
 
+## 2026-10-13 hot_plates units, max-age defaults, sealed captures
+
+- hot_plates (cache updated 09:27:29, phase=auction, 50 rows): `change_pct` is
+  percentage points (28 plates with >=5 members: Core plate mean of
+  (a25-pc)/pc correlates 0.62 mean / 0.81 median, 26/28 same sign, median
+  |value| 0.69 vs 0.69). `hot == strength` for all 50 rows (both are tuple
+  item[2]; hot is an alias; strength is a score, -86..883). `net_inflow_yi`
+  range -1.34..1.20 is consistent with yi (legacy tuple path divides by 1e8;
+  the dict path does not). Units are available as the opt-in
+  `LEGACY_KAIPAN_OBSERVED_FIELD_UNITS` (probe `--observed-units`: READY,
+  completeness 1.0); a magnitude guard (|net_inflow_yi| > 1000) falls back to
+  UNKNOWN. Not a producer-published contract; default stays masked.
+- `LiveInputCache` has `DEFAULT_MAX_AGE_MS` for every named input (caches 6h,
+  mapping 24h, anchor archive 30min).
+- `--seal-captures` writes each live poll as `capture_NNN.json`
+  (RedisQ2ReadCaptureV1); replay with `--source capture` reproduced the same
+  anchor events. A 11:48 sealed capture (`shadow-live-sealed-20261013-114807`)
+  is a real "cold start after 09:25" sample: a20 3318 / a24 4315 / a25 4853,
+  late finals not recoverable. A true auction-time seal needs
+  `--seal-captures --read-times ...` in tomorrow's session.
+- Stalled-clock timeline regression test added (09:25:03 stall, 09:26:03 late
+  final -> REVISION_EMITTED).
+
 ## 2026-10-13 legacy probes migrated to the live input layer
 
 `run_real_hot_plates`, `run_real_previous_day_limit_pool`,

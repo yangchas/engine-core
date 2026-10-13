@@ -198,3 +198,23 @@ def test_stalled_source_time_then_late_final_timeline(tmp_path: Path):
     assert late["late_execution"]["status"] == "REVISION_EMITTED"
     assert (late["available_count"], late["missing_count"]) == (2, 0)
     assert set(session.phase_zero_recoveries) == {"000001"}
+
+
+def test_sealed_live_capture_replays_to_the_same_anchor_events(tmp_path: Path):
+    run_shadow(
+        source="live", live_client=FakeClient(), out_dir=tmp_path / "live",
+        trade_date="2026-10-09", confirm_read_only=True, seal_captures=True,
+    )
+    sealed = tmp_path / "live" / "capture_000.json"
+    capture = json.loads(sealed.read_text(encoding="utf-8"))
+    assert capture["contract_version"] == "RedisQ2ReadCaptureV1"
+    assert {item["operation"] for item in capture["reads"]} == {"smembers", "hgetall"}
+    run_shadow(source="capture", capture_path=sealed, out_dir=tmp_path / "replay")
+
+    def anchors(path):
+        return [
+            (e["tag"], e["available_count"], e["missing_count"])
+            for e in map(json.loads, (path / "shadow_events.jsonl").read_text().splitlines())
+        ]
+
+    assert anchors(tmp_path / "live") == anchors(tmp_path / "replay")

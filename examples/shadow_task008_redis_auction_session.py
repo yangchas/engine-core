@@ -64,6 +64,35 @@ def _aware_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class _RecordingClient:
+    """Record the Q2 projection reads so a poll can be sealed as a capture."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+        self.reads: list[dict[str, Any]] = []
+
+    def smembers(self, key: str) -> Sequence[Any]:
+        value = self._client.smembers(key)
+        self.reads.append({"operation": "smembers", "key": key,
+                           "value": sorted(str(item) for item in value)})
+        return value
+
+    def hgetall(self, key: str) -> Mapping[Any, Any]:
+        value = self._client.hgetall(key)
+        self.reads.append({"operation": "hgetall", "key": key,
+                           "value": {str(k): str(v) for k, v in dict(value).items()}})
+        return value
+
+    def close(self) -> None:
+        close = getattr(self._client, "close", None)
+        if callable(close):
+            close()
+
+    def drain(self) -> list[dict[str, Any]]:
+        reads, self.reads = self.reads, []
+        return reads
+
+
 def _rows(snapshot: Any) -> dict[str, dict[str, Any]]:
     return {
         symbol: {
@@ -257,6 +286,7 @@ def run_shadow(
     pool_path: Path | None = None,
     read_times: Sequence[str] | None = None,
     live_pool_previous_date: str | None = None,
+    seal_captures: bool = False,
 ) -> dict[str, Any]:
     if source == "live" and not confirm_read_only:
         raise RuntimeError("live source requires confirm_read_only=True")
@@ -269,6 +299,7 @@ def run_shadow(
             recover_final_from_phase_zero=recover_final_from_phase_zero,
             pool_path=pool_path, read_times=read_times,
             live_pool_previous_date=live_pool_previous_date,
+            seal_captures=seal_captures,
         )
     try:
         return _run_shadow_impl(
@@ -279,6 +310,7 @@ def run_shadow(
             recover_final_from_phase_zero=recover_final_from_phase_zero,
             pool_path=pool_path, read_times=read_times,
             live_pool_previous_date=live_pool_previous_date,
+            seal_captures=seal_captures,
         )
     except Exception as exc:
         raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None
@@ -315,10 +347,12 @@ def _run_shadow_impl(
     pool_path: Path | None = None,
     read_times: Sequence[str] | None = None,
     live_pool_previous_date: str | None = None,
+    seal_captures: bool = False,
 ) -> dict[str, Any]:
     if out_dir.exists():
         raise FileExistsError(f"output directory already exists: {out_dir}")
     capture_sha256 = None
+    recorder = None
     if source == "capture":
         if capture_path is None:
             raise ValueError("capture source requires --capture")
@@ -333,7 +367,8 @@ def _run_shadow_impl(
         if live_client is None:
             raise ValueError("live source requires a Redis client")
         trade_date = str(trade_date or "")
-        client = ReadOnlyQ2Client(live_client)
+        recorder = _RecordingClient(live_client) if seal_captures else None
+        client = ReadOnlyQ2Client(recorder or live_client)
     else:
         raise ValueError("source must be capture or live")
     if not trade_date:
@@ -366,6 +401,16 @@ def _run_shadow_impl(
                     trade_date, freshness_policy=FreshnessPolicy()
                 )
                 wall_completed = _aware_now()
+                if recorder is not None:
+                    sealed = {
+                        "contract_version": "RedisQ2ReadCaptureV1",
+                        "trade_date": trade_date,
+                        "read_completed_at": wall_completed.isoformat(),
+                        "reads": recorder.drain(),
+                    }
+                    with (out_dir / ("capture_%03d.json" % poll)).open("x", encoding="utf-8") as sealed_file:
+                        json.dump(sealed, sealed_file, ensure_ascii=False, sort_keys=True,
+                                  separators=(",", ":"))
                 if session is None:
                     session = AuctionAnchorSessionV1(
                         trade_date, snapshot.expected_symbols,
@@ -469,6 +514,9 @@ def main() -> int:
     parser.add_argument("--read-times",
                         help="live only: comma-separated local HH:MM:SS read times in one session "
                         "(replaces --max-polls/--poll-seconds)")
+    parser.add_argument("--seal-captures", action="store_true",
+                        help="live only: write each poll's Q2 reads as capture_NNN.json "
+                        "(RedisQ2ReadCaptureV1) so the poll can be replayed with --source capture")
     parser.add_argument("--live-pool-previous-date",
                         help="read the previous-day limit pool live (YYYY-MM-DD of the previous session) "
                         "through the live input layer instead of --pool")
@@ -507,6 +555,7 @@ def main() -> int:
                 pool_path=args.pool,
                 read_times=_parse_times(args.read_times),
                 live_pool_previous_date=args.live_pool_previous_date,
+                seal_captures=args.seal_captures,
             )
         except Exception as exc:
             raise RuntimeError(f"live shadow failed: {type(exc).__name__}") from None
