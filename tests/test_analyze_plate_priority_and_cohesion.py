@@ -63,3 +63,60 @@ def test_writer_rejects_existing_output_directory(tmp_path):
     (output / "keep").write_text("x")
     with pytest.raises(ValueError, match="empty"):
         write_outputs(output, {})
+
+
+def test_three_way_reconciliation_and_legacy_output_keys():
+    memberships = {
+        "by_symbol": {
+            "same": [{"plate": "芯片", "tier": 3, "rank_in_stock": 1}],
+            "bracket": [{"plate": "芯片", "tier": 3, "rank_in_stock": 1}],
+            "alias": [{"plate": "芯片", "tier": 2, "rank_in_stock": 1}],
+            "generic": [{"plate": "昨日涨停", "tier": 1, "rank_in_stock": 1}],
+            "reason": [{"plate": "原因板", "tier": 2, "rank_in_stock": 1}],
+        },
+        "legacy_weights": {
+            "same": [["芯片", 1.0]], "bracket": [["先进封装", 1.0]],
+            "alias": [["芯片", 1.0]], "generic": [["芯片", 1.0]],
+            "reason": [["候选板", 1.0]],
+        },
+    }
+    snapshot = {"stock_plate": {
+        "same": "芯片/通信", "bracket": "芯片（半导体）", "alias": "先进封装",
+        "generic": "昨日涨停", "reason": "静态板",
+    }}
+
+    result = analyze(memberships, [], snapshot=snapshot)
+    reconciliation = result["reconciliation"]
+    assert reconciliation["n_comparable"] == 5
+    assert reconciliation["stored_eq_legacy_v1_share"] == 1 / 5
+    assert reconciliation["stored_eq_user_share"] == 3 / 5
+    assert reconciliation["legacy_v1_eq_user_share"] == 2 / 5
+    assert reconciliation["stored_vs_legacy_v1_reason_counts"]["BRACKET_CLEAN"] == 1
+    assert reconciliation["stored_vs_legacy_v1_reason_counts"]["ALIAS"] == 1
+    assert reconciliation["stored_vs_legacy_v1_reason_counts"]["GENERIC"] == 1
+    assert reconciliation["stored_vs_legacy_v1_reason_counts"]["POOL_OR_REASON"] == 1
+    assert "comparable_count" in result["priority_difference"]
+    assert "categories" in result["priority_difference"]
+
+
+def test_reconciliation_excludes_missing_symbols_and_reports_count():
+    memberships = {
+        "by_symbol": {
+            "all": [{"plate": "芯片", "rank_in_stock": 1}],
+            "no_legacy": [{"plate": "通信", "rank_in_stock": 1}],
+            "no_user": [{"plate": "医药", "rank_in_stock": 2}],
+            "no_stored": [{"plate": "汽车", "rank_in_stock": 1}],
+        },
+        "legacy_weights": {"all": [["芯片", 1]], "no_legacy": [["通信", 1]],
+                            "no_user": [["医药", 1]], "no_stored": [["汽车", 1]]},
+    }
+    result = analyze(memberships, [], snapshot={"stock_plate": {
+        "all": "芯片", "no_user": "医药", "no_stored": None,
+    }})
+    reconciliation = result["reconciliation"]
+    assert reconciliation["n_comparable"] == 1
+    assert reconciliation["excluded_missing_counts"] == {
+        "stored_legacy_primary_missing": 2,
+        "legacy_v1_primary_missing": 0,
+        "user_priority_rank1_missing": 1,
+    }

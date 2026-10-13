@@ -5,12 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import median
 from typing import Any, Mapping
 
-from engine_core.plate_rules import collapse_runtime_primary_plate, is_generic_plate
+from engine_core.plate_rules import (
+    collapse_runtime_primary_plate, is_generic_plate, normalize_plate_name, split_plate_tokens,
+)
 
 
 CATEGORIES = ("SAME", "REASON_OVER_STATIC", "GENERIC_REORDER", "ALIAS_COLLAPSE", "OTHER")
@@ -65,6 +68,95 @@ def _snapshot_stock_plate(snapshot: Mapping[str, Any] | None) -> dict[str, str]:
             if isinstance(plate, str) and plate.strip():
                 result[str(symbol)] = plate.strip()
     return result
+
+
+def _legacy_primary_by_symbol(memberships: Mapping[str, Any]) -> dict[str, str]:
+    raw = memberships.get("legacy_weights", {})
+    if not isinstance(raw, Mapping):
+        return {}
+    result = {}
+    for symbol, weights in raw.items():
+        if isinstance(weights, list) and weights:
+            row = weights[0]
+            if isinstance(row, (list, tuple)) and row and row[0]:
+                plate = split_plate_tokens(row[0])
+                if plate:
+                    result[str(symbol)] = plate[0]
+    return result
+
+
+def _stored_primary_by_symbol(snapshot: Mapping[str, Any] | None) -> tuple[dict[str, str], dict[str, str]]:
+    raw_values = _snapshot_stock_plate(snapshot)
+    raw_primary = {}
+    normalized = {}
+    for symbol, raw in raw_values.items():
+        tokens = split_plate_tokens(raw)
+        if tokens:
+            raw_primary[symbol] = re.split(r"[+,，、/|；;]+", raw, maxsplit=1)[0].strip()
+            normalized[symbol] = tokens[0]
+    return raw_primary, normalized
+
+
+def _rank1_by_symbol(memberships: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    result = {}
+    for symbol, rows in memberships.get("by_symbol", {}).items():
+        if isinstance(rows, list):
+            row = next((row for row in rows if isinstance(row, Mapping) and row.get("rank_in_stock") == 1), None)
+            if row is not None:
+                plate = split_plate_tokens(row.get("plate"))
+                if plate:
+                    result[str(symbol)] = {**row, "plate": plate[0]}
+    return result
+
+
+def _reconciliation_reason(
+    raw_stored: str, stored: str, legacy: str, rank1: Mapping[str, Any],
+) -> str:
+    if normalize_plate_name(raw_stored) != raw_stored and stored != legacy:
+        return "BRACKET_CLEAN"
+    if collapse_runtime_primary_plate(stored) == collapse_runtime_primary_plate(legacy):
+        return "ALIAS"
+    if is_generic_plate(stored) != is_generic_plate(legacy):
+        return "GENERIC"
+    if rank1.get("tier") in (1, 2):
+        return "POOL_OR_REASON"
+    return "OTHER"
+
+
+def _reconciliation(memberships: Mapping[str, Any], snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
+    raw_stored, stored = _stored_primary_by_symbol(snapshot)
+    legacy = _legacy_primary_by_symbol(memberships)
+    rank1 = _rank1_by_symbol(memberships)
+    symbols = sorted(set(raw_stored) | set(stored) | set(legacy) | set(rank1))
+    comparable = sorted(set(stored) & set(legacy) & set(rank1))
+    counts = {
+        "stored_legacy_primary_missing": len(set(symbols) - set(stored)),
+        "legacy_v1_primary_missing": len(set(symbols) - set(legacy)),
+        "user_priority_rank1_missing": len(set(symbols) - set(rank1)),
+    }
+    mismatches: dict[str, list[dict[str, str]]] = {
+        key: [] for key in ("BRACKET_CLEAN", "ALIAS", "GENERIC", "POOL_OR_REASON", "OTHER")
+    }
+    equal_counts = {"stored_eq_legacy_v1": 0, "stored_eq_user": 0, "legacy_v1_eq_user": 0}
+    for symbol in comparable:
+        s, l, u = stored[symbol], legacy[symbol], rank1[symbol]["plate"]
+        equal_counts["stored_eq_legacy_v1"] += s == l
+        equal_counts["stored_eq_user"] += s == u
+        equal_counts["legacy_v1_eq_user"] += l == u
+        if s != l:
+            reason = _reconciliation_reason(raw_stored[symbol], s, l, rank1[symbol])
+            mismatches[reason].append({"symbol": symbol, "stored": s, "legacy_v1": l,
+                                       "user_priority_rank1": u})
+    n = len(comparable)
+    shares = {key + "_share": (count / n if n else None) for key, count in equal_counts.items()}
+    return {
+        "n_comparable": n,
+        **equal_counts,
+        **shares,
+        "excluded_missing_counts": counts,
+        "stored_vs_legacy_v1_reason_counts": {key: len(rows) for key, rows in mismatches.items()},
+        "stored_vs_legacy_v1_reason_examples": {key: rows[:15] for key, rows in mismatches.items()},
+    }
 
 
 def _category(new: str, old: str, rank1: Mapping[str, Any]) -> str:
@@ -179,6 +271,7 @@ def analyze(
     return {
         "interpretation": "离线事实, 非策略结论",
         "priority_difference": priority,
+        "reconciliation": _reconciliation(memberships, snapshot),
         "reason_cohesion": _reason_cohesion(memberships, affinity),
     }
 
@@ -196,7 +289,8 @@ def write_outputs(output_dir: Path, result: Mapping[str, Any]) -> None:
     )
     (output_dir / "README").write_text(
         "# Plate priority and cohesion analysis\n\n"
-        "口径：主板块差异按 USER_PRIORITY_V1 rank1 与 legacy stock_plate 比较；原因板块聚集性按 tier 2 与 tier 3 的 affinity role、|best_corr| 和 UNKNOWN 占比统计。缺失 affinity、缺失相关系数及不可比较的主板块单独计数，不补零。\n\n"
+        "口径：`priority_difference` 的 SAME 等分类比较 USER_PRIORITY_V1 rank1 与快照 stock_plate 原始主板块，反映旧存储值口径；流水线 `legacy_v1_primary_match_rate` 比较 USER_PRIORITY_V1 rank1 与同一份输入重算的 LEGACY_V1 主板块。两者参照对象不同，不能直接视作同一一致率。新增 `reconciliation` 在 snapshot、LEGACY_V1 legacy_weights 和 USER_PRIORITY_V1 rank1 均有主板块的交集上，对三者逐项对账；快照主板块先拆词、取首项并规范化。缺失任一方的个股计入 excluded_missing_counts，不进入比例。\n\n"
+        "原因板块聚集性按 tier 2 与 tier 3 的 affinity role、|best_corr| 和 UNKNOWN 占比统计。缺失 affinity、缺失相关系数及不可比较的主板块单独计数，不补零。\n\n"
         "本产物是离线事实非策略结论。\n", encoding="utf-8",
     )
 
