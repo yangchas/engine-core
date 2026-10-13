@@ -69,10 +69,13 @@ class FreshAuctionClient(StrictAuctionClient):
 
 
 def _node(tmp_path: Path, client, ledger, times, sleep_until):
+    import examples.shadow_task008_redis_auction_session as shadow
+
     return run_auction_node(
         trade_date="2026-10-13", out_dir=tmp_path / "node", live_client=client,
         ledger_path=ledger, read_times=times, confirm_read_only=True,
         sleep_until=sleep_until,
+        shadow_runner=shadow.run_shadow,
     )
 
 
@@ -344,6 +347,13 @@ def test_auction_node_requires_read_only_confirmation(tmp_path):
             trade_date="2026-10-13", out_dir=tmp_path / "node",
             live_client=StrictAuctionClient(), ledger_path=tmp_path / "ledger.jsonl",
             read_times=("09:33:05",),
+        )
+
+    with pytest.raises(ValueError, match="shadow_runner is required"):
+        run_auction_node(
+            trade_date="2026-10-13", out_dir=tmp_path / "node",
+            live_client=StrictAuctionClient(), ledger_path=tmp_path / "ledger.jsonl",
+            read_times=("09:33:05",), confirm_read_only=True,
         )
 
 

@@ -1,9 +1,7 @@
 """Fetch a WenCai result set through adaptive market-cap ranges."""
 
 import argparse
-import asyncio
 import json
-import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -217,15 +215,9 @@ def main(argv=None):
     except ValueError as exc:
         parser.error(str(exc))
 
-    sys.path.insert(0, args.legacy_root)
-    from ai.API.api import UnifiedMarketDataFetcher
+    from examples.legacy_adapters import wencai_fetch_callable
 
-    fetcher = UnifiedMarketDataFetcher()
-
-    def fetch(query, loop, max_stocks):
-        return asyncio.run(fetcher._get_wencai_stocks(
-            query, loop=loop, max_stocks=max_stocks, return_df=True,
-        ))
+    fetch = wencai_fetch_callable(args.legacy_root)
 
     result = fetch_segmented(
         fetch, args.query, loop=args.loop, cap=args.cap, edges_yi=edges,

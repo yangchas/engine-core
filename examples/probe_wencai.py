@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import hashlib
 import json
-import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,8 +60,15 @@ def _cookie_string(fetcher):
     return value if isinstance(value, str) else ""
 
 
+def _redaction_values(fetcher):
+    method = getattr(fetcher, "redaction_values", None)
+    return method() if callable(method) else _cookie_string(fetcher)
+
+
 def _is_cookie_echo(value, cookie):
     text = str(value)
+    if isinstance(cookie, (set, frozenset)):
+        return len(text) >= 8 and text in cookie
     return len(text) >= 8 and bool(cookie) and text in cookie
 
 
@@ -112,7 +118,7 @@ def run_suite(fetcher, queries, *, sleep_s=4, max_queries=40):
     raw = {}
     failure_streak = 0
     aborted = False
-    cookie = _cookie_string(fetcher)
+    cookie = _redaction_values(fetcher)
     for index, query_spec in enumerate(selected):
         started = time.monotonic()
         entry = {
@@ -122,10 +128,15 @@ def run_suite(fetcher, queries, *, sleep_s=4, max_queries=40):
             "result_hash": "", "redacted_rows": 0,
         }
         try:
-            frame = asyncio.run(fetcher._get_wencai_stocks(
-                query_spec["query"], loop=query_spec["loop"],
-                max_stocks=query_spec["max_stocks"], return_df=True,
-            ))
+            if callable(fetcher):
+                frame = fetcher(
+                    query_spec["query"], query_spec["loop"], query_spec["max_stocks"],
+                )
+            else:
+                frame = asyncio.run(fetcher._get_wencai_stocks(
+                    query_spec["query"], loop=query_spec["loop"],
+                    max_stocks=query_spec["max_stocks"], return_df=True,
+                ))
             if not isinstance(frame, pd.DataFrame):
                 frame = pd.DataFrame(frame)
             safe_frame, redacted = sanitize_frame(frame, cookie)
@@ -212,10 +223,9 @@ def main(argv=None):
     if args.sleep_s < 0 or args.max_queries < 1:
         parser.error("--sleep-s must be >= 0 and --max-queries must be >= 1")
     out_dir = validate_output_dir(args.output_dir)
-    sys.path.insert(0, args.legacy_root)
-    from ai.API.api import UnifiedMarketDataFetcher
+    from examples.legacy_adapters import wencai_fetch_callable
 
-    fetcher = UnifiedMarketDataFetcher()
+    fetcher = wencai_fetch_callable(args.legacy_root)
     queries = _queries_for_suite(args.suite, args.date)
     report = run_suite(fetcher, queries, sleep_s=args.sleep_s, max_queries=args.max_queries)
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -1,9 +1,7 @@
 """Run an on-demand WenCai fallback and save normalized rows plus a manifest."""
 
 import argparse
-import asyncio
 import json
-import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -18,17 +16,9 @@ def validate_output_dir(path: str | Path) -> Path:
 
 
 def _default_fetcher(legacy_root: str) -> Callable[..., Any]:
-    sys.path.insert(0, legacy_root)
-    from ai.API.api import UnifiedMarketDataFetcher
+    from examples.legacy_adapters import wencai_fetch_callable
 
-    client = UnifiedMarketDataFetcher()
-
-    def fetch(query: str, loop: bool, max_stocks: int) -> Any:
-        return asyncio.run(client._get_wencai_stocks(
-            query, loop=loop, max_stocks=max_stocks, return_df=True,
-        ))
-
-    return fetch
+    return wencai_fetch_callable(legacy_root)
 
 
 def run(args: argparse.Namespace, fetch: Callable[..., Any]) -> tuple[dict[str, Any], dict[str, Any]]:

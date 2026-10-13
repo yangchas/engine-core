@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))  # the node reuses examples.shadow_task008_redis_auction_session
 
 from engine_core.auction_node import run_auction_node  # noqa: E402
+from examples.shadow_task008_redis_auction_session import run_shadow  # noqa: E402
 
 
 DEFAULT_READ_TIMES = (
@@ -51,6 +52,7 @@ def main() -> int:
             ledger_path=ledger_path, read_times=read_times,
             live_pool_previous_date=args.live_pool_previous_date,
             td_rows_path=args.td_rows, confirm_read_only=args.confirm_read_only,
+            shadow_runner=run_shadow,
         )
     except Exception as exc:
         client.close()

@@ -71,6 +71,7 @@ def run_auction_node(
     read_times: Sequence[str], live_pool_previous_date: str | None = None,
     td_rows_path: Path | None = None, confirm_read_only: bool = False,
     sleep_until: Callable[[str, str], Any] | None = None,
+    shadow_runner: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Run one live, read-only auction session and persist timer dispatches locally.
 
@@ -79,6 +80,8 @@ def run_auction_node(
     """
     if not confirm_read_only:
         raise RuntimeError("live source requires confirm_read_only=True")
+    if shadow_runner is None:
+        raise ValueError("shadow_runner is required")
     if not isinstance(trade_date, str) or len(trade_date) != 10:
         raise ValueError("trade_date must be strict YYYY-MM-DD")
     calendar, session_plan = _single_day_session(trade_date)
@@ -197,9 +200,7 @@ def run_auction_node(
             timers_pending.discard(firing.timer_id)
 
     try:
-        from examples.shadow_task008_redis_auction_session import run_shadow
-
-        run_shadow(
+        shadow_runner(
             source="live", out_dir=shadow_dir, live_client=live_client,
             trade_date=trade_date, confirm_read_only=True, read_times=read_times,
             poll_callback=on_poll, seal_captures=True,

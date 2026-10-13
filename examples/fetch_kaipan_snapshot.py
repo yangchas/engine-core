@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib
 import json
 import re
-import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,7 +43,9 @@ def _make_reason_fetcher(analyzer: Any, page_size: int) -> Callable[[str, int], 
 
     def fetch(code: str, requested_page_size: int) -> Any:
         # Import at call time so the offline/injected path does not load legacy SDK code.
-        kaipan = importlib.import_module("pykaipan.pykaipan")
+        from examples.legacy_adapters import kaipan_pykaipan_module
+
+        kaipan = kaipan_pykaipan_module()
         config = kaipan.config
         # Same envelope as pykaipan.getBanReasons; only st (page size) differs.
         query = (
@@ -117,7 +117,9 @@ def _redact_response(value: Any, secrets: set[str]) -> tuple[Any, int]:
 def _runtime_credentials(config: Mapping[str, Any] | None) -> set[str]:
     if config is None:
         try:
-            config = importlib.import_module("pykaipan.pykaipan").config
+            from examples.legacy_adapters import kaipan_pykaipan_module
+
+            config = kaipan_pykaipan_module().config
         except (ImportError, AttributeError):
             return set()
     return {value for key in ("Token", "DeviceID")
@@ -369,11 +371,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--extra-symbols", default="")
     args = parser.parse_args(argv)
 
-    sys.path.insert(0, str(Path(args.legacy_root)))
-    from ai.API.StockAnalyzer import StockAnalyzer  # type: ignore[import-not-found]
+    from examples.legacy_adapters import kaipan_analyzer
 
     manifest = fetch_all(
-        StockAnalyzer(), args.dates, output_dir=args.output_dir,
+        kaipan_analyzer(args.legacy_root), args.dates, output_dir=args.output_dir,
         max_ban=args.max_ban, size=args.size, sleep_s=args.sleep_s,
         max_requests=args.max_requests,
         reason_page_size=args.reason_page_size,
