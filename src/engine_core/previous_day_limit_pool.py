@@ -98,13 +98,62 @@ def _verified_field_units(metadata: Any) -> Mapping[str, str]:
     return units
 
 
+def _normalize_pool_row(raw: Any, index: int, actual_trade_date: str) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise TypeError("limit-pool row %d must be a mapping" % index)
+    if raw.get("_undecodable") is True:
+        raise ValueError("limit-pool row %d is not a decodable JSON object" % index)
+    row_date = _strict_date(raw.get("trade_date"), field="trade_date")
+    if row_date != actual_trade_date:
+        raise ValueError("limit-pool row %d trade_date mismatch" % index)
+    symbol = raw.get("symbol")
+    if not isinstance(symbol, str) or _SYMBOL_PATTERN.fullmatch(symbol) is None:
+        raise ValueError("limit-pool row %d has invalid symbol" % index)
+    name = raw.get("name")
+    source = raw.get("source")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("limit-pool row %d has invalid name" % index)
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError("limit-pool row %d has invalid source" % index)
+    lb_days = raw.get("lb_days")
+    if isinstance(lb_days, bool) or not isinstance(lb_days, int) or lb_days < 1:
+        raise ValueError("limit-pool row %d has invalid lb_days" % index)
+    plate = raw.get("plate")
+    seal_time = raw.get("seal_time")
+    if plate is not None and not isinstance(plate, str):
+        raise ValueError("limit-pool row %d has invalid plate" % index)
+    if seal_time is not None and not isinstance(seal_time, str):
+        raise ValueError("limit-pool row %d has invalid seal_time" % index)
+    return {
+        "trade_date": row_date,
+        "symbol": symbol,
+        "name": name,
+        "lb_days": lb_days,
+        "plate": plate,
+        "seal_time": seal_time,
+        # The legacy Redis/Kaipan payload calls this field ``turnover``; its
+        # verified producer recipe is a yuan amount, so the Core contract
+        # carries the unit explicitly.
+        "turnover_yuan": _finite_number(raw.get("turnover"), field="turnover"),
+        "close_pct": _finite_number(raw.get("close_pct"), field="close_pct"),
+        "source": source,
+    }
+
+
 def normalize_previous_day_limit_pool_rows(
     rows: Iterable[Mapping[str, Any]],
     *,
     actual_trade_date: str,
     verified_field_units: Optional[Mapping[str, str]] = None,
+    isolate_invalid_rows: bool = False,
 ) -> Mapping[str, Any]:
     """Validate and canonically order the legacy Kaipan pool rows.
+
+    By default one invalid row raises.  With ``isolate_invalid_rows`` an
+    invalid row is dropped and listed in ``rejected_rows`` (index, symbol if
+    known, reason) so the remaining rows stay usable; a symbol that appears
+    more than once is rejected in every occurrence because neither copy is
+    trustworthy.  Rows are never repaired.
 
     ``trade_date`` is required in every row.  The caller must not backfill it
     from the request date because the cache is a delayed, date-bucketed
@@ -117,53 +166,36 @@ def normalize_previous_day_limit_pool_rows(
 
     actual_trade_date = _strict_date(actual_trade_date, field="actual_trade_date")
     normalized: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    rejected: list[dict[str, Any]] = []
+    occurrences: dict[str, list[int]] = {}
     for index, raw in enumerate(rows):
-        if not isinstance(raw, Mapping):
-            raise TypeError("limit-pool row %d must be a mapping" % index)
-        row_date = _strict_date(raw.get("trade_date"), field="trade_date")
-        if row_date != actual_trade_date:
-            raise ValueError("limit-pool row %d trade_date mismatch" % index)
-        symbol = raw.get("symbol")
-        if not isinstance(symbol, str) or _SYMBOL_PATTERN.fullmatch(symbol) is None:
-            raise ValueError("limit-pool row %d has invalid symbol" % index)
-        if symbol in seen:
-            raise ValueError("duplicate limit-pool symbol: " + symbol)
-        seen.add(symbol)
-
-        name = raw.get("name")
-        source = raw.get("source")
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("limit-pool row %d has invalid name" % index)
-        if not isinstance(source, str) or not source.strip():
-            raise ValueError("limit-pool row %d has invalid source" % index)
-        lb_days = raw.get("lb_days")
-        if isinstance(lb_days, bool) or not isinstance(lb_days, int) or lb_days < 1:
-            raise ValueError("limit-pool row %d has invalid lb_days" % index)
-
-        plate = raw.get("plate")
-        seal_time = raw.get("seal_time")
-        if plate is not None and not isinstance(plate, str):
-            raise ValueError("limit-pool row %d has invalid plate" % index)
-        if seal_time is not None and not isinstance(seal_time, str):
-            raise ValueError("limit-pool row %d has invalid seal_time" % index)
-
-        normalized.append(
-            {
-                "trade_date": row_date,
-                "symbol": symbol,
-                "name": name,
-                "lb_days": lb_days,
-                "plate": plate,
-                "seal_time": seal_time,
-                # The legacy Redis/Kaipan payload calls this field
-                # ``turnover``.  Its verified producer recipe is an amount in
-                # yuan, so the Core contract carries the unit explicitly.
-                "turnover_yuan": _finite_number(raw.get("turnover"), field="turnover"),
-                "close_pct": _finite_number(raw.get("close_pct"), field="close_pct"),
-                "source": source,
-            }
-        )
+        try:
+            item = _normalize_pool_row(raw, index, actual_trade_date)
+        except (TypeError, ValueError) as exc:
+            if not isolate_invalid_rows:
+                raise
+            symbol = raw.get("symbol") if isinstance(raw, Mapping) else None
+            rejected.append({
+                "index": index,
+                "symbol": symbol if isinstance(symbol, str) else None,
+                "reason": str(exc),
+            })
+            continue
+        if item["symbol"] in occurrences:
+            if not isolate_invalid_rows:
+                raise ValueError("duplicate limit-pool symbol: " + item["symbol"])
+        occurrences.setdefault(item["symbol"], []).append(index)
+        normalized.append(item)
+    duplicated = {symbol for symbol, where in occurrences.items() if len(where) > 1}
+    if duplicated:
+        # neither copy of a duplicated symbol is trustworthy
+        normalized = [row for row in normalized if row["symbol"] not in duplicated]
+        for symbol in duplicated:
+            for index in occurrences[symbol]:
+                rejected.append({
+                    "index": index, "symbol": symbol,
+                    "reason": "duplicate limit-pool symbol: " + symbol,
+                })
 
     normalized.sort(key=lambda item: item["symbol"])
     by_symbol = {item["symbol"]: item for item in normalized}
@@ -190,7 +222,7 @@ def normalize_previous_day_limit_pool_rows(
     unit_uncertainties = tuple(
         sorted(field for field, unit in field_units.items() if unit == "UNKNOWN")
     )
-    return {
+    payload = {
         "contract_version": PREVIOUS_DAY_LIMIT_POOL_CONTRACT_VERSION,
         "previous_trade_date": actual_trade_date,
         "rows": normalized,
@@ -200,6 +232,10 @@ def normalize_previous_day_limit_pool_rows(
         "field_units": field_units,
         "unit_uncertainties": unit_uncertainties,
     }
+    if isolate_invalid_rows:
+        payload["rejected_rows"] = tuple(sorted(rejected, key=lambda r: (r["index"], r["reason"])))
+        payload["rejected_count"] = len(rejected)
+    return payload
 
 
 class PreviousDayLimitPoolProvider(Protocol):
@@ -228,7 +264,9 @@ class RedisPreviousDayLimitPoolProvider:
         source_schema: str = PREVIOUS_DAY_LIMIT_POOL_CONTRACT_VERSION,
         evidence_ref: Optional[str] = None,
         verified_field_units: Optional[Mapping[str, str]] = None,
+        isolate_invalid_rows: bool = False,
     ) -> None:
+        self._isolate_invalid_rows = isolate_invalid_rows
         self._fetch_rows = fetch_rows
         self._observed_at_ms = observed_at_ms
         self._available_at_ms = available_at_ms
@@ -275,6 +313,7 @@ class RedisPreviousDayLimitPoolProvider:
                     rows,
                     actual_trade_date=previous_trade_date,
                     verified_field_units=verified_units,
+                    isolate_invalid_rows=self._isolate_invalid_rows,
                 ),
                 source_id=self._source_id,
                 source_schema=self._source_schema,
@@ -313,6 +352,17 @@ def _result_from_provider(request: DataRequest, physical: ProviderResult) -> Dat
         and payload["row_count"] == 0
     ):
         status = DataStatus.MISSING
+    rejected_count = (
+        payload.get("rejected_count") if isinstance(payload, Mapping) else None
+    )
+    completeness = 1.0 if status is DataStatus.READY else 0.0
+    missing_fields = ("error",) if physical.error else ()
+    if isinstance(rejected_count, int) and rejected_count > 0 and not physical.error:
+        kept = int(payload.get("row_count") or 0)
+        if status is DataStatus.READY:
+            status = DataStatus.PARTIAL
+            completeness = kept / float(kept + rejected_count)
+        missing_fields = ("rejected_rows",)
     availability_status = str(physical.availability_status or "UNKNOWN").upper()
     available_at_ms = physical.available_at_ms if availability_status == "VERIFIED" else None
     actual_trade_date = payload.get("previous_trade_date") if isinstance(payload, Mapping) else None
@@ -330,8 +380,8 @@ def _result_from_provider(request: DataRequest, physical: ProviderResult) -> Dat
         temporal_mode=request.temporal_mode,
         fetch_completed_at_ms=physical.fetch_completed_at_ms,
         schema_version=1,
-        completeness=1.0 if status is DataStatus.READY else 0.0,
-        missing_fields=("error",) if physical.error else (),
+        completeness=completeness,
+        missing_fields=missing_fields,
         provenance=(
             Provenance(
                 source_id=physical.source_id,
@@ -447,16 +497,23 @@ class PreviousDayLimitPoolFunction:
         if requested_symbols:
             missing_symbols = tuple(symbol for symbol in requested_symbols if symbol not in by_symbol)
             present_count = len(requested_symbols) - len(missing_symbols)
+            symbol_status = (
+                DataStatus.MISSING
+                if present_count == 0
+                else DataStatus.PARTIAL
+                if missing_symbols
+                else DataStatus.READY
+            )
+            symbol_completeness = present_count / float(len(requested_symbols))
+            if result.status is DataStatus.PARTIAL and symbol_status is DataStatus.READY:
+                # a partial from rejected rows or the availability guard must
+                # not be upgraded by a complete requested-symbol set
+                symbol_status = DataStatus.PARTIAL
+                symbol_completeness = min(symbol_completeness, result.completeness)
             result = replace(
                 result,
-                status=(
-                    DataStatus.MISSING
-                    if present_count == 0
-                    else DataStatus.PARTIAL
-                    if missing_symbols
-                    else DataStatus.READY
-                ),
-                completeness=present_count / float(len(requested_symbols)),
+                status=symbol_status,
+                completeness=symbol_completeness,
                 missing_symbols=missing_symbols,
             )
         return result

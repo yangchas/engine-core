@@ -254,3 +254,41 @@ def test_empty_verified_pool_is_missing_not_ready():
 
     assert result.status is DataStatus.MISSING
     assert result.completeness == 0.0
+
+
+def _pool_row(symbol, **overrides):
+    row = {
+        "symbol": symbol, "name": "n" + symbol, "trade_date": "2026-10-12",
+        "close_pct": 10.0, "lb_days": 1, "turnover": 1.0e8,
+        "plate": "x", "seal_time": "", "source": "kaipan",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_isolate_invalid_rows_keeps_good_rows_and_lists_rejections():
+    from engine_core.previous_day_limit_pool import normalize_previous_day_limit_pool_rows as norm
+
+    rows = [
+        _pool_row("000001"),
+        _pool_row("000002", turnover=None),            # invalid number
+        _pool_row("000003", trade_date="2026-10-09"),  # wrong date
+        _pool_row("000004"), _pool_row("000004", lb_days=2),  # duplicate
+        "not a mapping",
+        _pool_row("600000"),
+    ]
+    out = norm(rows, actual_trade_date="2026-10-12", isolate_invalid_rows=True)
+    assert [r["symbol"] for r in out["rows"]] == ["000001", "600000"]
+    assert out["row_count"] == 2 and out["rejected_count"] == 5
+    reasons = {(r["index"], r["symbol"]) for r in out["rejected_rows"]}
+    assert (1, "000002") in reasons and (2, "000003") in reasons
+    assert (3, "000004") in reasons and (4, "000004") in reasons and (5, None) in reasons
+    with pytest.raises(ValueError):
+        norm(rows, actual_trade_date="2026-10-12")  # strict stays strict
+
+
+def test_strict_payload_has_no_rejection_keys():
+    from engine_core.previous_day_limit_pool import normalize_previous_day_limit_pool_rows as norm
+
+    out = norm([_pool_row("000001")], actual_trade_date="2026-10-12")
+    assert "rejected_rows" not in out and "rejected_count" not in out

@@ -20,10 +20,15 @@ from .previous_day_limit_pool import (
 )
 
 
-def json_rows_from_state(state: LiveInputState) -> Tuple[List[Mapping[str, Any]], int]:
+def json_rows_from_state(
+    state: LiveInputState, *, keep_undecodable: bool = False
+) -> Tuple[List[Mapping[str, Any]], int]:
     """Decode a hash read's JSON rows; ``(rows, decode_error_count)``.
 
     The hash field is used as ``symbol`` when the row does not carry one.
+    With ``keep_undecodable`` an undecodable entry is kept as a marker row
+    (``_undecodable``) so a downstream validator can reject and count it
+    instead of the entry silently disappearing.
     """
 
     if state.read is None or state.status == MISSING or state.read.kind != "hash":
@@ -34,13 +39,14 @@ def json_rows_from_state(state: LiveInputState) -> Tuple[List[Mapping[str, Any]]
         try:
             value = json.loads(raw)
         except (TypeError, ValueError):
-            errors += 1
-            continue
+            value = None
         if isinstance(value, dict):
             value.setdefault("symbol", field)
             rows.append(value)
         else:
             errors += 1
+            if keep_undecodable:
+                rows.append({"symbol": field, "_undecodable": True})
     return rows, errors
 
 
@@ -58,7 +64,7 @@ def previous_day_limit_pool_from_state(
     reports as missing data (never as an empty-but-complete pool).
     """
 
-    rows, _errors = json_rows_from_state(state)
+    rows, _decode_errors = json_rows_from_state(state, keep_undecodable=True)
     if state.status == EXPIRED_PREVIOUS:
         rows = []
     observed = int(observed_at_ms if observed_at_ms is not None else state.last_attempt_ms)
@@ -77,6 +83,7 @@ def previous_day_limit_pool_from_state(
         observed_at_ms=lambda: observed,
         evidence_ref="redis://cache:yest_limit_pool/%s#%s" % (
             previous_trade_date, state.status),
+        isolate_invalid_rows=True,
     )
     request = DataRequest(
         request_id="live-previous-day-limit-pool",

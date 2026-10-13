@@ -68,6 +68,11 @@ def build_shadow_auction_report(
         )
         structure = build_previous_day_limit_structure(previous_pool)
         notes.append("previous-day pool availability is unverified (previous-day data)")
+        rejected = (previous_pool.data or {}).get("rejected_count") if previous_pool.data else None
+        if isinstance(rejected, int) and rejected > 0:
+            notes.append(
+                "previous-day pool: %d row(s) rejected as invalid; counts exclude them" % rejected
+            )
     else:
         notes.append("previous-day pool not supplied")
     return build_market_auction_report(

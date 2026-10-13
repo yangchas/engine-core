@@ -69,3 +69,28 @@ def test_plate_mapping_states():
     assert mapping["stock_plate"] == {"000001": "AI,Chip"}
     assert mapping["s2p"] == {"000001": ["AI", "Chip"]}
     assert mapping["s2p_invalid_count"] == 1
+
+
+def test_bad_pool_rows_are_isolated_not_pool_wide_failure():
+    rows = {
+        b"000001": _row("000001", 2).encode(),
+        b"000002": json.dumps({"symbol": "000002", "name": "n", "trade_date": "2026-10-12",
+                               "close_pct": 10.0, "lb_days": 1, "plate": "x",
+                               "seal_time": "", "source": "kaipan"}).encode(),  # no turnover
+        b"000003": b"{broken json",
+        b"600000": _row("600000").encode(),
+    }
+    result = _pool(_state({POOL_KEY: rows}))
+    assert result.status.value == "PARTIAL"
+    assert result.data["row_count"] == 2
+    assert result.data["rejected_count"] == 2
+    assert result.completeness == 0.5
+    assert result.missing_fields == ("rejected_rows",)
+    symbols = {r["symbol"] for r in result.data["rejected_rows"]}
+    assert symbols == {"000002", "000003"}
+
+
+def test_all_rows_bad_is_missing_with_rejections_visible():
+    result = _pool(_state({POOL_KEY: {b"000001": b"[1]"}}))
+    assert result.status.value == "MISSING"
+    assert result.data["rejected_count"] == 1

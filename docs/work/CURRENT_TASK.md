@@ -14,7 +14,13 @@
   09:24:10, so a field-by-field comparison needs reads at those instants
   (next trade day). Same-day final Q2 values (a20 3318, a24 4315) are not a
   like-for-like comparison.
-- Known gap: one malformed pool row fails the whole pool (46 rows lost).
+- Pool row-level isolation (opt-in `isolate_invalid_rows`, on for the live
+  adapter): an invalid row (bad number/date/name, non-object, undecodable JSON)
+  is dropped and listed in `rejected_rows`; duplicated symbols are rejected in
+  every occurrence. Result is PARTIAL (completeness = kept/(kept+rejected),
+  missing_fields `rejected_rows`), never upgraded to READY by a complete
+  requested-symbol set; all rows bad -> MISSING. Strict default unchanged.
+  Real 10-12 pool: 46 rows, 0 rejected.
 
 ## 2026-10-13 unified read-only live input layer
 
