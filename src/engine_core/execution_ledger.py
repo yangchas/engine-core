@@ -6,10 +6,12 @@ again.  It is a library over a caller-chosen file; it never touches production
 stores, and writing it is not an effect on Redis/TD/Rabbit.
 
 Format: one JSON object per line.  Appends take an exclusive ``flock`` and are
-``fsync``ed.  A line that cannot be parsed (crash mid-write) is skipped and
-counted by ``unreadable_line_count``, never repaired; a skipped record means
-its timer may run once more, which is the safe direction for deterministic
-facts.  An identical record is a no-op; a record for the same
+``fsync``ed.  An incomplete, unterminated tail is skipped and counted by
+``unreadable_line_count`` because ``record`` has not returned to acknowledge
+it; the next append truncates that tail.  Malformed complete lines and
+parseable records missing required fields raise, since silently dropping an
+acknowledged firing could cause duplicate dispatch.  An identical record is a
+no-op; a record for the same
 ``(trade_date, timer_id)`` with a different firing hash raises.
 """
 
@@ -39,16 +41,33 @@ class ExecutionLedger:
             return [], 0
         records: List[dict] = []
         unreadable = 0
-        for raw in self._path.read_bytes().split(b"\n"):
+        lines = self._path.read_bytes().splitlines(keepends=True)
+        for line_number, raw_line in enumerate(lines, 1):
+            terminated = raw_line.endswith(b"\n")
+            raw = raw_line[:-1] if terminated else raw_line
             if not raw.strip():
                 continue
             try:
                 record = json.loads(raw)
-                if not isinstance(record, dict) or record.get("contract") != LEDGER_CONTRACT_VERSION:
-                    raise ValueError
-            except ValueError:
+            except (ValueError, UnicodeDecodeError):
+                if line_number == len(lines) and not terminated:
+                    unreadable += 1
+                    continue
+                raise ValueError("invalid ledger JSON at line %d" % line_number)
+            if line_number == len(lines) and not terminated:
                 unreadable += 1
                 continue
+            if not isinstance(record, dict):
+                raise ValueError("ledger record at line %d must be an object" % line_number)
+            required = {"contract", "trade_date", *_FIELDS, "content_hash"}
+            missing = sorted(required.difference(record))
+            if missing:
+                raise ValueError(
+                    "ledger record at line %d missing fields: %s"
+                    % (line_number, ", ".join(missing))
+                )
+            if record.get("contract") != LEDGER_CONTRACT_VERSION:
+                raise ValueError("unsupported ledger contract at line %d" % line_number)
             records.append(record)
         return records, unreadable
 
@@ -78,7 +97,19 @@ class ExecutionLedger:
         fd = os.open(self._path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o644)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
-            for existing in self.firings(trade_date):
+            records, _ = self._read()
+            content = self._path.read_bytes()
+            if content and not content.endswith(b"\n"):
+                os.ftruncate(fd, content.rfind(b"\n") + 1)
+            existing_firings = []
+            for record in records:
+                if record["trade_date"] != trade_date:
+                    continue
+                existing = TimerFiring(**{name: record[name] for name in _FIELDS})
+                if existing.content_hash != record["content_hash"]:
+                    raise ValueError("ledger record hash mismatch for %s" % record["timer_id"])
+                existing_firings.append(existing)
+            for existing in existing_firings:
                 if existing.timer_id == firing.timer_id:
                     if existing.content_hash == firing.content_hash:
                         return False
@@ -92,9 +123,6 @@ class ExecutionLedger:
                 },
                 sort_keys=True, separators=(",", ":"),
             ).encode("utf-8") + b"\n"
-            # a torn tail from an earlier crash must not glue onto this record
-            if self._path.stat().st_size and not self._path.read_bytes().endswith(b"\n"):
-                os.write(fd, b"\n")
             os.write(fd, line)
             os.fsync(fd)
             return True

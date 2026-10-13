@@ -145,7 +145,11 @@ def derive_stock_extremes(
     rank("auction_amount_top", candidates, amount, descending=True)
     rank("auction_gain_top", candidates, change_bp, descending=True)
     rank("auction_drop_top", candidates, change_bp, descending=False)
-    limit_up = [s for s in candidates if getattr(quotes[s], "limit_state", None) == 1]
+    limit_up = [
+        s for s in candidates
+        if getattr(quotes[s], "limit_state", None) == 1
+        or getattr(quotes[s], "limit_state", None) is None
+    ]
     rank("limit_up_seal_top", limit_up, seal, descending=True)
     notes = []
     if amount_delta_by_symbol is not None:

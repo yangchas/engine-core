@@ -84,6 +84,14 @@ def test_anchor_archive_json_and_invalid_json():
     assert not bad.usable and not bad.scan_consistent
 
 
+def test_anchor_archive_json_scalar_is_not_usable():
+    key = "market:auction:anchor:20261013"
+    read = _reader(StrictClient(strings={key: "42"})).read(
+        "anchor_archive", trade_date="2026-10-13"
+    )
+    assert not read.usable and not read.scan_consistent
+
+
 def test_empty_response_preserves_last_good_and_never_zero_fills():
     key = "cache:hot_plates:2026-10-13"
     cache = LiveInputCache()
@@ -96,6 +104,18 @@ def test_empty_response_preserves_last_good_and_never_zero_fills():
     assert again.reason == "empty_response"
     assert again.read.rows == (("a", "{}"),)
     assert again.last_refreshed_ms == 1000 and again.last_attempt_ms == 2000
+
+
+def test_last_good_is_scoped_to_input_name_and_redis_key():
+    cache = LiveInputCache()
+    key_a = "cache:hot_rank:2026-10-12"
+    key_b = "cache:hot_rank:2026-10-13"
+    first = cache.refresh(_reader(StrictClient(hashes={key_a: {b"a": b"1"}}), 1).read(
+        "hot_rank", trade_date="2026-10-12"))
+    second = cache.refresh(_reader(StrictClient(hashes={}), 2).read(
+        "hot_rank", trade_date="2026-10-13"))
+    assert first.status == FRESH
+    assert second.status == MISSING and second.read is None
 
 
 def test_missing_without_prior_is_missing_not_empty_data():

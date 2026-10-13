@@ -319,6 +319,32 @@ def _capture_client(capture: Mapping[str, Any]) -> ReadOnlyQ2Client:
     return ReadOnlyQ2Client(CaptureClient())
 
 
+def _capture_observed_at(capture: Mapping[str, Any]) -> datetime:
+    """Use the sealed read time, or the latest source time for older captures."""
+
+    completed = capture.get("read_completed_at")
+    if completed is not None:
+        try:
+            parsed = datetime.fromisoformat(str(completed).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("capture read_completed_at must be an ISO datetime") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("capture read_completed_at must be timezone-aware")
+        return parsed
+    source_times = []
+    for item in capture.get("reads", ()):
+        if item.get("operation") != "hgetall" or not isinstance(item.get("value"), Mapping):
+            continue
+        try:
+            source_times.append(int(item["value"].get("ts")))
+        except (TypeError, ValueError):
+            continue
+    # Without a source timestamp there is no logical evaluation time. This
+    # fixed metadata value avoids introducing the replay machine's wall clock.
+    source_ms = max(source_times) if source_times else 0
+    return datetime.fromtimestamp(source_ms / 1000, tz=timezone.utc)
+
+
 def run_shadow(
     *, source: str, out_dir: Path, capture_path: Path | None = None,
     live_client: Any | None = None, trade_date: str | None = None,
@@ -409,12 +435,14 @@ def _run_shadow_impl(
             raise ValueError("unsupported sealed Redis capture contract")
         trade_date = str(capture.get("trade_date", ""))
         client = _capture_client(capture)
+        capture_observed_at = _capture_observed_at(capture)
     elif source == "live":
         if live_client is None:
             raise ValueError("live source requires a Redis client")
         trade_date = str(trade_date or "")
         recorder = _RecordingClient(live_client) if seal_captures else None
         client = ReadOnlyQ2Client(recorder or live_client)
+        capture_observed_at = None
     else:
         raise ValueError("source must be capture or live")
     if not trade_date:
@@ -444,7 +472,8 @@ def _run_shadow_impl(
                     _sleep_until_local(trade_date, read_times[poll])
                 wall_started = _aware_now()
                 snapshot = RedisQ2ProjectionAdapter(client).read(
-                    trade_date, freshness_policy=FreshnessPolicy()
+                    trade_date, observed_at=capture_observed_at,
+                    freshness_policy=FreshnessPolicy()
                 )
                 wall_completed = _aware_now()
                 if recorder is not None:

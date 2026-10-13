@@ -64,7 +64,25 @@ def test_torn_line_is_skipped_counted_and_does_not_glue_onto_next_record(tmp_pat
     assert ledger.completed_timer_ids(D) == ("AUCTION_0926",)
     assert ledger.record(D, second) is True
     assert ledger.completed_timer_ids(D) == ("AUCTION_0926", "OPENING_0932")
-    assert ledger.unreadable_line_count() == 1
+    assert ledger.unreadable_line_count() == 0
+    assert path.read_bytes().endswith(b"\n")
+
+
+def test_complete_malformed_line_is_not_silently_skipped(tmp_path):
+    path = tmp_path / "l.jsonl"
+    first, _ = _firings()
+    ExecutionLedger(path).record(D, first)
+    with path.open("ab") as handle:
+        handle.write(b"{broken}\n")
+    with pytest.raises(ValueError, match="line 2"):
+        ExecutionLedger(path).firings(D)
+
+
+def test_parseable_record_missing_fields_reports_line(tmp_path):
+    path = tmp_path / "l.jsonl"
+    path.write_text('{"contract":"TimerExecutionLedgerV1","trade_date":"2026-10-14"}\n')
+    with pytest.raises(ValueError, match="line 1.*missing"):
+        ExecutionLedger(path).firings(D)
 
 
 def test_tampered_record_hash_is_detected(tmp_path):
@@ -95,3 +113,31 @@ def test_restart_does_not_refire_completed_timers(tmp_path):
     assert [f.timer_id for f in due] == ["OPENING_0932"]
     # restoring twice or restoring a foreign plan is safe / rejected
     assert restarted.restore_completed(ledger.firings(D)) == 0
+
+
+def test_restart_from_later_firing_keeps_earlier_due_timer(tmp_path):
+    plan, cal = _plan_cal()
+    specs = (TimerSpec("AUCTION_0926", "09:26:00"), TimerSpec("OPENING_0932", "09:32:00"))
+    later = _firings("09:33:00")[1]
+    restarted = SessionRuntimeCoordinator(
+        trade_date=D, calendar=cal, session_plan=plan, timer_specs=specs)
+    assert restarted.restore_completed((later,)) == 1
+    poll = restarted.poll(as_of_ms=local_datetime_ms(D, "09:33:00"), q2=None)
+    assert "AUCTION_0926" in poll.deferred_timer_ids
+
+
+def test_restore_rejects_firing_from_different_session_plan():
+    plan, cal = _plan_cal()
+    other_date = "2026-10-15"
+    other_cal = build_calendar_snapshot(
+        [D, other_date], version="ledger-test", declared_valid_from=D, declared_valid_to=other_date,
+        source_guard_valid_from=D, source_guard_valid_to=other_date)
+    other_plan = build_a_share_session_plan(other_date, other_cal)
+    foreign = due_timer_firings(
+        other_plan, (TimerSpec("AUCTION_0926", "09:26:00"),), previous_time_ms=None,
+        current_time_ms=local_datetime_ms(other_date, "09:27:00"), origin="RECOVERY_CATCHUP")[0]
+    restarted = SessionRuntimeCoordinator(
+        trade_date=D, calendar=cal, session_plan=plan,
+        timer_specs=(TimerSpec("AUCTION_0926", "09:26:00"),))
+    with pytest.raises(ValueError, match="session plan"):
+        restarted.restore_completed((foreign,))

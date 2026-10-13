@@ -34,8 +34,21 @@ def test_missing_amount_is_not_summed_as_zero_and_duplicates_are_counted():
     rows = [_r("000001", bp=5, amt=None, bid=3), _r("000002", bp=1, amt=100), _r("000002", bp=9, amt=7)]
     out = derive_td_auction_summary(rows, tag="0925")
     assert out["unknown_amount_rows"] == 1
-    assert out["auction_amount_yuan"] == 100
+    assert out["auction_amount_yuan"] is None
     assert out["duplicate_symbol_rows"] == 1
+
+
+def test_missing_limit_up_seal_amount_makes_seal_sum_unknown():
+    rows = [_r("000001", amt=10, bid=None, ls=1), _r("000002", amt=20, bid=30, ls=1)]
+    out = derive_td_auction_summary(rows, tag="0925")
+    assert out["limit_up_seal_amount_yuan"] is None
+    assert out["unknown_seal_rows"] == 1
+
+
+def test_seal_amount_is_known_when_all_limit_up_rows_have_amount():
+    out = derive_td_auction_summary([_r("000001", amt=10, bid=30, ls=1)], tag="0925")
+    assert out["limit_up_seal_amount_yuan"] == 30
+    assert out["unknown_seal_rows"] == 0
 
 
 def test_unknown_tag_rejected():

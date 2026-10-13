@@ -53,6 +53,9 @@ def derive_td_auction_summary(
     valid = [r for r in candidates if _pos(r.get("px_milli")) and _num(r.get("chg_bp")) is not None]
     amount_rows = [r for r in candidates if _num(r.get("match_amt_yuan")) is not None]
     seal_rows = [r for r in candidates if r.get("limit_state") == 1]
+    unknown_amount_rows = len(candidates) - len(amount_rows)
+    known_seal_rows = [r for r in seal_rows if _num(r.get("rest_bid_amt_yuan")) is not None]
+    unknown_seal_rows = len(seal_rows) - len(known_seal_rows)
     return {
         "contract": TD_AUCTION_SUMMARY_CONTRACT_VERSION,
         "tag": tag,
@@ -62,13 +65,18 @@ def derive_td_auction_summary(
         "positive_count": sum(1 for r in valid if r["chg_bp"] > 0),
         "negative_count": sum(1 for r in valid if r["chg_bp"] < 0),
         "flat_count": sum(1 for r in valid if r["chg_bp"] == 0),
-        "auction_amount_yuan": sum(int(r["match_amt_yuan"]) for r in amount_rows),
+        "auction_amount_yuan": (
+            sum(int(r["match_amt_yuan"]) for r in amount_rows)
+            if unknown_amount_rows == 0 else None
+        ),
         "limit_up_count": len(seal_rows),
         "limit_down_count": sum(1 for r in candidates if r.get("limit_state") == -1),
-        "limit_up_seal_amount_yuan": sum(
-            int(r["rest_bid_amt_yuan"]) for r in seal_rows if _num(r.get("rest_bid_amt_yuan")) is not None
+        "limit_up_seal_amount_yuan": (
+            sum(int(r["rest_bid_amt_yuan"]) for r in known_seal_rows)
+            if unknown_seal_rows == 0 else None
         ),
-        "unknown_amount_rows": len(candidates) - len(amount_rows),
+        "unknown_amount_rows": unknown_amount_rows,
+        "unknown_seal_rows": unknown_seal_rows,
         "duplicate_symbol_rows": duplicates,
     }
 

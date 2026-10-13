@@ -82,6 +82,10 @@ def test_assessment_is_deterministic_and_never_backdates(plan):
     assert a.content_hash == b.content_hash
     assert a.start_ms == ms("10:00:00")
     assert a.as_mapping()["start_class"] == "MORNING_SESSION"
+    assert a.anchor_semantics == (
+        "OBSERVABLE_AT_START=按时钟可读, 未检查字段实际存在, 观察时间=启动时刻"
+    )
+    assert a.as_mapping()["anchor_semantics"] == a.anchor_semantics
 
 
 def _rows(**symbols):

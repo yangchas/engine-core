@@ -56,6 +56,85 @@ def test_synthetic_capture_emits_three_anchor_events(tmp_path: Path):
     assert [event["available_count"] for event in events] == [2, 2, 2]
 
 
+def test_capture_replay_uses_sealed_read_completion_time(tmp_path: Path):
+    capture = {
+        "contract_version": "RedisQ2ReadCaptureV1",
+        "trade_date": "2026-10-09",
+        "read_completed_at": "2026-10-09T09:25:12+08:00",
+        "reads": [
+            {"operation": "smembers", "key": "q2:active:20261009", "value": ["000001"]},
+            {"operation": "hgetall", "key": "q2:000001", "value": {
+                "px": "1000", "pc": "990", "amt": "100", "ts": "1791509103000",
+                "a20": "990", "a24": "995", "a25": "1000",
+            }},
+        ],
+    }
+    capture_path = tmp_path / "capture.json"
+    capture_path.write_text(json.dumps(capture), encoding="utf-8")
+    result = run_shadow(source="capture", capture_path=capture_path, out_dir=tmp_path / "replay")
+    events = [json.loads(line) for line in (tmp_path / "replay" / "shadow_events.jsonl").read_text().splitlines()]
+    event = next(item for item in events if item["tag"] == "0925")
+    from engine_core.clock import local_datetime_ms
+    assert event["evaluation_time_ms"] == local_datetime_ms("2026-10-09", "09:25:12")
+
+
+def test_capture_without_read_completion_uses_source_time(tmp_path: Path):
+    capture = {
+        "contract_version": "RedisQ2ReadCaptureV1",
+        "trade_date": "2026-10-09",
+        "reads": [
+            {"operation": "smembers", "key": "q2:active:20261009", "value": ["000001"]},
+            {"operation": "hgetall", "key": "q2:000001", "value": {
+                "px": "1000", "pc": "990", "amt": "100", "ts": "1791509103000",
+                "a20": "990", "a24": "995", "a25": "1000",
+            }},
+        ],
+    }
+    capture_path = tmp_path / "capture-no-read-time.json"
+    capture_path.write_text(json.dumps(capture), encoding="utf-8")
+    run_shadow(source="capture", capture_path=capture_path, out_dir=tmp_path / "replay-no-read-time")
+    events = [json.loads(line) for line in (tmp_path / "replay-no-read-time" / "shadow_events.jsonl").read_text().splitlines()]
+    event = next(item for item in events if item["tag"] == "0925")
+    assert event["evaluation_time_ms"] == 1791509103000
+
+
+def test_first_read_is_recorded_only_after_late_start_is_observed():
+    from datetime import datetime, timedelta, timezone
+
+    from engine_core import AuctionAnchorSessionV1, FreshnessPolicy, RedisQ2ProjectionAdapter
+    from engine_core.clock import local_datetime_ms
+    from examples.shadow_task008_redis_auction_session import _observe_snapshot, _rows
+
+    date = "2026-10-09"
+    ms = lambda hms: local_datetime_ms(date, hms)  # noqa: E731
+    cst = timezone(timedelta(hours=8))
+    class BeforeBarrierClient(FakeClient):
+        def hgetall(self, key):
+            row = dict(super().hgetall(key))
+            if row:
+                row["ts"] = "1791509103000"  # 09:25:03, before first-observable barrier
+            return row
+
+    client = BeforeBarrierClient()
+    session = AuctionAnchorSessionV1(date, ("000001", "000002"))
+    first_read: set = set()
+
+    def observe(hms):
+        at = datetime.fromtimestamp(ms(hms) / 1000, tz=cst)
+        snapshot = RedisQ2ProjectionAdapter(client).read(
+            date, freshness_policy=FreshnessPolicy(), observed_at=at)
+        events = _observe_snapshot(
+            snapshot=snapshot, session=session, rows=_rows(snapshot), first_read=first_read,
+            wall_started=at, wall_completed=at)
+        return next(e for e in events if e["tag"] == "0925")
+
+    before = observe("09:25:03")
+    assert before["late_execution"]["status"] == "BEFORE_FIRST_OBSERVABLE"
+    assert "0925" not in first_read
+    after = observe("09:25:12")
+    assert after["late_execution"]["status"] == "LATE_START_OBSERVED"
+
+
 def test_live_requires_confirmation_and_redacts_client_errors(tmp_path: Path):
     class FailingClient(FakeClient):
         def hgetall(self, key):

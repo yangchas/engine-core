@@ -32,12 +32,14 @@ class TdAuctionReconstruction:
     current_0925: Current0925Rows
     theme_delta: ThemeDeltaRows
     row_counts: Mapping[str, int]
+    excluded_other_date_rows: int = 0
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "content_hash", canonical_hash({
             "contract": TD_RECONSTRUCTION_CONTRACT_VERSION,
             "trade_date": self.trade_date,
+            "excluded_other_date_rows": self.excluded_other_date_rows,
             "summaries": {k: dict(v) for k, v in self.summaries.items()},
             "current_0925": self.current_0925.content_hash,
             "theme_delta": self.theme_delta.content_hash,
@@ -50,6 +52,7 @@ class TdAuctionReconstruction:
             "status": self.status,
             "tag_status": dict(self.tag_status),
             "row_counts": dict(self.row_counts),
+            "excluded_other_date_rows": self.excluded_other_date_rows,
             "summaries": {k: dict(v) for k, v in self.summaries.items()},
             "current_0925": self.current_0925.as_trace(),
             "theme_delta": self.theme_delta.as_trace(),
@@ -60,12 +63,17 @@ class TdAuctionReconstruction:
 def reconstruct_auction_from_td(
     trade_date: str, td_rows: Iterable[Mapping[str, Any]]
 ) -> TdAuctionReconstruction:
-    rows = [dict(r) for r in td_rows]
-    # TD stores the compact date; the adapters want YYYY-MM-DD
+    rows = []
+    excluded_other_date_rows = 0
+    # TD stores either compact dates or YYYY-MM-DD; adapters use YYYY-MM-DD.
     compact = trade_date.replace("-", "")
-    for row in rows:
-        if str(row.get("trade_date", "")).replace("-", "") == compact:
-            row["trade_date"] = trade_date
+    for source_row in td_rows:
+        row = dict(source_row)
+        if str(row.get("trade_date", "")).replace("-", "") != compact:
+            excluded_other_date_rows += 1
+            continue
+        row["trade_date"] = trade_date
+        rows.append(row)
     counts = {tag: sum(1 for r in rows if str(r.get("auction_tag")) == tag) for tag in TAGS}
     summaries = {}
     tag_status = {}
@@ -80,13 +88,14 @@ def reconstruct_auction_from_td(
     delta = build_theme_delta_rows(trade_date, rows)
     if not summaries:
         status = FactStatus.UNAVAILABLE
-    elif any(v != FactStatus.READY.value for v in tag_status.values()):
+    elif excluded_other_date_rows or any(v != FactStatus.READY.value for v in tag_status.values()):
         status = FactStatus.PARTIAL
     else:
         status = FactStatus.READY
     return TdAuctionReconstruction(
         trade_date=trade_date, status=status, summaries=summaries, tag_status=tag_status,
         current_0925=current, theme_delta=delta, row_counts=counts,
+        excluded_other_date_rows=excluded_other_date_rows,
     )
 
 

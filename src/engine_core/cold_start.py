@@ -76,6 +76,7 @@ class ColdStartAssessment:
     opening_0932: str
     recovery_due_timers: Tuple[str, ...]
     unrecoverable: Tuple[str, ...]
+    anchor_semantics: str = "OBSERVABLE_AT_START=按时钟可读, 未检查字段实际存在, 观察时间=启动时刻"
     evidence: Tuple[str, ...] = EVIDENCE
     content_hash: str = field(init=False)
 
@@ -95,6 +96,7 @@ class ColdStartAssessment:
             "opening_0932": self.opening_0932,
             "recovery_due_timers": self.recovery_due_timers,
             "unrecoverable": self.unrecoverable,
+            "anchor_semantics": self.anchor_semantics,
             "evidence": self.evidence,
         }
         if not hash_free:

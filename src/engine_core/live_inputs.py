@@ -190,6 +190,8 @@ class LiveInputReader:
                 payload = json.loads(text)
             except ValueError:
                 consistent = False
+            else:
+                consistent = isinstance(payload, (dict, list))
         return LiveInputRead(
             name=name, key=key, kind="json", redis_type="string" if raw is not None else "none",
             rows=(), payload=payload, scan_consistent=consistent,
@@ -207,17 +209,18 @@ class LiveInputCache:
         # evidence but a consumer must treat it as degraded, not current.
         self._max_age_ms = dict(DEFAULT_MAX_AGE_MS)
         self._max_age_ms.update(max_age_ms or {})
-        self._good: Dict[str, Tuple[LiveInputRead, int]] = {}
+        self._good: Dict[Tuple[str, str], Tuple[LiveInputRead, int]] = {}
 
     def refresh(self, read: LiveInputRead) -> LiveInputState:
         now = read.observed_at_ms
+        identity = (read.name, read.key)
         if read.usable:
-            self._good[read.name] = (read, now)
+            self._good[identity] = (read, now)
             return LiveInputState(read.name, FRESH, read, None, now, now)
         reason = "scan_inconsistent" if (not read.scan_consistent and not read.is_empty) else (
             "invalid_json" if (read.kind == "json" and not read.scan_consistent) else "empty_response"
         )
-        previous = self._good.get(read.name)
+        previous = self._good.get(identity)
         if previous is not None:
             limit = self._max_age_ms.get(read.name)
             expired = limit is not None and now - previous[1] > limit
@@ -228,7 +231,8 @@ class LiveInputCache:
         return LiveInputState(read.name, MISSING, None, reason, None, now)
 
     def state(self, name: str) -> Optional[Tuple[LiveInputRead, int]]:
-        return self._good.get(name)
+        matches = [value for (input_name, _), value in self._good.items() if input_name == name]
+        return matches[-1] if matches else None
 
 
 __all__ = [

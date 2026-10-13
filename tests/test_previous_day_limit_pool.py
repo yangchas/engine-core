@@ -287,6 +287,25 @@ def test_isolate_invalid_rows_keeps_good_rows_and_lists_rejections():
         norm(rows, actual_trade_date="2026-10-12")  # strict stays strict
 
 
+def test_rejected_pool_rows_keep_result_partial_when_requested_symbols_are_present():
+    rows = [
+        _pool_row("000001", trade_date="2026-09-10"),
+        _pool_row("000002", trade_date="2026-09-10", turnover=None),
+    ]
+    provider = RedisPreviousDayLimitPoolProvider(
+        lambda previous: rows,
+        observed_at_ms=lambda: 1789080000000,
+        available_at_ms=lambda: 1789070000000,
+        verified_field_units={"turnover_yuan": "yuan"},
+        isolate_invalid_rows=True,
+    )
+    result = PreviousDayLimitPoolFunction(provider, CALENDAR).execute(
+        DataContext("eval", "READ_ONLY", 1789080000000), _request(("000001",))
+    )
+    assert result.status is DataStatus.PARTIAL
+    assert result.completeness < 1.0
+
+
 def test_strict_payload_has_no_rejection_keys():
     from engine_core.previous_day_limit_pool import normalize_previous_day_limit_pool_rows as norm
 

@@ -38,6 +38,16 @@ def test_missing_measure_is_excluded_not_ranked_as_zero_and_marks_partial():
     assert out.status is FactStatus.PARTIAL
 
 
+def test_unknown_limit_state_is_excluded_from_limit_up_seal_ranking():
+    from dataclasses import replace
+
+    cohort = {"000001": replace(_q("000001", am=100, br=70, a25=1000), limit_state=None)}
+    out = derive_stock_extremes(cohort, trade_date="2026-10-13")
+    assert out.rankings["limit_up_seal_top"] == ()
+    assert out.excluded_counts["limit_up_seal_top"] == 1
+    assert out.status is FactStatus.PARTIAL
+
+
 def test_recovered_anchor_enters_the_gain_ranking():
     out = derive_stock_extremes(
         _cohort(), trade_date="2026-10-13", top_n=10, recovered_anchor_milli={"000004": 1200})

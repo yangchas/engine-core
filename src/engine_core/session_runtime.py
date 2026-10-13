@@ -270,7 +270,8 @@ class SessionRuntimeCoordinator:
 
         Only firings of this session plan and of known timer ids are accepted;
         a firing that conflicts with an already completed one raises.  This
-        does not dispatch anything and moves the frontier only forward.
+        does not dispatch anything or advance the live polling frontier: due
+        timers are recomputed from day start using the restored timer ids.
         """
 
         known_ids = {item.timer_id for item in self.timer_specs}
@@ -290,7 +291,6 @@ class SessionRuntimeCoordinator:
             self._fired[firing.timer_id] = firing
             self._pending.pop(firing.timer_id, None)
             self._deferred.discard(firing.timer_id)
-            self._frontier_ms = max(self._frontier_ms or firing.fired_time_ms, firing.fired_time_ms)
             added += 1
         return added
 

@@ -39,3 +39,13 @@ def test_empty_input_is_unavailable_and_hash_is_deterministic():
     a = reconstruct_auction_from_td("2026-10-13", _rows())
     b = reconstruct_auction_from_td("2026-10-13", list(reversed(_rows())))
     assert a.content_hash == b.content_hash
+
+
+def test_rows_for_other_trade_date_are_excluded_and_make_result_partial():
+    rows = _rows() + [_r("600001", "0925", amt=999, ts="2026-10-12 09:25:06")]
+    rows[-1]["trade_date"] = "20261012"
+    out = reconstruct_auction_from_td("2026-10-13", rows)
+    assert out.status is FactStatus.PARTIAL
+    assert out.row_counts == {"0920": 2, "0924": 2, "0925": 2}
+    assert out.summaries["0925"]["auction_amount_yuan"] == 2700
+    assert out.as_trace()["excluded_other_date_rows"] == 1
