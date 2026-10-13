@@ -49,3 +49,11 @@ def test_rows_for_other_trade_date_are_excluded_and_make_result_partial():
     assert out.row_counts == {"0920": 2, "0924": 2, "0925": 2}
     assert out.summaries["0925"]["auction_amount_yuan"] == 2700
     assert out.as_trace()["excluded_other_date_rows"] == 1
+
+
+def test_unknown_limit_up_seal_makes_tag_and_reconstruction_partial():
+    rows = [_r("000001", tag, amt=10, bid=None, ls=1) for tag in ("0920", "0924", "0925")]
+    out = reconstruct_auction_from_td("2026-10-13", rows)
+    assert out.tag_status["0925"] == "PARTIAL"
+    assert out.status is FactStatus.PARTIAL
+    assert out.summaries["0925"]["limit_up_seal_amount_yuan"] is None

@@ -1,4 +1,5 @@
 from examples.compare_task008_tag_summaries_vs_legacy import compare
+from examples.compare_task008_td_rows_vs_legacy import compare as compare_td_rows
 
 LEGACY = {"projections": [
     {"tag": "0920", "summary": {
@@ -40,3 +41,18 @@ def test_no_poll_for_tag():
 def test_far_poll_is_not_time_aligned_even_when_equal():
     out = compare([_core(4, 1000 + 60_000, 0)], LEGACY)["0920"]
     assert out["status"] == "NOT_TIME_ALIGNED" and out["time_gap_ms"] == 60_000
+
+
+def test_td_comparison_does_not_treat_matching_unknown_fields_as_equal():
+    rows = [{"symbol": "000001", "auction_tag": "0920", "px_milli": 10000,
+             "chg_bp": 0, "match_amt_yuan": 100, "rest_bid_amt_yuan": None,
+             "rest_ask_amt_yuan": 0, "limit_state": 1}]
+    legacy = {"projections": [{"tag": "0920", "summary": {
+        "total_stocks": 1, "valid_stock_count": 1, "unavailable_stock_count": 0,
+        "high_open_count": 0, "low_open_count": 0, "flat_open_count": 1,
+        "total_auction_amount_yuan": 100, "limit_up_count": 1,
+        "limit_down_count": 0, "total_limit_up_bid_amount_yuan": None}}]}
+    result = compare_td_rows(rows, legacy)["0920"]
+    assert result["status"] != "ALL_EQUAL"
+    assert result["differences"]["total_limit_up_bid_amount_yuan"] == {
+        "legacy": None, "td": None, "unknown": True}

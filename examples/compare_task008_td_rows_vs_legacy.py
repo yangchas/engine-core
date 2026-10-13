@@ -26,11 +26,17 @@ def compare(td_rows: list, legacy_projection: dict) -> dict:
         if tag not in ("0920", "0924", "0925") or not summary:
             continue
         core = derive_td_auction_summary(td_rows, tag=tag)
-        diffs = {
-            lk: {"legacy": summary.get(lk), "td": core.get(ck)}
-            for lk, ck in FIELD_MAP.items() if summary.get(lk) != core.get(ck)
-        }
-        out[tag] = {"status": "ALL_EQUAL" if not diffs else "DIFFERENT",
+        diffs = {}
+        has_unknown = False
+        for lk, ck in FIELD_MAP.items():
+            legacy_value, td_value = summary.get(lk), core.get(ck)
+            if legacy_value is None or td_value is None:
+                diffs[lk] = {"legacy": legacy_value, "td": td_value, "unknown": True}
+                has_unknown = True
+            elif legacy_value != td_value:
+                diffs[lk] = {"legacy": legacy_value, "td": td_value}
+        status = "UNKNOWN_FIELDS" if has_unknown else "DIFFERENT" if diffs else "ALL_EQUAL"
+        out[tag] = {"status": status,
                     "fields_equal": len(FIELD_MAP) - len(diffs), "fields_compared": len(FIELD_MAP),
                     "differences": diffs}
     return out

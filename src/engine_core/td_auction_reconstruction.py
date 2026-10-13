@@ -82,7 +82,11 @@ def reconstruct_auction_from_td(
             tag_status[tag] = FactStatus.UNAVAILABLE.value
             continue
         summaries[tag] = derive_td_auction_summary(rows, tag=tag)
-        partial = summaries[tag]["unknown_amount_rows"] or summaries[tag]["duplicate_symbol_rows"]
+        partial = (
+            summaries[tag]["unknown_amount_rows"]
+            or summaries[tag]["unknown_seal_rows"]
+            or summaries[tag]["duplicate_symbol_rows"]
+        )
         tag_status[tag] = FactStatus.PARTIAL.value if partial else FactStatus.READY.value
     current = build_current_0925_rows(trade_date, rows)
     delta = build_theme_delta_rows(trade_date, rows)
