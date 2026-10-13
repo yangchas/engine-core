@@ -16,8 +16,6 @@ from urllib.parse import quote
 
 DEFAULT_LEGACY_ROOT = "/home/exedev/repos/stock-situation-runtime"
 DEFAULT_DATES = "2026-10-09,2026-10-12"
-_SYMBOL_KEYS = {"zscode", "code", "symbol", "stockcode"}
-_ROW_KEYS = ("data", "rows", "items", "stocks", "list")
 
 
 def _utc_now() -> str:
@@ -31,31 +29,40 @@ def _write_json(path: Path, value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _pool_code(value: Any) -> str | None:
+    if not isinstance(value, (str, int)):
+        return None
+    match = re.search(r"(\d{6})$", str(value).strip())
+    return match.group(1) if match else None
+
+
+def _pool_records(value: Any) -> list[list[Any] | tuple[Any, ...]]:
+    if not isinstance(value, dict) or not isinstance(value.get("info"), (list, tuple)):
+        return []
+    records: list[list[Any] | tuple[Any, ...]] = []
+    for page in value["info"]:
+        if not isinstance(page, (list, tuple)):
+            continue
+        for row in page:
+            if (isinstance(row, (list, tuple)) and len(row) >= 16
+                    and _pool_code(row[0]) is not None):
+                records.append(row)
+    return records
+
+
+def _valid_pool_shape(value: Any) -> bool:
+    return isinstance(value, dict) and isinstance(value.get("info"), (list, tuple))
+
+
 def _response_rows(value: Any) -> int:
-    if isinstance(value, list):
-        return len(value)
-    if isinstance(value, dict):
-        for key in _ROW_KEYS:
-            if key in value:
-                nested = value[key]
-                if isinstance(nested, (list, dict)):
-                    return _response_rows(nested)
-        return len(value) if value else 0
-    return 0
+    return len(_pool_records(value))
 
 
 def _pool_symbols(value: Any) -> Iterable[str]:
-    if isinstance(value, list):
-        for item in value:
-            yield from _pool_symbols(item)
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            if key.lower() in _SYMBOL_KEYS and isinstance(item, (str, int)):
-                symbol = str(item).strip()
-                if symbol:
-                    yield symbol
-            elif isinstance(item, (dict, list)):
-                yield from _pool_symbols(item)
+    for row in _pool_records(value):
+        symbol = _pool_code(row[0])
+        if symbol is not None:
+            yield symbol
 
 
 def _filename_symbol(symbol: str) -> str:
@@ -99,6 +106,7 @@ def fetch_all(
     failures: list[dict[str, Any]] = []
     checksums: dict[str, str] = {}
     pool_counts: dict[str, dict[str, int]] = {date: {} for date in dates}
+    pool_symbol_sets: dict[str, set[str]] = {date: set() for date in dates}
     symbols: list[str] = []
     seen_symbols: set[str] = set()
 
@@ -126,8 +134,9 @@ def fetch_all(
             consecutive_bad += 1
             response = None
         else:
-            if response is None or response == "" or response == [] or response == {}:
-                entry = {"error_type": "EmptyResponse"}
+            pool_shape_error = kind == "pool" and not _valid_pool_shape(response)
+            if pool_shape_error or response is None or response == "" or response == [] or response == {}:
+                entry = {"error_type": "UnexpectedShape" if pool_shape_error else "EmptyResponse"}
                 if date is not None:
                     entry["date"] = date
                 if lvl is not None:
@@ -142,8 +151,9 @@ def fetch_all(
         if response is not None:
             if kind == "pool":
                 relative = f"pools/{date}_ban{lvl}.json"
-                if reason_symbols_from_pool:
-                    for found in _pool_symbols(response):
+                for found in _pool_symbols(response):
+                    pool_symbol_sets[date].add(found)
+                    if reason_symbols_from_pool:
                         if found not in seen_symbols:
                             seen_symbols.add(found)
                             symbols.append(found)
@@ -188,6 +198,7 @@ def fetch_all(
         },
         "request_count": request_count,
         "pool_counts": pool_counts,
+        "pool_symbol_counts": {date: len(values) for date, values in pool_symbol_sets.items()},
         "failures": failures,
         "started_at_utc": started_at,
         "ended_at_utc": now_fn(),

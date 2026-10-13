@@ -27,7 +27,8 @@ class FakeAnalyzer:
 
 
 def test_fetch_writes_raw_pool_reason_and_manifest_hashes(tmp_path):
-    pool = [{"ZSCode": "600001", "PZSCode": "600000", "Date": "2026-10-09", "extra": 7}]
+    row = ["600001", "测试", *([None] * 14)]
+    pool = {"info": [[row], ["2026-10-09"]], "ttag": "x", "errcode": "0"}
     analyzer = FakeAnalyzer({("2026-10-09", "1"): pool}, {"600001": {"raw": ["原因"]}})
     out = tmp_path / "snapshot"
     manifest = fetch_all(analyzer, ["2026-10-09"], output_dir=out, max_ban=1,
@@ -36,12 +37,38 @@ def test_fetch_writes_raw_pool_reason_and_manifest_hashes(tmp_path):
     assert json.loads((out / "reasons/600001.json").read_text()) == {"raw": ["原因"]}
     assert [call for call in analyzer.calls if call[0] == "reason"] == [("reason", "600001")]
     assert manifest["pool_counts"] == {"2026-10-09": {"1": 1}}
+    assert manifest["pool_symbol_counts"] == {"2026-10-09": 1}
     assert manifest["request_count"] == 2
     for name, digest in manifest["sha256"].items():
         assert hashlib.sha256((out / name).read_bytes()).hexdigest() == digest
     assert set(path.relative_to(out).as_posix() for path in out.rglob("*") if path.is_file()) == {
         "pools/2026-10-09_ban1.json", "reasons/600001.json", "manifest.json"
     }
+
+
+def test_pool_parses_records_ignoring_metadata_and_empty_pages_and_dedupes_symbols(tmp_path):
+    row_a = ["SH600001", "甲", *([None] * 14)]
+    row_b = ["000002", "乙", *([None] * 14)]
+    pool_one = {"info": [[row_a, row_b], ["2026-10-09", "meta"]], "ttag": "x", "errcode": "0"}
+    pool_two = {"info": [[], ["2026-10-09"]], "ttag": "x", "errcode": "0"}
+    analyzer = FakeAnalyzer({("2026-10-09", "1"): pool_one,
+                             ("2026-10-09", "2"): pool_two},
+                            {"600001": {}, "000002": {}})
+    manifest = fetch_all(analyzer, ["2026-10-09"], output_dir=tmp_path / "out", max_ban=2,
+                         sleep_s=0, sleep_fn=lambda _: None)
+    assert manifest["pool_counts"] == {"2026-10-09": {"1": 2, "2": 0}}
+    assert manifest["pool_symbol_counts"] == {"2026-10-09": 2}
+    assert [call for call in analyzer.calls if call[0] == "reason"] == [
+        ("reason", "600001"), ("reason", "000002")
+    ]
+
+
+@pytest.mark.parametrize("response", [None, [], {"other": []}, {"info": None}])
+def test_unexpected_pool_shapes_are_counted_without_raising(tmp_path, response):
+    analyzer = FakeAnalyzer({("2026-10-09", "1"): response})
+    manifest = fetch_all(analyzer, ["2026-10-09"], output_dir=tmp_path / "out", max_ban=1,
+                         sleep_s=0, sleep_fn=lambda _: None)
+    assert manifest["failures"] == [{"error_type": "UnexpectedShape", "date": "2026-10-09", "lvl": 1}]
 
 
 def test_max_requests_truncates_before_next_request(tmp_path):
