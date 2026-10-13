@@ -1,5 +1,22 @@
 # Current Task
 
+## 2026-10-13 live auction validation (read-only, 09:15-09:30)
+
+- Core 0925 summary at the 09:25:12 read equals legacy `market:auction:*:0925`
+  summary field by field (5210 / valid 4853 / unavailable 357 / 284-4291-278 /
+  amount 16,314,699,696 / limit 10-9 / seal 5,363,192). a25-derived change_pct
+  equals legacy anchor `change_pct` for 4853/4853.
+- Late Shenzhen finals: ph==0 recovery gave 30 / 179 / 357 symbols at
+  09:26:04 / 09:26:30 / 09:27:05; legacy never patches them. 17 symbols have
+  no auction data. Recovered values stay within +-10%. Independent truth
+  (daily-kline open) is still to be checked after close, so recovery stays
+  opt-in until then.
+- Script fix: Q2 source time stalls at 09:25:03 until 09:26:00; evaluating at
+  source time never opened the 0925 barrier in single-session mode. Evaluation
+  clock is now max(source time, read time); `first_read` is set only after
+  LATE_START_OBSERVED. Regression test added.
+- Recovery needs a session that observed ph==0 rows before 09:30:00.
+
 ## 2026-10-13 — data-fetch audit vs legacy engine-next (read-only)
 
 Compared legacy `IntradayDataHub`/`auction_runtime_controller` with Core.

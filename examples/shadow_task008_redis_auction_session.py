@@ -102,8 +102,12 @@ def _observe_snapshot(
                                "timer_signal_id": None, "timer_logical_time_ms": None},
         }]
     source_time_max = max(source_times)
-    evaluation_time_ms = source_time_max - source_time_max % 1000
     observed_at_ms = snapshot.envelope.observed_time_ms
+    # Q2 source stamps can stall (live 2026-10-13: nothing newer than 09:25:03
+    # until 09:26:00), so the barrier clock is the later of source time and the
+    # read time; evaluating at source time alone never opens the 0925 barrier.
+    clock_ms = max(source_time_max, observed_at_ms)
+    evaluation_time_ms = clock_ms - clock_ms % 1000
     events = []
     for tag, raw_field in ANCHOR_FIELDS.items():
         if tag in first_read:
@@ -119,7 +123,8 @@ def _observe_snapshot(
                 ),
                 observed_at_ms=observed_at_ms, source_layers=(SOURCE_LAYER,),
             )
-            first_read.add(tag)
+            if outcome.status == "LATE_START_OBSERVED":
+                first_read.add(tag)
         revision = outcome.revision
         available = len(revision.available_anchor_symbols) if revision else 0
         missing = len(revision.missing_anchor_symbols) if revision else 0
@@ -172,7 +177,12 @@ def _write_report(
         if source is None and symbol in recovered:
             anchor, source = recovered[symbol]["price_milli"], "ph0_recovered"
         table[symbol] = {"a25": anchor if source else None, "src": source,
-                         "pc": quote.pre_close_milli, "amt": quote.auction_amount_yuan}
+                         "pc": quote.pre_close_milli, "amt": quote.auction_amount_yuan,
+                         "px": getattr(quote, "price_milli", None)}
+        if source == "ph0_recovered":
+            # evidence for the amount ~ price * lots * 100 / 1000 consistency check
+            table[symbol]["rec_lots"] = recovered[symbol].get("volume_lots")
+            table[symbol]["rec_amt"] = recovered[symbol].get("amount_yuan")
     (out_dir / ("anchor_table_%03d.json" % poll)).write_text(
         json.dumps(table, sort_keys=True, separators=(",", ":")), encoding="utf-8")
     with (out_dir / "report_status.jsonl").open("a", encoding="utf-8") as handle:

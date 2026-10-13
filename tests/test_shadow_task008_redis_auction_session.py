@@ -89,3 +89,24 @@ def test_live_redacts_session_errors(monkeypatch, tmp_path: Path):
     assert "secret-host-123" not in str(exc_info.value)
     assert "secret-host-123" not in str(exc_info.value.__cause__ or "")
     assert exc_info.value.__suppress_context__ is True
+
+
+def test_live_barrier_opens_when_source_time_stalls_before_first_observable(tmp_path: Path):
+    class StalledClient(FakeClient):
+        def hgetall(self, key):
+            row = dict(super().hgetall(key))
+            if row:
+                row["ts"] = "1791509103000"  # 09:25:03, before the 0925 first-observable time
+            return row
+
+    run_shadow(
+        source="live", live_client=StalledClient(), out_dir=tmp_path / "stalled",
+        trade_date="2026-10-09", confirm_read_only=True,
+    )
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "stalled" / "shadow_events.jsonl").read_text().splitlines()
+    ]
+    anchor = next(event for event in events if event["tag"] == "0925")
+    assert anchor["late_execution"]["status"] == "LATE_START_OBSERVED"
+    assert anchor["available_count"] == 2
