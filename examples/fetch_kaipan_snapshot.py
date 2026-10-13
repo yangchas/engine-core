@@ -128,6 +128,16 @@ def _response_rows(value: Any) -> int:
     return len(_pool_records(value))
 
 
+def _hot_plate_rows(value: Any) -> int | None:
+    if isinstance(value, Mapping):
+        for key in ("list", "List", "data", "info"):
+            rows = value.get(key)
+            if isinstance(rows, (list, tuple)):
+                return len(rows)
+        return None
+    return None
+
+
 def _pool_symbols(value: Any) -> Iterable[str]:
     for row in _pool_records(value):
         symbol = _pool_code(row[0])
@@ -151,6 +161,7 @@ def fetch_all(
     reason_symbols_from_pool: bool = True,
     extra_symbols: Iterable[str] = (),
     reason_page_size: int = 1,
+    hot_plate_dates: list[str] | None = None,
     reason_fetcher: Callable[[str, int], Any] | None = None,
     credential_config: Mapping[str, Any] | None = None,
     manifest_every: int = 50,
@@ -160,6 +171,7 @@ def fetch_all(
     """Fetch responses through the injected legacy analyzer and write raw JSON."""
     target = Path(output_dir)
     extra_symbols = tuple(str(value).strip() for value in extra_symbols if str(value).strip())
+    hot_plate_dates = list(hot_plate_dates or [])
     if target.exists() and (not target.is_dir() or any(target.iterdir())):
         raise FileExistsError("output directory must not exist or must be empty")
     if max_requests < 0:
@@ -173,8 +185,11 @@ def fetch_all(
     target.mkdir(parents=True)
     pools_dir = target / "pools"
     reasons_dir = target / "reasons"
+    hot_plates_dir = target / "hot_plates"
     pools_dir.mkdir()
     reasons_dir.mkdir()
+    if hot_plate_dates:
+        hot_plates_dir.mkdir()
 
     started_at = now_fn()
     request_count = 0
@@ -187,6 +202,7 @@ def fetch_all(
     redacted_response_count = 0
     credentials = _runtime_credentials(credential_config)
     pool_counts: dict[str, dict[str, int]] = {date: {} for date in dates}
+    hot_plate_counts: dict[str, int | None] = {date: None for date in hot_plate_dates}
     pool_symbol_sets: dict[str, set[str]] = {date: set() for date in dates}
     symbols: list[str] = []
     seen_symbols: set[str] = set()
@@ -201,10 +217,12 @@ def fetch_all(
                 "reason_symbols_from_pool": reason_symbols_from_pool,
                 "extra_symbols": list(extra_symbols),
                 "reason_page_size": reason_page_size,
+                "hot_plate_dates": hot_plate_dates,
                 "manifest_every": manifest_every,
             },
             "request_count": request_count,
             "pool_counts": pool_counts,
+            "hot_plate_counts": hot_plate_counts,
             "pool_symbol_counts": {date: len(values) for date, values in pool_symbol_sets.items()},
             "failures": failures,
             "possibly_truncated_symbols": possibly_truncated_symbols,
@@ -226,6 +244,8 @@ def fetch_all(
         try:
             if kind == "pool":
                 response = analyzer._call_api("getHisBans", date=date, ban=str(lvl), size=size)
+            elif kind == "hot_plate":
+                response = analyzer.get_his_plates(date)
             else:
                 response = reason_fetcher(symbol or "", reason_page_size)
         except Exception as exc:
@@ -243,7 +263,8 @@ def fetch_all(
             response, redacted = _redact_response(response, credentials)
             redacted_response_count += redacted
             pool_shape_error = kind == "pool" and not _valid_pool_shape(response)
-            if pool_shape_error or response is None or response == "" or response == [] or response == {}:
+            if (pool_shape_error or response is None or response == "" or response == []
+                    or response == () or response == {}):
                 entry = {"error_type": "UnexpectedShape" if pool_shape_error else "EmptyResponse"}
                 if date is not None:
                     entry["date"] = date
@@ -266,6 +287,9 @@ def fetch_all(
                             seen_symbols.add(found)
                             symbols.append(found)
                 pool_counts[date][str(lvl)] = _response_rows(response)
+            elif kind == "hot_plate":
+                relative = f"hot_plates/{date}.json"
+                hot_plate_counts[date] = _hot_plate_rows(response)
             else:
                 relative = f"reasons/{_filename_symbol(symbol or '')}.json"
                 rows = response.get("List") if isinstance(response, dict) else None
@@ -302,14 +326,21 @@ def fetch_all(
             if aborted:
                 break
 
+    if not truncated and not aborted:
+        for date in hot_plate_dates:
+            if not request("hot_plate", date=date):
+                break
+            if aborted:
+                break
+
     manifest = build_manifest(ended_at=now_fn())
     _write_manifest(target / "manifest.json", manifest)
     return manifest
 
 
-def _parse_dates(value: str) -> list[str]:
+def _parse_dates(value: str, *, allow_empty: bool = True) -> list[str]:
     dates = [part.strip() for part in value.split(",") if part.strip()]
-    if not dates or any(not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) for date in dates):
+    if (not dates and not allow_empty) or any(not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) for date in dates):
         raise argparse.ArgumentTypeError("dates must be comma-separated YYYY-MM-DD values")
     return dates
 
@@ -317,7 +348,8 @@ def _parse_dates(value: str) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--legacy-root", default=DEFAULT_LEGACY_ROOT)
-    parser.add_argument("--dates", type=_parse_dates, default=_parse_dates(DEFAULT_DATES))
+    parser.add_argument("--dates", type=_parse_dates, default=_parse_dates(DEFAULT_DATES, allow_empty=False))
+    parser.add_argument("--hot-plate-dates", type=_parse_dates, default=[])
     parser.add_argument("--max-ban", type=int, default=5)
     parser.add_argument("--size", type=int, default=200)
     parser.add_argument("--sleep-s", type=float, default=0.7)
@@ -337,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
         max_ban=args.max_ban, size=args.size, sleep_s=args.sleep_s,
         max_requests=args.max_requests,
         reason_page_size=args.reason_page_size,
+        hot_plate_dates=args.hot_plate_dates,
         manifest_every=args.manifest_every,
         reason_symbols_from_pool=args.reason_symbols_from_pool,
         extra_symbols=[item.strip() for item in args.extra_symbols.split(",") if item.strip()],

@@ -7,9 +7,10 @@ from examples.fetch_kaipan_snapshot import fetch_all
 
 
 class FakeAnalyzer:
-    def __init__(self, pools=None, reasons=None, error=None):
+    def __init__(self, pools=None, reasons=None, plates=None, error=None):
         self.pools = pools or {}
         self.reasons = reasons or {}
+        self.plates = plates or {}
         self.error = error
         self.calls = []
 
@@ -24,6 +25,55 @@ class FakeAnalyzer:
         if self.error:
             raise self.error
         return self.reasons.get(symbol, [])
+
+    def get_his_plates(self, trade_date):
+        self.calls.append(("hot_plates", trade_date))
+        if self.error:
+            raise self.error
+        return self.plates.get(trade_date, [])
+
+
+def test_fetch_writes_raw_hot_plates_and_manifest_count(tmp_path):
+    raw = {"List": [{"name": "芯片"}, {"name": "通信"}]}
+    analyzer = FakeAnalyzer(plates={"2026-10-13": raw})
+    out = tmp_path / "out"
+    manifest = fetch_all(analyzer, [], output_dir=out,
+                         hot_plate_dates=["2026-10-13"], sleep_s=0,
+                         sleep_fn=lambda _: None)
+    assert json.loads((out / "hot_plates/2026-10-13.json").read_text()) == raw
+    assert manifest["hot_plate_counts"] == {"2026-10-13": 2}
+    assert analyzer.calls == [("hot_plates", "2026-10-13")]
+
+
+def test_empty_hot_plate_response_counts_failure_and_writes_no_file(tmp_path):
+    analyzer = FakeAnalyzer(plates={"2026-10-13": None})
+    out = tmp_path / "out"
+    manifest = fetch_all(analyzer, [], output_dir=out,
+                         hot_plate_dates=["2026-10-13"], sleep_s=0,
+                         sleep_fn=lambda _: None)
+    assert manifest["failures"] == [{"error_type": "EmptyResponse", "date": "2026-10-13"}]
+    assert manifest["hot_plate_counts"] == {"2026-10-13": None}
+    assert not (out / "hot_plates/2026-10-13.json").exists()
+
+
+def test_cli_allows_empty_pool_dates_for_hot_plates_only(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    analyzer = FakeAnalyzer(plates={"2026-10-13": [{"name": "芯片"}]})
+    package = types.ModuleType("ai")
+    api = types.ModuleType("ai.API")
+    stock_analyzer = types.ModuleType("ai.API.StockAnalyzer")
+    stock_analyzer.StockAnalyzer = lambda: analyzer
+    monkeypatch.setitem(sys.modules, "ai", package)
+    monkeypatch.setitem(sys.modules, "ai.API", api)
+    monkeypatch.setitem(sys.modules, "ai.API.StockAnalyzer", stock_analyzer)
+
+    from examples.fetch_kaipan_snapshot import main
+    assert main(["--legacy-root", str(tmp_path), "--output-dir", str(tmp_path / "out"),
+                 "--dates", "", "--hot-plate-dates", "2026-10-13",
+                 "--sleep-s", "0"]) == 0
+    assert analyzer.calls == [("hot_plates", "2026-10-13")]
 
 
 def test_fetch_writes_raw_pool_reason_and_manifest_hashes(tmp_path):

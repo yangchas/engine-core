@@ -287,6 +287,11 @@ def test_opening_timer_waits_for_q2_when_snapshot_is_empty(tmp_path, monkeypatch
 
     ledger = tmp_path / "ledger.jsonl"
     _use_q2_observation_times(monkeypatch, ("09:33:05",))
+    import examples.shadow_task008_redis_auction_session as shadow
+    from datetime import datetime, timezone
+    # Empty snapshots fall back to the wall clock; pin it to the trade date so the test is date independent.
+    monkeypatch.setattr(shadow, "_aware_now", lambda: datetime.fromtimestamp(
+        local_datetime_ms("2026-10-13", "09:33:05") / 1000, tz=timezone.utc))
     _node(
         tmp_path, EmptyQ2Client(), ledger, ("09:33:05",),
         lambda day, hms: local_datetime_ms(day, hms),
