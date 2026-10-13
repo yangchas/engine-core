@@ -120,3 +120,9 @@ def test_reconciliation_excludes_missing_symbols_and_reports_count():
         "legacy_v1_primary_missing": 0,
         "user_priority_rank1_missing": 1,
     }
+
+
+def test_legacy_primary_prefers_direct_pipeline_key():
+    from examples.analyze_plate_priority_and_cohesion import _legacy_primary_by_symbol
+
+    assert _legacy_primary_by_symbol({"legacy_v1_primary_by_symbol": {"000001": "芯片(设备)"}}) == {"000001": "芯片"}

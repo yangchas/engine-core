@@ -72,6 +72,9 @@ def _snapshot_stock_plate(snapshot: Mapping[str, Any] | None) -> dict[str, str]:
 
 def _legacy_primary_by_symbol(memberships: Mapping[str, Any]) -> dict[str, str]:
     raw = memberships.get("legacy_weights", {})
+    direct = memberships.get("legacy_v1_primary_by_symbol")
+    if isinstance(direct, Mapping) and direct:  # written by run_offline_plate_pipeline (C078)
+        return {str(k): split_plate_tokens(v)[0] for k, v in direct.items() if split_plate_tokens(v)}
     if not isinstance(raw, Mapping):
         return {}
     result = {}

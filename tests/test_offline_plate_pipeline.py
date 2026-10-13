@@ -285,3 +285,34 @@ def test_membership_artifact_preserves_kind_for_each_member(tmp_path):
     artifact = json.loads((output / day / "memberships.json").read_text())
     member = artifact["by_symbol"]["a"][0]
     assert member["kind"] == "EVENT"
+
+
+def test_membership_artifact_exports_legacy_v1_primary_used_by_match_rate(tmp_path):
+    from argparse import Namespace
+    from examples.run_offline_plate_pipeline import _emit
+
+    day = "2026-01-05"
+    value = build_day(
+        trade_date=day, klines_by_symbol={},
+        auction_rows={"a": {"px_milli": 10000}, "b": {"px_milli": 10000}},
+        snapshot={"stock_plate": {"a": "甲板", "b": "乙板"}, "s2p": {}},
+        reasons_by_symbol={}, reason_asof_unknown=False, min_auction_rows=1,
+    )
+    output = tmp_path / "out"
+    output.mkdir()
+    _emit(output, {"days": [(day, value)], "skipped": []}, Namespace(
+        start_date=day, end_date=day, reasons=None, legacy_pool_dir=None,
+    ))
+
+    artifact = json.loads((output / day / "memberships.json").read_text())
+    quality = json.loads((output / day / "day_quality.json").read_text())
+    legacy_primary = artifact["legacy_v1_primary_by_symbol"]
+    current_primary = {
+        symbol: rows[0]["plate"] for symbol, rows in artifact["by_symbol"].items() if rows
+    }
+    comparable = set(current_primary) & set(legacy_primary)
+    assert legacy_primary == {"a": "甲板", "b": "乙板"}
+    assert quality["legacy_v1_primary_count"] == len(legacy_primary)
+    assert quality["legacy_v1_primary_match_count"] == sum(
+        current_primary[symbol] == legacy_primary[symbol] for symbol in comparable
+    )

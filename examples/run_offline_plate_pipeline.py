@@ -325,6 +325,7 @@ def build_day(
             for child in sorted(set(kaipan_hierarchy.parent_by_child) & set(default_hierarchy.parent_by_child))
         },
         "kaipan_hierarchy_evidence": dict(kaipan_hierarchy.evidence_by_child),
+        "legacy_v1_primary_count": len(legacy_primary),
         "legacy_v1_primary_match_count": equal_count,
         "legacy_v1_primary_comparable_count": len(comparable),
         "legacy_v1_primary_match_rate": equal_count / len(comparable) if comparable else None,
@@ -334,7 +335,8 @@ def build_day(
                  "lb_days": pool_lb_days.get(symbol)}
         for symbol in sorted(pool_symbols)
     }
-    return {"memberships": memberships, "aggregation": aggregation, "quality": quality,
+    return {"memberships": memberships, "legacy_v1_primary_by_symbol": legacy_primary,
+            "aggregation": aggregation, "quality": quality,
             "reason_asof_unknown": (reason_asof_unknown if kaipan_reasons_by_symbol is None else
                                      bool(quality["reason_source_counts"]["legacy_snapshot"])),
             "yest_pool_symbols": pool_symbols,
@@ -562,6 +564,7 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
         folder = output_dir / day
         folder.mkdir()
         membership_payload = _jsonable_memberships(value["memberships"])
+        membership_payload["legacy_v1_primary_by_symbol"] = value["legacy_v1_primary_by_symbol"]
         membership_payload["yest_pool_symbols"] = sorted(value["yest_pool_symbols"])
         membership_payload["yest_pool_members"] = value["yest_pool_members"]
         membership_payload["engine_membership_content_hash"] = membership_payload["content_hash"]
