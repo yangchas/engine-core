@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 
 from engine_core.limit_up_pool_derivation import derive_limit_up_pool_from_daily_klines
 from engine_core.plate_aggregation import StockFact, aggregate_plates
+from engine_core.plate_kind import classify_plate_kind
 from engine_core.plate_membership import (
     MEMBERSHIP_POLICY_LEGACY_V1,
     MEMBERSHIP_POLICY_USER_PRIORITY_V1,
@@ -78,7 +79,8 @@ def _jsonable_memberships(memberships: Any) -> dict[str, Any]:
         "content_hash": memberships.content_hash,
         "by_symbol": {
             symbol: [
-                {"plate": row.plate, "tier": row.tier, "rank_in_stock": row.rank_in_stock,
+                {"plate": row.plate, "kind": classify_plate_kind(row.plate),
+                 "tier": row.tier, "rank_in_stock": row.rank_in_stock,
                  "source": row.source, "generic": row.generic, "hard_generic": row.hard_generic,
                  "ancestors": list(row.ancestors), "flags": list(row.flags)}
                 for row in rows
@@ -106,7 +108,7 @@ def build_day(
     auction_rows: Mapping[str, Mapping[str, Any]], snapshot: Mapping[str, Any],
     reasons_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
     reason_asof_unknown: bool, auction_0924_rows: Mapping[str, Mapping[str, Any]] | None = None,
-    min_auction_rows: int = 4000,
+    min_auction_rows: int = 4000, skipped_kline_table_symbol_count: int = 0,
 ) -> dict[str, Any]:
     """Pure daily composition; accepts loaded data and performs no I/O."""
     if not isinstance(snapshot.get("stock_plate"), Mapping) or not isinstance(snapshot.get("s2p"), Mapping):
@@ -199,6 +201,7 @@ def build_day(
         "generic_plate_count": generic_count, "plate_count": len(aggregation.stats),
         "generic_plate_share": generic_count / len(aggregation.stats) if aggregation.stats else None,
         "missing_counts": dict(sorted(missing.items())),
+        "skipped_kline_table_symbol_count": skipped_kline_table_symbol_count,
         "previous_kline_date": prior_day, "pool_derivation_hash": derivation_hash,
         "legacy_v1_primary_match_count": equal_count,
         "legacy_v1_primary_comparable_count": len(comparable),
@@ -213,7 +216,7 @@ def run_pipeline(
     auction_by_date: Mapping[str, Mapping[str, Mapping[str, Any]]], snapshot: Mapping[str, Any],
     reasons_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]], start_date: str, end_date: str,
     reason_asof_unknown: bool = False, auction_0924_by_date: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
-    min_auction_rows: int = 4000,
+    min_auction_rows: int = 4000, skipped_kline_table_symbol_count: int = 0,
 ) -> dict[str, Any]:
     included, skipped = [], []
     for day in dates:
@@ -227,6 +230,7 @@ def run_pipeline(
             trade_date=day, klines_by_symbol=klines_by_symbol, auction_rows=auction, snapshot=snapshot,
             reasons_by_symbol=reasons_by_symbol, reason_asof_unknown=reason_asof_unknown,
             auction_0924_rows=(auction_0924_by_date or {}).get(day, {}), min_auction_rows=min_auction_rows,
+            skipped_kline_table_symbol_count=skipped_kline_table_symbol_count,
         )))
     return {"days": included, "skipped": skipped}
 
@@ -294,14 +298,29 @@ def _connect_td(host: str):
     ), database
 
 
-def _read_td( host: str, database: str, symbols: Sequence[str], kline_start: str, kline_end: str,
-              auction_dates: Sequence[str]) -> tuple[dict[str, list[Sequence[Any]]], dict[str, dict[str, dict[str, Any]]], dict[str, dict[str, dict[str, Any]]]]:
+def _is_missing_table_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    if "table does not exist" in message or "0x2603" in message:
+        return True
+    errno = getattr(exc, "errno", None)
+    try:
+        return int(errno, 0) == 0x2603 if isinstance(errno, str) else int(errno) == 0x2603
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _read_td(host: str, database: str, symbols: Sequence[str], kline_start: str, kline_end: str,
+             auction_dates: Sequence[str]) -> tuple[
+                 dict[str, list[Sequence[Any]]], dict[str, dict[str, dict[str, Any]]],
+                 dict[str, dict[str, dict[str, Any]]], int,
+             ]:
     connection, actual_database = _connect_td(host)
     if database != actual_database:
         raise ValueError("TD database configuration changed during connection")
     try:
         cursor = connection.cursor()
         klines: dict[str, list[Sequence[Any]]] = {}
+        skipped_kline_table_symbol_count = 0
         for symbol in symbols:
             if not re.fullmatch(r"\d{6}", symbol):
                 continue
@@ -312,8 +331,10 @@ def _read_td( host: str, database: str, symbols: Sequence[str], kline_start: str
                     f"WHERE ts >= '{kline_start}' AND ts <= '{kline_end}' ORDER BY ts"
                 )
                 klines[symbol] = list(cursor.fetchall())
-            except Exception:  # missing per-symbol table (e.g. new listing): leave absent, never zero-fill
-                continue
+            except Exception as exc:
+                if not _is_missing_table_error(exc):
+                    raise
+                skipped_kline_table_symbol_count += 1
         auction: dict[str, dict[str, dict[str, Any]]] = {}
         previous: dict[str, dict[str, dict[str, Any]]] = {}
         for day in auction_dates:
@@ -327,7 +348,7 @@ def _read_td( host: str, database: str, symbols: Sequence[str], kline_start: str
                     str(symbol): {"px_milli": px, "match_amt_yuan": amount, "limit_state": state}
                     for symbol, px, amount, state in cursor.fetchall()
                 }
-        return klines, auction, previous
+        return klines, auction, previous, skipped_kline_table_symbol_count
     finally:
         connection.close()
 
@@ -360,6 +381,7 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
     plate_days: Counter[str] = Counter()
     hashes: dict[str, str] = {}
     unmapped: dict[str, int] = {}
+    skipped_kline_symbols: dict[str, int] = {}
     same_matches = same_comparable = 0
     legacy_pool_comparison: dict[str, Any] = {}
     for day, value in daily_rows:
@@ -383,6 +405,7 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
         _write_json(folder / "day_quality.json", quality)
         hashes[day] = membership_payload["content_hash"]
         unmapped[day] = quality["unmapped_auction_symbol_count"]
+        skipped_kline_symbols[day] = quality["skipped_kline_table_symbol_count"]
         same_matches += quality["legacy_v1_primary_match_count"]
         same_comparable += quality["legacy_v1_primary_comparable_count"]
         for plate in {row.plate for rows in value["memberships"].by_symbol.values() for row in rows}:
@@ -408,6 +431,7 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
         "legacy_v1_primary_comparable_count": same_comparable,
         "legacy_v1_primary_match_rate": same_matches / same_comparable if same_comparable else None,
         "unmapped_auction_symbol_count_by_date": unmapped,
+        "skipped_kline_table_symbol_count_by_date": skipped_kline_symbols,
         "legacy_pool_comparison": legacy_pool_comparison if getattr(args, "legacy_pool_dir", None) else None,
         "interpretation": "离线事实, 非策略结论",
         "reason_asof_unknown": bool(args.reasons),
@@ -440,12 +464,13 @@ def main(argv: list[str] | None = None) -> int:
     symbols = sorted(set(map(str, snapshot["stock_plate"])) | set(map(str, snapshot["s2p"])) | set(reasons))
     auction_dates = [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
     # Confirm database value before opening and reuse that same value for the query.
-    klines, auctions, previous = _read_td(args.td_host, os.environ.get("TDENGINE_DATABASE", "market_data1"),
+    klines, auctions, previous, skipped_kline_symbols = _read_td(args.td_host, os.environ.get("TDENGINE_DATABASE", "market_data1"),
                                            symbols, kline_start.isoformat(), kline_end.isoformat(), auction_dates)
     result = run_pipeline(
         dates=auction_dates, klines_by_symbol=klines, auction_by_date=auctions, snapshot=snapshot,
         reasons_by_symbol=reasons, start_date=args.start_date, end_date=args.end_date,
         reason_asof_unknown=args.reasons is not None, auction_0924_by_date=previous,
+        skipped_kline_table_symbol_count=skipped_kline_symbols,
     )
     _emit(args.output_dir, result, args)
     return 0

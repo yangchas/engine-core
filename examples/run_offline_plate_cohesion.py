@@ -94,7 +94,7 @@ def _read_td(host: str, trade_date: str, window_start: str, window_end: str,
         auction_rows = {str(symbol): {"match_amt_yuan": amount} for symbol, amount in cursor.fetchall()}
         plates = select_top_plates(memberships, hierarchy, auction_rows, max_plates)
         symbols = sorted({symbol for plate in plates for symbol in members_of(plate, memberships, hierarchy)})
-        series: dict[str, list[tuple[int, float | None, float | None]]] = {symbol: [] for symbol in symbols}
+        series: dict[str, list[tuple[int, float | None, float | None, float | None]]] = {symbol: [] for symbol in symbols}
         pre_close: dict[str, float | None] = {}
         start_ms = int(datetime.strptime(start, "%Y-%m-%d %H:%M:%S").replace(
             tzinfo=ZoneInfo("Asia/Shanghai")).timestamp() * 1000)
@@ -105,6 +105,14 @@ def _read_td(host: str, trade_date: str, window_start: str, window_end: str,
                 raise ValueError("invalid symbol in membership snapshot")
             quoted = ",".join(f'"{symbol}"' for symbol in symbols)
             cursor.execute(
+                "SELECT LAST(pc_milli), symbol "
+                f"FROM {database}.stock_tick_v2 WHERE ts < '{start}' "
+                f"AND symbol IN ({quoted}) GROUP BY symbol"
+            )
+            for pc, symbol in cursor.fetchall():
+                if pc is not None:
+                    pre_close[str(symbol)] = float(pc) / 1000
+            cursor.execute(
                 "SELECT ts, px_milli, pc_milli, amt_yuan, symbol "
                 f"FROM {database}.stock_tick_v2 WHERE ts >= '{start}' AND ts <= '{end}' "
                 f"AND symbol IN ({quoted}) ORDER BY ts, symbol"
@@ -114,9 +122,7 @@ def _read_td(host: str, trade_date: str, window_start: str, window_end: str,
                 ts_ms = int(ts.replace(tzinfo=ZoneInfo("Asia/Shanghai")).timestamp() * 1000) if hasattr(ts, "replace") else int(ts)
                 price = float(px) / 1000 if px is not None else None
                 close = float(pc) / 1000 if pc is not None else None
-                series[symbol].append((ts_ms, price, float(amount) if amount is not None else None))
-                if close is not None:
-                    pre_close[symbol] = close
+                series[symbol].append((ts_ms, price, float(amount) if amount is not None else None, close))
         return plates, series, pre_close, len(auction_rows), sum(map(len, series.values()))
     finally:
         connection.close()
@@ -133,11 +139,12 @@ def write_outputs(
     missing = {
         "symbols_without_tick_rows": sum(not rows for rows in series.values()),
         "ticks_without_pre_close": sum(
-            price is not None and symbol not in pre_close
-            for symbol, rows in series.items() for _, price, _ in rows
+            price is not None and pc is None and symbol not in pre_close
+            for symbol, rows in series.items() for row in rows
+            for price, pc in ((row[1], row[3] if len(row) >= 4 else None),)
         ),
-        "ticks_without_price": sum(price is None for rows in series.values() for _, price, _ in rows),
-        "ticks_without_amount": sum(amount is None for rows in series.values() for _, _, amount in rows),
+        "ticks_without_price": sum(row[1] is None for rows in series.values() for row in rows),
+        "ticks_without_amount": sum(row[2] is None for rows in series.values() for row in rows),
     }
     _json_write(output_dir / "manifest.json", {
         "trade_date": trade_date, "snapshot": str(snapshot_path), "window_start": window_start,

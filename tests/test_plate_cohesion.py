@@ -59,6 +59,54 @@ def test_insufficient_members_and_points_are_flagged_and_metrics_unknown():
     assert lead_lag([1, 1, 1], [2, 2, 2], min_points=2) == (None, None)
 
 
+def test_insufficient_members_make_affinities_unknown_and_inactive():
+    symbols = ("a", "b")
+    memberships = _members(*symbols)
+    series = {
+        symbol: [(i * 3000, 10.0 + i, float(i)) for i in range(12)]
+        for symbol in symbols
+    }
+    result = calculate_plate_cohesion(
+        series, {symbol: 10.0 for symbol in symbols}, memberships, PlateHierarchy({}, {}),
+        grid_start_ms=0, grid_end_ms=33000, min_points=2,
+    )
+    assert "INSUFFICIENT_MEMBERS" in result.cohesion[0].flags
+    assert {row.role for row in result.affinities} == {"UNKNOWN"}
+    assert {row.status for row in active_plates_for_stock(result.affinities)} == {"UNKNOWN"}
+
+
+def test_amount_delta_up_and_down_shares_are_reported_separately():
+    symbols = ("a", "b", "c", "d", "e")
+    memberships = _members(*symbols)
+    series = {symbol: [(i * 3000, 10.0, 100.0 - i) for i in range(12)] for symbol in symbols}
+    result = calculate_plate_cohesion(
+        series, {symbol: 10.0 for symbol in symbols}, memberships, PlateHierarchy({}, {}),
+        grid_start_ms=0, grid_end_ms=33000, min_points=2,
+    )
+    row = result.cohesion[0]
+    assert row.amount_delta_up_share == 0.0
+    assert row.amount_delta_down_share == 1.0
+
+
+def test_pre_close_is_asof_each_grid_point_and_change_is_flagged():
+    symbols = ("a", "b", "c", "d", "e")
+    memberships = _members(*symbols)
+    series = {
+        symbol: [(0, 10.0, 100.0, 10.0), (3000, 20.0, 100.0, 20.0)]
+        for symbol in symbols
+    }
+    result = calculate_plate_cohesion(
+        series, {symbol: 10.0 for symbol in symbols}, memberships, PlateHierarchy({}, {}),
+        grid_start_ms=0, grid_end_ms=3000, min_members=1, min_points=1,
+    )
+    grid = align_asof_grid(series, 0, 3000)
+    assert grid["a"] == [(0, 10.0, 100.0, 10.0), (3000, 20.0, 100.0, 20.0)]
+    assert "pc_changed_in_window" in result.cohesion[0].flags
+    # Each price is unchanged relative to the pre-close known at its grid point.
+    assert result.cohesion[0].pct_median == 0.0
+    assert result.cohesion[0].speed_median == 0.0
+
+
 def test_noise_and_event_plates_are_skipped():
     memberships = build_memberships(
         symbols=("a",), pool_plate_by_symbol={"a": ["人工智能", "回购", "2026年公告"]},

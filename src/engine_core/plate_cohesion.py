@@ -20,7 +20,8 @@ class PlateCohesion:
     pct_dispersion_iqr: float | None
     pct_median: float | None
     amount_concentration_top3: float | None
-    amount_delta_same_direction_share: float | None
+    amount_delta_up_share: float | None
+    amount_delta_down_share: float | None
     speed_median: float | None
     speed_same_direction_share: float | None
     flags: tuple[str, ...] = ()
@@ -55,27 +56,35 @@ class PlateCohesionResult:
 
 
 def align_asof_grid(
-    series: Mapping[str, Sequence[tuple[int, float | None, float | None]]],
+    series: Mapping[str, Sequence[tuple]],
     grid_start_ms: int,
     grid_end_ms: int,
     *,
     grid_ms: int = 3000,
-) -> dict[str, list[tuple[int, float | None, float | None]]]:
+) -> dict[str, list[tuple]]:
     """Sample each input at fixed grid points using only observations at or before them."""
     if grid_ms <= 0 or grid_end_ms < grid_start_ms:
         raise ValueError("invalid grid bounds")
     grid = list(range(grid_start_ms, grid_end_ms + 1, grid_ms))
-    result: dict[str, list[tuple[int, float | None, float | None]]] = {}
+    result: dict[str, list[tuple]] = {}
     for symbol, raw_rows in series.items():
         rows = sorted(raw_rows, key=lambda row: row[0])
         cursor = 0
-        latest: tuple[int, float | None, float | None] | None = None
+        latest: tuple | None = None
+        latest_pc = None
         sampled = []
         for point in grid:
             while cursor < len(rows) and rows[cursor][0] <= point:
                 latest = rows[cursor]
+                if len(latest) >= 4 and latest[3] is not None:
+                    latest_pc = latest[3]
                 cursor += 1
-            sampled.append((point, latest[1], latest[2]) if latest is not None else (point, None, None))
+            if latest is None:
+                sampled.append((point, None, None, None))
+            elif len(latest) >= 4:
+                sampled.append((point, latest[1], latest[2], latest_pc))
+            else:
+                sampled.append((point, latest[1], latest[2]))
         result[str(symbol)] = sampled
     return result
 
@@ -141,7 +150,7 @@ def _quartile(values: Sequence[float], q: float) -> float:
 
 
 def calculate_plate_cohesion(
-    series: Mapping[str, Sequence[tuple[int, float | None, float | None]]],
+    series: Mapping[str, Sequence[tuple]],
     pre_close: Mapping[str, float | None],
     memberships: StockPlateMemberships,
     hierarchy: PlateHierarchy,
@@ -174,27 +183,38 @@ def calculate_plate_cohesion(
         symbols = sorted(members_of(plate, filtered, hierarchy))
         pct: dict[str, list[float | None]] = {}
         amounts: dict[str, list[float | None]] = {}
+        closes_by_symbol: dict[str, list[float]] = {}
         for symbol in symbols:
             rows = aligned.get(symbol, [(p, None, None) for p in points])
             pc = pre_close.get(symbol)
-            valid_pc = pc is not None and math.isfinite(float(pc)) and float(pc) > 0
-            pct[symbol] = [((float(price) / float(pc) - 1.0) * 100.0
-                            if price is not None and valid_pc and math.isfinite(float(price)) else None)
-                           for _, price, _ in rows]
-            amounts[symbol] = [float(amount) if amount is not None and math.isfinite(float(amount)) else None
-                               for _, _, amount in rows]
+            pct[symbol] = []
+            closes_by_symbol[symbol] = []
+            for row in rows:
+                _, price, amount = row[:3]
+                point_pc = row[3] if len(row) >= 4 and row[3] is not None else pc
+                valid_pc = point_pc is not None and math.isfinite(float(point_pc)) and float(point_pc) > 0
+                if valid_pc:
+                    closes_by_symbol[symbol].append(float(point_pc))
+                pct[symbol].append(
+                    (float(price) / float(point_pc) - 1.0) * 100.0
+                    if price is not None and valid_pc and math.isfinite(float(price)) else None
+                )
+            amounts[symbol] = [float(row[2]) if row[2] is not None and math.isfinite(float(row[2])) else None
+                               for row in rows]
         covered = sum(any(value is not None for value in values) for values in pct.values())
         eligible_grid_count = sum(any(pct[s][i] is not None for s in symbols) for i in range(len(points)))
         flags: list[str] = []
         if len(symbols) < min_members:
             flags.append("INSUFFICIENT_MEMBERS")
+        if any(len(set(closes_by_symbol[symbol])) > 1 for symbol in symbols):
+            flags.append("pc_changed_in_window")
         if eligible_grid_count < min_points:
             flags.append("INSUFFICIENT_POINTS")
-        insufficient = bool(flags)
+        insufficient = "INSUFFICIENT_MEMBERS" in flags or "INSUFFICIENT_POINTS" in flags
         latest_pct = [values[-1] for values in pct.values() if values and values[-1] is not None]
         latest_amount = [values[-1] for values in amounts.values() if values and values[-1] is not None]
         if insufficient:
-            direction = iqr = pct_median = concentration = amount_direction = speed_median = speed_direction = None
+            direction = iqr = pct_median = concentration = amount_up = amount_down = speed_median = speed_direction = None
         else:
             direction = _direction(latest_pct)
             iqr = _quartile(latest_pct, .75) - _quartile(latest_pct, .25) if latest_pct else None
@@ -202,20 +222,23 @@ def calculate_plate_cohesion(
             total_amount = sum(latest_amount)
             concentration = (sum(sorted(latest_amount, reverse=True)[:3]) / total_amount
                              if latest_amount and total_amount > 0 else None)
-            shares = []
+            up_shares = []
+            down_shares = []
             for i in range(1, len(points)):
                 changes = [amounts[s][i] - amounts[s][i - 1] for s in symbols
                            if amounts[s][i] is not None and amounts[s][i - 1] is not None]
                 if changes:
-                    shares.append(sum(change > 0 for change in changes) / len(changes))
-            amount_direction = median(shares) if shares else None
+                    up_shares.append(sum(change > 0 for change in changes) / len(changes))
+                    down_shares.append(sum(change < 0 for change in changes) / len(changes))
+            amount_up = median(up_shares) if up_shares else None
+            amount_down = median(down_shares) if down_shares else None
             cutoff_index = max(0, next((i for i, p in enumerate(points) if p >= points[-1] - window_ms), len(points)-1))
             speeds = [values[-1] - values[cutoff_index] for values in pct.values()
                       if len(values) > cutoff_index and values[-1] is not None and values[cutoff_index] is not None]
             speed_median = median(speeds) if speeds else None
             speed_direction = max(_direction(speeds).values()) if speeds else None
         output.append(PlateCohesion(plate, len(symbols), covered, direction, iqr, pct_median,
-                                    concentration, amount_direction, speed_median, speed_direction,
+                                    concentration, amount_up, amount_down, speed_median, speed_direction,
                                     tuple(flags)))
         plate_series: list[float | None] = []
         for i in range(len(points)):
@@ -230,7 +253,7 @@ def calculate_plate_cohesion(
                 leave_one_out.append(median(vals) if vals else None)
             lag, corr = lead_lag(leave_one_out, stock, max_lag_points=max_lag_points, min_points=min_points)
             corr0 = _pearson(_diff(leave_one_out), _diff(stock), min_points)
-            if lag is None or corr is None:
+            if "INSUFFICIENT_MEMBERS" in flags or lag is None or corr is None:
                 role = "UNKNOWN"
             elif abs(lag) <= 1:
                 role = "SYNC"

@@ -27,6 +27,7 @@ class StockFact:
 @dataclass(frozen=True)
 class MarketSummary:
     covered_count: int
+    amount_covered_count: int
     amount_sum: float | None
     pct_equal_weight: float | None
 
@@ -39,6 +40,7 @@ class PlateStat:
     hard_generic: bool
     member_count: int
     covered_count: int
+    amount_covered_count: int
     amount_sum: float | None
     amount_share_of_market: float | None
     pct_equal_weight: float | None
@@ -80,12 +82,8 @@ def market_summary(facts: Mapping[str, StockFact]) -> MarketSummary:
         for fact in facts.values()
         if fact.price is not None and fact.pre_close is not None and fact.pre_close > 0
     ]
-    amounts = [
-        fact.amount for fact in facts.values()
-        if fact.price is not None and fact.pre_close is not None and fact.pre_close > 0
-        and fact.amount is not None
-    ]
-    return MarketSummary(len(returns), _amount_sum(amounts), _mean(returns))
+    amounts = [fact.amount for fact in facts.values() if fact.amount is not None]
+    return MarketSummary(len(returns), len(amounts), _amount_sum(amounts), _mean(returns))
 
 
 def _payload(stat: PlateStat) -> dict:
@@ -93,6 +91,7 @@ def _payload(stat: PlateStat) -> dict:
         "plate": stat.plate, "kind": stat.kind,
         "generic": stat.generic, "hard_generic": stat.hard_generic,
         "member_count": stat.member_count, "covered_count": stat.covered_count,
+        "amount_covered_count": stat.amount_covered_count,
         "amount_sum": stat.amount_sum, "amount_share_of_market": stat.amount_share_of_market,
         "pct_equal_weight": stat.pct_equal_weight, "pct_amount_weighted": stat.pct_amount_weighted,
         "excess_vs_market": stat.excess_vs_market, "up_count": stat.up_count,
@@ -149,21 +148,24 @@ def aggregate_plates(
             if fact is not None and fact.price is not None and fact.pre_close is not None and fact.pre_close > 0:
                 covered.append((fact, fact.price / fact.pre_close - 1.0))
         returns = [change for _, change in covered]
-        amounts = [fact.amount for fact, _ in covered if fact.amount is not None]
+        known_facts = [facts[symbol] for symbol in symbols if symbol in facts]
+        amount_facts = [fact for fact in known_facts if fact.amount is not None]
+        amounts = [fact.amount for fact in amount_facts]
         total_amount = _amount_sum(amounts)
-        weighted_denom = sum(amounts)
+        covered_amounts = [fact.amount for fact, _ in covered if fact.amount is not None]
+        weighted_denom = sum(covered_amounts)
         weighted = (
             sum(fact.amount * change for fact, change in covered if fact.amount is not None) / weighted_denom
-            if weighted_denom != 0 and any(fact.amount is not None for fact, _ in covered) else None
+            if weighted_denom != 0 and covered_amounts else None
         )
         tiers = {tier: sum(1 for value in tier_by_symbol.values() if value == tier) for tier in range(1, 5)}
-        known_facts = [facts[symbol] for symbol in symbols if symbol in facts]
-        deltas = [fact.amount - fact.amount_prev for fact, _ in covered
+        deltas = [fact.amount - fact.amount_prev for fact in known_facts
                   if fact.amount is not None and fact.amount_prev is not None]
         rows.append(PlateStat(
             plate=plate, kind=classify_plate_kind(plate),
             generic=is_generic_plate(plate), hard_generic=is_hard_generic_plate(plate),
-            member_count=len(symbols), covered_count=len(covered), amount_sum=total_amount,
+            member_count=len(symbols), covered_count=len(covered),
+            amount_covered_count=len(amount_facts), amount_sum=total_amount,
             amount_share_of_market=(total_amount / market.amount_sum
                                     if total_amount is not None and market.amount_sum not in (None, 0) else None),
             pct_equal_weight=_mean(returns), pct_amount_weighted=weighted,

@@ -81,3 +81,75 @@ def test_kline_by_day_accepts_datetime_ts():
 
     row = (_dt.datetime(2026, 10, 12), 1, 1, 1, 1, 1, 1, 1, 0)
     assert _kline_by_day({"000001": [row]}) == {"2026-10-12": {"000001": row}}
+
+
+def test_td_reader_only_swallows_explicit_missing_symbol_tables(monkeypatch, tmp_path):
+    from argparse import Namespace
+    from examples import run_offline_plate_pipeline as module
+
+    class Cursor:
+        def __init__(self, message):
+            self.message = message
+
+        def execute(self, query):
+            if "FROM d_000001" in query:
+                raise RuntimeError(self.message)
+            if "FROM d_000002" in query:
+                error = RuntimeError("TD error")
+                error.errno = 0x2603
+                raise error
+
+        def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self, message):
+            self.cursor_value = Cursor(message)
+
+        def cursor(self):
+            return self.cursor_value
+
+        def close(self):
+            pass
+
+    current = {"connection": Connection("Table does not exist: d_000001")}
+    monkeypatch.setattr(module, "_connect_td", lambda _host: (current["connection"], "db"))
+    loaded = module._read_td("host", "db", ["000001", "000002"], "2026-01-01", "2026-01-02", [])
+    assert loaded[3] == 2
+
+    current["connection"] = Connection("permission denied")
+    with pytest.raises(RuntimeError, match="permission denied"):
+        module._read_td("host", "db", ["000001"], "2026-01-01", "2026-01-02", [])
+
+    day = "2026-01-05"
+    value = module.build_day(
+        trade_date=day, klines_by_symbol={}, auction_rows={"000001": {}},
+        snapshot={"stock_plate": {}, "s2p": {}}, reasons_by_symbol={},
+        reason_asof_unknown=False, min_auction_rows=1, skipped_kline_table_symbol_count=1,
+    )
+    output = tmp_path / "out"
+    output.mkdir()
+    module._emit(output, {"days": [(day, value)], "skipped": []},
+                 Namespace(start_date=day, end_date=day, reasons=None, legacy_pool_dir=None))
+    assert json.loads((output / day / "day_quality.json").read_text())["skipped_kline_table_symbol_count"] == 1
+    assert json.loads((output / "summary.json").read_text())["skipped_kline_table_symbol_count_by_date"] == {day: 1}
+
+
+def test_membership_artifact_preserves_kind_for_each_member(tmp_path):
+    from argparse import Namespace
+    from examples.run_offline_plate_pipeline import _emit
+
+    day = "2026-01-05"
+    value = build_day(
+        trade_date=day, klines_by_symbol={}, auction_rows={"a": {"px_milli": 10000}},
+        snapshot={"stock_plate": {"a": "业绩增长"}, "s2p": {}}, reasons_by_symbol={},
+        reason_asof_unknown=False, min_auction_rows=1,
+    )
+    output = tmp_path / "out"
+    output.mkdir()
+    _emit(output, {"days": [(day, value)], "skipped": []}, Namespace(
+        start_date=day, end_date=day, reasons=None, legacy_pool_dir=None,
+    ))
+    artifact = json.loads((output / day / "memberships.json").read_text())
+    member = artifact["by_symbol"]["a"][0]
+    assert member["kind"] == "EVENT"

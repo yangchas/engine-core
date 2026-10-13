@@ -91,6 +91,20 @@ def test_amount_delta_only_uses_members_with_both_values():
     assert stat.amount_delta_sum == 20
 
 
+def test_amount_coverage_is_independent_from_price_coverage():
+    memberships, hierarchy, facts = _inputs()
+    facts = {**facts, "a": StockFact("a", 10, None, 100, None, None),
+             "b": StockFact("b", None, 20, 200, None, None)}
+    result = aggregate_plates(memberships, hierarchy, facts)
+    assert result.market.covered_count == 0
+    assert result.market.amount_sum == 300
+    assert result.market.amount_covered_count == 2
+    stat = next(row for row in result.stats if row.plate == "芯片")
+    assert stat.covered_count == 0
+    assert stat.amount_covered_count == 2
+    assert stat.amount_sum == 300
+
+
 def test_generic_plates_are_sorted_after_specific_but_still_aggregated():
     memberships, hierarchy, facts = _inputs()
     result = aggregate_plates(memberships, hierarchy, facts, include_ancestors=False)
