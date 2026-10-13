@@ -147,6 +147,17 @@ def _write_report(
         data_origin=data_origin,
     )
     (out_dir / ("report_%03d.txt" % poll)).write_text(report.text, encoding="utf-8")
+    recovered = session.phase_zero_recoveries
+    table = {}
+    for symbol, quote in snapshot.quotes.items():
+        anchor = quote.auction_anchor_0925_price_milli
+        source = "a25" if isinstance(anchor, int) and anchor > 0 else None
+        if source is None and symbol in recovered:
+            anchor, source = recovered[symbol]["price_milli"], "ph0_recovered"
+        table[symbol] = {"a25": anchor if source else None, "src": source,
+                         "pc": quote.pre_close_milli, "amt": quote.auction_amount_yuan}
+    (out_dir / ("anchor_table_%03d.json" % poll)).write_text(
+        json.dumps(table, sort_keys=True, separators=(",", ":")), encoding="utf-8")
     with (out_dir / "report_status.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(
             {"poll": poll, "source_time_max": observed, **report.as_mapping()},
