@@ -1,5 +1,18 @@
 # Current Task
 
+## 2026-10-13 legacy auction summary == TD aggregation (exact)
+
+`derive_td_auction_summary` over TD `auction_snapshot_v2` rows (sealed with
+`examples/run_real_td_auction_rows.py`) reproduces the legacy
+`market:auction:{date}:{tag}` summary on all 10 fields for 0920, 0924 and 0925
+on both 2026-10-13 and 2026-10-12 (60/60; `examples/compare_task008_td_rows_vs_legacy.py`).
+The legacy summary is therefore exactly this aggregation of frozen TD rows
+(frozen at 09:20:03.003 / 09:24:10.131 / 09:25:06.143), and a cold start can
+rebuild all three summaries from TD. The Q2 live state is a different object
+at a different instant (a20 3318, a24 4315 final vs 1123 / 3486 frozen), so
+the 2026-10-14 session adds a three-way check (Q2 live poll vs TD vs legacy)
+rather than being the only path to 0920/0924 parity. Not NORMAL/Rabbit proof.
+
 ## 2026-10-13 M3 restart idempotency (`engine_core.execution_ledger`)
 
 `ExecutionLedger(path)`: append-only JSONL of acknowledged timer firings
