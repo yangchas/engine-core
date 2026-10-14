@@ -101,6 +101,7 @@ def build_session_report(
     hot_prev_by_plate: Mapping[str, Mapping[str, Any]] | None = None,
     hot_captures: list[Mapping[str, Any]] | None = None,
     stock_caps: Mapping[str, Mapping[str, Any]] | None = None,
+    f10_industry_by_symbol: Mapping[str, str] | None = None,
     min_members: int = 10,
     min_share: float = 0.003,
 ) -> dict[str, Any]:
@@ -137,6 +138,8 @@ def build_session_report(
     tags = (*_AUCTION_TAGS, *open_times)
     default_cutoffs = {tag: f"{trade_date}T{tag[:2]}:{tag[2:]}:00" for tag in tags}
     stocks: list[dict[str, Any]] = []
+    industry_fallback: list[dict[str, Any]] = []
+    no_industry_no_plate_count = 0
     for symbol in symbols:
         pc = _number(pre_close_by_symbol.get(symbol))
         pool_row = pool.get(symbol)
@@ -199,14 +202,24 @@ def build_session_report(
                 in_yest_pool=pool_row is not None,
             )
         membership_rows = memberships.by_symbol.get(symbol, ())
+        industry = (f10_industry_by_symbol or {}).get(symbol)
+        fallback = not membership_rows and isinstance(industry, str) and bool(industry.strip())
+        if fallback:
+            industry = industry.strip()
+            industry_fallback.append({"code": symbol, "name": names.get(symbol), "industry": industry})
+        elif not membership_rows and f10_industry_by_symbol is not None:
+            no_industry_no_plate_count += 1
         stocks.append({
             "symbol": symbol, "name": names.get(symbol), "pre_close": pc,
-            "primary_plate": next((row.plate for row in membership_rows if row.rank_in_stock == 1), None),
+            "primary_plate": (next((row.plate for row in membership_rows if row.rank_in_stock == 1), None)
+                              or (f"行业:{industry}" if fallback else None)),
             "plates": [{"plate": row.plate, "rank": row.rank_in_stock, "kind": row.kind,
                         "generic": row.generic, "tier": row.tier, "source": row.source,
                         "ancestors": list(row.ancestors)} for row in membership_rows],
             "times": time_rows, "lb_days": lb_days, "in_yest_pool": pool_row is not None,
             "flags": sorted(set(flags)),
+            **({"industry_fallback": {"industry": industry, "source": "F10_INDUSTRY",
+                                       "asof_unknown": True}} if fallback else {}),
         })
 
     aggregations = {tag: aggregate_plates(memberships, hierarchy, facts)
@@ -508,6 +521,9 @@ def build_session_report(
               "candidate_thresholds": {"min_members": min_members, "min_share": min_share},
               "min_effective_members": MIN_EFFECTIVE_MEMBERS,
               "stock_caps_available": stock_caps is not None,
+              **({"industry_fallback": industry_fallback,
+                  "no_industry_no_plate_count": no_industry_no_plate_count}
+                 if f10_industry_by_symbol is not None else {}),
               "degradation": list(degradation), "memberships_policy": memberships.policy}
     result["auction_sections"] = _build_auction_sections(result)
     result["excluded_small_plates"] = {

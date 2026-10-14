@@ -21,6 +21,7 @@ def label_stock(
     registry: Mapping[str, Mapping[str, Any]],
     ret: float | None,
     is_limit_up: bool,
+    industry: str | None = None,
 ) -> dict[str, Any]:
     """Label a stock from selected plate membership and prebuilt static features.
 
@@ -69,8 +70,12 @@ def label_stock(
         name = primary_row.get("name") or registry.get(code, {}).get("name") or code
         source = "STATIC_NO_SIGNAL"
     else:
-        code, name, source = None, None, "NO_PLATE"
-        flags.append("NO_PLATE")
+        if isinstance(industry, str) and industry.strip():
+            code, name, source = None, f"行业:{industry.strip()}", "F10_INDUSTRY"
+            flags.append("ASOF_UNKNOWN")
+        else:
+            code, name, source = None, None, "NO_PLATE"
+            flags.append("NO_PLATE")
 
     direction = next((row.get("direction") for row in dynamic
                       if str(row.get("code")) == code), None)
@@ -82,8 +87,10 @@ def label_stock(
     )
     if counter:
         flags.append("COUNTER_TREND")
-    return {"source": source, "plate": ({"code": code, "name": name} if code else None),
-            "direction": direction, "flags": sorted(set(flags))}
+    return {"source": source, "plate": ({"code": code, "name": name} if code else
+                                         ({"code": None, "name": name} if name else None)),
+            "direction": direction, "flags": sorted(set(flags)),
+            **({"asof_unknown": True} if source == "F10_INDUSTRY" else {})}
 
 
 __all__ = ["label_stock"]

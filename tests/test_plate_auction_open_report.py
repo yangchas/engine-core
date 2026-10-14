@@ -97,6 +97,39 @@ def test_size_neutral_metrics_are_hand_computable_and_ignore_missing_caps():
     assert section["relative_size_multiple"] == pytest.approx(1.0)
 
 
+def test_f10_industry_labels_only_unassigned_stocks_without_changing_plate_stats():
+    source = _source()
+    source["pre_close_by_symbol"]["000003"] = 10.0
+    source["auction_by_tag"]["0925"]["000003"] = {"px_milli": 10100, "match_amt_yuan": 500}
+    source["opening_by_symbol"]["000003"] = {"ts": "2026-10-13 09:32:00", "px_milli": 10200,
+                                                "amt_yuan": 800}
+    without_fallback = build_session_report(**source)
+    with_fallback = build_session_report(**source, f10_industry_by_symbol={
+        "000001": "金融-银行-国有大型银行", "000003": "电子-半导体-数字芯片设计",
+    })
+    with_empty_industry = build_session_report(**source, f10_industry_by_symbol={"000003": "  "})
+
+    industry_stock = next(row for row in with_fallback["stocks"] if row["symbol"] == "000003")
+    assigned_stock = next(row for row in with_fallback["stocks"] if row["symbol"] == "000001")
+    before_bank = next(row for row in without_fallback["plates"] if row["plate"] == "银行")
+    after_bank = next(row for row in with_fallback["plates"] if row["plate"] == "银行")
+    assert industry_stock["primary_plate"] == "行业:电子-半导体-数字芯片设计"
+    assert "industry_fallback" not in without_fallback
+    assert industry_stock["plates"] == []
+    assert industry_stock["industry_fallback"] == {
+        "industry": "电子-半导体-数字芯片设计", "source": "F10_INDUSTRY", "asof_unknown": True,
+    }
+    assert assigned_stock["primary_plate"] == "银行"
+    assert after_bank["member_count"] == before_bank["member_count"]
+    assert after_bank["times"]["0925"]["activity"]["amount_sum"] == before_bank["times"]["0925"]["activity"]["amount_sum"]
+    assert with_fallback["industry_fallback"] == [{
+        "code": "000003", "name": None, "industry": "电子-半导体-数字芯片设计",
+    }]
+    assert with_empty_industry["industry_fallback"] == []
+    assert with_empty_industry["no_industry_no_plate_count"] == 1
+    assert next(row for row in with_empty_industry["stocks"] if row["symbol"] == "000003")["primary_plate"] is None
+
+
 def test_size_neutral_board_applies_thresholds_sorts_and_marks_concentration():
     source = _size_neutral_input()
     for symbol in list(source["auction_by_tag"]["0925"])[:1]:

@@ -730,6 +730,31 @@ def _load_stock_names(path: Path | None, symbols: list[str]) -> tuple[dict[str, 
                      "hit_rate": len(matched) / denominator if denominator else None}
 
 
+def _load_f10_industries(path: Path | None, symbols: list[str]) -> tuple[dict[str, str], dict[str, Any]]:
+    requested = set(map(str, symbols))
+    if path is None:
+        return {}, {"path": None, "sha256": None, "symbol_count": len(requested),
+                    "matched_count": 0, "hit_rate": 0.0 if requested else None}
+    raw = path.read_bytes()
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        columns = reader.fieldnames or ()
+        code_column = "code" if "code" in columns else "股票代码" if "股票代码" in columns else None
+        if code_column is None or "所属同花顺行业" not in columns:
+            raise ValueError("F10 industry CSV must have code/股票代码 and 所属同花顺行业 columns")
+        industries: dict[str, str] = {}
+        for row in reader:
+            raw_code = str(row.get(code_column, ""))
+            code = "".join(re.findall(r"\d", raw_code))[:6]
+            industry = str(row.get("所属同花顺行业", "")).strip()
+            if len(code) == 6 and code in requested and industry:
+                industries[code] = industry
+    denominator = len(requested)
+    return industries, {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
+                        "symbol_count": denominator, "matched_count": len(industries),
+                        "hit_rate": len(industries) / denominator if denominator else None}
+
+
 def _load_stock_caps(path: Path | None, symbols: list[str]) -> tuple[dict[str, dict[str, float]], dict[str, Any]]:
     requested = set(map(str, symbols))
     if path is None:
@@ -1028,7 +1053,8 @@ def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, regis
             stock_tag = stock.get("times", {}).get(tag, {})
             stock.setdefault("labels", {})[tag] = label_stock(
                 stock["symbol"], selected_with_members, feature_sets.get(stock["symbol"]), registry,
-                stock_tag.get("pct_vs_pre_close"), stock_tag.get("limit_state") == 1)
+                stock_tag.get("pct_vs_pre_close"), stock_tag.get("limit_state") == 1,
+                industry=(stock.get("industry_fallback") or {}).get("industry"))
     report["independent_by_tag"] = out_by_tag
     code_by_name = {str(row.get("name")): code for code, row in registry.items() if row.get("name")}
     for plate in report.get("plates", ()):
@@ -1059,7 +1085,8 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                auction_price_source: str = "tick_book1",
                revision_cutoff: str = "09:27:10", min_members: int = 10,
                min_share: float = 0.003, stock_names_path: Path | None = None,
-               stock_caps_path: Path | None = None) -> None:
+               stock_caps_path: Path | None = None,
+               f10_industry_csv_path: Path | None = None) -> None:
     if conclusion_phase != "AUCTION":
         raise ValueError("session report only supports conclusion_phase=AUCTION")
     revision_cutoff = validate_revision_cutoff(revision_cutoff)
@@ -1093,6 +1120,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         symbols.update(map(str, by_symbol))
     symbols = sorted(symbols)
     stock_caps, stock_caps_manifest = _load_stock_caps(stock_caps_path, symbols)
+    f10_industries, f10_industry_manifest = _load_f10_industries(f10_industry_csv_path, symbols)
     for trade_date in trade_dates:
         report_started = time.perf_counter()
         auction, opening, pre_close, klines, baseline_auction, timing = _read_td(
@@ -1124,6 +1152,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             hot_captures=_load_hot_captures(hot_capture_dir),
             min_members=min_members, min_share=min_share,
             stock_caps=stock_caps if stock_caps_path is not None else None,
+            f10_industry_by_symbol=f10_industries if f10_industry_csv_path is not None else None,
         )
         auction_price_meta = timing.get("auction_price", {})
         for tag in ("0920", "0924", "0925"):
@@ -1151,6 +1180,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                 hot_prev_by_plate=_load_prev_hot(kaipan_dir, prior),
                 hot_captures=_load_hot_captures(hot_capture_dir),
                 stock_caps=stock_caps if stock_caps_path is not None else None,
+                f10_industry_by_symbol=f10_industries if f10_industry_csv_path is not None else None,
             )
             for stock in revision_report["stocks"]:
                 source_row = revised_auction.get("0925", {}).get(stock["symbol"], {})
@@ -1207,6 +1237,10 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         for stock in report["stocks"]:
             if stock.get("symbol") in stock_names:
                 stock["name"] = stock_names[stock["symbol"]]
+        if f10_industry_csv_path is not None:
+            stock_by_symbol = {stock["symbol"]: stock for stock in report["stocks"]}
+            for row in report.get("industry_fallback", ()):
+                row["name"] = stock_by_symbol.get(row["code"], {}).get("name")
         report["report_md"] = render_report_markdown(report)
         final_meta = auction_price_meta.get("0925", {})
         flagged_symbols = final_meta.get("pre_final_indicative_symbols", ())
@@ -1264,6 +1298,12 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "auction_price": auction_price_meta,
             "stock_names": stock_names_manifest,
             "stock_caps": stock_caps_manifest,
+            **({"f10_industry_csv": {
+                "path": f10_industry_manifest["path"], "sha256": f10_industry_manifest["sha256"],
+                "fallback_stock_count": len(report.get("industry_fallback", ())),
+                "no_industry_no_plate_count": report.get("no_industry_no_plate_count", 0),
+            }, "industry_fallback": report.get("industry_fallback", [])}
+               if f10_industry_csv_path is not None else {}),
             "revision_cutoff": revision_cutoff,
             "revision_summary": revision_summary,
             "coverage_count_by_stage": {tag: row["covered_count"] for tag, row in report["market"].items()},
@@ -1299,6 +1339,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--snapshot", type=Path, required=True)
     parser.add_argument("--stock-names", type=Path, help="optional JSON mapping of 6-digit stock codes to display names")
     parser.add_argument("--stock-caps", type=Path, help="optional JSON mapping of stock codes to float_cap/total_cap in yuan")
+    parser.add_argument("--f10-industry-csv", type=Path,
+                        help="optional F10 CSV for labels of stocks with no plate membership")
     parser.add_argument("--static-relation", type=Path, help="optional static relation JSON artifact")
     parser.add_argument("--registry-dir", type=Path, help="dated registry.json and relation.csv directory")
     parser.add_argument("--registry-asof", help="registry point-in-time date YYYY-MM-DD")
@@ -1342,7 +1384,7 @@ def main(argv: list[str] | None = None) -> int:
                registry_dir=args.registry_dir, registry_asof=args.registry_asof, open_times=open_times,
                auction_price_source=args.auction_price_source, revision_cutoff=revision_cutoff,
                min_members=args.min_members, min_share=args.min_share, stock_names_path=args.stock_names,
-               stock_caps_path=args.stock_caps)
+               stock_caps_path=args.stock_caps, f10_industry_csv_path=args.f10_industry_csv)
     return 0
 
 

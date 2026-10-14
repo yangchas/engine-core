@@ -20,6 +20,8 @@ def test_labels_dynamic_static_no_plate_and_flags():
     dynamic = label_stock("000001", selected, feature, registry, ret=0.10, is_limit_up=True)
     static = label_stock("000004", selected, feature, registry, ret=0.0, is_limit_up=False)
     no_plate = label_stock("000010", selected, None, registry, ret=None, is_limit_up=False)
+    industry = label_stock("000010", selected, None, registry, ret=None, is_limit_up=False,
+                           industry="电子-半导体-数字芯片设计")
 
     assert dynamic["source"] == "DYNAMIC"
     assert dynamic["plate"] == {"code": "801003", "name": "通信"}
@@ -27,3 +29,6 @@ def test_labels_dynamic_static_no_plate_and_flags():
     assert static["source"] == "STATIC_NO_SIGNAL"
     assert no_plate["source"] == "NO_PLATE"
     assert "NO_PLATE" in no_plate["flags"]
+    assert industry["source"] == "F10_INDUSTRY"
+    assert industry["plate"] == {"code": None, "name": "行业:电子-半导体-数字芯片设计"}
+    assert industry["asof_unknown"] is True

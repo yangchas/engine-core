@@ -17,6 +17,7 @@ from examples.run_offline_plate_auction_open_report import (
     _render_revision_note,
     _load_stock_names,
     _load_stock_caps,
+    _load_f10_industries,
     _load_hot_captures,
     parse_open_times,
     validate_revision_cutoff,
@@ -46,6 +47,20 @@ def test_stock_caps_loader_reports_hash_hit_rate_and_missing_codes(tmp_path):
     assert manifest["sha256"]
     assert manifest["hit_rate"] == 0.5
     assert manifest["missing_count"] == 1
+
+
+def test_f10_industry_loader_accepts_bom_and_code_aliases_and_skips_empty_values(tmp_path):
+    path = tmp_path / "f10.csv"
+    path.write_text("\ufeff股票代码,所属同花顺行业\n000001.SZ,电子-半导体-数字芯片设计\n000002,\n",
+                    encoding="utf-8")
+    industries, manifest = _load_f10_industries(path, ["000001", "000002"])
+    assert industries == {"000001": "电子-半导体-数字芯片设计"}
+    assert manifest["sha256"]
+    assert manifest["matched_count"] == 1
+
+    path.write_text("code,所属同花顺行业\n000003,机械-自动化设备-机器人\n", encoding="utf-8")
+    industries, _ = _load_f10_industries(path, ["000003"])
+    assert industries == {"000003": "机械-自动化设备-机器人"}
 
 
 def test_hot_capture_loader_keeps_member_sum_amount_column(tmp_path):
