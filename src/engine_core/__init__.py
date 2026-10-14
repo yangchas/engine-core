@@ -105,6 +105,7 @@ from .plate_cohesion_phases import (
     PhaseStockAffinity,
     compute_phase_cohesion,
 )
+from .plate_strength import Incidence, PlateStrength, build_incidence, compute_strength, stock_relative
 from .auction_book import AuctionBookState, AuctionBookTick, derive_auction_book
 from .stock_plate_assignment import (
     PlateAssignments,
@@ -549,6 +550,11 @@ __all__ = [
     "align_asof_grid",
     "calculate_plate_cohesion",
     "lead_lag",
+    "Incidence",
+    "PlateStrength",
+    "build_incidence",
+    "compute_strength",
+    "stock_relative",
     "BreadthFacts",
     "CALENDAR_CONTRACT_VERSION",
     "CalendarCoverageError",
