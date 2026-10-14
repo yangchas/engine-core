@@ -68,6 +68,80 @@ def test_conserved_activity_shares_sum_to_one_over_covered_market_amount():
     assert sum(shares) == pytest.approx(1.0)
 
 
+def _size_neutral_input():
+    symbols = [f"0000{index:02d}" for index in range(11)]
+    source = {
+        "trade_date": "2026-10-13",
+        "snapshot": {"stock_plate": {symbol: "主题" for symbol in symbols}, "s2p": {}},
+        "pre_close_by_symbol": {symbol: 10.0 for symbol in symbols},
+        "auction_by_tag": {tag: {symbol: {"px_milli": 10100, "match_amt_yuan": 100.0}
+                                 for symbol in symbols}
+                           for tag in ("0920", "0924", "0925")},
+        "opening_by_symbol": {symbol: {"ts": "2026-10-13 09:32:00", "px_milli": 10100,
+                                        "amt_yuan": 100.0} for symbol in symbols},
+        "stock_caps": {symbol: {"float_cap": 1_000_000.0, "total_cap": 2_000_000.0}
+                       for symbol in symbols[:10]},
+    }
+    return source
+
+
+def test_size_neutral_metrics_are_hand_computable_and_ignore_missing_caps():
+    source = _size_neutral_input()
+    source["auction_by_tag"]["0925"]["000010"]["match_amt_yuan"] = 900.0
+    result = build_session_report(**source)
+    section = next(row for row in result["plates"] if row["plate"] == "主题")["times"]["0925"]
+
+    assert section["member_count_with_cap"] == 10
+    assert section["member_sum_amount_yuan"] == 1000.0
+    assert section["amount_turnover_permille"] == pytest.approx(0.1)
+    assert section["relative_size_multiple"] == pytest.approx(1.0)
+
+
+def test_size_neutral_board_applies_thresholds_sorts_and_marks_concentration():
+    source = _size_neutral_input()
+    for symbol in list(source["auction_by_tag"]["0925"])[:1]:
+        source["auction_by_tag"]["0925"][symbol]["match_amt_yuan"] = 5000.0
+    result = build_session_report(**source)
+    theme = next(row for row in result["plates"] if row["plate"] == "主题")
+    higher = dict(theme)
+    higher.update({"plate": "更高倍数", "times": dict(theme["times"])})
+    higher["times"]["0925"] = dict(theme["times"]["0925"])
+    higher["times"]["0925"].update({"relative_size_multiple": 3.0, "top1_concentration": 0.6})
+    thin = dict(higher)
+    thin.update({"plate": "薄成员", "times": dict(higher["times"])})
+    thin["times"]["0925"] = dict(higher["times"]["0925"])
+    thin["times"]["0925"].update({"relative_size_multiple": 9.0, "member_count_with_cap": 9})
+    result["plates"].extend((higher, thin))
+    for stock in result["stocks"][:10]:
+        stock["plates"].append({"plate": "更高倍数"})
+    result["stocks"][0]["plates"].append({"plate": "薄成员"})
+    section = _build_auction_sections(result)["0925"]
+
+    assert section["size_neutral_top"][0]["plate"] == "更高倍数"
+    assert section["size_neutral_top"][0]["concentration_flag"] == "CONCENTRATED"
+    assert section["size_neutral_top"][0]["top1_concentration"] == 0.6
+    assert all(row["plate"] != "薄成员" for row in section["size_neutral_top"])
+
+
+def test_size_neutral_summary_is_rendered_and_absent_without_caps():
+    source = _source()
+    result = build_session_report(**source)
+    assert "额换手‰" not in result["report_md"]
+
+    text = render_report_markdown(result)
+    assert "额换手‰" not in text
+
+
+def test_size_neutral_metrics_are_added_to_report_and_first_screen():
+    source = _size_neutral_input()
+
+    result = build_session_report(**source)
+
+    assert "规模中性前 3" in result["report_md"].split("## 阅读说明", 1)[0]
+    assert "额换手‰" in result["report_md"]
+    assert result["plates"][0]["times"]["0925"]["amount_turnover_permille"] == pytest.approx(0.1)
+
+
 def test_0925_summary_counts_final_and_indicative_and_is_in_first_screen():
     source = _source()
     source["auction_by_tag"]["0925"]["000001"]["price_source"] = "SNAPSHOT_PX"

@@ -94,6 +94,7 @@ def build_session_report(
     baseline_auction_by_tag: Mapping[str, list[Mapping[str, Any]]] | None = None,
     hot_prev_by_plate: Mapping[str, Mapping[str, Any]] | None = None,
     hot_captures: list[Mapping[str, Any]] | None = None,
+    stock_caps: Mapping[str, Mapping[str, Any]] | None = None,
     min_members: int = 10,
     min_share: float = 0.003,
 ) -> dict[str, Any]:
@@ -316,6 +317,39 @@ def build_session_report(
             if valid_baseline_days < 3 or baseline_share is None or baseline_share <= 0:
                 activity_flags.append("BASELINE_SHORT")
             if stage_rows[tag] is not None:
+                if stock_caps is not None:
+                    cap_rows = []
+                    for symbol in members:
+                        fact = stage_facts.get(symbol)
+                        cap_row = stock_caps.get(symbol)
+                        float_cap = _number((cap_row or {}).get("float_cap"))
+                        if (fact is not None and fact.price is not None and fact.price > 0
+                                and fact.amount is not None and fact.amount >= 0
+                                and float_cap is not None and float_cap > 0):
+                            cap_rows.append((symbol, float(fact.amount), float_cap))
+                    market_cap_rows = []
+                    for symbol, fact in stage_facts.items():
+                        cap_row = stock_caps.get(symbol)
+                        float_cap = _number((cap_row or {}).get("float_cap"))
+                        if (fact.price is not None and fact.price > 0 and fact.amount is not None
+                                and fact.amount >= 0 and float_cap is not None and float_cap > 0):
+                            market_cap_rows.append((float(fact.amount), float_cap))
+                    member_amount = sum(row[1] for row in cap_rows)
+                    member_float_cap = sum(row[2] for row in cap_rows)
+                    market_cap_amount = sum(row[0] for row in market_cap_rows)
+                    market_float_cap = sum(row[1] for row in market_cap_rows)
+                    top_amount = max((row[1] for row in cap_rows), default=None)
+                    stage_rows[tag]["member_sum_amount_yuan"] = member_amount if cap_rows else None
+                    stage_rows[tag]["member_count_with_cap"] = len(cap_rows)
+                    stage_rows[tag]["float_cap_sum_yuan"] = member_float_cap if cap_rows else None
+                    stage_rows[tag]["amount_turnover_permille"] = (
+                        member_amount / member_float_cap * 1000 if member_float_cap > 0 else None)
+                    stage_rows[tag]["relative_size_multiple"] = (
+                        (member_amount / market_cap_amount) / (member_float_cap / market_float_cap)
+                        if market_cap_amount > 0 and market_float_cap > 0 and member_float_cap > 0 else None)
+                    stage_rows[tag]["top1_concentration"] = (
+                        top_amount / member_amount if top_amount is not None and member_amount > 0 else None)
+                    stage_rows[tag]["size_neutral_member_count"] = len(cap_rows)
                 stage_rows[tag]["activity"] = {
                     "amount_kind": "MATCH" if tag in _AUCTION_TAGS else "TRADED",
                     "amount_sum": allocated_amount if live_amounts else None,
@@ -456,6 +490,7 @@ def build_session_report(
               "input_cutoff": input_cutoffs,
               "activity_manifest": baseline_manifest,
               "candidate_thresholds": {"min_members": min_members, "min_share": min_share},
+              "stock_caps_available": stock_caps is not None,
               "degradation": list(degradation), "memberships_policy": memberships.policy}
     result["auction_sections"] = _build_auction_sections(result)
     result["report_md"] = render_report_markdown(result)
@@ -542,6 +577,10 @@ def _build_auction_sections(result: Mapping[str, Any]) -> dict[str, Any]:
             old_pct = previous.get("trimmed_mean_pct") if previous_usable else None
             candidates.append({
                 "plate": plate_name, "category": info.get("category", info.get("kind")),
+                "amount_turnover_permille": ((info.get("times", {}).get(tag) or {}).get("amount_turnover_permille")),
+                "relative_size_multiple": ((info.get("times", {}).get(tag) or {}).get("relative_size_multiple")),
+                "member_count_with_cap": ((info.get("times", {}).get(tag) or {}).get("member_count_with_cap")),
+                "top1_concentration": ((info.get("times", {}).get(tag) or {}).get("top1_concentration")),
                 "match_amount_yuan": amount, "member_sum_amount_yuan": member_sum_amount,
                 "match_amount_share": share,
                 "previous_amount_change_yuan": (amount - old_amount
@@ -616,8 +655,33 @@ def _build_auction_sections(result: Mapping[str, Any]) -> dict[str, Any]:
                 "sealed_limit": value.get("limit_state") == 1 if tag == "0925" and value.get("limit_state") is not None else None,
             })
         stock_rows.sort(key=lambda row: (-row["match_amount_yuan"], str(row["symbol"])))
+        size_neutral = []
+        selected_names = {str(item.get("name")) for item in
+                          result.get("independent_by_tag", {}).get(tag, {}).get("selected", ())}
+        for plate in plates:
+            stage = plate.get("times", {}).get(tag) or {}
+            multiple = stage.get("relative_size_multiple")
+            share = stage.get("activity", {}).get("amount_share_of_market")
+            if (multiple is None or (stage.get("member_count_with_cap") or 0) < 10
+                    or (share or 0) < 0.002):
+                continue
+            size_neutral.append({
+                "plate": plate.get("plate"), "category": plate.get("category"),
+                "member_sum_amount_yuan": stage.get("member_sum_amount_yuan"),
+                "amount_turnover_permille": stage.get("amount_turnover_permille"),
+                "relative_size_multiple": multiple,
+                "trimmed_mean_pct": stage.get("performance", {}).get("trimmed_mean_pct"),
+                "relative_market_pp": stage.get("performance", {}).get("relative_market_pp"),
+                "top1_concentration": stage.get("top1_concentration"),
+                "concentration_flag": ("CONCENTRATED" if (stage.get("top1_concentration") or 0) > 0.5 else None),
+                "independent_selected": plate.get("plate") in selected_names,
+                "hot_live_rank": stage.get("hot_live_rank"),
+                "member_count_with_cap": stage.get("member_count_with_cap"),
+            })
+        size_neutral.sort(key=lambda row: (-row["relative_size_multiple"], str(row["plate"])))
         out[tag] = {"main": main, "member_sum_top": member_sum_top,
                     "gainers": gainers, "losers": losers,
+                    "size_neutral_top": size_neutral[:15],
                     "stocks": stock_rows[:30], "all": candidates,
                     "final_price_count": sum(row.get("times", {}).get(tag, {}).get("price_source")
                                               in ("SNAPSHOT_PX", "TICK_PX_FINAL") for row in stocks)
@@ -678,15 +742,20 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
     lines.extend(["", "额累计进度是当前标签匹配额占 0925 终额（0920→0925）；参考历史 0920/0925 中位约 16%。", "",
                   "## 竞价板块主表", "",
                   "竞价事实: 虚拟撮合阶段无成交量/成交额；09:20 后不可撤单；匹配额=min(买一量,卖一量)×一档价；09:25 后才是真实成交。"])
-    full_headers = ("板块", "类别", "守恒额(亿,不重复)", "成员合计额(亿)", "占市场比%(守恒额/市场总额)",
+    if result.get("stock_caps_available"):
+        lines.append("规模中性=相对自身流通市值的额强度；原始额反映资金体量，二者并列不合成综合分。")
+    full_headers = ("板块", "类别", "守恒额(亿,不重复)", "成员合计额(亿)", "额换手‰", "相对体量倍数", "占市场比%(守恒额/市场总额)",
                     "较上一标签额变化(亿,%)", "板块涨幅(截尾均值%)",
                     "相对市场pp", "较上一标签涨幅变化pp", "触及涨停价数", "未匹配买(亿)",
                     "未匹配卖(亿)", "买卖差(亿)", "有价覆盖%")
     for tag in ("0920", "0924", "0925"):
         if tag not in auction_sections:
             continue
-        lines.extend(["", f"### {tag}", "", "| " + " | ".join(full_headers) + " |",
-                      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
+        headers = full_headers if result.get("stock_caps_available") else tuple(
+            value for value in full_headers if value not in ("额换手‰", "相对体量倍数"))
+        lines.extend(["", f"### {tag}", "", "| " + " | ".join(headers) + " |",
+                      "|" + "|".join("---" if index == 0 else "---:"
+                                     for index in range(len(headers))) + "|"])
         for row in auction_sections[tag]["main"]:
             delta = (f"{_amount_yi(row.get('previous_amount_change_yuan'))}, "
                      f"{format(row.get('previous_amount_change_pct'), '+.1f') + '%' if row.get('previous_amount_change_pct') is not None else '—'}"
@@ -695,12 +764,24 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                 _auction_plate_label(row), row.get("category") or "—",
                 _amount_yi(row.get("match_amount_yuan")),
                 _amount_yi(row.get("member_sum_amount_yuan")),
+                _fmt(row.get("amount_turnover_permille")) if result.get("stock_caps_available") else None,
+                (f"×{row['relative_size_multiple']:.2f}" if result.get("stock_caps_available")
+                 and row.get("relative_size_multiple") is not None else "—")
+                if result.get("stock_caps_available") else None,
                 _pctfmt(row.get("match_amount_share")), delta,
                 _pctfmt(row.get("trimmed_mean_pct")), _ppfmt(row.get("relative_market_pp")),
                 _ppfmt(row.get("previous_pct_change_pp")), _fmt(row.get("limit_up_count")),
                 _amount_yi(row.get("unmatched_buy_yuan")),
                 _amount_yi(row.get("unmatched_sell_yuan")),
                 _amount_yi(row.get("unmatched_buy_sell_diff_yuan")),
+                _pctfmt(row.get("price_coverage_pct")),
+            ) if result.get("stock_caps_available") else (
+                _auction_plate_label(row), row.get("category") or "—",
+                _amount_yi(row.get("match_amount_yuan")), _amount_yi(row.get("member_sum_amount_yuan")),
+                _pctfmt(row.get("match_amount_share")), delta, _pctfmt(row.get("trimmed_mean_pct")),
+                _ppfmt(row.get("relative_market_pp")), _ppfmt(row.get("previous_pct_change_pp")),
+                _fmt(row.get("limit_up_count")), _amount_yi(row.get("unmatched_buy_yuan")),
+                _amount_yi(row.get("unmatched_sell_yuan")), _amount_yi(row.get("unmatched_buy_sell_diff_yuan")),
                 _pctfmt(row.get("price_coverage_pct")),
             )) + " |")
         comparison_rows = auction_sections[tag]["member_sum_top"]
@@ -797,6 +878,15 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
         scale_text = "、".join(
             f"{plate['plate']}({_pctfmt(value['activity'].get('amount_share_of_market'))})"
             for plate, value in scale_top) or "—"
+        neutral_top = sorted(
+            ((plate, value) for plate, value in pairs
+             if value.get("relative_size_multiple") is not None
+             and (value.get("member_count_with_cap") or 0) >= 10
+             and (value.get("activity", {}).get("amount_share_of_market") or 0) >= 0.002),
+            key=lambda pair: (-pair[1]["relative_size_multiple"], pair[0]["plate"]))[:3]
+        neutral_text = "、".join(
+            f"{plate['plate']}(×{value['relative_size_multiple']:.2f})"
+            for plate, value in neutral_top) or "—"
         old_tag = ("0925" if tag == "0925R" else
                    stage_tags[stage_tags.index(tag) - 1] if stage_tags.index(tag) else None)
         prior = {plate["plate"]: plate.get("times", {}).get(old_tag) for plate in result["plates"]} if old_tag else {}
@@ -830,6 +920,41 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
             if tag == "0925" and result.get("no_late_finals"):
                 summary += "；无迟到终价, 0925R 与 0925 相同"
         lines.append(summary)
+        if result.get("stock_caps_available") and tag in ("0925", opening_summary_tag):
+            lines.append(f"{tag}: 规模中性前 3: {neutral_text}")
+    if result.get("stock_caps_available"):
+        lines.extend(["", "## 规模中性榜", "",
+                      "规模中性=相对自身流通市值的额强度；原始额反映资金体量，二者并列不合成综合分。额口径=成员合计。"])
+        for tag in stage_tags:
+            neutral_rows = []
+            selected_names = {str(item.get("name")) for item in
+                              result.get("independent_by_tag", {}).get(tag, {}).get("selected", ())}
+            for plate in result["plates"]:
+                stage = plate.get("times", {}).get(tag) or {}
+                activity = stage.get("activity") or {}
+                if (stage.get("relative_size_multiple") is None
+                        or (stage.get("member_count_with_cap") or 0) < 10
+                        or (activity.get("amount_share_of_market") or 0) < 0.002):
+                    continue
+                neutral_rows.append((plate, stage))
+            neutral_rows.sort(key=lambda pair: (-pair[1]["relative_size_multiple"], pair[0]["plate"]))
+            lines.extend([f"### {tag}", "",
+                          "| 板块 | 类别 | 成员数 | 成员合计额(亿) | 额换手‰ | 相对体量倍数 | 涨幅 | 相对市场pp | Top1集中度 | 独立入选 | Kaipan 名次(参考) |",
+                          "|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|"])
+            for plate, stage in neutral_rows[:15]:
+                concentration = stage.get("top1_concentration")
+                concentration_text = (_pctfmt(concentration) if concentration is not None else "—")
+                if concentration is not None and concentration > 0.5:
+                    concentration_text += " CONCENTRATED"
+                lines.append(f"| {_auction_plate_label(plate)} | {plate.get('category') or '—'} | "
+                             f"{_fmt(stage.get('member_count_with_cap'))} | "
+                             f"{_amount_yi(stage.get('member_sum_amount_yuan'))} | "
+                             f"{_fmt(stage.get('amount_turnover_permille'))} | "
+                             f"×{stage['relative_size_multiple']:.2f} | "
+                             f"{_pctfmt(stage.get('performance', {}).get('trimmed_mean_pct'))} | "
+                             f"{_ppfmt(stage.get('performance', {}).get('relative_market_pp'))} | "
+                             f"{concentration_text} | {'是' if plate['plate'] in selected_names else '否'} | "
+                             f"{_fmt(stage.get('hot_live_rank'))} |")
     lines.extend(["", "## 阅读说明", "",
              "竞价金额是虚拟撮合额；09:20 后不可撤单。09:32 金额是截至该时点的累计真实成交额。",
              "涨幅及超额以百分点（pp）显示，占比以百分比显示；金额以亿元显示；缺失值显示为 —。",
@@ -873,9 +998,13 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                 scale_rows.append((plate, stage))
         scale_rows.sort(key=lambda pair: (-(pair[1]["activity"].get("amount_share_of_market") or 0),
                                           -(pair[1]["activity"].get("amount_sum") or 0), pair[0]["plate"]))
-        lines.extend([f"### {tag}", "",
-                      "| 板块 | 类别 | 额(亿) | 占比 | 基线倍数 | 表现 z | 绝对均值% | 广度% | 涨停数/触及数 | 独立入选 | Kaipan 名次(参考) |",
-                      "|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|"])
+        scale_header = ("| 板块 | 类别 | 额(亿) | 额换手‰ | 相对体量倍数 | 占比 | 基线倍数 | 表现 z | 绝对均值% | 广度% | 涨停数/触及数 | 独立入选 | Kaipan 名次(参考) |"
+                        if result.get("stock_caps_available") else
+                        "| 板块 | 类别 | 额(亿) | 占比 | 基线倍数 | 表现 z | 绝对均值% | 广度% | 涨停数/触及数 | 独立入选 | Kaipan 名次(参考) |")
+        scale_alignment = ("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|"
+                           if result.get("stock_caps_available") else
+                           "|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|")
+        lines.extend([f"### {tag}", "", scale_header, scale_alignment])
         for plate, stage in scale_rows[:15]:
             activity, performance = stage["activity"], stage["performance"]
             limit_count = performance.get("sealed_limit_count")
@@ -884,7 +1013,10 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
             multiple = activity.get("baseline_multiple")
             multiple_text = f"×{multiple:.2f}" if multiple is not None else "—"
             lines.append(f"| {plate['plate']} | {plate['category']} | {_amount_yi(activity.get('amount_sum'))} | "
-                         f"{_pctfmt(activity.get('amount_share_of_market'))} | {multiple_text} | "
+                         + (f"{_fmt(stage.get('amount_turnover_permille'))} | "
+                            f"{('×%.2f' % stage['relative_size_multiple']) if stage.get('relative_size_multiple') is not None else '—'} | "
+                            if result.get("stock_caps_available") else "")
+                         + f"{_pctfmt(activity.get('amount_share_of_market'))} | {multiple_text} | "
                          f"{_zfmt(performance.get('relative_market_z'))} | "
                          f"{_ppfmt(performance.get('trimmed_mean_pct'))} | "
                          f"{_pctfmt(performance.get('breadth_up_share'))} | {_fmt(limit_count)} | "

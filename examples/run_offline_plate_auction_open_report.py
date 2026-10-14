@@ -728,6 +728,36 @@ def _load_stock_names(path: Path | None, symbols: list[str]) -> tuple[dict[str, 
                      "hit_rate": len(matched) / denominator if denominator else None}
 
 
+def _load_stock_caps(path: Path | None, symbols: list[str]) -> tuple[dict[str, dict[str, float]], dict[str, Any]]:
+    requested = set(map(str, symbols))
+    if path is None:
+        return {}, {"path": None, "sha256": None, "symbol_count": len(requested),
+                    "matched_count": 0, "hit_rate": 0.0 if requested else None,
+                    "missing_count": len(requested)}
+    raw = path.read_bytes()
+    payload = json.loads(raw)
+    if not isinstance(payload, Mapping):
+        raise ValueError("stock caps JSON must contain an object")
+    caps = {}
+    for symbol, values in payload.items():
+        if str(symbol) not in requested or not isinstance(values, Mapping):
+            continue
+        float_cap = values.get("float_cap")
+        total_cap = values.get("total_cap")
+        try:
+            float_cap, total_cap = float(float_cap), float(total_cap)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not (float_cap > 0 and total_cap > 0 and float_cap < float("inf") and total_cap < float("inf")):
+            continue
+        caps[str(symbol)] = {"float_cap": float_cap, "total_cap": total_cap}
+    denominator = len(requested)
+    return caps, {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
+                  "symbol_count": denominator, "matched_count": len(caps),
+                  "hit_rate": len(caps) / denominator if denominator else None,
+                  "missing_count": denominator - len(caps)}
+
+
 def _compact_report_plates(plates: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     full_categories = {"THEME", "NICHE", "BROAD"}
     compact = []
@@ -978,7 +1008,8 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                open_times: tuple[str, ...] = ("0932",),
                auction_price_source: str = "tick_book1",
                revision_cutoff: str = "09:27:10", min_members: int = 10,
-               min_share: float = 0.003, stock_names_path: Path | None = None) -> None:
+               min_share: float = 0.003, stock_names_path: Path | None = None,
+               stock_caps_path: Path | None = None) -> None:
     if conclusion_phase != "AUCTION":
         raise ValueError("session report only supports conclusion_phase=AUCTION")
     revision_cutoff = validate_revision_cutoff(revision_cutoff)
@@ -1011,6 +1042,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             raise ValueError("static_relation.by_symbol must be a mapping")
         symbols.update(map(str, by_symbol))
     symbols = sorted(symbols)
+    stock_caps, stock_caps_manifest = _load_stock_caps(stock_caps_path, symbols)
     for trade_date in trade_dates:
         report_started = time.perf_counter()
         auction, opening, pre_close, klines, baseline_auction, timing = _read_td(
@@ -1041,6 +1073,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             hot_prev_by_plate=_load_prev_hot(kaipan_dir, prior),
             hot_captures=_load_hot_captures(hot_capture_dir),
             min_members=min_members, min_share=min_share,
+            stock_caps=stock_caps if stock_caps_path is not None else None,
         )
         auction_price_meta = timing.get("auction_price", {})
         for tag in ("0920", "0924", "0925"):
@@ -1067,6 +1100,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                 memberships=memberships, hierarchy=hierarchy, baseline_auction_by_tag=baseline_auction,
                 hot_prev_by_plate=_load_prev_hot(kaipan_dir, prior),
                 hot_captures=_load_hot_captures(hot_capture_dir),
+                stock_caps=stock_caps if stock_caps_path is not None else None,
             )
             for stock in revision_report["stocks"]:
                 source_row = revised_auction.get("0925", {}).get(stock["symbol"], {})
@@ -1179,6 +1213,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "auction_system_boundary": AUCTION_SYSTEM_BOUNDARY,
             "auction_price": auction_price_meta,
             "stock_names": stock_names_manifest,
+            "stock_caps": stock_caps_manifest,
             "revision_cutoff": revision_cutoff,
             "revision_summary": revision_summary,
             "coverage_count_by_stage": {tag: row["covered_count"] for tag, row in report["market"].items()},
@@ -1206,6 +1241,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trade-date", required=True, help="comma-separated YYYY-MM-DD dates")
     parser.add_argument("--snapshot", type=Path, required=True)
     parser.add_argument("--stock-names", type=Path, help="optional JSON mapping of 6-digit stock codes to display names")
+    parser.add_argument("--stock-caps", type=Path, help="optional JSON mapping of stock codes to float_cap/total_cap in yuan")
     parser.add_argument("--static-relation", type=Path, help="optional static relation JSON artifact")
     parser.add_argument("--registry-dir", type=Path, help="dated registry.json and relation.csv directory")
     parser.add_argument("--registry-asof", help="registry point-in-time date YYYY-MM-DD")
@@ -1248,7 +1284,8 @@ def main(argv: list[str] | None = None) -> int:
                hot_capture_dir=args.hot_capture_dir, static_relation_path=args.static_relation,
                registry_dir=args.registry_dir, registry_asof=args.registry_asof, open_times=open_times,
                auction_price_source=args.auction_price_source, revision_cutoff=revision_cutoff,
-               min_members=args.min_members, min_share=args.min_share, stock_names_path=args.stock_names)
+               min_members=args.min_members, min_share=args.min_share, stock_names_path=args.stock_names,
+               stock_caps_path=args.stock_caps)
     return 0
 
 

@@ -16,6 +16,7 @@ from examples.run_offline_plate_auction_open_report import (
     _registry_point_in_time_flag,
     _render_revision_note,
     _load_stock_names,
+    _load_stock_caps,
     _load_hot_captures,
     parse_open_times,
     validate_revision_cutoff,
@@ -33,6 +34,18 @@ def test_stock_names_loader_reports_hash_and_match_rate(tmp_path):
     assert manifest["matched_count"] == 1
     assert manifest["symbol_count"] == 2
     assert manifest["hit_rate"] == 0.5
+
+
+def test_stock_caps_loader_reports_hash_hit_rate_and_missing_codes(tmp_path):
+    path = tmp_path / "caps.json"
+    path.write_text(json.dumps({"000001": {"float_cap": 1000, "total_cap": 2000}}), encoding="utf-8")
+
+    caps, manifest = _load_stock_caps(path, ["000001", "000002"])
+
+    assert caps == {"000001": {"float_cap": 1000.0, "total_cap": 2000.0}}
+    assert manifest["sha256"]
+    assert manifest["hit_rate"] == 0.5
+    assert manifest["missing_count"] == 1
 
 
 def test_hot_capture_loader_keeps_member_sum_amount_column(tmp_path):
