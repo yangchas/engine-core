@@ -1848,3 +1848,8 @@ of merged state. Status unchanged: `TASK-008=PARTIAL_EVIDENCE`,
 `M3_1_NORMAL=BLOCKED`, `TD_WRITE_HEALTH=UNPROVEN`. Rabbit arrival,
 `available_at`, vol upstream unit, the upstream cause of delayed Shenzhen final
 snapshots, and live/NORMAL parity remain UNKNOWN/UNPROVEN.
+
+
+## C113 — README 重写
+
+README 已重构为中文导航页，含三张 Mermaid 图、模块/时点/状态/命令表；重写前全文归档于 `docs/README_HISTORY.md`。状态标签保持原值。

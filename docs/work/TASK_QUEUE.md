@@ -657,3 +657,5 @@ Merge gate:
 
 All other migration, ownership, strategy, checkpoint, Rabbit, and effect tasks
 remain deferred. No card is auto-promoted by this bootstrap.
+
+- C113 | scribe | DONE | README 重写；原文完整归档至 docs/README_HISTORY.md。
