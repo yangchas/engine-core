@@ -1236,7 +1236,11 @@ def render_independent_plates_markdown(independent_by_tag: Mapping[str, Mapping[
 
 
 def _fmt(value: Any) -> str:
-    return "—" if value is None else str(value)
+    if value is None:
+        return "—"
+    if isinstance(value, float):
+        return f"{value:.2f}"
+    return str(value)
 
 
 def _auction_plate_label(row: Mapping[str, Any]) -> str:
