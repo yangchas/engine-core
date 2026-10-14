@@ -112,3 +112,51 @@ def test_5k_symbol_400_plate_20k_edge_budget():
                          "prev_close_ok": {s: True for s in symbols}})
     assert len(inc.rows) == 20000
     assert perf_counter() - started < 1.0
+
+
+def test_strength_caps_single_stock_and_reports_concentration():
+    symbols = ["leader"] + [f"s{i}" for i in range(9)] + [f"t{i}" for i in range(10)]
+    memberships = {s: ["p"] for s in symbols[:10]}
+    memberships.update({s: ["control"] for s in symbols[10:]})
+    inc = build_incidence(memberships, PlateHierarchy({}, {}),
+                          n_min=1, coverage_symbols=symbols)
+    vectors = {"y": {s: (10.0 if s == "leader" else 0.0) for s in symbols},
+               "amount": {s: (800.0 if s == "leader" else 25.0) for s in symbols},
+               "prev_close_ok": {s: True for s in symbols}}
+    row = {r.plate: r for r in compute_strength(inc, vectors, lam=0, weight_mode="amount")}['p']
+    uncapped = {r.plate: r for r in compute_strength(
+        inc, vectors, lam=0, weight_mode="amount", weight_cap_share=1.0)}['p']
+    assert abs(row.excess_amt_weighted) < abs(uncapped.excess_amt_weighted)
+    assert row.top1_amount_share == 800 / 1025
+    assert row.top3_amount_share > row.top1_amount_share
+    assert row.hhi_amount > 0.5
+    assert row.dominant_symbol == "leader"
+    assert "SINGLE_STOCK_DOMINATED" in row.flags
+
+
+def test_trimmed_and_winsorized_strength_resist_return_outlier():
+    symbols = [f"s{i}" for i in range(40)]
+    memberships = {s: (["p"] if i < 20 else ["control"]) for i, s in enumerate(symbols)}
+    inc = build_incidence(memberships, PlateHierarchy({}, {}),
+                          n_min=1, coverage_symbols=symbols)
+    y = {s: (100.0 if s == "s19" else 0.0) for s in symbols}
+    rows = {r.plate: r for r in compute_strength(
+        inc, {"y": y, "amount": {s: 1.0 for s in symbols},
+              "prev_close_ok": {s: True for s in symbols}}, lam=0)}
+    assert rows["p"].excess_trimmed == 0.0
+    assert rows["p"].beta_ridge_winsor < rows["p"].beta_ridge
+    assert "OUTLIER_DRIVEN" in rows["p"].flags
+
+
+def test_equal_weight_mode_and_beta_se_scale_with_plate_size():
+    symbols = [f"s{i}" for i in range(12)]
+    membership = {s: (["small"] if i < 2 else ["large"]) for i, s in enumerate(symbols)}
+    inc = build_incidence(membership, PlateHierarchy({}, {}), n_min=1, coverage_symbols=symbols)
+    y = [2.0, 4.0] + [2.0, 4.0] * 5
+    amounts = [1000.0, 1.0] + [1.0, 1.0] * 5
+    rows = {r.plate: r for r in compute_strength(
+        inc, {"y": y, "amount": amounts, "prev_close_ok": [True] * 12},
+        weight_mode="equal", lam=0.1)}
+    assert rows["small"].excess_amt_weighted == 3.0 - np.mean(y)
+    assert rows["small"].beta_se > 0
+    assert rows["small"].beta_se > rows["large"].beta_se

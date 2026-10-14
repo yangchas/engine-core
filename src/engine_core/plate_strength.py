@@ -36,6 +36,12 @@ class PlateStrength:
     limit_up_count: int | None
     imbalance: float | None
     flags: tuple[str, ...] = ()
+    excess_trimmed: float | None = None
+    beta_ridge_winsor: float | None = None
+    top1_amount_share: float | None = None
+    top3_amount_share: float | None = None
+    hhi_amount: float | None = None
+    dominant_symbol: str | None = None
 
 
 def _membership_parts(memberships: Any) -> tuple[dict[str, set[str]], dict[str, dict[str, Any]]]:
@@ -159,8 +165,8 @@ def _vector(incidence: Incidence, vectors: Mapping[str, Any], name: str) -> np.n
     return arr
 
 
-def _cg_beta(incidence: Incidence, y: np.ndarray, amount: np.ndarray,
-             valid: np.ndarray, lam: float, amount_weighted: bool) -> tuple[np.ndarray, np.ndarray]:
+def _cg_beta(incidence: Incidence, y: np.ndarray, valid: np.ndarray,
+             edge_weights: np.ndarray, lam: float) -> tuple[np.ndarray, np.ndarray]:
     p_count, s_count = len(incidence.plates), len(incidence.symbols)
     if p_count == 0:
         return np.empty(0), np.empty(0)
@@ -169,10 +175,8 @@ def _cg_beta(incidence: Incidence, y: np.ndarray, amount: np.ndarray,
     r, c = rows[obs], cols[obs]
     if r.size == 0:
         return np.zeros(p_count), np.full(p_count, np.nan)
-    stock_wt = np.where(np.isfinite(amount[valid]) & (amount[valid] > 0), amount[valid], 1.0)
-    mu = float(np.average(y[valid], weights=stock_wt)) if amount_weighted else float(np.mean(y[valid]))
-    wt = (np.where(np.isfinite(amount[r]) & (amount[r] > 0), amount[r], 1.0)
-          if amount_weighted else np.ones(r.size))
+    wt = edge_weights[obs]
+    mu = float(np.average(y[r], weights=np.maximum(wt, 1e-12)))
     centered = y[r] - mu
     rhs = np.bincount(c, weights=wt * centered, minlength=p_count)
     diagonal = np.bincount(c, weights=wt, minlength=p_count) + lam
@@ -199,9 +203,54 @@ def _cg_beta(incidence: Incidence, y: np.ndarray, amount: np.ndarray,
         next_rr = float(np.dot(residual, residual))
         direction = residual + (next_rr / rr) * direction
         rr = next_rr
-    # Diagonal inverse approximation; bounded and conservative for correlated columns.
-    se = np.sqrt(1.0 / np.maximum(diagonal, 1e-12))
+    fitted = np.bincount(r, weights=beta[c], minlength=s_count)
+    residuals = y[r] - mu - fitted[r]
+    dof = max(1, int(r.size) - p_count)
+    sigma2 = float(np.dot(wt, residuals * residuals) / dof)
+    # Diagonal of (B'WB + lam I)^-1, using its diagonal approximation.
+    se = np.sqrt(max(sigma2, 1e-24) / np.maximum(diagonal, 1e-12))
     return beta, se
+
+
+def _base_weights(amount: np.ndarray, mode: str) -> np.ndarray:
+    positive = np.isfinite(amount) & (amount > 0)
+    values = np.where(positive, amount, 1.0)
+    if mode == "equal":
+        return np.ones(amount.size, dtype=float)
+    if mode == "sqrt_amount":
+        return np.sqrt(values)
+    if mode == "amount":
+        return values
+    raise ValueError("weight_mode must be 'sqrt_amount', 'equal', or 'amount'")
+
+
+def _capped_edge_weights(incidence: Incidence, amount: np.ndarray, valid: np.ndarray,
+                         mode: str, cap_share: float) -> np.ndarray:
+    weights = np.zeros(incidence.rows.size, dtype=float)
+    base = _base_weights(amount, mode)
+    for plate_index in range(len(incidence.plates)):
+        edges = np.flatnonzero((incidence.cols == plate_index) & valid[incidence.rows])
+        if not edges.size:
+            continue
+        raw = base[incidence.rows[edges]]
+        raw = raw / np.sum(raw)
+        cap = max(cap_share, 1.0 / edges.size)  # A lower cap cannot sum to one for small plates.
+        current = raw.copy()
+        for _ in range(5):
+            over = current > cap + 1e-12
+            if not np.any(over):
+                break
+            current[over] = cap
+            free = ~over
+            remaining = 1.0 - float(np.sum(current[over]))
+            if not np.any(free) or remaining <= 0:
+                break
+            current[free] = raw[free] / np.sum(raw[free]) * remaining
+        if np.any(current > cap + 1e-10):
+            current.fill(1.0 / edges.size)
+        # Keep per-plate relative shares capped while retaining sample-size scale for ridge.
+        weights[edges] = current * edges.size
+    return weights
 
 
 def compute_strength(
@@ -211,19 +260,42 @@ def compute_strength(
     lam: float = 5.0,
     baseline_share: Mapping[str, float] | None = None,
     amount_weighted: bool = True,
+    weight_cap_share: float = 0.15,
+    weight_mode: str = "sqrt_amount",
+    divergence_pp: float = 2.0,
 ) -> list[PlateStrength]:
     if lam < 0:
         raise ValueError("lam must be non-negative")
+    if not 0 < weight_cap_share <= 1:
+        raise ValueError("weight_cap_share must be in (0, 1]")
+    if divergence_pp < 0:
+        raise ValueError("divergence_pp must be non-negative")
+    if weight_mode not in {"sqrt_amount", "equal", "amount"}:
+        raise ValueError("weight_mode must be 'sqrt_amount', 'equal', or 'amount'")
     y, amount = _vector(incidence, vectors, "y"), _vector(incidence, vectors, "amount")
     prev_close_ok = _vector(incidence, vectors, "prev_close_ok")
     rest_bid = _vector(incidence, vectors, "rest_bid")
     rest_ask = _vector(incidence, vectors, "rest_ask")
     limit_up = _vector(incidence, vectors, "limit_up")
     valid_y = np.isfinite(y) & (prev_close_ok > 0)
-    stock_weights = np.where(np.isfinite(amount[valid_y]) & (amount[valid_y] > 0), amount[valid_y], 1.0)
-    global_mean = (float(np.average(y[valid_y], weights=stock_weights)) if amount_weighted
-                   else float(np.mean(y[valid_y]))) if np.any(valid_y) else np.nan
-    beta, beta_se = _cg_beta(incidence, y, amount, valid_y, lam, amount_weighted)
+    effective_mode = weight_mode if amount_weighted else "equal"
+    edge_weights = _capped_edge_weights(incidence, amount, valid_y, effective_mode, weight_cap_share)
+    weighted_degree = np.bincount(incidence.rows, weights=edge_weights, minlength=len(incidence.symbols))
+    edge_degree = np.bincount(incidence.rows, minlength=len(incidence.symbols))
+    stock_weights = np.divide(weighted_degree, edge_degree, out=np.zeros_like(weighted_degree),
+                               where=edge_degree > 0)
+    unassigned_valid = valid_y & (edge_degree == 0)
+    stock_weights[unassigned_valid] = _base_weights(amount[unassigned_valid], effective_mode)
+    global_mean = (float(np.average(y[valid_y], weights=np.maximum(stock_weights[valid_y], 1e-12)))
+                   if np.any(valid_y) else np.nan)
+    beta, beta_se = _cg_beta(incidence, y, valid_y, edge_weights, lam)
+    if np.any(valid_y):
+        y_winsor = y.copy()
+        p1, p99 = np.percentile(y[valid_y], [1, 99])
+        y_winsor[valid_y] = np.clip(y[valid_y], p1, p99)
+        beta_winsor, _ = _cg_beta(incidence, y_winsor, valid_y, edge_weights, lam)
+    else:
+        beta_winsor = np.full(len(incidence.plates), np.nan)
     p_count = len(incidence.plates)
     membership_count = np.bincount(incidence.cols, minlength=p_count).astype(float)
     valid_count = np.bincount(incidence.cols[valid_y[incidence.rows]], minlength=p_count).astype(float)
@@ -244,6 +316,32 @@ def compute_strength(
         for left, right in zip(boundaries[:-1], boundaries[1:]):
             medians[int(med_groups[left])] = float(np.median(y[incidence.rows[med_order[left:right]]]))
     global_median = float(np.median(y[valid_y])) if np.any(valid_y) else np.nan
+    trimmed: dict[int, float] = {}
+    for plate_index in range(len(incidence.plates)):
+        values = y[incidence.rows[(incidence.cols == plate_index) & valid_y[incidence.rows]]]
+        if values.size:
+            ordered = np.sort(values)
+            trim = int(np.floor(ordered.size * 0.1))
+            kept = ordered[trim:ordered.size - trim] if trim else ordered
+            trimmed[plate_index] = float(np.mean(kept))
+    amount_concentration: dict[int, tuple[float | None, float | None, float | None, str | None]] = {}
+    for plate_index in range(p_count):
+        edges = np.flatnonzero((incidence.cols == plate_index) & valid_amount_edges)
+        if not edges.size:
+            amount_concentration[plate_index] = (None, None, None, None)
+            continue
+        edge_amount = amount[incidence.rows[edges]]
+        total = float(np.sum(edge_amount))
+        if total <= 0:
+            amount_concentration[plate_index] = (None, None, None, None)
+            continue
+        order = np.lexsort((np.asarray([incidence.symbols[r] for r in incidence.rows[edges]]), -edge_amount))
+        shares = edge_amount[order] / total
+        top_symbol = incidence.symbols[incidence.rows[edges[order[0]]]]
+        amount_concentration[plate_index] = (
+            float(shares[0]), float(np.sum(shares[:3])), float(np.dot(shares, shares)),
+            top_symbol if shares[0] >= 0.5 else None,
+        )
     # Conserved attribution uses only retained memberships and each stock's degree.
     degree = np.bincount(incidence.rows, minlength=len(incidence.symbols)).astype(float)
     edge_weight = np.divide(1.0, degree[incidence.rows], out=np.zeros(len(incidence.rows)),
@@ -278,11 +376,25 @@ def compute_strength(
     for i, plate in enumerate(incidence.plates):
         cov = valid_count[i] / membership_count[i] if membership_count[i] else 0.0
         eff = float(valid_count[i])
-        flags = tuple(flag for flag, cond in (("UNKNOWN", cov < 0.6 or eff < 5),) if cond)
-        excess_w = (ay_sum[i] / ay_amount[i] - global_mean
-                    if ay_amount[i] > 0 and np.isfinite(global_mean)
+        top1, top3, hhi, dominant = amount_concentration[i]
+        flags_list = [flag for flag, cond in (("UNKNOWN", cov < 0.6 or eff < 5),) if cond]
+        if top1 is not None and top1 >= 0.5:
+            flags_list.append("SINGLE_STOCK_DOMINATED")
+        plate_edges = np.flatnonzero((incidence.cols == i) & valid_y[incidence.rows])
+        plate_values = y[incidence.rows[plate_edges]]
+        plate_weights = edge_weights[plate_edges]
+        excess_w = (float(np.average(plate_values, weights=plate_weights)) - global_mean
+                    if plate_edges.size and np.isfinite(global_mean)
                     else None)
         excess_med = medians[i] - global_median if i in medians and np.isfinite(global_median) else None
+        excess_trim = trimmed[i] - global_median if i in trimmed and np.isfinite(global_median) else None
+        beta_winsor_value = float(beta_winsor[i]) if np.isfinite(beta_winsor[i]) else None
+        if ((beta_winsor_value is not None and np.isfinite(beta[i])
+             and abs(float(beta[i]) - beta_winsor_value) > divergence_pp)
+                or (excess_w is not None and excess_med is not None
+                    and abs(excess_w - excess_med) > divergence_pp)):
+            flags_list.append("OUTLIER_DRIVEN")
+        flags = tuple(flags_list)
         base = baseline_share.get(plate) if baseline_share is not None else None
         ratio = conserved_share[i] / base if base is not None and base > 0 and np.isfinite(conserved_share[i]) else None
         result.append(PlateStrength(
@@ -298,7 +410,7 @@ def compute_strength(
             float(up_counts[i] / valid_count[i]) if valid_count[i] else None,
             int(limit_counts[i]) if np.any(limit_valid_edges) else None,
             float(imbalance[i]) if np.isfinite(imbalance[i]) else None,
-            flags,
+            flags, excess_trim, beta_winsor_value, top1, top3, hhi, dominant,
         ))
     return result
 
