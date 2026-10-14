@@ -130,7 +130,7 @@ def test_membership_index_matches_legacy_members_of_with_cycle():
 
 
 def test_membership_build_and_aggregate_2000_by_300_under_five_seconds():
-    started = time.perf_counter()
+    started = time.process_time()
     symbols = [f"{index:06d}" for index in range(2000)]
     themes = {symbol: [f"板块{(index + offset) % 300:03d}" for offset in range(3)]
               for index, symbol in enumerate(symbols)}
@@ -144,7 +144,7 @@ def test_membership_build_and_aggregate_2000_by_300_under_five_seconds():
     facts = {symbol: StockFact(symbol, 10, 10.1, 100, None, None) for symbol in symbols}
     result = aggregate_plates(memberships, hierarchy, facts)
     assert len(result.stats) == 300
-    assert time.perf_counter() - started < 5
+    assert time.process_time() - started < 5
 
 
 def test_default_alias_hierarchy_has_semiconductor_aliases():

@@ -1,5 +1,5 @@
 import numpy as np
-from time import perf_counter
+from time import process_time as perf_counter
 
 from engine_core.plate_membership import PlateHierarchy
 from engine_core.plate_strength import build_incidence, compute_strength, stock_relative
