@@ -43,6 +43,45 @@ def test_no_plate_is_counted_and_never_filled_with_other():
     assert result["quality"]["missing_counts"]["match_amt_yuan"] == 1
 
 
+def test_static_relation_switches_tier3_source_and_flags_missing_symbol():
+    result = build_day(
+        trade_date="2026-01-05", klines_by_symbol={},
+        auction_rows={"a": {"px_milli": 10000}, "b": {"px_milli": 10000}},
+        snapshot={"stock_plate": {"a": "旧主板", "b": "旧主板"},
+                  "s2p": {"a": ["稀疏旧板"], "b": ["稀疏旧板"]}},
+        reasons_by_symbol={}, reason_asof_unknown=False, min_auction_rows=1,
+        static_relation={
+            "by_symbol": {"a": ["新静态板"]},
+            "hierarchy": {"parent_by_child": {"新子板": "新静态板"},
+                          "source_by_child": {"新子板": "kaipan_inner"}},
+            "plate_names": {"801001": "新静态板"}, "unnamed_codes": [],
+        },
+    )
+    rows = {row.plate: row for row in result["memberships"].by_symbol["a"]}
+    assert rows["新静态板"].tier == 3
+    assert rows["新静态板"].source == "kaipan_static_csv"
+    assert "稀疏旧板" not in rows
+    assert result["quality"]["static_source"] == "kaipan_static_csv"
+    assert result["quality"]["static_relation_member_pairs"] == 1
+    assert result["quality"]["static_asof"] == "UNKNOWN"
+    assert "STATIC_ASOF_UNKNOWN" in result["quality"]["flags"]
+    assert "STATIC_MISSING" in result["symbol_flags"]["b"]
+
+
+def test_unnamed_static_plate_is_retained_with_unknown_kind():
+    result = build_day(
+        trade_date="2026-01-05", klines_by_symbol={},
+        auction_rows={"a": {"px_milli": 10000}},
+        snapshot={"stock_plate": {}, "s2p": {}}, reasons_by_symbol={},
+        reason_asof_unknown=False, min_auction_rows=1,
+        static_relation={"by_symbol": {"a": ["P801999"]},
+                         "hierarchy": {}, "unnamed_codes": ["801999"]},
+    )
+    row = result["memberships"].by_symbol["a"][0]
+    assert row.plate == "P801999"
+    assert row.kind == "UNKNOWN"
+
+
 def test_reason_without_date_is_flagged_unknown():
     result = build_day(
         trade_date="2026-01-05", klines_by_symbol={},

@@ -211,6 +211,13 @@ from .plate_membership import (
     default_alias_hierarchy,
     members_of,
 )
+from .plate_static_relation import (
+    StaticRelation,
+    build_static_relation,
+    parse_plate_inner_edges,
+    parse_stock_plate_csv,
+    static_relation_to_dict,
+)
 from .plate_hierarchy_kaipan import PoolRow, parse_kaipan_pool, parse_kaipan_reason_hierarchy
 from .plate_aggregation import (
     StockFact,
@@ -528,6 +535,11 @@ __all__ = [
     "build_memberships",
     "default_alias_hierarchy",
     "members_of",
+    "StaticRelation",
+    "build_static_relation",
+    "parse_plate_inner_edges",
+    "parse_stock_plate_csv",
+    "static_relation_to_dict",
     "PoolRow",
     "parse_kaipan_pool",
     "parse_kaipan_reason_hierarchy",

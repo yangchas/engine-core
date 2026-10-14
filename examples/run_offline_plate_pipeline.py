@@ -16,12 +16,12 @@ from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from engine_core.limit_up_pool_derivation import derive_limit_up_pool_from_daily_klines
-from engine_core.plate_aggregation import StockFact, aggregate_plates
-from engine_core.plate_kind import classify_plate_kind
+from engine_core.plate_aggregation import StockFact, _payload as _plate_stat_payload, aggregate_plates
 from engine_core.plate_membership import (
     MEMBERSHIP_POLICY_LEGACY_V1,
     MEMBERSHIP_POLICY_USER_PRIORITY_V1,
     PlateHierarchy,
+    PlateMembership,
     apply_hierarchy,
     build_memberships,
     default_alias_hierarchy,
@@ -31,7 +31,7 @@ from engine_core.plate_hierarchy_kaipan import (
     parse_kaipan_reason_items,
 )
 from engine_core.plate_rules import build_plate_candidates_from_reason
-from engine_core.plate_rules import normalize_plate_name
+from engine_core.plate_rules import is_generic_plate, is_hard_generic_plate, normalize_plate_name
 from engine_core.stock_plate_assignment import build_stock_plate_assignments
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -190,7 +190,7 @@ def _jsonable_memberships(
         "content_hash": memberships.content_hash,
         "by_symbol": {
             symbol: [
-                {"plate": row.plate, "kind": classify_plate_kind(row.plate),
+                {"plate": row.plate, "kind": row.kind,
                  "tier": row.tier, "rank_in_stock": row.rank_in_stock,
                  "source": row.source, "generic": row.generic, "hard_generic": row.hard_generic,
                  "ancestors": list(row.ancestors), "flags": list(row.flags),
@@ -230,6 +230,7 @@ def build_day(
     hot_plate_input: Mapping[str, Any] | None = None,
     snapshot_asof: str | None = None,
     conclusion_phase: str = "AUCTION",
+    static_relation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Pure daily composition; accepts loaded data and performs no I/O."""
     if not isinstance(snapshot.get("stock_plate"), Mapping) or not isinstance(snapshot.get("s2p"), Mapping):
@@ -293,6 +294,35 @@ def build_day(
         static_themes[symbol] = list(dict.fromkeys(
             ([assignment.primary_plate] if assignment.primary_plate else []) + list(assignment.themes)
         ))
+    static_member_pair_count = sum(len(plates) for plates in static_themes.values())
+    static_source = "snapshot_s2p"
+    static_unnamed_names: set[str] = set()
+    static_hierarchy = PlateHierarchy({}, {})
+    if static_relation is not None:
+        raw_by_symbol = static_relation.get("by_symbol", {})
+        if not isinstance(raw_by_symbol, Mapping):
+            raise ValueError("static_relation.by_symbol must be a mapping")
+        static_themes = {
+            str(symbol): list(dict.fromkeys(
+                name for raw in (plates if isinstance(plates, (list, tuple)) else ())
+                if (name := normalize_plate_name(raw))
+            ))
+            for symbol, plates in raw_by_symbol.items()
+        }
+        static_themes = {symbol: names for symbol, names in static_themes.items() if names}
+        static_member_pair_count = sum(len(names) for names in static_themes.values())
+        static_source = "kaipan_static_csv"
+        raw_hierarchy = static_relation.get("hierarchy", {})
+        if isinstance(raw_hierarchy, Mapping):
+            static_hierarchy = PlateHierarchy(
+                dict(raw_hierarchy.get("parent_by_child", {})),
+                dict(raw_hierarchy.get("source_by_child", {})),
+                dict(raw_hierarchy.get("evidence_by_child", {})),
+            )
+        static_unnamed_names = {
+            f"P{str(code).strip()}" for code in static_relation.get("unnamed_codes", ())
+            if str(code).strip().isdigit()
+        }
 
     if conclusion_phase not in {"AUCTION", "EOD"}:
         raise ValueError("conclusion_phase must be AUCTION or EOD")
@@ -329,13 +359,25 @@ def build_day(
     reason_candidates = dict(legacy_reason_candidates)
     reason_candidates.update(kaipan_asof_candidates if kaipan_reasons_by_symbol is not None
                              else _reason_candidates(kaipan_reason_rows))
-    symbols = set(map(str, auction_rows)) | set(static_assignment.assignments) | set(pool_symbols) | set(reason_candidates)
+    symbols = set(map(str, auction_rows)) | set(static_themes) | set(pool_symbols) | set(reason_candidates)
     default_hierarchy = default_alias_hierarchy()
     kaipan_hierarchy = kaipan_hierarchy or PlateHierarchy({}, {})
     # Static alias edges are canonical and take precedence over Kaipan evidence.
     parent_by_child = dict(kaipan_hierarchy.parent_by_child)
     source_by_child = dict(kaipan_hierarchy.source_by_child)
     evidence_by_child = dict(kaipan_hierarchy.evidence_by_child)
+    # The uploaded inner-code hierarchy supplements reason-derived PZS edges.
+    for child, parent in static_hierarchy.parent_by_child.items():
+        if child not in parent_by_child:
+            parent_by_child[child] = parent
+            source_by_child[child] = "kaipan_inner"
+            if child in static_hierarchy.evidence_by_child:
+                evidence_by_child[child] = static_hierarchy.evidence_by_child[child]
+    static_alias_conflicts = {
+        child: {"kaipan_parent": parent_by_child[child], "static_parent": parent}
+        for child, parent in default_hierarchy.parent_by_child.items()
+        if child in parent_by_child and parent_by_child[child] != parent
+    }
     parent_by_child.update(default_hierarchy.parent_by_child)
     source_by_child.update(default_hierarchy.source_by_child)
     for child in default_hierarchy.parent_by_child:
@@ -347,6 +389,25 @@ def build_day(
         static_themes_by_symbol=static_themes, hot_plate_names=hot_plate_names,
         policy=MEMBERSHIP_POLICY_USER_PRIORITY_V1,
     ), kaipan_reason_rows)
+    if static_relation is not None:
+        updated_memberships = {}
+        for symbol, rows in memberships.by_symbol.items():
+            updated_rows = [replace(
+                row,
+                source=",".join(dict.fromkeys(("kaipan_static_csv", *(
+                    part for part in row.source.split(",") if part == "hot_plate"
+                )))),
+            ) for row in rows]
+            present = {row.plate for row in updated_rows}
+            for name in static_themes.get(symbol, ()):
+                if name in static_unnamed_names and name not in present:
+                    updated_rows.append(PlateMembership(
+                        symbol=symbol, plate=name, tier=3, rank_in_stock=len(updated_rows) + 1,
+                        source="kaipan_static_csv", generic=is_generic_plate(name),
+                        hard_generic=is_hard_generic_plate(name), kind="UNKNOWN",
+                    ))
+            updated_memberships[symbol] = tuple(updated_rows)
+        memberships = replace(memberships, by_symbol=updated_memberships)
     memberships = apply_hierarchy(memberships, hierarchy)
     legacy = _tag_reason_memberships(build_memberships(
         symbols=symbols, pool_plate_by_symbol=pool_plates,
@@ -380,6 +441,14 @@ def build_day(
         )
 
     aggregation = aggregate_plates(memberships, hierarchy, facts)
+    if static_unnamed_names:
+        visible_stats = tuple(row for row in aggregation.stats if row.plate not in static_unnamed_names)
+        payload = {"rule_version": aggregation.rule_version, "market": aggregation.market.__dict__,
+                   "stats": [_plate_stat_payload(row) for row in visible_stats]}
+        content_hash = hashlib.sha256(json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        aggregation = replace(aggregation, stats=visible_stats, content_hash=content_hash)
     membership_primary = {symbol: rows[0].plate for symbol, rows in memberships.by_symbol.items() if rows}
     legacy_primary = {symbol: rows[0].plate for symbol, rows in legacy.by_symbol.items() if rows}
     comparable = set(membership_primary) & set(legacy_primary)
@@ -428,9 +497,13 @@ def build_day(
                               if conclusion_phase == "EOD" else None),
         "reason_asof_rule": "Date<=D" if conclusion_phase == "EOD" else "Date<D",
         "reason_item_count_excluded_same_day": reason_counts["excluded_same_day"],
-        "flags": ["NOT_POINT_IN_TIME"] if snapshot_asof is None or trade_date < snapshot_asof else [],
+        "flags": ((["NOT_POINT_IN_TIME"] if snapshot_asof is None or trade_date < snapshot_asof else [])
+                  + (["STATIC_ASOF_UNKNOWN"] if static_relation is not None else [])),
         "degradation": degradation,
         "hot_plate_source": "kaipan_his_plates" if hot_plate_input else "missing",
+        "static_source": static_source,
+        "static_relation_member_pairs": static_member_pair_count,
+        "static_asof": "UNKNOWN" if static_relation is not None else (snapshot_asof or "UNKNOWN"),
         "hot_plate_count": len(hot_plate_rows),
         "hot_plate_matched_member_count": len({
             row.plate for rows in memberships.by_symbol.values() for row in rows
@@ -454,6 +527,7 @@ def build_day(
         "kaipan_reasons_only": len(set(reason_pool_rows) - td_pool_symbols),
         "td_only": len(td_pool_symbols - set(reason_pool_rows)),
         "hierarchy_edge_count": len(kaipan_hierarchy.parent_by_child),
+        "static_hierarchy_edge_count": len(static_hierarchy.parent_by_child),
         "hierarchy_items_used": hierarchy_counts["used"],
         "hierarchy_items_excluded_future": hierarchy_counts["excluded_future"],
         "hierarchy_items_excluded_no_date": hierarchy_counts["excluded_no_date"],
@@ -475,12 +549,8 @@ def build_day(
         "reason_asof_unknown_symbol_count": (len(legacy_reason_candidates)
                                               if kaipan_reasons_by_symbol is not None else
                                               (len(legacy_reason_candidates) if reason_asof_unknown else 0)),
-        "hierarchy_static_conflict_count": len(set(kaipan_hierarchy.parent_by_child) & set(default_hierarchy.parent_by_child)),
-        "hierarchy_static_conflicts": {
-            child: {"kaipan_parent": kaipan_hierarchy.parent_by_child[child],
-                    "static_parent": default_hierarchy.parent_by_child[child]}
-            for child in sorted(set(kaipan_hierarchy.parent_by_child) & set(default_hierarchy.parent_by_child))
-        },
+        "hierarchy_static_conflict_count": len(static_alias_conflicts),
+        "hierarchy_static_conflicts": static_alias_conflicts,
         "kaipan_hierarchy_evidence": dict(kaipan_hierarchy.evidence_by_child),
         "legacy_v1_primary_count": len(legacy_primary),
         "legacy_v1_primary_match_count": equal_count,
@@ -520,6 +590,7 @@ def run_pipeline(
     kaipan_hot_plates_by_day: Mapping[str, Mapping[str, Any]] | None = None,
     snapshot_asof: str | None = None,
     conclusion_phase: str = "AUCTION",
+    static_relation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if kaipan_reason_items is None and kaipan_reasons_by_symbol is not None:
         kaipan_reason_items = parse_kaipan_reason_items([
@@ -549,6 +620,7 @@ def run_pipeline(
             hot_plate_input=(kaipan_hot_plates_by_day or {}).get(prior_day),
             snapshot_asof=snapshot_asof,
             conclusion_phase=conclusion_phase,
+            static_relation=static_relation,
         )))
     return {"days": included, "skipped": skipped}
 
@@ -961,6 +1033,7 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", type=Path, required=True)
+    parser.add_argument("--static-relation", type=Path, help="optional artifact from build_plate_static_relation.py")
     parser.add_argument("--snapshot-asof", help="static snapshot date YYYY-MM-DD when its name does not include one")
     parser.add_argument("--conclusion-phase", choices=("AUCTION", "EOD"), default="AUCTION")
     parser.add_argument("--reasons", type=Path)
@@ -982,13 +1055,15 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("date range must be ordered and kline range must cover a prior session through end date")
     ensure_empty_output_dir(args.output_dir)
     snapshot = _load_snapshot(args.snapshot)
+    static_relation = _read_json(args.static_relation) if args.static_relation else None
     reasons = _load_reasons(args.reasons)
     kaipan_pools, kaipan_hierarchy, kaipan_pool_partial_dates = \
         _load_kaipan_inputs_with_status(args.kaipan_dir, parse_hierarchy=False) \
         if args.kaipan_dir else ({}, None, set())
     kaipan_reasons = _load_kaipan_reasons(args.kaipan_dir) if args.kaipan_dir else None
     kaipan_hot_plates = _load_kaipan_hot_plates(args.kaipan_dir) if args.kaipan_dir else {}
-    symbols = sorted(set(map(str, snapshot["stock_plate"])) | set(map(str, snapshot["s2p"])) | set(reasons))
+    symbols = sorted(set(map(str, snapshot["stock_plate"])) | set(map(str, snapshot["s2p"])) | set(reasons)
+                     | (set(map(str, static_relation.get("by_symbol", {}))) if static_relation else set()))
     auction_dates = [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
     # Confirm database value before opening and reuse that same value for the query.
     klines, auctions, previous, skipped_kline_symbols = _read_td(args.td_host, os.environ.get("TDENGINE_DATABASE", "market_data1"),
@@ -1005,6 +1080,7 @@ def main(argv: list[str] | None = None) -> int:
         kaipan_hot_plates_by_day=kaipan_hot_plates,
         snapshot_asof=snapshot_asof,
         conclusion_phase=args.conclusion_phase,
+        static_relation=static_relation,
     )
     args.snapshot_asof = snapshot_asof
     _emit(args.output_dir, result, args)
