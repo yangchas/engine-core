@@ -72,3 +72,24 @@ def test_builder_marks_manual_generic_names_file(tmp_path):
     row = json.loads((output / "registry.json").read_text(encoding="utf-8"))["plates"][0]
     assert row["class"] == "GENERIC_FACTOR"
     assert "GENERIC_NAMES_FILE" in row["flags"]
+
+
+def test_builder_requires_matching_members_manifest_for_api_asof(tmp_path):
+    csv_dir = tmp_path / "csv"
+    csv_dir.mkdir()
+    (csv_dir / "个股板块.csv").write_text("plateid,stockid\n801001,000001\n", encoding="utf-8")
+    (csv_dir / "板块.csv").write_text("id,name,x,inner\n", encoding="utf-8")
+    dictionary = tmp_path / "dictionary.json"
+    dictionary.write_text(json.dumps({"names": {"801001": "主题"}}), encoding="utf-8")
+    members_manifest = tmp_path / "members.json"
+    members_manifest.write_text(json.dumps({"parameters": {"date": "2026-10-12"}}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must match --as-of"):
+        build(csv_dir, dictionary, tmp_path / "bad", as_of="2026-10-13",
+              as_of_source="api_members", members_manifest_path=members_manifest)
+
+    build(csv_dir, dictionary, tmp_path / "good", as_of="2026-10-12",
+          as_of_source="api_members", members_manifest_path=members_manifest)
+    manifest = json.loads((tmp_path / "good" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["as_of_source"] == "api_members"
+    assert manifest["members_manifest_sha256"]

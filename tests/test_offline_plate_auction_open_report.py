@@ -59,7 +59,7 @@ def test_runner_writes_report_and_manifest_with_stage_semantics(tmp_path, monkey
     assert manifest["no_close_or_after_inputs"] is True
     assert manifest["query_count"] == 8
     assert set(manifest["timing"]) == {"read_s", "build_s", "total_s"}
-    assert set(manifest["input_cutoff"]) == {"0920", "0924", "0925", "0932"}
+    assert set(manifest["input_cutoff"]) == {"0920", "0924", "0925", "0925R", "0932"}
     assert "NOT_POINT_IN_TIME" in manifest["degradation"]
     report = (day / "report.md").read_text()
     assert report.startswith("标签: NOT_POINT_IN_TIME")

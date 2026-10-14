@@ -36,6 +36,23 @@ def test_auction_match_and_opening_traded_amounts_are_separate():
     assert bank["times"]["0932"]["input_cutoff"] == "2026-10-13T09:32:00"
 
 
+def test_0925r_is_rendered_as_revised_match_with_its_cutoff():
+    result = build_session_report(**_source())
+    result["market"]["0925R"] = dict(result["market"]["0925"])
+    result["input_cutoff"]["0925R"] = "2026-10-13T09:27:10"
+    for row in result["stocks"]:
+        row["times"]["0925R"] = dict(row["times"]["0925"])
+    for row in result["plates"]:
+        if row["times"].get("0925") is not None:
+            row["times"]["0925R"] = dict(row["times"]["0925"])
+
+    text = render_report_markdown(result)
+
+    assert "0925R=2026-10-13T09:27:10" in text
+    assert "0925R MATCH_REVISED(亿元)" in text
+    assert "0925R MATCH_REVISED(亿元)" in text
+
+
 def test_opening_tick_after_cutoff_is_not_used():
     source = _source()
     source["opening_by_symbol"]["000001"]["ts"] = "2026-10-13 09:32:01"
@@ -73,6 +90,7 @@ def test_event_facts_are_unranked_and_render_z_to_two_decimals():
     assert "事件类, 仅作事实" in text
     assert "并购重组" in text and "| 排名 |" in text
     assert "3.46" in text and "样本不足" in text
+    assert "触及涨停价数" in text and "封单涨停数(未知时为—)" in text
     event_part = text.split("事件类, 仅作事实", 1)[1]
     event_header = event_part.splitlines()[1]
     assert "排名" not in event_header

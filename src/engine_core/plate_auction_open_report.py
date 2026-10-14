@@ -487,7 +487,7 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
             continue
 
         lines.extend([f"### {tag} 板块强度（可排名前 20）", "",
-                      f"| 板块 | {'匹配额 MATCH（虚拟撮合,亿元）' if tag == '0925' else '成交额 TRADED（真实,亿元）'} | 市场份额(%) | beta/SE(pp) | 加权超额(pp) | 中位超额(pp) | 截尾超额(pp) | Top1占比(%) | 份额/基线 | 不平衡(%) | 热板前收排名 | 热板当日排名 |",
+                      f"| 板块 | {'匹配额 MATCH_REVISED(亿元)' if tag == '0925R' else '匹配额 MATCH（虚拟撮合,亿元）' if tag == '0925' else '成交额 TRADED（真实,亿元）'} | 市场份额(%) | beta/SE(pp) | 加权超额(pp) | 中位超额(pp) | 截尾超额(pp) | Top1占比(%) | 份额/基线 | 不平衡(%) | 热板前收排名 | 热板当日排名 |",
                       "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
         for row, stage in ranked_rows[:20]:
             strength = stage["strength"]
@@ -517,7 +517,7 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
     def stock_table(title: str, rows: list[Mapping[str, Any]], extra: str = "") -> None:
         headers = ["代码", "名称", "连板数", "主板块"]
         for stage_tag in stage_tags:
-            kind = "MATCH" if stage_tag in _AUCTION_TAGS else "TRADED"
+            kind = "MATCH_REVISED" if stage_tag == "0925R" else "MATCH" if stage_tag in _AUCTION_TAGS else "TRADED"
             headers.extend((f"{stage_tag}涨幅(pp)", f"{stage_tag} {kind}(亿元)"))
         headers.extend(("0925涨停有封单", "板块前3(tier/beta/热板排名/个股超额/涨幅分位)"))
         if extra:
@@ -649,12 +649,12 @@ def render_independent_plates_markdown(independent_by_tag: Mapping[str, Mapping[
             ))
             lines.append("")
         if result.get("event_plates"):
-            lines.extend(["事件类, 仅作事实。", "| 事件板块 | 成员有价数 | 截尾均值% | 涨停数 | 成员涨幅前3 |",
-                          "|---|---:|---:|---:|---|"])
+            lines.extend(["事件类, 仅作事实。触及涨停价不代表存在封单。", "| 事件板块 | 成员有价数 | 截尾均值% | 触及涨停价数 | 封单涨停数(未知时为—) | 成员涨幅前3 |",
+                          "|---|---:|---:|---:|---:|---|"])
             for row in result["event_plates"]:
                 top = "、".join(f"{item['symbol']}({_ppfmt(item.get('ret'))})" for item in row.get("top3", ()))
                 lines.append(f"| {row['name']} | {row['covered_count']} | {_ppfmt(row.get('trim_mean'))} | "
-                             f"{row['limit_up_count']} | {top or '—'} |")
+                             f"{_fmt(row.get('touch_limit_price_count'))} | {_fmt(row.get('sealed_limit_count'))} | {top or '—'} |")
             lines.append("")
         if result.get("generic_controls"):
             lines.extend(["控制因子(仅供参考)", "| 板块 | 有价成员 | 相对市场pp | z |", "|---|---:|---:|---:|"])

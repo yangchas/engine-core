@@ -9,6 +9,7 @@ from examples.run_offline_plate_auction_open_report import (
     _build_revision_auction,
     _compare_revision_selections,
     _load_registry_dir,
+    _merge_revision_stage,
     _registry_point_in_time_flag,
     _render_revision_note,
     parse_open_times,
@@ -38,19 +39,24 @@ def test_registry_loader_accepts_list_registry_and_reports_asof_flag(tmp_path):
 
 
 def test_independent_report_keeps_missing_returns_missing(tmp_path):
-    rows = [{"code": "801001", "name": "AI应用", "class": "THEME"}]
+    rows = [{"code": "801001", "name": "AI应用", "class": "THEME"},
+            {"code": "801002", "name": "事件板块", "class": "EVENT"}]
     (tmp_path / "registry.json").write_text(json.dumps({"plates": rows}), encoding="utf-8")
     with (tmp_path / "relation.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(("plateid", "stockid"))
         writer.writerows(("801001", f"00000{i}") for i in range(1, 10))
+        writer.writerow(("801002", "000001"))
+    (tmp_path / "manifest.json").write_text(json.dumps({"as_of": "2026-10-13",
+        "as_of_source": "csv_unknown"}), encoding="utf-8")
 
     stocks = []
     for i in range(1, 10):
         value = None if i == 9 else (i - 5) * 0.01
         stocks.append({
             "symbol": f"00000{i}",
-            "times": {tag: {"pct_vs_pre_close": value, "limit_state": None}
+            "times": {tag: {"pct_vs_pre_close": value, "limit_state": None,
+                            "at_limit_price": i == 1, "rest_bid": None}
                       for tag in ("0920", "0924", "0925", "0932")},
         })
     report = {"stocks": stocks, "plates": [{"plate": "AI应用", "times": {
@@ -58,13 +64,16 @@ def test_independent_report_keeps_missing_returns_missing(tmp_path):
         for tag in ("0920", "0924", "0925", "0932")
     }}]}
 
-    _attach_independent_plates(report, tmp_path, "2026-10-13", "2026-10-13")
+    independent_manifest = _attach_independent_plates(report, tmp_path, "2026-10-13", "2026-10-13")
 
     row = report["plates"][0]["times"]["0925"]["independent"]
     assert row["market"]["n"] == 8
     assert row["missing_count"] == 1
     assert row["uncovered"]["n"] <= 8
-    assert row["flags"] == ["NOT_POINT_IN_TIME"]
+    assert "NOT_POINT_IN_TIME" in row["flags"]
+    assert "REGISTRY_ASOF_UNVERIFIED" in independent_manifest["flags"]
+    assert report["independent_by_tag"]["0925"]["event_plates"][0]["touch_limit_price_count"] == 1
+    assert "limit_up_count" not in report["independent_by_tag"]["0925"]["event_plates"][0]
 
 
 def test_open_times_default_parse_and_validation():
@@ -115,6 +124,36 @@ def test_auction_price_uses_last_tick_at_or_before_snapshot_cutoff_and_counts_di
     assert auctions["0925"]["000002"]["price_flags"] == ["PRE_FINAL_INDICATIVE"]
     assert meta["0925"]["price_source_disagree"] == 1
     assert meta["0925"]["source_counts"]["TICK_BOOK1_INDICATIVE"] == 1
+
+
+def test_auction_price_caps_snapshot_cutoff_at_system_boundary():
+    auctions = {"0925": {"000001": {"ts": "2026-10-14 09:25:10", "px_milli": None}}}
+    ticks = {"0925": [
+        {"symbol": "000001", "ts": "2026-10-14 09:25:06", "bp1_milli": 10000, "ap1_milli": 10000},
+        {"symbol": "000001", "ts": "2026-10-14 09:25:07", "bp1_milli": 12000, "ap1_milli": 12000},
+    ]}
+
+    meta = _apply_auction_tick_prices(auctions, ticks)
+
+    assert auctions["0925"]["000001"]["px_milli"] == 10000
+    assert meta["0925"]["input_cutoff"] == "2026-10-14 09:25:06+08:00"
+    assert meta["0925"]["cutoff_capped"] is True
+    assert meta["0925"]["raw_snapshot_max_ts"] == "2026-10-14 09:25:10+08:00"
+
+
+def test_revision_stage_does_not_change_base_auction_or_opening_prices():
+    report = {"market": {"0925": {"covered_count": 1}}, "stocks": [{"symbol": "000001",
+        "times": {"0925": {"price": 10.0}, "0932": {"price": 11.0}}}], "plates": [],
+        "input_cutoff": {"0925": "2026-10-14T09:25:06", "0932": "2026-10-14T09:32:00"}}
+    revised = {"market": {"0925": {"covered_count": 1}}, "stocks": [{"symbol": "000001",
+        "times": {"0925": {"price": 12.0, "amount_kind": "MATCH"}}}], "plates": []}
+
+    _merge_revision_stage(report, revised, {})
+
+    assert report["stocks"][0]["times"]["0925"]["price"] == 10.0
+    assert report["stocks"][0]["times"]["0932"]["price"] == 11.0
+    assert report["stocks"][0]["times"]["0925R"]["price"] == 12.0
+    assert report["input_cutoff"]["0925"] == "2026-10-14T09:25:06"
 
 
 def test_snapshot_price_mode_preserves_old_missing_coverage():

@@ -32,6 +32,7 @@ from examples.run_offline_plate_pipeline import (
 
 
 _ZONE = ZoneInfo("Asia/Shanghai")
+AUCTION_SYSTEM_BOUNDARY = "09:25:06"
 _DEFAULT_OPEN_TIMES = ("0932", "0935", "0940", "0945")
 
 
@@ -120,7 +121,11 @@ def _apply_auction_tick_prices(
     metadata: dict[str, dict[str, Any]] = {}
     for tag, snapshots in auctions.items():
         cutoffs = [_local_datetime(row["ts"]) for row in snapshots.values() if row.get("ts")]
-        cutoff = max(cutoffs) if cutoffs else None
+        raw_cutoff = max(cutoffs) if cutoffs else None
+        boundary = (datetime.combine(raw_cutoff.date(), datetime.strptime(AUCTION_SYSTEM_BOUNDARY, "%H:%M:%S").time())
+                    .replace(tzinfo=_ZONE) if raw_cutoff else None)
+        cutoff = min(raw_cutoff, boundary) if raw_cutoff and boundary else raw_cutoff
+        cutoff_capped = bool(raw_cutoff and boundary and raw_cutoff > boundary)
         cutoff_text = cutoff.isoformat(sep=" ") if cutoff else None
         eligible: dict[str, tuple[datetime, Mapping[str, Any]]] = {}
         if cutoff is not None and price_source == "tick_book1":
@@ -162,7 +167,8 @@ def _apply_auction_tick_prices(
             counts[source] += 1
             if "PRE_FINAL_INDICATIVE" in flags:
                 pre_final_symbols.append(symbol)
-        metadata[tag] = {"input_cutoff": cutoff_text, "source_counts": counts,
+        metadata[tag] = {"input_cutoff": cutoff_text, "raw_snapshot_max_ts": raw_cutoff.isoformat(sep=" ") if raw_cutoff else None,
+                         "cutoff_capped": cutoff_capped, "source_counts": counts,
                          "price_source_disagree": disagree,
                          "pre_final_indicative_count": len(pre_final_symbols),
                          "pre_final_indicative_symbols": sorted(pre_final_symbols)}
@@ -320,6 +326,9 @@ def _merge_revision_stage(report: dict[str, Any], revised: Mapping[str, Any], su
             if other and other.get("times", {}).get("0925") is not None:
                 plate["times"]["0925R"] = {**other["times"]["0925"], "stage": "0925R"}
     report.setdefault("independent_by_tag", {})["0925R"] = (revised.get("independent_by_tag") or {}).get("0925")
+    revision_cutoff = (revised.get("input_cutoff") or {}).get("0925")
+    if revision_cutoff:
+        report.setdefault("input_cutoff", {})["0925R"] = revision_cutoff
     report["revision_summary"] = dict(summary)
 
 
@@ -395,6 +404,8 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str,
             if not snapshot_rows or auction_price_source == "snapshot_px":
                 continue
             cutoff = max(_local_datetime(row["ts"]) for row in snapshot_rows.values())
+            system_boundary = datetime.fromisoformat(f"{trade_date}T{AUCTION_SYSTEM_BOUNDARY}").replace(tzinfo=_ZONE)
+            cutoff = min(cutoff, system_boundary)
             cutoff_text = cutoff.strftime("%Y-%m-%d %H:%M:%S.%f")
             rows = fetchall(
                 "SELECT last_row(px_milli), last_row(bp1_milli), last_row(ap1_milli), "
@@ -634,6 +645,14 @@ def _registry_point_in_time_flag(registry_asof: str, trade_date: str) -> bool:
     return asof >= trade_day
 
 
+def _registry_manifest(registry_dir: Path) -> dict[str, Any]:
+    path = registry_dir / "manifest.json"
+    if not path.is_file():
+        return {}
+    value = json.loads(path.read_text(encoding="utf-8"))
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
 def _load_registry_dir(registry_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[str, set[str]]]:
     registry_path = registry_dir / "registry.json"
     relation_path = registry_dir / "relation.csv"
@@ -696,12 +715,16 @@ def _apply_selection_stability(out_by_tag: dict[str, dict[str, Any]], tags: tupl
             previous = current
 
 
-def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, registry_asof: str,
+def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, registry_asof: str | None,
                                trade_date: str, *, reason_rows: Mapping[str, list[dict[str, Any]]] | None = None,
                                pool_by_symbol: Mapping[str, Any] | None = None) -> dict[str, Any]:
     registry, members = _load_registry_dir(registry_dir)
     out_by_tag: dict[str, dict[str, Any]] = {}
-    flagged = _registry_point_in_time_flag(registry_asof, trade_date)
+    registry_manifest = _registry_manifest(registry_dir)
+    registry_asof = str(registry_manifest.get("as_of", registry_asof or "UNKNOWN"))
+    registry_verified = registry_manifest.get("as_of_source") == "api_members"
+    flagged = (not registry_verified or registry_asof == "UNKNOWN" or
+               _registry_point_in_time_flag(registry_asof, trade_date))
     plate_rows = {str(row.get("plate")): row for row in report.get("plates", ())}
     all_symbols = set(members_symbol for group in members.values() for members_symbol in group)
     all_symbols.update(str(row["symbol"]) for row in report.get("stocks", ()) if row.get("symbol"))
@@ -731,7 +754,8 @@ def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, regis
             "controls_top": control_rows, "controls": result.controls, "rounds": result.rounds,
             "missing_count": result.missing_count,
             "params": params, "registry_asof": registry_asof,
-            "flags": ["NOT_POINT_IN_TIME"] if flagged else [],
+            "flags": ((["NOT_POINT_IN_TIME"] if flagged else []) +
+                      (["REGISTRY_ASOF_UNVERIFIED"] if not registry_verified else [])),
         })
         for plate in report.get("plates", ()):
             stage = plate.get("times", {}).get(tag)
@@ -756,13 +780,21 @@ def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, regis
             trimmed = [value for _, value in ordered]
             cut = int(len(trimmed) * 0.1)
             sample = trimmed[cut:len(trimmed) - cut] if len(trimmed) > 2 * cut else trimmed
+            auction_tag = tag in ("0920", "0924", "0925", "0925R")
+            seal_fields_available = any(
+                report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("rest_bid") is not None
+                for symbol, _ in values
+            )
             event_rows.append({"code": code, "name": registry[code].get("name") or code,
                 "member_count": len(symbols), "covered_count": len(values),
                 "trim_mean": sum(sample) / len(sample) if sample else None,
-                "limit_up_count": sum(1 for symbol, value in values if (
-                    report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("limit_state") == 1 or
-                    (report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("at_limit_price") is True
-                     and value > 0))),
+                "touch_limit_price_count": sum(1 for symbol, _ in values if (
+                    report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("at_limit_price") is True or
+                    report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("limit_state") in (1, -1))),
+                "sealed_limit_count": (sum(1 for symbol, _ in values if (
+                    report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("limit_state") == 1 and
+                    (report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("rest_bid") or 0) > 0))
+                    if auction_tag and seal_fields_available else None),
                 "top3": [{"symbol": symbol, "name": report_stock.get(symbol, {}).get("name"), "ret": value}
                          for symbol, value in sorted(values, key=lambda item: (-item[1], item[0]))[:3]]})
         control_rows = []
@@ -835,10 +867,11 @@ def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, regis
         "registry_dir": str(registry_dir),
         "registry_json_sha256": hashlib.sha256((registry_dir / "registry.json").read_bytes()).hexdigest(),
         "relation_csv_sha256": hashlib.sha256((registry_dir / "relation.csv").read_bytes()).hexdigest(),
-        "registry_asof": registry_asof,
+        "registry_asof": registry_asof, "registry_asof_source": registry_manifest.get("as_of_source", "UNKNOWN"),
         "select_params": params,
         "selected_count_by_stage": {tag: len(row["selected"]) for tag, row in out_by_tag.items()},
-        "flags": ["NOT_POINT_IN_TIME"] if flagged else [],
+        "flags": ((["NOT_POINT_IN_TIME"] if flagged else []) +
+                  (["REGISTRY_ASOF_UNVERIFIED"] if not registry_verified else [])),
     }
 
 
@@ -856,8 +889,6 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
     _reject_eod_pipeline_product(snapshot_path)
     if kaipan_dir is not None:
         _reject_eod_pipeline_product(kaipan_dir)
-    if registry_dir is not None and registry_asof is None:
-        raise ValueError("--registry-asof is required with --registry-dir")
     if registry_dir is not None and registry_asof is not None:
         for trade_date in trade_dates:
             _registry_point_in_time_flag(registry_asof, trade_date)
@@ -914,6 +945,9 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             hot_captures=_load_hot_captures(hot_capture_dir),
         )
         auction_price_meta = timing.get("auction_price", {})
+        for tag in ("0920", "0924", "0925"):
+            if tag in auction_price_meta and auction_price_meta[tag].get("input_cutoff"):
+                report.setdefault("input_cutoff", {})[tag] = auction_price_meta[tag]["input_cutoff"]
         for stock in report["stocks"]:
             for tag in ("0920", "0924", "0925"):
                 source_row = auction.get(tag, {}).get(stock["symbol"], {})
@@ -923,7 +957,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                     stock["times"][tag]["flags"] = flags
         independent_manifest = (_attach_independent_plates(report, registry_dir, registry_asof, trade_date,
                                    reason_rows=reason_rows, pool_by_symbol=pool)
-                                if registry_dir is not None and registry_asof is not None else None)
+                                if registry_dir is not None else None)
         revised_auction, revision_meta = _build_revision_auction(
             auction, timing.get("revision_tick_rows", []), trade_date, revision_cutoff,
         )
@@ -940,7 +974,8 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             stock["times"]["0925"]["price_source"] = source_row.get("price_source", "NO_EFFECTIVE_PRICE")
             stock["times"]["0925"]["flags"] = list(source_row.get("price_flags", ()))
             stock["times"]["0925"]["input_cutoff"] = revision_meta["input_cutoff"]
-        if registry_dir is not None and registry_asof is not None:
+        revision_report.setdefault("input_cutoff", {})["0925"] = revision_meta["input_cutoff"]
+        if registry_dir is not None:
             _attach_independent_plates(revision_report, registry_dir, registry_asof, trade_date,
                                        reason_rows=reason_rows, pool_by_symbol=pool)
         revision_summary = _revision_summary(report, revision_report, revision_meta["revised_count"])
@@ -956,6 +991,12 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             point_in_time_asof, trade_date, report["input_cutoff"],
             snapshot_sealed_at if static_relation is None else None,
         )
+        registry_unverified = bool(independent_manifest and
+                                   "REGISTRY_ASOF_UNVERIFIED" in independent_manifest.get("flags", ()))
+        if registry_unverified:
+            point_in_time_by_stage = sorted(set(point_in_time_by_stage) | set(report["input_cutoff"]))
+            if "REGISTRY_ASOF_UNVERIFIED" not in degradation:
+                degradation.append("REGISTRY_ASOF_UNVERIFIED")
         if static_asof_unknown:
             degradation.append("STATIC_ASOF_UNKNOWN")
         if point_in_time_by_stage and "NOT_POINT_IN_TIME" not in degradation:
@@ -1023,6 +1064,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "snapshot_sealed_at": snapshot_sealed_at.isoformat() if snapshot_sealed_at else None,
             "point_in_time_by_stage": point_in_time_by_stage,
             "input_cutoff": report["input_cutoff"],
+            "auction_system_boundary": AUCTION_SYSTEM_BOUNDARY,
             "auction_price": auction_price_meta,
             "revision_cutoff": revision_cutoff,
             "revision_summary": revision_summary,
@@ -1065,8 +1107,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.registry_asof and not args.registry_dir:
         parser.error("--registry-asof requires --registry-dir")
-    if args.registry_dir and not args.registry_asof:
-        parser.error("--registry-asof is required with --registry-dir")
     try:
         revision_cutoff = validate_revision_cutoff(args.revision_cutoff)
     except ValueError as exc:

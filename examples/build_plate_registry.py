@@ -30,9 +30,22 @@ def _parse_as_of(value: str) -> str:
 
 
 def build(csv_dir: Path, dictionary_path: Path, output_dir: Path, *, as_of: str,
-          generic_names_file: Path | None = None) -> None:
+          generic_names_file: Path | None = None, as_of_source: str = "csv_unknown",
+          members_manifest_path: Path | None = None) -> None:
     """Build registry JSON, CSV/NPZ relations, and an input/output manifest."""
     as_of = _parse_as_of(as_of)
+    if as_of_source not in {"api_members", "csv_unknown"}:
+        raise ValueError("as_of_source must be api_members or csv_unknown")
+    members_manifest_hash = None
+    if as_of_source == "api_members":
+        if members_manifest_path is None:
+            raise ValueError("--members-manifest is required for --as-of-source api_members")
+        members_manifest_bytes = members_manifest_path.read_bytes()
+        members_manifest = json.loads(members_manifest_bytes.decode("utf-8"))
+        members_date = members_manifest.get("parameters", {}).get("date")
+        if members_date != as_of:
+            raise ValueError("members-manifest parameters.date must match --as-of")
+        members_manifest_hash = _sha256(members_manifest_bytes)
     if output_dir.exists() and (not output_dir.is_dir() or any(output_dir.iterdir())):
         raise ValueError(f"output directory must be empty: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -105,6 +118,8 @@ def build(csv_dir: Path, dictionary_path: Path, output_dir: Path, *, as_of: str,
     class_counts = dict(sorted(Counter(row["class"] for row in registry["plates"]).items()))
     manifest = {
         "as_of": as_of,
+        "as_of_source": as_of_source,
+        "members_manifest_sha256": members_manifest_hash,
         "inputs": {
             "个股板块.csv": {"sha256": _sha256(relation_bytes)},
             "板块.csv": {"sha256": _sha256(plates_bytes)},
@@ -130,10 +145,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dictionary", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--as-of", required=True)
+    parser.add_argument("--as-of-source", choices=("api_members", "csv_unknown"), default="csv_unknown")
+    parser.add_argument("--members-manifest", type=Path,
+                        help="fetch_kaipan_plate_members manifest.json proving API member date")
     parser.add_argument("--generic-names-file", type=Path)
     args = parser.parse_args(argv)
     build(args.csv_dir, args.dictionary, args.output_dir, as_of=args.as_of,
-          generic_names_file=args.generic_names_file)
+          generic_names_file=args.generic_names_file, as_of_source=args.as_of_source,
+          members_manifest_path=args.members_manifest)
     return 0
 
 
