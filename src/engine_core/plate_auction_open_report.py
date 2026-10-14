@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Mapping
@@ -10,6 +11,10 @@ from zoneinfo import ZoneInfo
 from .auction_limit_facts import _rounded_limit_price
 from .plate_aggregation import StockFact, aggregate_plates
 from .plate_membership import MembershipIndex, PlateHierarchy, StockPlateMemberships
+from .stock_scenario import (
+    AUCTION_HIGH_PP, AUCTION_LOW_PP, CHANGE_DOWN_PP, CHANGE_UP_PP,
+    build_stock_scenarios,
+)
 
 
 _AUCTION_TAGS = ("0920", "0924", "0925")
@@ -515,10 +520,42 @@ def build_session_report(
         market[tag]["flat_count"] = sum(value == 0 for value in changes)
         market[tag]["limit_up_count"] = sum(f.limit_state == 1 for f in facts.values()) if tag == "0925" else None
         market[tag]["limit_down_count"] = sum(f.limit_state == -1 for f in facts.values()) if tag == "0925" else None
+    plate_pct_by_stage = {
+        row["plate"]: {tag: (stage or {}).get("pct_equal_weight")
+                        for tag, stage in row["times"].items()}
+        for row in plates
+    }
+    scenario_by_symbol = build_stock_scenarios(
+        stocks, plate_pct_by_stage,
+        primary_plate_of=lambda row: row.get("primary_plate"),
+    )
+    for stock in stocks:
+        stock["scenario"] = scenario_by_symbol.get(stock["symbol"])
     result = {"trade_date": trade_date, "stocks": stocks, "plates": plates, "market": market,
               "input_cutoff": input_cutoffs,
               "activity_manifest": baseline_manifest,
               "candidate_thresholds": {"min_members": min_members, "min_share": min_share},
+              "stock_scenario_manifest": {
+                  "thresholds_pp": {"auction_high": AUCTION_HIGH_PP, "auction_low": AUCTION_LOW_PP,
+                                    "change_up": CHANGE_UP_PP, "change_down": CHANGE_DOWN_PP},
+                  "final_count": sum((row.get("scenario") or {}).get("auction", {}).get("final_flag") == "FINAL"
+                                     for row in stocks),
+                  "indicative_count": sum((row.get("scenario") or {}).get("auction", {}).get("final_flag") == "INDICATIVE"
+                                          for row in stocks),
+                  "no_price_count": sum((row.get("scenario") or {}).get("auction", {}).get("final_flag") == "NO_PRICE"
+                                        for row in stocks),
+                  "missing_scenario_count": sum(row.get("scenario") is None for row in stocks),
+                  "path_counts": {
+                      f"{auction}_{change}": sum(
+                          ((row.get("scenario") or {}).get("path") or {}).get("auction_band") == auction
+                          and ((row.get("scenario") or {}).get("path") or {}).get("change_band") == change
+                          for row in stocks)
+                      for auction in ("HIGH", "FLAT", "LOW")
+                      for change in ("UP", "SAME", "DOWN")
+                  },
+                  "broke_limit_count": sum(bool(((row.get("scenario") or {}).get("path") or {}).get("broke_limit"))
+                                           for row in stocks),
+              },
               "min_effective_members": MIN_EFFECTIVE_MEMBERS,
               "stock_caps_available": stock_caps is not None,
               **({"industry_fallback": industry_fallback,
@@ -1232,6 +1269,7 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
             lines.extend(["", f"{flag}: " + ("、".join(
                 f"{row['symbol']} {row.get('name') or ''} {_ppfmt(row['times'][tag].get('pct_vs_pre_close'))} "
                 f"{_amount_yi(row['times'][tag].get('amount'))}" for row in flagged_rows) or "—")])
+    _render_stock_scenario_section(lines, result)
     lines.extend(["", "## 数据质量与降级标签", "", f"- 竞价金额为虚拟匹配额；09:32 金额为真实累计成交额。",
                   f"- 昨日池成员数: {len(pool_rows)}。", f"- 降级标签: {', '.join(result['degradation']) or 'NONE'}。",
                   *[f"- {label}: {label_meanings.get(label, '数据质量标签，具体含义由对应输入契约定义。')}"
@@ -1311,6 +1349,104 @@ def render_independent_plates_markdown(independent_by_tag: Mapping[str, Mapping[
                              f"{_zfmt(row.get('z')) if row.get('z') is not None else '样本不足'} |")
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _is_st_stock(row: Mapping[str, Any]) -> bool:
+    if row.get("is_st") is True:
+        return True
+    name = str(row.get("name") or "").strip().upper()
+    return name.startswith("ST") or name.startswith("*ST")
+
+
+def _scenario_pp(value: Any) -> str:
+    return "—" if value is None else f"{float(value):+.2f}"
+
+
+def _render_stock_scenario_section(lines: list[str], result: Mapping[str, Any]) -> None:
+    stocks = list(result.get("stocks", ()))
+    eligible = [row for row in stocks if not _is_st_stock(row) and row.get("scenario")]
+    counts = {band: {change: 0 for change in ("UP", "SAME", "DOWN")}
+              for band in ("HIGH", "FLAT", "LOW")}
+    for row in eligible:
+        scenario = row["scenario"]
+        if scenario["auction"]["final_flag"] != "FINAL":
+            continue
+        path = scenario.get("path") or {}
+        if path.get("auction_band") in counts and path.get("change_band") in counts[path["auction_band"]]:
+            counts[path["auction_band"]][path["change_band"]] += 1
+    indicative = sum(row["scenario"]["auction"]["final_flag"] == "INDICATIVE" for row in eligible)
+    no_price = sum(row["scenario"]["auction"]["final_flag"] == "NO_PRICE" for row in eligible)
+    lines.extend(["", "## 个股竞价→开盘情景", "",
+                  "### 路径交叉表（非 ST 且 0925 FINAL）", "",
+                  "| 竞价档 | UP | SAME | DOWN |", "|---|---:|---:|---:|"])
+    for band in ("HIGH", "FLAT", "LOW"):
+        lines.append(f"| {band} | {counts[band]['UP']} | {counts[band]['SAME']} | {counts[band]['DOWN']} |")
+    lines.append(f"INDICATIVE: {indicative} 只；NO_PRICE: {no_price} 只。")
+
+    def scenario_row(row: Mapping[str, Any]) -> str:
+        item = row["scenario"]
+        auction, opened, change, rel = (item["auction"], item["open"], item["change"], item["vs_plate"])
+        return (f"| {row['symbol']} | {row.get('name') or ''} | {row.get('primary_plate') or '—'} | "
+                f"{_scenario_pp(auction.get('pct_0925'))} | {_scenario_pp(opened.get('pct_0932'))} | "
+                f"{_scenario_pp(opened.get('pct_0945'))} | {_scenario_pp(change.get('d_0945_vs_0925'))} | "
+                f"{_amount_yi(auction.get('matched_amount_0925'))} | "
+                f"{_fmt(item.get('open_amount_multiple'))} | {_scenario_pp(rel.get('rel_0945'))} | "
+                f"{_fmt(rel.get('rank_pct_0945'))} | {_fmt(rel.get('n_0945'))} | {auction.get('final_flag')} |")
+
+    headers = "| 代码 | 名称 | 主板块 | 0925(pp) | 0932(pp) | 0945(pp) | Δ(pp) | 匹配额(亿) | 开盘额倍数 | 相对板块(pp) | 板内涨幅名次 | n | 价格标记 |"
+    divider = "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"
+    for auction_band, change_band, title in (("HIGH", "DOWN", "HIGH×DOWN（高开回落）"),
+                                              ("LOW", "UP", "LOW×UP（低开拉升）"),
+                                              ("HIGH", "UP", "HIGH×UP（高开延续）")):
+        rows = [row for row in eligible if row["scenario"]["auction"]["final_flag"] == "FINAL"
+                and (row["scenario"].get("path") or {}).get("auction_band") == auction_band
+                and (row["scenario"].get("path") or {}).get("change_band") == change_band]
+        rows.sort(key=lambda row: (-(row["scenario"]["auction"].get("matched_amount_0925") or 0),
+                                   str(row.get("symbol", ""))))
+        lines.extend(["", f"### {title}", "", headers, divider])
+        lines.extend(scenario_row(row) for row in rows[:20])
+        if not rows:
+            lines.append("| — | — | — | — | — | — | — | — | — | — | — | — | — |")
+
+    selected_plates: list[str] = []
+    independent = result.get("independent_by_tag", {})
+    for tag in ("0925", "0945"):
+        selected = (independent.get(tag) or {}).get("selected", ())
+        for selected_row in list(selected)[:10]:
+            name = selected_row.get("name", selected_row.get("plate"))
+            if name and str(name) not in selected_plates:
+                selected_plates.append(str(name))
+    lines.extend(["", "### 独立入选板块内个股", ""])
+    by_primary: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in stocks:
+        if not row.get("scenario"):
+            continue
+        plate = row.get("primary_plate")
+        if plate:
+            by_primary[str(plate)].append(row)
+    for plate in selected_plates:
+        members = by_primary.get(plate, [])
+        by_amount = sorted((row for row in members
+                            if row["scenario"]["auction"].get("matched_amount_0925") is not None),
+                           key=lambda row: (-row["scenario"]["auction"]["matched_amount_0925"], row["symbol"]))[:5]
+        by_pct = sorted((row for row in members if row["scenario"]["auction"].get("pct_0925") is not None),
+                        key=lambda row: (-row["scenario"]["auction"]["pct_0925"], row["symbol"]))[:3]
+        merged = list(by_amount)
+        known = {row["symbol"] for row in merged}
+        merged.extend(row for row in by_pct if row["symbol"] not in known)
+        lines.extend([f"#### {plate}", "", "| 昨板 | 个股 | 竞价涨幅(pp) | 匹配额(亿) | 价格标记 | 开盘情景 |",
+                      "|---|---|---:|---:|---|---|"])
+        for row in merged:
+            item = row["scenario"]
+            path = (item.get("path") or {}).get("label") or "—"
+            lines.append(f"| {'昨板' if row.get('in_yest_pool') else ''} | {row['symbol']} {row.get('name') or ''} | "
+                         f"{_scenario_pp(item['auction'].get('pct_0925'))} | "
+                         f"{_amount_yi(item['auction'].get('matched_amount_0925'))} | "
+                         f"{item['auction']['final_flag']} | {path} |")
+    lines.extend(["", "说明：HIGH ≥ +1.0pp，FLAT 为 −1.0pp 至 +1.0pp 之间，LOW ≤ −1.0pp；",
+                  "UP ≥ +0.5pp，SAME 为 −0.5pp 至 +0.5pp 之间，DOWN ≤ −0.5pp。",
+                  "FINAL / INDICATIVE：FINAL 为 0925 终价来源，INDICATIVE 为终价未到时的指示价；",
+                  "榜单与路径交叉表排除 ST；缺失不补 0。"])
 
 
 def _fmt(value: Any) -> str:

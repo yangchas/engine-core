@@ -192,7 +192,8 @@ def test_revision_omitted_without_indicative_prices_and_compact_payloads_keep_fu
         "limit_state": 1, "pct_vs_pre_close": 0.1, "amount": 1000}}, "labels": {}}
     stocks[1] = selected_stock
     compact_stocks = _compact_report_stocks(stocks)
-    assert compact_stocks[100] == {"symbol": "0000101", "primary_plate": "主题", "final_label": None}
+    assert compact_stocks[100] == {"symbol": "0000101", "primary_plate": "主题", "final_label": None,
+                                   "scenario": None}
     assert compact_stocks[1] == selected_stock
 
     full_plate = {"plate": "主题", "category": "THEME", "priced_member_count": 5,
@@ -203,6 +204,11 @@ def test_revision_omitted_without_indicative_prices_and_compact_payloads_keep_fu
     assert compact_plates[0]["times"]["0925"]["amount_sum"] == 88.0
     assert compact_plates[1]["detail_omitted"] is True
     assert "SMALL_OR_THIN" in compact_plates[1]["quality_flags"]
+
+
+def test_compact_stock_payload_preserves_scenario():
+    stock = {"symbol": "000001", "times": {}, "scenario": {"path": {"label": "HIGH_UP"}}}
+    assert _compact_report_stocks([stock])[0]["scenario"] == stock["scenario"]
 
 
 def test_no_late_revision_note_omits_revision_section():

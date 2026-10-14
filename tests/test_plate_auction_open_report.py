@@ -41,6 +41,18 @@ def test_auction_match_and_opening_traded_amounts_are_separate():
     assert bank["times"]["0932"]["input_cutoff"] == "2026-10-13T09:32:00"
 
 
+def test_stock_scenario_report_has_three_lists_and_rule_explanation():
+    result = build_session_report(**_source())
+    assert result["stocks"][0]["scenario"] is not None
+    report = result["report_md"]
+    assert "## 个股竞价→开盘情景" in report
+    assert "HIGH×DOWN（高开回落）" in report
+    assert "LOW×UP（低开拉升）" in report
+    assert "HIGH×UP（高开延续）" in report
+    assert "FINAL / INDICATIVE" in report
+    assert "缺失不补 0" in report
+
+
 def test_plate_strength_is_two_explicit_dimensions_and_excludes_current_baseline():
     source = _source()
     source["baseline_auction_by_tag"] = {"0925": [

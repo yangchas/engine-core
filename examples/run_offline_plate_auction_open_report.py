@@ -708,7 +708,8 @@ def _compact_report_stocks(stocks: list[Mapping[str, Any]]) -> list[dict[str, An
             compact.append(dict(row))
         else:
             compact.append({"symbol": row["symbol"], "primary_plate": row.get("primary_plate"),
-                            "final_label": row.get("labels", {}).get(final_tag)})
+                            "final_label": row.get("labels", {}).get(final_tag),
+                            "scenario": row.get("scenario")})
     return compact
 
 
@@ -1288,6 +1289,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                                  "asof": static_asof if static_asof is not None else "UNKNOWN"}
                                 if static_relation_path is not None else None),
             "stock_row_count": len(report["stocks"]), "plate_row_count": len(report["plates"]),
+            "stock_scenario": report.get("stock_scenario_manifest", {}),
             "membership_policy": report["memberships_policy"], "degradation": degradation,
             "activity_baseline": report.get("activity_manifest", {}),
             "snapshot_asof": snapshot_asof, "conclusion_phase": conclusion_phase,
