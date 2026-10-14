@@ -244,6 +244,8 @@ def _render_revision_note(report: Mapping[str, Any]) -> str:
     lines = ["0925 是 09:25:06 的实时结论（含指示价）；0925R 是迟到终价到达后的修订，二者不得混用；开盘(0932+)使用终价。"]
     if price:
         lines.append(str(price))
+    if report.get("no_late_finals"):
+        return "\n".join(lines + ["", "无迟到终价, 0925R 与 0925 相同。"])
     change = summary.get("price_change_pp", {})
     lines.extend(["", "## 0925 → 0925R 修订对比", "",
                   f"价格变化 {summary.get('price_changed_count', 0)} 只；涨幅变化中位 {change.get('median')} pp / "
@@ -671,6 +673,55 @@ def _registry_manifest(registry_dir: Path) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _revision_should_render(revision_meta: Mapping[str, Any]) -> bool:
+    return int(revision_meta.get("pre_final_indicative_count", 0) or 0) > 0
+
+
+def _compact_report_stocks(stocks: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    selected: set[str] = set()
+    if not stocks:
+        return []
+    tags = list(stocks[0].get("times", {}))
+    final_tag = next((tag for tag in reversed(tags) if tag not in ("0920", "0924", "0925", "0925R")),
+                     "0925R" if "0925R" in tags else "0925")
+    for tag in tags:
+        stage = [(row, row.get("times", {}).get(tag, {})) for row in stocks]
+        selected.update(row["symbol"] for row, values in stage
+                        if values.get("limit_state") in (-1, 1))
+        with_price = [(row, values.get("pct_vs_pre_close")) for row, values in stage
+                      if values.get("pct_vs_pre_close") is not None]
+        selected.update(row["symbol"] for row, _ in sorted(with_price, key=lambda item: item[1], reverse=True)[:40])
+        selected.update(row["symbol"] for row, _ in sorted(with_price, key=lambda item: item[1])[:20])
+        with_amount = [(row, values.get("amount")) for row, values in stage if values.get("amount") is not None]
+        selected.update(row["symbol"] for row, _ in sorted(with_amount, key=lambda item: item[1], reverse=True)[:30])
+    for row in stocks:
+        label = row.get("labels", {}).get(final_tag, {})
+        if label.get("source") == "NO_PLATE" or {"NO_PLATE", "EVENT_ONLY", "COUNTER_TREND"} & set(label.get("flags", ())):
+            selected.add(str(row["symbol"]))
+    compact = []
+    for row in stocks:
+        if row["symbol"] in selected:
+            compact.append(dict(row))
+        else:
+            compact.append({"symbol": row["symbol"], "primary_plate": row.get("primary_plate"),
+                            "final_label": row.get("labels", {}).get(final_tag)})
+    return compact
+
+
+def _compact_report_plates(plates: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    full_categories = {"THEME", "NICHE", "BROAD"}
+    compact = []
+    for row in plates:
+        if row.get("category") in full_categories and int(row.get("priced_member_count", 0) or 0) >= 5:
+            compact.append(dict(row))
+        else:
+            compact.append({"plate": row.get("plate"), "member_count": row.get("member_count"),
+                            "category": row.get("category"), "quality_flags": sorted(set(
+                                row.get("quality_flags", ())) | {"SMALL_OR_THIN"}),
+                            "detail_omitted": True})
+    return compact
+
+
 def _load_registry_dir(registry_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[str, set[str]]]:
     registry_path = registry_dir / "registry.json"
     relation_path = registry_dir / "relation.csv"
@@ -878,6 +929,11 @@ def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, regis
                 stock["symbol"], selected_with_members, feature_sets.get(stock["symbol"]), registry,
                 stock_tag.get("pct_vs_pre_close"), stock_tag.get("limit_state") == 1)
     report["independent_by_tag"] = out_by_tag
+    code_by_name = {str(row.get("name")): code for code, row in registry.items() if row.get("name")}
+    for plate in report.get("plates", ()):
+        code = code_by_name.get(str(plate.get("plate")))
+        if code is not None:
+            plate["category"] = str(registry[code].get("class", plate.get("category")))
     if flagged:
         if "NOT_POINT_IN_TIME" not in report.setdefault("degradation", []):
             report["degradation"].append("NOT_POINT_IN_TIME")
@@ -900,7 +956,8 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                registry_asof: str | None = None,
                open_times: tuple[str, ...] = ("0932",),
                auction_price_source: str = "tick_book1",
-               revision_cutoff: str = "09:27:10") -> None:
+               revision_cutoff: str = "09:27:10", min_members: int = 10,
+               min_share: float = 0.003) -> None:
     if conclusion_phase != "AUCTION":
         raise ValueError("session report only supports conclusion_phase=AUCTION")
     revision_cutoff = validate_revision_cutoff(revision_cutoff)
@@ -938,6 +995,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         auction, opening, pre_close, klines, baseline_auction, timing = _read_td(
             td_host, trade_date, symbols, kline_range, open_times, auction_price_source, revision_cutoff,
         )
+        report_cpu_started = time.process_time()
         opening_by_tag: dict[str, dict[str, dict[str, Any]]] = {tag: {} for tag in open_times}
         for symbol, row in opening.items():
             tagged_rows = row.get("_asof_by_tag", {}) if isinstance(row, Mapping) else {}
@@ -961,6 +1019,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             baseline_auction_by_tag=baseline_auction,
             hot_prev_by_plate=_load_prev_hot(kaipan_dir, prior),
             hot_captures=_load_hot_captures(hot_capture_dir),
+            min_members=min_members, min_share=min_share,
         )
         auction_price_meta = timing.get("auction_price", {})
         for tag in ("0920", "0924", "0925"):
@@ -979,7 +1038,8 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         revised_auction, revision_meta = _build_revision_auction(
             auction, timing.get("revision_tick_rows", []), trade_date, revision_cutoff,
         )
-        revision_report = build_session_report(
+        if _revision_should_render(revision_meta):
+            revision_report = build_session_report(
                 trade_date=trade_date, snapshot=snapshot, pre_close_by_symbol=pre_close,
                 auction_by_tag=revised_auction, opening_by_symbol=opening, opening_by_tag=opening_by_tag,
                 open_times=open_times, yest_pool_by_symbol=pool, degradation=degradation,
@@ -987,17 +1047,21 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                 hot_prev_by_plate=_load_prev_hot(kaipan_dir, prior),
                 hot_captures=_load_hot_captures(hot_capture_dir),
             )
-        for stock in revision_report["stocks"]:
-            source_row = revised_auction.get("0925", {}).get(stock["symbol"], {})
-            stock["times"]["0925"]["price_source"] = source_row.get("price_source", "NO_EFFECTIVE_PRICE")
-            stock["times"]["0925"]["flags"] = list(source_row.get("price_flags", ()))
-            stock["times"]["0925"]["input_cutoff"] = revision_meta["input_cutoff"]
-        revision_report.setdefault("input_cutoff", {})["0925"] = revision_meta["input_cutoff"]
-        if registry_dir is not None:
-            _attach_independent_plates(revision_report, registry_dir, registry_asof, trade_date,
-                                       reason_rows=reason_rows, pool_by_symbol=pool)
-        revision_summary = _revision_summary(report, revision_report, revision_meta["revised_count"])
-        _merge_revision_stage(report, revision_report, revision_summary)
+            for stock in revision_report["stocks"]:
+                source_row = revised_auction.get("0925", {}).get(stock["symbol"], {})
+                stock["times"]["0925"]["price_source"] = source_row.get("price_source", "NO_EFFECTIVE_PRICE")
+                stock["times"]["0925"]["flags"] = list(source_row.get("price_flags", ()))
+                stock["times"]["0925"]["input_cutoff"] = revision_meta["input_cutoff"]
+            revision_report.setdefault("input_cutoff", {})["0925"] = revision_meta["input_cutoff"]
+            if registry_dir is not None:
+                _attach_independent_plates(revision_report, registry_dir, registry_asof, trade_date,
+                                           reason_rows=reason_rows, pool_by_symbol=pool)
+            revision_summary = _revision_summary(report, revision_report, revision_meta["revised_count"])
+            _merge_revision_stage(report, revision_report, revision_summary)
+        else:
+            revision_summary = _revision_summary(report, report, 0)
+            report["revision_summary"] = dict(revision_summary)
+            report["no_late_finals"] = True
         auction_price_meta["0925R"] = revision_meta
         if independent_manifest is not None:
             report["report_md"] = render_report_markdown(report)
@@ -1050,8 +1114,6 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                 continue
             prefix = f"| {stock['symbol']} | {stock.get('name') or ''} |"
             report["report_md"] = report["report_md"].replace(prefix, prefix[:-1] + "† |")
-        if static_asof_unknown:
-            report["report_md"] = "标签: STATIC_ASOF_UNKNOWN\n\n" + report["report_md"]
         for tag in point_in_time_by_stage:
             market = report["market"][tag]
             plain_cell = f"| {tag} | {market['covered_count']} |"
@@ -1065,9 +1127,13 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         ) if conclusion_phase == "AUCTION" else 0
         day_dir = output_dir / trade_date
         day_dir.mkdir()
-        _write(day_dir / "stocks.json", report["stocks"])
+        _write(day_dir / "stocks.json", _compact_report_stocks(report["stocks"]))
         plates_payload = ({"plates": report["plates"], "independent": report["independent_by_tag"]}
                           if registry_dir is not None else report["plates"])
+        if registry_dir is not None:
+            plates_payload["plates"] = _compact_report_plates(plates_payload["plates"])
+        else:
+            plates_payload = _compact_report_plates(plates_payload)
         _write(day_dir / "plates.json", plates_payload)
         (day_dir / "report.md").write_text(report["report_md"], encoding="utf-8")
         _write(day_dir / "manifest.json", {
@@ -1082,7 +1148,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "snapshot_asof": snapshot_asof, "conclusion_phase": conclusion_phase,
             "snapshot_sealed_at": snapshot_sealed_at.isoformat() if snapshot_sealed_at else None,
             "point_in_time_by_stage": point_in_time_by_stage,
-            "input_cutoff": report["input_cutoff"],
+            "input_cutoff": {**report["input_cutoff"], "0925R": revision_meta["input_cutoff"]},
             "auction_system_boundary": AUCTION_SYSTEM_BOUNDARY,
             "auction_price": auction_price_meta,
             "revision_cutoff": revision_cutoff,
@@ -1090,7 +1156,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "coverage_count_by_stage": {tag: row["covered_count"] for tag, row in report["market"].items()},
             **({"independent_plates": independent_manifest} if independent_manifest is not None else {}),
             "timing": {"read_s": timing["read_s"],
-                       "build_s": max(0.0, time.perf_counter() - report_started - timing["read_s"]),
+                       "build_s": max(0.0, time.process_time() - report_cpu_started),
                        "total_s": time.perf_counter() - report_started},
             "query_count": timing["query_count"],
             "reason_asof_rule": "Date<=D" if conclusion_phase == "EOD" else "Date<D",
@@ -1116,6 +1182,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="auction price source (default: tick_book1; snapshot_px reproduces prior coverage)")
     parser.add_argument("--revision-cutoff", default="09:27:10",
                         help="late-final revision cutoff HH:MM:SS (strictly between 09:25:06 and 09:30:00)")
+    parser.add_argument("--min-members", type=int, default=10,
+                        help="minimum priced members for first-screen/activity candidates (default: 10)")
+    parser.add_argument("--min-share", type=float, default=0.003,
+                        help="minimum market amount share for first-screen/activity candidates (default: 0.003)")
     parser.add_argument("--snapshot-asof", help="static snapshot date YYYY-MM-DD when its name does not include one")
     parser.add_argument("--conclusion-phase", choices=("AUCTION",), default="AUCTION")
     parser.add_argument("--kaipan-dir", "--prev-hot-dir", dest="kaipan_dir", type=Path)
@@ -1144,7 +1214,8 @@ def main(argv: list[str] | None = None) -> int:
                snapshot_asof=args.snapshot_asof, conclusion_phase=args.conclusion_phase,
                hot_capture_dir=args.hot_capture_dir, static_relation_path=args.static_relation,
                registry_dir=args.registry_dir, registry_asof=args.registry_asof, open_times=open_times,
-               auction_price_source=args.auction_price_source, revision_cutoff=revision_cutoff)
+               auction_price_source=args.auction_price_source, revision_cutoff=revision_cutoff,
+               min_members=args.min_members, min_share=args.min_share)
     return 0
 
 

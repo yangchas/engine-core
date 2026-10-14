@@ -10,6 +10,9 @@ from examples.run_offline_plate_auction_open_report import (
     _compare_revision_selections,
     _load_registry_dir,
     _merge_revision_stage,
+    _compact_report_plates,
+    _compact_report_stocks,
+    _revision_should_render,
     _registry_point_in_time_flag,
     _render_revision_note,
     parse_open_times,
@@ -74,6 +77,55 @@ def test_independent_report_keeps_missing_returns_missing(tmp_path):
     assert "REGISTRY_ASOF_UNVERIFIED" in independent_manifest["flags"]
     assert report["independent_by_tag"]["0925"]["event_plates"][0]["touch_limit_price_count"] == 1
     assert "limit_up_count" not in report["independent_by_tag"]["0925"]["event_plates"][0]
+
+
+def test_api_members_registry_asof_before_day_has_no_independent_npt_flag(tmp_path):
+    (tmp_path / "registry.json").write_text(json.dumps([{"code": "801001", "name": "主题",
+        "class": "THEME"}]), encoding="utf-8")
+    (tmp_path / "relation.csv").write_text("plateid,stockid\n801001,000001\n", encoding="utf-8")
+    (tmp_path / "manifest.json").write_text(json.dumps({"as_of": "2026-10-12",
+        "as_of_source": "api_members"}), encoding="utf-8")
+    report = {"stocks": [{"symbol": "000001", "times": {tag: {"pct_vs_pre_close": 0.01,
+        "limit_state": None, "at_limit_price": False, "rest_bid": None}
+        for tag in ("0920", "0924", "0925", "0932")}}], "plates": [{"plate": "主题",
+            "times": {tag: {} for tag in ("0920", "0924", "0925", "0932")}}]}
+
+    manifest = _attach_independent_plates(report, tmp_path, None, "2026-10-13")
+
+    assert "NOT_POINT_IN_TIME" not in manifest["flags"]
+    assert all("NOT_POINT_IN_TIME" not in row["flags"]
+               for row in report["independent_by_tag"].values())
+
+
+def test_revision_omitted_without_indicative_prices_and_compact_payloads_keep_full_row_values():
+    assert _revision_should_render({"pre_final_indicative_count": 1})
+    assert not _revision_should_render({"pre_final_indicative_count": 0})
+    stocks = [{"symbol": f"0000{i:02d}", "primary_plate": "主题", "times": {"0932": {
+        "limit_state": None, "pct_vs_pre_close": 0.02, "amount": 100}}, "labels": {}}
+        for i in range(1, 102)]
+    selected_stock = {"symbol": "000002", "primary_plate": "主题", "times": {"0932": {
+        "limit_state": 1, "pct_vs_pre_close": 0.1, "amount": 1000}}, "labels": {}}
+    stocks[1] = selected_stock
+    compact_stocks = _compact_report_stocks(stocks)
+    assert compact_stocks[100] == {"symbol": "0000101", "primary_plate": "主题", "final_label": None}
+    assert compact_stocks[1] == selected_stock
+
+    full_plate = {"plate": "主题", "category": "THEME", "priced_member_count": 5,
+        "member_count": 5, "times": {"0925": {"amount_sum": 88.0}}}
+    thin_plate = {"plate": "微型", "category": "THEME", "priced_member_count": 2,
+        "member_count": 2, "times": {"0925": {"amount_sum": 1.0}}}
+    compact_plates = _compact_report_plates([full_plate, thin_plate])
+    assert compact_plates[0]["times"]["0925"]["amount_sum"] == 88.0
+    assert compact_plates[1]["detail_omitted"] is True
+    assert "SMALL_OR_THIN" in compact_plates[1]["quality_flags"]
+
+
+def test_no_late_revision_note_omits_revision_section():
+    text = _render_revision_note({"no_late_finals": True, "revision_summary": {
+        "price_changed_count": 0}, "auction_price_note": "终价 5 / 指示价 0"})
+
+    assert "无迟到终价, 0925R 与 0925 相同" in text
+    assert "## 0925 → 0925R 修订对比" not in text
 
 
 def test_open_times_default_parse_and_validation():

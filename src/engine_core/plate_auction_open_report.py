@@ -94,7 +94,11 @@ def build_session_report(
     baseline_auction_by_tag: Mapping[str, list[Mapping[str, Any]]] | None = None,
     hot_prev_by_plate: Mapping[str, Mapping[str, Any]] | None = None,
     hot_captures: list[Mapping[str, Any]] | None = None,
+    min_members: int = 10,
+    min_share: float = 0.003,
 ) -> dict[str, Any]:
+    if min_members < 0 or min_share < 0:
+        raise ValueError("candidate thresholds must be non-negative")
     stock_plate = snapshot.get("stock_plate", {})
     s2p = snapshot.get("s2p", {})
     opening_rows = [symbol for group in (opening_by_tag or {}).values() for symbol in group]
@@ -200,6 +204,14 @@ def build_session_report(
 
     aggregations = {tag: aggregate_plates(memberships, hierarchy, facts)
                     for tag, facts in facts_by_stage.items()}
+    aggregation_rows = {tag: {row.plate: row for row in aggregation.stats}
+                        for tag, aggregation in aggregations.items()}
+    market_return_stats = {}
+    market_amounts = {}
+    for tag, stage_facts in facts_by_stage.items():
+        returns = [_pct(fact.price, fact.pre_close) for fact in stage_facts.values()
+                   if fact.price is not None and fact.pre_close is not None and fact.pre_close > 0]
+        market_return_stats[tag] = _robust_scale([value for value in returns if value is not None])
     from .plate_rules import normalize_plate_name
     prior_days = {}
     for tag, days in (baseline_auction_by_tag or {}).items():
@@ -221,6 +233,17 @@ def build_session_report(
     for members in plate_members.values():
         for symbol in members:
             member_degree[symbol] = member_degree.get(symbol, 0) + 1
+    for tag, stage_facts in facts_by_stage.items():
+        market_amounts[tag] = sum(float(stage_facts[symbol].amount) for symbol in member_degree
+                                  if symbol in stage_facts and stage_facts[symbol].amount is not None
+                                  and stage_facts[symbol].amount >= 0)
+    cutoff_by_plate_tag: dict[str, dict[str, str]] = {}
+    for stock in stocks:
+        for membership in memberships.by_symbol.get(stock["symbol"], ()):
+            per_tag = cutoff_by_plate_tag.setdefault(membership.plate, {})
+            for tag in tags:
+                per_tag[tag] = max(per_tag.get(tag, default_cutoffs[tag]),
+                                   stock["times"][tag]["input_cutoff"])
     baseline_share_by_tag: dict[str, dict[str, float]] = {}
     baseline_sample_count_by_tag: dict[str, dict[str, int]] = {}
     baseline_manifest: dict[str, Any] = {}
@@ -253,7 +276,7 @@ def build_session_report(
         plate = stat.plate
         stage_rows = {}
         for tag in tags:
-            stage_stat = next((row for row in aggregations[tag].stats if row.plate == plate), None)
+            stage_stat = aggregation_rows[tag].get(plate)
             stage_rows[tag] = None if stage_stat is None else {
                 "amount_kind": "TRADED" if tag not in _AUCTION_TAGS else "MATCH",
                 "covered_count": stage_stat.covered_count, "amount_sum": stage_stat.amount_sum,
@@ -264,9 +287,7 @@ def build_session_report(
                 "down_count": stage_stat.down_count, "flat_count": stage_stat.flat_count,
                 "limit_up_count": stage_stat.limit_up_count if tag == "0925" else None,
                 "max_lb_days": stage_stat.max_lb_days, "yest_pool_member_count": stage_stat.yest_pool_member_count,
-                "input_cutoff": max((row["times"][tag]["input_cutoff"] for row in stocks
-                                     if row["symbol"] in membership_index.members_of(plate)),
-                                    default=default_cutoffs[tag]),
+                "input_cutoff": cutoff_by_plate_tag.get(plate, {}).get(tag, default_cutoffs[tag]),
             }
             members = plate_members.get(plate, set())
             stage_facts = facts_by_stage[tag]
@@ -276,10 +297,7 @@ def build_session_report(
                              and stage_facts[symbol].pre_close is not None
                              and stage_facts[symbol].pre_close > 0]
             valid_returns = [value for value in valid_returns if value is not None]
-            market_returns = [_pct(fact.price, fact.pre_close) for fact in stage_facts.values()
-                              if fact.price is not None and fact.pre_close is not None and fact.pre_close > 0]
-            market_returns = [value for value in market_returns if value is not None]
-            market_center, market_scale = _robust_scale(market_returns)
+            market_center, market_scale = market_return_stats[tag]
             trimmed = _trimmed_mean(valid_returns)
             relative = trimmed - market_center if trimmed is not None and market_center is not None else None
             ratio = (relative / market_scale if relative is not None and market_scale else None)
@@ -288,9 +306,7 @@ def build_session_report(
                             and stage_facts[symbol].amount >= 0}
             allocated_amount = sum(value / member_degree[symbol] for symbol, value in live_amounts.items()
                                    if member_degree.get(symbol, 0) > 0)
-            market_amount = sum(float(stage_facts[symbol].amount) for symbol in member_degree
-                                if symbol in stage_facts and stage_facts[symbol].amount is not None
-                                and stage_facts[symbol].amount >= 0)
+            market_amount = market_amounts[tag]
             amount_share = allocated_amount / market_amount if market_amount and market_amount > 0 else None
             baseline_share = baseline_share_by_tag.get(tag, {}).get(plate)
             baseline_multiple = (amount_share / baseline_share if amount_share is not None
@@ -355,11 +371,17 @@ def build_session_report(
                        and facts_by_stage["0925"][symbol].amount is not None),
                       key=lambda sym: (-(facts_by_stage["0925"].get(sym).amount or 0)
                                        if facts_by_stage["0925"].get(sym) else 0, sym))[:3]
+        priced_members = (aggregation_rows["0925"].get(plate).covered_count
+                          if aggregation_rows["0925"].get(plate) else 0)
+        share = (stage_rows["0925"] or {}).get("amount_share_of_market")
+        quality_flags = (["SMALL_OR_THIN"] if priced_members < min_members or share is None or
+                         share < min_share else [])
         plates.append({
             "plate": plate, "kind": stat.kind,
             "category": "GENERIC_FACTOR" if stat.kind == "GENERIC" else stat.kind,
             "generic": stat.generic,
-            "member_count": stat.member_count, "times": stage_rows,
+            "member_count": stat.member_count, "priced_member_count": priced_members,
+            "quality_flags": quality_flags, "times": stage_rows,
             "match_amount_progress": {
                 "0920_to_0924": _delta(stage_rows["0920"], stage_rows["0924"]),
                 "0924_to_0925": _delta(stage_rows["0924"], stage_rows["0925"]),
@@ -431,6 +453,7 @@ def build_session_report(
     result = {"trade_date": trade_date, "stocks": stocks, "plates": plates, "market": market,
               "input_cutoff": input_cutoffs,
               "activity_manifest": baseline_manifest,
+              "candidate_thresholds": {"min_members": min_members, "min_share": min_share},
               "degradation": list(degradation), "memberships_policy": memberships.policy}
     result["report_md"] = render_report_markdown(result)
     return result
@@ -452,12 +475,14 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
     pool_rows = [row for row in result["stocks"] if row["in_yest_pool"]]
     labels = list(result.get("degradation", ()))
     label_meanings = {
-        "NOT_POINT_IN_TIME": "输入快照不是结论时点的历史快照",
+        "NOT_POINT_IN_TIME": "竞价快照点时性未核验",
+        "STATIC_ASOF_UNKNOWN": "静态关系 CSV 为旧快照且时点未知",
         "PARTIAL": "输入覆盖不完整",
         "UNKNOWN": "来源或语义未知",
     }
-    prominent_labels = [label for label in labels if label == "NOT_POINT_IN_TIME"]
-    lines = ([f"标签: {', '.join(prominent_labels)}", ""] if prominent_labels else [])
+    prominent_labels = [label for label in label_meanings if label in labels]
+    label_text = " / ".join(f"{label}（{label_meanings[label]}）" for label in prominent_labels)
+    lines = ([f"标签: {label_text}", ""] if prominent_labels else [])
     lines.extend([f"# 个股板块竞价开盘情况 {trade_date}", "",
              "## 表现 × 活跃度摘要", "",
              "放量条件：基线倍数≥1.5、|相对市场稳健 z|≥1.5；只列事实，不计算综合分。"])
@@ -470,18 +495,23 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
     for idx, tag in enumerate(summary_tags):
         pairs = [(plate, plate.get("times", {}).get(tag)) for plate in result["plates"]]
         pairs = [(plate, value) for plate, value in pairs if value and value.get("activity") and value.get("performance")]
+        thresholds = result.get("candidate_thresholds", {"min_members": 10, "min_share": 0.003})
         independent = [(plate, value) for plate, value in pairs
                        if plate.get("category") in ("THEME", "NICHE", "BROAD")
-                       and (value.get("performance", {}).get("covered_count") or 0) >= 5]
+                       and (value.get("performance", {}).get("covered_count") or 0) >= thresholds["min_members"]
+                       and (value["activity"].get("amount_share_of_market") or 0) >= thresholds["min_share"]]
         surged = [(plate, value) for plate, value in independent
+                  if "BASELINE_SHORT" not in value["activity"].get("flags", ())
                   if (value["activity"].get("baseline_multiple") or 0) >= 1.5
                   and abs(value["performance"].get("relative_market_z") or 0) >= 1.5]
         strong = sorted((pair for pair in surged if (pair[1]["performance"].get("relative_market_z") or 0) > 0),
                         key=lambda pair: -pair[1]["performance"]["relative_market_z"])[:3]
         weak = sorted((pair for pair in surged if (pair[1]["performance"].get("relative_market_z") or 0) < 0),
                       key=lambda pair: pair[1]["performance"]["relative_market_z"])[:3]
-        active = sorted((pair for pair in pairs if (pair[1]["activity"].get("amount_share_of_market") or 0) >= 0.005
-                         and (pair[1].get("performance", {}).get("covered_count") or 0) >= 5
+        active = sorted((pair for pair in pairs if pair[0].get("category") in ("THEME", "NICHE", "BROAD")
+                         and (pair[0].get("priced_member_count") or 0) >= thresholds["min_members"]
+                         and (pair[1]["activity"].get("amount_share_of_market") or 0) >= thresholds["min_share"]
+                         and (pair[1].get("performance", {}).get("covered_count") or 0) >= thresholds["min_members"]
                          and pair[1]["activity"].get("baseline_multiple") is not None),
                         key=lambda pair: -pair[1]["activity"]["baseline_multiple"])[:5]
         def summary_names(items):
@@ -507,6 +537,8 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
             final_n = sum(value in ("SNAPSHOT_PX", "TICK_PX_FINAL") for value in sources)
             indicative_n = sum("INDICATIVE" in str(value) for value in sources)
             summary += f"；终价 {final_n} / 指示价 {indicative_n}"
+            if tag == "0925" and result.get("no_late_finals"):
+                summary += "；无迟到终价, 0925R 与 0925 相同"
         lines.append(summary)
     lines.extend(["", "## 阅读说明", "",
              "竞价金额是虚拟撮合额；09:20 后不可撤单。09:32 金额是截至该时点的累计真实成交额。",
@@ -535,11 +567,13 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                      f"{_fmt(tag32.get('up_count'))}/{_fmt(tag32.get('down_count'))}/{_fmt(tag32.get('flat_count'))} |")
     lines.extend(["", "## 活跃度榜（与表现分开）", ""])
     for tag in stage_tags:
-        ranked = [(row, row["times"].get(tag)) for row in result["plates"]]
-        ranked = [(row, value) for row, value in ranked if value and value.get("activity")
-                  and row.get("category") not in ("EVENT", "GENERIC_FACTOR", "NOISE")
-                  and (value["activity"].get("amount_share_of_market") or 0) >= 0.003
-                  and (value.get("performance", {}).get("covered_count") or 0) >= 5
+        thresholds = result.get("candidate_thresholds", {"min_members": 10, "min_share": 0.003})
+        pairs = [(row, row.get("times", {}).get(tag)) for row in result["plates"]]
+        ranked = [(row, value) for row, value in pairs if value and value.get("activity")
+                  and row.get("category") in ("THEME", "NICHE", "BROAD")
+                  and (row.get("priced_member_count") or 0) >= thresholds["min_members"]
+                  and (value["activity"].get("amount_share_of_market") or 0) >= thresholds["min_share"]
+                  and (value.get("performance", {}).get("covered_count") or 0) >= thresholds["min_members"]
                   and value["activity"].get("baseline_multiple") is not None]
         ranked.sort(key=lambda pair: -pair[1]["activity"]["baseline_multiple"])
         lines.extend([f"### {tag}", "", "| 板块 | 类别 | 额(亿) | 占比 | 基线倍数 | 表现z | 截尾均值% | 广度% | 涨停/触及 | 独立入选 | Kaipan名次 |",
@@ -552,7 +586,8 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
             selected_names = {str(item.get("name")) for item in
                               result.get("independent_by_tag", {}).get(tag, {}).get("selected", ())}
             selected = row["plate"] in selected_names
-            lines.append(f"| {row['plate']} | {row['category']} | {_amount_yi(activity.get('amount_sum'))} | "
+            category_text = row["category"] + (" / BASELINE_SHORT" if "BASELINE_SHORT" in activity.get("flags", ()) else "")
+            lines.append(f"| {row['plate']} | {category_text} | {_amount_yi(activity.get('amount_sum'))} | "
                          f"{_pctfmt(activity.get('amount_share_of_market'))} | ×{activity['baseline_multiple']:.2f} | "
                          f"{_zfmt(performance.get('relative_market_z'))} | {_ppfmt(performance.get('trimmed_mean_pct'))} | "
                          f"{_pctfmt(performance.get('breadth_up_share'))} | {_fmt(limit_count)} | "
@@ -575,6 +610,14 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                          f"{_pctfmt(activity.get('amount_share_of_market'))} | ×{activity['baseline_multiple']:.2f} | "
                          f"{_zfmt(performance.get('relative_market_z'))} | {_ppfmt(performance.get('trimmed_mean_pct'))} | "
                          f"{_pctfmt(performance.get('breadth_up_share'))} | {_fmt(limit_count)} |")
+    thin_rows = [row for row in result["plates"] if "SMALL_OR_THIN" in row.get("quality_flags", ())]
+    if thin_rows:
+        lines.extend(["", "## 小样本/薄额板块（附录，标记 SMALL_OR_THIN）", "",
+                      "| 板块 | 类别 | 有价成员 | 市场额占比 |", "|---|---|---:|---:|"])
+        for row in thin_rows:
+            stage = row.get("times", {}).get("0925") or {}
+            lines.append(f"| {row['plate']} | {row.get('category')} | {row.get('priced_member_count', 0)} | "
+                         f"{_pctfmt(stage.get('amount_share_of_market'))} |")
     def stock_table(title: str, rows: list[Mapping[str, Any]], extra: str = "") -> None:
         headers = ["代码", "名称", "连板数", "主板块"]
         for stage_tag in stage_tags:

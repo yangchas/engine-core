@@ -176,6 +176,49 @@ def test_report_contains_degradation_and_virtual_match_semantics():
     assert "## 独立板块（净效应）" not in result["report_md"]
 
 
+def test_first_screen_filters_thin_and_short_baseline_plates_but_activity_can_show_short():
+    from engine_core.plate_auction_open_report import render_report_markdown
+
+    result = build_session_report(**_source())
+    bank = next(row for row in result["plates"] if row["plate"] == "银行")
+    bank["member_count"] = 20
+    bank["priced_member_count"] = 20
+    bank["times"]["0925"]["performance"]["covered_count"] = 20
+    bank["times"]["0925"]["activity"].update(
+        amount_share_of_market=0.01, baseline_multiple=31.3, flags=["BASELINE_SHORT"])
+    thin = {**bank, "plate": "冰雪产业", "member_count": 5, "priced_member_count": 5,
+            "quality_flags": ["SMALL_OR_THIN"], "times": dict(bank["times"])}
+    thin["times"]["0925"] = {**bank["times"]["0925"], "performance": {
+        **bank["times"]["0925"]["performance"], "covered_count": 5}}
+    thin["times"]["0925"]["activity"] = {**bank["times"]["0925"]["activity"],
+        "amount_share_of_market": 0.0001, "flags": []}
+    result["plates"].append(thin)
+
+    text = render_report_markdown(result)
+
+    summary = text.split("## 阅读说明", 1)[0]
+    assert "银行(z=" not in summary
+    assert "冰雪产业" not in summary
+    active = text.split("## 活跃度榜（与表现分开）", 1)[1].split("## 小样本/薄额板块", 1)[0]
+    assert "银行" in active
+    assert "BASELINE_SHORT" in active
+    assert "冰雪产业" not in active
+    assert "冰雪产业" in text.split("## 小样本/薄额板块", 1)[1]
+
+
+def test_defaults_and_degradation_labels_are_one_explained_line():
+    source = _source()
+    source["degradation"] = ["STATIC_ASOF_UNKNOWN", "NOT_POINT_IN_TIME"]
+    result = build_session_report(**source)
+
+    assert result["candidate_thresholds"] == {"min_members": 10, "min_share": 0.003}
+    label_line = result["report_md"].splitlines()[0]
+    assert label_line.startswith("标签: ")
+    assert "STATIC_ASOF_UNKNOWN（" in label_line
+    assert "NOT_POINT_IN_TIME（" in label_line
+    assert "静态关系 CSV" in label_line and "竞价快照点时性" in label_line
+
+
 def test_activity_fields_keep_missing_values_and_report_short_baseline():
     result = build_session_report(**_source())
     bank = next(row for row in result["plates"] if row["plate"] == "银行")
