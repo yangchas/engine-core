@@ -435,6 +435,8 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
         lines.append(f"| {tag} | {row['covered_count']} | {_amount_yi(row['amount_sum'])} | {row['up_count']} | "
                      f"{row['down_count']} | {row['flat_count']} | {_fmt(row['limit_up_count'])} | "
                      f"{_fmt(row['limit_down_count'])} |")
+    if result.get("independent_by_tag"):
+        lines.extend(["", render_independent_plates_markdown(result["independent_by_tag"]).rstrip(), ""])
     lines.extend(["", "## 非泛化板块 0925 匹配额占比前 20", "",
                   "| 板块 | 类型 | 成员 | 0925 匹配额占比 | 0932 涨幅变化(pp) | 涨/跌/平 |",
                   "|---|---|---:|---:|---:|---:|"])
@@ -445,7 +447,9 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
         lines.append(f"| {row['plate']} | {row['kind']} | {row['member_count']} | "
                      f"{_pctfmt(tag25.get('amount_share_of_market'))} | {_ppfmt(change)} | "
                      f"{_fmt(tag32.get('up_count'))}/{_fmt(tag32.get('down_count'))}/{_fmt(tag32.get('flat_count'))} |")
-    lines.extend(["", "## 板块强度与 Kaipan 热板参考", "",
+    strength_heading = ("## 旧口径板块强度（参考）与 Kaipan 热板参考"
+                        if result.get("independent_by_tag") else "## 板块强度与 Kaipan 热板参考")
+    lines.extend(["", strength_heading, "",
                   "各时点分别计算；0925 竞价金额为虚拟撮合额，0932 金额为真实成交额。可排名板块按 beta 降序，flagged 板块单列且不排名。",
                   "强度值 beta、SE 和超额使用百分点（pp）；份额、不平衡使用百分比。", ""])
     for tag in ("0920", "0924", "0925", "0932"):
@@ -552,6 +556,45 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                     for label in labels],
                   "- 缺失值保持 null；多板块统计按成员并集去重。", ""])
     return "\n".join(lines)
+
+
+def render_independent_plates_markdown(independent_by_tag: Mapping[str, Mapping[str, Any]]) -> str:
+    """Render already-computed independent plate selection facts."""
+    lines = ["## 独立板块（净效应）", "",
+             "方向为相对市场；结论为统计显著性(BH FDR 10%)，非预测。NO_SIGNAL 不出榜。",
+             "绝对截尾均值与相对市场差异均以百分点（pp）显示。", ""]
+    for tag in ("0920", "0924", "0925", "0932"):
+        result = independent_by_tag.get(tag)
+        if not isinstance(result, Mapping):
+            continue
+        market = result.get("market", {})
+        market_median = market.get("median") if isinstance(market, Mapping) else None
+        lines.extend([f"### {tag}", "",
+                      "| 排名 | 板块 | 类别 | 方向 | 绝对截尾均值% | 相对市场pp | z | 成员数 | 残差成员 | 涨停数 | Top1占比 | 本板块新解释数 | Kaipan 热板名次(参考) |",
+                      "|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
+        for row in result.get("selected", ()):
+            absolute = row.get("trim_mean")
+            delta = absolute - market_median if isinstance(absolute, (int, float)) and isinstance(
+                market_median, (int, float)) else None
+            lines.append(
+                f"| {_fmt(row.get('rank'))} | {row.get('name', row.get('code', ''))} | {row.get('class', '')} | "
+                f"{row.get('direction', '')} | {_ppfmt(absolute)} | {_ppfmt(delta)} | {_fmt(row.get('z'))} | "
+                f"{_fmt(row.get('n'))} | {_fmt(row.get('residual_n'))} | {_fmt(row.get('limit_up_count'))} | "
+                f"{_pctfmt(row.get('top1_weight_share'))} | {_fmt(row.get('explained_members'))} | "
+                f"{_fmt(row.get('hot_rank'))} |"
+            )
+        uncovered = result.get("uncovered", {})
+        lines.extend([f"| — | 未被覆盖个股 | — | — | {_ppfmt(uncovered.get('trim_mean'))} | — | — | "
+                      f"{_fmt(uncovered.get('n'))} | — | — | — | — | — |", "",
+                      f"未覆盖分布：中位 {_ppfmt(uncovered.get('median'))}；P10 {_ppfmt(uncovered.get('p10'))}；"
+                      f"P90 {_ppfmt(uncovered.get('p90'))}。缺失涨幅 {_fmt(result.get('missing_count'))} 只。", ""])
+        controls = result.get("controls_top", ())
+        if controls:
+            lines.append("控制因子（按 |z| 前 8）: " + "、".join(
+                f"{row.get('name', row.get('code', ''))} z={_fmt(row.get('z'))}" for row in controls
+            ))
+            lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _fmt(value: Any) -> str:

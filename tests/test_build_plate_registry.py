@@ -52,3 +52,23 @@ def test_builder_rejects_nonempty_output_directory(tmp_path):
     (output / "keep").write_text("x", encoding="utf-8")
     with pytest.raises(ValueError, match="must be empty"):
         build(csv_dir, dictionary, output, as_of="2026-10-13")
+
+
+def test_builder_marks_manual_generic_names_file(tmp_path):
+    csv_dir = tmp_path / "csv"
+    csv_dir.mkdir()
+    (csv_dir / "个股板块.csv").write_text(
+        "plateid,stockid\n801001,000001\n", encoding="utf-8"
+    )
+    (csv_dir / "板块.csv").write_text("id,name,x,inner\n", encoding="utf-8")
+    dictionary = tmp_path / "dictionary.json"
+    dictionary.write_text(json.dumps({"names": {"801001": "人工泛化因子"}}), encoding="utf-8")
+    generic_file = tmp_path / "generic.json"
+    generic_file.write_text(json.dumps({"names": ["人工泛化因子"]}), encoding="utf-8")
+    output = tmp_path / "out"
+
+    build(csv_dir, dictionary, output, as_of="2026-10-13", generic_names_file=generic_file)
+
+    row = json.loads((output / "registry.json").read_text(encoding="utf-8"))["plates"][0]
+    assert row["class"] == "GENERIC_FACTOR"
+    assert "GENERIC_NAMES_FILE" in row["flags"]

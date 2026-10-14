@@ -71,6 +71,8 @@ def test_report_contains_degradation_and_virtual_match_semantics():
     assert "KAIPAN_INPUTS_MISSING" in result["report_md"]
     assert "竞价金额为虚拟匹配额" in result["report_md"]
     assert "昨日涨停池成员" in result["report_md"]
+    assert "## 板块强度与 Kaipan 热板参考" in result["report_md"]
+    assert "## 独立板块（净效应）" not in result["report_md"]
 
 
 def test_strength_fields_keep_missing_values_and_report_no_baseline():
@@ -223,3 +225,22 @@ def test_stock_tables_cap_each_at_40_rows_but_keep_all_stocks_in_json():
     section = result["report_md"].split("## 昨日涨停池成员", 1)[1].split("## 0925 涨停/跌停个股", 1)[0]
     assert len(result["stocks"]) == 42
     assert section.count("| 000") <= 40
+
+
+def test_independent_plates_renderer_includes_fdr_disclaimer_and_reference_column():
+    from engine_core.plate_auction_open_report import render_independent_plates_markdown
+
+    text = render_independent_plates_markdown({"0925": {
+        "market": {"median": -0.007},
+        "selected": [{"rank": 1, "name": "AI应用", "class": "THEME", "direction": "STRONG",
+                      "trim_mean": 0.02, "z": 4.2, "residual_n": 8, "n": 10,
+                      "limit_up_count": 2, "top1_weight_share": 0.2,
+                      "explained_members": 7, "hot_rank": 3}],
+        "uncovered": {"n": 4, "median": 0.0, "trim_mean": 0.001, "p10": -0.01, "p90": 0.02},
+        "controls_top": [],
+    }})
+    assert "## 独立板块（净效应）" in text
+    assert "统计显著性(BH FDR 10%)" in text
+    assert "非预测" in text and "相对市场" in text
+    assert "Kaipan 热板名次(参考)" in text
+    assert "未被覆盖个股" in text

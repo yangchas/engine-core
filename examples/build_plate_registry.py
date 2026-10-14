@@ -29,7 +29,8 @@ def _parse_as_of(value: str) -> str:
     return value
 
 
-def build(csv_dir: Path, dictionary_path: Path, output_dir: Path, *, as_of: str) -> None:
+def build(csv_dir: Path, dictionary_path: Path, output_dir: Path, *, as_of: str,
+          generic_names_file: Path | None = None) -> None:
     """Build registry JSON, CSV/NPZ relations, and an input/output manifest."""
     as_of = _parse_as_of(as_of)
     if output_dir.exists() and (not output_dir.is_dir() or any(output_dir.iterdir())):
@@ -55,7 +56,22 @@ def build(csv_dir: Path, dictionary_path: Path, output_dir: Path, *, as_of: str)
         if len(edge) >= 2:
             parent_of.setdefault(str(edge[1]), str(edge[0]))
 
-    registry = build_registry(relation, names, parent_of)
+    generic_names: list[str] = []
+    if generic_names_file is not None:
+        generic_payload = json.loads(generic_names_file.read_text(encoding="utf-8"))
+        generic_names = generic_payload.get("names", []) if isinstance(generic_payload, dict) else generic_payload
+        if not isinstance(generic_names, list) or not all(isinstance(name, str) for name in generic_names):
+            raise ValueError("generic names file must contain a names array of strings")
+    registry = build_registry(relation, names, parent_of, generic_names=generic_names)
+    generic_name_set = set(generic_names)
+    if generic_name_set:
+        for row in registry["plates"]:
+            if row["name"] in generic_name_set:
+                row["class"] = "GENERIC_FACTOR"
+                if "GENERIC_FACTOR" not in row["flags"]:
+                    row["flags"].append("GENERIC_FACTOR")
+                if "GENERIC_NAMES_FILE" not in row["flags"]:
+                    row["flags"].append("GENERIC_NAMES_FILE")
     arrays = build_relation_arrays(relation)
     registry_path = output_dir / "registry.json"
     registry_path.write_text(
@@ -114,8 +130,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dictionary", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--as-of", required=True)
+    parser.add_argument("--generic-names-file", type=Path)
     args = parser.parse_args(argv)
-    build(args.csv_dir, args.dictionary, args.output_dir, as_of=args.as_of)
+    build(args.csv_dir, args.dictionary, args.output_dir, as_of=args.as_of,
+          generic_names_file=args.generic_names_file)
     return 0
 
 

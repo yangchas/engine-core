@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from datetime import date, datetime, timedelta
 import hashlib
 import json
@@ -21,6 +22,7 @@ from engine_core.plate_membership import (
 from engine_core.plate_rules import build_plate_candidates_from_reason
 from engine_core.plate_hierarchy_kaipan import build_hierarchy_as_of, parse_kaipan_reason_items
 from engine_core.plate_auction_open_report import build_session_report, render_report_markdown
+from engine_core.plate_significance import select_independent_plates
 from engine_core.plate_rules import normalize_plate_name
 from examples.run_offline_plate_pipeline import (
     _load_kaipan_hot_plates, _load_kaipan_inputs_with_status, _load_kaipan_reasons, _snapshot_asof,
@@ -331,15 +333,122 @@ def _write(path: Path, data: Any):
                     encoding="utf-8")
 
 
+def _registry_point_in_time_flag(registry_asof: str, trade_date: str) -> bool:
+    try:
+        asof = date.fromisoformat(registry_asof)
+        trade_day = date.fromisoformat(trade_date)
+    except ValueError as exc:
+        raise ValueError("registry dates must use YYYY-MM-DD") from exc
+    if asof.isoformat() != registry_asof or trade_day.isoformat() != trade_date:
+        raise ValueError("registry dates must use YYYY-MM-DD")
+    return asof >= trade_day
+
+
+def _load_registry_dir(registry_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[str, set[str]]]:
+    registry_path = registry_dir / "registry.json"
+    relation_path = registry_dir / "relation.csv"
+    raw = json.loads(registry_path.read_text(encoding="utf-8"))
+    if isinstance(raw, Mapping):
+        rows = raw.get("plates")
+        if rows is None:
+            rows = [dict(value, code=key) if isinstance(value, Mapping) and "code" not in value else value
+                    for key, value in raw.items()]
+    else:
+        rows = raw
+    if not isinstance(rows, list):
+        raise ValueError("registry.json must contain a plate list or a list value")
+    registry = {str(row["code"]): dict(row) for row in rows
+                if isinstance(row, Mapping) and row.get("code") is not None}
+    members: dict[str, set[str]] = {}
+    with relation_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not {"plateid", "stockid"}.issubset(reader.fieldnames or ()):
+            raise ValueError("relation.csv must have plateid and stockid columns")
+        for row in reader:
+            code, symbol = str(row["plateid"]).strip(), str(row["stockid"]).strip()
+            if code and symbol:
+                members.setdefault(code, set()).add(symbol)
+    return registry, members
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float) and not (value == value and abs(value) != float("inf")):
+        return None
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, registry_asof: str,
+                               trade_date: str) -> dict[str, Any]:
+    registry, members = _load_registry_dir(registry_dir)
+    out_by_tag: dict[str, dict[str, Any]] = {}
+    flagged = _registry_point_in_time_flag(registry_asof, trade_date)
+    plate_rows = {str(row.get("plate")): row for row in report.get("plates", ())}
+    all_symbols = set(members_symbol for group in members.values() for members_symbol in group)
+    all_symbols.update(str(row["symbol"]) for row in report.get("stocks", ()) if row.get("symbol"))
+    stocks = {str(row["symbol"]): row for row in report.get("stocks", ()) if row.get("symbol")}
+    params = {"fdr": 0.10, "min_n": 5, "trim": 0.1, "weight_cap_share": 0.25,
+              "max_selected": 20, "min_residual_share": 0.4, "min_residual_n": 8}
+    for tag in ("0920", "0924", "0925", "0932"):
+        returns = {symbol: (stocks.get(symbol, {}).get("times", {}).get(tag, {}).get("pct_vs_pre_close"))
+                   for symbol in all_symbols}
+        limit_up = {symbol for symbol, stock in stocks.items()
+                    if stock.get("times", {}).get(tag, {}).get("limit_state") == 1}
+        result = select_independent_plates(returns, members, registry, limit_up_symbols=limit_up)
+        selected = []
+        for row in result.plates:
+            item = dict(row)
+            source_plate = plate_rows.get(str(item.get("name")), {})
+            stage = source_plate.get("times", {}).get(tag, {})
+            item["hot_rank"] = stage.get("hot_live_rank")
+            selected.append(item)
+        controls = sorted(result.controls.items(), key=lambda item: (-abs(item[1]), item[0]))[:8]
+        control_rows = [{"code": code, "name": registry.get(code, {}).get("name") or code, "z": z}
+                        for code, z in controls]
+        out_by_tag[tag] = _json_safe({
+            "market": result.market, "selected": selected, "uncovered": result.uncovered,
+            "controls_top": control_rows, "rounds": result.rounds,
+            "missing_count": result.missing_count,
+            "params": params, "registry_asof": registry_asof,
+            "flags": ["NOT_POINT_IN_TIME"] if flagged else [],
+        })
+        for plate in report.get("plates", ()):
+            stage = plate.get("times", {}).get(tag)
+            if stage is not None:
+                stage["independent"] = out_by_tag[tag]
+    report["independent_by_tag"] = out_by_tag
+    if flagged:
+        if "NOT_POINT_IN_TIME" not in report.setdefault("degradation", []):
+            report["degradation"].append("NOT_POINT_IN_TIME")
+    return {
+        "registry_dir": str(registry_dir),
+        "registry_json_sha256": hashlib.sha256((registry_dir / "registry.json").read_bytes()).hexdigest(),
+        "relation_csv_sha256": hashlib.sha256((registry_dir / "relation.csv").read_bytes()).hexdigest(),
+        "registry_asof": registry_asof,
+        "select_params": params,
+        "selected_count_by_stage": {tag: len(row["selected"]) for tag, row in out_by_tag.items()},
+        "flags": ["NOT_POINT_IN_TIME"] if flagged else [],
+    }
+
+
 def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path | None,
                kline_range: str, td_host: str, output_dir: Path, snapshot_asof: str | None = None,
                conclusion_phase: str = "AUCTION", hot_capture_dir: Path | None = None,
-               static_relation_path: Path | None = None) -> None:
+               static_relation_path: Path | None = None, registry_dir: Path | None = None,
+               registry_asof: str | None = None) -> None:
     if conclusion_phase != "AUCTION":
         raise ValueError("session report only supports conclusion_phase=AUCTION")
     _reject_eod_pipeline_product(snapshot_path)
     if kaipan_dir is not None:
         _reject_eod_pipeline_product(kaipan_dir)
+    if registry_dir is not None and registry_asof is None:
+        raise ValueError("--registry-asof is required with --registry-dir")
+    if registry_dir is not None and registry_asof is not None:
+        for trade_date in trade_dates:
+            _registry_point_in_time_flag(registry_asof, trade_date)
     ensure_empty_output_dir(output_dir)
     snapshot = _load_snapshot(snapshot_path)
     static_relation = None
@@ -382,6 +491,8 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             hot_prev_by_plate=_load_prev_hot(kaipan_dir, prior),
             hot_captures=_load_hot_captures(hot_capture_dir),
         )
+        independent_manifest = (_attach_independent_plates(report, registry_dir, registry_asof, trade_date)
+                                if registry_dir is not None and registry_asof is not None else None)
         opening_flags = {symbol: set(row.get("flags", ())) for symbol, row in opening.items()}
         static_asof = static_relation.get("asof") if static_relation is not None else None
         static_asof_unknown = static_relation is not None and static_asof is None
@@ -424,7 +535,9 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         day_dir = output_dir / trade_date
         day_dir.mkdir()
         _write(day_dir / "stocks.json", report["stocks"])
-        _write(day_dir / "plates.json", report["plates"])
+        plates_payload = ({"plates": report["plates"], "independent": report["independent_by_tag"]}
+                          if registry_dir is not None else report["plates"])
+        _write(day_dir / "plates.json", plates_payload)
         (day_dir / "report.md").write_text(report["report_md"], encoding="utf-8")
         _write(day_dir / "manifest.json", {
             "trade_date": trade_date, "snapshot": str(snapshot_path), "kaipan_dir": str(kaipan_dir) if kaipan_dir else None,
@@ -438,6 +551,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "snapshot_sealed_at": snapshot_sealed_at.isoformat() if snapshot_sealed_at else None,
             "point_in_time_by_stage": point_in_time_by_stage,
             "input_cutoff": report["input_cutoff"],
+            **({"independent_plates": independent_manifest} if independent_manifest is not None else {}),
             "timing": {"read_s": timing["read_s"],
                        "build_s": max(0.0, time.perf_counter() - report_started - timing["read_s"]),
                        "total_s": time.perf_counter() - report_started},
@@ -456,6 +570,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trade-date", required=True, help="comma-separated YYYY-MM-DD dates")
     parser.add_argument("--snapshot", type=Path, required=True)
     parser.add_argument("--static-relation", type=Path, help="optional static relation JSON artifact")
+    parser.add_argument("--registry-dir", type=Path, help="dated registry.json and relation.csv directory")
+    parser.add_argument("--registry-asof", help="registry point-in-time date YYYY-MM-DD")
     parser.add_argument("--snapshot-asof", help="static snapshot date YYYY-MM-DD when its name does not include one")
     parser.add_argument("--conclusion-phase", choices=("AUCTION",), default="AUCTION")
     parser.add_argument("--kaipan-dir", "--prev-hot-dir", dest="kaipan_dir", type=Path)
@@ -464,6 +580,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--td-host", default="127.0.0.1")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
+    if args.registry_asof and not args.registry_dir:
+        parser.error("--registry-asof requires --registry-dir")
+    if args.registry_dir and not args.registry_asof:
+        parser.error("--registry-asof is required with --registry-dir")
     dates = [item.strip() for item in args.trade_date.split(",") if item.strip()]
     for item in dates:
         date.fromisoformat(item)
@@ -472,7 +592,8 @@ def main(argv: list[str] | None = None) -> int:
     run_report(trade_dates=dates, snapshot_path=args.snapshot, kaipan_dir=args.kaipan_dir,
                kline_range=args.kline_range, td_host=args.td_host, output_dir=args.output_dir,
                snapshot_asof=args.snapshot_asof, conclusion_phase=args.conclusion_phase,
-               hot_capture_dir=args.hot_capture_dir, static_relation_path=args.static_relation)
+               hot_capture_dir=args.hot_capture_dir, static_relation_path=args.static_relation,
+               registry_dir=args.registry_dir, registry_asof=args.registry_asof)
     return 0
 
 
