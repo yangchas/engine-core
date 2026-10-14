@@ -10,9 +10,10 @@ import os
 import re
 from dataclasses import replace
 from collections import Counter
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from engine_core.limit_up_pool_derivation import derive_limit_up_pool_from_daily_klines
 from engine_core.plate_aggregation import StockFact, aggregate_plates
@@ -32,6 +33,8 @@ from engine_core.plate_hierarchy_kaipan import (
 from engine_core.plate_rules import build_plate_candidates_from_reason
 from engine_core.plate_rules import normalize_plate_name
 from engine_core.stock_plate_assignment import build_stock_plate_assignments
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def ensure_empty_output_dir(path: Path) -> None:
@@ -421,6 +424,8 @@ def build_day(
         "asof_semantics": "REPLAY_FROM_DATED_REASONS_NOT_AVAILABLE_AT",
         "snapshot_asof": snapshot_asof,
         "conclusion_phase": conclusion_phase,
+        "usage_restriction": ("仅用于收盘后板块归类, 不得作为09:20-09:32结论输入"
+                              if conclusion_phase == "EOD" else None),
         "reason_asof_rule": "Date<=D" if conclusion_phase == "EOD" else "Date<D",
         "reason_item_count_excluded_same_day": reason_counts["excluded_same_day"],
         "flags": ["NOT_POINT_IN_TIME"] if snapshot_asof is None or trade_date < snapshot_asof else [],
@@ -751,6 +756,31 @@ def _snapshot_asof(path: Path, explicit: str | None, snapshot: Mapping[str, Any]
     return None
 
 
+def _snapshot_sealed_at(path: Path, explicit: str | None, snapshot: Mapping[str, Any]) -> datetime | None:
+    """Resolve snapshot sealing time; dated snapshots default to 15:10 Shanghai time."""
+    manifest_path = (path / "manifest.json") if path.is_dir() else path.parent / "manifest.json"
+    manifest: Mapping[str, Any] = {}
+    if manifest_path.is_file():
+        try:
+            raw = _read_json(manifest_path)
+            if isinstance(raw, Mapping):
+                manifest = raw
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    for key in ("snapshot_sealed_at", "snapshot_asof_at", "sealed_at", "captured_at", "snapshot_asof"):
+        value = manifest.get(key)
+        if isinstance(value, str) and ("T" in value or " " in value):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                return parsed.astimezone(_SHANGHAI) if parsed.tzinfo else parsed.replace(tzinfo=_SHANGHAI)
+            except ValueError:
+                pass
+    asof = _snapshot_asof(path, explicit, snapshot)
+    if asof is None:
+        return None
+    return datetime.fromisoformat(f"{asof}T15:10:00").replace(tzinfo=_SHANGHAI)
+
+
 def _connect_td(host: str):
     try:
         import taos  # type: ignore[import-not-found]
@@ -859,6 +889,9 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
             value["memberships"], value.get("hot_plate_metadata_by_name"),
         )
         membership_payload["legacy_v1_primary_by_symbol"] = value["legacy_v1_primary_by_symbol"]
+        membership_payload["conclusion_phase"] = value["quality"].get("conclusion_phase", "AUCTION")
+        if membership_payload["conclusion_phase"] == "EOD":
+            membership_payload["usage_restriction"] = "仅用于收盘后板块归类, 不得作为09:20-09:32结论输入"
         membership_payload["yest_pool_symbols"] = sorted(value["yest_pool_symbols"])
         membership_payload["yest_pool_members"] = value["yest_pool_members"]
         membership_payload["symbol_flags"] = value["symbol_flags"]
@@ -871,6 +904,9 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
         _write_json(folder / "plates.json", _jsonable_aggregation(value["aggregation"]))
         quality = dict(value["quality"])
         quality["reason_asof_unknown"] = value["reason_asof_unknown"]
+        quality["conclusion_phase"] = value["quality"].get("conclusion_phase", "AUCTION")
+        if quality["conclusion_phase"] == "EOD":
+            quality["usage_restriction"] = "仅用于收盘后板块归类, 不得作为09:20-09:32结论输入"
         _write_json(folder / "day_quality.json", quality)
         _write_json(folder / "hot_plates.json", {
             "asof_date": (value["hot_plates"][0]["asof_date"] if value["hot_plates"] else
@@ -910,6 +946,8 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
         "asof_semantics": "REPLAY_FROM_DATED_REASONS_NOT_AVAILABLE_AT",
         "snapshot_asof": getattr(args, "snapshot_asof", None),
         "conclusion_phase": getattr(args, "conclusion_phase", "AUCTION"),
+        "usage_restriction": ("仅用于收盘后板块归类, 不得作为09:20-09:32结论输入"
+                              if getattr(args, "conclusion_phase", "AUCTION") == "EOD" else None),
         "reason_asof_rule": "Date<=D" if getattr(args, "conclusion_phase", "AUCTION") == "EOD" else "Date<D",
         "reason_item_count_excluded_same_day_by_date": {
             day: value["quality"]["reason_item_count_excluded_same_day"] for day, value in daily_rows

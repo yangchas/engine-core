@@ -14,6 +14,32 @@ def test_output_directory_must_be_empty(tmp_path):
         runner.ensure_empty_output_dir(output)
 
 
+def test_eod_conclusion_is_rejected_by_session_report_cli():
+    with pytest.raises(SystemExit):
+        runner.main(["--trade-date", "2026-10-13", "--snapshot", "snapshot.json",
+                     "--kline-range", "2026-10-12:2026-10-13", "--output-dir", "out",
+                     "--conclusion-phase", "EOD"])
+
+
+def test_same_day_snapshot_is_not_point_in_time_but_previous_day_is():
+    same_day = runner._point_in_time_flags("2026-10-13", "2026-10-13", {
+        "0920": "2026-10-13T09:20:00", "0924": "2026-10-13T09:24:00",
+        "0925": "2026-10-13T09:25:00", "0932": "2026-10-13T09:32:00",
+    })
+    prior_day = runner._point_in_time_flags("2026-10-12", "2026-10-13", {
+        "0920": "2026-10-13T09:20:00", "0924": "2026-10-13T09:24:00",
+        "0925": "2026-10-13T09:25:00", "0932": "2026-10-13T09:32:00",
+    })
+    assert same_day == ["0920", "0924", "0925", "0932"]
+    assert prior_day == []
+
+
+def test_eod_pipeline_artifact_is_rejected(tmp_path):
+    (tmp_path / "summary.json").write_text(json.dumps({"conclusion_phase": "EOD"}))
+    with pytest.raises(ValueError, match="EOD"):
+        runner._reject_eod_pipeline_product(tmp_path)
+
+
 def test_runner_writes_report_and_manifest_with_stage_semantics(tmp_path, monkeypatch):
     snapshot_path = tmp_path / "snapshot.json"
     snapshot_path.write_text(json.dumps({"stock_plate": {"000001": "银行"}, "s2p": {}}))
@@ -37,6 +63,7 @@ def test_runner_writes_report_and_manifest_with_stage_semantics(tmp_path, monkey
     assert "NOT_POINT_IN_TIME" in manifest["degradation"]
     report = (day / "report.md").read_text()
     assert report.startswith("标签: NOT_POINT_IN_TIME")
+    assert "| 0920 (NOT_POINT_IN_TIME) |" in report
     assert manifest["degradation"] == ["KAIPAN_INPUTS_MISSING", "NOT_POINT_IN_TIME"]
 
 

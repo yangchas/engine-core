@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import date, datetime
 import json
 from pathlib import Path
 import re
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from engine_core.auction_limit_facts import (
     aggregate_plate_auction_limit_facts, derive_stock_auction_limit_fact,
@@ -17,13 +18,27 @@ from engine_core.plate_membership import (
     PlateHierarchy, apply_hierarchy, build_memberships, default_alias_hierarchy,
 )
 from examples.run_offline_plate_pipeline import (
-    _connect_td, _is_missing_table_error, _load_snapshot, ensure_empty_output_dir,
+    _connect_td, _is_missing_table_error, _load_snapshot, _snapshot_asof, _snapshot_sealed_at,
+    ensure_empty_output_dir,
 )
 
 
 def _json_write(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2,
                                 allow_nan=False) + "\n", encoding="utf-8")
+
+
+def _point_in_time_flags(trade_date: str, snapshot_asof: str | None,
+                         snapshot_sealed_at: datetime | None) -> list[str]:
+    tags = {"0920": "09:20:00", "0924": "09:24:00", "0925": "09:25:00"}
+    if snapshot_asof is None or snapshot_sealed_at is None:
+        return list(tags)
+    flagged = []
+    for tag, cutoff_time in tags.items():
+        cutoff = datetime.fromisoformat(f"{trade_date}T{cutoff_time}").replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+        if snapshot_sealed_at > cutoff:
+            flagged.append(tag)
+    return flagged
 
 
 def _snapshot_memberships(snapshot: Mapping[str, Any]):
@@ -120,7 +135,9 @@ def _prior_values(rows: Sequence[Sequence[Any]], trade_date: str) -> tuple[float
 
 def build_day(trade_date: str, symbols: Sequence[str], memberships, hierarchy,
               snapshots: Mapping[str, Mapping[str, Any]], kline_rows: Mapping[str, Sequence[Sequence[Any]]],
-              *, auction_row_count: int, missing_kline_table_count: int) -> dict[str, Any]:
+              *, auction_row_count: int, missing_kline_table_count: int,
+              snapshot_asof: str | None = None,
+              snapshot_sealed_at: datetime | None = None) -> dict[str, Any]:
     stocks = []
     for symbol in symbols:
         pre_close, prev_amount = _prior_values(kline_rows.get(symbol, ()), trade_date)
@@ -140,8 +157,13 @@ def build_day(trade_date: str, symbols: Sequence[str], memberships, hierarchy,
         for tag in ("0920", "0924", "0925")
     }
     with_0925_price = sum(fact.price_milli_0925 is not None for fact in stocks)
+    point_in_time_by_stage = _point_in_time_flags(trade_date, snapshot_asof, snapshot_sealed_at)
     quality = {
         "trade_date": trade_date,
+        "snapshot_asof": snapshot_asof,
+        "snapshot_sealed_at": snapshot_sealed_at.isoformat() if snapshot_sealed_at else None,
+        "point_in_time_by_stage": point_in_time_by_stage,
+        "flags": ["NOT_POINT_IN_TIME"] if point_in_time_by_stage else [],
         "universe_symbol_count": len(symbols),
         "auction_row_count": auction_row_count,
         "missing_kline_table_count": missing_kline_table_count,
@@ -163,28 +185,40 @@ def build_day(trade_date: str, symbols: Sequence[str], memberships, hierarchy,
 
 
 def run(trade_dates: Sequence[str], snapshot_path: Path, kline_range: str,
-        td_host: str, output_dir: Path) -> None:
+        td_host: str, output_dir: Path, snapshot_asof: str | None = None) -> None:
     ensure_empty_output_dir(output_dir)
     snapshot = _load_snapshot(snapshot_path)
+    snapshot_asof = _snapshot_asof(snapshot_path, snapshot_asof, snapshot)
+    snapshot_sealed_at = _snapshot_sealed_at(snapshot_path, snapshot_asof, snapshot)
     symbols, memberships, hierarchy = _snapshot_memberships(snapshot)
     kline_start, kline_end = kline_range.split(":", 1)
+    point_in_time_by_date: dict[str, list[str]] = {}
     for trade_date in trade_dates:
         snapshots, quality_inputs = _read_day(td_host, trade_date, kline_start, kline_end, symbols)
         result = build_day(
             trade_date, symbols, memberships, hierarchy, snapshots,
             quality_inputs.pop("kline_rows"), **quality_inputs,
+            snapshot_asof=snapshot_asof, snapshot_sealed_at=snapshot_sealed_at,
         )
         folder = output_dir / trade_date
         folder.mkdir()
         _json_write(folder / "stocks.json", [stock_fact_to_dict(row) for row in result["stocks"]])
         _json_write(folder / "plates.json", [plate_fact_to_dict(row) for row in result["plates"]])
         _json_write(folder / "day_quality.json", result["day_quality"])
+        point_in_time_by_date[trade_date] = result["day_quality"]["point_in_time_by_stage"]
+    _json_write(output_dir / "manifest.json", {
+        "trade_dates": list(trade_dates), "snapshot": str(snapshot_path),
+        "snapshot_asof": snapshot_asof,
+        "snapshot_sealed_at": snapshot_sealed_at.isoformat() if snapshot_sealed_at else None,
+        "NOT_POINT_IN_TIME": point_in_time_by_date,
+    })
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trade-date", required=True, help="one or more comma-separated YYYY-MM-DD dates")
     parser.add_argument("--snapshot", type=Path, required=True, help="plate snapshot used by run_offline_plate_pipeline")
+    parser.add_argument("--snapshot-asof", help="static snapshot date YYYY-MM-DD when its name does not include one")
     parser.add_argument("--kline-range", required=True, help="bounded TD range YYYY-MM-DD:YYYY-MM-DD")
     parser.add_argument("--td-host", default="127.0.0.1")
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -203,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError
     except ValueError:
         parser.error("dates must be unique ISO dates and --kline-range must be YYYY-MM-DD:YYYY-MM-DD before them")
-    run(dates, args.snapshot, args.kline_range, args.td_host, args.output_dir)
+    run(dates, args.snapshot, args.kline_range, args.td_host, args.output_dir, args.snapshot_asof)
     return 0
 
 

@@ -19,15 +19,47 @@ from engine_core.plate_membership import (
 )
 from engine_core.plate_rules import build_plate_candidates_from_reason
 from engine_core.plate_hierarchy_kaipan import build_hierarchy_as_of, parse_kaipan_reason_items
-from engine_core.plate_auction_open_report import build_session_report
+from engine_core.plate_auction_open_report import build_session_report, render_report_markdown
 from engine_core.plate_rules import normalize_plate_name
 from examples.run_offline_plate_pipeline import (
     _load_kaipan_hot_plates, _load_kaipan_inputs_with_status, _load_kaipan_reasons, _snapshot_asof,
-    _load_snapshot, ensure_empty_output_dir,
+    _load_snapshot, _snapshot_sealed_at, ensure_empty_output_dir,
 )
 
 
 _ZONE = ZoneInfo("Asia/Shanghai")
+
+
+def _point_in_time_flags(snapshot_asof: str | None, trade_date: str,
+                         input_cutoffs: Mapping[str, str], sealed_at: datetime | None = None) -> list[str]:
+    if snapshot_asof is None:
+        return list(input_cutoffs)
+    sealed_at = sealed_at or datetime.fromisoformat(f"{snapshot_asof}T15:10:00").replace(tzinfo=_ZONE)
+    flagged = []
+    for tag, value in input_cutoffs.items():
+        try:
+            cutoff = datetime.fromisoformat(value)
+            cutoff = cutoff.replace(tzinfo=_ZONE) if cutoff.tzinfo is None else cutoff.astimezone(_ZONE)
+        except (TypeError, ValueError):
+            cutoff = datetime.fromisoformat(f"{trade_date}T{tag[:2]}:{tag[2:]}:00").replace(tzinfo=_ZONE)
+        if sealed_at > cutoff:
+            flagged.append(tag)
+    return flagged
+
+
+def _reject_eod_pipeline_product(path: Path) -> None:
+    candidates = [path / "summary.json", path / "manifest.json", path / "day_quality.json"] if path.is_dir() else []
+    if not path.is_dir():
+        candidates = [path.parent / "summary.json", path.parent / "manifest.json", path.parent / "day_quality.json"]
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            raw = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(raw, Mapping) and str(raw.get("conclusion_phase", "")).upper() == "EOD":
+            raise ValueError("EOD pipeline product cannot be used as a 09:20-09:32 session report input")
 
 
 def _td_connect(host: str):
@@ -291,9 +323,15 @@ def _write(path: Path, data: Any):
 def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path | None,
                kline_range: str, td_host: str, output_dir: Path, snapshot_asof: str | None = None,
                conclusion_phase: str = "AUCTION", hot_capture_dir: Path | None = None) -> None:
+    if conclusion_phase != "AUCTION":
+        raise ValueError("session report only supports conclusion_phase=AUCTION")
+    _reject_eod_pipeline_product(snapshot_path)
+    if kaipan_dir is not None:
+        _reject_eod_pipeline_product(kaipan_dir)
     ensure_empty_output_dir(output_dir)
     snapshot = _load_snapshot(snapshot_path)
     snapshot_asof = _snapshot_asof(snapshot_path, snapshot_asof, snapshot)
+    snapshot_sealed_at = _snapshot_sealed_at(snapshot_path, snapshot_asof, snapshot)
     reason_rows = _load_kaipan_reasons(kaipan_dir) if kaipan_dir else {}
     reason_items = parse_kaipan_reason_items([
         {"StockID": symbol, "List": rows} for symbol, rows in reason_rows.items()
@@ -309,8 +347,6 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         memberships, hierarchy, pool, degradation = _memberships(
             snapshot, symbols, trade_date, prior, kaipan_dir, conclusion_phase, reason_rows, reason_items,
         )
-        if snapshot_asof is None or trade_date < snapshot_asof:
-            degradation.append("NOT_POINT_IN_TIME")
         report = build_session_report(
             trade_date=trade_date, snapshot=snapshot, pre_close_by_symbol=pre_close,
             auction_by_tag=auction, opening_by_symbol=opening, yest_pool_by_symbol=pool,
@@ -320,6 +356,30 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             hot_captures=_load_hot_captures(hot_capture_dir),
         )
         opening_flags = {symbol: set(row.get("flags", ())) for symbol, row in opening.items()}
+        point_in_time_by_stage = _point_in_time_flags(
+            snapshot_asof, trade_date, report["input_cutoff"], snapshot_sealed_at,
+        )
+        if point_in_time_by_stage and "NOT_POINT_IN_TIME" not in degradation:
+            degradation.append("NOT_POINT_IN_TIME")
+        for stock in report["stocks"]:
+            for tag in point_in_time_by_stage:
+                stock["times"][tag]["flags"] = sorted(set(stock["times"][tag].get("flags", ())) |
+                                                         {"NOT_POINT_IN_TIME"})
+        for plate in report["plates"]:
+            for tag in point_in_time_by_stage:
+                if plate["times"].get(tag) is not None:
+                    plate["times"][tag]["flags"] = sorted(set(plate["times"][tag].get("flags", ())) |
+                                                            {"NOT_POINT_IN_TIME"})
+        for tag in point_in_time_by_stage:
+            report["market"][tag]["flags"] = ["NOT_POINT_IN_TIME"]
+        report["point_in_time_by_stage"] = point_in_time_by_stage
+        report["degradation"] = degradation
+        report["report_md"] = render_report_markdown(report)
+        for tag in point_in_time_by_stage:
+            market = report["market"][tag]
+            plain_cell = f"| {tag} | {market['covered_count']} |"
+            flagged_cell = f"| {tag} (NOT_POINT_IN_TIME) | {market['covered_count']} |"
+            report["report_md"] = report["report_md"].replace(plain_cell, flagged_cell, 1)
         for stock in report["stocks"]:
             stock["flags"] = sorted(set(stock.get("flags", ())) | opening_flags.get(stock["symbol"], set()))
         excluded_same_day = sum(
@@ -336,6 +396,8 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "stock_row_count": len(report["stocks"]), "plate_row_count": len(report["plates"]),
             "membership_policy": report["memberships_policy"], "degradation": degradation,
             "snapshot_asof": snapshot_asof, "conclusion_phase": conclusion_phase,
+            "snapshot_sealed_at": snapshot_sealed_at.isoformat() if snapshot_sealed_at else None,
+            "point_in_time_by_stage": point_in_time_by_stage,
             "input_cutoff": report["input_cutoff"],
             "timing": {"read_s": timing["read_s"],
                        "build_s": max(0.0, time.perf_counter() - report_started - timing["read_s"]),
@@ -355,7 +417,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trade-date", required=True, help="comma-separated YYYY-MM-DD dates")
     parser.add_argument("--snapshot", type=Path, required=True)
     parser.add_argument("--snapshot-asof", help="static snapshot date YYYY-MM-DD when its name does not include one")
-    parser.add_argument("--conclusion-phase", choices=("AUCTION", "EOD"), default="AUCTION")
+    parser.add_argument("--conclusion-phase", choices=("AUCTION",), default="AUCTION")
     parser.add_argument("--kaipan-dir", "--prev-hot-dir", dest="kaipan_dir", type=Path)
     parser.add_argument("--hot-capture-dir", type=Path)
     parser.add_argument("--kline-range", required=True, help="bounded YYYY-MM-DD:YYYY-MM-DD range")

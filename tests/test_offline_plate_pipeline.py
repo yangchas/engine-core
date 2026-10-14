@@ -427,6 +427,27 @@ def test_quality_and_memberships_report_replay_semantics_and_missing_sources():
     )
 
 
+def test_eod_pipeline_products_declare_restricted_use(tmp_path):
+    from argparse import Namespace
+    from examples.run_offline_plate_pipeline import _emit, run_pipeline
+
+    result = run_pipeline(
+        dates=["2026-01-05"], klines_by_symbol={},
+        auction_by_date={"2026-01-05": {"a": {"px_milli": 10000}}},
+        snapshot={"stock_plate": {"a": "银行"}, "s2p": {}}, reasons_by_symbol={},
+        start_date="2026-01-05", end_date="2026-01-05", min_auction_rows=1,
+        conclusion_phase="EOD",
+    )
+    _emit(tmp_path, result, Namespace(start_date="2026-01-05", end_date="2026-01-05",
+                                      snapshot_asof=None, conclusion_phase="EOD", reasons=None,
+                                      legacy_pool_dir=None))
+    quality = json.loads((tmp_path / "2026-01-05" / "day_quality.json").read_text())
+    memberships = json.loads((tmp_path / "2026-01-05" / "memberships.json").read_text())
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert quality["conclusion_phase"] == memberships["conclusion_phase"] == "EOD"
+    assert summary["usage_restriction"] == "仅用于收盘后板块归类, 不得作为09:20-09:32结论输入"
+
+
 
 def test_kline_by_day_accepts_datetime_ts():
     import datetime as _dt
