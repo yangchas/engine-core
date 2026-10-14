@@ -1,4 +1,8 @@
+import time
+
+from engine_core.plate_aggregation import StockFact, aggregate_plates
 from engine_core.plate_membership import (
+    MembershipIndex,
     PlateHierarchy,
     apply_hierarchy,
     build_memberships,
@@ -112,6 +116,35 @@ def test_members_of_returns_deduplicated_descendant_union():
         source_by_child={"先进封装": "supplied", "存储": "supplied"},
     )
     assert members_of("芯片", result, hierarchy) == {"a", "b"}
+
+
+def test_membership_index_matches_legacy_members_of_with_cycle():
+    memberships = build_memberships(
+        symbols=["a", "b", "c"], pool_plate_by_symbol={}, reason_candidates_by_symbol={},
+        static_themes_by_symbol={"a": ["子板"], "b": ["孙板"], "c": ["环板"]},
+    )
+    hierarchy = PlateHierarchy({"子板": "主板", "孙板": "子板", "环板": "绕板", "绕板": "环板"}, {})
+    index = MembershipIndex(memberships, hierarchy)
+    for plate in ("主板", "子板", "孙板", "环板", "绕板", "空板"):
+        assert index.members_of(plate) == members_of(plate, memberships, hierarchy)
+
+
+def test_membership_build_and_aggregate_2000_by_300_under_five_seconds():
+    started = time.perf_counter()
+    symbols = [f"{index:06d}" for index in range(2000)]
+    themes = {symbol: [f"板块{(index + offset) % 300:03d}" for offset in range(3)]
+              for index, symbol in enumerate(symbols)}
+    memberships = build_memberships(
+        symbols=symbols, pool_plate_by_symbol={}, reason_candidates_by_symbol={},
+        static_themes_by_symbol=themes,
+    )
+    hierarchy = PlateHierarchy(
+        {f"板块{index:03d}": f"板块{index - 1:03d}" for index in range(1, 300)}, {},
+    )
+    facts = {symbol: StockFact(symbol, 10, 10.1, 100, None, None) for symbol in symbols}
+    result = aggregate_plates(memberships, hierarchy, facts)
+    assert len(result.stats) == 300
+    assert time.perf_counter() - started < 5
 
 
 def test_default_alias_hierarchy_has_semiconductor_aliases():

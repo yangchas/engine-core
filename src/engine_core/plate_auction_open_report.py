@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from .auction_limit_facts import _rounded_limit_price
 from .plate_aggregation import StockFact, aggregate_plates
-from .plate_membership import PlateHierarchy, StockPlateMemberships, members_of
+from .plate_membership import MembershipIndex, PlateHierarchy, StockPlateMemberships
 
 
 _TAGS = ("0920", "0924", "0925")
@@ -88,6 +88,7 @@ def build_session_report(
             static_themes_by_symbol=themes,
         ), hierarchy or default_alias_hierarchy())
     hierarchy = hierarchy or PlateHierarchy({}, {})
+    membership_index = MembershipIndex(memberships, hierarchy)
     pool = yest_pool_by_symbol or {}
     names = snapshot.get("names", {})
     facts_by_stage: dict[str, dict[str, StockFact]] = {}
@@ -160,7 +161,8 @@ def build_session_report(
             "flags": sorted(set(flags)),
         })
 
-    aggregations = {tag: aggregate_plates(memberships, hierarchy, facts) for tag, facts in facts_by_stage.items()}
+    aggregations = {tag: aggregate_plates(memberships, hierarchy, facts)
+                    for tag, facts in facts_by_stage.items()}
     from .plate_strength import build_incidence, compute_strength
     from .plate_rules import normalize_plate_name
     incidence = build_incidence(memberships, hierarchy, coverage_symbols=symbols)
@@ -224,7 +226,7 @@ def build_session_report(
                 "limit_up_count": stage_stat.limit_up_count if tag == "0925" else None,
                 "max_lb_days": stage_stat.max_lb_days, "yest_pool_member_count": stage_stat.yest_pool_member_count,
                 "input_cutoff": max((row["times"][tag]["input_cutoff"] for row in stocks
-                                     if row["symbol"] in members_of(plate, memberships, hierarchy)),
+                                     if row["symbol"] in membership_index.members_of(plate)),
                                     default=default_cutoffs[tag]),
             }
             strength = strength_by_tag[tag].get(plate)
@@ -277,7 +279,7 @@ def build_session_report(
                 stage_rows[tag]["strength"]["flags"].append("HOT_PREV_MISSING")
             if hot_row is None:
                 stage_rows[tag]["strength"]["flags"].append("HOT_LIVE_UNAVAILABLE")
-        core = sorted((symbol for symbol in members_of(plate, memberships, hierarchy)
+        core = sorted((symbol for symbol in membership_index.members_of(plate)
                        if facts_by_stage["0925"].get(symbol) is not None
                        and facts_by_stage["0925"][symbol].amount is not None),
                       key=lambda sym: (-(facts_by_stage["0925"].get(sym).amount or 0)

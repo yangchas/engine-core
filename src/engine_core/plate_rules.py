@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Any, Iterable, Optional, Sequence
 
 PLATE_RULES_VERSION = "PlateRulesV1"
@@ -147,6 +148,8 @@ _REASON_TAIL_PATTERN = re.compile(r"[。.].*$")
 
 _TRAILING_BRACKET_DETAIL_PATTERN = re.compile(r"([（(].*[）)])$")
 
+_OPEN_BRACKET_PATTERN = re.compile(r"[（(]")
+
 _PURE_NUMBER_PATTERN = re.compile(r"^\d+(?:\.\d+)?$")
 
 EXTRA_GENERIC_PLATE_NAMES = {
@@ -172,12 +175,18 @@ HARD_GENERIC_PLATE_KEYWORDS = (
 )
 
 def normalize_plate_name(value: Any) -> str:
-    text = str(value or "").strip()
+    # Cache the normalized string, while accepting unhashable legacy inputs just
+    # as the original public function did.
+    return _normalize_plate_text(str(value or "").strip())
+
+
+@lru_cache(maxsize=None)
+def _normalize_plate_text(text: str) -> str:
     if not text:
         return ""
     text = _REASON_TAIL_PATTERN.sub("", text)
     if _TRAILING_BRACKET_DETAIL_PATTERN.search(text):
-        head = re.split(r"[（(]", text, maxsplit=1)[0].strip()
+        head = _OPEN_BRACKET_PATTERN.split(text, maxsplit=1)[0].strip()
         if head:
             text = head
     for suffix in ("概念", "板块", "题材"):

@@ -18,7 +18,7 @@ from engine_core.plate_membership import (
     default_alias_hierarchy,
 )
 from engine_core.plate_rules import build_plate_candidates_from_reason
-from engine_core.plate_hierarchy_kaipan import parse_kaipan_reason_hierarchy
+from engine_core.plate_hierarchy_kaipan import build_hierarchy_as_of, parse_kaipan_reason_items
 from engine_core.plate_auction_open_report import build_session_report
 from engine_core.plate_rules import normalize_plate_name
 from examples.run_offline_plate_pipeline import (
@@ -213,7 +213,8 @@ def _load_prev_hot(path: Path | None, prior_date: str | None) -> dict[str, dict[
 
 
 def _memberships(snapshot: Mapping[str, Any], symbols: list[str], trade_date: str, prior_date: str | None,
-                 kaipan_dir: Path | None, conclusion_phase: str = "AUCTION"):
+                 kaipan_dir: Path | None, conclusion_phase: str = "AUCTION",
+                 reason_rows: Mapping[str, list[dict[str, Any]]] | None = None, reason_items: Any = ()):
     static = snapshot.get("stock_plate", {})
     s2p = snapshot.get("s2p", {})
     static_themes = {
@@ -224,15 +225,16 @@ def _memberships(snapshot: Mapping[str, Any], symbols: list[str], trade_date: st
         for symbol in symbols
     }
     pool_by_symbol: dict[str, Any] = {}
-    reasons: dict[str, list[Mapping[str, Any]]] = {}
+    reasons: Mapping[str, list[Mapping[str, Any]]] = reason_rows or {}
     hot_names: list[str] = []
     degradation: list[str] = []
     hierarchy = default_alias_hierarchy()
     if kaipan_dir is None:
         degradation.append("KAIPAN_INPUTS_MISSING")
     else:
-        pools, kaipan_hierarchy, partial = _load_kaipan_inputs_with_status(kaipan_dir)
-        reasons = _load_kaipan_reasons(kaipan_dir)
+        pools, _kaipan_hierarchy, partial = _load_kaipan_inputs_with_status(
+            kaipan_dir, parse_hierarchy=False,
+        )
         hot = _load_kaipan_hot_plates(kaipan_dir)
         if prior_date and prior_date in pools:
             pool_by_symbol = pools[prior_date]
@@ -244,9 +246,8 @@ def _memberships(snapshot: Mapping[str, Any], symbols: list[str], trade_date: st
             hot_names = [str(row.get("name")) for row in hot[prior_date].get("rows", ()) if row.get("name")]
         else:
             degradation.append("KAIPAN_HOT_PLATES_MISSING")
-        asof_hierarchy = parse_kaipan_reason_hierarchy(
-            [{"StockID": symbol, "List": rows} for symbol, rows in reasons.items()],
-            as_of_date=trade_date,
+        asof_hierarchy = build_hierarchy_as_of(
+            reason_items, trade_date,
             inclusive=conclusion_phase == "EOD",
         )
         hierarchy = PlateHierarchy(
@@ -291,6 +292,10 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
     ensure_empty_output_dir(output_dir)
     snapshot = _load_snapshot(snapshot_path)
     snapshot_asof = _snapshot_asof(snapshot_path, snapshot_asof, snapshot)
+    reason_rows = _load_kaipan_reasons(kaipan_dir) if kaipan_dir else {}
+    reason_items = parse_kaipan_reason_items([
+        {"StockID": symbol, "List": rows} for symbol, rows in reason_rows.items()
+    ])
     symbols = sorted(set(map(str, snapshot["stock_plate"])) | set(map(str, snapshot["s2p"])))
     for trade_date in trade_dates:
         report_started = time.perf_counter()
@@ -300,7 +305,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         sessions = sorted({str(row[0])[:10] for rows in klines.values() for row in rows if row and row[0] is not None})
         prior = max((day for day in sessions if day < trade_date), default=None)
         memberships, hierarchy, pool, degradation = _memberships(
-            snapshot, symbols, trade_date, prior, kaipan_dir, conclusion_phase,
+            snapshot, symbols, trade_date, prior, kaipan_dir, conclusion_phase, reason_rows, reason_items,
         )
         if snapshot_asof is None or trade_date < snapshot_asof:
             degradation.append("NOT_POINT_IN_TIME")
@@ -315,7 +320,6 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         opening_flags = {symbol: set(row.get("flags", ())) for symbol, row in opening.items()}
         for stock in report["stocks"]:
             stock["flags"] = sorted(set(stock.get("flags", ())) | opening_flags.get(stock["symbol"], set()))
-        reason_rows = _load_kaipan_reasons(kaipan_dir) if kaipan_dir else {}
         excluded_same_day = sum(
             1 for rows in reason_rows.values() for row in rows
             if row.get("Date", row.get("date")) == trade_date

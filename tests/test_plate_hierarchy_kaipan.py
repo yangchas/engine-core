@@ -1,4 +1,6 @@
 from engine_core.plate_hierarchy_kaipan import (
+    build_hierarchy_as_of,
+    parse_kaipan_reason_items,
     parse_kaipan_pool,
     parse_kaipan_reason_hierarchy,
 )
@@ -13,6 +15,18 @@ def test_parse_kaipan_pool_real_response_shape_and_metadata_page():
     parsed = parse_kaipan_pool([response])
     assert parsed["600693"].plate == "并购重组、零售"
     assert parsed["600693"].lb_days == 1
+
+
+def test_preparsed_hierarchy_matches_as_of_parser():
+    responses = [{"StockID": "600001", "List": [
+        {"Date": "2026-01-04", "Type": "0", "Reason": "芯片(AI芯片)",
+         "ZSCode": ["801001"], "PZSCode": "800001"},
+        {"Date": "2026-01-05", "Type": "0", "Reason": "通信(光模块)",
+         "ZSCode": ["801002"], "PZSCode": "800002"},
+    ]}]
+    items = parse_kaipan_reason_items(responses)
+    assert build_hierarchy_as_of(items, "2026-01-05", inclusive=False) == \
+        parse_kaipan_reason_hierarchy(responses, as_of_date="2026-01-05")
 
 
 def test_parse_kaipan_pool_uses_max_lb_for_duplicate_symbol():

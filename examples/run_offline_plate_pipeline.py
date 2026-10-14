@@ -26,7 +26,8 @@ from engine_core.plate_membership import (
     default_alias_hierarchy,
 )
 from engine_core.plate_hierarchy_kaipan import (
-    PoolRow, parse_kaipan_pool, parse_kaipan_reason_hierarchy,
+    PoolRow, build_hierarchy_as_of, parse_kaipan_pool, parse_kaipan_reason_hierarchy,
+    parse_kaipan_reason_items,
 )
 from engine_core.plate_rules import build_plate_candidates_from_reason
 from engine_core.plate_rules import normalize_plate_name
@@ -222,6 +223,7 @@ def build_day(
     kaipan_pool_partial: bool = False,
     kaipan_hierarchy: PlateHierarchy | None = None,
     kaipan_reasons_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    kaipan_reason_items: Sequence[Any] | None = None,
     hot_plate_input: Mapping[str, Any] | None = None,
     snapshot_asof: str | None = None,
     conclusion_phase: str = "AUCTION",
@@ -295,7 +297,11 @@ def build_day(
         kaipan_reasons_by_symbol or {}, trade_date, set(map(str, pool_symbols)), conclusion_phase,
     )
     hierarchy_counts = {"used": 0, "excluded_future": 0, "excluded_no_date": 0}
-    if kaipan_reasons_by_symbol is not None:
+    if kaipan_reason_items is not None:
+        kaipan_hierarchy = build_hierarchy_as_of(
+            kaipan_reason_items, trade_date, inclusive=conclusion_phase == "EOD", counts=hierarchy_counts,
+        )
+    elif kaipan_reasons_by_symbol is not None:
         hierarchy_responses = [
             {"StockID": str(symbol), "List": list(rows)}
             for symbol, rows in kaipan_reasons_by_symbol.items()
@@ -505,10 +511,16 @@ def run_pipeline(
     kaipan_pool_partial_dates: set[str] | None = None,
     kaipan_hierarchy: PlateHierarchy | None = None,
     kaipan_reasons_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    kaipan_reason_items: Sequence[Any] | None = None,
     kaipan_hot_plates_by_day: Mapping[str, Mapping[str, Any]] | None = None,
     snapshot_asof: str | None = None,
     conclusion_phase: str = "AUCTION",
 ) -> dict[str, Any]:
+    if kaipan_reason_items is None and kaipan_reasons_by_symbol is not None:
+        kaipan_reason_items = parse_kaipan_reason_items([
+            {"StockID": str(symbol), "List": list(rows)}
+            for symbol, rows in kaipan_reasons_by_symbol.items()
+        ])
     included, skipped = [], []
     for day in dates:
         if not start_date <= day <= end_date:
@@ -528,6 +540,7 @@ def run_pipeline(
             ), kaipan_hierarchy=kaipan_hierarchy,
             kaipan_pool_partial=prior_day in (kaipan_pool_partial_dates or set()),
             kaipan_reasons_by_symbol=kaipan_reasons_by_symbol,
+            kaipan_reason_items=kaipan_reason_items,
             hot_plate_input=(kaipan_hot_plates_by_day or {}).get(prior_day),
             snapshot_asof=snapshot_asof,
             conclusion_phase=conclusion_phase,
@@ -589,7 +602,7 @@ def _load_kaipan_inputs(path: Path) -> tuple[dict[str, dict[str, PoolRow]], Plat
 
 
 def _load_kaipan_inputs_with_status(
-    path: Path,
+    path: Path, *, parse_hierarchy: bool = True,
 ) -> tuple[dict[str, dict[str, PoolRow]], PlateHierarchy, set[str]]:
     candidates: dict[str, dict[str, PoolRow]] = {}
     files_by_date: dict[str, set[int]] = {}
@@ -644,7 +657,8 @@ def _load_kaipan_inputs_with_status(
     partial_dates.update((files_by_date.keys() | requested_dates) - pools.keys())
     reason_responses = [_read_json(source) for source in sorted((path / "reasons").glob("*.json"))] \
         if (path / "reasons").is_dir() else []
-    return pools, parse_kaipan_reason_hierarchy(reason_responses), partial_dates
+    hierarchy = parse_kaipan_reason_hierarchy(reason_responses) if parse_hierarchy else PlateHierarchy({}, {})
+    return pools, hierarchy, partial_dates
 
 
 def _load_kaipan_reasons(path: Path) -> dict[str, list[dict[str, Any]]]:
@@ -932,7 +946,8 @@ def main(argv: list[str] | None = None) -> int:
     snapshot = _load_snapshot(args.snapshot)
     reasons = _load_reasons(args.reasons)
     kaipan_pools, kaipan_hierarchy, kaipan_pool_partial_dates = \
-        _load_kaipan_inputs_with_status(args.kaipan_dir) if args.kaipan_dir else ({}, None, set())
+        _load_kaipan_inputs_with_status(args.kaipan_dir, parse_hierarchy=False) \
+        if args.kaipan_dir else ({}, None, set())
     kaipan_reasons = _load_kaipan_reasons(args.kaipan_dir) if args.kaipan_dir else None
     kaipan_hot_plates = _load_kaipan_hot_plates(args.kaipan_dir) if args.kaipan_dir else {}
     symbols = sorted(set(map(str, snapshot["stock_plate"])) | set(map(str, snapshot["s2p"])) | set(reasons))

@@ -6,6 +6,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date
+from functools import lru_cache
 from typing import Any, Mapping, MutableMapping, Sequence
 
 from .plate_membership import PlateHierarchy
@@ -16,6 +17,29 @@ from .plate_rules import normalize_plate_name
 class PoolRow:
     plate: str
     lb_days: int | None
+
+
+@dataclass(frozen=True)
+class KaipanReasonItem:
+    symbol: str
+    date: str | None
+    type: str
+    head_main: str
+    head_detail: str
+    zs_codes: tuple[str, ...]
+    pzs_code: str
+
+
+_REASON_HEAD = re.compile(r"([^()（）;；]+)[(（]([^()（）]+)[)）]")
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+@lru_cache(maxsize=32768)
+def _parse_reason_head(reason: str) -> tuple[str, str]:
+    match = _REASON_HEAD.search(reason)
+    if not match:
+        return "", ""
+    return normalize_plate_name(match.group(1)), normalize_plate_name(match.group(2))
 
 
 def _response_rows(response: Any) -> list[Any]:
@@ -81,16 +105,45 @@ def parse_kaipan_reason_hierarchy(
     counts: MutableMapping[str, int] | None = None, inclusive: bool = False,
 ) -> PlateHierarchy:
     """Extract parent edges from ``主(细)`` reasons with source code evidence."""
+    items = parse_kaipan_reason_items(reason_responses)
+    return build_hierarchy_as_of(items, as_of_date, inclusive=inclusive, counts=counts)
+
+
+def parse_kaipan_reason_items(reason_responses: Any) -> tuple[KaipanReasonItem, ...]:
+    """Parse immutable reason facts once so callers can reuse them across dates."""
+    output: list[KaipanReasonItem] = []
+    for symbol, row in _reason_records(reason_responses):
+        reason = str(row.get("Reason") or row.get("reason") or "")
+        parent, child = _parse_reason_head(reason)
+        codes = row.get("ZSCode", row.get("zs_code", []))
+        if isinstance(codes, str):
+            codes = [codes]
+        zs_codes = tuple(str(code) for code in codes
+                         if code not in (None, "")) if isinstance(codes, Sequence) else ()
+        raw_date = row.get("Date", row.get("date"))
+        output.append(KaipanReasonItem(
+            symbol=symbol, date=raw_date if isinstance(raw_date, str) else None,
+            type=str(row.get("Type", row.get("type", "")) or ""),
+            head_main=parent, head_detail=child, zs_codes=zs_codes,
+            pzs_code=str(row.get("PZSCode") or row.get("pzs_code") or "").strip(),
+        ))
+    return tuple(output)
+
+
+def build_hierarchy_as_of(
+    items: Sequence[KaipanReasonItem], as_of_date: str | None,
+    *, inclusive: bool = False, counts: MutableMapping[str, int] | None = None,
+) -> PlateHierarchy:
+    """Filter pre-parsed reason rows by date and deterministically choose parents."""
     candidates: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     cutoff = date.fromisoformat(as_of_date) if as_of_date is not None else None
     used = excluded_future = excluded_no_date = 0
-    for symbol, row in _reason_records(reason_responses):
+    for item in items:
         if cutoff is not None:
-            raw_date = row.get("Date", row.get("date"))
             try:
-                if not isinstance(raw_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_date):
+                if item.date is None or not _ISO_DATE.fullmatch(item.date):
                     raise ValueError("Date must use YYYY-MM-DD")
-                row_date = date.fromisoformat(raw_date)
+                row_date = date.fromisoformat(item.date)
             except ValueError:
                 excluded_no_date += 1
                 continue
@@ -98,26 +151,17 @@ def parse_kaipan_reason_hierarchy(
                 excluded_future += 1
                 continue
             used += 1
-        reason = str(row.get("Reason") or row.get("reason") or "")
-        match = re.search(r"([^()（）;；]+)[(（]([^()（）]+)[)）]", reason)
-        if not match:
-            continue
-        parent = normalize_plate_name(match.group(1))
-        child = normalize_plate_name(match.group(2))
-        pzs_code = str(row.get("PZSCode") or row.get("pzs_code") or "").strip()
+        parent, child = item.head_main, item.head_detail
+        pzs_code = item.pzs_code
         if not pzs_code or pzs_code == "0" or not parent or not child or parent == child:
             continue
         bucket = candidates[child].setdefault(
             parent, {"symbols": set(), "occurrences": 0, "zs_codes": set(), "pzs_codes": set()},
         )
         bucket["occurrences"] += 1
-        if symbol:
-            bucket["symbols"].add(symbol)
-        codes = row.get("ZSCode", row.get("zs_code", []))
-        if isinstance(codes, str):
-            codes = [codes]
-        if isinstance(codes, Sequence):
-            bucket["zs_codes"].update(str(code) for code in codes if code not in (None, ""))
+        if item.symbol:
+            bucket["symbols"].add(item.symbol)
+        bucket["zs_codes"].update(item.zs_codes)
         bucket["pzs_codes"].add(pzs_code)
 
     parents: dict[str, str] = {}

@@ -253,27 +253,63 @@ def default_alias_hierarchy() -> PlateHierarchy:
     return PlateHierarchy(parents, {child: "static_alias" for child in parents})
 
 
+class MembershipIndex:
+    """Precomputed direct and descendant membership lookups for one input pair."""
+
+    def __init__(self, memberships: StockPlateMemberships, hierarchy: PlateHierarchy) -> None:
+        self.memberships = memberships
+        self.hierarchy = hierarchy
+        children: dict[str, set[str]] = {}
+        for child, parent in hierarchy.parent_by_child.items():
+            child_name, parent_name = normalize_plate_name(child), normalize_plate_name(parent)
+            if child_name and parent_name:
+                children.setdefault(parent_name, set()).add(child_name)
+        self.children_by_parent = children
+        plates = {row.plate for rows in memberships.by_symbol.values() for row in rows}
+        plates.update(children)
+        plates.update(child for values in children.values() for child in values)
+        descendants: dict[str, frozenset[str]] = {}
+        for target in plates:
+            accepted = {target}
+            pending = [target]
+            while pending:
+                for child in children.get(pending.pop(), ()):
+                    if child not in accepted:
+                        accepted.add(child)
+                        pending.append(child)
+            descendants[target] = frozenset(accepted)
+        self.descendant_closure = descendants
+        direct: dict[str, set[str]] = {}
+        symbol_plates: dict[str, set[str]] = {}
+        for symbol, rows in memberships.by_symbol.items():
+            normalized = {normalize_plate_name(row.plate) for row in rows}
+            normalized.discard("")
+            symbol_plates[symbol] = normalized
+            for name in normalized:
+                direct.setdefault(name, set()).add(symbol)
+        self.symbol_to_plates = {key: frozenset(value) for key, value in symbol_plates.items()}
+        self.plate_to_symbols: dict[str, frozenset[str]] = {
+            name: frozenset().union(*(direct.get(descendant, frozenset()) for descendant in closure))
+            for name, closure in descendants.items()
+        }
+
+    def members_of(self, plate: str) -> set[str]:
+        target = normalize_plate_name(plate)
+        return set(self.plate_to_symbols.get(target, ())) if target else set()
+
+
+_MEMBERSHIP_INDEX_CACHE: dict[tuple[str, int], MembershipIndex] = {}
+
+
 def members_of(
     plate: str, memberships: StockPlateMemberships, hierarchy: PlateHierarchy,
 ) -> set[str]:
     """Return distinct symbols in a plate or any descendant plate."""
-    target = normalize_plate_name(plate)
-    if not target:
-        return set()
-    children_by_parent: dict[str, set[str]] = {}
-    for child, parent in hierarchy.parent_by_child.items():
-        child_name, parent_name = normalize_plate_name(child), normalize_plate_name(parent)
-        if child_name and parent_name:
-            children_by_parent.setdefault(parent_name, set()).add(child_name)
-    accepted = {target}
-    pending = [target]
-    while pending:
-        parent = pending.pop()
-        for child in children_by_parent.get(parent, ()):
-            if child not in accepted:
-                accepted.add(child)
-                pending.append(child)
-    return {
-        symbol for symbol, rows in memberships.by_symbol.items()
-        if any(row.plate in accepted for row in rows)
-    }
+    key = (memberships.content_hash, id(hierarchy))
+    index = _MEMBERSHIP_INDEX_CACHE.get(key)
+    if index is None:
+        index = MembershipIndex(memberships, hierarchy)
+        _MEMBERSHIP_INDEX_CACHE[key] = index
+        if len(_MEMBERSHIP_INDEX_CACHE) > 64:
+            _MEMBERSHIP_INDEX_CACHE.pop(next(iter(_MEMBERSHIP_INDEX_CACHE)))
+    return index.members_of(plate)
