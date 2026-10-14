@@ -220,6 +220,7 @@ from .plate_aggregation import (
     market_summary,
     aggregate_plates,
 )
+from .plate_auction_open_report import build_session_report, render_report_markdown
 from .plate_kind import EVENT_KEYWORDS, classify_plate_kind
 from .plate_cohesion import (
     ActivePlateEvidence,
@@ -536,6 +537,8 @@ __all__ = [
     "PlateAggregation",
     "market_summary",
     "aggregate_plates",
+    "build_session_report",
+    "render_report_markdown",
     "EVENT_KEYWORDS",
     "classify_plate_kind",
     "ActivePlateEvidence",
