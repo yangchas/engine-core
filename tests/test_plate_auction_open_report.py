@@ -1,4 +1,4 @@
-from engine_core.plate_auction_open_report import build_session_report
+from engine_core.plate_auction_open_report import build_session_report, render_report_markdown
 
 
 def _source():
@@ -138,3 +138,29 @@ def test_strength_rank_consistency_summary_is_present_per_stage():
     result = build_session_report(**_source())
     assert set(result["strength_hot_consistency"]) == {"0920", "0924", "0925", "0932"}
     assert result["strength_hot_consistency"]["0925"]["intersection_count"] == 0
+
+
+def test_markdown_strength_units_flagged_rows_and_missing_values():
+    result = build_session_report(**_source())
+    bank = next(row for row in result["plates"] if row["plate"] == "银行")
+    strength = bank["times"]["0925"]["strength"]
+    strength.update({"beta_ridge": 0.0059, "beta_se": 0.0012, "excess_amt_weighted": 0.0059,
+                     "excess_median": -0.001, "excess_trimmed": 0.002,
+                     "conserved_share": 0.1298, "baseline_share": 0.1,
+                     "share_vs_baseline": 0.0298, "top1_amount_share": None,
+                     "flags": [], "strength_rank": 1})
+    bank["times"]["0925"]["amount_share_of_market"] = 0.1298
+    flagged = {**bank, "plate": "异常板块", "times": dict(bank["times"])}
+    flagged["times"]["0925"] = {**bank["times"]["0925"], "strength": {
+        **strength, "beta_ridge": 0.5, "flags": ["SINGLE_STOCK_DOMINATED"],
+        "dominant_symbol": "000001", "strength_rank": "flagged"}}
+    result["plates"].append(flagged)
+
+    report = render_report_markdown(result)
+    ranked = report.split("### 0925 板块强度", 1)[1].split("### 0925 Flagged", 1)[0]
+    assert "+0.59pp" in ranked
+    assert "12.98%" in ranked
+    assert "—" in ranked
+    assert "异常板块" not in ranked
+    assert "异常板块" in report.split("### 0925 Flagged", 1)[1]
+    assert "金额(亿元)" in report

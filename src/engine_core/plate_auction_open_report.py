@@ -377,62 +377,102 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
     trade_date = result["trade_date"]
     market = result["market"]
     pool_rows = [row for row in result["stocks"] if row["in_yest_pool"]]
-    labels = [label for label in result.get("degradation", ()) if label == "NOT_POINT_IN_TIME"]
-    lines = ([f"标签: {', '.join(labels)}", ""] if labels else [])
+    labels = list(result.get("degradation", ()))
+    label_meanings = {
+        "NOT_POINT_IN_TIME": "输入快照不是结论时点的历史快照",
+        "PARTIAL": "输入覆盖不完整",
+        "UNKNOWN": "来源或语义未知",
+    }
+    prominent_labels = [label for label in labels if label == "NOT_POINT_IN_TIME"]
+    lines = ([f"标签: {', '.join(prominent_labels)}", ""] if prominent_labels else [])
     lines.extend([f"# 个股板块竞价开盘情况 {trade_date}", "",
+             "## 阅读说明", "",
+             "竞价金额是虚拟撮合额；09:20 后不可撤单。09:32 金额是截至该时点的累计真实成交额。",
+             "涨幅及超额以百分点（pp）显示，占比以百分比显示；金额以亿元显示；缺失值显示为 —。",
+             "NOT_POINT_IN_TIME 表示输入快照并非该历史结论时点可得；降级标签是数据质量说明。", "",
                   "输入时点: " + " / ".join(f"{tag}={value}" for tag, value in result.get("input_cutoff", {}).items()),
                   "", "## 市场摘要", "",
-             "| 时点 | 覆盖 | 金额(元) | 涨 | 跌 | 平 | 涨停 | 跌停 |",
+             "| 时点 | 覆盖 | 金额(亿元) | 涨 | 跌 | 平 | 涨停 | 跌停 |",
              "|---|---:|---:|---:|---:|---:|---:|---:|"])
     for tag in ("0920", "0924", "0925", "0932"):
         row = market[tag]
-        lines.append(f"| {tag} | {row['covered_count']} | {_fmt(row['amount_sum'])} | {row['up_count']} | "
+        lines.append(f"| {tag} | {row['covered_count']} | {_amount_yi(row['amount_sum'])} | {row['up_count']} | "
                      f"{row['down_count']} | {row['flat_count']} | {_fmt(row['limit_up_count'])} | "
                      f"{_fmt(row['limit_down_count'])} |")
     lines.extend(["", "## 非泛化板块 0925 匹配额占比前 20", "",
-                  "| 板块 | 类型 | 成员 | 0925 匹配额占比 | 0932 涨幅变化 | 涨/跌/平 |",
+                  "| 板块 | 类型 | 成员 | 0925 匹配额占比 | 0932 涨幅变化(pp) | 涨/跌/平 |",
                   "|---|---|---:|---:|---:|---:|"])
     candidates = [row for row in result["plates"] if row["kind"] == "THEME" and not row["generic"]][:20]
     for row in candidates:
         tag25, tag32 = row["times"]["0925"] or {}, row["times"]["0932"] or {}
         change = row["pct_equal_weight_change_0925_to_0932"]
         lines.append(f"| {row['plate']} | {row['kind']} | {row['member_count']} | "
-                     f"{_pctfmt(tag25.get('amount_share_of_market'))} | {_pctfmt(change)} | "
+                     f"{_pctfmt(tag25.get('amount_share_of_market'))} | {_ppfmt(change)} | "
                      f"{_fmt(tag32.get('up_count'))}/{_fmt(tag32.get('down_count'))}/{_fmt(tag32.get('flat_count'))} |")
     lines.extend(["", "## 板块强度与 Kaipan 热板参考", "",
-                  "封顶岭回归 beta_ridge 只在无 UNKNOWN、SINGLE_STOCK_DOMINATED、OUTLIER_DRIVEN 的板块中排名；flagged 行显示主导个股。竞价额为 MATCH，0932 额为 TRADED，分别计算。", "",
-                  "| 板块 | 时点 | beta | SE | 加权超额 | 中位超额 | 截尾超额 | 守恒份额 | 基线份额 | vs基线 | 不平衡 | Top1占比 | 主导个股 | 排名 | 标记 | 热板前收排名/强度/涨幅 | 热板当日排名/强度/涨幅 | 采集时间 | 延迟秒 |",
-                  "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---|---|---|---|---:|"])
-    for row in candidates:
-        for tag in ("0920", "0924", "0925", "0932"):
-            stage = row["times"][tag]
-            if stage is None:
-                continue
+                  "各时点分别计算；0925 竞价金额为虚拟撮合额，0932 金额为真实成交额。可排名板块按 beta 降序，flagged 板块单列且不排名。",
+                  "强度值 beta、SE 和超额使用百分点（pp）；份额、不平衡使用百分比。", ""])
+    for tag in ("0920", "0924", "0925", "0932"):
+        stage_rows = [(row, row["times"].get(tag)) for row in result["plates"]]
+        stage_rows = [(row, stage) for row, stage in stage_rows if stage is not None]
+        flagged_rows = [(row, stage) for row, stage in stage_rows
+                        if set(stage["strength"].get("flags", ()))
+                        .intersection({"SINGLE_STOCK_DOMINATED", "OUTLIER_DRIVEN", "UNKNOWN"})]
+        ranked_rows = [(row, stage) for row, stage in stage_rows
+                       if stage["strength"].get("beta_ridge") is not None
+                       and not set(stage["strength"].get("flags", ()))
+                       .intersection({"SINGLE_STOCK_DOMINATED", "OUTLIER_DRIVEN", "UNKNOWN"})]
+        ranked_rows.sort(key=lambda pair: (-pair[1]["strength"]["beta_ridge"], pair[0]["plate"]))
+        if tag in ("0920", "0924"):
+            lines.extend([f"### {tag} 板块强度（简表）", "",
+                          "| 板块 | 匹配额(亿元) | 匹配额占比(%) | 份额 vs 基线(pp) | 涨幅(pp) |",
+                          "|---|---:|---:|---:|---:|"])
+            for row, stage in ranked_rows[:20]:
+                strength = stage["strength"]
+                lines.append(f"| {row['plate']} | {_amount_yi(stage.get('amount_sum'))} | "
+                             f"{_pctfmt(stage.get('amount_share_of_market'))} | "
+                             f"{_ppfmt(strength.get('share_vs_baseline'))} | {_ppfmt(stage.get('pct_equal_weight'))} |")
+            continue
+
+        lines.extend([f"### {tag} 板块强度（可排名前 20）", "",
+                      f"| 板块 | {'匹配额 MATCH（虚拟撮合,亿元）' if tag == '0925' else '成交额 TRADED（真实,亿元）'} | 市场份额(%) | beta/SE(pp) | 加权超额(pp) | 中位超额(pp) | 截尾超额(pp) | Top1占比(%) | vs基线(pp) | 不平衡(%) | 热板前收排名 | 热板当日排名 |",
+                      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
+        for row, stage in ranked_rows[:20]:
             strength = stage["strength"]
-            prev = "/".join(_fmt(stage.get(f"hot_prev_close_{field}")) for field in ("rank", "strength", "pct"))
-            live = "/".join(_fmt(stage.get(f"hot_live_{field}")) for field in ("rank", "strength", "pct"))
-            lines.append(f"| {row['plate']} | {tag} ({stage.get('amount_kind', 'MATCH')}) | "
-                         f"{_fmt(strength.get('beta_ridge'))} | {_fmt(strength.get('beta_se'))} | "
-                         f"{_fmt(strength.get('excess_amt_weighted'))} | {_fmt(strength.get('excess_median'))} | "
-                         f"{_fmt(strength.get('excess_trimmed'))} | {_fmt(strength.get('conserved_share'))} | "
-                         f"{_fmt(strength.get('baseline_share'))} | {_fmt(strength.get('share_vs_baseline'))} | "
-                         f"{_fmt(strength.get('imbalance'))} | {_fmt(strength.get('top1_amount_share'))} | "
-                         f"{_fmt(strength.get('dominant_symbol'))} | {_fmt(strength.get('strength_rank'))} | "
-                         f"{','.join(strength.get('flags', ())) or '—'} | {prev} | {live} | "
-                         f"{_fmt(stage.get('hot_live_captured_at'))} | {_fmt(stage.get('hot_live_staleness_s'))} |")
+            lines.append(f"| {row['plate']} | {_amount_yi(stage.get('amount_sum'))} | "
+                         f"{_pctfmt(stage.get('amount_share_of_market'))} | "
+                         f"{_ppfmt(strength.get('beta_ridge'))} / {_ppfmt(strength.get('beta_se'))} | "
+                         f"{_ppfmt(strength.get('excess_amt_weighted'))} | {_ppfmt(strength.get('excess_median'))} | "
+                         f"{_ppfmt(strength.get('excess_trimmed'))} | "
+                         f"{_pctfmt(strength.get('top1_amount_share'))} | {_ppfmt(strength.get('share_vs_baseline'))} | "
+                         f"{_pctfmt(strength.get('imbalance'))} | {_fmt(stage.get('hot_prev_close_rank'))} | "
+                         f"{_fmt(stage.get('hot_live_rank'))} |")
+        lines.extend(["", f"### {tag} Flagged 板块", "",
+                      "| 板块 | 标记 | 金额(亿元) | 市场份额(%) | 主导个股 | 主导个股涨幅(pp) |",
+                      "|---|---|---:|---:|---|---:|"])
+        for row, stage in flagged_rows:
+            strength = stage["strength"]
+            dominant = strength.get("dominant_symbol")
+            stock = next((item for item in result["stocks"] if item["symbol"] == dominant), None)
+            stock_stage = (stock or {}).get("times", {}).get(tag, {})
+            lines.append(f"| {row['plate']} | {','.join(strength.get('flags', ())) or 'UNKNOWN'} | "
+                         f"{_amount_yi(stage.get('amount_sum'))} | {_pctfmt(stage.get('amount_share_of_market'))} | "
+                         f"{_fmt(dominant)} | {_ppfmt(stock_stage.get('pct_vs_pre_close'))} |")
     lines.extend(["", "### Beta 与当日热板 Top20 一致性", "",
                   "| 时点 | 交集数 | Spearman |", "|---|---:|---:|"])
     for tag, row in result.get("strength_hot_consistency", {}).items():
         lines.append(f"| {tag} | {row['intersection_count']} | {_fmt(row['spearman'])} |")
-    lines.extend(["", "## 昨日涨停池成员", "", "| 代码 | 名称 | 连板天数 | 0925 匹配额 | 0925 涨幅 | 0932 成交额 | 0932 涨幅 |",
+    lines.extend(["", "## 昨日涨停池成员", "", "| 代码 | 名称 | 连板天数 | 0925 匹配额(亿元) | 0925 涨幅(pp) | 0932 成交额(亿元) | 0932 涨幅(pp) |",
                   "|---|---|---:|---:|---:|---:|---:|"])
     for row in pool_rows:
         a25, o32 = row["times"]["0925"], row["times"]["0932"]
         lines.append(f"| {row['symbol']} | {row['name'] or ''} | {_fmt(row['lb_days'])} | "
-                     f"{_fmt(a25['amount'])} | {_pctfmt(a25['pct_vs_pre_close'])} | "
-                     f"{_fmt(o32['amount'])} | {_pctfmt(o32['pct_vs_pre_close'])} |")
+                     f"{_amount_yi(a25['amount'])} | {_ppfmt(a25['pct_vs_pre_close'])} | "
+                     f"{_amount_yi(o32['amount'])} | {_ppfmt(o32['pct_vs_pre_close'])} |")
     lines.extend(["", "## 数据质量与降级标签", "", f"- 竞价金额为虚拟匹配额；09:32 金额为真实累计成交额。",
                   f"- 昨日池成员数: {len(pool_rows)}。", f"- 降级标签: {', '.join(result['degradation']) or 'NONE'}。",
+                  *[f"- {label}: {label_meanings.get(label, '数据质量标签，具体含义由对应输入契约定义。')}"
+                    for label in labels],
                   "- 缺失值保持 null；多板块统计按成员并集去重。", ""])
     return "\n".join(lines)
 
@@ -443,6 +483,14 @@ def _fmt(value: Any) -> str:
 
 def _pctfmt(value: float | None) -> str:
     return "—" if value is None else f"{value * 100:.2f}%"
+
+
+def _ppfmt(value: float | None) -> str:
+    return "—" if value is None else f"{value * 100:+.2f}pp"
+
+
+def _amount_yi(value: float | None) -> str:
+    return "—" if value is None else f"{value / 100_000_000:.2f}"
 
 
 __all__ = ["build_session_report", "render_report_markdown"]
