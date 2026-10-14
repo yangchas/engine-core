@@ -45,6 +45,39 @@ def test_opening_tick_after_cutoff_is_not_used():
     assert "NO_0932_ASOF_ROW" in stock["flags"]
 
 
+def test_open_times_keep_each_cutoff_and_missing_prices_missing():
+    source = _source()
+    source["open_times"] = ("0932", "0935")
+    source["opening_by_tag"] = {"0932": {"000001": source["opening_by_symbol"]["000001"]},
+                                "0935": {"000001": {"ts": "2026-10-13 09:35:00",
+                                                     "px_milli": 11200, "amt_yuan": 1800}}}
+    result = build_session_report(**source)
+    stock = next(row for row in result["stocks"] if row["symbol"] == "000001")
+    assert stock["times"]["0935"]["input_cutoff"] == "2026-10-13T09:35:00"
+    assert stock["times"]["0935"]["price"] == 11.2
+    assert stock["times"]["0935"]["amount"] == 1800
+    missing = next(row for row in result["stocks"] if row["symbol"] == "000002")
+    assert missing["times"]["0935"]["price"] is None
+
+
+def test_event_facts_are_unranked_and_render_z_to_two_decimals():
+    from engine_core.plate_auction_open_report import render_independent_plates_markdown
+
+    text = render_independent_plates_markdown({"0925": {
+        "market": {"median": 0.0}, "selected": [{"code": "801001", "name": "主题",
+            "direction": "STRONG", "z": 3.456}],
+        "uncovered": {}, "event_plates": [{"name": "并购重组", "covered_count": 4,
+            "trim_mean": 0.01, "limit_up_count": 1, "top3": []}],
+        "generic_controls": [{"name": "全体规模", "n": 2, "relative_market_pp": 0.01, "z": None}],
+    }})
+    assert "事件类, 仅作事实" in text
+    assert "并购重组" in text and "| 排名 |" in text
+    assert "3.46" in text and "样本不足" in text
+    event_part = text.split("事件类, 仅作事实", 1)[1]
+    event_header = event_part.splitlines()[1]
+    assert "排名" not in event_header
+
+
 def test_membership_aggregation_deduplicates_members_and_keeps_missing_none():
     result = build_session_report(**_source())
     bank = next(row for row in result["plates"] if row["plate"] == "银行")

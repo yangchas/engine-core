@@ -31,6 +31,22 @@ from examples.run_offline_plate_pipeline import (
 
 
 _ZONE = ZoneInfo("Asia/Shanghai")
+_DEFAULT_OPEN_TIMES = ("0932", "0935", "0940", "0945")
+
+
+def parse_open_times(value: str) -> tuple[str, ...]:
+    tags = tuple(item.strip() for item in value.split(",") if item.strip())
+    if not tags:
+        raise ValueError("--open-times must contain at least one HHMM value")
+    for tag in tags:
+        if not re.fullmatch(r"\d{4}", tag):
+            raise ValueError("--open-times values must use HHMM")
+        hour, minute = int(tag[:2]), int(tag[2:])
+        if hour > 23 or minute > 59 or tag < "0930":
+            raise ValueError("--open-times values must be valid opening-session times >= 0930")
+    if tuple(sorted(set(tags))) != tags:
+        raise ValueError("--open-times values must be unique and increasing")
+    return tags
 
 
 def _point_in_time_flags(snapshot_asof: str | None, trade_date: str,
@@ -82,7 +98,8 @@ def _td_connect(host: str):
     return connection, database
 
 
-def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str):
+def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str,
+             open_times: tuple[str, ...] = ("0932",)):
     start, end = kline_range.split(":", 1)
     if date.fromisoformat(start) > date.fromisoformat(trade_date) - timedelta(days=1):
         raise ValueError("--kline-range must include dates before trade date")
@@ -99,7 +116,7 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str):
     baseline_auction: dict[str, list[dict[str, Any]]] = {tag: [] for tag in auctions}
     pre_close: dict[str, float | None] = {}
     klines: dict[str, list[tuple[Any, ...]]] = {}
-    opening: dict[str, dict[str, Any]] = {}
+    opening_by_tag: dict[str, dict[str, dict[str, Any]]] = {tag: {} for tag in open_times}
 
     def fetchall(sql: str):
         nonlocal read_seconds, query_count
@@ -138,31 +155,32 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str):
                 {"trade_date": day, "amount_by_symbol": grouped[day]}
                 for day in sorted(grouped)[-5:]
             ]
-        cutoff = f"{trade_date} 09:32:00"
         if symbols:
-            rows = fetchall(
-                "SELECT last_row(px_milli), last_row(amt_yuan), last_row(ts), "
-                "last_row(bp1_milli), last_row(ap1_milli), last_row(bv1), "
-                "last_row(av1), last_row(bv2), last_row(av2), symbol "
-                f"FROM {database}.stock_tick_v2 WHERE ts >= '{trade_date} 09:00:00' "
-                f"AND ts <= '{cutoff}' PARTITION BY symbol"
-            )
-            for raw in rows:
-                px, amount, ts, bp1, ap1, bv1, av1, bv2, av2, symbol = raw
-                symbol = str(symbol)
-                ts_dt = ts if isinstance(ts, datetime) else datetime.fromtimestamp(int(ts) / 1000, _ZONE)
-                ts_dt = ts_dt.replace(tzinfo=_ZONE) if ts_dt.tzinfo is None else ts_dt.astimezone(_ZONE)
-                ts_ms = int(ts_dt.timestamp() * 1000)
-                flags = []
-                if ts_dt.time() < datetime.strptime("09:30:00", "%H:%M:%S").time():
-                    state = derive_auction_book(AuctionBookTick(ts_ms, px, bp1, ap1, bv1, av1,
-                                                                 bv2, av2, amount, None))
-                    price = state.effective_price_milli if state.effective_price_milli > 0 else None
-                    flags.append("OPEN_SLICE_BEFORE_0930")
-                else:
-                    price = int(px) if px is not None and int(px) > 0 else None
-                opening[symbol] = {"ts": ts_dt.isoformat(sep=" "), "px_milli": price,
-                                   "amt_yuan": amount, "flags": flags}
+            for tag in open_times:
+                cutoff = f"{trade_date} {tag[:2]}:{tag[2:]}:00"
+                rows = fetchall(
+                    "SELECT last_row(px_milli), last_row(amt_yuan), last_row(ts), "
+                    "last_row(bp1_milli), last_row(ap1_milli), last_row(bv1), "
+                    "last_row(av1), last_row(bv2), last_row(av2), symbol "
+                    f"FROM {database}.stock_tick_v2 WHERE ts >= '{trade_date} 09:00:00' "
+                    f"AND ts <= '{cutoff}' PARTITION BY symbol"
+                )
+                for raw in rows:
+                    px, amount, ts, bp1, ap1, bv1, av1, bv2, av2, symbol = raw
+                    symbol = str(symbol)
+                    ts_dt = ts if isinstance(ts, datetime) else datetime.fromtimestamp(int(ts) / 1000, _ZONE)
+                    ts_dt = ts_dt.replace(tzinfo=_ZONE) if ts_dt.tzinfo is None else ts_dt.astimezone(_ZONE)
+                    ts_ms = int(ts_dt.timestamp() * 1000)
+                    flags = []
+                    if ts_dt.time() < datetime.strptime("09:30:00", "%H:%M:%S").time():
+                        state = derive_auction_book(AuctionBookTick(ts_ms, px, bp1, ap1, bv1, av1,
+                                                                     bv2, av2, amount, None))
+                        price = state.effective_price_milli if state.effective_price_milli > 0 else None
+                        flags.append("OPEN_SLICE_BEFORE_0930")
+                    else:
+                        price = int(px) if px is not None and int(px) > 0 else None
+                    opening_by_tag[tag][symbol] = {"ts": ts_dt.isoformat(sep=" "), "px_milli": price,
+                                                    "amt_yuan": amount, "flags": flags}
 
         rows = fetchall(
             f"SELECT ts, open, high, low, close, volume, amount, turnover, pct_chg, tbname "
@@ -188,6 +206,10 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str):
     total_seconds = time.perf_counter() - total_started
     timing = {"read_s": read_seconds, "build_s": max(0.0, total_seconds - read_seconds),
               "total_s": total_seconds, "query_count": query_count}
+    opening_0932 = opening_by_tag.get("0932", {})
+    opening = {symbol: {**row, "_asof_by_tag": {tag: values[symbol] for tag, values in opening_by_tag.items()
+                                                  if symbol in values}}
+               for symbol, row in opening_0932.items()}
     return auctions, opening, pre_close, klines, baseline_auction, timing
 
 
@@ -325,7 +347,8 @@ def _memberships(snapshot: Mapping[str, Any], symbols: list[str], trade_date: st
         static_themes_by_symbol=static_themes, hot_plate_names=hot_names,
         policy=MEMBERSHIP_POLICY_USER_PRIORITY_V1,
     ), hierarchy)
-    return memberships, hierarchy, {**{s: {"lb_days": v} for s, v in pool_lb.items()}}, degradation
+    return memberships, hierarchy, {s: {"lb_days": row.lb_days, "plate": row.plate}
+                                    for s, row in pool_by_symbol.items()}, degradation
 
 
 def _write(path: Path, data: Any):
@@ -381,8 +404,34 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _apply_selection_stability(out_by_tag: dict[str, dict[str, Any]], tags: tuple[str, ...]) -> None:
+    auction_tags = tuple(tag for tag in ("0920", "0924", "0925") if tag in tags)
+    opening_tags = tuple(tag for tag in tags if tag not in auction_tags)
+    for stage_tags in (auction_tags, opening_tags):
+        previous: set[str] = set()
+        runs: dict[str, int] = {}
+        for index, tag in enumerate(stage_tags):
+            current_rows = out_by_tag.get(tag, {}).get("selected", ())
+            current = {str(row.get("code")) for row in current_rows}
+            union = previous | current
+            jaccard = len(previous & current) / len(union) if union else 1.0
+            prior_rows = out_by_tag.get(stage_tags[index - 1], {}).get("selected", ()) if index else ()
+            prior_direction = {str(row.get("code")): row.get("direction") for row in prior_rows}
+            for row in current_rows:
+                code = str(row.get("code"))
+                runs[code] = runs.get(code, 0) + 1 if index and code in previous else 1
+                row["consecutive_selected"] = runs[code]
+                row["previous_direction"] = prior_direction.get(code)
+            out_by_tag.setdefault(tag, {})["stability"] = {
+                "previous_jaccard": jaccard if index else None,
+                "previous_selected_count": len(previous), "selected_count": len(current),
+            }
+            previous = current
+
+
 def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, registry_asof: str,
-                               trade_date: str) -> dict[str, Any]:
+                               trade_date: str, *, reason_rows: Mapping[str, list[dict[str, Any]]] | None = None,
+                               pool_by_symbol: Mapping[str, Any] | None = None) -> dict[str, Any]:
     registry, members = _load_registry_dir(registry_dir)
     out_by_tag: dict[str, dict[str, Any]] = {}
     flagged = _registry_point_in_time_flag(registry_asof, trade_date)
@@ -392,7 +441,9 @@ def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, regis
     stocks = {str(row["symbol"]): row for row in report.get("stocks", ()) if row.get("symbol")}
     params = {"fdr": 0.10, "min_n": 5, "trim": 0.1, "weight_cap_share": 0.25,
               "max_selected": 20, "min_residual_share": 0.4, "min_residual_n": 8}
-    for tag in ("0920", "0924", "0925", "0932"):
+    tags = tuple(report.get("input_cutoff", {})) or tuple(
+        next(iter(report.get("stocks", ())), {}).get("times", {}).keys())
+    for tag in tags:
         returns = {symbol: (stocks.get(symbol, {}).get("times", {}).get(tag, {}).get("pct_vs_pre_close"))
                    for symbol in all_symbols}
         limit_up = {symbol for symbol, stock in stocks.items()
@@ -410,7 +461,7 @@ def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, regis
                         for code, z in controls]
         out_by_tag[tag] = _json_safe({
             "market": result.market, "selected": selected, "uncovered": result.uncovered,
-            "controls_top": control_rows, "rounds": result.rounds,
+            "controls_top": control_rows, "controls": result.controls, "rounds": result.rounds,
             "missing_count": result.missing_count,
             "params": params, "registry_asof": registry_asof,
             "flags": ["NOT_POINT_IN_TIME"] if flagged else [],
@@ -419,6 +470,96 @@ def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, regis
             stage = plate.get("times", {}).get(tag)
             if stage is not None:
                 stage["independent"] = out_by_tag[tag]
+    _apply_selection_stability(out_by_tag, tags)
+    report_stock = {str(row["symbol"]): row for row in report.get("stocks", ()) if row.get("symbol")}
+    event_codes = sorted((code for code, row in registry.items() if row.get("class") == "EVENT"),
+                         key=lambda code: (-len(members.get(code, ())), code))
+    for tag in tags:
+        stage_returns = {str(stock["symbol"]): stock.get("times", {}).get(tag, {}).get("pct_vs_pre_close")
+                         for stock in report.get("stocks", ()) if stock.get("symbol")}
+        valid_market = [value for value in stage_returns.values()
+                        if isinstance(value, (int, float)) and not isinstance(value, bool)]
+        market_mean = sum(valid_market) / len(valid_market) if valid_market else None
+        event_rows = []
+        for code in event_codes:
+            symbols = sorted(members.get(code, ()))
+            values = [(symbol, stage_returns.get(symbol)) for symbol in symbols
+                      if isinstance(stage_returns.get(symbol), (int, float))]
+            ordered = sorted(values, key=lambda item: (item[1], item[0]))
+            trimmed = [value for _, value in ordered]
+            cut = int(len(trimmed) * 0.1)
+            sample = trimmed[cut:len(trimmed) - cut] if len(trimmed) > 2 * cut else trimmed
+            event_rows.append({"code": code, "name": registry[code].get("name") or code,
+                "member_count": len(symbols), "covered_count": len(values),
+                "trim_mean": sum(sample) / len(sample) if sample else None,
+                "limit_up_count": sum(1 for symbol, value in values if (
+                    report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("limit_state") == 1 or
+                    (report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("at_limit_price") is True
+                     and value > 0))),
+                "top3": [{"symbol": symbol, "name": report_stock.get(symbol, {}).get("name"), "ret": value}
+                         for symbol, value in sorted(values, key=lambda item: (-item[1], item[0]))[:3]]})
+        control_rows = []
+        for code in sorted((c for c, row in registry.items() if row.get("class") == "GENERIC_FACTOR")):
+            vals = [stage_returns.get(symbol) for symbol in members.get(code, ())
+                    if isinstance(stage_returns.get(symbol), (int, float))]
+            delta = sum(vals) / len(vals) - market_mean if vals and market_mean is not None else None
+            control_rows.append({"code": code, "name": registry[code].get("name") or code,
+                                 "n": len(vals), "relative_market_pp": delta,
+                                 "z": out_by_tag.get(tag, {}).get("controls", {}).get(code)})
+        out_by_tag.setdefault(tag, {})["event_plates"] = event_rows
+        out_by_tag[tag]["generic_controls"] = control_rows
+    # Registry feature sets provide the C_s static fallback and evidence flags.
+    from engine_core.plate_assignment import FeatureEvidence, build_feature_sets
+    from engine_core.plate_stock_labels import label_stock
+    registry_payload = {"plates": list(registry.values())}
+    code_by_name = {str(row.get("name")): code for code, row in registry.items() if row.get("name")}
+    pool_evidence = {str(symbol): code_by_name.get(str(value.get("plate", "")) if isinstance(value, Mapping)
+                     else str(getattr(value, "plate", ""))) for symbol, value in (pool_by_symbol or {}).items()}
+    recent_reasons: dict[str, list[tuple[str, int]]] = {}
+    for symbol, rows in (reason_rows or {}).items():
+        eligible = []
+        for row in rows:
+            day = row.get("Date", row.get("date"))
+            if isinstance(day, str) and day < trade_date and str(row.get("Type", row.get("type", "1"))) == "0":
+                codes = row.get("ZSCode", row.get("zs_code", ()))
+                if isinstance(codes, str):
+                    codes = [codes]
+                eligible.extend((str(code), (date.fromisoformat(trade_date) - date.fromisoformat(day)).days)
+                                for code in codes if str(code) in registry)
+        if eligible:
+            recent_reasons[str(symbol)] = eligible
+    feature_evidence = (FeatureEvidence(yesterday_pool_plates={k: v for k, v in pool_evidence.items() if v},
+                        recent_reason_plates=recent_reasons)
+                        if pool_evidence or recent_reasons else None)
+    feature_sets = build_feature_sets(registry_payload, members, feature_evidence)
+    for tag in tags:
+        selected = out_by_tag.get(tag, {}).get("selected", ())
+        valid_returns = sorted((
+            (str(stock["symbol"]), stock.get("times", {}).get(tag, {}).get("pct_vs_pre_close"))
+            for stock in report.get("stocks", ()) if stock.get("symbol") and
+            isinstance(stock.get("times", {}).get(tag, {}).get("pct_vs_pre_close"), (int, float))),
+            key=lambda item: (item[1], item[0]))
+        extreme_count = max(1, (len(valid_returns) + 19) // 20) if valid_returns else 0
+        bottom_symbols = {symbol for symbol, _ in valid_returns[:extreme_count]}
+        bottom_symbols.update(str(stock["symbol"]) for stock in report.get("stocks", ())
+                              if stock.get("symbol") and stock.get("times", {}).get(tag, {}).get("limit_state") == -1)
+        top_symbols = {symbol for symbol, _ in valid_returns[-extreme_count:]} if extreme_count else set()
+        top_symbols.update(str(stock["symbol"]) for stock in report.get("stocks", ())
+                           if stock.get("symbol") and stock.get("times", {}).get(tag, {}).get("limit_state") == 1)
+        selected_with_members = []
+        selected_codes = {str(row.get("code")) for row in selected}
+        for code, row in registry.items():
+            selected_with_members.append({"code": code, "name": row.get("name"),
+                "class": row.get("class"), "members": members.get(code, set()),
+                "member_count": len(members.get(code, ())),
+                "counter_weak_symbols": top_symbols,
+                "counter_strong_symbols": bottom_symbols,
+                "direction": next((item.get("direction") for item in selected if str(item.get("code")) == code), None)})
+        for stock in report.get("stocks", ()):
+            stock_tag = stock.get("times", {}).get(tag, {})
+            stock.setdefault("labels", {})[tag] = label_stock(
+                stock["symbol"], selected_with_members, feature_sets.get(stock["symbol"]), registry,
+                stock_tag.get("pct_vs_pre_close"), stock_tag.get("limit_state") == 1)
     report["independent_by_tag"] = out_by_tag
     if flagged:
         if "NOT_POINT_IN_TIME" not in report.setdefault("degradation", []):
@@ -438,7 +579,8 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                kline_range: str, td_host: str, output_dir: Path, snapshot_asof: str | None = None,
                conclusion_phase: str = "AUCTION", hot_capture_dir: Path | None = None,
                static_relation_path: Path | None = None, registry_dir: Path | None = None,
-               registry_asof: str | None = None) -> None:
+               registry_asof: str | None = None,
+               open_times: tuple[str, ...] = ("0932",)) -> None:
     if conclusion_phase != "AUCTION":
         raise ValueError("session report only supports conclusion_phase=AUCTION")
     _reject_eod_pipeline_product(snapshot_path)
@@ -475,8 +617,17 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
     for trade_date in trade_dates:
         report_started = time.perf_counter()
         auction, opening, pre_close, klines, baseline_auction, timing = _read_td(
-            td_host, trade_date, symbols, kline_range,
+            td_host, trade_date, symbols, kline_range, open_times,
         )
+        opening_by_tag: dict[str, dict[str, dict[str, Any]]] = {tag: {} for tag in open_times}
+        for symbol, row in opening.items():
+            tagged_rows = row.get("_asof_by_tag", {}) if isinstance(row, Mapping) else {}
+            for tag in open_times:
+                if tag in tagged_rows:
+                    opening_by_tag[tag][symbol] = tagged_rows[tag]
+        if not opening_by_tag.get("0932"):
+            opening_by_tag["0932"] = {symbol: row for symbol, row in opening.items()
+                                        if isinstance(row, Mapping) and "ts" in row}
         sessions = sorted({str(row[0])[:10] for rows in klines.values() for row in rows if row and row[0] is not None})
         prior = max((day for day in sessions if day < trade_date), default=None)
         memberships, hierarchy, pool, degradation = _memberships(
@@ -485,14 +636,18 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         )
         report = build_session_report(
             trade_date=trade_date, snapshot=snapshot, pre_close_by_symbol=pre_close,
-            auction_by_tag=auction, opening_by_symbol=opening, yest_pool_by_symbol=pool,
+            auction_by_tag=auction, opening_by_symbol=opening, opening_by_tag=opening_by_tag,
+            open_times=open_times, yest_pool_by_symbol=pool,
             degradation=degradation, memberships=memberships, hierarchy=hierarchy,
             baseline_auction_by_tag=baseline_auction,
             hot_prev_by_plate=_load_prev_hot(kaipan_dir, prior),
             hot_captures=_load_hot_captures(hot_capture_dir),
         )
-        independent_manifest = (_attach_independent_plates(report, registry_dir, registry_asof, trade_date)
+        independent_manifest = (_attach_independent_plates(report, registry_dir, registry_asof, trade_date,
+                                   reason_rows=reason_rows, pool_by_symbol=pool)
                                 if registry_dir is not None and registry_asof is not None else None)
+        if independent_manifest is not None:
+            report["report_md"] = render_report_markdown(report)
         opening_flags = {symbol: set(row.get("flags", ())) for symbol, row in opening.items()}
         static_asof = static_relation.get("asof") if static_relation is not None else None
         static_asof_unknown = static_relation is not None and static_asof is None
@@ -551,6 +706,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "snapshot_sealed_at": snapshot_sealed_at.isoformat() if snapshot_sealed_at else None,
             "point_in_time_by_stage": point_in_time_by_stage,
             "input_cutoff": report["input_cutoff"],
+            "coverage_count_by_stage": {tag: row["covered_count"] for tag, row in report["market"].items()},
             **({"independent_plates": independent_manifest} if independent_manifest is not None else {}),
             "timing": {"read_s": timing["read_s"],
                        "build_s": max(0.0, time.perf_counter() - report_started - timing["read_s"]),
@@ -559,9 +715,10 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "reason_asof_rule": "Date<=D" if conclusion_phase == "EOD" else "Date<D",
             "reason_item_count_excluded_same_day": excluded_same_day,
             "no_close_or_after_inputs": True,
-            "sources": ["TD auction_snapshot_v2", "TD stock_tick_v2 as-of 09:32:00", "TD daily kline"],
+            "sources": ["TD auction_snapshot_v2", "TD stock_tick_v2 last_row as-of each --open-times cutoff", "TD daily kline"],
             "stage_semantics": {"0920": "竞价金额为虚拟匹配额", "0924": "竞价金额为虚拟匹配额",
-                                "0925": "竞价金额为虚拟匹配额", "0932": "真实累计成交额"},
+                                "0925": "竞价金额为虚拟匹配额",
+                                **{tag: "真实累计成交额" for tag in open_times}},
         })
 
 
@@ -572,6 +729,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--static-relation", type=Path, help="optional static relation JSON artifact")
     parser.add_argument("--registry-dir", type=Path, help="dated registry.json and relation.csv directory")
     parser.add_argument("--registry-asof", help="registry point-in-time date YYYY-MM-DD")
+    parser.add_argument("--open-times", default=",".join(_DEFAULT_OPEN_TIMES),
+                        help="comma-separated opening cutoffs HHMM (default: 0932,0935,0940,0945)")
     parser.add_argument("--snapshot-asof", help="static snapshot date YYYY-MM-DD when its name does not include one")
     parser.add_argument("--conclusion-phase", choices=("AUCTION",), default="AUCTION")
     parser.add_argument("--kaipan-dir", "--prev-hot-dir", dest="kaipan_dir", type=Path)
@@ -584,6 +743,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--registry-asof requires --registry-dir")
     if args.registry_dir and not args.registry_asof:
         parser.error("--registry-asof is required with --registry-dir")
+    try:
+        open_times = parse_open_times(args.open_times)
+    except ValueError as exc:
+        parser.error(str(exc))
     dates = [item.strip() for item in args.trade_date.split(",") if item.strip()]
     for item in dates:
         date.fromisoformat(item)
@@ -593,7 +756,7 @@ def main(argv: list[str] | None = None) -> int:
                kline_range=args.kline_range, td_host=args.td_host, output_dir=args.output_dir,
                snapshot_asof=args.snapshot_asof, conclusion_phase=args.conclusion_phase,
                hot_capture_dir=args.hot_capture_dir, static_relation_path=args.static_relation,
-               registry_dir=args.registry_dir, registry_asof=args.registry_asof)
+               registry_dir=args.registry_dir, registry_asof=args.registry_asof, open_times=open_times)
     return 0
 
 

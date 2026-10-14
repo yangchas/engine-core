@@ -1,10 +1,13 @@
 import csv
 import json
+import pytest
 
 from examples.run_offline_plate_auction_open_report import (
+    _apply_selection_stability,
     _attach_independent_plates,
     _load_registry_dir,
     _registry_point_in_time_flag,
+    parse_open_times,
 )
 
 
@@ -57,3 +60,27 @@ def test_independent_report_keeps_missing_returns_missing(tmp_path):
     assert row["missing_count"] == 1
     assert row["uncovered"]["n"] <= 8
     assert row["flags"] == ["NOT_POINT_IN_TIME"]
+
+
+def test_open_times_default_parse_and_validation():
+    assert parse_open_times("0932,0935,0940,0945") == ("0932", "0935", "0940", "0945")
+    with pytest.raises(ValueError):
+        parse_open_times("0932,0945,0935")
+    with pytest.raises(ValueError):
+        parse_open_times("932")
+
+
+def test_stability_counts_contiguous_selection_and_adjacent_jaccard():
+    data = {
+        "0920": {"selected": [{"code": "A", "direction": "STRONG"}, {"code": "B"}]},
+        "0924": {"selected": [{"code": "A", "direction": "WEAK"}, {"code": "C"}]},
+        "0925": {"selected": [{"code": "A", "direction": "WEAK"}]},
+        "0932": {"selected": [{"code": "A", "direction": "STRONG"}]},
+        "0935": {"selected": [{"code": "A", "direction": "WEAK"}]},
+    }
+    _apply_selection_stability(data, tuple(data))
+    assert data["0925"]["selected"][0]["consecutive_selected"] == 3
+    assert data["0925"]["selected"][0]["previous_direction"] == "WEAK"
+    assert data["0924"]["stability"]["previous_jaccard"] == 1 / 3
+    assert data["0935"]["selected"][0]["consecutive_selected"] == 2
+    assert data["0932"]["stability"]["previous_jaccard"] is None
