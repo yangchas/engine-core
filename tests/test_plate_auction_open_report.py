@@ -164,3 +164,15 @@ def test_markdown_strength_units_flagged_rows_and_missing_values():
     assert "异常板块" not in ranked
     assert "异常板块" in report.split("### 0925 Flagged", 1)[1]
     assert "金额(亿元)" in report
+
+
+def test_hot_day_list_shape_is_accepted():
+    from examples.run_offline_plate_auction_open_report import _load_prev_hot
+    import json, tempfile, pathlib
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d = pathlib.Path(tmp) / "hot_plates"
+        d.mkdir()
+        (d / "2026-10-13.json").write_text(json.dumps(
+            {"Day": ["2026-10-13"], "list": [["801660", "通信", 6780, 1.113]]}), encoding="utf-8")
+        assert _load_prev_hot(pathlib.Path(tmp), "2026-10-13")["通信"]["rank"] == 1

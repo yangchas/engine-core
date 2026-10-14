@@ -183,6 +183,8 @@ def build_session_report(
                 for name in ("y", "amount", "prev_close_ok", "rest_bid", "rest_ask", "limit_up")}
 
     def same_day(value: Any) -> bool:
+        if isinstance(value, (list, tuple)) and value:  # Kaipan getHisPlates returns Day as ["YYYY-MM-DD"]
+            value = value[0]
         return isinstance(value, str) and value.replace("-", "")[:8] == trade_date.replace("-", "")
 
     # Preserve book values alongside StockFact for the plate_strength vector.

@@ -194,6 +194,8 @@ def _load_prev_hot(path: Path | None, prior_date: str | None) -> dict[str, dict[
     except (OSError, json.JSONDecodeError):
         return {}
     declared_day = raw.get("Day", raw.get("asof_date")) if isinstance(raw, Mapping) else None
+    if isinstance(declared_day, (list, tuple)) and declared_day:  # real shape: ["YYYY-MM-DD"]
+        declared_day = declared_day[0]
     if declared_day is not None and str(declared_day).replace("-", "")[:8] != prior_date.replace("-", ""):
         return {}
     rows = raw.get("list", []) if isinstance(raw, Mapping) else []
