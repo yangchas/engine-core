@@ -5,7 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError as exc:  # pragma: no cover - exercised in an isolated subprocess
+    raise ImportError(
+        "plate_strength requires NumPy; install numpy to use plate strength analysis"
+    ) from exc
 
 
 @dataclass(frozen=True)
