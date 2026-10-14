@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import time
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
@@ -55,32 +56,45 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str):
     if any(not re.fullmatch(r"\d{6}", symbol) for symbol in symbols):
         raise ValueError("snapshot contains invalid stock symbol")
     connection, database = _td_connect(host)
+    total_started = time.perf_counter()
+    read_seconds = 0.0
+    query_count = 0
     compact = trade_date.replace("-", "")
     auctions: dict[str, dict[str, dict[str, Any]]] = {tag: {} for tag in ("0920", "0924", "0925")}
     baseline_auction: dict[str, list[dict[str, Any]]] = {tag: [] for tag in auctions}
     pre_close: dict[str, float | None] = {}
     klines: dict[str, list[tuple[Any, ...]]] = {}
     opening: dict[str, dict[str, Any]] = {}
+
+    def fetchall(sql: str):
+        nonlocal read_seconds, query_count
+        started = time.perf_counter()
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+        read_seconds += time.perf_counter() - started
+        query_count += 1
+        return rows
+
     try:
         cursor = connection.cursor()
         for tag in auctions:
-            cursor.execute(
+            rows = fetchall(
                 f"SELECT ts, symbol, px_milli, match_amt_yuan, rest_bid_amt_yuan, rest_ask_amt_yuan, limit_state "
                 f'FROM {database}.auction_snapshot_v2 WHERE trade_date="{compact}" AND auction_tag="{tag}"'
             )
-            for ts, symbol, px, amount, bid, ask, state in cursor.fetchall():
+            for ts, symbol, px, amount, bid, ask, state in rows:
                 ts_dt = ts if isinstance(ts, datetime) else datetime.fromtimestamp(int(ts) / 1000, _ZONE)
                 ts_dt = ts_dt.replace(tzinfo=_ZONE) if ts_dt.tzinfo is None else ts_dt.astimezone(_ZONE)
                 auctions[tag][str(symbol)] = {"ts": ts_dt.isoformat(sep=" "), "px_milli": px, "match_amt_yuan": amount,
                                                "rest_bid_amt_yuan": bid, "rest_ask_amt_yuan": ask,
                                                "limit_state": state}
             lower = (date.fromisoformat(trade_date) - timedelta(days=14)).strftime("%Y%m%d")
-            cursor.execute(
+            rows = fetchall(
                 f"SELECT trade_date, symbol, match_amt_yuan FROM {database}.auction_snapshot_v2 "
                 f'WHERE trade_date >= "{lower}" AND trade_date < "{compact}" AND auction_tag="{tag}"'
             )
             grouped: dict[str, dict[str, float | None]] = {}
-            for day, symbol, amount in cursor.fetchall():
+            for day, symbol, amount in rows:
                 day_text = day.date().isoformat() if isinstance(day, datetime) else str(day)
                 if len(day_text) == 8 and day_text.isdigit():
                     day_text = f"{day_text[:4]}-{day_text[4:6]}-{day_text[6:]}"
@@ -90,49 +104,56 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str):
                 for day in sorted(grouped)[-5:]
             ]
         cutoff = f"{trade_date} 09:32:00"
-        quoted = ",".join(f'"{symbol}"' for symbol in symbols)
         if symbols:
-            cursor.execute(
-                "SELECT ts, px_milli, amt_yuan, vol_units, bp1_milli, ap1_milli, "
-                "bv1, av1, bv2, av2, symbol "
+            rows = fetchall(
+                "SELECT last_row(px_milli), last_row(amt_yuan), last_row(ts), "
+                "last_row(bp1_milli), last_row(ap1_milli), last_row(bv1), "
+                "last_row(av1), last_row(bv2), last_row(av2), symbol "
                 f"FROM {database}.stock_tick_v2 WHERE ts >= '{trade_date} 09:00:00' "
-                f"AND ts <= '{cutoff}' AND symbol IN ({quoted}) ORDER BY ts, symbol"
+                f"AND ts <= '{cutoff}' PARTITION BY symbol"
             )
-            for raw in cursor.fetchall():
-                ts, px, amount, volume, bp1, ap1, bv1, av1, bv2, av2, symbol = raw
+            for raw in rows:
+                px, amount, ts, bp1, ap1, bv1, av1, bv2, av2, symbol = raw
                 symbol = str(symbol)
                 ts_dt = ts if isinstance(ts, datetime) else datetime.fromtimestamp(int(ts) / 1000, _ZONE)
                 ts_dt = ts_dt.replace(tzinfo=_ZONE) if ts_dt.tzinfo is None else ts_dt.astimezone(_ZONE)
                 ts_ms = int(ts_dt.timestamp() * 1000)
-                state = derive_auction_book(AuctionBookTick(ts_ms, px, bp1, ap1, bv1, av1,
-                                                             bv2, av2, amount, volume))
-                if ts_dt <= datetime.fromisoformat(cutoff).replace(tzinfo=_ZONE):
+                flags = []
+                if ts_dt.time() < datetime.strptime("09:30:00", "%H:%M:%S").time():
+                    state = derive_auction_book(AuctionBookTick(ts_ms, px, bp1, ap1, bv1, av1,
+                                                                 bv2, av2, amount, None))
                     price = state.effective_price_milli if state.effective_price_milli > 0 else None
-                    opening[symbol] = {"ts": ts_dt.isoformat(sep=" "), "px_milli": price,
-                                       "amt_yuan": amount}
-        for symbol in symbols:
-            try:
-                cursor.execute(
-                    f"SELECT ts, open, high, low, close, volume, amount, turnover, pct_chg "
-                    f"FROM d_{symbol} WHERE ts >= '{start}' AND ts < '{trade_date}' "
-                    f"AND ts <= '{date.fromisoformat(trade_date) - timedelta(days=1)} 23:59:59' ORDER BY ts"
-                )
-                rows = list(cursor.fetchall())
-                klines[symbol] = rows
-                eligible = [row for row in rows if row[0] is not None and str(row[0])[:10] < trade_date]
-                if eligible:
-                    eligible.sort(key=lambda row: str(row[0]))
-                    pre_close[symbol] = float(eligible[-1][4]) if eligible[-1][4] is not None else None
+                    flags.append("OPEN_SLICE_BEFORE_0930")
                 else:
-                    pre_close[symbol] = None
-            except Exception as exc:
-                if "table" not in str(exc).lower() and "not exist" not in str(exc).lower():
-                    raise
-                klines[symbol] = []
-                pre_close[symbol] = None
+                    price = int(px) if px is not None and int(px) > 0 else None
+                opening[symbol] = {"ts": ts_dt.isoformat(sep=" "), "px_milli": price,
+                                   "amt_yuan": amount, "flags": flags}
+
+        rows = fetchall(
+            f"SELECT ts, open, high, low, close, volume, amount, turnover, pct_chg, tbname "
+            f"FROM {database}.daily_kline WHERE ts >= '{start}' AND ts < '{trade_date}'"
+        )
+        by_symbol: dict[str, list[tuple[Any, ...]]] = {symbol: [] for symbol in symbols}
+        for raw in rows:
+            ts = raw[0]
+            symbol = str(raw[9])
+            if symbol.startswith("d_"):
+                symbol = symbol[2:]
+            if symbol not in by_symbol or ts is None or str(ts)[:10] >= trade_date:
+                continue
+            row = tuple(raw[:9])
+            by_symbol[symbol].append(row)
+        for symbol in symbols:
+            symbol_rows = sorted(by_symbol[symbol], key=lambda row: str(row[0]))
+            klines[symbol] = symbol_rows
+            eligible = [row for row in symbol_rows if row[0] is not None and str(row[0])[:10] < trade_date]
+            pre_close[symbol] = (float(eligible[-1][4]) if eligible and eligible[-1][4] is not None else None)
     finally:
         connection.close()
-    return auctions, opening, pre_close, klines, baseline_auction
+    total_seconds = time.perf_counter() - total_started
+    timing = {"read_s": read_seconds, "build_s": max(0.0, total_seconds - read_seconds),
+              "total_s": total_seconds, "query_count": query_count}
+    return auctions, opening, pre_close, klines, baseline_auction, timing
 
 
 def _load_hot_captures(path: Path | None) -> list[dict[str, Any]]:
@@ -272,7 +293,10 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
     snapshot_asof = _snapshot_asof(snapshot_path, snapshot_asof, snapshot)
     symbols = sorted(set(map(str, snapshot["stock_plate"])) | set(map(str, snapshot["s2p"])))
     for trade_date in trade_dates:
-        auction, opening, pre_close, klines, baseline_auction = _read_td(td_host, trade_date, symbols, kline_range)
+        report_started = time.perf_counter()
+        auction, opening, pre_close, klines, baseline_auction, timing = _read_td(
+            td_host, trade_date, symbols, kline_range,
+        )
         sessions = sorted({str(row[0])[:10] for rows in klines.values() for row in rows if row and row[0] is not None})
         prior = max((day for day in sessions if day < trade_date), default=None)
         memberships, hierarchy, pool, degradation = _memberships(
@@ -288,6 +312,9 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             hot_prev_by_plate=_load_prev_hot(kaipan_dir, prior),
             hot_captures=_load_hot_captures(hot_capture_dir),
         )
+        opening_flags = {symbol: set(row.get("flags", ())) for symbol, row in opening.items()}
+        for stock in report["stocks"]:
+            stock["flags"] = sorted(set(stock.get("flags", ())) | opening_flags.get(stock["symbol"], set()))
         reason_rows = _load_kaipan_reasons(kaipan_dir) if kaipan_dir else {}
         excluded_same_day = sum(
             1 for rows in reason_rows.values() for row in rows
@@ -304,6 +331,10 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "membership_policy": report["memberships_policy"], "degradation": degradation,
             "snapshot_asof": snapshot_asof, "conclusion_phase": conclusion_phase,
             "input_cutoff": report["input_cutoff"],
+            "timing": {"read_s": timing["read_s"],
+                       "build_s": max(0.0, time.perf_counter() - report_started - timing["read_s"]),
+                       "total_s": time.perf_counter() - report_started},
+            "query_count": timing["query_count"],
             "reason_asof_rule": "Date<=D" if conclusion_phase == "EOD" else "Date<D",
             "reason_item_count_excluded_same_day": excluded_same_day,
             "no_close_or_after_inputs": True,
