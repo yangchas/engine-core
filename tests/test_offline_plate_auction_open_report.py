@@ -67,6 +67,46 @@ def test_runner_writes_report_and_manifest_with_stage_semantics(tmp_path, monkey
     assert manifest["degradation"] == ["KAIPAN_INPUTS_MISSING", "NOT_POINT_IN_TIME"]
 
 
+def test_static_relation_is_passed_through_and_marked_unknown(tmp_path, monkeypatch):
+    import hashlib
+
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps({"stock_plate": {"000001": "旧板块"}, "s2p": {}}))
+    static_path = tmp_path / "static_relation.json"
+    static_bytes = json.dumps({"by_symbol": {"000002": ["新板块"]}}, ensure_ascii=False).encode()
+    static_path.write_bytes(static_bytes)
+    monkeypatch.setattr(runner, "_read_td", lambda *args: (
+        {"0920": {}, "0924": {}, "0925": {}}, {}, {}, {"000001": [], "000002": []},
+        {"0920": [], "0924": [], "0925": []}, {"read_s": 0.1, "build_s": 0.2, "total_s": 0.3, "query_count": 8},
+    ))
+    captured = {}
+    original_memberships = runner._memberships
+
+    def capture_memberships(*args, **kwargs):
+        captured["static_relation"] = kwargs.get("static_relation")
+        return original_memberships(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "_memberships", capture_memberships)
+    output = tmp_path / "out"
+    runner.run_report(trade_dates=["2026-10-13"], snapshot_path=snapshot_path, kaipan_dir=None,
+                      kline_range="2026-10-12:2026-10-13", td_host="unused", output_dir=output,
+                      static_relation_path=static_path)
+
+    day = output / "2026-10-13"
+    manifest = json.loads((day / "manifest.json").read_text())
+    assert captured["static_relation"] == {"by_symbol": {"000002": ["新板块"]}}
+    assert manifest["static_source"] == "kaipan_static_csv"
+    assert manifest["static_relation"] == {
+        "path": str(static_path), "content_hash": hashlib.sha256(static_bytes).hexdigest(),
+        "asof": "UNKNOWN",
+    }
+    assert "STATIC_ASOF_UNKNOWN" in manifest["degradation"]
+    assert "NOT_POINT_IN_TIME" not in manifest["degradation"]
+    report = (day / "report.md").read_text()
+    assert report.startswith("标签: STATIC_ASOF_UNKNOWN")
+    assert not report.startswith("标签: NOT_POINT_IN_TIME")
+
+
 class _Cursor:
     def __init__(self):
         self.sql = ""

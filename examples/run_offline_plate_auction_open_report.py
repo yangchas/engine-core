@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import date, datetime, timedelta
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -248,7 +249,8 @@ def _load_prev_hot(path: Path | None, prior_date: str | None) -> dict[str, dict[
 
 def _memberships(snapshot: Mapping[str, Any], symbols: list[str], trade_date: str, prior_date: str | None,
                  kaipan_dir: Path | None, conclusion_phase: str = "AUCTION",
-                 reason_rows: Mapping[str, list[dict[str, Any]]] | None = None, reason_items: Any = ()):
+                 reason_rows: Mapping[str, list[dict[str, Any]]] | None = None, reason_items: Any = (),
+                 static_relation: Mapping[str, Any] | None = None):
     static = snapshot.get("stock_plate", {})
     s2p = snapshot.get("s2p", {})
     static_themes = {
@@ -258,6 +260,15 @@ def _memberships(snapshot: Mapping[str, Any], symbols: list[str], trade_date: st
         ))
         for symbol in symbols
     }
+    if static_relation is not None:
+        raw_by_symbol = static_relation.get("by_symbol", {})
+        if not isinstance(raw_by_symbol, Mapping):
+            raise ValueError("static_relation.by_symbol must be a mapping")
+        static_themes = {
+            str(symbol): list(dict.fromkeys(map(str, themes)))
+            for symbol, themes in raw_by_symbol.items()
+            if isinstance(themes, (list, tuple))
+        }
     pool_by_symbol: dict[str, Any] = {}
     reasons: Mapping[str, list[Mapping[str, Any]]] = reason_rows or {}
     hot_names: list[str] = []
@@ -322,7 +333,8 @@ def _write(path: Path, data: Any):
 
 def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path | None,
                kline_range: str, td_host: str, output_dir: Path, snapshot_asof: str | None = None,
-               conclusion_phase: str = "AUCTION", hot_capture_dir: Path | None = None) -> None:
+               conclusion_phase: str = "AUCTION", hot_capture_dir: Path | None = None,
+               static_relation_path: Path | None = None) -> None:
     if conclusion_phase != "AUCTION":
         raise ValueError("session report only supports conclusion_phase=AUCTION")
     _reject_eod_pipeline_product(snapshot_path)
@@ -330,13 +342,27 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         _reject_eod_pipeline_product(kaipan_dir)
     ensure_empty_output_dir(output_dir)
     snapshot = _load_snapshot(snapshot_path)
+    static_relation = None
+    static_relation_hash = None
+    if static_relation_path is not None:
+        static_relation_bytes = static_relation_path.read_bytes()
+        static_relation = json.loads(static_relation_bytes)
+        if not isinstance(static_relation, Mapping):
+            raise ValueError("static relation JSON must contain an object")
+        static_relation_hash = hashlib.sha256(static_relation_bytes).hexdigest()
     snapshot_asof = _snapshot_asof(snapshot_path, snapshot_asof, snapshot)
     snapshot_sealed_at = _snapshot_sealed_at(snapshot_path, snapshot_asof, snapshot)
     reason_rows = _load_kaipan_reasons(kaipan_dir) if kaipan_dir else {}
     reason_items = parse_kaipan_reason_items([
         {"StockID": symbol, "List": rows} for symbol, rows in reason_rows.items()
     ])
-    symbols = sorted(set(map(str, snapshot["stock_plate"])) | set(map(str, snapshot["s2p"])))
+    symbols = set(map(str, snapshot["stock_plate"])) | set(map(str, snapshot["s2p"]))
+    if static_relation is not None:
+        by_symbol = static_relation.get("by_symbol", {})
+        if not isinstance(by_symbol, Mapping):
+            raise ValueError("static_relation.by_symbol must be a mapping")
+        symbols.update(map(str, by_symbol))
+    symbols = sorted(symbols)
     for trade_date in trade_dates:
         report_started = time.perf_counter()
         auction, opening, pre_close, klines, baseline_auction, timing = _read_td(
@@ -346,6 +372,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         prior = max((day for day in sessions if day < trade_date), default=None)
         memberships, hierarchy, pool, degradation = _memberships(
             snapshot, symbols, trade_date, prior, kaipan_dir, conclusion_phase, reason_rows, reason_items,
+            static_relation=static_relation,
         )
         report = build_session_report(
             trade_date=trade_date, snapshot=snapshot, pre_close_by_symbol=pre_close,
@@ -356,9 +383,15 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             hot_captures=_load_hot_captures(hot_capture_dir),
         )
         opening_flags = {symbol: set(row.get("flags", ())) for symbol, row in opening.items()}
-        point_in_time_by_stage = _point_in_time_flags(
-            snapshot_asof, trade_date, report["input_cutoff"], snapshot_sealed_at,
+        static_asof = static_relation.get("asof") if static_relation is not None else None
+        static_asof_unknown = static_relation is not None and static_asof is None
+        point_in_time_asof = static_asof if static_relation is not None else snapshot_asof
+        point_in_time_by_stage = [] if static_asof_unknown else _point_in_time_flags(
+            point_in_time_asof, trade_date, report["input_cutoff"],
+            snapshot_sealed_at if static_relation is None else None,
         )
+        if static_asof_unknown:
+            degradation.append("STATIC_ASOF_UNKNOWN")
         if point_in_time_by_stage and "NOT_POINT_IN_TIME" not in degradation:
             degradation.append("NOT_POINT_IN_TIME")
         for stock in report["stocks"]:
@@ -375,6 +408,8 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         report["point_in_time_by_stage"] = point_in_time_by_stage
         report["degradation"] = degradation
         report["report_md"] = render_report_markdown(report)
+        if static_asof_unknown:
+            report["report_md"] = "标签: STATIC_ASOF_UNKNOWN\n\n" + report["report_md"]
         for tag in point_in_time_by_stage:
             market = report["market"][tag]
             plain_cell = f"| {tag} | {market['covered_count']} |"
@@ -393,6 +428,10 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         (day_dir / "report.md").write_text(report["report_md"], encoding="utf-8")
         _write(day_dir / "manifest.json", {
             "trade_date": trade_date, "snapshot": str(snapshot_path), "kaipan_dir": str(kaipan_dir) if kaipan_dir else None,
+            "static_source": "kaipan_static_csv" if static_relation is not None else "snapshot_s2p",
+            "static_relation": ({"path": str(static_relation_path), "content_hash": static_relation_hash,
+                                 "asof": static_asof if static_asof is not None else "UNKNOWN"}
+                                if static_relation_path is not None else None),
             "stock_row_count": len(report["stocks"]), "plate_row_count": len(report["plates"]),
             "membership_policy": report["memberships_policy"], "degradation": degradation,
             "snapshot_asof": snapshot_asof, "conclusion_phase": conclusion_phase,
@@ -416,6 +455,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trade-date", required=True, help="comma-separated YYYY-MM-DD dates")
     parser.add_argument("--snapshot", type=Path, required=True)
+    parser.add_argument("--static-relation", type=Path, help="optional static relation JSON artifact")
     parser.add_argument("--snapshot-asof", help="static snapshot date YYYY-MM-DD when its name does not include one")
     parser.add_argument("--conclusion-phase", choices=("AUCTION",), default="AUCTION")
     parser.add_argument("--kaipan-dir", "--prev-hot-dir", dest="kaipan_dir", type=Path)
@@ -432,7 +472,7 @@ def main(argv: list[str] | None = None) -> int:
     run_report(trade_dates=dates, snapshot_path=args.snapshot, kaipan_dir=args.kaipan_dir,
                kline_range=args.kline_range, td_host=args.td_host, output_dir=args.output_dir,
                snapshot_asof=args.snapshot_asof, conclusion_phase=args.conclusion_phase,
-               hot_capture_dir=args.hot_capture_dir)
+               hot_capture_dir=args.hot_capture_dir, static_relation_path=args.static_relation)
     return 0
 
 
