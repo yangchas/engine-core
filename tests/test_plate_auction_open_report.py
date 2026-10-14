@@ -53,6 +53,16 @@ def test_stock_scenario_report_has_three_lists_and_rule_explanation():
     assert "缺失不补 0" in report
 
 
+def test_integrated_plate_stock_views_follow_the_first_screen_summary():
+    result = build_session_report(**_source())
+    report = result["report_md"]
+    assert report.index("## 表现 × 活跃度摘要") < report.index("## 竞价分析")
+    assert report.index("## 竞价分析") < report.index("## 开盘分析")
+    assert "## 延续 / 反转" in report
+    assert "plate_stock_view" in result
+    assert result["plate_stock_view"]["manifest"]["focus_count_by_stage"]["0925"] <= 30
+
+
 def test_plate_strength_is_two_explicit_dimensions_and_excludes_current_baseline():
     source = _source()
     source["baseline_auction_by_tag"] = {"0925": [

@@ -1274,6 +1274,9 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         day_dir = output_dir / trade_date
         day_dir.mkdir()
         _write(day_dir / "stocks.json", _compact_report_stocks(report["stocks"]))
+        plate_stock_view = report.get("plate_stock_view", {})
+        if any(plate_stock_view.get("manifest", {}).get("focus_count_by_stage", {}).values()):
+            _write(day_dir / "plate_stock_view.json", plate_stock_view)
         plates_payload = ({"plates": report["plates"], "independent": report["independent_by_tag"]}
                           if registry_dir is not None else report["plates"])
         if registry_dir is not None:
@@ -1290,6 +1293,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                                 if static_relation_path is not None else None),
             "stock_row_count": len(report["stocks"]), "plate_row_count": len(report["plates"]),
             "stock_scenario": report.get("stock_scenario_manifest", {}),
+            "plate_stock_view": (report.get("plate_stock_view", {}).get("manifest", {})),
             "membership_policy": report["memberships_policy"], "degradation": degradation,
             "activity_baseline": report.get("activity_manifest", {}),
             "snapshot_asof": snapshot_asof, "conclusion_phase": conclusion_phase,

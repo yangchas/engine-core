@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from .auction_limit_facts import _rounded_limit_price
 from .plate_aggregation import StockFact, aggregate_plates
 from .plate_membership import MembershipIndex, PlateHierarchy, StockPlateMemberships
+from .plate_stock_view import build_plate_stock_view, render_plate_stock_view
 from .stock_scenario import (
     AUCTION_HIGH_PP, AUCTION_LOW_PP, CHANGE_DOWN_PP, CHANGE_UP_PP,
     build_stock_scenarios,
@@ -796,6 +797,10 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
     auction_sections = _build_auction_sections(result)
     if isinstance(result, dict):
         result["auction_sections"] = auction_sections
+        result["plate_stock_view"] = build_plate_stock_view(
+            result.get("stocks", ()), result.get("plates", ()),
+            independent_by_tag=result.get("independent_by_tag", {}),
+        )
     trade_date = result["trade_date"]
     market = result["market"]
     stage_tags = tuple(market.keys())
@@ -1026,6 +1031,12 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
         lines.append(summary)
         if result.get("stock_caps_available") and tag in ("0925", opening_summary_tag):
             lines.append(f"{tag}: 规模中性前 3: {neutral_text}")
+    lines.extend(["", "## 阅读说明", "",
+                  "竞价金额是虚拟撮合额；09:20 后不可撤单。09:32 金额是截至该时点的累计真实成交额。",
+                  "涨幅及超额以百分点（pp）显示，占比以百分比显示；金额以亿元显示；缺失值显示为 —。",
+                  "NOT_POINT_IN_TIME 表示输入快照并非该历史结论时点可得；降级标签是数据质量说明。"])
+    if result.get("plate_stock_view"):
+        lines.extend(["", render_plate_stock_view(result["plate_stock_view"])])
     if result.get("stock_caps_available"):
         lines.extend(["", "## 规模中性榜", "",
                       "规模中性=相对自身流通市值的额强度；原始额反映资金体量，二者并列不合成综合分。额口径=成员合计。"])
@@ -1060,10 +1071,7 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                              f"{_ppfmt(stage.get('performance', {}).get('relative_market_pp'))} | "
                              f"{concentration_text} | {'是' if plate['plate'] in selected_names else '否'} | "
                              f"{_fmt(stage.get('hot_live_rank'))} |")
-    lines.extend(["", "## 阅读说明", "",
-             "竞价金额是虚拟撮合额；09:20 后不可撤单。09:32 金额是截至该时点的累计真实成交额。",
-             "涨幅及超额以百分点（pp）显示，占比以百分比显示；金额以亿元显示；缺失值显示为 —。",
-             "NOT_POINT_IN_TIME 表示输入快照并非该历史结论时点可得；降级标签是数据质量说明。", "",
+    lines.extend(["", "## 输入时点与市场摘要", "",
                   "输入时点: " + " / ".join(f"{tag}={value}" for tag, value in result.get("input_cutoff", {}).items()),
                   "", "## 市场摘要", "",
              "| 时点 | 覆盖 | 金额(亿元) | 涨 | 跌 | 平 | 涨停 | 跌停 |",
