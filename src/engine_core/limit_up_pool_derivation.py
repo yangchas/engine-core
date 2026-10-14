@@ -151,6 +151,9 @@ def derive_limit_up_pool_from_daily_klines(
     plate_by_symbol: Mapping[str, str | None] | None = None,
     trading_dates: Collection[str] | None = None,
     close_limit_state_by_symbol: Optional[Mapping[str, int]] = None,
+    st_symbols: Collection[str] | None = None,
+    exclude_st: bool = True,
+    st_source: str | None = None,
 ) -> LimitUpPoolDerivation:
     target = _strict_date(trade_date)
     names_by_symbol = names_by_symbol or {}
@@ -183,7 +186,9 @@ def derive_limit_up_pool_from_daily_klines(
     excluded = {
         "no_row_for_trade_date": 0, "unknown_pct_or_price": 0,
         "no_pre_close": 0, "not_limit_up": 0, "limit_price_without_seal": 0,
+        "st": 0,
     }
+    st_symbol_set = set(st_symbols) if st_symbols is not None else None
     name_fallbacks = 0
     no_seal_symbols: list[str] = []
     output: list[dict[str, Any]] = []
@@ -206,6 +211,9 @@ def derive_limit_up_pool_from_daily_klines(
             continue
         if not is_up:
             excluded["not_limit_up"] += 1
+            continue
+        if exclude_st and st_symbol_set is not None and symbol in st_symbol_set:
+            excluded["st"] += 1
             continue
         if close_limit_state_by_symbol is not None and symbol in close_limit_state_by_symbol:
             if close_limit_state_by_symbol[symbol] != 1:
@@ -259,6 +267,13 @@ def derive_limit_up_pool_from_daily_klines(
     payload = json.dumps(output, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     notes = {"name_fallback_symbols": name_fallbacks}
+    if exclude_st and st_symbol_set is None:
+        notes["st_filter"] = "UNKNOWN_ST_LIST"
+    else:
+        notes["st_filter"] = "EXCLUDED" if exclude_st else "INCLUDED"
+    notes["st_symbol_count"] = len(st_symbol_set) if st_symbol_set is not None else 0
+    if st_source is not None:
+        notes["st_source"] = st_source
     if no_seal_symbols:
         notes["limit_price_without_seal_symbols"] = sorted(no_seal_symbols)
     if not trade_date_in_sessions:

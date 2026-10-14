@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from inspect import signature
-
 from engine_core.limit_up_pool_derivation import derive_limit_up_pool_from_daily_klines
 
 
@@ -42,8 +40,34 @@ def test_five_percent_st_name_is_not_a_limit_up():
     assert result.rows == ()
 
 
-def test_derivation_api_has_no_st_symbols_override():
-    assert "st_symbols" not in signature(derive_limit_up_pool_from_daily_klines).parameters
+def test_st_list_excludes_symbols_and_records_count_and_source():
+    result = derive_limit_up_pool_from_daily_klines(
+        {"600001": [_row("2026-10-12")], "600002": [_row("2026-10-12")]},
+        "2026-10-12", st_symbols={"600001"}, st_source="wencai:2026-10-12",
+    )
+    assert [row["symbol"] for row in result.rows] == ["600002"]
+    assert result.excluded_counts["st"] == 1
+    assert result.notes["st_symbol_count"] == 1
+    assert result.notes["st_source"] == "wencai:2026-10-12"
+
+
+def test_missing_st_list_is_unknown_and_does_not_filter():
+    result = derive_limit_up_pool_from_daily_klines(
+        {"600001": [_row("2026-10-12")]}, "2026-10-12"
+    )
+    assert [row["symbol"] for row in result.rows] == ["600001"]
+    assert result.notes["st_filter"] == "UNKNOWN_ST_LIST"
+
+
+def test_st_filter_does_not_change_included_symbols_streak_calculation():
+    rows = {"600001": [_row("2026-10-09"), _row("2026-10-12")]}
+    result = derive_limit_up_pool_from_daily_klines(
+        rows, "2026-10-12", st_symbols={"600001"},
+    )
+    assert result.rows == ()
+    assert result.excluded_counts["st"] == 1
+    unfiltered = derive_limit_up_pool_from_daily_klines(rows, "2026-10-12", exclude_st=False)
+    assert unfiltered.rows[0]["lb_days"] == 2
 
 
 def test_30_percent_board_is_supported():

@@ -130,6 +130,8 @@ def run_probe(
     apply: bool = False, confirm_write_core_cache: bool = False,
     now_ms: int | None = None, ttl_seconds: int = DEFAULT_TTL_SECONDS,
     close_limit_state_by_symbol: Mapping[str, int] | None = None,
+    st_symbols: Sequence[str] | None = None, exclude_st: bool = True,
+    st_source: str | None = None,
 ) -> dict[str, Any]:
     trade_date, previous_trade_date, lookback_start = map(
         _date, (trade_date, previous_trade_date, lookback_start)
@@ -150,6 +152,7 @@ def run_probe(
     derivation = derive_limit_up_pool_from_daily_klines(
         klines_by_symbol, previous_trade_date, names_by_symbol=names_by_symbol or {},
         close_limit_state_by_symbol=close_limit_state_by_symbol,
+        st_symbols=st_symbols, exclude_st=exclude_st, st_source=st_source,
     )
     reader = LiveInputReader(redis_read_client, now_ms=lambda: int(time.time() * 1000))
     legacy_read = reader.read(
@@ -181,6 +184,9 @@ def run_probe(
             row.get("seal_basis") == "KLINE_CLOSE_AT_LIMIT_NO_SEAL_EVIDENCE" for row in derivation.rows
         ),
         "excluded_limit_price_without_seal": dict(derivation.excluded_counts).get("limit_price_without_seal", 0),
+        "st_filter": derivation.notes.get("st_filter"),
+        "st_symbol_count": derivation.notes.get("st_symbol_count", 0),
+        "st_excluded_members": derivation.excluded_counts.get("st", 0),
         "legacy_count": 0,
         "both": 0,
         "core_only": [],
@@ -235,6 +241,18 @@ def run_probe(
             "ttl_seconds": ttl_seconds,
             "meta": written.get("meta"),
         }
+        if isinstance(write_result.get("meta"), dict):
+            meta = {
+                **write_result["meta"],
+                "st_filter": result["st_filter"],
+                "st_symbol_count": result["st_symbol_count"],
+            }
+            write_client.set(
+                write_result["meta_key"],
+                json.dumps(meta, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
+                ex=ttl_seconds,
+            )
+            write_result["meta"] = meta
         close = getattr(write_client, "close", None)
         if close:
             close()
@@ -246,6 +264,10 @@ def _symbols_file(path: Path) -> tuple[str, ...]:
     return tuple(sorted({_symbol(item.strip()) for item in path.read_text(encoding="utf-8").split(",") if item.strip()}))
 
 
+def _st_symbols_file(path: Path) -> tuple[str, ...]:
+    return tuple(sorted({_symbol(line.strip()) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trade-date", required=True)
@@ -253,12 +275,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--universe-symbols-file", required=True, type=Path)
     parser.add_argument("--lookback-start")
     parser.add_argument("--eod-capture", type=Path, help="sealed RedisQ2ReadCaptureV1 Q2 snapshot at close")
+    parser.add_argument("--st-symbols-file", type=Path, help="one six-digit ST symbol per line")
+    parser.add_argument("--include-st", action="store_true", help="include ST symbols in the derived pool")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm-write-core-cache", action="store_true")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     if args.apply and not args.confirm_write_core_cache:
         parser.error("--apply requires --confirm-write-core-cache")
+    if args.apply and not args.include_st and args.st_symbols_file is None:
+        parser.error("--apply requires --st-symbols-file unless --include-st is explicit")
     if args.output.exists():
         parser.error("--output must name a new file")
     trade_date = _date(args.trade_date)
@@ -267,6 +293,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         date.fromordinal(date.fromisoformat(previous_trade_date).toordinal() - 30).isoformat()
     )
     symbols = _symbols_file(args.universe_symbols_file)
+    st_symbols = _st_symbols_file(args.st_symbols_file) if args.st_symbols_file else None
+    if args.st_symbols_file is None and not args.include_st:
+        print("WARNING: UNKNOWN_ST_LIST; dry-run will not exclude any symbols", file=sys.stderr)
     import taos  # type: ignore[import-not-found]
     import redis  # type: ignore[import-not-found]
 
@@ -301,6 +330,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
             apply=args.apply, confirm_write_core_cache=args.confirm_write_core_cache,
             close_limit_state_by_symbol=_load_eod_capture(args.eod_capture) if args.eod_capture else None,
+            st_symbols=st_symbols, exclude_st=not args.include_st,
+            st_source=f"file:{args.st_symbols_file}" if args.st_symbols_file else None,
         )
     finally:
         close = getattr(read_client, "close", None)

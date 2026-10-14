@@ -72,7 +72,8 @@ def _daily_row(day="2026-10-12"):
     return (day + " 15:00:00", 10.0, 11.0, 9.0, 11.0, 100.0, 1234.0, 1.0, 10.0)
 
 
-def _run(monkeypatch, *, td_rows, redis=None, apply=False, confirm=False, names=None):
+def _run(monkeypatch, *, td_rows, redis=None, apply=False, confirm=False, names=None,
+         st_symbols=None, exclude_st=True, st_source=None):
     redis = redis or FakeRedis()
     clients = []
 
@@ -91,6 +92,9 @@ def _run(monkeypatch, *, td_rows, redis=None, apply=False, confirm=False, names=
         names_by_symbol=names or {},
         apply=apply,
         confirm_write_core_cache=confirm,
+        st_symbols=st_symbols,
+        exclude_st=exclude_st,
+        st_source=st_source,
     )
     return result, clients, redis
 
@@ -124,6 +128,34 @@ def test_apply_without_confirmation_returns_code_2_without_writing():
               "--universe-symbols-file", "unused", "--output", "/tmp/c051-should-not-exist.json",
               "--apply"])
     assert error.value.code == 2
+
+
+def test_cli_rejects_apply_without_st_list_unless_include_st_is_explicit(tmp_path):
+    from examples.run_core_limit_up_pool_cache import main
+
+    universe = tmp_path / "universe.txt"
+    universe.write_text("600001", encoding="utf-8")
+    with pytest.raises(SystemExit) as error:
+        main(["--trade-date", "2026-10-13", "--previous-trade-date", "2026-10-12",
+              "--universe-symbols-file", str(universe), "--output", str(tmp_path / "out.json"),
+              "--apply", "--confirm-write-core-cache"])
+    assert error.value.code == 2
+
+
+def test_run_probe_metadata_records_st_filter_and_count():
+    result, clients, _ = _run(
+        None, td_rows={"d_600001": [_daily_row()], "d_600002": [_daily_row()]},
+        st_symbols={"600001"}, st_source="test-st-list", apply=True, confirm=True,
+    )
+    assert result["st_filter"] == "EXCLUDED"
+    assert result["st_symbol_count"] == 1
+    assert result["derivation"]["excluded_counts"]["st"] == 1
+    meta = result["write"]["meta"]
+    assert meta["st_filter"] == "EXCLUDED"
+    assert meta["st_symbol_count"] == 1
+    persisted = json.loads(clients[0].values[result["write"]["meta_key"]])
+    assert persisted["st_filter"] == "EXCLUDED"
+    assert persisted["st_symbol_count"] == 1
 
 
 def test_confirmed_write_uses_only_core_cache_keys_and_records_meta():
