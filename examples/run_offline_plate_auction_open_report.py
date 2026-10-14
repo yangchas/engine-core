@@ -739,15 +739,15 @@ def _load_f10_industries(path: Path | None, symbols: list[str]) -> tuple[dict[st
     with path.open(encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         columns = reader.fieldnames or ()
-        code_column = "code" if "code" in columns else "股票代码" if "股票代码" in columns else None
-        if code_column is None or "所属同花顺行业" not in columns:
+        has_code = "code" in columns or "股票代码" in columns
+        if not has_code or "所属同花顺行业" not in columns:
             raise ValueError("F10 industry CSV must have code/股票代码 and 所属同花顺行业 columns")
         industries: dict[str, str] = {}
         for row in reader:
-            raw_code = str(row.get(code_column, ""))
+            raw_code = str(row.get("code") or row.get("股票代码") or "")
             code = "".join(re.findall(r"\d", raw_code))[:6]
             industry = str(row.get("所属同花顺行业", "")).strip()
-            if len(code) == 6 and code in requested and industry:
+            if len(code) == 6 and industry:
                 industries[code] = industry
     denominator = len(requested)
     return industries, {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
