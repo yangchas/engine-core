@@ -163,7 +163,7 @@ def build_session_report(
 
     aggregations = {tag: aggregate_plates(memberships, hierarchy, facts)
                     for tag, facts in facts_by_stage.items()}
-    from .plate_strength import build_incidence, compute_strength
+    from .plate_strength import build_incidence, compute_strength, stock_relative
     from .plate_rules import normalize_plate_name
     incidence = build_incidence(memberships, hierarchy, coverage_symbols=symbols)
     prior_days = {}
@@ -239,17 +239,23 @@ def build_session_report(
                              "conserved_share": strength.conserved_share,
                              "baseline_share": baseline_by_tag[tag].get(plate),
                              "share_vs_baseline": strength.share_vs_baseline,
+                             "share_ratio_to_baseline": (
+                                 strength.conserved_share / baseline_by_tag[tag][plate]
+                                 if strength.conserved_share is not None
+                                 and baseline_by_tag[tag].get(plate) is not None
+                                 and baseline_by_tag[tag][plate] > 0 else None),
                              "imbalance": strength.imbalance,
                              "top1_amount_share": strength.top1_amount_share,
                              "dominant_symbol": strength.dominant_symbol,
                              "flags": list(strength.flags)}) if strength is not None else {
                                  key: None for key in ("beta_ridge", "beta_se", "excess_amt_weighted",
                                                        "excess_median", "excess_trimmed", "conserved_share",
-                                                       "baseline_share", "share_vs_baseline", "imbalance",
+                                                       "baseline_share", "share_vs_baseline",
+                                                       "share_ratio_to_baseline", "imbalance",
                                                        "top1_amount_share", "dominant_symbol")}
             if strength is None:
                 strength_row["flags"] = ["UNKNOWN"]
-            if strength_row.get("baseline_share") is None:
+            if strength_row.get("baseline_share") is None or strength_row["baseline_share"] <= 0:
                 strength_row["flags"].append("NO_BASELINE")
             stage_rows[tag]["strength"] = strength_row
             hot_prev = (hot_prev_by_plate or {}).get(normalize_plate_name(plate))
@@ -318,6 +324,33 @@ def build_session_report(
                     strength_row["strength_rank"] = "flagged"
                 else:
                     strength_row.setdefault("strength_rank", None)
+    stock_relatives = {
+        tag: stock_relative(incidence, strength_vectors(tag, facts)) if incidence.plates else {}
+        for tag, facts in facts_by_stage.items()
+    }
+    plate_by_name = {row["plate"]: row for row in plates}
+    for stock in stocks:
+        ordered_memberships = sorted(stock["plates"], key=lambda row: (row["tier"], row["rank"], row["plate"]))
+        stock["plate_summary"] = [
+            {"plate": member["plate"], "tier": member["tier"], "rank": member["rank"],
+             "beta_0925": ((plate_by_name.get(member["plate"]) or {}).get("times", {})
+                           .get("0925", {}).get("strength", {}).get("beta_ridge")),
+             "hot_live_rank_0925": ((plate_by_name.get(member["plate"]) or {}).get("times", {})
+                                    .get("0925", {}).get("hot_live_rank")),
+             "rel_leave_one_out_0925": next((item["rel_leave_one_out"] for item in
+                                               stock_relatives["0925"].get(stock["symbol"], ())
+                                               if item["plate"] == member["plate"]), None),
+             "pct_rank_in_plate_0925": next((item["pct_rank_in_plate"] for item in
+                                               stock_relatives["0925"].get(stock["symbol"], ())
+                                               if item["plate"] == member["plate"]), None)}
+            for member in ordered_memberships[:3]
+        ]
+        stock["stock_relative"] = {
+            tag: {row["plate"]: {"rel_leave_one_out": row["rel_leave_one_out"],
+                                  "pct_rank_in_plate": row["pct_rank_in_plate"]}
+                  for row in stock_relatives[tag].get(stock["symbol"], ())}
+            for tag in (*_TAGS, "0932")
+        }
     market = {tag: {"covered_count": agg.market.covered_count,
                     "amount_covered_count": agg.market.amount_covered_count,
                     "amount_sum": agg.market.amount_sum,
@@ -378,6 +411,7 @@ def _delta_value(left: float | None, right: float | None) -> float | None:
 def render_report_markdown(result: Mapping[str, Any]) -> str:
     trade_date = result["trade_date"]
     market = result["market"]
+    report_plate_by_name = {row["plate"]: row for row in result["plates"]}
     pool_rows = [row for row in result["stocks"] if row["in_yest_pool"]]
     labels = list(result.get("degradation", ()))
     label_meanings = {
@@ -433,11 +467,11 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                 strength = stage["strength"]
                 lines.append(f"| {row['plate']} | {_amount_yi(stage.get('amount_sum'))} | "
                              f"{_pctfmt(stage.get('amount_share_of_market'))} | "
-                             f"{_ppfmt(strength.get('share_vs_baseline'))} | {_ppfmt(stage.get('pct_equal_weight'))} |")
+                             f"{_ratiofmt(strength)} | {_ppfmt(stage.get('pct_equal_weight'))} |")
             continue
 
         lines.extend([f"### {tag} 板块强度（可排名前 20）", "",
-                      f"| 板块 | {'匹配额 MATCH（虚拟撮合,亿元）' if tag == '0925' else '成交额 TRADED（真实,亿元）'} | 市场份额(%) | beta/SE(pp) | 加权超额(pp) | 中位超额(pp) | 截尾超额(pp) | Top1占比(%) | vs基线(pp) | 不平衡(%) | 热板前收排名 | 热板当日排名 |",
+                      f"| 板块 | {'匹配额 MATCH（虚拟撮合,亿元）' if tag == '0925' else '成交额 TRADED（真实,亿元）'} | 市场份额(%) | beta/SE(pp) | 加权超额(pp) | 中位超额(pp) | 截尾超额(pp) | Top1占比(%) | 份额/基线 | 不平衡(%) | 热板前收排名 | 热板当日排名 |",
                       "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
         for row, stage in ranked_rows[:20]:
             strength = stage["strength"]
@@ -446,7 +480,7 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                          f"{_ppfmt(strength.get('beta_ridge'))} / {_ppfmt(strength.get('beta_se'))} | "
                          f"{_ppfmt(strength.get('excess_amt_weighted'))} | {_ppfmt(strength.get('excess_median'))} | "
                          f"{_ppfmt(strength.get('excess_trimmed'))} | "
-                         f"{_pctfmt(strength.get('top1_amount_share'))} | {_ppfmt(strength.get('share_vs_baseline'))} | "
+                         f"{_pctfmt(strength.get('top1_amount_share'))} | {_ratiofmt(strength)} | "
                          f"{_pctfmt(strength.get('imbalance'))} | {_fmt(stage.get('hot_prev_close_rank'))} | "
                          f"{_fmt(stage.get('hot_live_rank'))} |")
         lines.extend(["", f"### {tag} Flagged 板块", "",
@@ -464,13 +498,54 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                   "| 时点 | 交集数 | Spearman |", "|---|---:|---:|"])
     for tag, row in result.get("strength_hot_consistency", {}).items():
         lines.append(f"| {tag} | {row['intersection_count']} | {_fmt(row['spearman'])} |")
-    lines.extend(["", "## 昨日涨停池成员", "", "| 代码 | 名称 | 连板天数 | 0925 匹配额(亿元) | 0925 涨幅(pp) | 0932 成交额(亿元) | 0932 涨幅(pp) |",
-                  "|---|---|---:|---:|---:|---:|---:|"])
-    for row in pool_rows:
-        a25, o32 = row["times"]["0925"], row["times"]["0932"]
-        lines.append(f"| {row['symbol']} | {row['name'] or ''} | {_fmt(row['lb_days'])} | "
-                     f"{_amount_yi(a25['amount'])} | {_ppfmt(a25['pct_vs_pre_close'])} | "
-                     f"{_amount_yi(o32['amount'])} | {_ppfmt(o32['pct_vs_pre_close'])} |")
+    def stock_table(title: str, rows: list[Mapping[str, Any]], extra: str = "") -> None:
+        headers = ["代码", "名称", "连板数", "主板块", "0920涨幅(pp)", "0920 MATCH(亿元)",
+                   "0924涨幅(pp)", "0924 MATCH(亿元)", "0925涨幅(pp)", "0925 MATCH(亿元)",
+                   "0932涨幅(pp)", "0932 TRADED(亿元)", "0925涨停有封单",
+                   "板块前3(tier/beta/热板排名/个股超额/涨幅分位)"]
+        if extra:
+            headers.extend(extra.strip(" | ").split(" | "))
+        lines.extend(["", f"## {title}", "",
+                      "| " + " | ".join(headers) + " |",
+                      "|" + "|".join("---" for _ in headers) + "|"])
+        for row in rows[:40]:
+            times = row["times"]
+            pieces = [row["symbol"], row.get("name") or "", _fmt(row.get("lb_days")),
+                      row.get("primary_plate") or ""]
+            for tag in ("0920", "0924", "0925", "0932"):
+                fact = times[tag]
+                pieces.extend((_ppfmt(fact.get("pct_vs_pre_close")), _amount_yi(fact.get("amount"))))
+            a25 = times["0925"]
+            seal_status = ("—" if a25.get("limit_state") is None else
+                           "是" if a25.get("limit_state") == 1 and (a25.get("rest_bid") or 0) > 0 else "否")
+            pieces.extend((seal_status,
+                      "; ".join(f"{plate['plate']}({plate['tier']}/{_ppfmt(plate['beta_0925'])}/"
+                                     f"{_fmt(plate['hot_live_rank_0925'])}/{_ppfmt(plate['rel_leave_one_out_0925'])}/"
+                                     f"{_pctfmt(plate['pct_rank_in_plate_0925'])})"
+                                     for plate in row.get("plate_summary", ())) or "—"))
+            if extra == " | rest_bid(亿元) | rest_ask(亿元) | 封单额(亿元)":
+                seal = a25.get("rest_bid") if a25.get("limit_state") == 1 else (
+                    a25.get("rest_ask") if a25.get("limit_state") == -1 else None)
+                pieces.extend((_amount_yi(a25.get("rest_bid")), _amount_yi(a25.get("rest_ask")),
+                               _amount_yi(seal)))
+            elif extra:
+                primary = row.get("primary_plate")
+                relative = row.get("stock_relative", {}).get("0925", {}).get(primary, {})
+                pieces.extend((_ppfmt(((report_plate_by_name.get(primary) or {}).get("times", {})
+                                       .get("0925", {}).get("strength", {}).get("beta_ridge"))),
+                               _ppfmt(relative.get("rel_leave_one_out"))))
+            lines.append("| " + " | ".join(pieces) + " |")
+
+    stock_table("昨日涨停池成员", pool_rows)
+    limit_rows = sorted((row for row in result["stocks"]
+                         if row["times"]["0925"].get("limit_state") in (-1, 1)),
+                        key=lambda row: (0 if row["times"]["0925"].get("limit_state") == 1 else 1,
+                                         row["symbol"]))
+    stock_table("0925 涨停/跌停个股", limit_rows,
+                 " | rest_bid(亿元) | rest_ask(亿元) | 封单额(亿元)")
+    amount_rows = sorted((row for row in result["stocks"] if row["times"]["0925"].get("amount") is not None),
+                         key=lambda row: (-row["times"]["0925"]["amount"], row["symbol"]))[:30]
+    stock_table("0925 匹配额前 30 个股", amount_rows, " | 主板块 beta(pp) | rel_leave_one_out(pp)")
     lines.extend(["", "## 数据质量与降级标签", "", f"- 竞价金额为虚拟匹配额；09:32 金额为真实累计成交额。",
                   f"- 昨日池成员数: {len(pool_rows)}。", f"- 降级标签: {', '.join(result['degradation']) or 'NONE'}。",
                   *[f"- {label}: {label_meanings.get(label, '数据质量标签，具体含义由对应输入契约定义。')}"
@@ -489,6 +564,15 @@ def _pctfmt(value: float | None) -> str:
 
 def _ppfmt(value: float | None) -> str:
     return "—" if value is None else f"{value * 100:+.2f}pp"
+
+
+def _ratiofmt(strength: Mapping[str, Any]) -> str:
+    baseline = _number(strength.get("baseline_share"))
+    ratio = _number(strength.get("share_ratio_to_baseline"))
+    if ratio is None and baseline is not None and baseline > 0:
+        share = _number(strength.get("conserved_share"))
+        ratio = share / baseline if share is not None else None
+    return "—" if ratio is None else f"×{ratio:.2f}"
 
 
 def _amount_yi(value: float | None) -> str:

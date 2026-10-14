@@ -158,7 +158,7 @@ def test_markdown_strength_units_flagged_rows_and_missing_values():
 
     report = render_report_markdown(result)
     ranked = report.split("### 0925 板块强度", 1)[1].split("### 0925 Flagged", 1)[0]
-    assert "+0.59pp" in ranked
+    assert "×1.30" in ranked
     assert "12.98%" in ranked
     assert "—" in ranked
     assert "异常板块" not in ranked
@@ -176,3 +176,50 @@ def test_hot_day_list_shape_is_accepted():
         (d / "2026-10-13.json").write_text(json.dumps(
             {"Day": ["2026-10-13"], "list": [["801660", "通信", 6780, 1.113]]}), encoding="utf-8")
         assert _load_prev_hot(pathlib.Path(tmp), "2026-10-13")["通信"]["rank"] == 1
+
+
+def test_share_ratio_is_reported_as_multiple_and_keeps_legacy_fields():
+    source = _source()
+    for index in range(3, 12):
+        symbol = f"0000{index:02d}"
+        source["snapshot"]["stock_plate"][symbol] = "银行"
+        source["pre_close_by_symbol"][symbol] = 10
+        source["auction_by_tag"]["0925"][symbol] = {"px_milli": 10000, "match_amt_yuan": 100}
+    source["baseline_auction_by_tag"] = {"0925": [{
+        "trade_date": "2026-10-12", "amount_by_symbol": {
+            **{f"0000{index:02d}": 100 for index in range(1, 12)}}
+    }]}
+    result = build_session_report(**source)
+    bank = next(row for row in result["plates"] if row["plate"] == "银行")
+    strength = bank["times"]["0925"]["strength"]
+    result["report_md"] = render_report_markdown(result)
+    assert strength["share_ratio_to_baseline"] is not None
+    assert "×" in result["report_md"]
+
+
+def test_stock_sections_include_pool_stages_and_sealed_limit_amounts():
+    source = _source()
+    source["snapshot"]["names"] = {"000001": "甲"}
+    source["auction_by_tag"]["0925"]["000001"].update(
+        {"rest_bid_amt_yuan": 200_000_000, "rest_ask_amt_yuan": 50_000_000})
+    source["auction_by_tag"]["0925"]["000002"] = {
+        "px_milli": 19000, "match_amt_yuan": 400, "limit_state": -1,
+        "rest_bid_amt_yuan": 0, "rest_ask_amt_yuan": 300_000_000}
+    report = build_session_report(**source)["report_md"]
+    assert "昨日涨停池成员" in report and "连板数" in report and "0920" in report and "0932" in report
+    assert "涨停/跌停个股" in report and "封单额(亿元)" in report
+    assert "2.00" in report and "3.00" in report
+
+
+def test_stock_tables_cap_each_at_40_rows_but_keep_all_stocks_in_json():
+    source = _source()
+    for index in range(2, 43):
+        symbol = f"0000{index:02d}"
+        source["snapshot"]["stock_plate"][symbol] = "银行"
+        source["pre_close_by_symbol"][symbol] = 10
+        source["auction_by_tag"]["0925"][symbol] = {
+            "px_milli": 10000, "match_amt_yuan": 1000 - index, "limit_state": None}
+    result = build_session_report(**source)
+    section = result["report_md"].split("## 昨日涨停池成员", 1)[1].split("## 0925 涨停/跌停个股", 1)[0]
+    assert len(result["stocks"]) == 42
+    assert section.count("| 000") <= 40
