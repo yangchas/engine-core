@@ -1,4 +1,5 @@
 from engine_core.plate_auction_open_report import build_session_report, render_report_markdown
+import pytest
 
 
 def _source():
@@ -34,6 +35,55 @@ def test_auction_match_and_opening_traded_amounts_are_separate():
     assert stock["times"]["0932"]["input_cutoff"] == "2026-10-13T09:32:00"
     bank = next(row for row in result["plates"] if row["plate"] == "银行")
     assert bank["times"]["0932"]["input_cutoff"] == "2026-10-13T09:32:00"
+
+
+def test_plate_strength_is_two_explicit_dimensions_and_excludes_current_baseline():
+    source = _source()
+    source["baseline_auction_by_tag"] = {"0925": [
+        {"trade_date": "2026-10-10", "amount_by_symbol": {"000001": 100}},
+        {"trade_date": "2026-10-11", "amount_by_symbol": {"000001": 100}},
+        {"trade_date": "2026-10-12", "amount_by_symbol": {"000001": 100}},
+        {"trade_date": "2026-10-13", "amount_by_symbol": {"000001": 1_000_000}},
+    ]}
+    result = build_session_report(**source)
+    bank = next(row for row in result["plates"] if row["plate"] == "银行")
+    row = bank["times"]["0925"]
+
+    assert row["activity"]["baseline_days"] == 3
+    assert row["activity"]["baseline_multiple"] == 1.0
+    assert "relative_market_z" in row["performance"]
+    assert "score" not in row and "strength" not in row and "strength_rank" not in row
+    assert set(row["activity"]) == {"amount_kind", "amount_sum", "amount_share_of_market",
+                                    "baseline_share", "baseline_multiple", "baseline_days", "flags"}
+
+
+def test_conserved_activity_shares_sum_to_one_over_covered_market_amount():
+    result = build_session_report(**_source())
+    shares = [plate["times"]["0925"]["activity"]["amount_share_of_market"]
+              for plate in result["plates"] if plate["times"]["0925"]]
+    assert sum(shares) == pytest.approx(1.0)
+
+
+def test_0925_summary_counts_final_and_indicative_and_is_in_first_screen():
+    source = _source()
+    source["auction_by_tag"]["0925"]["000001"]["price_source"] = "SNAPSHOT_PX"
+    source["auction_by_tag"]["0925"]["000002"] = {
+        "px_milli": 19900, "match_amt_yuan": 100, "price_source": "TICK_BOOK1_INDICATIVE"}
+    result = build_session_report(**source)
+    lines = result["report_md"].splitlines()
+    assert any("0925:" in line and "终价 1 / 指示价 1" in line for line in lines[:10])
+
+
+def test_primary_stock_plate_summary_exposes_activity_and_contribution():
+    result = build_session_report(**_source())
+    stock = next(row for row in result["stocks"] if row["symbol"] == "000001")
+    primary = stock["plate_summary"][0]
+    assert primary["plate"] == stock["primary_plate"]
+    assert "activity_multiple_0925" in primary
+    assert "performance_z_0925" in primary
+    assert "stock_amount_share_0925" in primary
+    assert {"0920", "0924", "0925", "0932"}.issubset(primary["activity_by_stage"])
+    assert "score" not in primary
 
 
 def test_0925r_is_rendered_as_revised_match_with_its_cutoff():
@@ -122,20 +172,17 @@ def test_report_contains_degradation_and_virtual_match_semantics():
     assert "KAIPAN_INPUTS_MISSING" in result["report_md"]
     assert "竞价金额为虚拟匹配额" in result["report_md"]
     assert "昨日涨停池成员" in result["report_md"]
-    assert "## 板块强度与 Kaipan 热板参考" in result["report_md"]
+    assert "## 活跃度榜（与表现分开）" in result["report_md"]
     assert "## 独立板块（净效应）" not in result["report_md"]
 
 
-def test_strength_fields_keep_missing_values_and_report_no_baseline():
+def test_activity_fields_keep_missing_values_and_report_short_baseline():
     result = build_session_report(**_source())
     bank = next(row for row in result["plates"] if row["plate"] == "银行")
     for tag in ("0920", "0924", "0925", "0932"):
-        strength = bank["times"][tag]["strength"]
-        assert strength["beta_ridge"] is None
-        assert strength["conserved_share"] is None
-        assert "UNKNOWN" in strength["flags"]
-        assert "NO_BASELINE" in strength["flags"]
-        assert strength["strength_rank"] == "flagged"
+        activity = bank["times"][tag]["activity"]
+        assert activity["baseline_multiple"] is None
+        assert "BASELINE_SHORT" in activity["flags"]
 
 
 def test_baseline_uses_only_five_prior_dates_and_matches_amount_kind():
@@ -160,12 +207,11 @@ def test_baseline_uses_only_five_prior_dates_and_matches_amount_kind():
     })
     result = build_session_report(**source)
     bank = next(row for row in result["plates"] if row["plate"] == "银行")
-    strength = bank["times"]["0925"]["strength"]
-    assert strength["baseline_share"] is not None
-    assert strength["baseline_share"] == 1.0
-    assert strength["share_vs_baseline"] is not None
-    assert "NO_BASELINE" not in strength["flags"]
-    assert bank["times"]["0932"]["strength"]["baseline_share"] is None
+    activity = bank["times"]["0925"]["activity"]
+    assert activity["baseline_share"] is not None
+    assert activity["baseline_days"] == 5
+    assert "BASELINE_SHORT" not in activity["flags"]
+    assert bank["times"]["0932"]["activity"]["baseline_share"] is None
 
 
 def test_hot_live_uses_latest_capture_at_or_before_cutoff_and_day_match():
@@ -183,40 +229,26 @@ def test_hot_live_uses_latest_capture_at_or_before_cutoff_and_day_match():
     bank = next(row for row in result["plates"] if row["plate"] == "银行")
     assert bank["times"]["0925"]["hot_live_rank"] == 3
     assert bank["times"]["0925"]["hot_prev_close_rank"] == 1
-    assert "HOT_LIVE_UNAVAILABLE" not in bank["times"]["0925"]["strength"]["flags"]
     assert bank["times"]["0924"]["hot_live_rank"] == 3
 
 
-def test_strength_rank_consistency_summary_is_present_per_stage():
+def test_two_dimensions_replace_composite_strength_summary():
     result = build_session_report(**_source())
-    assert set(result["strength_hot_consistency"]) == {"0920", "0924", "0925", "0932"}
-    assert result["strength_hot_consistency"]["0925"]["intersection_count"] == 0
+    assert "activity_manifest" in result
+    for row in result["plates"]:
+        for stage in row["times"].values():
+            if stage:
+                assert "activity" in stage and "performance" in stage
+                assert "strength" not in stage and "score" not in stage
 
 
-def test_markdown_strength_units_flagged_rows_and_missing_values():
+def test_markdown_activity_table_keeps_missing_baseline_visible():
     result = build_session_report(**_source())
     bank = next(row for row in result["plates"] if row["plate"] == "银行")
-    strength = bank["times"]["0925"]["strength"]
-    strength.update({"beta_ridge": 0.0059, "beta_se": 0.0012, "excess_amt_weighted": 0.0059,
-                     "excess_median": -0.001, "excess_trimmed": 0.002,
-                     "conserved_share": 0.1298, "baseline_share": 0.1,
-                     "share_vs_baseline": 0.0298, "top1_amount_share": None,
-                     "flags": [], "strength_rank": 1})
-    bank["times"]["0925"]["amount_share_of_market"] = 0.1298
-    flagged = {**bank, "plate": "异常板块", "times": dict(bank["times"])}
-    flagged["times"]["0925"] = {**bank["times"]["0925"], "strength": {
-        **strength, "beta_ridge": 0.5, "flags": ["SINGLE_STOCK_DOMINATED"],
-        "dominant_symbol": "000001", "strength_rank": "flagged"}}
-    result["plates"].append(flagged)
-
     report = render_report_markdown(result)
-    ranked = report.split("### 0925 板块强度", 1)[1].split("### 0925 Flagged", 1)[0]
-    assert "×1.30" in ranked
-    assert "12.98%" in ranked
-    assert "—" in ranked
-    assert "异常板块" not in ranked
-    assert "异常板块" in report.split("### 0925 Flagged", 1)[1]
-    assert "金额(亿元)" in report
+    assert "### 0925" in report
+    assert "基线倍数" in report
+    assert "BASELINE_SHORT" in str(bank["times"]["0925"]["activity"]["flags"])
 
 
 def test_hot_day_list_shape_is_accepted():
@@ -231,7 +263,7 @@ def test_hot_day_list_shape_is_accepted():
         assert _load_prev_hot(pathlib.Path(tmp), "2026-10-13")["通信"]["rank"] == 1
 
 
-def test_share_ratio_is_reported_as_multiple_and_keeps_legacy_fields():
+def test_activity_baseline_ratio_is_reported_as_multiple():
     source = _source()
     for index in range(3, 12):
         symbol = f"0000{index:02d}"
@@ -244,10 +276,9 @@ def test_share_ratio_is_reported_as_multiple_and_keeps_legacy_fields():
     }]}
     result = build_session_report(**source)
     bank = next(row for row in result["plates"] if row["plate"] == "银行")
-    strength = bank["times"]["0925"]["strength"]
+    activity = bank["times"]["0925"]["activity"]
     result["report_md"] = render_report_markdown(result)
-    assert strength["share_ratio_to_baseline"] is not None
-    assert "×" in result["report_md"]
+    assert activity["baseline_multiple"] is not None
 
 
 def test_stock_sections_include_pool_stages_and_sealed_limit_amounts():
@@ -262,6 +293,9 @@ def test_stock_sections_include_pool_stages_and_sealed_limit_amounts():
     assert "昨日涨停池成员" in report and "连板数" in report and "0920" in report and "0932" in report
     assert "涨停/跌停个股" in report and "封单额(亿元)" in report
     assert "2.00" in report and "3.00" in report
+    result = build_session_report(**source)
+    assert "板块活动倍数/z/个股额占比" in result["report_md"]
+    assert "竞价金额是虚拟撮合额" in result["report_md"]
 
 
 def test_stock_tables_cap_each_at_40_rows_but_keep_all_stocks_in_json():

@@ -56,6 +56,30 @@ def _pct(price: float | None, pre_close: float | None) -> float | None:
     return price / pre_close - 1.0
 
 
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def _trimmed_mean(values: list[float], fraction: float = 0.1) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    trim = int(len(ordered) * fraction)
+    kept = ordered[trim:len(ordered) - trim] if trim else ordered
+    return sum(kept) / len(kept)
+
+
+def _robust_scale(values: list[float]) -> tuple[float | None, float | None]:
+    center = _median(values)
+    deviations = [abs(value - center) for value in values] if center is not None else []
+    mad = _median(deviations)
+    return center, (1.4826 * mad if mad is not None and mad > 0 else None)
+
+
 def build_session_report(
     *, trade_date: str, snapshot: Mapping[str, Any],
     pre_close_by_symbol: Mapping[str, float | None],
@@ -131,6 +155,8 @@ def build_session_report(
             time_rows[tag] = {"price": px, "pct_vs_pre_close": _pct(px, pc), "amount": amt,
                               "amount_kind": "MATCH", "rest_bid": rest_bid, "rest_ask": rest_ask,
                               "limit_state": state, "at_limit_price": None,
+                              "price_source": (raw or {}).get("price_source"),
+                              "price_flags": list((raw or {}).get("price_flags", ())),
                               "input_cutoff": _cutoff_text((raw or {}).get("ts"), default_cutoffs[tag])}
             if raw is None:
                 flags.append(f"NO_{tag}")
@@ -174,54 +200,54 @@ def build_session_report(
 
     aggregations = {tag: aggregate_plates(memberships, hierarchy, facts)
                     for tag, facts in facts_by_stage.items()}
-    from .plate_strength import build_incidence, compute_strength, stock_relative
     from .plate_rules import normalize_plate_name
-    incidence = build_incidence(memberships, hierarchy, coverage_symbols=symbols)
     prior_days = {}
     for tag, days in (baseline_auction_by_tag or {}).items():
         eligible = [row for row in days if isinstance(row.get("trade_date"), str)
                     and row["trade_date"] < trade_date]
         prior_days[tag] = sorted(eligible, key=lambda row: row["trade_date"])[-5:]
 
-    def strength_vectors(tag: str, facts: Mapping[str, StockFact]) -> dict[str, dict[str, Any]]:
-        values = {symbol: {"y": _pct(fact.price, fact.pre_close), "amount": fact.amount,
-                           "prev_close_ok": 1 if fact.pre_close and fact.pre_close > 0 else 0,
-                           "rest_bid": facts_by_stage_value[tag].get(symbol, {}).get("rest_bid"),
-                           "rest_ask": facts_by_stage_value[tag].get(symbol, {}).get("rest_ask"),
-                           "limit_up": 1 if fact.limit_state == 1 else 0}
-                  for symbol, fact in facts.items()}
-        return {name: {symbol: row[name] for symbol, row in values.items()}
-                for name in ("y", "amount", "prev_close_ok", "rest_bid", "rest_ask", "limit_up")}
-
     def same_day(value: Any) -> bool:
         if isinstance(value, (list, tuple)) and value:  # Kaipan getHisPlates returns Day as ["YYYY-MM-DD"]
             value = value[0]
         return isinstance(value, str) and value.replace("-", "")[:8] == trade_date.replace("-", "")
 
-    # Preserve book values alongside StockFact for the plate_strength vector.
     facts_by_stage_value = {
         tag: {row["symbol"]: row["times"][tag] for row in stocks} for tag in facts_by_stage
     }
-    strength_by_tag: dict[str, dict[str, Any]] = {}
-    baseline_by_tag: dict[str, dict[str, float]] = {}
-    for tag, facts in facts_by_stage.items():
-        baseline_shares = {}
-        for prior in prior_days.get(tag, ()):
-            daily = {"y": {}, "amount": prior.get("amount_by_symbol", {}),
-                     "prev_close_ok": {}, "rest_bid": {}, "rest_ask": {}, "limit_up": {}}
-            daily_result = compute_strength(incidence, daily) if incidence.plates else []
-            for item in daily_result:
-                baseline_shares.setdefault(item.plate, []).append(item.conserved_share)
-        baseline_by_tag[tag] = {}
-        for plate, values in baseline_shares.items():
-            valid_values = [value for value in values if value is not None]
-            if valid_values:
-                import statistics
-                baseline_by_tag[tag][plate] = statistics.median(valid_values)
-        strength_by_tag[tag] = ({item.plate: item for item in compute_strength(
-            incidence, strength_vectors(tag, facts), baseline_share=baseline_by_tag[tag])}
-            if incidence.plates else {})
-    market_amounts = {tag: agg.market.amount_sum for tag, agg in aggregations.items()}
+    plate_members = {stat.plate: set(membership_index.members_of(stat.plate))
+                     for stat in aggregations["0925"].stats}
+    member_degree: dict[str, int] = {}
+    for members in plate_members.values():
+        for symbol in members:
+            member_degree[symbol] = member_degree.get(symbol, 0) + 1
+    baseline_share_by_tag: dict[str, dict[str, float]] = {}
+    baseline_sample_count_by_tag: dict[str, dict[str, int]] = {}
+    baseline_manifest: dict[str, Any] = {}
+    for tag in tags:
+        baseline_tag = "0925" if tag == "0925R" else tag
+        days = prior_days.get(tag, prior_days.get(baseline_tag, ()))
+        day_shares: dict[str, list[float]] = {}
+        for prior in days:
+            amounts = prior.get("amount_by_symbol", {})
+            allocated_total = sum(float(value) for symbol, value in amounts.items()
+                                  if _number(value) is not None and float(value) >= 0
+                                  and member_degree.get(str(symbol), 0) > 0)
+            if allocated_total <= 0:
+                continue
+            for plate, members in plate_members.items():
+                allocated = sum(float(amounts[str(symbol)]) / member_degree[str(symbol)]
+                                for symbol in members if str(symbol) in amounts
+                                and _number(amounts[str(symbol)]) is not None
+                                and float(amounts[str(symbol)]) >= 0)
+                day_shares.setdefault(plate, []).append(allocated / allocated_total)
+        baseline_share_by_tag[tag] = {plate: _median(values) for plate, values in day_shares.items()
+                                      if values and _median(values) is not None}
+        baseline_sample_count_by_tag[tag] = {plate: len(values) for plate, values in day_shares.items()}
+        short_count = sum(len(day_shares.get(plate, ())) < 3 for plate in plate_members)
+        baseline_manifest[tag] = {"baseline_dates": [row["trade_date"] for row in days],
+                                  "baseline_days": len(days),
+                                  "baseline_short_plates": short_count}
     plates: list[dict[str, Any]] = []
     for stat in aggregations["0925"].stats:
         plate = stat.plate
@@ -242,33 +268,62 @@ def build_session_report(
                                      if row["symbol"] in membership_index.members_of(plate)),
                                     default=default_cutoffs[tag]),
             }
-            strength = strength_by_tag[tag].get(plate)
-            strength_row = ({"beta_ridge": strength.beta_ridge, "beta_se": strength.beta_se,
-                             "excess_amt_weighted": strength.excess_amt_weighted,
-                             "excess_median": strength.excess_median,
-                             "excess_trimmed": strength.excess_trimmed,
-                             "conserved_share": strength.conserved_share,
-                             "baseline_share": baseline_by_tag[tag].get(plate),
-                             "share_vs_baseline": strength.share_vs_baseline,
-                             "share_ratio_to_baseline": (
-                                 strength.conserved_share / baseline_by_tag[tag][plate]
-                                 if strength.conserved_share is not None
-                                 and baseline_by_tag[tag].get(plate) is not None
-                                 and baseline_by_tag[tag][plate] > 0 else None),
-                             "imbalance": strength.imbalance,
-                             "top1_amount_share": strength.top1_amount_share,
-                             "dominant_symbol": strength.dominant_symbol,
-                             "flags": list(strength.flags)}) if strength is not None else {
-                                 key: None for key in ("beta_ridge", "beta_se", "excess_amt_weighted",
-                                                       "excess_median", "excess_trimmed", "conserved_share",
-                                                       "baseline_share", "share_vs_baseline",
-                                                       "share_ratio_to_baseline", "imbalance",
-                                                       "top1_amount_share", "dominant_symbol")}
-            if strength is None:
-                strength_row["flags"] = ["UNKNOWN"]
-            if strength_row.get("baseline_share") is None or strength_row["baseline_share"] <= 0:
-                strength_row["flags"].append("NO_BASELINE")
-            stage_rows[tag]["strength"] = strength_row
+            members = plate_members.get(plate, set())
+            stage_facts = facts_by_stage[tag]
+            valid_returns = [_pct(stage_facts[symbol].price, stage_facts[symbol].pre_close)
+                             for symbol in members if symbol in stage_facts
+                             and stage_facts[symbol].price is not None
+                             and stage_facts[symbol].pre_close is not None
+                             and stage_facts[symbol].pre_close > 0]
+            valid_returns = [value for value in valid_returns if value is not None]
+            market_returns = [_pct(fact.price, fact.pre_close) for fact in stage_facts.values()
+                              if fact.price is not None and fact.pre_close is not None and fact.pre_close > 0]
+            market_returns = [value for value in market_returns if value is not None]
+            market_center, market_scale = _robust_scale(market_returns)
+            trimmed = _trimmed_mean(valid_returns)
+            relative = trimmed - market_center if trimmed is not None and market_center is not None else None
+            ratio = (relative / market_scale if relative is not None and market_scale else None)
+            live_amounts = {symbol: stage_facts[symbol].amount for symbol in members
+                            if symbol in stage_facts and stage_facts[symbol].amount is not None
+                            and stage_facts[symbol].amount >= 0}
+            allocated_amount = sum(value / member_degree[symbol] for symbol, value in live_amounts.items()
+                                   if member_degree.get(symbol, 0) > 0)
+            market_amount = sum(float(stage_facts[symbol].amount) for symbol in member_degree
+                                if symbol in stage_facts and stage_facts[symbol].amount is not None
+                                and stage_facts[symbol].amount >= 0)
+            amount_share = allocated_amount / market_amount if market_amount and market_amount > 0 else None
+            baseline_share = baseline_share_by_tag.get(tag, {}).get(plate)
+            baseline_multiple = (amount_share / baseline_share if amount_share is not None
+                                 and baseline_share is not None and baseline_share > 0 else None)
+            activity_flags = []
+            valid_baseline_days = baseline_sample_count_by_tag.get(tag, {}).get(plate, 0)
+            if valid_baseline_days < 3 or baseline_share is None or baseline_share <= 0:
+                activity_flags.append("BASELINE_SHORT")
+            if stage_rows[tag] is not None:
+                stage_rows[tag]["activity"] = {
+                    "amount_kind": "MATCH" if tag in _AUCTION_TAGS else "TRADED",
+                    "amount_sum": allocated_amount if live_amounts else None,
+                    "amount_share_of_market": amount_share,
+                    "baseline_share": baseline_share,
+                    "baseline_multiple": baseline_multiple,
+                    "baseline_days": valid_baseline_days,
+                    "flags": activity_flags,
+                }
+                stage_rows[tag]["performance"] = {
+                    "relative_market_z": ratio,
+                    "trimmed_mean_pct": trimmed,
+                    "relative_market_pp": relative,
+                    "breadth_up_share": (sum(value > 0 for value in valid_returns) / len(valid_returns)
+                                         if valid_returns else None),
+                    "covered_count": len(valid_returns),
+                    "touch_limit_price_count": sum(
+                        _rounded_limit_price(facts_by_stage[symbol].pre_close, symbol, direction) ==
+                        Decimal(str(facts_by_stage[symbol].price)).quantize(Decimal("0.01"))
+                        for symbol in members if symbol in facts_by_stage and
+                        facts_by_stage[symbol].price is not None and facts_by_stage[symbol].pre_close
+                        for direction in (-1, 1)),
+                    "sealed_limit_count": (stage_stat.limit_up_count if tag == "0925" else None),
+                }
             hot_prev = (hot_prev_by_plate or {}).get(normalize_plate_name(plate))
             stage_cutoff = _timestamp(default_cutoffs[tag])
             eligible_captures = []
@@ -283,7 +338,8 @@ def build_session_report(
             hot_row = next((row for row in response.get("list", response.get("rows", ()))
                             if normalize_plate_name(row.get("name", row.get("plate", "")))
                             == normalize_plate_name(plate)), None)
-            stage_rows[tag].update({
+            if stage_rows[tag] is not None:
+                stage_rows[tag].update({
                 "hot_prev_close_rank": hot_prev.get("rank") if hot_prev else None,
                 "hot_prev_close_strength": hot_prev.get("strength") if hot_prev else None,
                 "hot_prev_close_pct": hot_prev.get("change_pct", hot_prev.get("pct")) if hot_prev else None,
@@ -293,18 +349,16 @@ def build_session_report(
                 "hot_live_captured_at": capture.isoformat() if capture else None,
                 "hot_live_staleness_s": (stage_cutoff - capture).total_seconds()
                 if capture and stage_cutoff else None,
-            })
-            if not hot_prev:
-                stage_rows[tag]["strength"]["flags"].append("HOT_PREV_MISSING")
-            if hot_row is None:
-                stage_rows[tag]["strength"]["flags"].append("HOT_LIVE_UNAVAILABLE")
+                })
         core = sorted((symbol for symbol in membership_index.members_of(plate)
                        if facts_by_stage["0925"].get(symbol) is not None
                        and facts_by_stage["0925"][symbol].amount is not None),
                       key=lambda sym: (-(facts_by_stage["0925"].get(sym).amount or 0)
                                        if facts_by_stage["0925"].get(sym) else 0, sym))[:3]
         plates.append({
-            "plate": plate, "kind": stat.kind, "generic": stat.generic,
+            "plate": plate, "kind": stat.kind,
+            "category": "GENERIC_FACTOR" if stat.kind == "GENERIC" else stat.kind,
+            "generic": stat.generic,
             "member_count": stat.member_count, "times": stage_rows,
             "match_amount_progress": {
                 "0920_to_0924": _delta(stage_rows["0920"], stage_rows["0924"]),
@@ -319,49 +373,44 @@ def build_session_report(
     kind_order = {"THEME": 0, "EVENT": 1, "GENERIC": 2, "NOISE": 3}
     plates.sort(key=lambda row: (kind_order.get(row["kind"], 4),
                                  -((row["times"]["0925"] or {}).get("amount_share_of_market") or 0), row["plate"]))
-    for tag in tags:
-        eligible = [row for row in plates if row["times"][tag]
-                    and row["times"][tag]["strength"].get("beta_ridge") is not None
-                    and not set(row["times"][tag]["strength"]["flags"])
-                    .intersection({"UNKNOWN", "SINGLE_STOCK_DOMINATED", "OUTLIER_DRIVEN"})]
-        eligible.sort(key=lambda row: (-row["times"][tag]["strength"]["beta_ridge"], row["plate"]))
-        for rank, row in enumerate(eligible, start=1):
-            row["times"][tag]["strength"]["strength_rank"] = rank
-        for row in plates:
-            if row["times"][tag]:
-                strength_row = row["times"][tag]["strength"]
-                if strength_row.get("beta_ridge") is None or set(strength_row["flags"]).intersection(
-                        {"UNKNOWN", "SINGLE_STOCK_DOMINATED", "OUTLIER_DRIVEN"}):
-                    strength_row["strength_rank"] = "flagged"
-                else:
-                    strength_row.setdefault("strength_rank", None)
-    stock_relatives = {
-        tag: stock_relative(incidence, strength_vectors(tag, facts)) if incidence.plates else {}
-        for tag, facts in facts_by_stage.items()
-    }
     plate_by_name = {row["plate"]: row for row in plates}
     for stock in stocks:
         ordered_memberships = sorted(stock["plates"], key=lambda row: (row["tier"], row["rank"], row["plate"]))
         stock["plate_summary"] = [
             {"plate": member["plate"], "tier": member["tier"], "rank": member["rank"],
-             "beta_0925": ((plate_by_name.get(member["plate"]) or {}).get("times", {})
-                           .get("0925", {}).get("strength", {}).get("beta_ridge")),
+             "source": member["source"],
+             "activity_by_stage": {
+                 tag: {
+                     "multiple": ((plate_by_name.get(member["plate"]) or {}).get("times", {})
+                                  .get(tag, {}).get("activity", {}).get("baseline_multiple")),
+                     "z": ((plate_by_name.get(member["plate"]) or {}).get("times", {})
+                           .get(tag, {}).get("performance", {}).get("relative_market_z")),
+                     "stock_amount_share": (
+                         (stock["times"][tag].get("amount") / member_degree.get(stock["symbol"], 1)) /
+                         ((plate_by_name.get(member["plate"]) or {}).get("times", {})
+                          .get(tag, {}).get("activity", {}).get("amount_sum") or 1)
+                         if stock["times"][tag].get("amount") is not None and
+                         ((plate_by_name.get(member["plate"]) or {}).get("times", {})
+                          .get(tag, {}).get("activity", {}).get("amount_sum") or 0) > 0 else None),
+                 }
+                 for tag in tags
+             },
+             "activity_multiple_0925": ((plate_by_name.get(member["plate"]) or {}).get("times", {})
+                                        .get("0925", {}).get("activity", {}).get("baseline_multiple")),
+             "performance_z_0925": ((plate_by_name.get(member["plate"]) or {}).get("times", {})
+                                    .get("0925", {}).get("performance", {}).get("relative_market_z")),
+             "stock_amount_share_0925": ((stock["times"]["0925"].get("amount") or 0) /
+                                          member_degree.get(stock["symbol"], 1) /
+                                          ((plate_by_name.get(member["plate"]) or {}).get("times", {})
+                                           .get("0925", {}).get("activity", {}).get("amount_sum") or 1)
+                                          if stock["times"]["0925"].get("amount") is not None and
+                                          ((plate_by_name.get(member["plate"]) or {}).get("times", {})
+                                           .get("0925", {}).get("activity", {}).get("amount_sum") or 0) > 0 else None),
              "hot_live_rank_0925": ((plate_by_name.get(member["plate"]) or {}).get("times", {})
                                     .get("0925", {}).get("hot_live_rank")),
-             "rel_leave_one_out_0925": next((item["rel_leave_one_out"] for item in
-                                               stock_relatives["0925"].get(stock["symbol"], ())
-                                               if item["plate"] == member["plate"]), None),
-             "pct_rank_in_plate_0925": next((item["pct_rank_in_plate"] for item in
-                                               stock_relatives["0925"].get(stock["symbol"], ())
-                                               if item["plate"] == member["plate"]), None)}
+            }
             for member in ordered_memberships[:3]
         ]
-        stock["stock_relative"] = {
-            tag: {row["plate"]: {"rel_leave_one_out": row["rel_leave_one_out"],
-                                  "pct_rank_in_plate": row["pct_rank_in_plate"]}
-                  for row in stock_relatives[tag].get(stock["symbol"], ())}
-        for tag in tags
-        }
     market = {tag: {"covered_count": agg.market.covered_count,
                     "amount_covered_count": agg.market.amount_covered_count,
                     "amount_sum": agg.market.amount_sum,
@@ -379,33 +428,9 @@ def build_session_report(
         market[tag]["flat_count"] = sum(value == 0 for value in changes)
         market[tag]["limit_up_count"] = sum(f.limit_state == 1 for f in facts.values()) if tag == "0925" else None
         market[tag]["limit_down_count"] = sum(f.limit_state == -1 for f in facts.values()) if tag == "0925" else None
-    consistency = {}
-    for tag in tags:
-        ranked = [row for row in plates if row["times"][tag]
-                  and row["times"][tag]["strength"].get("beta_ridge") is not None
-                  and not set(row["times"][tag]["strength"]["flags"])
-                  .intersection({"UNKNOWN", "SINGLE_STOCK_DOMINATED", "OUTLIER_DRIVEN"})]
-        ranked.sort(key=lambda row: (-row["times"][tag]["strength"]["beta_ridge"], row["plate"]))
-        beta_top = [row["plate"] for row in ranked[:20]]
-        hot_rows = sorted((row for row in plates if row["times"][tag]
-                           and row["times"][tag].get("hot_live_rank") is not None),
-                          key=lambda row: row["times"][tag]["hot_live_rank"])
-        hot_top = [row["plate"] for row in hot_rows[:20]]
-        common = sorted(set(beta_top) & set(hot_top))
-        beta_order = {plate: i for i, plate in enumerate(beta_top)}
-        hot_order = {row["plate"]: i for i, row in enumerate(hot_rows[:20])}
-        corr = None
-        if len(common) >= 2:
-            x = [beta_order[plate] for plate in common]
-            y = [hot_order[plate] for plate in common]
-            mx, my = sum(x) / len(x), sum(y) / len(y)
-            den = sum((a - mx) ** 2 for a in x) * sum((b - my) ** 2 for b in y)
-            corr = (sum((a - mx) * (b - my) for a, b in zip(x, y)) / den ** 0.5) if den else None
-        consistency[tag] = {"intersection_count": len(common), "spearman": corr,
-                            "common_plates": common}
     result = {"trade_date": trade_date, "stocks": stocks, "plates": plates, "market": market,
               "input_cutoff": input_cutoffs,
-              "strength_hot_consistency": consistency,
+              "activity_manifest": baseline_manifest,
               "degradation": list(degradation), "memberships_policy": memberships.policy}
     result["report_md"] = render_report_markdown(result)
     return result
@@ -434,7 +459,56 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
     prominent_labels = [label for label in labels if label == "NOT_POINT_IN_TIME"]
     lines = ([f"标签: {', '.join(prominent_labels)}", ""] if prominent_labels else [])
     lines.extend([f"# 个股板块竞价开盘情况 {trade_date}", "",
-             "## 阅读说明", "",
+             "## 表现 × 活跃度摘要", "",
+             "放量条件：基线倍数≥1.5、|相对市场稳健 z|≥1.5；只列事实，不计算综合分。"])
+    auction_summary_tag = "0925"
+    opening_summary_tag = next((tag for tag in reversed(stage_tags)
+                                if tag in ("0932", "0935", "0940", "0945")), None)
+    summary_tags = [tag for tag in (auction_summary_tag,
+                                    "0925R" if "0925R" in stage_tags else None,
+                                    opening_summary_tag) if tag in stage_tags]
+    for idx, tag in enumerate(summary_tags):
+        pairs = [(plate, plate.get("times", {}).get(tag)) for plate in result["plates"]]
+        pairs = [(plate, value) for plate, value in pairs if value and value.get("activity") and value.get("performance")]
+        independent = [(plate, value) for plate, value in pairs
+                       if plate.get("category") in ("THEME", "NICHE", "BROAD")
+                       and (value.get("performance", {}).get("covered_count") or 0) >= 5]
+        surged = [(plate, value) for plate, value in independent
+                  if (value["activity"].get("baseline_multiple") or 0) >= 1.5
+                  and abs(value["performance"].get("relative_market_z") or 0) >= 1.5]
+        strong = sorted((pair for pair in surged if (pair[1]["performance"].get("relative_market_z") or 0) > 0),
+                        key=lambda pair: -pair[1]["performance"]["relative_market_z"])[:3]
+        weak = sorted((pair for pair in surged if (pair[1]["performance"].get("relative_market_z") or 0) < 0),
+                      key=lambda pair: pair[1]["performance"]["relative_market_z"])[:3]
+        active = sorted((pair for pair in pairs if (pair[1]["activity"].get("amount_share_of_market") or 0) >= 0.005
+                         and (pair[1].get("performance", {}).get("covered_count") or 0) >= 5
+                         and pair[1]["activity"].get("baseline_multiple") is not None),
+                        key=lambda pair: -pair[1]["activity"]["baseline_multiple"])[:5]
+        def summary_names(items):
+            return "、".join(f"{plate['plate']}(z={_zfmt(value['performance'].get('relative_market_z'))},×{value['activity']['baseline_multiple']:.2f})"
+                            for plate, value in items) or "—"
+        active_text = "、".join(f"{plate['plate']}×{value['activity']['baseline_multiple']:.2f}"
+                                for plate, value in active) or "—"
+        old_tag = ("0925" if tag == "0925R" else
+                   stage_tags[stage_tags.index(tag) - 1] if stage_tags.index(tag) else None)
+        prior = {plate["plate"]: plate.get("times", {}).get(old_tag) for plate in result["plates"]} if old_tag else {}
+        changes = []
+        for plate, value in pairs:
+            before = (prior.get(plate["plate"]) or {}).get("activity", {}).get("baseline_multiple")
+            after = value["activity"].get("baseline_multiple")
+            if before is not None and after is not None:
+                changes.append((abs(after - before), plate["plate"], after - before))
+        change_text = "、".join(f"{name}{delta:+.2f}×" for _, name, delta in sorted(changes, reverse=True)[:2]) or "—"
+        summary = (f"{tag}: 放量偏强 Top3 {summary_names(strong)}；放量偏弱 Top3 {summary_names(weak)}；"
+                   f"最活跃 Top5 {active_text}；较{old_tag or '—'}变化 {change_text}")
+        if tag in ("0925", "0925R"):
+            price_tag = tag if tag == "0925R" else "0925"
+            sources = [row.get("times", {}).get(price_tag, {}).get("price_source") for row in result["stocks"]]
+            final_n = sum(value in ("SNAPSHOT_PX", "TICK_PX_FINAL") for value in sources)
+            indicative_n = sum("INDICATIVE" in str(value) for value in sources)
+            summary += f"；终价 {final_n} / 指示价 {indicative_n}"
+        lines.append(summary)
+    lines.extend(["", "## 阅读说明", "",
              "竞价金额是虚拟撮合额；09:20 后不可撤单。09:32 金额是截至该时点的累计真实成交额。",
              "涨幅及超额以百分点（pp）显示，占比以百分比显示；金额以亿元显示；缺失值显示为 —。",
              "NOT_POINT_IN_TIME 表示输入快照并非该历史结论时点可得；降级标签是数据质量说明。", "",
@@ -459,67 +533,54 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
         lines.append(f"| {row['plate']} | {row['kind']} | {row['member_count']} | "
                      f"{_pctfmt(tag25.get('amount_share_of_market'))} | {_ppfmt(change)} | "
                      f"{_fmt(tag32.get('up_count'))}/{_fmt(tag32.get('down_count'))}/{_fmt(tag32.get('flat_count'))} |")
-    strength_heading = ("## 旧口径板块强度（参考）与 Kaipan 热板参考"
-                        if result.get("independent_by_tag") else "## 板块强度与 Kaipan 热板参考")
-    lines.extend(["", strength_heading, "",
-                  "各时点分别计算；0925 竞价金额为虚拟撮合额，0932 金额为真实成交额。可排名板块按 beta 降序，flagged 板块单列且不排名。",
-                  "强度值 beta、SE 和超额使用百分点（pp）；份额、不平衡使用百分比。", ""])
+    lines.extend(["", "## 活跃度榜（与表现分开）", ""])
     for tag in stage_tags:
-        stage_rows = [(row, row["times"].get(tag)) for row in result["plates"]]
-        stage_rows = [(row, stage) for row, stage in stage_rows if stage is not None]
-        flagged_rows = [(row, stage) for row, stage in stage_rows
-                        if set(stage["strength"].get("flags", ()))
-                        .intersection({"SINGLE_STOCK_DOMINATED", "OUTLIER_DRIVEN", "UNKNOWN"})]
-        ranked_rows = [(row, stage) for row, stage in stage_rows
-                       if stage["strength"].get("beta_ridge") is not None
-                       and not set(stage["strength"].get("flags", ()))
-                       .intersection({"SINGLE_STOCK_DOMINATED", "OUTLIER_DRIVEN", "UNKNOWN"})]
-        ranked_rows.sort(key=lambda pair: (-pair[1]["strength"]["beta_ridge"], pair[0]["plate"]))
-        if tag in ("0920", "0924"):
-            lines.extend([f"### {tag} 板块强度（简表）", "",
-                          "| 板块 | 匹配额(亿元) | 匹配额占比(%) | 份额 vs 基线(pp) | 涨幅(pp) |",
-                          "|---|---:|---:|---:|---:|"])
-            for row, stage in ranked_rows[:20]:
-                strength = stage["strength"]
-                lines.append(f"| {row['plate']} | {_amount_yi(stage.get('amount_sum'))} | "
-                             f"{_pctfmt(stage.get('amount_share_of_market'))} | "
-                             f"{_ratiofmt(strength)} | {_ppfmt(stage.get('pct_equal_weight'))} |")
-            continue
-
-        lines.extend([f"### {tag} 板块强度（可排名前 20）", "",
-                      f"| 板块 | {'匹配额 MATCH_REVISED(亿元)' if tag == '0925R' else '匹配额 MATCH（虚拟撮合,亿元）' if tag == '0925' else '成交额 TRADED（真实,亿元）'} | 市场份额(%) | beta/SE(pp) | 加权超额(pp) | 中位超额(pp) | 截尾超额(pp) | Top1占比(%) | 份额/基线 | 不平衡(%) | 热板前收排名 | 热板当日排名 |",
-                      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
-        for row, stage in ranked_rows[:20]:
-            strength = stage["strength"]
-            lines.append(f"| {row['plate']} | {_amount_yi(stage.get('amount_sum'))} | "
-                         f"{_pctfmt(stage.get('amount_share_of_market'))} | "
-                         f"{_ppfmt(strength.get('beta_ridge'))} / {_ppfmt(strength.get('beta_se'))} | "
-                         f"{_ppfmt(strength.get('excess_amt_weighted'))} | {_ppfmt(strength.get('excess_median'))} | "
-                         f"{_ppfmt(strength.get('excess_trimmed'))} | "
-                         f"{_pctfmt(strength.get('top1_amount_share'))} | {_ratiofmt(strength)} | "
-                         f"{_pctfmt(strength.get('imbalance'))} | {_fmt(stage.get('hot_prev_close_rank'))} | "
-                         f"{_fmt(stage.get('hot_live_rank'))} |")
-        lines.extend(["", f"### {tag} Flagged 板块", "",
-                      "| 板块 | 标记 | 金额(亿元) | 市场份额(%) | 主导个股 | 主导个股涨幅(pp) |",
-                      "|---|---|---:|---:|---|---:|"])
-        for row, stage in flagged_rows:
-            strength = stage["strength"]
-            dominant = strength.get("dominant_symbol")
-            stock = next((item for item in result["stocks"] if item["symbol"] == dominant), None)
-            stock_stage = (stock or {}).get("times", {}).get(tag, {})
-            lines.append(f"| {row['plate']} | {','.join(strength.get('flags', ())) or 'UNKNOWN'} | "
-                         f"{_amount_yi(stage.get('amount_sum'))} | {_pctfmt(stage.get('amount_share_of_market'))} | "
-                         f"{_fmt(dominant)} | {_ppfmt(stock_stage.get('pct_vs_pre_close'))} |")
-    lines.extend(["", "### Beta 与当日热板 Top20 一致性", "",
-                  "| 时点 | 交集数 | Spearman |", "|---|---:|---:|"])
-    for tag, row in result.get("strength_hot_consistency", {}).items():
-        lines.append(f"| {tag} | {row['intersection_count']} | {_fmt(row['spearman'])} |")
+        ranked = [(row, row["times"].get(tag)) for row in result["plates"]]
+        ranked = [(row, value) for row, value in ranked if value and value.get("activity")
+                  and row.get("category") not in ("EVENT", "GENERIC_FACTOR", "NOISE")
+                  and (value["activity"].get("amount_share_of_market") or 0) >= 0.003
+                  and (value.get("performance", {}).get("covered_count") or 0) >= 5
+                  and value["activity"].get("baseline_multiple") is not None]
+        ranked.sort(key=lambda pair: -pair[1]["activity"]["baseline_multiple"])
+        lines.extend([f"### {tag}", "", "| 板块 | 类别 | 额(亿) | 占比 | 基线倍数 | 表现z | 截尾均值% | 广度% | 涨停/触及 | 独立入选 | Kaipan名次 |",
+                      "|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|"])
+        for row, stage in ranked[:15]:
+            activity, performance = stage["activity"], stage["performance"]
+            limit_count = performance.get("sealed_limit_count")
+            if limit_count is None:
+                limit_count = performance.get("touch_limit_price_count")
+            selected_names = {str(item.get("name")) for item in
+                              result.get("independent_by_tag", {}).get(tag, {}).get("selected", ())}
+            selected = row["plate"] in selected_names
+            lines.append(f"| {row['plate']} | {row['category']} | {_amount_yi(activity.get('amount_sum'))} | "
+                         f"{_pctfmt(activity.get('amount_share_of_market'))} | ×{activity['baseline_multiple']:.2f} | "
+                         f"{_zfmt(performance.get('relative_market_z'))} | {_ppfmt(performance.get('trimmed_mean_pct'))} | "
+                         f"{_pctfmt(performance.get('breadth_up_share'))} | {_fmt(limit_count)} | "
+                         f"{'是' if selected else '否'} | {_fmt(stage.get('hot_live_rank'))} |")
+        auxiliary = [(row, value) for row, value in pairs if value.get("activity")
+                     and row.get("category") in ("EVENT", "GENERIC_FACTOR")
+                     and (value["activity"].get("amount_share_of_market") or 0) >= 0.003
+                     and (value.get("performance", {}).get("covered_count") or 0) >= 5
+                     and value["activity"].get("baseline_multiple") is not None]
+        auxiliary.sort(key=lambda pair: -pair[1]["activity"]["baseline_multiple"])
+        lines.extend(["", f"#### 事件与泛化因子（{tag}）", "",
+                      "| 板块 | 类别 | 额(亿) | 占比 | 基线倍数 | 表现z | 截尾均值% | 广度% | 涨停/触及 |",
+                      "|---|---|---:|---:|---:|---:|---:|---:|---:|"])
+        for row, stage in auxiliary[:15]:
+            activity, performance = stage["activity"], stage["performance"]
+            limit_count = performance.get("sealed_limit_count")
+            if limit_count is None:
+                limit_count = performance.get("touch_limit_price_count")
+            lines.append(f"| {row['plate']} | {row['category']} | {_amount_yi(activity.get('amount_sum'))} | "
+                         f"{_pctfmt(activity.get('amount_share_of_market'))} | ×{activity['baseline_multiple']:.2f} | "
+                         f"{_zfmt(performance.get('relative_market_z'))} | {_ppfmt(performance.get('trimmed_mean_pct'))} | "
+                         f"{_pctfmt(performance.get('breadth_up_share'))} | {_fmt(limit_count)} |")
     def stock_table(title: str, rows: list[Mapping[str, Any]], extra: str = "") -> None:
         headers = ["代码", "名称", "连板数", "主板块"]
         for stage_tag in stage_tags:
             kind = "MATCH_REVISED" if stage_tag == "0925R" else "MATCH" if stage_tag in _AUCTION_TAGS else "TRADED"
             headers.extend((f"{stage_tag}涨幅(pp)", f"{stage_tag} {kind}(亿元)"))
-        headers.extend(("0925涨停有封单", "板块前3(tier/beta/热板排名/个股超额/涨幅分位)"))
+        headers.extend(("0925涨停有封单", "主板块来源", "主板块活动倍数/z/个股额占比"))
         if extra:
             headers.extend(extra.strip(" | ").split(" | "))
         lines.extend(["", f"## {title}", "",
@@ -527,6 +588,7 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                       "|" + "|".join("---" for _ in headers) + "|"])
         for row in rows[:40]:
             times = row["times"]
+            primary_source = next((item.get("source") for item in row.get("plate_summary", ())), None)
             pieces = [row["symbol"], row.get("name") or "", _fmt(row.get("lb_days")),
                       row.get("primary_plate") or ""]
             for tag in stage_tags:
@@ -535,10 +597,11 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
             a25 = times["0925"]
             seal_status = ("—" if a25.get("limit_state") is None else
                            "是" if a25.get("limit_state") == 1 and (a25.get("rest_bid") or 0) > 0 else "否")
-            pieces.extend((seal_status,
-                      "; ".join(f"{plate['plate']}({plate['tier']}/{_ppfmt(plate['beta_0925'])}/"
-                                     f"{_fmt(plate['hot_live_rank_0925'])}/{_ppfmt(plate['rel_leave_one_out_0925'])}/"
-                                     f"{_pctfmt(plate['pct_rank_in_plate_0925'])})"
+            pieces.extend((seal_status, primary_source or "无",
+                           "; ".join(f"{plate['plate']}[" + ", ".join(
+                                         f"{tag}:×{_fmt(values['multiple'])}/z={_zfmt(values['z'])}/"
+                                         f"个股额占比={_pctfmt(values['stock_amount_share'])}"
+                                         for tag, values in plate.get("activity_by_stage", {}).items()) + "]"
                                      for plate in row.get("plate_summary", ())) or "—"))
             if extra == " | rest_bid(亿元) | rest_ask(亿元) | 封单额(亿元)":
                 seal = a25.get("rest_bid") if a25.get("limit_state") == 1 else (
@@ -547,10 +610,11 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                                _amount_yi(seal)))
             elif extra:
                 primary = row.get("primary_plate")
-                relative = row.get("stock_relative", {}).get("0925", {}).get(primary, {})
-                pieces.extend((_ppfmt(((report_plate_by_name.get(primary) or {}).get("times", {})
-                                       .get("0925", {}).get("strength", {}).get("beta_ridge"))),
-                               _ppfmt(relative.get("rel_leave_one_out"))))
+                summary = next((item for item in row.get("plate_summary", ())
+                                if item["plate"] == primary), {})
+                pieces.extend((_fmt(summary.get("activity_multiple_0925")),
+                               _zfmt(summary.get("performance_z_0925")),
+                               _pctfmt(summary.get("stock_amount_share_0925"))))
             lines.append("| " + " | ".join(pieces) + " |")
 
     stock_table("昨日涨停池成员", pool_rows)
@@ -562,7 +626,7 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                  " | rest_bid(亿元) | rest_ask(亿元) | 封单额(亿元)")
     amount_rows = sorted((row for row in result["stocks"] if row["times"]["0925"].get("amount") is not None),
                          key=lambda row: (-row["times"]["0925"]["amount"], row["symbol"]))[:30]
-    stock_table("0925 匹配额前 30 个股", amount_rows, " | 主板块 beta(pp) | rel_leave_one_out(pp)")
+    stock_table("0925 匹配额前 30 个股", amount_rows, " | 主板块活动倍数 | 主板块表现z | 个股额占板块比")
     if result["stocks"] and any(row.get("labels") for row in result["stocks"]):
         tag = stage_tags[-1]
         def label_row(stock: Mapping[str, Any]) -> tuple[Any, ...]:

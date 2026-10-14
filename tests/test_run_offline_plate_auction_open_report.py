@@ -144,6 +144,8 @@ def test_auction_price_caps_snapshot_cutoff_at_system_boundary():
 def test_revision_stage_does_not_change_base_auction_or_opening_prices():
     report = {"market": {"0925": {"covered_count": 1}}, "stocks": [{"symbol": "000001",
         "times": {"0925": {"price": 10.0}, "0932": {"price": 11.0}}}], "plates": [],
+        "activity_manifest": {"0925": {"baseline_dates": ["2026-10-08", "2026-10-09"],
+                                          "baseline_days": 2, "baseline_short_plates": 1}},
         "input_cutoff": {"0925": "2026-10-14T09:25:06", "0932": "2026-10-14T09:32:00"}}
     revised = {"market": {"0925": {"covered_count": 1}}, "stocks": [{"symbol": "000001",
         "times": {"0925": {"price": 12.0, "amount_kind": "MATCH"}}}], "plates": []}
@@ -154,6 +156,7 @@ def test_revision_stage_does_not_change_base_auction_or_opening_prices():
     assert report["stocks"][0]["times"]["0932"]["price"] == 11.0
     assert report["stocks"][0]["times"]["0925R"]["price"] == 12.0
     assert report["input_cutoff"]["0925"] == "2026-10-14T09:25:06"
+    assert report["activity_manifest"]["0925R"] == report["activity_manifest"]["0925"]
 
 
 def test_snapshot_price_mode_preserves_old_missing_coverage():

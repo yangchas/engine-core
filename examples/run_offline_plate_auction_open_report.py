@@ -326,6 +326,8 @@ def _merge_revision_stage(report: dict[str, Any], revised: Mapping[str, Any], su
             if other and other.get("times", {}).get("0925") is not None:
                 plate["times"]["0925R"] = {**other["times"]["0925"], "stage": "0925R"}
     report.setdefault("independent_by_tag", {})["0925R"] = (revised.get("independent_by_tag") or {}).get("0925")
+    if "0925" in report.get("activity_manifest", {}):
+        report["activity_manifest"]["0925R"] = dict(report["activity_manifest"]["0925"])
     revision_cutoff = (revised.get("input_cutoff") or {}).get("0925")
     if revision_cutoff:
         report.setdefault("input_cutoff", {})["0925R"] = revision_cutoff
@@ -400,6 +402,22 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str,
                 {"trade_date": day, "amount_by_symbol": grouped[day]}
                 for day in sorted(grouped)[-5:]
             ]
+        # Keep same-tag historical cumulative traded amounts for opening activity.
+        # Auction tags already use match_amt_yuan and remain separate.
+        history_dates = sorted({row["trade_date"] for values in baseline_auction.values() for row in values})[-5:]
+        for tag in open_times:
+            tag_history = []
+            for history_day in history_dates:
+                cutoff = f"{history_day} {tag[:2]}:{tag[2:]}:00"
+                rows = fetchall(
+                    "SELECT last_row(amt_yuan), symbol "
+                    f"FROM {database}.stock_tick_v2 WHERE ts >= '{history_day} 09:00:00' "
+                    f"AND ts <= '{cutoff}' PARTITION BY symbol"
+                )
+                tag_history.append({"trade_date": history_day,
+                                    "amount_by_symbol": {str(symbol): float(amount) if amount is not None else None
+                                                         for amount, symbol in rows}})
+            baseline_auction[tag] = tag_history
         for tag, snapshot_rows in auctions.items():
             if not snapshot_rows or auction_price_source == "snapshot_px":
                 continue
@@ -1060,6 +1078,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                                 if static_relation_path is not None else None),
             "stock_row_count": len(report["stocks"]), "plate_row_count": len(report["plates"]),
             "membership_policy": report["memberships_policy"], "degradation": degradation,
+            "activity_baseline": report.get("activity_manifest", {}),
             "snapshot_asof": snapshot_asof, "conclusion_phase": conclusion_phase,
             "snapshot_sealed_at": snapshot_sealed_at.isoformat() if snapshot_sealed_at else None,
             "point_in_time_by_stage": point_in_time_by_stage,
