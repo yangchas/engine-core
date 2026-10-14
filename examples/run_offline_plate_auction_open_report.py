@@ -526,12 +526,14 @@ def _load_hot_captures(path: Path | None) -> list[dict[str, Any]]:
         for rank, row in enumerate(rows, 1):
             if isinstance(row, (list, tuple)) and len(row) >= 4:
                 normalized_rows.append({"rank": rank, "name": normalize_plate_name(row[1]),
-                                        "strength": row[2], "change_pct": row[3]})
+                                        "strength": row[2], "change_pct": row[3],
+                                        "amount_yuan": row[5] if len(row) > 5 else None})
             elif isinstance(row, Mapping):
                 normalized_rows.append({"rank": row.get("rank", rank),
                                          "name": normalize_plate_name(row.get("name", row.get("plate", ""))),
                                          "strength": row.get("strength"),
-                                         "change_pct": row.get("change_pct", row.get("pct"))})
+                                         "change_pct": row.get("change_pct", row.get("pct")),
+                                         "amount_yuan": row.get("amount_yuan", row.get("amount"))})
         captures.append({"captured_local": raw.get("captured_local"),
                          "response": {"Day": response.get("Day"), "Min": response.get("Min"),
                                       "Max": response.get("Max"), "list": normalized_rows}})
@@ -1180,6 +1182,10 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "revision_cutoff": revision_cutoff,
             "revision_summary": revision_summary,
             "coverage_count_by_stage": {tag: row["covered_count"] for tag, row in report["market"].items()},
+            "amount_definition": {
+                "member_sum": "成员有价匹配额直接求和(同热板口径)",
+                "conserved": "按所属板块数均分",
+            },
             **({"independent_plates": independent_manifest} if independent_manifest is not None else {}),
             "timing": {"read_s": timing["read_s"],
                        "build_s": max(0.0, time.process_time() - report_cpu_started),

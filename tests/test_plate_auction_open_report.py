@@ -1,4 +1,8 @@
-from engine_core.plate_auction_open_report import build_session_report, render_report_markdown
+from engine_core.plate_auction_open_report import (
+    _build_auction_sections,
+    build_session_report,
+    render_report_markdown,
+)
 import pytest
 
 
@@ -101,6 +105,87 @@ def test_0925r_is_rendered_as_revised_match_with_its_cutoff():
     assert "0925R=2026-10-13T09:27:10" in text
     assert "0925R MATCH_REVISED(亿元)" in text
     assert "0925R MATCH_REVISED(亿元)" in text
+
+
+def test_auction_section_exposes_conserved_and_member_sum_amounts_and_keeps_special_categories():
+    stocks = []
+    for index in range(10):
+        symbol = f"0000{index:02d}"
+        stocks.append({
+            "symbol": symbol,
+            "plates": [{"plate": "通信"}, {"plate": "三季报增长"}],
+            "times": {tag: {"amount": 100.0, "pct_vs_pre_close": 0.01,
+                            "rest_bid": 0.0, "rest_ask": 0.0, "price": 10.0}
+                      for tag in ("0920", "0924", "0925")},
+        })
+    result = {"stocks": stocks, "plates": [
+        {"plate": "通信", "category": "THEME"},
+        {"plate": "三季报增长", "category": "EVENT"},
+    ]}
+
+    section = _build_auction_sections(result)["0925"]
+
+    by_name = {row["plate"]: row for row in section["all"]}
+    assert by_name["通信"]["match_amount_yuan"] == 500.0
+    assert by_name["通信"]["member_sum_amount_yuan"] == 1000.0
+    assert by_name["三季报增长"]["category"] == "EVENT"
+    assert {row["plate"] for row in section["main"]} == {"通信", "三季报增长"}
+    assert [row["plate"] for row in section["member_sum_top"]] == ["三季报增长", "通信"]
+
+
+def test_auction_markdown_marks_event_and_generic_rows_without_changing_first_screen_filters():
+    assert "<span style=\"color:#888\">[事件] </span>" in __import__(
+        "engine_core.plate_auction_open_report", fromlist=["_auction_plate_label"]
+    )._auction_plate_label({"plate": "事件板块", "category": "EVENT"})
+    assert "<span style=\"color:#888\">[泛化] </span>" in __import__(
+        "engine_core.plate_auction_open_report", fromlist=["_auction_plate_label"]
+    )._auction_plate_label({"plate": "泛化板块", "category": "GENERIC_FACTOR"})
+    source = _source()
+    source["snapshot"]["stock_plate"].update({f"0000{i:02d}": "事件甲" for i in range(2, 12)})
+    source["snapshot"]["s2p"].update({f"0000{i:02d}": ["事件甲"] for i in range(2, 12)})
+    source["pre_close_by_symbol"].update({f"0000{i:02d}": 10.0 for i in range(2, 12)})
+    for tag, px in (("0920", 10100), ("0924", 10200), ("0925", 10300)):
+        source["auction_by_tag"][tag].update({f"0000{i:02d}": {
+            "px_milli": px, "match_amt_yuan": 300} for i in range(2, 12)})
+    result = build_session_report(**source)
+    event = next(row for row in result["plates"] if row["plate"] == "事件甲")
+    event["category"] = "EVENT"
+
+    text = render_report_markdown(result)
+
+    first_screen = text.split("## 阅读说明", 1)[0]
+    assert "[事件] </span>事件甲" in text
+    assert "放量偏强 Top3" in first_screen and "事件甲(z=" not in first_screen
+
+
+def test_kaipan_comparison_uses_latest_capture_within_ninety_seconds_and_labels_zero_amount():
+    source = _source()
+    for index in range(3, 12):
+        symbol = f"0000{index:02d}"
+        source["snapshot"]["stock_plate"][symbol] = "银行"
+        source["pre_close_by_symbol"][symbol] = 10.0
+        for tag, px in (("0920", 10100), ("0924", 10200), ("0925", 10300)):
+            source["auction_by_tag"][tag][symbol] = {"px_milli": px, "match_amt_yuan": 100}
+    source["hot_captures"] = [
+        {"captured_local": "2026-10-13T09:25:30+08:00", "response": {
+            "Day": "2026-10-13", "list": [{"name": "银行", "rank": 1, "change_pct": 0.01,
+                                              "amount_yuan": 700, "strength": 7}]}},
+        {"captured_local": "2026-10-13T09:26:00+08:00", "response": {
+            "Day": "2026-10-13", "list": [{"name": "银行", "rank": 1, "change_pct": 0.02,
+                                              "amount_yuan": 0, "strength": 9}]}},
+        {"captured_local": "2026-10-13T09:26:31+08:00", "response": {
+            "Day": "2026-10-13", "list": [{"name": "银行", "rank": 1, "change_pct": 0.03,
+                                              "amount_yuan": 900, "strength": 11}]}},
+    ]
+
+    result = build_session_report(**source)
+    bank = next(row for row in result["plates"] if row["plate"] == "银行")
+    stage = bank["times"]["0925"]
+
+    assert stage["hot_live_captured_at"] == "2026-10-13T09:26:00+08:00"
+    assert stage["hot_live_staleness_s"] == 60.0
+    assert stage["hot_live_strength"] == 9
+    assert "Kaipan 竞价期无金额" in result["report_md"]
 
 
 def test_auction_sections_rank_by_match_amount_and_keep_missing_deltas_missing():

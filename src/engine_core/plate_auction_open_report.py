@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
@@ -341,12 +341,13 @@ def build_session_report(
                     "sealed_limit_count": (stage_stat.limit_up_count if tag == "0925" else None),
                 }
             hot_prev = (hot_prev_by_plate or {}).get(normalize_plate_name(plate))
-            stage_cutoff = _timestamp(default_cutoffs[tag])
+            stage_cutoff = _timestamp((stage_rows[tag] or {}).get("input_cutoff", default_cutoffs[tag]))
             eligible_captures = []
             for capture in hot_captures or ():
                 captured = _timestamp(capture.get("captured_local"))
                 response = capture.get("response", capture)
-                if (captured is not None and stage_cutoff is not None and captured <= stage_cutoff
+                if (captured is not None and stage_cutoff is not None
+                        and captured <= stage_cutoff + timedelta(seconds=90)
                         and isinstance(response, Mapping) and same_day(response.get("Day"))):
                     eligible_captures.append((captured, response))
             capture, response = (max(eligible_captures, key=lambda item: item[0])
@@ -362,8 +363,9 @@ def build_session_report(
                 "hot_live_rank": (hot_row.get("rank") if hot_row else ">50" if capture else None),
                 "hot_live_strength": hot_row.get("strength") if hot_row else None,
                 "hot_live_pct": hot_row.get("change_pct", hot_row.get("pct")) if hot_row else None,
+                "hot_live_amount_yuan": hot_row.get("amount_yuan") if hot_row else None,
                 "hot_live_captured_at": capture.isoformat() if capture else None,
-                "hot_live_staleness_s": (stage_cutoff - capture).total_seconds()
+                "hot_live_staleness_s": (capture - stage_cutoff).total_seconds()
                 if capture and stage_cutoff else None,
                 })
         core = sorted((symbol for symbol in membership_index.members_of(plate)
@@ -501,18 +503,19 @@ def _build_auction_sections(result: Mapping[str, Any]) -> dict[str, Any]:
         candidates: list[dict[str, Any]] = []
         for plate_name, members in members_by_plate.items():
             info = plate_info.get(plate_name, {})
-            if info.get("category", info.get("kind")) not in ("THEME", "NICHE", "BROAD"):
-                continue
             valid_rows = [row for row in stocks if str(row.get("symbol")) in members
                           and row.get("times", {}).get(tag, {}).get("pct_vs_pre_close") is not None]
             if len(valid_rows) < 10:
                 continue
             eligible = [row for row in stocks if str(row.get("symbol")) in members]
+            priced_amount_rows = [row for row in valid_rows
+                                  if row.get("times", {}).get(tag, {}).get("amount") is not None
+                                  and row["times"][tag]["amount"] >= 0]
             amount_values = [row["times"][tag]["amount"] / degree[str(row["symbol"])]
-                             for row in eligible if degree.get(str(row["symbol"]), 0)
-                             and row.get("times", {}).get(tag, {}).get("amount") is not None
-                             and row["times"][tag]["amount"] >= 0]
+                             for row in priced_amount_rows if degree.get(str(row["symbol"]), 0)]
             amount = sum(amount_values) if amount_values else None
+            member_sum_amount = (sum(row["times"][tag]["amount"] for row in priced_amount_rows)
+                                 if priced_amount_rows else None)
             share = amount / market_amount[tag] if amount is not None and market_amount[tag] else None
             returns = [row["times"][tag]["pct_vs_pre_close"] for row in valid_rows]
             trimmed = _trimmed_mean(returns)
@@ -539,7 +542,8 @@ def _build_auction_sections(result: Mapping[str, Any]) -> dict[str, Any]:
             old_pct = previous.get("trimmed_mean_pct") if previous_usable else None
             candidates.append({
                 "plate": plate_name, "category": info.get("category", info.get("kind")),
-                "match_amount_yuan": amount, "match_amount_share": share,
+                "match_amount_yuan": amount, "member_sum_amount_yuan": member_sum_amount,
+                "match_amount_share": share,
                 "previous_amount_change_yuan": (amount - old_amount
                                                  if amount is not None and old_amount is not None else None),
                 "previous_amount_change_pct": ((amount / old_amount - 1) * 100
@@ -557,11 +561,19 @@ def _build_auction_sections(result: Mapping[str, Any]) -> dict[str, Any]:
                 "price_coverage_pct": len(valid_rows) / len(members) if members else None,
                 "priced_member_count": len(valid_rows), "member_count": len(members),
                 "previous_priced_member_count": previous_priced_count,
+                "hot_live_rank": (info.get("times", {}).get(tag) or {}).get("hot_live_rank"),
+                "hot_live_pct": (info.get("times", {}).get(tag) or {}).get("hot_live_pct"),
+                "hot_live_strength": (info.get("times", {}).get(tag) or {}).get("hot_live_strength"),
+                "hot_live_amount_yuan": (info.get("times", {}).get(tag) or {}).get("hot_live_amount_yuan"),
+                "hot_live_captured_at": (info.get("times", {}).get(tag) or {}).get("hot_live_captured_at"),
+                "hot_live_staleness_s": (info.get("times", {}).get(tag) or {}).get("hot_live_staleness_s"),
             })
         candidates.sort(key=lambda row: (-(row["match_amount_share"] or 0), row["plate"]))
-        main = candidates[:20]
         threshold_rows = [row for row in candidates if row["match_amount_share"] is not None
                           and row["match_amount_share"] >= 0.002]
+        main = threshold_rows[:20]
+        member_sum_top = sorted(threshold_rows, key=lambda row: (
+            -(row["member_sum_amount_yuan"] or 0), row["plate"]))[:15]
         gainers = sorted((row for row in threshold_rows if row["trimmed_mean_pct"] is not None),
                          key=lambda row: (-row["trimmed_mean_pct"], row["plate"]))[:10]
         losers = sorted((row for row in threshold_rows if row["trimmed_mean_pct"] is not None),
@@ -571,6 +583,7 @@ def _build_auction_sections(result: Mapping[str, Any]) -> dict[str, Any]:
             plate: sum(row["times"][tag]["amount"] / degree[str(row["symbol"])]
                        for row in stocks if str(row.get("symbol")) in members
                        and degree.get(str(row.get("symbol")), 0)
+                       and row.get("times", {}).get(tag, {}).get("pct_vs_pre_close") is not None
                        and row.get("times", {}).get(tag, {}).get("amount") is not None
                        and row["times"][tag]["amount"] >= 0)
             for plate, members in members_by_plate.items()
@@ -603,7 +616,8 @@ def _build_auction_sections(result: Mapping[str, Any]) -> dict[str, Any]:
                 "sealed_limit": value.get("limit_state") == 1 if tag == "0925" and value.get("limit_state") is not None else None,
             })
         stock_rows.sort(key=lambda row: (-row["match_amount_yuan"], str(row["symbol"])))
-        out[tag] = {"main": main, "gainers": gainers, "losers": losers,
+        out[tag] = {"main": main, "member_sum_top": member_sum_top,
+                    "gainers": gainers, "losers": losers,
                     "stocks": stock_rows[:30], "all": candidates,
                     "final_price_count": sum(row.get("times", {}).get(tag, {}).get("price_source")
                                               in ("SNAPSHOT_PX", "TICK_PX_FINAL") for row in stocks)
@@ -664,20 +678,23 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
     lines.extend(["", "额累计进度是当前标签匹配额占 0925 终额（0920→0925）；参考历史 0920/0925 中位约 16%。", "",
                   "## 竞价板块主表", "",
                   "竞价事实: 虚拟撮合阶段无成交量/成交额；09:20 后不可撤单；匹配额=min(买一量,卖一量)×一档价；09:25 后才是真实成交。"])
-    full_headers = ("板块", "匹配额(亿)", "占市场比%", "较上一标签额变化(亿,%)", "板块涨幅(截尾均值%)",
+    full_headers = ("板块", "类别", "守恒额(亿,不重复)", "成员合计额(亿)", "占市场比%(守恒额/市场总额)",
+                    "较上一标签额变化(亿,%)", "板块涨幅(截尾均值%)",
                     "相对市场pp", "较上一标签涨幅变化pp", "触及涨停价数", "未匹配买(亿)",
                     "未匹配卖(亿)", "买卖差(亿)", "有价覆盖%")
     for tag in ("0920", "0924", "0925"):
         if tag not in auction_sections:
             continue
         lines.extend(["", f"### {tag}", "", "| " + " | ".join(full_headers) + " |",
-                      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
+                      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
         for row in auction_sections[tag]["main"]:
             delta = (f"{_amount_yi(row.get('previous_amount_change_yuan'))}, "
                      f"{format(row.get('previous_amount_change_pct'), '+.1f') + '%' if row.get('previous_amount_change_pct') is not None else '—'}"
                      if row.get("previous_amount_change_yuan") is not None else "—")
             lines.append("| " + " | ".join((
-                str(row["plate"]), _amount_yi(row.get("match_amount_yuan")),
+                _auction_plate_label(row), row.get("category") or "—",
+                _amount_yi(row.get("match_amount_yuan")),
+                _amount_yi(row.get("member_sum_amount_yuan")),
                 _pctfmt(row.get("match_amount_share")), delta,
                 _pctfmt(row.get("trimmed_mean_pct")), _ppfmt(row.get("relative_market_pp")),
                 _ppfmt(row.get("previous_pct_change_pp")), _fmt(row.get("limit_up_count")),
@@ -686,16 +703,44 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                 _amount_yi(row.get("unmatched_buy_sell_diff_yuan")),
                 _pctfmt(row.get("price_coverage_pct")),
             )) + " |")
+        comparison_rows = auction_sections[tag]["member_sum_top"]
+        if any(row.get("hot_live_captured_at") for row in comparison_rows):
+            capture_times = [row["hot_live_captured_at"] for row in comparison_rows
+                             if row.get("hot_live_captured_at")]
+            offsets = [row.get("hot_live_staleness_s") for row in comparison_rows
+                       if row.get("hot_live_staleness_s") is not None]
+            lines.extend(["", f"#### {tag} Kaipan 同刻对照(参考)", "",
+                          (f"捕获时刻 {max(capture_times)}；相对输入截止时差 "
+                           f"{max(offsets, key=abs):+.0f}s。仅作参考；热板列表未出现的名次标为 >50。"), "",
+                          "| 板块 | 类别 | Kaipan名次 | 涨幅% | 额(亿) | 强度 |",
+                          "|---|---|---:|---:|---:|---:|"])
+            for row in comparison_rows:
+                hot_amount = row.get("hot_live_amount_yuan")
+                amount_cell = ("Kaipan 竞价期无金额" if tag in ("0920", "0924", "0925")
+                               and hot_amount == 0 else _amount_yi(hot_amount))
+                lines.append(f"| {_auction_plate_label(row)} | {row.get('category') or '—'} | "
+                             f"{row.get('hot_live_rank') or '>50'} | "
+                             f"{_pctfmt(row.get('hot_live_pct'))} | {amount_cell} | "
+                             f"{_fmt(row.get('hot_live_strength'))} |")
+        lines.extend(["", f"#### {tag} 按成员合计额排序前 15", "",
+                      "| 板块 | 类别 | 成员合计额(亿) | 守恒额(亿,不重复) |",
+                      "|---|---|---:|---:|"])
+        for row in auction_sections[tag]["member_sum_top"]:
+            lines.append(f"| {_auction_plate_label(row)} | {row.get('category') or '—'} | "
+                         f"{_amount_yi(row.get('member_sum_amount_yuan'))} | "
+                         f"{_amount_yi(row.get('match_amount_yuan'))} |")
         lines.append("\n较上一标签变化仅在上一标签有价成员不少于 5 时显示；若上一标签有价成员少于 5 只，标为 —。")
         if tag == "0925":
             lines.append(f"\n终价 {auction_sections[tag]['final_price_count']} / 指示价 "
                          f"{auction_sections[tag]['indicative_price_count']}。")
         for title, key in (("涨幅前 10", "gainers"), ("跌幅前 10", "losers")):
             lines.extend(["", f"#### {tag} {title}", "",
-                          "| 板块 | 匹配额(亿) | 占市场比% | 涨幅(截尾均值%) | 相对市场pp | 涨停数 | 有价覆盖% |",
-                          "|---|---:|---:|---:|---:|---:|---:|"])
+                          "| 板块 | 类别 | 守恒额(亿,不重复) | 成员合计额(亿) | 占市场比%(守恒额/市场总额) | 涨幅(截尾均值%) | 相对市场pp | 涨停数 | 有价覆盖% |",
+                          "|---|---|---:|---:|---:|---:|---:|---:|---:|"])
             for row in auction_sections[tag][key]:
-                lines.append(f"| {row['plate']} | {_amount_yi(row.get('match_amount_yuan'))} | "
+                lines.append(f"| {_auction_plate_label(row)} | {row.get('category') or '—'} | "
+                             f"{_amount_yi(row.get('match_amount_yuan'))} | "
+                             f"{_amount_yi(row.get('member_sum_amount_yuan'))} | "
                              f"{_pctfmt(row.get('match_amount_share'))} | {_pctfmt(row.get('trimmed_mean_pct'))} | "
                              f"{_ppfmt(row.get('relative_market_pp'))} | {_fmt(row.get('limit_up_count'))} | "
                              f"{_pctfmt(row.get('price_coverage_pct'))} |")
@@ -1060,6 +1105,14 @@ def render_independent_plates_markdown(independent_by_tag: Mapping[str, Mapping[
 
 def _fmt(value: Any) -> str:
     return "—" if value is None else str(value)
+
+
+def _auction_plate_label(row: Mapping[str, Any]) -> str:
+    category = row.get("category")
+    label = "[事件] " if category == "EVENT" else "[泛化] " if category == "GENERIC_FACTOR" else ""
+    if label:
+        return f'<span style="color:#888">{label}</span>{row.get("plate", "")}'
+    return str(row.get("plate", ""))
 
 
 def _zfmt(value: Any) -> str:
