@@ -7,6 +7,7 @@ import pandas as pd
 
 from examples.legacy_adapters import (
     kaipan_analyzer,
+    kaipan_plate_members_callable,
     kaipan_pykaipan_module,
     wencai_fetch_callable,
 )
@@ -56,6 +57,23 @@ def test_kaipan_adapters_import_lazily(monkeypatch):
 
     assert kaipan_analyzer("/unused/legacy-root") is expected_analyzer
     assert kaipan_pykaipan_module() is kaipan_module
+
+
+def test_kaipan_plate_members_callable_uses_fixed_point_in_time_arguments(monkeypatch, tmp_path):
+    calls = []
+    kaipan_module = types.ModuleType("pykaipan.pykaipan")
+    kaipan_module.config = {"Token": "secret-token", "DeviceID": "device-id"}
+    kaipan_module.getHisPlateIds = lambda **kwargs: calls.append(kwargs) or {"list": []}
+    package = types.ModuleType("pykaipan")
+    monkeypatch.setitem(sys.modules, "pykaipan", package)
+    monkeypatch.setitem(sys.modules, "pykaipan.pykaipan", kaipan_module)
+
+    fetch = kaipan_plate_members_callable(tmp_path)
+    response = fetch("801159", "2026-10-13")
+
+    assert response == {"list": []}
+    assert calls == [{"p": "801159", "date": "2026-10-13", "index": "0", "size": "2000"}]
+    assert fetch.redaction_values() == {"secret-token", "device-id"}
 
 
 def test_engine_core_imports_no_legacy_or_examples_modules():

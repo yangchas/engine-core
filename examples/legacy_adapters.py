@@ -46,5 +46,25 @@ def kaipan_analyzer(legacy_root: str | Path) -> Any:
     return StockAnalyzer()
 
 
+def kaipan_plate_members_callable(legacy_root: str | Path) -> Callable[[str, str], Any]:
+    """Build a thin callable for date-specific Kaipan plate membership."""
+    _insert_legacy_root(legacy_root)
+    kaipan = kaipan_pykaipan_module()
+
+    def fetch(plate_code: str, trade_date: str) -> Any:
+        return kaipan.getHisPlateIds(
+            p=plate_code, date=trade_date, index="0", size="2000",
+        )
+
+    def redaction_values() -> set[str]:
+        config = getattr(kaipan, "config", {})
+        if not isinstance(config, dict):
+            return set()
+        return {value for value in config.values() if isinstance(value, str) and value}
+
+    fetch.redaction_values = redaction_values  # type: ignore[attr-defined]
+    return fetch
+
+
 def kaipan_pykaipan_module() -> Any:
     return importlib.import_module("pykaipan.pykaipan")
