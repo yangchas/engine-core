@@ -75,3 +75,12 @@ def test_engine_core_imports_no_legacy_or_examples_modules():
                 if any(name == prefix or name.startswith(prefix + ".") for prefix in forbidden):
                     found.append((path.relative_to(source_root).as_posix(), name))
     assert found == []
+
+
+def test_package_import_does_not_pull_numpy():
+    import subprocess
+    import sys
+
+    code = "import sys; sys.path.insert(0, 'src'); import engine_core; print('numpy' in sys.modules)"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.strip()
+    assert out == "False"

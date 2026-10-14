@@ -105,7 +105,6 @@ from .plate_cohesion_phases import (
     PhaseStockAffinity,
     compute_phase_cohesion,
 )
-from .plate_strength import Incidence, PlateStrength, build_incidence, compute_strength, stock_relative
 from .auction_book import AuctionBookState, AuctionBookTick, derive_auction_book
 from .stock_plate_assignment import (
     PlateAssignments,
@@ -916,3 +915,14 @@ __all__ = [
     "CoreCacheWriter",
     "verify_core_cache",
 ]
+
+
+_LAZY_PLATE_STRENGTH = ("Incidence", "PlateStrength", "build_incidence", "compute_strength", "stock_relative")
+
+
+def __getattr__(name: str):  # numpy is only needed by the plate-strength analysis module
+    if name in _LAZY_PLATE_STRENGTH:
+        from . import plate_strength
+
+        return getattr(plate_strength, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
