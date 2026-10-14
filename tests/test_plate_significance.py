@@ -1,6 +1,10 @@
 import math
 
-from engine_core.plate_significance import _bh, detect_significant_plates
+from engine_core.plate_significance import (
+    _bh,
+    detect_significant_plates,
+    select_independent_plates,
+)
 
 
 def test_detects_real_strong_plate_and_not_random_plate():
@@ -98,3 +102,96 @@ def test_generic_and_event_are_controls_not_listed_plates():
     assert result.plates == []
     assert set(result.controls) == {"generic", "event"}
     assert all(math.isfinite(value) for value in result.controls.values())
+
+
+def test_independent_selection_folds_highly_overlapping_strong_plates():
+    returns = {f"s{i}": ((i % 7) - 3) / 1000 for i in range(200)}
+    shared = {f"s{i}" for i in range(30)}
+    for symbol in shared:
+        returns[symbol] += 0.08
+    members = {"a": shared, "b": set(shared)}
+    registry = {code: {"name": code, "class": "THEME"} for code in members}
+
+    result = select_independent_plates(returns, members, registry)
+
+    assert [row["code"] for row in result.plates] == ["a"]
+    redundant = {row["code"]: row for row in result.candidates}["b"]
+    assert redundant["status"] == "REDUNDANT"
+    assert redundant["covered_by"] == "a"
+
+
+def test_independent_selection_keeps_disjoint_strong_plates():
+    returns = {f"s{i}": ((i % 7) - 3) / 1000 for i in range(300)}
+    first = {f"s{i}" for i in range(20)}
+    second = {f"s{i}" for i in range(100, 120)}
+    for symbol in first | second:
+        returns[symbol] += 0.08
+    members = {"a": first, "b": second}
+    registry = {code: {"class": "THEME"} for code in members}
+
+    result = select_independent_plates(returns, members, registry)
+
+    assert {row["code"] for row in result.plates} == {"a", "b"}
+    assert all(row["direction"] == "STRONG" for row in result.plates)
+
+
+def test_independent_selection_retests_weak_plate_on_residual_members():
+    returns = {f"s{i}": ((i % 9) - 4) / 1000 for i in range(300)}
+    dominant = {f"s{i}" for i in range(30)}
+    residual = {f"s{i}" for i in range(30, 60)}
+    for symbol in dominant:
+        returns[symbol] += 0.12
+    members = {"dominant": dominant, "mixed": dominant | residual}
+    registry = {code: {"class": "THEME"} for code in members}
+
+    result = select_independent_plates(returns, members, registry)
+
+    assert [row["code"] for row in result.plates] == ["dominant"]
+    mixed = {row["code"]: row for row in result.candidates}["mixed"]
+    assert mixed["residual_n"] == len(residual)
+    assert mixed["status"] == "NO_SIGNAL"
+
+
+def test_independent_selection_returns_no_plates_for_noise():
+    returns = {f"s{i}": ((i * 37) % 101 - 50) / 10000 for i in range(500)}
+    members = {f"p{i}": {f"s{j}" for j in range(i * 10, i * 10 + 30)} for i in range(20)}
+    registry = {code: {"class": "THEME"} for code in members}
+    members["generic"] = set(returns)
+    registry["generic"] = {"class": "GENERIC_FACTOR"}
+
+    result = select_independent_plates(returns, members, registry)
+
+    assert result.plates == []
+    assert result.rounds == 1
+    assert "generic" in result.controls
+
+
+def test_independent_selection_max_selected_and_uncovered_summary():
+    returns = {f"s{i}": ((i % 7) - 3) / 1000 for i in range(120)}
+    first = {f"s{i}" for i in range(20)}
+    second = {f"s{i}" for i in range(40, 60)}
+    for symbol in first | second:
+        returns[symbol] += 0.08
+    members = {"a": first, "b": second}
+    registry = {code: {"class": "THEME"} for code in members}
+
+    result = select_independent_plates(returns, members, registry, max_selected=1)
+
+    assert len(result.plates) == 1
+    assert result.rounds == 1
+    assert result.uncovered["n"] == 100
+    assert math.isfinite(result.uncovered["median"])
+    assert math.isfinite(result.uncovered["trim_mean"])
+    assert result.uncovered["p10"] <= result.uncovered["median"] <= result.uncovered["p90"]
+
+
+def test_independent_selection_missing_returns_are_not_zero_filled():
+    returns = {"a": 0.10, "b": 0.11, "c": None, "d": 0.09, "e": 0.10}
+    members = {"p": set(returns) | {"missing"}}
+    registry = {"p": {"class": "THEME"}}
+
+    result = select_independent_plates(returns, members, registry, min_n=4)
+
+    assert result.missing_count == 2
+    assert result.candidates[0]["n"] == 4
+    assert result.uncovered["n"] == 4
