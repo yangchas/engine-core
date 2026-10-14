@@ -65,6 +65,9 @@ def build_session_report(
     degradation: tuple[str, ...] | list[str] = (),
     memberships: StockPlateMemberships | None = None,
     hierarchy: PlateHierarchy | None = None,
+    baseline_auction_by_tag: Mapping[str, list[Mapping[str, Any]]] | None = None,
+    hot_prev_by_plate: Mapping[str, Mapping[str, Any]] | None = None,
+    hot_captures: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     stock_plate = snapshot.get("stock_plate", {})
     s2p = snapshot.get("s2p", {})
@@ -158,6 +161,51 @@ def build_session_report(
         })
 
     aggregations = {tag: aggregate_plates(memberships, hierarchy, facts) for tag, facts in facts_by_stage.items()}
+    from .plate_strength import build_incidence, compute_strength
+    from .plate_rules import normalize_plate_name
+    incidence = build_incidence(memberships, hierarchy, coverage_symbols=symbols)
+    prior_days = {}
+    for tag, days in (baseline_auction_by_tag or {}).items():
+        eligible = [row for row in days if isinstance(row.get("trade_date"), str)
+                    and row["trade_date"] < trade_date]
+        prior_days[tag] = sorted(eligible, key=lambda row: row["trade_date"])[-5:]
+
+    def strength_vectors(tag: str, facts: Mapping[str, StockFact]) -> dict[str, dict[str, Any]]:
+        values = {symbol: {"y": _pct(fact.price, fact.pre_close), "amount": fact.amount,
+                           "prev_close_ok": 1 if fact.pre_close and fact.pre_close > 0 else 0,
+                           "rest_bid": facts_by_stage_value[tag].get(symbol, {}).get("rest_bid"),
+                           "rest_ask": facts_by_stage_value[tag].get(symbol, {}).get("rest_ask"),
+                           "limit_up": 1 if fact.limit_state == 1 else 0}
+                  for symbol, fact in facts.items()}
+        return {name: {symbol: row[name] for symbol, row in values.items()}
+                for name in ("y", "amount", "prev_close_ok", "rest_bid", "rest_ask", "limit_up")}
+
+    def same_day(value: Any) -> bool:
+        return isinstance(value, str) and value.replace("-", "")[:8] == trade_date.replace("-", "")
+
+    # Preserve book values alongside StockFact for the plate_strength vector.
+    facts_by_stage_value = {
+        tag: {row["symbol"]: row["times"][tag] for row in stocks} for tag in facts_by_stage
+    }
+    strength_by_tag: dict[str, dict[str, Any]] = {}
+    baseline_by_tag: dict[str, dict[str, float]] = {}
+    for tag, facts in facts_by_stage.items():
+        baseline_shares = {}
+        for prior in prior_days.get(tag, ()):
+            daily = {"y": {}, "amount": prior.get("amount_by_symbol", {}),
+                     "prev_close_ok": {}, "rest_bid": {}, "rest_ask": {}, "limit_up": {}}
+            daily_result = compute_strength(incidence, daily) if incidence.plates else []
+            for item in daily_result:
+                baseline_shares.setdefault(item.plate, []).append(item.conserved_share)
+        baseline_by_tag[tag] = {}
+        for plate, values in baseline_shares.items():
+            valid_values = [value for value in values if value is not None]
+            if valid_values:
+                import statistics
+                baseline_by_tag[tag][plate] = statistics.median(valid_values)
+        strength_by_tag[tag] = ({item.plate: item for item in compute_strength(
+            incidence, strength_vectors(tag, facts), baseline_share=baseline_by_tag[tag])}
+            if incidence.plates else {})
     market_amounts = {tag: agg.market.amount_sum for tag, agg in aggregations.items()}
     plates: list[dict[str, Any]] = []
     for stat in aggregations["0925"].stats:
@@ -166,6 +214,7 @@ def build_session_report(
         for tag in (*_TAGS, "0932"):
             stage_stat = next((row for row in aggregations[tag].stats if row.plate == plate), None)
             stage_rows[tag] = None if stage_stat is None else {
+                "amount_kind": "TRADED" if tag == "0932" else "MATCH",
                 "covered_count": stage_stat.covered_count, "amount_sum": stage_stat.amount_sum,
                 "amount_share_of_market": stage_stat.amount_share_of_market,
                 "pct_equal_weight": stage_stat.pct_equal_weight,
@@ -178,6 +227,56 @@ def build_session_report(
                                      if row["symbol"] in members_of(plate, memberships, hierarchy)),
                                     default=default_cutoffs[tag]),
             }
+            strength = strength_by_tag[tag].get(plate)
+            strength_row = ({"beta_ridge": strength.beta_ridge, "beta_se": strength.beta_se,
+                             "excess_amt_weighted": strength.excess_amt_weighted,
+                             "excess_median": strength.excess_median,
+                             "excess_trimmed": strength.excess_trimmed,
+                             "conserved_share": strength.conserved_share,
+                             "baseline_share": baseline_by_tag[tag].get(plate),
+                             "share_vs_baseline": strength.share_vs_baseline,
+                             "imbalance": strength.imbalance,
+                             "top1_amount_share": strength.top1_amount_share,
+                             "dominant_symbol": strength.dominant_symbol,
+                             "flags": list(strength.flags)}) if strength is not None else {
+                                 key: None for key in ("beta_ridge", "beta_se", "excess_amt_weighted",
+                                                       "excess_median", "excess_trimmed", "conserved_share",
+                                                       "baseline_share", "share_vs_baseline", "imbalance",
+                                                       "top1_amount_share", "dominant_symbol")}
+            if strength is None:
+                strength_row["flags"] = ["UNKNOWN"]
+            if strength_row.get("baseline_share") is None:
+                strength_row["flags"].append("NO_BASELINE")
+            stage_rows[tag]["strength"] = strength_row
+            hot_prev = (hot_prev_by_plate or {}).get(normalize_plate_name(plate))
+            stage_cutoff = _timestamp(default_cutoffs[tag])
+            eligible_captures = []
+            for capture in hot_captures or ():
+                captured = _timestamp(capture.get("captured_local"))
+                response = capture.get("response", capture)
+                if (captured is not None and stage_cutoff is not None and captured <= stage_cutoff
+                        and isinstance(response, Mapping) and same_day(response.get("Day"))):
+                    eligible_captures.append((captured, response))
+            capture, response = (max(eligible_captures, key=lambda item: item[0])
+                                 if eligible_captures else (None, {}))
+            hot_row = next((row for row in response.get("list", response.get("rows", ()))
+                            if normalize_plate_name(row.get("name", row.get("plate", "")))
+                            == normalize_plate_name(plate)), None)
+            stage_rows[tag].update({
+                "hot_prev_close_rank": hot_prev.get("rank") if hot_prev else None,
+                "hot_prev_close_strength": hot_prev.get("strength") if hot_prev else None,
+                "hot_prev_close_pct": hot_prev.get("change_pct", hot_prev.get("pct")) if hot_prev else None,
+                "hot_live_rank": hot_row.get("rank") if hot_row else None,
+                "hot_live_strength": hot_row.get("strength") if hot_row else None,
+                "hot_live_pct": hot_row.get("change_pct", hot_row.get("pct")) if hot_row else None,
+                "hot_live_captured_at": capture.isoformat() if capture else None,
+                "hot_live_staleness_s": (stage_cutoff - capture).total_seconds()
+                if capture and stage_cutoff else None,
+            })
+            if not hot_prev:
+                stage_rows[tag]["strength"]["flags"].append("HOT_PREV_MISSING")
+            if hot_row is None:
+                stage_rows[tag]["strength"]["flags"].append("HOT_LIVE_UNAVAILABLE")
         core = sorted((symbol for symbol in members_of(plate, memberships, hierarchy)
                        if facts_by_stage["0925"].get(symbol) is not None
                        and facts_by_stage["0925"][symbol].amount is not None),
@@ -199,12 +298,30 @@ def build_session_report(
     kind_order = {"THEME": 0, "EVENT": 1, "GENERIC": 2, "NOISE": 3}
     plates.sort(key=lambda row: (kind_order.get(row["kind"], 4),
                                  -((row["times"]["0925"] or {}).get("amount_share_of_market") or 0), row["plate"]))
+    for tag in (*_TAGS, "0932"):
+        eligible = [row for row in plates if row["times"][tag]
+                    and row["times"][tag]["strength"].get("beta_ridge") is not None
+                    and not set(row["times"][tag]["strength"]["flags"])
+                    .intersection({"UNKNOWN", "SINGLE_STOCK_DOMINATED", "OUTLIER_DRIVEN"})]
+        eligible.sort(key=lambda row: (-row["times"][tag]["strength"]["beta_ridge"], row["plate"]))
+        for rank, row in enumerate(eligible, start=1):
+            row["times"][tag]["strength"]["strength_rank"] = rank
+        for row in plates:
+            if row["times"][tag]:
+                strength_row = row["times"][tag]["strength"]
+                if strength_row.get("beta_ridge") is None or set(strength_row["flags"]).intersection(
+                        {"UNKNOWN", "SINGLE_STOCK_DOMINATED", "OUTLIER_DRIVEN"}):
+                    strength_row["strength_rank"] = "flagged"
+                else:
+                    strength_row.setdefault("strength_rank", None)
     market = {tag: {"covered_count": agg.market.covered_count,
                     "amount_covered_count": agg.market.amount_covered_count,
                     "amount_sum": agg.market.amount_sum,
                     "pct_equal_weight": agg.market.pct_equal_weight,
                     "up_count": sum(row.up_count for row in agg.stats if row.plate == "__market__")}
               for tag, agg in aggregations.items()}
+    input_cutoffs = {tag: max((row["times"][tag]["input_cutoff"] for row in stocks),
+                              default=default_cutoffs[tag]) for tag in (*_TAGS, "0932")}
     # Market direction counts are computed once per stock, independent of multi-plate membership.
     for tag, facts in facts_by_stage.items():
         changes = [_pct(fact.price, fact.pre_close) for fact in facts.values()]
@@ -214,7 +331,33 @@ def build_session_report(
         market[tag]["flat_count"] = sum(value == 0 for value in changes)
         market[tag]["limit_up_count"] = sum(f.limit_state == 1 for f in facts.values()) if tag == "0925" else None
         market[tag]["limit_down_count"] = sum(f.limit_state == -1 for f in facts.values()) if tag == "0925" else None
+    consistency = {}
+    for tag in (*_TAGS, "0932"):
+        ranked = [row for row in plates if row["times"][tag]
+                  and row["times"][tag]["strength"].get("beta_ridge") is not None
+                  and not set(row["times"][tag]["strength"]["flags"])
+                  .intersection({"UNKNOWN", "SINGLE_STOCK_DOMINATED", "OUTLIER_DRIVEN"})]
+        ranked.sort(key=lambda row: (-row["times"][tag]["strength"]["beta_ridge"], row["plate"]))
+        beta_top = [row["plate"] for row in ranked[:20]]
+        hot_rows = sorted((row for row in plates if row["times"][tag]
+                           and row["times"][tag].get("hot_live_rank") is not None),
+                          key=lambda row: row["times"][tag]["hot_live_rank"])
+        hot_top = [row["plate"] for row in hot_rows[:20]]
+        common = sorted(set(beta_top) & set(hot_top))
+        beta_order = {plate: i for i, plate in enumerate(beta_top)}
+        hot_order = {row["plate"]: i for i, row in enumerate(hot_rows[:20])}
+        corr = None
+        if len(common) >= 2:
+            x = [beta_order[plate] for plate in common]
+            y = [hot_order[plate] for plate in common]
+            mx, my = sum(x) / len(x), sum(y) / len(y)
+            den = sum((a - mx) ** 2 for a in x) * sum((b - my) ** 2 for b in y)
+            corr = (sum((a - mx) * (b - my) for a, b in zip(x, y)) / den ** 0.5) if den else None
+        consistency[tag] = {"intersection_count": len(common), "spearman": corr,
+                            "common_plates": common}
     result = {"trade_date": trade_date, "stocks": stocks, "plates": plates, "market": market,
+              "input_cutoff": input_cutoffs,
+              "strength_hot_consistency": consistency,
               "degradation": list(degradation), "memberships_policy": memberships.policy}
     result["report_md"] = render_report_markdown(result)
     return result
@@ -234,7 +377,9 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
     pool_rows = [row for row in result["stocks"] if row["in_yest_pool"]]
     labels = [label for label in result.get("degradation", ()) if label == "NOT_POINT_IN_TIME"]
     lines = ([f"标签: {', '.join(labels)}", ""] if labels else [])
-    lines.extend([f"# 个股板块竞价开盘情况 {trade_date}", "", "## 市场摘要", "",
+    lines.extend([f"# 个股板块竞价开盘情况 {trade_date}", "",
+                  "输入时点: " + " / ".join(f"{tag}={value}" for tag, value in result.get("input_cutoff", {}).items()),
+                  "", "## 市场摘要", "",
              "| 时点 | 覆盖 | 金额(元) | 涨 | 跌 | 平 | 涨停 | 跌停 |",
              "|---|---:|---:|---:|---:|---:|---:|---:|"])
     for tag in ("0920", "0924", "0925", "0932"):
@@ -252,6 +397,31 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
         lines.append(f"| {row['plate']} | {row['kind']} | {row['member_count']} | "
                      f"{_pctfmt(tag25.get('amount_share_of_market'))} | {_pctfmt(change)} | "
                      f"{_fmt(tag32.get('up_count'))}/{_fmt(tag32.get('down_count'))}/{_fmt(tag32.get('flat_count'))} |")
+    lines.extend(["", "## 板块强度与 Kaipan 热板参考", "",
+                  "封顶岭回归 beta_ridge 只在无 UNKNOWN、SINGLE_STOCK_DOMINATED、OUTLIER_DRIVEN 的板块中排名；flagged 行显示主导个股。竞价额为 MATCH，0932 额为 TRADED，分别计算。", "",
+                  "| 板块 | 时点 | beta | SE | 加权超额 | 中位超额 | 截尾超额 | 守恒份额 | 基线份额 | vs基线 | 不平衡 | Top1占比 | 主导个股 | 排名 | 标记 | 热板前收排名/强度/涨幅 | 热板当日排名/强度/涨幅 | 采集时间 | 延迟秒 |",
+                  "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---|---|---|---|---:|"])
+    for row in candidates:
+        for tag in ("0920", "0924", "0925", "0932"):
+            stage = row["times"][tag]
+            if stage is None:
+                continue
+            strength = stage["strength"]
+            prev = "/".join(_fmt(stage.get(f"hot_prev_close_{field}")) for field in ("rank", "strength", "pct"))
+            live = "/".join(_fmt(stage.get(f"hot_live_{field}")) for field in ("rank", "strength", "pct"))
+            lines.append(f"| {row['plate']} | {tag} ({stage.get('amount_kind', 'MATCH')}) | "
+                         f"{_fmt(strength.get('beta_ridge'))} | {_fmt(strength.get('beta_se'))} | "
+                         f"{_fmt(strength.get('excess_amt_weighted'))} | {_fmt(strength.get('excess_median'))} | "
+                         f"{_fmt(strength.get('excess_trimmed'))} | {_fmt(strength.get('conserved_share'))} | "
+                         f"{_fmt(strength.get('baseline_share'))} | {_fmt(strength.get('share_vs_baseline'))} | "
+                         f"{_fmt(strength.get('imbalance'))} | {_fmt(strength.get('top1_amount_share'))} | "
+                         f"{_fmt(strength.get('dominant_symbol'))} | {_fmt(strength.get('strength_rank'))} | "
+                         f"{','.join(strength.get('flags', ())) or '—'} | {prev} | {live} | "
+                         f"{_fmt(stage.get('hot_live_captured_at'))} | {_fmt(stage.get('hot_live_staleness_s'))} |")
+    lines.extend(["", "### Beta 与当日热板 Top20 一致性", "",
+                  "| 时点 | 交集数 | Spearman |", "|---|---:|---:|"])
+    for tag, row in result.get("strength_hot_consistency", {}).items():
+        lines.append(f"| {tag} | {row['intersection_count']} | {_fmt(row['spearman'])} |")
     lines.extend(["", "## 昨日涨停池成员", "", "| 代码 | 名称 | 连板天数 | 0925 匹配额 | 0925 涨幅 | 0932 成交额 | 0932 涨幅 |",
                   "|---|---|---:|---:|---:|---:|---:|"])
     for row in pool_rows:

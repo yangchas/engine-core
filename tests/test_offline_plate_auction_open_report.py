@@ -18,6 +18,7 @@ def test_runner_writes_report_and_manifest_with_stage_semantics(tmp_path, monkey
     snapshot_path.write_text(json.dumps({"stock_plate": {"000001": "银行"}, "s2p": {}}))
     monkeypatch.setattr(runner, "_read_td", lambda *args: (
         {"0920": {}, "0924": {}, "0925": {}}, {}, {}, {"000001": []},
+        {"0920": [], "0924": [], "0925": []},
     ))
     output = tmp_path / "out"
     runner.run_report(trade_dates=["2026-10-13"], snapshot_path=snapshot_path, kaipan_dir=None,
@@ -29,6 +30,7 @@ def test_runner_writes_report_and_manifest_with_stage_semantics(tmp_path, monkey
     assert manifest["stage_semantics"]["0932"] == "真实累计成交额"
     assert manifest["reason_asof_rule"] == "Date<D"
     assert manifest["no_close_or_after_inputs"] is True
+    assert set(manifest["input_cutoff"]) == {"0920", "0924", "0925", "0932"}
     assert "NOT_POINT_IN_TIME" in manifest["degradation"]
     report = (day / "report.md").read_text()
     assert report.startswith("标签: NOT_POINT_IN_TIME")

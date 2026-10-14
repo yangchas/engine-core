@@ -71,3 +71,70 @@ def test_report_contains_degradation_and_virtual_match_semantics():
     assert "KAIPAN_INPUTS_MISSING" in result["report_md"]
     assert "竞价金额为虚拟匹配额" in result["report_md"]
     assert "昨日涨停池成员" in result["report_md"]
+
+
+def test_strength_fields_keep_missing_values_and_report_no_baseline():
+    result = build_session_report(**_source())
+    bank = next(row for row in result["plates"] if row["plate"] == "银行")
+    for tag in ("0920", "0924", "0925", "0932"):
+        strength = bank["times"][tag]["strength"]
+        assert strength["beta_ridge"] is None
+        assert strength["conserved_share"] is None
+        assert "UNKNOWN" in strength["flags"]
+        assert "NO_BASELINE" in strength["flags"]
+        assert strength["strength_rank"] == "flagged"
+
+
+def test_baseline_uses_only_five_prior_dates_and_matches_amount_kind():
+    source = _source()
+    for index in range(2, 11):
+        symbol = f"0000{index:02d}"
+        source["snapshot"]["stock_plate"][symbol] = "银行"
+        source["pre_close_by_symbol"][symbol] = 10.0
+        for tag, amount in (("0920", 10), ("0924", 20), ("0925", 30)):
+            source["auction_by_tag"][tag][symbol] = {"px_milli": 10100, "match_amt_yuan": amount}
+        source["opening_by_symbol"][symbol] = {"ts": "2026-10-13 09:32:00", "px_milli": 10200,
+                                                "amt_yuan": 90}
+    source["baseline_auction_by_tag"] = {
+        "0925": [
+            {"trade_date": f"2026-10-{day:02d}", "amount_by_symbol": {"000001": day * 10}}
+            for day in range(8, 13)
+        ]
+    }
+    source["baseline_auction_by_tag"]["0925"].append({
+        "trade_date": "2026-10-13",
+        "amount_by_symbol": {"000001": 10, **{f"0000{i:02d}": 100 for i in range(2, 11)}},
+    })
+    result = build_session_report(**source)
+    bank = next(row for row in result["plates"] if row["plate"] == "银行")
+    strength = bank["times"]["0925"]["strength"]
+    assert strength["baseline_share"] is not None
+    assert strength["baseline_share"] == 1.0
+    assert strength["share_vs_baseline"] is not None
+    assert "NO_BASELINE" not in strength["flags"]
+    assert bank["times"]["0932"]["strength"]["baseline_share"] is None
+
+
+def test_hot_live_uses_latest_capture_at_or_before_cutoff_and_day_match():
+    source = _source()
+    source["hot_prev_by_plate"] = {"银行": {"rank": 1, "strength": 10, "change_pct": 2}}
+    source["hot_captures"] = [
+        {"captured_local": "2026-10-13T09:23:00+08:00", "Day": "2026-10-13",
+         "rows": [{"name": "银行", "rank": 3, "strength": 11, "change_pct": 3}]},
+        {"captured_local": "2026-10-13T09:24:00+08:00", "Day": "2026-10-14",
+         "rows": [{"name": "银行", "rank": 2, "strength": 99, "change_pct": 9}]},
+        {"captured_local": "2026-10-13T09:26:00+08:00", "Day": "2026-10-14",
+         "rows": [{"name": "银行", "rank": 1, "strength": 99, "change_pct": 9}]},
+    ]
+    result = build_session_report(**source)
+    bank = next(row for row in result["plates"] if row["plate"] == "银行")
+    assert bank["times"]["0925"]["hot_live_rank"] == 3
+    assert bank["times"]["0925"]["hot_prev_close_rank"] == 1
+    assert "HOT_LIVE_UNAVAILABLE" not in bank["times"]["0925"]["strength"]["flags"]
+    assert bank["times"]["0924"]["hot_live_rank"] == 3
+
+
+def test_strength_rank_consistency_summary_is_present_per_stage():
+    result = build_session_report(**_source())
+    assert set(result["strength_hot_consistency"]) == {"0920", "0924", "0925", "0932"}
+    assert result["strength_hot_consistency"]["0925"]["intersection_count"] == 0
