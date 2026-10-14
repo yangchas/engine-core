@@ -359,7 +359,7 @@ def build_session_report(
                 "hot_prev_close_rank": hot_prev.get("rank") if hot_prev else None,
                 "hot_prev_close_strength": hot_prev.get("strength") if hot_prev else None,
                 "hot_prev_close_pct": hot_prev.get("change_pct", hot_prev.get("pct")) if hot_prev else None,
-                "hot_live_rank": hot_row.get("rank") if hot_row else None,
+                "hot_live_rank": (hot_row.get("rank") if hot_row else ">50" if capture else None),
                 "hot_live_strength": hot_row.get("strength") if hot_row else None,
                 "hot_live_pct": hot_row.get("change_pct", hot_row.get("pct")) if hot_row else None,
                 "hot_live_captured_at": capture.isoformat() if capture else None,
@@ -484,6 +484,7 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
     label_text = " / ".join(f"{label}（{label_meanings[label]}）" for label in prominent_labels)
     lines = ([f"标签: {label_text}", ""] if prominent_labels else [])
     lines.extend([f"# 个股板块竞价开盘情况 {trade_date}", "",
+             "本报告含义：独立板块=统计显著且去重的相对市场偏强/偏弱（非预测）；规模榜=资金体量；活跃度=相对 5 日基线的放量；事件条=事实。", "",
              "## 表现 × 活跃度摘要", "",
              "放量条件：基线倍数≥1.5、|相对市场稳健 z|≥1.5；只列事实，不计算综合分。"])
     auction_summary_tag = "0925"
@@ -518,19 +519,37 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
             return "、".join(f"{plate['plate']}(z={_zfmt(value['performance'].get('relative_market_z'))},×{value['activity']['baseline_multiple']:.2f})"
                             for plate, value in items) or "—"
         active_text = "、".join(f"{plate['plate']}×{value['activity']['baseline_multiple']:.2f}"
+                                f"({_pctfmt(value['activity'].get('amount_share_of_market'))})"
                                 for plate, value in active) or "—"
+        scale_top = sorted(independent, key=lambda pair: (
+            -(pair[1]["activity"].get("amount_share_of_market") or 0), pair[0]["plate"]))[:5]
+        scale_text = "、".join(
+            f"{plate['plate']}({_pctfmt(value['activity'].get('amount_share_of_market'))})"
+            for plate, value in scale_top) or "—"
         old_tag = ("0925" if tag == "0925R" else
                    stage_tags[stage_tags.index(tag) - 1] if stage_tags.index(tag) else None)
         prior = {plate["plate"]: plate.get("times", {}).get(old_tag) for plate in result["plates"]} if old_tag else {}
         changes = []
         for plate, value in pairs:
-            before = (prior.get(plate["plate"]) or {}).get("activity", {}).get("baseline_multiple")
-            after = value["activity"].get("baseline_multiple")
+            if (plate.get("category") not in ("THEME", "NICHE", "BROAD")
+                    or (plate.get("priced_member_count") or 0) < thresholds["min_members"]
+                    or (value.get("performance", {}).get("covered_count") or 0) < thresholds["min_members"]
+                    or (value.get("activity", {}).get("amount_share_of_market") or 0) < thresholds["min_share"]):
+                continue
+            before = (prior.get(plate["plate"]) or {}).get("activity", {}).get("amount_share_of_market")
+            after = value["activity"].get("amount_share_of_market")
             if before is not None and after is not None:
                 changes.append((abs(after - before), plate["plate"], after - before))
-        change_text = "、".join(f"{name}{delta:+.2f}×" for _, name, delta in sorted(changes, reverse=True)[:2]) or "—"
+        change_text = "、".join(f"{name}{delta * 100:+.2f}pp" for _, name, delta in sorted(changes, reverse=True)[:3]) or "—"
+        event_rows = result.get("independent_by_tag", {}).get(tag, {}).get("event_plates", ())
+        event_top = sorted(event_rows, key=lambda row: (
+            -(row.get("touch_limit_price_count") or 0), row.get("name", "")))[:3]
+        event_text = "、".join(
+            f"{row.get('name')}({row.get('touch_limit_price_count', 0)}只,截尾均值{_ppfmt(row.get('trim_mean'))})"
+            for row in event_top) or "—"
         summary = (f"{tag}: 放量偏强 Top3 {summary_names(strong)}；放量偏弱 Top3 {summary_names(weak)}；"
-                   f"最活跃 Top5 {active_text}；较{old_tag or '—'}变化 {change_text}")
+                   f"规模前 5 {scale_text}；最活跃 Top5 {active_text}；较{old_tag or '—'}占比变化 Top3 {change_text}；"
+                   f"事件板块触及涨停价数最多 Top3 {event_text}（事件类, 仅事实）")
         if tag in ("0925", "0925R"):
             price_tag = tag if tag == "0925R" else "0925"
             sources = [row.get("times", {}).get(price_tag, {}).get("price_source") for row in result["stocks"]]
@@ -565,6 +584,41 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
         lines.append(f"| {row['plate']} | {row['kind']} | {row['member_count']} | "
                      f"{_pctfmt(tag25.get('amount_share_of_market'))} | {_ppfmt(change)} | "
                      f"{_fmt(tag32.get('up_count'))}/{_fmt(tag32.get('down_count'))}/{_fmt(tag32.get('flat_count'))} |")
+    lines.extend(["", "## 成交额占比榜（规模）", ""])
+    for tag in stage_tags:
+        thresholds = result.get("candidate_thresholds", {"min_members": 10, "min_share": 0.003})
+        scale_rows = []
+        selected_names = {str(item.get("name")) for item in
+                          result.get("independent_by_tag", {}).get(tag, {}).get("selected", ())}
+        for plate in result["plates"]:
+            stage = plate.get("times", {}).get(tag)
+            if not stage or not stage.get("activity") or not stage.get("performance"):
+                continue
+            activity, performance = stage["activity"], stage["performance"]
+            if (plate.get("category") in ("THEME", "NICHE", "BROAD")
+                    and (plate.get("priced_member_count") or 0) >= thresholds["min_members"]
+                    and (performance.get("covered_count") or 0) >= thresholds["min_members"]
+                    and (activity.get("amount_share_of_market") or 0) >= thresholds["min_share"]):
+                scale_rows.append((plate, stage))
+        scale_rows.sort(key=lambda pair: (-(pair[1]["activity"].get("amount_share_of_market") or 0),
+                                          -(pair[1]["activity"].get("amount_sum") or 0), pair[0]["plate"]))
+        lines.extend([f"### {tag}", "",
+                      "| 板块 | 类别 | 额(亿) | 占比 | 基线倍数 | 表现 z | 绝对均值% | 广度% | 涨停数/触及数 | 独立入选 | Kaipan 名次(参考) |",
+                      "|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|"])
+        for plate, stage in scale_rows[:15]:
+            activity, performance = stage["activity"], stage["performance"]
+            limit_count = performance.get("sealed_limit_count")
+            if limit_count is None:
+                limit_count = performance.get("touch_limit_price_count")
+            multiple = activity.get("baseline_multiple")
+            multiple_text = f"×{multiple:.2f}" if multiple is not None else "—"
+            lines.append(f"| {plate['plate']} | {plate['category']} | {_amount_yi(activity.get('amount_sum'))} | "
+                         f"{_pctfmt(activity.get('amount_share_of_market'))} | {multiple_text} | "
+                         f"{_zfmt(performance.get('relative_market_z'))} | "
+                         f"{_ppfmt(performance.get('trimmed_mean_pct'))} | "
+                         f"{_pctfmt(performance.get('breadth_up_share'))} | {_fmt(limit_count)} | "
+                         f"{'是' if plate['plate'] in selected_names else '否'} | "
+                         f"{_fmt(stage.get('hot_live_rank'))} |")
     lines.extend(["", "## 活跃度榜（与表现分开）", ""])
     for tag in stage_tags:
         thresholds = result.get("candidate_thresholds", {"min_members": 10, "min_share": 0.003})
@@ -722,9 +776,15 @@ def render_independent_plates_markdown(independent_by_tag: Mapping[str, Mapping[
             continue
         market = result.get("market", {})
         market_median = market.get("median") if isinstance(market, Mapping) else None
+        event_top = sorted(result.get("event_plates", ()), key=lambda row: (
+            -(row.get("touch_limit_price_count") or 0), row.get("name", "")))[:3]
+        event_summary = "、".join(
+            f"{row.get('name')}({_fmt(row.get('touch_limit_price_count'))}只,截尾均值{_ppfmt(row.get('trim_mean'))})"
+            for row in event_top) or "—"
         lines.extend([f"### {tag}", "",
                       (f"撮合收集中, 覆盖 {market.get('n', 0)} 只(仅有有效撮合价者), 低置信度, 仅作事实。"
                        if tag in ("0920", "0924") else ""),
+                      f"事件板块触及涨停价数最多 Top3: {event_summary}（事件类, 仅事实；触及涨停价不代表存在封单）",
                       "| 排名 | 板块 | 类别 | 方向 | 绝对截尾均值% | 相对市场pp | z | 成员数 | 残差成员 | 涨停数 | 连续入选时点数 | 上一时点方向 | Top1占比 | 本板块新解释数 | Kaipan 热板名次(参考) |",
                       "|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|"])
         for row in result.get("selected", ()):

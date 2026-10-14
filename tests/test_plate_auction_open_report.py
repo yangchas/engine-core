@@ -324,6 +324,69 @@ def test_activity_baseline_ratio_is_reported_as_multiple():
     assert activity["baseline_multiple"] is not None
 
 
+def test_report_adds_scale_ranking_and_meaning_line_without_score_keys():
+    result = build_session_report(**_source())
+    template = next(row for row in result["plates"] if row["plate"] == "银行")
+    for name, share, multiple in (("大盘主题", 0.02, 2.0), ("小盘主题", 0.01, 8.0),
+                                 ("门槛以下", 0.002, 50.0)):
+        row = {**template, "plate": name, "category": "THEME", "priced_member_count": 12,
+               "member_count": 12, "times": {tag: dict(value) if value else None
+                                               for tag, value in template["times"].items()}}
+        for stage in row["times"].values():
+            if stage:
+                stage["activity"] = {**stage["activity"], "amount_share_of_market": share,
+                                      "baseline_multiple": multiple}
+                stage["performance"] = {**stage["performance"], "covered_count": 12}
+        result["plates"].append(row)
+    result["report_md"] = render_report_markdown(result)
+
+    first_screen = result["report_md"].split("## 阅读说明", 1)[0]
+    scale_section = result["report_md"].split("## 成交额占比榜", 1)[1].split("## 活跃度榜", 1)[0]
+    assert "本报告含义" in first_screen
+    assert "规模前 5 大盘主题" in first_screen
+    assert scale_section.index("大盘主题") < scale_section.index("小盘主题")
+    assert "| 大盘主题 |" in scale_section and "| 小盘主题 |" in scale_section
+    assert "门槛以下" not in scale_section
+    assert "score" not in result and "strength" not in result
+
+
+def test_event_first_screen_line_uses_top_limit_touch_counts():
+    from engine_core.plate_auction_open_report import render_independent_plates_markdown
+
+    text = render_independent_plates_markdown({"0925": {
+        "market": {"median": 0.0}, "selected": [], "uncovered": {}, "event_plates": [
+            {"name": "并购重组", "covered_count": 20, "trim_mean": 0.03,
+             "touch_limit_price_count": 7, "top3": []},
+            {"name": "三季报增长", "covered_count": 20, "trim_mean": 0.01,
+             "touch_limit_price_count": 4, "top3": []},
+            {"name": "体育产业", "covered_count": 20, "trim_mean": -0.01,
+             "touch_limit_price_count": 1, "top3": []},
+            {"name": "事件四", "covered_count": 20, "trim_mean": 0.0,
+             "touch_limit_price_count": 0, "top3": []},
+        ]
+    }})
+
+    first_screen = text.split("| 排名 |", 1)[0]
+    assert "触及涨停价数最多" in first_screen
+    assert "并购重组" in first_screen and "三季报增长" in first_screen and "体育产业" in first_screen
+    assert "事件四" not in first_screen
+
+
+def test_absent_plate_in_top50_capture_is_marked_beyond_50():
+    source = _source()
+    source["hot_captures"] = [{"captured_local": "2026-10-13 09:25:00", "response": {
+        "Day": ["2026-10-13"], "list": [{"rank": i, "name": f"热板{i}"} for i in range(1, 51)]}}]
+    report = build_session_report(**source)
+
+    bank = next(row for row in report["plates"] if row["plate"] == "银行")
+    bank["priced_member_count"] = 10
+    bank["times"]["0925"]["activity"].update(amount_share_of_market=0.01, baseline_multiple=2)
+    bank["times"]["0925"]["performance"]["covered_count"] = 10
+    report["report_md"] = render_report_markdown(report)
+    assert bank["times"]["0925"]["hot_live_rank"] == ">50"
+    assert "| 银行 |" in report["report_md"] and ">50" in report["report_md"]
+
+
 def test_stock_sections_include_pool_stages_and_sealed_limit_amounts():
     source = _source()
     source["snapshot"]["names"] = {"000001": "甲"}

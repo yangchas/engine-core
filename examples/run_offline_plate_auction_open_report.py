@@ -832,7 +832,8 @@ def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, regis
                 stage["independent"] = out_by_tag[tag]
     _apply_selection_stability(out_by_tag, tags)
     report_stock = {str(row["symbol"]): row for row in report.get("stocks", ()) if row.get("symbol")}
-    event_codes = sorted((code for code, row in registry.items() if row.get("class") == "EVENT"),
+    event_codes = sorted((code for code, row in registry.items()
+                          if row.get("class") in ("EVENT", "GENERIC_FACTOR")),
                          key=lambda code: (-len(members.get(code, ())), code))
     for tag in tags:
         stage_returns = {str(stock["symbol"]): stock.get("times", {}).get(tag, {}).get("pct_vs_pre_close")
