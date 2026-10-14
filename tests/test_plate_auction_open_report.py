@@ -103,6 +103,77 @@ def test_0925r_is_rendered_as_revised_match_with_its_cutoff():
     assert "0925R MATCH_REVISED(亿元)" in text
 
 
+def test_auction_sections_rank_by_match_amount_and_keep_missing_deltas_missing():
+    source = _source()
+    source["snapshot"]["stock_plate"] = {}
+    source["snapshot"]["s2p"] = {}
+    source["snapshot"]["names"] = {}
+    source["pre_close_by_symbol"] = {}
+    source["auction_by_tag"] = {tag: {} for tag in ("0920", "0924", "0925")}
+    for prefix, plate, unit in (("0001", "新能源", 100), ("0002", "银行", 10)):
+        for idx in range(10):
+            symbol = f"{prefix}{idx:02d}"
+            source["snapshot"]["stock_plate"][symbol] = plate
+            source["snapshot"]["names"][symbol] = f"名称{idx}"
+            source["pre_close_by_symbol"][symbol] = 10.0
+            for tag, amount in (("0920", unit), ("0924", unit * 1.2), ("0925", unit * 1.5)):
+                source["auction_by_tag"][tag][symbol] = {
+                    "px_milli": 11000 if prefix == "0002" else 10100,
+                    "match_amt_yuan": amount,
+                    "rest_bid_amt_yuan": 4 if tag == "0925" else None,
+                    "rest_ask_amt_yuan": 1 if tag == "0925" else None,
+                    "price_source": "TICK_PX_FINAL" if tag == "0925" else "TICK_BOOK1_INDICATIVE",
+                    "limit_state": 1 if prefix == "0002" and tag == "0925" else None,
+                }
+
+    result = build_session_report(**source)
+
+    assert [row["plate"] for row in result["auction_sections"]["0920"]["main"]][0] == "新能源"
+    assert result["auction_sections"]["0920"]["main"][0]["match_amount_yuan"] == 1000
+    assert result["auction_sections"]["0920"]["main"][0]["previous_amount_change_yuan"] is None
+    assert result["auction_sections"]["0924"]["main"][0]["previous_amount_change_yuan"] == 200
+    bank = next(row for row in result["auction_sections"]["0925"]["main"] if row["plate"] == "银行")
+    assert bank["limit_up_count"] == 10
+    assert result["auction_sections"]["0925"]["main"][0]["price_coverage_pct"] is not None
+
+
+def test_auction_gain_loss_and_stock_tables_render_price_provenance():
+    source = _source()
+    source["snapshot"]["stock_plate"] = {}
+    source["snapshot"]["s2p"] = {}
+    source["snapshot"]["names"] = {}
+    source["pre_close_by_symbol"] = {}
+    source["auction_by_tag"] = {tag: {} for tag in ("0920", "0924", "0925")}
+    for idx in range(10):
+        symbol = f"00010{idx}"
+        source["snapshot"]["stock_plate"][symbol] = "新能源"
+        source["snapshot"]["names"][symbol] = f"名称{idx}"
+        source["pre_close_by_symbol"][symbol] = 10.0
+        for tag in ("0920", "0924", "0925"):
+            source["auction_by_tag"][tag][symbol] = {
+                "px_milli": 10100 + idx * 100, "match_amt_yuan": 1000 - idx * 50,
+                "price_source": "SNAPSHOT_PX" if idx == 0 and tag == "0925" else "TICK_PX_FINAL",
+                "price_flags": ["PRE_FINAL_INDICATIVE"] if idx == 1 and tag == "0925" else [],
+                "rest_bid_amt_yuan": 40 if tag == "0925" else None,
+                "rest_ask_amt_yuan": 10 if tag == "0925" else None,
+            }
+    result = build_session_report(**source)
+    section = result["auction_sections"]["0925"]
+
+    assert section["gainers"] and section["losers"]
+    assert section["stocks"][0]["price_kind"] == "SNAPSHOT_PX"
+    assert any(row["price_kind"] == "PRE_FINAL_INDICATIVE" for row in section["stocks"])
+    assert "竞价事实: 虚拟撮合" in result["report_md"]
+    assert "竞价个股榜 0925" in result["report_md"]
+
+
+def test_first_screen_market_summary_shows_auction_amount_progress():
+    result = build_session_report(**_source())
+    lines = result["report_md"].splitlines()
+    assert "竞价金额进度" in "\n".join(lines[:18])
+    assert "0920→0925" in result["report_md"]
+
+
 def test_opening_tick_after_cutoff_is_not_used():
     source = _source()
     source["opening_by_symbol"]["000001"]["ts"] = "2026-10-13 09:32:01"

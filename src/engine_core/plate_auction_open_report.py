@@ -455,6 +455,7 @@ def build_session_report(
               "activity_manifest": baseline_manifest,
               "candidate_thresholds": {"min_members": min_members, "min_share": min_share},
               "degradation": list(degradation), "memberships_policy": memberships.policy}
+    result["auction_sections"] = _build_auction_sections(result)
     result["report_md"] = render_report_markdown(result)
     return result
 
@@ -467,7 +468,153 @@ def _delta_value(left: float | None, right: float | None) -> float | None:
     return right - left if left is not None and right is not None else None
 
 
+def _build_auction_sections(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Build point-in-time auction boards from the already cut stock facts."""
+    tags = ("0920", "0924", "0925")
+    stocks = list(result.get("stocks", ()))
+    plates = list(result.get("plates", ()))
+    market_amount_values = {tag: [row["times"][tag]["amount"] for row in stocks
+                                  if row.get("times", {}).get(tag, {}).get("amount") is not None
+                                  and row["times"][tag]["amount"] >= 0] for tag in tags}
+    market_amount = {tag: sum(values) if values else None
+                     for tag, values in market_amount_values.items()}
+    market_returns: dict[str, list[float]] = {tag: [] for tag in tags}
+    for stock in stocks:
+        for tag in tags:
+            value = stock.get("times", {}).get(tag, {}).get("pct_vs_pre_close")
+            if value is not None:
+                market_returns[tag].append(value)
+    market_centers = {tag: _median(values) for tag, values in market_returns.items()}
+    degree: dict[str, int] = {}
+    members_by_plate: dict[str, set[str]] = {}
+    for stock in stocks:
+        symbol = str(stock.get("symbol", ""))
+        for membership in stock.get("plates", ()):
+            name = str(membership.get("plate", ""))
+            if name:
+                members_by_plate.setdefault(name, set()).add(symbol)
+                degree[symbol] = degree.get(symbol, 0) + 1
+    plate_info = {str(row.get("plate")): row for row in plates}
+    prior_tag: dict[str, str | None] = {"0920": None, "0924": "0920", "0925": "0924"}
+    out: dict[str, Any] = {}
+    for tag in tags:
+        candidates: list[dict[str, Any]] = []
+        for plate_name, members in members_by_plate.items():
+            info = plate_info.get(plate_name, {})
+            if info.get("category", info.get("kind")) not in ("THEME", "NICHE", "BROAD"):
+                continue
+            valid_rows = [row for row in stocks if str(row.get("symbol")) in members
+                          and row.get("times", {}).get(tag, {}).get("pct_vs_pre_close") is not None]
+            if len(valid_rows) < 10:
+                continue
+            eligible = [row for row in stocks if str(row.get("symbol")) in members]
+            amount_values = [row["times"][tag]["amount"] / degree[str(row["symbol"])]
+                             for row in eligible if degree.get(str(row["symbol"]), 0)
+                             and row.get("times", {}).get(tag, {}).get("amount") is not None
+                             and row["times"][tag]["amount"] >= 0]
+            amount = sum(amount_values) if amount_values else None
+            share = amount / market_amount[tag] if amount is not None and market_amount[tag] else None
+            returns = [row["times"][tag]["pct_vs_pre_close"] for row in valid_rows]
+            trimmed = _trimmed_mean(returns)
+            pressure_rows = [row for row in eligible
+                             if row.get("times", {}).get(tag, {}).get("rest_bid") is not None
+                             and row["times"][tag].get("rest_ask") is not None]
+            rest_bid = sum(row["times"][tag]["rest_bid"] / degree[str(row["symbol"])]
+                           for row in pressure_rows if degree.get(str(row["symbol"]), 0))
+            rest_ask = sum(row["times"][tag]["rest_ask"] / degree[str(row["symbol"])]
+                           for row in pressure_rows if degree.get(str(row["symbol"]), 0))
+            pressure = ((rest_bid - rest_ask) / amount
+                        if pressure_rows and amount is not None and amount > 0 else None)
+            touch_count = sum(
+                Decimal(str(row["times"][tag]["price"])).quantize(Decimal("0.01")) ==
+                _rounded_limit_price(row.get("pre_close"), str(row.get("symbol")), 1)
+                for row in valid_rows if row["times"][tag].get("price") is not None
+                and row.get("pre_close") is not None and row["pre_close"] > 0)
+            previous = None
+            old_tag = prior_tag[tag]
+            if old_tag:
+                previous = next((item for item in out.get(old_tag, {}).get("all", ())
+                                 if item["plate"] == plate_name), None)
+            old_amount = previous.get("match_amount_yuan") if previous else None
+            old_pct = previous.get("trimmed_mean_pct") if previous else None
+            candidates.append({
+                "plate": plate_name, "category": info.get("category", info.get("kind")),
+                "match_amount_yuan": amount, "match_amount_share": share,
+                "previous_amount_change_yuan": (amount - old_amount
+                                                 if amount is not None and old_amount is not None else None),
+                "previous_amount_change_pct": ((amount / old_amount - 1) * 100
+                                                if amount is not None and old_amount is not None
+                                                and old_amount > 0 else None),
+                "trimmed_mean_pct": trimmed,
+                "relative_market_pp": (trimmed - market_centers[tag]
+                                        if trimmed is not None and market_centers[tag] is not None else None),
+                "previous_pct_change_pp": (trimmed - old_pct
+                                           if trimmed is not None and old_pct is not None else None),
+                "limit_up_count": touch_count if tag == "0925" else None,
+                "buy_sell_pressure_pct": pressure,
+                "price_coverage_pct": len(valid_rows) / len(members) if members else None,
+                "priced_member_count": len(valid_rows), "member_count": len(members),
+            })
+        candidates.sort(key=lambda row: (-(row["match_amount_share"] or 0), row["plate"]))
+        main = candidates[:20]
+        threshold_rows = [row for row in candidates if row["match_amount_share"] is not None
+                          and row["match_amount_share"] >= 0.002]
+        gainers = sorted((row for row in threshold_rows if row["trimmed_mean_pct"] is not None),
+                         key=lambda row: (-row["trimmed_mean_pct"], row["plate"]))[:10]
+        losers = sorted((row for row in threshold_rows if row["trimmed_mean_pct"] is not None),
+                        key=lambda row: (row["trimmed_mean_pct"], row["plate"]))[:10]
+        stock_rows = []
+        all_plate_amounts = {
+            plate: sum(row["times"][tag]["amount"] / degree[str(row["symbol"])]
+                       for row in stocks if str(row.get("symbol")) in members
+                       and degree.get(str(row.get("symbol")), 0)
+                       and row.get("times", {}).get(tag, {}).get("amount") is not None
+                       and row["times"][tag]["amount"] >= 0)
+            for plate, members in members_by_plate.items()
+        }
+        for stock in stocks:
+            value = stock.get("times", {}).get(tag, {})
+            amount = value.get("amount")
+            if amount is None or amount < 0:
+                continue
+            memberships = stock.get("plates", ())
+            primary = stock.get("primary_plate")
+            allocated_plate_amount = all_plate_amounts.get(primary)
+            symbol_degree = degree.get(str(stock.get("symbol")), 0)
+            contribution = amount / symbol_degree if symbol_degree else None
+            stock_share = (contribution / allocated_plate_amount * 100
+                           if contribution is not None and allocated_plate_amount else None)
+            price_source = value.get("price_source")
+            price_flags = value.get("price_flags", value.get("flags", ()))
+            price_kind = ("PRE_FINAL_INDICATIVE" if "PRE_FINAL_INDICATIVE" in price_flags else
+                          price_source if price_source in ("SNAPSHOT_PX", "TICK_PX_FINAL",
+                                                          "TICK_BOOK1_INDICATIVE") else None)
+            stock_rows.append({
+                "symbol": stock.get("symbol"), "name": stock.get("name"), "price_kind": price_kind,
+                "pct": value.get("pct_vs_pre_close"), "match_amount_yuan": amount,
+                "plate_amount_share_pct": stock_share, "primary_plate": primary,
+                "rest_bid_yuan": value.get("rest_bid"), "rest_ask_yuan": value.get("rest_ask"),
+                "touch_limit_price": (Decimal(str(value["price"])).quantize(Decimal("0.01")) ==
+                                      _rounded_limit_price(stock.get("pre_close"), str(stock.get("symbol")), 1)
+                                      if value.get("price") is not None and stock.get("pre_close") else None),
+                "sealed_limit": value.get("limit_state") == 1 if tag == "0925" and value.get("limit_state") is not None else None,
+            })
+        stock_rows.sort(key=lambda row: (-row["match_amount_yuan"], str(row["symbol"])))
+        out[tag] = {"main": main, "gainers": gainers, "losers": losers,
+                    "stocks": stock_rows[:30], "all": candidates,
+                    "final_price_count": sum(row.get("times", {}).get(tag, {}).get("price_source")
+                                              in ("SNAPSHOT_PX", "TICK_PX_FINAL") for row in stocks)
+                    if tag == "0925" else None,
+                    "indicative_price_count": sum("INDICATIVE" in str(row.get("times", {}).get(tag, {}).get("price_source"))
+                                                  or "PRE_FINAL_INDICATIVE" in row.get("times", {}).get(tag, {}).get("price_flags", ())
+                                                  for row in stocks) if tag == "0925" else None}
+    return out
+
+
 def render_report_markdown(result: Mapping[str, Any]) -> str:
+    auction_sections = _build_auction_sections(result)
+    if isinstance(result, dict):
+        result["auction_sections"] = auction_sections
     trade_date = result["trade_date"]
     market = result["market"]
     stage_tags = tuple(market.keys())
@@ -487,6 +634,78 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
              "本报告含义：独立板块=统计显著且去重的相对市场偏强/偏弱（非预测）；规模榜=资金体量；活跃度=相对 5 日基线的放量；事件条=事实。", "",
              "## 表现 × 活跃度摘要", "",
              "放量条件：基线倍数≥1.5、|相对市场稳健 z|≥1.5；只列事实，不计算综合分。"])
+    final_match = market.get("0925", {}).get("amount_sum")
+    lines.extend(["", "## 竞价金额进度与市场摘要", "",
+                  "| 标签 | 总匹配额(亿) | 有价覆盖数 | 涨/跌/平 | 触及涨停价数 | 累计进度(占0925) |",
+                  "|---|---:|---:|---:|---:|---:|"])
+    for tag in ("0920", "0924", "0925"):
+        if tag not in market:
+            continue
+        row = market[tag]
+        prices = [stock for stock in result.get("stocks", ())
+                  if stock.get("times", {}).get(tag, {}).get("pct_vs_pre_close") is not None]
+        touched = sum(
+            stock.get("times", {}).get(tag, {}).get("price") is not None
+            and stock.get("pre_close") is not None
+            and Decimal(str(stock["times"][tag]["price"])).quantize(Decimal("0.01")) ==
+                _rounded_limit_price(stock["pre_close"], str(stock["symbol"]), 1)
+            for stock in result.get("stocks", ()))
+        progress = (row.get("amount_sum") / final_match * 100
+                    if final_match is not None and final_match > 0 and row.get("amount_sum") is not None else None)
+        lines.append(f"| {tag} | {_amount_yi(row.get('amount_sum'))} | {len(prices)} | "
+                     f"{row.get('up_count', '—')}/{row.get('down_count', '—')}/{row.get('flat_count', '—')} | "
+                     f"{touched if tag == '0925' else '—'} | {_pctfmt(progress / 100 if progress is not None else None)} |")
+    final_indicator = (f"0925: 终价 {auction_sections['0925']['final_price_count']} / 指示价 "
+                       f"{auction_sections['0925']['indicative_price_count']}")
+    lines.insert(3, final_indicator)
+    lines.extend(["", "额累计进度是当前标签匹配额占 0925 终额（0920→0925）；参考历史 0920/0925 中位约 16%。", "",
+                  "## 竞价板块主表", "",
+                  "竞价事实: 虚拟撮合阶段无成交量/成交额；09:20 后不可撤单；匹配额=min(买一量,卖一量)×一档价；09:25 后才是真实成交。"])
+    full_headers = ("板块", "匹配额(亿)", "占市场比%", "较上一标签额变化(亿,%)", "板块涨幅(截尾均值%)",
+                    "相对市场pp", "较上一标签涨幅变化pp", "触及涨停价数", "买卖压力%", "有价覆盖%")
+    for tag in ("0920", "0924", "0925"):
+        if tag not in auction_sections:
+            continue
+        lines.extend(["", f"### {tag}", "", "| " + " | ".join(full_headers) + " |",
+                      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
+        for row in auction_sections[tag]["main"]:
+            delta = (f"{_amount_yi(row.get('previous_amount_change_yuan'))}, "
+                     f"{_fmt(row.get('previous_amount_change_pct')) + '%' if row.get('previous_amount_change_pct') is not None else '—'}"
+                     if row.get("previous_amount_change_yuan") is not None else "—")
+            lines.append("| " + " | ".join((
+                str(row["plate"]), _amount_yi(row.get("match_amount_yuan")),
+                _pctfmt(row.get("match_amount_share")), delta,
+                _pctfmt(row.get("trimmed_mean_pct")), _ppfmt(row.get("relative_market_pp")),
+                _ppfmt(row.get("previous_pct_change_pp")), _fmt(row.get("limit_up_count")),
+                _pctfmt(row.get("buy_sell_pressure_pct")),
+                _pctfmt(row.get("price_coverage_pct")),
+            )) + " |")
+        if tag == "0925":
+            lines.append(f"\n终价 {auction_sections[tag]['final_price_count']} / 指示价 "
+                         f"{auction_sections[tag]['indicative_price_count']}。")
+        for title, key in (("涨幅前 10", "gainers"), ("跌幅前 10", "losers")):
+            lines.extend(["", f"#### {tag} {title}", "",
+                          "| 板块 | 匹配额(亿) | 占市场比% | 涨幅(截尾均值%) | 相对市场pp | 涨停数 | 有价覆盖% |",
+                          "|---|---:|---:|---:|---:|---:|---:|"])
+            for row in auction_sections[tag][key]:
+                lines.append(f"| {row['plate']} | {_amount_yi(row.get('match_amount_yuan'))} | "
+                             f"{_pctfmt(row.get('match_amount_share'))} | {_pctfmt(row.get('trimmed_mean_pct'))} | "
+                             f"{_ppfmt(row.get('relative_market_pp'))} | {_fmt(row.get('limit_up_count'))} | "
+                             f"{_pctfmt(row.get('price_coverage_pct'))} |")
+        lines.extend(["", f"#### 竞价个股榜 {tag}", "",
+                      "| 代码 | 名称 | 价格口径 | 涨幅% | 匹配额(亿) | 占板块额% | 主板块 | 买单(亿) | 卖单(亿) | 涨停/封单 |",
+                      "|---|---|---|---:|---:|---:|---|---:|---:|---|"])
+        for row in auction_sections[tag]["stocks"]:
+            status = ("触及涨停" if row.get("touch_limit_price") else "—")
+            if row.get("sealed_limit") is True:
+                status += "/有封单"
+            elif tag == "0925" and row.get("touch_limit_price") and row.get("sealed_limit") is False:
+                status += "/无封单"
+            lines.append(f"| {row.get('symbol')} | {row.get('name') or '—'} | {row.get('price_kind') or '—'} | "
+                         f"{_pctfmt(row.get('pct'))} | {_amount_yi(row.get('match_amount_yuan'))} | "
+                         f"{_pctfmt((row.get('plate_amount_share_pct') / 100) if row.get('plate_amount_share_pct') is not None else None)} | "
+                         f"{row.get('primary_plate') or '—'} | {_amount_yi(row.get('rest_bid_yuan'))} | "
+                         f"{_amount_yi(row.get('rest_ask_yuan'))} | {status} |")
     auction_summary_tag = "0925"
     opening_summary_tag = next((tag for tag in reversed(stage_tags)
                                 if tag in ("0932", "0935", "0940", "0945")), None)
