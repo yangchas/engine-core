@@ -45,6 +45,11 @@ def _timestamp(value: Any) -> datetime | None:
     return None
 
 
+def _cutoff_text(value: Any, fallback: str) -> str:
+    parsed = _timestamp(value)
+    return parsed.strftime("%Y-%m-%dT%H:%M:%S") if parsed is not None else fallback
+
+
 def _pct(price: float | None, pre_close: float | None) -> float | None:
     if price is None or pre_close is None or pre_close <= 0:
         return None
@@ -83,6 +88,8 @@ def build_session_report(
     pool = yest_pool_by_symbol or {}
     names = snapshot.get("names", {})
     facts_by_stage: dict[str, dict[str, StockFact]] = {}
+    default_cutoffs = {"0920": f"{trade_date}T09:20:00", "0924": f"{trade_date}T09:24:00",
+                       "0925": f"{trade_date}T09:25:00", "0932": f"{trade_date}T09:32:00"}
     stocks: list[dict[str, Any]] = []
     for symbol in symbols:
         pc = _number(pre_close_by_symbol.get(symbol))
@@ -112,7 +119,8 @@ def build_session_report(
                 state = None
             time_rows[tag] = {"price": px, "pct_vs_pre_close": _pct(px, pc), "amount": amt,
                               "amount_kind": "MATCH", "rest_bid": rest_bid, "rest_ask": rest_ask,
-                              "limit_state": state, "at_limit_price": None}
+                              "limit_state": state, "at_limit_price": None,
+                              "input_cutoff": _cutoff_text((raw or {}).get("ts"), default_cutoffs[tag])}
             if raw is None:
                 flags.append(f"NO_{tag}")
         opening = opening_by_symbol.get(symbol)
@@ -128,7 +136,8 @@ def build_session_report(
                     if px is not None and up_limit is not None and down_limit is not None else None)
         time_rows["0932"] = {"price": px, "pct_vs_pre_close": _pct(px, pc), "amount": amt,
                               "amount_kind": "TRADED", "rest_bid": None, "rest_ask": None,
-                              "limit_state": None, "at_limit_price": at_limit}
+                              "limit_state": None, "at_limit_price": at_limit,
+                              "input_cutoff": _cutoff_text((opening or {}).get("ts"), default_cutoffs["0932"])}
         if not opening_valid:
             flags.append("NO_0932_ASOF_ROW")
         for tag in (*_TAGS, "0932"):
@@ -165,6 +174,9 @@ def build_session_report(
                 "down_count": stage_stat.down_count, "flat_count": stage_stat.flat_count,
                 "limit_up_count": stage_stat.limit_up_count if tag == "0925" else None,
                 "max_lb_days": stage_stat.max_lb_days, "yest_pool_member_count": stage_stat.yest_pool_member_count,
+                "input_cutoff": max((row["times"][tag]["input_cutoff"] for row in stocks
+                                     if row["symbol"] in members_of(plate, memberships, hierarchy)),
+                                    default=default_cutoffs[tag]),
             }
         core = sorted((symbol for symbol in members_of(plate, memberships, hierarchy)
                        if facts_by_stage["0925"].get(symbol) is not None
@@ -220,9 +232,11 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
     trade_date = result["trade_date"]
     market = result["market"]
     pool_rows = [row for row in result["stocks"] if row["in_yest_pool"]]
-    lines = [f"# 个股板块竞价开盘情况 {trade_date}", "", "## 市场摘要", "",
+    labels = [label for label in result.get("degradation", ()) if label == "NOT_POINT_IN_TIME"]
+    lines = ([f"标签: {', '.join(labels)}", ""] if labels else [])
+    lines.extend([f"# 个股板块竞价开盘情况 {trade_date}", "", "## 市场摘要", "",
              "| 时点 | 覆盖 | 金额(元) | 涨 | 跌 | 平 | 涨停 | 跌停 |",
-             "|---|---:|---:|---:|---:|---:|---:|---:|"]
+             "|---|---:|---:|---:|---:|---:|---:|---:|"])
     for tag in ("0920", "0924", "0925", "0932"):
         row = market[tag]
         lines.append(f"| {tag} | {row['covered_count']} | {_fmt(row['amount_sum'])} | {row['up_count']} | "

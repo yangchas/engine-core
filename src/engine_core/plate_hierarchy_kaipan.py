@@ -78,7 +78,7 @@ def _reason_records(response: Any) -> list[tuple[str, Mapping[str, Any]]]:
 
 def parse_kaipan_reason_hierarchy(
     reason_responses: Any, *, as_of_date: str | None = None,
-    counts: MutableMapping[str, int] | None = None,
+    counts: MutableMapping[str, int] | None = None, inclusive: bool = False,
 ) -> PlateHierarchy:
     """Extract parent edges from ``主(细)`` reasons with source code evidence."""
     candidates: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
@@ -94,7 +94,7 @@ def parse_kaipan_reason_hierarchy(
             except ValueError:
                 excluded_no_date += 1
                 continue
-            if row_date > cutoff:
+            if row_date > cutoff or (row_date == cutoff and not inclusive):
                 excluded_future += 1
                 continue
             used += 1

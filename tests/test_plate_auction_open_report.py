@@ -30,6 +30,10 @@ def test_auction_match_and_opening_traded_amounts_are_separate():
     assert stock["times"]["0932"]["amount"] == 900
     assert stock["times"]["0932"]["amount_kind"] == "TRADED"
     assert stock["times"]["0932"]["amount"] != 900 + 300
+    assert stock["times"]["0925"]["input_cutoff"] == "2026-10-13T09:25:00"
+    assert stock["times"]["0932"]["input_cutoff"] == "2026-10-13T09:32:00"
+    bank = next(row for row in result["plates"] if row["plate"] == "银行")
+    assert bank["times"]["0932"]["input_cutoff"] == "2026-10-13T09:32:00"
 
 
 def test_opening_tick_after_cutoff_is_not_used():

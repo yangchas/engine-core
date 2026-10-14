@@ -65,12 +65,15 @@ def _reason_candidates(rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[
 
 def _kaipan_reasons_for_day(
     rows: Mapping[str, Sequence[Mapping[str, Any]]], trade_date: str, pool_symbols: set[str],
+    conclusion_phase: str = "AUCTION",
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     """Select dated reasons for every Kaipan file available by the requested date."""
     del pool_symbols  # Kaipan reason coverage is independent of yesterday's limit-up pool.
+    if conclusion_phase not in {"AUCTION", "EOD"}:
+        raise ValueError("conclusion_phase must be AUCTION or EOD")
     dated_mode = bool(rows)
     selected: dict[str, list[dict[str, Any]]] = {}
-    used = excluded_future = excluded_no_date = 0
+    used = excluded_future = excluded_no_date = excluded_same_day = 0
     if dated_mode:
         cutoff = date.fromisoformat(trade_date)
         for symbol in rows:
@@ -87,6 +90,9 @@ def _kaipan_reasons_for_day(
                 if row_date > cutoff:
                     excluded_future += 1
                     continue
+                if row_date == cutoff and conclusion_phase == "AUCTION":
+                    excluded_same_day += 1
+                    continue
                 eligible.append((row_date, dict(raw)))
             eligible.sort(key=lambda item: (str(item[1].get("Type", "1")) != "0", -item[0].toordinal()))
             if eligible:
@@ -99,6 +105,7 @@ def _kaipan_reasons_for_day(
                 used += len(eligible)
     return selected, {
         "used": used, "excluded_future": excluded_future, "excluded_no_date": excluded_no_date,
+        "excluded_same_day": excluded_same_day,
         "symbol_count_used": len(selected), "asof_enabled": dated_mode,
         "type0": sum(str(row.get("Type", "")) == "0" for items in selected.values() for row in items),
         "type1": sum(str(row.get("Type", "")) == "1" for items in selected.values() for row in items),
@@ -217,6 +224,7 @@ def build_day(
     kaipan_reasons_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     hot_plate_input: Mapping[str, Any] | None = None,
     snapshot_asof: str | None = None,
+    conclusion_phase: str = "AUCTION",
 ) -> dict[str, Any]:
     """Pure daily composition; accepts loaded data and performs no I/O."""
     if not isinstance(snapshot.get("stock_plate"), Mapping) or not isinstance(snapshot.get("s2p"), Mapping):
@@ -281,8 +289,10 @@ def build_day(
             ([assignment.primary_plate] if assignment.primary_plate else []) + list(assignment.themes)
         ))
 
+    if conclusion_phase not in {"AUCTION", "EOD"}:
+        raise ValueError("conclusion_phase must be AUCTION or EOD")
     kaipan_reason_rows, reason_counts = _kaipan_reasons_for_day(
-        kaipan_reasons_by_symbol or {}, trade_date, set(map(str, pool_symbols)),
+        kaipan_reasons_by_symbol or {}, trade_date, set(map(str, pool_symbols)), conclusion_phase,
     )
     hierarchy_counts = {"used": 0, "excluded_future": 0, "excluded_no_date": 0}
     if kaipan_reasons_by_symbol is not None:
@@ -292,6 +302,7 @@ def build_day(
         ]
         kaipan_hierarchy = parse_kaipan_reason_hierarchy(
             hierarchy_responses, as_of_date=trade_date, counts=hierarchy_counts,
+            inclusive=conclusion_phase == "EOD",
         )
     if kaipan_reasons_by_symbol is None:
         legacy_reason_rows = {str(symbol): rows for symbol, rows in reasons_by_symbol.items()}
@@ -379,6 +390,8 @@ def build_day(
             flags.add("REASON_MISSING")
         if snapshot_asof is None or (reason_asof_unknown and symbol in legacy_reason_candidates):
             flags.add("ASOF_UNKNOWN")
+        if snapshot_asof is None or trade_date < snapshot_asof:
+            flags.add("NOT_POINT_IN_TIME")
         if not hot_plate_names:
             flags.add("HOT_MISSING")
         if symbol not in static_themes:
@@ -395,11 +408,16 @@ def build_day(
         "STATIC_MISSING": sum("STATIC_MISSING" in flags for flags in symbol_flags.values()),
         "SOURCE_PARTIAL": bool(kaipan_pool_partial),
         "LB_UNKNOWN": sum("LB_UNKNOWN" in flags for flags in symbol_flags.values()),
+        "NOT_POINT_IN_TIME": sum("NOT_POINT_IN_TIME" in flags for flags in symbol_flags.values()),
     }
     quality = {
         "trade_date": trade_date,
         "asof_semantics": "REPLAY_FROM_DATED_REASONS_NOT_AVAILABLE_AT",
         "snapshot_asof": snapshot_asof,
+        "conclusion_phase": conclusion_phase,
+        "reason_asof_rule": "Date<=D" if conclusion_phase == "EOD" else "Date<D",
+        "reason_item_count_excluded_same_day": reason_counts["excluded_same_day"],
+        "flags": ["NOT_POINT_IN_TIME"] if snapshot_asof is None or trade_date < snapshot_asof else [],
         "degradation": degradation,
         "hot_plate_source": "kaipan_his_plates" if hot_plate_input else "missing",
         "hot_plate_count": len(hot_plate_rows),
@@ -489,6 +507,7 @@ def run_pipeline(
     kaipan_reasons_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     kaipan_hot_plates_by_day: Mapping[str, Mapping[str, Any]] | None = None,
     snapshot_asof: str | None = None,
+    conclusion_phase: str = "AUCTION",
 ) -> dict[str, Any]:
     included, skipped = [], []
     for day in dates:
@@ -511,6 +530,7 @@ def run_pipeline(
             kaipan_reasons_by_symbol=kaipan_reasons_by_symbol,
             hot_plate_input=(kaipan_hot_plates_by_day or {}).get(prior_day),
             snapshot_asof=snapshot_asof,
+            conclusion_phase=conclusion_phase,
         )))
     return {"days": included, "skipped": skipped}
 
@@ -685,6 +705,20 @@ def _snapshot_asof(path: Path, explicit: str | None, snapshot: Mapping[str, Any]
             return date.fromisoformat(explicit).isoformat()
         except ValueError as exc:
             raise ValueError("snapshot-asof must be YYYY-MM-DD") from exc
+    manifest_path = (path / "manifest.json") if path.is_dir() else path.parent / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            manifest = _read_json(manifest_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            manifest = {}
+        if isinstance(manifest, Mapping):
+            for key in ("snapshot_asof", "asof_date", "trade_date"):
+                value = manifest.get(key)
+                if isinstance(value, str):
+                    try:
+                        return date.fromisoformat(value[:10]).isoformat()
+                    except ValueError:
+                        pass
     for key in ("snapshot_asof", "asof_date", "trade_date"):
         value = snapshot.get(key)
         if isinstance(value, str):
@@ -861,6 +895,11 @@ def _emit(output_dir: Path, result: Mapping[str, Any], args: argparse.Namespace)
         "legacy_pool_comparison": legacy_pool_comparison if getattr(args, "legacy_pool_dir", None) else None,
         "asof_semantics": "REPLAY_FROM_DATED_REASONS_NOT_AVAILABLE_AT",
         "snapshot_asof": getattr(args, "snapshot_asof", None),
+        "conclusion_phase": getattr(args, "conclusion_phase", "AUCTION"),
+        "reason_asof_rule": "Date<=D" if getattr(args, "conclusion_phase", "AUCTION") == "EOD" else "Date<D",
+        "reason_item_count_excluded_same_day_by_date": {
+            day: value["quality"]["reason_item_count_excluded_same_day"] for day, value in daily_rows
+        },
         "interpretation": "离线事实, 非策略结论",
         "reason_asof_unknown": bool(args.reasons),
     }
@@ -871,6 +910,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", type=Path, required=True)
     parser.add_argument("--snapshot-asof", help="static snapshot date YYYY-MM-DD when its name does not include one")
+    parser.add_argument("--conclusion-phase", choices=("AUCTION", "EOD"), default="AUCTION")
     parser.add_argument("--reasons", type=Path)
     parser.add_argument("--kline-range", required=True, help="bounded TD date range YYYY-MM-DD:YYYY-MM-DD")
     parser.add_argument("--start-date", required=True)
@@ -911,6 +951,7 @@ def main(argv: list[str] | None = None) -> int:
         kaipan_reasons_by_symbol=kaipan_reasons,
         kaipan_hot_plates_by_day=kaipan_hot_plates,
         snapshot_asof=snapshot_asof,
+        conclusion_phase=args.conclusion_phase,
     )
     args.snapshot_asof = snapshot_asof
     _emit(args.output_dir, result, args)

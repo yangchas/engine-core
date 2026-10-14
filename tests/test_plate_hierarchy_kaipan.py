@@ -57,3 +57,13 @@ def test_reason_hierarchy_as_of_excludes_future_and_missing_dates():
     hierarchy = parse_kaipan_reason_hierarchy(responses, as_of_date="2026-01-05", counts=counts)
     assert hierarchy.parent_by_child == {}
     assert counts == {"used": 0, "excluded_future": 1, "excluded_no_date": 1}
+
+
+def test_reason_hierarchy_same_day_inclusion_is_explicit():
+    responses = [{"StockID": "000001", "List": [
+        {"Date": "2026-01-05", "Reason": "父板(子板)", "PZSCode": "801001"},
+    ]}]
+    auction = parse_kaipan_reason_hierarchy(responses, as_of_date="2026-01-05")
+    eod = parse_kaipan_reason_hierarchy(responses, as_of_date="2026-01-05", inclusive=True)
+    assert "子板" not in auction.parent_by_child
+    assert eod.parent_by_child["子板"] == "父板"

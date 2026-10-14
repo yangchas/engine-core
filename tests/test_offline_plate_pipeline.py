@@ -155,12 +155,13 @@ def test_kaipan_reasons_are_filtered_as_of_and_recent_candidates_are_first():
 
     reasons, stats = _kaipan_reasons_for_day({"000001": [
         {"Date": "2026-01-05", "Reason": "旧板(旧题材)"},
-        {"Date": "2026-01-07", "Reason": "未来板(未来题材)"},
+        {"Date": "2026-01-08", "Reason": "未来板(未来题材)"},
         {"Date": "2026-01-06", "Reason": "新板(新题材)"},
-    ]}, "2026-01-06", {"000001"})
+        {"Date": "2026-01-07", "Reason": "当日板(当日题材)"},
+    ]}, "2026-01-07", {"000001"})
     assert [row["reason"] for row in reasons["000001"]] == ["新板(新题材)", "旧板(旧题材)"]
     assert _reason_candidates(reasons)["000001"][:2] == ["新板", "旧板"]
-    assert stats == {"used": 2, "excluded_future": 1, "excluded_no_date": 0,
+    assert stats == {"used": 2, "excluded_future": 1, "excluded_no_date": 0, "excluded_same_day": 1,
                      "symbol_count_used": 1, "asof_enabled": True, "type0": 0, "type1": 0}
 
 
@@ -171,7 +172,7 @@ def test_kaipan_type_zero_candidates_precede_type_one_and_are_labeled():
         snapshot={"stock_plate": {}, "s2p": {}}, reasons_by_symbol={},
         reason_asof_unknown=False, min_auction_rows=1,
         kaipan_reasons_by_symbol={"000001": [
-            {"Date": "2026-01-05", "Type": "1", "Reason": "异动板(异动主题)"},
+            {"Date": "2026-01-04", "Type": "1", "Reason": "异动板(异动主题)"},
             {"Date": "2026-01-04", "Type": "0", "Reason": "涨停板(涨停主题)"},
         ]},
     )
@@ -182,6 +183,36 @@ def test_kaipan_type_zero_candidates_precede_type_one_and_are_labeled():
     assert any("reason_move" in row.source for row in reason_rows)
     assert result["quality"]["reason_item_count_type0"] == 1
     assert result["quality"]["reason_item_count_type1"] == 1
+
+
+def test_same_day_reason_is_excluded_for_auction_and_included_for_eod():
+    from examples.run_offline_plate_pipeline import _kaipan_reasons_for_day
+
+    rows = {"000001": [{"Date": "2026-01-05", "Type": "0", "Reason": "当日板(当日主题)"}]}
+    auction, auction_counts = _kaipan_reasons_for_day(rows, "2026-01-05", set(), conclusion_phase="AUCTION")
+    eod, eod_counts = _kaipan_reasons_for_day(rows, "2026-01-05", set(), conclusion_phase="EOD")
+    assert auction == {}
+    assert auction_counts["excluded_same_day"] == 1
+    assert [row["reason"] for row in eod["000001"]] == ["当日板(当日主题)"]
+    assert eod_counts["excluded_same_day"] == 0
+
+
+def test_snapshot_after_trade_date_is_marked_not_point_in_time(tmp_path):
+    from examples.run_offline_plate_pipeline import _snapshot_asof
+
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text("{}")
+    (tmp_path / "manifest.json").write_text(json.dumps({"snapshot_asof": "2026-01-06"}))
+    assert _snapshot_asof(snapshot_path, None, {}) == "2026-01-06"
+    result = build_day(
+        trade_date="2026-01-05", klines_by_symbol={},
+        auction_rows={"000001": {"px_milli": 10000}},
+        snapshot={"stock_plate": {"000001": "银行"}, "s2p": {}},
+        reasons_by_symbol={}, reason_asof_unknown=False, min_auction_rows=1,
+        snapshot_asof="2026-01-06",
+    )
+    assert "NOT_POINT_IN_TIME" in result["quality"]["flags"]
+    assert "NOT_POINT_IN_TIME" in result["symbol_flags"]["000001"]
 
 
 def test_previous_day_type_zero_reasons_rebuild_pool_when_no_pool_file():
@@ -234,7 +265,7 @@ def test_kaipan_reasons_without_valid_date_are_excluded_and_counted():
         {"Reason": "缺日期(题材乙)"},
     ]}, "2026-01-06", {"000001"})
     assert reasons == {}
-    assert stats == {"used": 0, "excluded_future": 0, "excluded_no_date": 2,
+    assert stats == {"used": 0, "excluded_future": 0, "excluded_no_date": 2, "excluded_same_day": 0,
                      "symbol_count_used": 0, "asof_enabled": True, "type0": 0, "type1": 0}
 
 

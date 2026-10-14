@@ -20,7 +20,7 @@ from engine_core.plate_rules import build_plate_candidates_from_reason
 from engine_core.plate_hierarchy_kaipan import parse_kaipan_reason_hierarchy
 from engine_core.plate_auction_open_report import build_session_report
 from examples.run_offline_plate_pipeline import (
-    _load_kaipan_hot_plates, _load_kaipan_inputs_with_status, _load_kaipan_reasons,
+    _load_kaipan_hot_plates, _load_kaipan_inputs_with_status, _load_kaipan_reasons, _snapshot_asof,
     _load_snapshot, ensure_empty_output_dir,
 )
 
@@ -63,11 +63,13 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str):
         cursor = connection.cursor()
         for tag in auctions:
             cursor.execute(
-                f"SELECT symbol, px_milli, match_amt_yuan, rest_bid_amt_yuan, rest_ask_amt_yuan, limit_state "
+                f"SELECT ts, symbol, px_milli, match_amt_yuan, rest_bid_amt_yuan, rest_ask_amt_yuan, limit_state "
                 f'FROM {database}.auction_snapshot_v2 WHERE trade_date="{compact}" AND auction_tag="{tag}"'
             )
-            for symbol, px, amount, bid, ask, state in cursor.fetchall():
-                auctions[tag][str(symbol)] = {"px_milli": px, "match_amt_yuan": amount,
+            for ts, symbol, px, amount, bid, ask, state in cursor.fetchall():
+                ts_dt = ts if isinstance(ts, datetime) else datetime.fromtimestamp(int(ts) / 1000, _ZONE)
+                ts_dt = ts_dt.replace(tzinfo=_ZONE) if ts_dt.tzinfo is None else ts_dt.astimezone(_ZONE)
+                auctions[tag][str(symbol)] = {"ts": ts_dt.isoformat(sep=" "), "px_milli": px, "match_amt_yuan": amount,
                                                "rest_bid_amt_yuan": bid, "rest_ask_amt_yuan": ask,
                                                "limit_state": state}
         cutoff = f"{trade_date} 09:32:00"
@@ -117,7 +119,7 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str):
 
 
 def _memberships(snapshot: Mapping[str, Any], symbols: list[str], trade_date: str, prior_date: str | None,
-                 kaipan_dir: Path | None):
+                 kaipan_dir: Path | None, conclusion_phase: str = "AUCTION"):
     static = snapshot.get("stock_plate", {})
     s2p = snapshot.get("s2p", {})
     static_themes = {
@@ -151,6 +153,7 @@ def _memberships(snapshot: Mapping[str, Any], symbols: list[str], trade_date: st
         asof_hierarchy = parse_kaipan_reason_hierarchy(
             [{"StockID": symbol, "List": rows} for symbol, rows in reasons.items()],
             as_of_date=trade_date,
+            inclusive=conclusion_phase == "EOD",
         )
         hierarchy = PlateHierarchy(
             {**hierarchy.parent_by_child, **asof_hierarchy.parent_by_child},
@@ -164,7 +167,9 @@ def _memberships(snapshot: Mapping[str, Any], symbols: list[str], trade_date: st
         eligible = []
         for item in items:
             raw_date = item.get("Date", item.get("date"))
-            if isinstance(raw_date, str) and raw_date <= trade_date and str(item.get("Type", item.get("type", "1"))) == "0":
+            eligible_date = (raw_date <= trade_date if conclusion_phase == "EOD" else raw_date < trade_date) \
+                if isinstance(raw_date, str) else False
+            if eligible_date and str(item.get("Type", item.get("type", "1"))) == "0":
                 eligible.append(item)
         if eligible:
             recent = max(eligible, key=lambda row: str(row.get("Date", row.get("date", ""))))
@@ -187,20 +192,31 @@ def _write(path: Path, data: Any):
 
 
 def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path | None,
-               kline_range: str, td_host: str, output_dir: Path) -> None:
+               kline_range: str, td_host: str, output_dir: Path, snapshot_asof: str | None = None,
+               conclusion_phase: str = "AUCTION") -> None:
     ensure_empty_output_dir(output_dir)
     snapshot = _load_snapshot(snapshot_path)
+    snapshot_asof = _snapshot_asof(snapshot_path, snapshot_asof, snapshot)
     symbols = sorted(set(map(str, snapshot["stock_plate"])) | set(map(str, snapshot["s2p"])))
     for trade_date in trade_dates:
         auction, opening, pre_close, klines = _read_td(td_host, trade_date, symbols, kline_range)
         sessions = sorted({str(row[0])[:10] for rows in klines.values() for row in rows if row and row[0] is not None})
         prior = max((day for day in sessions if day < trade_date), default=None)
-        memberships, hierarchy, pool, degradation = _memberships(snapshot, symbols, trade_date, prior, kaipan_dir)
+        memberships, hierarchy, pool, degradation = _memberships(
+            snapshot, symbols, trade_date, prior, kaipan_dir, conclusion_phase,
+        )
+        if snapshot_asof is None or trade_date < snapshot_asof:
+            degradation.append("NOT_POINT_IN_TIME")
         report = build_session_report(
             trade_date=trade_date, snapshot=snapshot, pre_close_by_symbol=pre_close,
             auction_by_tag=auction, opening_by_symbol=opening, yest_pool_by_symbol=pool,
             degradation=degradation, memberships=memberships, hierarchy=hierarchy,
         )
+        reason_rows = _load_kaipan_reasons(kaipan_dir) if kaipan_dir else {}
+        excluded_same_day = sum(
+            1 for rows in reason_rows.values() for row in rows
+            if row.get("Date", row.get("date")) == trade_date
+        ) if conclusion_phase == "AUCTION" else 0
         day_dir = output_dir / trade_date
         day_dir.mkdir()
         _write(day_dir / "stocks.json", report["stocks"])
@@ -210,6 +226,10 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "trade_date": trade_date, "snapshot": str(snapshot_path), "kaipan_dir": str(kaipan_dir) if kaipan_dir else None,
             "stock_row_count": len(report["stocks"]), "plate_row_count": len(report["plates"]),
             "membership_policy": report["memberships_policy"], "degradation": degradation,
+            "snapshot_asof": snapshot_asof, "conclusion_phase": conclusion_phase,
+            "reason_asof_rule": "Date<=D" if conclusion_phase == "EOD" else "Date<D",
+            "reason_item_count_excluded_same_day": excluded_same_day,
+            "no_close_or_after_inputs": True,
             "sources": ["TD auction_snapshot_v2", "TD stock_tick_v2 as-of 09:32:00", "TD daily kline"],
             "stage_semantics": {"0920": "竞价金额为虚拟匹配额", "0924": "竞价金额为虚拟匹配额",
                                 "0925": "竞价金额为虚拟匹配额", "0932": "真实累计成交额"},
@@ -220,6 +240,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trade-date", required=True, help="comma-separated YYYY-MM-DD dates")
     parser.add_argument("--snapshot", type=Path, required=True)
+    parser.add_argument("--snapshot-asof", help="static snapshot date YYYY-MM-DD when its name does not include one")
+    parser.add_argument("--conclusion-phase", choices=("AUCTION", "EOD"), default="AUCTION")
     parser.add_argument("--kaipan-dir", type=Path)
     parser.add_argument("--kline-range", required=True, help="bounded YYYY-MM-DD:YYYY-MM-DD range")
     parser.add_argument("--td-host", default="127.0.0.1")
@@ -231,7 +253,8 @@ def main(argv: list[str] | None = None) -> int:
     if not dates:
         parser.error("--trade-date must contain at least one date")
     run_report(trade_dates=dates, snapshot_path=args.snapshot, kaipan_dir=args.kaipan_dir,
-               kline_range=args.kline_range, td_host=args.td_host, output_dir=args.output_dir)
+               kline_range=args.kline_range, td_host=args.td_host, output_dir=args.output_dir,
+               snapshot_asof=args.snapshot_asof, conclusion_phase=args.conclusion_phase)
     return 0
 
 

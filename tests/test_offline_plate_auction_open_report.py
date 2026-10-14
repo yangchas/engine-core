@@ -27,4 +27,9 @@ def test_runner_writes_report_and_manifest_with_stage_semantics(tmp_path, monkey
     manifest = json.loads((day / "manifest.json").read_text())
     assert manifest["stage_semantics"]["0925"] == "竞价金额为虚拟匹配额"
     assert manifest["stage_semantics"]["0932"] == "真实累计成交额"
-    assert manifest["degradation"] == ["KAIPAN_INPUTS_MISSING"]
+    assert manifest["reason_asof_rule"] == "Date<D"
+    assert manifest["no_close_or_after_inputs"] is True
+    assert "NOT_POINT_IN_TIME" in manifest["degradation"]
+    report = (day / "report.md").read_text()
+    assert report.startswith("标签: NOT_POINT_IN_TIME")
+    assert manifest["degradation"] == ["KAIPAN_INPUTS_MISSING", "NOT_POINT_IN_TIME"]
