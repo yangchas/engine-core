@@ -6,6 +6,8 @@ from collections import Counter
 from typing import Any, Mapping, Sequence
 
 CONTINUATION_TOLERANCE_PP = 0.3
+OPENING_FOLD_PCT_CHANGE_PP = 1.0
+OPENING_FOLD_RANK_CHANGE = 10
 FOCUS_LIMIT_AUCTION = 30
 FOCUS_LIMIT_OPEN = 20
 _OPEN_TAGS = ("0932", "0935", "0940", "0945")
@@ -156,10 +158,12 @@ def build_plate_stock_view(
                            "pct_0924": (plate.get("times", {}).get("0924") or {}).get("pct_equal_weight"),
                            "amount_sum_yuan": metrics.get("amount_sum"),
                            "effective_member_count": metrics.get("effective_member_count"),
-                           "limit_up_count": metrics.get("limit_up_count"),
+                           "limit_up_count": _opening_limit_up_count(
+                               metrics.get("limit_up_count"), stocks, name, stage),
                            "yest_pool_member_count": metrics.get("yest_pool_member_count"),
                            "top1_concentration": top1,
                            "concentrated": _num(top1) is not None and top1 > 0.5,
+                           "rank": pct_rank.get(name),
                            "change_vs_0925_pp": (
                                (_num(metrics.get("pct_equal_weight")) - _num(auction.get("pct_equal_weight"))) * 100
                                if _num(metrics.get("pct_equal_weight")) is not None
@@ -185,6 +189,10 @@ def build_plate_stock_view(
             source for row in rows for source in row["sources"]))
         newly_focused = [row for row in rows if row["plate"] not in auction_focus_names]
         new_stocks = []
+        independently_selected = {
+            str(item.get("plate", item.get("name", "")))
+            for item in (independent_by_tag.get(tag) or {}).get("selected", ())
+        }
         for stock in stocks:
             name = str(stock.get("name") or "")
             if "ST" in name.upper():
@@ -194,9 +202,14 @@ def build_plate_stock_view(
             if a25 is None or now is None or a25 * 100 >= 3 or now * 100 < 5:
                 continue
             new_stocks.append({"symbol": stock.get("symbol"), "name": stock.get("name"),
+                               "auction_pct": a25,
                                "current_pct": now,
                                "current_amount_yuan": _num((stock.get("times", {}).get(tag) or {}).get("amount")),
-                               "primary_plate": stock.get("primary_plate")})
+                               "primary_plate": stock.get("primary_plate"),
+                               "in_yest_pool": bool(stock.get("in_yest_pool")),
+                               "in_independent_plate": any(
+                                   str(item.get("plate")) in independently_selected
+                                   for item in stock.get("plates", ()))})
         new_stocks.sort(key=lambda row: (row["current_amount_yuan"] is None,
                                         -(row["current_amount_yuan"] or 0), str(row["symbol"])))
         emerging[tag] = {"plates": newly_focused[:10], "stocks": new_stocks[:15]}
@@ -222,12 +235,46 @@ def build_plate_stock_view(
                       "昨日涨停池标记沿用既有 ST 排除规则；CONCENTRATED 与涨幅分档只用于显示。"]}
 
 
+def _opening_limit_up_count(existing: Any, stocks: Sequence[Mapping[str, Any]],
+                            plate_name: str, stage: str) -> Any:
+    if _num(existing) is not None:
+        return existing
+    valid_flags = []
+    key = f"at_limit_{stage}"
+    for stock in stocks:
+        if not any(str(item.get("plate")) == plate_name for item in stock.get("plates", ())):
+            continue
+        current = stock.get("times", {}).get(stage) or {}
+        flag = (stock.get("scenario", {}).get("open") or {}).get(key)
+        if current.get("pct_vs_pre_close") is not None and isinstance(flag, bool):
+            valid_flags.append(flag)
+    return sum(valid_flags) if valid_flags else None
+
+
+def _significant_opening_plate(row: Mapping[str, Any], previous: Mapping[str, Any] | None) -> bool:
+    if previous is None:
+        return True
+    current_pct = _num(row.get("pct"))
+    previous_pct = _num(previous.get("pct"))
+    if current_pct is not None and previous_pct is not None and abs(current_pct - previous_pct) * 100 >= OPENING_FOLD_PCT_CHANGE_PP:
+        return True
+    current_rank = _num(row.get("rank"))
+    previous_rank = _num(previous.get("rank"))
+    if current_rank is not None and previous_rank is not None and abs(current_rank - previous_rank) >= OPENING_FOLD_RANK_CHANGE:
+        return True
+    return any(member.get("opened_limit") or member.get("newly_emerged")
+               for member in row.get("members", ()))
+
+
 def render_plate_stock_view(view: Mapping[str, Any]) -> str:
     def pct(value: Any) -> str:
         return "—" if _num(value) is None else f"{float(value) * 100:+.2f}%"
 
     def pp(value: Any) -> str:
         return "—" if _num(value) is None else f"{float(value):+.2f}pp"
+
+    def share(value: Any) -> str:
+        return "—" if _num(value) is None else f"{float(value) * 100:.1f}%"
 
     def yi(value: Any, scale: float = 1e8) -> str:
         return "—" if _num(value) is None else f"{float(value) / scale:.2f}"
@@ -239,7 +286,7 @@ def render_plate_stock_view(view: Mapping[str, Any]) -> str:
                       f"涨幅 {pct(row.get('pct'))}；额 {yi(row.get('amount_sum_yuan'))} 亿；有效成员 {row.get('effective_member_count', '—')}；"
                       f"涨停 {row.get('limit_up_count', '—')}；昨板 {row.get('yest_pool_member_count', '—')}；"
                       f"0920→0924→0925 {pct(row.get('pct_0920'))}→{pct(row.get('pct_0924'))}→{pct(row.get('pct'))}；"
-                      f"Top1 {pct(row.get('top1_concentration'))}{' CONCENTRATED' if row.get('concentrated') else ''}。", "",
+                      f"Top1 {share(row.get('top1_concentration'))}{' CONCENTRATED' if row.get('concentrated') else ''}。", "",
                       "| 个股 | 0925涨幅 | 匹配额(亿) | 未匹配买(万) | 未匹配卖(万) | 昨板 | 封停 | 价格 | 其他板块 |",
                       "|---|---:|---:|---:|---:|---|---|---|---|"])
         for member in (item for item in row["members"] if item.get("display_member")):
@@ -250,16 +297,36 @@ def render_plate_stock_view(view: Mapping[str, Any]) -> str:
                          f"{'是' if member.get('sealed_0925') else '否'} | {member.get('price_flag')} | "
                          f"{'、'.join(member.get('also_in_plates', ())) or '—'} |")
         lines.append("")
-    lines.extend(["## 开盘分析", "", "分档阈值仅用于显示；涨幅变化以百分点计。", ""])
+    lines.extend(["## 开盘分析", "",
+                  f"分档阈值仅用于显示；涨幅变化以百分点计。0935/0940 仅展示相对上一展示时点变化≥{OPENING_FOLD_PCT_CHANGE_PP:.1f}pp、名次变化≥{OPENING_FOLD_RANK_CHANGE}或含开板/新进个股的板块。", ""])
+    previous_stage: dict[str, Mapping[str, Any]] = {}
     for tag, section in view.get("opening", {}).items():
         lines.extend([f"### {tag}", ""])
-        for row in section.get("plates", ()):
+        new = view.get("emerging", {}).get(tag, {})
+        lines.extend([f"#### {tag} 竞价后新冒头", "",
+                      "新入焦点板块：" + ("、".join(row["plate"] for row in new.get("plates", ())) or "—"), "",
+                      "| 代码 | 名称 | 主板块 | 0925 涨幅 | 当前涨幅 | 成交额(亿) | 昨板 | 独立入选板块 |",
+                      "|---|---|---|---:|---:|---:|---|---|"])
+        for row in new.get("stocks", ()):
+            lines.append(f"| {row.get('symbol')} | {row.get('name') or '—'} | {row.get('primary_plate') or '—'} | "
+                         f"{pct(row.get('auction_pct'))} | {pct(row.get('current_pct'))} | "
+                         f"{yi(row.get('current_amount_yuan'))} | {'是' if row.get('in_yest_pool') else '否'} | "
+                         f"{'是' if row.get('in_independent_plate') else '否'} |")
+        lines.append("")
+        candidates = list(section.get("plates", ()))
+        if tag in ("0935", "0940"):
+            shown = [row for row in candidates
+                     if _significant_opening_plate(row, previous_stage.get(str(row["plate"]))) ]
+            folded = len(candidates) - len(shown)
+        else:
+            shown, folded = candidates, 0
+        for row in shown:
             lines.extend([f"#### {row['plate']}（来源：{'、'.join(row['sources'])}）", "",
                           f"涨幅 {pct(row.get('pct'))}；相对0925 {pp(row.get('change_vs_0925_pp'))}；"
                           f"名次变化 {row.get('rank_change') if row.get('rank_change') is not None else '—'}；"
                           f"额 {yi(row.get('amount_sum_yuan'))} 亿；有效成员 {row.get('effective_member_count', '—')}；"
-                          f"涨停 {row.get('limit_up_count', '—')}；昨板 {row.get('yest_pool_member_count', '—')}；"
-                          f"Top1 {pct(row.get('top1_concentration'))}{' CONCENTRATED' if row.get('concentrated') else ''}。", "",
+                          f"涨停 {row.get('limit_up_count') if row.get('limit_up_count') is not None else '—'}；昨板 {row.get('yest_pool_member_count') if row.get('yest_pool_member_count') is not None else '—'}；"
+                          f"Top1 {share(row.get('top1_concentration'))}{' CONCENTRATED' if row.get('concentrated') else ''}。", "",
                           "| 个股 | 当前涨幅 | 相对0925 | 成交额(亿) | 开板 | 新进 | 昨板 | 其他板块 |",
                           "|---|---:|---:|---:|---|---|---|---|"])
             for member in (item for item in row["members"] if item.get("display_member")):
@@ -270,11 +337,9 @@ def render_plate_stock_view(view: Mapping[str, Any]) -> str:
                              f"{'是' if member.get('in_yest_pool') else '否'} | "
                              f"{'、'.join(member.get('also_in_plates', ())) or '—'} |")
             lines.append("")
-        new = view.get("emerging", {}).get(tag, {})
-        lines.extend([f"#### {tag} 竞价后新冒头", "",
-                      "新入焦点板块：" + ("、".join(row["plate"] for row in new.get("plates", ())) or "—"), "",
-                      "个股(0925<+3pp 且当前≥+5pp)：" + ("、".join(
-                          f"{row['symbol']} {pct(row['current_pct'])}" for row in new.get("stocks", ())) or "—"), ""])
+        if folded:
+            lines.extend([f"其余 {folded} 个板块无显著变化(见 JSON)", ""])
+        previous_stage = {str(row["plate"]): row for row in candidates}
     tolerance = float(view.get("continuation", {}).get("tolerance_pp", CONTINUATION_TOLERANCE_PP))
     lines.extend(["## 延续 / 反转", "",
                   f"判据：延续=0945−0925≥−{tolerance:.1f}pp 且 0945>0；转弱=变化<−{tolerance:.1f}pp 且 0945>0；其余跨零为反转。", "",
@@ -285,5 +350,6 @@ def render_plate_stock_view(view: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["CONTINUATION_TOLERANCE_PP", "build_plate_stock_view", "continuation_state",
+__all__ = ["CONTINUATION_TOLERANCE_PP", "OPENING_FOLD_PCT_CHANGE_PP", "OPENING_FOLD_RANK_CHANGE",
+           "build_plate_stock_view", "continuation_state",
            "render_plate_stock_view", "select_focus_plates"]
