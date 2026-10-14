@@ -674,7 +674,7 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                       "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
         for row in auction_sections[tag]["main"]:
             delta = (f"{_amount_yi(row.get('previous_amount_change_yuan'))}, "
-                     f"{_fmt(row.get('previous_amount_change_pct')) + '%' if row.get('previous_amount_change_pct') is not None else '—'}"
+                     f"{format(row.get('previous_amount_change_pct'), '+.1f') + '%' if row.get('previous_amount_change_pct') is not None else '—'}"
                      if row.get("previous_amount_change_yuan") is not None else "—")
             lines.append("| " + " | ".join((
                 str(row["plate"]), _amount_yi(row.get("match_amount_yuan")),
