@@ -15,9 +15,23 @@ from examples.run_offline_plate_auction_open_report import (
     _revision_should_render,
     _registry_point_in_time_flag,
     _render_revision_note,
+    _load_stock_names,
     parse_open_times,
     validate_revision_cutoff,
 )
+
+
+def test_stock_names_loader_reports_hash_and_match_rate(tmp_path):
+    path = tmp_path / "names.json"
+    path.write_text(json.dumps({"000001": "平安银行", "000002": "万科A"}), encoding="utf-8")
+
+    names, manifest = _load_stock_names(path, ["000001", "000003"])
+
+    assert names == {"000001": "平安银行"}
+    assert manifest["sha256"]
+    assert manifest["matched_count"] == 1
+    assert manifest["symbol_count"] == 2
+    assert manifest["hit_rate"] == 0.5
 
 
 def test_registry_loader_accepts_list_registry_and_reports_asof_flag(tmp_path):

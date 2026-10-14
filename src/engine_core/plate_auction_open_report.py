@@ -523,8 +523,6 @@ def _build_auction_sections(result: Mapping[str, Any]) -> dict[str, Any]:
                            for row in pressure_rows if degree.get(str(row["symbol"]), 0))
             rest_ask = sum(row["times"][tag]["rest_ask"] / degree[str(row["symbol"])]
                            for row in pressure_rows if degree.get(str(row["symbol"]), 0))
-            pressure = ((rest_bid - rest_ask) / amount
-                        if pressure_rows and amount is not None and amount > 0 else None)
             touch_count = sum(
                 Decimal(str(row["times"][tag]["price"])).quantize(Decimal("0.01")) ==
                 _rounded_limit_price(row.get("pre_close"), str(row.get("symbol")), 1)
@@ -535,8 +533,10 @@ def _build_auction_sections(result: Mapping[str, Any]) -> dict[str, Any]:
             if old_tag:
                 previous = next((item for item in out.get(old_tag, {}).get("all", ())
                                  if item["plate"] == plate_name), None)
-            old_amount = previous.get("match_amount_yuan") if previous else None
-            old_pct = previous.get("trimmed_mean_pct") if previous else None
+            previous_priced_count = previous.get("priced_member_count") if previous else None
+            previous_usable = previous is not None and previous_priced_count >= 5
+            old_amount = previous.get("match_amount_yuan") if previous_usable else None
+            old_pct = previous.get("trimmed_mean_pct") if previous_usable else None
             candidates.append({
                 "plate": plate_name, "category": info.get("category", info.get("kind")),
                 "match_amount_yuan": amount, "match_amount_share": share,
@@ -551,9 +551,12 @@ def _build_auction_sections(result: Mapping[str, Any]) -> dict[str, Any]:
                 "previous_pct_change_pp": (trimmed - old_pct
                                            if trimmed is not None and old_pct is not None else None),
                 "limit_up_count": touch_count if tag == "0925" else None,
-                "buy_sell_pressure_pct": pressure,
+                "unmatched_buy_yuan": rest_bid if pressure_rows else None,
+                "unmatched_sell_yuan": rest_ask if pressure_rows else None,
+                "unmatched_buy_sell_diff_yuan": rest_bid - rest_ask if pressure_rows else None,
                 "price_coverage_pct": len(valid_rows) / len(members) if members else None,
                 "priced_member_count": len(valid_rows), "member_count": len(members),
+                "previous_priced_member_count": previous_priced_count,
             })
         candidates.sort(key=lambda row: (-(row["match_amount_share"] or 0), row["plate"]))
         main = candidates[:20]
@@ -662,12 +665,13 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                   "## 竞价板块主表", "",
                   "竞价事实: 虚拟撮合阶段无成交量/成交额；09:20 后不可撤单；匹配额=min(买一量,卖一量)×一档价；09:25 后才是真实成交。"])
     full_headers = ("板块", "匹配额(亿)", "占市场比%", "较上一标签额变化(亿,%)", "板块涨幅(截尾均值%)",
-                    "相对市场pp", "较上一标签涨幅变化pp", "触及涨停价数", "买卖压力%", "有价覆盖%")
+                    "相对市场pp", "较上一标签涨幅变化pp", "触及涨停价数", "未匹配买(亿)",
+                    "未匹配卖(亿)", "买卖差(亿)", "有价覆盖%")
     for tag in ("0920", "0924", "0925"):
         if tag not in auction_sections:
             continue
         lines.extend(["", f"### {tag}", "", "| " + " | ".join(full_headers) + " |",
-                      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
+                      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
         for row in auction_sections[tag]["main"]:
             delta = (f"{_amount_yi(row.get('previous_amount_change_yuan'))}, "
                      f"{_fmt(row.get('previous_amount_change_pct')) + '%' if row.get('previous_amount_change_pct') is not None else '—'}"
@@ -677,9 +681,12 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                 _pctfmt(row.get("match_amount_share")), delta,
                 _pctfmt(row.get("trimmed_mean_pct")), _ppfmt(row.get("relative_market_pp")),
                 _ppfmt(row.get("previous_pct_change_pp")), _fmt(row.get("limit_up_count")),
-                _pctfmt(row.get("buy_sell_pressure_pct")),
+                _amount_yi(row.get("unmatched_buy_yuan")),
+                _amount_yi(row.get("unmatched_sell_yuan")),
+                _amount_yi(row.get("unmatched_buy_sell_diff_yuan")),
                 _pctfmt(row.get("price_coverage_pct")),
             )) + " |")
+        lines.append("\n较上一标签变化仅在上一标签有价成员不少于 5 时显示；若上一标签有价成员少于 5 只，标为 —。")
         if tag == "0925":
             lines.append(f"\n终价 {auction_sections[tag]['final_price_count']} / 指示价 "
                          f"{auction_sections[tag]['indicative_price_count']}。")
@@ -693,7 +700,7 @@ def render_report_markdown(result: Mapping[str, Any]) -> str:
                              f"{_ppfmt(row.get('relative_market_pp'))} | {_fmt(row.get('limit_up_count'))} | "
                              f"{_pctfmt(row.get('price_coverage_pct'))} |")
         lines.extend(["", f"#### 竞价个股榜 {tag}", "",
-                      "| 代码 | 名称 | 价格口径 | 涨幅% | 匹配额(亿) | 占板块额% | 主板块 | 买单(亿) | 卖单(亿) | 涨停/封单 |",
+                      "| 代码 | 名称 | 价格口径 | 涨幅% | 匹配额(亿) | 占板块额% | 主板块 | 未匹配买(亿) | 未匹配卖(亿) | 涨停/封单 |",
                       "|---|---|---|---:|---:|---:|---|---:|---:|---|"])
         for row in auction_sections[tag]["stocks"]:
             status = ("触及涨停" if row.get("touch_limit_price") else "—")

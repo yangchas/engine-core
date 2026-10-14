@@ -708,6 +708,24 @@ def _compact_report_stocks(stocks: list[Mapping[str, Any]]) -> list[dict[str, An
     return compact
 
 
+def _load_stock_names(path: Path | None, symbols: list[str]) -> tuple[dict[str, str], dict[str, Any]]:
+    if path is None:
+        return {}, {"path": None, "sha256": None, "symbol_count": len(set(symbols)),
+                    "matched_count": 0, "hit_rate": 0.0 if symbols else None}
+    raw = path.read_bytes()
+    payload = json.loads(raw)
+    if not isinstance(payload, Mapping):
+        raise ValueError("stock names JSON must contain an object")
+    names = {str(symbol): str(name) for symbol, name in payload.items()
+             if isinstance(name, str) and name.strip()}
+    requested = set(map(str, symbols))
+    matched = {symbol: name for symbol, name in names.items() if symbol in requested}
+    denominator = len(requested)
+    return matched, {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
+                     "symbol_count": denominator, "matched_count": len(matched),
+                     "hit_rate": len(matched) / denominator if denominator else None}
+
+
 def _compact_report_plates(plates: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     full_categories = {"THEME", "NICHE", "BROAD"}
     compact = []
@@ -958,7 +976,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                open_times: tuple[str, ...] = ("0932",),
                auction_price_source: str = "tick_book1",
                revision_cutoff: str = "09:27:10", min_members: int = 10,
-               min_share: float = 0.003) -> None:
+               min_share: float = 0.003, stock_names_path: Path | None = None) -> None:
     if conclusion_phase != "AUCTION":
         raise ValueError("session report only supports conclusion_phase=AUCTION")
     revision_cutoff = validate_revision_cutoff(revision_cutoff)
@@ -1097,6 +1115,12 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             report["market"][tag]["flags"] = ["NOT_POINT_IN_TIME"]
         report["point_in_time_by_stage"] = point_in_time_by_stage
         report["degradation"] = degradation
+        stock_names, stock_names_manifest = _load_stock_names(
+            stock_names_path, [str(stock.get("symbol", "")) for stock in report["stocks"]]
+        )
+        for stock in report["stocks"]:
+            if stock.get("symbol") in stock_names:
+                stock["name"] = stock_names[stock["symbol"]]
         report["report_md"] = render_report_markdown(report)
         final_meta = auction_price_meta.get("0925", {})
         flagged_symbols = final_meta.get("pre_final_indicative_symbols", ())
@@ -1152,6 +1176,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "input_cutoff": {**report["input_cutoff"], "0925R": revision_meta["input_cutoff"]},
             "auction_system_boundary": AUCTION_SYSTEM_BOUNDARY,
             "auction_price": auction_price_meta,
+            "stock_names": stock_names_manifest,
             "revision_cutoff": revision_cutoff,
             "revision_summary": revision_summary,
             "coverage_count_by_stage": {tag: row["covered_count"] for tag, row in report["market"].items()},
@@ -1174,6 +1199,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trade-date", required=True, help="comma-separated YYYY-MM-DD dates")
     parser.add_argument("--snapshot", type=Path, required=True)
+    parser.add_argument("--stock-names", type=Path, help="optional JSON mapping of 6-digit stock codes to display names")
     parser.add_argument("--static-relation", type=Path, help="optional static relation JSON artifact")
     parser.add_argument("--registry-dir", type=Path, help="dated registry.json and relation.csv directory")
     parser.add_argument("--registry-asof", help="registry point-in-time date YYYY-MM-DD")
@@ -1216,7 +1242,7 @@ def main(argv: list[str] | None = None) -> int:
                hot_capture_dir=args.hot_capture_dir, static_relation_path=args.static_relation,
                registry_dir=args.registry_dir, registry_asof=args.registry_asof, open_times=open_times,
                auction_price_source=args.auction_price_source, revision_cutoff=revision_cutoff,
-               min_members=args.min_members, min_share=args.min_share)
+               min_members=args.min_members, min_share=args.min_share, stock_names_path=args.stock_names)
     return 0
 
 

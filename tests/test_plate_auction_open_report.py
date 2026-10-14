@@ -137,6 +137,45 @@ def test_auction_sections_rank_by_match_amount_and_keep_missing_deltas_missing()
     assert result["auction_sections"]["0925"]["main"][0]["price_coverage_pct"] is not None
 
 
+def test_auction_pressure_uses_absolute_amount_columns_and_previous_tag_needs_five_prices():
+    source = _source()
+    source["snapshot"]["stock_plate"] = {}
+    source["snapshot"]["s2p"] = {}
+    source["snapshot"]["names"] = {}
+    source["pre_close_by_symbol"] = {}
+    source["auction_by_tag"] = {tag: {} for tag in ("0920", "0924", "0925")}
+    for idx in range(10):
+        symbol = f"00020{idx}"
+        source["snapshot"]["stock_plate"][symbol] = "新能源"
+        source["pre_close_by_symbol"][symbol] = 10.0
+        for tag in ("0920", "0924", "0925"):
+            source["auction_by_tag"][tag][symbol] = {
+                "px_milli": 10100 if tag != "0920" or idx < 4 else None,
+                "match_amt_yuan": 100,
+                "rest_bid_amt_yuan": 20,
+                "rest_ask_amt_yuan": 5,
+            }
+
+    result = build_session_report(**source)
+    section = result["auction_sections"]["0924"]
+    plate = next(row for row in section["main"] if row["plate"] == "新能源")
+    text = result["report_md"]
+
+    assert plate["previous_pct_change_pp"] is None
+    assert plate["previous_amount_change_yuan"] is None
+    final_plate = next(row for row in result["auction_sections"]["0925"]["main"] if row["plate"] == "新能源")
+    assert final_plate["previous_pct_change_pp"] == 0
+    assert final_plate["previous_amount_change_yuan"] == 0
+    assert plate["unmatched_buy_yuan"] == 200
+    assert plate["unmatched_sell_yuan"] == 50
+    assert plate["unmatched_buy_sell_diff_yuan"] == 150
+    assert "未匹配买(亿)" in text and "未匹配卖(亿)" in text and "买卖差(亿)" in text
+    assert "代码 | 名称 | 价格口径" in text
+    assert "买单(亿)" not in text and "卖单(亿)" not in text
+    assert "买卖压力%" not in text
+    assert "上一标签有价成员少于 5" in text
+
+
 def test_auction_gain_loss_and_stock_tables_render_price_provenance():
     source = _source()
     source["snapshot"]["stock_plate"] = {}
