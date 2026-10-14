@@ -167,7 +167,7 @@ def write_capture(out_dir: str | Path, rows: Sequence[Mapping[str, Any]], meta: 
         for row in rows:
             handle.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
     manifest = {
-        "date": meta.get("date"), "source": "baostock",
+        "date": meta.get("date"), "source": str(meta.get("source") or "baostock"),
         "fetched_at": meta.get("fetched_at") or datetime.now(timezone.utc).isoformat(),
         "symbol_count": int(meta.get("symbol_count", len(rows))), "valid": int(meta.get("valid", 0)),
         "suspended": int(meta.get("suspended", 0)), "missing": int(meta.get("missing", 0)),
