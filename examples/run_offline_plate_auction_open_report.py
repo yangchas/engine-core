@@ -169,6 +169,160 @@ def _apply_auction_tick_prices(
     return metadata
 
 
+def validate_revision_cutoff(value: str) -> str:
+    try:
+        parsed = datetime.strptime(value, "%H:%M:%S").time()
+    except (TypeError, ValueError) as exc:
+        raise ValueError("--revision-cutoff must use HH:MM:SS") from exc
+    if not (datetime.strptime("09:25:06", "%H:%M:%S").time() < parsed <
+            datetime.strptime("09:30:00", "%H:%M:%S").time()):
+        raise ValueError("--revision-cutoff must be after 09:25:06 and before 09:30:00")
+    return value
+
+
+def _build_revision_auction(auction_by_tag: Mapping[str, Mapping[str, Mapping[str, Any]]],
+                            tick_rows: list[Mapping[str, Any]], trade_date: str,
+                            revision_cutoff: str) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, Any]]:
+    """Apply only available late final prices to 0925 indicative rows."""
+    revision_cutoff = validate_revision_cutoff(revision_cutoff)
+    cutoff = datetime.fromisoformat(f"{trade_date}T{revision_cutoff}").replace(tzinfo=_ZONE)
+    revised = {tag: {symbol: dict(row) for symbol, row in rows.items()}
+               for tag, rows in auction_by_tag.items()}
+    base = revised.get("0925", {})
+    indicative = {symbol for symbol, row in base.items()
+                  if "PRE_FINAL_INDICATIVE" in row.get("price_flags", ())}
+    latest: dict[str, tuple[datetime, Mapping[str, Any]]] = {}
+    for tick in tick_rows:
+        tick_ts = _local_datetime(tick.get("ts"))
+        if tick_ts.date().isoformat() != trade_date or tick_ts > cutoff:
+            continue
+        symbol = str(tick.get("symbol", ""))
+        if symbol not in indicative:
+            continue
+        if symbol not in latest or tick_ts >= latest[symbol][0]:
+            latest[symbol] = (tick_ts, tick)
+    counts = {source: 0 for source in ("TICK_PX_FINAL", "TICK_BOOK1_INDICATIVE", "NO_EFFECTIVE_PRICE")}
+    revised_symbols = []
+    for symbol in sorted(indicative):
+        row = base[symbol]
+        picked = latest.get(symbol)
+        if picked is None:
+            counts["NO_EFFECTIVE_PRICE"] += 1
+            continue
+        price, source, _ = effective_price(picked[1], phase_cutoff_time=cutoff, tick_ts=picked[0])
+        counts[source] += 1
+        if source == "TICK_PX_FINAL" and price is not None:
+            row.update(px_milli=price, price_source=source, price_flags=[],
+                       input_cutoff=cutoff.isoformat(timespec="seconds"))
+            revised_symbols.append(symbol)
+    return revised, {"input_cutoff": cutoff.strftime("%Y-%m-%dT%H:%M:%S"),
+                     "source_counts": counts, "pre_final_indicative_count": len(indicative),
+                     "revised_count": len(revised_symbols), "revised_symbols": revised_symbols,
+                     "stage_flag": "REVISED_AFTER_LATE_FINALS"}
+
+
+def _compare_revision_selections(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, Any]:
+    before_rows = {str(row.get("code")): row for row in before.get("selected", ())}
+    after_rows = {str(row.get("code")): row for row in after.get("selected", ())}
+    before_codes, after_codes = set(before_rows), set(after_rows)
+    union = before_codes | after_codes
+    return {"added": sorted(after_codes - before_codes), "removed": sorted(before_codes - after_codes),
+            "direction_changed": sorted(code for code in before_codes & after_codes
+                                         if before_rows[code].get("direction") != after_rows[code].get("direction")),
+            "jaccard": len(before_codes & after_codes) / len(union) if union else 1.0}
+
+
+def _render_revision_note(report: Mapping[str, Any]) -> str:
+    summary = report.get("revision_summary", {})
+    price = report.get("auction_price_note")
+    lines = ["0925 是 09:25:06 的实时结论（含指示价）；0925R 是迟到终价到达后的修订，二者不得混用；开盘(0932+)使用终价。"]
+    if price:
+        lines.append(str(price))
+    change = summary.get("price_change_pp", {})
+    lines.extend(["", "## 0925 → 0925R 修订对比", "",
+                  f"价格变化 {summary.get('price_changed_count', 0)} 只；涨幅变化中位 {change.get('median')} pp / "
+                  f"P90 {change.get('p90')} pp / 最大 {change.get('max')} pp。"])
+    selection = summary.get("selection")
+    if selection is not None:
+        lines.extend([f"入选板块 Jaccard={selection.get('jaccard')}；新增={selection.get('added', [])}；"
+                      f"移除={selection.get('removed', [])}；方向变化={selection.get('direction_changed', [])}。",
+                      f"个股标签来源/flags 变化 {summary.get('label_change_count', 0)} 只；涨停 {summary.get('limit_up_delta', 0):+d}，"
+                      f"跌停 {summary.get('limit_down_delta', 0):+d}。"])
+    return "\n".join(lines)
+
+
+def _percentile(values: list[float], fraction: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = (len(ordered) - 1) * fraction
+    low, high = int(index), min(int(index) + 1, len(ordered) - 1)
+    return ordered[low] + (ordered[high] - ordered[low]) * (index - low)
+
+
+def _revision_summary(report: Mapping[str, Any], revised: Mapping[str, Any],
+                      revised_count: int) -> dict[str, Any]:
+    old_stocks = {row["symbol"]: row for row in report.get("stocks", ())}
+    new_stocks = {row["symbol"]: row for row in revised.get("stocks", ())}
+    deltas = []
+    label_changes = 0
+    for symbol in sorted(set(old_stocks) & set(new_stocks)):
+        old_time = old_stocks[symbol]["times"].get("0925", {})
+        new_time = new_stocks[symbol]["times"].get("0925", {})
+        if old_time.get("price") != new_time.get("price"):
+            old_pct, new_pct = old_time.get("pct_vs_pre_close"), new_time.get("pct_vs_pre_close")
+            if isinstance(old_pct, (int, float)) and isinstance(new_pct, (int, float)):
+                deltas.append((new_pct - old_pct) * 100)
+        if old_stocks[symbol].get("labels", {}).get("0925") != new_stocks[symbol].get("labels", {}).get("0925"):
+            label_changes += 1
+    has_selection = "independent_by_tag" in report and "independent_by_tag" in revised
+    selection = (_compare_revision_selections(
+        report.get("independent_by_tag", {}).get("0925", {}),
+        revised.get("independent_by_tag", {}).get("0925", {}),
+    ) if has_selection else None)
+    old_market, new_market = report["market"]["0925"], revised["market"]["0925"]
+    actual_changes = sum(1 for symbol in set(old_stocks) & set(new_stocks)
+                         if old_stocks[symbol]["times"].get("0925", {}).get("price") !=
+                         new_stocks[symbol]["times"].get("0925", {}).get("price"))
+    return {"price_changed_count": actual_changes,
+            "price_change_pp": {"median": _median(deltas), "p90": _percentile(deltas, 0.9),
+                                "max": max(deltas, key=abs) if deltas else None},
+            "selection": selection, "label_change_count": label_changes,
+            "limit_up_delta": int(new_market.get("limit_up_count") or 0) - int(old_market.get("limit_up_count") or 0),
+            "limit_down_delta": int(new_market.get("limit_down_count") or 0) - int(old_market.get("limit_down_count") or 0)}
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def _merge_revision_stage(report: dict[str, Any], revised: Mapping[str, Any], summary: Mapping[str, Any]) -> None:
+    report["market"]["0925R"] = {**revised["market"]["0925"], "stage": "0925R"}
+    report["market"]["0925"]["stage"] = "0925"
+    revised_stocks = {row["symbol"]: row for row in revised.get("stocks", ())}
+    for stock in report.get("stocks", ()):
+        stock["times"]["0925"]["stage"] = "0925"
+        other = revised_stocks.get(stock["symbol"])
+        if other:
+            stock["times"]["0925R"] = {**other["times"]["0925"], "stage": "0925R"}
+            revised_label = other.get("labels", {}).get("0925")
+            if revised_label is not None:
+                stock.setdefault("labels", {})["0925R"] = revised_label
+    revised_plates = {row["plate"]: row for row in revised.get("plates", ())}
+    for plate in report.get("plates", ()):
+        if plate.get("times", {}).get("0925") is not None:
+            plate["times"]["0925"]["stage"] = "0925"
+            other = revised_plates.get(plate["plate"])
+            if other and other.get("times", {}).get("0925") is not None:
+                plate["times"]["0925R"] = {**other["times"]["0925"], "stage": "0925R"}
+    report.setdefault("independent_by_tag", {})["0925R"] = (revised.get("independent_by_tag") or {}).get("0925")
+    report["revision_summary"] = dict(summary)
+
+
 def _positive_milli(value: Any) -> int | None:
     try:
         result = int(value)
@@ -178,7 +332,8 @@ def _positive_milli(value: Any) -> int | None:
 
 
 def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str,
-             open_times: tuple[str, ...] = ("0932",), auction_price_source: str = "tick_book1"):
+             open_times: tuple[str, ...] = ("0932",), auction_price_source: str = "tick_book1",
+             revision_cutoff: str = "09:27:10"):
     start, end = kline_range.split(":", 1)
     if date.fromisoformat(start) > date.fromisoformat(trade_date) - timedelta(days=1):
         raise ValueError("--kline-range must include dates before trade date")
@@ -197,6 +352,7 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str,
     klines: dict[str, list[tuple[Any, ...]]] = {}
     opening_by_tag: dict[str, dict[str, dict[str, Any]]] = {tag: {} for tag in open_times}
     auction_tick_rows: dict[str, list[dict[str, Any]]] = {tag: [] for tag in auctions}
+    revision_tick_rows: list[dict[str, Any]] = []
 
     def fetchall(sql: str):
         nonlocal read_seconds, query_count
@@ -253,6 +409,17 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str,
         auction_price_meta = _apply_auction_tick_prices(
             auctions, auction_tick_rows, auction_price_source,
         )
+        revision_cutoff = validate_revision_cutoff(revision_cutoff)
+        if auctions.get("0925"):
+            rows = fetchall(
+                "SELECT last_row(px_milli), last_row(bp1_milli), last_row(ap1_milli), "
+                "last_row(ts), symbol "
+                f"FROM {database}.stock_tick_v2 WHERE ts >= '{trade_date} 09:25:06' "
+                f"AND ts <= '{trade_date} {revision_cutoff}' PARTITION BY symbol"
+            )
+            for px, bp1, ap1, ts, symbol in rows:
+                revision_tick_rows.append({"px_milli": px, "bp1_milli": bp1, "ap1_milli": ap1,
+                                           "ts": _local_datetime(ts), "symbol": str(symbol)})
         if symbols:
             for tag in open_times:
                 cutoff = f"{trade_date} {tag[:2]}:{tag[2:]}:00"
@@ -304,7 +471,8 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str,
     total_seconds = time.perf_counter() - total_started
     timing = {"read_s": read_seconds, "build_s": max(0.0, total_seconds - read_seconds),
               "total_s": total_seconds, "query_count": query_count,
-              "auction_price": auction_price_meta}
+              "auction_price": auction_price_meta, "revision_tick_rows": revision_tick_rows,
+              "revision_cutoff": revision_cutoff}
     opening_0932 = opening_by_tag.get("0932", {})
     opening = {symbol: {**row, "_asof_by_tag": {tag: values[symbol] for tag, values in opening_by_tag.items()
                                                   if symbol in values}}
@@ -680,9 +848,11 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                static_relation_path: Path | None = None, registry_dir: Path | None = None,
                registry_asof: str | None = None,
                open_times: tuple[str, ...] = ("0932",),
-               auction_price_source: str = "tick_book1") -> None:
+               auction_price_source: str = "tick_book1",
+               revision_cutoff: str = "09:27:10") -> None:
     if conclusion_phase != "AUCTION":
         raise ValueError("session report only supports conclusion_phase=AUCTION")
+    revision_cutoff = validate_revision_cutoff(revision_cutoff)
     _reject_eod_pipeline_product(snapshot_path)
     if kaipan_dir is not None:
         _reject_eod_pipeline_product(kaipan_dir)
@@ -717,7 +887,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
     for trade_date in trade_dates:
         report_started = time.perf_counter()
         auction, opening, pre_close, klines, baseline_auction, timing = _read_td(
-            td_host, trade_date, symbols, kline_range, open_times, auction_price_source,
+            td_host, trade_date, symbols, kline_range, open_times, auction_price_source, revision_cutoff,
         )
         opening_by_tag: dict[str, dict[str, dict[str, Any]]] = {tag: {} for tag in open_times}
         for symbol, row in opening.items():
@@ -754,6 +924,28 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         independent_manifest = (_attach_independent_plates(report, registry_dir, registry_asof, trade_date,
                                    reason_rows=reason_rows, pool_by_symbol=pool)
                                 if registry_dir is not None and registry_asof is not None else None)
+        revised_auction, revision_meta = _build_revision_auction(
+            auction, timing.get("revision_tick_rows", []), trade_date, revision_cutoff,
+        )
+        revision_report = build_session_report(
+                trade_date=trade_date, snapshot=snapshot, pre_close_by_symbol=pre_close,
+                auction_by_tag=revised_auction, opening_by_symbol=opening, opening_by_tag=opening_by_tag,
+                open_times=open_times, yest_pool_by_symbol=pool, degradation=degradation,
+                memberships=memberships, hierarchy=hierarchy, baseline_auction_by_tag=baseline_auction,
+                hot_prev_by_plate=_load_prev_hot(kaipan_dir, prior),
+                hot_captures=_load_hot_captures(hot_capture_dir),
+            )
+        for stock in revision_report["stocks"]:
+            source_row = revised_auction.get("0925", {}).get(stock["symbol"], {})
+            stock["times"]["0925"]["price_source"] = source_row.get("price_source", "NO_EFFECTIVE_PRICE")
+            stock["times"]["0925"]["flags"] = list(source_row.get("price_flags", ()))
+            stock["times"]["0925"]["input_cutoff"] = revision_meta["input_cutoff"]
+        if registry_dir is not None and registry_asof is not None:
+            _attach_independent_plates(revision_report, registry_dir, registry_asof, trade_date,
+                                       reason_rows=reason_rows, pool_by_symbol=pool)
+        revision_summary = _revision_summary(report, revision_report, revision_meta["revised_count"])
+        _merge_revision_stage(report, revision_report, revision_summary)
+        auction_price_meta["0925R"] = revision_meta
         if independent_manifest is not None:
             report["report_md"] = render_report_markdown(report)
         opening_flags = {symbol: set(row.get("flags", ())) for symbol, row in opening.items()}
@@ -785,10 +977,15 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         final_meta = auction_price_meta.get("0925", {})
         flagged_symbols = final_meta.get("pre_final_indicative_symbols", ())
         shenzhen_count = sum(symbol.startswith(("0", "3")) for symbol in flagged_symbols)
-        price_note = (f"价格口径: 十档一档有效价(竞价为虚拟撮合), 截至 input_cutoff; "
-                      f"0925 中 {shenzhen_count} 只深市个股为 09:25:00 前指示价"
-                      "(PRE_FINAL_INDICATIVE), 终价尚未到达。† 表示该个股使用该指示价。")
-        report["report_md"] = report["report_md"].replace("## 阅读说明\n\n", "## 阅读说明\n\n" + price_note + "\n\n", 1)
+        source_counts = final_meta.get("source_counts", {})
+        final_count = int(source_counts.get("SNAPSHOT_PX", 0)) + int(source_counts.get("TICK_PX_FINAL", 0))
+        indicative_count = int(final_meta.get("pre_final_indicative_count", 0))
+        shenzhen_share = shenzhen_count * 100 / indicative_count if indicative_count else 0
+        price_note = (f"终价 {final_count} 只 / 指示价(终价迟到) {indicative_count} 只(深市占 {shenzhen_share:.1f}%), "
+                      "预计 09:26~09:27 到达。价格口径: 截至 09:25:06; † 表示该个股使用指示价。")
+        report["auction_price_note"] = price_note
+        report["report_md"] = report["report_md"].replace("## 市场摘要\n\n", "## 市场摘要\n\n" + price_note + "\n\n", 1)
+        report["report_md"] += "\n\n" + _render_revision_note(report) + "\n"
         for stock in report["stocks"]:
             if "PRE_FINAL_INDICATIVE" not in stock.get("times", {}).get("0925", {}).get("flags", ()):
                 continue
@@ -827,6 +1024,8 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "point_in_time_by_stage": point_in_time_by_stage,
             "input_cutoff": report["input_cutoff"],
             "auction_price": auction_price_meta,
+            "revision_cutoff": revision_cutoff,
+            "revision_summary": revision_summary,
             "coverage_count_by_stage": {tag: row["covered_count"] for tag, row in report["market"].items()},
             **({"independent_plates": independent_manifest} if independent_manifest is not None else {}),
             "timing": {"read_s": timing["read_s"],
@@ -854,6 +1053,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="comma-separated opening cutoffs HHMM (default: 0932,0935,0940,0945)")
     parser.add_argument("--auction-price-source", choices=("tick_book1", "snapshot_px"), default="tick_book1",
                         help="auction price source (default: tick_book1; snapshot_px reproduces prior coverage)")
+    parser.add_argument("--revision-cutoff", default="09:27:10",
+                        help="late-final revision cutoff HH:MM:SS (strictly between 09:25:06 and 09:30:00)")
     parser.add_argument("--snapshot-asof", help="static snapshot date YYYY-MM-DD when its name does not include one")
     parser.add_argument("--conclusion-phase", choices=("AUCTION",), default="AUCTION")
     parser.add_argument("--kaipan-dir", "--prev-hot-dir", dest="kaipan_dir", type=Path)
@@ -866,6 +1067,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--registry-asof requires --registry-dir")
     if args.registry_dir and not args.registry_asof:
         parser.error("--registry-asof is required with --registry-dir")
+    try:
+        revision_cutoff = validate_revision_cutoff(args.revision_cutoff)
+    except ValueError as exc:
+        parser.error(str(exc))
     try:
         open_times = parse_open_times(args.open_times)
     except ValueError as exc:
@@ -880,7 +1085,7 @@ def main(argv: list[str] | None = None) -> int:
                snapshot_asof=args.snapshot_asof, conclusion_phase=args.conclusion_phase,
                hot_capture_dir=args.hot_capture_dir, static_relation_path=args.static_relation,
                registry_dir=args.registry_dir, registry_asof=args.registry_asof, open_times=open_times,
-               auction_price_source=args.auction_price_source)
+               auction_price_source=args.auction_price_source, revision_cutoff=revision_cutoff)
     return 0
 
 

@@ -6,9 +6,13 @@ from examples.run_offline_plate_auction_open_report import (
     _apply_auction_tick_prices,
     _apply_selection_stability,
     _attach_independent_plates,
+    _build_revision_auction,
+    _compare_revision_selections,
     _load_registry_dir,
     _registry_point_in_time_flag,
+    _render_revision_note,
     parse_open_times,
+    validate_revision_cutoff,
 )
 
 
@@ -123,3 +127,51 @@ def test_snapshot_price_mode_preserves_old_missing_coverage():
     assert auctions["0920"]["000001"]["px_milli"] is None
     assert auctions["0920"]["000001"]["price_source"] == "NO_EFFECTIVE_PRICE"
     assert meta["0920"]["source_counts"]["NO_EFFECTIVE_PRICE"] == 1
+
+
+def test_revision_cutoff_requires_strictly_after_boundary_and_before_open():
+    assert validate_revision_cutoff("09:27:10") == "09:27:10"
+    for cutoff in ("09:25:06", "09:25:00", "09:30:00"):
+        with pytest.raises(ValueError):
+            validate_revision_cutoff(cutoff)
+
+
+def test_revision_changes_only_pre_final_indicative_rows_and_respects_cutoff():
+    auction = {"0925": {
+        "000001": {"px_milli": 10000, "price_source": "SNAPSHOT_PX", "price_flags": []},
+        "000002": {"px_milli": 9900, "price_source": "TICK_BOOK1_INDICATIVE",
+                   "price_flags": ["PRE_FINAL_INDICATIVE"]},
+    }}
+    ticks = [
+        {"symbol": "000002", "ts": "2026-10-14 09:26:00", "px_milli": 10100,
+         "bp1_milli": 10100, "ap1_milli": 10100},
+        {"symbol": "000002", "ts": "2026-10-14 09:27:11", "px_milli": 11000,
+         "bp1_milli": 11000, "ap1_milli": 11000},
+        {"symbol": "000001", "ts": "2026-10-14 09:26:00", "px_milli": 12000,
+         "bp1_milli": 12000, "ap1_milli": 12000},
+    ]
+    revised, meta = _build_revision_auction(auction, ticks, "2026-10-14", "09:27:10")
+    assert revised["0925"]["000001"]["px_milli"] == 10000
+    assert revised["0925"]["000002"]["px_milli"] == 10100
+    assert revised["0925"]["000002"]["price_source"] == "TICK_PX_FINAL"
+    assert meta["revised_count"] == 1
+    assert meta["input_cutoff"] == "2026-10-14T09:27:10"
+
+
+def test_revision_selection_comparison_reports_set_changes_and_jaccard():
+    before = {"selected": [{"code": "A", "direction": "STRONG"}, {"code": "B", "direction": "WEAK"}]}
+    after = {"selected": [{"code": "A", "direction": "WEAK"}, {"code": "C", "direction": "STRONG"}]}
+    result = _compare_revision_selections(before, after)
+    assert result["added"] == ["C"]
+    assert result["removed"] == ["B"]
+    assert result["direction_changed"] == ["A"]
+    assert result["jaccard"] == 1 / 3
+
+
+def test_markdown_has_revision_boundary_and_terminal_indicative_counts():
+    markdown = _render_revision_note({
+        "auction_price_note": "终价 93 只 / 指示价(终价迟到) 7 只(深市占 100%), 预计 09:26~09:27 到达",
+        "revision_summary": {"price_changed_count": 7},
+    })
+    assert "终价 93 只 / 指示价(终价迟到) 7 只(深市占 100%)" in markdown
+    assert "0925 是 09:25:06 的实时结论" in markdown
