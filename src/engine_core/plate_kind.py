@@ -17,9 +17,10 @@ _NOISE_PATTERNS = (
     re.compile(r"\d{4}年"),
     re.compile(r"\d+(?:\.\d+)?(?:万|亿)?元"),
     re.compile(r"\d+家|\d+只|\d+%"),
+    re.compile(r"约\s*\d"),
     re.compile(r"^(?:\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*[:/比]\s*\d+(?:\.\d+)?)$"),
 )
-_SENTENCE_MARKERS = ("不超过", "约", "总投资", "募集")
+_SENTENCE_MARKERS = ("不超过", "总投资", "募集")
 
 
 def classify_plate_kind(name: str) -> str:
