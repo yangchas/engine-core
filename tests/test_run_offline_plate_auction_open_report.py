@@ -88,16 +88,20 @@ def test_independent_report_keeps_missing_returns_missing(tmp_path):
         writer = csv.writer(handle)
         writer.writerow(("plateid", "stockid"))
         writer.writerows(("801001", f"00000{i}") for i in range(1, 10))
-        writer.writerow(("801002", "000001"))
+        writer.writerows(("801002", f"00000{i}") for i in range(1, 6))
     (tmp_path / "manifest.json").write_text(json.dumps({"as_of": "2026-10-13",
         "as_of_source": "csv_unknown"}), encoding="utf-8")
 
     stocks = []
     for i in range(1, 10):
         value = None if i == 9 else (i - 5) * 0.01
+        event_member = i <= 5
         stocks.append({
             "symbol": f"00000{i}",
-            "times": {tag: {"pct_vs_pre_close": value, "limit_state": None,
+            "times": {tag: {"pct_vs_pre_close": value,
+                            "price": 10.0 if event_member else None,
+                            "amount": 100.0 if event_member else None,
+                            "limit_state": None,
                             "at_limit_price": i == 1, "rest_bid": None}
                       for tag in ("0920", "0924", "0925", "0932")},
         })
@@ -116,6 +120,33 @@ def test_independent_report_keeps_missing_returns_missing(tmp_path):
     assert "REGISTRY_ASOF_UNVERIFIED" in independent_manifest["flags"]
     assert report["independent_by_tag"]["0925"]["event_plates"][0]["touch_limit_price_count"] == 1
     assert "limit_up_count" not in report["independent_by_tag"]["0925"]["event_plates"][0]
+
+
+def test_independent_filter_excludes_four_members_and_preserves_unknown_members(tmp_path):
+    (tmp_path / "registry.json").write_text(json.dumps({"plates": [
+        {"code": "801001", "name": "四成员主题", "class": "THEME"},
+        {"code": "801002", "name": "成员未知事件", "class": "EVENT"},
+    ]}), encoding="utf-8")
+    (tmp_path / "relation.csv").write_text(
+        "plateid,stockid\n" + "".join(f"801001,00000{i}\n" for i in range(1, 5)), encoding="utf-8")
+    (tmp_path / "manifest.json").write_text(json.dumps({"as_of": "2026-10-12",
+        "as_of_source": "api_members"}), encoding="utf-8")
+    stocks = [{"symbol": f"00000{i}", "times": {tag: {
+        "price": 10.0, "amount": 100.0, "pct_vs_pre_close": (i - 2) * 0.01,
+        "limit_state": None, "at_limit_price": False, "rest_bid": None,
+    } for tag in ("0920", "0924", "0925", "0932")}} for i in range(1, 5)]
+    report = {"stocks": stocks, "plates": [], "input_cutoff": {
+        tag: "2026-10-13T09:25:00" for tag in ("0920", "0924", "0925", "0932")}}
+
+    _attach_independent_plates(report, tmp_path, None, "2026-10-13")
+
+    assert any(row["code"] == "801001" and row["effective_members"] == 4
+               for row in report["excluded_small_plates"]["0925"])
+    assert any(row["code"] == "801002" and row["members_unknown"]
+               for row in report["excluded_small_plates"]["0925"])
+    assert "四成员主题" not in {row["name"] for row in report["independent_by_tag"]["0925"]["selected"]}
+    assert any(row["code"] == "801002" and row["members_unknown"]
+               for row in report["independent_by_tag"]["0925"]["event_plates"])
 
 
 def test_api_members_registry_asof_before_day_has_no_independent_npt_flag(tmp_path):

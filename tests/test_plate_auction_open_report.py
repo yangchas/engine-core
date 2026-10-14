@@ -123,6 +123,39 @@ def test_size_neutral_board_applies_thresholds_sorts_and_marks_concentration():
     assert all(row["plate"] != "薄成员" for row in section["size_neutral_top"])
 
 
+def test_small_plate_filter_is_stage_specific_and_preserves_excluded_rows():
+    source = _size_neutral_input()
+    symbols = list(source["snapshot"]["stock_plate"])
+    for tag in ("0920", "0924", "0925"):
+        source["auction_by_tag"][tag] = {
+            symbol: {"px_milli": 10100, "match_amt_yuan": 100}
+            for symbol in symbols
+        }
+    source["auction_by_tag"]["0920"] = {
+        symbol: {"px_milli": 10100, "match_amt_yuan": 100} for symbol in symbols[:4]
+    }
+    source["auction_by_tag"]["0924"] = {
+        symbol: {"px_milli": 10100, "match_amt_yuan": 100} for symbol in symbols[:5]
+    }
+    source["opening_by_symbol"] = {
+        symbol: {"ts": "2026-10-13 09:32:00", "px_milli": 10100, "amt_yuan": 100}
+        for symbol in symbols
+    }
+
+    result = build_session_report(**source)
+    sections = _build_auction_sections(result)
+
+    assert sections["0920"]["excluded_small_plates"] == [{
+        "code": "主题", "name": "主题", "effective_members": 4, "nominal_members": 11,
+    }]
+    assert "主题" not in {row["plate"] for row in sections["0920"]["all"]}
+    assert "主题" in {row["plate"] for row in sections["0924"]["all"]}
+    assert result["plates"][0]["times"]["0920"]["effective_member_count"] == 4
+    assert result["plates"][0]["times"]["0924"]["effective_member_count"] == 5
+    assert result["plates"][0]["times"]["0925"]["effective_member_count"] == 11
+    assert "本时点因有效成员<5未入榜: 1 个" in result["report_md"]
+
+
 def test_size_neutral_summary_is_rendered_and_absent_without_caps():
     source = _source()
     result = build_session_report(**source)
@@ -452,11 +485,16 @@ def test_first_screen_filters_thin_and_short_baseline_plates_but_activity_can_sh
     bank = next(row for row in result["plates"] if row["plate"] == "银行")
     bank["member_count"] = 20
     bank["priced_member_count"] = 20
+    bank["times"]["0925"]["effective_member_count"] = None
     bank["times"]["0925"]["performance"]["covered_count"] = 20
     bank["times"]["0925"]["activity"].update(
         amount_share_of_market=0.01, baseline_multiple=31.3, flags=["BASELINE_SHORT"])
     thin = {**bank, "plate": "冰雪产业", "member_count": 5, "priced_member_count": 5,
-            "quality_flags": ["SMALL_OR_THIN"], "times": dict(bank["times"])}
+            "quality_flags": ["SMALL_OR_THIN"],
+            "times": {tag: dict(value) if value else None for tag, value in bank["times"].items()}}
+    for stage in thin["times"].values():
+        if stage:
+            stage["effective_member_count"] = 5
     thin["times"]["0925"] = {**bank["times"]["0925"], "performance": {
         **bank["times"]["0925"]["performance"], "covered_count": 5}}
     thin["times"]["0925"]["activity"] = {**bank["times"]["0925"]["activity"],
@@ -603,6 +641,7 @@ def test_report_adds_scale_ranking_and_meaning_line_without_score_keys():
                                                for tag, value in template["times"].items()}}
         for stage in row["times"].values():
             if stage:
+                stage["effective_member_count"] = 12
                 stage["activity"] = {**stage["activity"], "amount_share_of_market": share,
                                       "baseline_multiple": multiple}
                 stage["performance"] = {**stage["performance"], "covered_count": 12}
@@ -649,6 +688,7 @@ def test_absent_plate_in_top50_capture_is_marked_beyond_50():
 
     bank = next(row for row in report["plates"] if row["plate"] == "银行")
     bank["priced_member_count"] = 10
+    bank["times"]["0925"]["effective_member_count"] = 10
     bank["times"]["0925"]["activity"].update(amount_share_of_market=0.01, baseline_multiple=2)
     bank["times"]["0925"]["performance"]["covered_count"] = 10
     report["report_md"] = render_report_markdown(report)

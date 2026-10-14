@@ -22,7 +22,9 @@ from engine_core.plate_membership import (
 )
 from engine_core.plate_rules import build_plate_candidates_from_reason
 from engine_core.plate_hierarchy_kaipan import build_hierarchy_as_of, parse_kaipan_reason_items
-from engine_core.plate_auction_open_report import build_session_report, render_report_markdown
+from engine_core.plate_auction_open_report import (
+    MIN_EFFECTIVE_MEMBERS, build_session_report, render_report_markdown,
+)
 from engine_core.plate_significance import select_independent_plates
 from engine_core.plate_rules import normalize_plate_name
 from examples.run_offline_plate_pipeline import (
@@ -852,12 +854,36 @@ def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, regis
               "max_selected": 20, "min_residual_share": 0.4, "min_residual_n": 8}
     tags = tuple(report.get("input_cutoff", {})) or tuple(
         next(iter(report.get("stocks", ())), {}).get("times", {}).keys())
+    excluded_by_tag = report.setdefault("excluded_small_plates", {})
     for tag in tags:
         returns = {symbol: (stocks.get(symbol, {}).get("times", {}).get(tag, {}).get("pct_vs_pre_close"))
                    for symbol in all_symbols}
+        stage_members = {}
+        excluded = list(excluded_by_tag.get(tag, ()))
+        for code, symbol_set in members.items():
+            stage_facts = [stocks.get(symbol, {}).get("times", {}).get(tag, {}) for symbol in symbol_set]
+            effective = sum(1 for fact in stage_facts
+                            if fact.get("price") is not None and fact.get("amount") is not None
+                            and fact.get("amount") >= 0)
+            if effective < MIN_EFFECTIVE_MEMBERS:
+                name = registry.get(code, {}).get("name") or code
+                if not any(row.get("code") == code or row.get("name") == name for row in excluded):
+                    excluded.append({"code": code, "name": name,
+                                     "effective_members": effective, "nominal_members": len(symbol_set)})
+            else:
+                stage_members[code] = symbol_set
+        for code, row in registry.items():
+            if code not in members:
+                stage_members[code] = members.get(code, set())
+                name = row.get("name") or code
+                if not any(item.get("code") == code or item.get("name") == name for item in excluded):
+                    excluded.append({"code": code, "name": name,
+                                     "effective_members": None, "nominal_members": None,
+                                     "members_unknown": True})
+        excluded_by_tag[tag] = excluded
         limit_up = {symbol for symbol, stock in stocks.items()
                     if stock.get("times", {}).get(tag, {}).get("limit_state") == 1}
-        result = select_independent_plates(returns, members, registry, limit_up_symbols=limit_up)
+        result = select_independent_plates(returns, stage_members, registry, limit_up_symbols=limit_up)
         selected = []
         for row in result.plates:
             item = dict(row)
@@ -894,6 +920,19 @@ def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, regis
         event_rows = []
         for code in event_codes:
             symbols = sorted(members.get(code, ()))
+            if code not in members:
+                event_rows.append({"code": code, "name": registry[code].get("name") or code,
+                                   "member_count": None, "covered_count": None,
+                                   "members_unknown": True, "trim_mean": None,
+                                   "touch_limit_price_count": None, "sealed_limit_count": None,
+                                   "top3": []})
+                continue
+            effective = sum(1 for symbol in symbols
+                            if report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("price") is not None
+                            and report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("amount") is not None
+                            and report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("amount") >= 0)
+            if effective < MIN_EFFECTIVE_MEMBERS:
+                continue
             values = [(symbol, stage_returns.get(symbol)) for symbol in symbols
                       if isinstance(stage_returns.get(symbol), (int, float))]
             ordered = sorted(values, key=lambda item: (item[1], item[0]))
@@ -919,6 +958,17 @@ def _attach_independent_plates(report: dict[str, Any], registry_dir: Path, regis
                          for symbol, value in sorted(values, key=lambda item: (-item[1], item[0]))[:3]]})
         control_rows = []
         for code in sorted((c for c, row in registry.items() if row.get("class") == "GENERIC_FACTOR")):
+            if code not in members:
+                control_rows.append({"code": code, "name": registry.get(code, {}).get("name") or code,
+                                     "n": None, "members_unknown": True,
+                                     "relative_market_pp": None, "z": None})
+                continue
+            effective = sum(1 for symbol in members[code]
+                            if report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("price") is not None
+                            and report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("amount") is not None
+                            and report_stock.get(symbol, {}).get("times", {}).get(tag, {}).get("amount") >= 0)
+            if effective < MIN_EFFECTIVE_MEMBERS:
+                continue
             vals = [stage_returns.get(symbol) for symbol in members.get(code, ())
                     if isinstance(stage_returns.get(symbol), (int, float))]
             delta = sum(vals) / len(vals) - market_mean if vals and market_mean is not None else None
@@ -1217,6 +1267,13 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "revision_cutoff": revision_cutoff,
             "revision_summary": revision_summary,
             "coverage_count_by_stage": {tag: row["covered_count"] for tag, row in report["market"].items()},
+            "min_effective_members": MIN_EFFECTIVE_MEMBERS,
+            "excluded_small_plate_count_by_stage": {
+                tag: sum(1 for row in rows if row.get("effective_members") is not None
+                         and row["effective_members"] < MIN_EFFECTIVE_MEMBERS)
+                for tag, rows in report.get("excluded_small_plates", {}).items()
+            },
+            "excluded_small_plates": report.get("excluded_small_plates", {}),
             "amount_definition": {
                 "member_sum": "成员有价匹配额直接求和(同热板口径)",
                 "conserved": "按所属板块数均分",
