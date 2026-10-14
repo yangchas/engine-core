@@ -14,6 +14,7 @@ import time
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
+from engine_core.auction_effective_price import effective_price
 from engine_core.auction_book import AuctionBookTick, derive_auction_book
 from engine_core.plate_membership import (
     MEMBERSHIP_POLICY_USER_PRIORITY_V1, PlateHierarchy, apply_hierarchy, build_memberships,
@@ -98,8 +99,86 @@ def _td_connect(host: str):
     return connection, database
 
 
+def _local_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and not value.isdigit():
+        parsed = datetime.fromisoformat(value)
+    else:
+        parsed = datetime.fromtimestamp(int(value) / 1000, _ZONE)
+    return parsed.replace(tzinfo=_ZONE) if parsed.tzinfo is None else parsed.astimezone(_ZONE)
+
+
+def _apply_auction_tick_prices(
+    auctions: dict[str, dict[str, dict[str, Any]]],
+    tick_rows_by_tag: Mapping[str, list[Mapping[str, Any]]],
+    price_source: str = "tick_book1",
+) -> dict[str, dict[str, Any]]:
+    """Choose snapshot or as-of tick prices and return per-tag provenance counts."""
+    if price_source not in {"tick_book1", "snapshot_px"}:
+        raise ValueError("auction price source must be tick_book1 or snapshot_px")
+    metadata: dict[str, dict[str, Any]] = {}
+    for tag, snapshots in auctions.items():
+        cutoffs = [_local_datetime(row["ts"]) for row in snapshots.values() if row.get("ts")]
+        cutoff = max(cutoffs) if cutoffs else None
+        cutoff_text = cutoff.isoformat(sep=" ") if cutoff else None
+        eligible: dict[str, tuple[datetime, Mapping[str, Any]]] = {}
+        if cutoff is not None and price_source == "tick_book1":
+            for tick in tick_rows_by_tag.get(tag, ()):
+                tick_time = _local_datetime(tick.get("ts"))
+                if tick_time.date() != cutoff.date() or tick_time > cutoff:
+                    continue
+                symbol = str(tick.get("symbol", ""))
+                if not symbol:
+                    continue
+                prior = eligible.get(symbol)
+                if prior is None or tick_time >= prior[0]:
+                    eligible[symbol] = (tick_time, tick)
+        counts = {source: 0 for source in ("SNAPSHOT_PX", "TICK_PX_FINAL",
+                                           "TICK_BOOK1_INDICATIVE", "NO_EFFECTIVE_PRICE")}
+        disagree = 0
+        pre_final_symbols: list[str] = []
+        for symbol, row in snapshots.items():
+            snapshot_px = _positive_milli(row.get("px_milli"))
+            tick_pair = eligible.get(symbol)
+            tick_price = None
+            tick_kind = "NO_EFFECTIVE_PRICE"
+            tick_flags: tuple[str, ...] = ()
+            if tick_pair is not None and cutoff is not None:
+                tick_price, tick_kind, tick_flags = effective_price(
+                    tick_pair[1], phase_cutoff_time=cutoff, tick_ts=tick_pair[0],
+                )
+            if snapshot_px is not None and tick_price is not None and snapshot_px != tick_price:
+                disagree += 1
+            if snapshot_px is not None:
+                price, source, flags = snapshot_px, "SNAPSHOT_PX", ()
+            elif price_source == "tick_book1":
+                price, source, flags = tick_price, tick_kind, tick_flags
+            else:
+                price, source, flags = None, "NO_EFFECTIVE_PRICE", ()
+            row["px_milli"] = price
+            row["price_source"] = source
+            row["price_flags"] = list(flags)
+            counts[source] += 1
+            if "PRE_FINAL_INDICATIVE" in flags:
+                pre_final_symbols.append(symbol)
+        metadata[tag] = {"input_cutoff": cutoff_text, "source_counts": counts,
+                         "price_source_disagree": disagree,
+                         "pre_final_indicative_count": len(pre_final_symbols),
+                         "pre_final_indicative_symbols": sorted(pre_final_symbols)}
+    return metadata
+
+
+def _positive_milli(value: Any) -> int | None:
+    try:
+        result = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if result > 0 else None
+
+
 def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str,
-             open_times: tuple[str, ...] = ("0932",)):
+             open_times: tuple[str, ...] = ("0932",), auction_price_source: str = "tick_book1"):
     start, end = kline_range.split(":", 1)
     if date.fromisoformat(start) > date.fromisoformat(trade_date) - timedelta(days=1):
         raise ValueError("--kline-range must include dates before trade date")
@@ -117,6 +196,7 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str,
     pre_close: dict[str, float | None] = {}
     klines: dict[str, list[tuple[Any, ...]]] = {}
     opening_by_tag: dict[str, dict[str, dict[str, Any]]] = {tag: {} for tag in open_times}
+    auction_tick_rows: dict[str, list[dict[str, Any]]] = {tag: [] for tag in auctions}
 
     def fetchall(sql: str):
         nonlocal read_seconds, query_count
@@ -155,6 +235,24 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str,
                 {"trade_date": day, "amount_by_symbol": grouped[day]}
                 for day in sorted(grouped)[-5:]
             ]
+        for tag, snapshot_rows in auctions.items():
+            if not snapshot_rows or auction_price_source == "snapshot_px":
+                continue
+            cutoff = max(_local_datetime(row["ts"]) for row in snapshot_rows.values())
+            cutoff_text = cutoff.strftime("%Y-%m-%d %H:%M:%S.%f")
+            rows = fetchall(
+                "SELECT last_row(px_milli), last_row(bp1_milli), last_row(ap1_milli), "
+                "last_row(ts), symbol "
+                f"FROM {database}.stock_tick_v2 WHERE ts >= '{trade_date} 09:14:00' "
+                f"AND ts <= '{cutoff_text}' PARTITION BY symbol"
+            )
+            for px, bp1, ap1, ts, symbol in rows:
+                auction_tick_rows[tag].append({"px_milli": px, "bp1_milli": bp1,
+                                               "ap1_milli": ap1, "ts": _local_datetime(ts),
+                                               "symbol": str(symbol)})
+        auction_price_meta = _apply_auction_tick_prices(
+            auctions, auction_tick_rows, auction_price_source,
+        )
         if symbols:
             for tag in open_times:
                 cutoff = f"{trade_date} {tag[:2]}:{tag[2:]}:00"
@@ -205,7 +303,8 @@ def _read_td(host: str, trade_date: str, symbols: list[str], kline_range: str,
         connection.close()
     total_seconds = time.perf_counter() - total_started
     timing = {"read_s": read_seconds, "build_s": max(0.0, total_seconds - read_seconds),
-              "total_s": total_seconds, "query_count": query_count}
+              "total_s": total_seconds, "query_count": query_count,
+              "auction_price": auction_price_meta}
     opening_0932 = opening_by_tag.get("0932", {})
     opening = {symbol: {**row, "_asof_by_tag": {tag: values[symbol] for tag, values in opening_by_tag.items()
                                                   if symbol in values}}
@@ -580,7 +679,8 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
                conclusion_phase: str = "AUCTION", hot_capture_dir: Path | None = None,
                static_relation_path: Path | None = None, registry_dir: Path | None = None,
                registry_asof: str | None = None,
-               open_times: tuple[str, ...] = ("0932",)) -> None:
+               open_times: tuple[str, ...] = ("0932",),
+               auction_price_source: str = "tick_book1") -> None:
     if conclusion_phase != "AUCTION":
         raise ValueError("session report only supports conclusion_phase=AUCTION")
     _reject_eod_pipeline_product(snapshot_path)
@@ -617,7 +717,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
     for trade_date in trade_dates:
         report_started = time.perf_counter()
         auction, opening, pre_close, klines, baseline_auction, timing = _read_td(
-            td_host, trade_date, symbols, kline_range, open_times,
+            td_host, trade_date, symbols, kline_range, open_times, auction_price_source,
         )
         opening_by_tag: dict[str, dict[str, dict[str, Any]]] = {tag: {} for tag in open_times}
         for symbol, row in opening.items():
@@ -643,6 +743,14 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             hot_prev_by_plate=_load_prev_hot(kaipan_dir, prior),
             hot_captures=_load_hot_captures(hot_capture_dir),
         )
+        auction_price_meta = timing.get("auction_price", {})
+        for stock in report["stocks"]:
+            for tag in ("0920", "0924", "0925"):
+                source_row = auction.get(tag, {}).get(stock["symbol"], {})
+                flags = list(source_row.get("price_flags", ()))
+                if tag in stock.get("times", {}):
+                    stock["times"][tag]["price_source"] = source_row.get("price_source", "NO_EFFECTIVE_PRICE")
+                    stock["times"][tag]["flags"] = flags
         independent_manifest = (_attach_independent_plates(report, registry_dir, registry_asof, trade_date,
                                    reason_rows=reason_rows, pool_by_symbol=pool)
                                 if registry_dir is not None and registry_asof is not None else None)
@@ -674,6 +782,18 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
         report["point_in_time_by_stage"] = point_in_time_by_stage
         report["degradation"] = degradation
         report["report_md"] = render_report_markdown(report)
+        final_meta = auction_price_meta.get("0925", {})
+        flagged_symbols = final_meta.get("pre_final_indicative_symbols", ())
+        shenzhen_count = sum(symbol.startswith(("0", "3")) for symbol in flagged_symbols)
+        price_note = (f"价格口径: 十档一档有效价(竞价为虚拟撮合), 截至 input_cutoff; "
+                      f"0925 中 {shenzhen_count} 只深市个股为 09:25:00 前指示价"
+                      "(PRE_FINAL_INDICATIVE), 终价尚未到达。† 表示该个股使用该指示价。")
+        report["report_md"] = report["report_md"].replace("## 阅读说明\n\n", "## 阅读说明\n\n" + price_note + "\n\n", 1)
+        for stock in report["stocks"]:
+            if "PRE_FINAL_INDICATIVE" not in stock.get("times", {}).get("0925", {}).get("flags", ()):
+                continue
+            prefix = f"| {stock['symbol']} | {stock.get('name') or ''} |"
+            report["report_md"] = report["report_md"].replace(prefix, prefix[:-1] + "† |")
         if static_asof_unknown:
             report["report_md"] = "标签: STATIC_ASOF_UNKNOWN\n\n" + report["report_md"]
         for tag in point_in_time_by_stage:
@@ -706,6 +826,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "snapshot_sealed_at": snapshot_sealed_at.isoformat() if snapshot_sealed_at else None,
             "point_in_time_by_stage": point_in_time_by_stage,
             "input_cutoff": report["input_cutoff"],
+            "auction_price": auction_price_meta,
             "coverage_count_by_stage": {tag: row["covered_count"] for tag, row in report["market"].items()},
             **({"independent_plates": independent_manifest} if independent_manifest is not None else {}),
             "timing": {"read_s": timing["read_s"],
@@ -715,7 +836,7 @@ def run_report(*, trade_dates: list[str], snapshot_path: Path, kaipan_dir: Path 
             "reason_asof_rule": "Date<=D" if conclusion_phase == "EOD" else "Date<D",
             "reason_item_count_excluded_same_day": excluded_same_day,
             "no_close_or_after_inputs": True,
-            "sources": ["TD auction_snapshot_v2", "TD stock_tick_v2 last_row as-of each --open-times cutoff", "TD daily kline"],
+            "sources": ["TD auction_snapshot_v2", "TD stock_tick_v2 last_row as-of each auction input_cutoff and --open-times cutoff", "TD daily kline"],
             "stage_semantics": {"0920": "竞价金额为虚拟匹配额", "0924": "竞价金额为虚拟匹配额",
                                 "0925": "竞价金额为虚拟匹配额",
                                 **{tag: "真实累计成交额" for tag in open_times}},
@@ -731,6 +852,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--registry-asof", help="registry point-in-time date YYYY-MM-DD")
     parser.add_argument("--open-times", default=",".join(_DEFAULT_OPEN_TIMES),
                         help="comma-separated opening cutoffs HHMM (default: 0932,0935,0940,0945)")
+    parser.add_argument("--auction-price-source", choices=("tick_book1", "snapshot_px"), default="tick_book1",
+                        help="auction price source (default: tick_book1; snapshot_px reproduces prior coverage)")
     parser.add_argument("--snapshot-asof", help="static snapshot date YYYY-MM-DD when its name does not include one")
     parser.add_argument("--conclusion-phase", choices=("AUCTION",), default="AUCTION")
     parser.add_argument("--kaipan-dir", "--prev-hot-dir", dest="kaipan_dir", type=Path)
@@ -756,7 +879,8 @@ def main(argv: list[str] | None = None) -> int:
                kline_range=args.kline_range, td_host=args.td_host, output_dir=args.output_dir,
                snapshot_asof=args.snapshot_asof, conclusion_phase=args.conclusion_phase,
                hot_capture_dir=args.hot_capture_dir, static_relation_path=args.static_relation,
-               registry_dir=args.registry_dir, registry_asof=args.registry_asof, open_times=open_times)
+               registry_dir=args.registry_dir, registry_asof=args.registry_asof, open_times=open_times,
+               auction_price_source=args.auction_price_source)
     return 0
 
 

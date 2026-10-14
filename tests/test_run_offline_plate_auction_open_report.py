@@ -3,6 +3,7 @@ import json
 import pytest
 
 from examples.run_offline_plate_auction_open_report import (
+    _apply_auction_tick_prices,
     _apply_selection_stability,
     _attach_independent_plates,
     _load_registry_dir,
@@ -84,3 +85,41 @@ def test_stability_counts_contiguous_selection_and_adjacent_jaccard():
     assert data["0924"]["stability"]["previous_jaccard"] == 1 / 3
     assert data["0935"]["selected"][0]["consecutive_selected"] == 2
     assert data["0932"]["stability"]["previous_jaccard"] is None
+
+
+def test_auction_price_uses_last_tick_at_or_before_snapshot_cutoff_and_counts_disagreement():
+    auctions = {"0925": {
+        "000001": {"ts": "2026-10-14 09:25:06", "px_milli": 10000},
+        "000002": {"ts": "2026-10-14 09:25:06", "px_milli": None},
+    }}
+    ticks = {"0925": [
+        {"symbol": "000001", "ts": "2026-10-14 09:25:02", "px_milli": 9990,
+         "bp1_milli": 9990, "ap1_milli": 9990},
+        {"symbol": "000001", "ts": "2026-10-14 09:25:07", "px_milli": 12000,
+         "bp1_milli": 12000, "ap1_milli": 12000},
+        {"symbol": "000002", "ts": "2026-10-14 09:24:57", "px_milli": None,
+         "bp1_milli": 9900, "ap1_milli": 9900},
+        {"symbol": "000002", "ts": "2026-10-14 09:25:07", "px_milli": 12000,
+         "bp1_milli": 12000, "ap1_milli": 12000},
+    ]}
+
+    meta = _apply_auction_tick_prices(auctions, ticks)
+
+    assert auctions["0925"]["000001"]["px_milli"] == 10000
+    assert auctions["0925"]["000001"]["price_source"] == "SNAPSHOT_PX"
+    assert auctions["0925"]["000002"]["px_milli"] == 9900
+    assert auctions["0925"]["000002"]["price_flags"] == ["PRE_FINAL_INDICATIVE"]
+    assert meta["0925"]["price_source_disagree"] == 1
+    assert meta["0925"]["source_counts"]["TICK_BOOK1_INDICATIVE"] == 1
+
+
+def test_snapshot_price_mode_preserves_old_missing_coverage():
+    auctions = {"0920": {"000001": {"ts": "2026-10-14 09:20:03", "px_milli": None}}}
+    ticks = {"0920": [{"symbol": "000001", "ts": "2026-10-14 09:20:02",
+                       "px_milli": None, "bp1_milli": 10000, "ap1_milli": 10000}]}
+
+    meta = _apply_auction_tick_prices(auctions, ticks, "snapshot_px")
+
+    assert auctions["0920"]["000001"]["px_milli"] is None
+    assert auctions["0920"]["000001"]["price_source"] == "NO_EFFECTIVE_PRICE"
+    assert meta["0920"]["source_counts"]["NO_EFFECTIVE_PRICE"] == 1
