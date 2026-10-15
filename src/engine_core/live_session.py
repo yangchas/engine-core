@@ -50,6 +50,58 @@ def load_daily_history_csv(path: str | Path) -> list[dict[str, Any]]:
     return rows
 
 
+def load_auction_amount_baseline_csv(path: str | Path | None,
+                                    trade_date: str) -> list[dict[str, Any]] | None:
+    """Load valid daily auction totals strictly before trade_date, in billion yuan."""
+    if not path:
+        return None
+    rows: list[dict[str, Any]] = []
+    try:
+        with Path(path).open(encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                day = str(row.get("date") or "")[:10]
+                if not day or day >= trade_date:
+                    continue
+                try:
+                    amount = float(row.get("sum_yi", ""))
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(amount) and amount >= 0:
+                    rows.append({"date": day, "sum_yi": amount})
+    except OSError:
+        return None
+    return rows
+
+
+def auction_amount_baseline_comparison(rows: list[Mapping[str, Any]] | None,
+                                       trade_date: str,
+                                       current_sum_yi: float | None) -> dict[str, Any] | None:
+    """Compare one auction total with prior-date history using a midrank percentile."""
+    if not rows or current_sum_yi is None or not math.isfinite(current_sum_yi):
+        return None
+    eligible = []
+    for row in rows:
+        day = str(row.get("date") or "")[:10]
+        try:
+            amount = float(row.get("sum_yi"))
+        except (TypeError, ValueError):
+            continue
+        if day and day < trade_date and math.isfinite(amount) and amount >= 0:
+            eligible.append((day, amount))
+    if not eligible:
+        return None
+    amounts = [amount for _, amount in eligible]
+    median = statistics.median(amounts)
+    less = sum(amount < current_sum_yi for amount in amounts)
+    equal = sum(amount == current_sum_yi for amount in amounts)
+    return {"sample_days": len(amounts), "median_yi": median,
+            "multiple": current_sum_yi / median if median else None,
+            "percentile": 100 * (less + equal / 2) / len(amounts),
+            "minimum_yi": min(amounts), "maximum_yi": max(amounts),
+            "earliest_date": min(day for day, _ in eligible),
+            "latest_date": max(day for day, _ in eligible)}
+
+
 def _limit_pct(symbol: str) -> float:
     if symbol.startswith(("300", "301", "688", "689")): return 20.0
     if symbol.startswith(("4", "8", "92")): return 30.0

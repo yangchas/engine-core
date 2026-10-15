@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from engine_core.live_session import (market_price_volume_status, build_live_slice, checkpoint_ready, daily_history_context,
+                                      load_auction_amount_baseline_csv, auction_amount_baseline_comparison,
                                       load_daily_history_csv, states_at)
 from engine_core.plate_enrichment import infer_plate_enrichment
 
@@ -47,6 +48,22 @@ def _input_manifest(value, kind):
             pass
     return {"provided": True, "path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
             "captured_local": captured}
+
+
+def _auction_baseline_manifest(value, rows):
+    if not value:
+        return {"provided": False, "sha256": None, "sample_days": 0,
+                "earliest_date": None, "latest_date": None}
+    try:
+        raw = Path(value).read_bytes()
+        return {"provided": True, "path": str(value),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "sample_days": len(rows or []),
+                "earliest_date": min((row["date"] for row in rows or []), default=None),
+                "latest_date": max((row["date"] for row in rows or []), default=None)}
+    except OSError:
+        return {"provided": False, "path": str(value), "sha256": None, "sample_days": 0,
+                "earliest_date": None, "latest_date": None}
 
 
 def _generic_factor_names():
@@ -166,13 +183,14 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
 
 def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
                 relations=None, plate_names=None, daily_history_csv=None, stock_names=None,
-                amount_baseline_json=None, kaipan_hot_json=None, strength_anchor_json=None,
+                amount_baseline_json=None, auction_baseline_csv=None, kaipan_hot_json=None, strength_anchor_json=None,
                 member_snapshot_date="UNKNOWN"):
     if stage not in STAGES: raise ValueError(f"unknown stage: {stage}")
     snaps, raw_states = [], {}
     td_fetch_seconds = 0.0
     aggregation_started = time.perf_counter()
     baseline_yuan = _load_amount_baseline(amount_baseline_json)
+    auction_baseline_rows = load_auction_amount_baseline_csv(auction_baseline_csv, trade_date)
     for label, clock in STAGES[stage]:
         cutoff = datetime.fromisoformat(f"{trade_date}T{clock}")
         fetch_started = time.perf_counter()
@@ -193,6 +211,12 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
         snap["vs_amount_baseline"] = (snap["market_match_amount_yuan"] / baseline_yuan
                                       if baseline_yuan and snap["market_match_amount_yuan"] else None)
         snap["label"] = label
+        comparison = None
+        if stage == "auction_0926" and label == "0925":
+            total_yi = (snap.get("market_match_amount_yuan") / 100_000_000
+                        if snap.get("market_match_amount_yuan") is not None else None)
+            comparison = auction_amount_baseline_comparison(auction_baseline_rows, trade_date, total_yi)
+        snap["auction_baseline_comparison"] = comparison
         if clock > "09:26:00":
             # 0926 之后的 TD 额是当日累计成交额, 不能与昨日 0925 竞价终值相比
             snap["vs_previous_day_final"] = None
@@ -237,7 +261,9 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
     limitations = "板块关系使用调用方提供的点时关系；名称来自可选名称表或代码。日线输入缺失时，昨日连板、A/B位置与72日比较明确降级；缺失字段不补零。09:45 切片未追平时标记 NOT_READY/STALE。"
     manifest = {"inputs": {"kaipan_hot": _input_manifest(kaipan_hot_json, "kaipan_hot"),
                             "strength_anchor": _input_manifest(strength_anchor_json, "strength_anchor"),
-                            "amount_baseline": _input_manifest(amount_baseline_json, "amount_baseline")}}
+                            "amount_baseline": _input_manifest(amount_baseline_json, "amount_baseline"),
+                            "auction_baseline": _auction_baseline_manifest(auction_baseline_csv,
+                                                                            auction_baseline_rows)}}
     payload = {"trade_date": trade_date, "stage": stage, "snapshots": snaps, "sections": sections,
                "conclusion": conclusion, "history": history, "chapters": chapters,
                "manifest": manifest,
@@ -455,6 +481,16 @@ def _conclusion(snaps, chapters, history, stage):
                    f"下跌个股额占比 {_fmt_pct(current.get('down_amount_share_pct'))}，上涨家数占比 {_fmt_pct(current.get('up_share_pct'))}，"
                    f"开盘中位 {_fmt_pct(market_summary.get('opening_median_pct_change'))}，Top100集中度 {_fmt_pct(current.get('top100_concentration_pct'))}；"
                    f"量价状态 {current.get('market_price_volume_state')}，状态阈值待校准；数据 {current['status']}，lag {current['data_lag_seconds']} 秒。")
+    comparison = current.get("auction_baseline_comparison")
+    if stage == "open_0946":
+        market_line += " 累计成交额不与竞价额比较。"
+    elif comparison:
+        market_line += (f" 64日竞价额为历史中位的 {_fmt_multiple(comparison['multiple'])}，"
+                        f"历史分位 {_fmt_pct(comparison['percentile'])}；样本 {comparison['sample_days']} 日，"
+                        f"范围 {_fmt_money(comparison['minimum_yi'] * 100_000_000)}–"
+                        f"{_fmt_money(comparison['maximum_yi'] * 100_000_000)}。")
+    else:
+        market_line += " 64日竞价额基线未提供。"
     if history and history.get("median_is_historical_low"):
         market_line += f" 0925 开盘中位达到或低于近 {history['session_count']} 个历史交易日最低值。"
     elif history:
@@ -482,8 +518,22 @@ def _section_body(title, payload):
                  ("上涨家数占比 / 开盘中位", f"{_fmt_pct(market.get('up_share_pct'))} / {_fmt_pct(market.get('opening_median_pct_change'))}"),
                  ("Top100额集中度", _fmt_pct(market.get("top100_concentration_pct"))),
                  ("量价状态", market.get("market_price_volume_state", "不可用"))]
+        if payload["stage"] == "auction_0926":
+            comparison = market.get("auction_baseline_comparison")
+            cards.extend([("对64日中位", _fmt_multiple(comparison.get("multiple") if comparison else None)
+                           if comparison else "基线未提供"),
+                          ("对64日分位", _fmt_pct(comparison.get("percentile") if comparison else None)
+                           if comparison else "基线未提供")])
+        else:
+            cards.append(("竞价基线口径", "累计成交额不与竞价额比较"))
         summary = "<div class='grid'>" + "".join(f"<div class='card'><small>{html.escape(k)}</small><br><b>{html.escape(str(v))}</b></div>" for k, v in cards) + "</div>"
-        summary += "<p class='muted'>状态阈值待校准；Top100常态区间40–47%，偏离按百分点显示。市场量价为描述性事实，不合成总分。</p>"
+        summary += "<p class='muted'>状态阈值待校准；Top100常态区间40–47%，偏离按百分点显示。市场量价为描述性事实，不合成总分。"
+        comparison = market.get("auction_baseline_comparison")
+        if payload["stage"] == "auction_0926" and comparison:
+            summary += (f" 64日范围 {_fmt_money(comparison['minimum_yi'] * 100_000_000)}–"
+                        f"{_fmt_money(comparison['maximum_yi'] * 100_000_000)}，样本 {comparison['sample_days']} 日。"
+                        "早期基线阈值为100/500万元，略低估尾部。")
+        summary += "</p>"
         return summary + "<ol>" + "".join(f"<li>{html.escape(line)}</li>" for line in payload["conclusion"]) + "</ol>"
     if title == "大盘":
         cards = []
@@ -632,6 +682,7 @@ def main(argv=None):
     parser.add_argument("--previous-day-final-yuan", type=int)
     parser.add_argument("--prev-final-amount", type=int, dest="previous_day_final_yuan")
     parser.add_argument("--amount-baseline-json", help="JSON scalar or object with amount_yuan for five-day same-time baseline")
+    parser.add_argument("--auction-baseline-csv", help="daily auction amount baseline CSV (sum_yi in billion yuan)")
     parser.add_argument("--kaipan-hot-json", help="captured Kaipan hot-plate JSON")
     parser.add_argument("--strength-anchor-json", help="same-day plate-name/code to {strength,pct,ts} mapping")
     parser.add_argument("--daily-history-csv", help="daily_kline CSV used for streak, position and 72-session comparisons")
@@ -660,6 +711,7 @@ def main(argv=None):
                                     relations=relations, plate_names=plate_names,
                                     daily_history_csv=args.daily_history_csv, stock_names=stock_names,
                                     amount_baseline_json=args.amount_baseline_json,
+                                    auction_baseline_csv=args.auction_baseline_csv,
                                     kaipan_hot_json=args.kaipan_hot_json,
                                     strength_anchor_json=args.strength_anchor_json,
                                     member_snapshot_date=member_snapshot_date)

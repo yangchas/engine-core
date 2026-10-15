@@ -88,3 +88,31 @@ def test_latest_tick_query_uses_last_not_max_for_tdengine():
     got = _ls._latest_tick(cur, _dt.datetime(2026, 10, 15, 9, 46, 0))
     assert got == _dt.datetime(2026, 10, 15, 9, 45, 59)
     assert "last(ts)" in cur.sql and "max(" not in cur.sql
+
+
+def test_auction_amount_baseline_uses_prior_dates_and_midrank():
+    from engine_core.live_session import auction_amount_baseline_comparison
+
+    baseline = auction_amount_baseline_comparison(
+        [
+            {"date": "2026-10-01", "sum_yi": 100},
+            {"date": "2026-10-02", "sum_yi": 200},
+            {"date": "2026-10-03", "sum_yi": 200},
+            {"date": "2026-10-15", "sum_yi": 900},
+        ],
+        trade_date="2026-10-15",
+        current_sum_yi=200,
+    )
+    assert baseline == {"sample_days": 3, "median_yi": 200, "multiple": 1,
+                       "percentile": pytest.approx(2 / 3 * 100),
+                       "minimum_yi": 100, "maximum_yi": 200,
+                       "earliest_date": "2026-10-01", "latest_date": "2026-10-03"}
+
+
+def test_auction_amount_baseline_empty_and_missing_return_none(tmp_path):
+    from engine_core.live_session import load_auction_amount_baseline_csv
+
+    assert load_auction_amount_baseline_csv(None, "2026-10-15") is None
+    empty = tmp_path / "empty.csv"
+    empty.write_text("date,rows,sum_yi,top100_share,threshold_wan\n", encoding="utf-8")
+    assert load_auction_amount_baseline_csv(empty, "2026-10-15") == []

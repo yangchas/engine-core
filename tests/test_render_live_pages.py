@@ -176,6 +176,53 @@ def test_missing_history_is_explicit_and_cli_inputs_are_supported():
     assert "缺少输入" in page
 
 
+def test_auction_baseline_is_shown_only_for_auction_stage(tmp_path):
+    baseline = tmp_path / "auction.csv"
+    baseline.write_text(
+        "date,rows,sum_yi,top100_share,threshold_wan\n"
+        "2026-10-01,10,100,50,100\n"
+        "2026-10-02,10,200,50,100\n"
+        "2026-10-03,10,200,50,100\n"
+        "2026-10-15,10,900,50,100\n", encoding="utf-8")
+
+    class TD:
+        def states_at(self, cutoff):
+            return {"000001": _state("000001", 1, 20_000_000_000,
+                                     ts=cutoff.strftime("%H:%M:%S"))}
+        def latest_tick_ts(self): return "2026-10-15T09:45:30"
+
+    page, auction = render_page(TD(), trade_date="2026-10-15", stage="auction_0926",
+                                auction_baseline_csv=baseline)
+    comparison = auction["chapters"]["market_price_volume"]["auction_baseline_comparison"]
+    assert comparison["multiple"] == 1
+    assert comparison["percentile"] == pytest.approx(2 / 3 * 100)
+    assert comparison["minimum_yi"] == 100 and comparison["maximum_yi"] == 200
+    assert auction["manifest"]["inputs"]["auction_baseline"]["sample_days"] == 3
+    assert auction["manifest"]["inputs"]["auction_baseline"]["earliest_date"] == "2026-10-01"
+    assert "对64日中位" in page and "对64日分位" in page
+    assert "历史分位" in auction["conclusion"][0]
+    _, without_baseline = render_page(TD(), trade_date="2026-10-15", stage="auction_0926")
+    payload_delta = (len(json.dumps(_json_report_payload(auction), ensure_ascii=False,
+                                    separators=(",", ":"))) -
+                     len(json.dumps(_json_report_payload(without_baseline), ensure_ascii=False,
+                                    separators=(",", ":"))))
+    assert payload_delta <= 5_000
+
+    opening_page, opening = render_page(TD(), trade_date="2026-10-15", stage="open_0946",
+                                        auction_baseline_csv=baseline)
+    assert opening["chapters"]["market_price_volume"]["auction_baseline_comparison"] is None
+    assert "累计成交额不与竞价额比较" in opening["conclusion"][0]
+    assert "对64日中位" not in opening_page
+
+    empty = tmp_path / "empty.csv"
+    empty.write_text("date,rows,sum_yi,top100_share,threshold_wan\n", encoding="utf-8")
+    _, unavailable = render_page(TD(), trade_date="2026-10-15", stage="auction_0926",
+                                 auction_baseline_csv=empty)
+    assert unavailable["chapters"]["market_price_volume"]["auction_baseline_comparison"] is None
+    assert unavailable["manifest"]["inputs"]["auction_baseline"]["sample_days"] == 0
+    assert "基线未提供" in unavailable["conclusion"][0]
+
+
 def test_hot_plate_quadrants_and_zero_input_fallback(tmp_path):
     hot = tmp_path / "hot.json"
     hot.write_text(json.dumps({"captured_local": "2026-10-15 09:26:30", "response": {"list": [
