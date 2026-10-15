@@ -43,6 +43,8 @@ def test_plate_share_surge_and_limit_seal_transition_events(monkeypatch):
         ticks.append(Tick("2026-10-14", "09:19:00", symbol, pc_milli=10000,
                           bp1_milli=10000, ap1_milli=10000, bv1=1, av1=1))
         ticks.append(Tick("2026-10-14", "09:20:00", symbol, pc_milli=10000,
+                          bp1_milli=10000, ap1_milli=10000, bv1=1, av1=1))
+        ticks.append(Tick("2026-10-14", "09:20:30", symbol, pc_milli=10000,
                           bp1_milli=11000, ap1_milli=11000, bv1=20, av1=20,
                           bv2=1, bp2_milli=11000))
     ticks.extend([
@@ -57,3 +59,50 @@ def test_plate_share_surge_and_limit_seal_transition_events(monkeypatch):
     assert "PLATE_SHARE_SURGE" in kinds
     assert "STOCK_AMOUNT_SURGE_PRICE_UP" in kinds
     assert "LIMIT_UP_APPEARED" in kinds
+
+
+def test_auction_events_start_at_092030(monkeypatch):
+    import engine_core.auction_tracking as tracking
+
+    monkeypatch.setattr(tracking, "PLATE_SHARE_JUMP_BP", 1)
+    monkeypatch.setattr(tracking, "PLATE_MIN_AMOUNT_YUAN", 1)
+    ticks = []
+    for ts, volume in (("09:20:00", 1), ("09:20:30", 100)):
+        for i in range(5):
+            ticks.append(Tick("2026-10-14", ts, f"60000{i}", pc_milli=10000,
+                              bp1_milli=10000, ap1_milli=10000, bv1=volume, av1=volume))
+    _, events = tracking.replay_tracking(trade_date="2026-10-14", ticks=ticks,
+        relations={"p": {f"60000{i}" for i in range(5)}}, plate_names={"p": "测试板块"})
+    assert events
+    assert all(event["timestamp"].endswith(("09:20:30", "09:21:00", "09:21:30", "09:22:00", "09:22:30", "09:23:00", "09:23:30", "09:24:00", "09:24:30", "09:25:00")) for event in events)
+
+
+def test_event_cooldown_counts_repeats_and_rounds_values():
+    from engine_core.auction_tracking import _cooldown_events
+
+    rows = [
+        {"timestamp": "2026-10-14T09:21:00", "object_type": "stock", "object": "600000", "type": "X", "values": {"x": 1.23456}},
+        {"timestamp": "2026-10-14T09:22:30", "object_type": "stock", "object": "600000", "type": "X", "values": {"x": 2.34567}},
+        {"timestamp": "2026-10-14T09:24:01", "object_type": "stock", "object": "600000", "type": "X", "values": {"x": 3.45678}},
+    ]
+    result = _cooldown_events(rows)
+    assert len(result) == 2
+    assert result[0]["repeat_count"] == 2
+    assert result[0]["values"]["x"] == 1.23
+    assert result[1]["repeat_count"] == 1
+
+
+def test_threshold_constants_and_importance_sort_are_explicit():
+    from engine_core.auction_tracking import (_event_importance, _qualifies_plate_share,
+        _qualifies_relative, RELATIVE_MOVE_PP, RELATIVE_MIN_AMOUNT_YUAN,
+        PLATE_SHARE_JUMP_BP, PLATE_MIN_AMOUNT_YUAN)
+
+    assert (RELATIVE_MOVE_PP, RELATIVE_MIN_AMOUNT_YUAN, PLATE_SHARE_JUMP_BP, PLATE_MIN_AMOUNT_YUAN) == (2.0, 5_000_000, 80, 100_000_000)
+    assert _qualifies_plate_share(80, 100_000_000)
+    assert not _qualifies_plate_share(79.99, 100_000_000)
+    assert _qualifies_relative(2.0, 5_000_000)
+    assert not _qualifies_relative(-1.99, 5_000_000)
+    assert not _qualifies_relative(2.0, 4_999_999)
+    small = {"values": {"share_change_bp": 100, "amount_yuan": 10_000}}
+    large = {"values": {"share_change_bp": 100, "amount_yuan": 1_000_000}}
+    assert _event_importance(large) > _event_importance(small)

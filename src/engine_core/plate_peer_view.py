@@ -364,31 +364,53 @@ def render_plate_peer_markdown(view: Mapping[str, Any]) -> str:
     summary = view["summary"]
     market = summary["market_auction"]
     yesterday = summary.get("yesterday") or {}
+    pool = summary.get("yesterday_pool") or {}
+    def pct(value: Any, ratio: bool = False) -> str:
+        return "未知" if value is None else f"{float(value) * (100 if ratio else 1):.2f}%"
+    def money(value: Any) -> str:
+        if value is None: return "未知"
+        amount = float(value)
+        if abs(amount) >= 100_000_000: return f"{amount / 100_000_000:.2f}亿"
+        if abs(amount) >= 10_000: return f"{amount / 10_000:.2f}万"
+        return f"{amount:.2f}元"
+    shown_a = [row for row in view["a_list"] if row["streak"] >= 2 or row.get("sealed") or row.get("one_word")]
+    qualified = [row for row in view["plates"] if any(a["symbol"] in row["a_symbols"] and
+        (a["streak"] >= 2 or a.get("sealed") or a.get("one_word")) for a in view["a_list"])]
+    priority = {"LOW_POS": 0, "STRONG_REL": 1, "HOLLOW_TOP": 2, "AMOUNT_LEAD": 3}
+    qualified.sort(key=lambda row: (-len(row["a_symbols"]), -sum(bool(p.get("type_flags")) for p in row["peers"]), row["plate"]))
+    shown_plates = qualified[:30]
     lines = ["# 看A做B：板块聚类视图", "",
              "竞价为虚拟撮合；FINAL/INDICATIVE 只在来源显式提供时标注，否则为 UNKNOWN。仅用昨日及之前日线与当日竞价/开盘信息；缺失不补 0；无逐笔委托无法证明意图。情绪读数仅并列展示，不作买卖判断。",
-             "", "## 情绪背景", "",
-             f"昨日 {yesterday.get('date', 'UNKNOWN')} 日型 {yesterday.get('day_type', 'UNKNOWN')}；Δ左尾 {yesterday.get('left_tail', 'UNKNOWN')}、右尾 {yesterday.get('right_tail', 'UNKNOWN')}、中位 {yesterday.get('median', 'UNKNOWN')}%、上涨占比 {yesterday.get('up_share', 'UNKNOWN')}。",
-             f"今日 0925：样本 {market['symbol_count']}，开盘中位 {market['median_open_pct']}%，<=-3% 占比 {market['down_le_3_pct_share']}，>=+3% 占比 {market['up_ge_3_pct_share']}，竞价金额 {market['matched_amount_yuan']} 元，前五日同刻倍数 {market['baseline_multiple']}；竞价封涨 {market['limit_up_count']}、封跌 {market['limit_down_count']}。",
-             f"昨日涨停池收盘表现：{summary.get('yesterday_pool')}。", "",
-             "## A 清单", "", "| 代码 | 名称 | 昨日连板 | 0925涨幅 | 匹配额(元) | 未匹配买/卖(元) | 可买 | 板块 |", "|---|---|---:|---:|---:|---:|---|---|"]
-    for row in view["a_list"]:
-        lines.append(f"| {row['symbol']} | {row['name']} | {row['streak']} | {row['auction_pct']} | {row['match_amount_yuan']} | {row['rest_bid_yuan']}/{row['rest_ask_yuan']} | {'是' if row['buyable'] else '否'} | {', '.join(row['plates'])} |")
-    lines.extend(["", "## A 所属板块与同伴", ""])
-    for plate in view["plates"]:
-        lines.extend([f"### {plate['plate']}（A: {', '.join(plate['a_symbols'])}）", "",
-                      f"竞价等权涨幅 {plate['auction_mean_pct']}%；成员合计额 {plate['amount_sum_yuan']} 元；占大盘 {plate['market_amount_share']}；涨停 {plate['limit_up_count']}；昨板 {plate['yest_limit_streak_count']}。", "",
-                      "| 代码 | 名称 | 连板 | 20日位置 | 0925涨幅 | 相对板块(pp) | 匹配额(亿)/名次/占比 | 未匹配买卖 | 0932 | 0945 | 其他板块 | 类型 |",
-                      "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"])
-        for peer in plate["peers"]:
-            opening = peer["opening"]
-            amount_100m = "" if peer["match_amount_yuan"] is None else f"{peer['match_amount_yuan']/1e8:.3f}"
-            lines.append(f"| {peer['symbol']} | {peer['name']} | {peer['streak']} | {peer['range_position_20d']} | {peer['auction_pct']} | {peer['relative_plate_pp']} | {amount_100m}/{peer['amount_rank']}/{peer['amount_share_of_plate']} | {peer['rest_bid_yuan']}/{peer['rest_ask_yuan']} | {opening['0932']['pct']} ({opening['0932']['change_vs_0925_pp']}) | {opening['0945']['pct']} ({opening['0945']['change_vs_0925_pp']}) | {', '.join(peer['other_plates'])} | {','.join(peer['type_flags'])} |")
-        lines.append("")
-    lines.extend(["## 板块聚类汇总", "", "| 板块 | A数 | 同伴数 | 低位 | 强相对 | 虚顶 | A不可买且有同伴 |", "|---|---:|---:|---:|---:|---:|---|"])
+             "", "## 情绪背景", "", "| 项目 | 读数 |", "|---|---|"]
+    mood = [("昨日", f"{yesterday.get('date', 'UNKNOWN')} {yesterday.get('day_type', 'UNKNOWN')}"),
+            ("昨日尾部/中位/上涨占比", f"左 {yesterday.get('left_tail', '未知')} / 右 {yesterday.get('right_tail', '未知')} / {pct(yesterday.get('median'))} / {pct(yesterday.get('up_share'), True)}"),
+            ("今日 0925", f"样本 {market['symbol_count']}；中位 {pct(market['median_open_pct'])}；<=-3% {pct(market['down_le_3_pct_share'], True)}；>=+3% {pct(market['up_ge_3_pct_share'], True)}"),
+            ("竞价撮合", f"{money(market['matched_amount_yuan'])}；前五日倍数 {market['baseline_multiple'] if market['baseline_multiple'] is not None else '未知'}；封涨 {market['limit_up_count']} / 封跌 {market['limit_down_count']}"),
+            ("昨日涨停池", f"{pool.get('date', '未知')}；{pool.get('symbol_count', '未知')}只；前日均涨 {pct(pool.get('prior_day_mean_pct_chg'))}；竞价溢价均值 {pct(pool.get('auction_premium_mean_pct'))}；正溢价 {pct(pool.get('auction_premium_positive_share'), True)}")]
+    lines.extend(f"| {key} | {value} |" for key, value in mood)
+    lines.extend(["", "## 板块聚类汇总", "", "| 板块 | A数 | 同伴数 | 低位 | 强相对 | 虚顶 | A不可买且有同伴 |", "|---|---:|---:|---:|---:|---:|---|"])
     for row in view["clusters"]:
         lines.append(f"| {row['plate']} | {row['a_count']} | {row['peer_count']} | {row['low_pos_count']} | {row['strong_rel_count']} | {row['hollow_top_count']} | {'是' if row['a_unbuyable_with_peers'] else '否'} |")
+    lines.extend(["", "## A 清单（昨日连板≥2 或今日封停/一字）", "", "| 代码 | 名称 | 昨日连板 | 0925涨幅 | 匹配额 | 未匹配买/卖 | 可买 | 板块 |", "|---|---|---:|---:|---:|---:|---|---|"])
+    for row in shown_a:
+        labels = row["plates"][:5]
+        plate_text = ", ".join(labels) + (f"等 {len(row['plates'])-5} 个" if len(row["plates"]) > 5 else "")
+        lines.append(f"| {row['symbol']} | {row['name']} | {row['streak']} | {pct(row['auction_pct'], True)} | {money(row['match_amount_yuan'])} | {money(row['rest_bid_yuan'])}/{money(row['rest_ask_yuan'])} | {'是' if row['buyable'] else '否'} | {plate_text} |")
+    lines.extend(["", "## A 所属板块与同伴", ""])
+    for plate in shown_plates:
+        marked = [p for p in plate["peers"] if p.get("type_flags")]
+        marked.sort(key=lambda p: (min((priority.get(f, 99) for f in p["type_flags"]), default=99), p.get("amount_rank") or 10**9, p["symbol"]))
+        selected = marked[:12]
+        lines.extend([f"### {plate['plate']}（A: {', '.join(plate['a_symbols'])}）", "",
+            f"竞价等权涨幅 {pct(plate['auction_mean_pct'])}；成员合计额 {money(plate['amount_sum_yuan'])}；占大盘 {pct(plate['market_amount_share'], True)}；涨停 {plate['limit_up_count']}；昨板 {plate['yest_limit_streak_count']}。", "",
+            "| 代码 | 名称 | 连板 | 20日位置 | 0925涨幅 | 相对板块(pp) | 匹配额/名次/占比 | 未匹配买卖 | 0932 | 0945 | 其他板块 | 类型 |", "|---|---|---:|---:|---:|---:|---|---:|---:|---:|---|---|"])
+        for peer in selected:
+            op = peer["opening"]
+            lines.append(f"| {peer['symbol']} | {peer['name']} | {peer['streak']} | {pct(peer['range_position_20d'], True)} | {pct(peer['auction_pct'], True)} | {pct(peer['relative_plate_pp'])} | {money(peer['match_amount_yuan'])}/{peer['amount_rank']}/{pct(peer['amount_share_of_plate'], True)} | {money(peer['rest_bid_yuan'])}/{money(peer['rest_ask_yuan'])} | {pct(op['0932']['pct'], True)} ({pct(op['0932']['change_vs_0925_pp'])}) | {pct(op['0945']['pct'], True)} ({pct(op['0945']['change_vs_0925_pp'])}) | {', '.join(peer['other_plates'][:5])} | {','.join(peer['type_flags'])} |")
+        lines.append(f"其余 {max(0, len(plate['peers']) - len(selected))} 只同伴见 JSON。")
+    if len(qualified) > 30: lines.append(f"另有 {len(qualified)-30} 个符合条件板块见 JSON。")
     lines.extend(["", "## 72日描述性参考", "", "描述性、非 PIT、观察重叠，不是建议。", "",
                   "| 日型 | 规则 | 观察 | 同伴收盘均% | 相对市场pp | 收盘>=+5% | 大面率 | 今日匹配 |", "|---|---|---:|---:|---:|---:|---:|---|"])
     for row in view["reference_statistics"]["rows"]:
-        lines.append(f"| {row['day_type']} | {row['rule']} | {row['observations']} | {row['peer_close_mean_pct']} | {row['relative_market_pp']} | {row['close_ge_5_pct']} | {row['large_loss_pct']} | {'是' if row['today_match'] else ''} |")
+        lines.append(f"| {row['day_type']} | {row['rule']} | {row['observations']} | {pct(row['peer_close_mean_pct'])} | {pct(row['relative_market_pp'])} | {pct(row['close_ge_5_pct'])} | {pct(row['large_loss_pct'])} | {'是' if row['today_match'] else ''} |")
     return "\n".join(lines) + "\n"
