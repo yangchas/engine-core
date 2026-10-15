@@ -67,7 +67,8 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
                                                    "强度负净流入背离": 0, "零值边界": 0},
              "rows": [], "fallback_equal_weight": equal_weight, "fallback_amount_down": amount_down,
              "fallback_note": "等权涨幅与金额榜只作事实降级；金额榜的净流出为价格与金额推断。",
-             "strength_estimates": [], "description_only": True}
+             "strength_estimates": [], "display_rows": [], "zero_value_boundary_count": 0,
+             "description_only": True}
     if anchor_path:
         anchors = json.loads(Path(anchor_path).read_text(encoding="utf-8"))
         for row in equal_weight:
@@ -127,8 +128,14 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
                      "pct_diff_pp": (our_pct - hot["kaipan_pct"]) if our_pct is not None else None,
                      "member_count": nominal, "effective_price_coverage": coverage,
                      "flags": flags})
+    double_positive = [row for row in rows if row["quadrant"] == "双正"]
+    divergences = [row for row in rows if row["quadrant"] in ("强度正净流出背离", "强度负净流入背离")]
+    double_negative = sorted((row for row in rows if row["quadrant"] == "双负"),
+                             key=lambda row: (row["net_yuan"], row["name"]))[:15]
+    display_rows = double_positive + divergences + double_negative
     block.update({"available": True, "status": "可用；只作描述，不表示因果或胜负",
-                  "captured_local": captured, "counts": counts, "rows": rows})
+                  "captured_local": captured, "counts": counts, "rows": rows,
+                  "display_rows": display_rows, "zero_value_boundary_count": counts["零值边界"]})
     return block
 
 
@@ -190,14 +197,14 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
                           "missing": "缺字段保持 null，不补 0",
                           "limitations": limitations}}
     content = "".join(f"<section><h2>{html.escape(title)}</h2>{_section_body(title, payload)}</section>" for title in sections)
-    encoded = html.escape(json.dumps(payload, ensure_ascii=False, indent=2))
+    safe_limitations = html.escape(limitations)
     page = f'''<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{trade_date} {stage}</title><style>
 :root{{color-scheme:light dark;--bg:#f4f6fa;--fg:#172033;--panel:#fff;--accent:#2563eb;--muted:#667085}}
 @media(prefers-color-scheme:dark){{:root{{--bg:#111827;--fg:#e5e7eb;--panel:#1f2937;--accent:#60a5fa;--muted:#aab4c3}}}}
 *{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 system-ui,sans-serif}}main{{max-width:1100px;margin:auto;padding:20px}}h1{{font-size:1.55rem}}section{{background:var(--panel);border-radius:12px;padding:16px;margin:14px 0;overflow:auto}}h2{{font-size:1.2rem;margin:0 0 12px}}table{{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}}td,th{{text-align:left;padding:7px;border-bottom:1px solid #8892a033}}small,.muted{{color:var(--muted)}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:9px}}.card{{padding:10px;background:var(--bg);border-radius:8px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}}</style></head>
 <body><main><h1>{trade_date} · {stage}</h1><p class="muted">只读观测；来源、口径与局限见页面末尾。状态值按可用数据计算。</p>{content}
-<section><h2>口径与局限</h2><pre>{encoded}</pre></section></main></body></html>'''
+<section><h2>口径与局限</h2><p>{safe_limitations}</p></section></main></body></html>'''
     return page, payload
 
 
@@ -414,13 +421,15 @@ def _section_body(title, payload):
     if title == "板块象限":
         block = chapters["plate_quadrants"]
         counts = "；".join(f"{name} {count}" for name, count in block["counts"].items())
-        intro = f"<p>{html.escape(block['status'])}。抓取时刻：{html.escape(str(block.get('captured_local') or '—'))}。{html.escape(counts)}。强度与净额只作描述，不暗示因果或胜负。</p>"
+        intro = (f"<p>{html.escape(block['status'])}。抓取时刻：{html.escape(str(block.get('captured_local') or '—'))}。"
+                 f"{html.escape(counts)}；零值边界 {block.get('zero_value_boundary_count', 0)}。"
+                 "强度与净额只作描述，不暗示因果或胜负。</p>")
         if block["available"]:
             table = _table([("板块", "name"), ("象限", "quadrant"), ("强度", "strength"), ("Kaipan涨幅%", "kaipan_pct"),
                             ("我方涨幅%", "our_pct"), ("差pp", "pct_diff_pp"), ("净额元", "net_yuan"),
                             ("金额元", "amount_yuan"), ("名义成员", "member_count"),
                             ("有效价格覆盖", "effective_price_coverage"), ("提示", "flags_text")],
-                           [{**row, "flags_text": "、".join(row["flags"])} for row in block["rows"]])
+                           [{**row, "flags_text": "、".join(row["flags"])} for row in block["display_rows"]])
             return intro + table
         equal = _table([("我方等权涨幅前15", "name"), ("成员", "member_count"), ("涨幅%", "equal_weight_pct")], block["fallback_equal_weight"])
         down = _table([("额最大且下跌板块", "name"), ("成员", "member_count"), ("金额元", "match_amount_yuan"), ("涨幅%", "equal_weight_pct")], block["fallback_amount_down"])
@@ -497,13 +506,25 @@ def _fmt_multiple(value): return f"{value:.2f}×" if isinstance(value, (int, flo
 def _fmt_money(value): return f"{value:,.0f} 元" if isinstance(value, (int, float)) else "—"
 
 
-def write_page(out_dir, page, payload):
+def _json_report_payload(payload, *, full_json=False):
+    import copy
+    result = copy.deepcopy(payload)
+    omitted = {}
+    if not full_json and "snapshots" in result:
+        raw = json.dumps(result.pop("snapshots"), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        omitted["snapshots"] = {"size_bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+    result.setdefault("manifest", {})["omitted_blocks"] = omitted
+    return result
+
+
+def write_page(out_dir, page, payload, *, full_json=False):
     path = Path(out_dir)
     if path.exists() and (not path.is_dir() or any(path.iterdir())):
         raise FileExistsError("out-dir must be a new or empty directory")
     path.mkdir(parents=True, exist_ok=True)
     (path / "report.html").write_text(page, encoding="utf-8")
-    (path / "report.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    report = _json_report_payload(payload, full_json=full_json)
+    (path / "report.json").write_text(json.dumps(report, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     return path
 
 
@@ -520,6 +541,7 @@ def main(argv=None):
     parser.add_argument("--daily-history-csv", help="daily_kline CSV used for streak, position and 72-session comparisons")
     parser.add_argument("--stock-names-json", help="optional symbol-to-name JSON mapping")
     parser.add_argument("--relations-dir", help="PIT registry directory containing registry.json and relation.csv")
+    parser.add_argument("--full-json", action="store_true", help="include full snapshots in report.json")
     args = parser.parse_args(argv)
     usage = shutil.disk_usage(Path(args.out_dir).parent if Path(args.out_dir).parent.exists() else ".")
     if usage.used / usage.total > .90:
@@ -542,7 +564,7 @@ def main(argv=None):
                                     amount_baseline_json=args.amount_baseline_json,
                                     kaipan_hot_json=args.kaipan_hot_json,
                                     strength_anchor_json=args.strength_anchor_json)
-        write_page(args.out_dir, page, payload)
+        write_page(args.out_dir, page, payload, full_json=args.full_json)
     finally:
         close = getattr(td, "close", None)
         if callable(close): close()

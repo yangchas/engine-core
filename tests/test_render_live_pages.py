@@ -52,6 +52,32 @@ def test_write_page_refuses_nonempty_directory(tmp_path):
         write_page(output, "page", {})
 
 
+def test_html_and_default_json_omit_snapshots_with_manifest(tmp_path):
+    td = type("TD", (), {"states_at": lambda self, cutoff: {
+        f"{i:06d}": _state(f"{i:06d}", i / 10, 1_000_000) for i in range(100)},
+        "latest_tick_ts": lambda self: "2026-10-15T09:45:30"})()
+    page, payload = render_page(td, trade_date="2026-10-15", stage="open_0946")
+    assert "snapshots" not in page
+    assert "\"snapshots\"" not in page
+    assert len(page.encode("utf-8")) <= 200_000
+    auction_page, _ = render_page(td, trade_date="2026-10-15", stage="auction_0926")
+    assert len(auction_page.encode("utf-8")) <= 120_000
+
+    default_dir = tmp_path / "default"
+    write_page(default_dir, page, payload)
+    default = json.loads((default_dir / "report.json").read_text(encoding="utf-8"))
+    assert "snapshots" not in default
+    assert (default_dir / "report.json").stat().st_size <= 300_000
+    omitted = default["manifest"]["omitted_blocks"]["snapshots"]
+    assert omitted["size_bytes"] > 0 and len(omitted["sha256"]) == 64
+
+    full_dir = tmp_path / "full"
+    write_page(full_dir, page, payload, full_json=True)
+    full = json.loads((full_dir / "report.json").read_text(encoding="utf-8"))
+    assert full["snapshots"]
+    assert full["manifest"]["omitted_blocks"] == {}
+
+
 def test_history_drives_conclusion_highboard_and_peer_sections(tmp_path):
     history = tmp_path / "daily.csv"
     _history_csv(history)
@@ -105,6 +131,8 @@ def test_hot_plate_quadrants_and_zero_input_fallback(tmp_path):
         ["801003", "正流出", 10, 0.2, 0, 2_100_000_000, -1, 3, -2, 0],
         ["801004", "负流入", -10, -0.2, 0, 2_100_000_000, 1, -1, -2, 0],
         ["801005", "零值", 0, 0, 0, 2_100_000_000, 0, 0, 0, 0],
+        *[[f"80{i:04d}", f"双负-{i}", -10, -2.0, 0, 2_100_000_000, -i, 1, -2, 0]
+          for i in range(10, 27)],
     ]}}), encoding="utf-8")
 
     class TD:
@@ -119,8 +147,14 @@ def test_hot_plate_quadrants_and_zero_input_fallback(tmp_path):
                                 relations=relations, plate_names=names, kaipan_hot_json=hot)
     block = payload["chapters"]["plate_quadrants"]
     assert block["available"] is True
-    assert block["counts"] == {"双正": 1, "双负": 1, "强度正净流出背离": 1,
+    assert block["counts"] == {"双正": 1, "双负": 18, "强度正净流出背离": 1,
                                 "强度负净流入背离": 1, "零值边界": 1}
+    assert len(block["rows"]) == 22
+    assert len(block["display_rows"]) == 18
+    assert sum(row["quadrant"] == "双负" for row in block["display_rows"]) == 15
+    assert next(row for row in block["display_rows"] if row["quadrant"] == "双负")["net_yuan"] == -26
+    assert block["zero_value_boundary_count"] == 1
+    assert all("pct_diff_pp" in row for row in block["display_rows"])
     assert block["rows"][0]["our_pct"] is not None and block["rows"][0]["pct_diff_pp"] is not None
     assert "09:26:30" in page and "描述" in page
 
