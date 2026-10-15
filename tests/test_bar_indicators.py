@@ -1,5 +1,48 @@
-from engine_core.auction_tracking import Tick
+from engine_core.auction_tracking import Tick, _int, _seconds
 from engine_core.bar_indicators import build_bar_report, detect_turning_points, summarize_curve
+from examples.run_bar_indicators import _sampled_ticks
+
+
+def test_columnar_sampled_ticks_match_row_reader_for_missing_out_of_order_duplicates(tmp_path):
+    import csv
+
+    path = tmp_path / "ticks.csv"
+    fields = ["trade_date", "ts", "symbol", "px_milli", "pc_milli", "bp1_milli",
+              "ap1_milli", "bv1", "av1", "bp2_milli", "ap2_milli", "bv2", "av2",
+              "amt_yuan", "vol_units", "name"]
+    rows = [
+        {"trade_date": "2026-10-14", "ts": "09:24:00", "symbol": "600001", "bp1_milli": "10000", "ap1_milli": "10000", "bv1": "5", "av1": "5"},
+        {"trade_date": "2026-10-14", "ts": "09:24:31", "symbol": "600001", "bp1_milli": "10100", "ap1_milli": "10100", "bv1": "6", "av1": "6"},
+        {"trade_date": "2026-10-14", "ts": "09:24:31", "symbol": "600001", "bp1_milli": "10200", "ap1_milli": "10200", "bv1": "7", "av1": "7"},
+        {"trade_date": "2026-10-14", "ts": "09:23:00", "symbol": "600002", "px_milli": "", "pc_milli": "", "bp1_milli": "", "ap1_milli": ""},
+    ]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    expected = [("600001", "09:24:00", 10000), ("600001", "09:24:31", 10200),
+                ("600002", "09:23:00", 0)]
+    ticks, count = _sampled_ticks(path, "2026-10-14", "AUCTION")
+    legacy = {}
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        for ordinal, row in enumerate(csv.DictReader(handle)):
+            sec = _seconds(row["ts"])
+            sample = 9 * 3600 + 15 * 60 + ((sec - (9 * 3600 + 15 * 60) + 29) // 30) * 30
+            key = (row["symbol"].zfill(6), sample)
+            if key not in legacy or (sec, ordinal) >= legacy[key][0]:
+                legacy[key] = ((sec, ordinal), row)
+    row_expected = sorted((symbol, row["ts"], _int(row, "bp1_milli"))
+                          for (symbol, _sample), (_order, row) in legacy.items())
+    actual = sorted((tick.symbol, tick.ts, tick.bp1_milli) for tick in ticks)
+    assert count == 4
+    assert actual == expected
+    assert actual == row_expected
+    report = build_bar_report(trade_date="2026-10-14", auction_ticks=ticks)
+    missing = next(row for row in report["bars"] if row["object_type"] == "market" and
+                   row["timestamp"].endswith("09:15:00") and row["window_minutes"] == 1)
+    assert missing["window_amount_yuan"] is None
+    assert missing["window_pct_change_pp"] is None
 
 
 def test_bars_use_window_amount_increment_and_final_print_after_0925():

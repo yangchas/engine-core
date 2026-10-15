@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import html
 import statistics
+import time
 from collections import defaultdict
 from bisect import bisect_right
+from functools import lru_cache
 from typing import Any, Iterable, Mapping
 
 from .auction_tracking import Tick, _at_limit, _seconds, _stamp, derive_state
@@ -22,6 +24,11 @@ LATE_RUSH_SHARE_PCT = 40.0  # 待校准
 LATE_RUSH_EXCESS_PCT = 10.0  # 板块相对大盘的尾段集中度阈值，待校准
 EARLY_FAVORITE_BEFORE = "09:22:00"  # 待校准
 FADE_AMOUNT_MULTIPLE = 0.5  # 待校准
+
+
+@lru_cache(maxsize=4096)
+def _cached_seconds(ts: str) -> int:
+    return _seconds(ts)
 
 
 def _price_pct(price: int, close: int) -> float | None:
@@ -133,19 +140,19 @@ def build_bar_report(*, trade_date: str, auction_ticks: Iterable[Tick], open_tic
                      baseline: Mapping[str, Any] | None = None, full_json: bool = False) -> dict[str, Any]:
     """Build compact market/plate/focus-stock rolling bars and report fragments."""
     relations, plate_names, generic_names = relations or {}, plate_names or {}, generic_names or set()
-    auction = sorted((t for t in auction_ticks if t.trade_date == trade_date), key=lambda t: (_seconds(t.ts), t.symbol))
-    opened = sorted((t for t in open_ticks if t.trade_date == trade_date), key=lambda t: (_seconds(t.ts), t.symbol))
+    auction = sorted((t for t in auction_ticks if t.trade_date == trade_date), key=lambda t: (_cached_seconds(t.ts), t.symbol))
+    opened = sorted((t for t in open_ticks if t.trade_date == trade_date), key=lambda t: (_cached_seconds(t.ts), t.symbol))
     state: dict[str, dict[str, Any]] = {}
     samples: list[dict[str, Any]] = []
     ai = 0
     for sec in range(_seconds("09:15:00"), _seconds("09:25:00") + 1, 30):
-        while ai < len(auction) and _seconds(auction[ai].ts) <= sec:
+        while ai < len(auction) and _cached_seconds(auction[ai].ts) <= sec:
             state[auction[ai].symbol] = derive_state(auction[ai]); ai += 1
         samples.append({"sec": sec, "phase": "AUCTION", "states": dict(state)})
     auction_anchor = dict(state)
     oi = 0
     for sec in range(_seconds("09:30:00"), _seconds("09:45:00") + 1, 60):
-        while oi < len(opened) and _seconds(opened[oi].ts) <= sec:
+        while oi < len(opened) and _cached_seconds(opened[oi].ts) <= sec:
             tick = opened[oi]
             row = derive_state(tick)
             row["match_amount_yuan"] = max(0, int(tick.amt_yuan))
@@ -159,14 +166,43 @@ def build_bar_report(*, trade_date: str, auction_ticks: Iterable[Tick], open_tic
     top50_symbols = set(ranked_symbols[:50])
     focus = pool_symbols | set(ranked_symbols[:50])
     prev_close = prev_close or {}
-    for snap in samples:
+    for sample_index, snap in enumerate(samples):
         for symbol, row in snap["states"].items():
             close = row.get("prev_close_milli") or prev_close.get(symbol)
             if isinstance(close, Mapping): close = close.get("prev_close_milli", close.get("pc_milli"))
             row["pct_change"] = _price_pct(int(row.get("price_milli") or 0), int(close or 0))
+    aggregate_started = time.perf_counter()
+    matrix_codes = [code for code in relations if plate_names.get(code, code) not in generic_names]
+    matrix_stocks = sorted({symbol for code in matrix_codes for symbol in relations[code]})
+    matrix_result = None
+    if matrix_codes and matrix_stocks:
+        import numpy as np
+        from .plate_matrix import PlateMatrix
+
+        stock_index = {symbol: index for index, symbol in enumerate(matrix_stocks)}
+        plate_matrix = PlateMatrix(
+            ((code, symbol) for code in matrix_codes for symbol in relations[code]),
+            matrix_codes, matrix_stocks)
+        matrix_result = {
+            key: np.empty((len(matrix_codes), 6, len(samples)), dtype=np.int64 if key == "count" else np.float64)
+            for key in ("sum", "mean", "count")}
+        for sample_index, snap in enumerate(samples):
+            sample_values = np.full((len(matrix_stocks), 6), np.nan, dtype=np.float64)
+            for symbol, value in snap["states"].items():
+                index = stock_index.get(symbol)
+                pct = value.get("pct_change")
+                if index is None or pct is None:
+                    continue
+                sample_values[index, :] = (
+                    pct, int(value.get("match_amount_yuan") or 0),
+                    int(_at_limit(value, "up")), int(_at_limit(value, "down")),
+                    int(value.get("status") == "FINAL"), int(value.get("status") == "INDICATIVE"))
+            sample_result = plate_matrix.aggregate(sample_values, weight_index=1)
+            for key in matrix_result:
+                matrix_result[key][:, :, sample_index] = sample_result[key][:, :, 0]
     # Build point-in-time aggregates once per sample. Missing inputs stay null.
     aggregates: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for snap in samples:
+    for sample_index, snap in enumerate(samples):
         states = snap["states"]
         stock_amounts_now = [v.get("match_amount_yuan") for v in states.values() if v.get("match_amount_yuan") is not None]
         pcts = [v["pct_change"] for v in states.values() if v.get("pct_change") is not None]
@@ -177,18 +213,17 @@ def build_bar_report(*, trade_date: str, auction_ticks: Iterable[Tick], open_tic
             "down": sum(_at_limit(v, "down") for v in states.values()),
             "final_count": sum(v.get("status") == "FINAL" for v in states.values()),
             "indicative_count": sum(v.get("status") == "INDICATIVE" for v in states.values())})
-        for code, members in relations.items():
-            name = plate_names.get(code, code)
-            if name in generic_names: continue
-            selected = [states[s] for s in members if s in states and states[s].get("pct_change") is not None]
-            if len(selected) < 5: continue
-            aggregates[f"plate:{code}"].append({"sec": snap["sec"], "phase": snap["phase"],
-                "cum_amount": sum(int(v.get("match_amount_yuan") or 0) for v in selected),
-                "pct": statistics.mean(v["pct_change"] for v in selected),
-                "up": sum(_at_limit(v, "up") for v in selected),
-                "down": sum(_at_limit(v, "down") for v in selected),
-                "final_count": sum(v.get("status") == "FINAL" for v in selected),
-                "indicative_count": sum(v.get("status") == "INDICATIVE" for v in selected)})
+        if matrix_result is not None:
+            for plate_index, code in enumerate(matrix_codes):
+                if matrix_result["count"][plate_index, 0, sample_index] < 5:
+                    continue
+                mean_pct, total, up, down, final, indicative = (
+                    matrix_result["sum"][plate_index, feature, sample_index]
+                    if feature != 0 else matrix_result["mean"][plate_index, feature, sample_index]
+                    for feature in range(6))
+                aggregates[f"plate:{code}"].append({"sec": snap["sec"], "phase": snap["phase"],
+                    "cum_amount": int(total), "pct": float(mean_pct), "up": int(up), "down": int(down),
+                    "final_count": int(final), "indicative_count": int(indicative)})
         for symbol in focus:
             v = states.get(symbol)
             if not v: continue
@@ -196,6 +231,8 @@ def build_bar_report(*, trade_date: str, auction_ticks: Iterable[Tick], open_tic
                 "cum_amount": v.get("match_amount_yuan"), "pct": v.get("pct_change"),
                 "price": v.get("price_milli"), "auction_price": auction_anchor.get(symbol, {}).get("price_milli"),
                 "up": int(_at_limit(v, "up")), "down": int(_at_limit(v, "down"))})
+    aggregate_seconds = time.perf_counter() - aggregate_started
+    turning_started = time.perf_counter()
     bars: list[dict[str, Any]] = []
     curves: dict[str, list[dict[str, Any]]] = {}
     market_points = {(x["phase"], x["sec"]): x for x in aggregates["market"]}
@@ -342,8 +379,11 @@ def build_bar_report(*, trade_date: str, auction_ticks: Iterable[Tick], open_tic
     baseline = baseline or {}
     prior_days = sorted(str(day) for day in baseline if str(day) < trade_date)
     baseline_amount = int(baseline.get(prior_days[-1]) or 0) if prior_days else None
+    turning_seconds = time.perf_counter() - turning_started
+    render_started = time.perf_counter()
     html_report = _render_html(trade_date, bars, summaries, turns, plate_names, baseline_amount)
     md = _render_markdown(trade_date, summaries, turns, bars)
+    render_seconds = time.perf_counter() - render_started
     if not full_json:
         summaries = [s for s in summaries if s["object_type"] == "market" or
             (s["object_type"] == "plate" and s["object"] in top30_plates) or
@@ -353,7 +393,10 @@ def build_bar_report(*, trade_date: str, auction_ticks: Iterable[Tick], open_tic
             (b["object_type"] == "stock" and b["object"] in focus)]
     return {"trade_date": trade_date, "json_mode": "full" if full_json else "focus", "bars": bars, "turning_points": turns, "summaries": summaries,
             "html": html_report, "markdown": md, "focus_symbols": sorted(focus),
-            "previous_day_terminal_amount_yuan": baseline_amount}
+            "previous_day_terminal_amount_yuan": baseline_amount,
+            "_stage_timings": {"plate_aggregation_seconds": aggregate_seconds,
+                               "turning_point_seconds": turning_seconds,
+                               "render_seconds": render_seconds}}
 
 
 def _plate_display_name(code: str, names: Mapping[str, str]) -> str:
