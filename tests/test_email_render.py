@@ -179,6 +179,17 @@ def test_numeric_format_uses_explicit_semantics_for_ratios_percentages_and_chang
     assert _num(0.125, "relative_to_plate_pp") == "+0.12 pp"
 
 
+def test_open_email_strips_close_fields_and_long_tables_are_collapsed():
+    report = {"stage": "open_0946", "chapters": {"yesterday_highboards": [
+        {"symbol": f"600{i:03d}", "name": f"股{i}", "p0945_pct": i, "close_pct": 99}
+        for i in range(12)]}}
+    rendered, plain = render_email_html(report, "open", "2026-10-15")
+    assert "收盘涨幅" not in rendered + plain and "99.00%" not in rendered + plain
+    assert "前 5 / 共 12 行" in rendered
+    assert "<details>" in rendered and "其余 7 行" in rendered
+    assert len(rendered.encode("utf-8")) <= 120 * 1024
+
+
 def test_close_email_marks_proxy_and_overlap_without_summing():
     report = {"market": {"close_limit_up_count": 2, "close_limit_down_count": 1},
               "data_quality": {"close_pct_coverage": 5215, "final_count": 4449, "indicative_count": 766},

@@ -126,6 +126,7 @@ def test_market_amount_ratios_share_one_fixed_common_pool():
     assert result["today_vs_previous"] == 1.5
     assert result["history_median"] == 100
     assert result["today_vs_history_median"] == 1.5
+    assert result["history_percentile"] == 1.0
 
 
 def test_close_markdown_labels_limit_counts_as_price_proxies_and_discloses_overlap():

@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from engine_core.daily_pipeline import DailySources, _load_ladder_summary, discover_references, run_daily_pipeline
+from engine_core.daily_pipeline import (DailySources, _attach_range_positions, _load_ladder_summary,
+                                        discover_references, run_daily_pipeline)
 
 
 class FakeTD:
@@ -25,6 +26,55 @@ class FakeRedis:
 
     def set(self, key, value, **kwargs):
         self.writes.append((key, value, kwargs))
+
+
+def test_a_to_b_range_position_uses_only_twenty_prior_closes_and_keeps_missing_unknown(tmp_path):
+    path = tmp_path / "history.csv"
+    rows = [f"2026-09-{i:02d},600001,{i}" for i in range(1, 21)]
+    path.write_text("date,symbol,close\n" + "\n".join(rows) + "\n2026-10-15,600001,999\n")
+    stocks = [{"symbol": "600001", "p0925_pct": 0}, {"symbol": "600002", "p0925_pct": 1}]
+    _attach_range_positions(stocks, path, "2026-10-15")
+    assert stocks[0]["prior_range_position20_pct"] == 100
+    assert "prior_range_position20_pct" not in stocks[1]
+
+
+def test_live_section_stocks_builds_point_in_time_rows_without_close_fields():
+    from engine_core.daily_pipeline import _live_section_stocks
+
+    class States:
+        def states_at(self, cutoff):
+            if cutoff.strftime("%H:%M:%S") == "09:25:06":
+                return {"600001": {"symbol": "600001", "pct_change": 10.0,
+                                    "match_amount_yuan": 1000, "status": "FINAL"},
+                        "600002": {"symbol": "600002", "pct_change": 2.0,
+                                    "match_amount_yuan": 500, "status": "FINAL"}}
+            if cutoff.strftime("%H:%M:%S") == "09:32:00":
+                return {"600001": {"pct_change": 9.0}, "600002": {"pct_change": 3.0}}
+            return {"600001": {"pct_change": 8.0}, "600002": {"pct_change": 4.0}}
+
+    rows = _live_section_stocks(States(), trade_date="2026-10-15", stage="open",
+        asof="09:46:00", relations={"801001": ["600001", "600002"]},
+        plate_names={"801001": "通信"}, stock_names={}, history_path=None)
+    assert rows[0]["main_plate"] == "通信"
+    assert rows[0]["p0925_pct"] == 10.0
+    assert rows[0]["p0945_pct"] == 8.0
+    assert rows[0]["auction_amount_bp"] == pytest.approx(6666.6667)
+    assert all("close_pct" not in row for row in rows)
+
+
+def test_live_section_stocks_does_not_request_future_checkpoints():
+    from engine_core.daily_pipeline import _live_section_stocks
+
+    class States:
+        def __init__(self): self.cutoffs = []
+        def states_at(self, cutoff):
+            self.cutoffs.append(cutoff.strftime("%H:%M:%S"))
+            return {"600001": {"pct_change": 1.0, "match_amount_yuan": 10}}
+
+    source = States()
+    _live_section_stocks(source, trade_date="2026-10-15", stage="open", asof="09:33:00",
+                          relations={}, plate_names={}, stock_names={}, history_path=None)
+    assert source.cutoffs == ["09:25:06", "09:32:00"]
 
 
 def test_ladder_summary_uses_dated_daily_rows_and_marks_close_price_proxy(tmp_path):

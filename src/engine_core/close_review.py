@@ -38,8 +38,11 @@ def _fixed_common_amounts(today: Mapping[str, float], previous: Mapping[str, flo
     today_total = sum(today[symbol] for symbol in common)
     previous_total = sum(previous[symbol] for symbol in common)
     history_median = _median(history_totals)
+    history_percentile = (sum(value <= today_total for value in history_totals) / len(history_totals)
+                          if history_totals else None)
     return {"symbols": common, "today": today_total, "previous": previous_total,
             "history_median": history_median,
+            "history_percentile": history_percentile,
             "today_vs_previous": today_total / previous_total if previous_total else None,
             "today_vs_history_median": today_total / history_median if history_median else None}
 
@@ -548,6 +551,7 @@ def assemble_close_review(trade_date: str, report_dir: str, checkpoints_csv: str
                        "amount_today_64d_common_yuan": today_64,
                        "amount_64d_median_common_yuan": median_64,
                        "amount_vs_64d_median_common": today_64 / median_64 if median_64 else None,
+                       "amount_64d_percentile_common": fixed["history_percentile"],
                        "amount_64d_common_pool_days": len(daily_64),
                        "amount_64d_pool": "当日及全部历史日均有数据的固定共同股票池"})
     history = compare_history(extremes, history_dir) if history_dir else None

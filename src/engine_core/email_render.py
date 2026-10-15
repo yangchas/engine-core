@@ -73,19 +73,34 @@ FIELD_LABELS = {
     "p0925_mean": "板块竞价均值", "p0932_mean": "板块09:32均值", "p0945_mean": "板块09:45均值",
     "relative_to_plate_pp": "个股相对板块", "position": "板块内位置", "peer_top3": "板块同伴Top3",
     "amount_64d_median_yuan": "64日成交额中位数", "amount_vs_64d_median": "对64日中位倍数",
-    "amount_64d_percentile": "64日成交额分位", "regime_label": "描述性日型",
+    "amount_64d_percentile": "64日全市场成交额分位", "amount_64d_percentile_common": "64日固定共同池成交额分位", "regime_label": "描述性日型",
     "regime_history_sample_days": "历史样本日数", "same_regime_days": "同日型样本数",
     "previous_space_height": "昨日最高板", "max_price_streak": "今日最高板高",
     "top_symbols": "最高板股票", "first_board_count": "今日首板数",
     "previous_limit_n": "昨日涨停家数", "promoted_n": "晋级家数", "broken_n": "断板家数",
     "promotion_rate": "晋级率", "unknown_broken_n": "炸板路径未知数",
     "board_height": "昨日板数", "current_n": "今日收盘涨停价数", "previous_n": "昨日家数",
+    "a_symbol": "A代码", "a_name": "A名称", "a_prior_streak": "A昨日连板",
+    "a_status": "A状态", "reason": "未成立原因", "candidates": "B候选",
+    "prior_streak_status": "昨日板数状态", "path_type": "路径类型", "path_label": "路径描述",
+    "history_frequency": "14日描述频率", "limit_status": "价格状态代理",
+    "asof": "数据时点", "relation_asof": "关系时点", "yesterday_board_counts": "昨日板数分布",
+    "emotion_label": "0945情绪档", "coverage_0945": "0945价格覆盖",
+    "today_promotion_or_price_proxy_count": "今日晋级/涨停价代理数", "count_label": "家数口径",
+    "summary": "梯队摘要", "emotion_asof": "情绪口径", "postmarket_label": "盘后对照",
+    "market_amount_percentile": "64日分位", "market_amount_multiple": "64日倍数",
+    "pool": "统计池", "top10": "竞价额前十", "top20": "竞价额前二十",
+    "sample_days": "历史样本日数",
+    "p0925_mean": "09:25平均涨幅", "p0932_mean": "09:32平均涨幅",
+    "p0945_mean": "09:45平均涨幅",
+    "median_yi": "64日竞价额中位数(亿)", "multiple": "对64日中位数倍数",
+    "percentile": "64日历史分位", "pool_label": "统计池",
 }
 
 # Explicit number semantics for report fields. Suffix classes below are only
 # used for the documented semantic suffixes, never arbitrary key substrings.
 FIELD_FORMATS = {
-    "ratio": frozenset({"amount_64d_percentile", "close_ge_5_rate", "sealed_up_rate",
+    "ratio": frozenset({"amount_64d_percentile", "amount_64d_percentile_common", "close_ge_5_rate", "sealed_up_rate",
                         "turned_negative_rate", "promotion_rate", "auction_amount_share",
                         "auction_amount_share_pct", "auction_amount_share_ratio", "auction_pct_coverage",
                         "anchor_coverage", "source_coverage", "coverage_rate",
@@ -237,7 +252,7 @@ def _metrics(report: Mapping[str, Any], stage: str) -> list[tuple[str, Any, str]
         candidates = [("全天成交额", market.get("amount_yuan"), "amount_yuan"),
                       (f"对前日倍数（固定共同池 {_plain_value(market.get('amount_common_pool_n'))} 只）", market.get("amount_vs_prev_common"), "vs_amount"),
                       (f"对64日中位数（固定共同池 {_plain_value(market.get('amount_64d_common_pool_n'))} 只）", market.get("amount_vs_64d_median_common"), "vs_amount"),
-                      ("64日成交额分位", market.get("amount_64d_percentile"), "rate"),
+                      (f"64日历史分位（固定共同池 {_plain_value(market.get('amount_64d_common_pool_n'))} 只）", market.get("amount_64d_percentile_common"), "rate"),
                       ("收盘中位涨幅", market.get("close_median"), "close_median"),
                       ("上涨家数", market.get("up_count"), "count"),
                       ("下跌家数", market.get("down_count"), "count"),
@@ -280,10 +295,27 @@ def _metrics(report: Mapping[str, Any], stage: str) -> list[tuple[str, Any, str]
 def _chapters(report: Mapping[str, Any]) -> list[tuple[str, list[dict[str, Any]]]]:
     chapters = report.get("chapters") if isinstance(report.get("chapters"), dict) else {}
     out = []
+    replaced_keys = set()
+    if isinstance(report.get("a_to_b"), list):
+        replaced_keys.add("look_a_do_b")
+    if isinstance(report.get("ladder_section"), Mapping):
+        replaced_keys.update({"yesterday_highboards", "ladder_summary"})
+    if isinstance(report.get("stocks"), list):
+        replaced_keys.add("market_price_volume")
     for key, value in chapters.items():
+        if key in replaced_keys:
+            continue
         label = _label(key)
         if label and isinstance(value, list) and value and isinstance(value[0], dict):
-            out.append((label, value[:12]))
+            rows = value[:12]
+            if key in {"big_meat", "big_loss", "extremes"}:
+                keep = ("symbol", "name", "main_plate", "limit_pct", "auction_pct", "p0925_pct", "p0932_pct",
+                        "p0945_pct", "open_pct", "close_pct", "high_pct", "low_pct", "delta_pp", "delta_over_limit",
+                        "auction_amount_yuan", "auction_amount_bp", "in_yest_pool", "lb_days", "path_flags",
+                        "visibility", "visibility_half_limit", "auction_price_status")
+                rows = [{field: row[field] for field in keep if field in row}
+                        for row in rows if isinstance(row, Mapping)]
+            out.append((label, rows))
     changes = chapters.get("plate_changes")
     if isinstance(changes, Mapping):
         rows = []
@@ -302,26 +334,82 @@ def _chapters(report: Mapping[str, Any]) -> list[tuple[str, list[dict[str, Any]]
                           "amount_weighted_pct_change", "median_pct_change", "up_share_pct",
                           "down_amount_share_pct", "top100_concentration_pct", "data_lag_seconds")
         summary = {key: market_volume[key] for key in summary_fields if key in market_volume and market_volume[key] is not None}
+        baseline = market_volume.get("auction_baseline_comparison")
+        if isinstance(baseline, Mapping):
+            for source_key, target_key in (("sample_days", "amount_64d_sample_days"),
+                                           ("median_yi", "median_yi"),
+                                           ("multiple", "multiple"), ("percentile", "percentile")):
+                if baseline.get(source_key) is not None:
+                    summary[target_key] = baseline[source_key]
+            summary["pool_label"] = "TD全市场可用竞价池；历史基线64交易日"
         if summary:
             out.append(("大盘竞价/开盘量价", [summary]))
         top_plates = market_volume.get("top_plates_by_share")
-        if isinstance(top_plates, list) and top_plates:
+        if isinstance(top_plates, list) and top_plates and not any(title.startswith("板块竞价额") for title, _ in out):
             out.append(("板块竞价额份额与涨幅（成员重叠，不可相加）", top_plates[:10]))
         top_stocks = market_volume.get("top_stocks_by_amount")
-        if isinstance(top_stocks, list) and top_stocks:
-            out.append(("个股竞价额前列", top_stocks[:10]))
+        if isinstance(top_stocks, list) and top_stocks and not isinstance(report.get("stocks"), list):
+            out.append(("个股竞价额前二十（含前十）", top_stocks[:20]))
     look = chapters.get("look_a_do_b")
-    if isinstance(look, list) and look:
+    if not isinstance(report.get("a_to_b"), list) and isinstance(look, list) and look:
         out.append(("看A做B", look[:10]))
-    if isinstance(chapters.get("look_a_do_b"), list) and not chapters["look_a_do_b"]:
+    if not isinstance(report.get("a_to_b"), list) and isinstance(chapters.get("look_a_do_b"), list) and not chapters["look_a_do_b"]:
         out.append(("看A做B", [{"status": "当前报告无匹配样本"}]))
     if "market" in report:
+        market = report.get("market") if isinstance(report.get("market"), Mapping) else {}
+        stock_rows = report.get("stocks") if isinstance(report.get("stocks"), list) else []
+        path_row = {}
+        for key, column in (("p0925_mean", "p0925_pct"), ("p0932_mean", "p0932_pct"),
+                            ("p0945_mean", "p0945_pct"), ("close_mean", "close_pct")):
+            values = [row.get(column) for row in stock_rows if isinstance(row, Mapping)
+                      and isinstance(row.get(column), (int, float))]
+            if values:
+                path_row[key] = sum(values) / len(values)
+        if path_row:
+            path_row["coverage_note"] = "各时点均值独立排除缺值；n_* 为该时点有值数"
+            for key, column in (("p0925_mean", "p0925_pct"), ("p0932_mean", "p0932_pct"),
+                                ("p0945_mean", "p0945_pct"), ("close_mean", "close_pct")):
+                path_row[key.replace("_mean", "_n")] = sum(
+                    1 for row in stock_rows if isinstance(row, Mapping)
+                    and isinstance(row.get(column), (int, float)))
+            out.append(("市场路径（各时点有值样本均值）", [path_row]))
+        metric_keys = ("auction_amount_yuan", "amount_64d_median_yuan", "amount_vs_64d_median",
+                       "amount_64d_percentile_common", "amount_64d_common_pool_days", "amount_64d_sample_days", "auction_regime",
+                       "auction_median", "p0945_median", "close_median", "up_count", "down_count",
+                       "close_limit_up_count", "close_limit_down_count")
+        metric_row = {key: market[key] for key in metric_keys if market.get(key) is not None}
+        if metric_row:
+            metric_row["pool"] = "竞价时点可见的固定共同股票池；历史分位样本日数见列，成员重叠不可相加"
+            out.append(("市场量价与历史位置", [metric_row]))
+        stocks = report.get("stocks")
+        if isinstance(stocks, list):
+            ranked = sorted((row for row in stocks if isinstance(row, Mapping)
+                             and isinstance(row.get("auction_amount_yuan"), (int, float))),
+                            key=lambda row: (-row["auction_amount_yuan"], str(row.get("symbol", ""))))[:20]
+            if ranked:
+                total = sum((row.get("auction_amount_yuan") or 0) for row in stocks
+                            if isinstance(row, Mapping) and isinstance(row.get("auction_amount_yuan"), (int, float)))
+                amount_rows = []
+                for rank_no, source in enumerate(ranked, 1):
+                    row = dict(source, rank=rank_no)
+                    row["amount_share_bp"] = (source["auction_amount_yuan"] / total * 10000) if total else None
+                    row["auction_price_status"] = source.get("auction_price_status")
+                    amount_rows.append(row)
+                out.append(("个股竞价额前二十（前十为同表前十行）", amount_rows))
+        extreme_rows = []
         for key in ("big_meat", "big_loss"):
             val = report.get(key)
             if isinstance(val, list) and val and isinstance(val[0], dict):
-                out.append(("大肉" if key == "big_meat" else "大面", val[:4]))
-        for key, title in (("plate_evolution", "个股—板块演化"), ("ladder_summary", "连板梯队"),
-                           ("unlimited_price_band_stocks", "新股/无涨跌幅限制")):
+                keep = ("symbol", "name", "main_plate", "limit_pct", "auction_pct", "p0925_pct", "p0932_pct",
+                        "p0945_pct", "open_pct", "close_pct", "high_pct", "low_pct", "delta_pp", "delta_over_limit",
+                        "auction_amount_yuan", "auction_amount_bp", "in_yest_pool", "lb_days", "path_flags",
+                        "visibility", "visibility_half_limit", "auction_price_status")
+                extreme_rows.extend(dict({field: row[field] for field in keep if field in row},
+                                         result_type="大肉" if key == "big_meat" else "大面")
+                                    for row in val[:4] if isinstance(row, Mapping))
+        if extreme_rows:
+            out.append(("极值与首次观测", extreme_rows))
+        for key, title in (("plate_evolution", "个股—板块演化"), ("ladder_summary", "连板梯队")):
             val = report.get(key)
             if isinstance(val, list) and val and isinstance(val[0], dict):
                 out.append((title, val[:8] if key == "plate_evolution" else val[:12]))
@@ -335,22 +423,33 @@ def _chapters(report: Mapping[str, Any]) -> list[tuple[str, list[dict[str, Any]]
                 ordinary_meat.append(row)
         if exceptional_rows:
             out = [(title, ordinary_meat[:10] if title == "大肉" else rows) for title, rows in out]
-            out.append(("新股/无涨跌幅限制（价格带例外）", exceptional_rows[:10]))
+            for title, rows in out:
+                if title == "极值与首次观测":
+                    rows.extend(dict(row, result_type="新股/无涨跌幅限制") for row in exceptional_rows[:4])
+                    break
         plates = report.get("plates")
+        unlimited = report.get("unlimited_price_band_stocks")
+        if isinstance(unlimited, list) and unlimited:
+            if extreme_rows:
+                extreme_rows.extend(dict(row, result_type="新股/无涨跌幅限制") for row in unlimited[:4])
+            else:
+                out.append(("极值与首次观测", [dict(row, result_type="新股/无涨跌幅限制") for row in unlimited[:4]]))
         if isinstance(plates, dict):
-            for key in ("close_top10", "close_bottom10", "auction_amount_top10"):
+            close_extremes = []
+            for key in ("close_top10", "close_bottom10"):
                 val = plates.get(key)
-                if isinstance(val, list) and val:
+                if isinstance(val, list):
+                    close_extremes.extend(dict(row, direction="收盘强势" if key == "close_top10" else "收盘弱势")
+                                          for row in val[:10] if isinstance(row, Mapping))
+            if close_extremes:
+                out.append(("收盘板块相对涨幅（强弱合并）", close_extremes))
+            for key in ("auction_amount_top10",):
+                val = plates.get(key)
+                if isinstance(val, list) and val and not any(title.startswith("竞价额前十") for title, _ in out):
                     title = FIELD_LABELS[key]
                     if key == "auction_amount_top10":
                         title += "（成员重叠，不可相加）"
                     out.append((title, val[:10]))
-        missed = report.get("missed_opportunities")
-        if isinstance(missed, Mapping) and isinstance(missed.get("plate_counts"), Mapping):
-            rows = [{"name": name, "count": count} for name, count in sorted(
-                missed["plate_counts"].items(), key=lambda item: (-item[1], item[0]))[:10]]
-            if rows:
-                out.append(("漏掉机会的板块分布", rows))
         scorecard = report.get("emerging_scorecard")
         if isinstance(scorecard, Mapping):
             rows = [{"cohort": label, **scorecard[key]} for key, label in (
@@ -365,7 +464,7 @@ def _chapters(report: Mapping[str, Any]) -> list[tuple[str, list[dict[str, Any]]
             out.append(("昨日机会回看", [{"status": "无昨日报告"}]))
     terminal = report.get("auction_terminal_0925") if isinstance(report.get("auction_terminal_0925"), Mapping) else {}
     top_stocks = terminal.get("top_stocks_by_amount") if isinstance(terminal, Mapping) else None
-    if isinstance(top_stocks, list) and top_stocks:
+    if isinstance(top_stocks, list) and top_stocks and not isinstance(report.get("stocks"), list):
         total = terminal.get("market_match_amount_yuan")
         stock_rows = []
         for source_row in top_stocks[:10]:
@@ -377,14 +476,64 @@ def _chapters(report: Mapping[str, Any]) -> list[tuple[str, list[dict[str, Any]]
             stock_rows.append(row)
         out.append(("竞价额前列个股", stock_rows))
     top_plates = terminal.get("top_plates_by_share") if isinstance(terminal, Mapping) else None
-    if isinstance(top_plates, list) and top_plates:
+    if isinstance(top_plates, list) and top_plates and not any(title.startswith("板块竞价额") for title, _ in out):
         out.append(("板块竞价额占比", top_plates[:10]))
     editorial = report.get("email_editorial")
     if isinstance(editorial, dict):
         for title, rows in editorial.items():
             if isinstance(rows, list) and rows and isinstance(rows[0], dict):
                 out.append(("收盘核心对照" if title == "SCORECARD" else title, rows[:20]))
-    return out[:24]
+    if isinstance(report.get("a_to_b"), list):
+        ab_rows = []
+        for group in report["a_to_b"]:
+            if not isinstance(group, Mapping):
+                continue
+            peers = group.get("candidates") if isinstance(group.get("candidates"), list) else []
+            if not peers:
+                ab_rows.append({"a_symbol": group.get("a_symbol"), "a_name": group.get("a_name"),
+                                "plate": group.get("plate"), "reason": group.get("reason")})
+            for peer in peers:
+                ab_rows.append({"a_symbol": group.get("a_symbol"), "a_name": group.get("a_name"),
+                                "plate": group.get("plate"), "asof": group.get("asof"),
+                                "relation_asof": group.get("relation_asof"), **peer})
+        if ab_rows:
+            total_candidates = len(ab_rows)
+            ab_rows = ab_rows[:5]
+            out.append((f"看A做B候选（前5项/共{total_candidates}项）", ab_rows))
+    ladder = report.get("ladder_section")
+    if isinstance(ladder, Mapping):
+        summary = ladder.get("summary") if isinstance(ladder.get("summary"), list) else []
+        summary_head = summary[0] if summary and isinstance(summary[0], Mapping) else {}
+        ladder_rows = [{"count_label": ladder.get("count_label"),
+                        "today_promotion_or_price_proxy_count": ladder.get("today_promotion_or_price_proxy_count"),
+                        "emotion_asof": ladder.get("emotion_asof"),
+                        "postmarket_label": ladder.get("postmarket_label"),
+                        "emotion_label": (ladder.get("emotion") or {}).get("label"),
+                        "coverage_0945": (ladder.get("emotion") or {}).get("coverage_0945"),
+                        **{key: summary_head.get(key) for key in ("max_price_streak", "first_board_count",
+                            "previous_limit_n", "promoted_n", "broken_n", "promotion_rate",
+                            "previous_space_height") if summary_head.get(key) is not None}}]
+        for level in ladder.get("yesterday_board_counts", []):
+            if isinstance(level, Mapping):
+                ladder_rows.append(dict(level))
+        for level in summary[1:]:
+            if isinstance(level, Mapping):
+                ladder_rows.append(dict(level))
+        for row in ladder.get("rows", []):
+            if isinstance(row, Mapping):
+                ladder_rows.append(dict(row))
+        out.append(("连板梯队与路径", ladder_rows))
+    priority = {"市场量价与历史位置": 0, "大盘竞价/开盘量价": 0, "数据质量": 1,
+                "市场路径": 2, "市场路径（各时点有值样本均值）": 2,
+                "连板梯队与路径": 3, "看A做B候选（前5项）": 4,
+                "竞价额前列个股": 3, "个股竞价额前列": 3, "个股竞价额前二十（含前十）": 5,
+                "个股竞价额前二十（前十为同表前十行）": 5,
+                "板块竞价额占比": 6, "板块竞价额份额与涨幅（成员重叠，不可相加）": 6,
+                "竞价额前十（成员重叠，不可相加）": 6, "个股—板块演化": 7,
+                "收盘板块相对涨幅（强弱合并）": 7, "极值与首次观测": 8,
+                "昨日机会回看": 9, "收盘核心对照": 10}
+    return sorted(out, key=lambda item: (priority.get(item[0],
+        4 if item[0].startswith("看A做B候选") else 9), item[0]))[:15]
 
 
 def _metadata(manifest: Mapping[str, Any], report: Mapping[str, Any], stage: str) -> list[str]:
@@ -426,6 +575,22 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
     if not isinstance(report, Mapping):
         raise ValueError("report JSON must be an object")
     stage_key = str(report.get("stage") or stage).lower()
+    if "close" not in stage_key and "closing" not in stage_key and stage_key != "eod":
+        forbidden = {"close_pct", "close_result_pct", "close_mean", "close_median",
+                     "close_at_limit_up", "close_limit_up_count", "close_limit_down_count",
+                     "close_ge_5", "close_ge_5_rate", "close_top10", "close_bottom10",
+                     "close_strength_top10", "close_weakness_top10"}
+        if "auction" in stage_key:
+            forbidden |= {"p0932_pct", "p0945_pct", "p0932_mean", "p0945_mean",
+                          "p0932_median", "p0945_median", "p0932_n", "p0945_n",
+                          "relative_to_plate_pp", "p0932", "p0945"}
+        def strip_close(value):
+            if isinstance(value, Mapping):
+                return {key: strip_close(item) for key, item in value.items() if key not in forbidden}
+            if isinstance(value, list):
+                return [strip_close(item) for item in value]
+            return value
+        report = strip_close(report)
     stage_name = "收盘" if "close" in stage_key else "开盘" if "open" in stage_key else "竞价"
     manifest = manifest or (report.get("manifest") if isinstance(report.get("manifest"), Mapping) else {})
     meta = _metadata(manifest, report, stage_key)
@@ -500,6 +665,12 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
                          "auction_amount_yuan", "auction_amount_bp", "in_yest_pool", "lb_days",
                          "visibility_half_limit")
             cols = [key for key in preferred if key in cols]
+        elif chapter_title.startswith("看A做B候选"):
+            preferred = ("a_symbol", "plate", "symbol", "name", "auction_pct",
+                         "auction_amount_yuan", "auction_amount_bp", "prior_range_position20_pct",
+                         "auction_price_status", "in_yest_pool", "prior_streak", "p0945_pct",
+                         "relative_to_plate_pp", "close_pct", "asof", "relation_asof")
+            cols = [key for key in preferred if key in cols]
         else:
             cols = cols[:18]
         auto_hidden_columns.extend(_label(key) or key for key in keys if not any(row.get(key) is not None for row in rows))
@@ -507,7 +678,8 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
             continue
         header = "".join(f'<th style="text-align:left;padding:8px 7px;background:#e9eef5;color:#475467;font-size:11px">{_esc(_label(k))}</th>' for k in cols)
         body = []
-        for idx, row in enumerate(rows):
+        shown_rows = rows[:5]
+        for idx, row in enumerate(shown_rows):
             cells = []
             for key in cols:
                 value = row.get(key)
@@ -525,14 +697,14 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
         share_key = next((k for k in ("amount_share_pct", "amount_share", "amount_share_bp", "auction_amount_share", "auction_amount_bp", "share_pct") if k in cols), None)
         bars = []
         if share_key:
-            for row in rows[:5]:
+            for row in shown_rows[:5]:
                 val = row.get(share_key)
                 if isinstance(val, (int, float)):
                     divisor = 100 if share_key.endswith("_bp") else 1
                     scale = 100 if "share" in share_key and abs(float(val)) <= 1 else 1
                     bar_width = max(0, min(100, float(val) * scale / divisor))
-                    bars.append(f'<tr><td style="padding:3px 6px;font-size:11px">{_esc(row.get("name", row.get("symbol", "—")))}</td><td style="width:72%;padding:3px"><table role="presentation" width="100%"><tr><td style="height:7px;background:#c83b3b;width:{bar_width:.1f}%;font-size:0">&nbsp;</td><td style="height:7px;background:#edf0f3;font-size:0">&nbsp;</td></tr></table></td><td style="font-size:11px;padding:3px">{_num(val,share_key)}</td></tr>')
-        bar_html = f'<table role="presentation" width="100%" style="margin-top:8px">{"".join(bars)}</table>' if bars else ""
+                    bars.append(f'<div style="display:flex;align-items:center;gap:8px;margin:3px 0;font-size:11px"><span style="width:95px">{_esc(row.get("name", row.get("symbol", "—")))}</span><span style="height:7px;flex:1;background:#edf0f3"><span style="display:block;height:7px;background:#c83b3b;width:{bar_width:.1f}%"></span></span><span>{_num(val,share_key)}</span></div>')
+        bar_html = f'<div style="margin-top:8px">{"".join(bars)}</div>' if bars else ""
         plate_appendix = ""
         if chapter_title.startswith("竞价额前十"):
             plate_data = report.get("plates") if isinstance(report.get("plates"), Mapping) else {}
@@ -542,8 +714,17 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
                                 for row in deferred if isinstance(row, Mapping))
                 if items:
                     plate_appendix = f"<details><summary>泛化/事件板块附录（折叠，不参与主榜）</summary><ul>{items}</ul></details>"
-        sections.append(f'<h2 style="font-size:16px;color:#23364d;margin:22px 0 8px">{_esc(chapter_title)}</h2><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse"><thead><tr>{header}</tr></thead><tbody>{"".join(body)}</tbody></table>{bar_html}{plate_appendix}')
-        plain_sections.append(chapter_title + "\n" + "\n".join(" | ".join(f"{_label(k)}：{_plain_value(r.get(k),k)}" for k in cols) for r in rows))
+        appendix_rows = []
+        if len(rows) > 5:
+            appendix_limit = 1
+            appendix_rows = ["；".join(f"{_label(k)}：{_plain_value(r.get(k), k)}" for k in cols[:3])
+                             for r in rows[5:5 + appendix_limit]]
+            remaining = len(rows) - 5 - len(appendix_rows)
+            extra = f"<p>另有 {remaining} 行未在邮件展开；完整清单见报告数据。</p>" if remaining else ""
+            plate_appendix += f'<details><summary>其余 {_num(len(rows)-5)} 行（共 {_num(len(rows))} 行）</summary><ol>' + "".join(
+                f"<li>{_esc(line)}</li>" for line in appendix_rows) + f"</ol>{extra}</details>"
+        sections.append(f'<h2 style="font-size:16px;color:#23364d;margin:22px 0 8px">{_esc(chapter_title)}（前 {_num(len(shown_rows))} / 共 {_num(len(rows))} 行）</h2><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse"><thead><tr>{header}</tr></thead><tbody>{"".join(body)}</tbody></table>{bar_html}{plate_appendix}')
+        plain_sections.append(chapter_title + f"（前{len(shown_rows)}/共{len(rows)}）\n" + "\n".join(" | ".join(f"{_label(k)}：{_plain_value(r.get(k),k)}" for k in cols) for r in shown_rows))
     close_extra = ""
     if isinstance(report.get("email_editorial"), Mapping):
         paragraphs = report["email_editorial"].get("结论", [])
@@ -565,5 +746,5 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
     plain += "\n\n" + "\n\n".join(plain_sections) + "\n\n" + footer
     content = f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>{_esc(title)}</title><style>@media (prefers-color-scheme: dark) {{ .page{{background:#111827!important;color:#e5e7eb!important}} }}</style></head><body style="margin:0;padding:16px;background:#eef2f6;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#26364a"><table role="presentation" width="100%"><tr><td align="center"><table class="page" role="presentation" width="100%" style="max-width:680px;background:#fff;border-radius:12px"><tr><td style="background:#172b43;padding:22px 24px;color:#fff"><div style="font-size:21px;font-weight:700">{_esc(title)}</div><div style="font-size:12px;padding-top:7px">{_esc(trade_date)}　{meta_html}</div></td></tr><tr><td style="padding:18px 20px"><section style="background:#f6f8fb;padding:14px 16px"><strong>一屏结论</strong><table width="100%">{points_html}</table></section><table width="100%" cellspacing="8" style="margin-top:14px"><tr>{metric_html}</tr></table>{gap_html}{''.join(sections)}{close_extra}<div style="border-top:1px solid #e5eaf0;margin-top:22px;padding:13px 0;color:#667085;font-size:11px">{_esc(footer)}</div></td></tr></table></td></tr></table></body></html>'''
     if len(content.encode("utf-8")) > MAX_EMAIL_HTML_BYTES:
-        raise ValueError("rendered email exceeds 120 KB")
+        raise ValueError(f"rendered email exceeds 120 KB ({len(content.encode('utf-8'))} bytes)")
     return content, plain
