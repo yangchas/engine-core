@@ -72,3 +72,19 @@ def test_market_price_volume_state_threshold_edges():
     assert market_price_volume_status(1.25, 0.01, 50) == "放量上攻"
     assert market_price_volume_status(0.85, 3, 80) == "缩量"
     assert market_price_volume_status(1.249, -1, 20) == "量价无明显一致方向"
+
+
+def test_latest_tick_query_uses_last_not_max_for_tdengine():
+    # TDengine rejects max() on the timestamp column ("Invalid parameter data type : max"); real-TD smoke found it.
+    import datetime as _dt
+    from engine_core import live_session as _ls
+
+    class Cur:
+        def __init__(self): self.sql = None
+        def execute(self, sql): self.sql = sql
+        def fetchall(self): return [(_dt.datetime(2026, 10, 15, 9, 45, 59),)]
+
+    cur = Cur()
+    got = _ls._latest_tick(cur, _dt.datetime(2026, 10, 15, 9, 46, 0))
+    assert got == _dt.datetime(2026, 10, 15, 9, 45, 59)
+    assert "last(ts)" in cur.sql and "max(" not in cur.sql

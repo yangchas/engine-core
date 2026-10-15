@@ -166,7 +166,7 @@ def _latest_tick(td: Any, cutoff: datetime) -> datetime | None:
         return value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
     cursor = td.cursor() if callable(getattr(td, "cursor", None)) else td
     start = cutoff.replace(hour=9, minute=14, second=0, microsecond=0)
-    cursor.execute("select max(ts) from stock_tick_v2 "
+    cursor.execute("select last(ts) from stock_tick_v2 "
                    f"where ts>='{start:%Y-%m-%d %H:%M:%S}' and ts<='{cutoff:%Y-%m-%d %H:%M:%S}'")
     rows = cursor.fetchall()
     value = rows[0][0] if rows and rows[0] else None
