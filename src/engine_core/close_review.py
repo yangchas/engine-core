@@ -112,7 +112,8 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
                         market: Mapping[str, Any] | None = None,
                         plates: Sequence[Mapping[str, Any]] | None = None,
                         kaipan_snapshots: Sequence[Mapping[str, Any]] | None = None,
-                        regime_history: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                        regime_history: Mapping[str, Any] | None = None,
+                        checkpoint_status: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Derive compact close-review sections from normalized per-stock observations."""
     clean = []
     for source in rows:
@@ -131,6 +132,12 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
         p932, p945 = _num(r.get("p0932_pct")), _num(r.get("p0945_pct"))
         r["visibility"] = "0945前可见" if (p932 is not None and p932 >= 2) or (p945 is not None and p945 >= 2) else "盘中才出现"
         clean.append(r)
+    checkpoint_status = dict(checkpoint_status or {})
+    missing_checkpoints = [tag for tag in ("0932", "0935", "0940", "0945")
+                           if checkpoint_status.get(tag, "READY") != "READY"]
+    if any(tag in missing_checkpoints for tag in ("0932", "0945")):
+        for row in clean:
+            row["visibility"] = f"不可判断：{','.join(tag for tag in ('0932','0945') if tag in missing_checkpoints)}检查点缺失"
     base = derive_extremes_review(clean, trade_date=trade_date, plates=plates or ())
     meat = sorted((r for r in clean if r.get("is_big_meat")), key=lambda r: (-(r.get("auction_amount_yuan") or 0), r["symbol"]))[:20]
     loss = sorted((r for r in clean if r.get("is_big_loss")), key=lambda r: (-(r.get("auction_amount_yuan") or 0), r["symbol"]))[:20]
@@ -163,9 +170,10 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
                 "turned_negative_rate": _rate(sum(r.get("close_pct") is not None and r["close_pct"] < 0 for r in group), n)}
     p945_ranked = sorted((r for r in clean if r.get("p0945_pct") is not None), key=lambda r: (-r["p0945_pct"], r["symbol"]))[:k]
     amount_ranked = sorted((r for r in clean if r.get("auction_amount_yuan") is not None), key=lambda r: (-r["auction_amount_yuan"], r["symbol"]))[:k]
-    scorecard = {"status": "READY" if live_report else "UNAVAILABLE_NO_LIVE_REPORT",
+    scorecard = {"status": ("UNAVAILABLE_NO_LIVE_REPORT" if not live_report else
+                             "DEGRADED" if "0945" in missing_checkpoints else "READY"),
                  "emerging": score(emerging_rows, k) if live_report else None,
-                 "p0945_top_k": score(p945_ranked) if live_report else None,
+                 "p0945_top_k": score(p945_ranked) if live_report and "0945" not in missing_checkpoints else None,
                  "amount_top_k": score(amount_ranked) if live_report else None, "k": k if live_report else None}
 
     yesterday = _prev_categories(prev_live)
@@ -255,6 +263,12 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
             "big_meat": meat, "big_loss": loss, "missed_opportunities": missed_section,
             "yesterday_review": yesterday_section, "emerging_scorecard": scorecard,
             "plates": plate_section, "regime_history": regime_history,
+            "checkpoint_chapters": {"timeline": {"status": "DEGRADED" if missing_checkpoints else "READY",
+                                                       "missing": missing_checkpoints,
+                                                       "reason": "缺少必需盘中检查点" if missing_checkpoints else None},
+                                     "visibility": {"status": "DEGRADED" if any(tag in missing_checkpoints for tag in ("0932", "0945")) else "READY",
+                                                    "missing": [tag for tag in missing_checkpoints if tag in ("0932", "0945")],
+                                                    "reason": "无法判断是否在0945前可见" if any(tag in missing_checkpoints for tag in ("0932", "0945")) else None}},
             "stocks": clean,
             "data_quality": {"included_stock_count": len(clean),
                              "auction_pct_coverage": sum(r.get("auction_pct") is not None for r in clean),
@@ -296,7 +310,12 @@ def render_close_markdown(data: Mapping[str, Any]) -> str:
     lines.append(f"收盘涨幅Top10与竞价额份额Top10重合 {data['plates'].get('top_bottom_overlap') if data['plates'].get('top_bottom_overlap') is not None else '—'} 个。")
     qr = data["plates"].get("quadrant_retention")
     lines.append("Kaipan 强度×主力净额象限保持率：" + "；".join(f"{x['from']}→{x['to']} {x['retained']}/{x['matched']} ({pct(x['rate'])})" for x in qr) if qr else "未提供可用 Kaipan 热板快照，象限延续性不可用。")
-    lines += ["", "## 数据质量", "", f"覆盖：收盘 {data['data_quality']['close_pct_coverage']}/{data['data_quality']['included_stock_count']}，0925 {data['data_quality']['auction_pct_coverage']}，0932 {data['data_quality']['p0932_coverage']}，0945 {data['data_quality']['p0945_coverage']}；竞价 FINAL/INDICATIVE {data['data_quality']['final_count']}/{data['data_quality']['indicative_count']}。日线来源：{data['data_quality']['daily_source']}。缺失字段保持缺失。", ""]
+    missing_cp = data.get("checkpoint_chapters", {}).get("timeline", {}).get("missing", [])
+    cp_note = f"必需检查点缺失 {','.join(missing_cp)}，相关章节已降级且不据此作结论。" if missing_cp else "必需盘中检查点齐全。"
+    refs = data.get("reference_data", {})
+    ref_note = "参考数据：" + "；".join(f"{name}{'可用' if refs.get(key, {}).get('status') == 'READY' else '缺失'}"
+                                         for key, name in (("stock_names", "名称表"), ("stock_caps", "市值表"))) + "。" if refs else ""
+    lines += ["", "## 数据质量", "", f"覆盖：收盘 {data['data_quality']['close_pct_coverage']}/{data['data_quality']['included_stock_count']}，0925 {data['data_quality']['auction_pct_coverage']}，0932 {data['data_quality']['p0932_coverage']}，0945 {data['data_quality']['p0945_coverage']}；竞价 FINAL/INDICATIVE {data['data_quality']['final_count']}/{data['data_quality']['indicative_count']}。{cp_note}{ref_note}日线来源：{data['data_quality']['daily_source']}。缺失字段保持缺失。", ""]
     return "\n".join(lines)
 
 
@@ -395,7 +414,9 @@ def assemble_close_review(trade_date: str, report_dir: str, checkpoints_csv: str
             snapshots.append({"tag": path.stem.removeprefix("hot_"), "rows": parsed})
     result = derive_close_review(rows, trade_date=trade_date, live_report=live, prev_live=prev,
                                  market=market, plates=plates, kaipan_snapshots=snapshots,
-                                 regime_history=history)
+                                 regime_history=history,
+                                 checkpoint_status={tag: ("READY" if coverage else "MISSING")
+                                                    for tag, coverage in manifest.get("checkpoint_coverage", {}).items()})
     capture_meta = _json(Path(daily_capture_dir) / "manifest.json")
     result["data_quality"]["daily_source"] = capture_meta.get("source", "UNKNOWN")
     result["market"]["daily_source"] = capture_meta.get("source", "UNKNOWN")

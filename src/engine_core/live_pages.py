@@ -219,7 +219,7 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
 def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
                 relations=None, plate_names=None, daily_history_csv=None, stock_names=None,
                 amount_baseline_json=None, auction_baseline_csv=None, kaipan_hot_json=None, strength_anchor_json=None,
-                member_snapshot_date="UNKNOWN", asof=None):
+                member_snapshot_date="UNKNOWN", member_lag_trading_days=None, asof=None):
     if stage not in STAGES: raise ValueError(f"unknown stage: {stage}")
     snaps, raw_states = [], {}
     td_fetch_seconds = 0.0
@@ -304,7 +304,9 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
         datetime.fromisoformat(report_current.get("asof", f"{trade_date}T09:25:06")))
     conclusion = _conclusion(snaps, chapters, history, stage)
     aggregation_seconds = max(0.0, time.perf_counter() - aggregation_started - td_fetch_seconds)
-    limitations = "板块关系使用调用方提供的点时关系；名称来自可选名称表或代码。日线输入缺失时，昨日连板、A/B位置与72日比较明确降级；缺失字段不补零。09:45 切片未追平时标记 NOT_READY/STALE。"
+    lag_text = (f"关系快照 {member_snapshot_date}，滞后 {member_lag_trading_days} 个交易日。"
+                if member_lag_trading_days is not None else f"关系快照 {member_snapshot_date}，滞后 UNKNOWN。")
+    limitations = f"板块关系使用调用方提供的点时关系；{lag_text}名称来自可选名称表或代码。日线输入缺失时，昨日连板、A/B位置与72日比较明确降级；缺失字段不补零。09:45 切片未追平时标记 NOT_READY/STALE。"
     manifest = {"inputs": {"kaipan_hot": _input_manifest(kaipan_hot_json, "kaipan_hot"),
                             "strength_anchor": _input_manifest(strength_anchor_json, "strength_anchor"),
                             "amount_baseline": _input_manifest(amount_baseline_json, "amount_baseline"),

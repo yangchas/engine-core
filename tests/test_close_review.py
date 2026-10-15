@@ -35,3 +35,16 @@ def test_missing_inputs_are_downgraded_not_errors():
     assert report["missed_opportunities"]["status"] == "UNAVAILABLE_NO_LIVE_REPORT"
     assert report["yesterday_review"]["status"] == "UNAVAILABLE_NO_PREV_REPORT"
     assert report["plates"]["status"] == "UNAVAILABLE_NO_RELATION"
+
+
+def test_missing_required_checkpoint_degrades_visibility_and_dependent_conclusions():
+    report = derive_close_review(
+        [{"symbol": "600001", "auction_pct": 0, "p0932_pct": 0, "p0945_pct": None,
+          "close_pct": 8, "delta_pp": 8}],
+        trade_date="2026-10-15",
+        live_report={"chapters": {"emerging": []}},
+        checkpoint_status={"0932": "READY", "0935": "READY", "0940": "READY", "0945": "MISSING"})
+    assert report["checkpoint_chapters"]["visibility"]["status"] == "DEGRADED"
+    assert report["big_meat"][0]["visibility"] == "不可判断：0945检查点缺失"
+    assert report["emerging_scorecard"]["status"] == "DEGRADED"
+    assert report["emerging_scorecard"]["p0945_top_k"] is None

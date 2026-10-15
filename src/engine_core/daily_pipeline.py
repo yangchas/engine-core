@@ -81,31 +81,129 @@ def _dated_candidates(root: Path, patterns: tuple[str, ...], trade_date: str) ->
                   key=lambda p: (_date_from_path(p) or "", str(p)), reverse=True)
 
 
-def discover_references(root: str | Path, trade_date: str) -> dict[str, Path | None]:
-    """Find the newest usable local reference for each report input."""
+def _catalog_path(root: Path, catalog_path: str | Path | None) -> Path:
+    if catalog_path:
+        candidate = Path(catalog_path)
+        return candidate if candidate.is_absolute() else root / candidate
+    return root / "reference_catalog.json"
+
+
+def _history_file_date(path: Path, trade_date: str) -> str | None:
+    """Use data dates, not the enclosing study directory date, for daily history."""
+    try:
+        import csv
+        with path.open(encoding="utf-8-sig", newline="") as handle:
+            values = [str(row.get("date") or "")[:10] for row in csv.DictReader(handle)]
+        eligible = [value for value in values if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
+                    and value < trade_date]
+        return max(eligible, default=None)
+    except (OSError, UnicodeError, csv.Error):
+        return _date_from_path(path)
+
+
+def resolve_references(root: str | Path, trade_date: str, *, stage: str = "auction",
+                       catalog_path: str | Path | None = None) -> tuple[dict[str, Path | None], dict[str, dict[str, Any]]]:
+    """Resolve references from an explicit catalog, then deterministic dated fallback."""
     base = Path(root)
-    baseline = _dated_candidates(base, ("auction_amount_by_day.csv", "*auction*baseline*.csv"), trade_date)
-    history = _dated_candidates(base, ("daily_history.csv", "daily_kline.csv", "history.csv"), trade_date)
-    captures = [p for p in (base.rglob("manifest.json") if base.exists() else [])
-                if p.is_file() and (p.parent / "daily_kline.jsonl").is_file()]
-    captures = sorted((p for p in captures if (_date_from_path(p.parent) or trade_date) <= trade_date),
-                      key=lambda p: (_date_from_path(p.parent) or "", str(p)), reverse=True)
+    specs = {
+        "auction_baseline": ("auction_amount_by_day.csv", "*auction*baseline*.csv"),
+        "daily_history": ("daily_history.csv", "daily_kline.csv", "daily_kline_*.csv", "history.csv"),
+        "stock_names": ("stock_names*.json",), "stock_caps": ("stock_caps*.json", "market_caps*.json"),
+    }
+    catalog_file = _catalog_path(base, catalog_path)
+    try:
+        catalog = json.loads(catalog_file.read_text(encoding="utf-8")) if catalog_file.is_file() else {}
+    except (OSError, ValueError):
+        catalog = {}
+    catalog_refs = catalog.get("references", catalog) if isinstance(catalog, dict) else {}
+    paths: dict[str, Path | None] = {}
+    metadata: dict[str, dict[str, Any]] = {}
+    categories = (*specs.keys(), "daily_capture_manifest", "relation_dir", "kaipan_hot_dir",
+                  "generic_names", "prev_reports_root")
+    for key in categories:
+        entry = catalog_refs.get(key) if isinstance(catalog_refs, dict) else None
+        entry = {"path": entry} if isinstance(entry, str) else (entry or {})
+        raw = entry.get("path") if isinstance(entry, dict) else None
+        candidate = Path(raw) if raw else None
+        if candidate and not candidate.is_absolute(): candidate = catalog_file.parent / candidate
+        if candidate and candidate.exists():
+            paths[key] = candidate
+            metadata[key] = {"as_of": entry.get("as_of", "UNKNOWN"), "discovered_by": "catalog"}
+        else:
+            paths[key] = None
+            metadata[key] = {"as_of": "UNKNOWN", "discovered_by": "fallback"}
+    for key, patterns in specs.items():
+        if paths[key] is not None: continue
+        if key == "daily_history":
+            candidates = {p for pattern in patterns for p in base.rglob(pattern)} if base.exists() else set()
+            candidates = sorted((p for p in candidates if p.is_file()
+                                 and (_history_file_date(p, trade_date) or "") < trade_date),
+                                key=lambda p: (_history_file_date(p, trade_date) or "", str(p)), reverse=True)
+        else:
+            candidates = _dated_candidates(base, patterns, trade_date)
+        if candidates:
+            paths[key] = candidates[0]
+            metadata[key]["as_of"] = (_history_file_date(candidates[0], trade_date) if key == "daily_history"
+                                       else _date_from_path(candidates[0]) or "UNKNOWN")
+    capture_manifest = paths["daily_capture_manifest"]
+    if capture_manifest:
+        try: capture_day = str(json.loads(capture_manifest.read_text(encoding="utf-8")).get("date") or "")
+        except (OSError, ValueError): capture_day = _date_from_path(capture_manifest.parent) or ""
+        if (not re.fullmatch(r"\d{4}-\d{2}-\d{2}", capture_day) or capture_day > trade_date
+                or (stage != "close" and capture_day >= trade_date)):
+            paths["daily_capture_manifest"] = None
+        else:
+            metadata["daily_capture_manifest"]["as_of"] = capture_day
+    if paths["daily_capture_manifest"] is None:
+        captures = []
+        for path in (base.rglob("manifest.json") if base.exists() else []):
+            if not path.is_file() or not (path.parent / "daily_kline.jsonl").is_file(): continue
+            try: capture_day = str(json.loads(path.read_text(encoding="utf-8")).get("date") or "")
+            except (OSError, ValueError): capture_day = _date_from_path(path.parent) or ""
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", capture_day): continue
+            if capture_day > trade_date or (stage != "close" and capture_day >= trade_date): continue
+            captures.append((capture_day, path))
+        if captures:
+            day, paths["daily_capture_manifest"] = max(captures, key=lambda item: (item[0], str(item[1])))
+            metadata["daily_capture_manifest"]["as_of"] = day
     relation_dirs = [p.parent for p in (base.rglob("registry.json") if base.exists() else [])
                      if (p.parent / "relation.csv").is_file()]
     relation_dirs = sorted((p for p in relation_dirs
                             if (_date_from_path(p) or "") <= trade_date),
                            key=lambda p: (_date_from_path(p) or "", str(p)), reverse=True)
-    hot_dirs = sorted((p for p in base.rglob("*") if p.is_dir() and list(p.glob("hot_*.json"))),
-                      key=lambda p: (_date_from_path(p) or "", str(p)), reverse=True) if base.exists() else []
-    names = _dated_candidates(base, ("stock_names.json",), trade_date)
-    caps = _dated_candidates(base, ("stock_caps.json", "market_caps.json"), trade_date)
-    return {"auction_baseline": baseline[0] if baseline else None,
-            "daily_history": history[0] if history else None,
-            "daily_capture_manifest": captures[0] if captures else None,
-            "relation_dir": relation_dirs[0] if relation_dirs else None,
-            "kaipan_hot_dir": hot_dirs[0] if hot_dirs else None,
-            "stock_names": names[0] if names else None,
-            "stock_caps": caps[0] if caps else None}
+    if paths["relation_dir"] is None and relation_dirs:
+        eligible = [p for p in relation_dirs if (_date_from_path(p) or "") <= trade_date]
+        if eligible: paths["relation_dir"] = sorted(eligible, key=lambda p: (_date_from_path(p) or "", str(p)), reverse=True)[0]
+    if paths["kaipan_hot_dir"] is None:
+        hot_dirs = sorted((p for p in base.rglob("*") if p.is_dir() and list(p.glob("hot_*.json"))
+                           and (_date_from_path(p) or "") <= trade_date),
+                          key=lambda p: (_date_from_path(p) or "", str(p)), reverse=True) if base.exists() else []
+        if hot_dirs: paths["kaipan_hot_dir"] = hot_dirs[0]
+    if paths["generic_names"] is None:
+        bundled_generic = Path(__file__).resolve().parents[2] / "examples/data/plate_generic_factor_names.json"
+        if bundled_generic.is_file(): paths["generic_names"] = bundled_generic
+    for key in ("relation_dir", "kaipan_hot_dir"):
+        if paths[key] is not None and metadata[key]["as_of"] == "UNKNOWN":
+            metadata[key]["as_of"] = _date_from_path(paths[key]) or "UNKNOWN"
+    return paths, metadata
+
+
+def discover_references(root: str | Path, trade_date: str, *, stage: str = "auction",
+                        catalog_path: str | Path | None = None) -> dict[str, Path | None]:
+    return resolve_references(root, trade_date, stage=stage, catalog_path=catalog_path)[0]
+
+
+def _relation_snapshot_date(relation_dir: Path | None) -> str:
+    return live_pages._relation_snapshot_date(relation_dir)
+
+
+def _relation_lag_trading_days(asof: str, trade_date: str, history_dates: list[str]) -> int | None:
+    match = re.search(r"(20\d{2})-?(\d{2})-?(\d{2})", asof or "")
+    if not match: return None
+    source_day = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+    dates = {day[:10] for day in history_dates if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day[:10])}
+    dates.add(trade_date)
+    return sum(source_day < day <= trade_date for day in dates)
 
 
 def _next_output(root: Path, trade_date: str, stage: str) -> Path:
@@ -214,7 +312,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                        out_root: str | Path = "/home/exedev/validation/daily-reports",
                        reference_root: str | Path = "/home/exedev/validation",
                        sources: DailySources | None = None, publish: bool = False,
-                       dry_run: bool = False, allow_wencai_fallback: bool = False) -> dict[str, Any]:
+                       dry_run: bool = False, allow_wencai_fallback: bool = False,
+                       reference_catalog: str | Path | None = None) -> dict[str, Any]:
     if stage not in STAGE_NAMES:
         raise ValueError("stage must be auction, open, or close")
     datetime.strptime(trade_date, "%Y-%m-%d")
@@ -223,7 +322,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     if publish and dry_run:
         raise ValueError("--publish and --dry-run cannot be combined")
     started = time.monotonic()
-    refs = discover_references(reference_root, trade_date)
+    refs, reference_meta = resolve_references(reference_root, trade_date, stage=stage,
+                                              catalog_path=reference_catalog)
     src = sources or DailySources(reference_root=reference_root)
     if src.td is None:
         src.td, src.td_error = _connect_td()
@@ -246,9 +346,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     degraded: list[str] = []
     if src.td_error:
         degraded.append(src.td_error)
-    for key, path in refs.items():
-        if path is None and key != "daily_capture_manifest":
-            degraded.append(f"MISSING_REFERENCE:{key}")
+    for key in ("auction_baseline", "daily_history", "relation_dir", "kaipan_hot_dir", "stock_names", "stock_caps"):
+        if refs[key] is None: degraded.append(f"MISSING_REFERENCE:{key}")
     wencai_result = None
     if allow_wencai_fallback and stage in ("auction", "open") and src.td_error:
         fetch = src.wencai_fetch
@@ -272,24 +371,21 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     for key, path in refs.items():
         inputs[key] = ({"path": str(path), "sha256": _sha(path)} if path and path.is_file()
                        else {"path": str(path) if path else None, "sha256": None})
+        inputs[key]["discovered_by"] = reference_meta[key]["discovered_by"]
+        inputs[key]["as_of"] = reference_meta[key]["as_of"]
         if key == "daily_capture_manifest" and path and (path.parent / "daily_kline.jsonl").is_file():
             data_path = path.parent / "daily_kline.jsonl"
             inputs["daily_capture_data"] = {"path": str(data_path), "sha256": _sha(data_path)}
     relation_dir = refs["relation_dir"]
     relations, plate_names, relation_asof = _load_relations(relation_dir)
     relation_lag = None
-    if relation_asof.startswith("PIT "):
+    if relation_asof != "UNKNOWN" and refs["daily_history"]:
         try:
-            source_day = datetime.strptime(relation_asof[4:], "%Y%m%d").date()
-            history_path = refs["daily_history"]
-            if history_path:
-                import csv
-                with history_path.open(encoding="utf-8-sig", newline="") as handle:
-                    session_dates = {str(row.get("date") or "")[:10]
-                                     for row in csv.DictReader(handle)}
-                relation_lag = sum(source_day.isoformat() < day <= trade_date
-                                   for day in session_dates)
-        except ValueError:
+            import csv
+            with refs["daily_history"].open(encoding="utf-8-sig", newline="") as handle:
+                session_dates = [str(row.get("date") or "")[:10] for row in csv.DictReader(handle)]
+            relation_lag = _relation_lag_trading_days(relation_asof, trade_date, session_dates)
+        except (OSError, ValueError):
             pass
     stock_names = {}
     if refs["stock_names"]:
@@ -322,7 +418,20 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             relations=relations, plate_names=plate_names, stock_names=stock_names,
             daily_history_csv=str(refs["daily_history"]) if refs["daily_history"] else None,
             auction_baseline_csv=baseline_csv, kaipan_hot_json=hot_path,
-            member_snapshot_date=relation_asof, asof=asof_cutoff)
+            member_snapshot_date=relation_asof, member_lag_trading_days=relation_lag,
+            asof=asof_cutoff)
+        payload.setdefault("chapters", {})["reference_data"] = {
+            "stock_names": {"status": "READY" if refs["stock_names"] else "MISSING",
+                            "reason": None if refs["stock_names"] else "名称表缺失，名称回退为代码"},
+            "stock_caps": {"status": "READY" if refs["stock_caps"] else "MISSING",
+                           "reason": None if refs["stock_caps"] else "市值表缺失"}}
+        if refs["stock_names"] is None or refs["stock_caps"] is None:
+            old_limitations = payload["limitations"]
+            payload["limitations"] += " 参考数据：" + "；".join(
+                name + "缺失" for name, key in (("名称表", "stock_names"), ("市值表", "stock_caps"))
+                if refs[key] is None) + "。"
+            import html
+            page = page.replace(html.escape(old_limitations), html.escape(payload["limitations"]))
         if src.td_error:
             payload["status"] = "DEGRADED_TD_MISSING"
         if stage == "auction":
@@ -400,15 +509,23 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         auction_candidates = _dated_candidates(Path(reference_root), ("*auction*snapshot*.csv",), trade_date)
         report_dir = report_dir_candidates[0].parent if report_dir_candidates else None
         live_path = open_ref or auction_ref
-        prev_path = _previous_report(root, trade_date, (STAGE_NAMES["close"], STAGE_NAMES["open"]))
+        reports_root = refs.get("prev_reports_root") or root
+        prev_path = _previous_report(Path(reports_root), trade_date, (STAGE_NAMES["close"], STAGE_NAMES["open"]))
         missing = [name for name, value in required.items() if value is None]
         if report_dir is None: missing.append("report_dir")
         if not checkpoint_candidates: missing.append("checkpoints_csv")
         if not auction_candidates: missing.append("auction_snapshot_csv")
         if missing:
             data, close_manifest = _close_fallback(trade_date, missing)
+            data["reference_data"] = {
+                "stock_names": {"status": "READY" if refs["stock_names"] else "MISSING"},
+                "stock_caps": {"status": "READY" if refs["stock_caps"] else "MISSING"}}
             degraded.extend(f"MISSING_CLOSE_INPUT:{name}" for name in missing)
-            markdown = "# 收盘复盘\n\n" + "\n".join(f"- {name}: 缺失" for name in missing) + "\n"
+            reference_state = "；".join(
+                f"{name}{'可用' if refs[key] else '缺失'}"
+                for key, name in (("stock_names", "名称表"), ("stock_caps", "市值表")))
+            markdown = ("# 收盘复盘\n\n" + "\n".join(f"- {name}: 缺失" for name in missing)
+                        + f"\n- 参考数据: {reference_state}。\n")
             page = "<!doctype html><meta charset='utf-8'><title>收盘复盘</title><pre>" + markdown + "</pre>"
         else:
             data, close_manifest = assemble_close_review(
@@ -420,6 +537,9 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 live_report_json=str(live_path) if live_path else None,
                 prev_live_json=str(prev_path) if prev_path else None,
                 kaipan_hot_dir=str(refs["kaipan_hot_dir"]) if refs["kaipan_hot_dir"] else None)
+            data["reference_data"] = {
+                "stock_names": {"status": "READY" if refs["stock_names"] else "MISSING"},
+                "stock_caps": {"status": "READY" if refs["stock_caps"] else "MISSING"}}
             markdown = render_close_markdown(data)
             page = render_close_html(data, markdown)
         data.setdefault("handoff", {})
@@ -442,7 +562,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                                          "coverage": len(q2_rows) if src.redis is not None and not degraded_q2 else None},
                             "kaipan_relation": {"path": str(relation_dir) if relation_dir else None,
                                                 "asof": relation_asof,
-                                                "lag_trading_days": relation_lag,
+                                                "lag_trading_days": relation_lag if relation_lag is not None else "UNKNOWN",
                                                 "coverage": len(relations)},
                             "daily_kline": {"available": refs["daily_capture_manifest"] is not None,
                                             "path": str(refs["daily_capture_manifest"]) if refs["daily_capture_manifest"] else None,
@@ -470,6 +590,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trade-date", default=date.today().isoformat())
     parser.add_argument("--asof")
     parser.add_argument("--out-root", default="/home/exedev/validation/daily-reports")
+    parser.add_argument("--reference-catalog")
     parser.add_argument("--publish", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-wencai-fallback", action="store_true")
@@ -482,7 +603,8 @@ def main(argv: list[str] | None = None, *, sources: DailySources | None = None) 
     result = run_daily_pipeline(stage=args.stage, trade_date=args.trade_date, asof=args.asof,
                                 out_root=args.out_root, reference_root=reference_root,
                                 sources=sources, publish=args.publish, dry_run=args.dry_run,
-                                allow_wencai_fallback=args.allow_wencai_fallback)
+                                allow_wencai_fallback=args.allow_wencai_fallback,
+                                reference_catalog=args.reference_catalog)
     print(f"trade_date={args.trade_date} stage={args.stage} out={result['out_dir']} "
           f"degraded={len(result['manifest']['degraded'])} report_json_bytes={result['manifest']['report_json_bytes']}")
     return 0
