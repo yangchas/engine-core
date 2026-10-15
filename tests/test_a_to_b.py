@@ -19,7 +19,7 @@ def test_builds_point_in_time_a_to_b_and_drops_unbuyable_candidates():
 
 def test_missing_relations_are_explicit():
     result = build_a_to_b([{"symbol": "600001", "lb_days": 2}], trade_date="2026-10-15")
-    assert result[0]["reason"] == "无合格主题板块"
+    assert result[0]["reason"] == "无板块关系"
 
 
 def test_auction_stage_does_not_use_or_emit_later_prices():
@@ -68,6 +68,16 @@ def test_no_qualified_theme_plate_has_explicit_reason():
                           plate_metadata={"物流": {"class": "BROAD", "size": 297}})
     assert result[0]["plate"] is None
     assert result[0]["reason"] == "无合格主题板块"
+
+
+def test_close_derived_unlimited_flag_does_not_remove_prior_known_anchor():
+    rows = [{"symbol": "600001", "name": "A", "lb_days": 2, "main_plate": "传媒",
+             "is_unlimited_price_band": True, "p0925_pct": 0},
+            {"symbol": "600002", "name": "B", "main_plate": "传媒", "p0925_pct": 1,
+             "auction_amount_yuan": 10}]
+    result = build_a_to_b(rows, trade_date="2026-10-15")
+    assert len(result) == 1
+    assert result[0]["a_symbol"] == "600001"
 
 
 def test_anchors_on_same_main_plate_are_marked_as_shared():
@@ -148,3 +158,33 @@ def test_close_a_to_b_emits_anchor_prices_and_candidate_display_fields():
     assert result[0]["a_auction_pct"] == 9.84
     assert result[0]["a_close_pct"] == 10
     assert result[0]["candidates"][0]["position"] == "高"
+
+
+def test_v2_contract_explains_anchor_strength_reasons_plate_and_b_selection_without_lookahead():
+    rows = [
+        {"symbol": "600001", "name": "A股", "lb_days": 3, "main_plate": "芯片",
+         "auction_limit_state": 1, "rest_bid_yuan": 50, "limit_pct": 10,
+         "p0925_pct": 10, "auction_amount_yuan": 200, "auction_amount_bp": 200,
+         "p0932_pct": 11, "p0945_pct": 12, "close_pct": 13},
+        {"symbol": "600002", "name": "B股", "main_plate": "芯片", "limit_pct": 10,
+         "p0925_pct": 2, "p0924_pct": 1, "auction_amount_yuan": 150,
+         "prior_range_position20_pct": 20, "p0932_pct": 3, "p0945_pct": 4,
+         "close_pct": 5},
+        {"symbol": "600003", "name": "C股", "main_plate": "芯片", "limit_pct": 10,
+         "p0925_pct": 1, "auction_amount_yuan": 100, "p0932_pct": 1,
+         "p0945_pct": 2, "close_pct": 3},
+    ]
+    result = build_a_to_b(rows, trade_date="2026-10-15", stage="auction", relation_asof="2026-10-14",
+                          path_frequencies={"UNKNOWN": {"k": 0, "n": 79, "days": 14}})
+    anchor = result[0]
+    assert anchor["schema_version"] == 2
+    assert {item["rule_id"] for item in anchor["a_reasons"]} >= {"R1", "R2", "R3", "R4"}
+    assert anchor["a_strength"]["auction_amount_rank"] == 1
+    assert anchor["a_strength"]["path_type"] == "UNKNOWN"
+    assert anchor["a_strength"]["path_frequency"] is None
+    assert anchor["plate_state"]["auction_amount_yuan"] == 450
+    assert anchor["sentiment_state"]["label"] == "UNKNOWN"
+    assert anchor["b_candidates"][0]["name"] == "B股"
+    assert len(anchor["b_candidates"][0]["reasons"]) <= 2
+    assert "p0945_pct" not in anchor["b_candidates"][0]["metrics"]
+    assert "close_pct" not in anchor["b_candidates"][0]["metrics"]

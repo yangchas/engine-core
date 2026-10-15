@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from . import live_pages
-from .close_review import (assemble_close_review, attach_close_sections, _attach_auction_baseline, render_close_html,
-                           render_close_markdown)
+from .close_review import (assemble_close_review, attach_close_sections, _attach_auction_baseline,
+                           derive_close_review, render_close_html, render_close_markdown)
 from .core_cache_writer import CoreCacheWriter
 from .daily_kline_capture import write_capture
 
@@ -103,10 +103,12 @@ def _history_file_date(path: Path, trade_date: str) -> str | None:
 
 
 def resolve_references(root: str | Path, trade_date: str, *, stage: str = "auction",
-                       catalog_path: str | Path | None = None) -> tuple[dict[str, Path | None], dict[str, dict[str, Any]]]:
+                       catalog_path: str | Path | None = None,
+                       redis: Any = None) -> tuple[dict[str, Path | None], dict[str, dict[str, Any]]]:
     """Resolve references from an explicit catalog, then deterministic dated fallback."""
     base = Path(root)
     specs = {
+        "stock_day_facts": ("stock_day_facts",),
         "auction_baseline": ("auction_amount_by_day.csv", "*auction*baseline*.csv"),
         "daily_history": ("daily_history.csv", "daily_kline.csv", "daily_kline_*.csv", "history.csv"),
         "stock_names": ("stock_names*.json",), "stock_caps": ("stock_caps*.json", "market_caps*.json"),
@@ -133,6 +135,32 @@ def resolve_references(root: str | Path, trade_date: str, *, stage: str = "aucti
         else:
             paths[key] = None
             metadata[key] = {"as_of": "UNKNOWN", "discovered_by": "fallback"}
+    # Core Redis keys only point at immutable catalog manifests; report inputs still
+    # resolve to the artifact so large history is never copied through Redis.
+    if redis is not None:
+        for key in categories:
+            if not callable(getattr(redis, "get", None)):
+                break
+            pointer_key = f"core:cache:data:reference:{key}:{trade_date}"
+            try:
+                pointer_raw = redis.get(pointer_key)
+                if pointer_raw is None:
+                    latest_raw = redis.get(f"core:cache:data:reference:{key}:latest")
+                    pointer_raw = latest_raw
+                pointer = json.loads(pointer_raw) if pointer_raw else {}
+                reference_uri = pointer.get("path") if isinstance(pointer, dict) else None
+                candidate = Path(reference_uri) if reference_uri else None
+                if candidate and candidate.exists():
+                    as_of = str(pointer.get("as_of", "UNKNOWN"))
+                    as_of_day = as_of[:10]
+                    point_in_time_ok = (as_of == "UNKNOWN" or as_of_day < trade_date
+                                        or (stage == "close" and as_of_day == trade_date))
+                    if point_in_time_ok:
+                        paths[key] = candidate
+                        metadata[key] = {"as_of": as_of, "discovered_by": "redis",
+                                         "version": pointer.get("version")}
+            except Exception:
+                continue
     for key, patterns in specs.items():
         if paths[key] is not None: continue
         if key == "daily_history":
@@ -190,8 +218,10 @@ def resolve_references(root: str | Path, trade_date: str, *, stage: str = "aucti
 
 
 def discover_references(root: str | Path, trade_date: str, *, stage: str = "auction",
-                        catalog_path: str | Path | None = None) -> dict[str, Path | None]:
-    return resolve_references(root, trade_date, stage=stage, catalog_path=catalog_path)[0]
+                        catalog_path: str | Path | None = None,
+                        redis: Any = None) -> dict[str, Path | None]:
+    return resolve_references(root, trade_date, stage=stage, catalog_path=catalog_path,
+                              redis=redis)[0]
 
 
 def _relation_snapshot_date(relation_dir: Path | None) -> str:
@@ -539,16 +569,16 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     if publish and dry_run:
         raise ValueError("--publish and --dry-run cannot be combined")
     started = time.monotonic()
-    refs, reference_meta = resolve_references(reference_root, trade_date, stage=stage,
-                                              catalog_path=reference_catalog)
     src = sources or DailySources(reference_root=reference_root)
-    if src.td is None:
-        src.td, src.td_error = _connect_td()
-    if src.redis is None and stage != "close":
+    if src.redis is None:
         try:
             src.redis = _connect_redis()
         except Exception:
             src.redis = None
+    refs, reference_meta = resolve_references(reference_root, trade_date, stage=stage,
+                                              catalog_path=reference_catalog, redis=src.redis)
+    if src.td is None and not (stage == "close" and refs.get("stock_day_facts")):
+        src.td, src.td_error = _connect_td()
     q2_rows: dict[str, Any] = {}
     if stage != "close" and src.redis is not None:
         try:
@@ -590,6 +620,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                        else {"path": str(path) if path else None, "sha256": None})
         inputs[key]["discovered_by"] = reference_meta[key]["discovered_by"]
         inputs[key]["as_of"] = reference_meta[key]["as_of"]
+        if reference_meta[key].get("version"):
+            inputs[key]["version"] = reference_meta[key]["version"]
         if key == "daily_capture_manifest" and path and (path.parent / "daily_kline.jsonl").is_file():
             data_path = path.parent / "daily_kline.jsonl"
             inputs["daily_capture_data"] = {"path": str(data_path), "sha256": _sha(data_path)}
@@ -641,7 +673,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             asof=asof_cutoff)
         payload.setdefault("chapters", {})["reference_data"] = {
             "stock_names": {"status": "READY" if refs["stock_names"] else "MISSING",
-                            "reason": None if refs["stock_names"] else "名称表缺失，名称回退为代码"},
+                            "reason": None if refs["stock_names"] else "名称表缺失，名称显示为名称未知"},
             "stock_caps": {"status": "READY" if refs["stock_caps"] else "MISSING",
                            "reason": None if refs["stock_caps"] else "市值表缺失"}}
         if refs["stock_names"] is None or refs["stock_caps"] is None:
@@ -716,7 +748,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         capture_manifest = refs["daily_capture_manifest"]
         daily_capture_dir = capture_manifest.parent if capture_manifest else None
         td_daily_error = None
-        if not src.td_error:
+        if not refs.get("stock_day_facts") and not src.td_error:
             try:
                 td_rows = _td_daily_rows(src.td, trade_date, src.daily_kline_rows)
                 if td_rows:
@@ -737,7 +769,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     td_daily_error = "TD_DAILY_KLINE_EMPTY"
             except Exception as exc:
                 td_daily_error = f"TD_DAILY_KLINE_UNAVAILABLE:{type(exc).__name__}"
-        else:
+        elif not refs.get("stock_day_facts"):
             td_daily_error = src.td_error
         if daily_capture_dir:
             try:
@@ -752,7 +784,54 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             degraded.append("MISSING_DAILY_KLINE: need TD daily_kline or a local same-date capture")
         elif td_daily_error:
             degraded.append(f"DAILY_KLINE_FALLBACK_LOCAL:{td_daily_error}")
-        required = {"daily_capture": daily_capture_dir, "report_dir": None,
+        if refs.get("stock_day_facts"):
+            from .stock_day_facts import read_facts
+            fact_rows, facts_manifest = read_facts(refs["stock_day_facts"])
+            fact_stocks = []
+            for fact in fact_rows:
+                pre = fact.get("pre_close_milli")
+                hi, lo = fact.get("day_high_milli"), fact.get("day_low_milli")
+                fact_stocks.append({
+                    "symbol": fact.get("symbol"), "name": fact.get("name") or "名称未知",
+                    "auction_pct": fact.get("p0925_pct"), "p0925_pct": fact.get("p0925_pct"),
+                    "p0932_pct": fact.get("p0932_pct"), "p0935_pct": fact.get("p0935_pct"),
+                    "p0940_pct": fact.get("p0940_pct"), "p0945_pct": fact.get("p0945_pct"),
+                    "close_pct": fact.get("day_pct"),
+                    "high_pct": (hi / pre - 1) * 100 if isinstance(hi, (int, float)) and isinstance(pre, (int, float)) and pre else None,
+                    "low_pct": (lo / pre - 1) * 100 if isinstance(lo, (int, float)) and isinstance(pre, (int, float)) and pre else None,
+                    "auction_amount_yuan": fact.get("auction_match_amount_yuan") or fact.get("p0925_cumulative_amount_yuan"),
+                    "amount_yuan": fact.get("day_amount_yuan"), "limit_pct": fact.get("limit_pct"),
+                    "lb_days": fact.get("yesterday_lb_days"), "in_yest_pool": fact.get("yesterday_limit_up"),
+                    "main_plate": fact.get("main_plate_name"), "plates": fact.get("plate_list_summary") or [],
+                    "auction_price_status": fact.get("p0925_price_status"),
+                    "auction_limit_state": fact.get("auction_limit_state"),
+                    "rest_bid_yuan": fact.get("auction_rest_bid_yuan"),
+                    "close_seal_up": fact.get("close_seal_up"),
+                    "is_new_listing": fact.get("is_new_listing"),
+                    "is_unlimited_price_band": bool(fact.get("is_new_listing")),
+                    "p0925_range_position20_pct": fact.get("position20_0925_pct"),
+                    "daily_source": fact.get("field_provenance_ref"),
+                    "caps": {"float_cap": fact.get("float_cap_yuan"), "total_cap": fact.get("total_cap_yuan")}})
+            amounts = [row["amount_yuan"] for row in fact_stocks if isinstance(row.get("amount_yuan"), (int, float))]
+            live_path = open_ref or auction_ref
+            prev_path = _previous_report(Path(refs.get("prev_reports_root") or root), trade_date,
+                                         (STAGE_NAMES["close"], STAGE_NAMES["open"]))
+            data = derive_close_review(fact_stocks, trade_date=trade_date,
+                live_report=_json(live_path) if live_path and live_path.is_file() else None,
+                prev_live=_json(prev_path) if prev_path and prev_path.is_file() else None,
+                market={"amount_yuan": sum(amounts) if amounts else None,
+                        "amount_coverage": len(amounts), "daily_source": "STOCK_DAY_FACTS"},
+                checkpoint_status={tag: "READY" if any(r.get(f"p{tag}_pct") is not None for r in fact_stocks) else "MISSING"
+                                   for tag in ("0932", "0935", "0940", "0945")})
+            data["data_quality"]["daily_source"] = "STOCK_DAY_FACTS"
+            data["data_quality"]["facts_manifest_sha256"] = facts_manifest.get("sha256")
+            close_manifest = {"facts_source": "STOCK_DAY_FACTS", "facts_manifest": facts_manifest,
+                              "legacy_fallback": False}
+            markdown = render_close_markdown(data)
+            page = render_close_html(data, markdown)
+            required = {}
+        else:
+            required = {"daily_capture": daily_capture_dir, "report_dir": None,
                     "checkpoints_csv": None, "auction_snapshot_csv": None}
         report_dir_candidates = _dated_candidates(Path(reference_root), ("stocks.json",), trade_date)
         checkpoint_candidates = _dated_candidates(Path(reference_root), ("checkpoints.csv",), trade_date)
@@ -765,6 +844,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         if report_dir is None: missing.append("report_dir")
         if not checkpoint_candidates: missing.append("checkpoints_csv")
         if not auction_candidates: missing.append("auction_snapshot_csv")
+        if refs.get("stock_day_facts"):
+            missing = []
         if missing:
             data, close_manifest = _close_fallback(trade_date, missing)
             data["reference_data"] = {
@@ -777,7 +858,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             markdown = ("# 收盘复盘\n\n" + "\n".join(f"- {name}: 缺失" for name in missing)
                         + f"\n- 参考数据: {reference_state}。\n")
             page = "<!doctype html><meta charset='utf-8'><title>收盘复盘</title><pre>" + markdown + "</pre>"
-        else:
+        elif not refs.get("stock_day_facts"):
             data, close_manifest = assemble_close_review(
                 trade_date, str(report_dir), str(checkpoint_candidates[0]),
                 str(auction_candidates[0]), str(daily_capture_dir),
@@ -792,7 +873,22 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 "stock_caps": {"status": "READY" if refs["stock_caps"] else "MISSING"}}
             markdown = render_close_markdown(data)
             page = render_close_html(data, markdown)
-        ladder = _load_ladder_summary(reference_root, trade_date)
+        if refs.get("stock_day_facts"):
+            streak_counts: dict[int, int] = {}
+            for row in fact_rows:
+                level = row.get("yesterday_lb_days")
+                if row.get("yesterday_limit_up") and isinstance(level, (int, float)) and level > 0:
+                    streak_counts[int(level)] = streak_counts.get(int(level), 0) + 1
+            ladder = [{"board_height": f"{level}板", "previous_n": count}
+                      for level, count in sorted(streak_counts.items())]
+            unknown_streaks = sum(bool(row.get("yesterday_limit_up")) and
+                                  not isinstance(row.get("yesterday_lb_days"), (int, float))
+                                  for row in fact_rows)
+            if unknown_streaks:
+                data.setdefault("data_gaps", []).append(
+                    f"昨日涨停池连板天数缺失：{unknown_streaks}只，未纳入梯队高度计数")
+        else:
+            ladder = _load_ladder_summary(reference_root, trade_date)
         previous_streaks = {}
         if prev_path and prev_path.is_file():
             try:
@@ -817,11 +913,13 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 prior_streak = _prior_streak(code, previous_streaks)
                 highboard_rows.append({"symbol": code, "name": stock.get("name"),
                     "main_plate": stock.get("main_plate"), "prior_streak": prior_streak,
-                    "p0925_pct": stock.get("p0925_pct"), "p0945_pct": stock.get("p0945_pct"),
+                    "p0925_pct": stock.get("p0925_pct"), "p0932_pct": stock.get("p0932_pct"),
+                    "p0935_pct": stock.get("p0935_pct"), "p0940_pct": stock.get("p0940_pct"),
+                    "p0945_pct": stock.get("p0945_pct"),
                     "close_pct": stock.get("close_pct"), "in_yest_pool": stock.get("in_yest_pool"),
                     "status": "今日最高板；收盘涨停价代理，封单/炸板路径 UNKNOWN"})
             data["ladder_summary"].extend(highboard_rows)
-        if isinstance(data.get("stocks"), list):
+        if isinstance(data.get("stocks"), list) and not refs.get("stock_day_facts"):
             _attach_range_positions(data["stocks"], refs["daily_history"], trade_date)
         ladder_rows = []
         symbols = []
@@ -858,7 +956,10 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         from .email_render import render_email_html
         email_page, _ = render_email_html(data, "close", trade_date, {"degraded": degraded})
         (out / "report.html").write_text(email_page, encoding="utf-8")
-        report_text = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
+        # The wide facts table is the detail store; keep the pipeline JSON under
+        # its existing size contract while retaining codes in the compact data.
+        report_payload = {key: value for key, value in data.items() if key != "stocks"}
+        report_text = json.dumps(report_payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
         close_manifest["input_files"] = close_manifest.get("input_files", {})
     if len(report_text.encode("utf-8")) > 300_000:
         raise ValueError("report.json exceeds 300 KB")

@@ -17,6 +17,7 @@ from .extremes_review import (REGIME_LABELS, _num, assemble_from_files, build_da
 from .plate_kind import classify_plate_kind
 from .a_to_b import _prior_streak, build_a_to_b, select_main_plate
 from .ladder_section import build_ladder_section
+from .extremes_board import build_extremes_board
 
 
 def attach_close_sections(data: dict[str, Any], *, relation_asof: str = "UNKNOWN",
@@ -29,10 +30,22 @@ def attach_close_sections(data: dict[str, Any], *, relation_asof: str = "UNKNOWN
     trade_date = str(data.get("trade_date") or "")
     stocks = data.get("stocks") if isinstance(data.get("stocks"), list) else []
     asof = f"{trade_date}T15:00:00" if trade_date else "UNKNOWN"
+    path_by_symbol = {str(row.get("symbol", row.get("code", ""))).zfill(6): row.get("path_type")
+                      for row in ladder_rows or () if row.get("path_type")}
+    for row in stocks:
+        symbol = str(row.get("symbol", row.get("code", ""))).zfill(6)
+        if symbol in path_by_symbol:
+            row["path_type"] = path_by_symbol[symbol]
+    market_state = dict(data.get("market") or {})
+    if isinstance(data.get("regime_history"), Mapping):
+        market_state["regime_history"] = data["regime_history"]
     a_to_b = build_a_to_b(stocks, trade_date=trade_date, stage="close", asof=asof,
                           relation_asof=relation_asof, relations=relations,
-                          plate_metadata=plate_metadata)
+                          plate_metadata=plate_metadata, market_state=market_state,
+                          path_frequencies=path_frequencies,
+                          relation_lag_trading_days=(data.get("data_quality") or {}).get("relation_lag_trading_days"))
     data["a_to_b"] = a_to_b
+    data["a_to_b_schema_version"] = 2
     data["a_to_b_status"] = "READY" if a_to_b else "NO_QUALIFIED_A"
     unlimited = [str(row.get("symbol", row.get("code", ""))).zfill(6) for row in stocks
                  if row.get("is_unlimited_price_band") or
@@ -192,13 +205,18 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
                         plates: Sequence[Mapping[str, Any]] | None = None,
                         kaipan_snapshots: Sequence[Mapping[str, Any]] | None = None,
                         regime_history: Mapping[str, Any] | None = None,
-                        checkpoint_status: Mapping[str, str] | None = None) -> dict[str, Any]:
+                        checkpoint_status: Mapping[str, str] | None = None,
+                        extremes_k_abs: int = 20, extremes_k_amount: int = 20,
+                        extremes_min_auction_amount_yuan: float = 30_000_000,
+                        extremes_threshold_pct: float = 3.0) -> dict[str, Any]:
     """Derive compact close-review sections from normalized per-stock observations."""
     clean = []
     for source in rows:
         r = dict(source)
         r["symbol"] = _sym(r.get("symbol", r.get("code")))
         r.setdefault("limit_pct", limit_percent(r["symbol"], str(r.get("name") or "")))
+        if r["symbol"].startswith("302"):
+            r["limit_pct"] = 20.0
         r["auction_pct"] = _num(r.get("auction_pct")); r["close_pct"] = _num(r.get("close_pct"))
         if r.get("delta_pp") is None and r["auction_pct"] is not None and r["close_pct"] is not None:
             r["delta_pp"] = r["close_pct"] - r["auction_pct"]
@@ -459,7 +477,12 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
                     for x in peer_rows)})
     unlimited_rows = [r for r in clean if r.get("is_unlimited_price_band")]
     market_section["unlimited_price_band_count"] = len(unlimited_rows)
+    extremes_board = build_extremes_board(
+        clean, stage="close", k_abs=extremes_k_abs, k_amount=extremes_k_amount,
+        min_auction_amount_yuan=extremes_min_auction_amount_yuan,
+        threshold_pct=extremes_threshold_pct)
     return {"contract": "CloseReviewV1", "trade_date": trade_date, "market": market_section,
+            "extremes_board": extremes_board,
             "big_meat": meat, "big_loss": loss, "missed_opportunities": missed_section,
             "yesterday_review": yesterday_section, "emerging_scorecard": scorecard,
             "plates": plate_section, "regime_history": regime_history,
@@ -490,15 +513,31 @@ def render_close_markdown(data: Mapping[str, Any]) -> str:
     m = data["market"]
     lines = [f"# 收盘复盘 {data['trade_date']}", "", "## 大盘收盘", "",
              f"收盘中位 {f(m.get('close_median'))}%；涨/跌/平 {m.get('up_count','—')}/{m.get('down_count','—')}/{m.get('flat_count','—')}；收盘涨停价代理/跌停价代理 {m.get('close_limit_up_count','—')}/{m.get('close_limit_down_count','—')}；全天成交额 {f(m.get('amount_yuan'))} 元；固定共同池({m.get('amount_common_pool_n','—')}只)前日倍数 {f(m.get('amount_vs_prev_common'))}×；64日共同池({m.get('amount_64d_common_pool_n','—')}只)中位数倍数 {f(m.get('amount_vs_64d_median_common'))}×。",
-             f"日型 {m.get('regime_label','—')}；{m.get('auction_comparison','竞价日型/金额对照缺失')}。", "", "## 大肉 / 大面（竞价额降序前20）", ""]
+             f"日型 {m.get('regime_label','—')}；{m.get('auction_comparison','竞价日型/金额对照缺失')}。", "",
+             "## 竞价先选、后追踪极值（当日描述）", "",
+             "选入集合仅使用≤09:25竞价涨幅绝对值前K与竞价金额前K的并集；金额阈值默认3000万元，FINAL/INDICATIVE按来源标注。", "",
+             "名称 | 板块 | 入选 | 竞价% | 额(亿) | 0932 | 0945 | 收盘% | Δ(pp) | 状态", "---|---|---|---:|---:|---:|---:|---:|---:|---"]
+    board_rows = data.get("extremes_board", {}).get("close", {}).get("rows", [])
+    for r in board_rows:
+        tr = r.get("tracking", {})
+        values = [r.get("name") or "名称未知", r.get("main_plate") or "—", r.get("selection_reason") or "—",
+                  f(r.get("auction_pct")), f((r.get("auction_amount_yuan") or 0) / 1e8),
+                  f(r.get("p0932_pct")), f(r.get("p0945_pct")), f(tr.get("close_pct")),
+                  f(tr.get("delta_close_pp")), r.get("auction_state") or r.get("auction_price_status") or "—"]
+        lines.append(" | ".join(str(x) for x in values))
+    outcome = data.get("extremes_board", {}).get("close", {})
+    for title, key in (("兑现/修复 Top8", "rebound_top8"), ("回落/走弱 Top8", "weak_top8")):
+        names = [r.get("name") or "名称未知" for r in outcome.get(key, [])]
+        lines.append(f"{title}（按固定竞价集合内Δ排序）：" + ("、".join(names) or "—"))
+    lines += ["", "### 旧口径附录：全市场收盘后极值（事后筛选，不是可见机会；Top5）", ""]
     for title, key in (("大肉", "big_meat"), ("大面", "big_loss")):
-        lines += [f"### {title}", "", "代码 | 名称 | 竞价价状态 | 竞价→0932→0945→收盘(%) | Δ/L | 竞价额 | 昨板 | 板块 | 已观测0.5L时点", "---|---|---|---:|---:|---:|---:|---|---"]
-        for r in data[key]:
+        lines += [f"### {title}", "", "名称 | 竞价价状态 | 竞价→0932→0945→收盘(%) | Δ/L | 竞价额 | 昨板 | 板块 | 已观测0.5L时点", "---|---|---|---:|---:|---:|---|---"]
+        for r in data[key][:5]:
             vals = "→".join(f(r.get(k)) for k in ("auction_pct", "p0932_pct", "p0945_pct", "close_pct"))
-            lines.append(f"{r['symbol']} | {r.get('name') or '—'} | {r.get('auction_price_status') or 'UNKNOWN'} | {vals} | {f(r.get('delta_over_limit'))} | {f((r.get('auction_amount_yuan') or 0)/1e8)}亿 | {r.get('lb_days') if r.get('lb_days') is not None else '—'} | {', '.join((r.get('plates') or [])[:2]) or r.get('main_plate') or '—'} | {r['visibility_half_limit']}")
+            lines.append(f"{r.get('name') or '名称未知'} | {r.get('auction_price_status') or 'UNKNOWN'} | {vals} | {f(r.get('delta_over_limit'))} | {f((r.get('auction_amount_yuan') or 0)/1e8)}亿 | {r.get('lb_days') if r.get('lb_days') is not None else '—'} | {', '.join((r.get('plates') or [])[:2]) or r.get('main_plate') or '—'} | {r['visibility_half_limit']}")
         lines.append("")
     missed = data["missed_opportunities"]
-    lines += ["## 漏掉的机会", "", (f"未提示大肉 {missed['count']} 只：{', '.join(missed['symbols'] or [])}；板块计数 {missed['plate_counts']}。" if missed["status"] == "READY" else "无法判断是否已提示：未提供开盘页 JSON。"), "",
+    lines += ["## 漏掉的机会", "", (f"未提示大肉 {missed['count']} 只；个股名称未知；板块计数 {missed['plate_counts']}。" if missed["status"] == "READY" else "无法判断是否已提示：未提供开盘页 JSON。"), "",
               "## 昨日机会回看", ""]
     if data["yesterday_review"]["status"] == "READY":
         for label, p in data["yesterday_review"]["categories"].items():
@@ -793,9 +832,10 @@ def assemble_close_review(trade_date: str, report_dir: str, checkpoints_csv: str
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--trade-date", required=True); p.add_argument("--report-dir", required=True)
-    p.add_argument("--checkpoints-csv", required=True); p.add_argument("--auction-snapshot-csv", required=True)
-    p.add_argument("--daily-capture-dir", required=True); p.add_argument("--daily-history-csv")
+    p.add_argument("--trade-date", required=True); p.add_argument("--report-dir")
+    p.add_argument("--checkpoints-csv"); p.add_argument("--auction-snapshot-csv")
+    p.add_argument("--daily-capture-dir"); p.add_argument("--stock-day-facts")
+    p.add_argument("--daily-history-csv")
     p.add_argument("--relation-dir"); p.add_argument("--generic-names-json"); p.add_argument("--stock-caps-json")
     p.add_argument("--live-report-json"); p.add_argument("--prev-live-json"); p.add_argument("--history-dir")
     p.add_argument("--kaipan-hot-dir"); p.add_argument("--out-dir", required=True); p.add_argument("--full-json", action="store_true")
@@ -808,13 +848,91 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv); out = Path(args.out_dir)
     if out.exists() and (not out.is_dir() or any(out.iterdir())): raise FileExistsError(f"output directory must be new or empty: {out}")
     out.mkdir(parents=True, exist_ok=True)
-    data, manifest = assemble_close_review(args.trade_date, args.report_dir, args.checkpoints_csv,
-        args.auction_snapshot_csv, args.daily_capture_dir, daily_history_csv=args.daily_history_csv,
-        relation_dir=args.relation_dir, generic_names_json=args.generic_names_json,
-        stock_caps_json=args.stock_caps_json, live_report_json=args.live_report_json,
-        prev_live_json=args.prev_live_json, history_dir=args.history_dir, kaipan_hot_dir=args.kaipan_hot_dir)
+    if args.stock_day_facts:
+        from .stock_day_facts import read_facts
+        fact_rows, facts_manifest = read_facts(args.stock_day_facts)
+        stocks = []
+        for fact in fact_rows:
+            pre_close = fact.get("pre_close_milli")
+            high_milli, low_milli = fact.get("day_high_milli"), fact.get("day_low_milli")
+            high_pct = ((high_milli / pre_close - 1) * 100
+                        if isinstance(high_milli, (int, float)) and isinstance(pre_close, (int, float)) and pre_close else None)
+            low_pct = ((low_milli / pre_close - 1) * 100
+                       if isinstance(low_milli, (int, float)) and isinstance(pre_close, (int, float)) and pre_close else None)
+            stocks.append({
+                "symbol": fact.get("symbol"), "name": fact.get("name"),
+                "auction_pct": fact.get("p0925_pct"), "p0925_pct": fact.get("p0925_pct"),
+                "p0932_pct": fact.get("p0932_pct"), "p0945_pct": fact.get("p0945_pct"),
+                "close_pct": fact.get("day_pct"), "high_pct": high_pct, "low_pct": low_pct,
+                "auction_amount_yuan": fact.get("auction_match_amount_yuan") or fact.get("p0925_cumulative_amount_yuan"),
+                "amount_yuan": fact.get("day_amount_yuan"), "limit_pct": fact.get("limit_pct"),
+                "lb_days": fact.get("yesterday_lb_days"),
+                "in_yest_pool": fact.get("yesterday_limit_up"),
+                "main_plate": fact.get("main_plate_name"), "plates": fact.get("plate_list_summary") or [],
+                "auction_price_status": fact.get("p0925_price_status"),
+                "auction_limit_state": fact.get("auction_limit_state"),
+                "rest_bid_yuan": fact.get("auction_rest_bid_yuan"),
+                "close_seal_up": fact.get("close_seal_up"),
+                "is_new_listing": fact.get("is_new_listing"),
+                "is_unlimited_price_band": bool(fact.get("is_new_listing")),
+                "p0925_range_position20_pct": fact.get("position20_0925_pct"),
+                "daily_source": fact.get("field_provenance_ref"),
+                "caps": {"float_cap": fact.get("float_cap_yuan"), "total_cap": fact.get("total_cap_yuan")},
+            })
+        # Derive the ladder's dated prior-board counts from the same wide rows;
+        # unknown streaks remain excluded from counts and are surfaced below.
+        prior_counts: dict[int, int] = {}
+        unknown_pool_streaks = 0
+        for stock in stocks:
+            if stock.get("in_yest_pool"):
+                level = stock.get("lb_days")
+                if isinstance(level, (int, float)) and level > 0:
+                    prior_counts[int(level)] = prior_counts.get(int(level), 0) + 1
+                else:
+                    unknown_pool_streaks += 1
+        ladder_summary = [{"board_height": f"{level}板", "previous_n": count}
+                          for level, count in sorted(prior_counts.items())]
+        for stock, fact in zip(stocks, fact_rows):
+            if fact.get("p0925_pct") is None:
+                stock["auction_price_status"] = None
+        amount_values = [stock["amount_yuan"] for stock in stocks
+                         if isinstance(stock.get("amount_yuan"), (int, float))]
+        live_path = Path(args.live_report_json) if args.live_report_json else _reference_path(
+            Path(args.reference_root), "live_report", args.reference_catalog)
+        prev_path = Path(args.prev_live_json) if args.prev_live_json else _reference_path(
+            Path(args.reference_root), "prev_live_report", args.reference_catalog)
+        live_report = _json(live_path) if live_path and live_path.is_file() else None
+        prev_live = _json(prev_path) if prev_path and prev_path.is_file() else None
+        data = derive_close_review(stocks, trade_date=args.trade_date, live_report=live_report,
+                                   prev_live=prev_live,
+                                   market={"amount_yuan": sum(amount_values) if amount_values else None,
+                                           "amount_coverage": len(amount_values),
+                                           "daily_source": "STOCK_DAY_FACTS"},
+                                   checkpoint_status={tag: "READY" if any(r.get(f"p{tag}_pct") is not None for r in stocks) else "MISSING"
+                                                      for tag in ("0932", "0935", "0940", "0945")})
+        data["data_quality"]["daily_source"] = "STOCK_DAY_FACTS"
+        data["data_quality"]["facts_manifest_sha256"] = facts_manifest.get("sha256")
+        if unknown_pool_streaks:
+            data.setdefault("data_gaps", []).append(
+                f"昨日涨停池连板天数缺失：{unknown_pool_streaks}只，未纳入梯队高度计数")
+        manifest = {"contract": "CloseReviewV1", "trade_date": args.trade_date,
+                    "facts_source": "STOCK_DAY_FACTS", "facts_manifest": facts_manifest,
+                    "legacy_fallback": False,
+                    "missing": ["daily_history", *(["live_report"] if live_report is None else []),
+                                *(["previous_live_report"] if prev_live is None else []), "Kaipan hot snapshots"]}
+    else:
+        if not all((args.report_dir, args.checkpoints_csv, args.auction_snapshot_csv, args.daily_capture_dir)):
+            raise ValueError("legacy path requires --report-dir, --checkpoints-csv, --auction-snapshot-csv and --daily-capture-dir")
+        data, manifest = assemble_close_review(args.trade_date, args.report_dir, args.checkpoints_csv,
+            args.auction_snapshot_csv, args.daily_capture_dir, daily_history_csv=args.daily_history_csv,
+            relation_dir=args.relation_dir, generic_names_json=args.generic_names_json,
+            stock_caps_json=args.stock_caps_json, live_report_json=args.live_report_json,
+            prev_live_json=args.prev_live_json, history_dir=args.history_dir, kaipan_hot_dir=args.kaipan_hot_dir)
+        manifest["facts_source"] = "LEGACY_FALLBACK"
+        manifest["legacy_fallback"] = True
     plate_metadata, relation_asof = _close_plate_metadata(args.relation_dir)
-    attach_close_sections(data, relation_asof=relation_asof, plate_metadata=plate_metadata)
+    attach_close_sections(data, relation_asof=relation_asof, plate_metadata=plate_metadata,
+                          ladder_summary=ladder_summary if args.stock_day_facts else ())
     _attach_auction_baseline(data, _reference_path(Path(args.reference_root), "auction_baseline",
                                                    args.reference_catalog))
     md = render_close_markdown(data); (out / "report.md").write_text(md, encoding="utf-8")

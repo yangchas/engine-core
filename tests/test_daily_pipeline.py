@@ -38,6 +38,50 @@ def test_a_to_b_range_position_uses_only_twenty_prior_closes_and_keeps_missing_u
     assert "prior_range_position20_pct" not in stocks[1]
 
 
+def test_reference_discovery_prefers_core_redis_pointer_and_records_version(tmp_path):
+    class ReferenceRedis:
+        def __init__(self, values): self.values = values
+        def get(self, key): return self.values.get(key)
+
+    redis_path = tmp_path / "redis-stock-names.json"
+    redis_path.write_text('{"600001":"Redis名称"}', encoding="utf-8")
+    catalog_path = tmp_path / "catalog-stock-names.json"
+    catalog_path.write_text('{"600001":"Catalog名称"}', encoding="utf-8")
+    (tmp_path / "reference_catalog.json").write_text(json.dumps({"references": {
+        "stock_names": {"path": str(catalog_path), "as_of": "2026-10-14"}}}), encoding="utf-8")
+    redis = ReferenceRedis({"core:cache:data:reference:stock_names:2026-10-15": json.dumps({
+        "path": str(redis_path), "as_of": "2026-10-14", "version": "sha256-abc"})})
+    from engine_core.daily_pipeline import resolve_references
+
+    paths, metadata = resolve_references(tmp_path, "2026-10-15", redis=redis)
+    assert paths["stock_names"] == redis_path
+    assert metadata["stock_names"] == {"as_of": "2026-10-14", "discovered_by": "redis",
+                                        "version": "sha256-abc"}
+
+
+def test_reference_discovery_rejects_same_day_redis_input_before_close(tmp_path):
+    class ReferenceRedis:
+        def __init__(self, values): self.values = values
+        def get(self, key): return self.values.get(key)
+
+    redis_path = tmp_path / "same-day-stock-names.json"
+    redis_path.write_text("{}", encoding="utf-8")
+    catalog_path = tmp_path / "prior-stock-names.json"
+    catalog_path.write_text("{}", encoding="utf-8")
+    (tmp_path / "reference_catalog.json").write_text(json.dumps({"references": {
+        "stock_names": {"path": str(catalog_path), "as_of": "2026-10-14"}}}), encoding="utf-8")
+    redis = ReferenceRedis({"core:cache:data:reference:stock_names:2026-10-15": json.dumps({
+        "path": str(redis_path), "as_of": "2026-10-15", "version": "same-day"})})
+    from engine_core.daily_pipeline import resolve_references
+
+    auction, auction_meta = resolve_references(tmp_path, "2026-10-15", stage="auction", redis=redis)
+    close, close_meta = resolve_references(tmp_path, "2026-10-15", stage="close", redis=redis)
+    assert auction["stock_names"] == catalog_path
+    assert auction_meta["stock_names"]["discovered_by"] == "catalog"
+    assert close["stock_names"] == redis_path
+    assert close_meta["stock_names"]["discovered_by"] == "redis"
+
+
 def test_live_section_stocks_builds_point_in_time_rows_without_close_fields():
     from engine_core.daily_pipeline import _live_section_stocks
 

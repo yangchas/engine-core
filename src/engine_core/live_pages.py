@@ -19,12 +19,13 @@ from engine_core.live_session import (market_price_volume_status, build_live_sli
                                       load_daily_history_csv, states_at)
 from engine_core.plate_enrichment import infer_plate_enrichment
 from engine_core.plate_linkage import build_plate_linkage
+from engine_core.extremes_board import build_extremes_board
 
 STAGES = {"auction_0926": [("0920", "09:20:00"), ("0924", "09:24:00"), ("0925", "09:25:06")],
           "open_0946": [("0925", "09:25:06"), ("0932", "09:32:00"), ("0935", "09:35:00"),
                         ("0940", "09:40:00"), ("0945", "09:45:30")]}
-SECTIONS = {"auction_0926": ["一屏结论", "大盘", "板块份额", "板块象限", "板块联动与跌停影响", "封涨停质量", "封跌停质量", "昨日连板高标", "竞价内变化", "看A做B", "近72日对比"],
-            "open_0946": ["一屏结论", "大盘", "板块象限", "昨日连板高标分化", "昨日涨停池", "竞价后新冒头", "板块回升榜", "板块回落榜", "板块联动与跌停影响", "封涨停质量", "封跌停质量", "竞价内变化", "看A做B", "近72日对比"]}
+SECTIONS = {"auction_0926": ["一屏结论", "大盘", "竞价先选极值集合", "板块份额", "板块象限", "板块联动与跌停影响", "封涨停质量", "封跌停质量", "昨日连板高标", "竞价内变化", "看A做B", "近72日对比"],
+            "open_0946": ["一屏结论", "大盘", "竞价集合开盘追踪", "板块象限", "昨日连板高标分化", "昨日涨停池", "竞价后新冒头", "板块回升榜", "板块回落榜", "板块联动与跌停影响", "封涨停质量", "封跌停质量", "竞价内变化", "看A做B", "近72日对比"]}
 GENERIC_NAMES_PATH = Path(__file__).resolve().parents[2] / "examples" / "data" / "plate_generic_factor_names.json"
 EVENT_NAME_MARKERS = ("季报增长", "年报增长", "中报增长", "并购重组", "实控人变更")
 
@@ -352,6 +353,7 @@ def _state_limit(row, side):
 def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_names,
                     stock_context, history, has_history):
     from engine_core.behavior_tags import calculate_stock_tags, summarize
+    from engine_core.extremes_review import limit_percent
     labels = {snap["label"]: snap for snap in snaps}
     auction = raw_states.get("0925", {})
     last_label = "0945" if stage == "open_0946" else "0925"
@@ -368,6 +370,7 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
         chapters["behavior_rows"] = []
         chapters["watchlist"] = {"amount_top50": [], "yesterday_limit_pool": [], "sealed_up": [],
                                  "sealed_down": [], "behavior_candidates": []}
+        chapters["extremes_board"] = build_extremes_board([], stage="open" if stage == "open_0946" else None)
         return chapters
     # C155 tags use the canonical 0920/0924/0925 values and market totals.
     market = {tag: {"m": sum(int(row.get("match_amount_yuan") or 0) for row in raw_states.get(tag, {}).values())}
@@ -514,6 +517,38 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                              "sealed_down": chapters["sealed_down"][:30],
                              "behavior_candidates": behavior_candidates}
     base = raw_states.get("0925", {})
+    selected_symbols = set(base)
+    selected_plates: dict[str, list[str]] = {str(symbol).zfill(6): [] for symbol in selected_symbols}
+    for plate_code, members in relations.items():
+        plate_name = plate_names.get(plate_code)
+        if not plate_name:
+            continue
+        for member in members:
+            symbol = str(member).zfill(6)
+            if symbol in selected_plates:
+                selected_plates[symbol].append(plate_name)
+    from .a_to_b import select_main_plate
+    extreme_rows = []
+    for symbol, row in base.items():
+        context = stock_context.get(symbol, {})
+        extreme_rows.append({
+            "symbol": symbol,
+            "name": stock_names.get(symbol, row.get("name") or symbol),
+            "main_plate": (context.get("main_plate") or context.get("plate") or
+                           select_main_plate(selected_plates.get(str(symbol).zfill(6), [])) or "—"),
+            "auction_pct": row.get("pct_change"),
+            "auction_amount_yuan": row.get("match_amount_yuan"),
+            "auction_price_status": row.get("status") or "UNKNOWN",
+            "auction_limit_state": row.get("limit_state"),
+            "limit_pct": limit_percent(symbol, stock_names.get(symbol, row.get("name") or "")),
+            "p0932_pct": raw_states.get("0932", {}).get(symbol, {}).get("pct_change"),
+            "p0935_pct": raw_states.get("0935", {}).get(symbol, {}).get("pct_change"),
+            "p0940_pct": raw_states.get("0940", {}).get(symbol, {}).get("pct_change"),
+            "p0945_pct": raw_states.get("0945", {}).get(symbol, {}).get("pct_change"),
+            "latest_pct": latest.get(symbol, {}).get("pct_change"),
+        })
+    chapters["extremes_board"] = build_extremes_board(
+        extreme_rows, stage="open" if stage == "open_0946" else None)
     if stage == "open_0946" and latest:
         chapters["emerging"] = sorted([{"symbol": symbol, "name": stock_names.get(symbol, row.get("name") or symbol),
                                        "0925": base.get(symbol, {}).get("pct_change"), "0932": raw_states.get("0932", {}).get(symbol, {}).get("pct_change"),
@@ -596,6 +631,30 @@ def _conclusion(snaps, chapters, history, stage):
 def _section_body(title, payload):
     snaps = payload["snapshots"]
     chapters = payload["chapters"]
+    if title in ("竞价先选极值集合", "竞价集合开盘追踪"):
+        stage_key = "open" if payload["stage"] == "open_0946" else "auction"
+        board = chapters.get("extremes_board", {}).get(stage_key, {})
+        source_rows = board.get("rows", []) if isinstance(board, dict) else []
+        rows = []
+        for row in source_rows:
+            if not isinstance(row, dict):
+                continue
+            track = row.get("tracking") or {}
+            state = row.get("auction_state") or row.get("auction_price_status") or "—"
+            rows.append({"name": row.get("name") or "名称未知", "main_plate": row.get("main_plate") or "—",
+                         "selection_reason": row.get("selection_reason"),
+                         "auction_pct": row.get("auction_pct"),
+                         "amount_yi": (row.get("auction_amount_yuan") / 1e8
+                                       if isinstance(row.get("auction_amount_yuan"), (int, float)) else None),
+                         "p0932_pct": row.get("p0932_pct"), "p0945_pct": row.get("p0945_pct"),
+                         "state": state, "latest_pct": track.get("latest_pct")})
+        columns = [("名称", "name"), ("板块", "main_plate"), ("入选", "selection_reason"),
+                   ("竞价%", "auction_pct"), ("额(亿)", "amount_yi")]
+        if stage_key == "open":
+            columns.extend([("0932", "p0932_pct"), ("0945", "p0945_pct"), ("实时", "latest_pct")])
+        columns.append(("状态", "state"))
+        note = "选入仅用≤09:25可见的竞价绝对涨幅前20与金额前20并集，最低竞价额3000万元；新股/无限制单列。"
+        return f"<p>{html.escape(note)}</p>" + _table(columns, rows)
     if title == "一屏结论":
         market = chapters.get("market_price_volume", {})
         cards = [("有价个股竞价总额", _fmt_money(market.get("market_match_amount_yuan"))),

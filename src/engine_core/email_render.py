@@ -16,7 +16,7 @@ _GREEN = "#16835d"
 
 # User-visible fields are allow-listed. Unknown machine fields are omitted.
 FIELD_LABELS = {
-    "symbol": "代码", "name": "名称", "stock_name": "名称", "main_plate": "所属板块",
+    "symbol": None, "a_symbol": None, "name": "名称", "stock_name": "名称", "main_plate": "所属板块",
     "count": "数量", "direction": "方向", "mean_pct": "平均涨幅", "auction_pct": "竞价涨幅",
     "close_pct": "收盘涨幅", "change_pp": "变化", "limit_band": "板数",
     "plates": "所属板块", "limit_pct": "板幅", "high_pct": "日内最高", "low_pct": "日内最低",
@@ -607,28 +607,42 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
     report = json.loads(report_json) if isinstance(report_json, (str, bytes)) else report_json
     if not isinstance(report, Mapping):
         raise ValueError("report JSON must be an object")
-    ladder = report.get("ladder_section")
-    if (isinstance(report.get("stocks"), list)
-            or (isinstance(ladder, Mapping) and bool(ladder.get("rows")))
-            or report.get("email_layout") == "board"):
-        return render_email_board(report, stage, trade_date)
-    stage_key = str(report.get("stage") or stage).lower()
+    stage_key = str(stage or report.get("stage") or "").lower()
     if "close" not in stage_key and "closing" not in stage_key and stage_key != "eod":
         forbidden = {"close_pct", "close_result_pct", "close_mean", "close_median",
                      "close_at_limit_up", "close_limit_up_count", "close_limit_down_count",
                      "close_ge_5", "close_ge_5_rate", "close_top10", "close_bottom10",
-                     "close_strength_top10", "close_weakness_top10"}
+                     "close_strength_top10", "close_weakness_top10", "emerging_scorecard",
+                     "yesterday_review"}
         if "auction" in stage_key:
             forbidden |= {"p0932_pct", "p0945_pct", "p0932_mean", "p0945_mean",
                           "p0932_median", "p0945_median", "p0932_n", "p0945_n",
                           "relative_to_plate_pp", "p0932", "p0945"}
+        auction_only = "auction" in stage_key
         def strip_close(value):
             if isinstance(value, Mapping):
-                return {key: strip_close(item) for key, item in value.items() if key not in forbidden}
+                cleaned = {}
+                for key, item in value.items():
+                    if key in forbidden:
+                        continue
+                    if auction_only and key in {"0932", "0945", "close"}:
+                        continue
+                    if auction_only and key in {"equal_weight_0945_pct", "equal_weight_close_pct",
+                                                "relative_to_plate_0945_pp", "relative_to_plate_close_pp"}:
+                        continue
+                    if not auction_only and key == "close":
+                        continue
+                    cleaned[key] = strip_close(item)
+                return cleaned
             if isinstance(value, list):
                 return [strip_close(item) for item in value]
             return value
         report = strip_close(report)
+    ladder = report.get("ladder_section")
+    if (isinstance(report.get("stocks"), list)
+            or (isinstance(ladder, Mapping) and bool(ladder.get("rows")))
+            or report.get("email_layout") == "board"):
+        return render_email_board(report, stage_key, trade_date)
     stage_name = "收盘" if "close" in stage_key else "开盘" if "open" in stage_key else "竞价"
     manifest = manifest or (report.get("manifest") if isinstance(report.get("manifest"), Mapping) else {})
     meta = _metadata(manifest, report, stage_key)
@@ -711,13 +725,13 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
         if "main_plate" in cols and "plates" in cols:
             cols.remove("plates")
         if chapter_title in {"大肉", "大面"}:
-            preferred = ("symbol", "name", "main_plate", "limit_pct", "auction_pct", "auction_price_status", "p0932_pct",
+            preferred = ("name", "main_plate", "limit_pct", "auction_pct", "auction_price_status", "p0932_pct",
                          "p0945_pct", "close_pct", "high_pct", "low_pct", "delta_over_limit",
                          "auction_amount_yuan", "auction_amount_bp", "in_yest_pool", "lb_days",
                          "visibility_half_limit")
             cols = [key for key in preferred if key in cols]
         elif chapter_title.startswith("看A做B候选"):
-            preferred = ("a_symbol", "plate", "symbol", "name", "auction_pct",
+            preferred = ("plate", "name", "auction_pct",
                          "auction_amount_yuan", "auction_amount_bp", "prior_range_position20_pct",
                          "auction_price_status", "in_yest_pool", "prior_streak", "p0945_pct",
                          "relative_to_plate_pp", "close_pct", "asof", "relation_asof")

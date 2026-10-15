@@ -172,6 +172,29 @@ def test_close_markdown_labels_limit_counts_as_price_proxies_and_discloses_overl
     assert "竞价额份额Top10（成员重叠，不可相加）" in markdown
 
 
+def test_close_markdown_is_name_only_and_missing_name_is_explicit():
+    from engine_core.close_review import render_close_markdown
+    import re
+
+    data = {"trade_date": "2026-10-15", "market": {"close_median": 0},
+            "big_meat": [{"symbol": "000833", "name": "粤桂股份", "auction_pct": 1,
+                          "p0932_pct": 2, "p0945_pct": 3, "close_pct": 4,
+                          "delta_over_limit": .3, "auction_amount_yuan": 100,
+                          "visibility_half_limit": "未知"}],
+            "big_loss": [], "missed_opportunities": {"status": "READY", "count": 1,
+                                                         "symbols": ["000833"], "plate_counts": {}},
+            "yesterday_review": {"status": "UNAVAILABLE_NO_PREV_REPORT"},
+            "emerging_scorecard": {}, "plates": {"close_top10": [], "close_bottom10": [],
+                                                       "auction_amount_top10": []},
+            "checkpoint_chapters": {"timeline": {"missing": []}}, "data_quality": {
+                "close_pct_coverage": 1, "included_stock_count": 1, "auction_pct_coverage": 1,
+                "p0932_coverage": 1, "p0945_coverage": 1, "final_count": 0,
+                "indicative_count": 0, "daily_source": "test"}}
+    rendered = render_close_markdown(data)
+    assert "粤桂股份" in rendered and "名称未知" in rendered
+    assert re.search(r"(?<!\d)\d{6}(?!\d)", rendered) is None
+
+
 def test_close_section_attachment_writes_a_to_b_and_ladder_into_report():
     from engine_core.close_review import attach_close_sections
 
@@ -184,6 +207,10 @@ def test_close_section_attachment_writes_a_to_b_and_ladder_into_report():
     attach_close_sections(report)
     assert len(report["a_to_b"]) == 1
     assert report["a_to_b"][0]["a_symbol"] == "600001"
+    assert report["a_to_b_schema_version"] == 2
+    assert report["a_to_b"][0]["schema_version"] == 2
+    assert report["a_to_b"][0]["a_reasons"][0]["rule_id"] == "R1"
+    assert report["a_to_b"][0]["plate_state"]["name"] == "芯片"
     assert report["ladder_section"]["rows"][0]["symbol"] == "600001"
     assert report["ladder_section"]["rows"][0]["prior_streak"] == 2
     assert report["ladder_section"]["rows"][0]["prior_streak_status"] == "字段冲突"
@@ -197,3 +224,23 @@ def test_plate_report_includes_narrow_theme_ranked_by_auction_share():
                                  plates=[{"name": "小主题", "kind": "THEME"}])
     assert report["plates"]["narrow_theme_top5"][0]["name"] == "小主题"
     assert report["plates"]["narrow_theme_top5"][0]["members"] == 8
+
+
+def test_close_extremes_uses_fixed_auction_cohort_and_limits_old_appendix_to_five():
+    from engine_core.close_review import derive_close_review, render_close_markdown
+
+    rows = [{"symbol": f"600{i:03d}", "name": f"股票{i}", "auction_pct": i - 6,
+             "auction_amount_yuan": 40_000_000 + i, "auction_price_status": "FINAL",
+             "limit_pct": 10, "p0932_pct": i, "p0945_pct": i - 1,
+             "close_pct": i - 2, "high_pct": i + 1, "low_pct": i - 3}
+            for i in range(30)]
+    report = derive_close_review(rows, trade_date="2026-10-15", extremes_k_abs=3,
+                                 extremes_k_amount=3, extremes_min_auction_amount_yuan=0)
+    board = report["extremes_board"]["close"]
+    assert len(board["rows"]) <= 6
+    assert all(row["symbol"] in {r["symbol"] for r in report["extremes_board"]["auction"]["rows"]}
+               for row in board["rebound_top8"] + board["weak_top8"])
+    markdown = render_close_markdown(report)
+    assert "竞价先选、后追踪极值（当日描述）" in markdown
+    assert "旧口径附录：全市场收盘后极值（事后筛选，不是可见机会；Top5）" in markdown
+    assert markdown.count("### 大肉") == 1 and markdown.count("### 大面") == 1
