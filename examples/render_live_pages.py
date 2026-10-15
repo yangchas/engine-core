@@ -556,7 +556,7 @@ def _conclusion(snaps, chapters, history, stage):
     market_line = (f"市场量价依据 {current['label']}：有价个股{'累计成交额' if current.get('amount_basis') == 'cumulative_session' else '竞价总额'} {_fmt_money(current.get('market_match_amount_yuan'))}，"
                    f"对昨日终值 {_fmt_multiple(current.get('vs_previous_day_final'))}，额加权涨幅 {_fmt_pct(current.get('amount_weighted_pct_change'))}，"
                    f"下跌个股额占比 {_fmt_pct(current.get('down_amount_share_pct'))}，上涨家数占比 {_fmt_pct(current.get('up_share_pct'))}，"
-                   f"开盘中位 {_fmt_pct(market_summary.get('opening_median_pct_change'))}，Top100集中度 {_fmt_pct(current.get('top100_concentration_pct'))}；"
+                   f"开盘中位 {_fmt_pct(market_summary.get('opening_median_pct_change') if market_summary.get('opening_median_pct_change') is not None else current.get('median_pct_change'))}，Top100集中度 {_fmt_pct(current.get('top100_concentration_pct'))}；"
                    f"量价状态 {current.get('market_price_volume_state')}，状态阈值待校准；数据 {current['status']}，lag {current['data_lag_seconds']} 秒。")
     comparison = current.get("auction_baseline_comparison")
     if stage == "open_0946":
