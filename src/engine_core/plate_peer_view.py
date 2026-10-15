@@ -37,6 +37,28 @@ def range_position(history: Iterable[Mapping[str, Any]], symbol: str,
     return 0.0 if high == low else (current - low) / (high - low)
 
 
+def _history_index(history: Iterable[Mapping[str, Any]]) -> dict[str, list[tuple[str, float]]]:
+    """symbol -> date-sorted (date, close); built once so peer loops are not O(peers x history)."""
+    index: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for row in history:
+        close = _number(row.get("close"))
+        if close is not None:
+            index[str(row.get("symbol"))].append((str(row.get("date", "")), float(close)))
+    for rows in index.values():
+        rows.sort()
+    return index
+
+
+def _range_position_indexed(index: Mapping[str, list[tuple[str, float]]], symbol: str,
+                            trade_date: str, window: int = 20) -> float | None:
+    rows = [item for item in index.get(symbol, ()) if item[0] < trade_date][-window:]
+    if len(rows) < window:
+        return None
+    closes = [value for _, value in rows]
+    low, high, current = min(closes), max(closes), closes[-1]
+    return 0.0 if high == low else (current - low) / (high - low)
+
+
 def limit_streaks(history: Iterable[Mapping[str, Any]], asof_date: str) -> dict[str, int]:
     by_symbol: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for row in history:
@@ -153,6 +175,7 @@ def build_plate_peer_view(*, trade_date: str, stocks: list[dict[str, Any]],
                           pool_symbols: set[str] | None = None,
                           input_hashes: Mapping[str, str] | None = None) -> dict[str, Any]:
     names = {str(row.get("symbol")): str(row.get("name") or row.get("symbol")) for row in stocks}
+    position_index = _history_index(history)
     stock_plates: dict[str, list[str]] = defaultdict(list)
     for plate, symbols in memberships.items():
         pname = plate_names.get(plate, plate)
@@ -230,7 +253,7 @@ def build_plate_peer_view(*, trade_date: str, stocks: list[dict[str, Any]],
         for symbol in peer_symbols:
             row = auction.get(symbol, {})
             pct = market_pcts.get(symbol)
-            position = range_position(history, symbol, trade_date)
+            position = _range_position_indexed(position_index, symbol, trade_date)
             amount_rank = rank_by.get(symbol)
             flags = classify_peer(pct=pct, plate_mean=mean_pct, amount_rank=amount_rank,
                                   member_count=len(ranked), position=position,

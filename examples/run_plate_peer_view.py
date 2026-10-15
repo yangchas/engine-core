@@ -66,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(f"--relation-dir missing required {required.name}")
     stock_rows = _read_json(args.report_dir / "stocks.json", [])
     plates_report = _read_json(args.report_dir / "plates.json", [])
+    if isinstance(plates_report, dict) and isinstance(plates_report.get("plates"), list):
+        plates_report = plates_report["plates"]  # real report layout: {"plates": [...], "independent": ...}
     if not isinstance(stock_rows, list) or not isinstance(plates_report, list):
         raise ValueError("report stocks.json and plates.json must contain arrays")
     # Report membership labels are a secondary alias/name source; PIT relation.csv is authoritative.
