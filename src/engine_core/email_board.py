@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .extremes_board import build_extremes_board
+from .limit_price import state_at_close
 
 
 def _esc(value: Any) -> str:
@@ -40,6 +41,25 @@ def _amount(value: Any) -> str:
         return f"{float(value) / 1e8:.1f}"
     except (TypeError, ValueError):
         return "—"
+
+
+def _amount_with_unit(value: Any) -> str:
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return "金额未知"
+    return f"{amount / 10_000:.0f}万" if 0 <= amount < 10_000_000 else f"{amount / 1e8:.1f}亿"
+
+
+def _exact_price_state(row: Mapping[str, Any], *, prefix: str = "") -> str:
+    return state_at_close(
+        row.get(prefix + "close", row.get("close")),
+        row.get(prefix + "high", row.get("high")),
+        row.get(prefix + "low", row.get("low")),
+        row.get("pre_close"), str(row.get("symbol", row.get("code", ""))),
+        is_st=bool(row.get("is_st")),
+        unlimited=bool(row.get("is_new_listing") or row.get("is_unlimited_price_band") or
+                        row.get("unlimited_price_band")))
 
 
 def _rows(value: Any) -> list[Mapping[str, Any]]:
@@ -178,10 +198,10 @@ def _ladder(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
             is_new = row.get("is_new_listing") or row.get("is_unlimited_price_band")
             if is_new:
                 state = "新"
-            elif stage == "close" and isinstance(pct, (int, float)) and isinstance(limit, (int, float)):
-                state = "封" if row.get("close_seal_up") is True else "停价" if pct >= limit - .2 else "触价" if isinstance(row.get("high_pct"), (int, float)) and row["high_pct"] >= limit - .2 else "跌停价" if pct <= -limit + .2 else ""
-            elif stage == "open" and isinstance(pct, (int, float)) and isinstance(limit, (int, float)):
-                state = "停价" if pct >= limit - .2 else "触价" if isinstance(row.get("high_pct"), (int, float)) and row["high_pct"] >= limit - .2 else ""
+            elif stage == "close":
+                state = _exact_price_state(row)
+            elif stage == "open":
+                state = _exact_price_state(row, prefix="p0945_")
             else:
                 state = "封" if row.get("auction_limit_state") in (1, "1", "UP") else ""
             if row.get("is_new_listing") or row.get("unlimited_price_band"):
@@ -267,12 +287,10 @@ def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
             limit = row.get("limit_pct")
             close = row.get("close_pct")
             state = "新" if row.get("is_new_listing") or row.get("is_unlimited_price_band") else ""
-            if stage == "close" and isinstance(limit, (int, float)) and isinstance(close, (int, float)):
-                state = "封" if row.get("close_seal_up") is True else "停价" if close >= limit - .2 else "触价" if isinstance(row.get("high_pct"), (int, float)) and row["high_pct"] >= limit - .2 else "跌停价" if close <= -limit + .2 else state
-            elif stage == "close" and row.get("close_at_limit_up"):
-                state = "停价"
-            elif stage == "open" and isinstance(p945, (int, float)) and isinstance(limit, (int, float)) and p945 >= limit - .2:
-                state = "停价"
+            if stage == "close":
+                state = _exact_price_state(row)
+            elif stage == "open":
+                state = _exact_price_state(row, prefix="p0945_")
             states.append(state)
             cells = [_esc(name), _esc(plate), _esc(_num(auction))]
             if stage != "auction":
@@ -502,7 +520,7 @@ def _a_to_b(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
         candidates = _rows(entry.get("candidates"))[:3]
         chips = []
         for row in candidates:
-            text = f"B {_display_name(row, 8)} {_num(_first(row, 'auction_pct', 'p0925_pct'))} {_amount(row.get('auction_amount_yuan'))}亿 {_position_label(row)}"
+            text = f"B {_display_name(row, 8)} {_num(_first(row, 'auction_pct', 'p0925_pct'))} {_amount_with_unit(row.get('auction_amount_yuan'))} {_position_label(row)}"
             if row.get("shared_anchor_names"):
                 text += " 共同同伴"
             if stage != "auction":

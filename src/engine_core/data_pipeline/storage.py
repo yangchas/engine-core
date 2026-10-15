@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
 import json
 import os
 import tempfile
@@ -52,14 +53,15 @@ class ArtifactCatalog:
         version = f"sha256-{digest[:16]}"
         day_root = self.root / dataset / f"trade_date={trade_date}" / f"source={source}"
         run_dir = day_root / version
-        data_path = run_dir / "rows.jsonl"
+        data_path = run_dir / "rows.jsonl.gz"
         manifest_path = run_dir / "manifest.json"
         result = dict(manifest)
         result.update({"version": version, "sha256": digest, "row_count": len(rows),
                        "storage_backend": "artifact", "storage_uri": str(run_dir),
                        "rows_uri": str(data_path), "manifest_uri": str(manifest_path)})
+        result["storage_format"] = "jsonl.gz"
         if not manifest_path.is_file():
-            _atomic_write(data_path, payload)
+            _atomic_write(data_path, gzip.compress(payload, mtime=0))
             _atomic_write(manifest_path, canonical_json(result) + b"\n")
         catalog = self.read()
         datasets = catalog.setdefault("datasets", {})
@@ -73,6 +75,11 @@ class ArtifactCatalog:
                 and (current_latest is None or trade_date >= current_latest.get("trade_date", ""))):
             entry["latest"] = {"trade_date": trade_date, "version": version}
         _atomic_write(self.path, canonical_json(catalog) + b"\n")
+        latest = entry.get("latest")
+        if latest and latest.get("version") == version and latest.get("trade_date") == trade_date:
+            pointer_path = self.root / dataset / "latest.json"
+            _atomic_write(pointer_path, canonical_json({"trade_date": trade_date,
+                "version": version, "manifest": str(manifest_path)}) + b"\n")
         return result
 
     def locate(self, dataset: str, trade_date: str | None = None) -> Path | None:
@@ -90,7 +97,8 @@ class ArtifactCatalog:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         path = Path(manifest["rows_uri"])
         rows = []
-        with path.open(encoding="utf-8") as handle:
+        opener = gzip.open if path.suffix == ".gz" else open
+        with opener(path, "rt", encoding="utf-8") as handle:
             for line in handle:
                 if line.strip(): rows.append(json.loads(line))
         return rows

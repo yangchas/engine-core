@@ -6,6 +6,7 @@ from statistics import median
 from typing import Any, Mapping, Sequence
 
 from .a_to_b import _prior_streak
+from .limit_price import state_at_close
 
 PATH_LABELS = {
     "LIMIT_HOLD": "采样仍在涨停价", "STRONG_FADE": "竞价偏高后回落",
@@ -105,14 +106,41 @@ def build_ladder_section(stocks: Sequence[Mapping[str, Any]], *, stage: str,
         item.update({key: row.get(key) for key in ("limit_pct", "high_pct", "auction_amount_yuan", "in_yest_pool")})
         if close_visible:
             item["close_pct"] = row.get("close_pct", row.get("close_result_pct"))
+            item["limit_status"] = state_at_close(
+                row.get("close"), row.get("high"), row.get("low"), row.get("pre_close"),
+                item["symbol"], is_st=bool(row.get("is_st")),
+                unlimited=bool(row.get("is_unlimited_price_band") or row.get("unlimited_price_band")))
         rows.append(item)
     by_streak = Counter(r["prior_streak"] for r in rows if r["prior_streak"] is not None)
-    def at_up_proxy(row: Mapping[str, Any], key: str) -> bool:
-        value, band = row.get(key), row.get("limit_pct")
-        return (isinstance(value, (int, float)) and isinstance(band, (int, float)) and band > 0
-                and value >= band - 0.2)
-    close_up = sum(1 for r in rows if close_visible and at_up_proxy(r, "close_pct"))
-    current = sum(1 for r in rows if not close_visible and at_up_proxy(r, "p0945_pct"))
+    market_by_symbol = {str(row.get("symbol", row.get("code", ""))).zfill(6): row
+                        for row in (market_stocks or ())}
+    def exact_state(row: Mapping[str, Any], prefix: str = "") -> str:
+        source = market_by_symbol.get(str(row.get("symbol", "")), row)
+        fallback = "" if not prefix else None
+        return state_at_close(source.get(prefix + "close", source.get(fallback + "close") if fallback is not None else None),
+                              source.get(prefix + "high", source.get(fallback + "high") if fallback is not None else None),
+                              source.get(prefix + "low", source.get(fallback + "low") if fallback is not None else None),
+                              source.get("pre_close"), str(row.get("symbol", "")),
+                              is_st=bool(source.get("is_st")),
+                              unlimited=bool(source.get("is_unlimited_price_band") or
+                                             source.get("unlimited_price_band")))
+    price_rows = list(market_stocks or stocks)
+    if close_visible:
+        states = [exact_state(r) for r in price_rows]
+    elif not auction_only:
+        states = [exact_state(r, "p0945_") for r in price_rows]
+    else:
+        states = []
+    known_states = [state for state in states if state != "缺价格字段"]
+    count_status = ("NOT_APPLICABLE" if auction_only else
+                    "MISSING" if not price_rows else
+                    "READY" if len(known_states) == len(states) else
+                    "PARTIAL" if known_states else "MISSING")
+    exact_up_count = sum(state == "封(价格代理)" for state in known_states)
+    exact_down_count = sum(state == "跌停价" for state in known_states)
+    exact_touch_count = sum(state in {"触", "跌触"} for state in known_states)
+    close_up = exact_up_count if count_status == "READY" else None
+    current = exact_up_count if count_status == "READY" and not close_visible and not auction_only else None
     summary_counts = [{"board_height": row.get("board_height"), "count": _int(row.get("previous_n"))}
                       for row in summary if row.get("board_height") and _int(row.get("previous_n")) is not None]
     yesterday_counts = summary_counts or [{"board_height": f"{level}板", "count": count}
@@ -128,8 +156,7 @@ def build_ladder_section(stocks: Sequence[Mapping[str, Any]], *, stage: str,
             for row in pool_rows:
                 if _int(row.get("lb_days")) != level:
                     continue
-                close, band = row.get("close_pct"), row.get("limit_pct")
-                if isinstance(close, (int, float)) and isinstance(band, (int, float)) and band > 0 and close >= band - 0.2:
+                if exact_state(row) == "封(价格代理)":
                     promoted += 1
             promotion_by_level[f"{level}板"] = {"promoted": promoted, "total": total}
     emotion = (_emotion_bucket(market_stocks, asof) if not auction_only and market_stocks is not None
@@ -137,6 +164,9 @@ def build_ladder_section(stocks: Sequence[Mapping[str, Any]], *, stage: str,
     result = {"asof": asof, "stage": stage, "rows": rows,
               "yesterday_board_counts": yesterday_counts,
               "today_promotion_or_price_proxy_count": close_up if close_visible else current,
+              "today_limit_down_price_count": exact_down_count if count_status == "READY" else None,
+              "today_touched_limit_count": exact_touch_count if count_status == "READY" else None,
+              "price_count_status": count_status,
               "count_label": "收盘涨停价代理家数" if close_visible else "截至0945涨停价代理家数",
               "summary": [dict(r) for r in summary],
               "promotion_status": "READY" if has_pool_field else "MISSING_YESTERDAY_POOL",

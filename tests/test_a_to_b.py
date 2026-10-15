@@ -141,6 +141,30 @@ def test_candidate_amount_never_falls_back_to_daily_amount_and_missing_is_explic
     assert result[0]["reason"] == "缺少竞价价/额"
 
 
+def test_small_b_amount_is_excluded_and_explained():
+    rows = [
+        {"symbol": "600001", "lb_days": 2, "main_plate": "芯片", "auction_pct": 0,
+         "auction_amount_yuan": 100_000_000},
+        {"symbol": "600002", "main_plate": "芯片", "auction_pct": 1,
+         "auction_amount_yuan": 500_000},
+    ]
+    result = build_a_to_b(rows, trade_date="2026-10-15")
+    assert result[0]["candidates"] == []
+    assert result[0]["reason"] == "同伴额过小"
+    assert result[0]["excluded_small_amount"] == 1
+
+
+def test_a_today_state_uses_exact_daily_prices_when_available():
+    rows = [
+        {"symbol": "000530", "name": "冰山冷热", "lb_days": 2, "main_plate": "芯片",
+         "close": 11.03, "high": 11.03, "low": 10.5, "pre_close": 10.03},
+        {"symbol": "600002", "main_plate": "芯片", "close": 10.0,
+         "high": 10.0, "low": 9.0, "pre_close": 10.0},
+    ]
+    result = build_a_to_b(rows, trade_date="2026-10-15")
+    assert result[0]["a_today_status"] == "封(价格代理)"
+
+
 def test_default_zero_streak_without_yesterday_pool_value_is_missing():
     from engine_core.a_to_b import _prior_streak
     assert _prior_streak({"prior_limit_streak": 0}) == (None, None)

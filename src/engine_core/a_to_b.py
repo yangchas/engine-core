@@ -6,6 +6,7 @@ from functools import lru_cache
 from typing import Any, Mapping, Sequence
 
 from .plate_kind import classify_plate_kind
+from .limit_price import state_at_close
 
 
 @lru_cache(maxsize=4096)
@@ -130,6 +131,7 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
                  plate_metadata: Mapping[str, Mapping[str, Any]] | None = None,
                  min_plate_size: int = 8, max_plate_size: int = 150,
                  max_candidates: int = 3,
+                 min_b_auction_amount_yuan: float = 10_000_000,
                  market_state: Mapping[str, Any] | None = None,
                  path_frequencies: Mapping[str, Mapping[str, Any]] | None = None,
                  relation_lag_trading_days: int | None = None) -> list[dict[str, Any]]:
@@ -140,6 +142,7 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
     stage_key = stage.lower()
     live = stage_key not in {"close", "closing", "eod"}
     auction_only = stage_key in {"auction", "auction_0926", "auction_0925"}
+    close_visible = not live and not auction_only
     by_plate: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     normalized = []
     qualified_by_symbol: dict[str, set[str]] = {}
@@ -202,11 +205,22 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
                        _number(anchor, "close_pct") if not live else _number(anchor, "p0945_pct"))
         visible_high = _number(anchor, "high_pct") if not live and not auction_only else None
         limit_pct = _number(anchor, "limit_pct")
+        exact_close_state = None
+        if close_visible and not is_unlimited and all(anchor.get(key) is not None
+                                                      for key in ("close", "high", "low", "pre_close")):
+            exact_close_state = state_at_close(anchor.get("close"), anchor.get("high"),
+                                               anchor.get("low"), anchor.get("pre_close"),
+                                               anchor["symbol"],
+                                               is_st=bool(anchor.get("is_st")), unlimited=False)
         if is_unlimited:
             today_status = "新"
-        elif visible_pct is not None and limit_pct is not None and visible_pct >= limit_pct - .2:
+        elif exact_close_state is not None:
+            today_status = exact_close_state
+        elif close_visible:
+            today_status = "缺原始价格字段"
+        elif not close_visible and visible_pct is not None and limit_pct is not None and visible_pct >= limit_pct - .2:
             today_status = "封" if (not live and anchor.get("close_seal_up") is True) or (auction_only and is_sealed) else "触"
-        elif visible_high is not None and limit_pct is not None and visible_high >= limit_pct - .2:
+        elif not close_visible and visible_high is not None and limit_pct is not None and visible_high >= limit_pct - .2:
             today_status = "触"
         elif streak is not None and visible_pct is not None:
             today_status = "断"
@@ -223,7 +237,7 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
                 "streak_status": streak_conflict or ("已知" if streak is not None else "—"),
                 "a_status": "竞价涨停价且有封单" if is_sealed else "昨日高标",
                 "a_today_status": today_status,
-                "a_status_is_price_proxy": today_status in {"触", "断"} or (today_status == "封" and live),
+                "a_status_is_price_proxy": today_status in {"触", "跌触", "跌停价", "封(价格代理)"} or (today_status == "封" and live),
                 "plate": anchor_plates[0] if anchor_plates else None,
                 "relation_asof": relation_asof or "UNKNOWN", "asof": asof or trade_date,
                 "candidates": [], "reason": None}
@@ -239,6 +253,7 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
         eligible = []
         has_missing_auction = False
         buyable_peers = 0
+        excluded_small_amount = 0
         for peer in peers:
             if peer.get("in_yest_pool") is True or peer.get("in_yest_pool") in (1, "1"):
                 continue
@@ -256,14 +271,21 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
             if amount is None or p is None:
                 has_missing_auction = True
             else:
+                peer_plate_amount = plate_amount.get(anchor_plates[0]) or 0
+                share_ok = peer_plate_amount > 0 and amount / peer_plate_amount >= 0.02
+                if amount < min_b_auction_amount_yuan and not share_ok:
+                    excluded_small_amount += 1
+                    continue
                 peer_plates = qualified_by_symbol.get(peer["symbol"], set())
                 anchor_qualified = qualified_by_symbol.get(anchor["symbol"], set())
                 common_count = len(peer_plates.intersection(anchor_qualified))
                 eligible.append((amount, common_count, peer))
         eligible.sort(key=lambda pair: (-pair[0], -pair[1], str(pair[2].get("symbol", ""))))
         if not eligible:
-            base["reason"] = ("缺少竞价价/额" if has_missing_auction else
+            base["reason"] = ("同伴额过小" if excluded_small_amount else
+                              "缺少竞价价/额" if has_missing_auction else
                               "同伴全部买不到" if buyable_peers == 0 else "无合格同伴")
+        base["excluded_small_amount"] = excluded_small_amount
         for amount, common_count, peer in eligible[:max_candidates]:
             peer_plate_pct = plate_average_0945.get(anchor_plates[0])
             peer_0945 = _number(peer, "p0945_pct", "0945")

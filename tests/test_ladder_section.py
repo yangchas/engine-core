@@ -71,9 +71,11 @@ def test_open_emotion_buckets_do_not_read_close_fields():
 def test_close_ladder_joins_real_stock_fields_and_computes_yesterday_pool_promotions():
     market = [
         {"symbol": "000530", "name": "冰山冷热", "in_yest_pool": True, "lb_days": 2,
-         "limit_pct": 10, "close_pct": 10, "high_pct": 10, "auction_amount_yuan": 4742500},
+         "limit_pct": 10, "close_pct": 10, "high_pct": 10, "close": 11.03,
+         "high": 11.03, "low": 10.5, "pre_close": 10.03, "auction_amount_yuan": 4742500},
         {"symbol": "000668", "name": "荣丰控股", "in_yest_pool": True, "lb_days": 2,
-         "limit_pct": 10, "close_pct": -9.9, "high_pct": 0, "auction_amount_yuan": 5252500},
+         "limit_pct": 10, "close_pct": -9.9, "high_pct": 0, "close": 9.01,
+         "high": 10.0, "low": 9.01, "pre_close": 10.0, "auction_amount_yuan": 5252500},
     ]
     section = build_ladder_section(
         [{"symbol": "000530", "prior_streak": 2, "close_pct": 10}],

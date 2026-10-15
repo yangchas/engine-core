@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import inspect
+import hashlib
+import gzip
 import math
 import re
 import time
@@ -111,8 +113,10 @@ def _quality(rows: list[dict[str, Any]], fetch_meta: Mapping[str, Any]) -> dict[
     actual = len(rows)
     coverage = actual / expected if isinstance(expected, (int, float)) and expected > 0 else None
     missing = int(max(0, expected - actual)) if isinstance(expected, (int, float)) else None
+    partial = bool(fetch_meta.get("partial"))
     return {"coverage": coverage, "missing": missing, "row_count": actual,
-            "status": "PARTIAL" if coverage is not None and coverage < 1 else "READY"}
+            "status": "PARTIAL" if partial or (coverage is not None and coverage < 1) else "READY",
+            "partial": partial}
 
 
 _SECRET_KEY = re.compile(r"token|cookie|password|passwd|device.?id|authorization|secret|headers?|url", re.I)
@@ -171,7 +175,8 @@ class JobRunner:
             now: str | None = None, publish: bool = False, td_write: bool = False,
             source: str | None = None, expected_count: int | None = None,
             as_of: str | None = None, available_at: str | None = None,
-            source_event_at: str | None = None, algorithm_version: str = "1") -> JobResult:
+            source_event_at: str | None = None, algorithm_version: str = "1",
+            dry_run: bool = False) -> JobResult:
         spec = get_dataset(name)
         day = datetime.strptime(trade_date, "%Y-%m-%d").date()
         clock = _parse_now(now)
@@ -194,16 +199,18 @@ class JobRunner:
         except Exception as exc:
             message = str(exc).lower()
             if any(marker in message for marker in ("403", "forbidden", "anti-bot", "captcha")):
-                self._open_breaker(spec.fetch_budget_scope, clock, "provider_blocked")
-                self._record_failure(name, trade_date, "provider_blocked", clock)
-            else:
+                if not dry_run:
+                    self._open_breaker(spec.fetch_budget_scope, clock, "provider_blocked")
+                    self._record_failure(name, trade_date, "provider_blocked", clock)
+            elif not dry_run:
                 self._record_failure(name, trade_date, f"fetch_failed:{type(exc).__name__}", clock)
             raise RuntimeError(f"fetch_failed:{type(exc).__name__}") from None
         fetch_meta = dict(raw) if isinstance(raw, Mapping) else {}
         raw_rows = fetch_meta.get("rows", raw) if fetch_meta else raw
         response_marker = str(fetch_meta.get("status", "")).lower() + " " + str(fetch_meta.get("error", "")).lower()
         if fetch_meta.get("status_code") == 403 or any(word in response_marker for word in ("forbidden", "anti-bot", "captcha")):
-            self._open_breaker(spec.fetch_budget_scope, clock, "provider_blocked")
+            if not dry_run:
+                self._open_breaker(spec.fetch_budget_scope, clock, "provider_blocked")
             raise RuntimeError("fetch_failed:provider_blocked")
         if context.request_count:
             fetch_meta.setdefault("request_count", context.request_count)
@@ -236,6 +243,10 @@ class JobRunner:
             shanghai_now = clock.astimezone(ZoneInfo("Asia/Shanghai"))
             manifest["business_status"] = ("FORMAL" if shanghai_now.strftime("%H:%M") >= "17:40"
                                            else "PROVISIONAL")
+        if dry_run:
+            manifest.update({"mode": "DRY_RUN", "storage_backend": None, "storage_uri": None,
+                             "manifest_uri": None, "rows_uri": None, "cache_publish": "SKIPPED"})
+            return JobResult(manifest, rows)
         # Durable artifact publication is the commit point. Redis/TD are later, optional tiers.
         committed = self.catalog.commit(name, trade_date, rows, manifest, source=safe_source)
         committed["cache_publish"] = "SKIPPED"
@@ -265,30 +276,90 @@ class JobRunner:
             payload["payload_omitted"] = "artifact_catalog"
         version_key = f"core:cache:data:{spec.name}:{trade_date}:{manifest['version']}"
         version_json = canonical_json(payload).decode("utf-8")
-        _redis_set(self.redis, version_key, version_json, spec.redis_ttl_seconds)
         date_key = f"core:cache:data:{spec.name}:{trade_date}"
-        _redis_set(self.redis, date_key, canonical_json({"version": manifest["version"],
-            "manifest": manifest.get("manifest_uri"), "trade_date": trade_date}).decode(), spec.redis_ttl_seconds)
+        date_json = canonical_json({"version": manifest["version"],
+            "manifest": manifest.get("manifest_uri"), "trade_date": trade_date}).decode()
         latest_key = f"core:cache:data:{spec.name}:latest"
         existing = _redis_get_json(self.redis, latest_key)
         existing_day = existing.get("trade_date") if existing else None
         if (manifest.get("business_status") != "PROVISIONAL"
                 and (existing_day is None or trade_date >= existing_day)):
-            _redis_set(self.redis, latest_key, canonical_json({"trade_date": trade_date,
-                "version": manifest["version"], "manifest": manifest.get("manifest_uri")}).decode(),
-                spec.redis_ttl_seconds)
+            latest_json = canonical_json({"trade_date": trade_date,
+                "version": manifest["version"], "manifest": manifest.get("manifest_uri")}).decode()
+        else:
+            latest_json = None
         status_key = "core:cache:data:status"
         status = _redis_get_json(self.redis, status_key) or {}
         status[spec.name] = {"trade_date": trade_date, "available_at": manifest["available_at"],
                              "version": manifest["version"], "quality": manifest["quality"]}
         # Keep status bounded and expire it like other coordination metadata.
         status = dict(list(status.items())[-32:])
-        _redis_set(self.redis, status_key, canonical_json(status).decode(), 7 * 86400)
+        status_json = canonical_json(status).decode()
+        plan = [(version_key, version_json, spec.redis_ttl_seconds),
+                (date_key, date_json, spec.redis_ttl_seconds), (status_key, status_json, 7 * 86400)]
+        if latest_json is not None:
+            plan.append((latest_key, latest_json, spec.redis_ttl_seconds))
+        limit = max(1024, int(spec.max_redis_payload_bytes))
+        too_large = [(key, len(value.encode("utf-8"))) for key, value, _ in plan
+                     if len(value.encode("utf-8")) > limit]
+        print("WRITE_PLAN " + json.dumps({"keys": [{"key": key, "bytes": len(value.encode("utf-8")),
+              "ttl_seconds": ttl} for key, value, ttl in plan], "max_value_bytes": limit}, sort_keys=True))
+        if too_large:
+            raise ValueError("redis_payload_budget_exceeded")
+        originals = {}
+        for key, _, _ in plan:
+            previous = _redis_get(self.redis, key)
+            ttl_fn = getattr(self.redis, "ttl", None)
+            try: prior_ttl = ttl_fn(key) if callable(ttl_fn) else None
+            except Exception: prior_ttl = None
+            originals[key] = (previous, prior_ttl)
+        written = []
+        try:
+            for key, value, ttl in plan:
+                _redis_set(self.redis, key, value, ttl)
+                written.append(key)
+            verify_raw = _redis_get(self.redis, version_key)
+            if isinstance(verify_raw, bytes): verify_raw = verify_raw.decode("utf-8")
+            verify = json.loads(verify_raw) if verify_raw is not None else {}
+            verify_rows = verify.get("rows")
+            if verify.get("sha256") != manifest.get("sha256") or verify.get("row_count") != len(rows):
+                raise RuntimeError("redis_readback_manifest_mismatch")
+            if verify_rows is not None:
+                verify_payload = b"\n".join(canonical_json(row) for row in verify_rows)
+                if verify_rows: verify_payload += b"\n"
+            else:
+                rows_path = Path(str(verify.get("rows_uri") or manifest.get("rows_uri") or ""))
+                if not rows_path.is_file(): raise RuntimeError("redis_readback_artifact_missing")
+                opener = gzip.open if rows_path.suffix == ".gz" else open
+                with opener(rows_path, "rb") as handle: verify_payload = handle.read()
+            if len(verify_rows) != len(rows) if verify_rows is not None else int(verify.get("row_count", -1)) != len(rows):
+                raise RuntimeError("redis_readback_row_count_mismatch")
+            if hashlib.sha256(verify_payload).hexdigest() != manifest.get("sha256"):
+                raise RuntimeError("redis_readback_sha256_mismatch")
+        except Exception:
+            for key in reversed(written):
+                previous, prior_ttl = originals[key]
+                if previous is None:
+                    _redis_delete(self.redis, key)
+                else:
+                    ttl = prior_ttl if isinstance(prior_ttl, int) and prior_ttl > 0 else spec.redis_ttl_seconds
+                    _redis_set(self.redis, key, previous, ttl)
+            raise
 
 
 def _redis_set(client: Any, key: str, value: str, ttl: int) -> None:
     try: client.set(key, value, ex=ttl)
     except TypeError: client.set(key, value, ttl=ttl)
+
+
+def _redis_get(client: Any, key: str) -> Any:
+    getter = getattr(client, "get", None)
+    return getter(key) if callable(getter) else None
+
+
+def _redis_delete(client: Any, key: str) -> None:
+    deleter = getattr(client, "delete", None)
+    if callable(deleter): deleter(key)
 
 
 def _redis_get_json(client: Any, key: str) -> dict[str, Any] | None:

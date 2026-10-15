@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import gzip
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,7 +65,9 @@ def load_dataset(name: str, trade_date: str | None = None, *, prefer: str = "red
             rows = catalog.read_rows(Path(selected["manifest_uri"]))
         else:
             rows = []
-            with Path(rows_uri).open(encoding="utf-8") as handle:
+            rows_path = Path(rows_uri)
+            opener = gzip.open if rows_path.suffix == ".gz" else open
+            with opener(rows_path, "rt", encoding="utf-8") as handle:
                 rows = [json.loads(line) for line in handle if line.strip()]
     freshness = selected.get("available_at")
     stale = False

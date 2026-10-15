@@ -59,6 +59,9 @@ _SPECS = (
                 empty_is_valid=False, key_fields=("date",)),
     DatasetSpec("symbol_universe", "explicit_universe_provider", "low_frequency", hot_view=False,
                 empty_is_valid=False, key_fields=("symbol",)),
+    DatasetSpec("stock_day_facts", "core_derived", "after_daily_kline",
+                max_redis_payload_bytes=262144, dependencies=("daily_kline",),
+                source_dependency="core_data", key_fields=("symbol",)),
 )
 
 DATASETS = {spec.name: spec for spec in _SPECS}

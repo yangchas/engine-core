@@ -18,6 +18,7 @@ from .plate_kind import classify_plate_kind
 from .a_to_b import _prior_streak, build_a_to_b, select_main_plate
 from .ladder_section import build_ladder_section
 from .extremes_board import build_extremes_board
+from .limit_price import is_limit_up, is_limit_down, state_at_close
 
 
 def attach_close_sections(data: dict[str, Any], *, relation_asof: str = "UNKNOWN",
@@ -230,7 +231,14 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
         r["delta_over_limit"] = r["delta_pp"] / band if r["delta_pp"] is not None and band else None
         r["is_big_meat"] = not r["is_unlimited_price_band"] and r["delta_over_limit"] is not None and r["delta_over_limit"] >= .5
         r["is_big_loss"] = not r["is_unlimited_price_band"] and r["delta_over_limit"] is not None and r["delta_over_limit"] <= -.5
-        r["close_at_limit_up"] = band is not None and r["close_pct"] is not None and r["close_pct"] >= band - .2
+        unlimited = bool(r.get("is_unlimited_price_band") or r.get("unlimited_price_band"))
+        r["close_price_state"] = state_at_close(r.get("close"), r.get("high"), r.get("low"),
+                                                r.get("pre_close"), r["symbol"],
+                                                is_st=bool(r.get("is_st")), unlimited=unlimited)
+        r["close_at_limit_up"] = is_limit_up(r.get("close"), r.get("pre_close"), r["symbol"],
+                                             is_st=bool(r.get("is_st")), unlimited=unlimited)
+        r["close_at_limit_down"] = is_limit_down(r.get("close"), r.get("pre_close"), r["symbol"],
+                                                 is_st=bool(r.get("is_st")), unlimited=unlimited)
         r["visibility"] = "已观测检查点待计算"
         clean.append(r)
     checkpoint_status = dict(checkpoint_status or {})
@@ -698,10 +706,8 @@ def assemble_close_review(trade_date: str, report_dir: str, checkpoints_csv: str
         if pct is None:
             continue
         market_closes.append(pct)
-        band = limit_percent(symbol, str(item.get("name") or ""))
-        if band is not None:
-            market_up_limit += pct >= band - .2
-            market_down_limit += pct <= -(band - .2)
+        market_up_limit += is_limit_up(close, pre, symbol, unlimited=bool(item.get("is_unlimited_price_band")))
+        market_down_limit += is_limit_down(close, pre, symbol, unlimited=bool(item.get("is_unlimited_price_band")))
     amount = sum(amounts) if amounts else None
     prev_amount = None
     prior_date = None
@@ -861,6 +867,14 @@ def main(argv: list[str] | None = None) -> int:
                        if isinstance(low_milli, (int, float)) and isinstance(pre_close, (int, float)) and pre_close else None)
             stocks.append({
                 "symbol": fact.get("symbol"), "name": fact.get("name"),
+                "close": (fact.get("day_close_milli") / 1000
+                          if isinstance(fact.get("day_close_milli"), (int, float)) else None),
+                "high": (fact.get("day_high_milli") / 1000
+                         if isinstance(fact.get("day_high_milli"), (int, float)) else None),
+                "low": (fact.get("day_low_milli") / 1000
+                        if isinstance(fact.get("day_low_milli"), (int, float)) else None),
+                "pre_close": (fact.get("pre_close_milli") / 1000
+                              if isinstance(fact.get("pre_close_milli"), (int, float)) else None),
                 "auction_pct": fact.get("p0925_pct"), "p0925_pct": fact.get("p0925_pct"),
                 "p0932_pct": fact.get("p0932_pct"), "p0945_pct": fact.get("p0945_pct"),
                 "close_pct": fact.get("day_pct"), "high_pct": high_pct, "low_pct": low_pct,

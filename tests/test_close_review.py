@@ -19,7 +19,7 @@ def test_big_meat_loss_visibility_and_missed_opportunities():
 
 def test_emerging_close_scorecard_hand_calculation():
     rows = [
-        {"symbol": "600001", "auction_pct": 0, "p0945_pct": 5, "close_pct": 10, "limit_pct": 10, "auction_amount_yuan": 200, "p0945_cumulative_amount_yuan": 50},
+            {"symbol": "600001", "auction_pct": 0, "p0945_pct": 5, "close_pct": 10, "limit_pct": 10, "close": 11.0, "high": 11.0, "low": 10.0, "pre_close": 10.0, "auction_amount_yuan": 200, "p0945_cumulative_amount_yuan": 50},
         {"symbol": "600002", "auction_pct": 0, "p0945_pct": 4.99, "close_pct": -1, "limit_pct": 10, "auction_amount_yuan": 100, "p0945_cumulative_amount_yuan": 60},
         {"symbol": "600003", "auction_pct": 0, "p0945_pct": 2, "close_pct": 6, "limit_pct": 10, "p0945_cumulative_amount_yuan": 70},
     ]
