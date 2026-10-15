@@ -106,3 +106,16 @@ def test_threshold_constants_and_importance_sort_are_explicit():
     small = {"values": {"share_change_bp": 100, "amount_yuan": 10_000}}
     large = {"values": {"share_change_bp": 100, "amount_yuan": 1_000_000}}
     assert _event_importance(large) > _event_importance(small)
+
+
+def test_final_print_at_0925_uses_final_price_and_matched_amount():
+    # From 09:25:00 the leftover book no longer encodes the match: px_milli/amt_yuan carry final price and amount.
+    tick = Tick(
+        trade_date="2026-10-14", ts="09:25:00", symbol="002639",
+        px_milli=15990, pc_milli=14590, bp1_milli=15990, ap1_milli=15990,
+        bv1=1, av1=1, amt_yuan=97_847_600,
+    )
+    state = derive_state(tick)
+    assert state["status"] == "FINAL"
+    assert state["price_milli"] == 15990
+    assert state["match_amount_yuan"] == 97_847_600

@@ -75,11 +75,18 @@ def matching_amount_yuan(tick: Tick) -> int:
 
 def derive_state(tick: Tick) -> dict[str, Any]:
     sec = _seconds(tick.ts)
+    final_print = _seconds("09:25:00") <= sec < _seconds("09:30:00")
     auction = sec <= _seconds("09:25:00")
-    price = tick.bp1_milli if auction and tick.bp1_milli > 0 and tick.bp1_milli == tick.ap1_milli else (
-        tick.px_milli if not auction else 0
-    )
-    amount = matching_amount_yuan(tick) if auction else max(0, tick.amt_yuan)
+    if final_print and tick.amt_yuan > 0:
+        # From 09:25:00 the opening match is done: px/amt_yuan carry the final price and matched amount
+        # (equal to the 0925 snapshot match_amt); the leftover book (bp1/bv1) no longer encodes the match.
+        price = tick.px_milli if tick.px_milli > 0 else (tick.bp1_milli if tick.bp1_milli == tick.ap1_milli else 0)
+        amount = max(0, tick.amt_yuan)
+    else:
+        price = tick.bp1_milli if auction and tick.bp1_milli > 0 and tick.bp1_milli == tick.ap1_milli else (
+            tick.px_milli if not auction else 0
+        )
+        amount = matching_amount_yuan(tick) if auction else max(0, tick.amt_yuan)
     pct = ((price / tick.pc_milli - 1.0) * 100.0) if price > 0 and tick.pc_milli > 0 else None
     return {
         "symbol": tick.symbol, "price_milli": price, "prev_close_milli": tick.pc_milli,
