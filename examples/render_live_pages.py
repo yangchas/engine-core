@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import html
 import json
+import math
 import re
 import shutil
 import statistics
@@ -345,6 +346,7 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
     last_label = "0945" if stage == "open_0946" else "0925"
     latest = raw_states.get(last_label, {})
     chapters = {"yesterday_highboards": "缺少输入" if not has_history else [],
+                "yesterday_highboards_summary": None,
                 "look_a_do_b": "缺少输入" if not has_history else [],
                 "history_comparison": "缺少输入" if history is None else history,
                 "behavior_tags": {}, "seal_quality": {}, "sealed_up": [], "sealed_down": [],
@@ -428,8 +430,28 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
             states = {tag: raw_states.get(tag, {}).get(symbol, {}) for tag in ("0925", "0932", "0940", "0945")}
             status = _board_status(states)
             highboards.append({"symbol": symbol, "name": stock_names.get(symbol, symbol), "streak": streak,
-                               "status": status, **vals})
-        chapters["yesterday_highboards"] = sorted(highboards, key=lambda row: (-row["streak"], row["symbol"]))
+                               "status": status, "match_amount_yuan": auction[symbol].get("match_amount_yuan"),
+                               **vals})
+        amounts = [row.get("match_amount_yuan") for row in auction.values()]
+        amounts = [float(value) for value in amounts
+                   if isinstance(value, (int, float)) and math.isfinite(value) and value >= 0]
+        market_auction_total = sum(amounts) if amounts and len(amounts) == len(auction) else None
+        highboard_amounts = [row.get("match_amount_yuan") for row in highboards]
+        valid_highboard_amounts = [float(value) for value in highboard_amounts
+                                   if isinstance(value, (int, float)) and math.isfinite(value) and value >= 0]
+        highboard_total = (sum(valid_highboard_amounts)
+                           if valid_highboard_amounts and len(valid_highboard_amounts) == len(highboards) else None)
+        ranked_highboards = sorted(
+            highboards,
+            key=lambda row: (row.get("match_amount_yuan") is None,
+                             -(row["match_amount_yuan"] if isinstance(row.get("match_amount_yuan"), (int, float)) else 0),
+                             row["symbol"]))
+        for rank, row in enumerate(ranked_highboards, 1):
+            row["amount_rank"] = rank
+            amount = row.get("match_amount_yuan")
+            if market_auction_total and amount is not None and isinstance(amount, (int, float)) and math.isfinite(amount):
+                row["amount_share_bp"] = round(amount / market_auction_total * 10_000, 1)
+        chapters["yesterday_highboards"] = ranked_highboards
         a_symbols = {row["symbol"] for row in highboards} | {row["symbol"] for row in sealed_up}
         peers = []
         for code, members in relations.items():
@@ -453,6 +475,25 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                                               "pct_change": row.get("pct_change")}
                                              for symbol, row in auction.items()
                                              if stock_context.get(symbol, {}).get("streak", 0) >= 1]
+        highboard_pcts = [row["0925"] for row in highboards
+                          if isinstance(row.get("0925"), (int, float)) and math.isfinite(row["0925"])]
+        pool_pcts = [row["pct_change"] for row in chapters["yesterday_limit_pool"]
+                     if isinstance(row.get("pct_change"), (int, float)) and math.isfinite(row["pct_change"])]
+        summary = {
+            "match_amount_yuan": highboard_total,
+            "median_pct_change": statistics.median(highboard_pcts) if highboard_pcts else None,
+            "sealed_up_count": sum(_state_limit(auction[row["symbol"]], 1) for row in highboards),
+            "sealed_down_count": sum(_state_limit(auction[row["symbol"]], -1) for row in highboards),
+            "yesterday_limit_pool": {
+                "count": len(chapters["yesterday_limit_pool"]),
+                "mean_pct_change": statistics.mean(pool_pcts) if pool_pcts else None,
+                "high_open_count": sum(value >= 3 for value in pool_pcts),
+                "low_open_count": sum(value <= -3 for value in pool_pcts),
+            },
+        }
+        if market_auction_total and highboard_total is not None:
+            summary["market_share_bp"] = round(highboard_total / market_auction_total * 10_000, 1)
+        chapters["yesterday_highboards_summary"] = summary
     chapters["watchlist"] = {"amount_top50": amount_top50,
                              "yesterday_limit_pool": sorted(
                                  ({**row, "match_amount_yuan": auction.get(row["symbol"], {}).get("match_amount_yuan")}
@@ -649,8 +690,27 @@ def _section_body(title, payload):
     if title in ("昨日连板高标", "昨日连板高标分化"):
         rows = chapters["yesterday_highboards"]
         if rows == "缺少输入": return "<p>缺少输入：日线历史；不推断昨日连板身份。</p>"
-        return _table([("昨连板", "streak"), ("代码", "symbol"), ("名称", "name"), ("竞价", "0925"),
-                       ("0932", "0932"), ("0940", "0940"), ("0945", "0945"), ("状态", "status")], rows)
+        summary = chapters.get("yesterday_highboards_summary") or {}
+        pool = summary.get("yesterday_limit_pool", {})
+        parts = [f"昨日连板高标合计竞价额 {_fmt_money(summary.get('match_amount_yuan'))}"]
+        parts.insert(0, "竞价金额口径：0925 FINAL")
+        if summary.get("market_share_bp") is not None:
+            parts[-1] += f"，占大盘 {summary['market_share_bp']:.0f}bp"
+        parts.append(f"竞价涨幅中位数 {_fmt_pct(summary.get('median_pct_change'))}")
+        parts.append(f"0925 封死/封跌停 {summary.get('sealed_up_count', 0)}/{summary.get('sealed_down_count', 0)} 只")
+        parts.append(f"昨日涨停池 {pool.get('count', 0)} 只：均值 {_fmt_pct(pool.get('mean_pct_change'))}，"
+                     f"高开≥3% {pool.get('high_open_count', 0)} 只，低开≤-3% {pool.get('low_open_count', 0)} 只")
+        if payload["stage"] == "open_0946":
+            parts.append("开盘状态按当前观测切片标注，10:30 再确认")
+        intro = "<p>" + "；".join(html.escape(part) for part in parts) + "。</p>"
+        columns = [("竞价额排名", "amount_rank"), ("竞价额元", "match_amount_yuan")]
+        if any(row.get("amount_share_bp") is not None for row in rows):
+            columns.append(("占大盘bp", "amount_share_bp"))
+        columns.extend([("昨连板", "streak"),
+                               ("代码", "symbol"), ("名称", "name"), ("竞价涨幅%", "0925"),
+                               ("0932", "0932"), ("0940", "0940"), ("0945", "0945"),
+                               ("状态", "status")])
+        return intro + _table(columns, rows)
     if title == "昨日涨停池":
         rows = chapters["yesterday_limit_pool"]
         if chapters["yesterday_highboards"] == "缺少输入": return "<p>缺少输入：日线历史；不推断昨日涨停名单。</p>"

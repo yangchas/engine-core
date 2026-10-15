@@ -153,6 +153,63 @@ def test_history_drives_conclusion_highboard_and_peer_sections(tmp_path):
     assert "昨日连板高标" in page and "近72日对比" in page
 
 
+def test_highboards_prioritize_auction_amount_and_show_aggregate_facts(tmp_path):
+    history = tmp_path / "daily.csv"
+    history.write_text(
+        "date,symbol,open,high,low,close,pct_chg,amount_yuan\n"
+        "2026-10-10,000001,10,10,10,10,0,1\n"
+        "2026-10-12,000001,11,11,11,11,10,1\n"
+        "2026-10-13,000001,12.1,12.1,12.1,12.1,10,1\n"
+        "2026-10-10,000002,10,10,10,10,0,1\n"
+        "2026-10-12,000002,11,11,11,11,10,1\n"
+        "2026-10-13,000002,12.1,12.1,12.1,12.1,10,1\n"
+        "2026-10-12,000003,10,10,10,10,0,1\n"
+        "2026-10-13,000003,11,11,11,11,10,1\n", encoding="utf-8")
+
+    class TD:
+        def states_at(self, cutoff):
+            rows = {
+                "000001": _state("000001", 2, 20_000_000, limit_state=1, rb=5),
+                "000002": _state("000002", -4, 30_000_000, limit_state=-1, ra=5),
+                "000003": _state("000003", 4, 10_000_000),
+            }
+            return rows
+        def latest_tick_ts(self): return "2026-10-15T09:45:30"
+
+    page, payload = render_page(TD(), trade_date="2026-10-15", stage="open_0946",
+                                daily_history_csv=history)
+    rows = payload["chapters"]["yesterday_highboards"]
+    assert [row["symbol"] for row in rows] == ["000002", "000001"]
+    assert [row["amount_rank"] for row in rows] == [1, 2]
+    assert [row["amount_share_bp"] for row in rows] == pytest.approx([5000, 3333.3], abs=0.05)
+    summary = payload["chapters"]["yesterday_highboards_summary"]
+    assert summary["match_amount_yuan"] == 50_000_000
+    assert summary["market_share_bp"] == pytest.approx(50_000_000 / 60_000_000 * 10_000)
+    assert summary["median_pct_change"] == -1
+    assert summary["sealed_up_count"] == summary["sealed_down_count"] == 1
+    pool = summary["yesterday_limit_pool"]
+    assert pool == {"count": 3, "mean_pct_change": pytest.approx(2 / 3), "high_open_count": 1, "low_open_count": 1}
+    assert "10:30 再确认" in page
+    assert "建议" not in page
+
+
+def test_highboard_amount_share_is_omitted_when_market_total_missing(tmp_path):
+    history = tmp_path / "daily.csv"
+    _history_csv(history)
+
+    class TD:
+        def states_at(self, cutoff):
+            return {"000001": _state("000001", 2, None)}
+
+    page, payload = render_page(TD(), trade_date="2026-10-15", stage="auction_0926",
+                                daily_history_csv=history)
+    row = payload["chapters"]["yesterday_highboards"][0]
+    assert "amount_share_bp" not in row
+    assert row["amount_rank"] == 1
+    assert "market_share_bp" not in payload["chapters"]["yesterday_highboards_summary"]
+    assert "占大盘bp" not in page
+
+
 def test_c155_behavior_tags_and_seal_quality_are_rendered(tmp_path):
     class TD:
         def states_at(self, cutoff):
