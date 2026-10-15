@@ -17,12 +17,13 @@ from engine_core.live_session import (market_price_volume_status, build_live_sli
                                       load_auction_amount_baseline_csv, auction_amount_baseline_comparison,
                                       load_daily_history_csv, states_at)
 from engine_core.plate_enrichment import infer_plate_enrichment
+from engine_core.plate_linkage import build_plate_linkage
 
 STAGES = {"auction_0926": [("0920", "09:20:00"), ("0924", "09:24:00"), ("0925", "09:25:06")],
           "open_0946": [("0925", "09:25:06"), ("0932", "09:32:00"), ("0935", "09:35:00"),
                         ("0940", "09:40:00"), ("0945", "09:45:30")]}
-SECTIONS = {"auction_0926": ["一屏结论", "大盘", "板块份额", "板块象限", "封涨停质量", "封跌停质量", "昨日连板高标", "竞价内变化", "看A做B", "近72日对比"],
-            "open_0946": ["一屏结论", "大盘", "板块象限", "昨日连板高标分化", "昨日涨停池", "竞价后新冒头", "板块回升榜", "板块回落榜", "封涨停质量", "封跌停质量", "竞价内变化", "看A做B", "近72日对比"]}
+SECTIONS = {"auction_0926": ["一屏结论", "大盘", "板块份额", "板块象限", "板块联动与跌停影响", "封涨停质量", "封跌停质量", "昨日连板高标", "竞价内变化", "看A做B", "近72日对比"],
+            "open_0946": ["一屏结论", "大盘", "板块象限", "昨日连板高标分化", "昨日涨停池", "竞价后新冒头", "板块回升榜", "板块回落榜", "板块联动与跌停影响", "封涨停质量", "封跌停质量", "竞价内变化", "看A做B", "近72日对比"]}
 GENERIC_NAMES_PATH = Path(__file__).resolve().parent / "data" / "plate_generic_factor_names.json"
 EVENT_NAME_MARKERS = ("季报增长", "年报增长", "中报增长", "并购重组", "实控人变更")
 
@@ -70,6 +71,39 @@ def _generic_factor_names():
     if not GENERIC_NAMES_PATH.exists(): return set()
     data = json.loads(GENERIC_NAMES_PATH.read_text(encoding="utf-8"))
     return set(data if isinstance(data, list) else data.get("names", []))
+
+
+def _plate_linkage_chapter(raw_states, stage, relations, plate_names, stock_names):
+    generic_names = _generic_factor_names() | set(EVENT_NAME_MARKERS)
+    current_label = "0945" if stage == "open_0946" else "0925"
+    current = build_plate_linkage(raw_states.get(current_label, {}), relations, plate_names,
+                                  stock_names=stock_names, generic_names=generic_names,
+                                  min_members=8, top_n=None)
+    all_rows = [row for row in current["rows"]
+                if not any(marker in row["name"] for marker in EVENT_NAME_MARKERS)]
+    displayed = all_rows[:15]
+    changes = None
+    if stage == "open_0946":
+        earlier = build_plate_linkage(raw_states.get("0925", {}), relations, plate_names,
+                                      stock_names=stock_names, generic_names=generic_names,
+                                      min_members=8, top_n=None)
+        before = {row["code"]: row for row in earlier["rows"]
+                  if not any(marker in row["name"] for marker in EVENT_NAME_MARKERS)}
+        change_fields = ("up_share_pct", "equal_weight_median_pct", "limit_up_count",
+                         "limit_up_amount_share_pct", "limit_down_count",
+                         "limit_down_amount_share_pct")
+        changes = []
+        for row in displayed:
+            old = before.get(row["code"])
+            deltas = {field: (row[field] - old[field]
+                              if old and row[field] is not None and old[field] is not None else None)
+                      for field in change_fields}
+            changes.append({"code": row["code"], "name": row["name"], "delta": deltas})
+    return {"available": bool(displayed), "slice_label": current_label,
+            "comparison_label": "0925" if stage == "open_0946" else None,
+            "rows": displayed, "down_limit_top5": current["down_limit_top5"],
+            "opening_changes": changes, "method_note": current["method_note"],
+            "description_only": True}
 
 
 def _relation_snapshot_date(relation_dir):
@@ -235,6 +269,8 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
     history = context["history"] if context else None
     chapters = _build_chapters(snaps, raw_states, stage, relations, plate_names,
                                stock_names, stock_context, history, history_rows is not None)
+    chapters["plate_linkage"] = _plate_linkage_chapter(
+        raw_states, stage, relations, plate_names, stock_names)
     chapters["plate_enrichment"] = {"status": "仅开盘更新页面计算；当前阶段不适用",
                                     "emerging_count": 0, "N": 0,
                                     "member_snapshot_date": member_snapshot_date,
@@ -564,6 +600,37 @@ def _section_body(title, payload):
         down = _table([("额最大且下跌板块", "name"), ("成员", "member_count"), ("金额元", "match_amount_yuan"), ("涨幅%", "equal_weight_pct")], block["fallback_amount_down"])
         estimate = _table([("带锚点估计", "name"), ("估计强度", "estimated_strength"), ("锚点年龄秒", "anchor_age_seconds"), ("锚点时刻", "anchor_ts")], block["strength_estimates"])
         return intro + "<h3>我方等权涨幅前15（与 Kaipan 初始强度 Top20 历史重合约18/20）</h3>" + equal + "<h3>额最大且下跌的10个板块（仅价格与额推断净流出倾向）</h3>" + down + estimate
+    if title == "板块联动与跌停影响":
+        block = chapters["plate_linkage"]
+        if not block["available"]:
+            return "<p>缺少可计算板块：需要点时关系、至少8只有涨幅成员及可用切片。缺失不补0。</p>"
+        rows = block["rows"]
+        body = (f"<p>金额榜按 {block['slice_label']} 有额成员额排序，最多15个板块；至少8只有涨幅成员，排除泛因子。"
+                "上涨占比/中位数以有涨幅成员为分母；额加权涨幅仅用同时有额和涨幅的成员。"
+                "封涨/跌停额占比以板块已知成员额为分母；领涨贡献按额最大的3只有效成员计算。"
+                "所有变化均为描述事实，不合成评分。</p>")
+        table = _table([
+            ("板块", "name"), ("成员/有价/有额/加权有效", "member_count"), ("上涨占比%", "up_share_pct"),
+            ("等权中位涨幅%", "equal_weight_median_pct"), ("额加权−等权均值pp", "weighted_minus_equal_mean_pp"),
+            ("封涨停数/额占比%", "limit_up_count"), ("封涨停Top3", "limit_up_top3"),
+            ("封跌停数/额占比%", "limit_down_count"), ("Top3领涨贡献占比%", "top3_leading_contribution_share_pct")],
+            [{**row, "member_count": (f"{row['member_count']}/{row['priced_member_count']}/"
+                                       f"{row['amount_member_count']}/{row['weighted_member_count']}"),
+              "limit_up_count": f"{row['limit_up_count']} / {row['limit_up_amount_share_pct']}",
+              "limit_down_count": f"{row['limit_down_count']} / {row['limit_down_amount_share_pct']}",
+              "limit_up_top3": ", ".join(f"{stock['name']} {stock['amount_yuan']}元" for stock in row["limit_up_top3"])}
+             for row in rows])
+        down = _table([("跌停集中板块", "name"), ("封跌停家数", "limit_down_count"),
+                       ("跌停额占比%", "limit_down_amount_share_pct"), ("板块额元", "amount_yuan")],
+                      block["down_limit_top5"])
+        delta = ""
+        if block.get("opening_changes") is not None:
+            delta_rows = [{"name": row["name"], **row["delta"]} for row in block["opening_changes"]]
+            delta = "<h3>0925→0945变化量</h3>" + _table([
+                ("板块", "name"), ("上涨占比变化pp", "up_share_pct"), ("等权中位涨幅变化pp", "equal_weight_median_pct"),
+                ("封涨停数变化", "limit_up_count"), ("封涨停额占比变化pp", "limit_up_amount_share_pct"),
+                ("封跌停数变化", "limit_down_count"), ("封跌停额占比变化pp", "limit_down_amount_share_pct")], delta_rows)
+        return body + table + "<h3>跌停集中板块 Top5</h3>" + down + delta
     if title == "板块份额":
         rows = snaps[-1]["top_plates_by_share"]
         return _table([("板块", "name"), ("成员", "member_count"), ("额", "match_amount_yuan"), ("份额bp", "market_share_bp"), ("等权涨幅%", "equal_weight_pct")], rows)

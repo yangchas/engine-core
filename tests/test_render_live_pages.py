@@ -327,3 +327,35 @@ def test_plate_enrichment_annex_states_and_default_json_size():
         assert len(compact) <= 20_000
         assert 0 < increment <= 20_000
         assert "plate_enrichment" in report["chapters"]
+
+
+def test_plate_linkage_chapter_render_size_and_opening_changes():
+    class TD:
+        def states_at(self, cutoff):
+            late = cutoff.strftime("%H:%M") >= "09:32"
+            return {f"s{i:03}": _state(
+                f"s{i:03}", (i - 3) + (1 if late else 0), 1_000_000 + i * 100_000,
+                limit_state=1 if i == 0 else -1 if i == 1 and not late else 0)
+                    for i in range(8)}
+        def latest_tick_ts(self): return "2026-10-15T09:45:30"
+
+    relations = {"p": {f"s{i:03}" for i in range(8)}}
+    names = {"p": "主题板块"}
+    page, auction = render_page(TD(), trade_date="2026-10-15", stage="auction_0926",
+                                relations=relations, plate_names=names,
+                                stock_names={"s000": "涨停股"})
+    block = auction["chapters"]["plate_linkage"]
+    assert block["slice_label"] == "0925" and block["rows"][0]["limit_up_top3"][0]["name"] == "涨停股"
+    assert "板块联动与跌停影响" in page and "跌停集中板块 Top5" in page
+    report = _json_report_payload(auction)
+    without = json.loads(json.dumps(report, ensure_ascii=False))
+    without["chapters"].pop("plate_linkage")
+    increment = (len(json.dumps(report, ensure_ascii=False, separators=(",", ":")).encode()) -
+                 len(json.dumps(without, ensure_ascii=False, separators=(",", ":")).encode()))
+    assert 0 < increment <= 30_000
+
+    _, opening = render_page(TD(), trade_date="2026-10-15", stage="open_0946",
+                              relations=relations, plate_names=names)
+    opened = opening["chapters"]["plate_linkage"]
+    assert opened["slice_label"] == "0945" and opened["comparison_label"] == "0925"
+    assert opened["opening_changes"] and opened["opening_changes"][0]["delta"]["up_share_pct"] is not None
