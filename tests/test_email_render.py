@@ -36,6 +36,50 @@ def test_renderer_emits_a_share_bar_and_inline_safe_email_layout():
     assert "▼" in html and "#16835d" in html.lower()
 
 
+def test_share_fraction_is_rendered_as_basis_points_and_empty_columns_are_hidden():
+    report = {"stage": "close", "market": {"close_median": -1.0},
+              "plates": {"auction_amount_top10": [
+                  {"name": "通信", "auction_amount_share": 0.00066, "close_mean": 1.2},
+                  {"name": "芯片", "auction_amount_share": 0.0012, "close_mean": -0.3}]},
+              "data_quality": {"included_stock_count": 2}}
+    html, plain = render_email_html(report, "close", "2026-10-15")
+    assert "6.6 bp" in html + plain
+    assert "12.0 bp" in html + plain
+    assert "auction_amount_share" not in html
+
+    empty = {"stage": "auction", "chapters": {"yesterday_highboards": [
+        {"symbol": "600001", "name": "样例", "auction_amount_share": None}]}}
+    html, plain = render_email_html(empty, "auction", "2026-10-15")
+    assert "竞价额占比</th>" not in html
+    assert "数据缺口" in html
+
+
+def test_intraday_email_renders_market_board_changes_and_highboard_context():
+    report = {"stage": "open_0946", "auction_terminal_0925": {"market_match_amount_yuan": 1_000_000_000,
+              "top_stocks_by_amount": [{"symbol": "600001", "name": "甲", "match_amount_yuan": 6_600_000,
+                                        "amount_share_pct": 0.66, "pct_change": 2.0}]},
+              "chapters": {"plate_changes": {"up": [{"name": "通信", "mean_pct": 1.2}],
+                                                "down": [{"name": "芯片", "mean_pct": -1.4}]},
+                           "yesterday_highboards": [{"symbol": "600002", "name": "乙", "streak": 3,
+                                                     "0925": 4.0, "0932": 5.0, "0940": 6.0, "0945": 7.0,
+                                                     "amount_share_bp": 82.0}],
+                           "look_a_do_b": []}}
+    html, plain = render_email_html(report, "open", "2026-10-15")
+    for expected in ("板块变化", "昨日高标", "看A做B", "无匹配样本", "0.66%", "09:45涨幅"):
+        assert expected in html + plain
+
+
+def test_close_email_separates_unlimited_listing_from_price_band_rank():
+    report = {"stage": "close", "market": {},
+              "big_meat": [{"symbol": "301569", "name": "新股样例", "limit_pct": 20,
+                            "close_pct": 285.0, "is_new_listing": True}],
+              "stocks": [{"symbol": "301569", "name": "新股样例", "listing_days": 1,
+                          "limit_pct": None, "close_pct": 285.0}],
+              "data_quality": {"included_stock_count": 1}}
+    html, plain = render_email_html(report, "close", "2026-10-15")
+    assert "新股/无涨跌幅限制" in html + plain
+
+
 def test_close_report_uses_scorecard_for_conclusion_points():
     report = {"trade_date": "2026-10-15", "market": {"close_median": -2.0,
               "up_count": 900, "down_count": 4000}, "emerging_scorecard": {"status": "READY",
@@ -45,6 +89,33 @@ def test_close_report_uses_scorecard_for_conclusion_points():
     assert "收盘中位" in plain and "日线来源" in plain and "问财" in plain
     assert "数据缺口" not in html
     assert "未提供" not in html + plain
+
+
+def test_missing_yesterday_review_is_explicit():
+    html, plain = render_email_html({"stage": "close", "market": {}}, "close", "2026-10-15")
+    assert "昨日机会回看" in html + plain
+    assert "无昨日报告" in html + plain
+
+
+def test_close_extreme_rows_show_full_context_and_half_limit_visibility():
+    row = {"symbol": "600001", "name": "甲", "main_plate": "银行", "limit_pct": 10,
+           "auction_pct": 1, "p0932_pct": 2, "p0945_pct": 3, "close_pct": 4,
+           "high_pct": 5, "low_pct": -1, "delta_over_limit": 0.3,
+           "auction_amount_yuan": 6_600_000, "auction_amount_bp": 6.6,
+           "in_yest_pool": True, "lb_days": 2, "visibility_half_limit": "09:32前已达0.5L"}
+    html, plain = render_email_html({"stage": "close", "market": {}, "big_meat": [row]},
+                                   "close", "2026-10-15")
+    for expected in ("所属板块", "涨跌停幅度", "竞价涨幅", "09:32涨幅", "09:45涨幅",
+                     "日内最高", "日内最低", "昨日涨停池", "连板数", "0.5L可见时点", "6.6 bp", "是"):
+        assert expected in html + plain
+
+
+def test_intraday_without_plate_share_source_reports_gap():
+    report = {"stage": "auction", "auction_terminal_0925": {"top_plates_by_share": []},
+              "chapters": {"plate_linkage": {"available": False, "rows": []}}}
+    html, plain = render_email_html(report, "auction", "2026-10-15")
+    assert "板块份额横条" in html + plain
+    assert "个股—板块联动样本" in html + plain
 
 
 def test_renderer_never_exposes_unmapped_fields_or_placeholder_metadata():

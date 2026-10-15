@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from engine_core.daily_pipeline import DailySources, discover_references, run_daily_pipeline
+from engine_core.daily_pipeline import DailySources, _load_ladder_summary, discover_references, run_daily_pipeline
 
 
 class FakeTD:
@@ -25,6 +25,19 @@ class FakeRedis:
 
     def set(self, key, value, **kwargs):
         self.writes.append((key, value, kwargs))
+
+
+def test_ladder_summary_uses_dated_daily_rows_and_marks_close_price_proxy(tmp_path):
+    path = tmp_path / "ladder-emotion-study-test" / "out_final" / "ladder_daily.csv"
+    path.parent.mkdir(parents=True)
+    path.write_text("date,phase_eod,max_price_streak,top_symbols,previous_space_height,previous_space_symbols,board_1_n,previous_limit_n,promoted_n,promotion_rate,previous_1_n,promoted_1_n,broken_1_n,promotion_1_rate\n"
+                    "2026-10-15,ICE,5,002343|002696,10,600825,30,38,6,0.5,22,2,19,0.09\n")
+    rows = _load_ladder_summary(tmp_path, "2026-10-15")
+    assert rows[0]["top_symbols"] == "002343|002696"
+    assert rows[0]["first_board_count"] == "30"
+    assert rows[1]["promoted_n"] == "2"
+    assert "炸板路径 UNKNOWN" in rows[1]["status"]
+    assert _load_ladder_summary(tmp_path, "2026-10-14") == []
 
 
 def test_three_stages_write_reports_and_explicit_missing_references(tmp_path):
@@ -151,6 +164,21 @@ def test_relation_asof_and_trading_day_lag_are_not_assumed_current(tmp_path):
     assert _relation_snapshot_date(relation) == "PIT 20261013"
     assert _relation_lag_trading_days("2026-10-13", "2026-10-15", ["2026-10-14"]) == 2
     assert _relation_snapshot_date(tmp_path / "relation") == "UNKNOWN"
+
+
+def test_relation_loader_returns_plate_to_member_mapping(tmp_path):
+    from engine_core.daily_pipeline import _load_relations
+
+    folder = tmp_path / "relation_pit_20261013"
+    folder.mkdir()
+    (folder / "registry.json").write_text(json.dumps({"plates": [
+        {"code": "801001", "name": "通信"}, {"code": "801002", "name": "芯片"}]}))
+    (folder / "relation.csv").write_text(
+        "stockid,plateid\n000001,801001\n000001,801002\n000002,801001\n")
+    relations, names, asof = _load_relations(folder)
+    assert relations == {"801001": ["000001", "000002"], "801002": ["000001"]}
+    assert names == {"801001": "通信", "801002": "芯片"}
+    assert asof == "PIT 20261013"
 
 
 @pytest.mark.parametrize("stage", ["auction", "open"])

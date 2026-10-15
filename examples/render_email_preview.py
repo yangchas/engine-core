@@ -2,9 +2,10 @@
 """Render a report JSON as a standalone, offline email preview."""
 import argparse
 import json
-import re
+import statistics
 from pathlib import Path
 
+from engine_core.daily_pipeline import _load_ladder_summary
 from engine_core.email_render import render_email_html
 
 
@@ -15,53 +16,85 @@ def _read_json(path):
         return None
 
 
-def _close_editorial(report_dir):
-    """Extract the approved C176 scorecard facts from its review README."""
-    candidates = [report_dir.parent / "README_C176.md", report_dir / "README_C176.md"]
-    readme = next((p for p in candidates if p.is_file()), None)
-    if not readme:
-        return {}
-    text = readme.read_text(encoding="utf-8")
-    editorial = {"单日描述": True, "结论": [], "SCORECARD": [], "高标收盘状态": [], "数据缺口列表": []}
-    amount = re.search(r"今日([\d.]+)亿 / 历史中位([\d.]+)亿 = \*\*([\d.]+×)\*\*，历史≤今日分位([\d.]+)%", text)
-    prev = re.search(r"同一\d+只的前日额([\d.]+)亿，今日为前日\*\*([\d.]+×)\*\*", text)
-    if amount:
-        editorial["结论"].append(f"固定共同样本全天成交额 {amount[1]} 亿，为前64个交易日中位数的 {amount[3]}，历史分位 {amount[4]}%。")
-    if prev:
-        editorial["结论"].append(f"同一固定样本全天成交额为前一交易日的 {prev[2]}。")
-    editorial["结论"].append("单日描述；仅呈现检查点与结算结果，不推断全天路径或预测能力。")
-    # Strict C176 scorecard, including the two same-K comparison cohorts.
-    editorial["SCORECARD"] = [
-        {"cohort": "严格新冒头", "k": 26, "matched": "16 / 10 / 1", "rate": "61.54% / 38.46% / 3.85%"},
-        {"cohort": "09:45涨幅前K", "k": 26, "matched": "22 / 16 / 1", "rate": "84.62% / 61.54% / 3.85%"},
-        {"cohort": "09:45累计额前K", "k": 26, "matched": "2 / 1 / 19", "rate": "7.69% / 3.85% / 73.08%"},
-    ]
-    editorial["可见性对照"] = [
-        {"cohort": "大肉", "meat_visibility": "40 / 91", "loss_visibility": "—"},
-        {"cohort": "大面", "meat_visibility": "—", "loss_visibility": "7 / 49"},
-    ]
-    editorial["板块榜保持"] = [{"auction_top10": "0 / 10", "close_strength_top10": "0 / 10", "close_weakness_top10": "0 / 10"}]
-    editorial["数据缺口列表"] = [
-        {"description": "日线来源为问财：5,566 / 5,569 行有效；7 只缺日线，另有 3 行字段不全。"},
-        {"description": "涨停价代理未核验收盘封单；结算截面不代表全天连续路径。"},
-        {"description": "大肉/大面可见性依据 09:32、09:35、09:40、09:45 检查点，点间首次触及时刻未知。"},
-    ]
-    section = re.search(r"## 高标补充.*?\n(.*?)(?=\n## |\Z)", text, re.S)
-    if section:
-        lines = [line.strip() for line in section.group(1).splitlines() if line.strip().startswith("|") and "---" not in line]
-        for line in lines[2:15]:
-            cells = [cell.strip() for cell in line.strip("|").split("|")]
-            if len(cells) >= 5:
-                code, name = cells[0].split(" ", 1)
-                editorial["高标收盘状态"].append({"symbol": code, "name": name,
-                    "prior_streak": cells[1], "sample_0945_pct": cells[3], "close_result_pct": cells[4]})
-    editorial["数据缺口列表"].extend([
-        {"description": "本次 09:32 与 09:45 检查点各有 5,215 只标的有价；这表示检查点可用，不代表点间连续可观察。"},
-        {"description": "收盘涨停价使用价格代理，未核实收盘封单；非常规价格带个股单独处理。"},
-        {"description": "严格新冒头名单按 09:45 截点筛得 26 只；固定页面旧名单为 28 只，两种口径不混用。"},
-        {"description": "板块竞价额以重叠成员统计，不等于全市场成交额份额。"},
-    ])
-    return editorial
+def _enrich_close_report(report, reference_root):
+    stocks = report.get("stocks")
+    if not isinstance(stocks, list):
+        return
+    by_code = {str(row.get("symbol")): row for row in stocks if isinstance(row, dict)}
+    auction_total = sum(row.get("auction_amount_yuan") for row in stocks
+                        if isinstance(row, dict) and isinstance(row.get("auction_amount_yuan"), (int, float)))
+    for row in stocks:
+        if not isinstance(row, dict):
+            continue
+        amount = row.get("auction_amount_yuan")
+        if row.get("auction_amount_bp") is None:
+            row["auction_amount_bp"] = amount / auction_total * 10_000 if isinstance(amount, (int, float)) and auction_total else None
+        if row.get("visibility_half_limit") is None:
+            band, auction = row.get("limit_pct"), row.get("auction_pct", row.get("p0925_pct"))
+            p932, p945 = row.get("p0932_pct"), row.get("p0945_pct")
+            if not all(isinstance(value, (int, float)) for value in (band, auction, p932, p945)) or not band:
+                row["visibility_half_limit"] = "不可判断：板幅或检查点缺失"
+            else:
+                threshold = .5 if row.get("is_big_meat") else -.5
+                reached = [((value - auction) / band >= threshold if threshold > 0
+                            else (value - auction) / band <= threshold) for value in (p932, p945)]
+                row["visibility_half_limit"] = ("09:32前已达0.5L" if reached[0] else
+                    "09:32至09:45达到0.5L" if reached[1] else "09:45前未达0.5L")
+    for group in ("big_meat", "big_loss"):
+        for row in report.get(group, []) if isinstance(report.get(group), list) else []:
+            source = by_code.get(str(row.get("symbol"))) if isinstance(row, dict) else None
+            if source:
+                for key in ("auction_amount_bp", "visibility_half_limit"):
+                    row.setdefault(key, source.get(key))
+    if not report.get("plate_evolution"):
+        meat = report.get("big_meat") if isinstance(report.get("big_meat"), list) else []
+        loss = report.get("big_loss") if isinstance(report.get("big_loss"), list) else []
+        focus = {str(row.get("symbol")) for row in meat[:8] + loss[:8] if row.get("symbol")}
+        by_plate = {}
+        for row in stocks:
+            if not isinstance(row, dict):
+                continue
+            names = row.get("plates") or ([row.get("main_plate")] if row.get("main_plate") else [])
+            for name in names:
+                by_plate.setdefault(str(name), []).append(row)
+        evolution = []
+        for plate, members in by_plate.items():
+            for row in members:
+                symbol = str(row.get("symbol"))
+                if symbol not in focus:
+                    continue
+                trajectory = {}
+                for output, key in (("p0925_pct", "p0925_pct"), ("p0932_pct", "p0932_pct"),
+                                    ("p0945_pct", "p0945_pct"), ("close_pct", "close_pct")):
+                    values = [member.get(key) for member in members if isinstance(member.get(key), (int, float))]
+                    trajectory[output] = statistics.fmean(values) if values else None
+                relative = row.get("close_pct") - trajectory["close_pct"] if (
+                    isinstance(row.get("close_pct"), (int, float)) and trajectory["close_pct"] is not None) else None
+                peers = sorted((member for member in members if member.get("symbol") != row.get("symbol")
+                                and isinstance(member.get("close_pct"), (int, float))),
+                               key=lambda member: (-member["close_pct"], str(member.get("symbol"))))[:3]
+                evolution.append({"symbol": symbol, "name": row.get("name"), "plate": plate, **trajectory,
+                                  "stock_close_pct": row.get("close_pct"), "relative_to_plate_pp": relative,
+                                  "position": "领涨" if relative is not None and relative >= 2 else
+                                              "落后板块" if relative is not None and relative <= -2 else "跟随板块",
+                                  "peer_top3": "；".join(
+                                      f"{peer.get('symbol')} {peer.get('name') or ''} {peer['close_pct']:+.2f}% "
+                                      f"{((peer.get('auction_amount_yuan') or 0) / 1e4):.0f}万" for peer in peers)})
+        report["plate_evolution"] = evolution[:20]
+    trade_date = str(report.get("trade_date") or "")
+    if not report.get("ladder_summary") and trade_date:
+        ladder = _load_ladder_summary(reference_root, trade_date)
+        if ladder:
+            head = ladder[0]
+            for code in str(head.get("top_symbols") or "").split("|"):
+                row = by_code.get(code)
+                if row:
+                    ladder.append({"symbol": code, "name": row.get("name"), "main_plate": row.get("main_plate"),
+                                   "prior_streak": row.get("prior_limit_streak"),
+                                   "p0925_pct": row.get("p0925_pct"), "p0945_pct": row.get("p0945_pct"),
+                                   "close_pct": row.get("close_pct"), "in_yest_pool": row.get("in_yest_pool"),
+                                   "status": "今日最高板；收盘涨停价代理，封单/炸板路径 UNKNOWN"})
+            report["ladder_summary"] = ladder
 
 
 def main(argv=None):
@@ -69,6 +102,7 @@ def main(argv=None):
     parser.add_argument("--report-dir", required=True, type=Path)
     parser.add_argument("--stage", required=True)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--reference-root", type=Path, default=Path("/home/exedev/validation"))
     args = parser.parse_args(argv)
     try:
         report = json.loads((args.report_dir / "report.json").read_text(encoding="utf-8"))
@@ -80,7 +114,9 @@ def main(argv=None):
         manifest = None
     full = _read_json(args.report_dir / "report.full.json")
     if isinstance(full, dict):
-        report = {**full, **report}
+        report = {**report, **full}
+    if "market" in report:
+        _enrich_close_report(report, args.reference_root)
     if isinstance(manifest, dict) and "market" in report:
         for source_path in manifest.get("input_files", {}).values() if isinstance(manifest.get("input_files"), dict) else []:
             if isinstance(source_path, str) and source_path.endswith("manifest.json"):
@@ -88,7 +124,6 @@ def main(argv=None):
                 if isinstance(candidate, dict) and candidate.get("source") == "wencai":
                     report["daily_manifest"] = candidate
                     break
-        report["email_editorial"] = _close_editorial(args.report_dir)
     trade_date = str(report.get("trade_date") or (manifest or {}).get("trade_date") or "未知日期")
     rendered, _ = render_email_html(report, args.stage, trade_date, manifest)
     args.out.parent.mkdir(parents=True, exist_ok=True)

@@ -48,3 +48,17 @@ def test_missing_required_checkpoint_degrades_visibility_and_dependent_conclusio
     assert report["big_meat"][0]["visibility"] == "不可判断：0945检查点缺失"
     assert report["emerging_scorecard"]["status"] == "DEGRADED"
     assert report["emerging_scorecard"]["p0945_top_k"] is None
+
+
+def test_price_band_exception_is_separated_and_auction_share_has_market_denominator():
+    report = derive_close_review([
+        {"symbol": "301569", "name": "新股", "limit_pct": 20, "auction_pct": 280,
+         "close_pct": 400, "high_pct": 500, "low_pct": 280, "auction_amount_yuan": 100},
+        {"symbol": "600001", "name": "普通股", "limit_pct": 10, "auction_pct": 0,
+         "close_pct": 2, "high_pct": 3, "low_pct": -1, "auction_amount_yuan": 900}],
+        trade_date="2026-01-01")
+    assert [row["symbol"] for row in report["unlimited_price_band_stocks"]] == ["301569"]
+    assert all(row["symbol"] != "301569" for row in report["big_meat"] + report["big_loss"])
+    assert report["stocks"][0]["auction_amount_share"] == 0.1
+    assert report["stocks"][0]["auction_amount_bp"] == 1000.0
+    assert report["stocks"][0]["visibility_half_limit"] == "不可判断：板幅或检查点缺失"

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -206,6 +207,38 @@ def _relation_lag_trading_days(asof: str, trade_date: str, history_dates: list[s
     return sum(source_day < day <= trade_date for day in dates)
 
 
+def _load_ladder_summary(root: str | Path, trade_date: str) -> list[dict[str, Any]]:
+    """Load a date-matched ladder study; price-limit closes are proxies, not seal facts."""
+    candidates = sorted(Path(root).glob("ladder-emotion-study-*/out_final/ladder_daily.csv"))
+    for path in reversed(candidates):
+        try:
+            with path.open(encoding="utf-8-sig", newline="") as stream:
+                row = next((item for item in csv.DictReader(stream) if item.get("date") == trade_date), None)
+        except OSError:
+            continue
+        if not row:
+            continue
+        levels = []
+        for level in range(1, 12):
+            suffix = str(level) if level < 11 else "11plus"
+            previous = row.get(f"previous_{suffix}_n")
+            if not previous or previous == "0":
+                continue
+            levels.append({"board_height": f"{level if level < 11 else '11+'}板",
+                           "previous_n": previous, "promoted_n": row.get(f"promoted_{suffix}_n"),
+                           "broken_n": row.get(f"broken_{suffix}_n"),
+                           "promotion_rate": row.get(f"promotion_{suffix}_rate"),
+                           "status": "收盘涨停价代理；炸板路径 UNKNOWN"})
+        summary = {"status": row.get("phase_eod") or "收盘", "max_price_streak": row.get("max_price_streak"),
+                   "top_symbols": row.get("top_symbols"), "previous_space_height": row.get("previous_space_height"),
+                   "previous_space_symbols": row.get("previous_space_symbols"),
+                   "first_board_count": row.get("board_1_n"), "previous_limit_n": row.get("previous_limit_n"),
+                   "promoted_n": row.get("promoted_n"), "promotion_rate": row.get("promotion_rate"),
+                   "unknown_broken_n": row.get("broken_1_n"), "source": "ladder_daily.csv; close-price rule"}
+        return [summary, *levels[:10]]
+    return []
+
+
 def _next_output(root: Path, trade_date: str, stage: str) -> Path:
     parent = root / trade_date
     candidate = parent / stage
@@ -235,7 +268,8 @@ def _load_relations(folder: Path | None) -> tuple[dict[str, list[str]], dict[str
                 symbol = str(row.get("stockid", row.get("symbol", ""))).zfill(6)
                 code = str(row.get("plateid", row.get("plate_code", "")))
                 if symbol and code:
-                    relations.setdefault(symbol, []).append(code)
+                    relations.setdefault(code, set()).add(symbol)
+        relations = {code: sorted(members) for code, members in relations.items()}
         snapshot = live_pages._relation_snapshot_date(folder)
         return relations, names, snapshot
     except (OSError, ValueError, TypeError):
@@ -461,7 +495,10 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             payload["handoff"] = {"auction_0925": handoff}
             if handoff is None:
                 degraded.append("MISSING_SAME_DAY_AUCTION_REPORT")
-        (out / "report.html").write_text(page, encoding="utf-8")
+        from .email_render import render_email_html
+        email_page, _ = render_email_html(payload, stage, trade_date, {
+            "asof": asof, "sources": {"td": td_source_manifest}, "degraded": degraded})
+        (out / "report.html").write_text(email_page, encoding="utf-8")
         report_json = live_pages._json_report_payload(payload)
         report_text = json.dumps(report_json, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
     else:
@@ -544,12 +581,40 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 "stock_caps": {"status": "READY" if refs["stock_caps"] else "MISSING"}}
             markdown = render_close_markdown(data)
             page = render_close_html(data, markdown)
+        ladder = _load_ladder_summary(reference_root, trade_date)
+        data["ladder_summary"] = ladder
+        if not ladder:
+            limitations = data.get("limitations")
+            if not isinstance(limitations, list):
+                limitations = [limitations] if limitations else []
+            limitations.append("未找到该交易日的连板梯队日表；晋级/断板与最高板状态不可用")
+            data["limitations"] = limitations
+        elif data.get("stocks"):
+            stock_by_code = {str(row.get("symbol")): row for row in data["stocks"]}
+            head = ladder[0]
+            highboard_rows = []
+            for code in str(head.get("top_symbols") or "").split("|"):
+                stock = stock_by_code.get(code)
+                if not stock:
+                    continue
+                highboard_rows.append({"symbol": code, "name": stock.get("name"),
+                    "main_plate": stock.get("main_plate"), "prior_streak": stock.get("prior_limit_streak"),
+                    "p0925_pct": stock.get("p0925_pct"), "p0945_pct": stock.get("p0945_pct"),
+                    "close_pct": stock.get("close_pct"), "in_yest_pool": stock.get("in_yest_pool"),
+                    "status": "今日最高板；收盘涨停价代理，封单/炸板路径 UNKNOWN"})
+            data["ladder_summary"].extend(highboard_rows)
+        quality = data.setdefault("data_quality", {})
+        quality["relation_snapshot_date"] = reference_meta.get("relation_dir", {}).get("as_of")
+        quality["relation_lag_trading_days"] = relation_lag
+        quality["checkpoint_coverage"] = close_manifest.get("checkpoint_coverage") if isinstance(close_manifest, Mapping) else None
         data.setdefault("handoff", {})
         data["handoff"].update({"same_day_auction": str(auction_ref) if auction_ref else None,
                                 "same_day_open": str(open_ref) if open_ref else None,
                                 "previous_day_live": str(prev_path) if prev_path else None})
         (out / "report.md").write_text(markdown, encoding="utf-8")
-        (out / "report.html").write_text(page, encoding="utf-8")
+        from .email_render import render_email_html
+        email_page, _ = render_email_html(data, "close", trade_date, {"degraded": degraded})
+        (out / "report.html").write_text(email_page, encoding="utf-8")
         report_text = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
         close_manifest["input_files"] = close_manifest.get("input_files", {})
     if len(report_text.encode("utf-8")) > 300_000:
