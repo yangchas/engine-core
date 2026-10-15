@@ -137,7 +137,7 @@ def test_renderer_never_exposes_unmapped_fields_or_placeholder_metadata():
     assert "market." not in both and "_pct" not in both and "yuan" not in both
     assert "未提供" not in both
     assert "未知" not in both
-    assert "上涨家数" in both and "收盘变化/涨跌停幅度" in both and "竞价额" in both
+    assert "上涨家数" in both and "收盘变化÷板幅" in both and "竞价额" in both
     assert "opaque_internal_value" not in both
     assert "▲ 1" not in both and "▼ 2" not in both
 

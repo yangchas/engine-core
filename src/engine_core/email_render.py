@@ -23,7 +23,7 @@ FIELD_LABELS = {
     "status": "状态", "close_pct": "收盘涨幅", "pct": "涨跌幅", "pct_change": "涨跌幅",
     "auction_pct": "竞价涨幅", "p0925_pct": "竞价涨幅", "p0932_pct": "09:32涨幅",
     "p0945_pct": "09:45涨幅", "open_pct": "开盘涨幅", "delta_pp": "较竞价变化",
-    "delta_over_limit": "收盘变化/涨跌停幅度", "auction_amount_yuan": "竞价额",
+    "delta_over_limit": "收盘变化÷板幅", "auction_amount_yuan": "竞价额",
     "amount_yuan": "成交额", "match_amount_yuan": "竞价额", "match_yuan": "竞价额",
     "amount": "成交额", "amount_share": "成交额占比", "amount_share_pct": "成交额占比",
     "amount_share_bp": "成交额占比", "auction_amount_share": "竞价额占比",
@@ -117,8 +117,10 @@ def _num(value: Any, key: str = "") -> str:
             return f"{x / 10_000:,.2f} 万"
     if key_l.endswith("_bp") or "bp" in key_l:
         return f"{x:+.1f} bp"
+    if "percentile" in key_l and 0 <= x <= 1:
+        return f"{x * 100:.1f}%"
     if key_l == "delta_over_limit":
-        return f"{x:+.2f} 倍涨跌停幅度"
+        return f"{x:+.2f}× 板幅"
     if key_l.endswith("_pp") or "_delta" in key_l:
         return f"{x:+.2f} pp"
     if any(k in key_l for k in ("pct", "change", "median", "rate", "share", "mean")) or "涨幅" in key:
@@ -193,9 +195,9 @@ def _conclusions(report: Mapping[str, Any], stage: str) -> list[str]:
         if market.get("close_median") is not None:
             points.append(f"收盘中位涨幅为 {_num(market['close_median'], 'close_median')}。")
         if market.get("auction_median") is not None:
-            points.append(f"竞价中位 {_num(market['auction_median'], 'auction_median')}%；收盘较竞价变化 {_num(market.get('close_median') - market['auction_median'] if market.get('close_median') is not None else None, 'delta_pp')} pp。")
+            points.append(f"竞价中位 {_num(market['auction_median'], 'auction_median')}；收盘较竞价变化 {_num(market.get('close_median') - market['auction_median'] if market.get('close_median') is not None else None, 'delta_pp')}。")
         if market.get("p0945_median") is not None and market.get("close_median") is not None:
-            points.append(f"09:45中位 {_num(market['p0945_median'], 'p0945_median')}%，收盘较09:45变化 {_num(market.get('close_vs_p0945_pp'), 'delta_pp')} pp；日型按预设规则为 {market.get('regime_label', '未知')}。")
+            points.append(f"09:45中位 {_num(market['p0945_median'], 'p0945_median')}，收盘较09:45变化 {_num(market.get('close_vs_p0945_pp'), 'delta_pp')}；日型按预设规则为 {market.get('regime_label', '未知')}。")
         if market.get("up_count") is not None or market.get("down_count") is not None:
             points.append(f"上涨 {_num(market.get('up_count'))} 家、下跌 {_num(market.get('down_count'))} 家。")
     return points
