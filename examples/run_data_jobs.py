@@ -40,7 +40,10 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         from engine_core.daily_kline_capture import BaostockClient
         from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider
         checkpoint = Path(artifact_root) / ".checkpoints" / f"daily_kline-{day}.json" if write_enabled else None
-        provider = BaostockDailyProvider(client_factory=BaostockClient, symbols=symbols_for,
+        def client_factory() -> Any:
+            import baostock as bs
+            return BaostockClient(bs)
+        provider = BaostockDailyProvider(client_factory=client_factory, symbols=symbols_for,
                                          checkpoint_path=checkpoint)
         return provider.fetch(day, context)
 
@@ -130,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     names = list(DATASETS) if args.job == "all" else [args.job]
     adapters = _default_adapters(args.artifact_root,
         os.getenv("ENGINE_LEGACY_ROOT", "/home/exedev/repos/stock-situation-runtime"),
-        args.max_requests, args.write)
+        args.max_requests, args.write or args.execute)
     adapters.update(_load_adapter(args.adapter))
     missing = [name for name in names if name not in adapters]
     if missing: raise RuntimeError("fetcher_not_configured:" + ",".join(missing))
@@ -144,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in names:
         result = runner.run(name, args.date, fetch=adapters[name], publish=args.write,
                             td_write=args.td_write, source=get_dataset(name).source,
-                            dry_run=not args.write)
+                            dry_run=not (args.write or args.execute))
         print(json.dumps({"job": name, "version": result.manifest.get("version"),
                           "row_count": result.manifest["row_count"],
                           "sha256": result.manifest.get("sha256"),

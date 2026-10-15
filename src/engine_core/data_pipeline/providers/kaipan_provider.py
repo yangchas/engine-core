@@ -90,7 +90,17 @@ class KaipanProvider:
                       context: Any = None) -> dict[str, Any]:
         rows, seen = [], set()
         for level in range(1, max_levels + 1):
-            response = self._call(self.client.get_his_bans, trade_date, level)
+            try:
+                response = self._call(self.client.get_his_bans, trade_date, level)
+            except ProviderCircuitOpen as exc:
+                if level > 1 and str(exc) == "kaipan_empty_response":
+                    self._tripped = False  # no stocks at this board level: end of ladder, not a block
+                    break
+                raise
+            except RuntimeError as exc:
+                if level > 1 and str(exc) == "kaipan_request_failed:TypeError":
+                    break  # SDK returns None past the highest populated level
+                raise
             for raw in _pool_rows(response):
                 symbol = _code(raw[0])
                 if not symbol or symbol in seen:
