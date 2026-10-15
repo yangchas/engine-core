@@ -44,6 +44,24 @@ class _MissingTD:
         return None
 
 
+def _shrink_live_report(report: dict[str, Any], *, plate_cap: int = 20, row_cap: int = 30) -> dict[str, Any]:
+    """Bound list sizes in the persisted live-stage JSON; the HTML page is rendered beforehand."""
+    def cut(container: Any, key: str, cap: int) -> None:
+        if isinstance(container, dict) and isinstance(container.get(key), list) and len(container[key]) > cap:
+            container[f"{key}_total"] = len(container[key])
+            container[key] = container[key][:cap]
+    chapters = report.get("chapters") if isinstance(report.get("chapters"), dict) else {}
+    cut(chapters.get("market_price_volume"), "top_plates_by_share", plate_cap)
+    cut(chapters.get("plate_quadrants"), "rows", row_cap)
+    cut(chapters.get("watchlist"), "behavior_candidates", 15)
+    for snap in report.get("snapshots", []) if isinstance(report.get("snapshots"), list) else []:
+        cut(snap, "top_plates_by_share", plate_cap)
+    terminal = report.get("auction_terminal_0925")
+    if isinstance(terminal, dict):
+        cut(terminal, "top_plates_by_share", plate_cap)
+    return report
+
+
 def _connect_td() -> tuple[Any, str | None]:
     try:
         import taos
@@ -742,7 +760,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         email_page, _ = render_email_html(payload, stage, trade_date, {
             "asof": asof, "sources": {"td": td_source_manifest}, "degraded": degraded})
         (out / "report.html").write_text(email_page, encoding="utf-8")
-        report_json = live_pages._json_report_payload(payload)
+        report_json = _shrink_live_report(live_pages._json_report_payload(payload))
         report_text = json.dumps(report_json, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
     else:
         capture_manifest = refs["daily_capture_manifest"]
@@ -962,7 +980,12 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         report_text = json.dumps(report_payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
         close_manifest["input_files"] = close_manifest.get("input_files", {})
     if len(report_text.encode("utf-8")) > 300_000:
-        raise ValueError("report.json exceeds 300 KB")
+        try:
+            _obj = json.loads(report_text)
+            _sizes = sorted(((len(json.dumps(v, ensure_ascii=False)), k) for k, v in _obj.items()), reverse=True)[:5]
+        except Exception:
+            _sizes = []
+        raise ValueError("report.json exceeds 300 KB; largest keys: " + ", ".join(f"{k}={n}" for n, k in _sizes))
     (out / "report.json").write_text(report_text, encoding="utf-8")
     if stage != "close":
         close_manifest = {}

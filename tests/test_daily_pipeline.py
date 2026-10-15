@@ -328,3 +328,19 @@ def test_email_failure_is_recorded_without_failing_pipeline(tmp_path, monkeypatc
     manifest = json.loads((result["out_dir"] / "manifest.json").read_text())
     assert manifest["email"]["status"] == "failed"
     assert (result["out_dir"] / "report.json").is_file()
+
+
+def test_shrink_live_report_caps_lists_and_records_totals():
+    from engine_core.daily_pipeline import _shrink_live_report
+    report = {"chapters": {"market_price_volume": {"top_plates_by_share": list(range(100))},
+                           "plate_quadrants": {"rows": list(range(100))},
+                           "watchlist": {"behavior_candidates": list(range(100))}},
+              "snapshots": [{"top_plates_by_share": list(range(50))}],
+              "auction_terminal_0925": {"top_plates_by_share": list(range(50))}}
+    out = _shrink_live_report(report)
+    assert len(out["chapters"]["market_price_volume"]["top_plates_by_share"]) == 20
+    assert out["chapters"]["market_price_volume"]["top_plates_by_share_total"] == 100
+    assert len(out["chapters"]["plate_quadrants"]["rows"]) == 30
+    assert len(out["chapters"]["watchlist"]["behavior_candidates"]) == 15
+    assert len(out["snapshots"][0]["top_plates_by_share"]) == 20
+    assert len(out["auction_terminal_0925"]["top_plates_by_share"]) == 20
