@@ -135,3 +135,40 @@ def test_ladder_descends_by_board_count_and_extremes_are_capped_at_eight_rows():
     assert sum(1 for cell in cells if cell.startswith("股") or "股" in cell) >= 8
     assert "股11" not in rendered
 
+
+def test_v6_shaped_close_report_renders_real_ladder_a_to_b_and_yesterday_performance():
+    # Small fixture copied from report.full.json in close-review-20261015-v6.
+    report = {
+        "trade_date": "2026-10-15",
+        "market": {"close_median": -3.0},
+        "stocks": [
+            {"symbol": "000530", "name": "冰山冷热", "in_yest_pool": True, "lb_days": 2,
+             "limit_pct": 10, "auction_pct": 9.84, "p0925_pct": 9.84, "close_pct": 10,
+             "high_pct": 10, "auction_amount_yuan": 11716600},
+            {"symbol": "000668", "name": "荣丰控股", "in_yest_pool": True, "lb_days": 2,
+             "limit_pct": 10, "auction_pct": -2, "p0925_pct": -2, "close_pct": -9.99,
+             "high_pct": -1, "auction_amount_yuan": 5252500},
+            {"symbol": "300781", "name": "因赛集团", "in_yest_pool": False, "lb_days": 0,
+             "limit_pct": 20, "auction_pct": -2.18, "p0925_pct": -2.18,
+             "p0945_pct": -0.89, "close_pct": -4.80, "auction_amount_yuan": 4742500,
+             "main_plate": "外卖概念", "plates": ["外卖概念"], "prior_range_position20_pct": 79},
+        ],
+        "ladder_section": {"rows": [
+            {"symbol": "000530", "name": "冰山冷热", "prior_streak": 2, "close_pct": 10},
+        ], "summary": [], "yesterday_board_counts": [{"board_height": "2板", "count": 2}]},
+        "a_to_b_status": "READY",
+        "a_to_b": [{"a_symbol": "000530", "a_name": "冰山冷热", "a_prior_streak": 2,
+                     "a_status": "昨日高标", "plate": "外卖概念", "plate_display": "外卖概念",
+                     "candidates": [{"symbol": "300781", "name": "因赛集团", "auction_pct": -2.18,
+                                     "auction_amount_yuan": 4742500, "position": "79%",
+                                     "p0945_pct": -0.89, "close_pct": -4.80}], "reason": None}],
+    }
+    rendered, plain = render_email_board(report, "close", "2026-10-15")
+    assert "晋1/2" in rendered
+    assert "0.1亿" in rendered
+    assert "高" in rendered
+    assert "昨板表现" in rendered and "红1/2" in rendered
+    assert "冰山冷热 昨2板" in rendered and "因赛集团" in rendered
+    assert not any("—" * 3 in line for line in (rendered + "\n" + plain).splitlines())
+    assert "—板" not in rendered and "—→—" not in rendered and "—亿" not in rendered
+

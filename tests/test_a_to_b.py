@@ -134,3 +134,17 @@ def test_candidate_amount_never_falls_back_to_daily_amount_and_missing_is_explic
 def test_default_zero_streak_without_yesterday_pool_value_is_missing():
     from engine_core.a_to_b import _prior_streak
     assert _prior_streak({"prior_limit_streak": 0}) == (None, None)
+
+
+def test_close_a_to_b_emits_anchor_prices_and_candidate_display_fields():
+    rows = [
+        {"symbol": "000530", "name": "冰山冷热", "lb_days": 2, "main_plate": "外卖概念",
+         "auction_pct": 9.84, "close_pct": 10, "auction_amount_yuan": 1},
+        {"symbol": "300781", "name": "因赛集团", "main_plate": "外卖概念", "auction_pct": -2.18,
+         "p0945_pct": -0.89, "close_pct": -4.8, "auction_amount_yuan": 4742500,
+         "prior_range_position20_pct": 79},
+    ]
+    result = build_a_to_b(rows, trade_date="2026-10-15")
+    assert result[0]["a_auction_pct"] == 9.84
+    assert result[0]["a_close_pct"] == 10
+    assert result[0]["candidates"][0]["position"] == "高"

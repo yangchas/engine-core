@@ -187,3 +187,13 @@ def test_close_section_attachment_writes_a_to_b_and_ladder_into_report():
     assert report["ladder_section"]["rows"][0]["symbol"] == "600001"
     assert report["ladder_section"]["rows"][0]["prior_streak"] == 2
     assert report["ladder_section"]["rows"][0]["prior_streak_status"] == "字段冲突"
+
+
+def test_plate_report_includes_narrow_theme_ranked_by_auction_share():
+    rows = [{"symbol": f"600{i:03d}", "plates": ["小主题"], "p0925_pct": i / 10,
+             "p0945_pct": i / 10, "close_pct": i / 10, "auction_amount_yuan": 100}
+            for i in range(8)]
+    report = derive_close_review(rows, trade_date="2026-01-01",
+                                 plates=[{"name": "小主题", "kind": "THEME"}])
+    assert report["plates"]["narrow_theme_top5"][0]["name"] == "小主题"
+    assert report["plates"]["narrow_theme_top5"][0]["members"] == 8

@@ -73,9 +73,15 @@ def build_ladder_section(stocks: Sequence[Mapping[str, Any]], *, stage: str,
     stage_key = stage.lower()
     close_visible = stage_key in {"close", "closing", "eod"}
     auction_only = stage_key in {"auction", "auction_0926", "auction_0925"}
+    market_by_symbol = {str(row.get("symbol", row.get("code", ""))).zfill(6): row
+                        for row in (market_stocks or ())}
     rows = []
     for source in stocks:
         row = dict(source)
+        market_row = market_by_symbol.get(str(row.get("symbol", row.get("code", ""))).zfill(6), {})
+        for key in ("limit_pct", "high_pct", "low_pct", "auction_amount_yuan", "in_yest_pool", "lb_days"):
+            if row.get(key) is None and market_row.get(key) is not None:
+                row[key] = market_row[key]
         streak, streak_conflict = _prior_streak(row)
         path = ("UNKNOWN" if auction_only else
                 str(row.get("path_type", row.get("path_label", row.get("path_flags", "UNKNOWN"))) or "UNKNOWN"))
@@ -96,6 +102,7 @@ def build_ladder_section(stocks: Sequence[Mapping[str, Any]], *, stage: str,
                 "path_type": path, "path_label": PATH_LABELS[path],
                 "history_frequency": hist, "asof": asof,
                 "limit_status": "收盘涨停价代理；封单状态未知" if close_visible else "涨停价代理；封单状态未知"}
+        item.update({key: row.get(key) for key in ("limit_pct", "high_pct", "auction_amount_yuan", "in_yest_pool")})
         if close_visible:
             item["close_pct"] = row.get("close_pct", row.get("close_result_pct"))
         rows.append(item)
@@ -110,6 +117,21 @@ def build_ladder_section(stocks: Sequence[Mapping[str, Any]], *, stage: str,
                       for row in summary if row.get("board_height") and _int(row.get("previous_n")) is not None]
     yesterday_counts = summary_counts or [{"board_height": f"{level}板", "count": count}
                                          for level, count in sorted(by_streak.items())]
+    has_pool_field = any("in_yest_pool" in row for row in (market_stocks or ()))
+    pool_rows = [row for row in (market_stocks or ()) if row.get("in_yest_pool") is True or
+                 row.get("in_yest_pool") in (1, "1")]
+    promotion_by_level: dict[str, dict[str, int]] = {}
+    if has_pool_field:
+        pool_counts = Counter(_int(row.get("lb_days")) for row in pool_rows if _int(row.get("lb_days")) is not None)
+        for level, total in pool_counts.items():
+            promoted = 0
+            for row in pool_rows:
+                if _int(row.get("lb_days")) != level:
+                    continue
+                close, band = row.get("close_pct"), row.get("limit_pct")
+                if isinstance(close, (int, float)) and isinstance(band, (int, float)) and band > 0 and close >= band - 0.2:
+                    promoted += 1
+            promotion_by_level[f"{level}板"] = {"promoted": promoted, "total": total}
     emotion = (_emotion_bucket(market_stocks, asof) if not auction_only and market_stocks is not None
                else {"state": "UNKNOWN", "label": "无09:45全市场截面", "asof": asof})
     result = {"asof": asof, "stage": stage, "rows": rows,
@@ -117,6 +139,8 @@ def build_ladder_section(stocks: Sequence[Mapping[str, Any]], *, stage: str,
               "today_promotion_or_price_proxy_count": close_up if close_visible else current,
               "count_label": "收盘涨停价代理家数" if close_visible else "截至0945涨停价代理家数",
               "summary": [dict(r) for r in summary],
+              "promotion_status": "READY" if has_pool_field else "MISSING_YESTERDAY_POOL",
+              "promotion_by_previous_level": promotion_by_level,
               "emotion_asof": "0945前可见状态；研究分档为14日描述，非预测",
               "emotion": emotion,
               "postmarket_label": "事后对照，非开盘信息" if close_visible else None}

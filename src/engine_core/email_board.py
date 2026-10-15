@@ -61,14 +61,25 @@ def _tiles(report: Mapping[str, Any], stage: str) -> list[tuple[str, str]]:
         tiles.append(_metric("涨/跌", f"{up if up is not None else '—'} / {down if down is not None else '—'}"))
     if stage == "close" and (market.get("close_limit_up_count") is not None or market.get("close_limit_down_count") is not None):
         tiles.append(_metric("涨停价/跌停价", f"{market.get('close_limit_up_count', '—')} / {market.get('close_limit_down_count', '—')}"))
-    yesterday = market.get("yesterday_limit_pool") or report.get("yesterday_review")
-    if isinstance(yesterday, Mapping):
-        avg = _first(yesterday, "today_mean_pct", "close_mean", "mean_pct")
-        red = _first(yesterday, "red_rate", "red_share", "up_rate")
-        if avg is not None or red is not None:
-            tiles.append(_metric("昨板表现", f"{_num(avg)} / 红{_num(float(red) * 100) if isinstance(red, (int, float)) and red <= 1 else _num(red)}"))
-        elif yesterday.get("status"):
-            tiles.append(_metric("昨板表现", "缺报告"))
+    stocks = _rows(report.get("stocks"))
+    if stocks and any("in_yest_pool" in row for row in stocks):
+        pool = [row for row in stocks if row.get("in_yest_pool") is True or row.get("in_yest_pool") in (1, "1")]
+        closes = [float(row["close_pct"]) for row in pool if isinstance(row.get("close_pct"), (int, float))]
+        if closes:
+            red = sum(value > 0 for value in closes) / len(closes)
+            red_count = sum(value > 0 for value in closes)
+            tiles.append(_metric("昨板表现", f"{_num(sum(closes) / len(closes))} / 红{red_count}/{len(closes)} ({red * 100:.1f}%)"))
+        else:
+            tiles.append(_metric("昨板表现", "数据缺口：昨日池无收盘值"))
+    else:
+        yesterday = market.get("yesterday_limit_pool") or report.get("yesterday_review")
+        if isinstance(yesterday, Mapping):
+            avg = _first(yesterday, "today_mean_pct", "close_mean", "mean_pct")
+            red = _first(yesterday, "red_rate", "red_share", "up_rate")
+            if avg is not None or red is not None:
+                tiles.append(_metric("昨板表现", f"{_num(avg)} / 红{_num(float(red) * 100) if isinstance(red, (int, float)) and red <= 1 else _num(red)}"))
+            elif yesterday.get("status"):
+                tiles.append(_metric("昨板表现", "数据缺口：缺昨板统计"))
     ladder = report.get("ladder_section") if isinstance(report.get("ladder_section"), Mapping) else {}
     summary = _rows(ladder.get("summary"))
     top = _first(summary[0], "max_price_streak", "max_streak", "board_height") if summary else None
@@ -108,7 +119,11 @@ def _ladder(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
         msg = f"数据缺口：连板梯队 {reason}"
         return _section("连板梯队", f'<div>{_esc(msg)}</div>'), msg
     levels: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+    stock_by_symbol = {str(row.get("symbol", "")).zfill(6): row for row in _rows(report.get("stocks"))}
     for row in rows:
+        merged = dict(stock_by_symbol.get(str(row.get("symbol", "")).zfill(6), {}))
+        merged.update(row)
+        row = merged
         try:
             prior = int(_first(row, "prior_streak", "lb_days", "streak"))
         except (TypeError, ValueError):
@@ -117,39 +132,69 @@ def _ladder(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     summary = _rows(data.get("summary"))
     summary_by_level = {str(r.get("board_height")): r for r in summary if r.get("board_height") is not None}
     yesterday_counts = {str(r.get("board_height")): r.get("count") for r in _rows(data.get("yesterday_board_counts"))}
+    promotions = data.get("promotion_by_previous_level") if isinstance(data.get("promotion_by_previous_level"), Mapping) else {}
+    if not promotions and data.get("promotion_status") != "MISSING_YESTERDAY_POOL":
+        stocks = _rows(report.get("stocks"))
+        if any("in_yest_pool" in row for row in stocks):
+            pool = [row for row in stocks if row.get("in_yest_pool") is True or row.get("in_yest_pool") in (1, "1")]
+            for row in pool:
+                try:
+                    prior = int(row.get("lb_days"))
+                except (TypeError, ValueError):
+                    continue
+                item = promotions.setdefault(f"{prior}板", {"promoted": 0, "total": 0})
+                item["total"] += 1
+                band, close = row.get("limit_pct"), row.get("close_pct")
+                if isinstance(band, (int, float)) and isinstance(close, (int, float)) and band > 0 and close >= band - .2:
+                    item["promoted"] += 1
     lines = []
+    plain_lines = []
     ordered = sorted(levels.items(), reverse=True)
     for board, items in ordered:
         stat = summary_by_level.get(f"{board - 1}板") or summary_by_level.get(f"{board}板") or {}
         n = _first(stat, "previous_n", "previous_limit_n", "count")
         if n is None:
             n = yesterday_counts.get(f"{board - 1}板")
-        k = _first(stat, "promoted_n", "today_n")
+        promotion = promotions.get(f"{board - 1}板")
+        k = promotion.get("promoted") if isinstance(promotion, Mapping) else _first(stat, "promoted_n", "today_n")
+        if isinstance(promotion, Mapping):
+            n = promotion.get("total")
+        if n is None:
+            n = yesterday_counts.get(f"{board - 1}板")
+        if k is None and n is not None:
+            k = _first(stat, "promoted_n", "today_n")
         label = f"{board}板 昨{n if n is not None else '—'} 晋{k if k is not None else '—'}/{n if n is not None else '—'}"
         chips = []
+        plain_chips = []
         for row in sorted(items, key=lambda r: (-float(r.get("auction_amount_yuan") or 0), str(r.get("symbol", ""))))[:12]:
             pct = row.get("close_pct") if stage == "close" else row.get("p0945_pct") if stage == "open" else _first(row, "p0925_pct", "auction_pct")
             limit = row.get("limit_pct")
-            if stage == "close" and isinstance(pct, (int, float)) and isinstance(limit, (int, float)):
-                state = "封" if pct >= limit - .2 else "触" if isinstance(row.get("high_pct"), (int, float)) and row["high_pct"] >= limit - .2 else "断"
+            is_new = row.get("is_new_listing") or row.get("is_unlimited_price_band")
+            if is_new:
+                state = "新"
+            elif stage == "close" and isinstance(pct, (int, float)) and isinstance(limit, (int, float)):
+                state = "封" if pct >= limit - .2 else "触" if isinstance(row.get("high_pct"), (int, float)) and row["high_pct"] >= limit - .2 else "跌" if pct <= -limit + .2 else ""
             elif stage == "open" and isinstance(pct, (int, float)) and isinstance(limit, (int, float)):
-                state = "封" if pct >= limit - .2 else "触" if isinstance(row.get("high_pct"), (int, float)) and row["high_pct"] >= limit - .2 else "—"
+                state = "封" if pct >= limit - .2 else "触" if isinstance(row.get("high_pct"), (int, float)) and row["high_pct"] >= limit - .2 else ""
             else:
-                state = "一字" if row.get("one_word") or row.get("is_one_word") else "封" if row.get("auction_limit_state") in (1, "1", "UP") else "—"
+                state = "封" if row.get("auction_limit_state") in (1, "1", "UP") else ""
             if row.get("is_new_listing") or row.get("unlimited_price_band"):
                 state = "新"
             name = _short(row.get("name") or row.get("symbol"), 8)
             chips.append(f'<span style="display:inline-block;margin:1px 3px 1px 0;padding:3px 5px;background:#f1f5f9;white-space:nowrap">{_esc(name)} {_esc(_num(pct))} {state} {_amount(row.get("auction_amount_yuan"))}亿</span>')
+            plain_chips.append(f"{name} {_num(pct)} {state} {_amount(row.get('auction_amount_yuan'))}亿".strip())
         emphasis = "background:#fff1ed;padding:0 3px" if board == max(levels) else ""
         lines.append(f'<div style="line-height:23px"><b style="display:inline-block;min-width:94px;color:#9b3e32;{emphasis}">{_esc(label)}</b>{"".join(chips)}</div>')
+        plain_lines.append(label + (" " + "、".join(plain_chips) if plain_chips else ""))
     firsts = [r for r in rows if _first(r, "prior_streak", "lb_days", "streak") in (0, "0")]
     firsts.sort(key=lambda r: (-float(r.get("auction_amount_yuan") or 0), str(r.get("symbol", ""))))
     if firsts:
         chips = "　".join(f"{_short(r.get('name') or r.get('symbol'), 8)} {_num(r.get('close_pct') if stage == 'close' else r.get('p0945_pct') if stage == 'open' else _first(r, 'p0925_pct', 'auction_pct'))}" for r in firsts[:8])
         lines.append(f'<div style="line-height:23px"><b>首板 {len(firsts)}只</b>　{_esc(chips)}</div>')
-    space = f'<div style="font-size:10px;color:#667085;margin-top:3px">空间板 {max(levels) if levels else "—"}板；价格状态为代理</div>'
-    text = "连板梯队：" + "；".join(f"{b}板 昨{_first(summary_by_level.get(f'{b-1}板', {}), 'previous_n', 'previous_limit_n', 'count') or yesterday_counts.get(f'{b-1}板', '—')} 晋{_first(summary_by_level.get(f'{b-1}板', {}), 'promoted_n', 'today_n') or '—'}/{_first(summary_by_level.get(f'{b-1}板', {}), 'previous_n', 'previous_limit_n', 'count') or yesterday_counts.get(f'{b-1}板', '—')}" for b, items in ordered)
-    return _section("连板梯队", "".join(lines) + space, "按昨日板数分层；封/触/断为价格代理") , text
+    gap_note = "" if data.get("promotion_status") != "MISSING_YESTERDAY_POOL" else "；数据缺口：缺昨日涨停池，晋级率不可算"
+    space = f'<div style="font-size:10px;color:#667085;margin-top:3px">空间板 {max(levels) if levels else "—"}板；封/触为价格代理，非封单{gap_note}</div>'
+    text = "连板梯队：\n" + "\n".join(plain_lines)
+    return _section("连板梯队", "".join(lines) + space, "按昨日板数分层；封/触为价格代理，非封单") , text
 
 
 def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
@@ -183,10 +228,11 @@ def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
         headers = ["名称", "板块", "竞价%"]
         if stage != "auction":
             headers.append("09:45")
-        headers.extend(["额", "状态"])
+        headers.append("额")
         if stage == "close":
             headers.insert(4, "收盘%")
         body = []
+        states = []
         for index, row in enumerate(source):
             name = _short(row.get("name") or row.get("symbol"), 10)
             code = _esc(str(row.get("symbol") or "")[-6:])
@@ -194,22 +240,33 @@ def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
             auction = _first(row, "auction_pct", "p0925_pct")
             p945 = row.get("p0945_pct") if stage != "auction" else None
             amount = _amount(_first(row, "auction_amount_yuan", "match_amount_yuan"))
-            state = "新" if row.get("is_new_listing") or row.get("is_unlimited_price_band") else "—"
-            if stage == "close" and row.get("close_at_limit_up"):
+            limit = row.get("limit_pct")
+            close = row.get("close_pct")
+            state = "新" if row.get("is_new_listing") or row.get("is_unlimited_price_band") else ""
+            if stage == "close" and isinstance(limit, (int, float)) and isinstance(close, (int, float)):
+                state = "封" if close >= limit - .2 else "触" if isinstance(row.get("high_pct"), (int, float)) and row["high_pct"] >= limit - .2 else "跌" if close <= -limit + .2 else state
+            elif stage == "close" and row.get("close_at_limit_up"):
                 state = "封"
-            elif stage == "open" and isinstance(p945, (int, float)) and isinstance(row.get("limit_pct"), (int, float)) and p945 >= row["limit_pct"] - .2:
+            elif stage == "open" and isinstance(p945, (int, float)) and isinstance(limit, (int, float)) and p945 >= limit - .2:
                 state = "封"
+            states.append(state)
             cells = [f'{_esc(name)}<small style="display:block;color:#667085">{code}</small>', _esc(plate), _esc(_num(auction))]
             if stage != "auction":
                 cells.append(_esc(_num(p945)))
             if stage == "close":
                 cells.append(_esc(_num(row.get("close_pct"))))
-            cells.extend([f"{amount}亿", state])
+            cells.append(f"{amount}亿")
             bg = "#fff" if index % 2 == 0 else "#f7f9fb"
             body.append("<tr>" + "".join(f'<td style="padding:4px 5px;background:{bg};white-space:nowrap;border-bottom:1px solid #e8edf2">{c}</td>' for c in cells) + "</tr>")
+        if any(states):
+            headers.append("状态")
+            # Append the proxy state after the amount cell.
+            for row_index, state in enumerate(states):
+                marker = f'<td style="padding:4px 5px;background:{"#fff" if row_index % 2 == 0 else "#f7f9fb"};white-space:nowrap;border-bottom:1px solid #e8edf2">{_esc(state)}</td>'
+                body[row_index] = body[row_index].replace("</tr>", marker + "</tr>")
         th = "".join(f'<th style="text-align:left;padding:4px 5px;background:#e9eef5;white-space:nowrap">{_esc(h)}</th>' for h in headers)
         table = f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:11px"><thead><tr>{th}</tr></thead><tbody>{"".join(body)}</tbody></table>'
-        blocks.append(_section(title, table))
+        blocks.append(_section(title, table, "状态仅标价格代理" if any(states) else "状态列省略；状态仅标价格代理"))
         plain.append(f"{title}：" + "、".join(f"{_short(r.get('name') or r.get('symbol'), 8)} {_num(r.get('close_pct') if stage == 'close' else r.get('p0945_pct') if stage == 'open' else _first(r, 'auction_pct', 'p0925_pct'))}" for r in source))
     exceptional = list({str(r.get("symbol") or r.get("name")): r for r in exceptional}.values())
     if exceptional:
@@ -235,7 +292,33 @@ def _plates(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     data = report.get("plates") if isinstance(report.get("plates"), Mapping) else {}
     top = _rows(data.get("auction_amount_top10"))[:8]
     weak = _rows(data.get("close_bottom10"))[:5] if stage == "close" else []
-    chosen = [(r, "主线") for r in top] + [(r, "弱势") for r in weak]
+    narrow = _rows(data.get("narrow_theme_top5"))[:5]
+    if not narrow:
+        stocks = _rows(report.get("stocks"))
+        by_name: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+        metadata = {str(row.get("name")): row for key in ("auction_amount_top10", "close_top10", "close_bottom10", "deferred_generic_event")
+                    for row in _rows(data.get(key)) if row.get("name")}
+        for stock in stocks:
+            for name in stock.get("plates", []) if isinstance(stock.get("plates"), list) else []:
+                by_name[str(name)].append(stock)
+        market_total = sum(float(r.get("auction_amount_yuan") or 0) for r in stocks)
+        from .plate_kind import classify_plate_kind
+        for name, members in by_name.items():
+            meta = metadata.get(name, {})
+            kind = str(meta.get("kind") or classify_plate_kind(name)).upper()
+            if not 8 <= len(members) <= 150 or kind not in {"THEME", "NICHE"}:
+                continue
+            amount = sum(float(r.get("auction_amount_yuan") or 0) for r in members)
+            pct_keys = [r.get("p0925_pct") for r in members if isinstance(r.get("p0925_pct"), (int, float))]
+            close_keys = [r.get("close_pct") for r in members if isinstance(r.get("close_pct"), (int, float))]
+            narrow.append({"name": name, "kind": kind, "members": len(members),
+                           "auction_amount_yuan": amount,
+                           "auction_amount_share": amount / market_total if market_total else None,
+                           "p0925_mean": sum(pct_keys) / len(pct_keys) if pct_keys else None,
+                           "p0945_mean": None, "close_mean": sum(close_keys) / len(close_keys) if close_keys else None})
+        narrow.sort(key=lambda r: (-(r.get("auction_amount_share") or 0), r["name"]))
+        narrow = narrow[:5]
+    chosen = [(r, "主线") for r in top] + [(r, "窄主题") for r in narrow] + [(r, "弱势") for r in weak]
     if not chosen:
         msg = "数据缺口：板块事实未生成"
         return _section("板块盘面", f'<div>{msg}</div>'), msg
@@ -287,24 +370,64 @@ def _a_to_b(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
         return _section("看A做B", f'<div>{msg}</div>'), msg
     output, plain = [], []
     for entry in entries[:8]:
-        anchor = f"A {_short(entry.get('a_name') or entry.get('name') or entry.get('a_symbol'), 8)} {_short(entry.get('prior_streak') or entry.get('streak') or '—', 6)}板"
-        anchor += f" {_num(_first(entry, 'auction_pct', 'p0925_pct'))}"
+        entry = dict(entry)
+        anchor_stock = next((row for row in _rows(report.get("stocks"))
+                             if str(row.get("symbol", "")).zfill(6) == str(entry.get("a_symbol", "")).zfill(6)), {})
+        if entry.get("a_auction_pct") is None:
+            entry["a_auction_pct"] = _first(anchor_stock, "p0925_pct", "auction_pct")
+        if entry.get("a_close_pct") is None:
+            entry["a_close_pct"] = anchor_stock.get("close_pct")
+        anchor_name = _short(entry.get('a_name') or entry.get('name') or entry.get('a_symbol'), 8)
+        anchor_parts = [f"A {anchor_name}"]
+        streak = _first(entry, "a_prior_streak", "prior_streak", "streak")
+        if streak is not None:
+            anchor_parts.append(f"昨{streak}板")
+        auction = _first(entry, "a_auction_pct", "auction_pct", "p0925_pct")
+        close = _first(entry, "a_close_pct", "close_pct")
+        anchor_parts.append(_num(auction) if auction is not None else "竞价缺失")
         if stage == "close":
-            anchor += f"→{_num(entry.get('close_pct'))}"
+            anchor_parts.append("→" + (_num(close) if close is not None else "收盘缺失"))
+        anchor = " ".join(anchor_parts)
         candidates = _rows(entry.get("candidates"))[:3]
         chips = []
         for row in candidates:
-            text = f"B {_short(row.get('name') or row.get('symbol'), 8)} {_num(_first(row, 'auction_pct', 'p0925_pct'))} {_amount(row.get('auction_amount_yuan'))}亿"
+            text = f"B {_short(row.get('name') or row.get('symbol'), 8)} {_num(_first(row, 'auction_pct', 'p0925_pct'))} {_amount(row.get('auction_amount_yuan'))}亿 {_position_label(row)}"
             if stage != "auction":
                 text += f" {_num(row.get('p0945_pct'))}"
             if stage == "close":
                 text += f" {_num(row.get('close_pct'))}"
             chips.append(text)
-        reason = "、".join(chips) if chips else _short(entry.get("reason") or "无候选", 10)
+        reason_map = {"无合格主题板块": "无合格板块", "无合格同伴": "无同伴",
+                      "同伴全部买不到": "同伴买不到", "缺少竞价价/额": "缺竞价数据"}
+        reason = "、".join(chips) if chips else reason_map.get(str(entry.get("reason") or ""), _short(entry.get("reason") or "无同伴", 10))
         content = f'<div style="line-height:23px"><b>{_esc(anchor)}</b><div style="padding-left:8px">{_esc(reason)}</div></div>'
         output.append(content)
         plain.append(anchor + " → " + reason)
-    return _section("看A做B", "".join(output), "点时同板块候选；不构成建议"), "看A做B：" + "；".join(plain)
+    return _section("看A做B", "".join(output), "点时同板块候选；不构成建议"), "看A做B：\n" + "\n".join(plain)
+
+
+def _position_label(row: Mapping[str, Any]) -> str:
+    raw = row.get("position")
+    if isinstance(raw, str):
+        if "低于前20日区间" in raw:
+            return "越界↓"
+        if "高于前20日区间" in raw:
+            return "越界↑"
+        if raw in {"低", "中", "高", "越界↑", "越界↓"}:
+            return raw
+    value = _first(row, "prior_range_position20_pct", "p0925_range_position20_pct")
+    if value is None and isinstance(raw, str):
+        try:
+            value = float(raw.rstrip("%"))
+        except ValueError:
+            value = None
+    if isinstance(value, (int, float)):
+        if value < 0:
+            return "越界↓"
+        if value > 100:
+            return "越界↑"
+        return "低" if value <= 33 else "中" if value <= 67 else "高"
+    return "位置未知"
 
 
 def _other(report: Mapping[str, Any]) -> tuple[str, str]:
@@ -322,7 +445,8 @@ def _other(report: Mapping[str, Any]) -> tuple[str, str]:
     if not isinstance(market.get("auction_baseline_comparison"), Mapping) and market.get("auction_baseline_multiple") is None:
         gaps.append("竞价额历史基线未生成")
     yesterday = report.get("yesterday_review")
-    if not isinstance(yesterday, Mapping) or yesterday.get("status") == "UNAVAILABLE_NO_PREV_REPORT":
+    has_pool = any("in_yest_pool" in row for row in _rows(report.get("stocks")))
+    if not has_pool and (not isinstance(yesterday, Mapping) or yesterday.get("status") == "UNAVAILABLE_NO_PREV_REPORT"):
         gaps.append("昨板回看缺前日报告")
     unique = list(dict.fromkeys(gaps))[:3]
     msg = "；".join(unique) if unique else "缺失不补零；仅描述当日事实"

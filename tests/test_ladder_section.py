@@ -66,3 +66,26 @@ def test_open_emotion_buckets_do_not_read_close_fields():
     first = build_ladder_section([], stage="open", asof="2026-10-15T09:46:00", market_stocks=base)
     second = build_ladder_section([], stage="open", asof="2026-10-15T09:46:00", market_stocks=poisoned_close)
     assert first["emotion"] == second["emotion"]
+
+
+def test_close_ladder_joins_real_stock_fields_and_computes_yesterday_pool_promotions():
+    market = [
+        {"symbol": "000530", "name": "冰山冷热", "in_yest_pool": True, "lb_days": 2,
+         "limit_pct": 10, "close_pct": 10, "high_pct": 10, "auction_amount_yuan": 4742500},
+        {"symbol": "000668", "name": "荣丰控股", "in_yest_pool": True, "lb_days": 2,
+         "limit_pct": 10, "close_pct": -9.9, "high_pct": 0, "auction_amount_yuan": 5252500},
+    ]
+    section = build_ladder_section(
+        [{"symbol": "000530", "prior_streak": 2, "close_pct": 10}],
+        stage="close", asof="2026-10-15T15:00:00", market_stocks=market,
+    )
+    assert section["rows"][0]["auction_amount_yuan"] == 4742500
+    assert section["promotion_by_previous_level"]["2板"] == {"promoted": 1, "total": 2}
+
+
+def test_close_ladder_reports_missing_yesterday_pool_instead_of_zero():
+    section = build_ladder_section(
+        [{"symbol": "000530", "prior_streak": 2}], stage="close",
+        asof="2026-10-15T15:00:00", market_stocks=[{"symbol": "000530", "close_pct": 10}],
+    )
+    assert section["promotion_status"] == "MISSING_YESTERDAY_POOL"

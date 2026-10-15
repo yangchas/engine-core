@@ -152,6 +152,8 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
                                 max_size=max_plate_size)
         base = {"a_symbol": anchor["symbol"], "a_name": anchor.get("name"),
                 "a_prior_streak": int(streak) if streak is not None else None,
+                "a_auction_pct": _number(anchor, "p0925_pct", "auction_pct", "0925"),
+                "a_close_pct": None if live else _number(anchor, "close_pct"),
                 "streak_status": streak_conflict or ("已知" if streak is not None else "—"),
                 "a_status": "竞价涨停价且有封单" if is_sealed else "昨日高标",
                 "plate": anchor_plates[0] if anchor_plates else None,
@@ -200,9 +202,11 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
             peer_plate_pct = average(by_plate.get(anchor_plates[0], []), "p0945_pct")
             peer_0945 = _number(peer, "p0945_pct", "0945")
             range_position = _number(peer, "prior_range_position20_pct", "p0925_range_position20_pct")
-            position_label = ("高于前20日区间" if range_position is not None and range_position > 100 else
-                              "低于前20日区间" if range_position is not None and range_position < 0 else
-                              f"{range_position:.0f}%" if range_position is not None else "UNKNOWN")
+            position_label = ("越界↑" if range_position is not None and range_position > 100 else
+                              "越界↓" if range_position is not None and range_position < 0 else
+                              "低" if range_position is not None and range_position <= 33 else
+                              "中" if range_position is not None and range_position <= 67 else
+                              "高" if range_position is not None else "未知")
             item = {"symbol": peer["symbol"], "name": peer.get("name"),
                     "auction_pct": _number(peer, "p0925_pct", "auction_pct", "0925"),
                     "auction_amount_yuan": amount,

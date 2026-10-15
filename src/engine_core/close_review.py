@@ -321,6 +321,9 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
         p["auction_amount_share"] = _rate(p["auction_amount_yuan"], total_plate_amt) if p["auction_amount_yuan"] is not None else None
         p["auction_amount_bp"] = p["auction_amount_share"] * 10_000 if p["auction_amount_share"] is not None else None
     top_amt = sorted((p for p in plate_rows if p["auction_amount_share"] is not None), key=lambda p: (-p["auction_amount_share"], p["name"]))[:10]
+    narrow_top = sorted((p for p in plate_rows if p["auction_amount_share"] is not None
+                         and 8 <= p["members"] <= 150 and p["kind"] in {"THEME", "NICHE"}),
+                        key=lambda p: (-p["auction_amount_share"], p["name"]))[:5]
     for p in deferred_plate_rows:
         p["auction_amount_share"] = _rate(p["auction_amount_yuan"], total_plate_amt) if p["auction_amount_yuan"] is not None else None
     deferred_top = sorted(deferred_plate_rows, key=lambda p: (-(p.get("auction_amount_yuan") or 0), p["name"]))[:20]
@@ -328,6 +331,7 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
     plate_section = {"status": "READY" if plates else "UNAVAILABLE_NO_RELATION",
                      "close_top10": list(reversed(plate_rows[-10:])), "close_bottom10": plate_rows[:10],
                      "auction_amount_top10": top_amt,
+                     "narrow_theme_top5": narrow_top,
                      "deferred_generic_event": deferred_top,
                      "top_bottom_overlap": len({p["name"] for p in plate_rows[-10:]} & {p["name"] for p in top_amt}) if plates else None,
                      "quadrant_retention": None}
