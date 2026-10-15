@@ -14,6 +14,7 @@ def build_parser():
     parser.add_argument("--to", required=True, action="append", metavar="ADDR")
     parser.add_argument("--allow", required=True, action="append", metavar="ADDR")
     parser.add_argument("--send", action="store_true", help="deliver email; default only previews")
+    parser.add_argument("--attach-full-html", action="store_true", help="attach the full report.html when it is at most 1.5 MB")
     return parser
 
 
@@ -28,8 +29,13 @@ def main(argv=None):
         trade_date = json.loads((args.report_dir / "manifest.json").read_text(encoding="utf-8"))["trade_date"]
     except (OSError, ValueError, KeyError):
         raise SystemExit("report manifest is missing a valid trade_date")
+    try:
+        manifest = json.loads((args.report_dir / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        manifest = None
     msg = build_report_message("Core", trade_date, args.stage,
-                               report_html, data, args.to, sender)
+                               report_html, data, args.to, sender, manifest=manifest,
+                               attach_full_html=args.attach_full_html)
     attachments = list(msg.iter_attachments())
     attached_bytes = sum(len(part.get_payload(decode=True) or b"") for part in attachments)
     plain = msg.get_body(preferencelist=("plain",)).get_content().splitlines()

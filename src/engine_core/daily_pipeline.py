@@ -314,7 +314,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                        sources: DailySources | None = None, publish: bool = False,
                        dry_run: bool = False, allow_wencai_fallback: bool = False,
                        reference_catalog: str | Path | None = None,
-                       email_to: tuple[str, ...] | list[str] = (), email_send: bool = False) -> dict[str, Any]:
+                       email_to: tuple[str, ...] | list[str] = (), email_send: bool = False,
+                       email_attach_full_html: bool = False) -> dict[str, Any]:
     if stage not in STAGE_NAMES:
         raise ValueError("stage must be auction, open, or close")
     datetime.strptime(trade_date, "%Y-%m-%d")
@@ -586,7 +587,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             mail_config = load_smtp_config() if email_send else None
             sender = mail_config.from_addr if mail_config else "reports@localhost"
             mail = build_report_message("Core", trade_date, stage, out / "report.html",
-                                       out / "report.json", email_to, sender)
+                                       out / "report.json", email_to, sender, manifest=manifest,
+                                       attach_full_html=email_attach_full_html)
             receipt = send_message(mail_config, mail, dry_run=not email_send,
                                   allow_recipients=email_to)
             manifest["email"] = {"status": receipt.status}
@@ -610,6 +612,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-wencai-fallback", action="store_true")
     parser.add_argument("--email-to", action="append", default=[], metavar="ADDR")
     parser.add_argument("--email-send", action="store_true", help="send email; default is dry-run")
+    parser.add_argument("--email-attach-full-html", action="store_true", help="attach full report.html when at most 1.5 MB")
     return parser
 
 
@@ -621,7 +624,8 @@ def main(argv: list[str] | None = None, *, sources: DailySources | None = None) 
                                 sources=sources, publish=args.publish, dry_run=args.dry_run,
                                 allow_wencai_fallback=args.allow_wencai_fallback,
                                 reference_catalog=args.reference_catalog,
-                                email_to=args.email_to, email_send=args.email_send)
+                                email_to=args.email_to, email_send=args.email_send,
+                                email_attach_full_html=args.email_attach_full_html)
     print(f"trade_date={args.trade_date} stage={args.stage} out={result['out_dir']} "
           f"degraded={len(result['manifest']['degraded'])} report_json_bytes={result['manifest']['report_json_bytes']}")
     return 0

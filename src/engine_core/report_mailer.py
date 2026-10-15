@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import html
 import json
 import logging
 import os
@@ -14,6 +13,8 @@ from email.message import EmailMessage
 from email.utils import make_msgid
 from pathlib import Path
 from typing import Mapping, Sequence
+
+from .email_render import RENDER_VERSION, render_email_html
 
 logger = logging.getLogger(__name__)
 MAX_HTML_ATTACHMENT_BYTES = int(1.5 * 1024 * 1024)
@@ -131,56 +132,55 @@ def _report_summary(report_path: Path | None) -> tuple[str, dict]:
 
 def build_report_message(subject_prefix: str, trade_date: str, stage: str,
                          report_html_path: str | Path, report_json_path: str | Path | None,
-                         to_addrs: Sequence[str], from_addr: str) -> EmailMessage:
+                         to_addrs: Sequence[str], from_addr: str, *,
+                         manifest: Mapping | None = None,
+                         attach_full_html: bool = False) -> EmailMessage:
     html_path = Path(report_html_path)
     json_path = Path(report_json_path) if report_json_path is not None else None
-    text_summary, report_data = _report_summary(json_path)
+    report_data = {}
+    if json_path is not None:
+        try:
+            report_data = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            report_data = {}
+    if not isinstance(report_data, dict):
+        report_data = {}
+    rendered_html, plain_text = render_email_html(report_data, stage, trade_date, manifest)
     subject = f"{subject_prefix} [{trade_date}] {stage} 报告"
     message = EmailMessage()
     message["Subject"] = subject
     message["Message-ID"] = make_msgid()
     message["From"] = from_addr
     message["To"] = ", ".join(str(address) for address in to_addrs)
-    message.set_content(f"交易日：{trade_date}\n阶段：{stage}\n\n{text_summary}\n")
-    compact_html = ("<!doctype html><meta charset='utf-8'><h2>" + html.escape(subject) + "</h2><pre>" +
-                    html.escape(text_summary) + "</pre>")
-    message.add_alternative(compact_html, subtype="html", charset="utf-8")
-    try:
-        html_bytes = html_path.read_bytes()
-    except OSError as exc:
-        raise ValueError(f"report HTML unavailable ({type(exc).__name__})") from None
-    report_digest = hashlib.sha256(html_bytes)
+    message.set_content(plain_text)
+    message.add_alternative(rendered_html, subtype="html", charset="utf-8")
+    report_digest = hashlib.sha256((RENDER_VERSION + "\0").encode("ascii"))
     if json_path is not None:
         try:
             report_digest.update(json_path.read_bytes())
         except OSError:
             pass
     message["X-Core-Report-SHA256"] = report_digest.hexdigest()
-    if len(html_bytes) <= MAX_HTML_ATTACHMENT_BYTES:
-        message.add_attachment(html_bytes, maintype="text", subtype="html", filename="report.html")
-    else:
-        message.get_body(preferencelist=("plain",)).set_content(
-            f"交易日：{trade_date}\n阶段：{stage}\n\n{text_summary}\n\n"
-            "report.html 超限，未附加；仅附 report.json 摘要。\n")
-        if json_path and json_path.is_file():
-            gaps = report_data.get("degraded") or report_data.get("data_gaps") or report_data.get("missing") or []
-            summary_data = {"conclusion": report_data.get("conclusion"),
-                            "key_numbers": dict(list(_walk_numbers(report_data))[:8]),
-                            "data_gaps": gaps}
-            summary_bytes = json.dumps(summary_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            message.add_attachment(summary_bytes, maintype="application", subtype="json",
-                                   filename="report.json")
+    if attach_full_html:
+        try:
+            html_bytes = html_path.read_bytes()
+        except OSError as exc:
+            raise ValueError(f"report HTML unavailable ({type(exc).__name__})") from None
+        if len(html_bytes) <= MAX_HTML_ATTACHMENT_BYTES:
+            message.add_attachment(html_bytes, maintype="text", subtype="html", filename="report.html")
         else:
-            message.add_attachment(json.dumps({"summary": text_summary}, ensure_ascii=False).encode("utf-8"),
-                                   maintype="application", subtype="json", filename="report.json")
+            message.get_body(preferencelist=("plain",)).set_content(
+                plain_text + "\n\n完整 report.html 超过 1.5 MB，未附加。\n")
     return message
 
 
 def _report_digest(message: EmailMessage) -> str:
     header_digest = message.get("X-Core-Report-SHA256")
-    if header_digest:
-        return str(header_digest)
     digest = hashlib.sha256()
+    digest.update(str(header_digest or "").encode("ascii", errors="ignore"))
+    digest.update(RENDER_VERSION.encode("ascii"))
+    recipients = sorted({part.strip().lower() for part in str(message.get("To", "")).split(",") if part.strip()})
+    digest.update(json.dumps(recipients, separators=(",", ":")).encode("utf-8"))
     for part in message.iter_attachments():
         digest.update(part.get_filename().encode("utf-8"))
         digest.update(part.get_payload(decode=True) or b"")
