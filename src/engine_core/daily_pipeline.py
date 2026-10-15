@@ -239,6 +239,38 @@ def _load_ladder_summary(root: str | Path, trade_date: str) -> list[dict[str, An
     return []
 
 
+def _yesterday_lb_days(report: Mapping[str, Any] | None) -> dict[str, int]:
+    """Extract known streak counts from a prior report without converting gaps to zero."""
+    found: dict[str, int] = {}
+    if not isinstance(report, Mapping):
+        return found
+    candidates = []
+    stocks = report.get("stocks")
+    if isinstance(stocks, list):
+        candidates.extend(stocks)
+    chapters = report.get("chapters")
+    if isinstance(chapters, Mapping):
+        for key in ("yesterday_limit_pool", "yesterday_highboards"):
+            if isinstance(chapters.get(key), list):
+                candidates.extend(chapters[key])
+    for row in candidates:
+        if not isinstance(row, Mapping):
+            continue
+        symbol = str(row.get("symbol", row.get("code", ""))).zfill(6)
+        value = row.get("lb_days", row.get("streak", row.get("prior_streak")))
+        try:
+            if symbol and value is not None:
+                found[symbol] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return found
+
+
+def _prior_streak(code: str, yesterday_lb_days: Mapping[str, int]) -> int | None:
+    """Missing yesterday streak data stays missing; current-day rows are not a fallback."""
+    return yesterday_lb_days.get(str(code).zfill(6))
+
+
 def _next_output(root: Path, trade_date: str, stage: str) -> Path:
     parent = root / trade_date
     candidate = parent / stage
@@ -582,6 +614,12 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             markdown = render_close_markdown(data)
             page = render_close_html(data, markdown)
         ladder = _load_ladder_summary(reference_root, trade_date)
+        previous_streaks = {}
+        if prev_path and prev_path.is_file():
+            try:
+                previous_streaks = _yesterday_lb_days(_json(prev_path))
+            except (OSError, ValueError, json.JSONDecodeError):
+                previous_streaks = {}
         data["ladder_summary"] = ladder
         if not ladder:
             limitations = data.get("limitations")
@@ -597,8 +635,9 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 stock = stock_by_code.get(code)
                 if not stock:
                     continue
+                prior_streak = _prior_streak(code, previous_streaks)
                 highboard_rows.append({"symbol": code, "name": stock.get("name"),
-                    "main_plate": stock.get("main_plate"), "prior_streak": stock.get("prior_limit_streak"),
+                    "main_plate": stock.get("main_plate"), "prior_streak": prior_streak,
                     "p0925_pct": stock.get("p0925_pct"), "p0945_pct": stock.get("p0945_pct"),
                     "close_pct": stock.get("close_pct"), "in_yest_pool": stock.get("in_yest_pool"),
                     "status": "今日最高板；收盘涨停价代理，封单/炸板路径 UNKNOWN"})

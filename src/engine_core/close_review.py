@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 from .daily_kline_capture import load_capture
 from .extremes_review import (REGIME_LABELS, _num, assemble_from_files, build_daily_history,
                               compare_history, derive_extremes_review, limit_percent)
+from .plate_kind import classify_plate_kind
 
 
 def _median(values: Sequence[float]) -> float | None:
@@ -26,6 +27,21 @@ def _mean(values: Sequence[float]) -> float | None:
 
 def _rate(n: int, d: int) -> float | None:
     return n / d if d else None
+
+
+def _fixed_common_amounts(today: Mapping[str, float], previous: Mapping[str, float],
+                          history: Sequence[Mapping[str, float]]) -> dict[str, Any]:
+    common = set(today) & set(previous)
+    for day in history:
+        common.intersection_update(day)
+    history_totals = [sum(day[symbol] for symbol in common) for day in history]
+    today_total = sum(today[symbol] for symbol in common)
+    previous_total = sum(previous[symbol] for symbol in common)
+    history_median = _median(history_totals)
+    return {"symbols": common, "today": today_total, "previous": previous_total,
+            "history_median": history_median,
+            "today_vs_previous": today_total / previous_total if previous_total else None,
+            "today_vs_history_median": today_total / history_median if history_median else None}
 
 
 def _sym(value: Any) -> str:
@@ -134,8 +150,7 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
         r["is_big_meat"] = not r["is_unlimited_price_band"] and r["delta_over_limit"] is not None and r["delta_over_limit"] >= .5
         r["is_big_loss"] = not r["is_unlimited_price_band"] and r["delta_over_limit"] is not None and r["delta_over_limit"] <= -.5
         r["close_at_limit_up"] = band is not None and r["close_pct"] is not None and r["close_pct"] >= band - .2
-        p932, p945 = _num(r.get("p0932_pct")), _num(r.get("p0945_pct"))
-        r["visibility"] = "0945前可见" if (p932 is not None and p932 >= 2) or (p945 is not None and p945 >= 2) else "盘中才出现"
+        r["visibility"] = "已观测检查点待计算"
         clean.append(r)
     checkpoint_status = dict(checkpoint_status or {})
     missing_checkpoints = [tag for tag in ("0932", "0935", "0940", "0945")
@@ -151,16 +166,19 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
         r["auction_amount_share"] = amount / market_auction_amount if amount is not None and market_auction_amount else None
         r["auction_amount_bp"] = r["auction_amount_share"] * 10_000 if r["auction_amount_share"] is not None else None
         band = _num(r.get("limit_pct"))
-        checkpoints = [_num(r.get("p0932_pct")), _num(r.get("p0945_pct"))]
+        checkpoints = [(tag, _num(r.get(key))) for tag, key in (("0932", "p0932_pct"), ("0935", "p0935_pct"),
+                      ("0940", "p0940_pct"), ("0945", "p0945_pct"))]
         auction_pct = _num(r.get("auction_pct"))
-        if not band or auction_pct is None or any(value is None for value in checkpoints):
+        if (not band or auction_pct is None or not any(value is not None for _, value in checkpoints)
+                or any(tag in missing_checkpoints for tag in ("0932", "0945"))):
             r["visibility_half_limit"] = "不可判断：板幅或检查点缺失"
         else:
-            signed_moves = [(value - auction_pct) / band for value in checkpoints]
             threshold = .5 if r.get("is_big_meat") else -.5
-            reached = [move >= threshold if threshold > 0 else move <= threshold for move in signed_moves]
-            r["visibility_half_limit"] = ("09:32前已达0.5L" if reached[0] else
-                "09:32至09:45达到0.5L" if reached[1] else "09:45前未达0.5L")
+            reached = [tag for tag, value in checkpoints if value is not None and
+                       ((value - auction_pct) / band >= threshold if threshold > 0 else (value - auction_pct) / band <= threshold)]
+            r["visibility_half_limit"] = (f"{reached[0]}首次已观测达到0.5L" if reached else
+                "在已观测检查点未达到0.5L；点间时刻UNKNOWN")
+            r["visibility"] = "在已观测检查点达到0.5L" if reached else "在已观测检查点未达到0.5L"
     meat = sorted((r for r in clean if r.get("is_big_meat")), key=lambda r: (-(r.get("auction_amount_yuan") or 0), r["symbol"]))[:20]
     loss = sorted((r for r in clean if r.get("is_big_loss")), key=lambda r: (-(r.get("auction_amount_yuan") or 0), r["symbol"]))[:20]
     prompt = _live_prompted(live_report)
@@ -177,21 +195,27 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
     else:
         missed_section = {"status": "UNAVAILABLE_NO_LIVE_REPORT", "symbols": None, "count": None, "plate_counts": None}
 
-    emerging_ids = sorted(_listed_symbols((live_report or {}).get("chapters", {}).get("emerging"))) if live_report else []
     by_symbol = {r["symbol"]: r for r in clean}
-    emerging_rows = [by_symbol[s] for s in emerging_ids if s in by_symbol]
-    k = len(emerging_ids)
+    eligible = [r for r in clean if r.get("p0945_pct") is not None and r.get("p0945_cumulative_amount_yuan") is not None
+                and not r.get("is_unlimited_price_band")]
+    live_emerging_ids = _listed_symbols((live_report or {}).get("chapters", {}).get("emerging")) if live_report else set()
+    # The page is only a candidate set. The reported strict cohort is rebuilt
+    # from the 09:45 checkpoint and its exact >=5% threshold.
+    emerging_rows = [r for r in eligible if r["symbol"] in live_emerging_ids and r["p0945_pct"] >= 5]
+    emerging_ids = [r["symbol"] for r in emerging_rows]
+    k = len(emerging_rows)
     def score(group: Sequence[Mapping[str, Any]], expected: int | None = None) -> dict[str, Any]:
         n = len(group)
         return {"n": n if expected is None else expected, "matched": n,
+                "symbols": [r["symbol"] for r in group],
                 "close_ge_5": sum(r.get("close_pct") is not None and r["close_pct"] >= 5 for r in group),
                 "sealed_up": sum(r.get("close_at_limit_up", False) for r in group),
                 "turned_negative": sum(r.get("close_pct") is not None and r["close_pct"] < 0 for r in group),
                 "close_ge_5_rate": _rate(sum(r.get("close_pct") is not None and r["close_pct"] >= 5 for r in group), n),
                 "sealed_up_rate": _rate(sum(r.get("close_at_limit_up", False) for r in group), n),
                 "turned_negative_rate": _rate(sum(r.get("close_pct") is not None and r["close_pct"] < 0 for r in group), n)}
-    p945_ranked = sorted((r for r in clean if r.get("p0945_pct") is not None), key=lambda r: (-r["p0945_pct"], r["symbol"]))[:k]
-    amount_ranked = sorted((r for r in clean if r.get("auction_amount_yuan") is not None), key=lambda r: (-r["auction_amount_yuan"], r["symbol"]))[:k]
+    p945_ranked = sorted(eligible, key=lambda r: (-r["p0945_pct"], r["symbol"]))[:k]
+    amount_ranked = sorted(eligible, key=lambda r: (-r["p0945_cumulative_amount_yuan"], r["symbol"]))[:k]
     scorecard = {"status": ("UNAVAILABLE_NO_LIVE_REPORT" if not live_report else
                              "DEGRADED" if "0945" in missing_checkpoints else "READY"),
                  "emerging": score(emerging_rows, k) if live_report else None,
@@ -211,6 +235,7 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
 
     # Close plate returns and auction-amount share use only known members/values.
     plate_rows = []
+    deferred_plate_rows = []
     for plate in plates or ():
         name = plate.get("name") or plate.get("code")
         members = [r for r in clean if name in (r.get("plates") or [])]
@@ -219,19 +244,28 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
         p932 = [r["p0932_pct"] for r in members if r.get("p0932_pct") is not None]
         p945 = [r["p0945_pct"] for r in members if r.get("p0945_pct") is not None]
         amounts = [r["auction_amount_yuan"] for r in members if r.get("auction_amount_yuan") is not None]
-        if len(members) >= 8 and not plate.get("generic") and closes:
-            plate_rows.append({"name": name, "members": len(members), "close_mean": _mean(closes),
-                               "p0925_mean": _mean(auction), "p0932_mean": _mean(p932), "p0945_mean": _mean(p945),
-                               "auction_amount_yuan": sum(amounts) if amounts else None})
+        kind = plate.get("kind") or classify_plate_kind(str(name or ""))
+        if len(members) >= 8 and closes:
+            row = {"name": name, "kind": kind, "members": len(members), "close_mean": _mean(closes),
+                   "p0925_mean": _mean(auction), "p0932_mean": _mean(p932), "p0945_mean": _mean(p945),
+                   "auction_amount_yuan": sum(amounts) if amounts else None}
+            if plate.get("generic") or kind in {"GENERIC", "EVENT", "NOISE"}:
+                deferred_plate_rows.append(row)
+            else:
+                plate_rows.append(row)
     total_plate_amt = market_auction_amount
     for p in plate_rows:
         p["auction_amount_share"] = _rate(p["auction_amount_yuan"], total_plate_amt) if p["auction_amount_yuan"] is not None else None
         p["auction_amount_bp"] = p["auction_amount_share"] * 10_000 if p["auction_amount_share"] is not None else None
     top_amt = sorted((p for p in plate_rows if p["auction_amount_share"] is not None), key=lambda p: (-p["auction_amount_share"], p["name"]))[:10]
+    for p in deferred_plate_rows:
+        p["auction_amount_share"] = _rate(p["auction_amount_yuan"], total_plate_amt) if p["auction_amount_yuan"] is not None else None
+    deferred_top = sorted(deferred_plate_rows, key=lambda p: (-(p.get("auction_amount_yuan") or 0), p["name"]))[:20]
     plate_rows.sort(key=lambda p: (p["close_mean"], p["name"]))
     plate_section = {"status": "READY" if plates else "UNAVAILABLE_NO_RELATION",
                      "close_top10": list(reversed(plate_rows[-10:])), "close_bottom10": plate_rows[:10],
                      "auction_amount_top10": top_amt,
+                     "deferred_generic_event": deferred_top,
                      "top_bottom_overlap": len({p["name"] for p in plate_rows[-10:]} & {p["name"] for p in top_amt}) if plates else None,
                      "quadrant_retention": None}
     snapshots = list(kaipan_snapshots or [])
@@ -296,22 +330,31 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
             by_plate.setdefault(str(name), []).append(row)
     focus_symbols = {r["symbol"] for r in meat[:8] + loss[:8]}
     plate_evolution = []
+    excluded_plate_names = {str(p.get("name")) for p in plates or ()
+                            if p.get("generic") or p.get("kind") in {"GENERIC", "EVENT", "NOISE"}
+                            or classify_plate_kind(str(p.get("name") or "")) in {"GENERIC", "EVENT", "NOISE"}}
     for name, members in by_plate.items():
+        if name in excluded_plate_names or classify_plate_kind(name) in {"GENERIC", "EVENT", "NOISE"}:
+            continue
         focus = [r for r in members if r["symbol"] in focus_symbols]
         if not focus:
             continue
         for row in focus:
             values = [r.get("p0925_pct") for r in members], [r.get("p0932_pct") for r in members], [r.get("p0945_pct") for r in members], [r.get("close_pct") for r in members]
             trajectory = [_mean([x for x in xs if x is not None]) for xs in values]
-            peer_rows = sorted((x for x in members if x["symbol"] != row["symbol"] and x.get("close_pct") is not None),
-                               key=lambda x: (-x["close_pct"], x["symbol"]))[:3]
+            peer_rows = sorted((x for x in members if x["symbol"] != row["symbol"] and x.get("auction_amount_yuan") is not None),
+                               key=lambda x: (-x["auction_amount_yuan"], x["symbol"]))[:3]
             rel = (row.get("close_pct") - trajectory[-1]) if row.get("close_pct") is not None and trajectory[-1] is not None else None
             plate_evolution.append({"symbol": row["symbol"], "name": row.get("name"), "plate": name,
                 "p0925_pct": trajectory[0], "p0932_pct": trajectory[1], "p0945_pct": trajectory[2],
                 "close_pct": trajectory[3], "stock_close_pct": row.get("close_pct"),
                 "relative_to_plate_pp": rel,
                 "position": "领涨" if rel is not None and rel >= 2 else "落后板块" if rel is not None and rel <= -2 else "跟随板块",
-                "peer_top3": "；".join(f"{x['symbol']} {x.get('name') or ''} {x['close_pct']:+.2f}% {((x.get('auction_amount_yuan') or 0)/1e4):.0f}万" for x in peer_rows)})
+                "peer_top3": "按竞价额选，非事后收益；" + "；".join(
+                    f"{x['symbol']} {x.get('name') or ''} 20日区间位置 "
+                    f"{x.get('p0925_range_position20_pct') if x.get('p0925_range_position20_pct') is not None else 'UNKNOWN'} "
+                    f"0945 {x.get('p0945_pct') if x.get('p0945_pct') is not None else '—'}% 竞价额 {((x.get('auction_amount_yuan') or 0)/1e4):.0f}万"
+                    for x in peer_rows)})
     unlimited_rows = [r for r in clean if r.get("is_unlimited_price_band")]
     market_section["unlimited_price_band_count"] = len(unlimited_rows)
     return {"contract": "CloseReviewV1", "trade_date": trade_date, "market": market_section,
@@ -341,13 +384,13 @@ def render_close_markdown(data: Mapping[str, Any]) -> str:
     pct = lambda v: "—" if v is None else f"{v*100:.1f}%"
     m = data["market"]
     lines = [f"# 收盘复盘 {data['trade_date']}", "", "## 大盘收盘", "",
-             f"收盘中位 {f(m.get('close_median'))}%；涨/跌/平 {m.get('up_count','—')}/{m.get('down_count','—')}/{m.get('flat_count','—')}；收盘涨停/跌停 {m.get('close_limit_up_count','—')}/{m.get('close_limit_down_count','—')}；全天成交额 {f(m.get('amount_yuan'))} 元；前日倍数 {f(m.get('amount_vs_prev'))}×。",
+             f"收盘中位 {f(m.get('close_median'))}%；涨/跌/平 {m.get('up_count','—')}/{m.get('down_count','—')}/{m.get('flat_count','—')}；收盘涨停价代理/跌停价代理 {m.get('close_limit_up_count','—')}/{m.get('close_limit_down_count','—')}；全天成交额 {f(m.get('amount_yuan'))} 元；固定共同池({m.get('amount_common_pool_n','—')}只)前日倍数 {f(m.get('amount_vs_prev_common'))}×；64日共同池({m.get('amount_64d_common_pool_n','—')}只)中位数倍数 {f(m.get('amount_vs_64d_median_common'))}×。",
              f"日型 {m.get('regime_label','—')}；{m.get('auction_comparison','竞价日型/金额对照缺失')}。", "", "## 大肉 / 大面（竞价额降序前20）", ""]
     for title, key in (("大肉", "big_meat"), ("大面", "big_loss")):
-        lines += [f"### {title}", "", "代码 | 名称 | 竞价→0932→0945→收盘(%) | Δ/L | 竞价额 | 昨板 | 板块 | 0945前可见", "---|---|---:|---:|---:|---:|---|---"]
+        lines += [f"### {title}", "", "代码 | 名称 | 竞价价状态 | 竞价→0932→0945→收盘(%) | Δ/L | 竞价额 | 昨板 | 板块 | 已观测0.5L时点", "---|---|---|---:|---:|---:|---:|---|---"]
         for r in data[key]:
             vals = "→".join(f(r.get(k)) for k in ("auction_pct", "p0932_pct", "p0945_pct", "close_pct"))
-            lines.append(f"{r['symbol']} | {r.get('name') or '—'} | {vals} | {f(r.get('delta_over_limit'))} | {f((r.get('auction_amount_yuan') or 0)/1e8)}亿 | {r.get('lb_days',0)} | {', '.join((r.get('plates') or [])[:2]) or r.get('main_plate') or '—'} | {r['visibility']}")
+            lines.append(f"{r['symbol']} | {r.get('name') or '—'} | {r.get('auction_price_status') or 'UNKNOWN'} | {vals} | {f(r.get('delta_over_limit'))} | {f((r.get('auction_amount_yuan') or 0)/1e8)}亿 | {r.get('lb_days') if r.get('lb_days') is not None else '—'} | {', '.join((r.get('plates') or [])[:2]) or r.get('main_plate') or '—'} | {r['visibility_half_limit']}")
         lines.append("")
     missed = data["missed_opportunities"]
     lines += ["## 漏掉的机会", "", (f"未提示大肉 {missed['count']} 只：{', '.join(missed['symbols'] or [])}；板块计数 {missed['plate_counts']}。" if missed["status"] == "READY" else "无法判断是否已提示：未提供开盘页 JSON。"), "",
@@ -356,13 +399,17 @@ def render_close_markdown(data: Mapping[str, Any]) -> str:
         for label, p in data["yesterday_review"]["categories"].items():
             lines.append(f"{label}: 今日竞价到收盘 n={p['matched_n']}/{p['expected_n']}，收盘均/中位 {f(p['close_mean'])}%/{f(p['close_median'])}%，大肉/大面 {p['big_meat_count']}/{p['big_loss_count']}。")
     else: lines.append("未提供昨日开盘页名单，跳过。")
-    lines += ["", "## 新冒头收盘占比（SCORECARD）", "", "收盘涨停按日线收盘价达到涨停价计（没有收盘盘口封单数据时不代表封单量已核实）。", "", "集合 | n | 收盘≥+5% | 收盘涨停价 | 转负", "---|---:|---:|---:|---:"]
-    for key, label in (("emerging", "0945新冒头"), ("p0945_top_k", "涨幅榜前K"), ("amount_top_k", "额榜前K")):
+    lines += ["", "## 新冒头收盘占比（SCORECARD）", "", "严格新冒头：仅用≤0945检查点，0945涨幅≥5%；收盘涨停按收盘价达到涨停价代理统计，封单状态未知时不称封板。", "", "集合 | n | 收盘≥+5% | 收盘涨停价代理 | 转负", "---|---:|---:|---:|---:"]
+    for key, label in (("emerging", "0945新冒头"), ("p0945_top_k", "涨幅榜前K"), ("amount_top_k", "0945累计额前K")):
         p = data["emerging_scorecard"].get(key)
         lines.append(f"{label} | {p['n']} | {p['close_ge_5']} ({pct(p['close_ge_5_rate'])}) | {p['sealed_up']} ({pct(p['sealed_up_rate'])}) | {p['turned_negative']} ({pct(p['turned_negative_rate'])})" if p else f"{label} | — | — | — | —")
     lines += ["", "## 板块", ""]
-    for label, key in (("收盘涨幅Top10", "close_top10"), ("收盘涨幅Bottom10", "close_bottom10"), ("竞价额份额Top10", "auction_amount_top10")):
+    for label, key in (("收盘涨幅Top10", "close_top10"), ("收盘涨幅Bottom10", "close_bottom10"), ("竞价额份额Top10（成员重叠，不可相加）", "auction_amount_top10")):
         lines.append(label + ": " + (", ".join(f"{r['name']} {f(r.get('close_mean'))}%" for r in data["plates"][key]) or "数据不可用"))
+    deferred = data["plates"].get("deferred_generic_event", [])
+    if deferred:
+        lines += ["", "<details><summary>泛化/事件板块附录（折叠，不参与主榜）</summary>", "",
+                  "；".join(f"{r['name']} ({r.get('kind')}, {r['members']}只成员)" for r in deferred), "", "</details>"]
     lines.append(f"收盘涨幅Top10与竞价额份额Top10重合 {data['plates'].get('top_bottom_overlap') if data['plates'].get('top_bottom_overlap') is not None else '—'} 个。")
     qr = data["plates"].get("quadrant_retention")
     lines.append("Kaipan 强度×主力净额象限保持率：" + "；".join(f"{x['from']}→{x['to']} {x['retained']}/{x['matched']} ({pct(x['rate'])})" for x in qr) if qr else "未提供可用 Kaipan 热板快照，象限延续性不可用。")
@@ -371,7 +418,7 @@ def render_close_markdown(data: Mapping[str, Any]) -> str:
     refs = data.get("reference_data", {})
     ref_note = "参考数据：" + "；".join(f"{name}{'可用' if refs.get(key, {}).get('status') == 'READY' else '缺失'}"
                                          for key, name in (("stock_names", "名称表"), ("stock_caps", "市值表"))) + "。" if refs else ""
-    lines += ["", "## 数据质量", "", f"覆盖：收盘 {data['data_quality']['close_pct_coverage']}/{data['data_quality']['included_stock_count']}，0925 {data['data_quality']['auction_pct_coverage']}，0932 {data['data_quality']['p0932_coverage']}，0945 {data['data_quality']['p0945_coverage']}；竞价 FINAL/INDICATIVE {data['data_quality']['final_count']}/{data['data_quality']['indicative_count']}。{cp_note}{ref_note}日线来源：{data['data_quality']['daily_source']}。缺失字段保持缺失。", ""]
+    lines += ["", "## 数据质量", "", f"覆盖：收盘 {data['data_quality']['close_pct_coverage']}/{data['data_quality']['included_stock_count']}，0925 {data['data_quality']['auction_pct_coverage']}，0932 {data['data_quality']['p0932_coverage']}，0945 {data['data_quality']['p0945_coverage']}；竞价价 FINAL/INDICATIVE {data['data_quality']['final_count']}/{data['data_quality']['indicative_count']}；首次达到时刻 UNKNOWN（检查点间未观测）。{cp_note}{ref_note}日线来源：{data['data_quality']['daily_source']}。缺失字段保持缺失。", ""]
     return "\n".join(lines)
 
 
@@ -395,12 +442,41 @@ def assemble_close_review(trade_date: str, report_dir: str, checkpoints_csv: str
                                               daily_capture_dir, daily_history_csv, relation_dir, stock_caps_json,
                                               generic_names_json)
     rows = extremes["stocks"]
+    checkpoint_rows = _read_csv(Path(checkpoints_csv))
+    checkpoint_amounts = {_sym(row.get("symbol")): _num(row.get("amt_yuan_cum"))
+                          for row in checkpoint_rows if row.get("tag") == "0945"}
+    checkpoint_points = {}
+    for point_row in checkpoint_rows:
+        symbol = _sym(point_row.get("symbol")); tag = str(point_row.get("tag") or "")
+        px, pre = _num(point_row.get("px")), _num(point_row.get("pre_close"))
+        if tag in {"0935", "0940"} and px is not None and pre:
+            checkpoint_points.setdefault(symbol, {})[tag] = (px / pre - 1) * 100
+    for row in rows:
+        row["p0945_cumulative_amount_yuan"] = checkpoint_amounts.get(row["symbol"])
+        row["p0935_pct"] = checkpoint_points.get(row["symbol"], {}).get("0935")
+        row["p0940_pct"] = checkpoint_points.get(row["symbol"], {}).get("0940")
+        row["p0945_cumulative_amount_yuan"] = checkpoint_amounts.get(row["symbol"])
     live = _json(Path(live_report_json)) if live_report_json else None
     prev = _json(Path(prev_live_json)) if prev_live_json else None
     daily = load_capture(daily_capture_dir)
+    history_for_position = _read_csv(Path(daily_history_csv)) if daily_history_csv else []
+    closes_by_symbol: dict[str, list[tuple[str, float]]] = {}
+    for item in history_for_position:
+        day = item.get("date") or ""
+        close = _num(item.get("close"))
+        symbol = _sym(item.get("symbol", item.get("code")))
+        if day < trade_date and close is not None:
+            closes_by_symbol.setdefault(symbol, []).append((day, close))
     for r in rows:
         item = daily.get(r["symbol"], {})
         r["amount_yuan"] = _num(item.get("amount_yuan"))
+        history20 = sorted(closes_by_symbol.get(r["symbol"], []))[-20:]
+        if len(history20) == 20 and r.get("p0925_pct") is not None:
+            prior_close = history20[-1][1]
+            low, high = min(value for _, value in history20), max(value for _, value in history20)
+            auction_price = prior_close * (1 + r["p0925_pct"] / 100)
+            if high > low:
+                r["p0925_range_position20_pct"] = (auction_price - low) / (high - low) * 100
     amounts = [_num(r.get("amount_yuan")) for r in daily.values()]
     amounts = [x for x in amounts if x is not None]
     market_closes = []
@@ -419,6 +495,7 @@ def assemble_close_review(trade_date: str, report_dir: str, checkpoints_csv: str
     prev_amount = None
     prior_date = None
     historical_amounts: list[tuple[str, float]] = []
+    history_rows: list[dict[str, str]] = []
     if daily_history_csv:
         history_rows = _read_csv(Path(daily_history_csv))
         totals_by_day: dict[str, float] = {}
@@ -446,6 +523,33 @@ def assemble_close_review(trade_date: str, report_dir: str, checkpoints_csv: str
         market["amount_vs_64d_median"] = amount / hist_median if amount is not None and hist_median else None
         market["amount_64d_percentile"] = sum(value <= amount for value in hist_values) / len(hist_values) if amount is not None else None
         market["amount_64d_sample_days"] = len(hist_values)
+    if daily_history_csv and daily:
+        today_by_symbol = {str(symbol): _num(item.get("amount_yuan")) for symbol, item in daily.items()
+                           if _num(item.get("amount_yuan")) is not None}
+        prior_day_rows = [row for row in history_rows if (row.get("date") or "") == prior_date]
+        prior_by_symbol = {_sym(row.get("symbol", row.get("code"))): _num(row.get("amount_yuan", row.get("amount")))
+                           for row in prior_day_rows}
+        history_days = sorted({row.get("date", "") for row in history_rows if row.get("date", "") < trade_date})[-64:]
+        per_day = {day: {_sym(row.get("symbol", row.get("code"))): _num(row.get("amount_yuan", row.get("amount")))
+                         for row in history_rows if row.get("date") == day and _num(row.get("amount_yuan", row.get("amount"))) is not None}
+                   for day in history_days}
+        fixed = _fixed_common_amounts(today_by_symbol,
+                                      {s: v for s, v in prior_by_symbol.items() if v is not None},
+                                      list(per_day.values()))
+        common_64 = fixed["symbols"]
+        today_64 = fixed["today"]
+        daily_64 = [sum(values[symbol] for symbol in common_64) for values in per_day.values()]
+        median_64 = fixed["history_median"]
+        market.update({"amount_common_pool_n": len(common_64), "amount_today_common_yuan": fixed["today"],
+                       "amount_prev_common_yuan": fixed["previous"],
+                       "amount_vs_prev_common": fixed["today_vs_previous"],
+                       "amount_vs_prev_pool": "同64日基准固定共同股票池"})
+        market.update({"amount_64d_common_pool_n": len(common_64),
+                       "amount_today_64d_common_yuan": today_64,
+                       "amount_64d_median_common_yuan": median_64,
+                       "amount_vs_64d_median_common": today_64 / median_64 if median_64 else None,
+                       "amount_64d_common_pool_days": len(daily_64),
+                       "amount_64d_pool": "当日及全部历史日均有数据的固定共同股票池"})
     history = compare_history(extremes, history_dir) if history_dir else None
     dayhist = extremes.get("daily_history")
     if dayhist:
@@ -467,6 +571,7 @@ def assemble_close_review(trade_date: str, report_dir: str, checkpoints_csv: str
         if gp and gp.is_file():
             gd = _json(gp); gen = set(gd.get("names", [])) if isinstance(gd, dict) else set(gd)
         plates = [{"code": str(x.get("code", x.get("plateid", ""))), "name": x.get("name"),
+                   "kind": x.get("kind", x.get("class")) or classify_plate_kind(str(x.get("name") or "")),
                    "generic": x.get("class") == "GENERIC" or x.get("name") in gen} for x in entries]
         rel = _read_csv(folder / "relation.csv")
         by = {}

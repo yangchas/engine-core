@@ -36,15 +36,14 @@ def test_renderer_emits_a_share_bar_and_inline_safe_email_layout():
     assert "▼" in html and "#16835d" in html.lower()
 
 
-def test_share_fraction_is_rendered_as_basis_points_and_empty_columns_are_hidden():
+def test_share_fraction_is_rendered_as_percentage_and_empty_columns_are_hidden():
     report = {"stage": "close", "market": {"close_median": -1.0},
               "plates": {"auction_amount_top10": [
                   {"name": "通信", "auction_amount_share": 0.00066, "close_mean": 1.2},
                   {"name": "芯片", "auction_amount_share": 0.0012, "close_mean": -0.3}]},
               "data_quality": {"included_stock_count": 2}}
     html, plain = render_email_html(report, "close", "2026-10-15")
-    assert "6.6 bp" in html + plain
-    assert "12.0 bp" in html + plain
+    assert "0.1%" in html + plain
     assert "auction_amount_share" not in html
 
     empty = {"stage": "auction", "chapters": {"yesterday_highboards": [
@@ -165,4 +164,52 @@ def test_close_email_has_descriptive_scorecard_and_chinese_headers():
     assert "严格新冒头" in html + plain and "高标收盘状态" in html + plain
     assert "单日描述" in html + plain
     assert "market." not in html + plain and "▲ 38" not in html + plain and "▼ 29" not in html + plain
+
+
+def test_numeric_format_uses_explicit_semantics_for_ratios_percentages_and_changes():
+    from engine_core.email_render import _num
+    assert _num(0.125, "amount_64d_percentile") == "12.5%"
+    assert _num(17 / 28, "close_ge_5_rate") == "60.7%"
+    assert _num(1.0, "anchor_coverage") == "100.0%"
+    assert _num(5215, "p0945_coverage") == "5,215"
+    assert _num(5215, "close_pct_coverage") == "5,215"
+    assert _num(0.25, "auction_amount_share") == "25.0%"
+    assert _num(60.7, "p0925_range_position20_pct") == "60.7%"
+    assert _num(0.125, "close_pct") == "+0.12%"
+    assert _num(0.125, "relative_to_plate_pp") == "+0.12 pp"
+
+
+def test_close_email_marks_proxy_and_overlap_without_summing():
+    report = {"market": {"close_limit_up_count": 2, "close_limit_down_count": 1},
+              "data_quality": {"close_pct_coverage": 5215, "final_count": 4449, "indicative_count": 766},
+              "plates": {"auction_amount_top10": [{"name": "芯片", "auction_amount_share": 2.1}]}}
+    html, plain = render_email_html(report, "close", "2026-10-15")
+    both = html + plain
+    assert "收盘涨停价代理 / 跌停价代理" in both
+    assert "成员重叠, 不可相加" in both or "成员重叠，不可相加" in both
+    assert "INDICATIVE 766 只" in both and "FINAL 4,449 只" in both
+    assert "收盘对账价覆盖 5,215 只" in both and "首次达到时刻 UNKNOWN" in both
+
+
+def test_common_pool_and_all_market_amount_semantics_are_explicit():
+    from engine_core.email_render import _metrics
+    metrics = _metrics({"market": {"amount_vs_prev_common": 1.154, "amount_common_pool_n": 5191,
+                                   "amount_vs_prev": 1.18, "amount_vs_64d_median_common": 0.793,
+                                   "amount_64d_common_pool_n": 5000}}, "close")
+    rendered = " ".join(label for label, _, _ in metrics)
+    assert "固定共同池 5,191 只" in rendered
+    assert "全市场口径注脚" in rendered
+    assert "64日中位数（固定共同池 5,000 只）" in rendered
+
+
+def test_generic_and_event_plate_appendix_is_collapsed_inside_plate_section():
+    from engine_core.email_render import render_email_html
+
+    html, _ = render_email_html({"stage": "close", "market": {}, "plates": {
+        "auction_amount_top10": [{"name": "芯片", "auction_amount_share": 0.2}],
+        "deferred_generic_event": [{"name": "业绩增长", "kind": "EVENT", "members": 8}],
+    }}, "close", "2026-01-01")
+    assert "竞价额前十（成员重叠，不可相加）" in html
+    assert "<details><summary>泛化/事件板块附录（折叠，不参与主榜）</summary>" in html
+    assert "业绩增长（EVENT，8只成员）" in html
 

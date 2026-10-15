@@ -40,6 +40,15 @@ def test_ladder_summary_uses_dated_daily_rows_and_marks_close_price_proxy(tmp_pa
     assert _load_ladder_summary(tmp_path, "2026-10-14") == []
 
 
+def test_yesterday_streaks_preserve_missing_as_missing():
+    from engine_core.daily_pipeline import _prior_streak, _yesterday_lb_days
+    report = {"stocks": [{"symbol": "600001", "lb_days": 4}, {"symbol": "600002"}],
+              "chapters": {"yesterday_limit_pool": [{"code": "000001", "streak": 2}]}}
+    assert _yesterday_lb_days(report) == {"600001": 4, "000001": 2}
+    assert _prior_streak("600001", _yesterday_lb_days(report)) == 4
+    assert _prior_streak("600002", _yesterday_lb_days(report)) is None
+
+
 def test_three_stages_write_reports_and_explicit_missing_references(tmp_path):
     references = tmp_path / "references"
     output = tmp_path / "reports"

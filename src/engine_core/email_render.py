@@ -36,9 +36,11 @@ FIELD_LABELS = {
     "close_ge_5": "收盘涨幅≥5%", "sealed_up": "涨停价数量", "turned_negative": "收盘转负数量",
     "close_ge_5_rate": "收盘涨幅≥5%占比", "sealed_up_rate": "涨停价占比",
     "turned_negative_rate": "收盘转负占比", "n": "样本数", "matched": "匹配数",
-    "close_limit_up_count": "收盘涨停家数", "close_limit_down_count": "收盘跌停家数",
+    "close_limit_up_count": "收盘涨停价代理家数", "close_limit_down_count": "收盘跌停价代理家数",
     "up_count": "上涨家数", "down_count": "下跌家数", "flat_count": "平盘家数",
     "limit_pct": "涨跌停幅度", "auction_price_status": "竞价价格类型",
+    "prior_range_quintile": "20日区间位置",
+    "p0945_cumulative_amount_yuan": "0945累计额",
     "in_yest_pool": "昨日涨停池", "prior_limit_streak": "此前连板数",
     "prior_down_streak": "此前连跌数", "visibility": "出现阶段", "visibility_half_limit": "0.5L可见时点",
     "rest_bid_yuan": "未匹配买额", "rest_ask_yuan": "未匹配卖额",
@@ -80,6 +82,30 @@ FIELD_LABELS = {
     "board_height": "昨日板数", "current_n": "今日收盘涨停价数", "previous_n": "昨日家数",
 }
 
+# Explicit number semantics for report fields. Suffix classes below are only
+# used for the documented semantic suffixes, never arbitrary key substrings.
+FIELD_FORMATS = {
+    "ratio": frozenset({"amount_64d_percentile", "close_ge_5_rate", "sealed_up_rate",
+                        "turned_negative_rate", "promotion_rate", "auction_amount_share",
+                        "auction_amount_share_pct", "auction_amount_share_ratio", "auction_pct_coverage",
+                        "anchor_coverage", "source_coverage", "coverage_rate",
+                        "retention_rate", "success_rate", "up_share", "down_share", "rate",
+                        "share", "regime_history_percentile", "top100_concentration_pct",
+                        "p0925_range_position20_pct"}),
+    "pp": frozenset({"relative_to_plate_pp", "delta_pp", "change_pp", "close_vs_p0945_pp",
+                     "move_0924_0925_pp"}),
+    "multiple": frozenset({"amount_vs_prev_common", "amount_vs_64d_median_common",
+                           "amount_vs_prev", "amount_vs_64d_median", "vs_amount", "vs_previous_day_final",
+                           "vs_amount_baseline", "amount_weighted_multiple"}),
+    "count": frozenset({"count", "n", "matched", "members", "up_count", "down_count", "flat_count",
+                        "close_limit_up_count", "close_limit_down_count", "final_count", "indicative_count",
+                        "amount_common_pool_n", "amount_64d_common_pool_n", "amount_coverage", "close_coverage",
+                        "auction_pct_coverage", "close_pct_coverage", "p0932_coverage", "p0945_coverage"}),
+    "amount": frozenset({"amount_yuan", "auction_amount_yuan", "p0945_cumulative_amount_yuan",
+                         "amount_64d_median_yuan", "auction_amount_top10"}),
+    "percent": frozenset({"p0925_range_position20_pct"}),
+}
+
 
 def _esc(value: Any) -> str:
     return html.escape(str(value), quote=True)
@@ -108,24 +134,26 @@ def _num(value: Any, key: str = "") -> str:
         return _esc(value)
     key_l = key.lower()
     x = float(value)
-    if "share" in key_l and not any(token in key_l for token in ("_share_pct", "_share_bp")) and abs(x) <= 1:
-        return f"{x * 10_000:.1f} bp"
-    if "yuan" in key_l or "amount" in key_l or "额" in key:
+    if key_l in FIELD_FORMATS["percent"]:
+        return f"{x:.1f}%"
+    if key_l in FIELD_FORMATS["count"]:
+        return f"{int(x):,}" if x.is_integer() else f"{x:,.2f}"
+    if key_l in FIELD_FORMATS["ratio"] or key_l.endswith(("_rate", "_share", "_coverage", "_percentile", "_ratio")):
+        return f"{x * 100:.1f}%"
+    if key_l in FIELD_FORMATS["amount"] or key_l.endswith(("_amount_yuan", "_amt_yuan")) or key == "竞价额":
         if abs(x) >= 100_000_000:
             return f"{x / 100_000_000:,.2f} 亿"
         if abs(x) >= 10_000:
             return f"{x / 10_000:,.2f} 万"
-    if key_l.endswith("_bp") or "bp" in key_l:
+    if key_l.endswith("_bp"):
         return f"{x:+.1f} bp"
-    if "percentile" in key_l and 0 <= x <= 1:
-        return f"{x * 100:.1f}%"
     if key_l == "delta_over_limit":
         return f"{x:+.2f}× 板幅"
-    if key_l.endswith("_pp") or "_delta" in key_l:
+    if key_l in FIELD_FORMATS["pp"] or key_l.endswith("_pp"):
         return f"{x:+.2f} pp"
-    if any(k in key_l for k in ("pct", "change", "median", "rate", "share", "mean")) or "涨幅" in key:
+    if key_l.endswith("_pct") or key_l in {"close_median", "p0945_median", "auction_median", "amount_weighted_pct_change", "pct", "pct_change"}:
         return f"{x:+.2f}%" if abs(x) < 1000 else f"{x:,.2f}"
-    if key_l.startswith("vs_") or "倍数" in key:
+    if key_l in FIELD_FORMATS["multiple"] or key_l.startswith("vs_"):
         return f"{x:.2f}×"
     return f"{x:,.2f}" if not x.is_integer() else f"{int(x):,}"
 
@@ -207,14 +235,16 @@ def _metrics(report: Mapping[str, Any], stage: str) -> list[tuple[str, Any, str]
     if stage == "close" or "market" in report:
         market = report.get("market") if isinstance(report.get("market"), dict) else {}
         candidates = [("全天成交额", market.get("amount_yuan"), "amount_yuan"),
-                      ("对前日倍数", market.get("amount_vs_prev"), "vs_amount"),
-                      ("对64日中位数", market.get("amount_vs_64d_median"), "vs_amount"),
+                      (f"对前日倍数（固定共同池 {_plain_value(market.get('amount_common_pool_n'))} 只）", market.get("amount_vs_prev_common"), "vs_amount"),
+                      (f"对64日中位数（固定共同池 {_plain_value(market.get('amount_64d_common_pool_n'))} 只）", market.get("amount_vs_64d_median_common"), "vs_amount"),
                       ("64日成交额分位", market.get("amount_64d_percentile"), "rate"),
                       ("收盘中位涨幅", market.get("close_median"), "close_median"),
                       ("上涨家数", market.get("up_count"), "count"),
                       ("下跌家数", market.get("down_count"), "count"),
-                      ("涨停 / 跌停", f"{_plain_value(market.get('close_limit_up_count'))} / {_plain_value(market.get('close_limit_down_count'))}", "")]
+                      ("收盘涨停价代理 / 跌停价代理", f"{_plain_value(market.get('close_limit_up_count'))} / {_plain_value(market.get('close_limit_down_count'))}", "")]
         quality = report.get("data_quality") if isinstance(report.get("data_quality"), Mapping) else {}
+        if market.get("amount_vs_prev") is not None or market.get("amount_vs_64d_median") is not None:
+            candidates.append(("全市场口径注脚", f"较前日 {_num(market.get('amount_vs_prev'), 'vs_amount')}；64日中位 {_num(market.get('amount_vs_64d_median'), 'vs_amount')}", ""))
         coverage = {"日线覆盖": f"{_plain_value(quality.get('close_pct_coverage'))}/{_plain_value(quality.get('included_stock_count'))}",
                     "0925覆盖": quality.get("auction_pct_coverage"), "0932覆盖": quality.get("p0932_coverage"),
                     "0945覆盖": quality.get("p0945_coverage"),
@@ -226,6 +256,8 @@ def _metrics(report: Mapping[str, Any], stage: str) -> list[tuple[str, Any, str]
         populated = {key: value for key, value in coverage.items() if value is not None}
         if populated:
             candidates.append(("数据覆盖", "；".join(f"{key} {value}" for key, value in populated.items()), ""))
+        if quality.get("final_count") is not None or quality.get("indicative_count") is not None:
+            candidates.append(("价格可得性", f"收盘对账价覆盖 {_plain_value(quality.get('close_pct_coverage'))} 只；FINAL {_plain_value(quality.get('final_count'))} 只；INDICATIVE {_plain_value(quality.get('indicative_count'))} 只；首次达到时刻 UNKNOWN", ""))
     else:
         terminal = report.get("auction_terminal_0925") if isinstance(report.get("auction_terminal_0925"), dict) else {}
         if not terminal and isinstance(report.get("handoff"), dict):
@@ -274,7 +306,7 @@ def _chapters(report: Mapping[str, Any]) -> list[tuple[str, list[dict[str, Any]]
             out.append(("大盘竞价/开盘量价", [summary]))
         top_plates = market_volume.get("top_plates_by_share")
         if isinstance(top_plates, list) and top_plates:
-            out.append(("板块竞价额份额与涨幅", top_plates[:10]))
+            out.append(("板块竞价额份额与涨幅（成员重叠，不可相加）", top_plates[:10]))
         top_stocks = market_volume.get("top_stocks_by_amount")
         if isinstance(top_stocks, list) and top_stocks:
             out.append(("个股竞价额前列", top_stocks[:10]))
@@ -309,7 +341,10 @@ def _chapters(report: Mapping[str, Any]) -> list[tuple[str, list[dict[str, Any]]
             for key in ("close_top10", "close_bottom10", "auction_amount_top10"):
                 val = plates.get(key)
                 if isinstance(val, list) and val:
-                    out.append((FIELD_LABELS[key], val[:10]))
+                    title = FIELD_LABELS[key]
+                    if key == "auction_amount_top10":
+                        title += "（成员重叠，不可相加）"
+                    out.append((title, val[:10]))
         missed = report.get("missed_opportunities")
         if isinstance(missed, Mapping) and isinstance(missed.get("plate_counts"), Mapping):
             rows = [{"name": name, "count": count} for name, count in sorted(
@@ -319,7 +354,7 @@ def _chapters(report: Mapping[str, Any]) -> list[tuple[str, list[dict[str, Any]]
         scorecard = report.get("emerging_scorecard")
         if isinstance(scorecard, Mapping):
             rows = [{"cohort": label, **scorecard[key]} for key, label in (
-                ("emerging", "严格新冒头"), ("p0945_top_k", "0945涨幅前K"), ("amount_top_k", "竞价额前K"))
+                ("emerging", "严格新冒头"), ("p0945_top_k", "0945涨幅前K"), ("amount_top_k", "0945累计额前K"))
                     if isinstance(scorecard.get(key), Mapping)]
             if rows:
                 out.append(("新冒头与同口径对照", rows))
@@ -460,7 +495,7 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
                     keys.append(key)
         cols = [key for key in keys if any(row.get(key) is not None for row in rows)]
         if chapter_title in {"大肉", "大面"}:
-            preferred = ("symbol", "name", "main_plate", "limit_pct", "auction_pct", "p0932_pct",
+            preferred = ("symbol", "name", "main_plate", "limit_pct", "auction_pct", "auction_price_status", "p0932_pct",
                          "p0945_pct", "close_pct", "high_pct", "low_pct", "delta_over_limit",
                          "auction_amount_yuan", "auction_amount_bp", "in_yest_pool", "lb_days",
                          "visibility_half_limit")
@@ -494,11 +529,20 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
                 val = row.get(share_key)
                 if isinstance(val, (int, float)):
                     divisor = 100 if share_key.endswith("_bp") else 1
-                    scale = 10_000 if "share" in share_key and abs(float(val)) <= 1 else 1
+                    scale = 100 if "share" in share_key and abs(float(val)) <= 1 else 1
                     bar_width = max(0, min(100, float(val) * scale / divisor))
                     bars.append(f'<tr><td style="padding:3px 6px;font-size:11px">{_esc(row.get("name", row.get("symbol", "—")))}</td><td style="width:72%;padding:3px"><table role="presentation" width="100%"><tr><td style="height:7px;background:#c83b3b;width:{bar_width:.1f}%;font-size:0">&nbsp;</td><td style="height:7px;background:#edf0f3;font-size:0">&nbsp;</td></tr></table></td><td style="font-size:11px;padding:3px">{_num(val,share_key)}</td></tr>')
         bar_html = f'<table role="presentation" width="100%" style="margin-top:8px">{"".join(bars)}</table>' if bars else ""
-        sections.append(f'<h2 style="font-size:16px;color:#23364d;margin:22px 0 8px">{_esc(chapter_title)}</h2><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse"><thead><tr>{header}</tr></thead><tbody>{"".join(body)}</tbody></table>{bar_html}')
+        plate_appendix = ""
+        if chapter_title.startswith("竞价额前十"):
+            plate_data = report.get("plates") if isinstance(report.get("plates"), Mapping) else {}
+            deferred = plate_data.get("deferred_generic_event")
+            if isinstance(deferred, list) and deferred:
+                items = "".join(f"<li>{_esc(row.get('name'))}（{_esc(row.get('kind'))}，{_plain_value(row.get('members'), 'members')}只成员）</li>"
+                                for row in deferred if isinstance(row, Mapping))
+                if items:
+                    plate_appendix = f"<details><summary>泛化/事件板块附录（折叠，不参与主榜）</summary><ul>{items}</ul></details>"
+        sections.append(f'<h2 style="font-size:16px;color:#23364d;margin:22px 0 8px">{_esc(chapter_title)}</h2><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse"><thead><tr>{header}</tr></thead><tbody>{"".join(body)}</tbody></table>{bar_html}{plate_appendix}')
         plain_sections.append(chapter_title + "\n" + "\n".join(" | ".join(f"{_label(k)}：{_plain_value(r.get(k),k)}" for k in cols) for r in rows))
     close_extra = ""
     if isinstance(report.get("email_editorial"), Mapping):
