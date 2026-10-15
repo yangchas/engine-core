@@ -113,6 +113,32 @@ def test_generic_and_event_plates_are_excluded_from_top_and_evolution():
     assert report["plates"]["deferred_generic_event"][0]["name"] == "业绩增长"
 
 
+def test_evolution_uses_qualified_main_plate_filters_unbuyable_peers_and_labels_range():
+    rows = [
+        {"symbol": "600001", "name": "A", "delta_pp": 8, "close_pct": 8,
+         "p0925_pct": 0, "p0932_pct": 1, "p0945_pct": 2, "auction_amount_yuan": 1,
+         "plates": ["物流", "芯片"], "p0925_range_position20_pct": 148},
+        {"symbol": "600002", "name": "B", "p0925_pct": 1, "p0932_pct": 1,
+         "p0945_pct": 1, "close_pct": 2, "auction_amount_yuan": 100,
+         "plates": ["物流", "芯片"], "p0925_range_position20_pct": 148},
+        {"symbol": "600003", "name": "C", "p0925_pct": 9.9, "limit_pct": 10,
+         "p0932_pct": 9, "p0945_pct": 8, "close_pct": 8, "auction_amount_yuan": 999,
+         "plates": ["芯片"]},
+        {"symbol": "600004", "name": "D", "p0925_pct": 1, "p0932_pct": 1,
+         "p0945_pct": 1, "close_pct": 2, "auction_amount_yuan": 50,
+         "plates": ["芯片"], "p0925_range_position20_pct": -14},
+    ]
+    plate_meta = [{"name": "物流", "code": "801019", "kind": "BROAD", "members": 297},
+                  {"name": "芯片", "code": "801001", "kind": "THEME", "members": 40}]
+    report = derive_close_review(rows, trade_date="2026-01-01", plates=plate_meta)
+    a = next(r for r in report["plate_evolution"] if r["symbol"] == "600001")
+    assert a["plate"] == "芯片"
+    assert "600002" in a["peer_top3"] and "600003" not in a["peer_top3"]
+    assert "高于前20日区间" in a["peer_top3"]
+    assert "低于前20日区间" in a["peer_top3"]
+    assert "148%" not in a["peer_top3"] and "-14%" not in a["peer_top3"]
+
+
 def test_market_amount_ratios_share_one_fixed_common_pool():
     from engine_core.close_review import _fixed_common_amounts
 
@@ -144,3 +170,20 @@ def test_close_markdown_labels_limit_counts_as_price_proxies_and_discloses_overl
     markdown = render_close_markdown(data)
     assert "涨停价代理/跌停价代理 1/2" in markdown
     assert "竞价额份额Top10（成员重叠，不可相加）" in markdown
+
+
+def test_close_section_attachment_writes_a_to_b_and_ladder_into_report():
+    from engine_core.close_review import attach_close_sections
+
+    report = {"trade_date": "2026-10-15", "stocks": [
+        {"symbol": "600001", "name": "昨日高标", "lb_days": 2, "prior_limit_streak": 0, "main_plate": "芯片",
+         "auction_amount_yuan": 100},
+        {"symbol": "600002", "name": "同伴", "main_plate": "芯片", "p0925_pct": 1,
+         "auction_amount_yuan": 50},
+    ]}
+    attach_close_sections(report)
+    assert len(report["a_to_b"]) == 1
+    assert report["a_to_b"][0]["a_symbol"] == "600001"
+    assert report["ladder_section"]["rows"][0]["symbol"] == "600001"
+    assert report["ladder_section"]["rows"][0]["prior_streak"] == 2
+    assert report["ladder_section"]["rows"][0]["prior_streak_status"] == "字段冲突"

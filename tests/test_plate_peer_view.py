@@ -51,6 +51,53 @@ def test_cluster_deduplicates_a_coverage_and_tracks_peer_types():
     assert result[0]["a_unbuyable_with_peers"] is True
 
 
+def test_peer_view_uses_bounded_theme_primary_and_visible_buyable_peers():
+    from engine_core.plate_peer_view import build_plate_peer_view
+
+    symbols = ["600001", "600002", "600003", "600004", "600005", "600006",
+               "600007", "600008", "600009", "600010"]
+    stocks = [{"symbol": symbol, "name": symbol} for symbol in symbols]
+    auctions = [
+        {"trade_date": "2026-10-15", "auction_tag": "0925", "symbol": "600001",
+         "chg_bp": 1000, "match_amt_yuan": 100, "limit_state": 1},
+        {"trade_date": "2026-10-15", "auction_tag": "0925", "symbol": "600002",
+         "chg_bp": 100, "match_amt_yuan": 50, "limit_state": 0},
+        {"trade_date": "2026-10-15", "auction_tag": "0925", "symbol": "600003",
+         "chg_bp": 100, "match_amt_yuan": 50, "limit_state": 0},
+        {"trade_date": "2026-10-15", "auction_tag": "0925", "symbol": "600004",
+         "chg_bp": 100, "match_amt_yuan": 999, "limit_state": 0},
+        {"trade_date": "2026-10-15", "auction_tag": "0925", "symbol": "600005",
+         "chg_bp": None, "match_amt_yuan": 999, "limit_state": 0},
+        {"trade_date": "2026-10-15", "auction_tag": "0925", "symbol": "600006",
+         "chg_bp": 1000, "match_amt_yuan": 999, "limit_state": 1},
+        *[{"trade_date": "2026-10-15", "auction_tag": "0925", "symbol": symbol,
+           "chg_bp": 100, "match_amt_yuan": 25, "limit_state": 0}
+          for symbol in ("600007", "600008", "600009", "600010")],
+    ]
+    memberships = {
+        "theme": set(symbols),
+        "second": {"600001", "600002", "600007", "600008", "600009", "600010"},
+        "broad": {"600001", "600004"},
+    }
+    view = build_plate_peer_view(trade_date="2026-10-15", stocks=stocks, checkpoints=[],
+        auctions=auctions, history=[], memberships=memberships,
+        plate_names={"theme": "产业主题", "second": "细分行业", "broad": "物流"},
+        generic_names=set(), plate_metadata={
+            "theme": {"class": "THEME", "size": 20},
+            "second": {"class": "NICHE", "size": 10},
+            "broad": {"class": "BROAD", "size": 297},
+        }, pool_symbols={"600004"})
+    assert [row["plate"] for row in view["plates"]] == ["细分行业"]
+    peers = view["plates"][0]["peers"]
+    peer_symbols = [row["symbol"] for row in peers]
+    assert peer_symbols[0] == "600002"
+    assert set(peer_symbols) == {"600002", "600007", "600008", "600009", "600010"}
+    assert "600004" not in peer_symbols  # yesterday's limit pool
+    assert "600005" not in peer_symbols  # no visible auction price
+    assert "600006" not in peer_symbols  # locked at the limit
+    assert peers[0]["common_plate_count_by_a"]["600001"] == 2
+
+
 def test_markdown_filters_a_truncates_plates_and_formats_values():
     from engine_core.plate_peer_view import render_plate_peer_markdown
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any, Iterable, Mapping
 
+from .plate_kind import classify_plate_kind
 
 TYPE_THRESHOLDS = {
     "LOW_POS_MAX": 0.30,
@@ -171,18 +172,36 @@ def build_plate_peer_view(*, trade_date: str, stocks: list[dict[str, Any]],
                           checkpoints: list[dict[str, Any]], auctions: list[dict[str, Any]],
                           history: list[dict[str, Any]], memberships: Mapping[str, set[str]],
                           plate_names: Mapping[str, str], generic_names: set[str],
+                          plate_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+                          min_plate_size: int = 8, max_plate_size: int = 150,
                           baseline: Mapping[str, Any] | None = None,
                           pool_symbols: set[str] | None = None,
                           input_hashes: Mapping[str, str] | None = None) -> dict[str, Any]:
     names = {str(row.get("symbol")): str(row.get("name") or row.get("symbol")) for row in stocks}
     position_index = _history_index(history)
-    stock_plates: dict[str, list[str]] = defaultdict(list)
+    plate_metadata = plate_metadata or {}
+    stock_candidates: dict[str, list[str]] = defaultdict(list)
+    plate_sizes: dict[str, int] = {}
     for plate, symbols in memberships.items():
         pname = plate_names.get(plate, plate)
-        if pname in generic_names or len(symbols) < 5:
+        meta = plate_metadata.get(plate, plate_metadata.get(pname, {}))
+        kind = str(meta.get("class", meta.get("kind", classify_plate_kind(pname)))).upper()
+        has_registered_size = meta.get("size", meta.get("members")) is not None
+        try:
+            size = int(meta.get("size", meta.get("members", len(symbols))))
+        except (TypeError, ValueError):
+            size = len(symbols)
+        if (pname in generic_names or kind not in {"THEME", "NICHE"}
+                or (has_registered_size and not min_plate_size <= size <= max_plate_size)):
             continue
+        plate_sizes[pname] = size
         for symbol in symbols:
-            stock_plates[symbol].append(pname)
+            stock_candidates[str(symbol).zfill(6)].append(pname)
+    stock_main = {symbol: min(plates, key=lambda name: (plate_sizes[name], name))
+                  for symbol, plates in stock_candidates.items() if plates}
+    stock_plates: dict[str, list[str]] = defaultdict(list)
+    for symbol, pname in stock_main.items():
+        stock_plates[pname].append(symbol)
     auction: dict[str, dict[str, Any]] = {}
     for row in auctions:
         if str(row.get("trade_date", "")) != trade_date or str(row.get("auction_tag")) != "0925":
@@ -215,10 +234,9 @@ def build_plate_peer_view(*, trade_date: str, stocks: list[dict[str, Any]],
     day_context = _daily_context(history, trade_date)
     a_symbols = {s for s, n in streaks.items() if n >= 2}
     for symbol, row in auction.items():
-        pct = market_pcts.get(symbol)
         one_word = (_number(row.get("rest_ask_amt_yuan")) == 0
                     and (_number(row.get("rest_bid_amt_yuan")) or 0) > 0)
-        if _number(row.get("limit_state")) == 1 or one_word or (pct is not None and pct >= .05):
+        if _number(row.get("limit_state")) == 1 or one_word:
             a_symbols.add(symbol)
     checkpoint_by: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     for row in checkpoints:
@@ -227,9 +245,8 @@ def build_plate_peer_view(*, trade_date: str, stocks: list[dict[str, Any]],
     # Every plate statistic uses all known 0925 members; peers exclude A and sealed names.
     plate_rows = []
     observations = []
-    for plate, symbols in sorted(memberships.items()):
-        pname = plate_names.get(plate, plate)
-        if pname in generic_names or len(symbols) < 5:
+    for pname, symbols in sorted(stock_plates.items()):
+        if pname in generic_names or len(symbols) < 1:
             continue
         covered = [s for s in symbols if market_pcts.get(s) is not None]
         if len(covered) < 5:
@@ -245,7 +262,9 @@ def build_plate_peer_view(*, trade_date: str, stocks: list[dict[str, Any]],
                      "amount_sum_yuan": amount_sum, "market_amount_share": amount_sum / market_amount if amount_sum is not None and market_amount else None,
                      "limit_up_count": limitups, "yest_limit_streak_count": yest,
                      "a_symbols": plate_a, "peers": []}
-        peer_symbols = sorted(s for s in symbols if s not in a_symbols and _number(auction.get(s, {}).get("limit_state")) not in (-1, 1))
+        peer_symbols = sorted(s for s in symbols if s not in a_symbols
+                              and s not in (pool_symbols or set())
+                              and _number(auction.get(s, {}).get("limit_state")) not in (-1, 1))
         ranked = sorted((s for s in symbols if _number(auction.get(s, {}).get("match_amt_yuan")) is not None),
                         key=lambda s: (-float(auction[s]["match_amt_yuan"]), s))
         rank_by = {symbol: rank for rank, symbol in enumerate(ranked, 1)}
@@ -253,6 +272,13 @@ def build_plate_peer_view(*, trade_date: str, stocks: list[dict[str, Any]],
         for symbol in peer_symbols:
             row = auction.get(symbol, {})
             pct = market_pcts.get(symbol)
+            amount_value = _number(row.get("match_amt_yuan"))
+            limit_pct = _number(row.get("limit_pct"))
+            if limit_pct is None:
+                limit_pct = 20.0 if symbol.startswith(("300", "301", "688", "689")) else 10.0
+            if (pct is None or amount_value is None or amount_value <= 0
+                    or (limit_pct > 0 and abs(pct * 100) >= limit_pct - 0.2)):
+                continue
             position = _range_position_indexed(position_index, symbol, trade_date)
             amount_rank = rank_by.get(symbol)
             flags = classify_peer(pct=pct, plate_mean=mean_pct, amount_rank=amount_rank,
@@ -268,7 +294,9 @@ def build_plate_peer_view(*, trade_date: str, stocks: list[dict[str, Any]],
                 stages[tag] = {"pct": (px / pre - 1) if px is not None and pre else None,
                                "change_vs_0925_pp": ((px / pre - 1 - pct) * 100
                                                      if px is not None and pre and pct is not None else None)}
-            amt = _number(row.get("match_amt_yuan"))
+            amt = amount_value
+            common_by_a = {a: len(set(stock_candidates.get(symbol, ()))
+                                  & set(stock_candidates.get(a, ()))) for a in plate_a}
             peer = {"symbol": symbol, "name": names.get(symbol, symbol), "streak": streaks.get(symbol, 0),
                     "range_position_20d": position, "auction_pct": pct,
                     "relative_plate_pp": (pct - mean_pct) * 100 if pct is not None and mean_pct is not None else None,
@@ -277,9 +305,15 @@ def build_plate_peer_view(*, trade_date: str, stocks: list[dict[str, Any]],
                     "rest_bid_yuan": _number(row.get("rest_bid_amt_yuan")),
                     "rest_ask_yuan": _number(row.get("rest_ask_amt_yuan")),
                     "price_finality": row.get("finality") or row.get("price_source") or "UNKNOWN",
-                    "opening": stages, "other_plates": sorted(set(stock_plates.get(symbol, ())) - {pname}),
+                    "opening": stages, "other_plates": sorted(set(stock_candidates.get(symbol, ())) - {pname}),
                     "type_flags": flags}
+            peer["common_plate_count"] = max(common_by_a.values(), default=0)
+            peer["common_plate_count_by_a"] = common_by_a
             plate_row["peers"].append(peer)
+        plate_row["peers"].sort(key=lambda peer: (-float(peer.get("match_amount_yuan") or 0),
+                                                   -int(peer.get("common_plate_count") or 0),
+                                                   peer["symbol"]))
+        plate_row["peers"] = plate_row["peers"][:5]
         for symbol in plate_a:
             arow = auction.get(symbol, {})
             pct = market_pcts.get(symbol)
@@ -310,7 +344,7 @@ def build_plate_peer_view(*, trade_date: str, stocks: list[dict[str, Any]],
                        "auction_pct": pct, "match_amount_yuan": _number(row.get("match_amt_yuan")),
                        "rest_bid_yuan": bid, "rest_ask_yuan": ask, "sealed": sealed,
                        "one_word": one_word, "buyable": not sealed and not one_word,
-                       "plates": sorted(stock_plates.get(symbol, ())),
+                       "plates": [stock_main[symbol]] if symbol in stock_main else [],
                        "price_finality": row.get("finality") or row.get("price_source") or "UNKNOWN"})
     table = [
         {"day_type": "修复/强势", "rule": "基线", "observations": 264, "peer_close_mean_pct": 1.31, "relative_market_pp": 0.56, "close_ge_5_pct": 10.4, "large_loss_pct": 0.4},

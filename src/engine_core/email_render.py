@@ -7,6 +7,8 @@ import math
 import re
 from typing import Any, Mapping
 
+from .email_board import render_email_board
+
 RENDER_VERSION = "core-mail-v3"
 MAX_EMAIL_HTML_BYTES = 120 * 1024
 _RED = "#c83b3b"
@@ -48,7 +50,7 @@ FIELD_LABELS = {
     "rel_to_strongest_plate": "相对最强板块涨幅", "move_0924_0925_pp": "09:24至09:25变化",
     "auction_amount_top10": "竞价额前十", "close_top10": "收盘强势板块前十",
     "close_bottom10": "收盘弱势板块前十", "yesterday_highboards": "昨日高标",
-    "sealed_up": "涨停", "sealed_down": "跌停", "emerging": "新冒头",
+    "sealed_up": "收盘价=涨停价(价格代理)", "sealed_down": "收盘价=跌停价(价格代理)", "emerging": "新冒头",
     "plate_changes": "板块变化", "look_a_do_b": "看A做B", "watchlist": "观察名单",
     "yesterday_limit_pool": "昨日涨停池", "market_price_volume": "市场量价",
     "plate_linkage": "板块联动", "plate_enrichment": "板块补充", "behavior_tags": "走势状态",
@@ -73,6 +75,8 @@ FIELD_LABELS = {
     "p0925_mean": "板块竞价均值", "p0932_mean": "板块09:32均值", "p0945_mean": "板块09:45均值",
     "relative_to_plate_pp": "个股相对板块", "position": "板块内位置", "peer_top3": "板块同伴Top3",
     "amount_64d_median_yuan": "64日成交额中位数", "amount_vs_64d_median": "对64日中位倍数",
+    "amount_vs_64d_median_common": "全天成交额/64日中位数倍数",
+    "amount_64d_common_pool_n": "固定共同池标的数",
     "amount_64d_percentile": "64日全市场成交额分位", "amount_64d_percentile_common": "64日固定共同池成交额分位", "regime_label": "描述性日型",
     "regime_history_sample_days": "历史样本日数", "same_regime_days": "同日型样本数",
     "previous_space_height": "昨日最高板", "max_price_streak": "今日最高板高",
@@ -95,6 +99,8 @@ FIELD_LABELS = {
     "p0945_mean": "09:45平均涨幅",
     "median_yi": "64日竞价额中位数(亿)", "multiple": "对64日中位数倍数",
     "percentile": "64日历史分位", "pool_label": "统计池",
+    "auction_baseline_multiple": "竞价额对64日基线倍数",
+    "auction_baseline_percentile": "竞价额历史分位",
 }
 
 # Explicit number semantics for report fields. Suffix classes below are only
@@ -109,7 +115,7 @@ FIELD_FORMATS = {
                         "p0925_range_position20_pct"}),
     "pp": frozenset({"relative_to_plate_pp", "delta_pp", "change_pp", "close_vs_p0945_pp",
                      "move_0924_0925_pp"}),
-    "multiple": frozenset({"amount_vs_prev_common", "amount_vs_64d_median_common",
+    "multiple": frozenset({"auction_baseline_multiple", "amount_vs_prev_common", "amount_vs_64d_median_common",
                            "amount_vs_prev", "amount_vs_64d_median", "vs_amount", "vs_previous_day_final",
                            "vs_amount_baseline", "amount_weighted_multiple"}),
     "count": frozenset({"count", "n", "matched", "members", "up_count", "down_count", "flat_count",
@@ -151,6 +157,8 @@ def _num(value: Any, key: str = "") -> str:
     x = float(value)
     if key_l in FIELD_FORMATS["percent"]:
         return f"{x:.1f}%"
+    if key_l == "auction_baseline_percentile":
+        return f"{x:.2f}%"
     if key_l in FIELD_FORMATS["count"]:
         return f"{int(x):,}" if x.is_integer() else f"{x:,.2f}"
     if key_l in FIELD_FORMATS["ratio"] or key_l.endswith(("_rate", "_share", "_coverage", "_percentile", "_ratio")):
@@ -379,14 +387,29 @@ def _chapters(report: Mapping[str, Any]) -> list[tuple[str, list[dict[str, Any]]
                     1 for row in stock_rows if isinstance(row, Mapping)
                     and isinstance(row.get(column), (int, float)))
             out.append(("市场路径（各时点有值样本均值）", [path_row]))
-        metric_keys = ("auction_amount_yuan", "amount_64d_median_yuan", "amount_vs_64d_median",
-                       "amount_64d_percentile_common", "amount_64d_common_pool_days", "amount_64d_sample_days", "auction_regime",
+        metric_keys = ("amount_64d_median_yuan", "amount_vs_64d_median_common",
+                       "amount_64d_percentile_common", "amount_64d_common_pool_n",
+                       "amount_64d_common_pool_days", "amount_64d_sample_days", "auction_regime",
                        "auction_median", "p0945_median", "close_median", "up_count", "down_count",
                        "close_limit_up_count", "close_limit_down_count")
         metric_row = {key: market[key] for key in metric_keys if market.get(key) is not None}
         if metric_row:
-            metric_row["pool"] = "竞价时点可见的固定共同股票池；历史分位样本日数见列，成员重叠不可相加"
-            out.append(("市场量价与历史位置", [metric_row]))
+            pool_n = market.get("amount_64d_common_pool_n")
+            metric_row["pool"] = (f"全天成交额；当日及64日历史共同池（{int(pool_n):,}只）"
+                                   if isinstance(pool_n, (int, float)) else
+                                   "全天成交额；当日及64日历史共同池（标的数缺失）")
+            out.append(("全天成交额历史基线（共同池）", [metric_row]))
+        comparison = market.get("auction_baseline_comparison")
+        if isinstance(comparison, Mapping):
+            auction_row = {"auction_amount_yuan": market.get("auction_amount_yuan"),
+                           "median_yi": comparison.get("median_yi"),
+                           "auction_baseline_multiple": comparison.get("multiple"),
+                           "auction_baseline_percentile": comparison.get("percentile"),
+                           "sample_days": comparison.get("sample_days"),
+                           "pool_label": "各日竞价额总和；阈值/覆盖按 auction_amount_by_day.csv"}
+            out.append(("竞价额历史基线（竞价池）", [auction_row]))
+        elif market.get("auction_baseline_status") == "MISSING":
+            out.append(("竞价额历史基线（竞价池）", [{"status": "缺口：未读取竞价额自身历史基线"}]))
         stocks = report.get("stocks")
         if isinstance(stocks, list):
             ranked = sorted((row for row in stocks if isinstance(row, Mapping)
@@ -415,7 +438,7 @@ def _chapters(report: Mapping[str, Any]) -> list[tuple[str, list[dict[str, Any]]
                                     for row in val[:4] if isinstance(row, Mapping))
         if extreme_rows:
             out.append(("极值与首次观测", extreme_rows))
-        for key, title in (("plate_evolution", "个股—板块演化"), ("ladder_summary", "连板梯队")):
+        for key, title in (("plate_evolution", "个股—板块演化（事后选出，非早盘已知B候选）"), ("ladder_summary", "连板梯队")):
             val = report.get(key)
             if isinstance(val, list) and val and isinstance(val[0], dict):
                 out.append((title, val[:8] if key == "plate_evolution" else val[:12]))
@@ -505,7 +528,9 @@ def _chapters(report: Mapping[str, Any]) -> list[tuple[str, list[dict[str, Any]]
         if ab_rows:
             total_candidates = len(ab_rows)
             ab_rows = ab_rows[:5]
-            out.append((f"看A做B候选（前5项/共{total_candidates}项）", ab_rows))
+            out.append((f"看A做B候选（早盘可见定义；前5项/共{total_candidates}项）", ab_rows))
+        else:
+            out.append(("看A做B候选（早盘可见定义）", [{"status": report.get("a_to_b_status") or "无A或未生成"}]))
     ladder = report.get("ladder_section")
     if isinstance(ladder, Mapping):
         summary = ladder.get("summary") if isinstance(ladder.get("summary"), list) else []
@@ -528,14 +553,16 @@ def _chapters(report: Mapping[str, Any]) -> list[tuple[str, list[dict[str, Any]]
         for row in ladder.get("rows", []):
             if isinstance(row, Mapping):
                 ladder_rows.append(dict(row))
-        out.append(("连板梯队与路径", ladder_rows))
-    priority = {"市场量价与历史位置": 0, "大盘竞价/开盘量价": 0, "数据质量": 1,
+        out.append(("连板梯队与路径", ladder_rows or [{"status": "无可展示梯队行"}]))
+    priority = {"市场量价与历史位置": 0, "全天成交额历史基线（共同池）": 0,
+                "竞价额历史基线（竞价池）": 0, "大盘竞价/开盘量价": 0, "数据质量": 1,
                 "市场路径": 2, "市场路径（各时点有值样本均值）": 2,
                 "连板梯队与路径": 3, "看A做B候选（前5项）": 4,
                 "竞价额前列个股": 3, "个股竞价额前列": 3, "个股竞价额前二十（含前十）": 5,
                 "个股竞价额前二十（前十为同表前十行）": 5,
                 "板块竞价额占比": 6, "板块竞价额份额与涨幅（成员重叠，不可相加）": 6,
-                "竞价额前十（成员重叠，不可相加）": 6, "个股—板块演化": 7,
+                "竞价额前十（成员重叠，不可相加）": 6,
+                "个股—板块演化（事后选出，非早盘已知B候选）": 7,
                 "收盘板块相对涨幅（强弱合并）": 7, "极值与首次观测": 8,
                 "昨日机会回看": 9, "收盘核心对照": 10}
     return sorted(out, key=lambda item: (priority.get(item[0],
@@ -580,6 +607,11 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
     report = json.loads(report_json) if isinstance(report_json, (str, bytes)) else report_json
     if not isinstance(report, Mapping):
         raise ValueError("report JSON must be an object")
+    ladder = report.get("ladder_section")
+    if (isinstance(report.get("stocks"), list)
+            or (isinstance(ladder, Mapping) and bool(ladder.get("rows")))
+            or report.get("email_layout") == "board"):
+        return render_email_board(report, stage, trade_date)
     stage_key = str(report.get("stage") or stage).lower()
     if "close" not in stage_key and "closing" not in stage_key and stage_key != "eod":
         forbidden = {"close_pct", "close_result_pct", "close_mean", "close_median",
@@ -610,11 +642,22 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
     conclusions = conclusions[:5]
     metrics = _metrics(report, stage_key)
     editorial_gaps = report.get("email_editorial", {}).get("数据缺口列表") if isinstance(report.get("email_editorial"), Mapping) else None
+    gaps = []
     if editorial_gaps:
-        gaps = [str(row.get("description")) for row in editorial_gaps if isinstance(row, Mapping) and row.get("description")]
-    else:
-        gaps = report.get("limitations") or report.get("data_gaps") or report.get("degraded") or manifest.get("degraded") or manifest.get("missing")
+        gaps.extend(str(row.get("description")) for row in editorial_gaps
+                    if isinstance(row, Mapping) and row.get("description"))
+    for source in (report.get("limitations"), report.get("data_gaps"), report.get("degraded"),
+                   manifest.get("degraded"), manifest.get("missing")):
+        if isinstance(source, list):
+            gaps.extend(str(item) for item in source if item)
+        elif source:
+            gaps.append(str(source))
+    gaps = list(dict.fromkeys(gaps))
     generated_gaps = []
+    if "a_to_b" not in report:
+        generated_gaps.append("A→B 章节未生成/原因：report 中缺少 a_to_b 数据")
+    if "ladder_section" not in report:
+        generated_gaps.append("连板梯队章节未生成/原因：report 中缺少 ladder_section 数据")
     plate_data = report.get("plates") if isinstance(report.get("plates"), Mapping) else {}
     if plate_data.get("status") in {"UNAVAILABLE_NO_RELATION", "PARTIAL"}:
         generated_gaps.append("个股—板块关系缺失或不完整，相关演化与份额列不展示")

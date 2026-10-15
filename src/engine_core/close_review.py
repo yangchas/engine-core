@@ -15,6 +15,66 @@ from .daily_kline_capture import load_capture
 from .extremes_review import (REGIME_LABELS, _num, assemble_from_files, build_daily_history,
                               compare_history, derive_extremes_review, limit_percent)
 from .plate_kind import classify_plate_kind
+from .a_to_b import _prior_streak, build_a_to_b, select_main_plate
+from .ladder_section import build_ladder_section
+
+
+def attach_close_sections(data: dict[str, Any], *, relation_asof: str = "UNKNOWN",
+                         plate_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+                         relations: Mapping[str, Sequence[str]] | None = None,
+                         ladder_rows: Sequence[Mapping[str, Any]] | None = None,
+                         ladder_summary: Sequence[Mapping[str, Any]] = (),
+                         path_frequencies: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
+    """Attach the same A→B and ladder chapters to every close report path."""
+    trade_date = str(data.get("trade_date") or "")
+    stocks = data.get("stocks") if isinstance(data.get("stocks"), list) else []
+    asof = f"{trade_date}T15:00:00" if trade_date else "UNKNOWN"
+    a_to_b = build_a_to_b(stocks, trade_date=trade_date, stage="close", asof=asof,
+                          relation_asof=relation_asof, relations=relations,
+                          plate_metadata=plate_metadata)
+    data["a_to_b"] = a_to_b
+    data["a_to_b_status"] = "READY" if a_to_b else "NO_QUALIFIED_A"
+    unlimited = [str(row.get("symbol", row.get("code", ""))).zfill(6) for row in stocks
+                 if row.get("is_unlimited_price_band") or
+                 row.get("price_band_label") in {"新股/无涨跌幅限制", "新股/无涨跌停价"} or
+                 row.get("auction_price_status") in {"UNLIMITED", "无涨跌停价", "无涨跌幅限制"}]
+    data["a_to_b_excluded_unlimited"] = unlimited
+    if unlimited:
+        gaps = data.setdefault("data_gaps", [])
+        if not isinstance(gaps, list):
+            gaps = data["data_gaps"] = [str(gaps)]
+        gaps.append(f"新股/无涨跌停价单列，不进入A→B：{len(unlimited)}只")
+    by_symbol = {str(row.get("symbol", row.get("code", ""))).zfill(6): row for row in stocks}
+    rows: list[dict[str, Any]] = []
+    for source in ladder_rows or ():
+        row = dict(source)
+        row["symbol"] = str(row.get("symbol", row.get("code", ""))).zfill(6)
+        rows.append(row)
+    existing = {row["symbol"] for row in rows}
+    for source in stocks:
+        symbol = str(source.get("symbol", source.get("code", ""))).zfill(6)
+        streak, _conflict = _prior_streak(source)
+        if symbol in existing or not (streak is not None and streak > 0 or
+                                      source.get("in_yest_pool") in (True, 1, "1")):
+            continue
+        row = dict(source)
+        rows.append(row)
+        existing.add(symbol)
+    for group in a_to_b:
+        symbol = group["a_symbol"]
+        if symbol not in existing and symbol in by_symbol:
+            row = dict(by_symbol[symbol])
+            rows.append(row)
+            existing.add(symbol)
+    data["ladder_section"] = build_ladder_section(
+        rows, stage="close", asof=asof, frequencies=path_frequencies,
+        summary=ladder_summary, market_stocks=stocks)
+    if not a_to_b:
+        gaps = data.setdefault("data_gaps", [])
+        if not isinstance(gaps, list):
+            gaps = data["data_gaps"] = [str(gaps)]
+        gaps.append("A→B 无候选：无满足昨日≥2板或竞价涨停价且有封单的 A")
+    return data
 
 
 def _median(values: Sequence[float]) -> float | None:
@@ -327,17 +387,31 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
         else:
             market_section["auction_comparison"] = "竞价金额/日型对照缺少可用输入"
 
+    plate_meta = {str(p.get("name")): {"class": p.get("kind", p.get("class")),
+                                        "size": p.get("members", p.get("size"))}
+                  for p in plates or () if p.get("name")}
+    candidate_names = {str(name) for row in clean for name in
+                       (row.get("plates") or ([row.get("main_plate")] if row.get("main_plate") else []))}
+    for row in clean:
+        names = [str(name) for name in (row.get("plates") or [])]
+        sources = {str(row.get(f"{source}_plate")): source.upper()
+                   for source in ("pool", "reason", "static", "hot") if row.get(f"{source}_plate")}
+        chosen = select_main_plate(names, plate_meta, source_candidates=sources)
+        row["main_plate"] = chosen
+        row["main_plate_reason"] = None if chosen else "无合格主题板块"
     by_plate: dict[str, list[Mapping[str, Any]]] = {}
     for row in clean:
-        for name in row.get("plates") or ([row.get("main_plate")] if row.get("main_plate") else []):
+        name = row.get("main_plate")
+        if name:
             by_plate.setdefault(str(name), []).append(row)
     focus_symbols = {r["symbol"] for r in meat[:8] + loss[:8]}
     plate_evolution = []
     excluded_plate_names = {str(p.get("name")) for p in plates or ()
-                            if p.get("generic") or p.get("kind") in {"GENERIC", "EVENT", "NOISE"}
-                            or classify_plate_kind(str(p.get("name") or "")) in {"GENERIC", "EVENT", "NOISE"}}
+                            if p.get("generic") or
+                            str(p.get("kind") or p.get("class") or classify_plate_kind(str(p.get("name") or ""))).upper()
+                            not in {"THEME", "NICHE"}}
     for name, members in by_plate.items():
-        if name in excluded_plate_names or classify_plate_kind(name) in {"GENERIC", "EVENT", "NOISE"}:
+        if name in excluded_plate_names:
             continue
         focus = [r for r in members if r["symbol"] in focus_symbols]
         if not focus:
@@ -345,18 +419,38 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
         for row in focus:
             values = [r.get("p0925_pct") for r in members], [r.get("p0932_pct") for r in members], [r.get("p0945_pct") for r in members], [r.get("close_pct") for r in members]
             trajectory = [_mean([x for x in xs if x is not None]) for xs in values]
-            peer_rows = sorted((x for x in members if x["symbol"] != row["symbol"] and x.get("auction_amount_yuan") is not None),
-                               key=lambda x: (-x["auction_amount_yuan"], x["symbol"]))[:3]
+            peers = []
+            for x in members:
+                if x["symbol"] == row["symbol"]:
+                    continue
+                pct = _num(x.get("p0925_pct", x.get("auction_pct")))
+                amount = _num(x.get("auction_amount_yuan"))
+                limit = _num(x.get("limit_pct"))
+                state = x.get("auction_limit_state")
+                if (x.get("in_yest_pool") in (True, 1, "1") or x.get("halted") is True
+                    or x.get("is_halted") is True or x.get("trading_status") in {"HALTED", "停牌"}
+                    or state in (1, -1, "1", "-1", "UP", "DOWN", "LIMIT_UP", "LIMIT_DOWN")
+                    or pct is None or amount is None
+                    or (limit is not None and abs(pct) >= limit - 0.2)):
+                    continue
+                common = sum(1 for candidate in (x.get("plates") or [])
+                             if candidate in candidate_names and candidate in (row.get("plates") or [])
+                             and candidate not in excluded_plate_names
+                             and (not plate_meta or select_main_plate([candidate], plate_meta) is not None))
+                peers.append((amount, common, x))
+            peer_rows = [entry[2] for entry in sorted(peers,
+                         key=lambda item: (-item[0], -item[1], item[2]["symbol"]))[:5]]
+            peer_common = {entry[2]["symbol"]: entry[1] for entry in peers}
+            first_plate_for_symbol = any(item.get("plate") == name for item in plate_evolution)
             rel = (row.get("close_pct") - trajectory[-1]) if row.get("close_pct") is not None and trajectory[-1] is not None else None
             plate_evolution.append({"symbol": row["symbol"], "name": row.get("name"), "plate": name,
                 "p0925_pct": trajectory[0], "p0932_pct": trajectory[1], "p0945_pct": trajectory[2],
                 "close_pct": trajectory[3], "stock_close_pct": row.get("close_pct"),
                 "relative_to_plate_pp": rel,
                 "position": "领涨" if rel is not None and rel >= 2 else "落后板块" if rel is not None and rel <= -2 else "跟随板块",
-                "peer_top3": "按竞价额选，非事后收益；" + "；".join(
-                    f"{x['symbol']} {x.get('name') or ''} 20日区间位置 "
-                    f"{(format(x.get('p0925_range_position20_pct'), '.0f') + '%') if x.get('p0925_range_position20_pct') is not None else 'UNKNOWN'}"
-                    f"{'(超出前20日区间)' if (x.get('p0925_range_position20_pct') is not None and (x.get('p0925_range_position20_pct') > 100 or x.get('p0925_range_position20_pct') < 0)) else ''} "
+                "peer_top3": (f"同板块 {name}；" if first_plate_for_symbol else "") + "按竞价额选，非事后收益；" + "；".join(
+                    f"{x['symbol']} {x.get('name') or ''} 共同合格板块数 {peer_common.get(x['symbol'], 0)}；20日区间位置 "
+                    f"{('高于前20日区间' if x.get('p0925_range_position20_pct') > 100 else '低于前20日区间') if x.get('p0925_range_position20_pct') is not None and (x.get('p0925_range_position20_pct') > 100 or x.get('p0925_range_position20_pct') < 0) else ((format(x.get('p0925_range_position20_pct'), '.0f') + '%') if x.get('p0925_range_position20_pct') is not None else 'UNKNOWN')} "
                     f"0945 {(format(x.get('p0945_pct'), '+.2f') + '%') if x.get('p0945_pct') is not None else '—'} 竞价额 {((x.get('auction_amount_yuan') or 0)/1e4):.0f}万"
                     for x in peer_rows)})
     unlimited_rows = [r for r in clean if r.get("is_unlimited_price_band")]
@@ -372,6 +466,9 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
                                                     "missing": [tag for tag in missing_checkpoints if tag in ("0932", "0945")],
                                                     "reason": "无法判断是否在0945前可见" if any(tag in missing_checkpoints for tag in ("0932", "0945")) else None}},
             "stocks": clean, "plate_evolution": plate_evolution[:20],
+            "main_plate_gaps": [{"symbol": r["symbol"], "name": r.get("name"),
+                                  "reason": "无合格主题板块"}
+                                 for r in clean if not r.get("main_plate")],
             "unlimited_price_band_stocks": sorted(unlimited_rows, key=lambda r: -(r.get("auction_amount_yuan") or 0))[:10],
             "data_quality": {"included_stock_count": len(clean),
                              "auction_pct_coverage": sum(r.get("auction_pct") is not None for r in clean),
@@ -434,6 +531,73 @@ def render_close_html(data: Mapping[str, Any], markdown: str) -> str:
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8-sig", newline="") as f:
         return list(csv.DictReader(f))
+
+
+def _reference_path(root: Path, key: str, catalog_path: str | None = None) -> Path | None:
+    catalog = Path(catalog_path) if catalog_path else root / "reference_catalog.json"
+    if not catalog.is_absolute():
+        catalog = root / catalog
+    try:
+        doc = _json(catalog)
+        refs = doc.get("references", doc) if isinstance(doc, Mapping) else {}
+        value = refs.get(key, {}).get("path") if isinstance(refs, Mapping) else None
+        if value:
+            candidate = Path(value)
+            return candidate if candidate.is_absolute() else root / candidate
+    except (OSError, ValueError, AttributeError):
+        pass
+    matches = sorted(root.rglob("auction_amount_by_day.csv")) if key == "auction_baseline" and root.exists() else []
+    return matches[-1] if matches else None
+
+
+def _close_plate_metadata(relation_dir: str | None) -> tuple[dict[str, dict[str, Any]], str]:
+    if not relation_dir:
+        return {}, "UNKNOWN"
+    base = Path(relation_dir)
+    try:
+        registry = _json(base / "registry.json")
+        plates = registry.get("plates", []) if isinstance(registry, Mapping) else []
+        metadata = {str(row.get("name")): {"class": row.get("class"), "size": row.get("size"),
+                                            "code": row.get("code")}
+                    for row in plates if isinstance(row, Mapping) and row.get("name")}
+    except (OSError, ValueError):
+        metadata = {}
+    match = __import__("re").search(r"20\d{6}", str(base))
+    return metadata, (f"{match.group()[:4]}-{match.group()[4:6]}-{match.group()[6:8]}" if match else "UNKNOWN")
+
+
+def _attach_auction_baseline(data: dict[str, Any], path: Path | None) -> None:
+    market = data.get("market")
+    if not isinstance(market, dict):
+        return
+    if not path or not path.is_file():
+        gaps = data.setdefault("data_gaps", [])
+        if not isinstance(gaps, list):
+            gaps = data["data_gaps"] = [str(gaps)]
+        gaps.append("竞价额自身历史基线缺失：reference_catalog.auction_baseline 未配置或不可读")
+        market["auction_baseline_status"] = "MISSING"
+        return
+    from .live_session import auction_amount_baseline_comparison, load_auction_amount_baseline_csv
+    rows = load_auction_amount_baseline_csv(path, str(data.get("trade_date") or ""))
+    amounts = [float(row["auction_amount_yuan"]) for row in data.get("stocks", [])
+               if isinstance(row, Mapping) and isinstance(row.get("auction_amount_yuan"), (int, float))]
+    if not amounts:
+        market["auction_baseline_status"] = "MISSING"
+        gaps = data.setdefault("data_gaps", [])
+        if not isinstance(gaps, list):
+            gaps = data["data_gaps"] = [str(gaps)]
+        gaps.append("竞价额自身历史基线缺失：当日没有可用竞价额")
+        return
+    total_yi = sum(amounts) / 1e8
+    comparison = auction_amount_baseline_comparison(rows, str(data.get("trade_date") or ""), total_yi)
+    market["auction_baseline_comparison"] = comparison
+    market["auction_baseline_status"] = "READY" if comparison else "MISSING"
+    market["auction_baseline_source"] = str(path)
+    if not comparison:
+        gaps = data.setdefault("data_gaps", [])
+        if not isinstance(gaps, list):
+            gaps = data["data_gaps"] = [str(gaps)]
+        gaps.append("竞价额自身历史基线缺失：无有效的历史样本")
 
 
 def assemble_close_review(trade_date: str, report_dir: str, checkpoints_csv: str, auction_snapshot_csv: str,
@@ -582,6 +746,13 @@ def assemble_close_review(trade_date: str, report_dir: str, checkpoints_csv: str
         by = {}
         for x in rel: by.setdefault(_sym(x.get("stockid")), []).append(str(x.get("plateid")))
         pnames = {p["code"]: p.get("name") for p in plates}
+        counts: dict[str, int] = {}
+        for row in rel:
+            code = str(row.get("plateid") or "")
+            if code:
+                counts[code] = counts.get(code, 0) + 1
+        for plate in plates:
+            plate["members"] = counts.get(plate["code"], 0)
         for r in rows: r["plates"] = [pnames[c] for c in by.get(r["symbol"], []) if pnames.get(c)]
     snapshots = []
     if kaipan_hot_dir:
@@ -624,6 +795,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--relation-dir"); p.add_argument("--generic-names-json"); p.add_argument("--stock-caps-json")
     p.add_argument("--live-report-json"); p.add_argument("--prev-live-json"); p.add_argument("--history-dir")
     p.add_argument("--kaipan-hot-dir"); p.add_argument("--out-dir", required=True); p.add_argument("--full-json", action="store_true")
+    p.add_argument("--reference-root", default="/home/exedev/validation")
+    p.add_argument("--reference-catalog")
     return p
 
 
@@ -636,6 +809,10 @@ def main(argv: list[str] | None = None) -> int:
         relation_dir=args.relation_dir, generic_names_json=args.generic_names_json,
         stock_caps_json=args.stock_caps_json, live_report_json=args.live_report_json,
         prev_live_json=args.prev_live_json, history_dir=args.history_dir, kaipan_hot_dir=args.kaipan_hot_dir)
+    plate_metadata, relation_asof = _close_plate_metadata(args.relation_dir)
+    attach_close_sections(data, relation_asof=relation_asof, plate_metadata=plate_metadata)
+    _attach_auction_baseline(data, _reference_path(Path(args.reference_root), "auction_baseline",
+                                                   args.reference_catalog))
     md = render_close_markdown(data); (out / "report.md").write_text(md, encoding="utf-8")
     (out / "report.html").write_text(render_close_html(data, md), encoding="utf-8")
     compact = {k: v for k, v in data.items() if k not in ("big_meat", "big_loss", "stocks")}

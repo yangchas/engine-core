@@ -5,7 +5,6 @@ import json
 import statistics
 from pathlib import Path
 
-from engine_core.daily_pipeline import _load_ladder_summary
 from engine_core.email_render import render_email_html
 
 
@@ -115,8 +114,6 @@ def main(argv=None):
     full = _read_json(args.report_dir / "report.full.json")
     if isinstance(full, dict):
         report = {**report, **full}
-    if "market" in report:
-        _enrich_close_report(report, args.reference_root)
     if isinstance(manifest, dict) and "market" in report:
         for source_path in manifest.get("input_files", {}).values() if isinstance(manifest.get("input_files"), dict) else []:
             if isinstance(source_path, str) and source_path.endswith("manifest.json"):

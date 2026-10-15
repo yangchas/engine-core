@@ -21,6 +21,15 @@ def test_live_chapter_checkpoint_keys_map_to_ladder_fields():
     assert (row["prior_streak"], row["p0925_pct"], row["p0932_pct"], row["p0945_pct"]) == (2, 1.0, 2.0, 3.0)
 
 
+def test_ladder_preserves_yesterday_pool_streak_and_marks_any_field_conflict():
+    section = build_ladder_section(
+        [{"symbol": "000530", "lb_days": 2, "prior_limit_streak": 0,
+          "prior_streak": 1}], stage="close", asof="2026-10-15T15:00:00")
+    row = section["rows"][0]
+    assert row["prior_streak"] == 2
+    assert row["prior_streak_status"] == "字段冲突"
+
+
 def test_0945_emotion_uses_full_market_coverage_and_previous_ladder_counts():
     stocks = [{"p0932_pct": -1.0, "p0945_pct": -1.8, "limit_pct": 10} for _ in range(9)]
     stocks += [{"p0932_pct": 0.5, "p0945_pct": 0.7, "limit_pct": 10}]

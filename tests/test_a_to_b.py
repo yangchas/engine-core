@@ -19,7 +19,7 @@ def test_builds_point_in_time_a_to_b_and_drops_unbuyable_candidates():
 
 def test_missing_relations_are_explicit():
     result = build_a_to_b([{"symbol": "600001", "lb_days": 2}], trade_date="2026-10-15")
-    assert result[0]["reason"] == "缺关系数据"
+    assert result[0]["reason"] == "无合格主题板块"
 
 
 def test_auction_stage_does_not_use_or_emit_later_prices():
@@ -36,3 +36,101 @@ def test_auction_stage_does_not_use_or_emit_later_prices():
     assert peer["symbol"] == "600003"
     assert peer["p0945_pct"] is None
     assert "close_pct" not in peer
+
+
+def test_main_plate_uses_qualified_theme_and_common_membership_breaks_peer_ties():
+    stocks = [
+        {"symbol": "600001", "lb_days": 2, "plates": ["物流", "芯片", "通信"],
+         "main_plate": "物流", "p0925_pct": 0, "auction_amount_yuan": 1},
+        {"symbol": "600002", "plates": ["芯片", "通信"], "p0925_pct": 1,
+         "auction_amount_yuan": 100},
+        {"symbol": "600003", "plates": ["通信"], "p0925_pct": 1,
+         "auction_amount_yuan": 100},
+        {"symbol": "600004", "plates": ["芯片"], "p0925_pct": 1,
+         "auction_amount_yuan": 999, "in_yest_pool": True},
+        {"symbol": "600005", "plates": ["芯片"], "p0925_pct": None,
+         "auction_amount_yuan": 999},
+    ]
+    metadata = {
+        "物流": {"class": "BROAD", "size": 297},
+        "芯片": {"class": "THEME", "size": 40},
+        "通信": {"class": "NICHE", "size": 20},
+    }
+    result = build_a_to_b(stocks, trade_date="2026-10-15", plate_metadata=metadata)
+    assert result[0]["plate"] == "通信"
+    assert [row["symbol"] for row in result[0]["candidates"]] == ["600002", "600003"]
+    assert result[0]["candidates"][0]["common_plate_count"] == 2
+
+
+def test_no_qualified_theme_plate_has_explicit_reason():
+    result = build_a_to_b([{"symbol": "600001", "lb_days": 2, "plates": ["物流"],
+                            "p0925_pct": 0}], trade_date="2026-10-15",
+                          plate_metadata={"物流": {"class": "BROAD", "size": 297}})
+    assert result[0]["plate"] is None
+    assert result[0]["reason"] == "无合格主题板块"
+
+
+def test_anchors_on_same_main_plate_are_marked_as_shared():
+    rows = [
+        {"symbol": "600001", "lb_days": 2, "main_plate": "传媒", "p0925_pct": 0,
+         "auction_amount_yuan": 10},
+        {"symbol": "600002", "auction_limit_state": 1, "main_plate": "传媒",
+         "rest_bid_yuan": 10, "p0925_pct": 10, "auction_amount_yuan": 20},
+        {"symbol": "600003", "main_plate": "传媒", "p0925_pct": 1,
+         "auction_amount_yuan": 5},
+    ]
+    result = build_a_to_b(rows, trade_date="2026-10-15")
+    assert [row["plate_display"] for row in result] == ["同板块 传媒", "同板块 传媒"]
+    assert all(any(peer["symbol"] == "600003" for peer in row["candidates"])
+               for row in result)
+
+
+def test_near_limit_price_without_locked_state_does_not_create_anchor():
+    rows = [{"symbol": "600001", "auction_pct": 9.84, "limit_pct": 10,
+             "auction_limit_state": 0, "main_plate": "传媒", "auction_amount_yuan": 10}]
+    assert build_a_to_b(rows, trade_date="2026-10-15") == []
+
+
+def test_yesterday_pool_lb_days_wins_over_default_zero_and_marks_conflict():
+    rows = [
+        {"symbol": "000006", "name": "冰山冷热", "in_yest_pool": True,
+         "prior_limit_streak": 0, "lb_days": 2, "main_plate": "芯片",
+         "auction_amount_yuan": 10},
+        {"symbol": "000007", "name": "同伴", "main_plate": "芯片",
+         "auction_pct": 1, "auction_amount_yuan": 5},
+    ]
+    result = build_a_to_b(rows, trade_date="2026-10-15")
+    assert len(result) == 1
+    assert result[0]["a_prior_streak"] == 2
+    assert result[0]["streak_status"] == "字段冲突"
+
+
+def test_anchor_requires_sealed_auction_state_and_rest_bid_or_prior_streak():
+    rows = [
+        {"symbol": "688123", "name": "联亚药业", "auction_pct": 285.71,
+         "limit_pct": 20, "auction_limit_state": 0, "main_plate": "芯片",
+         "auction_amount_yuan": 3, "is_unlimited_price_band": True},
+        {"symbol": "600001", "auction_limit_state": 1, "rest_bid_yuan": 0,
+         "main_plate": "芯片", "auction_amount_yuan": 4},
+        {"symbol": "600002", "auction_limit_state": 1, "rest_bid_yuan": 10,
+         "main_plate": "芯片", "auction_amount_yuan": 4},
+    ]
+    result = build_a_to_b(rows, trade_date="2026-10-15")
+    assert [row["a_symbol"] for row in result] == ["600002"]
+    assert result[0]["a_status"] == "竞价涨停价且有封单"
+
+
+def test_candidate_amount_never_falls_back_to_daily_amount_and_missing_is_explicit():
+    rows = [
+        {"symbol": "600001", "lb_days": 2, "main_plate": "芯片", "auction_pct": 0,
+         "auction_amount_yuan": 1},
+        {"symbol": "600002", "main_plate": "芯片", "auction_pct": 1, "amount_yuan": 999},
+    ]
+    result = build_a_to_b(rows, trade_date="2026-10-15")
+    assert result[0]["candidates"] == []
+    assert result[0]["reason"] == "缺少竞价价/额"
+
+
+def test_default_zero_streak_without_yesterday_pool_value_is_missing():
+    from engine_core.a_to_b import _prior_streak
+    assert _prior_streak({"prior_limit_streak": 0}) == (None, None)

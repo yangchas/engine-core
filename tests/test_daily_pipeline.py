@@ -62,6 +62,21 @@ def test_live_section_stocks_builds_point_in_time_rows_without_close_fields():
     assert all("close_pct" not in row for row in rows)
 
 
+def test_live_section_stocks_excludes_broad_plate_from_main_plate():
+    from engine_core.daily_pipeline import _live_section_stocks
+
+    class States:
+        def states_at(self, cutoff):
+            return {"600001": {"pct_change": 1, "match_amount_yuan": 10}}
+
+    rows = _live_section_stocks(States(), trade_date="2026-10-15", stage="auction",
+        asof="09:26:00", relations={"801019": ["600001"], "801001": ["600001"]},
+        plate_names={"801019": "物流", "801001": "芯片"}, stock_names={}, history_path=None,
+        plate_metadata={"物流": {"class": "BROAD", "size": 297},
+                        "芯片": {"class": "THEME", "size": 40}})
+    assert rows[0]["main_plate"] == "芯片"
+
+
 def test_live_section_stocks_does_not_request_future_checkpoints():
     from engine_core.daily_pipeline import _live_section_stocks
 
@@ -109,6 +124,9 @@ def test_three_stages_write_reports_and_explicit_missing_references(tmp_path):
         folder = result["out_dir"]
         assert (folder / "report.html").is_file()
         assert (folder / "report.json").is_file()
+        if stage == "close":
+            close_report = json.loads((folder / "report.json").read_text())
+            assert "a_to_b" in close_report and "ladder_section" in close_report
         manifest = json.loads((folder / "manifest.json").read_text())
         assert manifest["degraded"]
         assert any(item.startswith("MISSING_REFERENCE:") for item in manifest["degraded"])

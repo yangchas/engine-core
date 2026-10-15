@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from . import live_pages
-from .close_review import (assemble_close_review, render_close_html,
+from .close_review import (assemble_close_review, attach_close_sections, _attach_auction_baseline, render_close_html,
                            render_close_markdown)
 from .core_cache_writer import CoreCacheWriter
 from .daily_kline_capture import write_capture
@@ -299,7 +299,8 @@ def _attach_range_positions(stocks: list[dict[str, Any]], history_path: str | Pa
 
 def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
                          relations: Mapping[str, list[str]], plate_names: Mapping[str, str],
-                         stock_names: Mapping[str, str], history_path: str | Path | None) -> list[dict[str, Any]]:
+                         stock_names: Mapping[str, str], history_path: str | Path | None,
+                         plate_metadata: Mapping[str, Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Build full-universe, as-of stock rows for the live A→B and ladder sections."""
     from .live_session import daily_history_context, load_daily_history_csv, states_at
 
@@ -321,6 +322,8 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
             context = daily_history_context(history, trade_date, snapshots.get("0925", {}))["stocks"]
         except (OSError, ValueError, TypeError):
             context = {}
+    from .a_to_b import select_main_plate
+    plate_metadata = plate_metadata or {}
     symbol_plates: dict[str, list[str]] = {}
     for code, members in relations.items():
         name = plate_names.get(code)
@@ -336,7 +339,8 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
         streak = history_row.get("streak")
         row: dict[str, Any] = {
             "symbol": symbol, "name": stock_names.get(symbol, auction.get("name") or symbol),
-            "main_plate": (symbol_plates.get(symbol) or [None])[0],
+            "main_plate": select_main_plate(symbol_plates.get(symbol, []), plate_metadata),
+            "main_plate_reason": None if select_main_plate(symbol_plates.get(symbol, []), plate_metadata) else "无合格主题板块",
             "plates": symbol_plates.get(symbol, []),
             "prior_streak": streak,
             "in_yest_pool": (streak >= 1 if isinstance(streak, int) else None),
@@ -345,11 +349,11 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
             "p0925_pct": auction.get("pct_change"),
             "auction_amount_yuan": auction.get("match_amount_yuan"),
             "auction_price_status": auction.get("status", "UNKNOWN"),
+            "auction_limit_state": auction.get("auction_limit_state"),
+            "rest_bid_yuan": auction.get("rest_bid_yuan"),
         }
         if total_auction and row["auction_amount_yuan"] is not None:
             row["auction_amount_bp"] = 10000 * row["auction_amount_yuan"] / total_auction
-        band, pct = row["limit_pct"], row["p0925_pct"]
-        row["auction_limit_state"] = 1 if isinstance(pct, (int, float)) and pct >= band - 0.2 else 0
         for label, field in (("0932", "p0932_pct"), ("0945", "p0945_pct")):
             state = snapshots.get(label, {}).get(symbol)
             if state:
@@ -426,6 +430,31 @@ def _load_relations(folder: Path | None) -> tuple[dict[str, list[str]], dict[str
         return relations, names, snapshot
     except (OSError, ValueError, TypeError):
         return {}, {}, "UNKNOWN"
+
+
+def _relation_plate_metadata(folder: Path | None, relations: Mapping[str, list[str]],
+                             plate_names: Mapping[str, str]) -> dict[str, dict[str, Any]]:
+    metadata: dict[str, dict[str, Any]] = {}
+    if folder:
+        try:
+            registry = json.loads((folder / "registry.json").read_text(encoding="utf-8"))
+            entries = registry.get("plates", registry) if isinstance(registry, dict) else registry
+            if isinstance(entries, dict):
+                entries = [dict(value, code=code) for code, value in entries.items()]
+            for row in entries or []:
+                name = str(row.get("name") or row.get("code") or row.get("plateid") or "")
+                if name:
+                    metadata[name] = {"class": row.get("class", row.get("kind")),
+                                      "size": row.get("size", row.get("members"))}
+        except (OSError, ValueError, TypeError):
+            pass
+    for code, members in relations.items():
+        name = plate_names.get(str(code))
+        if name:
+            metadata.setdefault(name, {"size": len(members)})
+            if metadata[name].get("size") is None:
+                metadata[name]["size"] = len(members)
+    return metadata
 
 
 def _latest_report(root: Path, trade_date: str, stage: str) -> Path | None:
@@ -566,6 +595,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             inputs["daily_capture_data"] = {"path": str(data_path), "sha256": _sha(data_path)}
     relation_dir = refs["relation_dir"]
     relations, plate_names, relation_asof = _load_relations(relation_dir)
+    plate_metadata = _relation_plate_metadata(relation_dir, relations, plate_names)
     path_frequencies, path_labels = _load_path_study(reference_root, trade_date)
     relation_lag = None
     if relation_asof != "UNKNOWN" and refs["daily_history"]:
@@ -657,7 +687,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 src.td or _MissingTD(), trade_date=trade_date, stage=stage,
                 asof=asof or ("09:26:00" if stage == "auction" else "09:46:00"),
                 relations=relations, plate_names=plate_names, stock_names=stock_names,
-                history_path=refs["daily_history"])
+                history_path=refs["daily_history"], plate_metadata=plate_metadata)
         _attach_range_positions(live_stocks, refs["daily_history"], trade_date)
         symbol_plates = {}
         for plate_code, members in relations.items():
@@ -666,7 +696,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 for symbol in members:
                     symbol_plates.setdefault(symbol, []).append(plate_name)
         payload["a_to_b"] = (build_a_to_b(live_stocks, trade_date=trade_date, stage=stage,
-                          asof=point, relation_asof=relation_asof, relations=symbol_plates)
+                          asof=point, relation_asof=relation_asof, relations=symbol_plates,
+                          plate_metadata=plate_metadata)
                              if live_stocks else [{"a_symbol": "—", "reason": "缺关系数据：本时点报告无全量个股与板块成员"}])
         highboards = payload.get("chapters", {}).get("yesterday_highboards", []) if isinstance(payload.get("chapters"), Mapping) else []
         for row in highboards if isinstance(highboards, list) else []:
@@ -790,8 +821,6 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     "close_pct": stock.get("close_pct"), "in_yest_pool": stock.get("in_yest_pool"),
                     "status": "今日最高板；收盘涨停价代理，封单/炸板路径 UNKNOWN"})
             data["ladder_summary"].extend(highboard_rows)
-        from .a_to_b import build_a_to_b
-        from .ladder_section import build_ladder_section
         if isinstance(data.get("stocks"), list):
             _attach_range_positions(data["stocks"], refs["daily_history"], trade_date)
         ladder_rows = []
@@ -807,17 +836,16 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 row["path_type"] = path_labels.get(str(code).zfill(6), "UNKNOWN")
                 ladder_rows.append(row)
         close_asof = f"{trade_date}T15:00:00"
-        data["ladder_section"] = build_ladder_section(
-            ladder_rows, stage="close", asof=close_asof, frequencies=path_frequencies,
-            summary=ladder, market_stocks=data.get("stocks", []))
         symbol_plates = {}
         for plate_code, members in relations.items():
             plate_name = plate_names.get(plate_code)
             if plate_name:
                 for symbol in members:
                     symbol_plates.setdefault(symbol, []).append(plate_name)
-        data["a_to_b"] = build_a_to_b(data.get("stocks", []), trade_date=trade_date,
-            stage="close", asof=close_asof, relation_asof=relation_asof, relations=symbol_plates)
+        attach_close_sections(data, relation_asof=relation_asof, relations=symbol_plates,
+            plate_metadata=plate_metadata, ladder_rows=ladder_rows,
+            ladder_summary=ladder, path_frequencies=path_frequencies)
+        _attach_auction_baseline(data, refs.get("auction_baseline"))
         quality = data.setdefault("data_quality", {})
         quality["relation_snapshot_date"] = reference_meta.get("relation_dir", {}).get("as_of")
         quality["relation_lag_trading_days"] = relation_lag

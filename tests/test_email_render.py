@@ -80,13 +80,14 @@ def test_close_email_separates_unlimited_listing_from_price_band_rank():
 
 
 def test_close_report_uses_scorecard_for_conclusion_points():
-    report = {"trade_date": "2026-10-15", "market": {"close_median": -2.0,
+    report = {"trade_date": "2026-10-15", "a_to_b": [], "ladder_section": {"rows": []},
+              "market": {"close_median": -2.0,
               "up_count": 900, "down_count": 4000}, "emerging_scorecard": {"status": "READY",
               "emerging": [{"name": "版权", "score": 0.7}]}, "data_quality": {"daily_source": "wencai"}}
     html, plain = render_email_html(report, "close", "2026-10-15")
     assert "未提供结论" not in html + plain
     assert "收盘中位" in plain and "日线来源" in plain and "问财" in plain
-    assert "数据缺口" not in html
+    assert "A→B 章节未生成" not in html and "连板梯队章节未生成" not in html
     assert "未提供" not in html + plain
 
 
@@ -223,4 +224,34 @@ def test_generic_and_event_plate_appendix_is_collapsed_inside_plate_section():
     assert "竞价额前十（成员重叠，不可相加）" in html
     assert "<details><summary>泛化/事件板块附录（折叠，不参与主榜）</summary>" in html
     assert "业绩增长（EVENT，8只成员）" in html
+
+
+def test_close_email_separates_auction_and_daily_amount_baselines_and_reports_missing_sections():
+    report = {"stage": "close", "limitations": [], "data_gaps": ["其他缺口"],
+              "market": {"auction_amount_yuan": 20_205_000_000,
+                         "auction_baseline_comparison": {"median_yi": 169, "multiple": 1.196,
+                                                          "percentile": 67.19, "sample_days": 64},
+                         "amount_64d_median_yuan": 20_687_252_865,
+                         "amount_vs_64d_median_common": 0.79,
+                         "amount_64d_common_pool_n": 5191}}
+    html, plain = render_email_html(report, "close", "2026-10-15")
+    both = html + plain
+    assert "竞价额历史基线（竞价池）" in both
+    assert "全天成交额历史基线（共同池）" in both
+    daily_start = html.index("全天成交额历史基线（共同池）")
+    daily_end = html.find("</table>", daily_start)
+    daily_baseline_table = html[daily_start:daily_end]
+    assert "0.79×" in daily_baseline_table and "5,191" in daily_baseline_table
+    assert "1.20×" in both and "67.19%" in both
+    assert "0.79×" in both and "5,191" in both
+    assert "其他缺口" in both
+    assert "A→B 章节未生成/原因" in both and "连板梯队章节未生成/原因" in both
+
+
+def test_sealed_up_label_is_price_proxy_everywhere():
+    report = {"stage": "close", "market": {},
+              "chapters": {"emerging": [{"name": "样例", "sealed_up": 1}]}}
+    html, plain = render_email_html(report, "close", "2026-10-15")
+    assert "收盘价=涨停价(价格代理)" in html + plain
+    assert "涨停：1" not in html + plain
 

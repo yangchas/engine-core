@@ -5,6 +5,8 @@ from collections import Counter
 from statistics import median
 from typing import Any, Mapping, Sequence
 
+from .a_to_b import _prior_streak
+
 PATH_LABELS = {
     "LIMIT_HOLD": "采样仍在涨停价", "STRONG_FADE": "竞价偏高后回落",
     "WEAK_REBOUND": "竞价偏低后翻红回升", "WEAK_CONTINUE": "竞价偏低后续弱",
@@ -74,7 +76,7 @@ def build_ladder_section(stocks: Sequence[Mapping[str, Any]], *, stage: str,
     rows = []
     for source in stocks:
         row = dict(source)
-        streak = _int(row.get("prior_streak", row.get("prior_limit_streak", row.get("lb_days", row.get("streak")))))
+        streak, streak_conflict = _prior_streak(row)
         path = ("UNKNOWN" if auction_only else
                 str(row.get("path_type", row.get("path_label", row.get("path_flags", "UNKNOWN"))) or "UNKNOWN"))
         if path not in PATH_LABELS:
@@ -86,7 +88,7 @@ def build_ladder_section(stocks: Sequence[Mapping[str, Any]], *, stage: str,
                 else f"样本不足：{k if k is not None else '—'}/{n if n is not None else '—'}，{days if days is not None else '—'}日；暂不提供稳定频率")
         item = {"symbol": str(row.get("symbol", row.get("code", ""))).zfill(6),
                 "name": row.get("name"), "prior_streak": streak,
-                "prior_streak_status": "已知" if streak is not None else "—",
+                "prior_streak_status": streak_conflict or ("已知" if streak is not None else "—"),
                 "main_plate": row.get("main_plate"),
                 "p0925_pct": row.get("p0925_pct", row.get("auction_pct", row.get("0925"))),
                 "p0932_pct": None if auction_only else row.get("p0932_pct", row.get("0932")),
