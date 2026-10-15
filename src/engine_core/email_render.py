@@ -178,6 +178,12 @@ def _plain_value(value: Any, key: str = "") -> str:
         return "是" if value else "否"
     if isinstance(value, (int, float)) or value is None:
         return _num(value, key)
+    if isinstance(value, (list, tuple)):
+        items = [str(item) for item in value if item not in (None, "")]
+        if not items:
+            return "—"
+        shown = "、".join(items[:3])
+        return _esc(shown + (f" 等{len(items)}个" if len(items) > 3 else ""))
     return _esc(value)
 
 
@@ -659,6 +665,8 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
                 if key not in keys and _label(key):
                     keys.append(key)
         cols = [key for key in keys if any(row.get(key) is not None for row in rows)]
+        if "main_plate" in cols and "plates" in cols:
+            cols.remove("plates")
         if chapter_title in {"大肉", "大面"}:
             preferred = ("symbol", "name", "main_plate", "limit_pct", "auction_pct", "auction_price_status", "p0932_pct",
                          "p0945_pct", "close_pct", "high_pct", "low_pct", "delta_over_limit",

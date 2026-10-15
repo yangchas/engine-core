@@ -355,8 +355,9 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
                 "position": "领涨" if rel is not None and rel >= 2 else "落后板块" if rel is not None and rel <= -2 else "跟随板块",
                 "peer_top3": "按竞价额选，非事后收益；" + "；".join(
                     f"{x['symbol']} {x.get('name') or ''} 20日区间位置 "
-                    f"{x.get('p0925_range_position20_pct') if x.get('p0925_range_position20_pct') is not None else 'UNKNOWN'} "
-                    f"0945 {x.get('p0945_pct') if x.get('p0945_pct') is not None else '—'}% 竞价额 {((x.get('auction_amount_yuan') or 0)/1e4):.0f}万"
+                    f"{(format(x.get('p0925_range_position20_pct'), '.0f') + '%') if x.get('p0925_range_position20_pct') is not None else 'UNKNOWN'}"
+                    f"{'(超出前20日区间)' if (x.get('p0925_range_position20_pct') is not None and (x.get('p0925_range_position20_pct') > 100 or x.get('p0925_range_position20_pct') < 0)) else ''} "
+                    f"0945 {(format(x.get('p0945_pct'), '+.2f') + '%') if x.get('p0945_pct') is not None else '—'} 竞价额 {((x.get('auction_amount_yuan') or 0)/1e4):.0f}万"
                     for x in peer_rows)})
     unlimited_rows = [r for r in clean if r.get("is_unlimited_price_band")]
     market_section["unlimited_price_band_count"] = len(unlimited_rows)
