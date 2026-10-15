@@ -4,7 +4,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from examples.render_live_pages import render_page, write_page
+from examples.render_live_pages import (_json_report_payload, _section_body, render_page,
+                                        write_page)
 
 
 def _history_csv(path, days=22):
@@ -236,3 +237,46 @@ def test_strength_anchor_estimate_age_and_missing_chapters(tmp_path):
     assert payload["manifest"]["inputs"]["strength_anchor"]["captured_local"] == "2026-10-15T09:20:00"
     _, missing = render_page(TD(), trade_date="2026-10-15", stage="auction_0926")
     assert missing["chapters"]["plate_quadrants"]["status"] == "Kaipan 强度不可用；未提供抓取输入"
+
+
+def test_plate_enrichment_annex_states_and_default_json_size():
+    relations = {"p": {f"s{i:03}" for i in range(5)},
+                 "generic": {f"s{i:03}" for i in range(5)},
+                 "universe": {f"s{i:03}" for i in range(100)}}
+    names = {"p": "主题板块", "generic": "ST板块", "universe": "全体关系测试"}
+
+    for emerging_count, expected_text in ((0, "无显著关联板块"),
+                                           (2, "集合过小不检验"),
+                                           (3, "仅称关联不称买点")):
+        class TD:
+            def states_at(self, cutoff):
+                at_auction = cutoff.strftime("%H:%M") == "09:25"
+                rows = {}
+                for i in range(100):
+                    pct = -1.0 if at_auction else (2.0 if i < emerging_count else -1.0)
+                    rows[f"s{i:03}"] = _state(f"s{i:03}", pct, 100_000,
+                                               ts=cutoff.strftime("%H:%M:%S"))
+                return rows
+            def latest_tick_ts(self): return "2026-10-15T09:45:30"
+
+        _, payload = render_page(TD(), trade_date="2026-10-15", stage="open_0946",
+                                 relations=relations, plate_names=names,
+                                 member_snapshot_date="PIT 20261013")
+        block = payload["chapters"]["plate_enrichment"]
+        assert block["emerging_count"] == emerging_count
+        assert expected_text in block["status"]
+        assert block["member_snapshot_date"] == "PIT 20261013"
+        annex_text = _section_body("竞价后新冒头", payload)
+        assert "关联板块(富集反推, 仅关联不构成买点)" in annex_text
+        assert expected_text in annex_text
+
+        compact = json.dumps(payload["chapters"]["plate_enrichment"], ensure_ascii=False,
+                             separators=(",", ":")).encode("utf-8")
+        report = _json_report_payload(payload)
+        without_annex = json.loads(json.dumps(report, ensure_ascii=False))
+        without_annex["chapters"].pop("plate_enrichment")
+        increment = (len(json.dumps(report, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) -
+                     len(json.dumps(without_annex, ensure_ascii=False, separators=(",", ":")).encode("utf-8")))
+        assert len(compact) <= 20_000
+        assert 0 < increment <= 20_000
+        assert "plate_enrichment" in report["chapters"]

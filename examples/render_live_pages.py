@@ -6,14 +6,16 @@ import argparse
 import hashlib
 import html
 import json
+import re
 import shutil
 import statistics
 import time
 from datetime import datetime
 from pathlib import Path
 
-from engine_core.live_session import (build_live_slice, checkpoint_ready, daily_history_context,
+from engine_core.live_session import (market_price_volume_status, build_live_slice, checkpoint_ready, daily_history_context,
                                       load_daily_history_csv, states_at)
+from engine_core.plate_enrichment import infer_plate_enrichment
 
 STAGES = {"auction_0926": [("0920", "09:20:00"), ("0924", "09:24:00"), ("0925", "09:25:06")],
           "open_0946": [("0925", "09:25:06"), ("0932", "09:32:00"), ("0935", "09:35:00"),
@@ -45,6 +47,28 @@ def _input_manifest(value, kind):
             pass
     return {"provided": True, "path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
             "captured_local": captured}
+
+
+def _generic_factor_names():
+    if not GENERIC_NAMES_PATH.exists(): return set()
+    data = json.loads(GENERIC_NAMES_PATH.read_text(encoding="utf-8"))
+    return set(data if isinstance(data, list) else data.get("names", []))
+
+
+def _relation_snapshot_date(relation_dir):
+    if not relation_dir: return "UNKNOWN"
+    path = Path(relation_dir)
+    registry_path = path / "registry.json"
+    try:
+        data = json.loads(registry_path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            value = next((data[key] for key in ("snapshot_date", "as_of", "asof", "trade_date")
+                          if data.get(key)), None)
+            if value: return f"PIT {str(value).replace('-', '')[:8]}"
+    except (OSError, ValueError):
+        pass
+    match = re.search(r"20\d{6}", str(path))
+    return f"PIT {match.group(0)}" if match else "UNKNOWN"
 
 
 def _load_amount_baseline(value):
@@ -142,7 +166,8 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
 
 def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
                 relations=None, plate_names=None, daily_history_csv=None, stock_names=None,
-                amount_baseline_json=None, kaipan_hot_json=None, strength_anchor_json=None):
+                amount_baseline_json=None, kaipan_hot_json=None, strength_anchor_json=None,
+                member_snapshot_date="UNKNOWN"):
     if stage not in STAGES: raise ValueError(f"unknown stage: {stage}")
     snaps, raw_states = [], {}
     td_fetch_seconds = 0.0
@@ -168,6 +193,12 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
         snap["vs_amount_baseline"] = (snap["market_match_amount_yuan"] / baseline_yuan
                                       if baseline_yuan and snap["market_match_amount_yuan"] else None)
         snap["label"] = label
+        if clock > "09:26:00":
+            # 0926 之后的 TD 额是当日累计成交额, 不能与昨日 0925 竞价终值相比
+            snap["vs_previous_day_final"] = None
+            snap["market_price_volume_state"] = market_price_volume_status(
+                None, snap.get("amount_weighted_pct_change"), snap.get("up_share_pct"))
+            snap["amount_basis"] = "cumulative_session"
         snap["top_stocks_by_amount"] = _rows(rows)
         snaps.append(snap)
     sections = SECTIONS[stage]
@@ -180,6 +211,19 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
     history = context["history"] if context else None
     chapters = _build_chapters(snaps, raw_states, stage, relations, plate_names,
                                stock_names, stock_context, history, history_rows is not None)
+    chapters["plate_enrichment"] = {"status": "仅开盘更新页面计算；当前阶段不适用",
+                                    "emerging_count": 0, "N": 0,
+                                    "member_snapshot_date": member_snapshot_date,
+                                    "plates": [], "method_note": "仅称关联不称买点"}
+    if stage == "open_0946":
+        chapters["plate_enrichment"] = infer_plate_enrichment(
+            raw_states.get("0925", {}), raw_states.get("0945", {}), relations,
+            plate_names=plate_names, stock_names=stock_names,
+            generic_names=_generic_factor_names(), member_snapshot_date=member_snapshot_date)
+        enrichment = chapters["plate_enrichment"]
+        if len(enrichment.get("plates", [])) > 15:
+            enrichment["plates_total"] = len(enrichment["plates"])
+            enrichment["plates"] = enrichment["plates"][:15]
     report_current = next((snap for snap in reversed(snaps) if snap.get("status") != "NOT_READY"), {})
     chapters["market_price_volume"] = report_current
     opening_snap = next((snap for snap in snaps if snap.get("label") == "0932"), None)
@@ -406,7 +450,7 @@ def _conclusion(snaps, chapters, history, stage):
     if not available: return ["当前没有可计算的市场切片；请检查输入数据与追平状态。", "本页不对缺失字段作零值推断。", "高标和历史判断在数据可用前保持未知。"]
     current = available[-1]
     market_summary = chapters.get("market_price_volume", {})
-    market_line = (f"市场量价依据 {current['label']}：有价个股竞价总额 {_fmt_money(current.get('market_match_amount_yuan'))}，"
+    market_line = (f"市场量价依据 {current['label']}：有价个股{'累计成交额' if current.get('amount_basis') == 'cumulative_session' else '竞价总额'} {_fmt_money(current.get('market_match_amount_yuan'))}，"
                    f"对昨日终值 {_fmt_multiple(current.get('vs_previous_day_final'))}，额加权涨幅 {_fmt_pct(current.get('amount_weighted_pct_change'))}，"
                    f"下跌个股额占比 {_fmt_pct(current.get('down_amount_share_pct'))}，上涨家数占比 {_fmt_pct(current.get('up_share_pct'))}，"
                    f"开盘中位 {_fmt_pct(market_summary.get('opening_median_pct_change'))}，Top100集中度 {_fmt_pct(current.get('top100_concentration_pct'))}；"
@@ -498,8 +542,21 @@ def _section_body(title, payload):
         rows = chapters["emerging"]
         if snaps[-1].get("status") == "NOT_READY":
             return "<p>需要可用的 09:25 与当前切片；当前数据未追平或缺少竞价基准。</p>"
-        return _table([("代码", "symbol"), ("名称", "name"), ("0925", "0925"), ("0932", "0932"),
-                       ("0945", "0945"), ("现额元", "match_amount_yuan")], rows)
+        emerging = _table([("代码", "symbol"), ("名称", "name"), ("0925", "0925"), ("0932", "0932"),
+                           ("0945", "0945"), ("现额元", "match_amount_yuan")], rows)
+        block = chapters["plate_enrichment"]
+        intro = (f"<p>关联板块(富集反推, 仅关联不构成买点)：{html.escape(block['status'])}；"
+                 f"成员快照 {html.escape(str(block.get('member_snapshot_date') or 'UNKNOWN'))}。</p>")
+        plate_rows = []
+        for plate in block.get("plates", []):
+            members = "、".join(f"{row['name']}({row['symbol']}) {_fmt_pct(row['current_pct'])}"
+                                for row in plate.get("members", []))
+            plate_rows.append({**plate, "members_text": members})
+        association = _table([("板块", "name"), ("代码", "code"), ("N", "N"), ("n", "n"),
+                              ("K", "K"), ("交集", "intersection"), ("p", "p"), ("q", "q"),
+                              ("交集个股", "members_text"), ("成员快照", "member_snapshot_date"),
+                              ("说明", "note")], plate_rows)
+        return emerging + intro + association
     if title == "竞价内变化":
         tags = chapters["behavior_tags"]
         rows = [row for row in chapters.get("behavior_rows", []) if row.get("direction") in
@@ -592,9 +649,11 @@ def main(argv=None):
                       database=os.getenv("TD_DATABASE", "market_data1"), config=os.getenv("TD_CONFIG", "/etc/taos"))
     try:
         relations, plate_names = {}, {}
+        member_snapshot_date = "UNKNOWN"
         if args.relations_dir:
             from engine_core.auction_tracking import _load_relations
             relations, plate_names, _ = _load_relations(Path(args.relations_dir))
+            member_snapshot_date = _relation_snapshot_date(args.relations_dir)
         stock_names = json.loads(Path(args.stock_names_json).read_text(encoding="utf-8")) if args.stock_names_json else None
         page, payload = render_page(td, trade_date=args.trade_date, stage=args.stage,
                                     previous_day_final_yuan=args.previous_day_final_yuan,
@@ -602,7 +661,8 @@ def main(argv=None):
                                     daily_history_csv=args.daily_history_csv, stock_names=stock_names,
                                     amount_baseline_json=args.amount_baseline_json,
                                     kaipan_hot_json=args.kaipan_hot_json,
-                                    strength_anchor_json=args.strength_anchor_json)
+                                    strength_anchor_json=args.strength_anchor_json,
+                                    member_snapshot_date=member_snapshot_date)
         write_page(args.out_dir, page, payload, full_json=args.full_json)
         print("TIMINGS_MS " + json.dumps(payload["manifest"]["timings_ms"], separators=(",", ":")))
     finally:
