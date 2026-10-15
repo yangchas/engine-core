@@ -19,6 +19,7 @@ ACCELERATION_MULTIPLE = 2.0  # 待校准
 FLIP_MIN_CHANGE_PP = 0.5  # 待校准
 PLATE_SHARE_FLIP_BP = 50  # 待校准
 LATE_RUSH_SHARE_PCT = 40.0  # 待校准
+LATE_RUSH_EXCESS_PCT = 10.0  # 板块相对大盘的尾段集中度阈值，待校准
 EARLY_FAVORITE_BEFORE = "09:22:00"  # 待校准
 FADE_AMOUNT_MULTIPLE = 0.5  # 待校准
 
@@ -32,6 +33,13 @@ def detect_turning_points(rows: list[Mapping[str, Any]], *, flip_min: float = FL
     """Detect material local amount extrema, sustained acceleration, and pct flips."""
     if peak_min is None:
         peak_min = PEAK_MIN_AMOUNT_YUAN
+    values = [float(r["window_amount_yuan"]) for r in rows if r.get("window_amount_yuan") is not None]
+    median_value = statistics.median(values) if values else 0.0
+    volatility = statistics.median(abs(value - median_value) for value in values) if values else 0.0
+    relative_floor = 2 * volatility
+    pct_values = [float(r["window_pct_change_pp"]) for r in rows if r.get("window_pct_change_pp") is not None]
+    pct_median = statistics.median(pct_values) if pct_values else 0.0
+    pct_volatility = statistics.median(abs(value - pct_median) for value in pct_values) if pct_values else 0.0
     points: list[dict[str, Any]] = []
     for i, row in enumerate(rows):
         amount = row.get("window_amount_yuan")
@@ -39,11 +47,16 @@ def detect_turning_points(rows: list[Mapping[str, Any]], *, flip_min: float = FL
             before = rows[i - 1].get("window_amount_yuan")
             after = rows[i + 1].get("window_amount_yuan")
             if before is not None and after is not None:
-                peak = amount > before and amount >= after and amount - max(before, after) >= peak_min
-                valley = amount < before and amount <= after and min(before, after) - amount >= peak_min
+                amplitude = amount - max(before, after) if amount > before and amount >= after else (
+                    min(before, after) - amount if amount < before and amount <= after else 0)
+                peak = amount > before and amount >= after and amplitude >= max(peak_min, relative_floor)
+                valley = amount < before and amount <= after and amplitude >= max(peak_min, relative_floor)
                 if peak or valley:
                     points.append({"kind": "AMOUNT_PEAK" if peak else "AMOUNT_VALLEY",
                         "timestamp": row["timestamp"], "before": before, "value": amount, "after": after,
+                        "window_amount_yuan": amount,
+                        "amplitude": amplitude, "volatility_yuan": volatility,
+                        "salience": amplitude / max(peak_min, relative_floor, 1e-12),
                         "window_minutes": row.get("window_minutes")})
         if i >= 2:
             prev2, prev1 = rows[i - 2].get("window_amount_yuan"), rows[i - 1].get("window_amount_yuan")
@@ -51,9 +64,13 @@ def detect_turning_points(rows: list[Mapping[str, Any]], *, flip_min: float = FL
             if prev2 is not None and prev1 is not None and cur is not None and prev2 > 0 and prev1 > 0:
                 first = prev1 / prev2
                 second = cur / prev1
-                if first >= ACCELERATION_MULTIPLE and second >= ACCELERATION_MULTIPLE:
+                acceleration_amplitude = cur - prev2
+                if first >= ACCELERATION_MULTIPLE and second >= ACCELERATION_MULTIPLE and acceleration_amplitude >= max(peak_min, relative_floor):
                     points.append({"kind": "ACCELERATION_START", "timestamp": rows[i - 1]["timestamp"],
                         "before": prev2, "value": prev1, "after": cur,
+                        "window_amount_yuan": cur,
+                        "amplitude": acceleration_amplitude, "volatility_yuan": volatility,
+                        "salience": acceleration_amplitude / max(peak_min, relative_floor, 1e-12),
                         "window_minutes": row.get("window_minutes")})
                     # Only the first bar in a sustained run is reported.
                     if i >= 3:
@@ -64,14 +81,18 @@ def detect_turning_points(rows: list[Mapping[str, Any]], *, flip_min: float = FL
             before_pct, current_pct = rows[i - 1].get("window_pct_change_pp"), row.get("window_pct_change_pp")
             if before_pct is not None and current_pct is not None:
                 flipped = ((before_pct < 0 <= current_pct) or (before_pct > 0 >= current_pct))
-                if flipped and abs(current_pct - before_pct) >= flip_min:
+                if flipped and abs(current_pct - before_pct) >= max(flip_min, 2 * pct_volatility):
                     points.append({"kind": "DIRECTION_FLIP", "timestamp": row["timestamp"],
                         "before": before_pct, "value": current_pct, "after": current_pct,
+                        "window_amount_yuan": amount,
+                        "amplitude": abs(current_pct - before_pct), "volatility_yuan": volatility,
+                        "salience": abs(current_pct - before_pct) / max(flip_min, 2 * pct_volatility, 1e-12),
                         "window_minutes": row.get("window_minutes")})
-    return points
+    points.sort(key=lambda p: (-float(p.get("salience", 0)), p["timestamp"]))
+    return sorted(points[:5], key=lambda p: p["timestamp"])
 
 
-def summarize_curve(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+def summarize_curve(rows: list[Mapping[str, Any]], *, market_rows: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     auction = [r for r in rows if r.get("phase") == "AUCTION" and r.get("cumulative_amount_yuan") is not None]
     terminal = auction[-1].get("cumulative_amount_yuan") if auction else None
     target = terminal * 0.5 if terminal is not None else None
@@ -83,15 +104,24 @@ def summarize_curve(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         if prior and prior.get("cumulative_amount_yuan") is not None:
             last = terminal - prior["cumulative_amount_yuan"]
     last_share = 100 * last / terminal if terminal and last is not None else None
+    market_summary = summarize_curve(market_rows) if market_rows is not None and market_rows is not rows else None
+    market_late = (last_share if market_rows is rows else market_summary.get("last_60s_share_pct")
+                   if market_summary else None)
+    excess = round(last_share - market_late, 2) if last_share is not None and market_late is not None else None
+    market_t50 = t50 if market_rows is rows else market_summary.get("t50_timestamp") if market_summary else None
+    t50_offset = (_seconds(t50[-8:]) - _seconds(market_t50[-8:])) if t50 and market_t50 else None
     labels = []
-    if last_share is not None and last_share >= LATE_RUSH_SHARE_PCT:
+    if (excess is not None and excess >= LATE_RUSH_EXCESS_PCT) or (
+            market_rows is None and last_share is not None and last_share >= LATE_RUSH_SHARE_PCT):
         labels.append("LATE_RUSH")
     if t50 and t50[-8:] < EARLY_FAVORITE_BEFORE:
         labels.append("EARLY_FAVORITE")
     flips = sum(p["kind"] == "DIRECTION_FLIP" for p in detect_turning_points(auction))
     if flips >= 2:
         labels.append("REVERSAL")
-    return {"t50_timestamp": t50, "last_60s_share_pct": round(last_share, 2) if last_share is not None else None,
+    return {"t50_timestamp": t50, "t50_vs_market_seconds": t50_offset,
+            "last_60s_share_pct": round(last_share, 2) if last_share is not None else None,
+            "last_60s_excess_vs_market_pp": excess,
             "amount_peak_timestamp": next((p["timestamp"] for p in detect_turning_points(auction) if p["kind"] == "AMOUNT_PEAK"), None),
             "direction_flip_count": flips, "labels": labels, "terminal_amount_yuan": terminal}
 
@@ -100,7 +130,7 @@ def build_bar_report(*, trade_date: str, auction_ticks: Iterable[Tick], open_tic
                      relations: Mapping[str, set[str]] | None = None, plate_names: Mapping[str, str] | None = None,
                      generic_names: set[str] | None = None, pool_symbols: set[str] | None = None,
                      prev_close: Mapping[str, Any] | None = None,
-                     baseline: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                     baseline: Mapping[str, Any] | None = None, full_json: bool = False) -> dict[str, Any]:
     """Build compact market/plate/focus-stock rolling bars and report fragments."""
     relations, plate_names, generic_names = relations or {}, plate_names or {}, generic_names or set()
     auction = sorted((t for t in auction_ticks if t.trade_date == trade_date), key=lambda t: (_seconds(t.ts), t.symbol))
@@ -111,8 +141,8 @@ def build_bar_report(*, trade_date: str, auction_ticks: Iterable[Tick], open_tic
     for sec in range(_seconds("09:15:00"), _seconds("09:25:00") + 1, 30):
         while ai < len(auction) and _seconds(auction[ai].ts) <= sec:
             state[auction[ai].symbol] = derive_state(auction[ai]); ai += 1
-        samples.append({"sec": sec, "phase": "AUCTION", "states": {k: dict(v) for k, v in state.items()}})
-    auction_anchor = {k: dict(v) for k, v in state.items()}
+        samples.append({"sec": sec, "phase": "AUCTION", "states": dict(state)})
+    auction_anchor = dict(state)
     oi = 0
     for sec in range(_seconds("09:30:00"), _seconds("09:45:00") + 1, 60):
         while oi < len(opened) and _seconds(opened[oi].ts) <= sec:
@@ -121,13 +151,13 @@ def build_bar_report(*, trade_date: str, auction_ticks: Iterable[Tick], open_tic
             row["match_amount_yuan"] = max(0, int(tick.amt_yuan))
             state[tick.symbol] = row
             oi += 1
-        samples.append({"sec": sec, "phase": "OPEN", "states": {k: dict(v) for k, v in state.items()}})
+        samples.append({"sec": sec, "phase": "OPEN", "states": dict(state)})
     terminal = samples[20]["states"] if len(samples) > 20 else (samples[-1]["states"] if samples else {})
     stock_amounts = [(s, int(v.get("match_amount_yuan") or 0)) for s, v in terminal.items()]
     pool_symbols = set(pool_symbols or ())
     ranked_symbols = [s for s, _ in sorted(stock_amounts, key=lambda x: (-x[1], x[0]))]
     top50_symbols = set(ranked_symbols[:50])
-    focus = pool_symbols | set(ranked_symbols[:200])
+    focus = pool_symbols | set(ranked_symbols[:50])
     prev_close = prev_close or {}
     for snap in samples:
         for symbol, row in snap["states"].items():
@@ -171,6 +201,7 @@ def build_bar_report(*, trade_date: str, auction_ticks: Iterable[Tick], open_tic
     market_points = {(x["phase"], x["sec"]): x for x in aggregates["market"]}
     for key, curve in aggregates.items():
         curves[key] = []
+        auction_terminal_for_key = next((x["cum_amount"] for x in reversed(curve) if x["phase"] == "AUCTION"), None)
         windows = (0.5, *WINDOWS_MINUTES) if key == "market" else WINDOWS_MINUTES
         phase_points: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for item in curve:
@@ -195,25 +226,41 @@ def build_bar_report(*, trade_date: str, auction_ticks: Iterable[Tick], open_tic
                     "timestamp": _stamp(trade_date, cur["sec"]), "phase": cur["phase"], "window_minutes": window,
                     "window_amount_yuan": amount, "window_pct_change_pp": pct,
                     "market_share_bp": round(amount * 10000 / market_amount, 2) if amount is not None and market_amount else None,
-                    "amount_multiple": None, "end_pct": cur["pct"], "end_price_milli": cur.get("price"),
+                    "amount_multiple": None, "amount_multiple_basis": None,
+                    "end_pct": cur["pct"], "end_price_milli": cur.get("price"),
                     "limit_up_count": cur["up"], "limit_down_count": cur["down"],
                     "final_count": cur.get("final_count"), "indicative_count": cur.get("indicative_count"),
                     "cumulative_amount_yuan": cur["cum_amount"]}
                 prev_amount = prior_amount.get(cur["phase"])
                 if amount is not None and prev_amount:
                     row["amount_multiple"] = round(amount / prev_amount, 3)
+                    row["amount_multiple_basis"] = "PREVIOUS_WINDOW"
+                elif amount is not None and cur["phase"] == "OPEN":
+                    if auction_terminal_for_key:
+                        row["amount_multiple"] = round(amount / auction_terminal_for_key, 3)
+                        row["amount_multiple_basis"] = "AUCTION_TERMINAL_FALLBACK"
+                    else:
+                        row["amount_multiple_basis"] = "MISSING_NO_PREVIOUS_WINDOW_OR_AUCTION_TERMINAL"
                 if pct is not None:
                     row["window_pct_change_pp"] = round(pct, 6)
                 prior_amount[cur["phase"]] = amount
                 bars.append(row); curves[key].append(row)
+    plate_rank = sorted((code for code in relations if f"plate:{code}" in aggregates),
+        key=lambda code: (-int(next((x["cum_amount"] or 0 for x in reversed(aggregates[f"plate:{code}"]) if x["phase"] == "AUCTION"), 0)), code))
+    top30_plates = set(plate_rank[:30])
+    turning_keys = {"market", *(f"plate:{code}" for code in top30_plates),
+                    *(f"stock:{symbol}" for symbol in focus)}
     turns = []
     for key, rows in curves.items():
+        if not full_json and key not in turning_keys:
+            continue
         for window in WINDOWS_MINUTES:
             for phase in ("AUCTION", "OPEN"):
                 selected = [r for r in rows if r["window_minutes"] == window and r["phase"] == phase]
                 for point in detect_turning_points(selected):
-                    point.update({"object_type": key.split(":")[0], "object": key.split(":", 1)[1] if ":" in key else "ALL"})
-                    turns.append(point)
+                    point.update({"object_type": key.split(":")[0], "object": key.split(":", 1)[1] if ":" in key else "ALL", "phase": phase})
+                    if not (phase == "AUCTION" and point["kind"] == "DIRECTION_FLIP" and point["timestamp"][-8:] < "09:20:00"):
+                        turns.append(point)
                 if key.startswith("plate:"):
                     share_rows = [{**r, "window_amount_yuan": r["market_share_bp"],
                                    "window_pct_change_pp": r["market_share_bp"]}
@@ -222,14 +269,19 @@ def build_bar_report(*, trade_date: str, auction_ticks: Iterable[Tick], open_tic
                                                        peak_min=PLATE_SHARE_FLIP_BP):
                         point["kind"] = "SHARE_" + point["kind"]
                         point["series"] = "market_share_bp"
-                        point.update({"object_type": "plate", "object": key.split(":", 1)[1]})
-                        turns.append(point)
+                        point.update({"object_type": "plate", "object": key.split(":", 1)[1], "phase": phase})
+                        if not (phase == "AUCTION" and point["timestamp"][-8:] < "09:20:00"):
+                            turns.append(point)
     summaries = []
+    market_curve_rows = [{"timestamp": _stamp(trade_date, x["sec"]), "phase": x["phase"],
+        "cumulative_amount_yuan": x["cum_amount"], "window_amount_yuan": None,
+        "window_pct_change_pp": x["pct"]} for x in aggregates["market"]]
     for key, curve in aggregates.items():
         if key.startswith("stock:") and key.split(":", 1)[1] not in focus: continue
-        summary = summarize_curve([{"timestamp": _stamp(trade_date, x["sec"]), "phase": x["phase"],
+        curve_rows = [{"timestamp": _stamp(trade_date, x["sec"]), "phase": x["phase"],
             "cumulative_amount_yuan": x["cum_amount"], "window_amount_yuan": None,
-            "window_pct_change_pp": x["pct"]} for x in curve])
+            "window_pct_change_pp": x["pct"]} for x in curve]
+        summary = summarize_curve(curve_rows, market_rows=market_curve_rows)
         one_minute = [b for b in curves[key] if b["window_minutes"] == 1 and b["phase"] == "AUCTION"]
         peaks = [p for p in detect_turning_points(one_minute) if p["kind"] == "AMOUNT_PEAK"]
         summary["amount_peak_timestamp"] = peaks[0]["timestamp"] if peaks else None
@@ -242,7 +294,9 @@ def build_bar_report(*, trade_date: str, auction_ticks: Iterable[Tick], open_tic
             item = next((b for b in curves[key] if b["phase"] == "OPEN" and b["window_minutes"] == window and b["timestamp"].endswith(mark)), None)
             if item:
                 opening_metrics[str(window)] = {"amount_yuan": item["window_amount_yuan"],
-                    "amount_multiple": item["amount_multiple"], "pct_change_pp": item["window_pct_change_pp"]}
+                    "amount_multiple": item["amount_multiple"],
+                    "amount_multiple_basis": item.get("amount_multiple_basis"),
+                    "pct_change_pp": item["window_pct_change_pp"]}
         summary["opening_windows"] = opening_metrics
         if key.startswith("plate:"):
             def share_at(mark: str) -> float | None:
@@ -273,27 +327,50 @@ def build_bar_report(*, trade_date: str, auction_ticks: Iterable[Tick], open_tic
             summary["top50_auction_amount"] = symbol in top50_symbols
             summary["sealed_0925"] = bool(auction_anchor.get(symbol) and
                 (_at_limit(auction_anchor[symbol], "up") or _at_limit(auction_anchor[symbol], "down")))
-        summaries.append({"object_type": key.split(":")[0], "object": key.split(":", 1)[1] if ":" in key else "ALL", **summary})
+        object_type = key.split(":")[0]
+        object_code = key.split(":", 1)[1] if ":" in key else "ALL"
+        object_name = _plate_display_name(object_code, plate_names) if object_type == "plate" else object_code
+        summaries.append({"object_type": object_type, "object": object_code,
+                          "object_name": object_name, **summary})
+    by_object: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for point in turns:
+        by_object[(point["object_type"], point["object"])].append(point)
+    turns = []
+    for points in by_object.values():
+        points.sort(key=lambda p: (-float(p.get("salience", 0)), p["timestamp"]))
+        turns.extend(sorted(points[:5], key=lambda p: p["timestamp"]))
     baseline = baseline or {}
     prior_days = sorted(str(day) for day in baseline if str(day) < trade_date)
     baseline_amount = int(baseline.get(prior_days[-1]) or 0) if prior_days else None
     html_report = _render_html(trade_date, bars, summaries, turns, plate_names, baseline_amount)
-    md = _render_markdown(trade_date, summaries, turns)
-    return {"trade_date": trade_date, "bars": bars, "turning_points": turns, "summaries": summaries,
+    md = _render_markdown(trade_date, summaries, turns, bars)
+    if not full_json:
+        summaries = [s for s in summaries if s["object_type"] == "market" or
+            (s["object_type"] == "plate" and s["object"] in top30_plates) or
+            (s["object_type"] == "stock" and s["object"] in focus)]
+        bars = [b for b in bars if b["object_type"] == "market" or
+            (b["object_type"] == "plate" and b["object"] in top30_plates) or
+            (b["object_type"] == "stock" and b["object"] in focus)]
+    return {"trade_date": trade_date, "json_mode": "full" if full_json else "focus", "bars": bars, "turning_points": turns, "summaries": summaries,
             "html": html_report, "markdown": md, "focus_symbols": sorted(focus),
             "previous_day_terminal_amount_yuan": baseline_amount}
+
+
+def _plate_display_name(code: str, names: Mapping[str, str]) -> str:
+    name = str(names.get(code, "")).strip()
+    return f"{name} · {code}" if name and name != code else f"{code} (无名)"
 
 
 def _render_html(trade_date: str, bars: list[dict[str, Any]], summaries: list[dict[str, Any]],
                  turns: list[dict[str, Any]], names: Mapping[str, str], baseline_amount: int | None) -> str:
     plates = sorted((r for r in summaries if r["object_type"] == "plate"),
-                    key=lambda r: (-(r.get("share_0925_bp") or 0), r["object"]))[:20]
+                    key=lambda r: (-(r.get("share_0925_bp") or 0), r["object"]))[:30]
     stocks = [r for r in summaries if r["object_type"] == "stock" and
               (r.get("in_yesterday_limit_pool") or r.get("sealed_0925") or r.get("top50_auction_amount"))]
     chosen = [r for r in summaries if r["object_type"] == "market"] + plates + stocks
     sections = []
     for item in chosen:
-        obj = html.escape(names.get(item["object"], item["object"]))
+        obj = html.escape(item.get("object_name") or names.get(item["object"], item["object"]))
         if item["object_type"] == "market":
             selected = [b for b in bars if b["object_type"] == "market" and
                 ((b["phase"] == "AUCTION" and b["window_minutes"] == 0.5) or
@@ -317,17 +394,48 @@ def _render_html(trade_date: str, bars: list[dict[str, Any]], summaries: list[di
     baseline_note = f"前日 09:25 终值参考线: {baseline_amount:,} 元。" if baseline_amount is not None else "前日 09:25 终值缺失。"
     return ("<!doctype html><html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>窗口指标 {trade_date}</title><style>:root{{color-scheme:light dark}}body{{font:14px system-ui;margin:1rem}}main{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1rem}}section{{border:1px solid #8885;border-radius:8px;padding:.6rem}}svg{{width:100%;height:70px}}</style>"
-        f"<h1>大盘额曲线 · {trade_date}</h1><p>竞价虚拟撮合；09:25:00 起使用 FINAL px/amt_yuan。{baseline_note}橙点标注额峰/谷或加速。窗口额为累计额增量；窗口涨幅为端点变化，板块按等权。阈值待校准: 峰谷差≥{PEAK_MIN_AMOUNT_YUAN:,}元，翻转幅度≥{FLIP_MIN_CHANGE_PP}pp，加速倍数≥{ACCELERATION_MULTIPLE}且连续2柱，LATE_RUSH≥{LATE_RUSH_SHARE_PCT}%。q2 spd1m/amt2m/amt5m 分别对应 1/2/5 分钟字段，历史值由 tick 重建。</p><main>{''.join(sections)}</main></html>")
+        f"<h1>大盘额曲线 · {trade_date}</h1><p>竞价虚拟撮合；09:25:00 起使用 FINAL px/amt_yuan。{baseline_note}橙点标注显著转折。板块 LATE_RUSH 按最后60秒占比相对大盘高 {LATE_RUSH_EXCESS_PCT}pp 判定。窗口额为累计额增量；窗口涨幅为端点变化，板块按等权。q2 spd1m/amt2m/amt5m 分别对应 1/2/5 分钟字段，历史值由 tick 重建。</p><main>{''.join(sections)}</main></html>")
 
 
-def _render_markdown(trade_date: str, summaries: list[dict[str, Any]], turns: list[dict[str, Any]]) -> str:
-    lines = [f"# 窗口指标 {trade_date}", "", f"竞价阶段为虚拟撮合；09:25:00 起 px/amt_yuan 为 FINAL，之前价格为 INDICATIVE。窗口额为累计额增量，板块涨幅为等权端点变化。q2 spd1m/amt2m/amt5m 分别对应 1/2/5 分钟字段；本报告历史窗口由 TD tick 重建。规则阈值待校准: 峰谷差≥{PEAK_MIN_AMOUNT_YUAN:,}元、涨幅翻转≥{FLIP_MIN_CHANGE_PP}pp、板块份额翻转≥{PLATE_SHARE_FLIP_BP}bp、加速≥{ACCELERATION_MULTIPLE}连续2柱、LATE_RUSH≥{LATE_RUSH_SHARE_PCT}%。缺失值不补零。", "", "| 类型 | 对象 | t50 | 最后60秒占比 | 额峰 | 0920→0925份额变化(bp) | 开盘 1m / 5m / 15m (额倍数,涨幅pp) | 首次跌破 / 站回0925 | 方向翻转 | 标签 |", "|---|---|---|---:|---|---:|---|---|---:|---|"]
-    for r in summaries:
-        opening = r.get("opening_windows", {})
-        opening_text = " / ".join(f"{opening.get(str(w), {}).get('amount_multiple', '缺失')},{opening.get(str(w), {}).get('pct_change_pp', '缺失')}" for w in (1, 5, 15))
-        crossing = f"{r.get('first_below_auction_timestamp') or '缺失'} / {r.get('first_above_auction_timestamp') or '缺失'}" if r["object_type"] == "stock" else "—"
-        share_delta = r.get("share_change_0920_0925_bp", "—")
-        lines.append(f"| {r['object_type']} | {r['object']} | {r.get('t50_timestamp') or '缺失'} | {r.get('last_60s_share_pct') if r.get('last_60s_share_pct') is not None else '缺失'} | {r.get('amount_peak_timestamp') or '缺失'} | {share_delta} | {opening_text} | {crossing} | {r['direction_flip_count']} | {', '.join(r['labels']) or '—'} |")
-    lines.extend(["", "## 转折点", ""])
-    lines.extend(f"- {p['timestamp']} {p['object_type']}:{p['object']} {p['kind']} {p.get('before')} → {p.get('value')} → {p.get('after')}" for p in turns)
+def _render_markdown(trade_date: str, summaries: list[dict[str, Any]], turns: list[dict[str, Any]],
+                     bars: list[dict[str, Any]]) -> str:
+    market = next((r for r in summaries if r["object_type"] == "market"), None)
+    plates = sorted((r for r in summaries if r["object_type"] == "plate"),
+        key=lambda r: (-(r.get("share_0925_bp") or 0), r["object"]))[:30]
+    stocks = sorted((r for r in summaries if r["object_type"] == "stock"),
+        key=lambda r: (-(r.get("terminal_amount_yuan") or 0), r["object"]))[:30]
+    selected = ([market] if market else []) + plates + stocks
+    lines = [f"# 窗口指标 {trade_date}", "",
+        "竞价为虚拟撮合；09:25:00 起 px/amt_yuan 为 FINAL。窗口为 1/2/5/15 分钟；竞价额曲线每 30 秒更新，开盘曲线每分钟更新。板块涨幅等权。",
+        "q2 spd1m/amt2m/amt5m 对应 1/2/5 分钟字段；缺失不补零。开盘倍数分母优先前一窗口，前值为零时回退竞价终值并标注。",
+        f"LATE_RUSH 表示最后60秒占比高于大盘 {LATE_RUSH_EXCESS_PCT}pp。", "",
+        "## 大盘曲线与转折", ""]
+    if market:
+        lines.append(f"- t50 {market.get('t50_timestamp') or '缺失'}；最后60秒 {market.get('last_60s_share_pct')}%；显著转折 {market.get('amount_peak_timestamp') or '无'}")
+    market_bars = [b for b in bars if b["object_type"] == "market" and
+        ((b["phase"] == "AUCTION" and b["window_minutes"] == 0.5) or
+         (b["phase"] == "OPEN" and b["window_minutes"] == 1))]
+    checkpoints = {"09:15:00", "09:20:00", "09:22:00", "09:24:00", "09:25:00",
+                   "09:30:00", "09:31:00", "09:32:00", "09:35:00", "09:40:00", "09:45:00"}
+    market_bars = [b for b in market_bars if b["timestamp"][-8:] in checkpoints]
+    lines.extend(["", "| 时点 | 阶段 | 累计额(元) | 窗口额(元) | 中位涨幅(%) | 涨停/跌停数 |",
+                  "|---|---|---:|---:|---:|---:|"])
+    for b in market_bars:
+        pct = b.get("end_pct")
+        lines.append(f"| {b['timestamp'][-8:]} | {b['phase']} | {b.get('cumulative_amount_yuan') if b.get('cumulative_amount_yuan') is not None else '缺失'} | {b.get('window_amount_yuan') if b.get('window_amount_yuan') is not None else '缺失'} | {round(pct, 3) if pct is not None else '缺失'} | {b.get('limit_up_count', 0)}/{b.get('limit_down_count', 0)} |")
+    lines.extend(["", "## 板块 Top30", "", "| 板块 | t50偏移(秒) | 最后60秒占比 | 相对大盘(pp) | 份额变化(bp) | 开盘1m/5m/15m倍数 | 标签 |", "|---|---:|---:|---:|---:|---|---|"])
+    for r in plates:
+        opens = r.get("opening_windows", {})
+        multiple = "/".join(str(opens.get(str(w), {}).get("amount_multiple", "缺失")) for w in (1, 5, 15))
+        lines.append(f"| {r['object_name']} | {r.get('t50_vs_market_seconds', '缺失')} | {r.get('last_60s_share_pct', '缺失')} | {r.get('last_60s_excess_vs_market_pp', '缺失')} | {r.get('share_change_0920_0925_bp', '缺失')} | {multiple} | {', '.join(r['labels']) or '—'} |")
+    lines.extend(["", "## 个股 Top30", "", "| 代码 | 竞价额 | 开盘1m/5m/15m倍数 | 1m分母来源 | 首次跌破/站回竞价价 | 昨日涨停池 |", "|---|---:|---|---|---|---|"])
+    for r in stocks:
+        opens = r.get("opening_windows", {})
+        multiple = "/".join(str(opens.get(str(w), {}).get("amount_multiple", "缺失")) for w in (1, 5, 15))
+        basis = opens.get("1", {}).get("amount_multiple_basis") or "缺失"
+        crossing = f"{r.get('first_below_auction_timestamp') or '—'} / {r.get('first_above_auction_timestamp') or '—'}"
+        lines.append(f"| {r['object']} | {r.get('terminal_amount_yuan', '缺失')} | {multiple} | {basis} | {crossing} | {'是' if r.get('in_yesterday_limit_pool') else '否'} |")
+    ranked_turns = sorted(turns, key=lambda p: (-(float(p.get("window_amount_yuan") or 0) * float(p.get("amplitude") or 0)), p["timestamp"]))[:30]
+    lines.extend(["", "## 转折点 Top30", "", "按窗口额×转折幅度排序，仅用于展示，不是评分。"])
+    lines.extend(f"- {p['timestamp']} {p['object_type']}:{p['object']} {p['kind']} {p.get('before')} → {p.get('value')} → {p.get('after')}" for p in ranked_turns)
     return "\n".join(lines) + "\n"

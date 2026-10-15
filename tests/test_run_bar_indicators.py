@@ -42,3 +42,14 @@ def test_cli_refuses_nonempty_output_dir(tmp_path):
     assert result.returncode == 2
     assert "out-dir must be empty" in result.stderr
     assert (output / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_cli_full_json_flag_is_explicit(tmp_path):
+    ticks, output = tmp_path / "ticks.csv", tmp_path / "out"
+    _ticks(ticks)
+    result = subprocess.run([sys.executable, str(ROOT / "examples/run_bar_indicators.py"),
+        "--trade-date", "2026-10-14", "--ticks-csv", str(ticks), "--out-dir", str(output), "--full-json"],
+        cwd=ROOT, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    data = json.loads((output / "bars.json").read_text(encoding="utf-8"))
+    assert data["json_mode"] == "full"

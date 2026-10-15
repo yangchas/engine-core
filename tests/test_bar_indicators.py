@@ -53,3 +53,49 @@ def test_html_contains_market_and_plate_small_multiples():
     assert "大盘额曲线" in report["html"]
     assert "测试板块" in report["html"]
     assert "<svg" in report["html"]
+
+
+def test_late_rush_is_relative_to_market_baseline():
+    rows = [
+        {"timestamp": f"2026-10-14T09:{minute:02d}:00", "phase": "AUCTION",
+         "cumulative_amount_yuan": amount}
+        for minute, amount in ((23, 47), (24, 70), (25, 100))
+    ]
+    market = summarize_curve(rows)
+    plate = summarize_curve(rows, market_rows=rows)
+    assert market["last_60s_share_pct"] == 30.0
+    assert plate["last_60s_excess_vs_market_pp"] == 0.0
+    assert "LATE_RUSH" not in plate["labels"]
+
+
+def test_turning_points_require_material_move_and_are_capped():
+    rows = [{"timestamp": f"2026-10-14T09:{15+i:02d}:00",
+             "window_amount_yuan": value, "window_pct_change_pp": None}
+            for i, value in enumerate([100, 110, 100, 180, 100, 190, 100, 200, 100, 210, 100, 220, 100])]
+    points = detect_turning_points(rows, peak_min=1)
+    assert len(points) <= 5
+    assert all(abs(point["value"] - point["before"]) >= 2 * point["volatility_yuan"]
+               for point in points)
+
+
+def test_plate_names_and_missing_name_are_rendered_in_markdown_and_html():
+    ticks = [Tick("2026-10-14", "09:24:00", f"60000{i}", pc_milli=10000,
+                  bp1_milli=10000, ap1_milli=10000, bv1=10, av1=10) for i in range(5)]
+    report = build_bar_report(trade_date="2026-10-14", auction_ticks=ticks,
+        relations={"p": {f"60000{i}" for i in range(5)}, "q": {f"60000{i}" for i in range(5)}},
+        plate_names={"p": "测试板块"})
+    assert "测试板块" in report["markdown"] and "测试板块" in report["html"]
+    assert "q (无名)" in report["markdown"] and "q (无名)" in report["html"]
+
+
+def test_markdown_is_compact_and_opening_amount_uses_auction_fallback():
+    ticks = [Tick("2026-10-14", "09:24:00", "600000", pc_milli=10000,
+                  bp1_milli=10000, ap1_milli=10000, bv1=10, av1=10)]
+    opened = [Tick("2026-10-14", "09:30:00", "600000", amt_yuan=0),
+              Tick("2026-10-14", "09:31:00", "600000", amt_yuan=1000)]
+    report = build_bar_report(trade_date="2026-10-14", auction_ticks=ticks, open_ticks=opened)
+    stock = next(row for row in report["summaries"] if row["object_type"] == "stock")
+    one_minute = stock["opening_windows"]["1"]
+    assert one_minute["amount_multiple"] is not None
+    assert one_minute["amount_multiple_basis"] == "AUCTION_TERMINAL_FALLBACK"
+    assert len(report["markdown"].splitlines()) <= 400
