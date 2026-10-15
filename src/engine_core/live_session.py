@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import statistics
 import csv
 from collections import defaultdict
@@ -11,6 +12,25 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .auction_tracking import Tick, derive_state, _at_limit
+
+MARKET_VOLUME_THRESHOLDS = {"high_amount_multiple": 1.25, "low_amount_multiple": 0.85,
+                            "down_up_share_pct": 25.0, "up_up_share_pct": 50.0}
+TOP100_NORMAL_RANGE_PCT = (40.0, 47.0)
+TOP100_NORMAL_MIDPOINT_PCT = sum(TOP100_NORMAL_RANGE_PCT) / 2
+
+
+def market_price_volume_status(amount_multiple: float | None, weighted_pct: float | None,
+                               up_share_pct: float | None) -> str:
+    """Descriptive, uncalibrated market state rules; never a combined score."""
+    thresholds = MARKET_VOLUME_THRESHOLDS
+    if amount_multiple is not None and amount_multiple >= thresholds["high_amount_multiple"]:
+        if weighted_pct is not None and weighted_pct < 0 and up_share_pct is not None and up_share_pct < thresholds["down_up_share_pct"]:
+            return "放量下杀"
+        if weighted_pct is not None and weighted_pct > 0 and up_share_pct is not None and up_share_pct >= thresholds["up_up_share_pct"]:
+            return "放量上攻"
+    if amount_multiple is not None and amount_multiple <= thresholds["low_amount_multiple"]:
+        return "缩量"
+    return "量价无明显一致方向"
 
 
 def load_daily_history_csv(path: str | Path) -> list[dict[str, Any]]:
@@ -167,8 +187,10 @@ def build_live_slice(states: Mapping[str, Mapping[str, Any]], asof: datetime | s
                      plate_names: Mapping[str, str] | None = None,
                      top_n: int = 15, stale_after_seconds: float = 30) -> dict[str, Any]:
     stamp = _as_datetime(asof)
-    prices = [float(row["pct_change"]) for row in states.values() if row.get("pct_change") is not None]
-    amounts = [int(row.get("match_amount_yuan") or 0) for row in states.values()]
+    priced = [(row, float(row["pct_change"])) for row in states.values()
+              if row.get("pct_change") is not None and _finite_number(row.get("pct_change"))]
+    prices = [pct for _, pct in priced]
+    amounts = [max(0, int(row.get("match_amount_yuan") or 0)) for row, _ in priced]
     latest_values = []
     for row in states.values():
         value = row.get("source_ts")
@@ -180,10 +202,17 @@ def build_live_slice(states: Mapping[str, Mapping[str, Any]], asof: datetime | s
             except ValueError: pass
     lag = max(0.0, (stamp - max(latest_values)).total_seconds()) if latest_values else None
     total = sum(amounts)
+    weighted_pct = (sum(amount * pct for amount, (_, pct) in zip(amounts, priced)) / total) if total else None
+    down_amount = sum(amount for amount, (_, pct) in zip(amounts, priced) if pct < 0)
+    down_share = 100 * down_amount / total if total else None
+    up_share = 100 * sum(pct > 0 for pct in prices) / len(prices) if prices else None
+    ordered_amounts = sorted(amounts, reverse=True)
+    top100_concentration = 100 * sum(ordered_amounts[:100]) / total if total else None
     relations, plate_names = relations or {}, plate_names or {}
     plates = []
     for code, members in relations.items():
-        selected = [states[s] for s in members if s in states and states[s].get("pct_change") is not None]
+        selected = [states[s] for s in members if s in states and states[s].get("pct_change") is not None
+                    and _finite_number(states[s].get("pct_change"))]
         if len(selected) < 5: continue
         amount = sum(int(s.get("match_amount_yuan") or 0) for s in selected)
         plates.append({"code": code, "name": plate_names.get(code, code), "member_count": len(selected),
@@ -195,14 +224,28 @@ def build_live_slice(states: Mapping[str, Mapping[str, Any]], asof: datetime | s
     return {"asof": stamp.isoformat(timespec="seconds"), "phase": "AUCTION" if stamp.time() < datetime.strptime("09:30", "%H:%M").time() else "OPEN",
             "symbol_count": len(states), "data_lag_seconds": lag,
             "status": "STALE" if lag is None or lag > stale_after_seconds else "FRESH",
+            "priced_symbol_count": len(priced),
             "market_match_amount_yuan": total,
             "vs_previous_day_final": total / previous_day_final_yuan if previous_day_final_yuan and total else None,
+            "amount_weighted_pct_change": weighted_pct,
+            "down_amount_share_pct": down_share,
             "median_pct_change": statistics.median(prices) if prices else None,
-            "up_share_pct": 100 * sum(value > 0 for value in prices) / len(prices) if prices else None,
+            "up_share_pct": up_share,
+            "top100_concentration_pct": top100_concentration,
+            "top100_concentration_vs_normal_pp": (top100_concentration - TOP100_NORMAL_MIDPOINT_PCT) if top100_concentration is not None else None,
+            "top100_concentration_in_normal_range": (TOP100_NORMAL_RANGE_PCT[0] <= top100_concentration <= TOP100_NORMAL_RANGE_PCT[1]) if top100_concentration is not None else None,
+            "market_price_volume_state": market_price_volume_status(total / previous_day_final_yuan if previous_day_final_yuan and total else None,
+                                                                      weighted_pct, up_share),
+            "market_price_volume_thresholds": dict(MARKET_VOLUME_THRESHOLDS),
             "limit_up": sum(_at_limit(row, "up") for row in states.values()),
             "limit_down": sum(_at_limit(row, "down") for row in states.values()),
             "top_plates_by_share": plates[:top_n], "top_stocks_by_amount": stocks,
             "source": "TD stock_tick_v2 (read-only)", "isolated": True}
+
+
+def _finite_number(value: Any) -> bool:
+    try: return math.isfinite(float(value))
+    except (TypeError, ValueError): return False
 
 
 def publish_isolated(redis: Any, trade_date: str, payload: Mapping[str, Any], ttl: int, *, key: str | None = None) -> str:

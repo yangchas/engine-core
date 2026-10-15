@@ -40,3 +40,35 @@ def test_states_at_uses_injected_td():
     cutoff = datetime(2026, 10, 15, 9, 25)
     assert states_at(TD(), cutoff) == {"x": cutoff}
 
+
+
+def test_market_price_volume_metrics_use_priced_rows_and_handle_nan_zero_denominator():
+    states = {
+        "a": {"symbol": "a", "pct_change": 2.0, "match_amount_yuan": 100, "price_milli": 100000, "prev_close_milli": 100000, "rest_bid_shares": 0, "rest_ask_shares": 0},
+        "b": {"symbol": "b", "pct_change": -1.0, "match_amount_yuan": 300, "price_milli": 100000, "prev_close_milli": 100000, "rest_bid_shares": 0, "rest_ask_shares": 0},
+        "c": {"symbol": "c", "pct_change": float("nan"), "match_amount_yuan": 900, "price_milli": 100000, "prev_close_milli": 100000, "rest_bid_shares": 0, "rest_ask_shares": 0},
+        "d": {"symbol": "d", "pct_change": None, "match_amount_yuan": 700, "price_milli": 100000, "prev_close_milli": 100000, "rest_bid_shares": 0, "rest_ask_shares": 0},
+    }
+    payload = build_live_slice(states, datetime(2026, 10, 15, 9, 25), previous_day_final_yuan=200)
+    assert payload["market_match_amount_yuan"] == 400
+    assert payload["vs_previous_day_final"] == 2
+    assert payload["amount_weighted_pct_change"] == pytest.approx(-0.25)
+    assert payload["down_amount_share_pct"] == 75
+    assert payload["up_share_pct"] == 50
+    assert payload["median_pct_change"] == pytest.approx(0.5)
+    assert payload["top100_concentration_pct"] == 100
+    zero = build_live_slice({"z": {"symbol": "z", "pct_change": 1, "match_amount_yuan": 0,
+                                  "price_milli": 100000, "prev_close_milli": 100000,
+                                  "rest_bid_shares": 0, "rest_ask_shares": 0}},
+                            datetime(2026, 10, 15, 9, 25))
+    assert zero["amount_weighted_pct_change"] is None
+    assert zero["down_amount_share_pct"] is None
+    assert zero["top100_concentration_pct"] is None
+
+
+def test_market_price_volume_state_threshold_edges():
+    from engine_core.live_session import market_price_volume_status
+    assert market_price_volume_status(1.25, -0.01, 24.99) == "放量下杀"
+    assert market_price_volume_status(1.25, 0.01, 50) == "放量上攻"
+    assert market_price_volume_status(0.85, 3, 80) == "缩量"
+    assert market_price_volume_status(1.249, -1, 20) == "量价无明显一致方向"

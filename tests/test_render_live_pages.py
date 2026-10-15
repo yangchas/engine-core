@@ -95,3 +95,58 @@ def test_missing_history_is_explicit_and_cli_inputs_are_supported():
     assert payload["chapters"]["look_a_do_b"] == "缺少输入"
     assert payload["chapters"]["yesterday_highboards"] == "缺少输入"
     assert "缺少输入" in page
+
+
+def test_hot_plate_quadrants_and_zero_input_fallback(tmp_path):
+    hot = tmp_path / "hot.json"
+    hot.write_text(json.dumps({"captured_local": "2026-10-15 09:26:30", "response": {"list": [
+        ["801001", "双正", 10, 2.0, 0, 2_100_000_000, 1, 3, -2, 0],
+        ["801002", "双负", -10, -2.0, 0, 2_100_000_000, -3, 1, -2, 0],
+        ["801003", "正流出", 10, 0.2, 0, 2_100_000_000, -1, 3, -2, 0],
+        ["801004", "负流入", -10, -0.2, 0, 2_100_000_000, 1, -1, -2, 0],
+        ["801005", "零值", 0, 0, 0, 2_100_000_000, 0, 0, 0, 0],
+    ]}}), encoding="utf-8")
+
+    class TD:
+        def states_at(self, cutoff):
+            return {f"s{i:03}": _state(f"s{i:03}", (i % 5) - 2, 100_000_000,
+                                         ts=cutoff.strftime("%H:%M:%S")) for i in range(20)}
+    relations = {f"p{i}": {f"s{j:03}" for j in range(20)} for i in range(1, 6)}
+    names = {f"p{i}": f"板{i}" for i in range(1, 6)}
+    # Match supplied names to the captured Kaipan names.
+    names = {f"p{i}": name for i, name in enumerate(("双正", "双负", "正流出", "负流入", "零值"), 1)}
+    page, payload = render_page(TD(), trade_date="2026-10-15", stage="auction_0926",
+                                relations=relations, plate_names=names, kaipan_hot_json=hot)
+    block = payload["chapters"]["plate_quadrants"]
+    assert block["available"] is True
+    assert block["counts"] == {"双正": 1, "双负": 1, "强度正净流出背离": 1,
+                                "强度负净流入背离": 1, "零值边界": 1}
+    assert block["rows"][0]["our_pct"] is not None and block["rows"][0]["pct_diff_pp"] is not None
+    assert "09:26:30" in page and "描述" in page
+
+    hot.write_text(json.dumps({"captured_local": "2026-10-15 09:21:00", "response": {"list": [
+        ["801001", "双正", 0, 0, 0, 0, 0, 0, 0, 0]
+    ]}}), encoding="utf-8")
+    _, fallback = render_page(TD(), trade_date="2026-10-15", stage="auction_0926",
+                              relations=relations, plate_names=names, kaipan_hot_json=hot)
+    assert fallback["chapters"]["plate_quadrants"]["available"] is False
+    assert fallback["chapters"]["plate_quadrants"]["fallback_equal_weight"]
+    assert "Kaipan 强度不可用" in fallback["chapters"]["plate_quadrants"]["status"]
+
+
+def test_strength_anchor_estimate_age_and_missing_chapters(tmp_path):
+    anchor = tmp_path / "anchor.json"
+    anchor.write_text(json.dumps({"板块A": {"strength": 200, "pct": 1.0, "ts": "2026-10-15T09:20:00"}}), encoding="utf-8")
+    class TD:
+        def states_at(self, cutoff):
+            return {f"s{i:03}": _state(f"s{i:03}", 2.0, 100_000_000,
+                                         ts=cutoff.strftime("%H:%M:%S")) for i in range(20)}
+    rel = {"p": {f"s{i:03}" for i in range(20)}}
+    _, payload = render_page(TD(), trade_date="2026-10-15", stage="auction_0926",
+                             relations=rel, plate_names={"p": "板块A"}, strength_anchor_json=anchor)
+    block = payload["chapters"]["plate_quadrants"]
+    assert block["strength_estimates"][0]["estimated_strength"] == 300
+    assert block["strength_estimates"][0]["anchor_age_seconds"] == 306
+    assert payload["manifest"]["inputs"]["strength_anchor"]["captured_local"] == "2026-10-15T09:20:00"
+    _, missing = render_page(TD(), trade_date="2026-10-15", stage="auction_0926")
+    assert missing["chapters"]["plate_quadrants"]["status"] == "Kaipan 强度不可用；未提供抓取输入"
