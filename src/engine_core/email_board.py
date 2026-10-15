@@ -10,6 +10,10 @@ from typing import Any
 
 from .extremes_board import build_extremes_board
 from .limit_price import state_at_close
+from .story_features import build_story_features
+from .anomaly_detector import detect_anomalies
+from .tradability_funnel import filter_candidates
+from .story_composer import compose_story
 
 
 def _esc(value: Any) -> str:
@@ -132,6 +136,84 @@ def _tiles(report: Mapping[str, Any], stage: str) -> list[tuple[str, str]]:
 def _section(title: str, body: str, note: str = "") -> str:
     suffix = f'<div style="color:#667085;font-size:10px;margin-top:4px">{_esc(note)}</div>' if note else ""
     return f'<section style="margin:10px 0;padding:9px 10px;background:#fff;border:1px solid #e7ebf0"><h2 style="font-size:14px;margin:0 0 6px;color:#23364d">{_esc(title)}</h2>{body}{suffix}</section>'
+
+
+def _story_view(report: Mapping[str, Any], stage: str, trade_date: str) -> tuple[dict[str, Any], str, str]:
+    supplied = report.get("story")
+    if isinstance(supplied, Mapping) and supplied.get("stage") == stage:
+        story = dict(supplied)
+    else:
+        source = dict(report)
+        market = report.get("market") if isinstance(report.get("market"), Mapping) else {}
+        source.update(market)
+        source_facts = dict(source)
+        if stage == "auction":
+            source = {"trade_date": trade_date,
+                      "auction_amount_yuan": source.get("auction_amount_yuan", source.get("match_amount_yuan")),
+                      "auction_up_share": source.get("auction_up_share", source.get("up_share")),
+                      "auction_median_pct": source.get("auction_median_pct", source.get("median_pct")),
+                      "auction_prev_common_ratio": source.get("auction_prev_common_ratio")}
+        elif stage == "open":
+            source = {"trade_date": trade_date, "open_median_pct": source.get("open_median_pct", source.get("p0932_median")),
+                      "open_up_share": source.get("open_up_share", source.get("p0932_up_share")),
+                      "p0945_median": source.get("p0945_median"), "p0945_up_share": source.get("p0945_up_share")}
+        else:
+            source = {"trade_date": trade_date, "close_median_pct": source.get("close_median_pct", source.get("close_median")),
+                      "close_up_share": source.get("close_up_share", source.get("up_share")),
+                      "close_amount_yuan": source.get("close_amount_yuan", source.get("amount_yuan"))}
+        features = build_story_features(source, stage=stage, cutoff=str(source.get("asof", stage)),
+                                        observed_at=report.get("observed_at"),
+                                        provenance={"source_fidelity": "UNKNOWN", "refs": ["email_report"]})
+        candidates = []
+        groups = report.get("a_to_b") if isinstance(report.get("a_to_b"), list) else []
+        for group in groups:
+            for row in group.get("candidates", []):
+                candidates.append({**row, "bucket": row.get("bucket", "wait"),
+                                   "condition": row.get("condition", "观察下一可用截点是否延续"),
+                                   "risk": row.get("risk", "价格与成交可行性未验证")})
+        funnel = filter_candidates(candidates, features, asof=str(source.get("asof") or stage))
+        previous_acts = []
+        prior_specs = (
+            ("auction", "09:25", {"auction_median_pct": ("auction_median_pct", "auction_median"),
+                                   "auction_up_share": ("auction_up_share", "auction_up_share"),
+                                   "auction_amount_yuan": ("auction_amount_yuan", "match_amount_yuan")}),
+            ("open", "09:32", {"open_median_pct": ("open_median_pct", "p0932_median"),
+                                "open_up_share": ("open_up_share", "p0932_up_share")}),
+            ("intraday", "09:45", {"p0945_median": ("p0945_median",),
+                                    "p0945_up_share": ("p0945_up_share",)}),
+        )
+        stage_order = ("auction", "open", "intraday", "close")
+        for prior_stage, prior_cutoff, keys in prior_specs:
+            if stage_order.index(prior_stage) >= stage_order.index(stage):
+                break
+            snapshot = {"trade_date": trade_date}
+            for target, aliases in keys.items():
+                value = next((source_facts[key] for key in aliases if source_facts.get(key) is not None), None)
+                if value is not None:
+                    snapshot[target] = value
+            if len(snapshot) == 1:
+                continue
+            prior_features = build_story_features(snapshot, stage=prior_stage, cutoff=prior_cutoff,
+                observed_at=None, provenance={"source_fidelity": "HISTORICAL_AVAILABILITY_UNKNOWN",
+                                              "refs": ["email_report"]})
+            prior_story = compose_story(prior_features, [], {"shown": {}}, previous_acts=[])
+            previous_acts.extend(a for a in prior_story["acts"] if a["stage"] == prior_stage)
+        story = compose_story(features, detect_anomalies([], []), funnel, previous_acts=previous_acts)
+    text_lines = [str((story.get("headline") or {}).get("text", "结构化事实不足，保留缺口。"))]
+    for event in story.get("top_events", [])[:3]:
+        text_lines.append(f"{event.get('display_label', '对照观察')}：{event.get('id')}={event.get('value')}")
+    for act in story.get("acts", [])[:4]:
+        if act.get("status") != "UNOBSERVED":
+            text_lines.append(f"{act.get('stage')}：{(act.get('lead') or {}).get('text', '')}")
+    for key, label in (("watch", "能做"), ("wait", "要等"), ("exclude", "别碰")):
+        for row in (story.get("funnel") or {}).get(key, [])[:5]:
+            text_lines.append(f"{label}：{row.get('name', '名称未知')}｜{(row.get('condition') or {}).get('text', '')}｜风险：{row.get('risk', '')}")
+    text_lines = text_lines[:40]
+    html_lines = "".join(f"<li>{_esc(line)}</li>" for line in text_lines)
+    html_block = _section("今日三件不一样的事 · 四幕故事 · 观察漏斗",
+                          f'<ol style="margin:0;padding-left:20px">{html_lines}</ol>',
+                          "观察条件不构成买卖建议；缺失不按零处理。")
+    return story, html_block, "\n".join(text_lines)
 
 
 def _ladder(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
@@ -704,9 +786,12 @@ def render_email_board(report: Mapping[str, Any], stage: str, trade_date: str) -
     plate_html, plate_text = _plates(report, stage_key)
     ab_html, ab_text = _a_to_b(report, stage_key)
     other_html, other_text = _other(report, stage_key)
+    _story, story_html, story_text = _story_view(report, stage_key, trade_date)
+    appendix_html = (f'<section style="margin:12px 0"><h2 style="font-size:13px;color:#475467">附表：完整事实章节</h2>'
+                     f'{_section("情绪温度计", tile_html)}{ladder_html}{extreme_html}{plate_html}{ab_html}{other_html}</section>')
     body = (f'<div style="max-width:680px;margin:0 auto;background:#f5f7fa;color:#263445;font-family:Arial,"Microsoft YaHei",sans-serif;font-size:12px;line-height:1.45;font-variant-numeric:tabular-nums">'
             f'<header style="padding:10px 2px"><b>{_esc(trade_date)} {stage_label}盘面</b></header>'
-            f'{_section("情绪温度计", tile_html)}{ladder_html}{extreme_html}{plate_html}{ab_html}{other_html}'
+            f'{story_html}{appendix_html}'
             '<footer style="padding:8px;color:#667085;font-size:10px">缺失不补零；涨停状态为价格代理；单日事实不构成预测或建议。</footer></div>')
     if "close" != stage_key:
         # The A→B chapter must not leak later prices into an earlier stage.
@@ -714,5 +799,7 @@ def render_email_board(report: Mapping[str, Any], stage: str, trade_date: str) -
             assert forbidden not in ab_html
             assert forbidden not in ab_text
     document = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#f5f7fa">' + body + "</body></html>"
-    plain = f"{trade_date} {stage_label}盘面\n情绪温度计：" + "；".join(f"{label} {html.unescape(re.sub(r'<[^>]*>', '', val))}" for label, val in tiles) + f"\n{ladder_text}\n{extreme_text}\n{plate_text}\n{ab_text}\n数据与口径：{other_text}"
+    plain = (f"{trade_date} {stage_label}盘面\n{story_text}\n\n附表：完整事实章节\n情绪温度计：" +
+             "；".join(f"{label} {html.unescape(re.sub(r'<[^>]*>', '', val))}" for label, val in tiles) +
+             f"\n{ladder_text}\n{extreme_text}\n{plate_text}\n{ab_text}\n数据与口径：{other_text}")
     return document, plain

@@ -1,0 +1,462 @@
+{
+  "schema": "StoryTemplateLibraryV1",
+  "status": "DESIGN_NOT_STRATEGY_VALIDATED",
+  "version": "C201-1",
+  "multiple_matches_allowed": true,
+  "composite_score": false,
+  "expression_language": {
+    "node": "all",
+    "ops": [
+      "eq",
+      "in",
+      "gte",
+      "lte",
+      "gt",
+      "lt",
+      "between_closed",
+      "abs_lte"
+    ],
+    "missing_or_incomparable_operand": "UNKNOWN_NOT_FALSE"
+  },
+  "historical_policy": {
+    "lookback_trading_days": 64,
+    "rank_only_min_days": 5,
+    "tail_min_days": 20,
+    "tail_percentile": [
+      0.05,
+      0.95
+    ],
+    "abs_robust_z": 3,
+    "small_denominator_below": 5,
+    "prior_phase_only_until_close": true
+  },
+  "templates": [
+    {
+      "id": "ICE_REBOUND",
+      "title": "冰点反抽",
+      "stages": [
+        "open",
+        "intraday",
+        "close"
+      ],
+      "conditions": {
+        "all": [
+          {
+            "field": "prior_phase_known_preopen",
+            "op": "eq",
+            "value": "ICE"
+          },
+          {
+            "field": "median_delta_from_auction_pp",
+            "op": "gte",
+            "value": 1
+          },
+          {
+            "field": "breadth_delta_from_auction_pp",
+            "op": "gte",
+            "value": 5
+          }
+        ]
+      },
+      "neutral_sentence": "昨日处低广度区，当前涨幅中位与上涨范围回升；下一截点是否扩大仍待观察。",
+      "required_evidence": [
+        "prior_phase_known_preopen",
+        "median_delta_from_auction_pp",
+        "breadth_delta_from_auction_pp"
+      ],
+      "missing": "NO_MATCH_UNKNOWN",
+      "inference": "DESCRIPTIVE_ONLY",
+      "disallow": [
+        "profit_probability",
+        "intent",
+        "unobserved_path"
+      ]
+    },
+    {
+      "id": "PANIC_CONTINUES",
+      "title": "恐慌延续",
+      "stages": [
+        "open",
+        "intraday",
+        "close"
+      ],
+      "conditions": {
+        "all": [
+          {
+            "field": "prior_phase_known_preopen",
+            "op": "in",
+            "value": [
+              "ICE",
+              "RETREAT"
+            ]
+          },
+          {
+            "field": "breadth_delta_vs_previous_day_same_stage_pp",
+            "op": "lte",
+            "value": 0
+          },
+          {
+            "field": "down_price_count_comparable_prior_percentile",
+            "op": "gte",
+            "value": 0.9
+          }
+        ]
+      },
+      "neutral_sentence": "低广度延续，跌停价格个数未收敛；价格代理不表示封单。",
+      "required_evidence": [
+        "prior_phase_known_preopen",
+        "breadth_delta_vs_previous_day_same_stage_pp",
+        "down_price_count_comparable_prior_percentile"
+      ],
+      "missing": "NO_MATCH_UNKNOWN",
+      "inference": "DESCRIPTIVE_ONLY",
+      "disallow": [
+        "profit_probability",
+        "intent",
+        "unobserved_path"
+      ]
+    },
+    {
+      "id": "WEAK_REPAIR",
+      "title": "弱修复",
+      "stages": [
+        "open",
+        "intraday",
+        "close"
+      ],
+      "conditions": {
+        "all": [
+          {
+            "field": "median_delta_from_previous_act_pp",
+            "op": "gt",
+            "value": 0
+          },
+          {
+            "field": "breadth_delta_from_previous_act_pp",
+            "op": "gt",
+            "value": 0
+          },
+          {
+            "field": "up_share",
+            "op": "lt",
+            "value": 0.4
+          }
+        ]
+      },
+      "neutral_sentence": "相对上一截点有所回升，仍只有少数个股上涨。",
+      "required_evidence": [
+        "median_delta_from_previous_act_pp",
+        "breadth_delta_from_previous_act_pp",
+        "up_share"
+      ],
+      "missing": "NO_MATCH_UNKNOWN",
+      "inference": "DESCRIPTIVE_ONLY",
+      "disallow": [
+        "profit_probability",
+        "intent",
+        "unobserved_path"
+      ]
+    },
+    {
+      "id": "DIFFERENCES_CONVERGE",
+      "title": "分歧转一致",
+      "stages": [
+        "open",
+        "intraday",
+        "close"
+      ],
+      "conditions": {
+        "all": [
+          {
+            "field": "previous_act_up_share",
+            "op": "between_closed",
+            "value": [
+              0.2,
+              0.5
+            ]
+          },
+          {
+            "field": "up_share",
+            "op": "gte",
+            "value": 0.6
+          },
+          {
+            "field": "same_pool_return_iqr_delta_pp",
+            "op": "lt",
+            "value": 0
+          },
+          {
+            "field": "touch_up_price_count_delta",
+            "op": "gte",
+            "value": 0
+          }
+        ]
+      },
+      "neutral_sentence": "同一股票池更多成员转为同向上涨，涨幅分布收窄；不外推下一幕。",
+      "required_evidence": [
+        "previous_act_up_share",
+        "up_share",
+        "same_pool_return_iqr_delta_pp",
+        "touch_up_price_count_delta"
+      ],
+      "missing": "NO_MATCH_UNKNOWN",
+      "inference": "DESCRIPTIVE_ONLY",
+      "disallow": [
+        "profit_probability",
+        "intent",
+        "unobserved_path"
+      ]
+    },
+    {
+      "id": "CLIMAX_RETREAT",
+      "title": "高潮后退潮",
+      "stages": [
+        "open",
+        "intraday",
+        "close"
+      ],
+      "conditions": {
+        "all": [
+          {
+            "field": "prior_phase_known_preopen",
+            "op": "eq",
+            "value": "CLIMAX"
+          },
+          {
+            "field": "yesterday_pool_current_median_pp",
+            "op": "lt",
+            "value": 0
+          },
+          {
+            "field": "promotion_rate_delta_same_stage",
+            "op": "lt",
+            "value": 0
+          },
+          {
+            "field": "down_price_count_delta_same_stage",
+            "op": "gt",
+            "value": 0
+          }
+        ]
+      },
+      "neutral_sentence": "昨日强势组今日转弱，晋级减少、跌停价格个数增加；列出观察分母。",
+      "required_evidence": [
+        "prior_phase_known_preopen",
+        "yesterday_pool_current_median_pp",
+        "promotion_rate_delta_same_stage",
+        "down_price_count_delta_same_stage"
+      ],
+      "missing": "NO_MATCH_UNKNOWN",
+      "inference": "DESCRIPTIVE_ONLY",
+      "disallow": [
+        "profit_probability",
+        "intent",
+        "unobserved_path"
+      ]
+    },
+    {
+      "id": "LOW_VOLUME_RANGE",
+      "title": "缩量震荡",
+      "stages": [
+        "open",
+        "intraday",
+        "close"
+      ],
+      "conditions": {
+        "all": [
+          {
+            "field": "amount_common_ratio_same_stage",
+            "op": "lte",
+            "value": 0.8
+          },
+          {
+            "field": "up_share",
+            "op": "between_closed",
+            "value": [
+              0.4,
+              0.6
+            ]
+          },
+          {
+            "field": "median_delta_from_previous_act_pp",
+            "op": "abs_lte",
+            "value": 0.3
+          }
+        ]
+      },
+      "neutral_sentence": "同点成交额少于参照，涨跌分布接近平衡，中位变动较小。",
+      "required_evidence": [
+        "amount_common_ratio_same_stage",
+        "up_share",
+        "median_delta_from_previous_act_pp"
+      ],
+      "missing": "NO_MATCH_UNKNOWN",
+      "inference": "DESCRIPTIVE_ONLY",
+      "disallow": [
+        "profit_probability",
+        "intent",
+        "unobserved_path"
+      ]
+    },
+    {
+      "id": "VOLUME_ADVANCE",
+      "title": "放量上攻",
+      "stages": [
+        "open",
+        "intraday",
+        "close"
+      ],
+      "conditions": {
+        "all": [
+          {
+            "field": "amount_common_ratio_same_stage",
+            "op": "gte",
+            "value": 1.2
+          },
+          {
+            "field": "median_delta_from_previous_act_pp",
+            "op": "gte",
+            "value": 1
+          },
+          {
+            "field": "up_share",
+            "op": "gte",
+            "value": 0.6
+          }
+        ]
+      },
+      "neutral_sentence": "同点量增、上涨范围扩大，涨幅中位较前幕提高；不归因主力资金。",
+      "required_evidence": [
+        "amount_common_ratio_same_stage",
+        "median_delta_from_previous_act_pp",
+        "up_share"
+      ],
+      "missing": "NO_MATCH_UNKNOWN",
+      "inference": "DESCRIPTIVE_ONLY",
+      "disallow": [
+        "profit_probability",
+        "intent",
+        "unobserved_path"
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "id": "OPEN_PULLBACK",
+      "all": [
+        {
+          "field": "auction_median_pp",
+          "op": "gt",
+          "value": 0
+        },
+        {
+          "field": "median_delta_from_auction_pp",
+          "op": "lte",
+          "value": -1
+        }
+      ],
+      "text": "开盘较竞价回落。"
+    },
+    {
+      "id": "OPEN_REBOUND",
+      "all": [
+        {
+          "field": "auction_median_pp",
+          "op": "lt",
+          "value": 0
+        },
+        {
+          "field": "median_delta_from_auction_pp",
+          "op": "gte",
+          "value": 1
+        },
+        {
+          "field": "breadth_delta_from_auction_pp",
+          "op": "gte",
+          "value": 5
+        }
+      ],
+      "text": "开盘相对竞价回升，上涨范围扩大。"
+    },
+    {
+      "id": "RECOVERY_NOT_RETAINED",
+      "all": [
+        {
+          "field": "early_recovery_observed",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "field": "close_minus_0945_median_pp",
+          "op": "lte",
+          "value": -1
+        },
+        {
+          "field": "close_minus_0945_breadth_pp",
+          "op": "lt",
+          "value": 0
+        }
+      ],
+      "text": "早盘改善未保持到收盘；中间路径未观测时不能补写过程。"
+    },
+    {
+      "id": "PATH_ABSENT",
+      "all": [
+        {
+          "field": "act_path_available",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "text": "这一阶段没有连续路径，不判断阶段内先后。"
+    }
+  ],
+  "top_event_policy": {
+    "limit": 3,
+    "allow_fewer": true,
+    "quality_notice_separate_from_anomaly": true,
+    "family_priority": [
+      "volume",
+      "breadth",
+      "ladder_failure",
+      "structure"
+    ],
+    "quality_priority": [
+      "COMPARABLE",
+      "OBSERVED_RANK",
+      "CONTEXT"
+    ],
+    "collapse_key": [
+      "universe_id",
+      "stage_chain",
+      "family"
+    ],
+    "same_stock_or_theme_alias_deduplicate": true,
+    "tie_breaker": "metric_id",
+    "conflict": "SHOW_UNKNOWN_WITH_REFERENCES",
+    "context_must_be_labeled": true
+  },
+  "forbidden_automatic_claims": [
+    "诱多",
+    "吸筹",
+    "出货",
+    "骗炮",
+    "主力意图",
+    "庄家",
+    "必涨",
+    "必修复",
+    "稳了",
+    "确定性",
+    "无风险",
+    "闭眼买",
+    "真强"
+  ],
+  "restricted_claims": {
+    "总龙头": "human_attribution_with_source_required",
+    "资金流入": "verified_net_flow_required",
+    "回封": "ordered_seal_state_path_required",
+    "炸板": "ordered_seal_state_path_required",
+    "午后反包": "afternoon_path_required",
+    "历史第一": "comparable_history_required"
+  }
+}

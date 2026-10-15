@@ -19,6 +19,10 @@ from .a_to_b import _prior_streak, build_a_to_b, select_main_plate
 from .ladder_section import build_ladder_section
 from .extremes_board import build_extremes_board
 from .limit_price import is_limit_up, is_limit_down, state_at_close
+from .story_features import build_story_features
+from .anomaly_detector import detect_anomalies
+from .tradability_funnel import filter_candidates
+from .story_composer import compose_story
 
 
 def attach_close_sections(data: dict[str, Any], *, relation_asof: str = "UNKNOWN",
@@ -88,6 +92,44 @@ def attach_close_sections(data: dict[str, Any], *, relation_asof: str = "UNKNOWN
         if not isinstance(gaps, list):
             gaps = data["data_gaps"] = [str(gaps)]
         gaps.append("A→B 无候选：无满足昨日≥2板或竞价涨停价且有封单的 A")
+    market_metrics = dict(data.get("market") or {})
+    market_metrics.update({"close_median_pct": market_metrics.get("close_median"),
+                           "close_up_share": market_metrics.get("up_share"),
+                           "close_amount_yuan": market_metrics.get("amount_yuan")})
+    features = build_story_features({"trade_date": trade_date, **market_metrics}, stage="close",
+                                    cutoff=asof, observed_at=data.get("observed_at"),
+                                    provenance={"source_fidelity": "HISTORICAL_AVAILABILITY_UNKNOWN",
+                                                "refs": ["close_review.market"]})
+    candidates = []
+    for group in a_to_b:
+        for candidate in group.get("candidates", []):
+            candidates.append({**candidate, "bucket": candidate.get("bucket", "wait"),
+                               "condition": candidate.get("condition", "仅在价格和位置条件满足时复核"),
+                               "risk": candidate.get("risk", "A→B筛选不是成交可行性判断"),
+                               "origin_refs": [f"a_to_b:{group.get('a_symbol', '')}"]})
+    funnel = filter_candidates(candidates, features, asof=asof)
+    anomalies = detect_anomalies([], [])
+    previous_acts = []
+    stage_rows = (
+        ("auction", "09:25", "auction_median_pct", "auction_up_share", "auction_amount_yuan", "auction_pct", "auction_amount_yuan"),
+        ("open", "09:32", "open_median_pct", "open_up_share", None, "p0932_pct", None),
+        ("intraday", "09:45", "p0945_median", "p0945_up_share", "p0945_amount_yuan", "p0945_pct", "p0945_cumulative_amount_yuan"),
+    )
+    for prior_stage, prior_cutoff, median_key, share_key, amount_key, pct_field, amount_field in stage_rows:
+        values = [r[pct_field] for r in stocks if isinstance(r.get(pct_field), (int, float))]
+        if not values:
+            continue
+        snapshot = {"trade_date": trade_date, median_key: _median(values),
+                    share_key: sum(v > 0 for v in values) / len(values)}
+        if amount_key and amount_field:
+            amounts = [r[amount_field] for r in stocks if isinstance(r.get(amount_field), (int, float))]
+            snapshot[amount_key] = sum(amounts) if amounts else None
+        prior_features = build_story_features(snapshot, stage=prior_stage, cutoff=prior_cutoff,
+            observed_at=None, provenance={"source_fidelity": "HISTORICAL_AVAILABILITY_UNKNOWN",
+                                          "refs": [f"close_review.{prior_stage}_rows"]})
+        prior_story = compose_story(prior_features, [], {"shown": {}}, previous_acts=[])
+        previous_acts.extend(a for a in prior_story["acts"] if a["stage"] == prior_stage)
+    data["story"] = compose_story(features, anomalies, funnel, previous_acts=previous_acts)
     return data
 
 
