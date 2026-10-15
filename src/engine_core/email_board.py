@@ -347,7 +347,7 @@ def _selected_extremes(board: Mapping[str, Any], stage: str,
         endpoint_label = "实时" if stage == "open" else "收盘"
         group_label = "09:45" if stage == "open" else "收盘"
         for label, key in (("兑现/修复 Top8", "rebound_top8"), ("回落/走弱 Top8", "weak_top8")):
-            names = [f"{_display_name(row, 10)} {_num((row.get('tracking') or {}).get(delta_key))}pp"
+            names = [f"{_display_name(row, 10)} {_num((row.get('tracking') or {}).get(delta_key)).rstrip('%')}pp"
                      for row in _rows(board.get(key))]
             line = label + "（固定集合内）: " + ("、".join(names) or "—")
             blocks.append(f"<div>{_esc(line)}</div>")
@@ -583,8 +583,16 @@ def _a_to_b_v2(report: Mapping[str, Any], entries: Sequence[Mapping[str, Any]], 
             f"封单/匹配额：{val(strength.get('seal_to_match_ratio') * 100 if strength.get('seal_to_match_ratio') is not None else None)}%；轨迹 {trajectory}；日高低 {pct(strength.get('high_pct'))}/{pct(strength.get('low_pct'))}；路径 {strength.get('path_type') or 'UNKNOWN'}",
             f"同身位竞价额：{same_rank if same_rank is not None else '—'}/{same_count if same_count is not None else '—'}；{path_history(strength.get('path_frequency'))}",
             "选A原因：" + ("；".join(f"{r.get('rule_id')} {r.get('text')}" for r in entry.get("a_reasons", [])) or "规则原因缺失"),
-            f"板块状态：竞价额 {yi(plate.get('auction_amount_yuan'))}，占大盘 {val(plate.get('auction_amount_share_bp'))}bp（重叠不可加）；64日/前日 {val(plate.get('relative_64d_multiple'))}/{val(plate.get('relative_prev_multiple'))}倍；上涨占比 {pct((plate.get('up_share') or 0) * 100 if plate.get('up_share') is not None else None)}；等权涨幅 {pct(plate.get('equal_weight_pct'))}→{pct(plate.get('equal_weight_0945_pct'))}" + (f"→{pct(plate.get('equal_weight_close_pct'))}" if stage == "close" else "") + f"；涨停价 {plate.get('limit_up_count') if plate.get('limit_up_count') is not None else '—'}只；强/弱Top {plate.get('strength_top')}/{plate.get('weak_top')}；关系 {plate.get('relation_asof') or 'UNKNOWN'}，滞后 {plate.get('relation_lag_trading_days') if plate.get('relation_lag_trading_days') is not None else '—'}交易日",
-            f"情绪档：{sentiment.get('label') or 'UNKNOWN'}；历史频率 {sentiment_history(sentiment)}；单日描述，非预测",
+            "板块状态：竞价额 " + yi(plate.get('auction_amount_yuan')) + "，占大盘 " + val(plate.get('auction_amount_share_bp')) + "bp（重叠不可加）"
+            + (f"；对64日/前日 {val(plate.get('relative_64d_multiple'))}/{val(plate.get('relative_prev_multiple'))}倍" if plate.get('relative_64d_multiple') is not None or plate.get('relative_prev_multiple') is not None else "")
+            + (f"；成员上涨占比 {val((plate.get('up_share') or 0) * 100)}%" if plate.get('up_share') is not None else "")
+            + f"；等权涨幅 {pct(plate.get('equal_weight_pct'))}→{pct(plate.get('equal_weight_0945_pct'))}"
+            + (f"→{pct(plate.get('equal_weight_close_pct'))}" if stage == "close" else "")
+            + (f"；涨停价 {plate.get('limit_up_count')}只" if plate.get('limit_up_count') is not None else "")
+            + ("；当日强势板块" if plate.get('strength_top') is True else "；当日弱势板块" if plate.get('weak_top') is True else "")
+            + f"；关系日期 {plate.get('relation_asof') or '未知'}"
+            + (f"（滞后{plate.get('relation_lag_trading_days')}个交易日）" if plate.get('relation_lag_trading_days') is not None else ""),
+            f"情绪档：{ {'WEAK': '弱势', 'STRONG': '强势', 'NEUTRAL': '中性', 'PANIC': '恐慌', 'REPAIR': '修复'}.get(str(sentiment.get('label')), sentiment.get('label') or '未知') }；历史频率 {sentiment_history(sentiment)}；单日描述，非预测",
         ]
         candidates = entry.get("b_candidates") or []
         if candidates:
