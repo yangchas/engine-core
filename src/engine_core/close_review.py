@@ -941,7 +941,9 @@ def main(argv: list[str] | None = None) -> int:
     compact["big_meat"] = [{k: r.get(k) for k in ("symbol", "name", "delta_over_limit", "auction_amount_yuan")} for r in data["big_meat"]]
     compact["big_loss"] = [{k: r.get(k) for k in ("symbol", "name", "delta_over_limit", "auction_amount_yuan")} for r in data["big_loss"]]
     report_json = json.dumps(compact, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
-    if len(report_json.encode()) > 300_000: raise ValueError("report.json exceeds 300 KB")
+    if len(report_json.encode()) > 300_000:
+        sizes = sorted(((len(json.dumps(v, ensure_ascii=False, separators=(",", ":")).encode()), k) for k, v in compact.items()), reverse=True)[:6]
+        raise ValueError("report.json exceeds 300 KB; largest keys: " + ", ".join(f"{k}={n}" for n, k in sizes))
     (out / "report.json").write_text(report_json, encoding="utf-8")
     if args.full_json: (out / "report.full.json").write_text(json.dumps(data, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
     manifest["outputs"] = {name: (out / name).stat().st_size for name in ("report.md", "report.html", "report.json")}

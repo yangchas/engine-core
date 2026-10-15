@@ -50,6 +50,46 @@ def _track(row: Mapping[str, Any]) -> dict[str, float | None]:
     return result
 
 
+_KEEP_FIELDS = ("symbol", "name", "main_plate", "limit_pct", "auction_pct", "auction_amount_yuan",
+                "auction_amount_bp", "auction_price_status", "auction_limit_state", "p0924_pct", "p0925_pct",
+                "p0932_pct", "p0935_pct", "p0940_pct", "p0945_pct", "close_pct", "high_pct", "low_pct",
+                "abs_rank", "amount_rank", "selection_reason", "auction_state", "tracking", "in_yest_pool",
+                "lb_days", "is_unlimited_price_band")
+
+
+def _slim_row(row: Any) -> Any:
+    if not isinstance(row, Mapping):
+        return row
+    return {key: row[key] for key in _KEEP_FIELDS if key in row}
+
+
+def _slim_result(result: dict[str, Any], stage: str | None = None) -> dict[str, Any]:
+    """Keep the board compact: only displayed fields, no repeated full stock records."""
+    for section in ("auction", "open", "close"):
+        block = result.get(section)
+        if not isinstance(block, dict):
+            continue
+        for key, value in list(block.items()):
+            if isinstance(value, list) and value and isinstance(value[0], Mapping):
+                block[key] = [_slim_row(item) for item in value]
+    active = {"close": "close", "open": "open", "auction": "auction"}.get(stage or "")
+    minimal = ("symbol", "name", "abs_rank", "amount_rank", "selection_reason")
+    for section in ("auction", "open", "close"):
+        block = result.get(section)
+        if active is not None and section != active and isinstance(block, dict):
+            if section == "auction" and active != "auction":
+                block["amount_cohort"] = []
+            for key in ("rows",):
+                if isinstance(block.get(key), list):
+                    block[key] = [{k: r.get(k) for k in minimal} for r in block[key]]
+    auction = result.get("auction", {})
+    if isinstance(auction.get("excluded_unlimited"), list):
+        auction["excluded_unlimited"] = [
+            {key: row.get(key) for key in ("symbol", "name", "auction_pct", "close_pct")}
+            for row in auction["excluded_unlimited"]]
+    return result
+
+
 def _selection_label(abs_rank: int | None, amount_rank: int | None) -> str:
     if abs_rank is not None and amount_rank is not None:
         return f"绝对值#{abs_rank}/额#{amount_rank}"
@@ -165,5 +205,5 @@ def build_extremes_board(rows: Sequence[Mapping[str, Any]], *,
             "low_open_group": _red_rate([], "close_pct"), "amount_top20": _amount_weighted_outcome([], "close_pct"),
             "missing_close_count": sum(row["tracking"]["close_pct"] is None for row in traced), "sample_label": "当日描述"},
     }
-    return result
+    return _slim_result(result, stage)
 
