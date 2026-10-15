@@ -377,6 +377,9 @@ def _emit_events(out: list[dict[str, Any]], snap: Mapping[str, Any], prev: Mappi
         before = old_plates.get(code)
         if allow_volume_events and before and now["market_share_bp"] - before["market_share_bp"] >= PLATE_SHARE_JUMP_BP and now["match_amount_yuan"] >= PLATE_MIN_AMOUNT_YUAN:
             out.append(_event(ts, "plate", names.get(code, code), "PLATE_SHARE_SURGE", {"share_change_bp": now["market_share_bp"] - before["market_share_bp"], "amount_yuan": now["match_amount_yuan"]}, {"market_amount_yuan": snap["market_match_amount_yuan"], "window_seconds": 60}))
+    old_plate_map = _plate_pct_map(old_states, relations, names, generic_names or set())
+    new_plate_map = _plate_pct_map(states, relations, names, generic_names or set())
+    plates_of = _stock_plates(relations)
     for symbol, now in states.items():
         before = old_states.get(symbol)
         if not before: continue
@@ -388,8 +391,8 @@ def _emit_events(out: list[dict[str, Any]], snap: Mapping[str, Any], prev: Mappi
             out.append(_event(ts, "stock", symbol, f"STOCK_AMOUNT_SURGE_{direction}", {"amount_increase_yuan": d_amount, "multiple": d_amount / max(1, prior_amt), "price_change_pp": price_delta}, {"market_amount_yuan": snap["market_match_amount_yuan"], "window_seconds": 60}, now.get("status")))
         _limit_transition(out, ts, symbol, (immediate_states or {}).get(symbol, before), now)
         if before.get("pct_change") is not None and now.get("pct_change") is not None:
-            old_plate_pct = _strongest_plate_pct(symbol, old_states, relations, names, generic_names or set())
-            new_plate_pct = _strongest_plate_pct(symbol, states, relations, names, generic_names or set())
+            old_plate_pct = _strongest_from_map(symbol, old_plate_map, plates_of)
+            new_plate_pct = _strongest_from_map(symbol, new_plate_map, plates_of)
             if old_plate_pct is not None and new_plate_pct is not None:
                 relative_move = (now["pct_change"] - new_plate_pct) - (before["pct_change"] - old_plate_pct)
                 if abs(relative_move) >= RELATIVE_MOVE_PP:
@@ -399,6 +402,39 @@ def _emit_events(out: list[dict[str, Any]], snap: Mapping[str, Any], prev: Mappi
                                       {"strongest_plate_pct": new_plate_pct}, now.get("status")))
     if snap["market_match_amount_yuan"] >= int(prev["market_match_amount_yuan"] * INDEX_AMOUNT_MULTIPLE) > 0:
         out.append(_event(ts, "market", "ALL", "MARKET_AMOUNT_JUMP", {"multiple": snap["market_match_amount_yuan"] / prev["market_match_amount_yuan"]}, {}))
+
+
+_STOCK_PLATES_CACHE: dict[int, dict[str, list[str]]] = {}
+
+
+def _stock_plates(relations: Mapping[str, set[str]]) -> dict[str, list[str]]:
+    key = id(relations)
+    cached = _STOCK_PLATES_CACHE.get(key)
+    if cached is None or cached.get("__n__") != len(relations):
+        cached = {"__n__": len(relations)}  # type: ignore[dict-item]
+        for code, members in relations.items():
+            for symbol in members:
+                cached.setdefault(symbol, []).append(code)
+        _STOCK_PLATES_CACHE[key] = cached
+    return cached
+
+
+def _plate_pct_map(states: Mapping[str, Mapping[str, Any]], relations: Mapping[str, set[str]],
+                   names: Mapping[str, str], generic_names: set[str]) -> dict[str, float]:
+    """plate code -> equal-weight mean pct over members with a price (>=5 priced members), computed once per slice."""
+    result: dict[str, float] = {}
+    for code, members in relations.items():
+        if names.get(code, code) in generic_names:
+            continue
+        selected = [states[s]["pct_change"] for s in members if s in states and states[s].get("pct_change") is not None]
+        if len(selected) >= 5:
+            result[code] = statistics.mean(selected)
+    return result
+
+
+def _strongest_from_map(symbol: str, plate_map: Mapping[str, float], plates_of: Mapping[str, list[str]]) -> float | None:
+    values = [plate_map[code] for code in plates_of.get(symbol, ()) if code in plate_map]
+    return max(values) if values else None
 
 
 def _strongest_plate_pct(symbol: str, states: Mapping[str, Mapping[str, Any]], relations: Mapping[str, set[str]],
