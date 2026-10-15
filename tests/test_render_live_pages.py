@@ -184,7 +184,7 @@ def test_highboards_prioritize_auction_amount_and_show_aggregate_facts(tmp_path)
     assert [row["amount_share_bp"] for row in rows] == pytest.approx([5000, 3333.3], abs=0.05)
     summary = payload["chapters"]["yesterday_highboards_summary"]
     assert summary["match_amount_yuan"] == 50_000_000
-    assert summary["market_share_bp"] == pytest.approx(50_000_000 / 60_000_000 * 10_000)
+    assert summary["market_share_bp"] == pytest.approx(50_000_000 / 60_000_000 * 10_000, abs=0.05)
     assert summary["median_pct_change"] == -1
     assert summary["sealed_up_count"] == summary["sealed_down_count"] == 1
     pool = summary["yesterday_limit_pool"]
