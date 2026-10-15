@@ -1,0 +1,42 @@
+from datetime import datetime, timedelta
+
+import pytest
+
+from engine_core.live_session import build_live_slice, checkpoint_ready, publish_isolated, states_at
+
+
+def test_isolated_publish_checks_prefix_and_ttl():
+    class Redis:
+        def __init__(self): self.calls = []
+        def set(self, key, value, ex=None): self.calls.append((key, value, ex))
+    redis = Redis()
+    publish_isolated(redis, "2026-10-15", {"ok": True}, 60)
+    assert redis.calls[0][0] == "core:cache:live_tracking:2026-10-15:latest"
+    assert redis.calls[0][2] == 60
+    with pytest.raises(ValueError):
+        publish_isolated(redis, "2026-10-15", {}, 0, key="cache:legacy")
+
+
+def test_slice_marks_stale_and_checkpoint_requires_data_through_cutoff():
+    now = datetime(2026, 10, 15, 9, 32)
+    states = {"000001": {"symbol": "000001", "pct_change": 1.0, "match_amount_yuan": 100,
+                         "price_milli": 101000, "prev_close_milli": 100000, "rest_bid_shares": 0,
+                         "rest_ask_shares": 0, "ts": "09:30:00"}}
+    payload = build_live_slice(states, now, previous_day_final_yuan=1000)
+    assert payload["data_lag_seconds"] == 120
+    assert payload["status"] == "STALE"
+    class TD:
+        latest = datetime(2026, 10, 15, 9, 31, 59)
+        def latest_tick_ts(self): return self.latest
+    td = TD()
+    assert checkpoint_ready(td, datetime(2026, 10, 15, 9, 32)) is False
+    td.latest = datetime(2026, 10, 15, 9, 32)
+    assert checkpoint_ready(td, datetime(2026, 10, 15, 9, 32)) is True
+
+
+def test_states_at_uses_injected_td():
+    class TD:
+        def states_at(self, cutoff): return {"x": cutoff}
+    cutoff = datetime(2026, 10, 15, 9, 25)
+    assert states_at(TD(), cutoff) == {"x": cutoff}
+
