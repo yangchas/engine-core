@@ -78,6 +78,58 @@ def test_html_and_default_json_omit_snapshots_with_manifest(tmp_path):
     assert full["manifest"]["omitted_blocks"] == {}
 
 
+def test_default_json_omits_behavior_rows_but_full_json_keeps_them(tmp_path):
+    class TD:
+        def states_at(self, cutoff):
+            return {f"{i:06d}": _state(f"{i:06d}", (i % 7) - 3, 100_000 + i)
+                    for i in range(80)}
+
+    _, payload = render_page(TD(), trade_date="2026-10-15", stage="auction_0926")
+    original_count = len(payload["chapters"]["behavior_rows"])
+    default_dir, full_dir = tmp_path / "default", tmp_path / "full"
+    write_page(default_dir, "", payload)
+    write_page(full_dir, "", payload, full_json=True)
+    default = json.loads((default_dir / "report.json").read_text(encoding="utf-8"))
+    full = json.loads((full_dir / "report.json").read_text(encoding="utf-8"))
+
+    assert "behavior_rows" not in default["chapters"]
+    assert len(full["chapters"]["behavior_rows"]) == original_count
+    assert default["chapters"]["behavior_tags"] == payload["chapters"]["behavior_tags"]
+    assert (default_dir / "report.json").stat().st_size <= 300_000
+    omitted = default["manifest"]["omitted_blocks"]["behavior_rows"]
+    assert omitted["size_bytes"] > 0 and len(omitted["sha256"]) == 64
+    assert omitted["row_count"] == original_count
+
+
+def test_attention_watchlist_rules_and_phase_timings(tmp_path):
+    history = tmp_path / "daily.csv"
+    _history_csv(history)
+    class TD:
+        def states_at(self, cutoff):
+            minute = cutoff.strftime("%H:%M")
+            states = {f"{i:06d}": _state(f"{i:06d}", i % 10, 1_000_000 + i,
+                                           limit_state=1 if i < 2 else 0, rb=100 if i < 2 else 0)
+                      for i in range(60)}
+            if minute == "09:24":
+                states["000000"] = _state("000000", 0, 1_000)
+            elif minute == "09:25":
+                states["000000"] = _state("000000", 5, 1_000_001,
+                                           limit_state=1, rb=100)
+            return states
+
+    _, payload = render_page(TD(), trade_date="2026-10-15", stage="auction_0926",
+                             daily_history_csv=history)
+    watchlist = payload["chapters"]["watchlist"]
+    assert len(watchlist["amount_top50"]) == 50
+    assert {row["symbol"] for row in watchlist["sealed_up"]} == {"000000", "000001"}
+    assert any(row["symbol"] == "000001" for row in watchlist["yesterday_limit_pool"])
+    assert len(watchlist["behavior_candidates"]) <= 30
+    assert any(row["symbol"] == "000000" for row in watchlist["behavior_candidates"])
+    timings = payload["manifest"]["timings_ms"]
+    assert set(timings) == {"td_fetch", "aggregation", "render"}
+    assert all(isinstance(value, (int, float)) and value >= 0 for value in timings.values())
+
+
 def test_history_drives_conclusion_highboard_and_peer_sections(tmp_path):
     history = tmp_path / "daily.csv"
     _history_csv(history)

@@ -8,6 +8,7 @@ import html
 import json
 import shutil
 import statistics
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -144,17 +145,22 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
                 amount_baseline_json=None, kaipan_hot_json=None, strength_anchor_json=None):
     if stage not in STAGES: raise ValueError(f"unknown stage: {stage}")
     snaps, raw_states = [], {}
+    td_fetch_seconds = 0.0
+    aggregation_started = time.perf_counter()
     baseline_yuan = _load_amount_baseline(amount_baseline_json)
     for label, clock in STAGES[stage]:
         cutoff = datetime.fromisoformat(f"{trade_date}T{clock}")
+        fetch_started = time.perf_counter()
         if clock == "09:45:30" and not checkpoint_ready(td, cutoff):
             snaps.append({"label": label, "asof": cutoff.isoformat(timespec="seconds"),
                           "status": "NOT_READY", "data_lag_seconds": None,
                           "market_match_amount_yuan": None, "vs_previous_day_final": None,
                           "median_pct_change": None, "up_share_pct": None, "limit_up": None,
                           "limit_down": None, "top_plates_by_share": [], "top_stocks_by_amount": []})
+            td_fetch_seconds += time.perf_counter() - fetch_started
             continue
         rows = states_at(td, cutoff)
+        td_fetch_seconds += time.perf_counter() - fetch_started
         raw_states[label] = rows
         snap = build_live_slice(rows, cutoff, previous_day_final_yuan=previous_day_final_yuan,
                                 relations=relations, plate_names=plate_names, top_n=max(15, len(relations or {})))
@@ -183,6 +189,7 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
         report_current, relations, plate_names, kaipan_hot_json, strength_anchor_json,
         datetime.fromisoformat(report_current.get("asof", f"{trade_date}T09:25:06")))
     conclusion = _conclusion(snaps, chapters, history, stage)
+    aggregation_seconds = max(0.0, time.perf_counter() - aggregation_started - td_fetch_seconds)
     limitations = "板块关系使用调用方提供的点时关系；名称来自可选名称表或代码。日线输入缺失时，昨日连板、A/B位置与72日比较明确降级；缺失字段不补零。09:45 切片未追平时标记 NOT_READY/STALE。"
     manifest = {"inputs": {"kaipan_hot": _input_manifest(kaipan_hot_json, "kaipan_hot"),
                             "strength_anchor": _input_manifest(strength_anchor_json, "strength_anchor"),
@@ -196,6 +203,7 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
                           "amount": "竞价期为虚拟匹配额；开盘后为 TD 成交额累计值",
                           "missing": "缺字段保持 null，不补 0",
                           "limitations": limitations}}
+    render_started = time.perf_counter()
     content = "".join(f"<section><h2>{html.escape(title)}</h2>{_section_body(title, payload)}</section>" for title in sections)
     safe_limitations = html.escape(limitations)
     page = f'''<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -205,6 +213,10 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
 *{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 system-ui,sans-serif}}main{{max-width:1100px;margin:auto;padding:20px}}h1{{font-size:1.55rem}}section{{background:var(--panel);border-radius:12px;padding:16px;margin:14px 0;overflow:auto}}h2{{font-size:1.2rem;margin:0 0 12px}}table{{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}}td,th{{text-align:left;padding:7px;border-bottom:1px solid #8892a033}}small,.muted{{color:var(--muted)}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:9px}}.card{{padding:10px;background:var(--bg);border-radius:8px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}}</style></head>
 <body><main><h1>{trade_date} · {stage}</h1><p class="muted">只读观测；来源、口径与局限见页面末尾。状态值按可用数据计算。</p>{content}
 <section><h2>口径与局限</h2><p>{safe_limitations}</p></section></main></body></html>'''
+    render_seconds = time.perf_counter() - render_started
+    payload["manifest"]["timings_ms"] = {"td_fetch": round(td_fetch_seconds * 1000, 3),
+                                         "aggregation": round(aggregation_seconds * 1000, 3),
+                                         "render": round(render_seconds * 1000, 3)}
     return page, payload
 
 
@@ -235,19 +247,29 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
         chapters["behavior_tags"] = {"direction_counts": {}, "seal_quality": {}}
         chapters["seal_quality"] = {"up_count": 0, "down_count": 0, "up_median_yuan": None, "down_median_yuan": None}
         chapters["behavior_rows"] = []
+        chapters["watchlist"] = {"amount_top50": [], "yesterday_limit_pool": [], "sealed_up": [],
+                                 "sealed_down": [], "behavior_candidates": []}
         return chapters
     # C155 tags use the canonical 0920/0924/0925 values and market totals.
     market = {tag: {"m": sum(int(row.get("match_amount_yuan") or 0) for row in raw_states.get(tag, {}).values())}
               for tag in ("0920", "0924", "0925")}
-    plate_pct = {}
+    plate_pct, plate_means, symbol_plates = {}, {}, {}
     auction_state = raw_states.get("0925", {})
     for code, members in relations.items():
-        values = [auction_state[s]["pct_change"] for s in members if s in auction_state and auction_state[s].get("pct_change") is not None]
-        if len(values) >= 5: plate_pct[code] = statistics.mean(values)
+        values = []
+        for symbol in members:
+            symbol_plates.setdefault(symbol, []).append(code)
+            row = auction_state.get(symbol)
+            if row is not None and row.get("pct_change") is not None:
+                values.append(row["pct_change"])
+        if values:
+            plate_means[code] = statistics.mean(values)
+            if len(values) >= 5: plate_pct[code] = plate_means[code]
     tagged = {}
     for symbol in set().union(*(set(raw_states.get(tag, {})) for tag in ("0920", "0924", "0925"))):
         stock = {"symbol": symbol, "prev_day_amount": stock_context.get(symbol, {}).get("prev_day_amount_yuan"),
-                 "plates_0925": {code: pct for code, pct in plate_pct.items() if symbol in relations.get(code, ())}}
+                 "plates_0925": {code: plate_pct[code] for code in symbol_plates.get(symbol, ())
+                                 if code in plate_pct}}
         for tag in ("0920", "0924", "0925"):
             row = raw_states.get(tag, {}).get(symbol)
             if row is None: continue
@@ -280,6 +302,15 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
         if _state_limit(row, -1): sealed_down.append(item)
     chapters["sealed_up"] = sorted(sealed_up, key=lambda row: -(row.get("seal_yuan") or 0))
     chapters["sealed_down"] = sorted(sealed_down, key=lambda row: -(row.get("seal_yuan") or 0))
+    amount_top50 = _rows(auction, 50)
+    amount_top50 = [{"symbol": row["symbol"],
+                     "name": stock_names.get(row["symbol"], row.get("name") or row["symbol"]),
+                     "pct_change": row.get("pct_change"),
+                     "match_amount_yuan": row.get("match_amount_yuan")}
+                    for row in amount_top50]
+    behavior_candidates = [row for row in chapters["behavior_rows"]
+                           if row.get("direction") in ("价升份额升(抢筹候选)", "价降份额升(放量走弱)")
+                           or row.get("outrun")][:30]
     chapters["seal_quality"] = {"up_count": len(sealed_up), "down_count": len(sealed_down),
                                  "up_median_yuan": statistics.median([r["seal_yuan"] for r in sealed_up if r["seal_yuan"] is not None]) if any(r["seal_yuan"] is not None for r in sealed_up) else None,
                                  "down_median_yuan": statistics.median([r["seal_yuan"] for r in sealed_down if r["seal_yuan"] is not None]) if any(r["seal_yuan"] is not None for r in sealed_down) else None}
@@ -294,15 +325,11 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                                "status": status, **vals})
         chapters["yesterday_highboards"] = sorted(highboards, key=lambda row: (-row["streak"], row["symbol"]))
         a_symbols = {row["symbol"] for row in highboards} | {row["symbol"] for row in sealed_up}
-        means = {}
-        for code, members in relations.items():
-            live = [auction[s] for s in members if s in auction and auction[s].get("pct_change") is not None]
-            if live: means[code] = statistics.mean(row["pct_change"] for row in live)
         peers = []
         for code, members in relations.items():
             anchors = [s for s in members if s in a_symbols]
             if not anchors: continue
-            mean = means.get(code)
+            mean = plate_means.get(code)
             for symbol in members:
                 row = auction.get(symbol)
                 if symbol in a_symbols or row is None or row.get("pct_change") is None: continue
@@ -320,6 +347,14 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                                               "pct_change": row.get("pct_change")}
                                              for symbol, row in auction.items()
                                              if stock_context.get(symbol, {}).get("streak", 0) >= 1]
+    chapters["watchlist"] = {"amount_top50": amount_top50,
+                             "yesterday_limit_pool": sorted(
+                                 ({**row, "match_amount_yuan": auction.get(row["symbol"], {}).get("match_amount_yuan")}
+                                  for row in chapters["yesterday_limit_pool"]),
+                                 key=lambda row: -(row.get("match_amount_yuan") or 0))[:50],
+                             "sealed_up": chapters["sealed_up"][:30],
+                             "sealed_down": chapters["sealed_down"][:30],
+                             "behavior_candidates": behavior_candidates}
     base = raw_states.get("0925", {})
     if stage == "open_0946" and latest:
         chapters["emerging"] = sorted([{"symbol": symbol, "name": stock_names.get(symbol, row.get("name") or symbol),
@@ -328,8 +363,8 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                                       for symbol, row in latest.items() if base.get(symbol, {}).get("pct_change") is not None
                                       and base[symbol]["pct_change"] < 3 and row.get("pct_change") is not None and row["pct_change"] >= 5],
                                      key=lambda row: -(row.get("match_amount_yuan") or 0))[:30]
-        old_plates = _all_plate_stats(raw_states.get("0925", {}), relations, plate_names)
-        new_plates = _all_plate_stats(raw_states.get("0945", {}), relations, plate_names)
+        old_plates = labels.get("0925", {}).get("top_plates_by_share", [])
+        new_plates = labels.get("0945", {}).get("top_plates_by_share", [])
         old = {row["code"]: row for row in old_plates}
         changed = []
         for row in new_plates:
@@ -510,9 +545,13 @@ def _json_report_payload(payload, *, full_json=False):
     import copy
     result = copy.deepcopy(payload)
     omitted = {}
-    if not full_json and "snapshots" in result:
-        raw = json.dumps(result.pop("snapshots"), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        omitted["snapshots"] = {"size_bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+    if not full_json:
+        for key, container in (("snapshots", result), ("behavior_rows", result.get("chapters", {}))):
+            if key not in container: continue
+            value = container.pop(key)
+            raw = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            omitted[key] = {"size_bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+                            "row_count": len(value) if isinstance(value, list) else None}
     result.setdefault("manifest", {})["omitted_blocks"] = omitted
     return result
 
@@ -565,6 +604,7 @@ def main(argv=None):
                                     kaipan_hot_json=args.kaipan_hot_json,
                                     strength_anchor_json=args.strength_anchor_json)
         write_page(args.out_dir, page, payload, full_json=args.full_json)
+        print("TIMINGS_MS " + json.dumps(payload["manifest"]["timings_ms"], separators=(",", ":")))
     finally:
         close = getattr(td, "close", None)
         if callable(close): close()
