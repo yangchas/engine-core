@@ -163,3 +163,19 @@ def test_intraday_manifest_never_references_same_day_daily_capture(tmp_path, sta
     result = run_daily_pipeline(stage=stage, trade_date="2026-10-15", out_root=tmp_path / "out",
                                 reference_root=root, sources=DailySources(td=FakeTD()), dry_run=True)
     assert result["manifest"]["sources"]["daily_kline"]["path"] is None
+
+
+def test_email_failure_is_recorded_without_failing_pipeline(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from engine_core import report_mailer
+
+    monkeypatch.setattr(report_mailer, "load_smtp_config", lambda: SimpleNamespace(from_addr="reports@example.test"))
+    monkeypatch.setattr(report_mailer, "send_message", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("provider failure")))
+    result = run_daily_pipeline(stage="auction", trade_date="2026-10-15", out_root=tmp_path / "out",
+                                reference_root=tmp_path / "refs", sources=DailySources(td=FakeTD()),
+                                dry_run=True, email_to=["me@example.test"], email_send=True)
+    assert result["manifest"]["email"] == {"status": "failed", "error_class": "RuntimeError"}
+    manifest = json.loads((result["out_dir"] / "manifest.json").read_text())
+    assert manifest["email"]["status"] == "failed"
+    assert (result["out_dir"] / "report.json").is_file()

@@ -313,7 +313,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                        reference_root: str | Path = "/home/exedev/validation",
                        sources: DailySources | None = None, publish: bool = False,
                        dry_run: bool = False, allow_wencai_fallback: bool = False,
-                       reference_catalog: str | Path | None = None) -> dict[str, Any]:
+                       reference_catalog: str | Path | None = None,
+                       email_to: tuple[str, ...] | list[str] = (), email_send: bool = False) -> dict[str, Any]:
     if stage not in STAGE_NAMES:
         raise ValueError("stage must be auction, open, or close")
     datetime.strptime(trade_date, "%Y-%m-%d")
@@ -578,6 +579,19 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         key = f"core:cache:report:{trade_date}:{stage}"
         CoreCacheWriter(src.redis, now_ms=int(time.time() * 1000)).client.set(key, report_text, ex=172800)
         manifest["published_key"] = key
+    manifest["email"] = {"status": "not_requested"}
+    if email_to:
+        try:
+            from .report_mailer import build_report_message, load_smtp_config, send_message
+            mail_config = load_smtp_config() if email_send else None
+            sender = mail_config.from_addr if mail_config else "reports@localhost"
+            mail = build_report_message("Core", trade_date, stage, out / "report.html",
+                                       out / "report.json", email_to, sender)
+            receipt = send_message(mail_config, mail, dry_run=not email_send,
+                                  allow_recipients=email_to)
+            manifest["email"] = {"status": receipt.status}
+        except Exception as exc:
+            manifest["email"] = {"status": "failed", "error_class": type(exc).__name__}
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False,
                                                     separators=(",", ":"), allow_nan=False) + "\n",
                                         encoding="utf-8")
@@ -594,6 +608,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--publish", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-wencai-fallback", action="store_true")
+    parser.add_argument("--email-to", action="append", default=[], metavar="ADDR")
+    parser.add_argument("--email-send", action="store_true", help="send email; default is dry-run")
     return parser
 
 
@@ -604,7 +620,8 @@ def main(argv: list[str] | None = None, *, sources: DailySources | None = None) 
                                 out_root=args.out_root, reference_root=reference_root,
                                 sources=sources, publish=args.publish, dry_run=args.dry_run,
                                 allow_wencai_fallback=args.allow_wencai_fallback,
-                                reference_catalog=args.reference_catalog)
+                                reference_catalog=args.reference_catalog,
+                                email_to=args.email_to, email_send=args.email_send)
     print(f"trade_date={args.trade_date} stage={args.stage} out={result['out_dir']} "
           f"degraded={len(result['manifest']['degraded'])} report_json_bytes={result['manifest']['report_json_bytes']}")
     return 0
