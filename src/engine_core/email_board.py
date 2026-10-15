@@ -79,16 +79,38 @@ def _metric(label: str, value: str, color: str = "#f1f5f9") -> tuple[str, str]:
 
 
 def _tiles(report: Mapping[str, Any], stage: str) -> list[tuple[str, str]]:
+    chapters = report.get("chapters") if isinstance(report.get("chapters"), Mapping) else {}
+    terminal = report.get("auction_terminal_0925") if isinstance(report.get("auction_terminal_0925"), Mapping) else {}
+    market_chapter = chapters.get("market_price_volume") if isinstance(chapters.get("market_price_volume"), Mapping) else {}
     market = report.get("market") if isinstance(report.get("market"), Mapping) else {}
+    if not market:
+        market = terminal if stage == "auction" and terminal else market_chapter
     tiles: list[tuple[str, str]] = []
     median_key = "close_median" if stage == "close" else "p0945_median" if stage == "open" else "auction_median"
     median_label = "收盘中位" if stage == "close" else "09:45中位" if stage == "open" else "竞价中位"
-    if market.get(median_key) is not None:
-        tiles.append(_metric(median_label, _num(market.get(median_key))))
+    median_value = _first(market, median_key, "median_pct_change" if stage != "close" else "close_median_pct")
+    if median_value is not None:
+        tiles.append(_metric(median_label, _num(median_value)))
+    up_share = _first(market, "up_share", "up_share_pct")
+    if up_share is not None and stage != "close":
+        ratio = float(up_share) / 100 if float(up_share) > 1 else float(up_share)
+        tiles.append(_metric("上涨占比", f"{ratio * 100:.1f}%"))
     up, down = ((market.get("auction_up_count"), market.get("auction_down_count")) if stage == "auction" else
                 (_first(market, "open_up_count", "up_count"), _first(market, "open_down_count", "down_count")))
     if up is not None or down is not None:
         tiles.append(_metric("涨/跌", f"{up if up is not None else '—'} / {down if down is not None else '—'}"))
+    if stage != "close":
+        limit_up, limit_down = _first(market, "limit_up", "auction_limit_up_count"), _first(market, "limit_down", "auction_limit_down_count")
+        if limit_up is not None or limit_down is not None:
+            tiles.append(_metric("涨/跌停价代理", f"{limit_up if limit_up is not None else '—'} / {limit_down if limit_down is not None else '—'}"))
+        amount = _first(market, "market_match_amount_yuan", "auction_amount_yuan")
+        if amount is not None:
+            tiles.append(_metric("竞价匹配额" if stage == "auction" else "截至截点成交额", f"{_amount(amount)}亿"))
+        yesterday = chapters.get("yesterday_highboards_summary") if isinstance(chapters.get("yesterday_highboards_summary"), Mapping) else {}
+        pool = yesterday.get("yesterday_limit_pool") if isinstance(yesterday.get("yesterday_limit_pool"), Mapping) else {}
+        pool_mean = pool.get("mean_pct_change")
+        if pool_mean is not None:
+            tiles.append(_metric("昨板竞价承接均值", _num(pool_mean)))
     if stage == "close" and (market.get("close_limit_up_count") is not None or market.get("close_limit_down_count") is not None):
         tiles.append(_metric("涨停价/跌停价", f"{market.get('close_limit_up_count', '—')} / {market.get('close_limit_down_count', '—')}"))
     stocks = _rows(report.get("stocks"))
@@ -120,6 +142,10 @@ def _tiles(report: Mapping[str, Any], stage: str) -> list[tuple[str, str]]:
         value = _short(top, 8) + (f" / {high_count}只" if high_count is not None else "")
         tiles.append(_metric("最高板", value))
     auction_base = market.get("auction_baseline_comparison")
+    if not isinstance(auction_base, Mapping):
+        baseline = market.get("vs_amount_baseline")
+        if isinstance(baseline, Mapping):
+            auction_base = {"multiple": baseline.get("multiple"), "percentile": baseline.get("percentile")}
     if isinstance(auction_base, Mapping):
         multiple, pctile = auction_base.get("multiple"), auction_base.get("percentile")
         if multiple is not None or pctile is not None:
@@ -138,15 +164,254 @@ def _section(title: str, body: str, note: str = "") -> str:
     return f'<section style="margin:10px 0;padding:9px 10px;background:#fff;border:1px solid #e7ebf0"><h2 style="font-size:14px;margin:0 0 6px;color:#23364d">{_esc(title)}</h2>{body}{suffix}</section>'
 
 
+def _story_event_text(event: Mapping[str, Any]) -> str:
+    """Render an anomaly without leaking internal metric keys or float reprs."""
+    supplied = event.get("summary") or event.get("text")
+    if supplied:
+        return f"{event.get('display_label', '对照观察')}：{supplied}"
+    metric = str(event.get("metric") or event.get("id") or "")
+    quality = str(event.get("quality") or "")
+    value = event.get("value")
+    label = {
+        "close_up_share": "收盘广度", "breadth_low": "收盘广度",
+        "close_median_pp": "收盘涨幅中位数", "auction_amount_yuan": "竞价匹配额",
+        "auction_up_share": "竞价上涨占比", "auction_median_pct": "竞价涨幅中位数",
+        "volume_day_change": "竞价匹配额", "ladder_high_promotion_rate": "高标晋级率",
+        "theme_divergence": "版权板块日内变化",
+    }.get(metric, str(event.get("display_name") or "市场对照"))
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = None
+    if number is None:
+        detail = "数据缺失"
+    elif metric == "auction_up_share":
+        detail = f"{number:.1%}"
+    elif metric in {"close_up_share", "breadth_low"}:
+        # A nested C201 input bundle may carry the denominator without copying it
+        # onto every display event.
+        nested = event.get("_narrative_facts")
+        denominator = event.get("denominator") or (nested.get("fixed_daily_pool") if isinstance(nested, Mapping) else None)
+        numerator = event.get("numerator")
+        if denominator:
+            detail = f"上涨{int(numerator) if numerator is not None else round(number * float(denominator))}只（{number:.1%}）"
+        else:
+            detail = f"上涨占比{number:.1%}"
+    elif metric in {"volume_day_change"}:
+        nested = event.get("_narrative_facts")
+        amount = nested.get("auction_amount_yuan") if isinstance(nested, Mapping) else None
+        amount_text = f"{float(amount) / 1e8:.2f}亿元；" if isinstance(amount, (int, float)) else ""
+        detail = f"{amount_text}共同池为昨日{number:.2f}倍"
+    elif metric == "auction_amount_yuan":
+        detail = f"{number / 1e8:.2f}亿元"
+    elif metric == "ladder_high_promotion_rate":
+        detail = f"{number:.0%}"
+    elif metric == "theme_divergence":
+        detail = f"较竞价回升{number:+.2f}个百分点"
+    elif "median" in metric or metric.endswith("_pp"):
+        detail = f"{number:+.2f}个百分点"
+    else:
+        detail = f"{number:.2f}"
+    ranks = event.get("ranks") if isinstance(event.get("ranks"), Mapping) else {}
+    history_n = event.get("historical_n")
+    if ranks.get("ascending") == 1 and isinstance(history_n, int):
+        detail += f"，含当日{history_n + 1}日最低"
+    elif ranks.get("descending") == 1 and isinstance(history_n, int):
+        detail += f"，含当日{history_n + 1}日最高"
+    baseline = event.get("baseline") or event.get("comparison_baseline")
+    if not baseline and "FIXED_POOL_HISTORICAL" in quality:
+        baseline = "固定池64日历史对照"
+    elif not baseline and "MIXED_THRESHOLD_64D" in quality:
+        baseline = "64日混阈值近似参照"
+    n = event.get("historical_n", event.get("n"))
+    if metric == "volume_day_change" and "64D" in quality:
+        n = 64
+    elif n is None and ("FIXED_POOL_HISTORICAL" in quality or "64D" in quality):
+        n = 64
+    context = []
+    if baseline:
+        context.append(str(baseline))
+    if n is not None:
+        context.append(f"n={n}")
+    suffix = f"（{'；'.join(context)}）" if context else ""
+    return f"{event.get('display_label', '对照观察')}：{label}{detail}{suffix}。"
+
+
+def _story_text(story: Mapping[str, Any], report: Mapping[str, Any]) -> list[str]:
+    lines = []
+    headline = story.get("one_line_today") or report.get("one_line_today")
+    if not headline:
+        try:
+            auction_share = float(report.get("auction_up_share"))
+            peak_share = float(report.get("p0940_up_share"))
+            late_share = float(report.get("p0945_up_share"))
+            close_share = float(report.get("close_up_share"))
+            close_median = float(report.get("close_median_pct"))
+            late_median = float(report.get("p0945_median"))
+        except (TypeError, ValueError):
+            pass
+        else:
+            if auction_share < 0.5 and peak_share > late_share and close_share < late_share and close_median < late_median:
+                headline = (f"竞价多数低开，早盘一度改善；收盘固定池上涨占比降至{close_share:.1%}，"
+                           "局部回升没有扩展成全市场改善。")
+    headline = headline or (story.get("headline") or {}).get("text")
+    if headline:
+        text = str(headline)
+        if text.startswith("一句话今日："):
+            lines.append(text)
+        else:
+            lines.append(f"一句话今日：{text}")
+    for event in story.get("top_events", [])[:3]:
+        if isinstance(event, Mapping):
+            display_event = dict(event)
+            if isinstance(report.get("narrative_facts"), Mapping):
+                display_event["_narrative_facts"] = report["narrative_facts"]
+            if display_event.get("id") == "volume_day_change":
+                display_event.setdefault("n", (report.get("narrative_facts") or {}).get("auction_prev_common_n"))
+            lines.append(_story_event_text(display_event))
+    acts = story.get("acts", [])
+    stage_labels = {"auction": "第一幕｜竞价", "open": "第二幕｜开盘", "intraday": "第三幕｜盘中", "close": "第四幕｜收盘"}
+    stage_order = ("auction", "open", "intraday", "close")
+    current_stage = str(story.get("stage", "close"))
+    visible_acts = [act for act in acts[:4] if isinstance(act, Mapping)
+                    and (current_stage not in stage_order or str(act.get("stage")) in stage_order[:stage_order.index(current_stage) + 1])]
+    for act in visible_acts:
+        if not isinstance(act, Mapping) or act.get("status") == "UNOBSERVED" and not (act.get("lead") or {}).get("text"):
+            continue
+        stage = str(act.get("stage", ""))
+        lead = str((act.get("lead") or {}).get("text") or "该阶段暂无可用观测。")
+        no_afternoon = stage == "intraday" and str(story.get("stage")) == "close"
+        if no_afternoon:
+            lead = "下午连续路径缺失：封存输入止于09:45，不能补写午后过程。"
+        lines.append(f"{stage_labels.get(stage, stage)}：{lead}")
+        for item in ([] if no_afternoon else (act.get("evidence") or [])[:3]):
+            if isinstance(item, Mapping) and item.get("text"):
+                lines.append(f"证据：{item['text']}")
+        transition_text = act.get("transition_text")
+        transition = act.get("transition") or {}
+        result = transition.get("observed_result") if isinstance(transition, Mapping) else None
+        if transition_text:
+            lines.append(f"转折：{transition_text}")
+        elif result == "NOT_RETAINED_AT_CLOSE":
+            lines.append("转折：早盘回升没有保持到收盘；两个端点不能还原下午过程。")
+        elif result == "PARTIAL_RECOVERY":
+            lines.append("转折：竞价留下的“上涨范围能否扩大”一度兑现，但09:45已回落。")
+        elif result == "UNKNOWN_PATH":
+            lines.append("留给收盘核对：早盘改善能否保持；下午过程没有连续记录。")
+        elif stage == "close":
+            try:
+                late_share = float(report.get("p0945_up_share"))
+                close_share = float(report.get("close_up_share"))
+            except (TypeError, ValueError):
+                pass
+            else:
+                if late_share > close_share:
+                    lines.append("转折：早盘回升没有保持到收盘；两个端点不能还原下午过程。")
+        if stage == "auction":
+            try:
+                narrative = report.get("narrative_facts") if isinstance(report.get("narrative_facts"), Mapping) else {}
+                amount_ratio = float(report.get("auction_prev_common_ratio", narrative.get("auction_prev_common_ratio")))
+            except (TypeError, ValueError):
+                pass
+            else:
+                common_n = report.get("auction_prev_common_n", narrative.get("auction_prev_common_n"))
+                sample = f"共同{int(common_n)}只" if common_n is not None else "共同样本"
+                lines.append(f"和昨天比：{sample}竞价匹配额为昨日{amount_ratio:.2f}倍。")
+            historical = report.get("auction_historical_comparison") or story.get("auction_historical_comparison")
+            if not historical and any("MIXED_THRESHOLD_64D" in str(event.get("quality", "")) for event in story.get("top_events", []) if isinstance(event, Mapping)):
+                historical = "64日混阈值近似参照（n=64），无可直接比较的历史倍数"
+            if historical:
+                lines.append(f"和往常比：{historical}。")
+    funnel = story.get("funnel") or {}
+    shown = funnel.get("shown") if isinstance(funnel.get("shown"), Mapping) else funnel
+    own_facts = {}
+    for row in report.get("candidate_facts", []):
+        if isinstance(row, Mapping) and row.get("symbol"):
+            own_facts[str(row["symbol"])] = row
+    labels = (("watch", "能做"), ("wait", "要等"), ("exclude", "别碰"))
+    for key, label in labels:
+        entries = shown.get(key, [])
+        if entries:
+            for row in entries[:5]:
+                if not isinstance(row, Mapping):
+                    continue
+                name = str(row.get("name") or "名称未知")
+                condition = (row.get("condition") or {}).get("text", "")
+                risk = str(row.get("risk") or "观察条件未验证")
+                why = "；".join(str(x.get("text")) for x in row.get("reasons", []) if isinstance(x, Mapping) and x.get("text"))
+                if why == condition:
+                    why = ""
+                fact = own_facts.get(str(row.get("symbol", "")), {})
+                try:
+                    own_pct = float(fact["p0945_pct"])
+                    plate_pct = float(fact["plate0945"])
+                    relative_pct = float(fact["relative0945"])
+                except (KeyError, TypeError, ValueError):
+                    pass
+                else:
+                    plate = str(fact.get("plate") or "所属板块")
+                    individual = f"09:45个股{own_pct:+.1f}%，{plate}{plate_pct:+.1f}%，相对落后{abs(relative_pct):.1f}个百分点" if relative_pct < 0 else f"09:45个股{own_pct:+.1f}%，{plate}{plate_pct:+.1f}%，相对领先{relative_pct:.1f}个百分点"
+                    why = "；".join(x for x in (why, individual) if x)
+                    if fact.get("auction_price_status") == "INDICATIVE":
+                        why += "；竞价价仍为指示价"
+                    if row.get("bucket") != "exclude":
+                        if relative_pct < 0:
+                            condition = f"至少收复09:32价格，并缩小与{plate}的差距后再复核"
+                        else:
+                            condition = f"观察相对{plate}的领先能否延续到下一截点"
+                        risk = "相对板块偏弱" if relative_pct < 0 else "相对强势尚未确认"
+                details = "；".join(x for x in (why, str(condition), f"风险：{risk}") if x)
+                lines.append(f"{label}：{name}｜{details}")
+        elif key == "watch":
+            counts = funnel.get("counts") or {}
+            reason_counts = funnel.get("reason_counts") or {}
+            candidates_n = sum(int(counts.get(k, 0) or 0) for k in ("watch", "wait", "exclude", "能做", "要等", "别碰"))
+            why = "、".join(f"{reason} {count}只" for reason, count in list(reason_counts.items())[:3])
+            if not why:
+                why = "现有候选没有同时满足观察条件"
+            lines.append(f"能做：暂无；既有候选{candidates_n}只未通过当前条件。主要原因：{why}。")
+        elif key == "wait":
+            lines.append("要等：暂无；当前没有个股达到等待栏条件。")
+        elif key == "exclude":
+            lines.append("别碰：暂无；当前没有个股达到排除栏条件。")
+    scope = story.get("scope_note") or story.get("data_gaps") or report.get("scope_note") or report.get("口径与缺口") or report.get("note")
+    if not scope:
+        quality = story.get("quality", [])
+        known = []
+        if any("AFTERNOON" in str(x) for x in quality): known.append("缺少09:45之后的连续路径")
+        if any("AVAILABILITY" in str(x) for x in quality): known.append("历史可得时刻未知")
+        if any("EXECUTION" in str(x) for x in quality): known.append("成交队列未知")
+        scope = "；".join(known) or "四幕按各自可用截點统计；缺失项不按零处理。"
+    lines.append(f"口径与缺口：{str(scope).replace('截點', '截点')}")
+    return lines[:40]
+
+
 def _story_view(report: Mapping[str, Any], stage: str, trade_date: str) -> tuple[dict[str, Any], str, str]:
     supplied = report.get("story")
     if isinstance(supplied, Mapping) and supplied.get("stage") == stage:
         story = dict(supplied)
     else:
         source = dict(report)
+        nested_facts = report.get("narrative_facts")
+        if isinstance(nested_facts, Mapping):
+            source = {**nested_facts, **source}
         market = report.get("market") if isinstance(report.get("market"), Mapping) else {}
         source.update(market)
         source_facts = dict(source)
+        timeline = source.get("market_timeline")
+        if isinstance(timeline, list):
+            for point in timeline:
+                if not isinstance(point, Mapping):
+                    continue
+                tag = str(point.get("tag", ""))
+                prefix = {"0925": "auction", "0932": "open", "0940": "p0940", "0945": "p0945", "close": "close"}.get(tag)
+                if prefix:
+                    source_facts[f"{prefix}_median_pct"] = point.get("median_pp")
+                    source_facts[f"{prefix}_up_share"] = point.get("up_share")
+                    source_facts[f"{prefix}_up_count"] = point.get("up_n")
+                    source_facts[f"{prefix}_n"] = point.get("n")
+        source_facts.setdefault("auction_amount_yuan", source.get("auction_amount_yuan"))
+        source_facts.setdefault("auction_prev_common_ratio", source.get("auction_prev_common_ratio"))
         if stage == "auction":
             source = {"trade_date": trade_date,
                       "auction_amount_yuan": source.get("auction_amount_yuan", source.get("match_amount_yuan")),
@@ -161,7 +426,9 @@ def _story_view(report: Mapping[str, Any], stage: str, trade_date: str) -> tuple
             source = {"trade_date": trade_date, "close_median_pct": source.get("close_median_pct", source.get("close_median")),
                       "close_up_share": source.get("close_up_share", source.get("up_share")),
                       "close_amount_yuan": source.get("close_amount_yuan", source.get("amount_yuan"))}
-        features = build_story_features(source, stage=stage, cutoff=str(source.get("asof", stage)),
+        feature_facts = dict(source_facts)
+        feature_facts["trade_date"] = trade_date
+        features = build_story_features(feature_facts, stage=stage, cutoff=str(source.get("asof", stage)),
                                         observed_at=report.get("observed_at"),
                                         provenance={"source_fidelity": "UNKNOWN", "refs": ["email_report"]})
         candidates = []
@@ -169,14 +436,21 @@ def _story_view(report: Mapping[str, Any], stage: str, trade_date: str) -> tuple
         for group in groups:
             for row in group.get("candidates", []):
                 candidates.append({**row, "bucket": row.get("bucket", "wait"),
-                                   "condition": row.get("condition", "观察下一可用截点是否延续"),
-                                   "risk": row.get("risk", "价格与成交可行性未验证")})
+                                   "condition": row.get("condition", ""),
+                                   "risk": row.get("risk", "")})
+        if not candidates and isinstance(source.get("funnel_display"), Mapping):
+            for label, bucket in (("能做", "watch"), ("要等", "wait"), ("别碰", "exclude")):
+                for row in source["funnel_display"].get(label, []):
+                    if isinstance(row, Mapping):
+                        candidates.append({**row, "bucket": bucket})
         funnel = filter_candidates(candidates, features, asof=str(source.get("asof") or stage))
         previous_acts = []
         prior_specs = (
             ("auction", "09:25", {"auction_median_pct": ("auction_median_pct", "auction_median"),
                                    "auction_up_share": ("auction_up_share", "auction_up_share"),
-                                   "auction_amount_yuan": ("auction_amount_yuan", "match_amount_yuan")}),
+                                   "auction_amount_yuan": ("auction_amount_yuan", "match_amount_yuan"),
+                                   "auction_prev_common_ratio": ("auction_prev_common_ratio",),
+                                   "auction_n": ("auction_n",)}),
             ("open", "09:32", {"open_median_pct": ("open_median_pct", "p0932_median"),
                                 "open_up_share": ("open_up_share", "p0932_up_share")}),
             ("intraday", "09:45", {"p0945_median": ("p0945_median",),
@@ -199,16 +473,14 @@ def _story_view(report: Mapping[str, Any], stage: str, trade_date: str) -> tuple
             prior_story = compose_story(prior_features, [], {"shown": {}}, previous_acts=[])
             previous_acts.extend(a for a in prior_story["acts"] if a["stage"] == prior_stage)
         story = compose_story(features, detect_anomalies([], []), funnel, previous_acts=previous_acts)
-    text_lines = [str((story.get("headline") or {}).get("text", "结构化事实不足，保留缺口。"))]
-    for event in story.get("top_events", [])[:3]:
-        text_lines.append(f"{event.get('display_label', '对照观察')}：{event.get('id')}={event.get('value')}")
-    for act in story.get("acts", [])[:4]:
-        if act.get("status") != "UNOBSERVED":
-            text_lines.append(f"{act.get('stage')}：{(act.get('lead') or {}).get('text', '')}")
-    for key, label in (("watch", "能做"), ("wait", "要等"), ("exclude", "别碰")):
-        for row in (story.get("funnel") or {}).get(key, [])[:5]:
-            text_lines.append(f"{label}：{row.get('name', '名称未知')}｜{(row.get('condition') or {}).get('text', '')}｜风险：{row.get('risk', '')}")
-    text_lines = text_lines[:40]
+        event_rows = report.get("top_events", source_facts.get("top_events"))
+        if isinstance(event_rows, list):
+            story["top_events"] = event_rows[:3]
+        claims = source_facts.get("story_claims")
+        if isinstance(claims, Mapping) and claims.get("one_line_today"):
+            story["one_line_today"] = str(claims["one_line_today"])
+        story["scope_note"] = report.get("scope_note") or source_facts.get("scope_note")
+    text_lines = _story_text(story, report)
     html_lines = "".join(f"<li>{_esc(line)}</li>" for line in text_lines)
     html_block = _section("今日三件不一样的事 · 四幕故事 · 观察漏斗",
                           f'<ol style="margin:0;padding-left:20px">{html_lines}</ol>',
@@ -271,7 +543,11 @@ def _ladder(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
             n = yesterday_counts.get(f"{board - 1}板")
         if k is None and n is not None:
             k = _first(stat, "promoted_n", "today_n")
-        label = f"{board}板 昨{n if n is not None else '—'} 晋{k if k is not None else '—'}/{n if n is not None else '—'}"
+        if stage in {"auction", "open"}:
+            prior_height = board - 1
+            label = f"昨{prior_height}板 · 当前样本{len(items)}只"
+        else:
+            label = f"{board}板 昨{n if n is not None else '—'} 晋{k if k is not None else '—'}/{n if n is not None else '—'}"
         chips = []
         plain_chips = []
         for row in sorted(items, key=lambda r: (-float(r.get("auction_amount_yuan") or 0), str(r.get("symbol", ""))))[:12]:
@@ -283,7 +559,9 @@ def _ladder(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
             elif stage == "close":
                 state = _exact_price_state(row)
             elif stage == "open":
-                state = _exact_price_state(row, prefix="p0945_")
+                state = (_exact_price_state(row, prefix="p0945_")
+                         if any(row.get(f"p0945_{field}") is not None for field in ("open_pct", "high_pct", "low_pct", "close_pct"))
+                         else "")
             else:
                 state = "封" if row.get("auction_limit_state") in (1, "1", "UP") else ""
             if row.get("is_new_listing") or row.get("unlimited_price_band"):
@@ -307,6 +585,11 @@ def _ladder(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
 
 def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     attached = report.get("extremes_board")
+    chapters = report.get("chapters") if isinstance(report.get("chapters"), Mapping) else {}
+    if not isinstance(attached, Mapping):
+        attached = chapters.get("extremes_board")
+    if isinstance(attached, Mapping) and isinstance(attached.get(stage), list):
+        attached = {**attached, stage: {"rows": attached[stage]}}
     if not isinstance(attached, Mapping):
         attached = build_extremes_board(_rows(report.get("stocks")), stage=stage)
     board = attached.get(stage) if isinstance(attached, Mapping) else None
@@ -492,7 +775,24 @@ def _spark(values: Sequence[Any]) -> str:
 
 
 def _plates(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
+    chapters = report.get("chapters") if isinstance(report.get("chapters"), Mapping) else {}
     data = report.get("plates") if isinstance(report.get("plates"), Mapping) else {}
+    market = chapters.get("market_price_volume") if isinstance(chapters.get("market_price_volume"), Mapping) else {}
+    if stage == "auction" and not data.get("auction_amount_top10"):
+        data = {**data, "auction_amount_top10": [
+            {"name": row.get("name"), "members": row.get("member_count"),
+             "auction_amount_yuan": row.get("match_amount_yuan"),
+             "auction_amount_share_bp": row.get("market_share_bp"),
+             "p0925_mean": row.get("equal_weight_pct"), "kind": "竞价额份额"}
+            for row in _rows(market.get("top_plates_by_share"))]}
+    if stage != "auction" and not data.get("narrow_theme_top5"):
+        quadrant = chapters.get("plate_quadrants") if isinstance(chapters.get("plate_quadrants"), Mapping) else {}
+        qrows = sorted(_rows(quadrant.get("rows")), key=lambda r: float(r.get("amount_yuan") or 0), reverse=True)
+        data = {**data, "narrow_theme_top5": [
+            {"name": row.get("name"), "members": row.get("member_count"),
+             "auction_amount_yuan": row.get("amount_yuan"), "current_mean": row.get("our_pct"),
+             "kind": row.get("quadrant"), "flags": row.get("flags")}
+            for row in qrows[:8]]}
     top = _rows(data.get("auction_amount_top10"))[:8]
     weak = _rows(data.get("close_bottom10"))[:5] if stage == "close" else []
     narrow = _rows(data.get("narrow_theme_top5"))[:5]
@@ -531,9 +831,9 @@ def _plates(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     if not chosen:
         msg = "数据缺口：板块事实未生成"
         return _section("板块盘面", f'<div>{msg}</div>'), msg
-    headers = ["类", "板块", "人数", "竞价额", "占比bp", "竞价%"]
-    if stage != "auction":
-        headers.append("09:45")
+    headers = (["类", "板块", "人数", "竞价额", "占比bp", "竞价%"] if stage == "auction" else
+               ["盘面", "板块", "人数", "当前成员额", "份额bp", "当前等权%"] if stage == "open" else
+               ["类", "板块", "人数", "竞价额", "占比bp", "竞价%"])
     if stage == "close":
         headers.append("收盘%")
     headers.append("趋势")
@@ -544,17 +844,18 @@ def _plates(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
         if share is None:
             ratio = _first(row, "auction_amount_share", "amount_share")
             share = float(ratio) * 10000 if isinstance(ratio, (int, float)) else None
-        pct = _first(row, "p0925_mean", "auction_mean", "mean_pct", "pct")
+        pct = _first(row, "p0925_mean", "auction_mean", "mean_pct", "pct") if stage == "auction" else _first(row, "current_mean", "our_pct", "p0945_mean", "mean_pct")
         if stage == "close" and isinstance(row.get("trend"), list):
             values = row["trend"]
         elif stage == "auction":
             values = [row.get("p0920_mean"), row.get("p0924_mean"), pct]
         else:
-            values = [pct, row.get("p0932_mean"), row.get("p0945_mean"), row.get("close_mean")]
+            values = [row.get("p0932_mean"), row.get("p0935_mean"), row.get("p0940_mean"),
+                      row.get("p0945_mean"), row.get("close_mean")]
         values = values[:3] if stage == "auction" else values[:3] if stage == "open" else values
+        if stage == "open" and sum(isinstance(value, (int, float)) for value in values) < 2:
+            values = []
         cells = [kind, _short(row.get("name") or row.get("plate") or "—", 8), str(_first(row, "members", "count") or "—"), _amount(amount), f"{float(share):.0f}" if isinstance(share, (int, float)) else "—", _num(pct)]
-        if stage != "auction":
-            cells.append(_num(row.get("p0945_mean")))
         if stage == "close":
             cells.append(_num(row.get("close_mean")))
         cells.append(_spark(values))
@@ -562,10 +863,12 @@ def _plates(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
         table_rows.append("<tr>" + "".join(f'<td style="padding:4px 5px;background:{bg};white-space:nowrap;border-bottom:1px solid #e8edf2">{_esc(c)}</td>' for c in cells) + "</tr>")
         if kind == "主线" and isinstance(share, (int, float)):
             notes.append(f"{_short(row.get('name'), 8)} {share:.0f}bp")
+        elif stage != "close":
+            notes.append(f"{_short(row.get('name') or row.get('plate'), 8)} {_num(pct)}")
     th = "".join(f'<th style="text-align:left;padding:4px 5px;background:#e9eef5;white-space:nowrap">{_esc(h)}</th>' for h in headers)
     table = f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:11px"><thead><tr>{th}</tr></thead><tbody>{"".join(table_rows)}</tbody></table>'
-    note = ("额单位：亿元；份额单位：bp且成员重叠不可加总；趋势：竞价→09:32→09:45→收盘。"
-            if stage == "close" else "额单位：亿元；份额单位：bp且成员重叠不可加总。")
+    note = ("额单位：亿元；份额单位：bp且成员重叠不可加总；变化列没有可比历史切片时留空。"
+            if stage == "auction" else "额单位：亿元；份额单位：bp且成员重叠不可加总；当前成员额为板块聚合口径，板块间成员可重叠。")
     return _section("板块盘面", table, note), "板块盘面：" + "；".join(notes)
 
 
@@ -685,7 +988,7 @@ def _a_to_b_v2(report: Mapping[str, Any], entries: Sequence[Mapping[str, Any]], 
             "选A原因：" + ("；".join(f"{r.get('rule_id')} {r.get('text')}" for r in entry.get("a_reasons", [])) or "规则原因缺失"),
             "板块状态：竞价额 " + yi(plate.get('auction_amount_yuan')) + "，占大盘 " + val(plate.get('auction_amount_share_bp')) + "bp（重叠不可加）"
             + (f"；对64日/前日 {val(plate.get('relative_64d_multiple'))}/{val(plate.get('relative_prev_multiple'))}倍" if plate.get('relative_64d_multiple') is not None or plate.get('relative_prev_multiple') is not None else "")
-            + (f"；成员上涨占比 {val((plate.get('up_share') or 0) * 100)}%" if plate.get('up_share') is not None else "")
+            + f"；成员上涨占比 {val(plate.get('up_share') * 100 if plate.get('up_share') is not None else None)}%"
             + f"；等权涨幅 {pct(plate.get('equal_weight_pct'))}→{pct(plate.get('equal_weight_0945_pct'))}"
             + (f"→{pct(plate.get('equal_weight_close_pct'))}" if stage == "close" else "")
             + (f"；涨停价 {plate.get('limit_up_count')}只" if plate.get('limit_up_count') is not None else "")
@@ -700,9 +1003,14 @@ def _a_to_b_v2(report: Mapping[str, Any], entries: Sequence[Mapping[str, Any]], 
                 bm = b.get("metrics") or {}
                 reason = "、".join(b.get("reasons") or []) or "入选原因缺失"
                 buyable = "买得到✓" if b.get("buyable") else "买不到"
+                position = _position_label(bm)
+                position_value = _first(bm, "prior_range_position20_pct", "p0925_range_position20_pct")
+                position_text = (f"前20日区间位置 {float(position_value):.0f}%" if isinstance(position_value, (int, float))
+                                 else "前20日区间位置未知" if position == "位置未知"
+                                 else f"前20日区间位置 {position}")
                 line = (f"B { _short(b.get('name') or '名称未知', 10) } | {reason} | {pct(bm.get('auction_pct'))} | "
                         f"{yi(bm.get('auction_amount_yuan'))}/板块额{pct((bm.get('plate_amount_share') or 0) * 100 if bm.get('plate_amount_share') is not None else None)} | "
-                        f"20日{bm.get('position20') or '未知'} | {buyable}（竞价未涨停/非接近涨跌停）")
+                        f"{position_text} | {buyable}（竞价未涨停/非接近涨跌停）")
                 if stage != "auction":
                     line += f" | 0945相对板块 {pp(bm.get('relative_to_plate_0945_pp'))}"
                 if stage == "close":
@@ -754,12 +1062,18 @@ def _other(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     quality = report.get("data_quality") if isinstance(report.get("data_quality"), Mapping) else {}
     if quality.get("daily_source"):
         gaps.append("日线:" + _short(quality.get("daily_source"), 10))
+    chapters = report.get("chapters") if isinstance(report.get("chapters"), Mapping) else {}
     market = report.get("market") if isinstance(report.get("market"), Mapping) else {}
-    if not isinstance(market.get("auction_baseline_comparison"), Mapping) and market.get("auction_baseline_multiple") is None:
+    chapter_market = chapters.get("market_price_volume") if isinstance(chapters.get("market_price_volume"), Mapping) else {}
+    if (not isinstance(market.get("auction_baseline_comparison"), Mapping) and market.get("auction_baseline_multiple") is None
+            and not isinstance(chapter_market.get("auction_baseline_comparison"), Mapping)
+            and chapter_market.get("auction_baseline_multiple") is None):
         gaps.append("竞价额历史基线未生成")
     yesterday = report.get("yesterday_review")
     has_pool = any("in_yest_pool" in row for row in _rows(report.get("stocks")))
-    if not has_pool and (not isinstance(yesterday, Mapping) or yesterday.get("status") == "UNAVAILABLE_NO_PREV_REPORT"):
+    yesterday_summary = chapters.get("yesterday_highboards_summary")
+    if (not has_pool and not isinstance(yesterday_summary, Mapping)
+            and (not isinstance(yesterday, Mapping) or yesterday.get("status") == "UNAVAILABLE_NO_PREV_REPORT")):
         gaps.append("昨板回看缺前日报告")
     unique = list(dict.fromkeys(gaps))[:3]
     msg = "；".join(unique) if unique else "缺失不补零；仅描述当日事实"
@@ -799,7 +1113,13 @@ def render_email_board(report: Mapping[str, Any], stage: str, trade_date: str) -
             assert forbidden not in ab_html
             assert forbidden not in ab_text
     document = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#f5f7fa">' + body + "</body></html>"
+    tile_text = []
+    for label, markup in tiles:
+        value = html.unescape(re.sub(r"<[^>]*>", "", markup)).strip()
+        if value.startswith(label):
+            value = value[len(label):].strip()
+        tile_text.append(f"{label} {value}".strip())
     plain = (f"{trade_date} {stage_label}盘面\n{story_text}\n\n附表：完整事实章节\n情绪温度计：" +
-             "；".join(f"{label} {html.unescape(re.sub(r'<[^>]*>', '', val))}" for label, val in tiles) +
+             "；".join(tile_text) +
              f"\n{ladder_text}\n{extreme_text}\n{plate_text}\n{ab_text}\n数据与口径：{other_text}")
     return document, plain

@@ -8,6 +8,65 @@ _BUCKET = {"能做": "watch", "要等": "wait", "别碰": "exclude", "watch": "w
 _LABEL = {"watch": "能做", "wait": "要等", "exclude": "别碰"}
 
 
+def _number(source: Mapping[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        try:
+            value = source.get(key)
+            if value not in (None, ""):
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _candidate_language(source: Mapping[str, Any], bucket: str, status: str,
+                        position: Any, relative: float | None) -> tuple[str, str]:
+    reason = str(source.get("reason") or source.get("reasons") or "").strip()
+    if isinstance(source.get("reasons"), Sequence) and not isinstance(source.get("reasons"), str):
+        reason = "；".join(str(x) for x in source["reasons"] if x)
+    condition = str(source.get("condition") or "").strip()
+    risk = str(source.get("risk") or "").strip()
+    position_value = _number(source, "position_asof", "position20_prior", "position")
+    own_move = _number(source, "p0945_pct", "intraday_pct")
+    plate_move = _number(source, "plate0945", "plate_pct")
+    if not condition:
+        if status in {"INDICATIVE", "PRICE_PROXY"}:
+            condition = "先确认竞价参照已到终价，再核对位置和板块差距"
+        elif bucket == "exclude" and position_value is not None and position_value >= 0.67:
+            condition = "下一交易日重算20日位置；仍处高位则不纳入观察池"
+        elif relative is not None and relative < -0.5:
+            condition = f"个股落后所属板块{abs(relative):.1f}个百分点；重回开盘价并缩小差距后复核"
+        elif relative is not None and relative > 0.5:
+            condition = f"个股暂强于所属板块{relative:.1f}个百分点；观察相对强势能否延续"
+        elif own_move is not None and own_move < -1:
+            condition = f"仍低于昨收{abs(own_move):.1f}%；先站回开盘价再复核"
+        else:
+            condition = "下一截点复核个股价格与所属板块是否同向"
+    if not reason:
+        if status in {"INDICATIVE", "PRICE_PROXY"}:
+            reason = "竞价价格仍是指示价，不能当作最终开盘价"
+        elif position_value is not None and position_value >= 0.8:
+            reason = f"昨日收盘位于20日区间约{position_value * 100:.0f}%位置"
+        elif relative is not None and relative < -0.5:
+            reason = f"早盘落后所属板块{abs(relative):.1f}个百分点"
+        elif relative is not None and relative > 0.5:
+            reason = f"早盘跑赢所属板块{relative:.1f}个百分点"
+        elif own_move is not None:
+            reason = f"早盘个股涨跌{own_move:+.1f}%，板块约{plate_move:+.1f}%" if plate_move is not None else f"早盘个股涨跌{own_move:+.1f}%"
+        else:
+            reason = "当前候选事实不足，保留观察"
+    if not risk:
+        if status in {"INDICATIVE", "PRICE_PROXY"}:
+            risk = "竞价价未到终价"
+        elif position_value is not None and position_value >= 0.8:
+            risk = "高位回撤"
+        elif relative is not None and relative < -0.5:
+            risk = "板块相对偏弱"
+        else:
+            risk = "延续尚未确认"
+    return condition, risk
+
+
 def filter_candidates(candidates: Sequence[Mapping[str, Any]], features: Mapping[str, Any], *,
                       asof: str, policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
     stage = str(features.get("stage", "auction"))
@@ -21,13 +80,15 @@ def filter_candidates(candidates: Sequence[Mapping[str, Any]], features: Mapping
         # Explicitly ignore all later-stage result fields in early-stage eligibility and ordering.
         status = str(source.get("price_status", source.get("auction_price_status", "UNKNOWN")))
         position = source.get("position_asof", source.get("position20_prior"))
-        if stage in {"auction", "open", "intraday"} and source.get("auction_price_status"):
+        if source.get("auction_price_status"):
             status = str(source["auction_price_status"])
         reasons_raw = source.get("reasons", source.get("reason", []))
         if isinstance(reasons_raw, str): reasons_raw = [reasons_raw]
         reasons = [str(x) for x in reasons_raw] if isinstance(reasons_raw, Sequence) else []
-        condition = str(source.get("condition") or ("观察同口径下一截点是否延续" if bucket != "exclude" else "仅在价格与位置风险解除后复核"))
-        risk = str(source.get("risk") or ("价格/成交可行性未验证" if status in {"UNKNOWN", "INDICATIVE", "PRICE_PROXY"} else "同板块不代表个股联动"))
+        relative = _number(source, "relative0945", "relative_pct", "relative_to_plate_pp")
+        condition, risk = _candidate_language(source, bucket, status, position, relative)
+        if not reasons:
+            reasons = [str(source.get("reason") or condition)]
         if position is None and "position" in source:
             position = source.get("position")
         ref = source.get("origin_refs", source.get("refs", []))
@@ -56,9 +117,15 @@ def filter_candidates(candidates: Sequence[Mapping[str, Any]], features: Mapping
             if symbol:
                 seen[symbol] = item
     counts = {bucket: len(rows[bucket]) for bucket in _LABEL}
+    reason_counts: dict[str, int] = {}
+    for bucket_rows in rows.values():
+        for row in bucket_rows:
+            for reason in row["reasons"]:
+                label = str(reason["text"])
+                reason_counts[label] = reason_counts.get(label, 0) + 1
     shown = {}
     for bucket, label in _LABEL.items():
         # Preserve source order; never rank on later outcome fields or synthesize a score.
         shown[bucket] = [{k: v for k, v in row.items() if k != "_index"} for row in rows[bucket][:5]]
     return {"asof": asof, "candidate_origin": "A_TO_B", "counts": counts, "shown": shown,
-            "reason_counts": counts.copy(), "all_rows_ref": None, "stage": stage}
+            "reason_counts": reason_counts, "all_rows_ref": None, "stage": stage}

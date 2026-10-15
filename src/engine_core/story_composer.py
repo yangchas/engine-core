@@ -36,11 +36,17 @@ def _fmt(value: Any, unit: Any) -> str:
 def _metric_label(key: str) -> str:
     return {"auction_median_pct": "竞价中位", "auction_up_share": "上涨占比",
             "auction_amount_yuan": "竞价匹配额", "auction_prev_common_ratio": "竞价额/前日同池",
+            "auction_baseline_multiple": "竞价额/64日中位基线",
+            "auction_baseline_percentile": "64日竞价额分位",
             "open_median_pct": "开盘中位", "open_up_share": "上涨占比",
             "open_amount_yuan": "开盘成交额", "p0945_median": "0945中位",
             "p0945_up_share": "上涨占比", "p0945_amount_yuan": "0945累计成交额",
             "close_median_pct": "收盘中位", "close_up_share": "上涨占比",
-            "close_amount_yuan": "收盘成交额", "close_vs_p0945_pp": "收盘较0945"}.get(key, key)
+            "close_amount_yuan": "收盘成交额", "close_vs_p0945_pp": "收盘较0945",
+            "p0940_up_share": "09:40上涨占比", "p0945_up_share": "09:45上涨占比",
+            "p0940_median_pct": "09:40涨幅中位数", "p0945_median_pct": "09:45涨幅中位数",
+            "auction_n": "竞价样本", "open_n": "开盘样本", "close_n": "收盘样本"}.get(
+                key, key.replace("_", " ").replace("pct", "涨幅").replace("share", "占比").strip())
 
 
 def _metric_unit(key: str, unit: Any) -> Any:
@@ -90,9 +96,14 @@ def compose_story(features: Mapping[str, Any], anomalies: Sequence[Mapping[str, 
     events = []
     for anomaly in anomalies:
         if anomaly.get("display_eligible") and len(events) < 3:
+            metric_ids = anomaly.get("metric_ids", [])
+            metric = str(metric_ids[0]) if metric_ids else str(anomaly.get("id", "")).split(":")[-1]
             label = "历史异常" if anomaly.get("kind") in {"TAIL", "ROBUST"} else "对照观察"
+            baseline = "固定池64日历史对照" if metric == "close_up_share" else (
+                "64日混阈值近似参照" if metric == "volume_day_change" else None)
             events.append({"id": anomaly.get("id"), "family": anomaly.get("family"),
-                           "display_label": label, "value": anomaly.get("value"),
+                           "metric": metric, "display_label": label, "value": anomaly.get("value"),
+                           "baseline": baseline,
                            "quality": anomaly.get("quality", []), "ref": anomaly.get("refs", [])})
     shown = funnel.get("shown", {}) if isinstance(funnel.get("shown"), Mapping) else {}
     lines = []
@@ -112,6 +123,16 @@ def compose_story(features: Mapping[str, Any], anomalies: Sequence[Mapping[str, 
         if isinstance(metric, Mapping) and metric.get("value") is not None:
             lead_values.append(f"{_metric_label(key)}{_fmt(metric['value'], _metric_unit(key, metric.get('unit')))}")
     headline_text = (f"{date} { _LABEL.get(stage, stage) }观察：" + ("；".join(lead_values[:2]) if lead_values else "当前结构化事实有限，按缺口观察。"))
+    if stage == "auction":
+        baseline = metrics.get("auction_baseline_multiple", {})
+        percentile = metrics.get("auction_baseline_percentile", {})
+        median = metrics.get("auction_baseline_median_yuan", {})
+        if all(isinstance(item, Mapping) and item.get("value") is not None for item in (baseline, percentile, median)):
+            headline_text += (f"；64日同刻中位基线{float(median['value']) / 1e8:.1f}亿，"
+                              f"当前{float(baseline['value']):.2f}倍、{float(percentile['value']):.1f}分位")
+        prior_ratio = metrics.get("auction_prev_common_ratio", {})
+        if isinstance(prior_ratio, Mapping) and prior_ratio.get("value") is not None:
+            headline_text += f"；对昨日同池{float(prior_ratio['value']):.2f}倍"
     acts, earlier = [], {str(a.get("stage")): a for a in previous_acts if isinstance(a, Mapping)}
     if templates is None:
         templates = _default_templates()
@@ -119,7 +140,7 @@ def compose_story(features: Mapping[str, Any], anomalies: Sequence[Mapping[str, 
                          and _condition_matches(t.get("conditions"), metrics)]
     for act_stage in _ACTS:
         if _ACTS.index(act_stage) > _ACTS.index(stage) if stage in _ACTS else True:
-            acts.append({"stage": act_stage, "status": "UNOBSERVED", "lead": _claim(f"story:{act_stage}:lead", "该阶段尚无可用观测。"),
+            acts.append({"stage": act_stage, "status": "UNOBSERVED", "lead": _claim(f"story:{act_stage}:lead", "该幕没有独立截点记录。"),
                          "evidence": [], "transition": {"from": None, "condition_id": None,
                          "observed_result": None, "rule_id": None}, "pending_conditions": [], "template_ids": []})
             continue
@@ -128,20 +149,20 @@ def compose_story(features: Mapping[str, Any], anomalies: Sequence[Mapping[str, 
         current = act_stage == stage
         if not current:
             acts.append({"stage": act_stage, "status": "UNOBSERVED",
-                         "lead": _claim(f"story:{act_stage}:lead", "该幕独立时点事实未提供。"),
+                         "lead": _claim(f"story:{act_stage}:lead", "该幕没有独立截点记录。"),
                          "evidence": [], "transition": {"from": None, "condition_id": None,
                          "observed_result": None, "rule_id": None}, "pending_conditions": [], "template_ids": []})
             continue
         relevant = [(k, metrics[k]) for k in lead_keys if k in metrics and isinstance(metrics[k], Mapping)
                     and metrics[k].get("value") is not None]
-        evidence = [_claim(f"story:{act_stage}:evidence:{i}", f"{k}：{_fmt(v.get('value'), v.get('unit'))}", v.get("refs", []))
+        evidence = [_claim(f"story:{act_stage}:evidence:{i}", f"{_metric_label(k)}：{_fmt(v.get('value'), _metric_unit(k, v.get('unit')))}", v.get("refs", []))
                     for i, (k, v) in enumerate(relevant[:3])]
         label = _LABEL[act_stage]
         active_templates = matched_templates
         stage_values = lead_values[:3]
         text = (str(active_templates[0].get("neutral_sentence")) if active_templates else
                 f"{label}观测：" + "；".join(stage_values) + "。" if relevant else
-                f"{label}阶段可用事实不足，结论保留缺口。")
+                f"{label}截点没有可用事实，结论保留缺口。")
         acts.append({"stage": act_stage, "status": "OBSERVED",
                      "lead": _claim(f"story:{act_stage}:lead", text, refs), "evidence": evidence,
                      "transition": {"from": None, "condition_id": None, "observed_result": None,
@@ -149,10 +170,15 @@ def compose_story(features: Mapping[str, Any], anomalies: Sequence[Mapping[str, 
                      "template_ids": [str(x.get("id")) for x in active_templates]})
     top = []
     for ev in events:
-        top.append({"id": ev["id"], "display_label": ev["display_label"], "family": ev["family"],
-                    "value": ev["value"], "ref": ev["ref"], "quality": ",".join(ev["quality"])})
+        top.append({"id": ev["id"], "metric": ev["metric"], "display_label": ev["display_label"], "family": ev["family"],
+                    "value": ev["value"], "baseline": ev["baseline"], "ref": ev["ref"], "quality": ",".join(ev["quality"]),
+                    "historical_n": next((a.get("n") for a in anomalies if a.get("id") == ev["id"]), None),
+                    "ranks": next((a.get("ranks") for a in anomalies if a.get("id") == ev["id"]), {})})
     return {"schema": "StoryV1", "trade_date": date, "stage": stage,
             "generated_at": features.get("observed_at"), "headline": _claim("story:headline", headline_text, refs),
-            "top_events": top[:3], "acts": acts[:4], "funnel": {k: shown.get(k, [])[:5] for k in ("watch", "wait", "exclude")},
+            "top_events": top[:3], "acts": acts[:4], "funnel": {
+                **{k: shown.get(k, [])[:5] for k in ("watch", "wait", "exclude")},
+                "counts": dict(funnel.get("counts", {})),
+                "reason_counts": dict(funnel.get("reason_counts", {}))},
             "quality": list(features.get("quality", [])), "refs": refs,
             "template_status": "DESCRIPTIVE_ONLY"}

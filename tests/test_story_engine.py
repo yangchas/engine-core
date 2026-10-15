@@ -1,11 +1,13 @@
 import json
+import re
 from datetime import date, timedelta
 
 from engine_core.anomaly_detector import detect_anomalies
 from engine_core.story_composer import compose_story
-from engine_core.story_features import build_story_features
+from engine_core.story_features import build_story_features, build_live_story_features
 from engine_core.story_memory import append_memory, attach_next_day, make_daily_memory
 from engine_core.tradability_funnel import filter_candidates
+from engine_core.email_board import _story_view, _tiles, _extremes, _plates, _ladder, render_email_board
 
 
 def test_missing_zero_and_small_sample_anomaly_policy():
@@ -118,3 +120,202 @@ def test_cutoff_excludes_late_final_and_funnel_deduplicates_without_outcome_orde
     funnel = filter_candidates(rows, early, asof="09:25:00")
     assert funnel["counts"] == {"watch": 0, "wait": 0, "exclude": 1}
     assert [x["name"] for x in funnel["shown"]["exclude"]] == ["甲"]
+
+
+def test_story_text_is_human_readable_and_stitches_four_acts_with_transitions():
+    report = {
+        "auction_median_pct": -1.91, "auction_up_share": 97 / 5215,
+        "auction_amount_yuan": 20204600380, "auction_prev_common_ratio": 1.71,
+        "auction_n": 5215, "open_up_share": 295 / 5215,
+        "p0940_up_share": 706 / 5215, "p0945_up_share": 551 / 5215,
+        "close_up_share": 400 / 5215, "close_median_pct": -3.0006978,
+        "p0945_median": -1.8012608,
+        "top_events": [{"id": "close_up_share", "display_label": "历史异常",
+                         "value": 0.0761519, "n": 64, "baseline": "64日固定池对照",
+                         "numerator": 395, "denominator": 5187,
+                         "historical_n": 64, "ranks": {"ascending": 1}}],
+    }
+    story, _, rendered = _story_view(report, "close", "2026-10-15")
+    assert "一句话今日：" in rendered
+    assert "和昨天比" in rendered or "和往常比" in rendered
+    assert "含当日65日最低" in rendered
+    assert "早盘回升没有保持到收盘" in rendered
+    assert "下午连续路径缺失" in rendered
+    assert "close_up_share" not in rendered
+    assert re.search(r"\d+\.\d{7,}", rendered) is None
+    assert all(len(act.get("evidence", [])) <= 3 for act in story["acts"])
+
+
+def test_funnel_reasons_are_stock_specific_and_empty_watch_has_explanation():
+    bundle = build_story_features({"trade_date": "2026-10-15"}, stage="close", cutoff="15:00",
+                                  observed_at=None, provenance={})
+    candidates = [
+        {"symbol": "1", "name": "甲", "bucket": "wait", "position20_prior": 0.0,
+         "auction_price_status": "FINAL", "p0945_pct": -3.8, "plate0945": -1.9,
+         "relative0945": -1.9},
+        {"symbol": "2", "name": "乙", "bucket": "wait", "position20_prior": 0.24,
+         "auction_price_status": "INDICATIVE", "p0945_pct": -2.8, "plate0945": -3.0,
+         "relative0945": 0.2},
+    ]
+    funnel = filter_candidates(candidates, bundle, asof="09:45")
+    reasons = [row["condition"]["text"] for row in funnel["shown"]["wait"]]
+    assert len(set(reasons)) == 2
+    assert "终价" in " ".join(reasons)
+    assert funnel["reason_counts"]
+    story = {"stage": "close", "funnel": {"shown": funnel["shown"], "counts": funnel["counts"],
+              "reason_counts": funnel["reason_counts"]}}
+    rendered_report = {"story": story, "candidate_facts": candidates}
+    _, _, rendered = _story_view(rendered_report, "close", "2026-10-15")
+    candidate_lines = [line for line in rendered.splitlines() if line.startswith("要等：")]
+    assert len(candidate_lines) == 2
+    assert candidate_lines[0] != candidate_lines[1]
+    assert "能做：暂无" in rendered and "主要原因" in rendered
+
+
+def test_live_story_features_uses_stage_scoped_market_and_plate_facts():
+    report = {
+        "trade_date": "2026-10-15",
+        "market_price_volume": {"asof": "2026-10-15T09:25:06", "phase": "AUCTION",
+            "market_match_amount_yuan": 100, "median_pct_change": -1.2,
+            "up_share_pct": 12.0, "top_plates_by_share": [{"name": "通信", "market_share_bp": 200}]},
+        "auction_terminal_0925": {"asof": "2026-10-15T09:25:06", "market_match_amount_yuan": 100},
+        "ladder_section": {"rows": [{"symbol": "000001", "p0925_pct": -2}]},
+        "chapters": {"extremes_board": {"auction": {"rows": [{"symbol": "000001"}]}},
+                     "plate_quadrants": {"rows": [{"name": "通信"}]}},
+        "close_median_pct": 88,
+    }
+    features = build_live_story_features(report, stage="auction", cutoff="09:26:00")
+    assert features["metrics"]["auction_amount_yuan"]["value"] == 100
+    assert features["metrics"]["auction_median_pct"]["value"] == -1.2
+    assert features["metrics"]["plate_top_share"]["value"][0]["name"] == "通信"
+    assert "close_median_pct" not in features["metrics"]
+
+
+def test_funnel_does_not_repeat_condition_as_reason():
+    bundle = build_story_features({"trade_date": "2026-10-15"}, stage="auction", cutoff="09:25",
+                                  observed_at=None, provenance={})
+    funnel = filter_candidates([{"symbol": "000001", "name": "甲", "bucket": "wait",
+                                 "condition": "等下一截点确认", "risk": "回落"}], bundle,
+                               asof="09:25")
+    row = funnel["shown"]["wait"][0]
+    assert row["reasons"][0]["text"] == row["condition"]["text"]
+    report = {"story": {"stage": "auction", "funnel": {"shown": funnel["shown"],
+              "counts": funnel["counts"], "reason_counts": funnel["reason_counts"]}}}
+    _, _, rendered = _story_view(report, "auction", "2026-10-15")
+    candidate_line = next(line for line in rendered.splitlines() if line.startswith("要等："))
+    assert candidate_line.count("等下一截点确认") == 1
+
+
+def test_live_story_features_excludes_later_open_checkpoints_and_close():
+    report = {
+        "trade_date": "2026-10-15",
+        "market_price_volume": {"asof": "2026-10-15T09:32:00", "phase": "OPEN",
+            "status": "FRESH", "symbol_count": 5000, "market_match_amount_yuan": 100,
+            "median_pct_change": -0.5, "up_share_pct": 25},
+        "snapshots": [
+            {"label": "0932", "asof": "2026-10-15T09:32:00", "median_pct": -0.5},
+            {"label": "0938", "asof": "2026-10-15T09:38:00", "median_pct": 2.0},
+            {"label": "0945", "asof": "2026-10-15T09:45:00", "median_pct": 4.0},
+        ],
+        "close_median_pct": 88,
+    }
+    features = build_live_story_features(report, stage="open", cutoff="09:32:00")
+    metrics = features["metrics"]
+    assert metrics["open_median_pct"]["value"] == -0.5
+    assert metrics["p0932_median_pct"]["value"] == -0.5
+    assert "p0938_median_pct" not in metrics
+    assert "p0945_median_pct" not in metrics
+    assert "close_median_pct" not in metrics
+
+
+def test_live_story_feature_rows_and_market_cutoff_fail_closed():
+    report = {"trade_date": "2026-10-15",
+        "market_price_volume": {"asof": "2026-10-15T09:38:30", "phase": "OPEN",
+            "status": "FRESH", "symbol_count": 5000, "median_pct_change": 7.0},
+        "ladder_section": {"rows": [{"symbol": "000001", "p0932_pct": 1.0,
+            "p0940_pct": 9.0, "close_pct": 20.0}]},
+        "chapters": {"extremes_board": {"open": {"rows": [{"p0932_pct": 1.0,
+            "p0945_pct": 9.0, "close_pct": 20.0}]}}}}
+    features = build_live_story_features(report, stage="open", cutoff="09:32:00")
+    assert "open_median_pct" not in features["metrics"]
+    ladder = features["metrics"]["ladder_rows"]["value"][0]
+    extreme = features["metrics"]["extremes_rows"]["value"][0]
+    assert ladder == {"symbol": "000001", "p0932_pct": 1.0}
+    assert extreme == {"p0932_pct": 1.0}
+
+
+def test_open_story_keeps_auction_handoff_when_open_slice_has_no_terminal():
+    report = {"trade_date": "2026-10-15",
+        "handoff": {"auction_0925": {"final_0925": {"asof": "2026-10-15T09:25:06",
+            "status": "FRESH", "symbol_count": 5226, "market_match_amount_yuan": 200,
+            "median_pct_change": -1.0, "up_share_pct": 10}}},
+        "market_price_volume": {"asof": "2026-10-15T09:32:00", "phase": "OPEN",
+            "status": "STALE", "symbol_count": 0}}
+    features = build_live_story_features(report, stage="open", cutoff="09:32:00")
+    assert features["metrics"]["auction_amount_yuan"]["value"] == 200
+    assert features["metrics"]["auction_median_pct"]["value"] == -1.0
+    assert features["metrics"]["open_median_pct"]["value"] is None
+
+
+def test_live_report_chapter_shapes_feed_emotion_extremes_and_plate_appendices():
+    report = {"chapters": {
+        "market_price_volume": {"median_pct_change": -1.4, "up_share_pct": 20,
+            "market_match_amount_yuan": 5_000_000_000, "limit_up": 3, "limit_down": 4,
+            "top_plates_by_share": [{"name": "通信", "member_count": 80,
+                "match_amount_yuan": 2_000_000_000, "market_share_bp": 400,
+                "equal_weight_pct": -0.7}]},
+        "yesterday_highboards_summary": {"yesterday_limit_pool": {"count": 40,
+            "mean_pct_change": 1.2}},
+        "extremes_board": {"auction": [{"symbol": "000001", "name": "甲",
+            "auction_pct": -4.0, "auction_amount_yuan": 4_000_000_000,
+            "selection_reason": "amount_top20"}]},
+        "plate_quadrants": {"rows": [{"name": "芯片", "member_count": 100,
+            "amount_yuan": 3_000_000_000, "our_pct": -0.4, "quadrant": "双负"}]},
+    }}
+    assert {label for label, _ in _tiles(report, "auction")} >= {"竞价中位", "上涨占比", "涨/跌停价代理", "竞价匹配额"}
+    extreme_html, extreme_text = _extremes(report, "auction")
+    assert "甲" in extreme_html and "甲" in extreme_text
+    plate_html, plate_text = _plates(report, "auction")
+    assert "通信" in plate_html and "通信" in plate_text
+    open_html, open_text = _plates(report, "open")
+    assert "芯片" in open_html and "芯片" in open_text and "收盘" not in open_text
+
+
+def test_auction_story_headline_includes_available_historical_amount_baseline():
+    features = build_story_features({"trade_date": "2026-10-15", "metrics": {
+        "auction_amount_yuan": {"value": 202e8, "unit": "yuan"},
+        "auction_median_pct": {"value": -1.9, "unit": "pp"},
+        "auction_baseline_median_yuan": {"value": 169e8, "unit": "yuan"},
+        "auction_baseline_multiple": {"value": 1.20, "unit": "ratio"},
+        "auction_baseline_percentile": {"value": 67.2, "unit": "percentile"}},
+        }, stage="auction", cutoff="09:26", observed_at=None, provenance={})
+    story = compose_story(features, [], {"shown": {}}, previous_acts=[])
+    assert "64日同刻中位基线169.0亿" in story["headline"]["text"]
+    assert "1.20倍、67.2分位" in story["headline"]["text"]
+
+
+def test_live_ladder_labels_yesterday_height_without_inventing_promotion():
+    report = {"ladder_section": {"rows": [
+        {"symbol": "000001", "name": "甲", "prior_streak": 3, "p0925_pct": 2.0},
+        {"symbol": "000002", "name": "乙", "prior_streak": 3, "p0925_pct": -1.0},
+    ], "promotion_by_previous_level": {}, "promotion_status": "READY"}}
+    _, rendered = _ladder(report, "auction")
+    assert "昨3板" in rendered and "当前样本2只" in rendered
+    assert "晋" not in rendered
+
+
+def test_open_plate_appendix_does_not_repeat_one_snapshot_as_a_trend():
+    report = {"chapters": {"plate_quadrants": {"rows": [
+        {"name": "通信", "member_count": 80, "amount_yuan": 3e9,
+         "our_pct": -0.4, "quadrant": "双负"},
+    ]}}}
+    _, rendered = _plates(report, "open")
+    assert "通信" in rendered
+    assert "▄" not in rendered and "▁" not in rendered
+
+
+def test_temperature_plain_text_does_not_repeat_tile_labels():
+    _, plain = render_email_board({"market": {"auction_median": -1.2,
+        "up_share_pct": 12.0, "market_match_amount_yuan": 100}}, "auction", "2026-10-15")
+    assert "竞价中位 -1.2%" in plain
+    assert "竞价中位 竞价中位" not in plain

@@ -756,6 +756,70 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         payload["ladder_section"] = build_ladder_section(
             highboards if isinstance(highboards, list) else [], stage=stage, asof=point,
             frequencies=path_frequencies, market_stocks=live_stocks)
+        # Build the story from the same live payload used by the appendices. Keep
+        # the auction terminal as an explicit handoff in open reports.
+        from .story_features import build_live_story_features
+        from .story_composer import compose_story
+        from .tradability_funnel import filter_candidates
+        story_cutoff = asof or ("09:26:00" if stage == "auction" else "09:46:00")
+        features = build_live_story_features(payload, stage=stage, cutoff=story_cutoff,
+                                             observed_at=point)
+        funnel_candidates = []
+        for group in payload.get("a_to_b", []) if isinstance(payload.get("a_to_b"), list) else []:
+            if not isinstance(group, Mapping):
+                continue
+            candidates = group.get("b_candidates", group.get("candidates", []))
+            for candidate in candidates if isinstance(candidates, list) else []:
+                if not isinstance(candidate, Mapping):
+                    continue
+                metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), Mapping) else {}
+                funnel_candidates.append({**candidate,
+                    "symbol": candidate.get("symbol") or candidate.get("code") or candidate.get("stock_code"),
+                    "bucket": candidate.get("bucket", "wait"),
+                    "auction_price_status": candidate.get("auction_price_status", "UNKNOWN"),
+                    "auction_pct": metrics.get("auction_pct"),
+                    "p0945_pct": metrics.get("p0945_pct"),
+                    "relative0945": metrics.get("relative_to_plate_0945_pp"),
+                    "position20_prior": metrics.get("position20_prior", metrics.get("position20")),
+                    "reasons": candidate.get("reasons", []),
+                    "origin": "A_TO_B"})
+        story_funnel = filter_candidates(funnel_candidates, features, asof=point)
+        previous_acts = []
+        if stage == "open" and isinstance(payload.get("handoff"), Mapping):
+            handoff = payload["handoff"].get("auction_0925")
+            terminal = handoff.get("final_0925") if isinstance(handoff, Mapping) else None
+            if isinstance(terminal, Mapping):
+                prior_payload = {"trade_date": trade_date, "auction_terminal_0925": terminal}
+                prior_features = build_live_story_features(prior_payload, stage="auction",
+                                                           cutoff="09:25:06")
+                prior_story = compose_story(prior_features, [], {"shown": {}}, previous_acts=[])
+                previous_acts = [act for act in prior_story.get("acts", [])
+                                 if act.get("stage") == "auction"]
+        payload["story"] = compose_story(features, [], story_funnel,
+                                         previous_acts=previous_acts)
+        # A compact auction handoff may reuse only history available before this
+        # trade date. Emit fewer than three events when the data do not support more.
+        terminal_for_events = payload.get("auction_terminal_0925")
+        if stage == "open" and isinstance(payload.get("handoff"), Mapping):
+            auction_ref = payload["handoff"].get("auction_0925")
+            terminal_for_events = auction_ref.get("final_0925") if isinstance(auction_ref, Mapping) else None
+        history_rows = payload.get("history", {}).get("daily", []) if isinstance(payload.get("history"), Mapping) else []
+        if isinstance(terminal_for_events, Mapping) and isinstance(history_rows, list):
+            events = []
+            for metric, current_key, history_key, label in (
+                ("auction_median_pct", "median_pct_change", "median_open_pct", "竞价中位数"),
+                ("auction_up_share", "up_share_pct", "up_share_pct", "竞价上涨占比"),
+            ):
+                current = terminal_for_events.get(current_key)
+                values = [row.get(history_key) for row in history_rows if isinstance(row, Mapping)
+                          and row.get("date") and str(row.get("date")) < trade_date
+                          and isinstance(row.get(history_key), (int, float))]
+                if isinstance(current, (int, float)) and len(values) >= 20 and current < min(values):
+                    events.append({"id": f"auction:{metric}", "metric": metric,
+                        "display_label": "历史低位", "value": current / 100 if metric == "auction_up_share" else current,
+                        "historical_n": len(values), "ranks": {"ascending": 1, "n": len(values)},
+                        "quality": ["PRIOR_DAILY_HISTORY"], "ref": ["history.daily", "auction_terminal_0925"]})
+            payload["story"]["top_events"] = events[:3]
         from .email_render import render_email_html
         email_page, _ = render_email_html(payload, stage, trade_date, {
             "asof": asof, "sources": {"td": td_source_manifest}, "degraded": degraded})
