@@ -38,6 +38,20 @@ def test_a_to_b_range_position_uses_only_twenty_prior_closes_and_keeps_missing_u
     assert "prior_range_position20_pct" not in stocks[1]
 
 
+def test_final_live_report_projection_shrinks_after_basis_notes_are_added():
+    from engine_core.daily_pipeline import _shrink_live_report
+
+    report = {"stage": "auction", "basis_notes": ["legacy_redis"] * 100,
+              "chapters": {"plate_quadrants": {"rows": [{"text": "大" * 1000} for _ in range(100)]}},
+              "snapshots": [{"text": "大" * 1000} for _ in range(400)]}
+    report["slice_data_basis"] = ["legacy_redis"]
+    projected = {key: value for key, value in report.items() if key != "stocks"}
+    _shrink_live_report(projected)
+    text = json.dumps(projected, ensure_ascii=False, separators=(",", ":"))
+    assert len(text.encode()) < 250_000
+    assert "slice_data_basis" in json.loads(text)
+
+
 def test_reference_discovery_prefers_core_redis_pointer_and_records_version(tmp_path):
     class ReferenceRedis:
         def __init__(self, values): self.values = values
@@ -268,6 +282,94 @@ def test_three_stages_write_reports_and_explicit_missing_references(tmp_path):
     assert (output / "2026-10-15" / "close_review" / "report.json").exists()
 
 
+def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.slices import SliceProviders, SliceReader
+
+    trade_date = "2026-10-16"
+    prior_date = "2026-10-15"
+    catalog = ArtifactCatalog(tmp_path / "core-data")
+    available = f"{trade_date}T09:00:00+08:00"
+    common = {"available_at": available, "point_in_time_date": prior_date}
+    catalog.commit("stock_static", prior_date, [
+        {"symbol": "600001", "name": "样本股", "real_market_cap": 100, **common}],
+        common, source="test")
+    catalog.commit("plate_registry", prior_date, [
+        {"code": "801001", "name": "通信", "class": "industry", **common}],
+        common, source="test")
+    catalog.commit("plate_members", prior_date, [
+        {"symbol": "600001", "plate_code": "801001", **common}],
+        common, source="test")
+    catalog.commit("daily_history_compact", prior_date, [
+        {"date": prior_date, "symbol": "600001", "close": 10, "pct_chg": 1,
+         "amount": 100000, **common}], common, source="test")
+    catalog.commit("auction_baseline", trade_date, [
+        {"date": trade_date, "symbol": "600001", "match_amount_yuan": 100000,
+         "change_pct": 1, **common}], common, source="test")
+    catalog.commit("limit_up_pool", prior_date, [
+        {"symbol": "600001", "name": "样本股", "lb_days": 2, **common}], common, source="test")
+    catalog.commit("limit_reasons", prior_date, [
+        {"symbol": "600001", "Date": prior_date, "ZSCode": ["801001"],
+         "Reason": "通信", **common}], common, source="test")
+    for day in (trade_date, prior_date):
+        catalog.commit("hot_plates", day, [
+            {"code": "801001", "name": "通信", "strength": 1, "change_pct": 1,
+             "amount_yuan": 100000, "sampled_at": f"{day}T09:20:00+08:00",
+             "available_at": f"{day}T09:20:00+08:00"}],
+            {"available_at": f"{day}T09:20:00+08:00"}, source="test")
+    catalog.commit("hot_rank", trade_date, [
+        {"symbol": "600001", "rank": 1, **common}], common, source="test")
+    catalog.commit("trade_calendar", trade_date, [
+        {"date": prior_date}, {"date": trade_date}], common, source="test")
+    catalog.commit("path_stats", prior_date, [
+        {"symbol": "600001", "outcome_status": "CLOSED_UP_PRICE_PROXY", **common}],
+        common, source="test")
+
+    class BytePipeline:
+        def execute(self):
+            return [{b"px": b"11000", b"pc": b"10000", b"amt": b"5000000",
+                     b"vol": b"100", b"ts": b"1792113960000"}]
+
+    class ByteRedis:
+        def scan_iter(self, **kwargs):
+            return iter([b"q2:600001"])
+
+        def pipeline(self):
+            class Pipe:
+                def hgetall(self, _key):
+                    return self
+                execute = BytePipeline.execute
+            return Pipe()
+
+        def get(self, _key):
+            return None
+
+        def hgetall(self, _key):
+            return {b"600001": b'{"name":"legacy bytes"}'}
+
+    class DataTD(FakeTD):
+        def states_at(self, cutoff):
+            pct = 1.0 if cutoff.strftime("%H:%M:%S") <= "09:25:06" else 2.0
+            return {"600001": {"symbol": "600001", "price": 10.1, "price_milli": 10100,
+                               "pre_close": 10, "prev_close_milli": 10000,
+                               "rest_bid_shares": 0, "rest_ask_shares": 0,
+                               "pct_change": pct, "match_amount_yuan": 5000000,
+                               "auction_amount_yuan": 5000000, "status": "FINAL"}}
+
+    redis = ByteRedis()
+    reader = SliceReader(SliceProviders(catalog=catalog, redis=redis, file_fallback=False).providers())
+    sources = DailySources(td=DataTD(), redis=redis, slice_reader=reader)
+    for stage, asof in (("auction", "09:26:00"), ("open", "09:46:00")):
+        result = run_daily_pipeline(stage=stage, trade_date=trade_date, asof=asof,
+                                    out_root=tmp_path / "reports", sources=sources, dry_run=True)
+        report_path = result["out_dir"] / "report.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        manifest = json.loads((result["out_dir"] / "manifest.json").read_text(encoding="utf-8"))
+        assert {row["status"] for row in manifest["slices"].values()} <= {"READY", "PARTIAL"}, {
+            name: row for name, row in manifest["slices"].items() if row["status"] == "MISSING"}
+        assert all(row["source"].startswith("core_data") for row in manifest["slices"].values())
+        assert "front_page" in report and "plate_strength" in report["front_page"]
+        assert "ladder" in report["front_page"]
 def test_repeat_run_uses_numbered_directory_without_overwriting(tmp_path):
     kwargs = dict(stage="auction", trade_date="2026-10-15", out_root=tmp_path / "out",
                   reference_root=tmp_path / "refs", sources=DailySources(td=FakeTD()))
@@ -460,3 +562,14 @@ def test_shrink_live_report_compacts_auction_extremes_and_behavior_candidates():
     out = _shrink_live_report(report)
     assert len(out["chapters"]["watchlist"]["behavior_candidates"]) <= 5
     assert out["chapters"]["extremes_board"]["open"]["rows"] == []
+
+
+def test_live_report_json_drops_full_universe_rows_after_basis_note():
+    """Realistic-scale regression (SMOKE-1): behavior_rows for ~5k stocks must never reach report.json."""
+    from engine_core import live_pages
+    payload = {"stage": "auction_0926", "chapters": {"behavior_rows": [{"symbol": f"{i:06d}", "name": "n" * 20, "pad": "x" * 900} for i in range(5200)],
+                                                      "watchlist": {}}, "snapshots": [], "limitations": "x"}
+    out = live_pages._json_report_payload(payload)
+    import json
+    assert "behavior_rows" not in out.get("chapters", {})
+    assert len(json.dumps(out, ensure_ascii=False)) < 250_000

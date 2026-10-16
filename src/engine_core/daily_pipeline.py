@@ -78,6 +78,7 @@ def _shrink_live_report(report: dict[str, Any], *, plate_cap: int = 20, row_cap:
                         block[key] = []
     for snap in report.get("snapshots", []) if isinstance(report.get("snapshots"), list) else []:
         cut(snap, "top_plates_by_share", plate_cap)
+    cut(report, "snapshots", 10)
     terminal = report.get("auction_terminal_0925")
     if isinstance(terminal, dict):
         cut(terminal, "top_plates_by_share", plate_cap)
@@ -1034,11 +1035,13 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             static_themes_by_symbol=static_by_symbol,
             pool_rows=slice_results["yest_limit_pool"].rows,
             reason_rows=slice_results["limit_reason_history"].rows,
-            hot_rows=slice_results["hot_plates_yesterday"].rows)
+            hot_rows=slice_results["hot_plates_yesterday"].rows,
+            trading_dates=calendar_days)
         payload["limit_reason_themes"] = theme_snapshot["assignments"]
         payload["theme_attribution_basis"] = theme_snapshot["basis"]
         payload["hot_plate_names"] = theme_snapshot["hot_plate_names"]
         payload["theme_snapshot_status"] = theme_snapshot["status"]
+        payload["theme_source_counts"] = theme_snapshot.get("source_counts", {})
         # Keep A→B peers on the same C212 primary theme used by the ladder.
         assigned_counts: dict[str, int] = {}
         themed_stocks = []
@@ -1328,7 +1331,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         written = (head + note_html + sep + tail) if sep else (written + note_html)
         html_path.write_text(written, encoding="utf-8")
     compact_report = ({key: value for key, value in data.items() if key != "stocks"}
-                      if stage == "close" else payload)
+                      if stage == "close" else live_pages._json_report_payload(payload))
+    _shrink_live_report(compact_report)
     report_text = json.dumps(compact_report,
                              ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
     if len(report_text.encode("utf-8")) > 250_000:

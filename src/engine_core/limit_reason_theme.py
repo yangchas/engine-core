@@ -39,9 +39,9 @@ def _symbol(value: Any) -> str:
 def _pool_values(row: Sequence[Any] | Mapping[str, Any]) -> tuple[str, str, list[str], str, str]:
     if isinstance(row, Mapping):
         symbol = _symbol(row.get("symbol", row.get("code")))
-        label = str(row.get("plate") or row.get("theme_name") or "").strip()
+        label = str(row.get("plate") or row.get("theme_name") or row.get("plate_label") or "").strip()
         topics = row.get("themes", row.get("theme_text", label))
-        code = str(row.get("plate_code", row.get("theme_code", "")) or "").strip()
+        code = str(row.get("plate_code", row.get("theme_code", row.get("theme_codes", ""))) or "").strip()
         tier = str(row.get("tier_label", row.get("SCLT", "")) or "").strip()
     elif len(row) >= 20:
         symbol = _symbol(row[0])
@@ -114,7 +114,8 @@ def build_limit_reason_themes(
     *, expected_previous_date: str,
     plate_names: Mapping[str, str],
     static_themes_by_symbol: Mapping[str, Any] | None = None,
-    lookback_sessions: int = 10,
+    lookback_sessions: int = 20,
+    trading_dates: Sequence[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Assign one primary theme to each pool symbol using only prior-session facts."""
     pool: dict[str, tuple[str, list[str], str, str]] = {}
@@ -124,7 +125,8 @@ def build_limit_reason_themes(
             pool[symbol] = (label, topics, code, tier)
 
     result: dict[str, dict[str, Any]] = {}
-    all_symbols = set(pool) | {_symbol(value) for value in (static_themes_by_symbol or {})}
+    reason_symbols = {_symbol(value) for value in reason_responses_by_symbol}
+    all_symbols = set(pool) | reason_symbols | {_symbol(value) for value in (static_themes_by_symbol or {})}
     for symbol in sorted(value for value in all_symbols if value):
         label, topics, pool_code, pool_tier = pool.get(symbol, ("", [], "", ""))
         records = []
@@ -140,6 +142,12 @@ def build_limit_reason_themes(
             codes = [str(code).strip() for code in codes if str(code).strip()] if isinstance(codes, Sequence) else []
             records.append((event_date, row, codes))
         records.sort(key=lambda item: item[0], reverse=True)
+        if trading_dates:
+            sessions = sorted({str(day)[:10] for day in trading_dates
+                               if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(day)[:10])
+                               and str(day)[:10] <= expected_previous_date})[-max(1, lookback_sessions):]
+            session_set = set(sessions)
+            records = [record for record in records if record[0] in session_set]
         latest = records[0] if records else None
         selected: dict[str, Any] | None = None
         if label or pool_code:
@@ -225,6 +233,7 @@ def load_kaipan_theme_snapshot(
     pool_rows: Sequence[Mapping[str, Any]] | None = None,
     reason_rows: Sequence[Mapping[str, Any]] | None = None,
     hot_rows: Sequence[Mapping[str, Any]] | None = None,
+    trading_dates: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Load only a completed same-day snapshot visible at the report cutoff."""
     # No implicit validation/Kaipan directory input. Callers may pass an explicit
@@ -241,15 +250,32 @@ def load_kaipan_theme_snapshot(
                 reason_map.setdefault(symbol, {"StockID": symbol, "List": []})["List"].append(record)
             assignments = build_limit_reason_themes(
                 list(pool_rows or ()), reason_map, expected_previous_date=previous_trade_date,
-                plate_names=plate_names, static_themes_by_symbol=static_themes_by_symbol)
-            hot_names = sorted({str(row.get("name") or row.get("plate_name") or "")
-                                for row in hot_rows or ()} - {""})
+                plate_names=plate_names, static_themes_by_symbol=static_themes_by_symbol,
+                lookback_sessions=20, trading_dates=trading_dates)
+            cutoff = _parse_time(observed_at)
+            latest_hot: dict[str, tuple[datetime, Mapping[str, Any]]] = {}
+            for row in hot_rows or ():
+                code = str(row.get("code") or row.get("plate_code") or "").strip()
+                sampled = _parse_time(str(row.get("sampled_at") or row.get("available_at") or ""))
+                if not code or sampled is None or (cutoff is not None and sampled > cutoff):
+                    continue
+                if code not in latest_hot or sampled > latest_hot[code][0]:
+                    latest_hot[code] = (sampled, row)
+            hot_samples = {code: {"name": str(row.get("name") or row.get("plate_name") or ""),
+                                  "sampled_at": str(row.get("sampled_at") or row.get("available_at") or "")}
+                           for code, (_sampled, row) in latest_hot.items()}
+            hot_names = sorted({item["name"] for item in hot_samples.values()} - {""})
+            source_counts: Counter[str] = Counter(row.get("theme_source", "NONE") for row in assignments.values())
             status = "READY" if pool_rows and reason_rows else "PARTIAL"
+            counts_text = ", ".join(f"{key}={source_counts[key]}" for key in sorted(source_counts)) or "无记录"
             return {"status": status, "assignments": assignments,
-                    "basis": "切片：昨日涨停池/历史原因" if status == "READY" else "切片不完整；登记表回退",
-                    "snapshot_dir": None, "hot_plate_names": hot_names}
+                    "basis": ("切片：昨日涨停池/历史原因" if status == "READY" else "切片不完整；登记表回退")
+                             + f"；来源计数 {counts_text}",
+                    "snapshot_dir": None, "hot_plate_names": hot_names,
+                    "hot_plate_samples": hot_samples, "source_counts": dict(source_counts)}
         return {"status": "MISSING", "assignments": {}, "hot_plate_names": [],
-                "basis": "缺历史原因切片；登记表回退", "snapshot_dir": None,
+                "hot_plate_samples": {}, "source_counts": {},
+                "basis": "缺历史原因切片；登记表回退；来源计数 NONE=0", "snapshot_dir": None,
                 "reason": "limit_reason_history_slice_unavailable"}
     base = Path(root)
     run = _latest_run(base, report_date, observed_at)
@@ -302,6 +328,10 @@ def load_kaipan_theme_snapshot(
         assignments = build_limit_reason_themes(
             {}, {}, expected_previous_date=previous_trade_date, plate_names=plate_names,
             static_themes_by_symbol=static_themes_by_symbol)
+    source_counts: Counter[str] = Counter(row.get("theme_source", "NONE") for row in assignments.values())
+    counts_text = ", ".join(f"{key}={source_counts[key]}" for key in sorted(source_counts)) or "无记录"
     return {"assignments": assignments, "status": status,
-            "basis": "昨日涨停池题材/历史原因" if status == "READY" else "登记表回退",
-            "snapshot_dir": str(run) if run else None, "hot_plate_names": hot_names}
+            "basis": ("昨日涨停池题材/历史原因" if status == "READY" else "登记表回退")
+                     + f"；来源计数 {counts_text}",
+            "snapshot_dir": str(run) if run else None, "hot_plate_names": hot_names,
+            "source_counts": dict(source_counts)}

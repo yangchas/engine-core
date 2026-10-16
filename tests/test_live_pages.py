@@ -39,3 +39,21 @@ def test_live_report_json_preserves_a_to_b_v2_contract_fields():
     assert payload["a_to_b_schema_version"] == 2
     assert payload["a_to_b"][0]["a_strength"]["auction_amount_rank"] == 1
     assert payload["a_to_b"][0]["b_candidates"][0]["name"] == "同伴"
+
+
+def test_kaipan_missing_net_is_not_filled_as_zero(tmp_path):
+    from datetime import datetime
+
+    hot = tmp_path / "hot.json"
+    hot.write_text(json.dumps({"captured_local": "2026-10-16T09:26:00+08:00",
+                               "response": {"list": [["801001", "通信", 10, 1.2, None,
+                                                        3_000_000_000, None, None, None]]}}),
+                   encoding="utf-8")
+    result = live_pages._plate_quadrants(
+        {"top_plates_by_share": [{"name": "通信", "code": "801001", "equal_weight_pct": 1.0,
+                                  "member_count": 20}]}, {}, {}, str(hot), None,
+        datetime.fromisoformat("2026-10-16T09:27:00+08:00"))
+
+    assert result["rows"][0]["net_yuan"] is None
+    assert result["coverage"]["net_missing"] == 1
+    assert result["zero_value_boundary_count"] == 0

@@ -3,7 +3,8 @@ from engine_core.ladder_cluster import build_ladder_clusters, select_plate_stren
 
 def test_ladder_clusters_group_by_eligible_theme_and_use_price_proxy_labels():
     highboards = [
-        {"symbol": "000001", "name": "甲股", "streak": 4, "0925": 10.0, "match_amount_yuan": 20},
+        {"symbol": "000001", "name": "甲股", "streak": 4, "0925": 10.0, "match_amount_yuan": 20,
+         "close": 11.0, "pre_close": 10.0},
         {"symbol": "000002", "name": "乙股", "streak": 2, "0925": -6.0, "match_amount_yuan": 30},
         {"symbol": "000003", "name": "丙股", "streak": 2, "0925": 1.0, "match_amount_yuan": 50},
     ]
@@ -21,6 +22,24 @@ def test_ladder_clusters_group_by_eligible_theme_and_use_price_proxy_labels():
     assert "甲股 昨4板→+10.0%[封停价代理]" in chip["leaders"]
     assert "乙股 昨2板→-6.0%[大低开]" in chip["leaders"]
     assert result["first_board_summary"] == "昨首板0只"
+
+
+def test_ladder_seal_proxy_requires_exact_price_and_known_price_inputs():
+    from engine_core.ladder_cluster import _price_label
+
+    assert _price_label(9.9, "000001", 11.0, 10.0) == "封停价代理"
+    assert _price_label(10.0, "000001", 10.99, 10.0) == "高开"
+    assert _price_label(10.0, "000001", None, 10.0) == "高开"
+    assert _price_label(20.0, "300001", 12.0, 10.0, unlimited=True) == "高开"
+
+
+def test_ladder_cluster_keeps_missing_amount_unknown():
+    result = build_ladder_clusters(
+        [{"symbol": "000001", "name": "甲", "streak": 2, "0925": 1}],
+        [{"a_symbol": "000001", "plate": "芯片"}],
+        {"芯片": {"class": "THEME", "size": 50}}, stage="auction")
+
+    assert result["clusters"][0]["amount_yuan"] is None
 
 
 def test_empty_highboards_and_first_board_counts_are_explicit():

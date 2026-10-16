@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from math import isfinite
 from math import ceil
 from typing import Any
+from .limit_price import is_limit_up
 
 
 def _number(value: Any) -> float | None:
@@ -26,11 +27,11 @@ def _eligible(name: str, metadata: Mapping[str, Any]) -> bool:
     return row.get("class", row.get("kind")) in {"THEME", "NICHE"} and 8 <= size <= 150 and not row.get("generic", False)
 
 
-def _price_label(pct: float | None, symbol: str) -> str:
+def _price_label(pct: float | None, symbol: str, price: Any = None, pre_close: Any = None,
+                 unlimited: bool = False) -> str:
     if pct is None:
         return "涨幅缺失"
-    limit = 20.0 if symbol.startswith(("300", "301", "688", "689")) else 30.0 if symbol.startswith(("4", "8", "92")) else 10.0
-    if pct >= limit - 0.2:
+    if price is not None and pre_close is not None and is_limit_up(price, pre_close, symbol, unlimited=unlimited):
         return "封停价代理"
     if pct <= -5:
         return "大低开"
@@ -119,12 +120,14 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
     for theme_key, rows in grouped.items():
         plate = group_names[theme_key]
         rows.sort(key=lambda row: (-(row["streak"] or 0), -(row.get("match_amount_yuan") or 0), row.get("name", "")))
-        amount = sum(max(0.0, _number(row.get("match_amount_yuan")) or 0.0) for row in rows)
+        known_amounts = [max(0.0, value) for row in rows
+                         if (value := _number(row.get("match_amount_yuan"))) is not None]
+        amount = sum(known_amounts) if known_amounts else None
         # A cluster's own highboard amount is not the whole plate amount.
         # Keep plate share missing unless the report supplied a plate-level value.
         share_bp = share_data.get(plate, (None, None))[0]
         share_basis = None
-        if share_bp is None and market_amount_yuan and market_amount_yuan > 0:
+        if share_bp is None and amount is not None and market_amount_yuan and market_amount_yuan > 0:
             share_bp = amount * 10000 / market_amount_yuan
             share_basis = "簇内合计"
         if stage == "open":
@@ -137,12 +140,17 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
         for row in rows:
             pct = row.get("pct")
             pct_text = "缺失" if pct is None else f"{pct:+.1f}%"
-            leaders.append(f"{row.get('name') or '名称未知'} 昨{int(row['streak']) if row['streak'] is not None else '?'}板→{pct_text}[{_price_label(pct, row['symbol'])}]")
+            price = next((row.get(key) for key in ("close", "current_price", "price", "px")
+                          if row.get(key) is not None), None)
+            pre_close = row.get("pre_close", row.get("preclose"))
+            price_label = _price_label(pct, row["symbol"], price, pre_close,
+                                       bool(row.get("is_new_listing") or row.get("is_unlimited_price_band")))
+            leaders.append(f"{row.get('name') or '名称未知'} 昨{int(row['streak']) if row['streak'] is not None else '?'}板→{pct_text}[{price_label}]")
             paths.append({"symbol": row["symbol"], "name": row.get("name") or "名称未知", "streak": row.get("streak"),
                           "0925": _number(row.get("0925", row.get("auction_pct"))),
                           "0932": _number(row.get("0932")), "0938": _number(row.get("0938")),
                           "0945": _number(row.get("0945", row.get("p0945_pct"))),
-                          "status": _price_label(pct, row["symbol"])})
+                          "status": price_label})
         clusters.append({"key": theme_key, "name": plate, "count": len(rows), "max_streak": max((r["streak"] or 0) for r in rows),
                          "amount_yuan": amount, "share_bp": share_bp, "share_basis": share_basis,
                          "hot_today": plate in hot_names,
@@ -156,7 +164,8 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
                                              else "降级" if auction_judgement == "承接强" and _judgement(rows, "pct") == "弱"
                                              else "不变" if auction_judgement == _judgement(rows, "pct") else "分化"),
                          "leader": dict(leader) if isinstance(leader, Mapping) else {}})
-    clusters.sort(key=lambda row: (-row["max_streak"], -row["amount_yuan"], row["name"]))
+    clusters.sort(key=lambda row: (-row["max_streak"], row["amount_yuan"] is None,
+                                   -(row["amount_yuan"] or 0), row["name"]))
     first = []
     high_symbols = {str(row.get("symbol", "")).zfill(6) for row in highboards if isinstance(row, Mapping)}
     for row in first_board_rows:
@@ -176,7 +185,11 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
             up = sum(value > 0 for value in values)
             down = sum(value < 0 for value in values)
             flat = sum(value == 0 for value in values)
-            locked = sum(_price_label(value, str(row.get("symbol", "")).zfill(6)) == "封停价代理"
+            locked = sum(_price_label(value, str(row.get("symbol", "")).zfill(6),
+                                      next((row.get(key) for key in ("close", "current_price", "price", "px")
+                                            if row.get(key) is not None), None),
+                                      row.get("pre_close", row.get("preclose")),
+                                      bool(row.get("is_new_listing") or row.get("is_unlimited_price_band"))) == "封停价代理"
                          for row in first for value in [_number(row.get(field, row.get(fallback)))] if value is not None)
             return up, down, flat, locked, len(first) - len(values)
         auction_counts = counts("0925", "auction_pct")
@@ -267,8 +280,10 @@ def build_plate_strength_from_stocks(stocks: Sequence[Mapping[str, Any]],
                      if (value := amount(row, current_key)) is not None)
     comparable_market = [row for row in valid_stocks
                          if amount(row, current_key) is not None and amount(row, previous_key) is not None]
-    market_comparable_now = sum(amount(row, current_key) or 0.0 for row in comparable_market)
-    market_before = sum(amount(row, previous_key) or 0.0 for row in comparable_market)
+    market_comparable_now = sum(value for row in comparable_market
+                                if (value := amount(row, current_key)) is not None)
+    market_before = sum(value for row in comparable_market
+                        if (value := amount(row, previous_key)) is not None)
     rows = []
     for name, members in grouped.items():
         if not 8 <= len(members) <= 150:
@@ -277,12 +292,14 @@ def build_plate_strength_from_stocks(stocks: Sequence[Mapping[str, Any]],
         current_coverage = len(with_now) / len(members)
         if current_coverage < 0.5:  # missing amounts are not zeros: need >=50% coverage
             continue
-        now = sum(amount(row, current_key) or 0.0 for row in with_now)
+        now = sum(value for row in with_now if (value := amount(row, current_key)) is not None)
         comparable = [row for row in members
                       if amount(row, current_key) is not None and amount(row, previous_key) is not None]
         comparison_coverage = len(comparable) / len(members)
-        comparable_now = sum(amount(row, current_key) or 0.0 for row in comparable)
-        before = sum(amount(row, previous_key) or 0.0 for row in comparable)
+        comparable_now = sum(value for row in comparable
+                             if (value := amount(row, current_key)) is not None)
+        before = sum(value for row in comparable
+                     if (value := amount(row, previous_key)) is not None)
         if now <= 0 or market_now <= 0:
             continue
         now_bp = now * 10000 / market_now
@@ -291,7 +308,7 @@ def build_plate_strength_from_stocks(stocks: Sequence[Mapping[str, Any]],
         delta = (comparable_now_bp - old_bp if old_bp is not None and comparison_coverage >= 0.5 else None)
         pct_rows = [(row, _number(row.get(pct_key))) for row in members]
         pct_values = [pct for _, pct in pct_rows if pct is not None]
-        leader = max(with_now, key=lambda row: amount(row, current_key) or 0)
+        leader = max(with_now, key=lambda row: amount(row, current_key))
         rows.append({"name": name, "share_bp": now_bp, "previous_share_bp": old_bp,
                      "comparable_share_bp": comparable_now_bp,
                      "delta_bp": delta,

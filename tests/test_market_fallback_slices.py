@@ -95,7 +95,7 @@ def test_market_slice_filters_late_rows_and_never_turns_missing_values_into_zero
     assert [row["symbol"] for row in result.rows] == ["600001"]
     assert result.rows[0].get("match_amount_yuan") is None
     assert result.meta["status"] == "PARTIAL"
-    assert result.meta["reason"] == "NO_ASOF"
+    assert result.meta["reason"] == "FUTURE_ROWS_FILTERED"
 
 
 def test_limit_state_derivation_and_wencai_pool_are_evidence_not_seal_truth():

@@ -6,6 +6,7 @@ import argparse
 import csv
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -58,14 +59,20 @@ def _rows(path: Path, dataset: str = "") -> list[dict[str, Any]]:
                         rows.append({"date": date, "symbol": str(raw[0]).zfill(6),
                                      "code": str(raw[0]).zfill(6),
                                      "name": str(raw[1]) if len(raw) > 1 else None,
+                                     "plate_label": raw[5] if len(raw) > 5 else None,
+                                     "theme_text": raw[12] if len(raw) > 12 else None,
+                                     "board_height": raw[15] if len(raw) > 15 else None,
+                                     "theme_codes": raw[19] if len(raw) > 19 else None,
                                      "lb_days": int(level) if level.isdigit() else None, "raw": raw})
             return rows
         if dataset == "hot_plates":
             rows = []
-            for item in sorted(path.glob("hot_*.json")):
+            for item in sorted(path.glob("hot_plates/*.json")):
                 payload = json.loads(item.read_text(encoding="utf-8"))
-                captured = payload.get("captured_local")
-                response = payload.get("response", {})
+                captured = payload.get("captured_local") or payload.get("available_at")
+                if not captured and payload.get("Time"):
+                    captured = datetime.fromtimestamp(float(payload["Time"])).astimezone().isoformat()
+                response = payload.get("response", payload)
                 for raw in response.get("list", []) if isinstance(response, dict) else []:
                     if isinstance(raw, list) and len(raw) >= 9:
                         rows.append({"date": str(captured or "")[:10], "available_at": captured,

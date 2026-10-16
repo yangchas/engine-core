@@ -1,6 +1,45 @@
 from engine_core.close_review import derive_close_review, render_close_markdown
 
 
+def test_close_review_defaults_to_slice_data_and_never_validation_root(tmp_path, monkeypatch):
+    from engine_core.close_review import build_parser, main
+    import json
+
+    monkeypatch.delenv("CORE_ALLOW_FILE_FALLBACK", raising=False)
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path / "core-data"))
+    assert build_parser().get_default("reference_root") is None
+    out = tmp_path / "close"
+    assert main(["--trade-date", "2026-10-16", "--out-dir", str(out)]) == 0
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["legacy_fallback"] is False
+    assert set(manifest["slices"]) == {"daily_history", "auction_baseline"}
+
+
+def test_close_review_rejects_explicit_files_without_fallback_opt_in(tmp_path, monkeypatch):
+    from engine_core.close_review import main
+    import pytest
+
+    monkeypatch.delenv("CORE_ALLOW_FILE_FALLBACK", raising=False)
+    with pytest.raises(ValueError, match="CORE_ALLOW_FILE_FALLBACK=1"):
+        main(["--trade-date", "2026-10-16", "--stock-day-facts", str(tmp_path / "facts.json"),
+              "--out-dir", str(tmp_path / "close")])
+
+
+def test_close_review_facts_file_fallback_is_marked_in_manifest(tmp_path, monkeypatch):
+    from engine_core import stock_day_facts
+    from engine_core.close_review import main
+    import json
+
+    monkeypatch.setenv("CORE_ALLOW_FILE_FALLBACK", "1")
+    monkeypatch.setattr(stock_day_facts, "read_facts", lambda _path: ([], {"sha256": "fixture"}))
+    out = tmp_path / "close-facts"
+    assert main(["--trade-date", "2026-10-16", "--stock-day-facts", str(tmp_path / "facts.json"),
+                 "--out-dir", str(out)]) == 0
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["quality"] == "FILE_FALLBACK"
+    assert manifest["file_fallback"] == "FILE_FALLBACK"
+
+
 def test_big_meat_loss_visibility_and_missed_opportunities():
     rows = [
         {"symbol": "600001", "name": "甲", "auction_pct": 0, "p0932_pct": 5.1, "p0945_pct": 4,

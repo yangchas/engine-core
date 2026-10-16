@@ -33,7 +33,9 @@ EVENT_NAME_MARKERS = ("季报增长", "年报增长", "中报增长", "并购重
 
 def _rows(states, top=20):
     return sorted((dict(row) for row in states.values()),
-                  key=lambda row: (-(int(row.get("match_amount_yuan") or 0)), row.get("symbol", "")))[:top]
+                  key=lambda row: (row.get("match_amount_yuan") is None,
+                                   -(int(row["match_amount_yuan"]) if row.get("match_amount_yuan") is not None else 0),
+                                   row.get("symbol", "")))[:top]
 
 
 def _input_manifest(value, kind):
@@ -151,7 +153,7 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
                          key=lambda row: (-row["match_amount_yuan"], row["name"]))[:10]
     block = {"available": False, "status": "Kaipan 强度不可用；未提供抓取输入",
              "captured_local": None, "counts": {"双正": 0, "双负": 0, "强度正净流出背离": 0,
-                                                   "强度负净流入背离": 0, "零值边界": 0},
+         "强度负净流入背离": 0, "零值边界": 0, "净额缺失": 0},
              "rows": [], "fallback_equal_weight": equal_weight, "fallback_amount_down": amount_down,
              "fallback_note": "等权涨幅与金额榜只作事实降级；金额榜的净流出为价格与金额推断。",
              "strength_estimates": [], "display_rows": [], "zero_value_boundary_count": 0,
@@ -185,22 +187,26 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
     for item in raw_rows:
         if isinstance(item, Mapping):
             try:
+                amount_raw = item.get("amount_yuan", item.get("amount"))
+                net_raw = item.get("net_yuan", item.get("net_inflow_yuan"))
                 parsed.append({"code": str(item.get("code") or item.get("plate_code") or ""),
                                "name": str(item.get("name") or ""),
                                "strength": float(item.get("strength")),
                                "kaipan_pct": float(item.get("change_pct", item.get("pct"))),
-                               "amount_yuan": float(item.get("amount_yuan", item.get("amount", 0))),
-                               "net_yuan": float(item.get("net_yuan", item.get("net_inflow_yuan", 0)))})
+                               "amount_yuan": float(amount_raw) if amount_raw not in (None, "") else None,
+                               "net_yuan": float(net_raw) if net_raw not in (None, "") else None})
             except (TypeError, ValueError):
                 continue
             continue
         if not isinstance(item, (list, tuple)) or len(item) < 9: continue
         try:
-            strength, hot_pct, amount, net = float(item[2]), float(item[3]), float(item[5]), float(item[6])
+            strength, hot_pct = float(item[2]), float(item[3])
+            amount = float(item[5]) if item[5] not in (None, "") else None
+            net = float(item[6]) if item[6] not in (None, "") else None
         except (TypeError, ValueError): continue
         parsed.append({"code": str(item[0]), "name": str(item[1]), "strength": strength,
                        "kaipan_pct": hot_pct, "amount_yuan": amount, "net_yuan": net})
-    if not parsed or all(row["strength"] == 0 and row["net_yuan"] == 0 for row in parsed):
+    if not parsed or all(row["strength"] == 0 and row["net_yuan"] in (None, 0) for row in parsed):
         block["status"] = "Kaipan 强度不可用；抓取动态字段全零"
         block["captured_local"] = captured
         return block
@@ -208,11 +214,14 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
     generic_names = set(generic_data.get("names", []))
     rows = []
     counts = dict(block["counts"])
+    amount_known = sum(row["amount_yuan"] is not None for row in parsed)
+    net_known = sum(row["net_yuan"] is not None for row in parsed)
     for hot in parsed:
-        if hot["amount_yuan"] < 2_000_000_000: continue
+        if hot["amount_yuan"] is None or hot["amount_yuan"] < 2_000_000_000: continue
         ours = plate_stats_by_code.get(hot["code"]) or plate_stats.get(hot["name"])
         our_pct = ours.get("equal_weight_pct") if ours else None
-        if hot["strength"] == 0 or hot["net_yuan"] == 0: quadrant = "零值边界"
+        if hot["net_yuan"] is None: quadrant = "净额缺失"
+        elif hot["strength"] == 0 or hot["net_yuan"] == 0: quadrant = "零值边界"
         elif hot["strength"] > 0 and hot["net_yuan"] > 0: quadrant = "双正"
         elif hot["strength"] < 0 and hot["net_yuan"] < 0: quadrant = "双负"
         elif hot["strength"] > 0: quadrant = "强度正净流出背离"
@@ -236,7 +245,10 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
     display_rows = double_positive + divergences + double_negative
     block.update({"available": True, "status": "可用；只作描述，不表示因果或胜负",
                   "captured_local": captured, "counts": counts, "rows": rows,
-                  "display_rows": display_rows, "zero_value_boundary_count": counts["零值边界"]})
+                  "display_rows": display_rows, "zero_value_boundary_count": counts["零值边界"],
+                  "coverage": {"rows": len(parsed), "amount_known": amount_known,
+                               "amount_missing": len(parsed) - amount_known,
+                               "net_known": net_known, "net_missing": len(parsed) - net_known}})
     return block
 
 
@@ -409,8 +421,12 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
         chapters["extremes_board"] = build_extremes_board([], stage="open" if stage == "open_0946" else None)
         return chapters
     # C155 tags use the canonical 0920/0924/0925 values and market totals.
-    market = {tag: {"m": sum(int(row.get("match_amount_yuan") or 0) for row in raw_states.get(tag, {}).values())}
-              for tag in ("0920", "0924", "0925")}
+    market = {}
+    for tag in ("0920", "0924", "0925"):
+        values = [row.get("match_amount_yuan") for row in raw_states.get(tag, {}).values()]
+        known = [int(value) for value in values if isinstance(value, (int, float))]
+        market[tag] = {"m": sum(known) if known else None,
+                       "amount_known": len(known), "amount_missing": len(values) - len(known)}
     plate_pct, plate_means, symbol_plates = {}, {}, {}
     auction_state = raw_states.get("0925", {})
     for code, members in relations.items():
@@ -437,10 +453,15 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                           "status": row.get("status")}
         tagged[symbol] = {**stock, **calculate_stock_tags(stock, market)}
     chapters["behavior_tags"] = summarize(market, tagged)
+    chapters["behavior_tags"]["amount_coverage"] = {
+        tag: {"known": value["amount_known"], "missing": value["amount_missing"]}
+        for tag, value in market.items()}
     chapters["behavior_rows"] = [{"symbol": symbol, "name": stock_names.get(symbol, symbol),
                                   "display_tag": (tag.get("direction") or "") + ("；抢跑候选" if tag.get("outrun") else ""),
                                   **tag}
-                                  for symbol, tag in sorted(tagged.items(), key=lambda pair: -(pair[1].get("share_0925") or 0))
+                                  for symbol, tag in sorted(tagged.items(), key=lambda pair: (
+                                      pair[1].get("share_0925") is None,
+                                      -(pair[1].get("share_0925") or 0)))
                                   if tag.get("direction") or tag.get("outrun")]
     sealed_up, sealed_down = [], []
     for symbol, row in auction.items():
@@ -458,8 +479,10 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                 "current_pct": later.get("pct_change"), "status": result_status}
         if _state_limit(row, 1): sealed_up.append(item)
         if _state_limit(row, -1): sealed_down.append(item)
-    chapters["sealed_up"] = sorted(sealed_up, key=lambda row: -(row.get("seal_yuan") or 0))
-    chapters["sealed_down"] = sorted(sealed_down, key=lambda row: -(row.get("seal_yuan") or 0))
+    chapters["sealed_up"] = sorted(sealed_up, key=lambda row: (row.get("seal_yuan") is None,
+                                                               -(row["seal_yuan"] or 0)))
+    chapters["sealed_down"] = sorted(sealed_down, key=lambda row: (row.get("seal_yuan") is None,
+                                                                   -(row["seal_yuan"] or 0)))
     amount_top50 = _rows(auction, 50)
     amount_top50 = [{"symbol": row["symbol"],
                      "name": stock_names.get(row["symbol"], row.get("name") or row["symbol"]),
@@ -520,11 +543,13 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                               "position": "低位" if pos is not None and pos <= .3 else "高位" if pos is not None and pos >= .7 else "中位" if pos is not None else "位置未知",
                               "relative_to_plate_pp": relative,
                               "auction_tag": "竞价偏强" if relative is not None and relative >= 1 else "竞价偏弱" if relative is not None and relative <= -1 else ""})
-        chapters["look_a_do_b"] = sorted(peers, key=lambda row: (row["plate"], -(row.get("match_amount_yuan") or 0)))[:40]
+        chapters["look_a_do_b"] = sorted(peers, key=lambda row: (row["plate"],
+            row.get("match_amount_yuan") is None, -(row.get("match_amount_yuan") or 0)))[:40]
         chapters["yesterday_limit_pool"] = [{"symbol": symbol, "name": stock_names.get(symbol, row.get("name") or symbol),
                                               "pct_change": row.get("pct_change")}
                                              for symbol, row in auction.items()
-                                             if stock_context.get(symbol, {}).get("streak", 0) >= 1]
+                                             if stock_context.get(symbol, {}).get("streak") is not None
+                                             and stock_context[symbol]["streak"] >= 1]
         highboard_pcts = [row["0925"] for row in highboards
                           if isinstance(row.get("0925"), (int, float)) and math.isfinite(row["0925"])]
         pool_pcts = [row["pct_change"] for row in chapters["yesterday_limit_pool"]
@@ -548,7 +573,8 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                              "yesterday_limit_pool": sorted(
                                  ({**row, "match_amount_yuan": auction.get(row["symbol"], {}).get("match_amount_yuan")}
                                   for row in chapters["yesterday_limit_pool"]),
-                                 key=lambda row: -(row.get("match_amount_yuan") or 0))[:50],
+                                 key=lambda row: (row.get("match_amount_yuan") is None,
+                                                  -(row.get("match_amount_yuan") or 0)))[:50],
                              "sealed_up": chapters["sealed_up"][:30],
                              "sealed_down": chapters["sealed_down"][:30],
                              "behavior_candidates": behavior_candidates}
@@ -591,7 +617,8 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                                        "0945": row.get("pct_change"), "match_amount_yuan": row.get("match_amount_yuan")}
                                       for symbol, row in latest.items() if base.get(symbol, {}).get("pct_change") is not None
                                       and base[symbol]["pct_change"] < 3 and row.get("pct_change") is not None and row["pct_change"] >= 5],
-                                     key=lambda row: -(row.get("match_amount_yuan") or 0))[:30]
+                                     key=lambda row: (row.get("match_amount_yuan") is None,
+                                                      -(row.get("match_amount_yuan") or 0)))[:30]
         old_plates = labels.get("0925", {}).get("top_plates_by_share", [])
         new_plates = labels.get("0945", {}).get("top_plates_by_share", [])
         old = {row["code"]: row for row in old_plates}
@@ -733,8 +760,10 @@ def _section_body(title, payload):
     if title == "板块象限":
         block = chapters["plate_quadrants"]
         counts = "；".join(f"{name} {count}" for name, count in block["counts"].items())
+        coverage = block.get("coverage", {})
         intro = (f"<p>{html.escape(block['status'])}。抓取时刻：{html.escape(str(block.get('captured_local') or '—'))}。"
                  f"{html.escape(counts)}；零值边界 {block.get('zero_value_boundary_count', 0)}。"
+                 f"覆盖：金额 {coverage.get('amount_known', '—')}/{coverage.get('rows', '—')}，净额 {coverage.get('net_known', '—')}/{coverage.get('rows', '—')}。"
                  "强度与净额只作描述，不暗示因果或胜负。</p>")
         if block["available"]:
             table = _table([("板块", "name"), ("象限", "quadrant"), ("强度", "strength"), ("Kaipan涨幅%", "kaipan_pct"),

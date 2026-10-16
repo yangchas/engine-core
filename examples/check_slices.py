@@ -7,7 +7,7 @@ import os
 import time
 from pathlib import Path
 
-from engine_core.slices import SliceProviders, SliceReader
+from engine_core.slices import SliceProviders, SliceReader, previous_trade_date
 
 
 SLICE_IDS = ("stock_name_map", "plate_registry", "plate_members", "daily_history",
@@ -20,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trade-date", required=True)
     parser.add_argument("--asof", required=True)
     parser.add_argument("--root", default="~/core-data")
+    parser.add_argument("--prev-trade-date")
     args = parser.parse_args(argv)
     redis = None
     try:
@@ -30,9 +31,15 @@ def main(argv: list[str] | None = None) -> int:
         pass
     providers = SliceProviders(artifact_root=Path(args.root).expanduser(), redis=redis)
     reader = SliceReader(providers.providers(), snapshot_id="check_slices")
+    prior = args.prev_trade_date or previous_trade_date(providers.catalog, args.trade_date)
     for slice_id in SLICE_IDS:
         started = time.perf_counter()
-        result = reader.get(slice_id, trade_date=args.trade_date, asof=args.asof)
+        params = {}
+        if prior:
+            params["prior_trade_date"] = prior
+            if slice_id in {"yest_limit_pool", "hot_plates_yesterday"}:
+                params["source_date"] = prior
+        result = reader.get(slice_id, trade_date=args.trade_date, asof=args.asof, **params)
         elapsed = time.perf_counter() - started
         print(f"{slice_id} source={result.meta['source']} status={result.meta['status']} "
               f"rows={len(result.rows)} elapsed={elapsed:.3f}s reason={result.meta.get('reason', '')}")

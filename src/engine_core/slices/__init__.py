@@ -6,9 +6,10 @@ import os
 import threading
 from concurrent.futures import Future
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from zoneinfo import ZoneInfo
 
 STATUSES = {"READY", "PARTIAL", "MISSING", "STALE", "DEGRADED"}
 
@@ -81,9 +82,8 @@ class SliceReader:
                 rows, unknown = _pit_rows(result.rows, request.asof)
                 available_at = result.meta.get("available_at")
                 if available_at:
-                    parsed = datetime.fromisoformat(str(available_at).replace("Z", "+00:00"))
-                    cutoff = datetime.fromisoformat(request.asof)
-                    if parsed.tzinfo is None or parsed > cutoff:
+                    parsed, cutoff = _parse_pit_timestamp(available_at), _parse_pit_timestamp(request.asof)
+                    if parsed is None or cutoff is None or parsed > cutoff:
                         continue
                 meta = dict(result.meta)
                 if len(rows) != len(result.rows):
@@ -161,21 +161,60 @@ class SliceProviders:
         if request.slice_id == "trading_calendar":
             calendar_manifest = self.catalog.locate(dataset, date or None)
             if calendar_manifest is None:
-                history_manifest = self.catalog.locate("daily_history_compact", date or None)
-                if history_manifest:
-                    try:
-                        history_rows = self.catalog.read_rows(history_manifest)
-                        dates = sorted({str(row.get("date") or "")[:10] for row in history_rows
-                                        if row.get("date") and str(row.get("date"))[:10] <= request.trade_date})
-                        rows = [{"date": day} for day in dates]
-                        return _result(request, rows, source="core_data:daily_history_compact",
-                                       status="PARTIAL", reason="CALENDAR_DERIVED_FROM_DAILY_HISTORY",
-                                       version="derived", quality={"coverage": len(rows), "missing": None,
-                                                                    "partial": True})
-                    except (OSError, ValueError, KeyError):
-                        pass
+                dates = trading_dates_from_catalog(self.catalog)
+                if dates:
+                    rows = [{"date": day} for day in dates if day <= request.trade_date]
+                    return _result(request, rows, source="core_data:daily_kline_or_symbol_universe",
+                                   status="PARTIAL", reason="CALENDAR_DERIVED_FROM_CORE_DATASETS",
+                                   version="derived", quality={"coverage": len(rows), "missing": None,
+                                                                "partial": True})
+                return _result(request, [], source="core_data", status="MISSING",
+                               reason="CALENDAR_DATA_UNAVAILABLE")
         if request.slice_id in {"hot_plates_yesterday", "yest_limit_pool"}:
             date = str(request.params.get("source_date") or "")
+        if request.slice_id == "daily_history":
+            date = str(request.params.get("prior_trade_date") or date or "")
+        if request.slice_id == "limit_reason_history":
+            try:
+                dates = self.catalog.read().get("datasets", {}).get(dataset, {}).get("dates", {})
+                # Dataset dates are artifact/version dates, not the trading-day
+                # lookback. Imported Kaipan history may be bundled under one
+                # version date, so retain all PIT-eligible versions here; the
+                # consumer applies the last-20-trading-session event window.
+                eligible = sorted(day for day in dates if day <= request.trade_date)
+                rows: list[dict[str, Any]] = []
+                lineage = []
+                unknown = False
+                for day in eligible:
+                    manifest_path = self.catalog.locate(dataset, day)
+                    if manifest_path is None or not manifest_path.is_file():
+                        continue
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    day_rows = self.catalog.read_rows(manifest_path)
+                    for row in day_rows:
+                        if not row.get("available_at") and manifest.get("available_at"):
+                            row["available_at"] = manifest["available_at"]
+                        row.setdefault("dataset_date", day)
+                    kept, day_unknown = _pit_rows(_as_rows(day_rows), request.asof)
+                    unknown = unknown or day_unknown
+                    rows.extend(kept)
+                    lineage.append({"dataset": dataset, "trade_date": day,
+                                    "available_at": manifest.get("available_at")})
+                unique = {}
+                for row in rows:
+                    key = (row.get("symbol", row.get("code")), row.get("Date", row.get("date")),
+                           str(row.get("ZSCode", row.get("zs_code", ""))),
+                           row.get("Reason", row.get("reason")))
+                    unique[key] = row
+                status = "PARTIAL" if unknown else "READY" if unique else "MISSING"
+                return _result(request, list(unique.values()), source="core_data", status=status,
+                               reason="NO_ASOF" if unknown else (None if unique else "DATASET_NOT_FOUND"),
+                               version="multi_date", quality={"coverage": len(unique) or None,
+                                                              "partial": unknown,
+                                                              "history_trade_dates": len(lineage)},
+                               lineage=lineage)
+            except (AttributeError, OSError, ValueError, KeyError, TypeError):
+                return _result(request, [], source="core_data", status="MISSING", reason="CORRUPT_DATASET")
         if request.slice_id in {"hot_plates_yesterday", "yest_limit_pool"} and not date:
             return _result(request, [], source="core_data", status="MISSING",
                            reason="PREVIOUS_TRADE_DATE_MISSING")
@@ -270,7 +309,9 @@ class SliceProviders:
                 return None
             pipe = redis.pipeline()
             for symbol in symbols:
-                pipe.get(f"cache:kline:d:{symbol}")
+                normalized_symbol = symbol.decode() if isinstance(symbol, bytes) else str(symbol)
+                normalized_symbol = normalized_symbol.zfill(6)
+                pipe.get(f"cache:kline:d:{normalized_symbol}")
             values = pipe.execute()
             import zlib
             rows: list[dict[str, Any]] = []
@@ -279,7 +320,7 @@ class SliceProviders:
                     blob = bytes.fromhex(raw.decode() if isinstance(raw, bytes) else raw)
                     history = json.loads(zlib.decompress(blob))
                     for item in history:
-                        normalized = dict(item, symbol=str(symbol).zfill(6))
+                        normalized = dict(item, symbol=normalized_symbol)
                         if "date" not in normalized and normalized.get("time") is not None:
                             normalized["date"] = str(normalized["time"])[:10]
                         if "amount_yuan" not in normalized and normalized.get("amount") is not None:
@@ -350,39 +391,63 @@ def _hash_rows(value: Mapping[Any, Any]) -> list[dict[str, Any]]:
 
 
 def _pit_rows(rows: list[dict[str, Any]], asof: str) -> tuple[list[dict[str, Any]], bool]:
-    cutoff = datetime.fromisoformat(asof.replace("Z", "+00:00"))
+    cutoff = _parse_pit_timestamp(asof)
+    if cutoff is None:
+        raise ValueError("slice_asof_timezone_required")
     selected = []
     unknown = False
     for row in rows:
-        event = row.get("event_time") or row.get("event_date") or row.get("date")
-        available = row.get("available_at") or row.get("observed_at")
-        if event is not None:
-            try:
-                event_dt = datetime.fromisoformat(str(event).replace("Z", "+00:00"))
-                if event_dt.tzinfo is None:
-                    event_dt = event_dt.replace(tzinfo=datetime.fromisoformat(asof).tzinfo)
-                if event_dt > datetime.fromisoformat(asof):
-                    continue
-            except ValueError:
-                unknown = True
-        if event is None or available is None:
-            unknown = True
-            selected.append(row)
+        event = next((row.get(key) for key in ("event_time", "event_date", "date")
+                      if row.get(key) not in (None, "")), None)
+        available = next((row.get(key) for key in
+                          ("available_at", "observed_at", "created_at", "capture_time", "sampled_at")
+                          if row.get(key) not in (None, "")), None)
+        event_dt, available_dt = _parse_pit_timestamp(event), _parse_pit_timestamp(available)
+        # Availability is the PIT boundary even if event time is absent or malformed.
+        if available_dt is not None and available_dt > cutoff:
             continue
-        try:
-            event_dt = datetime.fromisoformat(str(event).replace("Z", "+00:00"))
-            available_dt = datetime.fromisoformat(str(available).replace("Z", "+00:00"))
-        except ValueError:
-            unknown = True
-            selected.append(row)
+        if event_dt is not None and event_dt > cutoff:
             continue
-        if event_dt.tzinfo is None or available_dt.tzinfo is None:
+        if event_dt is None and available_dt is None:
             unknown = True
-            selected.append(row)
-            continue
-        if event_dt <= cutoff and available_dt <= cutoff:
-            selected.append(row)
+        selected.append(row)
     return selected, unknown
 
 
+def _parse_pit_timestamp(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+    return parsed.astimezone(timezone.utc)
+
+
 __all__ = ["SliceReader", "SliceResult", "SliceProviders"]
+
+
+def trading_dates_from_catalog(catalog: Any) -> list[str]:
+    """Return observed trade dates from Core datasets; never infer weekdays."""
+    try:
+        datasets = catalog.read().get("datasets", {})
+    except (AttributeError, OSError, ValueError):
+        return []
+    for name in ("daily_kline", "symbol_universe"):
+        entry = datasets.get(name, {}) if isinstance(datasets, Mapping) else {}
+        dates = entry.get("dates", {}) if isinstance(entry, Mapping) else {}
+        observed = sorted(day for day in dates if isinstance(day, str) and len(day) == 10)
+        if observed:
+            return observed
+    return []
+
+
+def previous_trade_date(catalog: Any, trade_date: str) -> str | None:
+    """Find the previous date backed by Core calendar data, or fail closed."""
+    eligible = [day for day in trading_dates_from_catalog(catalog) if day < trade_date]
+    return eligible[-1] if eligible else None
+
+
+__all__ += ["trading_dates_from_catalog", "previous_trade_date"]

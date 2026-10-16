@@ -305,7 +305,7 @@ def test_hot_plate_quadrants_and_zero_input_fallback(tmp_path):
     block = payload["chapters"]["plate_quadrants"]
     assert block["available"] is True
     assert block["counts"] == {"双正": 1, "双负": 18, "强度正净流出背离": 1,
-                                "强度负净流入背离": 1, "零值边界": 1}
+                                "强度负净流入背离": 1, "零值边界": 1, "净额缺失": 0}
     assert len(block["rows"]) == 22
     assert len(block["display_rows"]) == 18
     assert sum(row["quadrant"] == "双负" for row in block["display_rows"]) == 15

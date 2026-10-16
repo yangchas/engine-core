@@ -120,7 +120,7 @@ class MarketFallbackProviders:
                           ("wencai", self.limit_wencai, True)]
 
         lineage: list[dict[str, Any]] = []
-        best: tuple[str, list[dict[str, Any]], Mapping[str, Any], bool, float | None] | None = None
+        best: tuple[str, list[dict[str, Any]], Mapping[str, Any], bool, float | None, bool] | None = None
         fallback_reason = "PRIMARY_SOURCE_MISSING"
         for source, provider, degraded in candidates:
             if provider is None:
@@ -147,7 +147,7 @@ class MarketFallbackProviders:
                     attempt["future_rows_filtered"] = True
                 lineage.append(attempt)
                 if rows and (best is None or (coverage or 0) > (best[4] or 0)):
-                    best = (source, rows, payload, degraded, coverage)
+                    best = (source, rows, payload, degraded, coverage, future_filtered)
                 adequate = bool(rows) and (coverage is None or coverage >= self.coverage_threshold)
                 if adequate:
                     return self._result(request, source, rows, payload, lineage,
@@ -165,10 +165,11 @@ class MarketFallbackProviders:
                     fallback_reason = "TD_SOURCE_ERROR"
 
         if best:
-            source, rows, payload, degraded, coverage = best
+            source, rows, payload, degraded, coverage, future_filtered = best
             return self._result(request, source, rows, payload, lineage,
                                 degraded=source != "td_auction_snapshot_v2" and source != "price_derived",
-                                coverage=coverage, degraded_reason=fallback_reason)
+                                coverage=coverage, future_filtered=future_filtered,
+                                degraded_reason=fallback_reason)
         return SliceResult.create([], {
             "slice_id": request.slice_id, "trade_date": request.trade_date,
             "asof": request.asof, "source": "none", "status": "MISSING",

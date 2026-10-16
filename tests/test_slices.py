@@ -53,6 +53,63 @@ def test_slice_provider_priority_and_pit_filtering(tmp_path):
     assert [row["symbol"] for row in result.rows] == ["600001"]
 
 
+def test_pit_rejects_future_available_at_even_when_event_time_is_missing_and_normalizes_naive():
+    from engine_core.slices import _pit_rows
+
+    rows, unknown = _pit_rows([
+        {"symbol": "600001", "available_at": "2026-10-16T09:27:00"},
+        {"symbol": "600002", "event_time": "2026-10-16T09:00:00",
+         "available_at": "2026-10-16T09:25:00"},
+        {"symbol": "600003", "value": 1},
+    ], "2026-10-16T09:26:00+08:00")
+
+    assert [row["symbol"] for row in rows] == ["600002", "600003"]
+    assert unknown is True
+
+    only_available, unknown = _pit_rows(
+        [{"symbol": "600004", "available_at": "2026-10-16T09:25:00"}],
+        "2026-10-16T09:26:00+08:00")
+    assert [row["symbol"] for row in only_available] == ["600004"]
+    assert unknown is False
+
+
+def test_daily_history_legacy_adapter_decodes_bytes_symbols():
+    import json
+    import zlib
+    from engine_core.slices import SliceProviders, SliceRequest
+
+    class Pipe:
+        def __init__(self): self.keys = []
+        def get(self, key): self.keys.append(key); return self
+        def execute(self):
+            return [zlib.compress(json.dumps([{"time": "2026-10-15", "close": 12.3}]).encode()).hex().encode()]
+
+    class Redis:
+        def __init__(self): self.pipe = Pipe()
+        def hkeys(self, key): return [b"000001"]
+        def pipeline(self): return self.pipe
+
+    redis = Redis()
+    providers = SliceProviders(redis=redis, file_fallback=False)
+    request = SliceRequest("daily_history", "2026-10-16", "2026-10-16T09:26:00+08:00",
+                           {"prior_trade_date": "2026-10-15"})
+    rows = providers._legacy_rows(request)
+    assert redis.pipe.keys == ["cache:kline:d:000001"]
+    assert rows[0]["symbol"] == "000001"
+    assert rows[0]["date"] == "2026-10-15"
+
+
+def test_previous_trade_date_uses_observed_core_dates_and_fails_closed():
+    from engine_core.slices import previous_trade_date
+
+    class Catalog:
+        def __init__(self, dates): self.dates = dates
+        def read(self): return {"datasets": {"daily_kline": {"dates": {day: [] for day in self.dates}}}}
+
+    assert previous_trade_date(Catalog(["2026-10-14", "2026-10-16"]), "2026-10-17") == "2026-10-16"
+    assert previous_trade_date(Catalog([]), "2026-10-17") is None
+
+
 def test_legacy_source_and_file_fallback_are_explicit(tmp_path):
     from engine_core.slices import SliceProviders
 

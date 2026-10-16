@@ -45,7 +45,7 @@ def test_1016_snapshot_uses_pool_theme_labels_before_stale_static_membership():
     assert {row["name"] for row in clusters} == {"冰雪产业", "食品饮料"}
     clustered_symbols = [path["symbol"] for cluster in clusters for path in cluster["paths"]]
     assert clustered_symbols.count("000530") == 1
-    assert ladder["attribution_basis"] == "昨日涨停池题材/历史原因"
+    assert ladder["attribution_basis"].startswith("昨日涨停池题材/历史原因；来源计数 ")
 
 
 def test_reason_latest_and_history_are_as_of_previous_session():
@@ -101,7 +101,7 @@ def test_missing_and_stale_daily_snapshots_degrade_without_using_future_data(tmp
         observed_at="2026-10-16T09:26:00+08:00", plate_names={},
         static_themes_by_symbol={"000004": [{"name": "登记表题材", "class": "THEME", "size": 12}]})
     assert missing["status"] == "MISSING"
-    assert missing["basis"] == "登记表回退"
+    assert missing["basis"].startswith("登记表回退；来源计数 ")
 
     dated = tmp_path / "2026-10-16-085000"
     (dated / "pools").mkdir(parents=True)
@@ -113,7 +113,7 @@ def test_missing_and_stale_daily_snapshots_degrade_without_using_future_data(tmp
         observed_at="2026-10-16T09:26:00+08:00", plate_names={},
         static_themes_by_symbol={"000004": [{"name": "登记表题材", "class": "THEME", "size": 12}]})
     assert stale["status"] == "STALE"
-    assert stale["basis"] == "登记表回退"
+    assert stale["basis"].startswith("登记表回退；来源计数 ")
 
 
 def test_snapshot_after_report_cutoff_is_not_loaded(tmp_path):
@@ -141,3 +141,44 @@ def test_snapshot_after_report_cutoff_is_not_loaded(tmp_path):
     assert "000001" in result["assignments"]
     assert "000002" not in result["assignments"]
     assert result["hot_plate_names"] == ["盘前热板"]
+
+
+def test_imported_pool_fields_and_reason_fields_survive_and_recent_hot_sample_is_selected():
+    from engine_core.limit_reason_theme import load_kaipan_theme_snapshot
+    from examples.import_reference_to_core_store import _rows
+
+    fixture = Path(__file__).parent / "fixtures" / "kaipan-daily"
+    pool_rows = _rows(fixture, "limit_up_pool")
+    reason_rows = _rows(fixture, "limit_reasons")
+    imported_hot = _rows(fixture, "hot_plates")
+    # The importer accepts the actual daily directory shape; one row is enough
+    # to assert that positional pool metadata and the independent reason columns
+    # remain queryable after flattening.
+    assert pool_rows
+    assert all(key in pool_rows[0] for key in ("plate_label", "theme_text", "theme_codes"))
+    assert all(key in reason_rows[0] for key in ("ZSCode", "PZSCode", "Reason", "Date", "SCLT"))
+    assert imported_hot and imported_hot[0].get("available_at")
+
+    rows = [
+        {"code": "801001", "name": "旧热板", "available_at": "2026-10-16T09:20:00+08:00"},
+        {"code": "801001", "name": "新热板", "available_at": "2026-10-16T09:25:00+08:00"},
+        {"code": "801002", "name": "未来热板", "available_at": "2026-10-16T09:27:00+08:00"},
+    ]
+    result = load_kaipan_theme_snapshot(
+        None, report_date="2026-10-16", previous_trade_date="2026-10-15",
+        observed_at="2026-10-16T09:26:00+08:00", plate_names={}, hot_rows=rows)
+    assert result["hot_plate_names"] == ["新热板"]
+    assert result["hot_plate_samples"]["801001"]["sampled_at"] == "2026-10-16T09:25:00+08:00"
+
+
+def test_reason_history_uses_last_twenty_trade_dates_and_reports_source_counts():
+    dates = [f"2026-10-{day:02d}" for day in range(1, 22)]
+    records = [{"Date": date, "Type": "0", "ZSCode": ["801001" if date in dates[-2:] else "801002"]}
+               for date in dates]
+    result = load_kaipan_theme_snapshot(
+        None, report_date="2026-10-22", previous_trade_date=dates[-1], observed_at=None,
+        plate_names={"801001": "近因", "801002": "旧因"},
+        reason_rows=[{"symbol": "000001", **row} for row in records],
+        trading_dates=dates)
+    assert result["assignments"]["000001"]["theme_name"] == "近因"
+    assert result["source_counts"]["REASON_LATEST"] == 1

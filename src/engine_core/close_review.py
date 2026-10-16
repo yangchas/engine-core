@@ -7,6 +7,7 @@ import hashlib
 import html
 import json
 import math
+import os
 import statistics
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -670,7 +671,8 @@ def _attach_auction_baseline(data: dict[str, Any], path: Path | list[dict[str, A
         market["auction_baseline_status"] = "MISSING"
         return
     from .live_session import auction_amount_baseline_comparison, load_auction_amount_baseline_csv
-    rows = load_auction_amount_baseline_csv(path, str(data.get("trade_date") or ""))
+    rows = (list(path) if isinstance(path, list) else
+            load_auction_amount_baseline_csv(path, str(data.get("trade_date") or "")))
     amounts = [float(row["auction_amount_yuan"]) for row in data.get("stocks", [])
                if isinstance(row, Mapping) and isinstance(row.get("auction_amount_yuan"), (int, float))]
     if not amounts:
@@ -886,13 +888,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--relation-dir"); p.add_argument("--generic-names-json"); p.add_argument("--stock-caps-json")
     p.add_argument("--live-report-json"); p.add_argument("--prev-live-json"); p.add_argument("--history-dir")
     p.add_argument("--kaipan-hot-dir"); p.add_argument("--out-dir", required=True); p.add_argument("--full-json", action="store_true")
-    p.add_argument("--reference-root", default="/home/exedev/validation")
+    p.add_argument("--reference-root")
     p.add_argument("--reference-catalog")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv); out = Path(args.out_dir)
+    file_fallback = os.getenv("CORE_ALLOW_FILE_FALLBACK") == "1"
+    if (args.stock_day_facts or args.reference_root or args.reference_catalog or args.daily_capture_dir
+            or args.checkpoints_csv or args.auction_snapshot_csv or args.report_dir or args.daily_history_csv
+            or args.relation_dir or args.generic_names_json or args.stock_caps_json or args.history_dir
+            or args.kaipan_hot_dir or args.live_report_json or args.prev_live_json) and not file_fallback:
+        raise ValueError("file inputs require CORE_ALLOW_FILE_FALLBACK=1")
     if out.exists() and (not out.is_dir() or any(out.iterdir())): raise FileExistsError(f"output directory must be new or empty: {out}")
     out.mkdir(parents=True, exist_ok=True)
     if args.stock_day_facts:
@@ -952,10 +960,11 @@ def main(argv: list[str] | None = None) -> int:
                 stock["auction_price_status"] = None
         amount_values = [stock["amount_yuan"] for stock in stocks
                          if isinstance(stock.get("amount_yuan"), (int, float))]
-        live_path = Path(args.live_report_json) if args.live_report_json else _reference_path(
-            Path(args.reference_root), "live_report", args.reference_catalog)
-        prev_path = Path(args.prev_live_json) if args.prev_live_json else _reference_path(
-            Path(args.reference_root), "prev_live_report", args.reference_catalog)
+        live_path = Path(args.live_report_json) if args.live_report_json else None
+        prev_path = Path(args.prev_live_json) if args.prev_live_json else None
+        if file_fallback and args.reference_root:
+            live_path = live_path or _reference_path(Path(args.reference_root), "live_report", args.reference_catalog)
+            prev_path = prev_path or _reference_path(Path(args.reference_root), "prev_live_report", args.reference_catalog)
         live_report = _json(live_path) if live_path and live_path.is_file() else None
         prev_live = _json(prev_path) if prev_path and prev_path.is_file() else None
         data = derive_close_review(stocks, trade_date=args.trade_date, live_report=live_report,
@@ -972,12 +981,14 @@ def main(argv: list[str] | None = None) -> int:
                 f"昨日涨停池连板天数缺失：{unknown_pool_streaks}只，未纳入梯队高度计数")
         manifest = {"contract": "CloseReviewV1", "trade_date": args.trade_date,
                     "facts_source": "STOCK_DAY_FACTS", "facts_manifest": facts_manifest,
-                    "legacy_fallback": False,
+                    "legacy_fallback": True, "quality": "FILE_FALLBACK",
+                    "file_fallback": "FILE_FALLBACK",
                     "missing": ["daily_history", *(["live_report"] if live_report is None else []),
                                 *(["previous_live_report"] if prev_live is None else []), "Kaipan hot snapshots"]}
-    else:
-        if not all((args.report_dir, args.checkpoints_csv, args.auction_snapshot_csv, args.daily_capture_dir)):
-            raise ValueError("legacy path requires --report-dir, --checkpoints-csv, --auction-snapshot-csv and --daily-capture-dir")
+        baseline_slice = None
+    elif all((args.report_dir, args.checkpoints_csv, args.auction_snapshot_csv, args.daily_capture_dir)):
+        if not file_fallback:
+            raise ValueError("legacy file inputs require CORE_ALLOW_FILE_FALLBACK=1")
         data, manifest = assemble_close_review(args.trade_date, args.report_dir, args.checkpoints_csv,
             args.auction_snapshot_csv, args.daily_capture_dir, daily_history_csv=args.daily_history_csv,
             relation_dir=args.relation_dir, generic_names_json=args.generic_names_json,
@@ -985,11 +996,38 @@ def main(argv: list[str] | None = None) -> int:
             prev_live_json=args.prev_live_json, history_dir=args.history_dir, kaipan_hot_dir=args.kaipan_hot_dir)
         manifest["facts_source"] = "LEGACY_FALLBACK"
         manifest["legacy_fallback"] = True
+        manifest["quality"] = "FILE_FALLBACK"
+        baseline_slice = None
+    else:
+        from .slices import SliceProviders, SliceReader
+        reader = SliceReader(SliceProviders().providers(), snapshot_id=f"{args.trade_date}:close-review")
+        asof = f"{args.trade_date}T23:59:59+08:00"
+        daily = reader.get("daily_history", trade_date=args.trade_date, asof=asof)
+        baseline_slice = reader.get("auction_baseline", trade_date=args.trade_date, asof=asof)
+        stocks = [{"symbol": row.get("symbol"), "name": row.get("name"),
+                   "close": row.get("close"), "high": row.get("high"), "low": row.get("low"),
+                   "pre_close": row.get("pre_close", row.get("preclose")),
+                   "close_pct": row.get("pct_chg"), "amount_yuan": row.get("amount_yuan", row.get("amount")),
+                   "auction_amount_yuan": row.get("auction_amount_yuan"),
+                   "daily_source": daily.meta.get("source")} for row in daily.rows]
+        data = derive_close_review(stocks, trade_date=args.trade_date,
+                                   market={"amount_yuan": sum(float(row["amount_yuan"]) for row in stocks
+                                                               if isinstance(row.get("amount_yuan"), (int, float))) or None,
+                                           "daily_source": daily.meta.get("source")},
+                                   checkpoint_status={tag: "MISSING" for tag in ("0932", "0935", "0940", "0945")})
+        data["data_quality"]["daily_source"] = daily.meta.get("source", "MISSING")
+        manifest = {"contract": "CloseReviewV1", "trade_date": args.trade_date,
+                    "facts_source": daily.meta.get("source"), "legacy_fallback": False,
+                    "slices": {"daily_history": daily.meta, "auction_baseline": baseline_slice.meta}}
+        ladder_summary = []
     plate_metadata, relation_asof = _close_plate_metadata(args.relation_dir)
     attach_close_sections(data, relation_asof=relation_asof, plate_metadata=plate_metadata,
                           ladder_summary=ladder_summary if args.stock_day_facts else ())
-    _attach_auction_baseline(data, _reference_path(Path(args.reference_root), "auction_baseline",
-                                                   args.reference_catalog))
+    baseline_path = (_reference_path(Path(args.reference_root), "auction_baseline", args.reference_catalog)
+                     if file_fallback and args.reference_root else None)
+    _attach_auction_baseline(data, baseline_path if baseline_path else
+                             (baseline_slice.rows if baseline_slice is not None and baseline_slice.meta.get("status") in {"READY", "PARTIAL"}
+                              else None))
     md = render_close_markdown(data); (out / "report.md").write_text(md, encoding="utf-8")
     (out / "report.html").write_text(render_close_html(data, md), encoding="utf-8")
     compact = {k: v for k, v in data.items() if k not in ("big_meat", "big_loss", "stocks")}
