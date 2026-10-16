@@ -192,6 +192,12 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
         return block
     if isinstance(hot_path, list):
         captured, raw_rows = None, hot_path
+        stamps = [_local_datetime(str(item.get("available_at") or item.get("sampled_at") or
+                                      item.get("captured_local") or ""))
+                  for item in raw_rows if isinstance(item, Mapping)]
+        visible_stamps = [stamp for stamp in stamps if stamp is not None and stamp <= now]
+        if visible_stamps:
+            captured = max(visible_stamps).isoformat(timespec="seconds")
     else:
         data = json.loads(Path(hot_path).read_text(encoding="utf-8"))
         captured = data.get("captured_local") if isinstance(data, dict) else None
@@ -203,7 +209,7 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
             continue
         code = (str(item.get("code") or item.get("plate_code") or "") if isinstance(item, Mapping)
                 else str(item[0]) if item else "")
-        stamp_value = (item.get("sampled_at", item.get("captured_local", captured))
+        stamp_value = (item.get("available_at", item.get("sampled_at", item.get("captured_local", captured)))
                        if isinstance(item, Mapping) else captured)
         sampled = _local_datetime(stamp_value)
         if sampled is not None and sampled > now:
@@ -378,7 +384,7 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
         opening_snap.get("median_pct_change") if opening_snap else None)
     chapters["plate_quadrants"] = _plate_quadrants(
         report_current, relations, plate_names,
-        kaipan_hot_rows if kaipan_hot_rows is not None else kaipan_hot_json, strength_anchor_json,
+        kaipan_hot_rows if kaipan_hot_rows is not None else [], strength_anchor_json,
         asof_cutoff or datetime.fromisoformat(report_current.get("asof", f"{trade_date}T09:25:06")))
     conclusion = _conclusion(snaps, chapters, history, stage)
     aggregation_seconds = max(0.0, time.perf_counter() - aggregation_started - td_fetch_seconds)
@@ -423,8 +429,16 @@ def _number(value):
 def _state_limit(row, side):
     state = row.get("limit_state")
     if state in (-1, 1): return state == side
+    if any(row.get(key) is None for key in ("price_milli", "prev_close_milli",
+                                            "rest_bid_shares" if side == 1 else "rest_ask_shares")):
+        return None
     from engine_core.auction_tracking import _at_limit
     return _at_limit(row, "up" if side == 1 else "down")
+
+
+def _complete_limit_count(states, rows, side):
+    checks = [_state_limit(states[row["symbol"]], side) for row in rows]
+    return sum(check is True for check in checks) if all(check is not None for check in checks) else None
 
 
 def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_names,
@@ -476,9 +490,12 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
         for tag in ("0920", "0924", "0925"):
             row = raw_states.get(tag, {}).get(symbol)
             if row is None: continue
+            up_limit = _state_limit(row, 1)
+            down_limit = _state_limit(row, -1)
             stock[tag] = {"pct": row.get("pct_change"), "m": row.get("match_amount_yuan"),
                           "rb": row.get("rest_bid_yuan"), "ra": row.get("rest_ask_yuan"),
-                          "limit_state": 1 if _state_limit(row, 1) else -1 if _state_limit(row, -1) else 0,
+                          "limit_state": (1 if up_limit is True else -1 if down_limit is True else
+                                          None if up_limit is None or down_limit is None else 0),
                           "status": row.get("status")}
         tagged[symbol] = {**stock, **calculate_stock_tags(stock, market)}
     chapters["behavior_tags"] = summarize(market, tagged)
@@ -495,10 +512,16 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
     sealed_up, sealed_down = [], []
     for symbol, row in auction.items():
         later = latest.get(symbol, {})
-        latest_side = 1 if later and _state_limit(later, 1) else -1 if later and _state_limit(later, -1) else 0
+        if later:
+            latest_up, latest_down = _state_limit(later, 1), _state_limit(later, -1)
+        else:
+            latest_up, latest_down = None, None
+        latest_side = (1 if latest_up is True else -1 if latest_down is True else
+                       None if later and (latest_up is None or latest_down is None) else 0)
         earlier = [raw_states.get(tag, {}).get(symbol, {}) for tag in ("0925", "0932", "0935", "0940")]
         was_sealed = _state_limit(row, 1)
-        result_status = ("封死" if latest_side == 1 and all(_state_limit(x, 1) for x in earlier if x)
+        result_status = ("封停状态缺失" if latest_side is None or was_sealed is None else
+                         "封死" if latest_side == 1 and all(_state_limit(x, 1) for x in earlier if x)
                          else "回封" if latest_side == 1 else "开板" if was_sealed and latest_side != 1
                          else "封跌停" if latest_side == -1 else "观察")
         item = {"symbol": symbol, "name": stock_names.get(symbol, row.get("name") or symbol),
@@ -522,6 +545,9 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                            if row.get("direction") in ("价升份额升(抢筹候选)", "价降份额升(放量走弱)")
                            or row.get("outrun")][:30]
     chapters["seal_quality"] = {"up_count": len(sealed_up), "down_count": len(sealed_down),
+                                 "unknown_count": sum(_state_limit(row, 1) is None or
+                                                      _state_limit(row, -1) is None
+                                                      for row in auction.values()),
                                  "up_median_yuan": statistics.median([r["seal_yuan"] for r in sealed_up if r["seal_yuan"] is not None]) if any(r["seal_yuan"] is not None for r in sealed_up) else None,
                                  "down_median_yuan": statistics.median([r["seal_yuan"] for r in sealed_down if r["seal_yuan"] is not None]) if any(r["seal_yuan"] is not None for r in sealed_down) else None}
     if has_history:
@@ -530,7 +556,7 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
         for symbol, streak in candidates:
             vals = {tag: raw_states.get(tag, {}).get(symbol, {}).get("pct_change") for tag in ("0925", "0932", "0940", "0945")}
             states = {tag: raw_states.get(tag, {}).get(symbol, {}) for tag in ("0925", "0932", "0940", "0945")}
-            cutoff_state = states["0945"] if stage == "open" else states["0925"]
+            cutoff_state = states["0945"] if stage == "open_0946" else states["0925"]
             status = _board_status(states)
             highboards.append({"symbol": symbol, "name": stock_names.get(symbol, symbol), "streak": streak,
                                "status": status, "match_amount_yuan": auction[symbol].get("match_amount_yuan"),
@@ -592,8 +618,15 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
         summary = {
             "match_amount_yuan": highboard_total,
             "median_pct_change": statistics.median(highboard_pcts) if highboard_pcts else None,
-            "sealed_up_count": sum(_state_limit(auction[row["symbol"]], 1) for row in highboards),
-            "sealed_down_count": sum(_state_limit(auction[row["symbol"]], -1) for row in highboards),
+            "sealed_up_count": _complete_limit_count(auction, highboards, 1),
+            "sealed_down_count": _complete_limit_count(auction, highboards, -1),
+            "sealed_unknown_count": sum(
+                _state_limit(auction[row["symbol"]], 1) is None or
+                _state_limit(auction[row["symbol"]], -1) is None for row in highboards),
+            "sealed_unknown_coverage_pct": (100 * sum(
+                _state_limit(auction[row["symbol"]], 1) is None or
+                _state_limit(auction[row["symbol"]], -1) is None for row in highboards) / len(highboards)
+                if highboards else None),
             "yesterday_limit_pool": {
                 "count": len(chapters["yesterday_limit_pool"]),
                 "mean_pct_change": statistics.mean(pool_pcts) if pool_pcts else None,
@@ -868,6 +901,8 @@ def _section_body(title, payload):
             parts[-1] += f"，占大盘 {summary['market_share_bp']:.0f}bp"
         parts.append(f"竞价涨幅中位数 {_fmt_pct(summary.get('median_pct_change'))}")
         parts.append(f"0925 封死/封跌停 {summary.get('sealed_up_count', 0)}/{summary.get('sealed_down_count', 0)} 只")
+        if summary.get("sealed_unknown_count", 0):
+            parts.append(f"封停状态未知 {summary['sealed_unknown_count']} 只（覆盖 {summary['sealed_unknown_coverage_pct']:.1f}%）")
         parts.append(f"昨日涨停池 {pool.get('count', 0)} 只：均值 {_fmt_pct(pool.get('mean_pct_change'))}，"
                      f"高开≥3% {pool.get('high_open_count', 0)} 只，低开≤-3% {pool.get('low_open_count', 0)} 只")
         if payload["stage"] == "open_0946":

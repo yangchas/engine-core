@@ -126,15 +126,21 @@ def _limit_pct(symbol: str) -> float:
     return 10.0
 
 
-def _at_limit(state: Mapping[str, Any], direction: str) -> bool:
-    symbol, price = str(state["symbol"]), int(state["price_milli"] or 0)
-    pc = int(state["prev_close_milli"] or 0)
+def _at_limit(state: Mapping[str, Any], direction: str) -> bool | None:
+    symbol = str(state.get("symbol") or "")
+    if symbol.startswith(("N", "C")):
+        return False
+    required = ("price_milli", "prev_close_milli",
+                "rest_bid_shares" if direction == "up" else "rest_ask_shares")
+    if any(key not in state or state[key] is None for key in required):
+        return None
+    price, pc = int(state["price_milli"]), int(state["prev_close_milli"])
     if not price or not pc or symbol.startswith(("N", "C")):
         return False
     ratio = _limit_pct(symbol) / 100
     target = int((pc * (1 + ratio if direction == "up" else 1 - ratio) + 5) // 10 * 10)
     rest = state["rest_bid_shares"] if direction == "up" else state["rest_ask_shares"]
-    return abs(price - target) <= 10 and rest > 0
+    return abs(price - target) <= 10 and int(rest) > 0
 
 
 def _pct_values(states: Mapping[str, Mapping[str, Any]]) -> list[float]:
@@ -189,9 +195,13 @@ def _pool_symbols(pool: Any) -> set[str]:
 def _snapshot(states: Mapping[str, Mapping[str, Any]], ts: str, prior: Mapping[str, Any] | None,
               focus: set[str], relations: Mapping[str, set[str]], names: Mapping[str, str],
               generic: set[str], phase: str, final_amount: int | None = None) -> dict[str, Any]:
-    market = sum(int(s["match_amount_yuan"]) for s in states.values())
+    amounts = [s.get("match_amount_yuan") for s in states.values()]
+    market = (sum(int(value) for value in amounts) if states and
+              all(value is not None for value in amounts) else None)
     pct = _pct_values(states)
-    sorted_stocks = sorted(states.values(), key=lambda s: (-int(s["match_amount_yuan"]), s["symbol"]))
+    sorted_stocks = sorted(states.values(), key=lambda s: (s.get("match_amount_yuan") is None,
+                                                            -(int(s["match_amount_yuan"]) if s.get("match_amount_yuan") is not None else 0),
+                                                            s["symbol"]))
     strongest_by_symbol: dict[str, tuple[float, str]] = {}
     for code, members in relations.items():
         name = names.get(code, code)
@@ -205,7 +215,7 @@ def _snapshot(states: Mapping[str, Mapping[str, Any]], ts: str, prior: Mapping[s
     stocks = []
     for src in sorted_stocks[:TOP_STOCKS_PER_SLICE]:
         row = dict(src)
-        row["market_share_bp"] = round(10000 * row["match_amount_yuan"] / market, 2) if market else None
+        row["market_share_bp"] = round(10000 * row["match_amount_yuan"] / market, 2) if market and row.get("match_amount_yuan") is not None else None
         strongest = strongest_by_symbol.get(row["symbol"])
         row["strongest_plate"] = strongest[1] if strongest else None
         row["relative_to_strongest_plate_pp"] = row["pct_change"] - strongest[0] if strongest and row.get("pct_change") is not None else None
@@ -214,7 +224,7 @@ def _snapshot(states: Mapping[str, Mapping[str, Any]], ts: str, prior: Mapping[s
     present = {x["symbol"] for x in stocks}
     for symbol in sorted(focus - present):
         if symbol in states:
-            row = dict(states[symbol]); row["market_share_bp"] = round(10000 * row["match_amount_yuan"] / market, 2) if market else None
+            row = dict(states[symbol]); row["market_share_bp"] = round(10000 * row["match_amount_yuan"] / market, 2) if market and row.get("match_amount_yuan") is not None else None
             strongest = strongest_by_symbol.get(symbol)
             row["strongest_plate"] = strongest[1] if strongest else None
             row["relative_to_strongest_plate_pp"] = row["pct_change"] - strongest[0] if strongest and row.get("pct_change") is not None else None
@@ -225,19 +235,26 @@ def _snapshot(states: Mapping[str, Mapping[str, Any]], ts: str, prior: Mapping[s
         selected = [states[s] for s in members if s in states and states[s].get("pct_change") is not None]
         if len(selected) < 5 or name in generic:
             continue
-        amount = sum(int(row["match_amount_yuan"]) for row in selected)
+        known_amounts = [row.get("match_amount_yuan") for row in selected]
+        amount = sum(int(value) for value in known_amounts) if all(value is not None for value in known_amounts) else None
         plate_rows.append({"code": code, "name": name, "member_count": len(selected),
                            "match_amount_yuan": amount,
-                           "market_share_bp": round(amount * 10000 / market, 2) if market else None,
+                           "market_share_bp": round(amount * 10000 / market, 2) if market and amount is not None else None,
                            "equal_weight_pct": statistics.mean(row["pct_change"] for row in selected)})
-    plate_rows.sort(key=lambda row: (-row["match_amount_yuan"], row["code"]))
+    plate_rows.sort(key=lambda row: (row["match_amount_yuan"] is None,
+                                     -(row["match_amount_yuan"] if row["match_amount_yuan"] is not None else 0), row["code"]))
     return {"timestamp": ts, "phase": phase, "market_match_amount_yuan": market,
-            "market_change_yuan": market - int(prior["market_match_amount_yuan"]) if prior else None,
-            "share_of_0925_terminal_bp": round(market * 10000 / final_amount, 2) if final_amount else None,
+            "market_change_yuan": (market - int(prior["market_match_amount_yuan"])
+                                   if prior and market is not None and prior.get("market_match_amount_yuan") is not None else None),
+            "share_of_0925_terminal_bp": round(market * 10000 / final_amount, 2) if market is not None and final_amount else None,
             "median_pct_change": statistics.median(pct) if pct else None,
             "up_share_pct": 100 * sum(x > 0 for x in pct) / len(pct) if pct else None,
-            "limit_up_count": sum(_at_limit(s, "up") for s in states.values()),
-            "limit_down_count": sum(_at_limit(s, "down") for s in states.values()),
+            "limit_up_count": sum(_at_limit(s, "up") is True for s in states.values()),
+            "limit_up_unknown_count": sum(_at_limit(s, "up") is None for s in states.values()),
+            "limit_up_unknown_coverage_pct": (100 * sum(_at_limit(s, "up") is None for s in states.values()) / len(states) if states else None),
+            "limit_down_count": sum(_at_limit(s, "down") is True for s in states.values()),
+            "limit_down_unknown_count": sum(_at_limit(s, "down") is None for s in states.values()),
+            "limit_down_unknown_coverage_pct": (100 * sum(_at_limit(s, "down") is None for s in states.values()) / len(states) if states else None),
             "stocks": stocks, "plates": plate_rows}
 
 
@@ -264,14 +281,16 @@ def replay_tracking(*, trade_date: str, ticks: Iterable[Tick], open_ticks: Itera
         snap = _snapshot(state, ts, prior, set(), relations, plate_names, generic_names, "AUCTION")
         timeline.append(snap)
         state_history.append({s: dict(v) for s, v in state.items()})
-    terminal = timeline[-1]["market_match_amount_yuan"] if timeline else 0
+    terminal = timeline[-1]["market_match_amount_yuan"] if timeline else None
     previous_dates = sorted(str(key) for key in (baseline or {}) if str(key) < trade_date)
     baseline_date = previous_dates[-1] if previous_dates else None
-    baseline_amount = int((baseline or {}).get(baseline_date, 0) or 0) if baseline_date else 0
+    baseline_value = (baseline or {}).get(baseline_date) if baseline_date else None
+    baseline_amount = int(baseline_value) if baseline_value is not None else None
     # Retrospective field is attached after all auction states have been computed.
     for snap in timeline:
-        snap["share_of_0925_terminal_bp"] = round(snap["market_match_amount_yuan"] * 10000 / terminal, 2) if terminal else None
-        snap["market_amount_vs_previous_day_final"] = round(snap["market_match_amount_yuan"] / baseline_amount, 4) if baseline_amount else None
+        snap_amount = snap["market_match_amount_yuan"]
+        snap["share_of_0925_terminal_bp"] = round(snap_amount * 10000 / terminal, 2) if snap_amount is not None and terminal else None
+        snap["market_amount_vs_previous_day_final"] = round(snap_amount / baseline_amount, 4) if snap_amount is not None and baseline_amount else None
     _add_comparisons(timeline)
     anchor = {s: dict(v) for s, v in state.items()}
     focus = set(pool_symbols or ())
@@ -300,14 +319,17 @@ def replay_tracking(*, trade_date: str, ticks: Iterable[Tick], open_ticks: Itera
                                plate_names, generic_names, "AUCTION")
         opened_positions: dict[str, int] = {}
         for mark in marks_open:
-            previous_amounts = {symbol: int(row.get("amt_yuan", 0)) for symbol, row in open_state.items()}
+            previous_amounts = {symbol: (int(row["amt_yuan"]) if row.get("amt_yuan") is not None else None)
+                                for symbol, row in open_state.items()}
             while oi < len(opens) and _seconds(opens[oi].ts) <= mark:
                 tick = opens[oi]
                 new = derive_state(tick)
                 new["auction_price_milli"] = anchor.get(tick.symbol, {}).get("price_milli")
                 open_state[tick.symbol] = new; oi += 1
             for symbol, row in open_state.items():
-                row["opening_amount_delta_yuan"] = max(0, int(row.get("amt_yuan", 0)) - previous_amounts.get(symbol, 0))
+                amount_now, amount_before = row.get("amt_yuan"), previous_amounts.get(symbol)
+                row["opening_amount_delta_yuan"] = (max(0, int(amount_now) - amount_before)
+                                                     if amount_now is not None and amount_before is not None else None)
             ts = _stamp(trade_date, mark)
             snap = _snapshot(open_state, ts, prior_open, focus, relations, plate_names, generic_names, "OPEN")
             for stock in snap["stocks"]:
@@ -315,20 +337,22 @@ def replay_tracking(*, trade_date: str, ticks: Iterable[Tick], open_ticks: Itera
                 if auction:
                     stock["auction_price_milli"] = auction.get("price_milli")
                     stock["auction_pct_change"] = auction.get("pct_change")
-                    stock["below_auction_price"] = bool(stock.get("price_milli") and auction.get("price_milli") and stock["price_milli"] < auction["price_milli"])
+                    stock["below_auction_price"] = (stock["price_milli"] < auction["price_milli"]
+                                                     if stock.get("price_milli") is not None and auction.get("price_milli") is not None else None)
             timeline.append(snap)
             for symbol, row in open_state.items():
                 pct, auc = row.get("pct_change"), anchor.get(symbol, {})
                 if pct is not None and auc.get("pct_change") is not None and auc["pct_change"] < 3 and pct >= 5 and symbol not in opened_positions:
-                    if pct >= 5 and int(row.get("amt_yuan", 0)) >= RELATIVE_MIN_AMOUNT_YUAN:
+                    if pct >= 5 and row.get("amt_yuan") is not None and int(row["amt_yuan"]) >= RELATIVE_MIN_AMOUNT_YUAN:
                         opened_positions[symbol] = mark
-                        events.append(_event(ts, "stock", symbol, "OPENING_NEW_LEADER", {"pct_change": pct, "amount_yuan": int(row.get("amt_yuan", 0))}, {"auction_pct": auc["pct_change"]}, row.get("status")))
+                        events.append(_event(ts, "stock", symbol, "OPENING_NEW_LEADER", {"pct_change": pct, "amount_yuan": int(row["amt_yuan"])}, {"auction_pct": auc["pct_change"]}, row.get("status")))
             _emit_open_events(events, snap, prior_open, open_state, anchor, relations, plate_names)
             prior_open = snap
     report = {"trade_date": trade_date, "timeline": timeline, "focus_symbols": sorted(focus),
               "focus_plate_codes": sorted(focus_plates), "terminal_market_match_amount_yuan": terminal,
               "previous_day_baseline": {"date": baseline_date, "terminal_amount_yuan": baseline_amount,
-                                        "current_terminal_multiple": round(terminal / baseline_amount, 4) if baseline_amount else None},
+                                        "current_terminal_multiple": round(terminal / baseline_amount, 4)
+                                        if terminal is not None and baseline_amount else None},
               "price_status_coverage": {"symbols": len(anchor),
                   "final": sum(row.get("status") == "FINAL" for row in anchor.values()),
                   "indicative": sum(row.get("status") == "INDICATIVE" for row in anchor.values()),
@@ -399,7 +423,9 @@ def _add_comparisons(timeline: list[dict[str, Any]]) -> None:
             for label, ref in comparisons.items():
                 item = next((p for p in ref["plates"] if p["code"] == plate["code"]), None) if ref else None
                 plate[f"share_change_bp_vs_{label}"] = round(plate["market_share_bp"] - item["market_share_bp"], 2) if item and plate["market_share_bp"] is not None and item["market_share_bp"] is not None else None
-                plate[f"amount_change_yuan_vs_{label}"] = plate["match_amount_yuan"] - item["match_amount_yuan"] if item else None
+                plate[f"amount_change_yuan_vs_{label}"] = (plate["match_amount_yuan"] - item["match_amount_yuan"]
+                                                            if item and plate.get("match_amount_yuan") is not None and
+                                                            item.get("match_amount_yuan") is not None else None)
                 plate[f"equal_weight_change_pp_vs_{label}"] = round(plate["equal_weight_pct"] - item["equal_weight_pct"], 4) if item else None
         for stock in snap["stocks"]:
             stock["market_share_bp"] = stock.get("market_share_bp")
@@ -412,7 +438,8 @@ def _emit_late_summary(out: list[dict[str, Any]], before: Mapping[str, Any], aft
     old_plates = {p["code"]: p for p in before["plates"]}
     for plate in after["plates"]:
         old = old_plates.get(plate["code"])
-        if old and abs(plate["market_share_bp"] - old["market_share_bp"]) >= LATE_SHARE_CHANGE_BP:
+        if (old and plate.get("market_share_bp") is not None and old.get("market_share_bp") is not None and
+                abs(plate["market_share_bp"] - old["market_share_bp"]) >= LATE_SHARE_CHANGE_BP):
             out.append(_event(ts, "plate", plate["name"], "AFTER_0924_SHARE_CHANGE",
                               {"share_change_bp": plate["market_share_bp"] - old["market_share_bp"], "amount_yuan": plate["match_amount_yuan"]},
                               {"from": "09:24:00", "to": "09:25:00"}))
@@ -421,7 +448,7 @@ def _emit_late_summary(out: list[dict[str, Any]], before: Mapping[str, Any], aft
         if old and now.get("pct_change") is not None and old.get("pct_change") is not None:
             change = now["pct_change"] - old["pct_change"]
             if abs(change) >= LATE_CHANGE_PP:
-                out.append(_event(ts, "stock", symbol, "AFTER_0924_PRICE_CHANGE", {"change_pp": change, "amount_yuan": now.get("match_amount_yuan", 0), "name": now.get("name") or symbol},
+                out.append(_event(ts, "stock", symbol, "AFTER_0924_PRICE_CHANGE", {"change_pp": change, "amount_yuan": now.get("match_amount_yuan"), "name": now.get("name") or symbol},
                                   {"from": "09:24:00", "to": "09:25:00"}, now.get("status")))
 
 
@@ -436,7 +463,9 @@ def _emit_events(out: list[dict[str, Any]], snap: Mapping[str, Any], prev: Mappi
     old_plates = {p["code"]: p for p in (sixty_snapshot or prev)["plates"]}; new_plates = {p["code"]: p for p in snap["plates"]}
     for code, now in new_plates.items():
         before = old_plates.get(code)
-        if allow_volume_events and before and _qualifies_plate_share(now["market_share_bp"] - before["market_share_bp"], now["match_amount_yuan"]):
+        if (allow_volume_events and before and now.get("market_share_bp") is not None and
+                before.get("market_share_bp") is not None and now.get("match_amount_yuan") is not None and
+                _qualifies_plate_share(now["market_share_bp"] - before["market_share_bp"], now["match_amount_yuan"])):
             out.append(_event(ts, "plate", names.get(code, code), "PLATE_SHARE_SURGE", {"share_change_bp": now["market_share_bp"] - before["market_share_bp"], "amount_yuan": now["match_amount_yuan"]}, {"market_amount_yuan": snap["market_match_amount_yuan"], "window_seconds": 60}))
     old_plate_map = _plate_pct_map(old_states, relations, names, generic_names or set())
     new_plate_map = _plate_pct_map(states, relations, names, generic_names or set())
@@ -444,10 +473,11 @@ def _emit_events(out: list[dict[str, Any]], snap: Mapping[str, Any], prev: Mappi
     for symbol, now in states.items():
         before = old_states.get(symbol)
         if not before: continue
-        d_amount = max(0, int(now["match_amount_yuan"]) - int(before["match_amount_yuan"]))
-        prior_amt = int(before["match_amount_yuan"])
+        amount_now, amount_before = now.get("match_amount_yuan"), before.get("match_amount_yuan")
+        d_amount = max(0, int(amount_now) - int(amount_before)) if amount_now is not None and amount_before is not None else None
+        prior_amt = int(amount_before) if amount_before is not None else None
         price_delta = (now["pct_change"] - before["pct_change"]) if now.get("pct_change") is not None and before.get("pct_change") is not None else 0
-        if allow_volume_events and d_amount >= STOCK_MIN_AMOUNT_YUAN and (d_amount / max(1, prior_amt)) >= STOCK_AMOUNT_MULTIPLE:
+        if allow_volume_events and d_amount is not None and prior_amt is not None and d_amount >= STOCK_MIN_AMOUNT_YUAN and (d_amount / max(1, prior_amt)) >= STOCK_AMOUNT_MULTIPLE:
             direction = "PRICE_UP" if price_delta >= STOCK_PRICE_MOVE_PP else "PRICE_DOWN" if price_delta <= -STOCK_PRICE_MOVE_PP else "PRICE_FLAT"
             out.append(_event(ts, "stock", symbol, f"STOCK_AMOUNT_SURGE_{direction}", {"amount_increase_yuan": d_amount, "multiple": d_amount / max(1, prior_amt), "price_change_pp": price_delta}, {"market_amount_yuan": snap["market_match_amount_yuan"], "window_seconds": 60}, now.get("status")))
         _limit_transition(out, ts, symbol, (immediate_states or {}).get(symbol, before), now)
@@ -456,12 +486,13 @@ def _emit_events(out: list[dict[str, Any]], snap: Mapping[str, Any], prev: Mappi
             new_plate_pct = _strongest_from_map(symbol, new_plate_map, plates_of)
             if old_plate_pct is not None and new_plate_pct is not None:
                 relative_move = (now["pct_change"] - new_plate_pct) - (before["pct_change"] - old_plate_pct)
-                if _qualifies_relative(relative_move, int(now.get("match_amount_yuan") or 0)):
+                if now.get("match_amount_yuan") is not None and _qualifies_relative(relative_move, int(now["match_amount_yuan"])):
                     kind = "STOCK_RELATIVE_WEAKENING" if relative_move < 0 else "STOCK_RELATIVE_STRENGTHENING"
                     out.append(_event(ts, "stock", symbol, kind,
-                                      {"relative_change_pp": relative_move, "amount_yuan": int(now.get("match_amount_yuan") or 0), "name": now.get("name") or symbol},
+                                      {"relative_change_pp": relative_move, "amount_yuan": int(now["match_amount_yuan"]), "name": now.get("name") or symbol},
                                       {"strongest_plate_pct": new_plate_pct}, now.get("status")))
-    if snap["market_match_amount_yuan"] >= int(prev["market_match_amount_yuan"] * INDEX_AMOUNT_MULTIPLE) > 0:
+    if (snap.get("market_match_amount_yuan") is not None and prev.get("market_match_amount_yuan") is not None and
+            snap["market_match_amount_yuan"] >= int(prev["market_match_amount_yuan"] * INDEX_AMOUNT_MULTIPLE) > 0):
         out.append(_event(ts, "market", "ALL", "MARKET_AMOUNT_JUMP", {"multiple": snap["market_match_amount_yuan"] / prev["market_match_amount_yuan"], "amount_yuan": snap["market_match_amount_yuan"]}, {}))
 
 
@@ -513,11 +544,13 @@ def _strongest_plate_pct(symbol: str, states: Mapping[str, Mapping[str, Any]], r
 def _limit_transition(out: list[dict[str, Any]], ts: str, symbol: str, before: Mapping[str, Any], now: Mapping[str, Any]) -> None:
     for direction, label in (("up", "LIMIT_UP"), ("down", "LIMIT_DOWN")):
         was, is_now = _at_limit(before, direction), _at_limit(now, direction)
-        if was != is_now:
+        if was is not None and is_now is not None and was != is_now:
             side = "bid" if direction == "up" else "ask"
-            remaining_yuan = int(now.get(f"rest_{side}_yuan") or 0)
+            rest_now, rest_before = now.get(f"rest_{side}_shares"), before.get(f"rest_{side}_shares")
+            rest_change = rest_now - rest_before if rest_now is not None and rest_before is not None else None
+            remaining_yuan = now.get(f"rest_{side}_yuan")
             out.append(_event(ts, "stock", symbol, f"{label}_{'APPEARED' if is_now else 'DISAPPEARED'}",
-                              {"name": now.get("name") or symbol, "rest_shares": now[f"rest_{side}_shares"], "rest_change_shares": now[f"rest_{side}_shares"] - before[f"rest_{side}_shares"], "remaining_yuan": remaining_yuan}, {}, now.get("status")))
+                              {"name": now.get("name") or symbol, "rest_shares": rest_now, "rest_change_shares": rest_change, "remaining_yuan": remaining_yuan}, {}, now.get("status")))
 
 
 def _emit_open_events(out: list[dict[str, Any]], snap: Mapping[str, Any], prev: Mapping[str, Any], states: Mapping[str, Mapping[str, Any]], anchor: Mapping[str, Mapping[str, Any]], relations: Mapping[str, set[str]], names: Mapping[str, str]) -> None:
@@ -531,10 +564,11 @@ def _emit_open_events(out: list[dict[str, Any]], snap: Mapping[str, Any], prev: 
         shown = now_stocks.get(symbol)
         if old and shown:
             # Per-tick activity is retained in the timeline; it is too noisy as an event stream.
-            auc_price = int(anchor[symbol].get("price_milli") or 0)
-            was_below = bool(old.get("price_milli") and auc_price and old["price_milli"] < auc_price)
-            is_below = bool(shown.get("price_milli") and auc_price and shown["price_milli"] < auc_price)
-            if was_below != is_below:
+            auc_price = anchor[symbol].get("price_milli")
+            old_price, shown_price = old.get("price_milli"), shown.get("price_milli")
+            was_below = old_price < auc_price if old_price is not None and auc_price is not None else None
+            is_below = shown_price < auc_price if shown_price is not None and auc_price is not None else None
+            if was_below is not None and is_below is not None and was_below != is_below:
                 out.append(_event(str(snap["timestamp"]), "stock", symbol,
                                   "OPENING_BELOW_AUCTION" if is_below else "OPENING_RECLAIMED_AUCTION",
                                   {"auction_price_milli": auc_price, "price_milli": shown.get("price_milli")}, {}, row.get("status")))
@@ -559,11 +593,16 @@ def write_outputs(out_dir: Path, report: Mapping[str, Any], events: list[dict[st
 def _write_markdown(path: Path, report: Mapping[str, Any], events: list[dict[str, Any]]) -> None:
     timeline = report["timeline"]
     auction = [s for s in timeline if s["phase"] == "AUCTION"]
-    points = " → ".join(f"{s['timestamp'][-8:-3]} {s['market_match_amount_yuan']/1e8:.1f}亿" for s in auction)
+    points = " → ".join(f"{s['timestamp'][-8:-3]} {s['market_match_amount_yuan']/1e8:.1f}亿"
+                         if s["market_match_amount_yuan"] is not None else
+                         f"{s['timestamp'][-8:-3]} 未知" for s in auction)
     baseline = report.get("previous_day_baseline", {})
-    amount = baseline.get("terminal_amount_yuan") or 0
-    previous = f"{baseline.get('date')} 09:25={amount/1e8:.1f}亿" if amount else "未提供前日基线"
-    curve = ("当前切片(前日09:25终值=20格)：" + " ".join("█" * max(1, round(s["market_match_amount_yuan"] * 20 / amount)) for s in auction)) if amount else "前日对比曲线：不可用"
+    amount = baseline.get("terminal_amount_yuan")
+    previous = f"{baseline.get('date')} 09:25={amount/1e8:.1f}亿" if amount is not None and amount > 0 else "未提供前日基线"
+    curve = ("当前切片(前日09:25终值=20格)：" + " ".join(
+        "未知" if s["market_match_amount_yuan"] is None else
+        "█" * max(1, round(s["market_match_amount_yuan"] * 20 / amount)) for s in auction)
+        if amount and amount > 0 else "前日对比曲线：不可用")
     eligible = [e for e in events if e["timestamp"][-8:] >= "09:20:30"]
     key_events = sorted(eligible, key=_event_importance, reverse=True)[:FOCUS_COUNT]
     late = [e for e in events if e["type"].startswith("AFTER_0924_")]
@@ -583,7 +622,9 @@ def _write_markdown(path: Path, report: Mapping[str, Any], events: list[dict[str
 
 
 def _format_money(value: Any) -> str:
-    amount = float(value or 0)
+    if value is None:
+        return "未知"
+    amount = float(value)
     if abs(amount) >= 100_000_000:
         return f"{amount / 100_000_000:.2f}亿元"
     if abs(amount) >= 10_000:

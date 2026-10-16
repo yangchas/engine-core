@@ -169,10 +169,11 @@ def test_highboards_prioritize_auction_amount_and_show_aggregate_facts(tmp_path)
     class TD:
         def states_at(self, cutoff):
             rows = {
-                "000001": _state("000001", 2, 20_000_000, limit_state=1, rb=5),
+            "000001": _state("000001", 2, 20_000_000, limit_state=None, rb=5),
                 "000002": _state("000002", -4, 30_000_000, limit_state=-1, ra=5),
                 "000003": _state("000003", 4, 10_000_000),
             }
+            rows["000001"]["price_milli"] = None
             return rows
         def latest_tick_ts(self): return "2026-10-15T09:45:30"
 
@@ -186,7 +187,9 @@ def test_highboards_prioritize_auction_amount_and_show_aggregate_facts(tmp_path)
     assert summary["match_amount_yuan"] == 50_000_000
     assert summary["market_share_bp"] == pytest.approx(50_000_000 / 60_000_000 * 10_000, abs=0.05)
     assert summary["median_pct_change"] == -1
-    assert summary["sealed_up_count"] == summary["sealed_down_count"] == 1
+    assert summary["sealed_up_count"] is None
+    assert summary["sealed_down_count"] is None
+    assert summary["sealed_unknown_count"] == 1
     pool = summary["yesterday_limit_pool"]
     assert pool == {"count": 3, "mean_pct_change": pytest.approx(2 / 3), "high_open_count": 1, "low_open_count": 1}
     assert "10:30 再确认" in page
@@ -301,8 +304,13 @@ def test_hot_plate_quadrants_and_zero_input_fallback(tmp_path):
     names = {f"p{i}": f"板{i}" for i in range(1, 6)}
     # Match supplied names to the captured Kaipan names.
     names = {f"p{i}": name for i, name in enumerate(("双正", "双负", "正流出", "负流入", "零值"), 1)}
+    hot_rows = [{"code": row[0], "name": row[1], "strength": row[2],
+                 "change_pct": row[3], "amount_yuan": row[5], "net_yuan": row[6],
+                 "sampled_at": "2026-10-15 09:26:30"}
+                for row in json.loads(hot.read_text(encoding="utf-8"))["response"]["list"]]
     page, payload = render_page(TD(), trade_date="2026-10-15", stage="auction_0926",
                                 relations=relations, plate_names=names, kaipan_hot_json=hot,
+                                kaipan_hot_rows=hot_rows,
                                 asof="2026-10-15T09:27:00")
     block = payload["chapters"]["plate_quadrants"]
     assert block["available"] is True

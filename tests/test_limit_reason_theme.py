@@ -79,8 +79,8 @@ def test_history_frequency_and_static_fallback_are_explicit():
     historic = build_limit_reason_themes(
         pool, reasons, expected_previous_date="2026-10-15",
         plate_names={"801001": "甲题材", "801002": "乙题材"}, static_themes_by_symbol={})["000002"]
-    assert historic["theme_source"] == "REASON_HISTORY"
-    assert historic["theme_key"] == "801002"
+    assert historic["theme_source"] == "NONE"
+    assert historic["history_status"] == "CALENDAR_MISSING"
 
     no_reason = build_limit_reason_themes(
         {"info": [[["000003", "丙", 0, "", 0, "", 0, 0, 0, 0, 0, 0, "", 0, 0, 1, 0, 0, "", ""]]]},
@@ -109,6 +109,15 @@ def test_history_frequency_uses_all_records_in_twenty_sessions():
         expected_previous_date="2026-09-21", plate_names={"801001": "甲", "801002": "乙"},
         trading_dates=dates)
     assert result["000010"]["theme_key"] == "801001"
+
+
+def test_missing_calendar_marks_reason_window_degraded_and_excludes_old_history():
+    result = build_limit_reason_themes(
+        {}, {"000011": {"StockID": "000011", "List": [
+            {"Date": "2020-01-02", "Type": "0", "ZSCode": ["801001"], "Reason": "旧原因"},
+        ]}}, expected_previous_date="2026-10-16", plate_names={"801001": "旧题材"})
+    assert result["000011"]["theme_source"] == "NONE"
+    assert result["000011"]["history_status"] == "CALENDAR_MISSING"
 
 
 def test_naive_reason_timestamp_is_shanghai_local():

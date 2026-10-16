@@ -53,3 +53,21 @@ def test_plate_linkage_excludes_generic_and_keeps_unavailable_distinct():
     assert row["amount_weighted_pct"] is None
     assert row["limit_up_amount_share_pct"] is None
     assert result["down_limit_top5"] == []
+
+
+def test_plate_linkage_keeps_missing_limit_state_unknown_in_report():
+    from engine_core.auction_tracking import _at_limit
+
+    unknown = {"symbol": "600001", "price_milli": None, "prev_close_milli": 10000,
+               "rest_bid_shares": 5, "rest_ask_shares": 0, "pct_change": 1.0,
+               "match_amount_yuan": 10}
+    assert _at_limit(unknown, "up") is None
+    states = {f"s{i}": {"symbol": f"s{i}", "pct_change": 1.0, "match_amount_yuan": 10,
+                         "limit_state": 0} for i in range(7)}
+    states["s7"] = {**unknown, "limit_state": None}
+    report = build_plate_linkage(states, {"p": set(states)}, {"p": "主题"}, min_members=8)
+    row = report["rows"][0]
+    assert row["limit_up_count"] == 0
+    assert row["limit_up_unknown_count"] == 1
+    assert row["limit_up_unknown_coverage_pct"] == pytest.approx(12.5)
+    assert row["limit_up_amount_share_pct"] is None

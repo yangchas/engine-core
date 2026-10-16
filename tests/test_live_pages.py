@@ -76,3 +76,40 @@ def test_plate_quadrants_uses_latest_sample_per_plate_at_asof():
     assert result["coverage"]["rows"] == 5000
     assert result["counts"]["双正"] == 4999
     assert result["counts"]["双负"] == 1
+
+
+def test_shared_hot_plate_slice_deduplicates_by_available_at_before_asof():
+    from engine_core.slices import SliceReader, _result
+    source = [
+        {"code": "801001", "name": "较新", "strength": 1, "change_pct": 1,
+         "sampled_at": "2026-10-16T09:25:00+08:00"},
+        {"code": "801001", "name": "过时", "strength": -1, "change_pct": -1,
+         "available_at": "2026-10-16T09:20:00+08:00"},
+        {"symbol": "801002", "name": "未来", "strength": -1, "change_pct": -1,
+         "sampled_at": "2026-10-16T09:27:00+08:00"},
+    ]
+
+    def provider(_reader, request):
+        return _result(request, source, source="test", status="READY")
+
+    reader = SliceReader({"hot_plates_yesterday": (provider,)})
+    result = reader.get("hot_plates_yesterday", trade_date="2026-10-16",
+                        asof="2026-10-16T09:26:00+08:00")
+    assert [(row["code"], row["name"]) for row in result.rows] == [("801001", "较新")]
+
+
+def test_shared_today_hot_plate_slice_deduplicates_and_filters_future_samples():
+    from engine_core.slices import SliceReader, _result
+    source = [
+        {"code": "801001", "name": "新", "sampled_at": "2026-10-16T09:25:00+08:00"},
+        {"plate_code": "801001", "name": "旧", "captured_local": "2026-10-16T09:20:00"},
+        {"code": "801002", "name": "未来", "sampled_at": "2026-10-16T09:27:00+08:00"},
+    ]
+
+    def provider(_reader, request):
+        return _result(request, source, source="test", status="READY")
+
+    reader = SliceReader({"hot_plates_today": (provider,)})
+    result = reader.get("hot_plates_today", trade_date="2026-10-16",
+                        asof="2026-10-16T09:26:00+08:00")
+    assert [(row.get("code", row.get("plate_code")), row["name"]) for row in result.rows] == [("801001", "新")]

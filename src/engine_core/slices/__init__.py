@@ -79,7 +79,12 @@ class SliceReader:
             # missing result still falls through, while an attempted chain
             # must remain visible even when every source returned no rows.
             if result.meta.get("status") != "MISSING" or result.meta.get("lineage"):
-                rows, unknown = _pit_rows(result.rows, request.asof)
+                source_rows = result.rows
+                if request.slice_id in {"hot_plates_today", "hot_plates_yesterday"}:
+                    source_rows = _canonical_hot_plate_rows(source_rows)
+                rows, unknown = _pit_rows(source_rows, request.asof)
+                if request.slice_id in {"hot_plates_today", "hot_plates_yesterday"}:
+                    rows = _latest_hot_plate_rows(rows, request.asof)
                 available_at = result.meta.get("available_at")
                 if available_at:
                     parsed, cutoff = _parse_pit_timestamp(available_at), _parse_pit_timestamp(request.asof)
@@ -434,6 +439,46 @@ def _pit_rows(rows: list[dict[str, Any]], asof: str) -> tuple[list[dict[str, Any
             unknown = True
         selected.append(row)
     return selected, unknown
+
+
+def _canonical_hot_plate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Use one PIT timestamp field for hot-plate records before filtering."""
+    normalized = []
+    for row in rows:
+        item = dict(row)
+        if not (item.get("code") or item.get("plate_code")) and item.get("symbol"):
+            item["code"] = str(item["symbol"]).strip()
+        sampled = next((item.get(key) for key in
+                        ("available_at", "sampled_at", "captured_local", "capture_time")
+                        if item.get(key) not in (None, "")), None)
+        if sampled is not None:
+            item["available_at"] = sampled
+        normalized.append(item)
+    return normalized
+
+
+def _latest_hot_plate_rows(rows: list[dict[str, Any]], asof: str) -> list[dict[str, Any]]:
+    """Return one latest as-of row per plate, preserving unknown-time rows last-seen."""
+    latest: dict[str, tuple[datetime | None, int, dict[str, Any]]] = {}
+    for index, row in enumerate(rows):
+        code = str(row.get("code") or row.get("plate_code") or row.get("symbol") or "").strip()
+        if not code:
+            continue
+        cutoff = _parse_pit_timestamp(asof)
+        sample_values = [row.get(key) for key in
+                         ("sampled_at", "captured_local", "capture_time", "available_at")
+                         if row.get(key) not in (None, "")]
+        parsed_samples = [_parse_pit_timestamp(value) for value in sample_values]
+        if cutoff is not None and any(stamp is not None and stamp > cutoff for stamp in parsed_samples):
+            continue
+        stamp = next((parsed for parsed in parsed_samples if parsed is not None), None)
+        previous = latest.get(code)
+        rank = (stamp, index)
+        if previous is None or (stamp is not None and
+                                (previous[0] is None or rank > (previous[0], previous[1]))) or (
+                stamp is None and previous[0] is None and index > previous[1]):
+            latest[code] = (stamp, index, row)
+    return [item[2] for item in latest.values()]
 
 
 def _parse_pit_timestamp(value: Any) -> datetime | None:

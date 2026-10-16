@@ -150,12 +150,10 @@ def build_limit_reason_themes(
                                and str(day)[:10] <= expected_previous_date})[-max(1, lookback_sessions):]
             session_set = set(sessions)
             records = [record for record in records if record[0] in session_set]
-        elif records:
-            # When no external calendar was supplied, use the observed event dates
-            # as a conservative local session index; never truncate by row count.
-            observed_sessions = sorted({record[0] for record in records})[-max(1, lookback_sessions):]
-            session_set = set(observed_sessions)
-            records = [record for record in records if record[0] in session_set]
+        else:
+            # Without an exchange calendar, only the exact prior session can be
+            # asserted. Older records cannot establish a 20-trading-day window.
+            records = [record for record in records if record[0] == expected_previous_date]
         latest = records[0] if records else None
         selected: dict[str, Any] | None = None
         if label or pool_code:
@@ -202,6 +200,7 @@ def build_limit_reason_themes(
                     selected = _assignment(symbol, code or name, name, "STATIC_FALLBACK")
                     break
         result[symbol] = selected or _assignment(symbol, "NONE", "无题材", "NONE")
+        result[symbol]["history_status"] = "CALENDAR_OK" if trading_dates else "CALENDAR_MISSING"
     return result
 
 
@@ -278,7 +277,7 @@ def load_kaipan_theme_snapshot(
             counts_text = ", ".join(f"{key}={source_counts[key]}" for key in sorted(source_counts)) or "无记录"
             return {"status": status, "assignments": assignments,
                     "basis": ("切片：昨日涨停池/历史原因" if status == "READY" else "切片不完整；登记表回退")
-                             + f"；来源计数 {counts_text}",
+                    + f"；原因窗口 {'按交易日历' if trading_dates else 'CALENDAR_MISSING，不满足20交易日窗口'}；来源计数 {counts_text}",
                     "snapshot_dir": None, "hot_plate_names": hot_names,
                     "hot_plate_samples": hot_samples, "source_counts": dict(source_counts)}
         return {"status": "MISSING", "assignments": {}, "hot_plate_names": [],

@@ -354,6 +354,8 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
     rows = []
     for symbol in sorted(str(value).zfill(6) for value in symbols):
         auction = snapshots.get("0925", {}).get(symbol, {})
+        cutoff_state = (snapshots.get("0945", {}).get(symbol, {})
+                        if stage == "open" else auction)
         history_row = context.get(symbol, {})
         streak = history_row.get("streak")
         main_plate = select_main_plate(symbol_plates.get(symbol, []), plate_metadata)
@@ -375,10 +377,10 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
             "auction_price_status": auction.get("status", "UNKNOWN"),
             "auction_limit_state": auction.get("auction_limit_state"),
             "rest_bid_yuan": auction.get("rest_bid_yuan"),
-            "price": (auction.get("price_milli") / 1000
-                      if isinstance(auction.get("price_milli"), (int, float)) else None),
-            "pre_close": (auction.get("prev_close_milli") / 1000
-                          if isinstance(auction.get("prev_close_milli"), (int, float)) else None),
+            "price": (cutoff_state.get("price_milli") / 1000
+                      if isinstance(cutoff_state.get("price_milli"), (int, float)) else None),
+            "pre_close": (cutoff_state.get("prev_close_milli") / 1000
+                          if isinstance(cutoff_state.get("prev_close_milli"), (int, float)) else None),
         }
         if total_auction and row["auction_amount_yuan"] is not None:
             row["auction_amount_bp"] = 10000 * row["auction_amount_yuan"] / total_auction

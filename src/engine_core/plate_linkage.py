@@ -21,7 +21,7 @@ def _sealed(row: Mapping[str, Any], side: int) -> bool | None:
         return state == side
     try:
         from engine_core.auction_tracking import _at_limit
-        return bool(_at_limit(row, "up" if side == 1 else "down"))
+        return _at_limit(row, "up" if side == 1 else "down")
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
 
@@ -73,6 +73,8 @@ def build_plate_linkage(states: Mapping[str, Mapping[str, Any]],
                      if _sealed(row, -1) is True]
         up_known = sum(amount for _, _, amount in up_rows)
         down_known = sum(amount for _, _, amount in down_rows)
+        up_unknown = sum(_sealed(row, 1) is None for _, row in rows)
+        down_unknown = sum(_sealed(row, -1) is None for _, row in rows)
 
         top_priced = sorted(priced_amount_rows, key=lambda item: (-item[2], item[0]))[:3]
         top3_contribution = sum(amount * pct for _, _, amount, pct in top_priced)
@@ -98,10 +100,14 @@ def build_plate_linkage(states: Mapping[str, Mapping[str, Any]],
             "amount_weighted_pct": weighted_pct,
             "weighted_minus_equal_mean_pp": weighted_pct - equal_mean if weighted_pct is not None else None,
             "limit_up_count": sum(_sealed(row, 1) is True for _, row in rows),
-            "limit_up_amount_share_pct": _ratio(up_known, amount_total),
+            "limit_up_unknown_count": up_unknown,
+            "limit_up_unknown_coverage_pct": _ratio(up_unknown, len(rows)),
+            "limit_up_amount_share_pct": (_ratio(up_known, amount_total) if up_unknown == 0 else None),
             "limit_up_top3": sealed_top(up_rows),
             "limit_down_count": sum(_sealed(row, -1) is True for _, row in rows),
-            "limit_down_amount_share_pct": _ratio(down_known, amount_total),
+            "limit_down_unknown_count": down_unknown,
+            "limit_down_unknown_coverage_pct": _ratio(down_unknown, len(rows)),
+            "limit_down_amount_share_pct": (_ratio(down_known, amount_total) if down_unknown == 0 else None),
             "top3_leading_contribution_share_pct": leading_share,
         })
     result.sort(key=lambda row: (-(row["amount_yuan"] if row["amount_yuan"] is not None else -1), row["code"]))

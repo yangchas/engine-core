@@ -15,6 +15,20 @@ def test_auction_state_uses_only_equal_first_level_and_exact_match_amount():
     assert state["match_amount_yuan"] == 20200
 
 
+def test_tracking_snapshot_retains_unknown_amount_and_limit_coverage():
+    from engine_core.auction_tracking import _at_limit, _snapshot
+
+    unknown = {"symbol": "600001", "price_milli": None, "prev_close_milli": 10000,
+               "rest_bid_shares": 5, "rest_ask_shares": None,
+               "match_amount_yuan": None, "pct_change": None}
+    snap = _snapshot({"600001": unknown}, "09:25:00", None, set(), {}, {}, set(), "AUCTION")
+    assert snap["market_match_amount_yuan"] is None
+    assert _at_limit(unknown, "up") is None
+    assert snap["limit_up_count"] == 0
+    assert snap["limit_up_unknown_count"] == 1
+    assert snap["limit_up_unknown_coverage_pct"] == 100
+
+
 def test_replay_slices_consume_only_ticks_at_or_before_slice_time():
     def tick(ts, price, volume):
         return Tick("2026-10-14", ts, "600000", pc_milli=10000,

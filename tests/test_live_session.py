@@ -52,6 +52,94 @@ def test_null_amount_is_reported_as_missing_and_not_zero():
     assert payload["top_stocks_by_amount"][1]["match_amount_yuan"] is None
 
 
+def test_missing_price_stock_remains_in_market_amount_completeness_check():
+    states = {
+        "priced": {"symbol": "600001", "pct_change": 1.0, "match_amount_yuan": 500},
+        "unpriced": {"symbol": "600002", "pct_change": None, "match_amount_yuan": None},
+    }
+    payload = build_live_slice(states, datetime(2026, 10, 15, 9, 25))
+    assert payload["market_match_amount_yuan"] is None
+    assert payload["amount_coverage"] == 1
+    assert payload["amount_missing"] == 1
+    empty = build_live_slice({}, datetime(2026, 10, 15, 9, 25))
+    assert empty["market_match_amount_yuan"] is None
+
+
+def test_sql_state_amount_missingness_tracks_derive_state_phase():
+    from engine_core.live_session import _sql_states
+
+    class TD:
+        def cursor(self): return self
+        def execute(self, _query): pass
+        def fetchall(self):
+            return [
+                (datetime(2026, 10, 15, 9, 24, 50), 0, 10000, 10000, 10000, None, 20,
+                 0, 0, 0, 0, None, 0, "600001"),
+                (datetime(2026, 10, 15, 9, 25, 6), 10000, 10000, None, None, None, None,
+                 None, None, None, None, 500, 0, "600002"),
+                (datetime(2026, 10, 15, 9, 45, 0), 10000, 10000, None, None, None, None,
+                 None, None, None, None, None, 0, "600003"),
+                (datetime(2026, 10, 15, 9, 45, 0), 10000, 10000, None, None, None, None,
+                 None, None, None, None, 700, 0, "600004"),
+            ]
+
+    result = _sql_states(TD(), datetime(2026, 10, 15, 9, 45))
+    assert result["600001"]["match_amount_yuan"] is None
+    assert result["600002"]["match_amount_yuan"] == 500
+    assert result["600003"]["match_amount_yuan"] is None
+    assert result["600004"]["match_amount_yuan"] == 700
+
+
+def test_sql_states_propagates_null_book_price_but_keeps_post_auction_amount():
+    from engine_core.live_session import _sql_states
+
+    class TD:
+        def cursor(self): return self
+        def execute(self, _query): pass
+        def fetchall(self):
+            return [
+                (datetime(2026, 10, 16, 9, 20), 0, 10000, 10000, None,
+                 10, 20, 10000, 10000, 5, 7, 0, 0, "600001"),
+                (datetime(2026, 10, 16, 9, 25, 6), 10500, 10000, 10400, 10600,
+                 None, 4, 10300, 10700, 3, 2, 500, 10, "600002"),
+            ]
+
+    states = _sql_states(TD(), datetime(2026, 10, 16, 9, 25, 6))
+    auction = states["600001"]
+    assert auction["match_amount_yuan"] is None
+    assert auction["rest_ask_yuan"] is None
+    assert auction["price_milli"] is None
+    final = states["600002"]
+    assert final["match_amount_yuan"] == 500
+    assert final["price_milli"] == 10500
+
+
+def test_sql_states_final_print_at_0925_matches_derive_state_when_bv1_null():
+    from engine_core.live_session import _sql_states
+
+    class TD:
+        def cursor(self): return self
+        def execute(self, _query): pass
+        def fetchall(self):
+            return [(datetime(2026, 10, 16, 9, 25, 0), 10500, 10000, 10400, 10600,
+                     None, 4, 10300, 10700, 3, 2, 500, 10, "600003")]
+
+    state = _sql_states(TD(), datetime(2026, 10, 16, 9, 25, 0))["600003"]
+    assert state["match_amount_yuan"] == 500
+    assert state["price_milli"] == 10500
+
+
+def test_missing_limit_price_is_unknown_instead_of_unsealed():
+    from engine_core.live_session import _safe_at_limit, build_live_slice
+    state = {"symbol": "600001", "price_milli": None, "prev_close_milli": 10000,
+             "rest_bid_shares": 10, "rest_ask_shares": 0, "pct_change": None,
+             "match_amount_yuan": 100}
+    assert _safe_at_limit(state, "up") is None
+    payload = build_live_slice({"600001": state}, datetime(2026, 10, 16, 9, 25))
+    assert payload["limit_up"] is None
+    assert payload["limit_state_missing"] == 1
+
+
 def test_states_at_uses_injected_td(tmp_path, monkeypatch):
     monkeypatch.setenv("CORE_SLICE_ROOT", str(tmp_path))
     class TD:

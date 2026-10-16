@@ -399,10 +399,12 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
 
     class DataTD(FakeTD):
         def states_at(self, cutoff):
-            return {symbol: {"symbol": symbol, "price": price_milli / 1000,
-                             "price_milli": price_milli, "pre_close": 10,
+            opening = cutoff.strftime("%H:%M:%S") >= "09:30:00"
+            return {symbol: {"symbol": symbol, "price": (10500 if opening else price_milli) / 1000,
+                             "price_milli": 10500 if opening else price_milli,
+                             "pre_close": 10,
                              "prev_close_milli": 10000, "rest_bid_shares": 0,
-                             "rest_ask_shares": 0, "pct_change": pct,
+                             "rest_ask_shares": 0, "pct_change": 5.0 if opening and symbol == "600001" else pct,
                              "match_amount_yuan": amount, "auction_amount_yuan": amount,
                              "status": "FINAL"}
                     for symbol, price_milli, pct, amount in (
@@ -426,7 +428,10 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
         paths = [path for cluster in report["front_page"]["ladder"]["clusters"]
                  for path in cluster["paths"]]
         labels = {path["symbol"]: path["status"] for path in paths}
-        assert labels["600001"] == "封停价代理"
+        if stage == "auction":
+            assert labels["600001"] == "封停价代理"
+        else:
+            assert labels["600001"] != "封停价代理"
         assert labels["600002"] != "封停价代理"
 def test_repeat_run_uses_numbered_directory_without_overwriting(tmp_path):
     kwargs = dict(stage="auction", trade_date="2026-10-15", out_root=tmp_path / "out",
