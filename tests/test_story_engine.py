@@ -9,6 +9,7 @@ from engine_core.story_memory import append_memory, attach_next_day, make_daily_
 from engine_core.tradability_funnel import filter_candidates
 from engine_core.email_board import _story_view, _tiles, _extremes, _plates, _ladder, render_email_board
 from engine_core.email_board import _story_text
+from engine_core.email_board import _front_page_view
 
 
 def test_missing_zero_and_small_sample_anomaly_policy():
@@ -402,6 +403,32 @@ def test_open_plate_appendix_does_not_repeat_one_snapshot_as_a_trend():
     _, rendered = _plates(report, "open")
     assert "通信" in rendered
     assert "▄" not in rendered and "▁" not in rendered
+
+
+def test_front_page_uses_em_dash_for_missing_and_shows_breadth_rank_inline():
+    report = {
+        "auction_terminal_0925": {"market_match_amount_yuan": 138e8,
+            "median_pct_change": 1.2, "up_share_pct": 90.4,
+            "auction_baseline_comparison": {"multiple": 0.81, "percentile": 23}},
+        "chapters": {"yesterday_highboards_summary": {"yesterday_limit_pool": {
+            "mean_pct_change": -3.0, "up_share_pct": 7.6}}},
+        "front_page": {"ladder": {"clusters": [{"name": "冰雪产业", "share_bp": None,
+            "delta_share_bp": None, "equal_weight_pct": 1.0, "judgement": "分化",
+            "paths": [{"symbol": "000001", "name": "甲", "streak": 2,
+                       "0925": 1.0, "0932": None, "0938": None, "0945": None}]}],
+            "first_board_summary": "昨首板28只：高开16/低开11/封停价代理3"},
+            "plate_strength": {"up": [], "down": [], "message": "缺0924"}},
+        "story": {"top_events": [
+            {"id": "auction_amount_context", "summary": "竞价额138亿"},
+            {"id": "auction_breadth_context", "summary": "昨日收盘中位-3.0%/上涨7.6%→今日竞价+1.2%/90.4%；上涨占比近64日由高到低第1/64"}],
+            "funnel": {"wait": [{"name": "甲", "condition": "观察0932价格是否保持并相对板块转强，确认后继续观察",
+                                "risk": "高标波动与竞价承接不足，注意回落"}]}}}
+    _, text = _front_page_view(report, "auction")
+    assert "—Δ—" in text
+    assert "历史分位见附表" not in text
+    assert "昨日收盘中位-3.0%/上涨7.6%→今日竞价+1.2%/90.4%" in text and "近64日由高到低第1/64" in text
+    assert "?" not in text and "…" not in text
+    assert "要等 甲｜触发:开盘看承接｜险:高标波动" in text
 
 
 def test_temperature_plain_text_does_not_repeat_tile_labels():

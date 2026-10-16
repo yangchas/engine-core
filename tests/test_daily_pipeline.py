@@ -133,7 +133,25 @@ def test_live_section_stocks_does_not_request_future_checkpoints():
     source = States()
     _live_section_stocks(source, trade_date="2026-10-15", stage="open", asof="09:33:00",
                           relations={}, plate_names={}, stock_names={}, history_path=None)
-    assert source.cutoffs == ["09:25:06", "09:32:00"]
+    assert source.cutoffs == ["09:24:10", "09:25:06", "09:32:00"]
+
+
+def test_live_section_stocks_includes_0945_at_exact_cutoff():
+    from engine_core.daily_pipeline import _live_section_stocks
+
+    class States:
+        def __init__(self): self.cutoffs = []
+        def states_at(self, cutoff):
+            self.cutoffs.append(cutoff.strftime("%H:%M:%S"))
+            return {"600001": {"pct_change": 1.0, "match_amount_yuan": 10,
+                               "amt_yuan": 20}}
+
+    source = States()
+    rows = _live_section_stocks(source, trade_date="2026-10-15", stage="open", asof="09:45:00",
+                                relations={}, plate_names={}, stock_names={}, history_path=None)
+    assert source.cutoffs == ["09:24:10", "09:25:06", "09:32:00", "09:38:00", "09:45:00"]
+    assert rows[0]["p0945_pct"] == 1.0
+    assert rows[0]["p0945_amount_yuan"] == 20
 
 
 def test_ladder_summary_uses_dated_daily_rows_and_marks_close_price_proxy(tmp_path):

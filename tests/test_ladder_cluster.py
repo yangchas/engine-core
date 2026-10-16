@@ -1,4 +1,4 @@
-from engine_core.ladder_cluster import build_ladder_clusters, select_plate_strength
+from engine_core.ladder_cluster import build_ladder_clusters, select_plate_strength, build_plate_strength_from_stocks
 
 
 def test_ladder_clusters_group_by_eligible_theme_and_use_price_proxy_labels():
@@ -30,13 +30,13 @@ def test_empty_highboards_and_first_board_counts_are_explicit():
 
     assert result["clusters"] == []
     assert result["empty_message"] == "无昨高标簇"
-    assert result["first_board_summary"] == "昨首板1只：高开1/低开0/封停价代理0"
+    assert result["first_board_summary"].startswith("昨首板1只：高开1/低开0/封停价代理0；昨首板中今日竞价最强：")
 
     partial = build_ladder_clusters(
         [], [], {}, stage="auction",
         first_board_rows=[{"symbol": "1", "name": "首板甲", "0925": 0.5},
                           {"symbol": "2", "name": "首板乙"}])
-    assert partial["first_board_summary"] == "昨首板2只：高开1/低开0/封停价代理0/缺1只"
+    assert partial["first_board_summary"].startswith("昨首板2只：高开1/低开0/封停价代理0/缺1只；昨首板中今日竞价最强：")
 
     assert build_ladder_clusters(
         [{"symbol": "000001", "name": "甲", "streak": 2, "0925": 1},
@@ -74,3 +74,34 @@ def test_plate_strength_marks_missing_comparison_and_filters_noneligible_plates(
     assert result["missing"] is True
     assert result["up"] == [] and result["down"] == []
     assert result["message"] == "0924份额缺失，变化暂不可判"
+
+
+def test_plate_strength_aggregates_full_universe_stock_slices_not_top_twenty():
+    meta = {"冰雪产业": {"class": "THEME", "size": 8},
+            "中报增长": {"class": "THEME", "size": 8, "generic": True}}
+    stocks = []
+    for i in range(8):
+        stocks.append({"symbol": f"00000{i+1}", "name": f"股{i+1}", "plates": ["冰雪产业", "中报增长"],
+                       "p0924_amount_yuan": 100, "p0925_amount_yuan": 300 if i == 0 else 100,
+                       "p0925_pct": float(i), "p0924_pct": -1})
+    for i in range(8):
+        stocks.append({"symbol": f"00001{i+1}", "name": f"其他{i+1}", "plates": [],
+                       "p0924_amount_yuan": 100, "p0925_amount_yuan": 50,
+                       "p0925_pct": 1.0, "p0924_pct": 0.0})
+    result = build_plate_strength_from_stocks(stocks, meta)
+    assert result["missing"] is False
+    assert result["eligible_count"] == 1
+    assert result["up"][0]["name"] == "冰雪产业"
+    assert result["up"][0]["top_stock_name"] == "股1"
+    assert result["up"][0]["equal_weight_pct"] == 3.5
+    assert result["up"][0]["share_bp"] == 10000 * 1000 / 1400
+
+
+def test_first_board_summary_adds_three_strongest_yesterday_firsts():
+    result = build_ladder_clusters([], [], {}, stage="auction", first_board_rows=[
+        {"symbol": "000001", "name": "甲", "theme": "冰雪产业", "0925": 3.0},
+        {"symbol": "000002", "name": "乙", "theme": "冰雪产业", "0925": 8.0},
+        {"symbol": "000003", "name": "丙", "theme": "芯片", "0925": 5.0},
+        {"symbol": "000004", "name": "丁", "theme": "芯片", "0925": 1.0},
+    ])
+    assert "昨首板中今日竞价最强：乙 +8.0% 冰雪产业、丙 +5.0% 芯片、甲 +3.0% 冰雪产业" in result["first_board_summary"]

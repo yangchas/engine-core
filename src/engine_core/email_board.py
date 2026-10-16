@@ -1161,7 +1161,6 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     else:
         amount_short = "开盘缺失" if amount is None else f"开盘{float(amount) / 1e8:.0f}亿"
         headline = f"{amount_short}｜{amount_comparison}｜中{_num(median)}｜涨{_num(up_share)}｜昨板{_num(carry)}"
-    headline = _short(headline, 40)
     lines = [headline, "【昨高标路径·按板块聚类】" if stage == "open" else "【昨日连板→今日竞价·按板块聚类】"]
     ladder = data.get("ladder") if isinstance(data.get("ladder"), Mapping) else {}
     clusters = ladder.get("clusters", []) if isinstance(ladder.get("clusters"), list) else []
@@ -1171,14 +1170,14 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     for cluster in visible_clusters:
         share = cluster.get("share_bp")
         delta = cluster.get("delta_share_bp")
-        share_text = "份额缺失" if share is None else f"额占比{float(share):.0f}bp"
+        share_text = "份额—" if share is None else f"额占比{float(share):.0f}bp"
         if delta is not None and float(delta) != 0:
             share_text += f"({float(delta):+.0f})"
         eq = _num(cluster.get("equal_weight_pct"))
-        judgement = cluster.get("judgement") or "信息缺失"
+        judgement = cluster.get("judgement") or "—"
         if stage == "open":
             trend = cluster.get("judgement_trend")
-            if trend:
+            if trend and trend not in {"信息缺失", "较竞价分化"}:
                 judgement += f"·较竞价{trend}"
         lead_text = ""
         if stage == "open":
@@ -1208,8 +1207,9 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
             row = paths[0] if paths else {}
             lead_text = (f"{row.get('name')}{int(row.get('streak') or 0)}板"
                          f"{_num(row.get('0925'))}{row.get('status') or '状态缺失'}" if row else "反馈缺失")
-        delta_short = "Δ?" if delta is None else f"Δ{float(delta):+.0f}"
-        share_short = "份额?" if share is None else f"{float(share):.0f}bp"
+        delta_short = "Δ—" if delta is None else f"Δ{float(delta):+.0f}"
+        share_basis = "簇内合计" if cluster.get("share_basis") == "簇内合计" else ""
+        share_short = "—" if share is None else f"{float(share):.0f}bp"
         if stage == "open" and cluster.get("paths"):
             path = cluster["paths"][0]
             path_value = lambda key: "缺" if path.get(key) is None else _num(path.get(key))
@@ -1218,8 +1218,8 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
                          f"{path_value('0938')}→{path_value('0945')} "
                          f"{path.get('path_status') or '缺'}")
         hot_note = "·今日热榜" if cluster.get("hot_today") else ""
-        lines.append(_short(f"{cluster.get('name')}{hot_note} {share_short}{delta_short} 等权{eq} {judgement}", 40))
-        lines.append(_short(lead_text, 40))
+        lines.append(f"{cluster.get('name')}{hot_note} {share_basis}{share_short}{delta_short} 等权{eq} {judgement}")
+        lines.append(lead_text)
     folded = max(0, len(clusters) - len(visible_clusters)) + int(ladder.get("other_cluster_count") or 0)
     if folded:
         lines.append(f"其余{folded}簇见附表")
@@ -1236,9 +1236,9 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
             leader = row.get("top_stock_name") or "龙头未知"
             leader_pct = _num(row.get("top_stock_pct")) if row.get("top_stock_pct") is not None else "涨幅缺失"
             share_value = row.get("share_bp")
-            share_display = "份额?" if share_value is None else f"{float(share_value):.0f}bp"
-            lines.append(_short(f"{label} {row.get('name')} {share_display}"
-                                f"Δ{delta:+.0f} 等权{_num(pct)} 龙头{leader}{leader_pct}", 40))
+            share_display = "—" if share_value is None else f"{float(share_value):.0f}bp"
+            lines.append(f"{label} {row.get('name')} {share_display}"
+                         f"Δ{delta:+.0f}bp 等权{_num(pct)} 龙头{leader}{leader_pct}")
     story = report.get("story") if isinstance(report.get("story"), Mapping) else {}
     events = story.get("top_events", []) if isinstance(story.get("top_events"), list) else []
     lines.append("【今日3件不一样】")
@@ -1252,11 +1252,11 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
                          if isinstance(amount, (int, float)) and isinstance(baseline.get("multiple"), (int, float)) and isinstance(baseline.get("percentile"), (int, float))
                          else _short(summary.rstrip("。"), 40))
         elif event_id == "auction_breadth_context" and stage == "auction":
-            lines.append(f"竞价中位{_num(median)}，上涨{_num(up_share)}；历史分位见附表")
+            lines.append(summary.rstrip("。"))
         elif event_id == "auction_ladder_plate_context":
-            lines.append(_short(summary.replace("+0bp", "变化未显著").rstrip("。"), 40))
+            lines.append(summary.replace("+0bp", "变化未显著").rstrip("。"))
         else:
-            lines.append(_short(summary.rstrip("。"), 40) if summary else "信息缺失")
+            lines.append(summary.rstrip("。") if summary else "信息缺失")
     while sum(1 for line in lines if line) < 3 + 3:
         lines.append("信息缺失")
     funnel = story.get("funnel") if isinstance(story.get("funnel"), Mapping) else {}
@@ -1270,13 +1270,19 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
             if isinstance(condition, Mapping):
                 condition = condition.get("text")
             risk = row.get("risk") or "风险信息缺失"
-            lines.append(_short(f"{label} {_display_name(row, 7)}｜触发:{_short(condition or '条件缺失', 14)}｜险:{_short(risk, 8)}", 40))
-    if stage == "open":
-        lines.append("路径只取0932/0945；0938行情缺失")
+            condition_text = str(condition or "")
+            risk_text = str(risk)
+            trigger = ("开盘看承接" if "0932" in condition_text or "开盘" in condition_text else
+                       "观察封单变化" if "封" in condition_text else "等待信号确认")
+            risk_brief = ("高标波动" if "高标" in risk_text else
+                          "注意回落" if "回落" in risk_text or "波动" in risk_text else "风险未明")
+            lines.append(f"{label} {_display_name(row, 7)}｜触发:{trigger}｜险:{risk_brief}")
     lines.append("归属来源：" + str(ladder.get("attribution_basis") or "登记表回退"))
     lines.append("口径：封停为价格代理；不补缺失；成员关系点时性见附表")
     # Keep the first screen bounded even when the source story has many items.
-    lines = [_short(line, 40) for line in lines[:29]]
+    tail_at = next((i for i, line in enumerate(lines) if line.startswith("【能做")), len(lines))
+    head, tail = lines[:tail_at], lines[tail_at:]
+    lines = head[:max(0, 38 - len(tail))] + tail  # never cut the funnel / scope lines
     html_lines = "".join(f"<div style=\"padding:4px 6px;border-bottom:1px solid #e5eaf0\">{_esc(line)}</div>" for line in lines)
     markup = f'<section style="margin:8px 0;padding:10px;background:#fff;border:1px solid #dbe3ec;border-radius:8px">{html_lines}</section>'
     return markup, "\n".join(lines)

@@ -363,8 +363,9 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
     """Build full-universe, as-of stock rows for the live A→B and ladder sections."""
     from .live_session import daily_history_context, load_daily_history_csv, states_at
 
-    clocks = {"0925": "09:25:06", "0932": "09:32:00", "0945": "09:45:30"}
-    requested = ["0925"] if stage == "auction" else ["0925", "0932", "0945"]
+    clocks = {"0924": "09:24:10", "0925": "09:25:06", "0932": "09:32:00",
+              "0938": "09:38:00", "0945": "09:45:00"}
+    requested = ["0924", "0925"] if stage == "auction" else ["0924", "0925", "0932", "0938", "0945"]
     end = datetime.fromisoformat(f"{trade_date}T{asof}")
     snapshots: dict[str, dict[str, Any]] = {}
     for label in requested:
@@ -407,13 +408,17 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
                          30.0 if symbol.startswith(("4", "8", "92")) else 10.0,
             "p0925_pct": auction.get("pct_change"),
             "auction_amount_yuan": auction.get("match_amount_yuan"),
+            "p0924_amount_yuan": snapshots.get("0924", {}).get(symbol, {}).get("match_amount_yuan"),
+            "p0924_pct": snapshots.get("0924", {}).get(symbol, {}).get("pct_change"),
+            "p0925_amount_yuan": auction.get("match_amount_yuan"),
+            "p0945_amount_yuan": snapshots.get("0945", {}).get(symbol, {}).get("amt_yuan"),
             "auction_price_status": auction.get("status", "UNKNOWN"),
             "auction_limit_state": auction.get("auction_limit_state"),
             "rest_bid_yuan": auction.get("rest_bid_yuan"),
         }
         if total_auction and row["auction_amount_yuan"] is not None:
             row["auction_amount_bp"] = 10000 * row["auction_amount_yuan"] / total_auction
-        for label, field in (("0932", "p0932_pct"), ("0945", "p0945_pct")):
+        for label, field in (("0932", "p0932_pct"), ("0938", "p0938_pct"), ("0945", "p0945_pct")):
             state = snapshots.get(label, {}).get(symbol)
             if state:
                 row[field] = state.get("pct_change")
@@ -770,9 +775,18 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                           plate_metadata=plate_metadata)
                              if live_stocks else [{"a_symbol": "—", "reason": "缺关系数据：本时点报告无全量个股与板块成员"}])
         highboards = payload.get("chapters", {}).get("yesterday_highboards", []) if isinstance(payload.get("chapters"), Mapping) else []
+        stock_by_symbol = {str(row.get("symbol", row.get("code", ""))).zfill(6): row
+                           for row in live_stocks if isinstance(row, Mapping)}
         for row in highboards if isinstance(highboards, list) else []:
             if isinstance(row, dict):
-                row["path_type"] = path_labels.get(str(row.get("symbol", "")).zfill(6), "UNKNOWN")
+                symbol = str(row.get("symbol", row.get("code", ""))).zfill(6)
+                row["path_type"] = path_labels.get(symbol, "UNKNOWN")
+                live = stock_by_symbol.get(symbol, {})
+                row.setdefault("0925", live.get("p0925_pct"))
+                row.setdefault("0932", live.get("p0932_pct"))
+                row["0938"] = live.get("p0938_pct")
+                row["0945"] = live.get("p0945_pct")
+                row["match_amount_yuan"] = live.get("auction_amount_yuan")
         payload["ladder_section"] = build_ladder_section(
             highboards if isinstance(highboards, list) else [], stage=stage, asof=point,
             frequencies=path_frequencies, market_stocks=live_stocks)
@@ -847,6 +861,24 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             auction_ref = payload["handoff"].get("auction_0925")
             terminal_for_events = auction_ref.get("final_0925") if isinstance(auction_ref, Mapping) else None
         history_rows = payload.get("history", {}).get("daily", []) if isinstance(payload.get("history"), Mapping) else []
+        if not history_rows and refs.get("daily_history"):
+            try:
+                import statistics
+                from .live_session import load_daily_history_csv
+                historical = load_daily_history_csv(refs["daily_history"])
+                by_day: dict[str, list[float]] = {}
+                for row in historical:
+                    day = str(row.get("date") or "")
+                    value = row.get("pct_chg")
+                    if day < trade_date and isinstance(value, (int, float)):
+                        by_day.setdefault(day, []).append(float(value))
+                history_rows = [{
+                    "date": day,
+                    "median_open_pct": statistics.median(values),
+                    "up_share_pct": 100.0 * sum(value > 0 for value in values) / len(values),
+                } for day, values in sorted(by_day.items())[-64:] if values]
+            except (OSError, ValueError, TypeError):
+                history_rows = []
         terminal_usable = (isinstance(terminal_for_events, Mapping)
                            and terminal_for_events.get("status") not in {"STALE", "NOT_READY", "NOT_YET_AVAILABLE"}
                            and terminal_for_events.get("symbol_count") != 0)
@@ -857,6 +889,18 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             if isinstance(amount, (int, float)) and isinstance(baseline, Mapping):
                 multiple, percentile = baseline.get("multiple"), baseline.get("percentile")
                 previous = terminal_for_events.get("vs_previous_day_final")
+                if not isinstance(previous, (int, float)) and refs.get("auction_baseline"):
+                    try:
+                        import csv
+                        with refs["auction_baseline"].open(encoding="utf-8-sig", newline="") as handle:
+                            prior_amounts = [(str(row.get("date") or "")[:10], float(row["sum_yi"]))
+                                             for row in csv.DictReader(handle)
+                                             if str(row.get("date") or "")[:10] < trade_date
+                                             and row.get("sum_yi") not in (None, "")]
+                        if prior_amounts:
+                            previous = (amount / 1e8) / max(prior_amounts)[1] if max(prior_amounts)[1] else None
+                    except (OSError, ValueError, TypeError):
+                        previous = None
                 prev_text = f"，约为昨日终值{float(previous):.2f}倍" if isinstance(previous, (int, float)) else ""
                 if isinstance(multiple, (int, float)) and isinstance(percentile, (int, float)):
                     baseline_yi = baseline.get("median_yi")
@@ -875,10 +919,34 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                           and row.get("date") and str(row.get("date")) < trade_date
                           and isinstance(row.get(history_key), (int, float))]
                 if isinstance(current, (int, float)) and len(values) >= 20:
-                    rank = 1 + sum(value < current for value in values)
-                    suffix = "低" if rank <= len(values) / 2 else "高"
-                    breadth_parts.append(f"{label}{current:.2f}{'%' if metric == 'auction_up_share' else '个百分点'}，64日第{rank}/{len(values)}{suffix}")
+                    rank = 1 + sum(value > current for value in values)
+                    breadth_parts.append(f"{label}{current:.2f}{'%' if metric == 'auction_up_share' else '个百分点'}，近{len(values)}日由高到低第{rank}/{len(values)}")
             if breadth_parts:
+                import statistics
+                yesterday_close = None
+                if refs.get("daily_history"):
+                    from .live_session import load_daily_history_csv
+                    raw_daily = load_daily_history_csv(refs["daily_history"])
+                    prior_days = sorted({str(row.get("date") or "") for row in raw_daily
+                                         if str(row.get("date") or "") < trade_date})
+                    if prior_days:
+                        last_day = prior_days[-1]
+                        returns = [row.get("pct_chg") for row in raw_daily
+                                   if row.get("date") == last_day and isinstance(row.get("pct_chg"), (int, float))]
+                        if returns:
+                            yesterday_close = (statistics.median(returns),
+                                100.0 * sum(value > 0 for value in returns) / len(returns), last_day)
+                if yesterday_close:
+                    if isinstance(terminal_for_events.get("median_pct_change"), (int, float)) and isinstance(
+                            terminal_for_events.get("up_share_pct"), (int, float)):
+                        transition = "冰点反转：" if yesterday_close[0] < 0 < float(terminal_for_events["median_pct_change"]) else "昨日→今日："
+                        breadth_parts.insert(0, (f"{transition}昨日收盘中位{yesterday_close[0]:+.1f}%/上涨"
+                                                 f"{yesterday_close[1]:.1f}%→今日竞价"
+                                                 f"{float(terminal_for_events['median_pct_change']):+.1f}%/"
+                                                 f"{float(terminal_for_events['up_share_pct']):.1f}%"
+                                                 f"（昨日{yesterday_close[2]}）"))
+                    else:
+                        breadth_parts.insert(0, f"昨日收盘中位{yesterday_close[0]:+.1f}%/上涨{yesterday_close[1]:.1f}%")
                 events.append({"id": "auction_breadth_context", "metric": "auction_up_share",
                                "display_label": "历史异常" if any("第1/" in part for part in breadth_parts) else "对照观察",
                                "summary": "；".join(breadth_parts) + "。"})
@@ -919,14 +987,18 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         previous_trade_date = (_history_file_date(refs["daily_history"], trade_date)
                                if refs.get("daily_history") else None)
         static_by_symbol: dict[str, list[dict[str, Any]]] = {}
-        for relation in payload.get("a_to_b", []) if isinstance(payload.get("a_to_b"), list) else []:
-            if not isinstance(relation, Mapping):
+        for stock in live_stocks:
+            if not isinstance(stock, Mapping):
                 continue
-            symbol = str(relation.get("a_symbol", relation.get("symbol", ""))).zfill(6)
-            plate_name = str(relation.get("plate_display") or relation.get("plate") or "")
-            if plate_name and _eligible_front_plate(plate_name, plate_metadata):
-                static_by_symbol.setdefault(symbol, []).append({"name": plate_name,
-                    **plate_metadata.get(plate_name, {})})
+            symbol = str(stock.get("symbol", stock.get("code", ""))).zfill(6)
+            names = stock.get("plates", [])
+            if not isinstance(names, list):
+                names = [stock.get("main_plate")] if stock.get("main_plate") else []
+            for plate_name in names:
+                plate_name = str(plate_name or "")
+                if plate_name and _eligible_front_plate(plate_name, plate_metadata):
+                    static_by_symbol.setdefault(symbol, []).append({"name": plate_name,
+                        **plate_metadata.get(plate_name, {})})
         theme_snapshot = load_kaipan_theme_snapshot(
             None, report_date=trade_date, previous_trade_date=previous_trade_date or "",
             observed_at=point, plate_names=plate_names,
@@ -935,8 +1007,29 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         payload["theme_attribution_basis"] = theme_snapshot["basis"]
         payload["hot_plate_names"] = theme_snapshot["hot_plate_names"]
         payload["theme_snapshot_status"] = theme_snapshot["status"]
+        # Keep A→B peers on the same C212 primary theme used by the ladder.
+        assigned_counts: dict[str, int] = {}
+        themed_stocks = []
+        for stock in live_stocks:
+            if not isinstance(stock, Mapping):
+                continue
+            symbol = str(stock.get("symbol", stock.get("code", ""))).zfill(6)
+            assignment = theme_snapshot["assignments"].get(symbol, {})
+            name = str(assignment.get("theme_name") or "") if isinstance(assignment, Mapping) else ""
+            if name and name != "无题材" and assignment.get("theme_source") not in (None, "NONE"):
+                assigned_counts[name] = assigned_counts.get(name, 0) + 1
+                themed_stocks.append({**stock, "plates": [name], "main_plate": name})
+            else:
+                themed_stocks.append({**stock, "plates": []})
+        theme_metadata = dict(plate_metadata)
+        for name, count in assigned_counts.items():
+            theme_metadata.setdefault(name, {"class": "THEME", "size": count, "generic": False})
+        if themed_stocks:
+            payload["a_to_b"] = build_a_to_b(
+                themed_stocks, trade_date=trade_date, stage=stage, asof=point,
+                relation_asof=relation_asof, plate_metadata=theme_metadata)
         payload["front_page"] = build_front_page_data(
-            payload, stage=stage, plate_metadata=plate_metadata, stocks=live_stocks,
+            payload, stage=stage, plate_metadata=theme_metadata, stocks=themed_stocks,
             theme_assignments=theme_snapshot["assignments"], theme_basis=theme_snapshot["basis"],
             hot_plate_names=theme_snapshot["hot_plate_names"])
         from .email_render import render_email_html

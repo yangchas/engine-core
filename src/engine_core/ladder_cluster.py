@@ -33,6 +33,8 @@ def _price_label(pct: float | None, symbol: str) -> str:
         return "封停价代理"
     if pct <= -5:
         return "大低开"
+    if abs(pct) < 0.3:
+        return "平开"
     return "高开" if pct > 0 else "低开"
 
 
@@ -120,6 +122,10 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
         # A cluster's own highboard amount is not the whole plate amount.
         # Keep plate share missing unless the report supplied a plate-level value.
         share_bp = share_data.get(plate, (None, None))[0]
+        share_basis = None
+        if share_bp is None and market_amount_yuan and market_amount_yuan > 0:
+            share_bp = amount * 10000 / market_amount_yuan
+            share_basis = "簇内合计"
         if stage == "open":
             for row in rows:
                 row["auction_pct"] = _number(row.get("0925", row.get("auction_pct")))
@@ -137,7 +143,7 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
                           "0945": _number(row.get("0945", row.get("p0945_pct"))),
                           "status": _price_label(pct, row["symbol"])})
         clusters.append({"key": theme_key, "name": plate, "count": len(rows), "max_streak": max((r["streak"] or 0) for r in rows),
-                         "amount_yuan": amount, "share_bp": share_bp,
+                         "amount_yuan": amount, "share_bp": share_bp, "share_basis": share_basis,
                          "hot_today": plate in hot_names,
                          "theme_sources": sorted({str(row.get("theme_source") or "NONE") for row in rows}),
                          "delta_share_bp": (plate_share_changes or {}).get(plate, (None, None))[1],
@@ -178,6 +184,17 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
         first_summary = f"昨首板{len(first)}只：高开{up}/低开{down}/封停价代理{locked}"
         if missing:
             first_summary += f"/缺{missing}只"
+        pct_key = "0925" if stage == "auction" else "0945"
+        fallback_key = "auction_pct" if stage == "auction" else "p0945_pct"
+        strongest = sorted((row for row in first if _number(row.get(pct_key, row.get(fallback_key))) is not None),
+                           key=lambda row: -(_number(row.get(pct_key, row.get(fallback_key))) or 0))[:3]
+        if strongest:
+            details = []
+            for row in strongest:
+                pct = _number(row.get(pct_key, row.get(fallback_key)))
+                topic = row.get("theme") or row.get("theme_name") or row.get("main_plate") or "主题缺失"
+                details.append(f"{row.get('name') or row.get('symbol')} {pct:+.1f}% {topic}")
+            first_summary += "；昨首板中今日竞价最强：" + "、".join(details)
     basis = theme_basis or ("登记表回退" if fallback_used else "昨日涨停池题材/历史原因")
     return {"clusters": clusters[:8], "other_cluster_count": max(0, len(clusters) - 8),
             "cluster_count": len(clusters), "empty_message": empty_message,
@@ -214,6 +231,66 @@ def select_plate_strength(current: Sequence[Mapping[str, Any]], previous: Sequen
     down = sorted((row for row in changed if row["delta_bp"] < 0), key=lambda row: (row["delta_bp"], row["name"]))[:5]
     return {"up": up, "down": down, "threshold_bp": threshold, "missing": False,
             "message": "" if up or down else "份额变化未达显著阈值"}
+
+
+def build_plate_strength_from_stocks(stocks: Sequence[Mapping[str, Any]],
+                                     plate_metadata: Mapping[str, Mapping[str, Any]], *,
+                                     stage: str = "auction") -> dict[str, Any]:
+    """Aggregate registered themes from the full point-in-time stock universe."""
+    grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for stock in stocks:
+        if not isinstance(stock, Mapping):
+            continue
+        names = stock.get("plates")
+        if not isinstance(names, list):
+            names = [stock.get("main_plate")] if stock.get("main_plate") else []
+        for name in set(str(value) for value in names if value):
+            if _eligible(name, plate_metadata):
+                grouped[name].append(stock)
+    current_key = "p0945_amount_yuan" if stage == "open" else "p0925_amount_yuan"
+    previous_key = "p0925_amount_yuan" if stage == "open" else "p0924_amount_yuan"
+    pct_key = "p0945_pct" if stage == "open" else "p0925_pct"
+    market_now = sum(max(0.0, _number(row.get(current_key)) or 0.0) for row in stocks
+                     if isinstance(row, Mapping))
+    market_before = sum(max(0.0, _number(row.get(previous_key)) or 0.0) for row in stocks
+                        if isinstance(row, Mapping))
+    rows = []
+    for name, members in grouped.items():
+        if not 8 <= len(members) <= 150:
+            continue
+        with_now = [row for row in members if _number(row.get(current_key)) is not None]
+        if len(with_now) * 2 < len(members):  # missing amounts are not zeros: need >=50% coverage
+            continue
+        now = sum(max(0.0, _number(row.get(current_key)) or 0.0) for row in with_now)
+        before = sum(max(0.0, _number(row.get(previous_key)) or 0.0) for row in with_now
+                     if _number(row.get(previous_key)) is not None)
+        if now <= 0 or market_now <= 0:
+            continue
+        now_bp = now * 10000 / market_now
+        old_bp = before * 10000 / market_before if market_before > 0 else None
+        delta = now_bp - old_bp if old_bp is not None else None
+        pct_rows = [(row, _number(row.get(pct_key))) for row in members]
+        pct_values = [pct for _, pct in pct_rows if pct is not None]
+        leader = max(members, key=lambda row: _number(row.get(current_key)) or 0)
+        rows.append({"name": name, "share_bp": now_bp, "previous_share_bp": old_bp,
+                     "delta_bp": delta,
+                     "equal_weight_pct": sum(pct_values) / len(pct_values) if pct_values else None,
+                     "top_stock_name": leader.get("name") or leader.get("symbol"),
+                     "top_stock_pct": _number(leader.get(pct_key)),
+                     "member_count": len(members), "amount_yuan": now})
+    comparable = [row for row in rows if row["delta_bp"] is not None]
+    if not comparable:
+        missing_0924 = stage == "auction" and not any(
+            _number(row.get("p0924_amount_yuan")) is not None for row in stocks if isinstance(row, Mapping))
+        return {"up": [], "down": [], "threshold_bp": None, "missing": True,
+                "eligible_count": len(rows), "message": "缺0924" if missing_0924 else "合格板块不足"}
+    magnitudes = sorted(abs(row["delta_bp"]) for row in comparable)
+    threshold = max(10.0, magnitudes[min(len(magnitudes) - 1, ceil(0.8 * len(magnitudes)) - 1)])
+    changed = [row for row in comparable if abs(row["delta_bp"]) >= threshold and row["delta_bp"] != 0]
+    up = sorted((row for row in changed if row["delta_bp"] > 0), key=lambda row: (-row["delta_bp"], row["name"]))[:5]
+    down = sorted((row for row in changed if row["delta_bp"] < 0), key=lambda row: (row["delta_bp"], row["name"]))[:5]
+    return {"up": up, "down": down, "threshold_bp": threshold, "missing": False,
+            "eligible_count": len(rows), "message": "" if up or down else "份额变化未达显著阈值"}
 
 
 def build_front_page_data(report: Mapping[str, Any], *, stage: str,
@@ -253,7 +330,7 @@ def build_front_page_data(report: Mapping[str, Any], *, stage: str,
                            "equal_weight_pct": row.get("equal_weight_pct", row.get("equal_weight_mean_pct"))})
         return result
     metadata = plate_metadata or {}
-    eligible = {name for name, info in metadata.items() if _eligible(name, info)}
+    eligible = {name for name in metadata if _eligible(name, metadata)}
     if not eligible:
         eligible = {str(row.get("name")) for row in current if isinstance(row, Mapping)
                     and str(row.get("name", "")) and metadata and _eligible(str(row.get("name")), metadata)}
@@ -280,6 +357,20 @@ def build_front_page_data(report: Mapping[str, Any], *, stage: str,
     first = chapters.get("yesterday_limit_pool", [])
     if not isinstance(first, list):
         first = []
+    assignments = theme_assignments or report.get("limit_reason_themes") or {}
+    if isinstance(assignments, Mapping):
+        annotated = []
+        for source in first:
+            if not isinstance(source, Mapping):
+                continue
+            symbol = str(source.get("symbol", source.get("code", ""))).zfill(6)
+            theme = assignments.get(symbol)
+            if isinstance(theme, Mapping) and theme.get("theme_name"):
+                annotated.append({**source, "theme": theme.get("theme_name"),
+                                  "theme_key": theme.get("theme_key")})
+            else:
+                annotated.append(dict(source))
+        first = annotated
     stock_by_symbol = {str(row.get("symbol", row.get("code", ""))).zfill(6): row
                        for row in stocks if isinstance(row, Mapping)}
     first = [{**row, **({"0925": stock_by_symbol[str(row.get("symbol", "")).zfill(6)].get("p0925_pct")}
@@ -308,6 +399,6 @@ def build_front_page_data(report: Mapping[str, Any], *, stage: str,
                                              theme_assignments=theme_assignments or report.get("limit_reason_themes"),
                                              theme_basis=theme_basis or report.get("theme_attribution_basis"),
                                              hot_plate_names=hot_plate_names or report.get("hot_plate_names", ())),
-            "plate_strength": select_plate_strength(current_norm, previous_norm, eligible_names=eligible),
+            "plate_strength": build_plate_strength_from_stocks(stocks, metadata, stage=stage),
             "eligible_plate_count": len(eligible),
             "basis": "STATIC_ASOF_UNKNOWN" if report.get("manifest", {}).get("inputs", {}).get("relation_dir") else "RELATION_ASOF_UNKNOWN"}
