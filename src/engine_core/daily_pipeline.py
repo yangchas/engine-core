@@ -898,7 +898,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     latest = [r for r in cuts.get("0925", []) if isinstance(r, Mapping)]
                     changes = [(r, r.get("amount_share_bp", 0) - old[r.get("code")].get("amount_share_bp", 0))
                                for r in latest if r.get("code") in old]
-                    if changes:
+                    if changes and max(abs(pair[1]) for pair in changes) >= 20:
                         plate, delta = max(changes, key=lambda pair: abs(pair[1]))
                         ladder_parts.append(f"板块份额变化最大：{plate.get('name')} {delta:+.0f}bp")
                 if ladder_parts:

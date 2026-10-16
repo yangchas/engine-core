@@ -90,6 +90,15 @@ def filter_candidates(candidates: Sequence[Mapping[str, Any]], features: Mapping
             reasons_raw = source.get("reasons", [])
         if isinstance(reasons_raw, str): reasons_raw = [reasons_raw]
         reasons = [str(x) for x in reasons_raw] if isinstance(reasons_raw, Sequence) else []
+        _seen_rank = False
+        _dedup = []
+        for _r in reasons:  # one rank statement only; B can be listed under several A with different local ranks
+            if _r.startswith("板块竞价额第"):
+                if _seen_rank:
+                    continue
+                _seen_rank = True
+            _dedup.append(_r)
+        reasons = _dedup
         filter_reasons = source.get("filter_reasons", [])
         if isinstance(filter_reasons, str): filter_reasons = [filter_reasons]
         filter_reasons = [str(x) for x in filter_reasons if x]

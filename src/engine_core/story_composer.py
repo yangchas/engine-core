@@ -33,12 +33,20 @@ def _fmt(value: Any, unit: Any) -> str:
     return str(value)
 
 
+def _checkpoint_label(key: str) -> str | None:
+    import re as _re
+    m = _re.fullmatch(r"p(\d{2})(\d{2})_(up_share|median(?:_pct)?)", key)
+    if not m:
+        return None
+    return f"{m.group(1)}:{m.group(2)}" + ("上涨占比" if m.group(3) == "up_share" else "涨幅中位数")
+
+
 def _metric_label(key: str) -> str:
-    return {"auction_median_pct": "竞价中位", "auction_up_share": "上涨占比",
+    return {"auction_median_pct": "竞价中位", "auction_up_share": "竞价上涨占比",
             "auction_amount_yuan": "竞价匹配额", "auction_prev_common_ratio": "竞价额/前日同池",
             "auction_baseline_multiple": "竞价额/64日中位基线",
             "auction_baseline_percentile": "64日竞价额分位",
-            "open_median_pct": "开盘中位", "open_up_share": "上涨占比",
+            "open_median_pct": "开盘中位", "open_up_share": "开盘上涨占比",
             "open_amount_yuan": "开盘成交额", "p0945_median": "0945中位",
             "p0945_up_share": "上涨占比", "p0945_amount_yuan": "0945累计成交额",
             "close_median_pct": "收盘中位", "close_up_share": "上涨占比",
@@ -46,7 +54,7 @@ def _metric_label(key: str) -> str:
             "p0940_up_share": "09:40上涨占比", "p0945_up_share": "09:45上涨占比",
             "p0940_median_pct": "09:40涨幅中位数", "p0945_median_pct": "09:45涨幅中位数",
             "auction_n": "竞价样本", "open_n": "开盘样本", "close_n": "收盘样本"}.get(
-                key, key.replace("_", " ").replace("pct", "涨幅").replace("share", "占比").strip())
+                key, _checkpoint_label(key) or key.replace("_", " ").replace("pct", "涨幅").replace("share", "占比").strip())
 
 
 def _metric_unit(key: str, unit: Any) -> Any:
