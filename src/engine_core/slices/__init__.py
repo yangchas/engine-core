@@ -101,7 +101,7 @@ class SliceReader:
                                        "missing": "NO_ASOF"}
                     if meta["status"] == "READY":
                         meta["status"] = "PARTIAL"
-                    meta["reason"] = "NO_ASOF"
+                        meta["reason"] = "NO_ASOF"
                 meta["snapshot_id"] = self.snapshot_id
                 return SliceResult.create(rows, meta)
         return _result(request, [], source="none", status="MISSING", reason="NO_PROVIDER_DATA")
@@ -163,6 +163,97 @@ class SliceProviders:
     def _core(self, reader: SliceReader, request: SliceRequest) -> SliceResult:
         dataset = self.DATASETS[request.slice_id]
         date = request.trade_date
+        if request.slice_id == "daily_history":
+            through_date = str(request.params.get("prior_trade_date") or date)
+            from engine_core.daily_history import core_history_rows, read_daily_history_cache
+            cached = read_daily_history_cache(self.redis, through_date, asof=request.asof)
+            if cached is not None:
+                rows, history_meta = cached
+                history_meta["row_count"] = len(rows)
+                return _result(request, rows, source="core_data", status="READY",
+                               quality={"coverage": len(rows), "partial": False,
+                                        "history_trade_dates": history_meta["history_trade_dates"],
+                                        "field_units": history_meta["field_units"]},
+                               version="redis_hot_view", available_at=history_meta["available_at"],
+                               lineage=[{"dataset": "daily_history", "source": "core_data",
+                                         "hot_view": True}])
+            try:
+                rows, history_meta = core_history_rows(self.catalog, through_date=through_date,
+                                                       asof=request.asof, max_days=120)
+            except (OSError, ValueError, TypeError):
+                rows, history_meta = [], {"row_count": 0, "history_trade_dates": 0,
+                                           "available_at": None, "unknown_availability": True}
+            if not rows:
+                compact_path = self._select_manifest(dataset, through_date, request.asof)
+                if compact_path is not None and compact_path.is_file():
+                    try:
+                        compact_manifest = json.loads(compact_path.read_text(encoding="utf-8"))
+                        compact_rows = self.catalog.read_rows(compact_path)
+                        for row in compact_rows:
+                            row.setdefault("available_at", compact_manifest.get("available_at"))
+                            row.setdefault("source", compact_manifest.get("source") or "core_data")
+                        compact_rows, unknown = _pit_rows(compact_rows, request.asof)
+                        if compact_rows:
+                            return _result(request, compact_rows, source="core_data:daily_history_compact",
+                                           status="PARTIAL" if unknown else "READY",
+                                           reason="NO_ASOF" if unknown else None,
+                                           quality={"coverage": len(compact_rows), "partial": unknown,
+                                                    "legacy_core_dataset": True},
+                                           version="daily_history_compact",
+                                           available_at=compact_manifest.get("available_at"))
+                    except (OSError, ValueError, TypeError, KeyError):
+                        pass
+                return _result(request, [], source="core_data", status="MISSING",
+                               reason="DAILY_HISTORY_NOT_IMPORTED", quality={"coverage": 0})
+            indicator_rows: dict[str, dict[str, Any]] = {}
+            indicator_available_at = None
+            indicator_date_used = None
+            try:
+                indicator_dates = sorted(day for day in self.catalog.read().get("datasets", {}).get("daily_indicators", {}).get("dates", {})
+                                         if day <= through_date)
+                cutoff = _parse_pit_timestamp(request.asof)
+                for indicator_date in reversed(indicator_dates):
+                    manifest_path = self.catalog.locate("daily_indicators", indicator_date)
+                    if manifest_path is None or not manifest_path.is_file():
+                        continue
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    available = _parse_pit_timestamp(manifest.get("available_at"))
+                    if available is None or cutoff is None or available > cutoff:
+                        continue
+                    indicator_rows = {str(row.get("symbol", "")).zfill(6): row
+                                      for row in self.catalog.read_rows(manifest_path)}
+                    indicator_available_at = manifest.get("available_at")
+                    indicator_date_used = indicator_date
+                    break
+            except (AttributeError, OSError, ValueError, TypeError):
+                indicator_rows = {}
+            latest_bar_date = max(str(row.get("date", ""))[:10] for row in rows)
+            indicator_fields = ("ma5", "ma10", "ma20", "bias_20", "rsi_6", "change_pct_5d",
+                                "avg_turnover_5d", "limit_up_days_5", "vol_ratio")
+            indicator_coverage = 0
+            for row in rows:
+                if str(row.get("date", ""))[:10] != latest_bar_date:
+                    continue
+                values = indicator_rows.get(str(row.get("symbol", "")).zfill(6))
+                if indicator_date_used != latest_bar_date:
+                    values = None  # PIT: never present an earlier day's indicators as the latest bar's
+                if values:
+                    indicator_coverage += 1
+                for field in indicator_fields:
+                    row[field] = values.get(field) if values else None
+                if values:
+                    row["indicator_source"] = "core_derived"
+                    row["indicator_available_at"] = indicator_available_at
+            status = "PARTIAL" if history_meta.get("unknown_availability") else "READY"
+            reason = "DAILY_HISTORY_AVAILABILITY_UNKNOWN" if status == "PARTIAL" else None
+            return _result(request, rows, source="core_data", status=status, reason=reason,
+                           quality={"coverage": len(rows), "partial": status == "PARTIAL",
+                                    "history_trade_dates": history_meta["history_trade_dates"],
+                                    "indicator_coverage": indicator_coverage,
+                                    "field_units": history_meta["field_units"]},
+                           version="multi_date", available_at=history_meta.get("available_at"),
+                           lineage=[{"dataset": "daily_kline", "source": source}
+                                    for source in history_meta.get("sources", [])])
         if request.slice_id == "trading_calendar":
             calendar_manifest = self.catalog.locate(dataset, date or None)
             if calendar_manifest is None:
@@ -177,8 +268,6 @@ class SliceProviders:
                                reason="CALENDAR_DATA_UNAVAILABLE")
         if request.slice_id in {"hot_plates_yesterday", "yest_limit_pool"}:
             date = str(request.params.get("source_date") or "")
-        if request.slice_id == "daily_history":
-            date = str(request.params.get("prior_trade_date") or date or "")
         if request.slice_id == "limit_reason_history":
             try:
                 dates = self.catalog.read().get("datasets", {}).get(dataset, {}).get("dates", {})
@@ -301,12 +390,18 @@ class SliceProviders:
         if rows is None:
             return _result(request, [], source="legacy_redis", status="MISSING", reason="LEGACY_KEY_MISSING")
         rows, unknown = _pit_rows(rows, request.asof)
+        if request.slice_id == "daily_history":
+            for row in rows:
+                row.setdefault("available_at", None)
         source = "ths_hot_rank" if request.slice_id == "hot_rank" else "legacy_redis"
         result = _result(request, rows, source=source, status="PARTIAL" if unknown else "READY",
                        reason="NO_ASOF" if unknown else None,
                        quality={"coverage": len(rows) or None, "missing": "NO_ASOF" if unknown else None,
                                 "partial": unknown})
         result.meta["legacy_dependency"] = True
+        if request.slice_id == "daily_history":
+            result.meta["status"] = "DEGRADED"
+            result.meta["reason"] = "LEGACY_DAILY_HISTORY_DEGRADED"
         return result
 
     def _legacy_rows(self, request: SliceRequest) -> list[dict[str, Any]] | None:
