@@ -30,13 +30,13 @@ def test_empty_highboards_and_first_board_counts_are_explicit():
 
     assert result["clusters"] == []
     assert result["empty_message"] == "无昨高标簇"
-    assert result["first_board_summary"].startswith("昨首板1只：高开1/低开0/封停价代理0；昨首板中今日竞价最强：")
+    assert result["first_board_summary"].startswith("昨首板竞价高1/低0/平0；昨首板竞价最强：")
 
     partial = build_ladder_clusters(
         [], [], {}, stage="auction",
         first_board_rows=[{"symbol": "1", "name": "首板甲", "0925": 0.5},
                           {"symbol": "2", "name": "首板乙"}])
-    assert partial["first_board_summary"].startswith("昨首板2只：高开1/低开0/封停价代理0/缺1只；昨首板中今日竞价最强：")
+    assert partial["first_board_summary"].startswith("昨首板竞价高1/低0/平0 缺1只；昨首板竞价最强：")
 
     assert build_ladder_clusters(
         [{"symbol": "000001", "name": "甲", "streak": 2, "0925": 1},
@@ -104,4 +104,54 @@ def test_first_board_summary_adds_three_strongest_yesterday_firsts():
         {"symbol": "000003", "name": "丙", "theme": "芯片", "0925": 5.0},
         {"symbol": "000004", "name": "丁", "theme": "芯片", "0925": 1.0},
     ])
-    assert "昨首板中今日竞价最强：乙 +8.0% 冰雪产业、丙 +5.0% 芯片、甲 +3.0% 冰雪产业" in result["first_board_summary"]
+    assert "昨首板竞价最强：乙 +8.0% 冰雪产业、丙 +5.0% 芯片、甲 +3.0% 冰雪产业" in result["first_board_summary"]
+
+
+def test_open_first_board_summary_separates_auction_and_0945_counts():
+    result = build_ladder_clusters([], [], {}, stage="open", first_board_rows=[
+        {"symbol": "000001", "name": "甲", "0925": 2.0, "0945": -1.0},
+        {"symbol": "000002", "name": "乙", "0925": -1.0, "0945": 3.0},
+        {"symbol": "000003", "name": "丙", "0925": 0.0, "0945": 0.0},
+    ])
+    assert "竞价高1/低1/平1→0945高1/低1/平1" in result["first_board_summary"]
+    assert "昨首板0945最强：乙 +3.0%" in result["first_board_summary"]
+
+
+def test_plate_strength_uses_only_present_amounts_and_matched_comparison_universe():
+    meta = {"主题": {"class": "THEME", "size": 8}}
+    stocks = []
+    for i in range(12):
+        row = {"symbol": f"00000{i+1}", "plates": ["主题"] if i < 8 else [],
+               "p0924_amount_yuan": 100,
+               "p0925_amount_yuan": 100,
+               "p0925_pct": 1.0}
+        if i == 0:
+            row["p0925_amount_yuan"] = None
+        if i == 1:
+            row["p0924_amount_yuan"] = None
+        stocks.append(row)
+
+    result = build_plate_strength_from_stocks(stocks, meta)
+
+    assert result["missing"] is False
+    assert result["up"] == [] and result["down"] == []
+    # Current share uses all rows with a current amount; delta uses only the
+    # six themed and four unthemed rows with amounts at both cutoffs.
+    row = result["rows"][0]
+    assert row["share_bp"] == 10000 * 700 / 1100
+    assert row["previous_share_bp"] == 6000
+    assert row["comparable_share_bp"] == 6000
+    assert row["comparison_coverage"] == 0.75
+
+
+def test_plate_strength_market_totals_ignore_missing_current_amounts():
+    meta = {"主题": {"class": "THEME", "size": 8}}
+    stocks = [{"symbol": f"00000{i+1}", "plates": ["主题"] if i < 8 else [],
+               "p0925_amount_yuan": 100 if i < 8 else None,
+               "p0924_amount_yuan": 100 if i < 8 else None,
+               "p0925_pct": 0.0} for i in range(8)]
+
+    result = build_plate_strength_from_stocks(stocks, meta)
+
+    assert result["rows"][0]["share_bp"] == 10000
+    assert result["rows"][0]["member_coverage"] == 1.0

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import re
 from typing import Any
 
 _BUCKET = {"能做": "watch", "要等": "wait", "别碰": "exclude", "watch": "watch", "wait": "wait", "exclude": "exclude"}
@@ -20,20 +21,39 @@ def _number(source: Mapping[str, Any], *keys: str) -> float | None:
 
 
 def _candidate_language(source: Mapping[str, Any], bucket: str, status: str,
-                        position: Any, relative: float | None) -> tuple[str, str]:
+                        position: Any, relative: float | None, stage: str) -> tuple[str, str]:
     reason = str(source.get("reason") or source.get("reasons") or "").strip()
     if isinstance(source.get("reasons"), Sequence) and not isinstance(source.get("reasons"), str):
         reason = "；".join(str(x) for x in source["reasons"] if x)
     condition = str(source.get("condition") or "").strip()
     risk = str(source.get("risk") or "").strip()
     position_value = _number(source, "position_asof", "position20_prior", "position")
-    own_move = _number(source, "p0945_pct", "intraday_pct")
+    own_move = (_number(source, "auction_pct", "p0925_pct") if stage == "auction" else
+                _number(source, "p0945_pct", "intraday_pct"))
+    auction_move = _number(source, "auction_pct", "p0925_pct")
     plate_move = _number(source, "plate0945", "plate_pct")
+    if condition in {"等待信号确认", "风险未明", "等待信号", "先确认后观察"}:
+        condition = ""
     if not condition:
         if status in {"INDICATIVE", "PRICE_PROXY"}:
-            condition = "先确认竞价参照已到终价，再核对位置和板块差距"
+            reference_move = auction_move if auction_move is not None else own_move
+            if reference_move is not None and stage == "auction":
+                floor = 5.0 if reference_move >= 5.0 else 0.0
+                condition = (f"竞价指示{reference_move:+.1f}%，终价确认后看0932仍≥{floor:.0f}%且不弱于板块"
+                             if floor else f"竞价指示{reference_move:+.1f}%，终价确认后看0932保持红盘且不弱于板块")
+            elif reference_move is not None and stage == "open":
+                condition = f"竞价指示{reference_move:+.1f}%，0945{own_move:+.1f}%，看后续保持红盘且不弱于板块"
+            elif reference_move is not None:
+                condition = f"参考涨幅{reference_move:+.1f}%，终价确认后再复核"
         elif bucket == "exclude" and position_value is not None and position_value >= 0.67:
             condition = "下一交易日重算20日位置；仍处高位则不纳入观察池"
+        elif stage == "auction" and auction_move is not None:
+            floor = 5.0 if auction_move >= 5.0 else 0.0
+            condition = (f"竞价{auction_move:+.1f}%，看0932仍≥{floor:.0f}%且相对板块不转弱"
+                         if floor else f"竞价{auction_move:+.1f}%，看0932保持红盘且不弱于板块")
+        elif stage == "open" and own_move is not None:
+            condition = (f"竞价{auction_move:+.1f}%后0945{own_move:+.1f}%，看后续保持红盘且不弱于板块"
+                         if auction_move is not None else f"0945{own_move:+.1f}%，看后续保持红盘且不弱于板块")
         elif relative is not None and relative < -0.5:
             condition = f"个股落后所属板块{abs(relative):.1f}个百分点；重回开盘价并缩小差距后复核"
         elif relative is not None and relative > 0.5:
@@ -41,7 +61,7 @@ def _candidate_language(source: Mapping[str, Any], bucket: str, status: str,
         elif own_move is not None and own_move < -1:
             condition = f"仍低于昨收{abs(own_move):.1f}%；先站回开盘价再复核"
         else:
-            condition = "下一截点复核个股价格与所属板块是否同向"
+            condition = ""
     if not reason:
         if status in {"INDICATIVE", "PRICE_PROXY"}:
             reason = "竞价价格仍是指示价，不能当作最终开盘价"
@@ -52,18 +72,25 @@ def _candidate_language(source: Mapping[str, Any], bucket: str, status: str,
         elif relative is not None and relative > 0.5:
             reason = f"早盘跑赢所属板块{relative:.1f}个百分点"
         elif own_move is not None:
-            reason = f"早盘个股涨跌{own_move:+.1f}%，板块约{plate_move:+.1f}%" if plate_move is not None else f"早盘个股涨跌{own_move:+.1f}%"
+            prefix = "0945" if stage == "open" else "竞价"
+            reason = f"{prefix}个股涨跌{own_move:+.1f}%，板块约{plate_move:+.1f}%" if plate_move is not None else f"{prefix}个股涨跌{own_move:+.1f}%"
         else:
             reason = "当前候选事实不足，保留观察"
     if not risk:
         if status in {"INDICATIVE", "PRICE_PROXY"}:
-            risk = "竞价价未到终价"
+            reference_move = auction_move if auction_move is not None else own_move
+            risk = f"竞价参考{reference_move:+.1f}%尚非终价" if reference_move is not None else ""
         elif position_value is not None and position_value >= 0.8:
             risk = "高位回撤"
         elif relative is not None and relative < -0.5:
             risk = "板块相对偏弱"
         else:
-            risk = "延续尚未确认"
+            risk = f"需复核自身涨幅{own_move:+.1f}%" if own_move is not None else ""
+    elif not re.search(r"\d+(?:\.\d+)?", risk):
+        risk_move = own_move if own_move is not None else relative
+        if risk_move is not None:
+            unit = "%" if own_move is not None else "个百分点"
+            risk = f"{risk}（个股{risk_move:+.1f}{unit}）"
     return condition, risk
 
 
@@ -78,10 +105,18 @@ def filter_candidates(candidates: Sequence[Mapping[str, Any]], features: Mapping
         symbol = str(source.get("symbol", source.get("a_symbol", "")))
         name = str(source.get("name", source.get("a_name", symbol or "未命名")))
         # Explicitly ignore all later-stage result fields in early-stage eligibility and ordering.
-        status = str(source.get("price_status", source.get("auction_price_status", "UNKNOWN")))
+        has_price_status = "price_status" in source or "auction_price_status" in source
+        status = str(source.get("price_status", source.get("auction_price_status", "UNSPECIFIED")))
         position = source.get("position_asof", source.get("position20_prior"))
         if source.get("auction_price_status"):
             status = str(source["auction_price_status"])
+        required_price_keys = ("p0945_pct", "intraday_pct") if stage == "open" else ("auction_pct", "p0925_pct")
+        price_field_present = any(key in source for key in required_price_keys)
+        required_price = _number(source, *required_price_keys)
+        if (symbol.strip().lower() in {"", "none", "null", "unknown"}
+                or has_price_status and status.upper() in {"UNKNOWN", "MISSING", "UNAVAILABLE"}
+                or price_field_present and required_price is None):
+            continue
         # Keep why the candidate was selected separate from why it has not
         # cleared the current observation filter. Ranking text is never a
         # rejection reason.
@@ -119,10 +154,14 @@ def filter_candidates(candidates: Sequence[Mapping[str, Any]], features: Mapping
                 filter_reasons.append("所属板块不满足观察范围")
             elif status in {"UNKNOWN", "MISSING", "UNAVAILABLE"}:
                 filter_reasons.append("价格或成交数据缺失")
+            elif status == "UNSPECIFIED":
+                filter_reasons.append("价格或成交数据缺失")
             else:
                 filter_reasons.append("当前截点条件尚未满足")
         relative = _number(source, "relative0945", "relative_pct", "relative_to_plate_pp")
-        condition, risk = _candidate_language(source, bucket, status, position, relative)
+        condition, risk = _candidate_language(source, bucket, status, position, relative, stage)
+        if not condition or not risk:
+            continue
         if not reasons:
             reasons = ["板内竞价金额与相对表现值得继续观察"]
         if position is None and "position" in source:

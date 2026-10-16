@@ -5,6 +5,11 @@ import json
 import math
 import statistics
 import csv
+import functools
+import hashlib
+import os
+import sys
+import time
 from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
@@ -33,8 +38,44 @@ def market_price_volume_status(amount_multiple: float | None, weighted_pct: floa
     return "量价无明显一致方向"
 
 
-def load_daily_history_csv(path: str | Path) -> list[dict[str, Any]]:
-    """Load the supplied daily-kline file without filling absent values."""
+def load_daily_history_csv(path: str | Path, trade_date: str | None = None) -> list[dict[str, Any]]:
+    """Load an immutable compact slice when available, otherwise parse CSV once."""
+    source = Path(path)
+    if trade_date:
+        root = Path(os.environ.get("CORE_SLICE_ROOT", str(Path.home() / "core-data" / "slices"))).expanduser()
+        started = time.monotonic()
+        try:
+            st = source.stat()
+            rows = _load_cached_slice(str(root), trade_date, str(source), st.st_mtime_ns, st.st_size)
+            if rows is not None:
+                return rows
+        except OSError:
+            pass
+        elapsed = time.monotonic() - started
+        print(f"SLICE_MISSING_FALLBACK daily_history trade_date={trade_date} elapsed={elapsed:.3f}s",
+              file=sys.stderr)
+        return _load_daily_history_csv_cached(str(source), source.stat().st_mtime_ns,
+                                               source.stat().st_size)
+    return _load_daily_history_csv_cached(str(source), source.stat().st_mtime_ns,
+                                           source.stat().st_size)
+
+
+@functools.lru_cache(maxsize=8)
+def _load_cached_slice(root: str, trade_date: str, source: str,
+                       source_mtime_ns: int, source_size: int):
+    from .slice_cache import load_daily_history_slice, sha256_file
+    rows, manifest = load_daily_history_slice(root, trade_date)
+    if rows is None or manifest is None:
+        return None
+    source_path = Path(source)
+    if source_path.stat().st_size != source_size or sha256_file(source_path) != manifest.get("source_sha256"):
+        return None
+    return rows
+
+
+@functools.lru_cache(maxsize=4)
+def _load_daily_history_csv_cached(path: str, mtime_ns: int, size: int) -> list[dict[str, Any]]:
+    """The no-slice fallback; keying on file identity avoids repeat CSV parses."""
     rows = []
     with Path(path).open(encoding="utf-8-sig", newline="") as handle:
         for row in csv.DictReader(handle):
@@ -108,8 +149,27 @@ def _limit_pct(symbol: str) -> float:
     return 10.0
 
 
+_DAILY_HISTORY_CONTEXT_CACHE: dict[tuple[int, str, tuple[tuple[str, Any], ...]],
+                                   tuple[list[Mapping[str, Any]], dict[str, Any]]] = {}
+
+
 def daily_history_context(rows: list[Mapping[str, Any]], trade_date: str,
                           states: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    state_key = tuple(sorted((str(symbol), row.get("pct_change"))
+                              for symbol, row in states.items()))
+    key = (id(rows), trade_date, state_key)
+    cached = _DAILY_HISTORY_CONTEXT_CACHE.get(key)
+    if cached is not None and cached[0] is rows:
+        return cached[1]
+    result = _compute_daily_history_context(rows, trade_date, states)
+    if len(_DAILY_HISTORY_CONTEXT_CACHE) >= 4:
+        _DAILY_HISTORY_CONTEXT_CACHE.pop(next(iter(_DAILY_HISTORY_CONTEXT_CACHE)))
+    _DAILY_HISTORY_CONTEXT_CACHE[key] = (rows, result)
+    return result
+
+
+def _compute_daily_history_context(rows: list[Mapping[str, Any]], trade_date: str,
+                                   states: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     """Derive as-of streak/position context and 72-session opening benchmarks."""
     by_day: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
     for row in rows:
@@ -117,25 +177,32 @@ def daily_history_context(rows: list[Mapping[str, Any]], trade_date: str,
         if day and day < trade_date and symbol:
             by_day[day][symbol] = row
     days = sorted(by_day)
+    day_index = {day: index for index, day in enumerate(days)}
+    by_symbol: dict[str, list[tuple[str, Mapping[str, Any]]]] = defaultdict(list)
+    for day in days:
+        for symbol, row in by_day[day].items():
+            by_symbol[symbol].append((day, row))
     stock_context: dict[str, dict[str, Any]] = {}
     for symbol in states:
-        own = [(day, by_day[day][symbol]) for day in days if symbol in by_day[day]]
+        own = by_symbol.get(symbol, [])
         closes = [row.get("close") for _, row in own if row.get("close") is not None]
         position = None
         if len(closes) >= 20:
             window = closes[-20:]
             if max(window) != min(window): position = (window[-1] - min(window)) / (max(window) - min(window))
         streak, last_day = 0, days[-1] if days else None
-        reverse_days = list(reversed(days))
-        for index, day in enumerate(reverse_days):
-            row = by_day[day].get(symbol)
-            previous = by_day[reverse_days[index + 1]].get(symbol) if index + 1 < len(reverse_days) else None
-            close, preclose = row.get("close") if row else None, previous.get("close") if previous else None
-            if close is None or preclose in (None, 0): break
-            limit_price = (Decimal(str(preclose)) * (Decimal(1) + Decimal(str(_limit_pct(symbol))) / Decimal(100))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            close_price = Decimal(str(close)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            if close_price != limit_price: break
-            streak += 1
+        if own and own[-1][0] == last_day:
+            for index in range(len(own) - 1, 0, -1):
+                day, row = own[index]
+                previous_day, previous = own[index - 1]
+                if day_index[day] != day_index[previous_day] + 1:
+                    break
+                close, preclose = row.get("close"), previous.get("close")
+                if close is None or preclose in (None, 0): break
+                limit_price = (Decimal(str(preclose)) * (Decimal(1) + Decimal(str(_limit_pct(symbol))) / Decimal(100))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                close_price = Decimal(str(close)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                if close_price != limit_price: break
+                streak += 1
         stock_context[symbol] = {"streak": streak, "position_20d": position,
                                  "position_close_days": min(20, len(closes)), "last_history_date": last_day,
                                  "prev_day_amount_yuan": by_day[last_day][symbol].get("amount_yuan") if last_day and symbol in by_day[last_day] else None}
@@ -206,8 +273,59 @@ def _sql_states(td: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
 def states_at(td: Any, cutoff: datetime | str) -> dict[str, dict[str, Any]]:
     """Get per-symbol state at cutoff from an injected fake/provider or bounded TD last() query."""
     cutoff = _as_datetime(cutoff)
+    if cutoff < datetime.now() and _state_cache_enabled():
+        cached = _read_checkpoint_cache(cutoff)
+        if cached is not None:
+            return cached
     provider = getattr(td, "states_at", None)
-    return provider(cutoff) if callable(provider) else _sql_states(td, cutoff)
+    states = provider(cutoff) if callable(provider) else _sql_states(td, cutoff)
+    if cutoff < datetime.now() and _state_cache_enabled():
+        try:
+            if checkpoint_ready(td, cutoff):
+                _write_checkpoint_cache(cutoff, states)
+        except Exception:
+            # Checkpoint caching is opportunistic; the authoritative TD read already succeeded.
+            pass
+    return states
+
+
+def _state_cache_enabled() -> bool:
+    return os.environ.get("CORE_STATE_CACHE", "on").lower() != "off"
+
+
+def _checkpoint_cache_path(cutoff: datetime) -> Path:
+    root = Path(os.environ.get("CORE_SLICE_ROOT", str(Path.home() / "core-data" / "slices"))).expanduser()
+    label = cutoff.strftime("%H%M%S")
+    return root / "states" / cutoff.strftime("%Y-%m-%d") / f"{label}.json"
+
+
+def _read_checkpoint_cache(cutoff: datetime) -> dict[str, dict[str, Any]] | None:
+    path = _checkpoint_cache_path(cutoff)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        states = data.get("states")
+        raw = json.dumps(states, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        if (data.get("schema") != "CheckpointStatesV1"
+                or data.get("cutoff") != cutoff.isoformat(sep=" ") or not isinstance(states, dict)
+                or data.get("symbol_count") != len(states)
+                or data.get("sha256") != hashlib.sha256(raw).hexdigest()):
+            return None
+        return states
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _write_checkpoint_cache(cutoff: datetime, states: Mapping[str, Mapping[str, Any]]) -> None:
+    normalized = {str(symbol).zfill(6): dict(row) for symbol, row in states.items()}
+    raw = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    data = {"schema": "CheckpointStatesV1", "cutoff": cutoff.isoformat(sep=" "),
+            "symbol_count": len(normalized),
+            "sha256": hashlib.sha256(raw).hexdigest(), "states": normalized}
+    path = _checkpoint_cache_path(cutoff)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def _latest_tick(td: Any, cutoff: datetime) -> datetime | None:

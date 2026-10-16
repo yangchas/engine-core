@@ -114,3 +114,30 @@ def test_missing_and_stale_daily_snapshots_degrade_without_using_future_data(tmp
         static_themes_by_symbol={"000004": [{"name": "登记表题材", "class": "THEME", "size": 12}]})
     assert stale["status"] == "STALE"
     assert stale["basis"] == "登记表回退"
+
+
+def test_snapshot_after_report_cutoff_is_not_loaded(tmp_path):
+    prior = tmp_path / "2026-10-16-092000"
+    later = tmp_path / "2026-10-16-095000"
+    for folder, ended, symbol, hot_name in (
+        (prior, "2026-10-16T01:20:00+00:00", "000001", "盘前热板"),
+        (later, "2026-10-16T01:50:00+00:00", "000002", "盘后热板"),
+    ):
+        (folder / "pools").mkdir(parents=True)
+        (folder / "reasons").mkdir()
+        (folder / "hot_plates").mkdir()
+        (folder / "manifest.json").write_text(json.dumps({
+            "ended_at_utc": ended, "pool_complete_by_date": {"2026-10-15": True}}), encoding="utf-8")
+        for level in range(1, 6):
+            (folder / "pools" / f"2026-10-15_ban{level}.json").write_text(json.dumps({
+                "info": [[{"symbol": symbol, "plate": "昨日题材", "tier_label": "首板"}]]}), encoding="utf-8")
+        (folder / "hot_plates" / "2026-10-16.json").write_text(json.dumps({
+            "list": [["801001", hot_name]]}), encoding="utf-8")
+
+    result = load_kaipan_theme_snapshot(
+        tmp_path, report_date="2026-10-16", previous_trade_date="2026-10-15",
+        observed_at="2026-10-16T09:45:00+08:00", plate_names={"801001": "主题"})
+    assert result["snapshot_dir"] == str(prior)
+    assert "000001" in result["assignments"]
+    assert "000002" not in result["assignments"]
+    assert result["hot_plate_names"] == ["盘前热板"]

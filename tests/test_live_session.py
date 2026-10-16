@@ -2,7 +2,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from engine_core.live_session import build_live_slice, checkpoint_ready, publish_isolated, states_at
+from engine_core.live_session import (build_live_slice, checkpoint_ready, publish_isolated,
+                                      states_at, _checkpoint_cache_path, _write_checkpoint_cache)
 
 
 def test_isolated_publish_checks_prefix_and_ttl():
@@ -34,11 +35,72 @@ def test_slice_marks_stale_and_checkpoint_requires_data_through_cutoff():
     assert checkpoint_ready(td, datetime(2026, 10, 15, 9, 32)) is True
 
 
-def test_states_at_uses_injected_td():
+def test_states_at_uses_injected_td(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORE_SLICE_ROOT", str(tmp_path))
     class TD:
         def states_at(self, cutoff): return {"x": cutoff}
     cutoff = datetime(2026, 10, 15, 9, 25)
     assert states_at(TD(), cutoff) == {"x": cutoff}
+
+
+def test_states_at_reuses_past_ready_checkpoint_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORE_SLICE_ROOT", str(tmp_path))
+    monkeypatch.setenv("CORE_STATE_CACHE", "on")
+    cutoff = datetime(2020, 1, 2, 9, 25, 6)
+    class TD:
+        calls = 0
+        def states_at(self, requested):
+            self.calls += 1
+            return {"000001": {"symbol": "000001", "pct_change": 1.0}}
+        def latest_tick_ts(self): return cutoff
+    td = TD()
+    first = states_at(td, cutoff)
+    second = states_at(td, cutoff)
+    assert first == second
+    assert td.calls == 1
+    assert _checkpoint_cache_path(cutoff).is_file()
+
+
+def test_states_at_does_not_read_future_checkpoint_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORE_SLICE_ROOT", str(tmp_path))
+    cutoff = datetime.now().replace(microsecond=0) + timedelta(hours=1)
+    _write_checkpoint_cache(cutoff, {"000001": {"symbol": "000001", "pct_change": 99.0}})
+    class TD:
+        calls = 0
+        def states_at(self, requested):
+            self.calls += 1
+            return {"000001": {"symbol": "000001", "pct_change": 1.0}}
+    td = TD()
+    assert states_at(td, cutoff)["000001"]["pct_change"] == 1.0
+    assert td.calls == 1
+
+
+def test_daily_history_context_uses_symbol_rows_and_keeps_latest_day_semantics():
+    from engine_core.live_session import daily_history_context
+
+    rows = []
+    start = datetime(2026, 1, 1)
+    for offset in range(20):
+        rows.append({"date": (start + timedelta(days=offset)).date().isoformat(),
+                     "symbol": "600001", "close": 100.0, "open": 100.0,
+                     "amount_yuan": 10.0})
+        rows.append({"date": (start + timedelta(days=offset)).date().isoformat(),
+                     "symbol": "600002", "close": 100.0, "open": 100.0,
+                     "amount_yuan": 20.0})
+    latest = (start + timedelta(days=20)).date().isoformat()
+    rows.append({"date": latest, "symbol": "600001", "close": 110.0,
+                 "open": 110.0, "amount_yuan": 30.0})
+
+    result = daily_history_context(rows, "2026-02-01", {"600001": {}, "600002": {}})
+    assert result["stocks"]["600001"]["streak"] == 1
+    assert result["stocks"]["600001"]["position_20d"] == 1.0
+    assert result["stocks"]["600001"]["prev_day_amount_yuan"] == 30.0
+    assert result["stocks"]["600002"]["streak"] == 0
+    assert result["stocks"]["600002"]["prev_day_amount_yuan"] is None
+    assert daily_history_context(rows, "2026-02-01", {"600001": {}, "600002": {}}) is result
+    changed = daily_history_context(rows, "2026-02-01", {"600001": {"pct_change": 1.0}, "600002": {}})
+    assert changed is not result
+    assert changed["history"]["current_median_open_pct"] == 1.0
 
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
+from math import isfinite
 from math import ceil
 from typing import Any
 
@@ -169,21 +170,28 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
     if not first:
         first_summary = "昨首板0只"
     else:
-        pcts = [_number(row.get("0925" if stage == "auction" else "0945",
-                                row.get("auction_pct" if stage == "auction" else "p0945_pct"))) for row in first]
-        pcts = [pct for pct in pcts if pct is not None]
-        up = sum(pct > 0 for pct in pcts)
-        down = sum(pct < 0 for pct in pcts)
-        locked = sum(_price_label(pct, str(row.get("symbol", "")).zfill(6)) == "封停价代理"
-                     for row in first
-                     for pct in [_number(row.get("0925" if stage == "auction" else "0945",
-                                                 row.get("auction_pct" if stage == "auction" else "p0945_pct")))]
-                     if pct is not None)
-        classified = len(pcts)
-        missing = len(first) - classified
-        first_summary = f"昨首板{len(first)}只：高开{up}/低开{down}/封停价代理{locked}"
+        def counts(field: str, fallback: str) -> tuple[int, int, int, int, int]:
+            values = [_number(row.get(field, row.get(fallback))) for row in first]
+            values = [value for value in values if value is not None]
+            up = sum(value > 0 for value in values)
+            down = sum(value < 0 for value in values)
+            flat = sum(value == 0 for value in values)
+            locked = sum(_price_label(value, str(row.get("symbol", "")).zfill(6)) == "封停价代理"
+                         for row in first for value in [_number(row.get(field, row.get(fallback)))] if value is not None)
+            return up, down, flat, locked, len(first) - len(values)
+        auction_counts = counts("0925", "auction_pct")
+        current_counts = counts("0945", "p0945_pct")
+        shown_counts = auction_counts if stage == "auction" else current_counts
+        up, down, flat, locked, missing = shown_counts
+        first_summary = (f"昨首板竞价高{auction_counts[0]}/低{auction_counts[1]}/平{auction_counts[2]}"
+                         if stage == "open" else
+                         f"昨首板竞价高{up}/低{down}/平{flat}")
+        if stage == "open":
+            first_summary += f"→0945高{up}/低{down}/平{flat}"
+        if locked:
+            first_summary += f" 封停价代理{locked}"
         if missing:
-            first_summary += f"/缺{missing}只"
+            first_summary += f" 缺{missing}只"
         pct_key = "0925" if stage == "auction" else "0945"
         fallback_key = "auction_pct" if stage == "auction" else "p0945_pct"
         strongest = sorted((row for row in first if _number(row.get(pct_key, row.get(fallback_key))) is not None),
@@ -194,7 +202,7 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
                 pct = _number(row.get(pct_key, row.get(fallback_key)))
                 topic = row.get("theme") or row.get("theme_name") or row.get("main_plate") or "主题缺失"
                 details.append(f"{row.get('name') or row.get('symbol')} {pct:+.1f}% {topic}")
-            first_summary += "；昨首板中今日竞价最强：" + "、".join(details)
+            first_summary += ("；昨首板竞价最强：" if stage == "auction" else "；昨首板0945最强：") + "、".join(details)
     basis = theme_basis or ("登记表回退" if fallback_used else "昨日涨停池题材/历史原因")
     return {"clusters": clusters[:8], "other_cluster_count": max(0, len(clusters) - 8),
             "cluster_count": len(clusters), "empty_message": empty_message,
@@ -250,46 +258,60 @@ def build_plate_strength_from_stocks(stocks: Sequence[Mapping[str, Any]],
     current_key = "p0945_amount_yuan" if stage == "open" else "p0925_amount_yuan"
     previous_key = "p0925_amount_yuan" if stage == "open" else "p0924_amount_yuan"
     pct_key = "p0945_pct" if stage == "open" else "p0925_pct"
-    market_now = sum(max(0.0, _number(row.get(current_key)) or 0.0) for row in stocks
-                     if isinstance(row, Mapping))
-    market_before = sum(max(0.0, _number(row.get(previous_key)) or 0.0) for row in stocks
-                        if isinstance(row, Mapping))
+    def amount(row: Mapping[str, Any], key: str) -> float | None:
+        value = _number(row.get(key))
+        return max(0.0, value) if value is not None and isfinite(value) else None
+
+    valid_stocks = [row for row in stocks if isinstance(row, Mapping)]
+    market_now = sum(value for row in valid_stocks
+                     if (value := amount(row, current_key)) is not None)
+    comparable_market = [row for row in valid_stocks
+                         if amount(row, current_key) is not None and amount(row, previous_key) is not None]
+    market_comparable_now = sum(amount(row, current_key) or 0.0 for row in comparable_market)
+    market_before = sum(amount(row, previous_key) or 0.0 for row in comparable_market)
     rows = []
     for name, members in grouped.items():
         if not 8 <= len(members) <= 150:
             continue
-        with_now = [row for row in members if _number(row.get(current_key)) is not None]
-        if len(with_now) * 2 < len(members):  # missing amounts are not zeros: need >=50% coverage
+        with_now = [row for row in members if amount(row, current_key) is not None]
+        current_coverage = len(with_now) / len(members)
+        if current_coverage < 0.5:  # missing amounts are not zeros: need >=50% coverage
             continue
-        now = sum(max(0.0, _number(row.get(current_key)) or 0.0) for row in with_now)
-        before = sum(max(0.0, _number(row.get(previous_key)) or 0.0) for row in with_now
-                     if _number(row.get(previous_key)) is not None)
+        now = sum(amount(row, current_key) or 0.0 for row in with_now)
+        comparable = [row for row in members
+                      if amount(row, current_key) is not None and amount(row, previous_key) is not None]
+        comparison_coverage = len(comparable) / len(members)
+        comparable_now = sum(amount(row, current_key) or 0.0 for row in comparable)
+        before = sum(amount(row, previous_key) or 0.0 for row in comparable)
         if now <= 0 or market_now <= 0:
             continue
         now_bp = now * 10000 / market_now
+        comparable_now_bp = comparable_now * 10000 / market_comparable_now if market_comparable_now > 0 else None
         old_bp = before * 10000 / market_before if market_before > 0 else None
-        delta = now_bp - old_bp if old_bp is not None else None
+        delta = (comparable_now_bp - old_bp if old_bp is not None and comparison_coverage >= 0.5 else None)
         pct_rows = [(row, _number(row.get(pct_key))) for row in members]
         pct_values = [pct for _, pct in pct_rows if pct is not None]
-        leader = max(members, key=lambda row: _number(row.get(current_key)) or 0)
+        leader = max(with_now, key=lambda row: amount(row, current_key) or 0)
         rows.append({"name": name, "share_bp": now_bp, "previous_share_bp": old_bp,
+                     "comparable_share_bp": comparable_now_bp,
                      "delta_bp": delta,
                      "equal_weight_pct": sum(pct_values) / len(pct_values) if pct_values else None,
                      "top_stock_name": leader.get("name") or leader.get("symbol"),
                      "top_stock_pct": _number(leader.get(pct_key)),
-                     "member_count": len(members), "amount_yuan": now})
+                     "member_count": len(members), "member_coverage": current_coverage,
+                     "comparison_coverage": comparison_coverage, "amount_yuan": now})
     comparable = [row for row in rows if row["delta_bp"] is not None]
     if not comparable:
         missing_0924 = stage == "auction" and not any(
             _number(row.get("p0924_amount_yuan")) is not None for row in stocks if isinstance(row, Mapping))
-        return {"up": [], "down": [], "threshold_bp": None, "missing": True,
+        return {"up": [], "down": [], "rows": rows, "threshold_bp": None, "missing": True,
                 "eligible_count": len(rows), "message": "缺0924" if missing_0924 else "合格板块不足"}
     magnitudes = sorted(abs(row["delta_bp"]) for row in comparable)
     threshold = max(10.0, magnitudes[min(len(magnitudes) - 1, ceil(0.8 * len(magnitudes)) - 1)])
     changed = [row for row in comparable if abs(row["delta_bp"]) >= threshold and row["delta_bp"] != 0]
     up = sorted((row for row in changed if row["delta_bp"] > 0), key=lambda row: (-row["delta_bp"], row["name"]))[:5]
     down = sorted((row for row in changed if row["delta_bp"] < 0), key=lambda row: (row["delta_bp"], row["name"]))[:5]
-    return {"up": up, "down": down, "threshold_bp": threshold, "missing": False,
+    return {"up": up, "down": down, "rows": rows, "threshold_bp": threshold, "missing": False,
             "eligible_count": len(rows), "message": "" if up or down else "份额变化未达显著阈值"}
 
 
@@ -298,7 +320,9 @@ def build_front_page_data(report: Mapping[str, Any], *, stage: str,
                           stocks: Sequence[Mapping[str, Any]] = (),
                           theme_assignments: Mapping[str, Mapping[str, Any]] | None = None,
                           theme_basis: str | None = None,
-                          hot_plate_names: Iterable[str] = ()) -> dict[str, Any]:
+                          hot_plate_names: Iterable[str] = (),
+                          relation_asof: str | None = None,
+                          relation_lag_trading_days: int | None = None) -> dict[str, Any]:
     chapters = report.get("chapters") if isinstance(report.get("chapters"), Mapping) else {}
     highboards = chapters.get("yesterday_highboards", []) if isinstance(chapters.get("yesterday_highboards"), list) else []
     a_to_b = report.get("a_to_b", []) if isinstance(report.get("a_to_b"), list) else []
@@ -401,4 +425,6 @@ def build_front_page_data(report: Mapping[str, Any], *, stage: str,
                                              hot_plate_names=hot_plate_names or report.get("hot_plate_names", ())),
             "plate_strength": build_plate_strength_from_stocks(stocks, metadata, stage=stage),
             "eligible_plate_count": len(eligible),
-            "basis": "STATIC_ASOF_UNKNOWN" if report.get("manifest", {}).get("inputs", {}).get("relation_dir") else "RELATION_ASOF_UNKNOWN"}
+            "basis": f"PIT {relation_asof} (滞后{relation_lag_trading_days}个交易日)"
+            if relation_asof and relation_asof != "UNKNOWN" and relation_lag_trading_days is not None else
+            f"PIT {relation_asof}" if relation_asof and relation_asof != "UNKNOWN" else "时点未知"}

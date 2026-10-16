@@ -163,6 +163,8 @@ def test_funnel_reasons_are_stock_specific_and_empty_watch_has_explanation():
     reasons = [row["condition"]["text"] for row in funnel["shown"]["wait"]]
     assert len(set(reasons)) == 2
     assert "终价" in " ".join(reasons)
+    assert "-2.8%" in reasons[1]
+    assert "2.8" in funnel["shown"]["wait"][1]["risk"]
     assert funnel["reason_counts"]
     story = {"stage": "close", "funnel": {"shown": funnel["shown"], "counts": funnel["counts"],
               "reason_counts": funnel["reason_counts"]}}
@@ -270,13 +272,30 @@ def test_funnel_uses_filter_reasons_not_candidate_strength_descriptions():
         cutoff="09:25", observed_at=None, provenance={})
     funnel = filter_candidates([{"symbol": "000001", "name": "甲", "bucket": "wait",
         "selection_reason": "板块竞价额第2；竞价较板块+0.9pp", "price_status": "INDICATIVE",
-        "auction_price_status": "INDICATIVE", "match_amount_yuan": 20_000_000}], features,
+        "auction_price_status": "INDICATIVE", "auction_pct": 1.2,
+        "match_amount_yuan": 20_000_000}], features,
         asof="09:25")
     row = funnel["shown"]["wait"][0]
     assert "板块竞价额第2" in " ".join(reason["text"] for reason in row["reasons"])
     assert "板块竞价额第2" not in " ".join(row["filter_reasons"])
     assert "终价" in row["condition"]["text"]
     assert funnel["reason_counts"] == {"竞价价仍为指示价，终价未确认": 1}
+
+
+def test_funnel_omits_unknown_price_or_missing_symbol_and_uses_specific_conditions():
+    features = build_story_features({"trade_date": "2026-10-16"}, stage="open",
+        cutoff="09:45", observed_at=None, provenance={})
+    result = filter_candidates([
+        {"symbol": None, "name": "庄园牧场", "bucket": "wait", "price_status": "UNKNOWN",
+         "relative0945": 1.5},
+        {"symbol": "000001", "name": "甲", "bucket": "wait", "price_status": "FINAL",
+         "auction_pct": 8.3, "p0945_pct": 6.2, "condition": "", "risk": ""}],
+        features, asof="09:46:00")
+    shown = result["shown"]["wait"]
+    assert [row["symbol"] for row in shown] == ["000001"]
+    assert "0932" not in shown[0]["condition"]["text"]
+    assert "0945" in shown[0]["condition"]["text"]
+    assert "8.3%" in shown[0]["condition"]["text"]
 
 
 def test_live_story_degrades_for_absent_and_partial_auction_inputs():
@@ -424,11 +443,11 @@ def test_front_page_uses_em_dash_for_missing_and_shows_breadth_rank_inline():
             "funnel": {"wait": [{"name": "甲", "condition": "观察0932价格是否保持并相对板块转强，确认后继续观察",
                                 "risk": "高标波动与竞价承接不足，注意回落"}]}}}
     _, text = _front_page_view(report, "auction")
-    assert "—Δ—" in text
+    assert "Δ" not in text
     assert "历史分位见附表" not in text
-    assert "昨日收盘中位-3.0%/上涨7.6%→今日竞价+1.2%/90.4%" in text and "近64日由高到低第1/64" in text
-    assert "?" not in text and "…" not in text
-    assert "要等 甲｜触发:开盘看承接｜险:高标波动" in text
+    assert all(len(line) <= 40 for line in text.splitlines())
+    assert "?" not in text
+    assert "要等(1)" in text and "甲 观察0932价格" in text
 
 
 def test_temperature_plain_text_does_not_repeat_tile_labels():

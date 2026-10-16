@@ -1161,12 +1161,13 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     else:
         amount_short = "开盘缺失" if amount is None else f"开盘{float(amount) / 1e8:.0f}亿"
         headline = f"{amount_short}｜{amount_comparison}｜中{_num(median)}｜涨{_num(up_share)}｜昨板{_num(carry)}"
-    lines = [headline, "【昨高标路径·按板块聚类】" if stage == "open" else "【昨日连板→今日竞价·按板块聚类】"]
+    cutoff_label = "0945" if stage == "open" else "0925"
+    lines = [f"{cutoff_label}｜{headline}", "【昨高标·题材聚类】"]
     ladder = data.get("ladder") if isinstance(data.get("ladder"), Mapping) else {}
     clusters = ladder.get("clusters", []) if isinstance(ladder.get("clusters"), list) else []
     if not clusters:
         lines.append(str(ladder.get("empty_message") or "无昨高标簇：数据缺失"))
-    visible_clusters = clusters[:4]
+    visible_clusters = clusters[:2]
     for cluster in visible_clusters:
         share = cluster.get("share_bp")
         delta = cluster.get("delta_share_bp")
@@ -1207,41 +1208,34 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
             row = paths[0] if paths else {}
             lead_text = (f"{row.get('name')}{int(row.get('streak') or 0)}板"
                          f"{_num(row.get('0925'))}{row.get('status') or '状态缺失'}" if row else "反馈缺失")
-        delta_short = "Δ—" if delta is None else f"Δ{float(delta):+.0f}"
-        share_basis = "簇内合计" if cluster.get("share_basis") == "簇内合计" else ""
-        share_short = "—" if share is None else f"{float(share):.0f}bp"
-        if stage == "open" and cluster.get("paths"):
-            path = cluster["paths"][0]
-            path_value = lambda key: "缺" if path.get(key) is None else _num(path.get(key))
-            lead_text = (f"{path.get('name')}昨{int(path.get('streak') or 0)}板 "
-                         f"{path_value('0925')}→{path_value('0932')}→"
-                         f"{path_value('0938')}→{path_value('0945')} "
-                         f"{path.get('path_status') or '缺'}")
         hot_note = "·今日热榜" if cluster.get("hot_today") else ""
-        lines.append(f"{cluster.get('name')}{hot_note} {share_basis}{share_short}{delta_short} 等权{eq} {judgement}")
-        lines.append(lead_text)
+        delta_text = "" if delta is None else f" Δ{float(delta):+.0f}bp"
+        leader = cluster.get("leader", {}) if isinstance(cluster.get("leader"), Mapping) else {}
+        leader_name = _short(leader.get("name") or (cluster.get("paths") or [{}])[0].get("name") or "高标", 5)
+        lines.append(f"{_short(cluster.get('name'), 8)}{hot_note}{delta_text} 等权{eq} {leader_name}{judgement}")
     folded = max(0, len(clusters) - len(visible_clusters)) + int(ladder.get("other_cluster_count") or 0)
     if folded:
         lines.append(f"其余{folded}簇见附表")
     lines.append(str(ladder.get("first_board_summary") or "昨首板反馈缺失"))
-    lines.append("【板块强弱·较竞价变化】" if stage == "open" else "【板块强弱·竞价】")
+    lines.append(f"【板块强弱@{cutoff_label}｜市场额同截点】")
     strength = data.get("plate_strength") if isinstance(data.get("plate_strength"), Mapping) else {}
     for label, key in (("变强", "up"), ("变弱", "down")):
         rows = strength.get(key, []) if isinstance(strength.get(key), list) else []
         if not rows:
             lines.append(f"{label}：{strength.get('message') or '无显著变化'}")
-        for row in rows:
+        for row in rows[:2]:
             delta = float(row.get("delta_bp", 0))
             pct = row.get("equal_weight_pct")
             leader = row.get("top_stock_name") or "龙头未知"
             leader_pct = _num(row.get("top_stock_pct")) if row.get("top_stock_pct") is not None else "涨幅缺失"
             share_value = row.get("share_bp")
             share_display = "—" if share_value is None else f"{float(share_value):.0f}bp"
-            lines.append(f"{label} {row.get('name')} {share_display}"
-                         f"Δ{delta:+.0f}bp 等权{_num(pct)} 龙头{leader}{leader_pct}")
+            lines.append(f"{label} {_short(row.get('name'), 8)} Δ{delta:+.0f}bp 等权{_num(pct)} {_short(leader, 5)}{leader_pct}")
+        if len(rows) > 2:
+            lines.append(f"{label}另{len(rows)-2}个见附表")
     story = report.get("story") if isinstance(report.get("story"), Mapping) else {}
     events = story.get("top_events", []) if isinstance(story.get("top_events"), list) else []
-    lines.append("【今日3件不一样】")
+    lines.append(f"【今日{min(3, len(events))}件不一样】")
     for event in events[:3]:
         summary = str(event.get("summary") or "") if isinstance(event, Mapping) else ""
         event_id = event.get("id") if isinstance(event, Mapping) else None
@@ -1252,37 +1246,42 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
                          if isinstance(amount, (int, float)) and isinstance(baseline.get("multiple"), (int, float)) and isinstance(baseline.get("percentile"), (int, float))
                          else _short(summary.rstrip("。"), 40))
         elif event_id == "auction_breadth_context" and stage == "auction":
-            lines.append(summary.rstrip("。"))
+            compact = (summary.replace("昨日收盘中位", "昨中位").replace("今日竞价", "竞价")
+                       .replace("上涨占比近", "涨占比近").replace("由高到低第", "第"))
+            lines.append(_short(compact.rstrip("。"), 40))
         elif event_id == "auction_ladder_plate_context":
             lines.append(summary.replace("+0bp", "变化未显著").rstrip("。"))
         else:
             lines.append(summary.rstrip("。") if summary else "信息缺失")
-    while sum(1 for line in lines if line) < 3 + 3:
-        lines.append("信息缺失")
     funnel = story.get("funnel") if isinstance(story.get("funnel"), Mapping) else {}
     lines.append("【能做 / 要等 / 别碰】")
     for label, key in (("能做", "watch"), ("要等", "wait"), ("别碰", "exclude")):
         rows = funnel.get(key, []) if isinstance(funnel.get(key), list) else []
-        if not rows:
-            lines.append(f"{label}：无，当前截点未筛出")
-        for row in rows[:3]:
+        counts = funnel.get("counts", {}) if isinstance(funnel.get("counts"), Mapping) else {}
+        try:
+            total_count = max(0, int(counts.get(key, len(rows))))
+        except (TypeError, ValueError):
+            total_count = len(rows)
+        visible = min(2, total_count, len(rows))
+        lines.append(f"{label}({visible})")
+        if not visible:
+            lines.append(f"{label}：无")
+        for row in rows[:visible]:
             condition = row.get("condition")
             if isinstance(condition, Mapping):
                 condition = condition.get("text")
-            risk = row.get("risk") or "风险信息缺失"
             condition_text = str(condition or "")
-            risk_text = str(risk)
-            trigger = ("开盘看承接" if "0932" in condition_text or "开盘" in condition_text else
-                       "观察封单变化" if "封" in condition_text else "等待信号确认")
-            risk_brief = ("高标波动" if "高标" in risk_text else
-                          "注意回落" if "回落" in risk_text or "波动" in risk_text else "风险未明")
-            lines.append(f"{label} {_display_name(row, 7)}｜触发:{trigger}｜险:{risk_brief}")
+            risk_text = str(row.get("risk") or "")
+            lines.append(_short(f"{_display_name(row, 5)} {condition_text}；险{risk_text}", 40))
+        overflow = max(0, total_count - visible)
+        if overflow:
+            lines.append(f"另{overflow}只")
     lines.append("归属来源：" + str(ladder.get("attribution_basis") or "登记表回退"))
-    lines.append("口径：封停为价格代理；不补缺失；成员关系点时性见附表")
-    # Keep the first screen bounded even when the source story has many items.
-    tail_at = next((i for i, line in enumerate(lines) if line.startswith("【能做")), len(lines))
-    head, tail = lines[:tail_at], lines[tail_at:]
-    lines = head[:max(0, 38 - len(tail))] + tail  # never cut the funnel / scope lines
+    basis = str(report.get("front_page", {}).get("basis") or "") if isinstance(report.get("front_page"), Mapping) else ""
+    if basis and basis not in {"时点未知", "RELATION_ASOF_UNKNOWN", "UNKNOWN"}:
+        lines.append("关系" + basis)
+    lines.append("口径：封停价代理；缺失不补零")
+    lines = [_short(line, 40) for line in lines]
     html_lines = "".join(f"<div style=\"padding:4px 6px;border-bottom:1px solid #e5eaf0\">{_esc(line)}</div>" for line in lines)
     markup = f'<section style="margin:8px 0;padding:10px;background:#fff;border:1px solid #dbe3ec;border-radius:8px">{html_lines}</section>'
     return markup, "\n".join(lines)

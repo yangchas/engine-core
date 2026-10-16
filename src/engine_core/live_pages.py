@@ -284,7 +284,7 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
     relations, plate_names, stock_names = relations or {}, plate_names or {}, stock_names or {}
     final_label = "0945" if stage == "open_0946" else "0925"
     current = raw_states.get(final_label, {})
-    history_rows = load_daily_history_csv(daily_history_csv) if daily_history_csv else None
+    history_rows = load_daily_history_csv(daily_history_csv, trade_date=trade_date) if daily_history_csv else None
     context = daily_history_context(history_rows, trade_date, raw_states.get("0925", current)) if history_rows is not None else None
     stock_context = context["stocks"] if context else {}
     history = context["history"] if context else None
@@ -857,17 +857,25 @@ def _fmt_money(value): return f"{value:,.0f} 元" if isinstance(value, (int, flo
 
 
 def _json_report_payload(payload, *, full_json=False):
-    import copy
-    result = copy.deepcopy(payload)
+    result = dict(payload)
     omitted = {}
     if not full_json:
-        for key, container in (("snapshots", result), ("behavior_rows", result.get("chapters", {}))):
-            if key not in container: continue
-            value = container.pop(key)
+        if "snapshots" in result:
+            result.pop("snapshots")
+            value = payload["snapshots"]
             raw = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            omitted[key] = {"size_bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+            omitted["snapshots"] = {"size_bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
                             "row_count": len(value) if isinstance(value, list) else None}
-    result.setdefault("manifest", {})["omitted_blocks"] = omitted
+        chapters = result.get("chapters")
+        if isinstance(chapters, dict) and "behavior_rows" in chapters:
+            chapters = dict(chapters)
+            value = chapters.pop("behavior_rows")
+            result["chapters"] = chapters
+            raw = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            omitted["behavior_rows"] = {"size_bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+                                        "row_count": len(value) if isinstance(value, list) else None}
+    result["manifest"] = dict(result.get("manifest") or {})
+    result["manifest"]["omitted_blocks"] = omitted
     return result
 
 

@@ -121,6 +121,30 @@ def test_live_section_stocks_excludes_broad_plate_from_main_plate():
     assert rows[0]["main_plate"] == "芯片"
 
 
+def test_live_section_stocks_selects_main_plate_once_per_symbol(monkeypatch):
+    import engine_core.a_to_b as a_to_b
+    from engine_core.daily_pipeline import _live_section_stocks
+
+    calls = []
+    original = a_to_b.select_main_plate
+
+    def counted(*args, **kwargs):
+        calls.append(args[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(a_to_b, "select_main_plate", counted)
+
+    class States:
+        def states_at(self, cutoff):
+            return {"600001": {"pct_change": 1.0, "match_amount_yuan": 10}}
+
+    rows = _live_section_stocks(States(), trade_date="2026-10-15", stage="auction",
+        asof="09:26:00", relations={"801001": ["600001"]},
+        plate_names={"801001": "通信"}, stock_names={}, history_path=None)
+    assert rows[0]["main_plate"] == "通信"
+    assert len(calls) == 1
+
+
 def test_live_section_stocks_does_not_request_future_checkpoints():
     from engine_core.daily_pipeline import _live_section_stocks
 
@@ -193,6 +217,9 @@ def test_three_stages_write_reports_and_explicit_missing_references(tmp_path):
         assert manifest["degraded"]
         assert any(item.startswith("MISSING_REFERENCE:") for item in manifest["degraded"])
         assert manifest["report_json_bytes"] <= 300_000
+        assert isinstance(manifest.get("timings"), dict)
+        if stage in ("auction", "open"):
+            assert {"td_fetch", "compute", "render", "prepare_output", "write_json"} <= set(manifest["timings"])
         if stage in ("auction", "open"):
             assert result["report"]["chapters"]["reference_data"]["stock_names"]["status"] == "MISSING"
             assert result["report"]["chapters"]["reference_data"]["stock_caps"]["status"] == "MISSING"
@@ -295,6 +322,25 @@ def test_stage_daily_capture_and_history_are_point_in_time(tmp_path):
     assert close["daily_capture_manifest"].parent.name == "capture-20261015"
 
 
+def test_intraday_relation_reference_after_report_date_is_excluded(tmp_path):
+    from engine_core.daily_pipeline import resolve_references
+
+    root = tmp_path / "refs"
+    older = root / "registry-pit-20261013"
+    same_day = root / "registry-pit-20261016"
+    for folder in (older, same_day):
+        folder.mkdir(parents=True)
+        (folder / "registry.json").write_text("{}", encoding="utf-8")
+        (folder / "relation.csv").write_text("stockid,plateid\n", encoding="utf-8")
+    (root / "reference_catalog.json").write_text(json.dumps({"references": {
+        "relation_dir": {"path": str(same_day), "as_of": "2026-10-16"}}}), encoding="utf-8")
+
+    auction, _ = resolve_references(root, "2026-10-16", stage="auction")
+    close, _ = resolve_references(root, "2026-10-16", stage="close")
+    assert auction["relation_dir"] == older
+    assert close["relation_dir"] == same_day
+
+
 def test_relation_asof_and_trading_day_lag_are_not_assumed_current(tmp_path):
     from engine_core.daily_pipeline import _relation_lag_trading_days, _relation_snapshot_date
 
@@ -317,7 +363,7 @@ def test_relation_loader_returns_plate_to_member_mapping(tmp_path):
     relations, names, asof = _load_relations(folder)
     assert relations == {"801001": ["000001", "000002"], "801002": ["000001"]}
     assert names == {"801001": "通信", "801002": "芯片"}
-    assert asof == "PIT 20261013"
+    assert asof == "2026-10-13"
 
 
 @pytest.mark.parametrize("stage", ["auction", "open"])
