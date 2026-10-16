@@ -86,3 +86,37 @@ def test_health_reports_artifact_redis_consistency_and_red_status(tmp_path):
 def test_trading_day_uses_supplied_calendar():
     assert is_trading_day("2026-10-16", {"2026-10-16"})
     assert not is_trading_day("2026-10-18", {"2026-10-16"})
+
+
+def test_postmarket_appends_injected_auction_total_to_core_baseline(tmp_path):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+
+    catalog = ArtifactCatalog(tmp_path)
+    catalog.commit("auction_baseline", "2026-10-15", [
+        {"date": "2026-10-14", "sum_yi": 100.0, "available_at": "2026-10-15T17:30:00+08:00"},
+    ], {"available_at": "2026-10-15T17:30:00+08:00"}, source="test")
+    result = run_daily_phase("postmarket", "2026-10-16", root=tmp_path,
+        adapters={"auction_amount_provider": lambda day: {
+            "amount_yuan": 250_000_000, "available_at": "2026-10-16T17:30:00+08:00"}},
+        trading_dates=["2026-10-14", "2026-10-15", "2026-10-16"], write=True,
+        now="2026-10-16T18:00:00+08:00", lock=False)
+    assert result["auction_baseline_append"]["status"] == "READY"
+    rows = catalog.read_rows(catalog.locate("auction_baseline", "2026-10-16"))
+    assert rows[-1] == {"date": "2026-10-16", "sum_yi": 2.5,
+                        "available_at": "2026-10-16T17:30:00+08:00",
+                        "source": "postmarket_auction_summary"}
+
+
+def test_premarket_jobs_use_previous_trading_date_for_kaipan_products(tmp_path):
+    called = []
+
+    def fetch(day):
+        called.append(day)
+        return [{"date": day, "symbol": "000001"}]
+
+    run_daily_phase("premarket", "2026-10-16", root=tmp_path,
+        adapters={name: fetch for name in ("plate_members", "limit_up_pool",
+                                           "limit_reasons", "hot_plates")},
+        trading_dates=["2026-10-15", "2026-10-16"], write=False,
+        now="2026-10-16T08:50:00+08:00", lock=False)
+    assert called == ["2026-10-15"] * 4

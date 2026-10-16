@@ -291,8 +291,9 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
         for row in clean:
             row["visibility"] = f"不可判断：{','.join(tag for tag in ('0932','0945') if tag in missing_checkpoints)}检查点缺失"
     base = derive_extremes_review(clean, trade_date=trade_date, plates=plates or ())
-    market_auction_amount = sum(r.get("auction_amount_yuan") or 0 for r in clean
-                                if r.get("auction_amount_yuan") is not None)
+    auction_amounts = [r.get("auction_amount_yuan") for r in clean]
+    market_auction_amount = (sum(auction_amounts) if auction_amounts
+                             and all(value is not None for value in auction_amounts) else None)
     for r in clean:
         amount = r.get("auction_amount_yuan")
         r["auction_amount_share"] = amount / market_auction_amount if amount is not None and market_auction_amount else None
@@ -311,8 +312,12 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
             r["visibility_half_limit"] = (f"{reached[0]}首次已观测达到0.5L" if reached else
                 "在已观测检查点未达到0.5L；点间时刻UNKNOWN")
             r["visibility"] = "在已观测检查点达到0.5L" if reached else "在已观测检查点未达到0.5L"
-    meat = sorted((r for r in clean if r.get("is_big_meat")), key=lambda r: (-(r.get("auction_amount_yuan") or 0), r["symbol"]))[:20]
-    loss = sorted((r for r in clean if r.get("is_big_loss")), key=lambda r: (-(r.get("auction_amount_yuan") or 0), r["symbol"]))[:20]
+    meat = sorted((r for r in clean if r.get("is_big_meat")), key=lambda r: (
+        r.get("auction_amount_yuan") is None,
+        -(r.get("auction_amount_yuan") if r.get("auction_amount_yuan") is not None else 0), r["symbol"]))[:20]
+    loss = sorted((r for r in clean if r.get("is_big_loss")), key=lambda r: (
+        r.get("auction_amount_yuan") is None,
+        -(r.get("auction_amount_yuan") if r.get("auction_amount_yuan") is not None else 0), r["symbol"]))[:20]
     prompt = _live_prompted(live_report)
     missed = [r for r in clean if r.get("is_big_meat") and (r.get("auction_pct") is not None and r["auction_pct"] < 3)
               and (r["symbol"] not in prompt)] if live_report else []
@@ -395,7 +400,9 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
                         key=lambda p: (-p["auction_amount_share"], p["name"]))[:5]
     for p in deferred_plate_rows:
         p["auction_amount_share"] = _rate(p["auction_amount_yuan"], total_plate_amt) if p["auction_amount_yuan"] is not None else None
-    deferred_top = sorted(deferred_plate_rows, key=lambda p: (-(p.get("auction_amount_yuan") or 0), p["name"]))[:20]
+    deferred_top = sorted(deferred_plate_rows, key=lambda p: (
+        p.get("auction_amount_yuan") is None,
+        -(p["auction_amount_yuan"] if p.get("auction_amount_yuan") is not None else 0), p["name"]))[:20]
     plate_rows.sort(key=lambda p: (p["close_mean"], p["name"]))
     plate_section = {"status": "READY" if plates else "UNAVAILABLE_NO_RELATION",
                      "close_top10": list(reversed(plate_rows[-10:])), "close_bottom10": plate_rows[:10],
@@ -524,7 +531,7 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
                 "peer_top3": (f"同板块 {name}；" if first_plate_for_symbol else "") + "按竞价额选，非事后收益；" + "；".join(
                     f"{x['symbol']} {x.get('name') or ''} 共同合格板块数 {peer_common.get(x['symbol'], 0)}；20日区间位置 "
                     f"{('高于前20日区间' if x.get('p0925_range_position20_pct') > 100 else '低于前20日区间') if x.get('p0925_range_position20_pct') is not None and (x.get('p0925_range_position20_pct') > 100 or x.get('p0925_range_position20_pct') < 0) else ((format(x.get('p0925_range_position20_pct'), '.0f') + '%') if x.get('p0925_range_position20_pct') is not None else 'UNKNOWN')} "
-                    f"0945 {(format(x.get('p0945_pct'), '+.2f') + '%') if x.get('p0945_pct') is not None else '—'} 竞价额 {((x.get('auction_amount_yuan') or 0)/1e4):.0f}万"
+                    f"0945 {(format(x.get('p0945_pct'), '+.2f') + '%') if x.get('p0945_pct') is not None else '—'} 竞价额 {(format(x['auction_amount_yuan'] / 1e4, '.0f') + '万') if x.get('auction_amount_yuan') is not None else '—'}"
                     for x in peer_rows)})
     unlimited_rows = [r for r in clean if r.get("is_unlimited_price_band")]
     market_section["unlimited_price_band_count"] = len(unlimited_rows)
@@ -547,7 +554,9 @@ def derive_close_review(rows: Sequence[Mapping[str, Any]], *, trade_date: str,
             "main_plate_gaps": [{"symbol": r["symbol"], "name": r.get("name"),
                                   "reason": "无合格主题板块"}
                                  for r in clean if not r.get("main_plate")],
-            "unlimited_price_band_stocks": sorted(unlimited_rows, key=lambda r: -(r.get("auction_amount_yuan") or 0))[:10],
+            "unlimited_price_band_stocks": sorted(unlimited_rows, key=lambda r: (
+                r.get("auction_amount_yuan") is None,
+                -(r["auction_amount_yuan"] if r.get("auction_amount_yuan") is not None else 0)))[:10],
             "data_quality": {"included_stock_count": len(clean),
                              "auction_pct_coverage": sum(r.get("auction_pct") is not None for r in clean),
                              "close_pct_coverage": len(returns),
@@ -572,7 +581,7 @@ def render_close_markdown(data: Mapping[str, Any]) -> str:
     for r in board_rows:
         tr = r.get("tracking", {})
         values = [r.get("name") or "名称未知", r.get("main_plate") or "—", r.get("selection_reason") or "—",
-                  f(r.get("auction_pct")), f((r.get("auction_amount_yuan") or 0) / 1e8),
+                  f(r.get("auction_pct")), f(r.get("auction_amount_yuan") / 1e8 if r.get("auction_amount_yuan") is not None else None),
                   f(r.get("p0932_pct")), f(r.get("p0945_pct")), f(tr.get("close_pct")),
                   f(tr.get("delta_close_pp")), r.get("auction_state") or r.get("auction_price_status") or "—"]
         lines.append(" | ".join(str(x) for x in values))
@@ -585,7 +594,9 @@ def render_close_markdown(data: Mapping[str, Any]) -> str:
         lines += [f"### {title}", "", "名称 | 竞价价状态 | 竞价→0932→0945→收盘(%) | Δ/L | 竞价额 | 昨板 | 板块 | 已观测0.5L时点", "---|---|---|---:|---:|---:|---|---"]
         for r in data[key][:5]:
             vals = "→".join(f(r.get(k)) for k in ("auction_pct", "p0932_pct", "p0945_pct", "close_pct"))
-            lines.append(f"{r.get('name') or '名称未知'} | {r.get('auction_price_status') or 'UNKNOWN'} | {vals} | {f(r.get('delta_over_limit'))} | {f((r.get('auction_amount_yuan') or 0)/1e8)}亿 | {r.get('lb_days') if r.get('lb_days') is not None else '—'} | {', '.join((r.get('plates') or [])[:2]) or r.get('main_plate') or '—'} | {r['visibility_half_limit']}")
+            amount = (f(r['auction_amount_yuan'] / 1e8) + '亿'
+                      if r.get('auction_amount_yuan') is not None else '—')
+            lines.append(f"{r.get('name') or '名称未知'} | {r.get('auction_price_status') or 'UNKNOWN'} | {vals} | {f(r.get('delta_over_limit'))} | {amount} | {r.get('lb_days') if r.get('lb_days') is not None else '—'} | {', '.join((r.get('plates') or [])[:2]) or r.get('main_plate') or '—'} | {r['visibility_half_limit']}")
         lines.append("")
     missed = data["missed_opportunities"]
     lines += ["## 漏掉的机会", "", (f"未提示大肉 {missed['count']} 只；个股名称未知；板块计数 {missed['plate_counts']}。" if missed["status"] == "READY" else "无法判断是否已提示：未提供开盘页 JSON。"), "",
@@ -613,7 +624,8 @@ def render_close_markdown(data: Mapping[str, Any]) -> str:
     refs = data.get("reference_data", {})
     ref_note = "参考数据：" + "；".join(f"{name}{'可用' if refs.get(key, {}).get('status') == 'READY' else '缺失'}"
                                          for key, name in (("stock_names", "名称表"), ("stock_caps", "市值表"))) + "。" if refs else ""
-    lines += ["", "## 数据质量", "", f"覆盖：收盘 {data['data_quality']['close_pct_coverage']}/{data['data_quality']['included_stock_count']}，0925 {data['data_quality']['auction_pct_coverage']}，0932 {data['data_quality']['p0932_coverage']}，0945 {data['data_quality']['p0945_coverage']}；竞价价 FINAL/INDICATIVE {data['data_quality']['final_count']}/{data['data_quality']['indicative_count']}；首次达到时刻 UNKNOWN（检查点间未观测）。{cp_note}{ref_note}日线来源：{data['data_quality']['daily_source']}。缺失字段保持缺失。", ""]
+    limitations = "；限制：" + "；".join(data["data_quality"].get("limitations", [])) if data["data_quality"].get("limitations") else ""
+    lines += ["", "## 数据质量", "", f"覆盖：收盘 {data['data_quality']['close_pct_coverage']}/{data['data_quality']['included_stock_count']}，0925 {data['data_quality']['auction_pct_coverage']}，0932 {data['data_quality']['p0932_coverage']}，0945 {data['data_quality']['p0945_coverage']}；竞价价 FINAL/INDICATIVE {data['data_quality']['final_count']}/{data['data_quality']['indicative_count']}；首次达到时刻 UNKNOWN（检查点间未观测）。{cp_note}{ref_note}日线来源：{data['data_quality']['daily_source']}。缺失字段保持缺失。{limitations}", ""]
     return "\n".join(lines)
 
 
@@ -893,6 +905,10 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _rows_for_trade_date(rows: Sequence[Mapping[str, Any]], trade_date: str) -> list[Mapping[str, Any]]:
+    return [row for row in rows if str(row.get("date") or row.get("time") or "")[:10] == trade_date]
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv); out = Path(args.out_dir)
     file_fallback = os.getenv("CORE_ALLOW_FILE_FALLBACK") == "1"
@@ -1004,22 +1020,34 @@ def main(argv: list[str] | None = None) -> int:
         asof = f"{args.trade_date}T23:59:59+08:00"
         daily = reader.get("daily_history", trade_date=args.trade_date, asof=asof)
         baseline_slice = reader.get("auction_baseline", trade_date=args.trade_date, asof=asof)
+        today_rows = _rows_for_trade_date(daily.rows, args.trade_date)
+        day_amounts = [row.get("amount_yuan", row.get("amount")) for row in today_rows]
+        market_amount = (sum(float(value) for value in day_amounts)
+                         if day_amounts and all(isinstance(value, (int, float)) for value in day_amounts)
+                         else None)
         stocks = [{"symbol": row.get("symbol"), "name": row.get("name"),
                    "close": row.get("close"), "high": row.get("high"), "low": row.get("low"),
                    "pre_close": row.get("pre_close", row.get("preclose")),
                    "close_pct": row.get("pct_chg"), "amount_yuan": row.get("amount_yuan", row.get("amount")),
                    "auction_amount_yuan": row.get("auction_amount_yuan"),
-                   "daily_source": daily.meta.get("source")} for row in daily.rows]
+                   "daily_source": daily.meta.get("source")} for row in today_rows]
         data = derive_close_review(stocks, trade_date=args.trade_date,
-                                   market={"amount_yuan": sum(float(row["amount_yuan"]) for row in stocks
-                                                               if isinstance(row.get("amount_yuan"), (int, float))) or None,
+                                   market={"amount_yuan": market_amount,
                                            "daily_source": daily.meta.get("source")},
                                    checkpoint_status={tag: "MISSING" for tag in ("0932", "0935", "0940", "0945")})
         data["data_quality"]["daily_source"] = daily.meta.get("source", "MISSING")
+        if daily.meta.get("source") == "FILE_FALLBACK":
+            data["data_quality"]["limitations"] = ["日线来自显式 FILE_FALLBACK；仅当日行计入收盘事实"]
         manifest = {"contract": "CloseReviewV1", "trade_date": args.trade_date,
                     "facts_source": daily.meta.get("source"), "legacy_fallback": False,
                     "slices": {"daily_history": daily.meta, "auction_baseline": baseline_slice.meta}}
+        if daily.meta.get("source") == "FILE_FALLBACK":
+            manifest["limitations"] = ["FILE_FALLBACK daily_history; historical rows excluded from today's market totals"]
         ladder_summary = []
+    if manifest.get("quality") == "FILE_FALLBACK" or manifest.get("file_fallback") == "FILE_FALLBACK":
+        data.setdefault("data_quality", {})["daily_source"] = "FILE_FALLBACK"
+        data["data_quality"]["limitations"] = ["本报告包含 FILE_FALLBACK 输入；当日事实仅统计 trade_date 当日记录"]
+        manifest.setdefault("limitations", data["data_quality"]["limitations"])
     plate_metadata, relation_asof = _close_plate_metadata(args.relation_dir)
     attach_close_sections(data, relation_asof=relation_asof, plate_metadata=plate_metadata,
                           ladder_summary=ladder_summary if args.stock_day_facts else ())

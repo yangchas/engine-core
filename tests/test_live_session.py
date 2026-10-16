@@ -35,6 +35,23 @@ def test_slice_marks_stale_and_checkpoint_requires_data_through_cutoff():
     assert checkpoint_ready(td, datetime(2026, 10, 15, 9, 32)) is True
 
 
+def test_null_amount_is_reported_as_missing_and_not_zero():
+    states = {
+        "000001": {"symbol": "000001", "pct_change": 2.0, "match_amount_yuan": 100,
+                    "price_milli": 102000, "prev_close_milli": 100000,
+                    "rest_bid_shares": 0, "rest_ask_shares": 0},
+        "000002": {"symbol": "000002", "pct_change": -2.0, "match_amount_yuan": None,
+                    "price_milli": 98000, "prev_close_milli": 100000,
+                    "rest_bid_shares": 0, "rest_ask_shares": 0},
+    }
+    payload = build_live_slice(states, datetime(2026, 10, 15, 9, 25))
+    assert payload["amount_coverage"] == 1
+    assert payload["amount_missing"] == 1
+    assert payload["market_match_amount_yuan"] is None
+    assert payload["amount_weighted_pct_change"] is None
+    assert payload["top_stocks_by_amount"][1]["match_amount_yuan"] is None
+
+
 def test_states_at_uses_injected_td(tmp_path, monkeypatch):
     monkeypatch.setenv("CORE_SLICE_ROOT", str(tmp_path))
     class TD:

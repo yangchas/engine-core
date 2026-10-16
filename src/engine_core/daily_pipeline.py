@@ -23,6 +23,11 @@ from .daily_kline_capture import write_capture
 STAGE_NAMES = {"auction": "auction_0926", "open": "open_0946", "close": "close_review"}
 
 
+def _fact_auction_amount(fact: Mapping[str, Any]) -> Any:
+    matched = fact.get("auction_match_amount_yuan")
+    return matched if matched is not None else fact.get("p0925_cumulative_amount_yuan")
+
+
 @dataclass
 class DailySources:
     """All runtime inputs are injected; tests can supply small in-memory fakes."""
@@ -343,8 +348,9 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
         if name:
             for symbol in members:
                 symbol_plates.setdefault(str(symbol).zfill(6), []).append(name)
-    total_auction = sum(max(0, int(row.get("match_amount_yuan") or 0))
-                        for row in snapshots.get("0925", {}).values())
+    auction_amounts = [row.get("match_amount_yuan") for row in snapshots.get("0925", {}).values()]
+    total_auction = (sum(max(0, int(value)) for value in auction_amounts)
+                     if auction_amounts and all(value is not None for value in auction_amounts) else None)
     rows = []
     for symbol in sorted(str(value).zfill(6) for value in symbols):
         auction = snapshots.get("0925", {}).get(symbol, {})
@@ -369,6 +375,10 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
             "auction_price_status": auction.get("status", "UNKNOWN"),
             "auction_limit_state": auction.get("auction_limit_state"),
             "rest_bid_yuan": auction.get("rest_bid_yuan"),
+            "price": (auction.get("price_milli") / 1000
+                      if isinstance(auction.get("price_milli"), (int, float)) else None),
+            "pre_close": (auction.get("prev_close_milli") / 1000
+                          if isinstance(auction.get("prev_close_milli"), (int, float)) else None),
         }
         if total_auction and row["auction_amount_yuan"] is not None:
             row["auction_amount_bp"] = 10000 * row["auction_amount_yuan"] / total_auction
@@ -1134,7 +1144,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     "close_pct": fact.get("day_pct"),
                     "high_pct": (hi / pre - 1) * 100 if isinstance(hi, (int, float)) and isinstance(pre, (int, float)) and pre else None,
                     "low_pct": (lo / pre - 1) * 100 if isinstance(lo, (int, float)) and isinstance(pre, (int, float)) and pre else None,
-                    "auction_amount_yuan": fact.get("auction_match_amount_yuan") or fact.get("p0925_cumulative_amount_yuan"),
+                    "auction_amount_yuan": _fact_auction_amount(fact),
                     "amount_yuan": fact.get("day_amount_yuan"), "limit_pct": fact.get("limit_pct"),
                     "lb_days": fact.get("yesterday_lb_days"), "in_yest_pool": fact.get("yesterday_limit_up"),
                     "main_plate": fact.get("main_plate_name"), "plates": fact.get("plate_list_summary") or [],

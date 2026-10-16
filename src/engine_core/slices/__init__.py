@@ -186,14 +186,13 @@ class SliceProviders:
                 lineage = []
                 unknown = False
                 for day in eligible:
-                    manifest_path = self.catalog.locate(dataset, day)
+                    manifest_path = self._select_manifest(dataset, day, request.asof, exact_date=True)
                     if manifest_path is None or not manifest_path.is_file():
                         continue
                     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                     day_rows = self.catalog.read_rows(manifest_path)
                     for row in day_rows:
-                        if not row.get("available_at") and manifest.get("available_at"):
-                            row["available_at"] = manifest["available_at"]
+                        row.setdefault("available_at", manifest.get("available_at"))
                         row.setdefault("dataset_date", day)
                     kept, day_unknown = _pit_rows(_as_rows(day_rows), request.asof)
                     unknown = unknown or day_unknown
@@ -218,16 +217,9 @@ class SliceProviders:
         if request.slice_id in {"hot_plates_yesterday", "yest_limit_pool"} and not date:
             return _result(request, [], source="core_data", status="MISSING",
                            reason="PREVIOUS_TRADE_DATE_MISSING")
-        manifest_path = self.catalog.locate(dataset, date or None)
-        if manifest_path is None and request.slice_id in {
-                "stock_name_map", "plate_registry", "plate_members", "path_stats"}:
-            try:
-                dates = self.catalog.read().get("datasets", {}).get(dataset, {}).get("dates", {})
-                eligible = [day for day in dates if day <= request.trade_date]
-                if eligible:
-                    manifest_path = self.catalog.locate(dataset, max(eligible))
-            except (AttributeError, OSError, ValueError):
-                manifest_path = None
+        exact_date = request.slice_id in {"hot_plates_today", "hot_plates_yesterday", "yest_limit_pool"}
+        manifest_path = self._select_manifest(dataset, date or request.trade_date, request.asof,
+                                              exact_date=exact_date)
         discovered_by = "artifact"
         if manifest_path is None and callable(getattr(self.redis, "get", None)):
             pointer_key = f"core:cache:data:{dataset}:{date or 'latest'}"
@@ -250,6 +242,8 @@ class SliceProviders:
         except (OSError, ValueError, KeyError):
             return _result(request, [], source="core_data", status="MISSING", reason="CORRUPT_DATASET")
         rows = _as_rows(rows)
+        for row in rows:
+            row.setdefault("available_at", manifest.get("available_at"))
         original_count = len(rows)
         rows, unknown = _pit_rows(rows, request.asof)
         source = "core_redis" if discovered_by == "core_redis" else "core_data"
@@ -265,6 +259,32 @@ class SliceProviders:
                        pit_date=(manifest.get("point_in_time_date") or manifest.get("pit_date")),
                        lineage=[{"dataset": dataset,
                                 "available_at": manifest.get("available_at")}])
+
+    def _select_manifest(self, dataset: str, max_trade_date: str,
+                         asof: str, *, exact_date: bool = False) -> Path | None:
+        """Select the newest artifact version whose date and availability are PIT eligible."""
+        try:
+            dates = self.catalog.read().get("datasets", {}).get(dataset, {}).get("dates", {})
+            cutoff = _parse_pit_timestamp(asof)
+            candidates = []
+            for day, versions in dates.items():
+                if (day != max_trade_date if exact_date else day > max_trade_date):
+                    continue
+                for entry in versions:
+                    path = Path(entry["manifest"])
+                    try:
+                        manifest = json.loads(path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError, KeyError):
+                        continue
+                    available = _parse_pit_timestamp(manifest.get("available_at"))
+                    if available is None or cutoff is None or available > cutoff:
+                        continue
+                    candidates.append((day, available, path))
+            if not candidates:
+                return None
+            return max(candidates, key=lambda item: (item[0], item[1]))[2]
+        except (AttributeError, OSError, ValueError, TypeError):
+            return None
 
     def _legacy(self, reader: SliceReader, request: SliceRequest) -> SliceResult:
         try:
@@ -317,6 +337,8 @@ class SliceProviders:
             rows: list[dict[str, Any]] = []
             for symbol, raw in zip(symbols, values):
                 try:
+                    normalized_symbol = symbol.decode() if isinstance(symbol, bytes) else str(symbol)
+                    normalized_symbol = normalized_symbol.zfill(6)
                     blob = bytes.fromhex(raw.decode() if isinstance(raw, bytes) else raw)
                     history = json.loads(zlib.decompress(blob))
                     for item in history:

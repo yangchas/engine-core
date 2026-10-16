@@ -57,3 +57,22 @@ def test_kaipan_missing_net_is_not_filled_as_zero(tmp_path):
     assert result["rows"][0]["net_yuan"] is None
     assert result["coverage"]["net_missing"] == 1
     assert result["zero_value_boundary_count"] == 0
+
+
+def test_plate_quadrants_uses_latest_sample_per_plate_at_asof():
+    from datetime import datetime
+    rows = [{"code": f"{801000 + i}", "name": f"板块{i}", "strength": 1,
+             "change_pct": 1.0, "amount_yuan": 2_000_000_000, "net_yuan": 1,
+             "sampled_at": "2026-10-16T09:20:00"} for i in range(5000)]
+    rows.extend([
+        {"code": "801001", "name": "板块1", "strength": -1, "change_pct": -1,
+         "amount_yuan": 2_000_000_000, "net_yuan": -1, "sampled_at": "2026-10-16T09:25:00"},
+        {"code": "801002", "name": "板块2", "strength": 100, "change_pct": 10,
+         "amount_yuan": 2_000_000_000, "net_yuan": 1, "sampled_at": "2026-10-16T09:30:00"},
+    ])
+    result = live_pages._plate_quadrants(
+        {"top_plates_by_share": []}, {}, {}, rows, None,
+        datetime.fromisoformat("2026-10-16T09:26:00+08:00"))
+    assert result["coverage"]["rows"] == 5000
+    assert result["counts"]["双正"] == 4999
+    assert result["counts"]["双负"] == 1

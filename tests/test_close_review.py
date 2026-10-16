@@ -1,6 +1,15 @@
 from engine_core.close_review import derive_close_review, render_close_markdown
 
 
+def test_default_close_facts_filter_historical_rows_from_today():
+    from engine_core.close_review import _rows_for_trade_date
+    rows = [
+        {"date": "2026-10-14", "symbol": "600001", "amount_yuan": 100},
+        {"date": "2026-10-15", "symbol": "600001", "amount_yuan": 200},
+    ]
+    assert [row["amount_yuan"] for row in _rows_for_trade_date(rows, "2026-10-15")] == [200]
+
+
 def test_close_review_defaults_to_slice_data_and_never_validation_root(tmp_path, monkeypatch):
     from engine_core.close_review import build_parser, main
     import json

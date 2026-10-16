@@ -5,13 +5,15 @@ import json
 import os
 import re
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
 _SPLIT = re.compile(r"[、,，/；;]+")
 _CODE = re.compile(r"\d{6}")
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def _pool_rows(value: Any) -> list[Sequence[Any] | Mapping[str, Any]]:
@@ -148,6 +150,12 @@ def build_limit_reason_themes(
                                and str(day)[:10] <= expected_previous_date})[-max(1, lookback_sessions):]
             session_set = set(sessions)
             records = [record for record in records if record[0] in session_set]
+        elif records:
+            # When no external calendar was supplied, use the observed event dates
+            # as a conservative local session index; never truncate by row count.
+            observed_sessions = sorted({record[0] for record in records})[-max(1, lookback_sessions):]
+            session_set = set(observed_sessions)
+            records = [record for record in records if record[0] in session_set]
         latest = records[0] if records else None
         selected: dict[str, Any] | None = None
         if label or pool_code:
@@ -172,10 +180,10 @@ def build_limit_reason_themes(
                                    reason=latest[1].get("Reason", latest[1].get("reason")),
                                    tier=str(latest[1].get("SCLT", latest[1].get("sclt", "")) or ""))
         elif records:
-            counts: Counter[str] = Counter(code for _day, _row, codes in records[:max(1, lookback_sessions)]
+            counts: Counter[str] = Counter(code for _day, _row, codes in records
                                            for code in codes)
             if counts:
-                first_order = [code for _day, _row, codes in records[:max(1, lookback_sessions)] for code in codes]
+                first_order = [code for _day, _row, codes in records for code in codes]
                 chosen = min(counts, key=lambda code: (-counts[code], first_order.index(code)))
                 selected = _assignment(symbol, chosen, str(plate_names.get(chosen) or chosen), "REASON_HISTORY",
                                        secondary=_names([code for code in dict.fromkeys(first_order) if code != chosen], plate_names),
@@ -202,7 +210,7 @@ def _parse_time(value: str | None) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=_SHANGHAI)
     except ValueError:
         return None
 

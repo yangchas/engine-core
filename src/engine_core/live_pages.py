@@ -14,6 +14,7 @@ import time
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from engine_core.live_session import (market_price_volume_status, build_live_slice, checkpoint_ready, daily_history_context,
                                       load_auction_amount_baseline_csv, auction_amount_baseline_comparison,
@@ -29,6 +30,17 @@ SECTIONS = {"auction_0926": ["一屏结论", "大盘", "竞价先选极值集合
             "open_0946": ["一屏结论", "大盘", "竞价集合开盘追踪", "板块象限", "昨日连板高标分化", "昨日涨停池", "竞价后新冒头", "板块回升榜", "板块回落榜", "板块联动与跌停影响", "封涨停质量", "封跌停质量", "竞价内变化", "看A做B", "近72日对比"]}
 GENERIC_NAMES_PATH = Path(__file__).resolve().parents[2] / "examples" / "data" / "plate_generic_factor_names.json"
 EVENT_NAME_MARKERS = ("季报增长", "年报增长", "中报增长", "并购重组", "实控人变更")
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _local_datetime(value):
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=_SHANGHAI) if parsed.tzinfo is None else parsed
+    except (TypeError, ValueError):
+        return None
 
 
 def _rows(states, top=20):
@@ -146,6 +158,7 @@ def _load_amount_baseline(value):
 
 
 def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now):
+    now = now.replace(tzinfo=_SHANGHAI) if now.tzinfo is None else now
     plate_stats = {row["name"]: row for row in current.get("top_plates_by_share", [])}
     plate_stats_by_code = {row["code"]: row for row in current.get("top_plates_by_share", [])}
     equal_weight = sorted(plate_stats.values(), key=lambda row: (-row["equal_weight_pct"], row["name"]))[:15]
@@ -164,7 +177,8 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
             anchor = anchors.get(row["name"], anchors.get(row["code"])) if isinstance(anchors, dict) else None
             if not isinstance(anchor, dict): continue
             try:
-                anchor_ts = datetime.fromisoformat(str(anchor["ts"]).replace(" ", "T"))
+                anchor_ts = _local_datetime(str(anchor["ts"]).replace(" ", "T"))
+                if anchor_ts is None: continue
                 if anchor_ts.date() != now.date() or anchor_ts > now: continue
                 age = int((now - anchor_ts).total_seconds())
                 estimate = float(anchor["strength"]) + 100.0 * (float(row["equal_weight_pct"]) - float(anchor["pct"]))
@@ -183,6 +197,21 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
         captured = data.get("captured_local") if isinstance(data, dict) else None
         response = data.get("response", {}) if isinstance(data, dict) else {}
         raw_rows = response.get("list", []) if isinstance(response, dict) else []
+    latest_by_code = {}
+    for index, item in enumerate(raw_rows):
+        if not isinstance(item, (Mapping, list, tuple)):
+            continue
+        code = (str(item.get("code") or item.get("plate_code") or "") if isinstance(item, Mapping)
+                else str(item[0]) if item else "")
+        stamp_value = (item.get("sampled_at", item.get("captured_local", captured))
+                       if isinstance(item, Mapping) else captured)
+        sampled = _local_datetime(stamp_value)
+        if sampled is not None and sampled > now:
+            continue
+        rank = (sampled or datetime.min.replace(tzinfo=_SHANGHAI), index)
+        if code and (code not in latest_by_code or rank > latest_by_code[code][0]):
+            latest_by_code[code] = (rank, item)
+    raw_rows = [item for _, item in latest_by_code.values()]
     parsed = []
     for item in raw_rows:
         if isinstance(item, Mapping):
@@ -350,7 +379,7 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
     chapters["plate_quadrants"] = _plate_quadrants(
         report_current, relations, plate_names,
         kaipan_hot_rows if kaipan_hot_rows is not None else kaipan_hot_json, strength_anchor_json,
-        datetime.fromisoformat(report_current.get("asof", f"{trade_date}T09:25:06")))
+        asof_cutoff or datetime.fromisoformat(report_current.get("asof", f"{trade_date}T09:25:06")))
     conclusion = _conclusion(snaps, chapters, history, stage)
     aggregation_seconds = max(0.0, time.perf_counter() - aggregation_started - td_fetch_seconds)
     lag_text = (f"关系快照 {member_snapshot_date}，滞后 {member_lag_trading_days} 个交易日。"
@@ -425,7 +454,7 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
     for tag in ("0920", "0924", "0925"):
         values = [row.get("match_amount_yuan") for row in raw_states.get(tag, {}).values()]
         known = [int(value) for value in values if isinstance(value, (int, float))]
-        market[tag] = {"m": sum(known) if known else None,
+        market[tag] = {"m": sum(known) if known and len(known) == len(values) else None,
                        "amount_known": len(known), "amount_missing": len(values) - len(known)}
     plate_pct, plate_means, symbol_plates = {}, {}, {}
     auction_state = raw_states.get("0925", {})
@@ -461,7 +490,7 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                                   **tag}
                                   for symbol, tag in sorted(tagged.items(), key=lambda pair: (
                                       pair[1].get("share_0925") is None,
-                                      -(pair[1].get("share_0925") or 0)))
+                                      -(pair[1]["share_0925"] if pair[1].get("share_0925") is not None else 0)))
                                   if tag.get("direction") or tag.get("outrun")]
     sealed_up, sealed_down = [], []
     for symbol, row in auction.items():
@@ -480,9 +509,9 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
         if _state_limit(row, 1): sealed_up.append(item)
         if _state_limit(row, -1): sealed_down.append(item)
     chapters["sealed_up"] = sorted(sealed_up, key=lambda row: (row.get("seal_yuan") is None,
-                                                               -(row["seal_yuan"] or 0)))
+                                                               -(row["seal_yuan"] if row["seal_yuan"] is not None else 0)))
     chapters["sealed_down"] = sorted(sealed_down, key=lambda row: (row.get("seal_yuan") is None,
-                                                                   -(row["seal_yuan"] or 0)))
+                                                                   -(row["seal_yuan"] if row["seal_yuan"] is not None else 0)))
     amount_top50 = _rows(auction, 50)
     amount_top50 = [{"symbol": row["symbol"],
                      "name": stock_names.get(row["symbol"], row.get("name") or row["symbol"]),
@@ -501,9 +530,14 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
         for symbol, streak in candidates:
             vals = {tag: raw_states.get(tag, {}).get(symbol, {}).get("pct_change") for tag in ("0925", "0932", "0940", "0945")}
             states = {tag: raw_states.get(tag, {}).get(symbol, {}) for tag in ("0925", "0932", "0940", "0945")}
+            cutoff_state = states["0945"] if stage == "open" else states["0925"]
             status = _board_status(states)
             highboards.append({"symbol": symbol, "name": stock_names.get(symbol, symbol), "streak": streak,
                                "status": status, "match_amount_yuan": auction[symbol].get("match_amount_yuan"),
+                               "price": (cutoff_state.get("price_milli") / 1000
+                                         if isinstance(cutoff_state.get("price_milli"), (int, float)) else None),
+                               "pre_close": (cutoff_state.get("prev_close_milli") / 1000
+                                             if isinstance(cutoff_state.get("prev_close_milli"), (int, float)) else None),
                                **vals})
         amounts = [row.get("match_amount_yuan") for row in auction.values()]
         amounts = [float(value) for value in amounts
@@ -544,7 +578,8 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                               "relative_to_plate_pp": relative,
                               "auction_tag": "竞价偏强" if relative is not None and relative >= 1 else "竞价偏弱" if relative is not None and relative <= -1 else ""})
         chapters["look_a_do_b"] = sorted(peers, key=lambda row: (row["plate"],
-            row.get("match_amount_yuan") is None, -(row.get("match_amount_yuan") or 0)))[:40]
+            row.get("match_amount_yuan") is None,
+            -(row["match_amount_yuan"] if row.get("match_amount_yuan") is not None else 0)))[:40]
         chapters["yesterday_limit_pool"] = [{"symbol": symbol, "name": stock_names.get(symbol, row.get("name") or symbol),
                                               "pct_change": row.get("pct_change")}
                                              for symbol, row in auction.items()
@@ -574,7 +609,7 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                                  ({**row, "match_amount_yuan": auction.get(row["symbol"], {}).get("match_amount_yuan")}
                                   for row in chapters["yesterday_limit_pool"]),
                                  key=lambda row: (row.get("match_amount_yuan") is None,
-                                                  -(row.get("match_amount_yuan") or 0)))[:50],
+                                                  -(row["match_amount_yuan"] if row.get("match_amount_yuan") is not None else 0)))[:50],
                              "sealed_up": chapters["sealed_up"][:30],
                              "sealed_down": chapters["sealed_down"][:30],
                              "behavior_candidates": behavior_candidates}
@@ -618,7 +653,7 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                                       for symbol, row in latest.items() if base.get(symbol, {}).get("pct_change") is not None
                                       and base[symbol]["pct_change"] < 3 and row.get("pct_change") is not None and row["pct_change"] >= 5],
                                      key=lambda row: (row.get("match_amount_yuan") is None,
-                                                      -(row.get("match_amount_yuan") or 0)))[:30]
+                                                      -(row["match_amount_yuan"] if row.get("match_amount_yuan") is not None else 0)))[:30]
         old_plates = labels.get("0925", {}).get("top_plates_by_share", [])
         new_plates = labels.get("0945", {}).get("top_plates_by_share", [])
         old = {row["code"]: row for row in old_plates}

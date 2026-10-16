@@ -119,7 +119,10 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
     clusters = []
     for theme_key, rows in grouped.items():
         plate = group_names[theme_key]
-        rows.sort(key=lambda row: (-(row["streak"] or 0), -(row.get("match_amount_yuan") or 0), row.get("name", "")))
+        rows.sort(key=lambda row: (row["streak"] is None,
+                                   -(row["streak"] if row["streak"] is not None else 0),
+                                   row.get("match_amount_yuan") is None,
+                                   -(_number(row.get("match_amount_yuan")) or 0), row.get("name", "")))
         known_amounts = [max(0.0, value) for row in rows
                          if (value := _number(row.get("match_amount_yuan"))) is not None]
         amount = sum(known_amounts) if known_amounts else None
@@ -151,7 +154,8 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
                           "0932": _number(row.get("0932")), "0938": _number(row.get("0938")),
                           "0945": _number(row.get("0945", row.get("p0945_pct"))),
                           "status": price_label})
-        clusters.append({"key": theme_key, "name": plate, "count": len(rows), "max_streak": max((r["streak"] or 0) for r in rows),
+        known_streaks = [r["streak"] for r in rows if r["streak"] is not None]
+        clusters.append({"key": theme_key, "name": plate, "count": len(rows), "max_streak": max(known_streaks) if known_streaks else None,
                          "amount_yuan": amount, "share_bp": share_bp, "share_basis": share_basis,
                          "hot_today": plate in hot_names,
                          "theme_sources": sorted({str(row.get("theme_source") or "NONE") for row in rows}),
@@ -164,8 +168,10 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
                                              else "降级" if auction_judgement == "承接强" and _judgement(rows, "pct") == "弱"
                                              else "不变" if auction_judgement == _judgement(rows, "pct") else "分化"),
                          "leader": dict(leader) if isinstance(leader, Mapping) else {}})
-    clusters.sort(key=lambda row: (-row["max_streak"], row["amount_yuan"] is None,
-                                   -(row["amount_yuan"] or 0), row["name"]))
+    clusters.sort(key=lambda row: (row["max_streak"] is None,
+                                   -(row["max_streak"] if row["max_streak"] is not None else 0),
+                                   row["amount_yuan"] is None,
+                                   -(_number(row["amount_yuan"]) or 0), row["name"]))
     first = []
     high_symbols = {str(row.get("symbol", "")).zfill(6) for row in highboards if isinstance(row, Mapping)}
     for row in first_board_rows:

@@ -288,6 +288,7 @@ def test_hot_plate_quadrants_and_zero_input_fallback(tmp_path):
         ["801003", "正流出", 10, 0.2, 0, 2_100_000_000, -1, 3, -2, 0],
         ["801004", "负流入", -10, -0.2, 0, 2_100_000_000, 1, -1, -2, 0],
         ["801005", "零值", 0, 0, 0, 2_100_000_000, 0, 0, 0, 0],
+        ["801001", "双正", 10, 2.0, 0, 2_100_000_000, 1, 3, -2, 0],
         *[[f"80{i:04d}", f"双负-{i}", -10, -2.0, 0, 2_100_000_000, -i, 1, -2, 0]
           for i in range(10, 27)],
     ]}}), encoding="utf-8")
@@ -301,7 +302,8 @@ def test_hot_plate_quadrants_and_zero_input_fallback(tmp_path):
     # Match supplied names to the captured Kaipan names.
     names = {f"p{i}": name for i, name in enumerate(("双正", "双负", "正流出", "负流入", "零值"), 1)}
     page, payload = render_page(TD(), trade_date="2026-10-15", stage="auction_0926",
-                                relations=relations, plate_names=names, kaipan_hot_json=hot)
+                                relations=relations, plate_names=names, kaipan_hot_json=hot,
+                                asof="2026-10-15T09:27:00")
     block = payload["chapters"]["plate_quadrants"]
     assert block["available"] is True
     assert block["counts"] == {"双正": 1, "双负": 18, "强度正净流出背离": 1,

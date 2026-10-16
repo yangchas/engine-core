@@ -13,6 +13,7 @@ from .jobs import JobRunner, RequestBudget
 from .registry import DATASETS, get_dataset
 from .storage import ArtifactCatalog, _atomic_write, canonical_json
 from ..limit_price import limit_percent
+from ..live_session import append_auction_amount_baseline
 
 
 class FileLock:
@@ -61,9 +62,9 @@ def retry_window_for(dataset: str, local_time: str) -> int | None:
 
 
 _PHASE_JOBS = {
-    "premarket": ("plate_members", "limit_up_pool", "limit_reasons"),
+    "premarket": ("plate_members", "limit_up_pool", "limit_reasons", "hot_plates"),
     "intraday": ("hot_plates",),
-    "postmarket": ("daily_kline", "ladder_daily", "auction_baseline", "stock_day_facts"),
+    "postmarket": ("daily_kline", "ladder_daily", "stock_day_facts"),
 }
 
 
@@ -95,6 +96,15 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
     lock_context = FileLock(root / ".locks" / f"daily-{phase}.lock") if lock else _NullContext()
     results = []
     errors = []
+    job_trade_date = trade_date
+    if phase == "premarket":
+        prior_dates = sorted(day for day in trading_dates if day < trade_date)
+        if not prior_dates:
+            result = {"phase": phase, "trade_date": trade_date,
+                      "status": "FAILED_CALENDAR_UNAVAILABLE", "jobs": [], "errors": []}
+            if write: _atomic_write(status_path, canonical_json(result) + b"\n")
+            return result
+        job_trade_date = prior_dates[-1]
     with lock_context:
         runner = JobRunner(artifact_root=root, redis=redis, td_adapter=td_adapter,
                            budget=RequestBudget(max_requests=100, min_interval_seconds=0))
@@ -102,7 +112,7 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
             if name not in DATASETS:
                 errors.append({"job": name, "status": "NOT_REGISTERED"})
                 continue
-            existing_path = runner.catalog.locate(name, trade_date)
+            existing_path = runner.catalog.locate(name, job_trade_date)
             if existing_path is not None and name != "hot_plates":
                 try:
                     existing_manifest = json.loads(existing_path.read_text(encoding="utf-8"))
@@ -116,9 +126,9 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                                     "row_count": existing_manifest.get("row_count")})
                     continue
             fetch = adapters.get(name)
-            if name == "ladder_daily" and fetch is None and runner.catalog.locate("daily_kline", trade_date):
+            if name == "ladder_daily" and fetch is None and runner.catalog.locate("daily_kline", job_trade_date):
                 try:
-                    derived = backfill_ladder_daily(runner, trade_date, trade_date)
+                    derived = backfill_ladder_daily(runner, job_trade_date, job_trade_date)
                     results.append({"job": name, "status": derived["status"],
                                     "row_count": derived.get("row_count"),
                                     "reference_comparison": derived.get("reference_comparison")})
@@ -147,7 +157,7 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                 errors.append({"job": name, "status": "FETCHER_NOT_CONFIGURED"})
                 continue
             try:
-                job = runner.run(name, trade_date, fetch=fetch, now=now,
+                job = runner.run(name, job_trade_date, fetch=fetch, now=now,
                                  publish=bool(write and redis is not None),
                                  td_write=bool(td_write and name in {"daily_kline", "auction_baseline"}),
                                  dry_run=not write)
@@ -157,8 +167,45 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                                 "sha256": job.manifest.get("sha256")})
             except Exception as exc:
                 errors.append({"job": name, "status": "FAILED", "error": str(exc)[:120]})
+        baseline_append = None
+        amount_provider = adapters.get("auction_amount_provider")
+        if phase == "postmarket" and amount_provider is not None:
+            try:
+                observed = amount_provider(trade_date)
+                observed = dict(observed) if isinstance(observed, Mapping) else {}
+                baseline_dates = runner.catalog.read().get("datasets", {}).get(
+                    "auction_baseline", {}).get("dates", {})
+                prior_dates = sorted(day for day in baseline_dates if day < trade_date)
+                previous_rows = []
+                if prior_dates:
+                    path = runner.catalog.locate("auction_baseline", prior_dates[-1])
+                    if path is not None:
+                        previous_rows = runner.catalog.read_rows(path)
+                available_at = observed.get("available_at") or now or datetime.now().astimezone().isoformat()
+                updated = append_auction_amount_baseline(
+                    previous_rows, trade_date=trade_date,
+                    amount_yuan=observed.get("amount_yuan"), available_at=available_at)
+                committed = None
+                if write and observed.get("amount_yuan") is not None:
+                    manifest = {"trade_date": trade_date, "as_of": available_at,
+                        "available_at": available_at, "point_in_time_date": trade_date,
+                        "provenance": "postmarket_auction_summary",
+                        "source": observed.get("source", "injected_auction_provider"),
+                        "row_count": len(updated), "status": "READY"}
+                    committed = runner.catalog.commit("auction_baseline", trade_date, updated,
+                        manifest, source="core_derived")
+                baseline_append = {"status": "READY" if observed.get("amount_yuan") is not None else "PARTIAL",
+                    "row_count": len(updated), "version": committed.get("version") if committed else None,
+                    "available_at": available_at,
+                    "missing": None if observed.get("amount_yuan") is not None else "AUCTION_AMOUNT_MISSING"}
+            except Exception as exc:
+                errors.append({"job": "auction_baseline_append", "status": "FAILED",
+                               "error": str(exc)[:120]})
+                baseline_append = {"status": "FAILED", "error": str(exc)[:120]}
         result = {"phase": phase, "trade_date": trade_date,
                   "status": "FAILED" if errors else "READY", "jobs": results, "errors": errors}
+        if baseline_append is not None:
+            result["auction_baseline_append"] = baseline_append
         if write:
             _atomic_write(status_path, canonical_json(result) + b"\n")
             if redis is not None:

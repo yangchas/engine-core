@@ -2,8 +2,15 @@ import json
 
 import pytest
 
-from engine_core.daily_pipeline import (DailySources, _attach_range_positions, _load_ladder_summary,
+from engine_core.daily_pipeline import (DailySources, _attach_range_positions, _fact_auction_amount, _load_ladder_summary,
                                         discover_references, run_daily_pipeline)
+
+
+def test_zero_auction_amount_does_not_fall_back_to_another_source():
+    assert _fact_auction_amount({"auction_match_amount_yuan": 0,
+                                 "p0925_cumulative_amount_yuan": 123}) == 0
+    assert _fact_auction_amount({"auction_match_amount_yuan": None,
+                                 "p0925_cumulative_amount_yuan": 123}) == 123
 
 
 class FakeTD:
@@ -118,6 +125,36 @@ def test_live_section_stocks_builds_point_in_time_rows_without_close_fields():
     assert rows[0]["p0945_pct"] == 8.0
     assert rows[0]["auction_amount_bp"] == pytest.approx(6666.6667)
     assert all("close_pct" not in row for row in rows)
+
+
+def test_live_section_stocks_transmits_cutoff_prices_for_exact_limit_proxy():
+    from engine_core.daily_pipeline import _live_section_stocks
+    from engine_core.ladder_cluster import _price_label
+
+    class States:
+        def states_at(self, cutoff):
+            return {"600001": {"symbol": "600001", "pct_change": 9.9, "match_amount_yuan": 100,
+                                "price_milli": 11000, "prev_close_milli": 10000},
+                    "600002": {"symbol": "600002", "pct_change": 9.99, "match_amount_yuan": 100,
+                                "price_milli": 10990, "prev_close_milli": 10000}}
+
+    rows = _live_section_stocks(States(), trade_date="2026-10-15", stage="auction", asof="09:26:00",
+                                relations={}, plate_names={}, stock_names={}, history_path=None)
+    by_symbol = {row["symbol"]: row for row in rows}
+    assert _price_label(by_symbol["600001"]["p0925_pct"], "600001", by_symbol["600001"]["price"],
+                        by_symbol["600001"]["pre_close"]) == "封停价代理"
+    assert _price_label(by_symbol["600002"]["p0925_pct"], "600002", by_symbol["600002"]["price"],
+                        by_symbol["600002"]["pre_close"]) == "高开"
+
+
+def test_live_report_json_drops_5200_full_universe_rows_under_size_limit():
+    import json
+    from engine_core import live_pages
+    payload = {"stage": "auction_0926", "chapters": {"behavior_rows": [
+        {"symbol": f"{i:06d}", "name": "n" * 20, "pad": "x" * 900} for i in range(5200)]}}
+    result = live_pages._json_report_payload(payload)
+    assert "behavior_rows" not in result["chapters"]
+    assert len(json.dumps(result, ensure_ascii=False)) < 250_000
 
 
 def test_live_section_stocks_excludes_broad_plate_from_main_plate():
@@ -292,22 +329,32 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
     available = f"{trade_date}T09:00:00+08:00"
     common = {"available_at": available, "point_in_time_date": prior_date}
     catalog.commit("stock_static", prior_date, [
-        {"symbol": "600001", "name": "样本股", "real_market_cap": 100, **common}],
+        {"symbol": "600001", "name": "封停股", "real_market_cap": 100, **common},
+        {"symbol": "600002", "name": "接近封停股", "real_market_cap": 100, **common}],
         common, source="test")
     catalog.commit("plate_registry", prior_date, [
         {"code": "801001", "name": "通信", "class": "industry", **common}],
         common, source="test")
     catalog.commit("plate_members", prior_date, [
-        {"symbol": "600001", "plate_code": "801001", **common}],
+        {"symbol": "600001", "plate_code": "801001", **common},
+        {"symbol": "600002", "plate_code": "801001", **common}],
         common, source="test")
     catalog.commit("daily_history_compact", prior_date, [
-        {"date": prior_date, "symbol": "600001", "close": 10, "pct_chg": 1,
-         "amount": 100000, **common}], common, source="test")
+        {"date": "2026-10-13", "symbol": symbol, "close": 9.09, "pct_chg": 1,
+         "amount": 100000, **common}
+        for symbol in ("600001", "600002")] + [
+        {"date": "2026-10-14", "symbol": symbol, "close": 10, "pct_chg": 10,
+         "amount": 100000, **common}
+        for symbol in ("600001", "600002")] + [
+        {"date": prior_date, "symbol": symbol, "close": 11, "pct_chg": 10,
+         "amount": 100000, **common}
+        for symbol in ("600001", "600002")], common, source="test")
     catalog.commit("auction_baseline", trade_date, [
         {"date": trade_date, "symbol": "600001", "match_amount_yuan": 100000,
          "change_pct": 1, **common}], common, source="test")
     catalog.commit("limit_up_pool", prior_date, [
-        {"symbol": "600001", "name": "样本股", "lb_days": 2, **common}], common, source="test")
+        {"symbol": "600001", "name": "封停股", "lb_days": 2, **common},
+        {"symbol": "600002", "name": "接近封停股", "lb_days": 2, **common}], common, source="test")
     catalog.commit("limit_reasons", prior_date, [
         {"symbol": "600001", "Date": prior_date, "ZSCode": ["801001"],
          "Reason": "通信", **common}], common, source="test")
@@ -328,11 +375,13 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
     class BytePipeline:
         def execute(self):
             return [{b"px": b"11000", b"pc": b"10000", b"amt": b"5000000",
+                     b"vol": b"100", b"ts": b"1792113960000"},
+                    {b"px": b"10990", b"pc": b"10000", b"amt": b"4000000",
                      b"vol": b"100", b"ts": b"1792113960000"}]
 
     class ByteRedis:
         def scan_iter(self, **kwargs):
-            return iter([b"q2:600001"])
+            return iter([b"q2:600001", b"q2:600002"])
 
         def pipeline(self):
             class Pipe:
@@ -345,16 +394,20 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
             return None
 
         def hgetall(self, _key):
-            return {b"600001": b'{"name":"legacy bytes"}'}
+            return {b"600001": b'{"name":"legacy bytes"}',
+                    b"600002": b'{"name":"legacy bytes"}'}
 
     class DataTD(FakeTD):
         def states_at(self, cutoff):
-            pct = 1.0 if cutoff.strftime("%H:%M:%S") <= "09:25:06" else 2.0
-            return {"600001": {"symbol": "600001", "price": 10.1, "price_milli": 10100,
-                               "pre_close": 10, "prev_close_milli": 10000,
-                               "rest_bid_shares": 0, "rest_ask_shares": 0,
-                               "pct_change": pct, "match_amount_yuan": 5000000,
-                               "auction_amount_yuan": 5000000, "status": "FINAL"}}
+            return {symbol: {"symbol": symbol, "price": price_milli / 1000,
+                             "price_milli": price_milli, "pre_close": 10,
+                             "prev_close_milli": 10000, "rest_bid_shares": 0,
+                             "rest_ask_shares": 0, "pct_change": pct,
+                             "match_amount_yuan": amount, "auction_amount_yuan": amount,
+                             "status": "FINAL"}
+                    for symbol, price_milli, pct, amount in (
+                        ("600001", 11000, 10.0, 5000000),
+                        ("600002", 10990, 9.99, 4000000))}
 
     redis = ByteRedis()
     reader = SliceReader(SliceProviders(catalog=catalog, redis=redis, file_fallback=False).providers())
@@ -370,6 +423,11 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
         assert all(row["source"].startswith("core_data") for row in manifest["slices"].values())
         assert "front_page" in report and "plate_strength" in report["front_page"]
         assert "ladder" in report["front_page"]
+        paths = [path for cluster in report["front_page"]["ladder"]["clusters"]
+                 for path in cluster["paths"]]
+        labels = {path["symbol"]: path["status"] for path in paths}
+        assert labels["600001"] == "封停价代理"
+        assert labels["600002"] != "封停价代理"
 def test_repeat_run_uses_numbered_directory_without_overwriting(tmp_path):
     kwargs = dict(stage="auction", trade_date="2026-10-15", out_root=tmp_path / "out",
                   reference_root=tmp_path / "refs", sources=DailySources(td=FakeTD()))

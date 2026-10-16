@@ -95,6 +95,28 @@ def test_history_frequency_and_static_fallback_are_explicit():
     assert unverified_static["theme_source"] == "NONE"
 
 
+def test_history_frequency_uses_all_records_in_twenty_sessions():
+    dates = [f"2026-09-{day:02d}" for day in range(1, 21)]
+    # 21 older rows on a valid session must not hide the 20 newer rows.
+    reason_rows = [{"Date": dates[0], "Type": "0", "ZSCode": ["801001"]}
+                   for _ in range(21)]
+    reason_rows.extend({"Date": day, "Type": "0",
+                        "ZSCode": ["801002"] if day == dates[-2] else []}
+                       for day in dates[-2:]
+                       for _ in range(10))
+    result = build_limit_reason_themes(
+        {}, {"000010": {"StockID": "000010", "List": reason_rows[:-1] + [reason_rows[-1]]}},
+        expected_previous_date="2026-09-21", plate_names={"801001": "甲", "801002": "乙"},
+        trading_dates=dates)
+    assert result["000010"]["theme_key"] == "801001"
+
+
+def test_naive_reason_timestamp_is_shanghai_local():
+    from engine_core.limit_reason_theme import _parse_time
+    parsed = _parse_time("2026-10-16T09:00:00")
+    assert parsed.isoformat() == "2026-10-16T09:00:00+08:00"
+
+
 def test_missing_and_stale_daily_snapshots_degrade_without_using_future_data(tmp_path):
     missing = load_kaipan_theme_snapshot(
         tmp_path, report_date="2026-10-16", previous_trade_date="2026-10-15",

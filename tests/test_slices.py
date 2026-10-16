@@ -1,6 +1,12 @@
 from engine_core.slices import SliceReader, SliceResult
 
 
+def test_core_data_root_is_isolated_per_test(tmp_path):
+    import os
+
+    assert os.environ["CORE_DATA_ROOT"] == str(tmp_path / "core-data")
+
+
 def test_slice_reader_uses_core_provider_once_and_rejects_future_data():
     calls = []
 
@@ -97,6 +103,66 @@ def test_daily_history_legacy_adapter_decodes_bytes_symbols():
     assert redis.pipe.keys == ["cache:kline:d:000001"]
     assert rows[0]["symbol"] == "000001"
     assert rows[0]["date"] == "2026-10-15"
+
+
+def test_daily_history_legacy_adapter_keeps_each_mixed_symbol_with_its_prices():
+    import json
+    import zlib
+    from engine_core.slices import SliceProviders, SliceRequest
+
+    blobs = [
+        zlib.compress(json.dumps([{"time": "2026-10-15", "close": price}]).encode()).hex()
+        for price in (10, 20, 30)
+    ]
+    class Pipe:
+        def __init__(self): self.keys = []
+        def get(self, key): self.keys.append(key); return self
+        def execute(self): return [value.encode() for value in blobs]
+    class Redis:
+        def __init__(self): self.pipe = Pipe()
+        def hkeys(self, key): return [b"000001", "000002", b"000003"]
+        def pipeline(self): return self.pipe
+    rows = SliceProviders(redis=Redis(), file_fallback=False)._legacy_rows(
+        SliceRequest("daily_history", "2026-10-16", "2026-10-16T09:26:00+08:00",
+                     {"prior_trade_date": "2026-10-15"}))
+    assert [(row["symbol"], row["close"]) for row in rows] == [
+        ("000001", 10), ("000002", 20), ("000003", 30)]
+
+
+def test_historical_reason_artifact_availability_is_checked_before_ready(tmp_path):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.slices import SliceProviders, SliceReader
+
+    catalog = ArtifactCatalog(tmp_path / "core")
+    catalog.commit("limit_reasons", "2026-10-16", [{
+        "symbol": "600001", "Date": "2026-10-15", "available_at": "2026-10-16T08:50:00+08:00",
+        "ZSCode": ["801001"], "Reason": "future artifact"}],
+        {"available_at": "2026-10-16T15:00:00+08:00"}, source="test")
+    result = SliceReader(SliceProviders(catalog=catalog, file_fallback=False).providers()).get(
+        "limit_reason_history", trade_date="2026-10-16", asof="2026-10-16T09:26:00+08:00")
+    assert result.meta["status"] == "MISSING"
+    assert result.rows == []
+
+
+def test_daily_history_decoder_handles_5200_symbols_without_cross_symbol_state():
+    import json
+    import zlib
+    from engine_core.slices import SliceProviders, SliceRequest
+    symbols = [f"{index:06d}" for index in range(1, 5201)]
+    values = [zlib.compress(json.dumps([{"time": "2026-10-15", "close": index}]).encode()).hex().encode()
+              for index in range(1, len(symbols) + 1)]
+    class Pipe:
+        def get(self, key): return self
+        def execute(self): return values
+    class Redis:
+        def hkeys(self, key): return symbols
+        def pipeline(self): return Pipe()
+    rows = SliceProviders(redis=Redis(), file_fallback=False)._legacy_rows(
+        SliceRequest("daily_history", "2026-10-16", "2026-10-16T09:26:00+08:00",
+                     {"prior_trade_date": "2026-10-15"}))
+    assert len(rows) == 5200
+    assert rows[0]["symbol"] == "000001" and rows[0]["close"] == 1
+    assert rows[-1]["symbol"] == "005200" and rows[-1]["close"] == 5200
 
 
 def test_previous_trade_date_uses_observed_core_dates_and_fails_closed():

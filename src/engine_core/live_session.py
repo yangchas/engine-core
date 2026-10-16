@@ -294,10 +294,25 @@ def _sql_states(td: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
         if symbol is None or not pc or not ts:
             continue
         tick_time = ts.strftime("%H:%M:%S") if hasattr(ts, "strftime") else str(ts)[-8:]
+        numeric_fields = [key for key in Tick.__dataclass_fields__
+                          if key not in {"trade_date", "ts", "symbol", "name"}]
+        missing = {key for key in numeric_fields if row.get(key) is None}
         tick = Tick(trade_date=cutoff.date().isoformat(), ts=tick_time, symbol=str(symbol).zfill(6),
-                    **{key: int(row.get(key) or 0) for key in Tick.__dataclass_fields__
-                       if key not in {"trade_date", "ts", "symbol", "name"}})
-        result[tick.symbol] = derive_state(tick)
+                    **{key: int(row[key]) if row.get(key) is not None else 0 for key in numeric_fields})
+        state = derive_state(tick)
+        required = {"amt_yuan": ("match_amount_yuan", "amt_yuan"),
+                    "bv1": ("match_amount_yuan",), "av1": ("match_amount_yuan",),
+                    "bp1_milli": ("match_amount_yuan", "rest_bid_yuan"),
+                    "av2": ("rest_ask_shares", "rest_ask_yuan"),
+                    "bv2": ("rest_bid_shares", "rest_bid_yuan")}
+        missing_outputs = set()
+        for source in missing:
+            missing_outputs.update(required.get(source, ()))
+        for key in missing_outputs:
+            state[key] = None
+        state["field_quality"] = {key: "MISSING" for key in missing}
+        state["missing_field_count"] = len(missing)
+        result[tick.symbol] = state
         result[tick.symbol]["source_ts"] = ts.isoformat(sep=" ") if isinstance(ts, datetime) else str(ts)
     return result
 
@@ -392,7 +407,9 @@ def build_live_slice(states: Mapping[str, Mapping[str, Any]], asof: datetime | s
     priced = [(row, float(row["pct_change"])) for row in states.values()
               if row.get("pct_change") is not None and _finite_number(row.get("pct_change"))]
     prices = [pct for _, pct in priced]
-    amounts = [max(0, int(row.get("match_amount_yuan") or 0)) for row, _ in priced]
+    amount_known = [(row, pct, max(0, int(row["match_amount_yuan"]))) for row, pct in priced
+                    if row.get("match_amount_yuan") is not None]
+    amounts = [amount for _, _, amount in amount_known]
     latest_values = []
     for row in states.values():
         value = row.get("source_ts")
@@ -403,28 +420,37 @@ def build_live_slice(states: Mapping[str, Mapping[str, Any]], asof: datetime | s
             try: latest_values.append(datetime.combine(stamp.date(), datetime.strptime(row["ts"], "%H:%M:%S").time()))
             except ValueError: pass
     lag = max(0.0, (stamp - max(latest_values)).total_seconds()) if latest_values else None
-    total = sum(amounts)
-    weighted_pct = (sum(amount * pct for amount, (_, pct) in zip(amounts, priced)) / total) if total else None
-    down_amount = sum(amount for amount, (_, pct) in zip(amounts, priced) if pct < 0)
-    down_share = 100 * down_amount / total if total else None
+    total_known = sum(amounts)
+    amount_complete = len(amount_known) == len(priced)
+    total = total_known if amount_complete else None
+    weighted_pct = (sum(amount * pct for _, pct, amount in amount_known) / total_known
+                    if total_known and amount_complete else None)
+    down_amount = sum(amount for _, pct, amount in amount_known if pct < 0)
+    down_share = 100 * down_amount / total_known if total_known and amount_complete else None
     up_share = 100 * sum(pct > 0 for pct in prices) / len(prices) if prices else None
     ordered_amounts = sorted(amounts, reverse=True)
-    top100_concentration = 100 * sum(ordered_amounts[:100]) / total if total else None
+    top100_concentration = 100 * sum(ordered_amounts[:100]) / total_known if total_known and amount_complete else None
     relations, plate_names = relations or {}, plate_names or {}
     plates = []
     for code, members in relations.items():
         selected = [states[s] for s in members if s in states and states[s].get("pct_change") is not None
                     and _finite_number(states[s].get("pct_change"))]
         if len(selected) < 5: continue
-        amount = sum(int(s.get("match_amount_yuan") or 0) for s in selected)
+        amount_values = [s.get("match_amount_yuan") for s in selected]
+        complete = all(value is not None for value in amount_values)
+        amount = sum(int(value) for value in amount_values if value is not None) if complete else None
         plates.append({"code": code, "name": plate_names.get(code, code), "member_count": len(selected),
                        "match_amount_yuan": amount, "market_share_bp": round(amount * 10000 / total, 2) if total else None,
                        "equal_weight_pct": statistics.mean(s["pct_change"] for s in selected)})
-    plates.sort(key=lambda p: (-(p["market_share_bp"] or 0), p["code"]))
+    plates.sort(key=lambda p: (p["market_share_bp"] is None,
+                               -(p["market_share_bp"] if p["market_share_bp"] is not None else 0), p["code"]))
     stocks = sorted((dict(row) for row in states.values()),
-                    key=lambda row: (-(int(row.get("match_amount_yuan") or 0)), row.get("symbol", "")))[:top_n]
+                    key=lambda row: (row.get("match_amount_yuan") is None,
+                                     -(int(row["match_amount_yuan"]) if row.get("match_amount_yuan") is not None else 0),
+                                     row.get("symbol", "")))[:top_n]
     return {"asof": stamp.isoformat(timespec="seconds"), "phase": "AUCTION" if stamp.time() < datetime.strptime("09:30", "%H:%M").time() else "OPEN",
-            "symbol_count": len(states), "data_lag_seconds": lag,
+            "symbol_count": len(states), "amount_coverage": len(amount_known),
+            "amount_missing": len(priced) - len(amount_known), "data_lag_seconds": lag,
             "status": "STALE" if lag is None or lag > stale_after_seconds else "FRESH",
             "priced_symbol_count": len(priced),
             "market_match_amount_yuan": total,
@@ -439,8 +465,8 @@ def build_live_slice(states: Mapping[str, Mapping[str, Any]], asof: datetime | s
             "market_price_volume_state": market_price_volume_status(total / previous_day_final_yuan if previous_day_final_yuan and total else None,
                                                                       weighted_pct, up_share),
             "market_price_volume_thresholds": dict(MARKET_VOLUME_THRESHOLDS),
-            "limit_up": sum(_at_limit(row, "up") for row in states.values()),
-            "limit_down": sum(_at_limit(row, "down") for row in states.values()),
+            "limit_up": sum(_safe_at_limit(row, "up") for row in states.values()),
+            "limit_down": sum(_safe_at_limit(row, "down") for row in states.values()),
             "top_plates_by_share": plates[:top_n], "top_stocks_by_amount": stocks,
             "source": "TD stock_tick_v2 (read-only)", "isolated": True}
 
@@ -448,6 +474,13 @@ def build_live_slice(states: Mapping[str, Mapping[str, Any]], asof: datetime | s
 def _finite_number(value: Any) -> bool:
     try: return math.isfinite(float(value))
     except (TypeError, ValueError): return False
+
+
+def _safe_at_limit(state: Mapping[str, Any], direction: str) -> bool:
+    try:
+        return _at_limit(state, direction)
+    except (TypeError, ValueError):
+        return False
 
 
 def publish_isolated(redis: Any, trade_date: str, payload: Mapping[str, Any], ttl: int, *, key: str | None = None) -> str:
