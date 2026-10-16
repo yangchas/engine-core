@@ -631,3 +631,14 @@ def test_live_report_json_drops_full_universe_rows_after_basis_note():
     import json
     assert "behavior_rows" not in out.get("chapters", {})
     assert len(json.dumps(out, ensure_ascii=False)) < 250_000
+
+
+def test_relation_snapshot_date_ignores_dates_in_parent_path(tmp_path):
+    from engine_core.daily_pipeline import _relation_snapshot_date
+
+    parent = tmp_path / "run_20261016" / "relation_pit_20261013"
+    parent.mkdir(parents=True)
+    assert _relation_snapshot_date(parent) == "PIT 20261013"
+    undated = tmp_path / "run_20261016" / "relation"
+    undated.mkdir()
+    assert _relation_snapshot_date(undated) == "UNKNOWN"

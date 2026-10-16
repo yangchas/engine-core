@@ -143,7 +143,7 @@ def _relation_snapshot_date(relation_dir):
             if value: return f"PIT {str(value).replace('-', '')[:8]}"
     except (OSError, ValueError):
         pass
-    match = re.search(r"20\d{6}", str(path))
+    match = re.search(r"20\d{6}", path.name)
     return f"PIT {match.group(0)}" if match else "UNKNOWN"
 
 
