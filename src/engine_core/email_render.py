@@ -301,8 +301,10 @@ def _metrics(report: Mapping[str, Any], stage: str) -> list[tuple[str, Any, str]
                      ("涨停 / 跌停", f"{_plain_value(terminal.get('sealed_up_count'))} / {_plain_value(terminal.get('sealed_down_count'))}", "")]
         volume = report.get("chapters", {}).get("market_price_volume", {}) if isinstance(report.get("chapters"), Mapping) else {}
         if isinstance(volume, Mapping):
+            volume_valid = (volume.get("status") not in {"STALE", "NOT_READY", "NOT_YET_AVAILABLE"}
+                            and volume.get("symbol_count") != 0)
             candidates += [("数据时点", volume.get("asof"), ""), ("数据滞后秒", volume.get("data_lag_seconds"), ""),
-                           ("有价标的数", volume.get("priced_symbol_count"), "count")]
+                           ("有价标的数", volume.get("priced_symbol_count") if volume_valid else None, "count")]
     return [(label, value, key) for label, value, key in candidates if value is not None]
 
 
@@ -594,9 +596,15 @@ def _metadata(manifest: Mapping[str, Any], report: Mapping[str, Any], stage: str
                 terminal = {}
         lag = td.get("data_lag_seconds", terminal.get("data_lag_seconds"))
         coverage = td.get("coverage") if isinstance(td.get("coverage"), Mapping) else {}
+        volume = report.get("chapters", {}).get("market_price_volume", {}) if isinstance(report.get("chapters"), Mapping) else {}
+        volume_valid = (not isinstance(volume, Mapping) or
+                        (volume.get("status") not in {"STALE", "NOT_READY", "NOT_YET_AVAILABLE"}
+                         and volume.get("symbol_count") != 0))
         if lag is not None:
             lines.append(f"数据滞后：{_num(lag)} 秒")
-        if coverage.get("symbols") is not None:
+        if not volume_valid:
+            lines.append("TD 截面不可用；覆盖未知")
+        elif coverage.get("symbols") is not None:
             lines.append(f"覆盖：{_num(coverage.get('priced_symbols'))} / {_num(coverage['symbols'])} 只")
     return lines
 

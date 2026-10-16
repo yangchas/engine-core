@@ -251,6 +251,16 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
         raw_states[label] = rows
         snap = build_live_slice(rows, cutoff, previous_day_final_yuan=previous_day_final_yuan,
                                 relations=relations, plate_names=plate_names, top_n=max(15, len(relations or {})))
+        if not rows or snap.get("status") in {"STALE", "NOT_READY", "NOT_YET_AVAILABLE"}:
+            # build_live_slice's empty aggregation uses numeric zeros internally;
+            # at report boundaries an absent slice must remain missing.
+            snap["symbol_count"] = None
+            snap["priced_symbol_count"] = None
+            for key in ("market_match_amount_yuan", "vs_previous_day_final", "median_pct_change",
+                        "up_share_pct", "amount_weighted_pct_change", "down_amount_share_pct",
+                        "top100_concentration_pct", "top100_concentration_vs_normal_pp",
+                        "limit_up", "limit_down", "vs_amount_baseline"):
+                snap[key] = None
         snap["amount_baseline_yuan"] = baseline_yuan
         snap["vs_amount_baseline"] = (snap["market_match_amount_yuan"] / baseline_yuan
                                       if baseline_yuan and snap["market_match_amount_yuan"] else None)
@@ -259,7 +269,8 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
         if stage == "auction_0926" and label == "0925":
             total_yi = (snap.get("market_match_amount_yuan") / 100_000_000
                         if snap.get("market_match_amount_yuan") is not None else None)
-            comparison = auction_amount_baseline_comparison(auction_baseline_rows, trade_date, total_yi)
+            if total_yi is not None:
+                comparison = auction_amount_baseline_comparison(auction_baseline_rows, trade_date, total_yi)
         snap["auction_baseline_comparison"] = comparison
         if clock > "09:26:00":
             # 0926 之后的 TD 额是当日累计成交额, 不能与昨日 0925 竞价终值相比
@@ -535,7 +546,7 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
             "symbol": symbol,
             "name": stock_names.get(symbol, row.get("name") or symbol),
             "main_plate": (context.get("main_plate") or context.get("plate") or
-                           select_main_plate(selected_plates.get(str(symbol).zfill(6), [])) or "—"),
+                           select_main_plate(selected_plates.get(str(symbol).zfill(6), [])) or "无板块"),
             "auction_pct": row.get("pct_change"),
             "auction_amount_yuan": row.get("match_amount_yuan"),
             "auction_price_status": row.get("status") or "UNKNOWN",

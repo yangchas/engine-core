@@ -85,7 +85,8 @@ def _slim_result(result: dict[str, Any], stage: str | None = None) -> dict[str, 
     auction = result.get("auction", {})
     if isinstance(auction.get("excluded_unlimited"), list):
         auction["excluded_unlimited"] = [
-            {key: row.get(key) for key in ("symbol", "name", "auction_pct", "close_pct")}
+            {key: row.get(key) for key in ("symbol", "name", "main_plate", "auction_pct",
+                                           "close_pct", "auction_state")}
             for row in auction["excluded_unlimited"]]
     return result
 
@@ -140,6 +141,7 @@ def build_extremes_board(rows: Sequence[Mapping[str, Any]], *,
         row["auction_price_status"] = row.get("auction_price_status") or "UNKNOWN"
         normalized.append(row)
         if _unlimited(row):
+            row["auction_state"] = "新股无涨跌停限制"
             unlimited.append(row)
         elif row["auction_pct"] is not None and row["auction_amount_yuan"] is not None and row["auction_amount_yuan"] >= min_auction_amount_yuan:
             eligible.append(row)
@@ -159,7 +161,8 @@ def build_extremes_board(rows: Sequence[Mapping[str, Any]], *,
         limit = _number(row.get("limit_pct"))
         pct = row["auction_pct"]
         lock = row.get("auction_limit_state")
-        row["auction_state"] = ("竞价涨停价/买不到" if lock in (1, "1", "UP") or (limit and pct >= limit - .2) else
+        row["auction_state"] = ("新股无涨跌停限制" if _unlimited(row) else
+                                "竞价涨停价/买不到" if lock in (1, "1", "UP") or (limit and pct >= limit - .2) else
                                 "竞价跌停价" if lock in (-1, "-1", "DOWN") or (limit and pct <= -limit + .2) else
                                 "INDICATIVE" if row["auction_price_status"] == "INDICATIVE" else "")
     amount_symbols = {row["symbol"] for row in by_amount}
@@ -192,6 +195,7 @@ def build_extremes_board(rows: Sequence[Mapping[str, Any]], *,
                        "min_auction_amount_yuan": min_auction_amount_yuan,
                        "threshold_pct": threshold_pct},
         "selection_cutoff": "<=09:25; post-auction fields are not used for selection",
+        "rank_legend": "绝对值#=竞价涨跌幅绝对值排名；额#=竞价匹配额排名。",
         "auction": {"rows": auction_rows, "selected_count": len(selected),
                     "excluded_unlimited": unlimited, "amount_cohort": [r for r in auction_rows if r["symbol"] in amount_symbols]},
         "open": {"rows": traced, "selected_count": len(selected), **outcome} if stage == "open" else {

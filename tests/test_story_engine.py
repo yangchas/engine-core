@@ -8,6 +8,7 @@ from engine_core.story_features import build_story_features, build_live_story_fe
 from engine_core.story_memory import append_memory, attach_next_day, make_daily_memory
 from engine_core.tradability_funnel import filter_candidates
 from engine_core.email_board import _story_view, _tiles, _extremes, _plates, _ladder, render_email_board
+from engine_core.email_board import _story_text
 
 
 def test_missing_zero_and_small_sample_anomaly_policy():
@@ -198,7 +199,8 @@ def test_funnel_does_not_repeat_condition_as_reason():
                                  "condition": "等下一截点确认", "risk": "回落"}], bundle,
                                asof="09:25")
     row = funnel["shown"]["wait"][0]
-    assert row["reasons"][0]["text"] == row["condition"]["text"]
+    assert row["reasons"][0]["text"] != row["condition"]["text"]
+    assert row["filter_reasons"] == ["价格或成交数据缺失"]
     report = {"story": {"stage": "auction", "funnel": {"shown": funnel["shown"],
               "counts": funnel["counts"], "reason_counts": funnel["reason_counts"]}}}
     _, _, rendered = _story_view(report, "auction", "2026-10-15")
@@ -226,6 +228,94 @@ def test_live_story_features_excludes_later_open_checkpoints_and_close():
     assert "p0938_median_pct" not in metrics
     assert "p0945_median_pct" not in metrics
     assert "close_median_pct" not in metrics
+
+
+def test_open_story_compares_auction_to_opening_path_and_keeps_missing_explicit():
+    report = {
+        "trade_date": "2026-10-15",
+        "market_price_volume": {"asof": "2026-10-15T09:45:00", "phase": "OPEN",
+            "status": "FRESH", "symbol_count": 5000, "median_pct_change": -1.8,
+            "up_share_pct": 9.9},
+        "snapshots": [
+            {"label": label, "asof": f"2026-10-15T{clock}:00", "median_pct_change": median,
+             "up_share_pct": share}
+            for label, clock, median, share in (("0925", "09:25", -1.92, 1.9),
+                ("0932", "09:32", -1.2, 5.7), ("0938", "09:38", -0.7, 12.0),
+                ("0945", "09:45", -1.8, 9.9))],
+        "handoff": {"auction_0925": {"final_0925": {"status": "READY", "symbol_count": 5000,
+            "asof": "09:25:06", "median_pct_change": -1.92, "up_share_pct": 1.9}}}}
+    features = build_live_story_features(report, stage="open", cutoff="09:45:00")
+    story = compose_story(features, [], {"shown": {}}, previous_acts=[])
+    text = "\n".join(_story_text(story, report))
+    assert "1.9%" in text and "5.7%" in text and "12.0%" in text and "9.9%" in text
+    assert "改善但仍是少数个股上涨" in text
+    assert "第三、四幕未到" in text
+
+
+def test_auction_events_are_presented_as_three_observation_items():
+    from engine_core.email_board import _story_text
+    story = {"stage": "auction", "top_events": [
+        {"id": "a", "display_label": "对照观察", "summary": "竞价额与基线。"},
+        {"id": "b", "display_label": "历史异常", "summary": "上涨占比排名。"},
+        {"id": "c", "display_label": "对照观察", "summary": "昨高标承接。"}],
+        "acts": [], "funnel": {"shown": {}}}
+    text = "\n".join(_story_text(story, {}))
+    assert "今日3件不一样的事" in text
+    assert all(value in text for value in ("竞价额与基线", "上涨占比排名", "昨高标承接"))
+
+
+def test_funnel_uses_filter_reasons_not_candidate_strength_descriptions():
+    features = build_story_features({"trade_date": "2026-10-15"}, stage="auction",
+        cutoff="09:25", observed_at=None, provenance={})
+    funnel = filter_candidates([{"symbol": "000001", "name": "甲", "bucket": "wait",
+        "selection_reason": "板块竞价额第2；竞价较板块+0.9pp", "price_status": "INDICATIVE",
+        "auction_price_status": "INDICATIVE", "match_amount_yuan": 20_000_000}], features,
+        asof="09:25")
+    row = funnel["shown"]["wait"][0]
+    assert "板块竞价额第2" in " ".join(reason["text"] for reason in row["reasons"])
+    assert "板块竞价额第2" not in " ".join(row["filter_reasons"])
+    assert "终价" in row["condition"]["text"]
+    assert funnel["reason_counts"] == {"竞价价仍为指示价，终价未确认": 1}
+
+
+def test_live_story_degrades_for_absent_and_partial_auction_inputs():
+    for report, cutoff in (({"trade_date": "2026-10-15"}, "09:27:00"),
+        ({"trade_date": "2026-10-15", "snapshots": [
+            {"label": "0920", "asof": "09:20:00", "up_share_pct": 20},
+            {"label": "0924", "asof": "09:24:00", "up_share_pct": 30}]}, "09:27:00"),
+        ({"trade_date": "2026-10-15", "auction_terminal_0925": {"status": "PARTIAL",
+            "symbol_count": 4000, "expected_symbol_count": 5200, "asof": "09:25:06",
+            "up_share_pct": 10}, "degraded": ["深市终价仍在到达"]}, "09:27:00")):
+        features = build_live_story_features(report, stage="auction", cutoff=cutoff)
+        story = compose_story(features, [], {"shown": {}}, previous_acts=[])
+        text = "\n".join(_story_text(story, report))
+        assert "口径与缺口" in text
+        if "auction_terminal_0925" not in report:
+            assert "缺少" in text or "没有可用事实" in text
+        else:
+            assert "PARTIAL" in text or "到达" in text
+
+
+def test_empty_stale_funnel_reports_unknown_candidate_counts():
+    report = {"trade_date": "2026-10-15", "stage": "auction",
+              "chapters": {"market_price_volume": {"status": "STALE", "symbol_count": None}},
+              "candidate_facts": [], "story": {"stage": "auction", "funnel": {"shown": {}, "counts": {}}}}
+    rendered = "\n".join(_story_text(report["story"], report))
+    assert "候选数量和过滤原因未知" in rendered
+    assert "候选0只" not in rendered
+
+
+def test_stale_zero_snapshot_is_missing_not_zero_in_story_and_tiles():
+    from engine_core.email_board import _tiles
+    report = {"trade_date": "2026-10-15", "snapshots": [{"label": "0925",
+        "asof": "09:25:06", "status": "STALE", "symbol_count": 0,
+        "market_match_amount_yuan": 0, "median_pct_change": 0, "up_share_pct": 0}],
+        "chapters": {"market_price_volume": {"status": "STALE", "symbol_count": 0,
+            "market_match_amount_yuan": 0, "median_pct_change": None, "up_share_pct": None}}}
+    features = build_live_story_features(report, stage="auction", cutoff="09:26:00")
+    assert features["metrics"]["auction_amount_yuan"]["value"] is None
+    assert features["metrics"]["auction_median_pct"]["value"] is None
+    assert "竞价匹配额" not in " ".join(label for label, _ in _tiles(report, "auction"))
 
 
 def test_live_story_feature_rows_and_market_cutoff_fail_closed():

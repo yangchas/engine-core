@@ -82,13 +82,40 @@ def filter_candidates(candidates: Sequence[Mapping[str, Any]], features: Mapping
         position = source.get("position_asof", source.get("position20_prior"))
         if source.get("auction_price_status"):
             status = str(source["auction_price_status"])
-        reasons_raw = source.get("reasons", source.get("reason", []))
+        # Keep why the candidate was selected separate from why it has not
+        # cleared the current observation filter. Ranking text is never a
+        # rejection reason.
+        reasons_raw = source.get("selection_reasons", source.get("selection_reason", []))
+        if not reasons_raw:
+            reasons_raw = source.get("reasons", [])
         if isinstance(reasons_raw, str): reasons_raw = [reasons_raw]
         reasons = [str(x) for x in reasons_raw] if isinstance(reasons_raw, Sequence) else []
+        filter_reasons = source.get("filter_reasons", [])
+        if isinstance(filter_reasons, str): filter_reasons = [filter_reasons]
+        filter_reasons = [str(x) for x in filter_reasons if x]
+        if not filter_reasons:
+            amount = _number(source, "match_amount_yuan", "auction_amount_yuan")
+            unlimited = bool(source.get("is_unlimited_price_band") or source.get("price_band_label") == "新股/无涨跌幅限制")
+            if status in {"INDICATIVE", "PRICE_PROXY"}:
+                filter_reasons.append("竞价价仍为指示价，终价未确认")
+            elif unlimited:
+                filter_reasons.append("新股无涨跌幅限制，竞价位置不可按涨跌停判断")
+            elif status in {"LIMIT_UP", "AT_LIMIT_UP", "SEALED_UP"} or source.get("auction_limit_state") in (1, "1", "UP", "LIMIT_UP"):
+                filter_reasons.append("竞价已在涨停价，无法按可买入候选处理")
+            elif amount is not None and amount < 10_000_000:
+                filter_reasons.append("竞价金额过小")
+            elif position is not None and _number(source, "position_asof", "position20_prior", "position") is not None and _number(source, "position_asof", "position20_prior", "position") >= .8:
+                filter_reasons.append("昨日位置偏高")
+            elif source.get("plate_qualified") is False:
+                filter_reasons.append("所属板块不满足观察范围")
+            elif status in {"UNKNOWN", "MISSING", "UNAVAILABLE"}:
+                filter_reasons.append("价格或成交数据缺失")
+            else:
+                filter_reasons.append("当前截点条件尚未满足")
         relative = _number(source, "relative0945", "relative_pct", "relative_to_plate_pp")
         condition, risk = _candidate_language(source, bucket, status, position, relative)
         if not reasons:
-            reasons = [str(source.get("reason") or condition)]
+            reasons = ["板内竞价金额与相对表现值得继续观察"]
         if position is None and "position" in source:
             position = source.get("position")
         ref = source.get("origin_refs", source.get("refs", []))
@@ -98,6 +125,7 @@ def filter_candidates(candidates: Sequence[Mapping[str, Any]], features: Mapping
             "condition": {"claim_id": f"candidate:{symbol}:condition", "text": condition,
                           "refs": list(ref) if isinstance(ref, Sequence) and not isinstance(ref, str) else []},
             "risk": risk, "origin_refs": list(ref) if isinstance(ref, Sequence) and not isinstance(ref, str) else [],
+            "filter_reasons": filter_reasons,
             "price_status": status, "position_asof": source.get("position_asof"), "asof": asof,
             "origin": str(source.get("origin", "A_TO_B")), "_index": i}
         if symbol and symbol in seen:
@@ -120,8 +148,7 @@ def filter_candidates(candidates: Sequence[Mapping[str, Any]], features: Mapping
     reason_counts: dict[str, int] = {}
     for bucket_rows in rows.values():
         for row in bucket_rows:
-            for reason in row["reasons"]:
-                label = str(reason["text"])
+            for label in row["filter_reasons"]:
                 reason_counts[label] = reason_counts.get(label, 0) + 1
     shown = {}
     for bucket, label in _LABEL.items():

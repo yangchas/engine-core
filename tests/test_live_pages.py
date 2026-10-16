@@ -17,6 +17,11 @@ def test_migrated_renderer_compatibility_json_matches_fixture_fields():
         json.loads(json.dumps(cli_json, ensure_ascii=False, allow_nan=False))
     assert compatibility_cli.render_page is live_pages.render_page
     assert payload["chapters"]["extremes_board"]["auction"]["selected_count"] == 0
+    assert payload["chapters"]["market_price_volume"]["status"] == "STALE"
+    assert payload["chapters"]["market_price_volume"]["market_match_amount_yuan"] is None
+    assert payload["chapters"]["market_price_volume"]["symbol_count"] is None
+    assert payload["chapters"]["market_price_volume"]["priced_symbol_count"] is None
+    assert payload["snapshots"][-1]["market_match_amount_yuan"] is None
     assert "竞价先选极值集合" in from_library_html
 
 

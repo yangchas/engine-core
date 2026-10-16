@@ -21,6 +21,17 @@ def test_renderer_escapes_structured_report_and_marks_missing():
     assert len(html.encode("utf-8")) <= 120 * 1024
 
 
+def test_stale_intraday_report_does_not_present_missing_coverage_as_zero():
+    report = {"trade_date": "2026-10-15", "chapters": {
+        "market_price_volume": {"status": "STALE", "symbol_count": None,
+                                "priced_symbol_count": None, "market_match_amount_yuan": None}}}
+    manifest = {"sources": {"td": {"coverage": {"symbols": 0, "priced_symbols": 0}}}}
+    html, plain = render_email_html(report, "auction_0926", "2026-10-15", manifest=manifest)
+    assert "覆盖未知" in html + plain
+    assert "覆盖：0 / 0" not in html + plain
+    assert "有价标的数</div><b" not in html
+
+
 def test_renderer_emits_a_share_bar_and_inline_safe_email_layout():
     report = {"trade_date": "2026-10-15", "conclusion": ["一条事实"],
                   "chapters": {"plate_changes": [{"name": "通信", "amount_share_pct": 19.6,

@@ -41,6 +41,16 @@ def test_selection_uses_0925_threshold_union_and_reason_without_lookahead():
         mutated, k_abs=1, k_amount=1, min_auction_amount_yuan=30_000_000)["auction"]["rows"]] == list(selected)
 
 
+def test_unlimited_listing_is_never_called_limit_price_or_buyable():
+    row = {"symbol": "301569", "name": "新股", "auction_pct": 285.7,
+           "auction_amount_yuan": 100_000_000, "is_new_listing": True,
+           "limit_pct": None}
+    board = build_extremes_board([row], k_abs=1, k_amount=1,
+                                 min_auction_amount_yuan=0)
+    assert board["auction"]["excluded_unlimited"][0]["auction_state"] == "新股无涨跌停限制"
+    assert "绝对值#" in board["rank_legend"] and "额#" in board["rank_legend"]
+
+
 def test_stage_tracking_keeps_missing_missing_and_indicative_label():
     board = build_extremes_board(_rows(), k_abs=2, k_amount=1, min_auction_amount_yuan=0)
     indicative = next(r for r in board["open"]["rows"] if r["symbol"] == "600002")

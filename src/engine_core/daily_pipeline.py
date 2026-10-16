@@ -53,7 +53,18 @@ def _shrink_live_report(report: dict[str, Any], *, plate_cap: int = 20, row_cap:
     chapters = report.get("chapters") if isinstance(report.get("chapters"), dict) else {}
     cut(chapters.get("market_price_volume"), "top_plates_by_share", plate_cap)
     cut(chapters.get("plate_quadrants"), "rows", row_cap)
-    cut(chapters.get("watchlist"), "behavior_candidates", 15)
+    cut(chapters.get("watchlist"), "behavior_candidates", 5)
+    extremes = chapters.get("extremes_board")
+    if isinstance(extremes, dict):
+        stage = str(report.get("stage", ""))
+        inactive = (("open", "close") if stage.startswith("auction") else
+                    ("close",) if stage.startswith("open") else ())
+        for name in inactive:
+            block = extremes.get(name)
+            if isinstance(block, dict):
+                for key in ("rows", "rebound_top8", "weak_top8", "amount_cohort"):
+                    if isinstance(block.get(key), list):
+                        block[key] = []
     for snap in report.get("snapshots", []) if isinstance(report.get("snapshots"), list) else []:
         cut(snap, "top_plates_by_share", plate_cap)
     terminal = report.get("auction_terminal_0925")
@@ -783,6 +794,29 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     "position20_prior": metrics.get("position20_prior", metrics.get("position20")),
                     "reasons": candidate.get("reasons", []),
                     "origin": "A_TO_B"})
+        # Yesterday's highboard leaders are valid observation objects in their
+        # own right; retain them alongside B peers when they have an auction row.
+        known_symbols = {str(row.get("symbol", "")).zfill(6) for row in funnel_candidates}
+        highboards = payload.get("chapters", {}).get("yesterday_highboards", []) if isinstance(payload.get("chapters"), Mapping) else []
+        for row in highboards if isinstance(highboards, list) else []:
+            if not isinstance(row, Mapping):
+                continue
+            symbol = str(row.get("symbol", row.get("code", ""))).zfill(6)
+            auction = next((r for r in live_stocks if isinstance(r, Mapping) and
+                            str(r.get("symbol", "")).zfill(6) == symbol), {})
+            if not symbol or symbol in known_symbols or not auction:
+                continue
+            pct = auction.get("auction_pct", auction.get("p0925_pct"))
+            funnel_candidates.append({"symbol": symbol, "name": row.get("name", symbol),
+                "bucket": "wait", "selection_reason": "昨日高标，跟踪竞价承接",
+                "condition": ("开盘后确认是否仍封住，或观察开板回落" if auction.get("auction_limit_state") in (1, "1")
+                              else "观察0932价格是否保持并相对板块转强"),
+                "risk": "高标波动与竞价承接不足", "auction_price_status": auction.get("auction_price_status", "UNKNOWN"),
+                "auction_pct": pct, "match_amount_yuan": auction.get("auction_amount_yuan"),
+                "auction_limit_state": auction.get("auction_limit_state"), "origin": "YESTERDAY_HIGHBOARD"})
+            known_symbols.add(symbol)
+            if len(funnel_candidates) >= 30:
+                break
         story_funnel = filter_candidates(funnel_candidates, features, asof=point)
         previous_acts = []
         if stage == "open" and isinstance(payload.get("handoff"), Mapping):
@@ -804,8 +838,25 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             auction_ref = payload["handoff"].get("auction_0925")
             terminal_for_events = auction_ref.get("final_0925") if isinstance(auction_ref, Mapping) else None
         history_rows = payload.get("history", {}).get("daily", []) if isinstance(payload.get("history"), Mapping) else []
-        if isinstance(terminal_for_events, Mapping) and isinstance(history_rows, list):
+        terminal_usable = (isinstance(terminal_for_events, Mapping)
+                           and terminal_for_events.get("status") not in {"STALE", "NOT_READY", "NOT_YET_AVAILABLE"}
+                           and terminal_for_events.get("symbol_count") != 0)
+        if terminal_usable and isinstance(history_rows, list):
             events = []
+            amount = terminal_for_events.get("market_match_amount_yuan")
+            baseline = terminal_for_events.get("auction_baseline_comparison")
+            if isinstance(amount, (int, float)) and isinstance(baseline, Mapping):
+                multiple, percentile = baseline.get("multiple"), baseline.get("percentile")
+                previous = terminal_for_events.get("vs_previous_day_final")
+                prev_text = f"，约为昨日终值{float(previous):.2f}倍" if isinstance(previous, (int, float)) else ""
+                if isinstance(multiple, (int, float)) and isinstance(percentile, (int, float)):
+                    baseline_yi = baseline.get("median_yi")
+                    summary = (f"竞价额{amount / 1e8:.1f}亿{prev_text}；64日同刻基线"
+                               f"{float(baseline_yi):.1f}亿，{multiple:.2f}倍、"
+                               f"第{percentile:.0f}分位，不算异常放量。")
+                    events.append({"id": "auction_amount_context", "metric": "auction_amount_yuan",
+                                   "display_label": "对照观察", "summary": summary})
+            breadth_parts = []
             for metric, current_key, history_key, label in (
                 ("auction_median_pct", "median_pct_change", "median_open_pct", "竞价中位数"),
                 ("auction_up_share", "up_share_pct", "up_share_pct", "竞价上涨占比"),
@@ -814,11 +865,45 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 values = [row.get(history_key) for row in history_rows if isinstance(row, Mapping)
                           and row.get("date") and str(row.get("date")) < trade_date
                           and isinstance(row.get(history_key), (int, float))]
-                if isinstance(current, (int, float)) and len(values) >= 20 and current < min(values):
-                    events.append({"id": f"auction:{metric}", "metric": metric,
-                        "display_label": "历史低位", "value": current / 100 if metric == "auction_up_share" else current,
-                        "historical_n": len(values), "ranks": {"ascending": 1, "n": len(values)},
-                        "quality": ["PRIOR_DAILY_HISTORY"], "ref": ["history.daily", "auction_terminal_0925"]})
+                if isinstance(current, (int, float)) and len(values) >= 20:
+                    rank = 1 + sum(value < current for value in values)
+                    suffix = "低" if rank <= len(values) / 2 else "高"
+                    breadth_parts.append(f"{label}{current:.2f}{'%' if metric == 'auction_up_share' else '个百分点'}，64日第{rank}/{len(values)}{suffix}")
+            if breadth_parts:
+                events.append({"id": "auction_breadth_context", "metric": "auction_up_share",
+                               "display_label": "历史异常" if any("第1/" in part for part in breadth_parts) else "对照观察",
+                               "summary": "；".join(breadth_parts) + "。"})
+            if stage == "auction":
+                highboards = payload.get("chapters", {}).get("yesterday_highboards", [])
+                summary_data = payload.get("chapters", {}).get("yesterday_highboards_summary", {})
+                pool = summary_data.get("yesterday_limit_pool", {}) if isinstance(summary_data, Mapping) else {}
+                ladder_parts = []
+                if isinstance(pool, Mapping) and isinstance(pool.get("mean_pct_change"), (int, float)):
+                    ladder_parts.append(f"昨日涨停池竞价均值{pool['mean_pct_change']:+.1f}%")
+                rows = highboards if isinstance(highboards, list) else []
+                four = [r for r in rows if isinstance(r, Mapping) and r.get("prior_streak", r.get("streak")) == 4]
+                three = [r for r in rows if isinstance(r, Mapping) and r.get("prior_streak", r.get("streak")) == 3]
+                if four:
+                    opened = sum(isinstance(r.get("0925"), (int, float)) and r["0925"] > 0 for r in four)
+                    sealed = sum(r.get("status") == "封" for r in four)
+                    ladder_parts.append(f"昨4板{len(four)}只：{opened}只高开、{sealed}只封停价")
+                if three:
+                    weakest = min(three, key=lambda r: r.get("0925") if isinstance(r.get("0925"), (int, float)) else 999)
+                    if isinstance(weakest.get("0925"), (int, float)):
+                        ladder_parts.append(f"昨3板最弱{weakest.get('name', weakest.get('symbol'))} {weakest['0925']:+.1f}%")
+                snapshots = payload.get("snapshots", [])
+                if isinstance(snapshots, list):
+                    cuts = {r.get("label"): r.get("top_plates_by_share", []) for r in snapshots if isinstance(r, Mapping)}
+                    old = {r.get("code"): r for r in cuts.get("0924", []) if isinstance(r, Mapping)}
+                    latest = [r for r in cuts.get("0925", []) if isinstance(r, Mapping)]
+                    changes = [(r, r.get("amount_share_bp", 0) - old[r.get("code")].get("amount_share_bp", 0))
+                               for r in latest if r.get("code") in old]
+                    if changes:
+                        plate, delta = max(changes, key=lambda pair: abs(pair[1]))
+                        ladder_parts.append(f"板块份额变化最大：{plate.get('name')} {delta:+.0f}bp")
+                if ladder_parts:
+                    events.append({"id": "auction_ladder_plate_context", "metric": "auction_up_share",
+                                   "display_label": "对照观察", "summary": "；".join(ladder_parts) + "。"})
             payload["story"]["top_events"] = events[:3]
         from .email_render import render_email_html
         email_page, _ = render_email_html(payload, stage, trade_date, {
@@ -1043,13 +1128,13 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         report_payload = {key: value for key, value in data.items() if key != "stocks"}
         report_text = json.dumps(report_payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
         close_manifest["input_files"] = close_manifest.get("input_files", {})
-    if len(report_text.encode("utf-8")) > 300_000:
+    if len(report_text.encode("utf-8")) > 250_000:
         try:
             _obj = json.loads(report_text)
             _sizes = sorted(((len(json.dumps(v, ensure_ascii=False)), k) for k, v in _obj.items()), reverse=True)[:5]
         except Exception:
             _sizes = []
-        raise ValueError("report.json exceeds 300 KB; largest keys: " + ", ".join(f"{k}={n}" for n, k in _sizes))
+        raise ValueError("report.json exceeds 250 KB; largest keys: " + ", ".join(f"{k}={n}" for n, k in _sizes))
     (out / "report.json").write_text(report_text, encoding="utf-8")
     if stage != "close":
         close_manifest = {}

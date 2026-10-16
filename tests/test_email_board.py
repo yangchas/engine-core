@@ -279,3 +279,15 @@ def test_auction_extremes_table_is_name_only_and_open_stage_tracks_fixed_union()
         "data_gaps": []}, "auction", "2026-10-15")
     auction_visible = re.sub(r"<[^>]*>", " ", auction_html) + auction_plain
     assert "0932" not in auction_visible and "0945" not in auction_visible
+
+
+def test_extremes_table_explains_rank_columns_and_marks_missing_plate():
+    from engine_core.email_board import _extremes
+    from engine_core.extremes_board import build_extremes_board
+    board = build_extremes_board([{"symbol": "600001", "name": "甲", "auction_pct": 2,
+                                   "auction_amount_yuan": 50_000_000,
+                                   "auction_price_status": "FINAL"}],
+                                 k_abs=1, k_amount=0, min_auction_amount_yuan=0)
+    _, text = _extremes({"extremes_board": board}, "auction")
+    assert "无板块" in text
+    assert "绝对值#=竞价涨跌幅绝对值排名" in text and "额#=竞价匹配额排名" in text

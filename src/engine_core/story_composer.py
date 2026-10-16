@@ -149,24 +149,36 @@ def compose_story(features: Mapping[str, Any], anomalies: Sequence[Mapping[str, 
         current = act_stage == stage
         if not current:
             acts.append({"stage": act_stage, "status": "UNOBSERVED",
-                         "lead": _claim(f"story:{act_stage}:lead", "该幕没有独立截点记录。"),
+                         "lead": _claim(f"story:{act_stage}:lead", "未到：该幕尚无独立截点记录。"),
                          "evidence": [], "transition": {"from": None, "condition_id": None,
                          "observed_result": None, "rule_id": None}, "pending_conditions": [], "template_ids": []})
             continue
         relevant = [(k, metrics[k]) for k in lead_keys if k in metrics and isinstance(metrics[k], Mapping)
                     and metrics[k].get("value") is not None]
+        evidence_rows = list(relevant[:3])
+        transition_text = None
+        if act_stage == "open":
+            path_keys = ("auction_up_share", "p0932_up_share", "p0938_up_share", "p0945_up_share")
+            path_values = [(key, metrics[key]) for key in path_keys
+                           if key in metrics and isinstance(metrics[key], Mapping)
+                           and metrics[key].get("value") is not None]
+            if len(path_values) >= 2:
+                path = "→".join(f"{float(value['value']):.1%}" for _, value in path_values)
+                transition_text = f"竞价→开盘广度路径为{path}，改善但仍是少数个股上涨；第三、四幕未到。"
+                evidence_rows = path_values[:3]
         evidence = [_claim(f"story:{act_stage}:evidence:{i}", f"{_metric_label(k)}：{_fmt(v.get('value'), _metric_unit(k, v.get('unit')))}", v.get("refs", []))
-                    for i, (k, v) in enumerate(relevant[:3])]
+                    for i, (k, v) in enumerate(evidence_rows)]
         label = _LABEL[act_stage]
         active_templates = matched_templates
         stage_values = lead_values[:3]
         text = (str(active_templates[0].get("neutral_sentence")) if active_templates else
                 f"{label}观测：" + "；".join(stage_values) + "。" if relevant else
-                f"{label}截点没有可用事实，结论保留缺口。")
+                f"{label}截点没有可用事实，数据缺口待补。")
         acts.append({"stage": act_stage, "status": "OBSERVED",
                      "lead": _claim(f"story:{act_stage}:lead", text, refs), "evidence": evidence,
                      "transition": {"from": None, "condition_id": None, "observed_result": None,
                                     "rule_id": None}, "pending_conditions": [],
+                     "transition_text": transition_text,
                      "template_ids": [str(x.get("id")) for x in active_templates]})
     top = []
     for ev in events:
@@ -174,11 +186,19 @@ def compose_story(features: Mapping[str, Any], anomalies: Sequence[Mapping[str, 
                     "value": ev["value"], "baseline": ev["baseline"], "ref": ev["ref"], "quality": ",".join(ev["quality"]),
                     "historical_n": next((a.get("n") for a in anomalies if a.get("id") == ev["id"]), None),
                     "ranks": next((a.get("ranks") for a in anomalies if a.get("id") == ev["id"]), {})})
+    quality = list(features.get("quality", []))
+    scope = "指示价数量、关系快照PIT日期滞后与成交队列状态按本报告可用字段标注；缺失项不补零。"
+    if "AUCTION_TERMINAL_PARTIAL" in quality:
+        scope = "0925终价仍在到达（PARTIAL）；当前覆盖不完整，关系快照PIT日期滞后见附录，未使用成交队列。"
+    elif "MARKET_SLICE_MISSING" in quality:
+        scope = "TD当日切片缺失；仅展示已到达截点，指示价数量UNKNOWN，关系快照PIT日期滞后见附录，未使用成交队列。"
+    elif "MARKET_SLICE_PARTIAL" in quality:
+        scope = "TD当日切片未全部到达（PARTIAL）；指示价数量与完整覆盖待补，关系快照PIT日期滞后见附录，未使用成交队列。"
     return {"schema": "StoryV1", "trade_date": date, "stage": stage,
             "generated_at": features.get("observed_at"), "headline": _claim("story:headline", headline_text, refs),
             "top_events": top[:3], "acts": acts[:4], "funnel": {
                 **{k: shown.get(k, [])[:5] for k in ("watch", "wait", "exclude")},
                 "counts": dict(funnel.get("counts", {})),
                 "reason_counts": dict(funnel.get("reason_counts", {}))},
-            "quality": list(features.get("quality", [])), "refs": refs,
+            "quality": quality, "scope_note": scope, "refs": refs,
             "template_status": "DESCRIPTIVE_ONLY"}

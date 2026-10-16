@@ -341,6 +341,20 @@ def test_shrink_live_report_caps_lists_and_records_totals():
     assert len(out["chapters"]["market_price_volume"]["top_plates_by_share"]) == 20
     assert out["chapters"]["market_price_volume"]["top_plates_by_share_total"] == 100
     assert len(out["chapters"]["plate_quadrants"]["rows"]) == 30
-    assert len(out["chapters"]["watchlist"]["behavior_candidates"]) == 15
+    assert len(out["chapters"]["watchlist"]["behavior_candidates"]) <= 5
     assert len(out["snapshots"][0]["top_plates_by_share"]) == 20
     assert len(out["auction_terminal_0925"]["top_plates_by_share"]) == 20
+
+
+def test_shrink_live_report_compacts_auction_extremes_and_behavior_candidates():
+    from engine_core.daily_pipeline import _shrink_live_report
+    report = {"stage": "auction_0926", "chapters": {
+        "watchlist": {"behavior_candidates": [{"symbol": str(i), "name": "甲", "extra": "x" * 100}
+                                                for i in range(12)]},
+        "extremes_board": {"auction": {"rows": [{"symbol": "1"}],
+                            "rebound_top8": [], "weak_top8": [], "amount_cohort": []},
+                           "open": {"rows": [{"symbol": "2"}], "rebound_top8": [{"symbol": "3"}],
+                                    "weak_top8": [], "amount_cohort": []}}}}
+    out = _shrink_live_report(report)
+    assert len(out["chapters"]["watchlist"]["behavior_candidates"]) <= 5
+    assert out["chapters"]["extremes_board"]["open"]["rows"] == []

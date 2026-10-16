@@ -29,7 +29,7 @@ def _stage_value(key: str, value: Any, stage: str) -> bool:
     if stage == "auction":
         return not any(token in name for token in ("p0932", "p0945", "open_", "intraday"))
     if stage == "open":
-        return not any(token in name for token in ("p0945", "intraday"))
+        return not any(token in name for token in ("intraday",))
     if stage == "intraday":
         return True
     return True
@@ -188,7 +188,8 @@ def build_live_story_features(report: Mapping[str, Any], *, stage: str, cutoff: 
         add("auction_limit_up_price_count", terminal.get("limit_up") if valid_terminal else None, "auction_terminal_0925", "count", event_at)
         add("auction_limit_down_price_count", terminal.get("limit_down") if valid_terminal else None, "auction_terminal_0925", "count", event_at)
     if market and (stage == "auction" or phase in {"AUCTION", "OPEN"}):
-        prefix = "auction" if stage == "auction" else "p0945"
+        prefix = "auction" if stage == "auction" else (
+            "p0945" if _at_or_before("09:45:00", cutoff) else "open")
         event_at = market.get("asof") or cutoff
         valid_market = (market.get("status") not in {"STALE", "NOT_READY", "NOT_YET_AVAILABLE"}
                         and market.get("symbol_count") != 0 and _at_or_before(event_at, cutoff))
@@ -204,10 +205,11 @@ def build_live_story_features(report: Mapping[str, Any], *, stage: str, cutoff: 
             add("open_up_share", float(share) / 100 if isinstance(share, (int, float)) else None,
                 "market_price_volume", "ratio", event_at)
             add("open_amount_yuan", amount, "market_price_volume", "yuan", event_at)
-            add("p0945_amount_yuan", amount, "market_price_volume", "yuan", event_at)
-            add("p0945_median", median, "market_price_volume", "pp", event_at)
-            add("p0945_up_share", float(share) / 100 if isinstance(share, (int, float)) else None,
-                "market_price_volume", "ratio", event_at)
+            if _at_or_before("09:45:00", cutoff):
+                add("p0945_amount_yuan", amount, "market_price_volume", "yuan", event_at)
+                add("p0945_median", median, "market_price_volume", "pp", event_at)
+                add("p0945_up_share", float(share) / 100 if isinstance(share, (int, float)) else None,
+                    "market_price_volume", "ratio", event_at)
         # Keep compact plate facts in the bundle; downstream rendering can use them as evidence.
         add("plate_top_share", market.get("top_plates_by_share") if valid_market else None, "market_price_volume", "rows", event_at)
         add("market_limit_up_price_count", market.get("limit_up") if valid_market else None, "market_price_volume", "count", event_at)
@@ -224,6 +226,8 @@ def build_live_story_features(report: Mapping[str, Any], *, stage: str, cutoff: 
     snapshots = report.get("snapshots") if isinstance(report.get("snapshots"), list) else []
     for row in snapshots:
         if not isinstance(row, Mapping):
+            continue
+        if row.get("status") in {"STALE", "NOT_READY", "NOT_YET_AVAILABLE"} or row.get("symbol_count") == 0:
             continue
         label = str(row.get("label") or row.get("tag") or "").replace(":", "")
         stamp = row.get("asof") or row.get("observed_at") or row.get("timestamp")
@@ -242,6 +246,15 @@ def build_live_story_features(report: Mapping[str, Any], *, stage: str, cutoff: 
                                     ("amount_yuan", amount, "yuan")):
             facts[f"{key}_{suffix}"] = {"value": value, "unit": unit, "event_cutoff": stamp,
                                         "refs": [f"snapshots:{label}"]}
+
+    # The open-stage headline is the first continuous post-auction checkpoint,
+    # not whichever later slice happens to be the report's current market row.
+    if stage == "open":
+        for metric, snapshot_metric in (("open_median_pct", "p0932_median_pct"),
+                                       ("open_up_share", "p0932_up_share"),
+                                       ("open_amount_yuan", "p0932_amount_yuan")):
+            if snapshot_metric in facts:
+                facts[metric] = facts[snapshot_metric]
 
     ladder = report.get("ladder_section") if isinstance(report.get("ladder_section"), Mapping) else {}
     extremes = report.get("extremes_board")
@@ -265,6 +278,18 @@ def build_live_story_features(report: Mapping[str, Any], *, stage: str, cutoff: 
         if isinstance(quadrants, Mapping) else cutoff}
     facts["candidate_refs"] = report.get("a_to_b", [])
     facts["source_refs"] = refs
+    degradation = report.get("degraded", [])
+    quality = ["LIVE_INPUT_DEGRADED"] if degradation else []
+    terminal_status = report.get("auction_terminal_0925", {}).get("status") if isinstance(report.get("auction_terminal_0925"), Mapping) else None
+    if terminal_status == "PARTIAL":
+        quality.append("AUCTION_TERMINAL_PARTIAL")
+    if not market or market.get("symbol_count") in (None, 0):
+        quality.append("MARKET_SLICE_MISSING")
+    elif market.get("status") == "PARTIAL":
+        quality.append("MARKET_SLICE_PARTIAL")
+    facts["quality"] = quality
+    if degradation:
+        facts["source_refs"] = refs + ["degraded:" + str(x) for x in degradation[:5]]
     provenance = {"source_fidelity": "LIVE_REPORT", "refs": refs}
     return build_story_features(facts, stage=stage, cutoff=cutoff,
                                 observed_at=observed_at, provenance=provenance)
