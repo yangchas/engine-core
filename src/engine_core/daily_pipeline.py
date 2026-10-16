@@ -714,6 +714,9 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         hot_dir = refs["kaipan_hot_dir"]
         if hot_dir:
             hotfiles = sorted(hot_dir.glob("hot_*.json"))
+            if asof_cutoff is not None:  # point-in-time: never read a capture taken after the report cutoff
+                cutoff_tag = asof_cutoff.strftime("%H%M%S")
+                hotfiles = [path for path in hotfiles if path.stem.split("_")[-1] <= cutoff_tag]
             hot_path = str(hotfiles[-1]) if hotfiles else None
         baseline_csv = str(refs["auction_baseline"]) if refs["auction_baseline"] else None
         page, payload = live_pages.render_page(
