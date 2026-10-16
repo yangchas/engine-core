@@ -50,6 +50,15 @@ def _shrink_live_report(report: dict[str, Any], *, plate_cap: int = 20, row_cap:
         if isinstance(container, dict) and isinstance(container.get(key), list) and len(container[key]) > cap:
             container[f"{key}_total"] = len(container[key])
             container[key] = container[key][:cap]
+    themes = report.get("limit_reason_themes")
+    if isinstance(themes, (dict, list)) and len(json.dumps(themes, ensure_ascii=False)) > 20_000:
+        rows = list(themes.values()) if isinstance(themes, dict) else themes
+        by_source: dict[str, int] = {}
+        for row in rows:
+            key = str(row.get("theme_source")) if isinstance(row, dict) else "UNKNOWN"
+            by_source[key] = by_source.get(key, 0) + 1
+        report["limit_reason_themes"] = {"count": len(rows), "by_source": by_source,
+                                         "note": "full mapping omitted from report.json; see ladder clusters"}
     chapters = report.get("chapters") if isinstance(report.get("chapters"), dict) else {}
     cut(chapters.get("market_price_volume"), "top_plates_by_share", plate_cap)
     cut(chapters.get("plate_quadrants"), "rows", row_cap)
