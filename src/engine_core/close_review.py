@@ -639,8 +639,7 @@ def _reference_path(root: Path, key: str, catalog_path: str | None = None) -> Pa
             return candidate if candidate.is_absolute() else root / candidate
     except (OSError, ValueError, AttributeError):
         pass
-    matches = sorted(root.rglob("auction_amount_by_day.csv")) if key == "auction_baseline" and root.exists() else []
-    return matches[-1] if matches else None
+    return None
 
 
 def _close_plate_metadata(relation_dir: str | None) -> tuple[dict[str, dict[str, Any]], str]:
@@ -659,11 +658,11 @@ def _close_plate_metadata(relation_dir: str | None) -> tuple[dict[str, dict[str,
     return metadata, (f"{match.group()[:4]}-{match.group()[4:6]}-{match.group()[6:8]}" if match else "UNKNOWN")
 
 
-def _attach_auction_baseline(data: dict[str, Any], path: Path | None) -> None:
+def _attach_auction_baseline(data: dict[str, Any], path: Path | list[dict[str, Any]] | None) -> None:
     market = data.get("market")
     if not isinstance(market, dict):
         return
-    if not path or not path.is_file():
+    if not path or (not isinstance(path, list) and not path.is_file()):
         gaps = data.setdefault("data_gaps", [])
         if not isinstance(gaps, list):
             gaps = data["data_gaps"] = [str(gaps)]

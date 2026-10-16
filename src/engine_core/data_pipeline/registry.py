@@ -25,9 +25,9 @@ class DatasetSpec:
 
 
 _SPECS = (
-    DatasetSpec("daily_kline", "baostock_then_wencai", "after_17:40_and_bounded_20:00_retry",
+    DatasetSpec("daily_kline", "baostock>wencai>q2_final", "15:05_degrade_17:30_formal",
                 max_redis_payload_bytes=65536, dependencies=("trade_calendar", "symbol_universe"),
-                source_dependency="baostock_or_independent_wencai", key_fields=("symbol",),
+                source_dependency="tiered_baostock_wencai_legacy_redis_q2", key_fields=("symbol",),
                 required_fields=("symbol",)),
     DatasetSpec("limit_up_pool", "kaipan_getHisBans", "08:50", max_redis_payload_bytes=262144,
                 dependencies=("daily_kline", "trade_calendar"), source_dependency="kaipan",

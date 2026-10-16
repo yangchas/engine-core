@@ -13,6 +13,10 @@ from ...daily_kline_capture import parse_row, to_baostock_code
 
 
 class BaostockDailyProvider:
+    source = "baostock"
+    source_dependency = "independent_provider"
+    available_at_rule = "trade_date 17:30 Asia/Shanghai"
+
     def __init__(self, *, client_factory: Callable[[], Any], symbols: Sequence[str] | Callable[[str], Sequence[str]],
                  timeout_seconds: float = 20, retries: int = 2, max_consecutive_errors: int = 25,
                  sleep_fn: Callable[[float], None] = time.sleep, timeout_call: Callable[..., Any] | None = None,

@@ -28,7 +28,8 @@ class DailySources:
     """All runtime inputs are injected; tests can supply small in-memory fakes."""
     td: Any = None
     redis: Any = None
-    reference_root: Path | str = Path("/home/exedev/validation")
+    reference_root: Path | str | None = None
+    slice_reader: Any = None
     td_error: str | None = None
     wencai_fetch: Any = None
     daily_kline_rows: Any = None
@@ -116,9 +117,9 @@ def _date_from_path(path: Path) -> str | None:
 
 
 def _dated_candidates(root: Path, patterns: tuple[str, ...], trade_date: str) -> list[Path]:
-    paths = {p for pattern in patterns for p in root.rglob(pattern)} if root.exists() else set()
-    return sorted((p for p in paths if p.is_file() and (_date_from_path(p) or "") <= trade_date),
-                  key=lambda p: (_date_from_path(p) or "", str(p)), reverse=True)
+    # Recursive file discovery is deliberately disabled. File based replay must
+    # name an explicit catalog entry and opt into CORE_ALLOW_FILE_FALLBACK.
+    return []
 
 
 def _catalog_path(root: Path, catalog_path: str | Path | None) -> Path:
@@ -144,7 +145,7 @@ def _history_file_date(path: Path, trade_date: str) -> str | None:
 def resolve_references(root: str | Path, trade_date: str, *, stage: str = "auction",
                        catalog_path: str | Path | None = None,
                        redis: Any = None) -> tuple[dict[str, Path | None], dict[str, dict[str, Any]]]:
-    """Resolve references from an explicit catalog, then deterministic dated fallback."""
+    """Resolve explicit replay references only; never discover files recursively."""
     base = Path(root)
     specs = {
         "stock_day_facts": ("stock_day_facts",),
@@ -204,62 +205,11 @@ def resolve_references(root: str | Path, trade_date: str, *, stage: str = "aucti
                                          "version": pointer.get("version")}
             except Exception:
                 continue
-    for key, patterns in specs.items():
-        if paths[key] is not None: continue
-        if key == "daily_history":
-            candidates = {p for pattern in patterns for p in base.rglob(pattern)} if base.exists() else set()
-            candidates = sorted((p for p in candidates if p.is_file()
-                                 and (_history_file_date(p, trade_date) or "") < trade_date),
-                                key=lambda p: (_history_file_date(p, trade_date) or "", str(p)), reverse=True)
-        else:
-            candidates = _dated_candidates(base, patterns, trade_date)
-        if candidates:
-            paths[key] = candidates[0]
-            metadata[key]["as_of"] = (_history_file_date(candidates[0], trade_date) if key == "daily_history"
-                                       else _date_from_path(candidates[0]) or "UNKNOWN")
-    capture_manifest = paths["daily_capture_manifest"]
-    if capture_manifest:
-        try: capture_day = str(json.loads(capture_manifest.read_text(encoding="utf-8")).get("date") or "")
-        except (OSError, ValueError): capture_day = _date_from_path(capture_manifest.parent) or ""
-        if (not re.fullmatch(r"\d{4}-\d{2}-\d{2}", capture_day) or capture_day > trade_date
-                or (stage != "close" and capture_day >= trade_date)):
-            paths["daily_capture_manifest"] = None
-        else:
-            metadata["daily_capture_manifest"]["as_of"] = capture_day
-    if paths["daily_capture_manifest"] is None:
-        captures = []
-        for path in (base.rglob("manifest.json") if base.exists() else []):
-            if not path.is_file() or not (path.parent / "daily_kline.jsonl").is_file(): continue
-            try: capture_day = str(json.loads(path.read_text(encoding="utf-8")).get("date") or "")
-            except (OSError, ValueError): capture_day = _date_from_path(path.parent) or ""
-            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", capture_day): continue
-            if capture_day > trade_date or (stage != "close" and capture_day >= trade_date): continue
-            captures.append((capture_day, path))
-        if captures:
-            day, paths["daily_capture_manifest"] = max(captures, key=lambda item: (item[0], str(item[1])))
-            metadata["daily_capture_manifest"]["as_of"] = day
-    relation_dirs = [p.parent for p in (base.rglob("registry.json") if base.exists() else [])
-                     if (p.parent / "relation.csv").is_file()]
-    relation_cutoff = trade_date if stage == "close" else (datetime.strptime(trade_date, "%Y-%m-%d").date().isoformat())
-    relation_dirs = sorted((p for p in relation_dirs
-                            if (_date_from_path(p) or "") < relation_cutoff or
-                            (stage == "close" and (_date_from_path(p) or "") == relation_cutoff)),
-                           key=lambda p: (_date_from_path(p) or "", str(p)), reverse=True)
-    if paths["relation_dir"] is None and relation_dirs:
-        eligible = [p for p in relation_dirs if (_date_from_path(p) or "") < relation_cutoff or
-                    (stage == "close" and (_date_from_path(p) or "") == relation_cutoff)]
-        if eligible: paths["relation_dir"] = sorted(eligible, key=lambda p: (_date_from_path(p) or "", str(p)), reverse=True)[0]
-    if paths["kaipan_hot_dir"] is None:
-        hot_dirs = sorted((p for p in base.rglob("*") if p.is_dir() and list(p.glob("hot_*.json"))
-                           and (_date_from_path(p) or "") <= trade_date),
-                          key=lambda p: (_date_from_path(p) or "", str(p)), reverse=True) if base.exists() else []
-        if hot_dirs: paths["kaipan_hot_dir"] = hot_dirs[0]
+    # Explicit catalogs are replay-only compatibility. File fallback is opt-in and
+    # callers must separately mark it in report provenance.
     if paths["generic_names"] is None:
         bundled_generic = Path(__file__).resolve().parents[2] / "examples/data/plate_generic_factor_names.json"
         if bundled_generic.is_file(): paths["generic_names"] = bundled_generic
-    for key in ("relation_dir", "kaipan_hot_dir"):
-        if paths[key] is not None and metadata[key]["as_of"] == "UNKNOWN":
-            metadata[key]["as_of"] = _date_from_path(paths[key]) or "UNKNOWN"
     return paths, metadata
 
 
@@ -283,17 +233,10 @@ def _relation_lag_trading_days(asof: str, trade_date: str, history_dates: list[s
     return sum(source_day < day <= trade_date for day in dates)
 
 
-def _load_ladder_summary(root: str | Path, trade_date: str) -> list[dict[str, Any]]:
+def _load_ladder_summary(root: str | Path | list[dict[str, Any]] | None, trade_date: str) -> list[dict[str, Any]]:
     """Load a date-matched ladder study; price-limit closes are proxies, not seal facts."""
-    candidates = sorted(Path(root).glob("ladder-emotion-study-*/out_final/ladder_daily.csv"))
-    for path in reversed(candidates):
-        try:
-            with path.open(encoding="utf-8-sig", newline="") as stream:
-                row = next((item for item in csv.DictReader(stream) if item.get("date") == trade_date), None)
-        except OSError:
-            continue
-        if not row:
-            continue
+    candidates = [row for row in root if row.get("date") == trade_date] if isinstance(root, list) else []
+    for row in candidates:
         levels = []
         for level in range(1, 12):
             suffix = str(level) if level < 11 else "11plus"
@@ -315,22 +258,17 @@ def _load_ladder_summary(root: str | Path, trade_date: str) -> list[dict[str, An
     return []
 
 
-def _load_path_study(reference_root: str | Path, trade_date: str) -> tuple[dict[str, dict[str, int]], dict[str, str]]:
+def _load_path_study(reference_root: str | Path | list[dict[str, Any]] | None, trade_date: str) -> tuple[dict[str, dict[str, int]], dict[str, str]]:
     """Load the supplied 14-day descriptive path sample, never treat it as a rule."""
-    path = Path(reference_root) / "ladder-pre0945-study-20261015" / "paths_daily.csv"
-    if not path.is_file():
+    if not isinstance(reference_root, list):
         return {}, {}
-    grouped: dict[str, list[dict[str, str]]] = {}
+    grouped: dict[str, list[dict[str, Any]]] = {}
     today = {}
-    try:
-        with path.open(encoding="utf-8-sig", newline="") as handle:
-            for row in csv.DictReader(handle):
-                kind = str(row.get("path_0945") or "UNKNOWN")
-                grouped.setdefault(kind, []).append(row)
-                if row.get("date") == trade_date:
-                    today[str(row.get("symbol") or "").zfill(6)] = kind
-    except (OSError, csv.Error):
-        return {}, {}
+    for row in reference_root:
+        kind = str(row.get("path_0945") or "UNKNOWN")
+        grouped.setdefault(kind, []).append(row)
+        if row.get("date") == trade_date:
+            today[str(row.get("symbol") or "").zfill(6)] = kind
     frequencies = {}
     for kind, rows in grouped.items():
         observed = [r for r in rows if r.get("outcome_status") not in {"MISSING", "UNKNOWN"}]
@@ -616,7 +554,7 @@ def _td_daily_rows(td: Any, trade_date: str, injected: Any = None) -> list[dict[
 
 def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                        out_root: str | Path = "/home/exedev/validation/daily-reports",
-                       reference_root: str | Path = "/home/exedev/validation",
+                       reference_root: str | Path | None = None,
                        sources: DailySources | None = None, publish: bool = False,
                        dry_run: bool = False, allow_wencai_fallback: bool = False,
                        reference_catalog: str | Path | None = None,
@@ -637,8 +575,43 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             src.redis = _connect_redis()
         except Exception:
             src.redis = None
-    refs, reference_meta = resolve_references(reference_root, trade_date, stage=stage,
-                                              catalog_path=reference_catalog, redis=src.redis)
+    if os.getenv("CORE_ALLOW_FILE_FALLBACK") == "1" and (reference_root is not None or reference_catalog):
+        explicit_root = reference_root or Path(reference_catalog).expanduser().parent
+        refs, reference_meta = resolve_references(explicit_root, trade_date, stage=stage,
+                                                  catalog_path=reference_catalog, redis=src.redis)
+    else:
+        refs, reference_meta = resolve_references("/__core_slice_no_file_fallback__", trade_date,
+                                                  stage=stage, redis=None)
+    from .slices import SliceProviders, SliceReader
+    slice_reader = src.slice_reader or SliceReader(
+        SliceProviders(redis=src.redis).providers(), snapshot_id=f"{trade_date}:{stage}")
+    point = asof or ("09:26:00" if stage == "auction" else "09:46:00" if stage == "open" else "17:40:00")
+    slice_asof = f"{trade_date}T{point}+08:00"
+    slice_names = ("stock_name_map", "plate_registry", "plate_members", "daily_history",
+                   "auction_baseline", "yest_limit_pool", "limit_reason_history", "hot_plates_today",
+                   "hot_plates_yesterday", "hot_rank", "trading_calendar", "path_stats")
+    slice_results = {}
+    slice_timings = {}
+    ordered_slices = ("trading_calendar",) + tuple(name for name in slice_names if name != "trading_calendar")
+    prior_candidates = []
+    for name in ordered_slices:
+        slice_started = time.monotonic()
+        params = {}
+        fallback_key = {"daily_history": "daily_history", "auction_baseline": "auction_baseline",
+                        "stock_name_map": "stock_names"}.get(name)
+        if fallback_key and refs.get(fallback_key) is not None:
+            params["fallback_file"] = str(refs[fallback_key])
+        if name in {"daily_history", "hot_plates_yesterday", "yest_limit_pool"}:
+            calendar_rows = slice_results.get("trading_calendar")
+            if calendar_rows:
+                prior_candidates = sorted({str(row.get("date") or "")[:10]
+                                           for row in calendar_rows.rows
+                                           if str(row.get("date") or "")[:10] < trade_date})
+            params["prior_trade_date"] = prior_candidates[-1] if prior_candidates else None
+            if name in {"hot_plates_yesterday", "yest_limit_pool"}:
+                params["source_date"] = params["prior_trade_date"]
+        slice_results[name] = slice_reader.get(name, trade_date=trade_date, asof=slice_asof, **params)
+        slice_timings[name] = round(time.monotonic() - slice_started, 3)
     if src.td is None and not (stage == "close" and refs.get("stock_day_facts")):
         src.td, src.td_error = _connect_td()
     q2_rows: dict[str, Any] = {}
@@ -658,7 +631,11 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     if src.td_error:
         degraded.append(src.td_error)
     for key in ("auction_baseline", "daily_history", "relation_dir", "kaipan_hot_dir", "stock_names", "stock_caps"):
-        if refs[key] is None: degraded.append(f"MISSING_REFERENCE:{key}")
+        slice_name = {"relation_dir": "plate_members", "kaipan_hot_dir": "hot_plates_today",
+                      "stock_names": "stock_name_map", "stock_caps": "stock_name_map"}.get(key, key)
+        available = slice_results.get(slice_name)
+        if refs[key] is None and (available is None or available.meta.get("status") == "MISSING"):
+            degraded.append(f"MISSING_SLICE:{slice_name}")
     wencai_result = None
     if allow_wencai_fallback and stage in ("auction", "open") and src.td_error:
         fetch = src.wencai_fetch
@@ -691,24 +668,43 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             inputs["daily_capture_data"] = {"path": str(data_path), "sha256": _sha(data_path)}
     relation_dir = refs["relation_dir"]
     relations, plate_names, relation_asof = _load_relations(relation_dir)
+    members_rows = slice_results["plate_members"].rows
+    registry_rows = slice_results["plate_registry"].rows
+    if members_rows:
+        relations = {}
+        for row in members_rows:
+            symbol = str(row.get("symbol") or row.get("stock_code") or row.get("stockid") or "").zfill(6)
+            code = str(row.get("plate_code") or row.get("plateid") or row.get("code") or "")
+            if symbol.strip("0") and code:
+                relations.setdefault(code, []).append(symbol)
+        plate_names = {str(row.get("code") or row.get("plate_code") or row.get("plateid")): str(row.get("name") or "")
+                       for row in registry_rows if row.get("name")}
+        relation_asof = str(slice_results["plate_members"].meta.get("pit_date") or
+                             slice_results["plate_members"].meta.get("asof") or "UNKNOWN")
     plate_metadata = _relation_plate_metadata(relation_dir, relations, plate_names)
-    path_frequencies, path_labels = _load_path_study(reference_root, trade_date)
+    for row in registry_rows:
+        name = str(row.get("name") or "")
+        if name:
+            plate_metadata[name] = {"class": row.get("class", row.get("kind")),
+                                    "size": row.get("size", row.get("members")),
+                                    "code": row.get("code", row.get("plate_code"))}
+    path_frequencies, path_labels = _load_path_study(slice_results["path_stats"].rows, trade_date)
     relation_lag = None
-    if relation_asof != "UNKNOWN" and refs["daily_history"]:
+    if relation_asof != "UNKNOWN" and slice_results["daily_history"].rows:
         try:
             import csv
             from .live_session import load_daily_history_csv
             session_dates = [str(row.get("date") or "")[:10] for row in
-                             load_daily_history_csv(refs["daily_history"], trade_date=trade_date)]
+                             load_daily_history_csv(slice_results["daily_history"].rows, trade_date=trade_date)]
             relation_lag = _relation_lag_trading_days(relation_asof, trade_date, session_dates)
         except (OSError, ValueError):
             pass
-    stock_names = {}
-    if refs["stock_names"]:
-        try:
-            stock_names = json.loads(refs["stock_names"].read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            degraded.append("INVALID_REFERENCE:stock_names")
+    stock_names = {str(row.get("symbol") or row.get("code")): str(row.get("name") or "")
+                   for row in slice_results["stock_name_map"].rows
+                   if (row.get("symbol") or row.get("code")) and row.get("name")}
+    stock_caps = {str(row.get("symbol") or row.get("code")): row.get("real_market_cap")
+                  for row in slice_results["stock_name_map"].rows
+                  if (row.get("symbol") or row.get("code")) and row.get("real_market_cap") is not None}
     td_source_manifest = {"available": src.td is not None and not src.td_error,
                           "data_lag_seconds": None, "coverage": None}
     daily_coverage = None
@@ -731,24 +727,25 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 cutoff_tag = asof_cutoff.strftime("%H%M%S")
                 hotfiles = [path for path in hotfiles if path.stem.split("_")[-1] <= cutoff_tag]
             hot_path = str(hotfiles[-1]) if hotfiles else None
-        baseline_csv = str(refs["auction_baseline"]) if refs["auction_baseline"] else None
+        baseline_csv = slice_results["auction_baseline"].rows
         page, payload = live_pages.render_page(
             src.td or _MissingTD(), trade_date=trade_date, stage=render_stage,
             relations=relations, plate_names=plate_names, stock_names=stock_names,
-            daily_history_csv=str(refs["daily_history"]) if refs["daily_history"] else None,
+            daily_history_csv=slice_results["daily_history"].rows,
             auction_baseline_csv=baseline_csv, kaipan_hot_json=hot_path,
+            kaipan_hot_rows=slice_results["hot_plates_today"].rows or None,
             member_snapshot_date=relation_asof, member_lag_trading_days=relation_lag,
             asof=asof_cutoff)
         payload.setdefault("chapters", {})["reference_data"] = {
-            "stock_names": {"status": "READY" if refs["stock_names"] else "MISSING",
-                            "reason": None if refs["stock_names"] else "名称表缺失，名称显示为名称未知"},
-            "stock_caps": {"status": "READY" if refs["stock_caps"] else "MISSING",
-                           "reason": None if refs["stock_caps"] else "市值表缺失"}}
-        if refs["stock_names"] is None or refs["stock_caps"] is None:
+            "stock_names": {"status": "READY" if stock_names else "MISSING",
+                            "reason": None if stock_names else "名称表缺失，名称显示为名称未知"},
+            "stock_caps": {"status": "READY" if stock_caps else "MISSING",
+                           "reason": None if stock_caps else "市值表缺失"}}
+        if not stock_names or not stock_caps:
             old_limitations = payload["limitations"]
             payload["limitations"] += " 参考数据：" + "；".join(
-                name + "缺失" for name, key in (("名称表", "stock_names"), ("市值表", "stock_caps"))
-                if refs[key] is None) + "。"
+                name + "缺失" for name, available in (("名称表", bool(stock_names)), ("市值表", bool(stock_caps)))
+                if not available) + "。"
             import html
             page = page.replace(html.escape(old_limitations), html.escape(payload["limitations"]))
         if src.td_error:
@@ -787,8 +784,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 src.td or _MissingTD(), trade_date=trade_date, stage=stage,
                 asof=asof or ("09:26:00" if stage == "auction" else "09:46:00"),
                 relations=relations, plate_names=plate_names, stock_names=stock_names,
-                history_path=refs["daily_history"], plate_metadata=plate_metadata)
-        _attach_range_positions(live_stocks, refs["daily_history"], trade_date)
+        history_path=slice_results["daily_history"].rows, plate_metadata=plate_metadata)
+        _attach_range_positions(live_stocks, slice_results["daily_history"].rows, trade_date)
         symbol_plates = {}
         for plate_code, members in relations.items():
             plate_name = plate_names.get(plate_code)
@@ -892,11 +889,11 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             auction_ref = payload["handoff"].get("auction_0925")
             terminal_for_events = auction_ref.get("final_0925") if isinstance(auction_ref, Mapping) else None
         history_rows = payload.get("history", {}).get("daily", []) if isinstance(payload.get("history"), Mapping) else []
-        if not history_rows and refs.get("daily_history"):
+        if not history_rows and slice_results["daily_history"].rows:
             try:
                 import statistics
                 from .live_session import load_daily_history_csv
-                historical = load_daily_history_csv(refs["daily_history"], trade_date=trade_date)
+                historical = load_daily_history_csv(slice_results["daily_history"].rows, trade_date=trade_date)
                 by_day: dict[str, list[float]] = {}
                 for row in historical:
                     day = str(row.get("date") or "")
@@ -920,14 +917,12 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             if isinstance(amount, (int, float)) and isinstance(baseline, Mapping):
                 multiple, percentile = baseline.get("multiple"), baseline.get("percentile")
                 previous = terminal_for_events.get("vs_previous_day_final")
-                if not isinstance(previous, (int, float)) and refs.get("auction_baseline"):
+                if not isinstance(previous, (int, float)) and slice_results["auction_baseline"].rows:
                     try:
-                        import csv
-                        with refs["auction_baseline"].open(encoding="utf-8-sig", newline="") as handle:
-                            prior_amounts = [(str(row.get("date") or "")[:10], float(row["sum_yi"]))
-                                             for row in csv.DictReader(handle)
-                                             if str(row.get("date") or "")[:10] < trade_date
-                                             and row.get("sum_yi") not in (None, "")]
+                        prior_amounts = [(str(row.get("date") or "")[:10], float(row["sum_yi"]))
+                                         for row in slice_results["auction_baseline"].rows
+                                         if str(row.get("date") or "")[:10] < trade_date
+                                         and row.get("sum_yi") not in (None, "")]
                         if prior_amounts:
                             previous = (amount / 1e8) / max(prior_amounts)[1] if max(prior_amounts)[1] else None
                     except (OSError, ValueError, TypeError):
@@ -955,9 +950,9 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             if breadth_parts:
                 import statistics
                 yesterday_close = None
-                if refs.get("daily_history"):
+                if slice_results["daily_history"].rows:
                     from .live_session import load_daily_history_csv
-                    raw_daily = load_daily_history_csv(refs["daily_history"], trade_date=trade_date)
+                    raw_daily = load_daily_history_csv(slice_results["daily_history"].rows, trade_date=trade_date)
                     prior_days = sorted({str(row.get("date") or "") for row in raw_daily
                                          if str(row.get("date") or "") < trade_date})
                     if prior_days:
@@ -1015,8 +1010,11 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             payload["story"]["top_events"] = events[:3]
         from .ladder_cluster import build_front_page_data
         from .limit_reason_theme import load_kaipan_theme_snapshot
-        previous_trade_date = (_history_file_date(refs["daily_history"], trade_date)
-                               if refs.get("daily_history") else None)
+        calendar_days = sorted({str(row.get("date") or "")[:10] for row in slice_results["trading_calendar"].rows
+                                if str(row.get("date") or "")[:10] < trade_date})
+        history_days = sorted({str(row.get("date") or "")[:10] for row in slice_results["daily_history"].rows
+                               if str(row.get("date") or "")[:10] < trade_date})
+        previous_trade_date = max(calendar_days or history_days, default=None)
         static_by_symbol: dict[str, list[dict[str, Any]]] = {}
         for stock in live_stocks:
             if not isinstance(stock, Mapping):
@@ -1033,7 +1031,10 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         theme_snapshot = load_kaipan_theme_snapshot(
             None, report_date=trade_date, previous_trade_date=previous_trade_date or "",
             observed_at=point, plate_names=plate_names,
-            static_themes_by_symbol=static_by_symbol)
+            static_themes_by_symbol=static_by_symbol,
+            pool_rows=slice_results["yest_limit_pool"].rows,
+            reason_rows=slice_results["limit_reason_history"].rows,
+            hot_rows=slice_results["hot_plates_yesterday"].rows)
         payload["limit_reason_themes"] = theme_snapshot["assignments"]
         payload["theme_attribution_basis"] = theme_snapshot["basis"]
         payload["hot_plate_names"] = theme_snapshot["hot_plate_names"]
@@ -1164,9 +1165,10 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         else:
             required = {"daily_capture": daily_capture_dir, "report_dir": None,
                     "checkpoints_csv": None, "auction_snapshot_csv": None}
-        report_dir_candidates = _dated_candidates(Path(reference_root), ("stocks.json",), trade_date)
-        checkpoint_candidates = _dated_candidates(Path(reference_root), ("checkpoints.csv",), trade_date)
-        auction_candidates = _dated_candidates(Path(reference_root), ("*auction*snapshot*.csv",), trade_date)
+        replay_root = Path(reference_root) if reference_root else Path("/__core_file_inputs_disabled__")
+        report_dir_candidates = _dated_candidates(replay_root, ("stocks.json",), trade_date)
+        checkpoint_candidates = _dated_candidates(replay_root, ("checkpoints.csv",), trade_date)
+        auction_candidates = _dated_candidates(replay_root, ("*auction*snapshot*.csv",), trade_date)
         report_dir = report_dir_candidates[0].parent if report_dir_candidates else None
         live_path = open_ref or auction_ref
         reports_root = refs.get("prev_reports_root") or root
@@ -1193,7 +1195,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             data, close_manifest = assemble_close_review(
                 trade_date, str(report_dir), str(checkpoint_candidates[0]),
                 str(auction_candidates[0]), str(daily_capture_dir),
-                daily_history_csv=str(refs["daily_history"]) if refs["daily_history"] else None,
+                daily_history_csv=slice_results["daily_history"].rows,
                 relation_dir=str(relation_dir) if relation_dir else None,
                 stock_caps_json=str(refs["stock_caps"]) if refs["stock_caps"] else None,
                 live_report_json=str(live_path) if live_path else None,
@@ -1219,7 +1221,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 data.setdefault("data_gaps", []).append(
                     f"昨日涨停池连板天数缺失：{unknown_streaks}只，未纳入梯队高度计数")
         else:
-            ladder = _load_ladder_summary(reference_root, trade_date)
+            ladder = _load_ladder_summary(slice_results["path_stats"].rows, trade_date)
         previous_streaks = {}
         if prev_path and prev_path.is_file():
             try:
@@ -1251,7 +1253,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     "status": "今日最高板；收盘涨停价代理，封单/炸板路径 UNKNOWN"})
             data["ladder_summary"].extend(highboard_rows)
         if isinstance(data.get("stocks"), list) and not refs.get("stock_day_facts"):
-            _attach_range_positions(data["stocks"], refs["daily_history"], trade_date)
+            _attach_range_positions(data["stocks"], slice_results["daily_history"].rows, trade_date)
         ladder_rows = []
         symbols = []
         for summary_row in ladder:
@@ -1274,7 +1276,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         attach_close_sections(data, relation_asof=relation_asof, relations=symbol_plates,
             plate_metadata=plate_metadata, ladder_rows=ladder_rows,
             ladder_summary=ladder, path_frequencies=path_frequencies)
-        _attach_auction_baseline(data, refs.get("auction_baseline"))
+        _attach_auction_baseline(data, slice_results["auction_baseline"].rows)
         quality = data.setdefault("data_quality", {})
         quality["relation_snapshot_date"] = reference_meta.get("relation_dir", {}).get("as_of")
         quality["relation_lag_trading_days"] = relation_lag
@@ -1292,6 +1294,43 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         report_payload = {key: value for key, value in data.items() if key != "stocks"}
         report_text = json.dumps(report_payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
         close_manifest["input_files"] = close_manifest.get("input_files", {})
+    basis_notes = []
+    if any(result.meta.get("legacy_dependency") or result.meta.get("source") == "legacy_redis"
+           for result in slice_results.values()):
+        basis_notes.append("部分切片来自 legacy_redis 过渡数据")
+    if any(result.meta.get("source") == "FILE_FALLBACK" for result in slice_results.values()):
+        basis_notes.append("存在 FILE_FALLBACK 回放文件切片")
+    if any(result.meta.get("reason") == "NO_ASOF" for result in slice_results.values()):
+        basis_notes.append("部分来源无可验证时点(NO_ASOF)")
+    report_object = data if stage == "close" else payload
+    report_object["slice_data_basis"] = basis_notes or ["仅使用有可用时点信息的 Core 数据集切片"]
+    if basis_notes:
+        note = "数据口径：" + "；".join(basis_notes) + "。"
+        if stage == "close":
+            limitations = report_object.get("limitations")
+            if not isinstance(limitations, list):
+                limitations = [limitations] if limitations else []
+            limitations.append(note)
+            report_object["limitations"] = limitations
+        else:
+            old_limitations = str(report_object.get("limitations") or "")
+            report_object["limitations"] = (old_limitations + " " + note).strip()
+        if stage == "close":
+            markdown += "\n\n" + note + "\n"
+            (out / "report.md").write_text(markdown, encoding="utf-8")
+        import html
+        note_html = "<p>" + html.escape(note) + "</p>"
+        html_path = out / "report.html"
+        # Append to the report actually written for this stage (the email-styled page for auction/open),
+        # never overwrite it with the earlier render_page output.
+        written = html_path.read_text(encoding="utf-8") if html_path.exists() else ""
+        head, sep, tail = written.rpartition("</body>")
+        written = (head + note_html + sep + tail) if sep else (written + note_html)
+        html_path.write_text(written, encoding="utf-8")
+    compact_report = ({key: value for key, value in data.items() if key != "stocks"}
+                      if stage == "close" else payload)
+    report_text = json.dumps(compact_report,
+                             ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
     if len(report_text.encode("utf-8")) > 250_000:
         try:
             _obj = json.loads(report_text)
@@ -1319,6 +1358,19 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 "degraded": sorted(set(degraded)), "close_review_manifest": close_manifest,
                 "elapsed_seconds": round(time.monotonic() - started, 3),
                 "timings": pipeline_timings,
+                "slices": {name: {"source": result.meta.get("source"),
+                                   "status": result.meta.get("status"),
+                                   "asof": result.meta.get("asof"),
+                                   "available_at": result.meta.get("available_at"),
+                                   "elapsed_seconds": slice_timings[name], "rows": len(result.rows),
+                                   "reason": result.meta.get("reason"), "version": result.meta.get("version")}
+                           for name, result in slice_results.items()},
+                "data_provenance_flags": sorted({
+                    "FILE_FALLBACK" if result.meta.get("source") == "FILE_FALLBACK" else
+                    "NO_ASOF" if result.meta.get("reason") == "NO_ASOF" else
+                    "legacy_redis" if result.meta.get("legacy_dependency") or
+                    result.meta.get("source") == "legacy_redis" else ""
+                    for result in slice_results.values()} - {""}),
                 "report_json_bytes": len(report_text.encode("utf-8")), "allow_wencai_fallback": allow_wencai_fallback}
     print("REPORT_TIMINGS " + " ".join(f"{key}={value:.3f}s" for key, value in pipeline_timings.items()),
           file=sys.stderr)
@@ -1368,7 +1420,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None, *, sources: DailySources | None = None) -> int:
     args = build_parser().parse_args(argv)
-    reference_root = os.getenv("CORE_REFERENCE_ROOT", "/home/exedev/validation")
+    reference_root = os.getenv("CORE_REFERENCE_ROOT")
+    if args.reference_catalog and os.getenv("CORE_ALLOW_FILE_FALLBACK") != "1":
+        print("WARNING --reference-catalog is deprecated; set CORE_ALLOW_FILE_FALLBACK=1 for explicit replay only",
+              file=sys.stderr)
     result = run_daily_pipeline(stage=args.stage, trade_date=args.trade_date, asof=args.asof,
                                 out_root=args.out_root, reference_root=reference_root,
                                 sources=sources, publish=args.publish, dry_run=args.dry_run,

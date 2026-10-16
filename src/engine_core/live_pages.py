@@ -11,6 +11,7 @@ import re
 import shutil
 import statistics
 import time
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -37,6 +38,9 @@ def _rows(states, top=20):
 
 def _input_manifest(value, kind):
     if not value: return {"provided": False, "sha256": None, "captured_local": None}
+    if isinstance(value, list):
+        return {"provided": True, "path": f"slice:{kind}", "sha256": None,
+                "captured_local": None, "row_count": len(value)}
     path = Path(value)
     raw = path.read_bytes()
     captured = None
@@ -57,6 +61,11 @@ def _auction_baseline_manifest(value, rows):
     if not value:
         return {"provided": False, "sha256": None, "sample_days": 0,
                 "earliest_date": None, "latest_date": None}
+    if isinstance(value, list):
+        return {"provided": True, "path": "slice:auction_baseline", "sha256": None,
+                "sample_days": len(rows or []),
+                "earliest_date": min((row["date"] for row in rows or []), default=None),
+                "latest_date": max((row["date"] for row in rows or []), default=None)}
     try:
         raw = Path(value).read_bytes()
         return {"provided": True, "path": str(value),
@@ -165,12 +174,26 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
                                                 "method": "anchor_strength + 100 × (our_pct - anchor_pct)"})
     if not hot_path:
         return block
-    data = json.loads(Path(hot_path).read_text(encoding="utf-8"))
-    captured = data.get("captured_local") if isinstance(data, dict) else None
-    response = data.get("response", {}) if isinstance(data, dict) else {}
-    raw_rows = response.get("list", []) if isinstance(response, dict) else []
+    if isinstance(hot_path, list):
+        captured, raw_rows = None, hot_path
+    else:
+        data = json.loads(Path(hot_path).read_text(encoding="utf-8"))
+        captured = data.get("captured_local") if isinstance(data, dict) else None
+        response = data.get("response", {}) if isinstance(data, dict) else {}
+        raw_rows = response.get("list", []) if isinstance(response, dict) else []
     parsed = []
     for item in raw_rows:
+        if isinstance(item, Mapping):
+            try:
+                parsed.append({"code": str(item.get("code") or item.get("plate_code") or ""),
+                               "name": str(item.get("name") or ""),
+                               "strength": float(item.get("strength")),
+                               "kaipan_pct": float(item.get("change_pct", item.get("pct"))),
+                               "amount_yuan": float(item.get("amount_yuan", item.get("amount", 0))),
+                               "net_yuan": float(item.get("net_yuan", item.get("net_inflow_yuan", 0)))})
+            except (TypeError, ValueError):
+                continue
+            continue
         if not isinstance(item, (list, tuple)) or len(item) < 9: continue
         try:
             strength, hot_pct, amount, net = float(item[2]), float(item[3]), float(item[5]), float(item[6])
@@ -219,7 +242,8 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
 
 def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
                 relations=None, plate_names=None, daily_history_csv=None, stock_names=None,
-                amount_baseline_json=None, auction_baseline_csv=None, kaipan_hot_json=None, strength_anchor_json=None,
+                amount_baseline_json=None, auction_baseline_csv=None, kaipan_hot_json=None, kaipan_hot_rows=None,
+                strength_anchor_json=None,
                 member_snapshot_date="UNKNOWN", member_lag_trading_days=None, asof=None):
     if stage not in STAGES: raise ValueError(f"unknown stage: {stage}")
     snaps, raw_states = [], {}
@@ -312,7 +336,8 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
     chapters["market_price_volume"]["opening_median_pct_change"] = (
         opening_snap.get("median_pct_change") if opening_snap else None)
     chapters["plate_quadrants"] = _plate_quadrants(
-        report_current, relations, plate_names, kaipan_hot_json, strength_anchor_json,
+        report_current, relations, plate_names,
+        kaipan_hot_rows if kaipan_hot_rows is not None else kaipan_hot_json, strength_anchor_json,
         datetime.fromisoformat(report_current.get("asof", f"{trade_date}T09:25:06")))
     conclusion = _conclusion(snaps, chapters, history, stage)
     aggregation_seconds = max(0.0, time.perf_counter() - aggregation_started - td_fetch_seconds)

@@ -10,10 +10,12 @@ import shlex
 import subprocess
 import sys
 import time
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from engine_core.guardian.scheduler import EventSpec, FileInstanceLock, Guardian, default_events
+from engine_core.guardian.management import append_record, load_schedule
 
 
 def _load_dates(root: Path, explicit: str | None):
@@ -141,6 +143,7 @@ def main(argv=None) -> int:
     parser.add_argument("--simulate-date", help="use a simulated YYYY-MM-DD")
     parser.add_argument("--simulate-clock", help="simulate inclusive HH:MM:SS..HH:MM:SS")
     parser.add_argument("--events", help="comma separated event ids")
+    parser.add_argument("--schedule", help="versioned schedule JSON; defaults to <artifact-root>/guardian/schedule.json")
     parser.add_argument("--calendar", help="trade_dates.json path; missing calendar fails closed")
     parser.add_argument("--gate-status", help="JSON map of named readiness gates to booleans")
     parser.add_argument("--adapter", help="module:function returning {gates, handlers}")
@@ -160,7 +163,22 @@ def main(argv=None) -> int:
         parser.error("--tick-seconds must be positive")
     root = Path(args.artifact_root).expanduser()
     trade_date = args.simulate_date or date.today().isoformat()
-    selected = [event for event in default_events()
+    schedule_path = Path(args.schedule).expanduser() if args.schedule else root / "guardian" / "schedule.json"
+    packaged_schedule = Path(__file__).resolve().parents[1] / "src" / "engine_core" / "guardian" / "schedule.json"
+    try:
+        if schedule_path.exists():
+            configured, schedule_config = load_schedule(schedule_path, create_default=False)
+        elif args.run:
+            configured, schedule_config = load_schedule(schedule_path, create_default=True)
+            append_record(schedule_path.parent, {"type": "CONFIG_APPLIED", "revision": schedule_config["revision"],
+                                                 "new_hash": __import__("engine_core.guardian.management", fromlist=["schedule_hash"]).schedule_hash(schedule_config),
+                                                 "result": "INITIALIZED"})
+        else:
+            configured, schedule_config = load_schedule(packaged_schedule, create_default=False)
+    except (OSError, ValueError, TypeError) as exc:
+        print("schedule_invalid:" + str(exc), file=sys.stderr)
+        return 2
+    selected = [event for event in configured
                 if not args.events or event.event_id in set(args.events.split(","))]
     gates_data = _build_gate_status(args.gate_status)
     if args.simulate_clock and args.simulate_date and not args.gate_status:
@@ -177,7 +195,9 @@ def main(argv=None) -> int:
         handlers.update(adapter.get("handlers", {}))
     guardian = Guardian(selected, calendar_dates=_load_dates(root, args.calendar),
                         state_root=root / "guardian", gates=gates, handlers=handlers,
-                        dry_run=not args.run, context={"write": args.write, "td_write": args.td_write})
+                        dry_run=not args.run, context={"write": args.write, "td_write": args.td_write},
+                        schedule_path=schedule_path if schedule_path.exists() else None,
+                        config_revision=schedule_config["revision"], config_payload=schedule_config)
     if args.list:
         for event in selected:
             print(json.dumps({"id": event.event_id, "phase": event.phase, "window": [event.start, event.deadline],
@@ -213,6 +233,12 @@ def main(argv=None) -> int:
         return 2
     try:
         last_heartbeat = 0.0
+        heartbeat_stop = threading.Event()
+        def heartbeat_loop():
+            while not heartbeat_stop.wait(5.0):
+                guardian.write_heartbeat(datetime.now().astimezone())
+        heartbeat_thread = threading.Thread(target=heartbeat_loop, name="guardian-heartbeat", daemon=True)
+        heartbeat_thread.start()
         while True:
             now = datetime.now().astimezone()
             for row in guardian.tick(now):
@@ -224,6 +250,8 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         return 0
     finally:
+        if "heartbeat_stop" in locals():
+            heartbeat_stop.set()
         lock.release()
 
 

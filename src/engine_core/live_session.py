@@ -38,8 +38,10 @@ def market_price_volume_status(amount_multiple: float | None, weighted_pct: floa
     return "量价无明显一致方向"
 
 
-def load_daily_history_csv(path: str | Path, trade_date: str | None = None) -> list[dict[str, Any]]:
+def load_daily_history_csv(path: str | Path | list[dict[str, Any]], trade_date: str | None = None) -> list[dict[str, Any]]:
     """Load an immutable compact slice when available, otherwise parse CSV once."""
+    if isinstance(path, list):
+        return [dict(row) for row in path if isinstance(row, Mapping)]
     source = Path(path)
     if trade_date:
         root = Path(os.environ.get("CORE_SLICE_ROOT", str(Path.home() / "core-data" / "slices"))).expanduser()
@@ -91,9 +93,24 @@ def _load_daily_history_csv_cached(path: str, mtime_ns: int, size: int) -> list[
     return rows
 
 
-def load_auction_amount_baseline_csv(path: str | Path | None,
+def load_auction_amount_baseline_csv(path: str | Path | list[dict[str, Any]] | None,
                                     trade_date: str) -> list[dict[str, Any]] | None:
     """Load valid daily auction totals strictly before trade_date, in billion yuan."""
+    if isinstance(path, list):
+        rows = []
+        for row in path:
+            day = str(row.get("date") or "")[:10]
+            if not day or day >= trade_date:
+                continue
+            try:
+                amount = float(row.get("sum_yi", row.get("auction_amount_yuan")))
+                if "sum_yi" not in row:
+                    amount /= 1e8
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(amount) and amount >= 0:
+                rows.append({"date": day, "sum_yi": amount})
+        return rows
     if not path:
         return None
     rows: list[dict[str, Any]] = []
@@ -112,6 +129,21 @@ def load_auction_amount_baseline_csv(path: str | Path | None,
     except OSError:
         return None
     return rows
+
+
+def append_auction_amount_baseline(rows: list[dict[str, Any]] | None, *, trade_date: str,
+                                   amount_yuan: int | float | None,
+                                   available_at: str) -> list[dict[str, Any]]:
+    """Return prior values plus an observed postmarket total, without filling gaps."""
+    updated = [dict(row) for row in (rows or []) if str(row.get("date") or "")[:10] != trade_date]
+    if amount_yuan is None:
+        return updated
+    amount = float(amount_yuan)
+    if not math.isfinite(amount) or amount < 0:
+        raise ValueError("invalid_auction_amount")
+    updated.append({"date": trade_date, "sum_yi": amount / 100_000_000,
+                    "available_at": available_at, "source": "postmarket_auction_summary"})
+    return sorted(updated, key=lambda row: str(row.get("date") or ""))
 
 
 def auction_amount_baseline_comparison(rows: list[Mapping[str, Any]] | None,

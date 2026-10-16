@@ -19,6 +19,8 @@ def _pool_rows(value: Any) -> list[Sequence[Any] | Mapping[str, Any]]:
         return [row for item in value for row in _pool_rows(item)]
     if not isinstance(value, Mapping):
         return []
+    if value.get("symbol") or value.get("code"):
+        return [value]
     info = value.get("info")
     if not isinstance(info, Sequence) or isinstance(info, (str, bytes)):
         return []
@@ -220,9 +222,36 @@ def load_kaipan_theme_snapshot(
     observed_at: str | None,
     plate_names: Mapping[str, str],
     static_themes_by_symbol: Mapping[str, Any] | None = None,
+    pool_rows: Sequence[Mapping[str, Any]] | None = None,
+    reason_rows: Sequence[Mapping[str, Any]] | None = None,
+    hot_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Load only a completed same-day snapshot visible at the report cutoff."""
-    base = Path(root or os.getenv("CORE_KAIPAN_DAILY_ROOT", "/home/exedev/validation/kaipan-daily"))
+    # No implicit validation/Kaipan directory input. Callers may pass an explicit
+    # replay directory; production obtains these rows through the slice layer.
+    if root is None:
+        if pool_rows or reason_rows or hot_rows:
+            reason_map: dict[str, dict[str, Any]] = {}
+            for row in reason_rows or ():
+                symbol = _symbol(row.get("symbol", row.get("code")))
+                if not symbol:
+                    continue
+                record = {key: row.get(key) for key in
+                          ("ZSCode", "PZSCode", "Reason", "Date", "SCLT", "GNSM", "Type")}
+                reason_map.setdefault(symbol, {"StockID": symbol, "List": []})["List"].append(record)
+            assignments = build_limit_reason_themes(
+                list(pool_rows or ()), reason_map, expected_previous_date=previous_trade_date,
+                plate_names=plate_names, static_themes_by_symbol=static_themes_by_symbol)
+            hot_names = sorted({str(row.get("name") or row.get("plate_name") or "")
+                                for row in hot_rows or ()} - {""})
+            status = "READY" if pool_rows and reason_rows else "PARTIAL"
+            return {"status": status, "assignments": assignments,
+                    "basis": "切片：昨日涨停池/历史原因" if status == "READY" else "切片不完整；登记表回退",
+                    "snapshot_dir": None, "hot_plate_names": hot_names}
+        return {"status": "MISSING", "assignments": {}, "hot_plate_names": [],
+                "basis": "缺历史原因切片；登记表回退", "snapshot_dir": None,
+                "reason": "limit_reason_history_slice_unavailable"}
+    base = Path(root)
     run = _latest_run(base, report_date, observed_at)
     status = "MISSING"
     assignments: dict[str, dict[str, Any]] = {}

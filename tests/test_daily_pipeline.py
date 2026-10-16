@@ -179,11 +179,14 @@ def test_live_section_stocks_includes_0945_at_exact_cutoff():
 
 
 def test_ladder_summary_uses_dated_daily_rows_and_marks_close_price_proxy(tmp_path):
-    path = tmp_path / "ladder-emotion-study-test" / "out_final" / "ladder_daily.csv"
-    path.parent.mkdir(parents=True)
-    path.write_text("date,phase_eod,max_price_streak,top_symbols,previous_space_height,previous_space_symbols,board_1_n,previous_limit_n,promoted_n,promotion_rate,previous_1_n,promoted_1_n,broken_1_n,promotion_1_rate\n"
-                    "2026-10-15,ICE,5,002343|002696,10,600825,30,38,6,0.5,22,2,19,0.09\n")
-    rows = _load_ladder_summary(tmp_path, "2026-10-15")
+    # The pipeline now receives the versioned path_stats slice instead of
+    # discovering ladder_daily.csv beneath a reference directory.
+    rows = _load_ladder_summary([{"date": "2026-10-15", "phase_eod": "ICE",
+                                  "max_price_streak": "5", "top_symbols": "002343|002696",
+                                  "previous_space_height": "10", "previous_space_symbols": "600825",
+                                  "board_1_n": "30", "previous_limit_n": "38", "promoted_n": "6",
+                                  "promotion_rate": "0.5", "previous_1_n": "22", "promoted_1_n": "2",
+                                  "broken_1_n": "19", "promotion_1_rate": "0.09"}], "2026-10-15")
     assert rows[0]["top_symbols"] == "002343|002696"
     assert rows[0]["first_board_count"] == "30"
     assert rows[1]["promoted_n"] == "2"
@@ -201,9 +204,34 @@ def test_yesterday_streaks_preserve_missing_as_missing():
 
 
 def test_three_stages_write_reports_and_explicit_missing_references(tmp_path):
+    from engine_core.slices import SliceReader, SliceResult
+
     references = tmp_path / "references"
     output = tmp_path / "reports"
-    sources = DailySources(td=FakeTD(), reference_root=references)
+    slice_ids = ("stock_name_map", "plate_registry", "plate_members", "daily_history",
+                 "auction_baseline", "yest_limit_pool", "limit_reason_history",
+                 "hot_plates_today", "hot_plates_yesterday", "hot_rank",
+                 "trading_calendar", "path_stats")
+    calls = []
+
+    def fixture_provider(reader, request):
+        calls.append(request.slice_id)
+        if request.slice_id == "stock_name_map":
+            return SliceResult.create([], {
+                "slice_id": request.slice_id, "trade_date": request.trade_date,
+                "asof": request.asof, "source": "fixture", "version": "test-v1",
+                "built_at": "2026-10-15T09:00:00+08:00", "available_at": None,
+                "quality": {"coverage": None, "missing": "FIXTURE_MISSING", "partial": False},
+                "status": "MISSING", "lineage": []})
+        return SliceResult.create([], {
+            "slice_id": request.slice_id, "trade_date": request.trade_date,
+            "asof": request.asof, "source": "fixture", "version": "test-v1",
+            "built_at": "2026-10-15T09:00:00+08:00", "available_at": None,
+            "quality": {"coverage": 0, "missing": "FIXTURE_EMPTY", "partial": True},
+            "status": "PARTIAL", "lineage": []})
+
+    slices = SliceReader({name: [fixture_provider] for name in slice_ids})
+    sources = DailySources(td=FakeTD(), reference_root=references, slice_reader=slices)
     for stage in ("auction", "open", "close"):
         result = run_daily_pipeline(stage=stage, trade_date="2026-10-15", out_root=output,
                                     reference_root=references, sources=sources, dry_run=True)
@@ -214,8 +242,9 @@ def test_three_stages_write_reports_and_explicit_missing_references(tmp_path):
             close_report = json.loads((folder / "report.json").read_text())
             assert "a_to_b" in close_report and "ladder_section" in close_report
         manifest = json.loads((folder / "manifest.json").read_text())
+        report = json.loads((folder / "report.json").read_text())
         assert manifest["degraded"]
-        assert any(item.startswith("MISSING_REFERENCE:") for item in manifest["degraded"])
+        assert any(item.startswith("MISSING_SLICE:") for item in manifest["degraded"])
         assert manifest["report_json_bytes"] <= 300_000
         assert isinstance(manifest.get("timings"), dict)
         if stage in ("auction", "open"):
@@ -223,8 +252,17 @@ def test_three_stages_write_reports_and_explicit_missing_references(tmp_path):
         if stage in ("auction", "open"):
             assert result["report"]["chapters"]["reference_data"]["stock_names"]["status"] == "MISSING"
             assert result["report"]["chapters"]["reference_data"]["stock_caps"]["status"] == "MISSING"
+            assert "plate_strength" in report["front_page"]
+            assert "ladder" in report["front_page"]
+            assert "extremes_board" in report["chapters"]
+            assert "a_to_b" in report and "front_page" in report
+            assert all({"source", "status", "elapsed_seconds", "rows"} <= set(row)
+                       for row in manifest["slices"].values())
+            assert any(row["source"] == "fixture" for row in manifest["slices"].values())
         else:
             assert result["report"]["reference_data"]["stock_names"]["status"] == "MISSING"
+            assert "a_to_b" in report and "ladder_section" in report
+    assert set(calls) == set(slice_ids)
     assert (output / "2026-10-15" / "auction_0926" / "report.json").exists()
     assert (output / "2026-10-15" / "open_0946" / "report.json").exists()
     assert (output / "2026-10-15" / "close_review" / "report.json").exists()
@@ -276,7 +314,7 @@ def test_close_stage_captures_injected_td_daily_kline(tmp_path):
     assert row["symbol"] == "000001"
 
 
-def test_catalog_wins_and_fallback_uses_latest_not_after_trade_date(tmp_path):
+def test_reference_catalog_is_explicit_and_recursive_fallback_is_disabled(tmp_path):
     from engine_core.daily_pipeline import resolve_references
 
     root = tmp_path / "refs"
@@ -287,7 +325,7 @@ def test_catalog_wins_and_fallback_uses_latest_not_after_trade_date(tmp_path):
         path.parent.mkdir(parents=True)
         path.write_text("date,amount\n")
     selected, meta = resolve_references(root, "2026-10-15")
-    assert selected["auction_baseline"] == new
+    assert selected["auction_baseline"] is None
     assert meta["auction_baseline"]["discovered_by"] == "fallback"
 
     old_history = root / "study-20261014" / "daily_kline.csv"
@@ -297,7 +335,7 @@ def test_catalog_wins_and_fallback_uses_latest_not_after_trade_date(tmp_path):
     old_history.write_text("date,close\n2026-10-13,1\n")
     latest_history.write_text("date,close\n2026-10-13,1\n2026-10-14,2\n2026-10-15,3\n")
     selected, _ = resolve_references(root, "2026-10-15")
-    assert selected["daily_history"] == latest_history
+    assert selected["daily_history"] is None
 
     catalog = root / "reference_catalog.json"
     catalog.write_text(json.dumps({"references": {"auction_baseline": {
@@ -318,8 +356,8 @@ def test_stage_daily_capture_and_history_are_point_in_time(tmp_path):
         (folder / "daily_kline.jsonl").write_text("{}\n")
     auction, _ = resolve_references(root, "2026-10-15", stage="auction")
     close, _ = resolve_references(root, "2026-10-15", stage="close")
-    assert auction["daily_capture_manifest"].parent.name == "capture-20261014"
-    assert close["daily_capture_manifest"].parent.name == "capture-20261015"
+    assert auction["daily_capture_manifest"] is None
+    assert close["daily_capture_manifest"] is None
 
 
 def test_intraday_relation_reference_after_report_date_is_excluded(tmp_path):
@@ -337,7 +375,7 @@ def test_intraday_relation_reference_after_report_date_is_excluded(tmp_path):
 
     auction, _ = resolve_references(root, "2026-10-16", stage="auction")
     close, _ = resolve_references(root, "2026-10-16", stage="close")
-    assert auction["relation_dir"] == older
+    assert auction["relation_dir"] is None
     assert close["relation_dir"] == same_day
 
 

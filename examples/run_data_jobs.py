@@ -123,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="fetch and validate without persisting (default)")
     parser.add_argument("--execute", action="store_true", help="run fetch and commit the artifact version")
     parser.add_argument("--max-requests", type=int, default=30)
+    parser.add_argument("--providers", default="baostock,wencai,q2_final",
+                        help="daily_kline source set; fixed quality order is baostock,wencai,q2_final")
     parser.add_argument("--adapter", help="injected module:function returning dataset fetch callables")
     parser.add_argument("--artifact-root", default=os.getenv("CORE_DATA_ROOT", "~/core-data"))
     parser.add_argument("--td-database", help="allowlisted independent database: core_data/core_intraday")
@@ -135,7 +137,13 @@ def main(argv: list[str] | None = None) -> int:
         os.getenv("ENGINE_LEGACY_ROOT", "/home/exedev/repos/stock-situation-runtime"),
         args.max_requests, args.write or args.execute)
     adapters.update(_load_adapter(args.adapter))
-    missing = [name for name in names if name not in adapters]
+    daily_providers = [name.strip() for name in args.providers.split(",") if name.strip()]
+    unknown_providers = set(daily_providers) - {"baostock", "wencai", "q2_final"}
+    if unknown_providers:
+        parser.error("unknown daily provider: " + ",".join(sorted(unknown_providers)))
+    if "wencai" in daily_providers and args.max_requests > 15:
+        args.max_requests = 15
+    missing = [name for name in names if name not in adapters and name != "daily_kline"]
     if missing: raise RuntimeError("fetcher_not_configured:" + ",".join(missing))
     redis = None
     if args.write:
@@ -145,6 +153,48 @@ def main(argv: list[str] | None = None) -> int:
     runner = JobRunner(artifact_root=args.artifact_root, redis=redis, td_adapter=td_adapter,
                        budget=RequestBudget(max_requests=args.max_requests))
     for name in names:
+        if name == "daily_kline":
+            from engine_core.data_pipeline.providers.daily_kline_chain import (
+                DailyKlineProviderChain, Q2FinalProvider, WencaiDailyProvider,
+            )
+
+            configured: dict[str, Any] = {}
+            if "baostock" in daily_providers:
+                configured["baostock"] = adapters[name]
+            if "wencai" in daily_providers:
+                wencai_fetch = adapters.get("wencai_daily_kline")
+                if wencai_fetch is not None:
+                    universe = load_dataset("symbol_universe", args.date, prefer="file",
+                                            catalog=ArtifactCatalog(args.artifact_root))
+                    expected_count = len(universe.rows) if universe is not None else None
+                    configured["wencai"] = WencaiDailyProvider(
+                        wencai_fetch, state_path=Path(args.artifact_root) / ".provider_state" / "wencai.json",
+                        max_requests=args.max_requests, expected_count=expected_count,
+                    )
+                else:
+                    configured["wencai"] = lambda _day: {
+                        "status": "PROVIDER_UNAVAILABLE", "reason": "wencai_adapter_not_configured", "rows": []}
+            if "q2_final" in daily_providers:
+                q2_redis = adapters.get("q2_redis")
+                if q2_redis is None:
+                    redis_url = os.getenv("LEGACY_REDIS_URL") or os.getenv("CORE_REDIS_URL")
+                    if redis_url:
+                        import redis as redis_package
+                        q2_redis = redis_package.Redis.from_url(redis_url, decode_responses=False)
+                configured["q2_final"] = (Q2FinalProvider(q2_redis) if q2_redis is not None else
+                    lambda _day: {"status": "PROVIDER_UNAVAILABLE", "reason": "q2_redis_not_configured", "rows": []})
+            chain = DailyKlineProviderChain(providers=configured, artifact_root=args.artifact_root)
+            result = chain.fetch_chain(args.date, persist=bool(args.execute or args.write))
+            if result is None:
+                print(json.dumps({"job": name, "status": "PROVIDER_UNAVAILABLE_OR_COVERAGE_LOW",
+                                  "providers": daily_providers, "mode": "DRY_RUN" if not (args.execute or args.write) else "WRITE"}, sort_keys=True))
+                continue
+            print(json.dumps({"job": name, "version": result.manifest.get("version"),
+                              "source": result.manifest.get("source"), "degraded": result.manifest.get("degraded"),
+                              "quality": result.manifest["quality"], "provider_attempts": result.manifest["provider_attempts"],
+                              "storage_uri": result.manifest.get("storage_uri"),
+                              "mode": "DRY_RUN" if not (args.execute or args.write) else "WRITE"}, sort_keys=True))
+            continue
         result = runner.run(name, args.date, fetch=adapters[name], publish=args.write,
                             td_write=args.td_write, source=get_dataset(name).source,
                             dry_run=not (args.write or args.execute))

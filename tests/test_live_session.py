@@ -178,3 +178,15 @@ def test_auction_amount_baseline_empty_and_missing_return_none(tmp_path):
     empty = tmp_path / "empty.csv"
     empty.write_text("date,rows,sum_yi,top100_share,threshold_wan\n", encoding="utf-8")
     assert load_auction_amount_baseline_csv(empty, "2026-10-15") == []
+
+
+def test_append_auction_amount_baseline_preserves_missing_and_adds_observed_value():
+    from engine_core.live_session import append_auction_amount_baseline
+
+    previous = [{"date": "2026-10-14", "sum_yi": 10.0}]
+    assert append_auction_amount_baseline(previous, trade_date="2026-10-15", amount_yuan=None,
+                                          available_at="2026-10-15T17:40:00+08:00") == previous
+    updated = append_auction_amount_baseline(previous, trade_date="2026-10-15", amount_yuan=250_000_000,
+                                             available_at="2026-10-15T17:40:00+08:00")
+    assert updated[-1]["sum_yi"] == 2.5
+    assert updated[-1]["source"] == "postmarket_auction_summary"

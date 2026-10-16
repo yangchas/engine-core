@@ -1117,15 +1117,6 @@ def _front_page_inputs(report: Mapping[str, Any], stage: str) -> Mapping[str, An
     if isinstance(data, Mapping):
         return data
     metadata: dict[str, dict[str, Any]] = {}
-    try:
-        registry = json.loads(Path("/home/exedev/validation/plate-registry-pit-20261013/registry.json").read_text(encoding="utf-8"))
-        generic = set(json.loads(Path(__file__).resolve().parents[2].joinpath("examples/data/plate_generic_factor_names.json").read_text(encoding="utf-8")))
-        for row in registry.get("plates", []):
-            if isinstance(row, Mapping) and row.get("name"):
-                metadata[str(row["name"])] = {"class": row.get("class"), "size": row.get("size"),
-                                               "generic": str(row["name"]) in generic}
-    except (OSError, ValueError, TypeError):
-        metadata = {}
     from .ladder_cluster import build_front_page_data
     stocks = report.get("stocks") if isinstance(report.get("stocks"), list) else []
     return build_front_page_data(report, stage=stage, plate_metadata=metadata, stocks=stocks)
