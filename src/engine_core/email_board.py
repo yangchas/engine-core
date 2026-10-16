@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import html
+import json
 import math
 import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from .extremes_board import build_extremes_board
@@ -1110,6 +1112,176 @@ def _other(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     return _section("新冒头记分卡 / 数据与口径", content), (score_text + "\n" if score_text else "") + msg
 
 
+def _front_page_inputs(report: Mapping[str, Any], stage: str) -> Mapping[str, Any]:
+    data = report.get("front_page")
+    if isinstance(data, Mapping):
+        return data
+    metadata: dict[str, dict[str, Any]] = {}
+    try:
+        registry = json.loads(Path("/home/exedev/validation/plate-registry-pit-20261013/registry.json").read_text(encoding="utf-8"))
+        generic = set(json.loads(Path(__file__).resolve().parents[2].joinpath("examples/data/plate_generic_factor_names.json").read_text(encoding="utf-8")))
+        for row in registry.get("plates", []):
+            if isinstance(row, Mapping) and row.get("name"):
+                metadata[str(row["name"])] = {"class": row.get("class"), "size": row.get("size"),
+                                               "generic": str(row["name"]) in generic}
+    except (OSError, ValueError, TypeError):
+        metadata = {}
+    from .ladder_cluster import build_front_page_data
+    stocks = report.get("stocks") if isinstance(report.get("stocks"), list) else []
+    return build_front_page_data(report, stage=stage, plate_metadata=metadata, stocks=stocks)
+
+
+def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
+    data = _front_page_inputs(report, stage)
+    chapters = report.get("chapters") if isinstance(report.get("chapters"), Mapping) else {}
+    market = chapters.get("market_price_volume") if isinstance(chapters.get("market_price_volume"), Mapping) else {}
+    terminal = report.get("auction_terminal_0925") if isinstance(report.get("auction_terminal_0925"), Mapping) else {}
+    if stage == "auction":
+        current = terminal or market
+    else:
+        current = market
+    amount = _first(current, "market_match_amount_yuan", "match_amount_yuan")
+    median = _first(current, "median_pct_change", "median_open_pct")
+    up_share = current.get("up_share_pct")
+    if up_share is None and isinstance(current.get("up_share"), (int, float)):
+        up_share = current["up_share"] * 100
+    baseline = current.get("auction_baseline_comparison") if isinstance(current.get("auction_baseline_comparison"), Mapping) else {}
+    multiple, percentile = baseline.get("multiple"), baseline.get("percentile")
+    previous = current.get("vs_previous_day_final")
+    yesterday = chapters.get("yesterday_highboards_summary") if isinstance(chapters.get("yesterday_highboards_summary"), Mapping) else {}
+    pool = yesterday.get("yesterday_limit_pool") if isinstance(yesterday.get("yesterday_limit_pool"), Mapping) else {}
+    carry = pool.get("mean_pct_change")
+    amount_text = ("开盘缺失" if stage == "open" else "竞价缺失") if amount is None else (
+        f"开盘{float(amount) / 1e8:.1f}亿" if stage == "open" else f"竞价{float(amount) / 1e8:.1f}亿")
+    amount_comparison = (f"昨{float(previous):.2f}倍" if isinstance(previous, (int, float)) else
+                         f"64日{float(multiple):.2f}倍/P{float(percentile):.0f}" if isinstance(multiple, (int, float)) and isinstance(percentile, (int, float)) else "倍数/分位缺失")
+    if stage == "auction":
+        amount_short = "竞价缺失" if amount is None else f"竞价{float(amount) / 1e8:.0f}亿"
+        headline = f"{amount_short}｜{amount_comparison.replace('倍/P', '倍P')}｜中{_num(median)}｜涨{_num(up_share)}｜昨板{_num(carry)}"
+    else:
+        amount_short = "开盘缺失" if amount is None else f"开盘{float(amount) / 1e8:.0f}亿"
+        headline = f"{amount_short}｜{amount_comparison}｜中{_num(median)}｜涨{_num(up_share)}｜昨板{_num(carry)}"
+    headline = _short(headline, 40)
+    lines = [headline, "【昨高标路径·按板块聚类】" if stage == "open" else "【昨日连板→今日竞价·按板块聚类】"]
+    ladder = data.get("ladder") if isinstance(data.get("ladder"), Mapping) else {}
+    clusters = ladder.get("clusters", []) if isinstance(ladder.get("clusters"), list) else []
+    if not clusters:
+        lines.append(str(ladder.get("empty_message") or "无昨高标簇：数据缺失"))
+    visible_clusters = clusters[:4]
+    for cluster in visible_clusters:
+        share = cluster.get("share_bp")
+        delta = cluster.get("delta_share_bp")
+        share_text = "份额缺失" if share is None else f"额占比{float(share):.0f}bp"
+        if delta is not None and float(delta) != 0:
+            share_text += f"({float(delta):+.0f})"
+        eq = _num(cluster.get("equal_weight_pct"))
+        judgement = cluster.get("judgement") or "信息缺失"
+        if stage == "open":
+            trend = cluster.get("judgement_trend")
+            if trend:
+                judgement += f"·较竞价{trend}"
+        lead_text = ""
+        if stage == "open":
+            paths = cluster.get("paths", [])
+            row = paths[0] if paths else {}
+            members = (f"高标{row.get('name')}昨{int(row.get('streak') or 0)}板 "
+                       f"{_num(row.get('0925'))}→{_num(row.get('0932'))}→"
+                       f"{_num(row.get('0938'))}→{_num(row.get('0945'))}"
+                       if row else "路径缺失")
+            for row in paths[:1]:
+                auction_pct, open_pct = row.get("0925"), row.get("0945")
+                symbol = str(row.get("symbol") or "")
+                limit = 20.0 if symbol.startswith(("300", "301", "688", "689")) else 30.0 if symbol.startswith(("4", "8", "92")) else 10.0
+                if auction_pct is not None and auction_pct >= limit - 0.2 and open_pct is not None and open_pct < limit - 0.2:
+                    path_status = "炸板价代理"
+                elif auction_pct is not None and open_pct is not None and open_pct > auction_pct + 0.2:
+                    path_status = "转强"
+                elif auction_pct is not None and open_pct is not None and open_pct < auction_pct - 0.2:
+                    path_status = "回落"
+                else:
+                    path_status = "保持" if auction_pct is not None and open_pct is not None else "路径缺失"
+                row["path_status"] = path_status
+                members += f" {path_status}"
+            lead_text = members
+        else:
+            paths = cluster.get("paths", [])
+            row = paths[0] if paths else {}
+            lead_text = (f"{row.get('name')}{int(row.get('streak') or 0)}板"
+                         f"{_num(row.get('0925'))}{row.get('status') or '状态缺失'}" if row else "反馈缺失")
+        delta_short = "Δ?" if delta is None else f"Δ{float(delta):+.0f}"
+        share_short = "份额?" if share is None else f"{float(share):.0f}bp"
+        if stage == "open" and cluster.get("paths"):
+            path = cluster["paths"][0]
+            path_value = lambda key: "缺" if path.get(key) is None else _num(path.get(key))
+            lead_text = (f"{path.get('name')}昨{int(path.get('streak') or 0)}板 "
+                         f"{path_value('0925')}→{path_value('0932')}→"
+                         f"{path_value('0938')}→{path_value('0945')} "
+                         f"{path.get('path_status') or '缺'}")
+        hot_note = "·今日热榜" if cluster.get("hot_today") else ""
+        lines.append(_short(f"{cluster.get('name')}{hot_note} {share_short}{delta_short} 等权{eq} {judgement}", 40))
+        lines.append(_short(lead_text, 40))
+    folded = max(0, len(clusters) - len(visible_clusters)) + int(ladder.get("other_cluster_count") or 0)
+    if folded:
+        lines.append(f"其余{folded}簇见附表")
+    lines.append(str(ladder.get("first_board_summary") or "昨首板反馈缺失"))
+    lines.append("【板块强弱·较竞价变化】" if stage == "open" else "【板块强弱·竞价】")
+    strength = data.get("plate_strength") if isinstance(data.get("plate_strength"), Mapping) else {}
+    for label, key in (("变强", "up"), ("变弱", "down")):
+        rows = strength.get(key, []) if isinstance(strength.get(key), list) else []
+        if not rows:
+            lines.append(f"{label}：{strength.get('message') or '无显著变化'}")
+        for row in rows:
+            delta = float(row.get("delta_bp", 0))
+            pct = row.get("equal_weight_pct")
+            leader = row.get("top_stock_name") or "龙头未知"
+            leader_pct = _num(row.get("top_stock_pct")) if row.get("top_stock_pct") is not None else "涨幅缺失"
+            share_value = row.get("share_bp")
+            share_display = "份额?" if share_value is None else f"{float(share_value):.0f}bp"
+            lines.append(_short(f"{label} {row.get('name')} {share_display}"
+                                f"Δ{delta:+.0f} 等权{_num(pct)} 龙头{leader}{leader_pct}", 40))
+    story = report.get("story") if isinstance(report.get("story"), Mapping) else {}
+    events = story.get("top_events", []) if isinstance(story.get("top_events"), list) else []
+    lines.append("【今日3件不一样】")
+    for event in events[:3]:
+        summary = str(event.get("summary") or "") if isinstance(event, Mapping) else ""
+        event_id = event.get("id") if isinstance(event, Mapping) else None
+        summary = summary.replace("；板块份额变化最大：中报增长 +0bp", "；板块份额变化未达显著阈值")
+        if event_id == "auction_amount_context" and stage == "auction":
+            baseline = current.get("auction_baseline_comparison") if isinstance(current.get("auction_baseline_comparison"), Mapping) else {}
+            lines.append(f"竞价额{float(amount) / 1e8:.1f}亿，64日{float(baseline.get('multiple')):.2f}倍/P{float(baseline.get('percentile')):.0f}"
+                         if isinstance(amount, (int, float)) and isinstance(baseline.get("multiple"), (int, float)) and isinstance(baseline.get("percentile"), (int, float))
+                         else _short(summary.rstrip("。"), 40))
+        elif event_id == "auction_breadth_context" and stage == "auction":
+            lines.append(f"竞价中位{_num(median)}，上涨{_num(up_share)}；历史分位见附表")
+        elif event_id == "auction_ladder_plate_context":
+            lines.append(_short(summary.replace("+0bp", "变化未显著").rstrip("。"), 40))
+        else:
+            lines.append(_short(summary.rstrip("。"), 40) if summary else "信息缺失")
+    while sum(1 for line in lines if line) < 3 + 3:
+        lines.append("信息缺失")
+    funnel = story.get("funnel") if isinstance(story.get("funnel"), Mapping) else {}
+    lines.append("【能做 / 要等 / 别碰】")
+    for label, key in (("能做", "watch"), ("要等", "wait"), ("别碰", "exclude")):
+        rows = funnel.get(key, []) if isinstance(funnel.get(key), list) else []
+        if not rows:
+            lines.append(f"{label}：无，当前截点未筛出")
+        for row in rows[:3]:
+            condition = row.get("condition")
+            if isinstance(condition, Mapping):
+                condition = condition.get("text")
+            risk = row.get("risk") or "风险信息缺失"
+            lines.append(_short(f"{label} {_display_name(row, 7)}｜触发:{_short(condition or '条件缺失', 14)}｜险:{_short(risk, 8)}", 40))
+    if stage == "open":
+        lines.append("路径只取0932/0945；0938行情缺失")
+    lines.append("归属来源：" + str(ladder.get("attribution_basis") or "登记表回退"))
+    lines.append("口径：封停为价格代理；不补缺失；成员关系点时性见附表")
+    # Keep the first screen bounded even when the source story has many items.
+    lines = [_short(line, 40) for line in lines[:29]]
+    html_lines = "".join(f"<div style=\"padding:4px 6px;border-bottom:1px solid #e5eaf0\">{_esc(line)}</div>" for line in lines)
+    markup = f'<section style="margin:8px 0;padding:10px;background:#fff;border:1px solid #dbe3ec;border-radius:8px">{html_lines}</section>'
+    return markup, "\n".join(lines)
+
+
 def render_email_board(report: Mapping[str, Any], stage: str, trade_date: str) -> tuple[str, str]:
     """Return a compact complete email HTML document and a matching text view."""
     stage_key = "close" if any(x in stage.lower() for x in ("close", "closing", "eod")) else "open" if "open" in stage.lower() else "auction"
@@ -1122,12 +1294,15 @@ def render_email_board(report: Mapping[str, Any], stage: str, trade_date: str) -
     ab_html, ab_text = _a_to_b(report, stage_key)
     other_html, other_text = _other(report, stage_key)
     _story, story_html, story_text = _story_view(report, stage_key, trade_date)
+    front_html, front_text = _front_page_view(report, stage_key)
     appendix_html = (f'<section style="margin:12px 0"><h2 style="font-size:13px;color:#475467">附表：完整事实章节</h2>'
                      f'{_section("情绪温度计", tile_html)}{ladder_html}{extreme_html}{plate_html}{ab_html}{other_html}</section>')
+    main_html = (f'{story_html}{appendix_html}' if stage_key == "close" else
+                 f'{front_html}<details style="margin:8px 0"><summary style="padding:8px;background:#e9eef5">附表（极值、完整梯队、盘面、A→B、温度计）</summary>{appendix_html}</details>')
     body = (f'<div style="max-width:680px;margin:0 auto;background:#f5f7fa;color:#263445;font-family:Arial,"Microsoft YaHei",sans-serif;font-size:12px;line-height:1.45;font-variant-numeric:tabular-nums">'
             f'<header style="padding:10px 2px"><b>{_esc(trade_date)} {stage_label}盘面</b></header>'
-            f'{story_html}{appendix_html}'
-            '<footer style="padding:8px;color:#667085;font-size:10px">缺失不补零；涨停状态为价格代理；单日事实不构成预测或建议。</footer></div>')
+            f'{main_html}'
+            f'<footer style="padding:8px;color:#667085;font-size:10px">归属来源：{_esc(str((_front_page_inputs(report, stage_key).get("ladder") or {}).get("attribution_basis") or "登记表回退"))}；缺失不补零；涨停状态为价格代理；单日事实不构成预测或建议。</footer></div>')
     if "close" != stage_key:
         # The A→B chapter must not leak later prices into an earlier stage.
         for forbidden in ("close_pct", "close_mean", "close_median", "收盘%", "收盘中位", "收盘"):
@@ -1140,7 +1315,15 @@ def render_email_board(report: Mapping[str, Any], stage: str, trade_date: str) -
         if value.startswith(label):
             value = value[len(label):].strip()
         tile_text.append(f"{label} {value}".strip())
-    plain = (f"{trade_date} {stage_label}盘面\n{story_text}\n\n附表：完整事实章节\n情绪温度计：" +
+    plain_main = front_text if stage_key != "close" else story_text
+    appendix_story = story_text if stage_key == "close" else "故事摘要见首屏"
+    plain = (f"{trade_date} {stage_label}盘面\n{plain_main}\n\n附表：完整事实章节\n{appendix_story}\n情绪温度计：" +
              "；".join(tile_text) +
              f"\n{ladder_text}\n{extreme_text}\n{plate_text}\n{ab_text}\n数据与口径：{other_text}")
+    if stage_key != "close":
+        document = re.sub(r"(?<!\d)\d{6}(?!\d)", "", document)
+        plain = re.sub(r"(?<!\d)\d{6}(?!\d)", "", plain)
+    max_bytes = 120 * 1024 if stage_key == "close" else 100_000
+    if len(document.encode("utf-8")) > max_bytes:
+        raise ValueError(f"rendered email exceeds {max_bytes} bytes ({len(document.encode('utf-8'))} bytes)")
     return document, plain

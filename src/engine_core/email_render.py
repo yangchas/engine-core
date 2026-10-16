@@ -10,7 +10,7 @@ from typing import Any, Mapping
 from .email_board import render_email_board
 
 RENDER_VERSION = "core-mail-v3"
-MAX_EMAIL_HTML_BYTES = 120 * 1024
+MAX_EMAIL_HTML_BYTES = 100_000
 _RED = "#c83b3b"
 _GREEN = "#16835d"
 
@@ -811,17 +811,27 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
         gap_html = f'<section style="margin-top:14px;background:#fff4d6;padding:12px 14px"><strong>数据缺口与降级</strong><br>{_esc(gap_text)}</section>'
     gap_html = f'<section style="margin-top:14px;background:#fff4d6;padding:12px 14px"><strong>数据缺口与降级</strong><br>{_esc(gap_text)}</section>' if gap_text else ""
     footer = "口径：缺失显示“—”，不补零。仅事实描述，不构成买卖建议。"
-    from .email_board import _story_view
+    from .email_board import _front_page_view, _story_view
     story_stage = "close" if any(token in stage_key for token in ("close", "closing", "eod")) else (
         "open" if "open" in stage_key else "auction")
     _story, story_html, story_text = _story_view(report, story_stage, trade_date)
-    plain = f"{title} | {trade_date}\n" + "\n".join(meta) + "\n\n" + story_text + "\n\n一屏结论\n" + "\n".join(f"• {p}" for p in conclusions)
+    if story_stage == "close":
+        front_html, front_text, appendix_open, appendix_close = "", story_text, "", ""
+    else:
+        front_html, front_text = _front_page_view(report, story_stage)
+        appendix_open, appendix_close = '<details><summary style="padding:8px;background:#e9eef5">附表</summary>', "</details>"
+    appendix_story = story_text if story_stage == "close" else "故事摘要见首屏"
+    plain = f"{title} | {trade_date}\n" + "\n".join(meta) + "\n\n" + front_text + "\n\n附表\n" + appendix_story + "\n\n一屏结论\n" + "\n".join(f"• {p}" for p in conclusions)
     if metrics:
         plain += "\n\n关键指标\n" + "\n".join(f"{label}：{_num(value,key) if not isinstance(value,str) else value}" for label,value,key in metrics)
     if gap_text:
         plain += "\n\n数据缺口与降级\n" + gap_text
     plain += "\n\n" + "\n\n".join(plain_sections) + "\n\n" + footer
-    content = f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>{_esc(title)}</title><style>@media (prefers-color-scheme: dark) {{ .page{{background:#111827!important;color:#e5e7eb!important}} }}</style></head><body style="margin:0;padding:16px;background:#eef2f6;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#26364a"><table role="presentation" width="100%"><tr><td align="center"><table class="page" role="presentation" width="100%" style="max-width:680px;background:#fff;border-radius:12px"><tr><td style="background:#172b43;padding:22px 24px;color:#fff"><div style="font-size:21px;font-weight:700">{_esc(title)}</div><div style="font-size:12px;padding-top:7px">{_esc(trade_date)}　{meta_html}</div></td></tr><tr><td style="padding:18px 20px">{story_html}<section style="background:#f6f8fb;padding:14px 16px"><strong>一屏结论</strong><table width="100%">{points_html}</table></section><table width="100%" cellspacing="8" style="margin-top:14px"><tr>{metric_html}</tr></table>{gap_html}{''.join(sections)}{close_extra}<div style="border-top:1px solid #e5eaf0;margin-top:22px;padding:13px 0;color:#667085;font-size:11px">{_esc(footer)}</div></td></tr></table></td></tr></table></body></html>'''
+    appendix_story_html = story_html if story_stage == "close" else ""
+    content = f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>{_esc(title)}</title><style>@media (prefers-color-scheme: dark) {{ .page{{background:#111827!important;color:#e5e7eb!important}} }}</style></head><body style="margin:0;padding:16px;background:#eef2f6;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#26364a"><table role="presentation" width="100%"><tr><td align="center"><table class="page" role="presentation" width="100%" style="max-width:680px;background:#fff;border-radius:12px"><tr><td style="background:#172b43;padding:22px 24px;color:#fff"><div style="font-size:21px;font-weight:700">{_esc(title)}</div><div style="font-size:12px;padding-top:7px">{_esc(trade_date)}　{meta_html}</div></td></tr><tr><td style="padding:18px 20px">{front_html}{appendix_open}{appendix_story_html}<section style="background:#f6f8fb;padding:14px 16px"><strong>一屏结论</strong><table width="100%">{points_html}</table></section><table width="100%" cellspacing="8" style="margin-top:14px"><tr>{metric_html}</tr></table>{gap_html}{''.join(sections)}{close_extra}{appendix_close}<div style="border-top:1px solid #e5eaf0;margin-top:22px;padding:13px 0;color:#667085;font-size:11px">{_esc(footer)}</div></td></tr></table></td></tr></table></body></html>'''
     if len(content.encode("utf-8")) > MAX_EMAIL_HTML_BYTES:
-        raise ValueError(f"rendered email exceeds 120 KB ({len(content.encode('utf-8'))} bytes)")
+        raise ValueError(f"rendered email exceeds 100 KB ({len(content.encode('utf-8'))} bytes)")
+    if story_stage != "close":
+        content = re.sub(r"(?<!\d)\d{6}(?!\d)", "", content)
+        plain = re.sub(r"(?<!\d)\d{6}(?!\d)", "", plain)
     return content, plain

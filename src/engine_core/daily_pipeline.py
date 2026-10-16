@@ -516,6 +516,15 @@ def _relation_plate_metadata(folder: Path | None, relations: Mapping[str, list[s
     return metadata
 
 
+def _eligible_front_plate(name: str, metadata: Mapping[str, Mapping[str, Any]]) -> bool:
+    row = metadata.get(name, {})
+    try:
+        size = int(row.get("size"))
+    except (TypeError, ValueError):
+        return False
+    return row.get("class", row.get("kind")) in {"THEME", "NICHE"} and 8 <= size <= 150
+
+
 def _latest_report(root: Path, trade_date: str, stage: str) -> Path | None:
     parent = root / trade_date
     candidates = [parent / stage / "report.json"]
@@ -905,6 +914,31 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     events.append({"id": "auction_ladder_plate_context", "metric": "auction_up_share",
                                    "display_label": "对照观察", "summary": "；".join(ladder_parts) + "。"})
             payload["story"]["top_events"] = events[:3]
+        from .ladder_cluster import build_front_page_data
+        from .limit_reason_theme import load_kaipan_theme_snapshot
+        previous_trade_date = (_history_file_date(refs["daily_history"], trade_date)
+                               if refs.get("daily_history") else None)
+        static_by_symbol: dict[str, list[dict[str, Any]]] = {}
+        for relation in payload.get("a_to_b", []) if isinstance(payload.get("a_to_b"), list) else []:
+            if not isinstance(relation, Mapping):
+                continue
+            symbol = str(relation.get("a_symbol", relation.get("symbol", ""))).zfill(6)
+            plate_name = str(relation.get("plate_display") or relation.get("plate") or "")
+            if plate_name and _eligible_front_plate(plate_name, plate_metadata):
+                static_by_symbol.setdefault(symbol, []).append({"name": plate_name,
+                    **plate_metadata.get(plate_name, {})})
+        theme_snapshot = load_kaipan_theme_snapshot(
+            None, report_date=trade_date, previous_trade_date=previous_trade_date or "",
+            observed_at=point, plate_names=plate_names,
+            static_themes_by_symbol=static_by_symbol)
+        payload["limit_reason_themes"] = theme_snapshot["assignments"]
+        payload["theme_attribution_basis"] = theme_snapshot["basis"]
+        payload["hot_plate_names"] = theme_snapshot["hot_plate_names"]
+        payload["theme_snapshot_status"] = theme_snapshot["status"]
+        payload["front_page"] = build_front_page_data(
+            payload, stage=stage, plate_metadata=plate_metadata, stocks=live_stocks,
+            theme_assignments=theme_snapshot["assignments"], theme_basis=theme_snapshot["basis"],
+            hot_plate_names=theme_snapshot["hot_plate_names"])
         from .email_render import render_email_html
         email_page, _ = render_email_html(payload, stage, trade_date, {
             "asof": asof, "sources": {"td": td_source_manifest}, "degraded": degraded})
