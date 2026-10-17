@@ -243,6 +243,8 @@ class JobRunner:
             shanghai_now = clock.astimezone(ZoneInfo("Asia/Shanghai"))
             manifest["business_status"] = ("FORMAL" if shanghai_now.strftime("%H:%M") >= "17:40"
                                            else "PROVISIONAL")
+        elif fetch_meta.get("partial"):
+            manifest["business_status"] = "PARTIAL"
         if dry_run:
             manifest.update({"mode": "DRY_RUN", "storage_backend": None, "storage_uri": None,
                              "manifest_uri": None, "rows_uri": None, "cache_publish": "SKIPPED"})

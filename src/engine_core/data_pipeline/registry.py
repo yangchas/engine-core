@@ -35,6 +35,10 @@ _SPECS = (
     DatasetSpec("hot_plates", "kaipan_hot_plates", "09:15-15:00_selected_points",
                 redis_ttl_seconds=1800, max_redis_payload_bytes=524288,
                 source_dependency="kaipan", fetch_budget_scope="kaipan", key_fields=("plate_code",)),
+    DatasetSpec("hot_plate_minutes", "kaipan_getHisPlateMins", "after_daily_history_available",
+                hot_view=False, max_redis_payload_bytes=4194304,
+                source_dependency="kaipan", fetch_budget_scope="kaipan",
+                key_fields=("plate_code", "time")),
     DatasetSpec("hot_rank", "ths_hot_rank", "09:15-15:00_selected_points",
                 redis_ttl_seconds=1800, max_redis_payload_bytes=262144,
                 source_dependency="ths_independent_client_required", fetch_budget_scope="ths",
@@ -48,6 +52,10 @@ _SPECS = (
     DatasetSpec("auction_baseline", "td_auction_snapshot_v2", "after_auction_input_ready",
                 max_redis_payload_bytes=524288, dependencies=("auction_snapshot",),
                 source_dependency="legacy_shared_td", key_fields=("trade_date", "symbol")),
+    DatasetSpec("auction_points", "t1_v2_redis_market_auction+a2", "09:20/09:24/09:25_capture",
+                redis_ttl_seconds=604800, max_redis_payload_bytes=2097152,
+                source_dependency="legacy_shared_redis", key_fields=("trade_date", "tag", "symbol", "source_key"),
+                required_fields=("trade_date", "tag", "symbol", "source_key", "point_ts")),
     DatasetSpec("ladder_daily", "core_derived", "after_daily_kline_and_pool",
                 max_redis_payload_bytes=262144, dependencies=("daily_kline", "limit_up_pool", "trade_calendar"),
                 key_fields=("symbol",)),
@@ -62,6 +70,9 @@ _SPECS = (
     DatasetSpec("stock_day_facts", "core_derived", "after_daily_kline",
                 max_redis_payload_bytes=262144, dependencies=("daily_kline",),
                 source_dependency="core_data", key_fields=("symbol",)),
+    DatasetSpec("daily_report_features", "core_derived", "after_daily_kline_close",
+                max_redis_payload_bytes=524288, dependencies=("daily_kline",),
+                source_dependency="core_data", key_fields=("symbol", "date")),
 )
 
 DATASETS = {spec.name: spec for spec in _SPECS}

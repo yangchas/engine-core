@@ -23,6 +23,40 @@ def test_registry_declares_tiered_storage_and_bounded_redis_views():
     assert get_dataset("plate_members").max_redis_payload_bytes == 64 * 1024
 
 
+def test_ths_hot_rank_provider_handles_empty_heat_and_403_circuit():
+    from engine_core.data_pipeline.providers.ths_hot_rank import ThsHotRankProvider, ProviderCircuitOpen
+
+    class Response:
+        status_code = 200
+        def json(self):
+            return {"status_code": 0, "data": {"stock_list": [
+                {"code": "SZ000001", "name": "样本", "rate": None},
+                {"code": "SH600000", "name": "样本二", "rate": "12.5"},
+            ]}}
+    class Session:
+        def __init__(self, response): self.response, self.calls = response, 0
+        def get(self, *args, **kwargs): self.calls += 1; return self.response
+
+    session = Session(Response())
+    provider = ThsHotRankProvider(session=session, sleep_fn=lambda _: None)
+    rows = provider.fetch()
+    assert rows == [
+        {"symbol": "000001", "code": "SZ000001", "name": "样本", "rank": 1, "source": "ths_hot_rank"},
+        {"symbol": "600000", "code": "SH600000", "name": "样本二", "rank": 2, "heat": 12.5, "source": "ths_hot_rank"},
+    ]
+    assert provider.normalize({"status_code": 0, "data": {"stock_list": []}}) == []
+    class EmptyResponse(Response):
+        def json(self): return {"status_code": 0, "data": {"stock_list": []}}
+    with pytest.raises(RuntimeError, match="ths_hot_rank_fetch_failed"):
+        ThsHotRankProvider(session=Session(EmptyResponse()), retries=1,
+                           sleep_fn=lambda _: None).fetch()
+    blocked = Session(type("Blocked", (), {"status_code": 403})())
+    circuit = ThsHotRankProvider(session=blocked, retries=3, sleep_fn=lambda _: None)
+    with pytest.raises(ProviderCircuitOpen): circuit.fetch()
+    with pytest.raises(ProviderCircuitOpen): circuit.fetch()
+    assert blocked.calls == 1
+
+
 @pytest.mark.parametrize("name", sorted(DATASET_NAMES))
 def test_job_pipeline_persists_immutable_artifact_and_manifest(name, tmp_path):
     redis = None
@@ -210,6 +244,19 @@ def test_injected_kaipan_provider_fetches_pool_and_honors_request_limit(tmp_path
     assert result["rows"][0]["symbol"] == "600001"
     assert result["rows"][0]["lb_days"] == 1
 
+    class NoisyClient:
+        def get_his_bans(self, day, level):
+            return {"info": [[
+                ["600001", "短元数据"],
+                ["600001", "有效", *([""] * 14)],
+                ["600002", "重复", *([""] * 14)],
+            ]]}
+
+    guarded = KaipanProvider(NoisyClient(), plate_codes=[], max_requests=1,
+                             sleep_fn=lambda _: None).limit_up_pool("2026-10-15", max_levels=1)
+    assert [row["symbol"] for row in guarded["rows"]] == ["600001", "600002"]
+    assert guarded["rows"][0]["name"] == "有效"
+
     partial = KaipanProvider(
         type("Reasons", (), {"get_ban_reasons": lambda _self, _symbol: {"List": []}})(),
         symbols=["600001", "600002"], max_requests=1, sleep_fn=lambda _: None,
@@ -230,3 +277,72 @@ def test_injected_kaipan_provider_fetches_pool_and_honors_request_limit(tmp_path
     ).limit_reasons("2026-10-15")
     assert resumed["partial"] is False
     assert resumed["unqueried_symbol_count"] == 0
+
+
+def test_kaipan_provider_uses_sdk_plate_methods_and_normalizes_rows():
+    from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+
+    class SDK:
+        def getHisPlates(self, date, index, size):
+            assert (date, index, size) == ("2026-10-16", "0", "50")
+            return {"list": [["801001", "芯片", 12300, 1.25, 0, 500]],
+                    "Count": 1, "Day": ["2026-10-16"]}
+
+        def getHisPlateIds(self, p, date, index, size):
+            assert (p, date, index, size) == ("801001", "2026-10-16", "0", "30")
+            return {"list": [["600001", "示例", "", 0, "芯片"]],
+                    "Count": 1, "Day": ["2026-10-16"]}
+
+    provider = KaipanProvider(SDK(), plate_codes=["801001"], max_requests=3,
+                              sleep_fn=lambda _: None)
+    plates = provider.hot_plates("2026-10-16")
+    members = provider.plate_members("2026-10-16", page_size=30)
+    assert plates["rows"] == [{"plate_code": "801001", "name": "芯片", "strength": 12300,
+                               "change_pct": 1.25, "amount_yuan": 500,
+                               "trade_date": "2026-10-16"}]
+    assert members["rows"] == [{"plate_code": "801001", "symbol": "600001",
+                                "plate_class": "UNKNOWN", "plate_member_label": "芯片",
+                                "trade_date": "2026-10-16"}]
+
+
+def test_kaipan_provider_keeps_response_day_as_metadata_not_requested_date():
+    from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+
+    class SDK:
+        def getHisPlates(self, date, index, size):
+            return {"list": [["801001", "芯片"]], "Count": 1,
+                    "Day": ["2026-10-16"], "Time": 1792220400,
+                    "Min": "0925", "Max": "1500"}
+
+    result = KaipanProvider(SDK(), sleep_fn=lambda _: None).hot_plates("2026-10-15")
+    assert result["rows"][0]["trade_date"] == "2026-10-15"
+    assert result["requested_date"] == "2026-10-15"
+    assert result["response_time"] == 1792220400
+    assert result["response_min"] == "0925"
+    assert result["response_max"] == "1500"
+    assert result["response_day"] == ["2026-10-16"]
+
+
+def test_kaipan_provider_normalizes_historical_plate_minute_trend():
+    from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+
+    class SDK:
+        def getHisPlateMins(self, plate_code, trade_date):
+            assert (plate_code, trade_date) == ("801001", "2026-10-15")
+            return {"trend": [["09:30", 12.3, 4, 5, 0], ["09:31", 12.4, 6, 7, 0]],
+                    "begin_px": 12.0, "hprice": 12.4, "lprice": 11.9,
+                    "preclose_px": 12.1, "day": "2026-10-15"}
+
+    result = KaipanProvider(SDK(), min_interval_seconds=1,
+                            sleep_fn=lambda _: None).plate_minutes("801001", "2026-10-15")
+    assert result["rows"] == [
+        {"plate_code": "801001", "trade_date": "2026-10-15", "time": "09:30",
+         "event_time": "2026-10-15T09:30:00+08:00", "minute_index": 0,
+         "price": 12.3, "volume": 4, "amount": 5},
+        {"plate_code": "801001", "trade_date": "2026-10-15", "time": "09:31",
+         "event_time": "2026-10-15T09:31:00+08:00", "minute_index": 1,
+         "price": 12.4, "volume": 6, "amount": 7},
+    ]
+    assert result["metadata"] == {"begin_px": 12.0, "hprice": 12.4,
+                                  "lprice": 11.9, "preclose_px": 12.1,
+                                  "day": "2026-10-15"}

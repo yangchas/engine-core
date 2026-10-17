@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import html
 import json
@@ -289,9 +290,11 @@ def _plate_quadrants(current, relations, plate_names, hot_path, anchor_path, now
 
 def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
                 relations=None, plate_names=None, daily_history_csv=None, stock_names=None,
+                daily_report_features=None,
                 amount_baseline_json=None, auction_baseline_csv=None, kaipan_hot_json=None, kaipan_hot_rows=None,
                 strength_anchor_json=None,
-                member_snapshot_date="UNKNOWN", member_lag_trading_days=None, asof=None):
+                member_snapshot_date="UNKNOWN", member_lag_trading_days=None, asof=None,
+                td_connection_factory=None, max_fetch_workers=4):
     if stage not in STAGES: raise ValueError(f"unknown stage: {stage}")
     snaps, raw_states = [], {}
     td_fetch_seconds = 0.0
@@ -299,9 +302,37 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
     baseline_yuan = _load_amount_baseline(amount_baseline_json)
     auction_baseline_rows = load_auction_amount_baseline_csv(auction_baseline_csv, trade_date)
     asof_cutoff = datetime.fromisoformat(asof) if isinstance(asof, str) else asof
+    cutoffs = {label: datetime.fromisoformat(f"{trade_date}T{clock}")
+               for label, clock in STAGES[stage]}
+    fetchable = {}
+    skipped = set()
+    for label, clock in STAGES[stage]:
+        cutoff = cutoffs[label]
+        if asof_cutoff is not None and cutoff > asof_cutoff:
+            skipped.add(label)
+        elif clock == "09:45:30" and not checkpoint_ready(td, cutoff):
+            skipped.add(label)
+    fetch_started = time.perf_counter()
+
+    def fetch_one(label):
+        connection = td_connection_factory() if td_connection_factory else td
+        try:
+            return label, states_at(connection, cutoffs[label])
+        finally:
+            if td_connection_factory:
+                close = getattr(connection, "close", None)
+                if callable(close):
+                    close()
+
+    fetch_labels = [label for label, _ in STAGES[stage] if label not in skipped]
+    if len(fetch_labels) > 1 and max_fetch_workers > 1:
+        with ThreadPoolExecutor(max_workers=min(4, max(1, int(max_fetch_workers)), len(fetch_labels))) as pool:
+            fetchable.update(pool.map(fetch_one, fetch_labels))
+    else:
+        fetchable.update(fetch_one(label) for label in fetch_labels)
+    td_fetch_seconds = time.perf_counter() - fetch_started
     for label, clock in STAGES[stage]:
         cutoff = datetime.fromisoformat(f"{trade_date}T{clock}")
-        fetch_started = time.perf_counter()
         if asof_cutoff is not None and cutoff > asof_cutoff:
             snaps.append({"label": label, "asof": cutoff.isoformat(timespec="seconds"),
                           "status": "NOT_YET_AVAILABLE", "data_lag_seconds": None,
@@ -309,16 +340,14 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
                           "median_pct_change": None, "up_share_pct": None, "limit_up": None,
                           "limit_down": None, "top_plates_by_share": [], "top_stocks_by_amount": []})
             continue
-        if clock == "09:45:30" and not checkpoint_ready(td, cutoff):
+        if label in skipped:
             snaps.append({"label": label, "asof": cutoff.isoformat(timespec="seconds"),
                           "status": "NOT_READY", "data_lag_seconds": None,
                           "market_match_amount_yuan": None, "vs_previous_day_final": None,
                           "median_pct_change": None, "up_share_pct": None, "limit_up": None,
                           "limit_down": None, "top_plates_by_share": [], "top_stocks_by_amount": []})
-            td_fetch_seconds += time.perf_counter() - fetch_started
             continue
-        rows = states_at(td, cutoff)
-        td_fetch_seconds += time.perf_counter() - fetch_started
+        rows = fetchable[label]
         raw_states[label] = rows
         snap = build_live_slice(rows, cutoff, previous_day_final_yuan=previous_day_final_yuan,
                                 relations=relations, plate_names=plate_names, top_n=max(15, len(relations or {})))
@@ -355,7 +384,8 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
     relations, plate_names, stock_names = relations or {}, plate_names or {}, stock_names or {}
     final_label = "0945" if stage == "open_0946" else "0925"
     current = raw_states.get(final_label, {})
-    history_rows = load_daily_history_csv(daily_history_csv, trade_date=trade_date) if daily_history_csv else None
+    history_rows = (daily_report_features if daily_report_features else
+                    load_daily_history_csv(daily_history_csv, trade_date=trade_date) if daily_history_csv else None)
     context = daily_history_context(history_rows, trade_date, raw_states.get("0925", current)) if history_rows is not None else None
     stock_context = context["stocks"] if context else {}
     history = context["history"] if context else None
@@ -611,6 +641,7 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
                                              for symbol, row in auction.items()
                                              if stock_context.get(symbol, {}).get("streak") is not None
                                              and stock_context[symbol]["streak"] >= 1]
+        chapters["yesterday_limit_pool"].sort(key=lambda row: str(row["symbol"]))
         highboard_pcts = [row["0925"] for row in highboards
                           if isinstance(row.get("0925"), (int, float)) and math.isfinite(row["0925"])]
         pool_pcts = [row["pct_change"] for row in chapters["yesterday_limit_pool"]
@@ -1035,9 +1066,13 @@ def main(argv=None):
         parser.error("disk usage exceeds 90%; refusing to write report files")
     import os
     import taos
-    td = taos.connect(host=os.getenv("TD_HOST", "127.0.0.1"), port=int(os.getenv("TD_PORT", "6030")),
-                      user=os.getenv("TD_USER", "root"), password=os.getenv("TD_PASSWORD", "taosdata"),
-                      database=os.getenv("TD_DATABASE", "market_data1"), config=os.getenv("TD_CONFIG", "/etc/taos"))
+    td_settings = {"host": os.getenv("TD_HOST", "127.0.0.1"),
+                   "port": int(os.getenv("TD_PORT", "6030")),
+                   "user": os.getenv("TD_USER", "root"), "password": os.getenv("TD_PASSWORD", "taosdata"),
+                   "database": os.getenv("TD_DATABASE", "market_data1"),
+                   "config": os.getenv("TD_CONFIG", "/etc/taos")}
+    td = taos.connect(**td_settings)
+    td_factory = lambda: taos.connect(**td_settings)
     try:
         relations, plate_names = {}, {}
         member_snapshot_date = "UNKNOWN"
@@ -1054,7 +1089,8 @@ def main(argv=None):
                                     auction_baseline_csv=args.auction_baseline_csv,
                                     kaipan_hot_json=args.kaipan_hot_json,
                                     strength_anchor_json=args.strength_anchor_json,
-                                    member_snapshot_date=member_snapshot_date)
+                                    member_snapshot_date=member_snapshot_date,
+                                    td_connection_factory=td_factory)
         write_page(args.out_dir, page, payload, full_json=args.full_json)
         print("TIMINGS_MS " + json.dumps(payload["manifest"]["timings_ms"], separators=(",", ":")))
     finally:

@@ -1,6 +1,7 @@
 """Small, read-only data slice API used by report entry points."""
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import threading
@@ -133,7 +134,10 @@ class SliceProviders:
         "auction_baseline": "auction_baseline", "yest_limit_pool": "limit_up_pool",
         "limit_reason_history": "limit_reasons", "hot_plates_today": "hot_plates",
         "hot_plates_yesterday": "hot_plates", "hot_rank": "hot_rank",
+        "hot_plate_minutes": "hot_plate_minutes",
+        "auction_points": "auction_points",
         "trading_calendar": "trade_calendar", "path_stats": "path_stats",
+        "daily_report_features": "daily_report_features",
     }
 
     def __init__(self, *, catalog: Any = None, redis: Any = None, artifact_root: str | Path | None = None,
@@ -163,10 +167,66 @@ class SliceProviders:
     def _core(self, reader: SliceReader, request: SliceRequest) -> SliceResult:
         dataset = self.DATASETS[request.slice_id]
         date = request.trade_date
+        if request.slice_id == "hot_plates_today":
+            # Kaipan D-day hot plates become available at D+1 00:00. A report
+            # for D must therefore resolve only the latest prior-day artifact.
+            prior = str(request.params.get("prior_trade_date") or "")
+            if not prior:
+                prior = previous_trade_date(self.catalog, request.trade_date) or ""
+            date = prior
+        if request.slice_id == "daily_report_features":
+            feature_date = str(request.params.get("prior_trade_date") or "")
+            if not feature_date:
+                return _result(request, [], source="core_data", status="PARTIAL",
+                               reason="PRIOR_TRADE_DATE_MISSING",
+                               quality={"coverage": 0, "partial": True, "fallback": "daily_history"})
+            cutoff = _parse_pit_timestamp(request.asof)
+            key = f"core:cache:data:daily_report_features:{feature_date}"
+            try:
+                raw = self.redis.get(key) if self.redis is not None else None
+                payload = json.loads(gzip.decompress(raw)) if raw else None
+                available = _parse_pit_timestamp((payload or {}).get("available_at"))
+                if (isinstance(payload, dict) and payload.get("dataset") == "daily_report_features"
+                        and payload.get("trade_date") == feature_date
+                        and payload.get("source") == "core_data"
+                        and payload.get("row_count") == len(payload.get("rows", []))
+                        and available is not None and cutoff is not None and available <= cutoff):
+                    return _result(request, payload["rows"], source="core_redis", status="READY",
+                                   version="redis_hot_view", available_at=payload.get("available_at"),
+                                   quality={"coverage": len(payload["rows"]), "partial": False},
+                                   lineage=[{"dataset": dataset, "hot_view": True}])
+            except (OSError, ValueError, TypeError):
+                pass
+            manifest_path = self.catalog.locate(dataset, feature_date)
+            if manifest_path is None or not manifest_path.is_file():
+                return _result(request, [], source="core_data", status="PARTIAL",
+                               reason="DAILY_REPORT_FEATURES_NOT_IMPORTED",
+                               quality={"coverage": 0, "partial": True, "fallback": "daily_history"})
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                available = _parse_pit_timestamp(manifest.get("available_at"))
+                if available is None or cutoff is None or available > cutoff:
+                    return _result(request, [], source="core_data", status="PARTIAL",
+                                   reason="DAILY_REPORT_FEATURES_NOT_PIT_READY",
+                                   quality={"coverage": 0, "partial": True, "fallback": "daily_history"})
+                rows = self.catalog.read_rows(manifest_path)
+            except (OSError, ValueError, TypeError, KeyError):
+                rows, manifest = [], {}
+            if not rows:
+                return _result(request, [], source="core_data", status="PARTIAL",
+                               reason="DAILY_REPORT_FEATURES_EMPTY",
+                               quality={"coverage": 0, "partial": True, "fallback": "daily_history"})
+            return _result(request, rows, source="core_data", status="READY",
+                           version=str(manifest.get("version") or "unknown"),
+                           available_at=manifest.get("available_at"),
+                           quality={"coverage": len(rows), "partial": False},
+                           lineage=[{"dataset": dataset, "source": "core_data"}])
         if request.slice_id == "daily_history":
             through_date = str(request.params.get("prior_trade_date") or date)
             from engine_core.daily_history import core_history_rows, read_daily_history_cache
-            cached = read_daily_history_cache(self.redis, through_date, asof=request.asof)
+            history_days = max(1, int(request.params.get("history_days", 5)))
+            cached = read_daily_history_cache(self.redis, through_date, asof=request.asof,
+                                              history_days=history_days)
             if cached is not None:
                 rows, history_meta = cached
                 history_meta["row_count"] = len(rows)
@@ -179,7 +239,7 @@ class SliceProviders:
                                          "hot_view": True}])
             try:
                 rows, history_meta = core_history_rows(self.catalog, through_date=through_date,
-                                                       asof=request.asof, max_days=120)
+                                                       asof=request.asof, max_days=history_days)
             except (OSError, ValueError, TypeError):
                 rows, history_meta = [], {"row_count": 0, "history_trade_dates": 0,
                                            "available_at": None, "unknown_availability": True}
@@ -311,7 +371,9 @@ class SliceProviders:
         if request.slice_id in {"hot_plates_yesterday", "yest_limit_pool"} and not date:
             return _result(request, [], source="core_data", status="MISSING",
                            reason="PREVIOUS_TRADE_DATE_MISSING")
-        exact_date = request.slice_id in {"hot_plates_today", "hot_plates_yesterday", "yest_limit_pool"}
+        exact_date = request.slice_id in {"hot_plates_today", "hot_plates_yesterday", "hot_rank",
+                                         "hot_plate_minutes",
+                                         "yest_limit_pool"}
         manifest_path = self._select_manifest(dataset, date or request.trade_date, request.asof,
                                               exact_date=exact_date)
         discovered_by = "artifact"
@@ -336,22 +398,31 @@ class SliceProviders:
         except (OSError, ValueError, KeyError):
             return _result(request, [], source="core_data", status="MISSING", reason="CORRUPT_DATASET")
         rows = _as_rows(rows)
+        if request.slice_id == "hot_plate_minutes":
+            plate_code = str(request.params.get("plate_code") or "")
+            if plate_code:
+                rows = [row for row in rows if str(row.get("plate_code") or "") == plate_code]
         for row in rows:
             row.setdefault("available_at", manifest.get("available_at"))
         original_count = len(rows)
         rows, unknown = _pit_rows(rows, request.asof)
         source = "core_redis" if discovered_by == "core_redis" else "core_data"
         filtered = len(rows) < original_count
-        status = "PARTIAL" if unknown or filtered or manifest.get("business_status") == "PARTIAL" else "READY"
+        manifest_quality = manifest.get("quality")
+        partial_source = (manifest.get("business_status") == "PARTIAL" or
+                          (isinstance(manifest_quality, Mapping) and
+                           bool(manifest_quality.get("partial"))))
+        status = "PARTIAL" if unknown or filtered or partial_source else "READY"
         return _result(request, rows, source=source, status=status,
                        reason="NO_ASOF" if unknown else ("FUTURE_ROWS_FILTERED" if filtered else None),
                        version=str(manifest.get("version") or "unknown"),
                        available_at=manifest.get("available_at"),
                        quality={"coverage": len(rows) or None,
                                 "missing": "NO_ASOF" if unknown else ("FUTURE_ROWS_FILTERED" if filtered else None),
-                                "partial": unknown or filtered},
+                                "partial": unknown or filtered or partial_source},
                        pit_date=(manifest.get("point_in_time_date") or manifest.get("pit_date")),
-                       lineage=[{"dataset": dataset,
+                       lineage=[{"dataset": dataset, "requested_date": request.trade_date,
+                                "used_date": manifest.get("trade_date", date),
                                 "available_at": manifest.get("available_at")}])
 
     def _select_manifest(self, dataset: str, max_trade_date: str,
@@ -399,8 +470,9 @@ class SliceProviders:
                        quality={"coverage": len(rows) or None, "missing": "NO_ASOF" if unknown else None,
                                 "partial": unknown})
         result.meta["legacy_dependency"] = True
+        result.meta["status"] = "DEGRADED"
+        result.meta.setdefault("reason", "LEGACY_SOURCE_FALLBACK")
         if request.slice_id == "daily_history":
-            result.meta["status"] = "DEGRADED"
             result.meta["reason"] = "LEGACY_DAILY_HISTORY_DEGRADED"
         return result
 

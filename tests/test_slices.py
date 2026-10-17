@@ -59,6 +59,86 @@ def test_slice_provider_priority_and_pit_filtering(tmp_path):
     assert [row["symbol"] for row in result.rows] == ["600001"]
 
 
+def test_hot_rank_slice_selects_latest_core_capture_not_after_asof(tmp_path):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.slices import SliceProviders
+
+    catalog = ArtifactCatalog(tmp_path / "core")
+    for captured, symbol in (("2026-10-17T10:00:00+08:00", "000001"),
+                             ("2026-10-17T11:00:00+08:00", "000002")):
+        catalog.commit("hot_rank", "2026-10-17", [{"symbol": symbol, "rank": 1,
+            "captured_at": captured, "available_at": captured}],
+            {"available_at": captured, "point_in_time_date": "2026-10-17"}, source="ths_hot_rank")
+
+    class Redis:
+        def hgetall(self, key): return {"000099": '{"rank":1}'}
+
+    reader = SliceReader(SliceProviders(catalog=catalog, redis=Redis(), file_fallback=False).providers())
+    result = reader.get("hot_rank", trade_date="2026-10-17", asof="2026-10-17T10:30:00+08:00")
+    assert result.meta["source"] == "core_data"
+    assert result.meta["status"] == "READY"
+    assert [row["symbol"] for row in result.rows] == ["000001"]
+    no_redis = SliceReader(SliceProviders(catalog=catalog, redis=None,
+                                         file_fallback=False).providers())
+    next_day = no_redis.get("hot_rank", trade_date="2026-10-18",
+                            asof="2026-10-18T09:00:00+08:00")
+    assert next_day.meta["status"] == "MISSING"
+    assert next_day.rows == []
+
+
+def test_hot_plates_and_plate_members_read_core_artifacts_before_legacy(tmp_path):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.slices import SliceProviders
+
+    catalog = ArtifactCatalog(tmp_path / "core")
+    catalog.commit("hot_plates", "2026-10-16", [{
+        "plate_code": "801001", "name": "芯片", "strength": 100,
+        "captured_at": "2026-10-17T09:20:00+08:00",
+        "available_at": "2026-10-17T09:20:00+08:00",
+    }], {"available_at": "2026-10-17T09:20:00+08:00"}, source="kaipan_getHisPlates")
+    catalog.commit("plate_members", "2026-10-16", [{
+        "plate_code": "801001", "symbol": "600001",
+        "captured_at": "2026-10-17T09:20:00+08:00",
+        "available_at": "2026-10-17T09:20:00+08:00",
+    }], {"available_at": "2026-10-17T09:20:00+08:00"}, source="kaipan_getHisPlateIds")
+
+    class Redis:
+        def hgetall(self, key):
+            return {"legacy": '{"symbol":"000001"}'}
+
+    reader = SliceReader(SliceProviders(catalog=catalog, redis=Redis(),
+                                        file_fallback=False).providers())
+    asof = "2026-10-17T09:30:00+08:00"
+    hot = reader.get("hot_plates_today", trade_date="2026-10-16", asof=asof)
+    members = reader.get("plate_members", trade_date="2026-10-16", asof=asof)
+    assert hot.meta["source"] == members.meta["source"] == "core_data"
+    assert [row["plate_code"] for row in hot.rows] == ["801001"]
+    assert [row["symbol"] for row in members.rows] == ["600001"]
+
+
+def test_hot_plate_minute_slice_filters_by_plate_and_available_at(tmp_path):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.slices import SliceProviders
+
+    catalog = ArtifactCatalog(tmp_path / "core")
+    catalog.commit("hot_plate_minutes", "2026-10-15", [
+        {"plate_code": "801001", "trade_date": "2026-10-15", "time": "09:30",
+         "event_time": "2026-10-15T09:30:00+08:00"},
+        {"plate_code": "801001", "trade_date": "2026-10-15", "time": "09:31",
+         "event_time": "2026-10-15T09:31:00+08:00"},
+        {"plate_code": "801002", "trade_date": "2026-10-15", "time": "09:30",
+         "event_time": "2026-10-15T09:30:00+08:00"},
+    ], {"available_at": "2026-10-16T00:00:00+08:00"}, source="kaipan_getHisPlateMins")
+    reader = SliceReader(SliceProviders(catalog=catalog, file_fallback=False).providers())
+    result = reader.get("hot_plate_minutes", trade_date="2026-10-15",
+                        asof="2026-10-16T09:30:30+08:00", plate_code="801001")
+    assert result.meta["source"] == "core_data"
+    assert [row["time"] for row in result.rows] == ["09:30", "09:31"]
+    before_available = reader.get("hot_plate_minutes", trade_date="2026-10-15",
+                                  asof="2026-10-15T15:00:00+08:00", plate_code="801001")
+    assert before_available.rows == []
+
+
 def test_pit_rejects_future_available_at_even_when_event_time_is_missing_and_normalizes_naive():
     from engine_core.slices import _pit_rows
 
@@ -190,7 +270,7 @@ def test_legacy_source_and_file_fallback_are_explicit(tmp_path):
     missing = reader.get("yest_limit_pool", trade_date="2026-10-15",
                          asof="2026-10-15T09:02:00+08:00", source_date="2026-10-14",
                          fallback_file=str(file_path))
-    assert missing.meta["status"] == "PARTIAL"
+    assert missing.meta["status"] == "DEGRADED"
     assert missing.meta["source"] == "legacy_redis"
     assert missing.meta["reason"] == "NO_ASOF"
 

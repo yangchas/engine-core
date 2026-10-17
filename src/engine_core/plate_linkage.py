@@ -50,6 +50,7 @@ def build_plate_linkage(states: Mapping[str, Mapping[str, Any]],
         if name in generic_names:
             continue
         rows = [(symbol, states[symbol]) for symbol in members if symbol in states]
+        sealed = {symbol: (_sealed(row, 1), _sealed(row, -1)) for symbol, row in rows}
         priced = [(symbol, row, _finite(row.get("pct_change")))
                   for symbol, row in rows if _finite(row.get("pct_change")) is not None]
         if len(priced) < min_members:
@@ -68,13 +69,13 @@ def build_plate_linkage(states: Mapping[str, Mapping[str, Any]],
                         if weighted_denominator > 0 else None)
 
         up_rows = [(symbol, row, amount) for symbol, row, amount in known_amounts
-                   if _sealed(row, 1) is True]
+                   if sealed[symbol][0] is True]
         down_rows = [(symbol, row, amount) for symbol, row, amount in known_amounts
-                     if _sealed(row, -1) is True]
+                     if sealed[symbol][1] is True]
         up_known = sum(amount for _, _, amount in up_rows)
         down_known = sum(amount for _, _, amount in down_rows)
-        up_unknown = sum(_sealed(row, 1) is None for _, row in rows)
-        down_unknown = sum(_sealed(row, -1) is None for _, row in rows)
+        up_unknown = sum(sealed[symbol][0] is None for symbol, _ in rows)
+        down_unknown = sum(sealed[symbol][1] is None for symbol, _ in rows)
 
         top_priced = sorted(priced_amount_rows, key=lambda item: (-item[2], item[0]))[:3]
         top3_contribution = sum(amount * pct for _, _, amount, pct in top_priced)
@@ -99,12 +100,12 @@ def build_plate_linkage(states: Mapping[str, Mapping[str, Any]],
             "equal_weight_mean_pct": equal_mean,
             "amount_weighted_pct": weighted_pct,
             "weighted_minus_equal_mean_pp": weighted_pct - equal_mean if weighted_pct is not None else None,
-            "limit_up_count": sum(_sealed(row, 1) is True for _, row in rows),
+            "limit_up_count": sum(sealed[symbol][0] is True for symbol, _ in rows),
             "limit_up_unknown_count": up_unknown,
             "limit_up_unknown_coverage_pct": _ratio(up_unknown, len(rows)),
             "limit_up_amount_share_pct": (_ratio(up_known, amount_total) if up_unknown == 0 else None),
             "limit_up_top3": sealed_top(up_rows),
-            "limit_down_count": sum(_sealed(row, -1) is True for _, row in rows),
+            "limit_down_count": sum(sealed[symbol][1] is True for symbol, _ in rows),
             "limit_down_unknown_count": down_unknown,
             "limit_down_unknown_coverage_pct": _ratio(down_unknown, len(rows)),
             "limit_down_amount_share_pct": (_ratio(down_known, amount_total) if down_unknown == 0 else None),

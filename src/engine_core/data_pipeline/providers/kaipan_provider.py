@@ -51,13 +51,20 @@ class KaipanProvider:
         self.symbols = tuple(dict.fromkeys(str(symbol).zfill(6) for symbol in symbols))
         self.plate_classes = dict(plate_classes or {})
         self.max_requests = max(1, int(max_requests))
-        self.min_interval_seconds = max(10.0, float(min_interval_seconds))
+        self.min_interval_seconds = max(1.0, float(min_interval_seconds))
         self.sleep_fn, self.monotonic_fn = sleep_fn, monotonic_fn
         self._requests = 0
         self._last_request: float | None = None
         self._tripped = False
         self.reasons_checkpoint_path = (Path(reasons_checkpoint_path)
                                         if reasons_checkpoint_path is not None else None)
+
+    def _client_method(self, *names: str) -> Callable[..., Any]:
+        for name in names:
+            method = getattr(self.client, name, None)
+            if callable(method):
+                return method
+        raise AttributeError(f"kaipan_method_unavailable:{names[0]}")
 
     def _call(self, fn: Callable[..., Any], *args: Any) -> Any:
         if self._tripped:
@@ -75,12 +82,12 @@ class KaipanProvider:
         except Exception as exc:
             if any(token in str(exc).lower() for token in ("403", "forbidden", "captcha", "anti-bot")):
                 self._tripped = True
-                raise ProviderCircuitOpen("kaipan_provider_blocked") from None
+                raise ProviderCircuitOpen("kaipan_provider_blocked:403") from None
             raise RuntimeError(f"kaipan_request_failed:{type(exc).__name__}") from None
         if isinstance(value, Mapping) and (value.get("status_code") == 403 or
                 str(value.get("error", "")).lower() in {"403", "forbidden"}):
             self._tripped = True
-            raise ProviderCircuitOpen("kaipan_provider_blocked")
+            raise ProviderCircuitOpen("kaipan_provider_blocked:403")
         if value is None or value == [] or value == {}:
             self._tripped = True
             raise ProviderCircuitOpen("kaipan_empty_response")
@@ -102,6 +109,11 @@ class KaipanProvider:
                     break  # SDK returns None past the highest populated level
                 raise
             for raw in _pool_rows(response):
+                # The legacy pool contract requires the complete positional
+                # record (16 fields). Short tuples are metadata/noise and must
+                # not become partially trusted pool members.
+                if len(raw) < 16:
+                    continue
                 symbol = _code(raw[0])
                 if not symbol or symbol in seen:
                     continue
@@ -121,7 +133,8 @@ class KaipanProvider:
                 if self._requests >= self.max_requests:
                     partial = True
                     break
-                response = self._call(self.client.get_his_plate_ids, plate, trade_date, index, page_size)
+                response = self._call(self._client_method("get_his_plate_ids", "getHisPlateIds"),
+                                      plate, trade_date, str(index), str(page_size))
                 page = _list_rows(response)
                 for raw in page:
                     if not isinstance(raw, (list, tuple)) or len(raw) < 1:
@@ -148,29 +161,58 @@ class KaipanProvider:
 
     def hot_plates(self, trade_date: str, *, context: Any = None,
                    page_size: int = 50) -> dict[str, Any]:
-        rows, index = [], 0
-        while True:
-            response = self._call(self.client.get_his_plates, trade_date, index, page_size)
-            page = _list_rows(response)
-            for raw in page:
-                if isinstance(raw, Mapping):
-                    row = dict(raw)
-                    code = _code(row.get("plate_code", row.get("code")))
-                    row["plate_code"] = code
-                elif isinstance(raw, (list, tuple)) and raw:
-                    row = {"plate_code": _code(raw[0]), "name": raw[1] if len(raw) > 1 else None,
-                           "strength": raw[2] if len(raw) > 2 else None,
-                           "change_pct": raw[3] if len(raw) > 3 else None,
-                           "amount_yuan": raw[5] if len(raw) > 5 else None}
-                else:
-                    continue
-                row["trade_date"] = trade_date
-                rows.append(row)
-            count = response.get("Count") if isinstance(response, Mapping) else None
-            index += len(page)
-            if not page or (count is not None and index >= int(count)) or len(page) < page_size:
-                break
-        return {"rows": rows, "expected_count": len(rows), "request_count": self._requests}
+        response = self._call(self._client_method("get_his_plates", "getHisPlates"),
+                              trade_date, "0", str(page_size))
+        response_metadata = {key: response.get(key) for key in ("Time", "Min", "Max", "Day")
+                             if response.get(key) is not None} if isinstance(response, Mapping) else {}
+        rows = []
+        for raw in _list_rows(response)[:page_size]:
+            if isinstance(raw, Mapping):
+                row = dict(raw)
+                code = _code(row.get("plate_code", row.get("code")))
+                row["plate_code"] = code
+            elif isinstance(raw, (list, tuple)) and raw:
+                row = {"plate_code": _code(raw[0]), "name": raw[1] if len(raw) > 1 else None,
+                       "strength": raw[2] if len(raw) > 2 else None,
+                       "change_pct": raw[3] if len(raw) > 3 else None,
+                       "amount_yuan": raw[5] if len(raw) > 5 else None}
+            else:
+                continue
+            row["trade_date"] = trade_date
+            rows.append(row)
+        return {"rows": rows, "expected_count": len(rows), "request_count": self._requests,
+                "requested_date": trade_date, "response_time": response_metadata.get("Time"),
+                "response_min": response_metadata.get("Min"),
+                "response_max": response_metadata.get("Max"),
+                "response_day": response_metadata.get("Day"),
+                "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())}
+
+    def plate_minutes(self, plate_code: str, trade_date: str, *, context: Any = None) -> dict[str, Any]:
+        code = _code(plate_code)
+        if code is None:
+            raise ValueError("kaipan_plate_code_invalid")
+        response = self._call(self._client_method("get_his_plate_mins", "getHisPlateMins"),
+                              code, trade_date)
+        if not isinstance(response, Mapping):
+            raise ValueError("kaipan_unexpected_plate_minutes_shape")
+        trend = response.get("trend")
+        if not isinstance(trend, (list, tuple)):
+            raise ValueError("kaipan_unexpected_plate_minutes_shape")
+        rows = []
+        for index, point in enumerate(trend):
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            rows.append({"plate_code": code, "trade_date": trade_date,
+                         "time": str(point[0]), "event_time": f"{trade_date}T{point[0]}:00+08:00",
+                         "minute_index": index, "price": point[1],
+                         "volume": point[2] if len(point) > 2 else None,
+                         "amount": point[3] if len(point) > 3 else None})
+        metadata = {key: response.get(key) for key in
+                    ("begin_px", "hprice", "lprice", "preclose_px", "day")
+                    if response.get(key) is not None}
+        return {"rows": rows, "expected_count": len(trend), "request_count": self._requests,
+                "requested_date": trade_date, "plate_code": code, "metadata": metadata,
+                "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())}
 
     def limit_reasons(self, trade_date: str, *, context: Any = None,
                       symbols: Iterable[str] | None = None) -> dict[str, Any]:

@@ -50,6 +50,34 @@ def test_daily_indicators_use_legacy_formulas_and_keep_short_windows_missing():
     assert calculate_daily_indicators("000001", rows[:4])["change_pct_5d"] is None
 
 
+def test_daily_history_hot_view_keeps_five_bars_and_latest_indicators():
+    import gzip
+    import json
+    from engine_core.daily_history import write_daily_history_cache
+
+    class Redis:
+        values = {}
+
+        def set(self, key, value, ex):
+            self.values[key] = value
+
+    redis = Redis()
+    rows = [{"symbol": "000001", "date": f"2026-10-{day:02d}", "close": day,
+             "available_at": f"2026-10-{day:02d}T17:30:00+08:00",
+             **({"ma20": 8.0, "bias_20": 25.0} if day == 16 else {})}
+            for day in range(1, 17)]
+
+    assert write_daily_history_cache(redis, "2026-10-16", rows,
+                                     available_at="2026-10-16T17:30:00+08:00")
+    payload = json.loads(gzip.decompress(redis.values[
+        "core:cache:data:daily_history:2026-10-16"]))
+
+    assert [row["date"] for row in payload["rows"]] == [
+        "2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16"]
+    assert payload["rows"][-1]["ma20"] == 8.0
+    assert all("ma20" not in row for row in payload["rows"][:-1])
+
+
 def test_legacy_daily_history_fallback_is_marked_degraded():
     class Redis:
         def hkeys(self, _key):
@@ -123,6 +151,13 @@ def test_history_import_checkpoints_completed_symbol_batches(tmp_path):
     assert report["days_committed"] == 1
     assert len(client.queries) == 2
     assert "core:cache:data:daily_history:2026-10-15" in redis.values
+    import gzip, json
+    batch_checkpoint = next((checkpoint / "range-2026-10-15-2026-10-15").glob("symbols-*.json.gz"))
+    saved_batch = json.loads(gzip.decompress(batch_checkpoint.read_bytes()))
+    assert saved_batch["source"] == "baostock"
+    assert saved_batch["parameters"]["start"] == "2026-10-15"
+    assert saved_batch["parameters"]["end"] == "2026-10-15"
+    assert saved_batch["fetched_at"]
     assert catalog.locate("daily_indicators", "2026-10-15") is not None
     cached = SliceReader(SliceProviders(catalog=catalog, redis=redis).providers()).get(
         "daily_history", trade_date="2026-10-16", asof="2026-10-16T20:00:00+08:00",
@@ -130,6 +165,11 @@ def test_history_import_checkpoints_completed_symbol_batches(tmp_path):
     assert cached.meta["version"] == "redis_hot_view"
     assert cached.meta["source"] == "core_data"
     assert cached.rows[0]["indicator_source"] == "core_derived"
+    long_window = SliceReader(SliceProviders(catalog=catalog, redis=redis).providers()).get(
+        "daily_history", trade_date="2026-10-16", asof="2026-10-16T20:00:00+08:00",
+        prior_trade_date="2026-10-15", history_days=6)
+    assert long_window.meta["version"] == "multi_date"
+    assert long_window.rows[0]["indicator_source"] == "core_derived"
 
     resumed = Client()
     backfill_daily_history(catalog, start="2026-10-15", end="2026-10-15",

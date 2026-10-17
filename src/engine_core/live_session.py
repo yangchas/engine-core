@@ -203,6 +203,32 @@ def daily_history_context(rows: list[Mapping[str, Any]], trade_date: str,
 def _compute_daily_history_context(rows: list[Mapping[str, Any]], trade_date: str,
                                    states: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     """Derive as-of streak/position context and 72-session opening benchmarks."""
+    if rows and rows[0].get("feature_type") == "daily_report_features_v1":
+        stock_rows = {str(row.get("symbol", "")).zfill(6): row for row in rows
+                      if row.get("symbol") != "__MARKET__"}
+        market = next((row for row in rows if row.get("symbol") == "__MARKET__"), {})
+        history = list(market.get("opening_history_72") or [])
+        current = [float(row["pct_change"]) for row in states.values()
+                   if row.get("pct_change") is not None]
+        median_now = statistics.median(current) if current else None
+        up_now = 100 * sum(value > 0 for value in current) / len(current) if current else None
+        med_min = min(history, key=lambda item: item["median_open_pct"]) if history else None
+        up_min = min(history, key=lambda item: item["up_share_pct"]) if history else None
+        stocks = {symbol: {"streak": row.get("streak"), "position_20d": row.get("position_20d"),
+                           "position_close_days": row.get("position_close_days", 0),
+                           "last_history_date": row.get("last_history_date"),
+                           "prev_day_amount_yuan": row.get("prev_day_amount_yuan")}
+                   for symbol, row in stock_rows.items()}
+        return {"stocks": stocks, "history": {
+            "session_count": len(history), "current_median_open_pct": median_now,
+            "current_up_share_pct": up_now,
+            "median_is_historical_low": median_now is not None and med_min is not None and median_now <= med_min["median_open_pct"],
+            "up_share_is_historical_low": up_now is not None and up_min is not None and up_now <= up_min["up_share_pct"],
+            "history_min_median_date": med_min["date"] if med_min else None,
+            "history_min_median_open_pct": med_min["median_open_pct"] if med_min else None,
+            "history_min_up_share_date": up_min["date"] if up_min else None,
+            "history_min_up_share_pct": up_min["up_share_pct"] if up_min else None,
+            "daily": history}}
     by_day: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
     for row in rows:
         day, symbol = str(row.get("date") or "")[:10], str(row.get("symbol") or "").zfill(6)
@@ -335,15 +361,34 @@ def _sql_states(td: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
 def states_at(td: Any, cutoff: datetime | str) -> dict[str, dict[str, Any]]:
     """Get per-symbol state at cutoff from an injected fake/provider or bounded TD last() query."""
     cutoff = _as_datetime(cutoff)
-    if cutoff < datetime.now() and _state_cache_enabled():
-        cached = _read_checkpoint_cache(cutoff)
+    cacheable = cutoff < datetime.now() and _state_cache_enabled()
+    if cacheable:
+        from . import live_state_cache
+        cached = live_state_cache.read(cutoff)
         if cached is not None:
             return cached
+        # Preserve the explicit legacy test/caller override; production reads use
+        # the verified Core cache so old metadata-free blobs cannot shadow it.
+        if os.environ.get("CORE_SLICE_ROOT"):
+            cached = _read_checkpoint_cache(cutoff)
+            if cached is not None:
+                return cached
     provider = getattr(td, "states_at", None)
+    sql_path = not callable(provider)
     states = provider(cutoff) if callable(provider) else _sql_states(td, cutoff)
-    if cutoff < datetime.now() and _state_cache_enabled():
+    # Only publish a complete market-wide checkpoint. A custom/provider test seam
+    # may not expose readiness; in production TD connections do.
+    cache_complete = bool(states) and len(states) >= 4_000
+    ready = cache_complete
+    if cache_complete and (sql_path or callable(getattr(td, "latest_tick_ts", None))):
         try:
-            if checkpoint_ready(td, cutoff):
+            ready = checkpoint_ready(td, cutoff)
+        except Exception:
+            ready = False
+    if cacheable and cache_complete and ready:
+        try:
+            live_state_cache.write(cutoff, states)
+            if os.environ.get("CORE_SLICE_ROOT"):
                 _write_checkpoint_cache(cutoff, states)
         except Exception:
             # Checkpoint caching is opportunistic; the authoritative TD read already succeeded.
@@ -369,7 +414,7 @@ def _read_checkpoint_cache(cutoff: datetime) -> dict[str, dict[str, Any]] | None
         raw = json.dumps(states, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         if (data.get("schema") != "CheckpointStatesV1"
                 or data.get("cutoff") != cutoff.isoformat(sep=" ") or not isinstance(states, dict)
-                or data.get("symbol_count") != len(states)
+                or data.get("symbol_count") != len(states) or len(states) < 4_000
                 or data.get("sha256") != hashlib.sha256(raw).hexdigest()):
             return None
         return states

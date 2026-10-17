@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -38,6 +39,7 @@ class DailySources:
     td_error: str | None = None
     wencai_fetch: Any = None
     daily_kline_rows: Any = None
+    td_connection_factory: Any = None
 
 
 class _MissingTD:
@@ -285,8 +287,22 @@ def _load_path_study(reference_root: str | Path | list[dict[str, Any]] | None, t
 
 
 def _attach_range_positions(stocks: list[dict[str, Any]], history_path: str | Path | None,
-                            trade_date: str) -> None:
+                            trade_date: str, *, report_features: list[Mapping[str, Any]] | None = None) -> None:
     """Attach a 20-session close-range location; missing history stays UNKNOWN."""
+    if report_features and report_features[0].get("feature_type") == "daily_report_features_v1":
+        feature_map = {str(item.get("symbol", "")).zfill(6): item for item in report_features
+                       if item.get("symbol") != "__MARKET__"}
+        for row in stocks:
+            symbol = str(row.get("symbol", row.get("code", ""))).zfill(6)
+            feature = feature_map.get(symbol, {})
+            pct = row.get("p0925_pct", row.get("auction_pct"))
+            low, high, prior_close = (feature.get("range20_low"), feature.get("range20_high"),
+                                      feature.get("range20_last_close"))
+            if (feature.get("position_close_days") == 20 and all(isinstance(value, (int, float))
+                    for value in (low, high, prior_close, pct)) and high > low):
+                auction_price = prior_close * (1 + float(pct) / 100)
+                row["prior_range_position20_pct"] = (auction_price - low) / (high - low) * 100
+        return
     if not history_path:
         return
     try:
@@ -317,7 +333,9 @@ def _attach_range_positions(stocks: list[dict[str, Any]], history_path: str | Pa
 def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
                          relations: Mapping[str, list[str]], plate_names: Mapping[str, str],
                          stock_names: Mapping[str, str], history_path: str | Path | None,
-                         plate_metadata: Mapping[str, Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
+                         plate_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+                         report_features: list[Mapping[str, Any]] | None = None,
+                         td_connection_factory=None) -> list[dict[str, Any]]:
     """Build full-universe, as-of stock rows for the live A→B and ladder sections."""
     from .live_session import daily_history_context, load_daily_history_csv, states_at
 
@@ -326,15 +344,32 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
     requested = ["0924", "0925"] if stage == "auction" else ["0924", "0925", "0932", "0938", "0945"]
     end = datetime.fromisoformat(f"{trade_date}T{asof}")
     snapshots: dict[str, dict[str, Any]] = {}
+    fetch = []
     for label in requested:
         cutoff = datetime.fromisoformat(f"{trade_date}T{clocks[label]}")
         if cutoff <= end:
-            snapshots[label] = states_at(td, cutoff)
+            fetch.append((label, cutoff))
+    def fetch_one(item):
+        label, cutoff = item
+        connection = td_connection_factory() if td_connection_factory else td
+        try:
+            return label, states_at(connection, cutoff)
+        finally:
+            if td_connection_factory:
+                close = getattr(connection, "close", None)
+                if callable(close): close()
+    if len(fetch) > 1:
+        with ThreadPoolExecutor(max_workers=min(4, len(fetch))) as pool:
+            snapshots.update(pool.map(fetch_one, fetch))
+    elif fetch:
+        snapshots.update(fetch_one(fetch[0]) for _ in (0,))
     if not snapshots:
         return []
     symbols = set().union(*(set(rows) for rows in snapshots.values()))
     context = {}
-    if history_path:
+    if report_features:
+        context = daily_history_context(report_features, trade_date, snapshots.get("0925", {}))["stocks"]
+    elif history_path:
         try:
             history = load_daily_history_csv(history_path, trade_date=trade_date)
             context = daily_history_context(history, trade_date, snapshots.get("0925", {}))["stocks"]
@@ -600,7 +635,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         SliceProviders(redis=src.redis).providers(), snapshot_id=f"{trade_date}:{stage}")
     point = asof or ("09:26:00" if stage == "auction" else "09:46:00" if stage == "open" else "17:40:00")
     slice_asof = f"{trade_date}T{point}+08:00"
-    slice_names = ("stock_name_map", "plate_registry", "plate_members", "daily_history",
+    slice_names = ("stock_name_map", "plate_registry", "plate_members", "daily_report_features", "daily_history",
                    "auction_baseline", "yest_limit_pool", "limit_reason_history", "hot_plates_today",
                    "hot_plates_yesterday", "hot_rank", "trading_calendar", "path_stats")
     slice_results = {}
@@ -614,19 +649,30 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                         "stock_name_map": "stock_names"}.get(name)
         if fallback_key and refs.get(fallback_key) is not None:
             params["fallback_file"] = str(refs[fallback_key])
-        if name in {"daily_history", "hot_plates_yesterday", "yest_limit_pool"}:
+        if name in {"daily_history", "daily_report_features", "hot_plates_today",
+                    "hot_plates_yesterday", "yest_limit_pool"}:
             calendar_rows = slice_results.get("trading_calendar")
             if calendar_rows:
                 prior_candidates = sorted({str(row.get("date") or "")[:10]
                                            for row in calendar_rows.rows
                                            if str(row.get("date") or "")[:10] < trade_date})
             params["prior_trade_date"] = prior_candidates[-1] if prior_candidates else None
+            if name == "daily_history":
+                # Keep a short raw window for report stages when the PIT feature
+                # snapshot is ready; otherwise retain the legacy recomputation span.
+                feature_status = slice_results.get("daily_report_features")
+                features_ready = bool(feature_status and feature_status.meta.get("status") == "READY")
+                params["history_days"] = (5 if features_ready and stage in {"auction", "open"} else 75)
+            if name == "daily_report_features":
+                params["prior_trade_date"] = prior_candidates[-1] if prior_candidates else None
             if name in {"hot_plates_yesterday", "yest_limit_pool"}:
                 params["source_date"] = params["prior_trade_date"]
         slice_results[name] = slice_reader.get(name, trade_date=trade_date, asof=slice_asof, **params)
         slice_timings[name] = round(time.monotonic() - slice_started, 3)
     if src.td is None and not (stage == "close" and refs.get("stock_day_facts")):
         src.td, src.td_error = _connect_td()
+        if not src.td_error:
+            src.td_connection_factory = lambda: _connect_td()[0]
     q2_rows: dict[str, Any] = {}
     if stage != "close" and src.redis is not None:
         try:
@@ -707,8 +753,16 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         try:
             import csv
             from .live_session import load_daily_history_csv
-            session_dates = [str(row.get("date") or "")[:10] for row in
-                             load_daily_history_csv(slice_results["daily_history"].rows, trade_date=trade_date)]
+            session_dates = sorted({str(row.get("date") or "")[:10] for row in
+                                    slice_results["trading_calendar"].rows
+                                    if str(row.get("date") or "")[:10] < trade_date})
+            if not session_dates and slice_results["daily_report_features"].rows:
+                market = next((row for row in slice_results["daily_report_features"].rows
+                               if row.get("symbol") == "__MARKET__"), {})
+                session_dates = [str(row.get("date") or "") for row in market.get("opening_history_72", [])]
+            if not session_dates:
+                session_dates = [str(row.get("date") or "")[:10] for row in
+                                 load_daily_history_csv(slice_results["daily_history"].rows, trade_date=trade_date)]
             relation_lag = _relation_lag_trading_days(relation_asof, trade_date, session_dates)
         except (OSError, ValueError):
             pass
@@ -745,13 +799,15 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             src.td or _MissingTD(), trade_date=trade_date, stage=render_stage,
             relations=relations, plate_names=plate_names, stock_names=stock_names,
             daily_history_csv=slice_results["daily_history"].rows,
+            daily_report_features=slice_results["daily_report_features"].rows or None,
             auction_baseline_csv=baseline_csv, kaipan_hot_json=hot_path,
             kaipan_hot_rows=slice_results["hot_plates_today"].rows or None,
             member_snapshot_date=relation_asof, member_lag_trading_days=relation_lag,
-            asof=asof_cutoff)
+            asof=asof_cutoff, td_connection_factory=src.td_connection_factory)
         payload.setdefault("chapters", {})["reference_data"] = {
             "stock_names": {"status": "READY" if stock_names else "MISSING",
                             "reason": None if stock_names else "名称表缺失，名称显示为名称未知"},
+            "daily_report_features": dict(slice_results["daily_report_features"].meta),
             "stock_caps": {"status": "READY" if stock_caps else "MISSING",
                            "reason": None if stock_caps else "市值表缺失"}}
         if not stock_names or not stock_caps:
@@ -797,8 +853,11 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 src.td or _MissingTD(), trade_date=trade_date, stage=stage,
                 asof=asof or ("09:26:00" if stage == "auction" else "09:46:00"),
                 relations=relations, plate_names=plate_names, stock_names=stock_names,
-        history_path=slice_results["daily_history"].rows, plate_metadata=plate_metadata)
-        _attach_range_positions(live_stocks, slice_results["daily_history"].rows, trade_date)
+        history_path=slice_results["daily_history"].rows, plate_metadata=plate_metadata,
+        report_features=slice_results["daily_report_features"].rows or None,
+        td_connection_factory=src.td_connection_factory)
+        _attach_range_positions(live_stocks, slice_results["daily_history"].rows, trade_date,
+                                report_features=slice_results["daily_report_features"].rows or None)
         symbol_plates = {}
         for plate_code, members in relations.items():
             plate_name = plate_names.get(plate_code)
@@ -1268,7 +1327,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     "status": "今日最高板；收盘涨停价代理，封单/炸板路径 UNKNOWN"})
             data["ladder_summary"].extend(highboard_rows)
         if isinstance(data.get("stocks"), list) and not refs.get("stock_day_facts"):
-            _attach_range_positions(data["stocks"], slice_results["daily_history"].rows, trade_date)
+            _attach_range_positions(data["stocks"], slice_results["daily_history"].rows, trade_date,
+                                    report_features=slice_results["daily_report_features"].rows or None)
         ladder_rows = []
         symbols = []
         for summary_row in ladder:
@@ -1347,13 +1407,15 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     _shrink_live_report(compact_report)
     report_text = json.dumps(compact_report,
                              ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
+    report_json_warning = None
     if len(report_text.encode("utf-8")) > 250_000:
         try:
             _obj = json.loads(report_text)
             _sizes = sorted(((len(json.dumps(v, ensure_ascii=False)), k) for k, v in _obj.items()), reverse=True)[:5]
         except Exception:
             _sizes = []
-        raise ValueError("report.json exceeds 250 KB; largest keys: " + ", ".join(f"{k}={n}" for n, k in _sizes))
+        report_json_warning = "report.json exceeds 250 KB; largest keys: " + ", ".join(
+            f"{k}={n}" for n, k in _sizes)
     write_started = time.monotonic()
     (out / "report.json").write_text(report_text, encoding="utf-8")
     pipeline_timings["write_json"] = round(time.monotonic() - write_started, 3)
@@ -1388,6 +1450,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     result.meta.get("source") == "legacy_redis" else ""
                     for result in slice_results.values()} - {""}),
                 "report_json_bytes": len(report_text.encode("utf-8")), "allow_wencai_fallback": allow_wencai_fallback}
+    if report_json_warning:
+        manifest["warnings"] = [report_json_warning]
     print("REPORT_TIMINGS " + " ".join(f"{key}={value:.3f}s" for key, value in pipeline_timings.items()),
           file=sys.stderr)
     if degraded_q2 and stage != "close":

@@ -45,6 +45,30 @@ def test_render_page_has_sections_and_self_contained_assets():
     assert payload["limitations"]
 
 
+def test_render_page_fetches_independent_cutoffs_concurrently_and_keeps_stage_order():
+    import threading
+    import time
+
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+    class TD:
+        def states_at(self, cutoff):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(.04)
+            with lock:
+                active -= 1
+            return {"000001": _state("000001", 0, 1_000_000, ts=cutoff.strftime("%H:%M:%S"))}
+
+    _, payload = render_page(TD(), trade_date="2026-10-15", stage="auction_0926",
+                             max_fetch_workers=3)
+    assert peak > 1
+    assert [snap["label"] for snap in payload["snapshots"]] == ["0920", "0924", "0925"]
+
+
 def test_write_page_refuses_nonempty_directory(tmp_path):
     output = tmp_path / "out"
     output.mkdir()

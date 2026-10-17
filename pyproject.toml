@@ -7,7 +7,7 @@ name = "engine-core"
 version = "0.3.1.dev0"
 description = "Independent deterministic market-state calculation core"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["pykaipan"]
 
 [project.optional-dependencies]
 test = ["pytest>=7.1"]

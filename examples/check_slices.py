@@ -34,15 +34,18 @@ def main(argv: list[str] | None = None) -> int:
     prior = args.prev_trade_date or previous_trade_date(providers.catalog, args.trade_date)
     for slice_id in SLICE_IDS:
         started = time.perf_counter()
+        slice_asof = args.asof
         params = {}
         if prior:
             params["prior_trade_date"] = prior
-            if slice_id in {"yest_limit_pool", "hot_plates_yesterday"}:
+            if slice_id in {"yest_limit_pool", "hot_plates_yesterday", "hot_plates_today"}:
                 params["source_date"] = prior
-        result = reader.get(slice_id, trade_date=args.trade_date, asof=args.asof, **params)
+        result = reader.get(slice_id, trade_date=args.trade_date, asof=slice_asof, **params)
         elapsed = time.perf_counter() - started
         print(f"{slice_id} source={result.meta['source']} status={result.meta['status']} "
-              f"rows={len(result.rows)} elapsed={elapsed:.3f}s reason={result.meta.get('reason', '')}")
+              f"rows={len(result.rows)} elapsed={elapsed:.3f}s reason={result.meta.get('reason', '')} "
+              f"requested_date={args.trade_date} used_date="
+              f"{(result.meta.get('lineage') or [{}])[-1].get('used_date', '')}")
     return 0
 
 
