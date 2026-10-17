@@ -1,6 +1,25 @@
 from engine_core.close_review import derive_close_review, render_close_markdown
 
 
+def test_close_baseline_does_not_upgrade_partial_window_to_ready():
+    from engine_core.close_review import _attach_auction_baseline
+
+    data = {"trade_date": "2026-10-19", "market": {},
+            "stocks": [{"auction_amount_yuan": 16_000_000_000}]}
+    rows = [
+        {"row_kind": "market_observation", "date": "2026-10-15", "sum_yi": 139.0},
+        {"row_kind": "market_observation", "date": "2026-10-16", "sum_yi": 140.0},
+        {"row_kind": "symbol_observation", "date": "2026-10-16", "symbol": "600001",
+         "auction_amount_yuan": 430_000, "sum_yi": 0.0043},
+        {"row_kind": "market_baseline", "sample_days": 2, "window_days": 64},
+    ]
+    _attach_auction_baseline(data, rows)
+    comparison = data["market"]["auction_baseline_comparison"]
+    assert data["market"]["auction_baseline_status"] == "PARTIAL"
+    assert comparison["sample_days"] == 2
+    assert comparison["window_days"] == 64
+
+
 def test_default_close_facts_filter_historical_rows_from_today():
     from engine_core.close_review import _rows_for_trade_date
     rows = [

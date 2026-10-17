@@ -305,6 +305,78 @@ def test_kaipan_provider_uses_sdk_plate_methods_and_normalizes_rows():
                                 "trade_date": "2026-10-16"}]
 
 
+def test_kaipan_default_job_uses_direct_sdk_and_resumable_member_checkpoints(tmp_path, monkeypatch):
+    import importlib
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import examples.run_data_jobs as run_jobs
+    from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+
+    assert not run_jobs._is_complete_member_manifest({"quality": "REFERENCE", "row_count": 87364})
+    assert not run_jobs._is_complete_member_manifest({"quality": {"status": "PARTIAL"}, "row_count": 6815})
+    assert run_jobs._is_complete_member_manifest({"quality": {"status": "READY"}, "row_count": 88646})
+
+    # The default adapter must lazily load the separately installed pykaipan
+    # SDK directly, without importing the legacy adapter module.
+    calls = []
+    def get_ids(plate, date, index, size):
+        if plate == "801002":
+            raise OSError("temporary")
+        return {"list": [["600001", "甲"]], "Count": 1}
+
+    sdk = SimpleNamespace(
+        getHisPlates=lambda **kwargs: {"list": [["801001", "测试"]], "Count": 1},
+        getHisPlateIds=get_ids,
+        getHisBans=lambda **kwargs: {"info": []},
+        getHisPlateMins=lambda *args, **kwargs: {},
+        getBanReasons=lambda *args, **kwargs: {"List": []},
+    )
+    original_import = importlib.import_module
+
+    def direct_import(name, *args, **kwargs):
+        calls.append(name)
+        if name == "pykaipan.pykaipan":
+            return sdk
+        if name == "examples.legacy_adapters":
+            raise AssertionError("default Kaipan path imported legacy adapter")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", direct_import)
+    monkeypatch.setattr(run_jobs, "_plate_codes", lambda *args: ["801001", "801002"])
+    adapters = run_jobs._default_adapters(str(tmp_path), "/unused", 30, True)
+    hot = adapters["hot_plates"]("2026-10-16")
+    assert hot["rows"][0]["plate_code"] == "801001"
+    assert calls == ["pykaipan.pykaipan"]
+
+    provider = KaipanProvider(
+        sdk, plate_codes=["801001", "801002"], max_requests=10,
+        min_interval_seconds=0.2, sleep_fn=lambda _: None,
+        members_checkpoint_path=tmp_path / "members.json",
+    )
+    assert provider.min_interval_seconds == 0.2
+    first = provider.plate_members("2026-10-16", concurrency=4)
+    assert first["rows"][0]["symbol"] == "600001"
+    assert first["failed_plates"] == [{"plate_code": "801002", "error_type": "RuntimeError"}]
+    assert first["partial"] is True
+
+    retried = []
+    sdk.getHisPlateIds = lambda plate, date, index, size: retried.append(plate) or {
+        "list": [["600002", "乙"]], "Count": 1}
+    resumed = KaipanProvider(
+        sdk, plate_codes=["801001", "801002"], max_requests=10,
+        min_interval_seconds=1, sleep_fn=lambda _: None,
+        members_checkpoint_path=tmp_path / "members.json",
+    ).plate_members("2026-10-16", concurrency=4)
+    assert retried == ["801002"]
+    assert {row["symbol"] for row in resumed["rows"]} == {"600001", "600002"}
+    assert resumed["partial"] is False
+
+    source = Path(run_jobs.__file__).read_text(encoding="utf-8")
+    assert "examples.legacy_adapters" not in source
+
+
 def test_kaipan_provider_keeps_response_day_as_metadata_not_requested_date():
     from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
 

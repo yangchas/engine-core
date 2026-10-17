@@ -296,7 +296,8 @@ class Guardian:
                 self._save(now.date().isoformat(), now)
             result = _invoke_with_timeout(handler, (event, now, self.context, degraded),
                                           event.timeout_seconds, on_started=persist_worker)
-            row.update(status="SUCCEEDED_DEGRADED" if degraded else "SUCCEEDED",
+            result_degraded = isinstance(result, str) and result.startswith("DEGRADED:")
+            row.update(status="SUCCEEDED_DEGRADED" if degraded or result_degraded else "SUCCEEDED",
                         completed_at=now.isoformat(), duration_seconds=round(time.monotonic() - started, 3),
                         result=str(result)[:500])
             row.pop("worker_pid", None)

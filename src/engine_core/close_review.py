@@ -671,7 +671,8 @@ def _close_plate_metadata(relation_dir: str | None) -> tuple[dict[str, dict[str,
     return metadata, (f"{match.group()[:4]}-{match.group()[4:6]}-{match.group()[6:8]}" if match else "UNKNOWN")
 
 
-def _attach_auction_baseline(data: dict[str, Any], path: Path | list[dict[str, Any]] | None) -> None:
+def _attach_auction_baseline(data: dict[str, Any], path: Path | list[dict[str, Any]] | None,
+                             *, baseline_status: str | None = None) -> None:
     market = data.get("market")
     if not isinstance(market, dict):
         return
@@ -685,6 +686,7 @@ def _attach_auction_baseline(data: dict[str, Any], path: Path | list[dict[str, A
     from .live_session import auction_amount_baseline_comparison, load_auction_amount_baseline_csv
     rows = (list(path) if isinstance(path, list) else
             load_auction_amount_baseline_csv(path, str(data.get("trade_date") or "")))
+    market_rows = load_auction_amount_baseline_csv(rows, str(data.get("trade_date") or "")) or []
     amounts = [float(row["auction_amount_yuan"]) for row in data.get("stocks", [])
                if isinstance(row, Mapping) and isinstance(row.get("auction_amount_yuan"), (int, float))]
     if not amounts:
@@ -695,9 +697,17 @@ def _attach_auction_baseline(data: dict[str, Any], path: Path | list[dict[str, A
         gaps.append("竞价额自身历史基线缺失：当日没有可用竞价额")
         return
     total_yi = sum(amounts) / 1e8
-    comparison = auction_amount_baseline_comparison(rows, str(data.get("trade_date") or ""), total_yi)
+    comparison = auction_amount_baseline_comparison(market_rows, str(data.get("trade_date") or ""), total_yi)
     market["auction_baseline_comparison"] = comparison
-    market["auction_baseline_status"] = "READY" if comparison else "MISSING"
+    baseline_summary = next((row for row in rows or []
+                             if row.get("row_kind") == "market_baseline"), {})
+    window_days = int(baseline_summary.get("window_days") or 64)
+    if comparison:
+        comparison["window_days"] = window_days
+    incomplete = (baseline_status == "PARTIAL" or
+                  (comparison is not None and comparison["sample_days"] < window_days))
+    market["auction_baseline_status"] = (
+        "MISSING" if not comparison else "PARTIAL" if incomplete else "READY")
     market["auction_baseline_source"] = str(path)
     if not comparison:
         gaps = data.setdefault("data_gaps", [])
@@ -1055,7 +1065,9 @@ def main(argv: list[str] | None = None) -> int:
                      if file_fallback and args.reference_root else None)
     _attach_auction_baseline(data, baseline_path if baseline_path else
                              (baseline_slice.rows if baseline_slice is not None and baseline_slice.meta.get("status") in {"READY", "PARTIAL"}
-                              else None))
+                              else None),
+                             baseline_status=(baseline_slice.meta.get("status")
+                                              if baseline_slice is not None else None))
     md = render_close_markdown(data); (out / "report.md").write_text(md, encoding="utf-8")
     (out / "report.html").write_text(render_close_html(data, md), encoding="utf-8")
     compact = {k: v for k, v in data.items() if k not in ("big_meat", "big_loss", "stocks")}

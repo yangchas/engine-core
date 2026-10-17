@@ -97,8 +97,11 @@ def load_auction_amount_baseline_csv(path: str | Path | list[dict[str, Any]] | N
                                     trade_date: str) -> list[dict[str, Any]] | None:
     """Load valid daily auction totals strictly before trade_date, in billion yuan."""
     if isinstance(path, list):
-        rows = []
+        by_day: dict[str, float] = {}
         for row in path:
+            row_kind = row.get("row_kind")
+            if row_kind is not None and row_kind != "market_observation":
+                continue
             day = str(row.get("date") or "")[:10]
             if not day or day >= trade_date:
                 continue
@@ -109,14 +112,17 @@ def load_auction_amount_baseline_csv(path: str | Path | list[dict[str, Any]] | N
             except (TypeError, ValueError):
                 continue
             if math.isfinite(amount) and amount >= 0:
-                rows.append({"date": day, "sum_yi": amount})
-        return rows
+                by_day[day] = amount
+        return [{"date": day, "sum_yi": by_day[day]} for day in sorted(by_day)]
     if not path:
         return None
-    rows: list[dict[str, Any]] = []
+    by_day: dict[str, float] = {}
     try:
         with Path(path).open(encoding="utf-8-sig", newline="") as handle:
             for row in csv.DictReader(handle):
+                row_kind = row.get("row_kind")
+                if row_kind and row_kind != "market_observation":
+                    continue
                 day = str(row.get("date") or "")[:10]
                 if not day or day >= trade_date:
                     continue
@@ -125,10 +131,10 @@ def load_auction_amount_baseline_csv(path: str | Path | list[dict[str, Any]] | N
                 except (TypeError, ValueError):
                     continue
                 if math.isfinite(amount) and amount >= 0:
-                    rows.append({"date": day, "sum_yi": amount})
+                    by_day[day] = amount
     except OSError:
         return None
-    return rows
+    return [{"date": day, "sum_yi": by_day[day]} for day in sorted(by_day)]
 
 
 def append_auction_amount_baseline(rows: list[dict[str, Any]] | None, *, trade_date: str,

@@ -224,7 +224,8 @@ class JobRunner:
         digest_payload = b"\n".join(canonical_json(row) for row in rows)
         if len(digest_payload) > self.max_payload_bytes:
             raise ValueError("quality_invalid:artifact_payload_budget")
-        fetched = available_at or clock.isoformat().replace("+00:00", "Z")
+        fetched = clock.isoformat().replace("+00:00", "Z")
+        available_at = available_at or fetch_meta.get("available_at") or fetched
         safe_source = source if isinstance(source, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", source) else spec.source
         raw_digest = fetch_meta.get("raw_sha256")
         if not isinstance(raw_digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", raw_digest):
@@ -239,6 +240,11 @@ class JobRunner:
             "row_count": len(rows), "request_count": fetch_meta.get("request_count"),
             "raw_sha256": raw_digest,
         }
+        provider_details = {key: fetch_meta[key] for key in
+                            ("failed_plates", "completed_plate_count", "queried_plate_count",
+                             "unqueried_plate_count") if key in fetch_meta}
+        if provider_details:
+            manifest["provider_details"] = provider_details
         if name == "daily_kline":
             shanghai_now = clock.astimezone(ZoneInfo("Asia/Shanghai"))
             manifest["business_status"] = ("FORMAL" if shanghai_now.strftime("%H:%M") >= "17:40"
@@ -269,9 +275,14 @@ class JobRunner:
 
     def _publish_redis(self, spec: DatasetSpec, trade_date: str, manifest: Mapping[str, Any],
                        rows: list[dict[str, Any]], source: str) -> None:
+        latest_key = f"core:cache:data:{spec.name}:latest"
+        existing = _redis_get_json(self.redis, latest_key)
+        existing_day = existing.get("trade_date") if existing else None
         payload = dict(manifest)
         encoded_rows = canonical_json(rows)
-        if spec.hot_view and len(encoded_rows) <= spec.max_redis_payload_bytes:
+        is_latest_member_day = (spec.name != "plate_members" or existing_day is None or
+                                trade_date >= existing_day)
+        if spec.hot_view and is_latest_member_day and len(encoded_rows) <= spec.max_redis_payload_bytes:
             payload["rows"] = rows
         else:
             payload["rows"] = None
@@ -281,9 +292,6 @@ class JobRunner:
         date_key = f"core:cache:data:{spec.name}:{trade_date}"
         date_json = canonical_json({"version": manifest["version"],
             "manifest": manifest.get("manifest_uri"), "trade_date": trade_date}).decode()
-        latest_key = f"core:cache:data:{spec.name}:latest"
-        existing = _redis_get_json(self.redis, latest_key)
-        existing_day = existing.get("trade_date") if existing else None
         if (manifest.get("business_status") != "PROVISIONAL"
                 and (existing_day is None or trade_date >= existing_day)):
             latest_json = canonical_json({"trade_date": trade_date,

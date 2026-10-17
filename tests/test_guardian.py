@@ -188,3 +188,31 @@ def test_kaipan_yesterday_data_is_only_schedulable_after_midnight():
     assert event.data_date_offset == -1
     assert event.available_after == "00:00:00"
 
+
+def test_guardian_prep_failure_is_not_plain_success(tmp_path, monkeypatch):
+    import json
+    from datetime import datetime
+    from types import SimpleNamespace
+    import examples.core_guardian as core_guardian
+
+    monkeypatch.setattr(core_guardian.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json.dumps({"status": "PARTIAL", "errors": ["auction_baseline:COMMAND_FAILED"],
+                                        "steps": []}), stderr=""))
+    handler = core_guardian._command_handler("premarket_data", SimpleNamespace(write=True), tmp_path)
+    event = SimpleNamespace(data_date_offset=0, timeout_seconds=10)
+    with pytest.raises(RuntimeError, match="COMMAND_FAILED"):
+        handler(event, datetime.fromisoformat("2026-10-19T08:50:00+08:00"), {}, False)
+
+    monkeypatch.setattr(core_guardian.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json.dumps({"status": "PARTIAL", "errors": [],
+                                        "steps": [{"step": "auction_baseline", "status": "PARTIAL"}]}),
+        stderr=""))
+    scheduled = EventSpec("prep", "PREMARKET", "08:50:00", "09:00:00", "calendar_ready",
+                         "premarket_data")
+    guardian = Guardian([scheduled], calendar_dates={"2026-10-19"},
+                        state_root=tmp_path / "guardian", gates={"calendar_ready": lambda *_: True},
+                        handlers={"premarket_data": core_guardian._command_handler(
+                            "premarket_data", SimpleNamespace(write=True), tmp_path)})
+    guardian.tick(datetime.fromisoformat("2026-10-19T08:50:00+08:00"))
+    assert guardian.status("2026-10-19", "prep") == "SUCCEEDED_DEGRADED"
+

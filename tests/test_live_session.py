@@ -286,6 +286,18 @@ def test_auction_amount_baseline_empty_and_missing_return_none(tmp_path):
     assert load_auction_amount_baseline_csv(empty, "2026-10-15") == []
 
 
+def test_market_baseline_consumer_ignores_symbol_observations():
+    from engine_core.live_session import load_auction_amount_baseline_csv
+
+    rows = load_auction_amount_baseline_csv([
+        {"row_kind": "symbol_observation", "date": "2026-10-16", "symbol": "600001",
+         "auction_amount_yuan": 430_000},
+        {"row_kind": "market_observation", "date": "2026-10-16", "symbol_count": 5222,
+         "auction_amount_yuan": 14_010_637_874},
+    ], "2026-10-19")
+    assert rows == [{"date": "2026-10-16", "sum_yi": 140.10637874}]
+
+
 def test_append_auction_amount_baseline_preserves_missing_and_adds_observed_value():
     from engine_core.live_session import append_auction_amount_baseline
 

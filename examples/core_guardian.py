@@ -16,6 +16,25 @@ from pathlib import Path
 
 from engine_core.guardian.scheduler import EventSpec, FileInstanceLock, Guardian, default_events
 from engine_core.guardian.management import append_record, load_schedule
+from engine_core.prep_trade_day import previous_trade_date
+
+
+# Configured handlers either call an existing Core job/report or fail visibly.
+HANDLER_IMPLEMENTATIONS = {
+    "night_report": "examples/run_daily_reports.py:close dry-run",
+    "premarket_data": "examples/prep_trade_day.py:premarket_and_auction_baseline",
+    "kaipan_fetch": "examples/run_data_jobs.py:limit_up_pool,limit_reasons,hot_plates,plate_members",
+    "auction_watch": "NOT_IMPLEMENTED",
+    "kaipan_hot_capture": "examples/capture_kaipan_plates.py:hot_plates",
+    "snapshot_check": "NOT_IMPLEMENTED",
+    "auction_report": "examples/run_daily_reports.py:auction",
+    "open_report": "examples/run_daily_reports.py:open",
+    "intraday_data": "examples/core_data_daily.py:intraday",
+    "postmarket_data": "examples/core_data_daily.py:postmarket",
+    "baostock_probe": "examples/core_data_daily.py:postmarket (Baostock daily job)",
+    "close_capture": "NOT_IMPLEMENTED",
+    "close_report": "examples/run_daily_reports.py:close",
+}
 
 
 def _load_dates(root: Path, explicit: str | None):
@@ -48,11 +67,20 @@ def _build_gate_status(path: str | None):
 def _command_handler(name: str, opts, root: Path):
     def handler(event: EventSpec, now: datetime, _context, degraded: bool):
         day = now.date().isoformat()
+        if event.data_date_offset < 0:
+            day = previous_trade_date(root, day) or ""
+            if not day:
+                raise RuntimeError("previous_trade_date_unavailable")
         py = sys.executable
         repo = Path(__file__).resolve().parents[1]
         env = os.environ.copy()
         env["PYTHONPATH"] = str(repo / "src") + os.pathsep + str(repo)
-        if name in {"premarket_data", "intraday_data", "postmarket_data"}:
+        if name == "premarket_data":
+            cmd = [py, str(repo / "examples/prep_trade_day.py"), "--date", day,
+                   "--artifact-root", str(root)]
+            if opts.write:
+                cmd.append("--write")
+        elif name in {"intraday_data", "postmarket_data"}:
             phase = {"premarket_data": "premarket", "intraday_data": "intraday",
                      "postmarket_data": "postmarket"}[name]
             cmd = [py, str(repo / "examples/core_data_daily.py"), "--phase", phase, "--date", day,
@@ -75,18 +103,41 @@ def _command_handler(name: str, opts, root: Path):
                     raise RuntimeError("audit_ok_missing:" + stage)
                 cmd.extend(["--email-send", "--email-to", "412826313@qq.com"])
         elif name == "kaipan_fetch":
-            cmd = [py, str(repo / "examples/fetch_kaipan_snapshot.py"), "--dates", day,
-                   "--hot-plate-dates", day, "--output-dir", str(root / "kaipan" / day)]
+            from engine_core.data_pipeline.storage import ArtifactCatalog
+            catalog = ArtifactCatalog(root)
+            for job in ("limit_up_pool", "limit_reasons", "hot_plates", "plate_members"):
+                existing = catalog.locate(job, day)
+                if existing is not None:
+                    try:
+                        manifest = json.loads(existing.read_text(encoding="utf-8"))
+                        quality = manifest.get("quality") if isinstance(manifest, dict) else None
+                        if job == "plate_members":
+                            from examples.run_data_jobs import _is_complete_member_manifest
+                            reusable = _is_complete_member_manifest(manifest)
+                        else:
+                            reusable = (isinstance(quality, dict) and
+                                        quality.get("status") == "READY" and
+                                        int(manifest.get("row_count", 0)) > 0)
+                        if reusable:
+                            continue
+                    except (OSError, ValueError, TypeError):
+                        pass
+                cmd = [py, str(repo / "examples/run_data_jobs.py"), "--job", job, "--date", day,
+                       "--artifact-root", str(root)]
+                if opts.write:
+                    cmd.append("--write")
+                result = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True,
+                                        timeout=event.timeout_seconds, check=False)
+                if result.returncode:
+                    raise RuntimeError(f"command_exit={result.returncode}: {result.stderr[-500:]}")
+            return "Core Kaipan jobs checked; existing date versions reused"
         elif name == "kaipan_hot_capture":
-            external = os.getenv("CORE_KAIPAN_HOT_COMMAND")
-            if not external:
-                raise RuntimeError("CORE_KAIPAN_HOT_COMMAND_not_configured")
-            cmd = shlex.split(external) + [day, now.strftime("%H:%M:%S")]
+            cmd = [py, str(repo / "examples/capture_kaipan_plates.py"), "--trade-date", day,
+                   "--dataset", "hot_plates", "--artifact-root", str(root)]
+            if opts.write:
+                cmd.append("--execute")
         elif name == "close_capture":
-            external = os.getenv("CORE_EOD_CAPTURE_COMMAND")
-            if not external:
-                raise RuntimeError("CORE_EOD_CAPTURE_COMMAND_not_configured")
-            cmd = shlex.split(external) + [day]
+            raise RuntimeError("NOT_IMPLEMENTED: no existing Core close raw-capture job")
         elif name == "baostock_probe":
             external = os.getenv("CORE_BAOSTOCK_PROBE_COMMAND")
             cmd = (shlex.split(external) + [day] if external else
@@ -97,21 +148,41 @@ def _command_handler(name: str, opts, root: Path):
             if opts.td_write:
                 cmd.extend(["--write", "--td-write"])
         elif name in {"snapshot_check", "auction_watch"}:
-            # These are checks, never network calls in the scheduler itself.
-            return {"check": name, "degraded": degraded}
+            raise RuntimeError("NOT_IMPLEMENTED: no existing Core " + name + " implementation")
         elif name == "night_report":
             dates = sorted(_load_dates(root, opts.calendar) or [])
             previous = [item for item in dates if item < day]
-            if not previous:
+            previous_day = previous[-1] if previous else previous_trade_date(root, day)
+            if previous_day is None:
                 raise RuntimeError("previous_trade_date_unavailable")
             cmd = [py, str(repo / "examples/run_daily_reports.py"), "--stage", "close",
-                   "--trade-date", previous[-1], "--out-root", str(root / "reports"), "--dry-run"]
+                   "--trade-date", previous_day, "--out-root", str(root / "reports"), "--dry-run"]
         else:
             raise RuntimeError("handler_not_implemented:" + name)
         result = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True,
                                 timeout=event.timeout_seconds, check=False)
         if result.returncode:
             raise RuntimeError(f"command_exit={result.returncode}: {result.stderr[-500:]}")
+        if name == "premarket_data":
+            try:
+                report = json.loads(result.stdout)
+            except (ValueError, TypeError) as exc:
+                raise RuntimeError("prep_report_invalid_json") from exc
+            if not isinstance(report, dict):
+                raise RuntimeError("prep_report_invalid_shape")
+            errors = report.get("errors") or []
+            if errors:
+                raise RuntimeError("prep_errors:" + ";".join(map(str, errors))[-400:])
+            missing = [str(item.get("step")) for item in report.get("steps", [])
+                       if isinstance(item, dict) and item.get("status") == "MISSING"]
+            if missing:
+                raise RuntimeError("prep_critical_missing:" + ",".join(missing))
+            if report.get("status") == "PARTIAL":
+                partial = [str(item.get("step")) for item in report.get("steps", [])
+                           if isinstance(item, dict) and item.get("status") == "PARTIAL"]
+                return "DEGRADED:prep_partial:" + ",".join(partial)
+            if report.get("status") != "READY":
+                raise RuntimeError("prep_status_invalid:" + str(report.get("status")))
         return result.stdout[-500:]
     return handler
 
