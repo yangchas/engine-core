@@ -143,6 +143,40 @@ def _at_limit(state: Mapping[str, Any], direction: str) -> bool | None:
     return abs(price - target) <= 10 and int(rest) > 0
 
 
+def _at_limit_pair(state: Mapping[str, Any]) -> tuple[bool | None, bool | None]:
+    """Evaluate both limit directions while sharing symbol and price parsing."""
+    symbol = str(state.get("symbol") or "")
+    if symbol.startswith(("N", "C")):
+        return False, False
+    price_raw, close_raw = state.get("price_milli"), state.get("prev_close_milli")
+    up_rest, down_rest = state.get("rest_bid_shares"), state.get("rest_ask_shares")
+    try:
+        price, close = int(price_raw), int(close_raw)
+    except (TypeError, ValueError, OverflowError):
+        price = close = None
+    ratio = _limit_pct(symbol) / 100
+    up = down = None
+    if price is not None and close is not None and up_rest is not None:
+        if not price or not close:
+            up = False
+        else:
+            target = int((close * (1 + ratio) + 5) // 10 * 10)
+            try:
+                up = abs(price - target) <= 10 and int(up_rest) > 0
+            except (TypeError, ValueError, OverflowError):
+                up = None
+    if price is not None and close is not None and down_rest is not None:
+        if not price or not close:
+            down = False
+        else:
+            target = int((close * (1 - ratio) + 5) // 10 * 10)
+            try:
+                down = abs(price - target) <= 10 and int(down_rest) > 0
+            except (TypeError, ValueError, OverflowError):
+                down = None
+    return up, down
+
+
 def _pct_values(states: Mapping[str, Mapping[str, Any]]) -> list[float]:
     return [float(s["pct_change"]) for s in states.values() if s.get("pct_change") is not None]
 

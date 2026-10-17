@@ -78,6 +78,7 @@ def select_main_plate(candidates: Sequence[str], metadata: Mapping[str, Mapping[
 
 def _plates(row: Mapping[str, Any], relations: Mapping[str, Sequence[str]] | None,
             metadata: Mapping[str, Mapping[str, Any]] | None = None,
+            selection_cache: dict[tuple[Any, ...], str | None] | None = None,
             *, min_size: int = 8, max_size: int = 150) -> list[str]:
     ordered = [row.get("pool_plate"), row.get("reason_plate"), row.get("static_plate"),
                row.get("main_plate"), row.get("hot_plate")]
@@ -97,13 +98,22 @@ def _plates(row: Mapping[str, Any], relations: Mapping[str, Sequence[str]] | Non
             continue
         seen.add(str(name))
         eligible.append(str(name))
-    chosen = select_main_plate(eligible, metadata, source_candidates=source_candidates,
-                               min_size=min_size, max_size=max_size)
+    if selection_cache is None:
+        chosen = select_main_plate(eligible, metadata, source_candidates=source_candidates,
+                                   min_size=min_size, max_size=max_size)
+    else:
+        cache_key = (tuple(sorted(eligible)), tuple(sorted(source_candidates.items())))
+        chosen = selection_cache.get(cache_key, ...)
+        if chosen is ...:
+            chosen = select_main_plate(eligible, metadata, source_candidates=source_candidates,
+                                       min_size=min_size, max_size=max_size)
+            selection_cache[cache_key] = chosen
     return [chosen] if chosen else []
 
 
 def _qualified_plates(row: Mapping[str, Any], relations: Mapping[str, Sequence[str]] | None,
                       metadata: Mapping[str, Mapping[str, Any]] | None,
+                      eligibility_cache: dict[str, bool] | None = None,
                       *, min_size: int, max_size: int) -> set[str]:
     candidates = [str(value) for value in (
         row.get("pool_plate"), row.get("reason_plate"), row.get("static_plate"),
@@ -112,8 +122,19 @@ def _qualified_plates(row: Mapping[str, Any], relations: Mapping[str, Sequence[s
     candidates.extend(str(value) for value in (row.get("plates") or []) if value)
     if relations:
         candidates.extend(str(value) for value in relations.get(str(row.get("symbol", "")).zfill(6), []))
-    return {name for name in candidates if select_main_plate(
-        [name], metadata, min_size=min_size, max_size=max_size) is not None}
+    if eligibility_cache is None:
+        return {name for name in candidates if select_main_plate(
+            [name], metadata, min_size=min_size, max_size=max_size) is not None}
+    qualified = set()
+    for name in candidates:
+        eligible = eligibility_cache.get(name)
+        if eligible is None:
+            eligible = select_main_plate([name], metadata, min_size=min_size,
+                                         max_size=max_size) is not None
+            eligibility_cache[name] = eligible
+        if eligible:
+            qualified.add(name)
+    return qualified
 
 
 def _has_membership(row: Mapping[str, Any], relations: Mapping[str, Sequence[str]] | None) -> bool:
@@ -146,13 +167,17 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
     by_plate: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     normalized = []
     qualified_by_symbol: dict[str, set[str]] = {}
+    eligibility_cache: dict[str, bool] = {}
+    selection_cache: dict[tuple[Any, ...], str | None] = {}
     for source in stocks:
         row = dict(source)
         row["symbol"] = str(row.get("symbol", row.get("code", ""))).zfill(6)
         normalized.append(row)
         qualified_by_symbol[row["symbol"]] = _qualified_plates(
-            row, relations, plate_metadata, min_size=min_plate_size, max_size=max_plate_size)
-        for plate in _plates(row, relations, plate_metadata, min_size=min_plate_size,
+            row, relations, plate_metadata, eligibility_cache,
+            min_size=min_plate_size, max_size=max_plate_size)
+        for plate in _plates(row, relations, plate_metadata, selection_cache,
+                             min_size=min_plate_size,
                              max_size=max_plate_size):
             by_plate[plate].append(row)
     result = []

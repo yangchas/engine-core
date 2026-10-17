@@ -16,7 +16,7 @@ def test_auction_state_uses_only_equal_first_level_and_exact_match_amount():
 
 
 def test_tracking_snapshot_retains_unknown_amount_and_limit_coverage():
-    from engine_core.auction_tracking import _at_limit, _snapshot
+    from engine_core.auction_tracking import _at_limit, _at_limit_pair, _snapshot
 
     unknown = {"symbol": "600001", "price_milli": None, "prev_close_milli": 10000,
                "rest_bid_shares": 5, "rest_ask_shares": None,
@@ -24,6 +24,7 @@ def test_tracking_snapshot_retains_unknown_amount_and_limit_coverage():
     snap = _snapshot({"600001": unknown}, "09:25:00", None, set(), {}, {}, set(), "AUCTION")
     assert snap["market_match_amount_yuan"] is None
     assert _at_limit(unknown, "up") is None
+    assert _at_limit_pair(unknown) == (_at_limit(unknown, "up"), _at_limit(unknown, "down"))
     assert snap["limit_up_count"] == 0
     assert snap["limit_up_unknown_count"] == 1
     assert snap["limit_up_unknown_coverage_pct"] == 100

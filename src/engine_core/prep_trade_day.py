@@ -108,6 +108,99 @@ def _latest_step(name: str, dataset: str, before: str, catalog: ArtifactCatalog,
     return item
 
 
+def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
+                                  previous: str, asof: str, redis: Any) -> bool:
+    """Build the target-day theme view from PIT-ready Core artifacts only."""
+    from .limit_reason_theme import (load_kaipan_theme_snapshot,
+                                     theme_snapshot_visibility,
+                                     theme_snapshot_version,
+                                     write_theme_snapshot_cache)
+    from .slices import _pit_rows
+
+    def load(dataset: str, day: str) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+        entries = (catalog.read().get("datasets", {}).get(dataset, {})
+                   .get("dates", {}).get(day, []))
+        cutoff = _pit_time(asof)
+        candidates = []
+        for entry in entries:
+            path = Path(entry.get("manifest") or "")
+            try:
+                manifest = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            available = _pit_time(manifest.get("available_at"))
+            quality = manifest.get("quality")
+            failed = isinstance(quality, dict) and quality.get("status") == "FAILED"
+            if available is not None and cutoff is not None and available <= cutoff and not failed:
+                candidates.append((available, path, manifest))
+        if not candidates:
+            return None
+        _available, path, selected_manifest = max(candidates, key=lambda item: (item[0], str(item[1])))
+        try:
+            manifest = selected_manifest
+            rows = catalog.read_rows(path)
+            for row in rows:
+                row.setdefault("available_at", manifest.get("available_at"))
+            return rows, manifest
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+
+    pool = load("limit_up_pool", previous)
+    hot = load("hot_plates", previous)
+    cutoff = asof
+    if pool:
+        pool = (_pit_rows(pool[0], cutoff)[0], pool[1])
+    if hot:
+        hot = (_pit_rows(hot[0], cutoff)[0], hot[1])
+    registry_catalog = catalog.read().get("datasets", {}).get("plate_registry", {}).get("dates", {})
+    registry_dates = sorted(day for day in registry_catalog if day <= trade_date)
+    registry = next((load("plate_registry", day) for day in reversed(registry_dates)
+                     if load("plate_registry", day)), None)
+    reasons: list[dict[str, Any]] = []
+    reason_manifests: dict[str, str] = {}
+    reason_dates = sorted(catalog.read().get("datasets", {}).get("limit_reasons", {})
+                          .get("dates", {}))
+    for day in reason_dates:
+        if day > trade_date:
+            continue
+        loaded = load("limit_reasons", day)
+        if loaded:
+            rows, manifest = loaded
+            reasons.extend(_pit_rows(rows, cutoff)[0])
+            reason_manifests[day] = str(manifest.get("version") or "")
+    if not pool or not registry or not reasons:
+        return False
+    registry_rows, registry_manifest = registry
+    registry_rows, _registry_unknown = _pit_rows(registry_rows, cutoff)
+    plate_names: dict[str, str] = {}
+    for row in registry_rows:
+        code = str(row.get("plate_code", row.get("code", ""))).strip()
+        name = str(row.get("name", "") or "").strip()
+        if code and name:
+            plate_names[code] = name
+    calendar_dates = sorted(day for day in catalog.read().get("datasets", {})
+                            .get("trade_calendar", {}).get("dates", {}) if day < trade_date)
+    if not calendar_dates:
+        calendar_dates = sorted(day for day in catalog.read().get("datasets", {})
+                                .get("daily_kline", {}).get("dates", {}) if day < trade_date)
+    snapshot = load_kaipan_theme_snapshot(
+        None, report_date=trade_date, previous_trade_date=previous, observed_at=asof,
+        plate_names=plate_names, static_themes_by_symbol={},
+        pool_rows=pool[0], reason_rows=reasons, hot_rows=hot[0] if hot else (),
+        trading_dates=calendar_dates)
+    if snapshot.get("status") not in {"READY", "PARTIAL"}:
+        return False
+    inputs = {"trade_date": trade_date, "previous_trade_date": previous,
+              "pool_version": pool[1].get("version"), "hot_version": hot[1].get("version") if hot else None,
+              "registry_version": registry_manifest.get("version"),
+              "reason_versions": reason_manifests, "calendar_dates": calendar_dates,
+              "visibility": theme_snapshot_visibility({
+                  "pool": pool[0], "registry": registry_rows})}
+    return write_theme_snapshot_cache(
+        redis, trade_date, previous, snapshot, as_of=asof,
+        version=theme_snapshot_version(inputs))
+
+
 def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                       asof: str | None = None) -> dict[str, Any]:
     date.fromisoformat(trade_date)
@@ -200,6 +293,18 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
         timings["auction_baseline"] = round((time.monotonic() - started) * 1000, 3)
         if rc:
             errors.append("auction_baseline:COMMAND_FAILED:" + out[-240:])
+        try:
+            redis = None
+            if os.getenv("REDIS_URL"):
+                import redis as redis_package
+                redis = redis_package.Redis.from_url(os.environ["REDIS_URL"], decode_responses=False)
+            if not _prepare_theme_snapshot_cache(fresh_catalog := ArtifactCatalog(root),
+                                                 trade_date, previous, asof, redis):
+                errors.append("theme_snapshot:PRECOMPUTE_UNAVAILABLE")
+            else:
+                timings["theme_snapshot"] = 0.0
+        except Exception as exc:
+            errors.append("theme_snapshot:" + str(exc)[:200])
     # Re-read after writes and annotate each real artifact state.
     if write:
         fresh = ArtifactCatalog(root)

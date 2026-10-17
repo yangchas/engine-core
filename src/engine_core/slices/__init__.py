@@ -83,7 +83,9 @@ class SliceReader:
                 source_rows = result.rows
                 if request.slice_id in {"hot_plates_today", "hot_plates_yesterday"}:
                     source_rows = _canonical_hot_plate_rows(source_rows)
-                rows, unknown = _pit_rows(source_rows, request.asof)
+                pit_filtered = bool(result.meta.get("_pit_filtered"))
+                rows, unknown = ((source_rows, result.meta.get("reason") == "NO_ASOF")
+                                 if pit_filtered else _pit_rows(source_rows, request.asof))
                 if request.slice_id in {"hot_plates_today", "hot_plates_yesterday"}:
                     rows = _latest_hot_plate_rows(rows, request.asof)
                 available_at = result.meta.get("available_at")
@@ -92,6 +94,7 @@ class SliceReader:
                     if parsed is None or cutoff is None or parsed > cutoff:
                         continue
                 meta = dict(result.meta)
+                meta.pop("_pit_filtered", None)
                 if len(rows) != len(result.rows):
                     meta["quality"] = {**meta.get("quality", {}), "partial": True,
                                        "missing": "FUTURE_ROWS_FILTERED"}
@@ -112,7 +115,7 @@ def _result(request: SliceRequest, rows: list[dict[str, Any]], *, source: str,
             status: str, reason: str | None = None, version: str | None = None,
             available_at: str | None = None, quality: Mapping[str, Any] | None = None,
             lineage: list[dict[str, Any]] | None = None,
-            pit_date: str | None = None) -> SliceResult:
+            pit_date: str | None = None, pit_filtered: bool = False) -> SliceResult:
     meta = {"slice_id": request.slice_id, "trade_date": request.trade_date,
             "asof": request.asof, "source": source, "version": version,
             "built_at": datetime.now().astimezone().isoformat(), "available_at": available_at,
@@ -122,6 +125,8 @@ def _result(request: SliceRequest, rows: list[dict[str, Any]], *, source: str,
         meta["pit_date"] = pit_date
     if reason:
         meta["reason"] = reason
+    if pit_filtered:
+        meta["_pit_filtered"] = True
     return SliceResult.create(rows, meta)
 
 
@@ -352,7 +357,8 @@ class SliceProviders:
                     unknown = unknown or day_unknown
                     rows.extend(kept)
                     lineage.append({"dataset": dataset, "trade_date": day,
-                                    "available_at": manifest.get("available_at")})
+                                    "available_at": manifest.get("available_at"),
+                                    "version": str(manifest.get("version") or "unknown")})
                 unique = {}
                 for row in rows:
                     key = (row.get("symbol", row.get("code")), row.get("Date", row.get("date")),
@@ -365,7 +371,7 @@ class SliceProviders:
                                version="multi_date", quality={"coverage": len(unique) or None,
                                                               "partial": unknown,
                                                               "history_trade_dates": len(lineage)},
-                               lineage=lineage)
+                               lineage=lineage, pit_filtered=True)
             except (AttributeError, OSError, ValueError, KeyError, TypeError):
                 return _result(request, [], source="core_data", status="MISSING", reason="CORRUPT_DATASET")
         if request.slice_id in {"hot_plates_yesterday", "yest_limit_pool"} and not date:
@@ -588,6 +594,21 @@ def _pit_rows(rows: list[dict[str, Any]], asof: str) -> tuple[list[dict[str, Any
     cutoff = _parse_pit_timestamp(asof)
     if cutoff is None:
         raise ValueError("slice_asof_timezone_required")
+    parsed_cache: dict[Any, datetime | None] = {}
+
+    def parse(value: Any) -> datetime | None:
+        try:
+            cached = parsed_cache.get(value, ...)
+        except TypeError:
+            return _parse_pit_timestamp(value)
+        if cached is not ...:
+            return cached
+        parsed = _parse_pit_timestamp(value)
+        if len(parsed_cache) >= 8192:
+            parsed_cache.clear()
+        parsed_cache[value] = parsed
+        return parsed
+
     selected = []
     unknown = False
     for row in rows:
@@ -596,7 +617,7 @@ def _pit_rows(rows: list[dict[str, Any]], asof: str) -> tuple[list[dict[str, Any
         available = next((row.get(key) for key in
                           ("available_at", "observed_at", "created_at", "capture_time", "sampled_at")
                           if row.get(key) not in (None, "")), None)
-        event_dt, available_dt = _parse_pit_timestamp(event), _parse_pit_timestamp(available)
+        event_dt, available_dt = parse(event), parse(available)
         # Availability is the PIT boundary even if event time is absent or malformed.
         if available_dt is not None and available_dt > cutoff:
             continue

@@ -673,11 +673,11 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         src.td, src.td_error = _connect_td()
         if not src.td_error:
             src.td_connection_factory = lambda: _connect_td()[0]
-    q2_rows: dict[str, Any] = {}
+    q2_coverage: int | None = None
     if stage != "close" and src.redis is not None:
         try:
-            from .q2_tracker import read_q2_hashes
-            q2_rows = read_q2_hashes(src.redis)
+            from .q2_tracker import count_q2_hashes
+            q2_coverage = count_q2_hashes(src.redis)
         except Exception:
             degraded_q2 = True
         else:
@@ -1081,7 +1081,10 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                                    "display_label": "对照观察", "summary": "；".join(ladder_parts) + "。"})
             payload["story"]["top_events"] = events[:3]
         from .ladder_cluster import build_front_page_data
-        from .limit_reason_theme import load_kaipan_theme_snapshot
+        from .limit_reason_theme import (load_kaipan_theme_snapshot,
+                                         read_theme_snapshot_cache,
+                                         theme_snapshot_visibility,
+                                         theme_snapshot_version)
         calendar_days = sorted({str(row.get("date") or "")[:10] for row in slice_results["trading_calendar"].rows
                                 if str(row.get("date") or "")[:10] < trade_date})
         history_days = sorted({str(row.get("date") or "")[:10] for row in slice_results["daily_history"].rows
@@ -1100,14 +1103,48 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 if plate_name and _eligible_front_plate(plate_name, plate_metadata):
                     static_by_symbol.setdefault(symbol, []).append({"name": plate_name,
                         **plate_metadata.get(plate_name, {})})
-        theme_snapshot = load_kaipan_theme_snapshot(
-            None, report_date=trade_date, previous_trade_date=previous_trade_date or "",
-            observed_at=point, plate_names=plate_names,
-            static_themes_by_symbol=static_by_symbol,
-            pool_rows=slice_results["yest_limit_pool"].rows,
-            reason_rows=slice_results["limit_reason_history"].rows,
-            hot_rows=slice_results["hot_plates_yesterday"].rows,
-            trading_dates=calendar_days)
+        reason_versions = {
+            str(item.get("trade_date")): str(item.get("version") or "unknown")
+            for item in slice_results["limit_reason_history"].meta.get("lineage", [])
+            if item.get("trade_date")
+        }
+        cache_inputs = {
+            "trade_date": trade_date,
+            "previous_trade_date": previous_trade_date,
+            "pool_version": slice_results["yest_limit_pool"].meta.get("version"),
+            "hot_version": slice_results["hot_plates_yesterday"].meta.get("version"),
+            "registry_version": slice_results["plate_registry"].meta.get("version"),
+            "reason_versions": reason_versions,
+            "calendar_dates": calendar_days,
+            # Versions identify artifacts; PIT visibility boundaries detect rows
+            # newly admitted when the report cutoff advances.
+            "visibility": theme_snapshot_visibility({
+                "pool": slice_results["yest_limit_pool"].rows,
+                "registry": slice_results["plate_registry"].rows,
+            }),
+        }
+        cache_version = (theme_snapshot_version(cache_inputs)
+                         if previous_trade_date and cache_inputs["pool_version"]
+                         and cache_inputs["registry_version"] and reason_versions else None)
+        theme_snapshot = (read_theme_snapshot_cache(
+            src.redis, trade_date, previous_trade_date or "", asof=slice_asof,
+            version=cache_version) if cache_version else None)
+        if theme_snapshot is not None:
+            from .limit_reason_theme import merge_theme_snapshot_static_fallback
+            theme_snapshot = merge_theme_snapshot_static_fallback(
+                theme_snapshot, static_by_symbol,
+                expected_previous_date=previous_trade_date or "",
+                plate_names=plate_names, trading_dates=calendar_days)
+        else:
+            theme_snapshot = load_kaipan_theme_snapshot(
+                None, report_date=trade_date, previous_trade_date=previous_trade_date or "",
+                observed_at=point, plate_names=plate_names,
+                static_themes_by_symbol=static_by_symbol,
+                pool_rows=slice_results["yest_limit_pool"].rows,
+                reason_rows=slice_results["limit_reason_history"].rows,
+                hot_rows=slice_results["hot_plates_yesterday"].rows,
+                trading_dates=calendar_days)
+            degraded.append("THEME_SNAPSHOT_CACHE_MISS_FALLBACK_COMPUTE")
         payload["limit_reason_themes"] = theme_snapshot["assignments"]
         payload["theme_attribution_basis"] = theme_snapshot["basis"]
         payload["hot_plate_names"] = theme_snapshot["hot_plate_names"]
@@ -1425,7 +1462,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 "stage": stage, "asof": asof, "outputs": str(out), "input_files": inputs,
                 "sources": {"td": td_source_manifest,
                             "q2_redis": {"available": src.redis is not None and not degraded_q2,
-                                         "coverage": len(q2_rows) if src.redis is not None and not degraded_q2 else None},
+                                         "coverage": q2_coverage if src.redis is not None and not degraded_q2 else None},
                             "kaipan_relation": {"path": str(relation_dir) if relation_dir else None,
                                                 "asof": relation_asof,
                                                 "lag_trading_days": relation_lag if relation_lag is not None else "UNKNOWN",

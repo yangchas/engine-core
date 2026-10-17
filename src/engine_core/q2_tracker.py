@@ -53,6 +53,32 @@ def read_q2_hashes(redis: Any, *, batch_size: int = 2000) -> dict[str, dict[str,
     return output
 
 
+def count_q2_hashes(redis: Any, *, batch_size: int = 2000) -> int:
+    """Count report coverage without transferring every Q2 field value."""
+    keys = sorted({key for key in redis.scan_iter(match="q2:[0-9]*", count=batch_size)
+                   if len(key) == 9 and key.startswith("q2:") and key[3:].isdigit()})
+    count = 0
+    for offset in range(0, len(keys), batch_size):
+        batch = keys[offset:offset + batch_size]
+        pipe = redis.pipeline()
+        for key in batch:
+            pipe.type(key)
+        for key_type in pipe.execute():
+            if isinstance(key_type, bytes):
+                key_type = key_type.decode("ascii", errors="replace")
+            if key_type == "hash":
+                count += 1
+            elif key_type in ("none", None):
+                # A scan result may expire before TYPE, but the equivalent
+                # HGETALL would have returned an empty mapping and counted it.
+                count += 1
+            else:
+                # The previous HGETALL read would fail the whole Q2 fetch on
+                # a non-hash key; keep that degraded-path signal unchanged.
+                raise TypeError("Q2 key is not a hash")
+    return count
+
+
 class Q2Tracker:
     def __init__(self, relations: Mapping[str, list[str] | set[str]],
                  baseline: Mapping[str, Mapping[str, Any]], *,

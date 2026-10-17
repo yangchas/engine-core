@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 from collections import Counter
@@ -14,6 +15,71 @@ from typing import Any, Mapping, Sequence
 _SPLIT = re.compile(r"[、,，/；;]+")
 _CODE = re.compile(r"\d{6}")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+THEME_SNAPSHOT_CACHE_TTL_SECONDS = 7 * 86400
+THEME_SNAPSHOT_CACHE_SCHEMA = "ThemeSnapshotCacheV3"
+
+
+def _cache_json(value: Any) -> bytes:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                      allow_nan=False).encode("utf-8")
+
+
+def theme_snapshot_version(inputs: Mapping[str, Any]) -> str:
+    """Stable version for the cold inputs used to build a target-day theme view."""
+    return "sha256-" + hashlib.sha256(_cache_json(inputs)).hexdigest()[:16]
+
+
+def theme_snapshot_visibility(rows_by_input: Mapping[str, Sequence[Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Fingerprint row visibility boundaries without duplicating full slice payloads."""
+    fields = ("available_at", "sampled_at", "captured_local", "capture_time",
+              "event_time", "event_at", "Date")
+    result: dict[str, list[dict[str, Any]]] = {}
+    for name, rows in rows_by_input.items():
+        visible = []
+        for row in rows:
+            if isinstance(row, Mapping):
+                boundary = {key: row[key] for key in fields if row.get(key) not in (None, "")}
+                visible.append(boundary)
+        result[name] = sorted(visible, key=_cache_json)
+    return result
+
+
+def write_theme_snapshot_cache(redis: Any, trade_date: str, previous_trade_date: str,
+                               snapshot: Mapping[str, Any], *, as_of: str,
+                               version: str) -> bool:
+    if redis is None or not callable(getattr(redis, "set", None)) or not version:
+        return False
+    try:
+        payload = {"schema": THEME_SNAPSHOT_CACHE_SCHEMA, "trade_date": trade_date,
+                   "previous_trade_date": previous_trade_date, "pit_date": previous_trade_date,
+                   "as_of": as_of, "version": version, "snapshot": dict(snapshot)}
+        key = f"core:cache:data:theme_snapshot:{trade_date}"
+        redis.set(key, _cache_json(payload), ex=THEME_SNAPSHOT_CACHE_TTL_SECONDS)
+        return True
+    except Exception:
+        return False
+
+
+def read_theme_snapshot_cache(redis: Any, trade_date: str, previous_trade_date: str, *,
+                              asof: str, version: str | None = None) -> dict[str, Any] | None:
+    if redis is None or not callable(getattr(redis, "get", None)):
+        return None
+    try:
+        raw = redis.get(f"core:cache:data:theme_snapshot:{trade_date}")
+        payload = json.loads(raw) if raw else None
+        cutoff, built = _parse_time(asof), _parse_time((payload or {}).get("as_of"))
+        snapshot = (payload or {}).get("snapshot")
+        if (not isinstance(payload, Mapping) or payload.get("schema") != THEME_SNAPSHOT_CACHE_SCHEMA
+                or payload.get("trade_date") != trade_date
+                or payload.get("previous_trade_date") != previous_trade_date
+                or payload.get("pit_date") != previous_trade_date
+                or not isinstance(payload.get("version"), str) or not payload.get("version")
+                or (version is not None and payload.get("version") != version)
+                or cutoff is None or built is None or built > cutoff or not isinstance(snapshot, dict)):
+            return None
+        return snapshot
+    except Exception:
+        return None
 
 
 def _pool_rows(value: Any) -> list[Sequence[Any] | Mapping[str, Any]]:
@@ -129,6 +195,12 @@ def build_limit_reason_themes(
     result: dict[str, dict[str, Any]] = {}
     reason_symbols = {_symbol(value) for value in reason_responses_by_symbol}
     all_symbols = set(pool) | reason_symbols | {_symbol(value) for value in (static_themes_by_symbol or {})}
+    session_set: set[str] | None = None
+    if trading_dates:
+        sessions = sorted({str(day)[:10] for day in trading_dates
+                           if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(day)[:10])
+                           and str(day)[:10] <= expected_previous_date})[-max(1, lookback_sessions):]
+        session_set = set(sessions)
     for symbol in sorted(value for value in all_symbols if value):
         label, topics, pool_code, pool_tier = pool.get(symbol, ("", [], "", ""))
         records = []
@@ -144,11 +216,7 @@ def build_limit_reason_themes(
             codes = [str(code).strip() for code in codes if str(code).strip()] if isinstance(codes, Sequence) else []
             records.append((event_date, row, codes))
         records.sort(key=lambda item: item[0], reverse=True)
-        if trading_dates:
-            sessions = sorted({str(day)[:10] for day in trading_dates
-                               if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(day)[:10])
-                               and str(day)[:10] <= expected_previous_date})[-max(1, lookback_sessions):]
-            session_set = set(sessions)
+        if session_set is not None:
             records = [record for record in records if record[0] in session_set]
         else:
             # Without an exchange calendar, only the exact prior session can be
@@ -201,6 +269,51 @@ def build_limit_reason_themes(
                     break
         result[symbol] = selected or _assignment(symbol, "NONE", "无题材", "NONE")
         result[symbol]["history_status"] = "CALENDAR_OK" if trading_dates else "CALENDAR_MISSING"
+    return result
+
+
+def merge_theme_snapshot_static_fallback(
+    snapshot: Mapping[str, Any], static_themes_by_symbol: Mapping[str, Any], *,
+    expected_previous_date: str, plate_names: Mapping[str, str],
+    trading_dates: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Add report-universe static fallbacks to a cached cold-data snapshot."""
+    assignments = {str(symbol): dict(row) for symbol, row in
+                   (snapshot.get("assignments", {}) or {}).items()
+                   if isinstance(row, Mapping)}
+    # The prepared snapshot may have been built with an earlier registry
+    # snapshot. Resolve code-backed display names with the same registry used
+    # by the report's direct-compute path.
+    for row in assignments.values():
+        theme_key = str(row.get("theme_key") or "").strip()
+        if theme_key in plate_names:
+            row["theme_name"] = str(plate_names[theme_key])
+        secondary = row.get("secondary_themes")
+        if isinstance(secondary, list):
+            row["secondary_themes"] = [
+                {**item, "name": str(plate_names.get(str(item.get("code") or ""), item.get("name") or ""))}
+                if isinstance(item, Mapping) else item
+                for item in secondary
+            ]
+    static_assignments = build_limit_reason_themes(
+        {}, {}, expected_previous_date=expected_previous_date,
+        plate_names=plate_names, static_themes_by_symbol=static_themes_by_symbol,
+        trading_dates=trading_dates)
+    for symbol, row in static_assignments.items():
+        if row.get("theme_source") == "STATIC_FALLBACK" and (
+                symbol not in assignments or assignments[symbol].get("theme_source") == "NONE"):
+            assignments[symbol] = row
+    source_counts: Counter[str] = Counter(row.get("theme_source", "NONE")
+                                          for row in assignments.values())
+    result = dict(snapshot)
+    result["assignments"] = assignments
+    result["source_counts"] = dict(source_counts)
+    counts_text = ", ".join(f"{key}={source_counts[key]}" for key in sorted(source_counts)) or "无记录"
+    status = snapshot.get("status", "PARTIAL")
+    result["basis"] = (("切片：昨日涨停池/历史原因" if status == "READY"
+                        else "切片不完整；登记表回退")
+                       + f"；原因窗口 {'按交易日历' if trading_dates else 'CALENDAR_MISSING，不满足20交易日窗口'}"
+                       + f"；来源计数 {counts_text}")
     return result
 
 

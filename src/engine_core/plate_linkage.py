@@ -15,17 +15,6 @@ def _finite(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _sealed(row: Mapping[str, Any], side: int) -> bool | None:
-    state = row.get("limit_state")
-    if state in (-1, 0, 1):
-        return state == side
-    try:
-        from engine_core.auction_tracking import _at_limit
-        return _at_limit(row, "up" if side == 1 else "down")
-    except (KeyError, TypeError, ValueError, OverflowError):
-        return None
-
-
 def _ratio(numerator: float, denominator: float) -> float | None:
     return 100.0 * numerator / denominator if denominator > 0 else None
 
@@ -50,18 +39,27 @@ def build_plate_linkage(states: Mapping[str, Mapping[str, Any]],
         if name in generic_names:
             continue
         rows = [(symbol, states[symbol]) for symbol in members if symbol in states]
-        sealed = {symbol: (_sealed(row, 1), _sealed(row, -1)) for symbol, row in rows}
-        priced = [(symbol, row, _finite(row.get("pct_change")))
-                  for symbol, row in rows if _finite(row.get("pct_change")) is not None]
+        from engine_core.auction_tracking import _at_limit_pair
+        sealed = {}
+        for symbol, row in rows:
+            state = row.get("limit_state")
+            if state in (-1, 0, 1):
+                sealed[symbol] = (state == 1, state == -1)
+            else:
+                try:
+                    sealed[symbol] = _at_limit_pair(row)
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    sealed[symbol] = (None, None)
+        facts = [(symbol, row, _finite(row.get("pct_change")),
+                  _finite(row.get("match_amount_yuan"))) for symbol, row in rows]
+        priced = [(symbol, row, pct) for symbol, row, pct, _amount in facts if pct is not None]
         if len(priced) < min_members:
             continue
-        known_amounts = [(symbol, row, _finite(row.get("match_amount_yuan")))
-                         for symbol, row in rows if _finite(row.get("match_amount_yuan")) is not None
-                         and _finite(row.get("match_amount_yuan")) >= 0]
+        known_amounts = [(symbol, row, amount) for symbol, row, _pct, amount in facts
+                         if amount is not None and amount >= 0]
         amount_total = sum(amount for _, _, amount in known_amounts)
-        priced_amount_rows = [(symbol, row, amount, _finite(row.get("pct_change")))
-                              for symbol, row, amount in known_amounts
-                              if _finite(row.get("pct_change")) is not None]
+        priced_amount_rows = [(symbol, row, amount, pct) for symbol, row, pct, amount in facts
+                              if amount is not None and amount >= 0 and pct is not None]
         weighted_denominator = sum(amount for _, _, amount, _ in priced_amount_rows)
         weighted_contribution = sum(amount * pct for _, _, amount, pct in priced_amount_rows)
         equal_mean = statistics.mean(pct for _, _, pct in priced)

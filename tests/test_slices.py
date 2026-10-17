@@ -224,6 +224,57 @@ def test_historical_reason_artifact_availability_is_checked_before_ready(tmp_pat
     assert result.rows == []
 
 
+def test_pit_filter_reuses_timestamp_parses_within_dataset(monkeypatch):
+    from engine_core import slices
+
+    original = slices._parse_pit_timestamp
+    calls = []
+
+    def counted(value):
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(slices, "_parse_pit_timestamp", counted)
+    rows, unknown = slices._pit_rows([
+        {"date": "2026-10-15", "available_at": "2026-10-15T08:00:00+08:00"}
+        for _ in range(20)
+    ], "2026-10-16T09:26:00+08:00")
+
+    assert len(rows) == 20
+    assert not unknown
+    assert calls.count("2026-10-15") == 1
+    assert calls.count("2026-10-15T08:00:00+08:00") == 1
+
+
+def test_limit_reason_history_applies_pit_filter_once_for_multidate_rows(tmp_path, monkeypatch):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core import slices
+
+    catalog = ArtifactCatalog(tmp_path / "core")
+    for artifact_date in ("2026-10-15", "2026-10-16"):
+        catalog.commit("limit_reasons", artifact_date, [{
+            "symbol": "600001", "Date": artifact_date, "ZSCode": ["801001"],
+            "Reason": artifact_date,
+        }], {"available_at": f"{artifact_date}T08:00:00+08:00"}, source="test")
+
+    original = slices._pit_rows
+    calls = 0
+
+    def counted(rows, asof):
+        nonlocal calls
+        calls += 1
+        return original(rows, asof)
+
+    monkeypatch.setattr(slices, "_pit_rows", counted)
+    result = slices.SliceReader(
+        slices.SliceProviders(catalog=catalog, file_fallback=False).providers()).get(
+            "limit_reason_history", trade_date="2026-10-16",
+            asof="2026-10-16T09:26:00+08:00")
+
+    assert len(result.rows) == 2
+    assert calls == 2
+
+
 def test_daily_history_decoder_handles_5200_symbols_without_cross_symbol_state():
     import json
     import zlib

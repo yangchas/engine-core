@@ -16,8 +16,9 @@ def main(argv=None) -> int:
     parser.add_argument("--date", required=True, help="target trading day")
     parser.add_argument("--write", action="store_true", help="run missing Core jobs and publish permitted Core cache views")
     parser.add_argument("--artifact-root", default=os.getenv("CORE_DATA_ROOT", "~/core-data"))
+    parser.add_argument("--asof", help="PIT cutoff for deterministic preparation and replay")
     args = parser.parse_args(argv)
-    report = build_prep_report(args.artifact_root, args.date, write=args.write)
+    report = build_prep_report(args.artifact_root, args.date, write=args.write, asof=args.asof)
     print(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2))
     return 0 if report["status"] in {"READY", "PARTIAL"} else 1
 

@@ -2,7 +2,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from engine_core.q2_tracker import Q2Tracker, read_q2_hashes, publish_q2_snapshot
+from engine_core.q2_tracker import (Q2Tracker, count_q2_hashes, read_q2_hashes,
+                                    publish_q2_snapshot)
 
 
 def _row(px, pc="10000", ts="1792062000000", **extra):
@@ -30,6 +31,21 @@ def test_q2_read_and_freshness_marks_stale_without_zero_filling():
     assert result["stocks"]["000002"]["status"] == "STALE"
     assert result["stocks"]["000003"]["pct_change"] is None
     assert result["market"]["amount_yuan"] == 1000
+
+
+def test_q2_coverage_counts_hash_keys_in_batched_type_pipeline():
+    class Pipe:
+        def __init__(self, redis): self.redis, self.keys = redis, []
+        def type(self, key): self.keys.append(key)
+        def execute(self): return [self.redis.types.get(key, b"none") for key in self.keys]
+
+    class Redis:
+        keys = ["q2:000001", "q2:000002", "q2:000004", "q2:bad", "other:000003"]
+        types = {"q2:000001": b"hash", "q2:000002": "hash"}
+        def scan_iter(self, match, count): return iter(self.keys)
+        def pipeline(self): return Pipe(self)
+
+    assert count_q2_hashes(Redis()) == 3
 
 
 def test_plate_aggregation_uses_equal_weight_and_injected_baselines():

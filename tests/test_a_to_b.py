@@ -95,6 +95,28 @@ def test_anchors_on_same_main_plate_are_marked_as_shared():
                for row in result)
 
 
+def test_build_a_to_b_checks_repeated_plate_eligibility_once(monkeypatch):
+    import engine_core.a_to_b as a_to_b
+
+    original = a_to_b.select_main_plate
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(a_to_b, "select_main_plate", counted)
+    rows = [{"symbol": f"60000{index}", "plates": ["物流"]} for index in range(4)]
+    result = build_a_to_b(rows, trade_date="2026-10-15",
+                          plate_metadata={"物流": {"class": "THEME", "size": 20}})
+
+    assert result == []
+    # The unique plate is checked once for qualification and once for primary
+    # selection, then reused across stocks.
+    assert calls == 2
+
+
 def test_near_limit_price_without_locked_state_does_not_create_anchor():
     rows = [{"symbol": "600001", "auction_pct": 9.84, "limit_pct": 10,
              "auction_limit_state": 0, "main_plate": "传媒", "auction_amount_yuan": 10}]

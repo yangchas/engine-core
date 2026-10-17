@@ -69,6 +69,27 @@ def test_reason_latest_and_history_are_as_of_previous_session():
     assert [row["code"] for row in out["secondary_themes"]] == ["801003"]
 
 
+def test_trading_session_window_is_built_once_for_all_symbols(monkeypatch):
+    import engine_core.limit_reason_theme as themes
+
+    original = themes.re.fullmatch
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(themes.re, "fullmatch", counted)
+    symbols = {f"{index:06d}": {"List": []} for index in range(20)}
+    out = build_limit_reason_themes(
+        {}, symbols, expected_previous_date="2026-10-15", plate_names={},
+        trading_dates=["2026-10-14", "2026-10-15", "bad-date"])
+
+    assert len(out) == 20
+    assert calls == 3
+
+
 def test_history_frequency_and_static_fallback_are_explicit():
     reasons = {"000002": {"StockID": "000002", "List": [
         {"Date": "2026-10-15", "Type": "0", "ZSCode": [], "Reason": "暂无题材"},
@@ -213,3 +234,89 @@ def test_reason_history_uses_last_twenty_trade_dates_and_reports_source_counts()
         trading_dates=dates)
     assert result["assignments"]["000001"]["theme_name"] == "近因"
     assert result["source_counts"]["REASON_LATEST"] == 1
+
+
+def test_theme_snapshot_cache_round_trips_exact_snapshot_with_pit_and_ttl():
+    from engine_core.limit_reason_theme import (
+        read_theme_snapshot_cache,
+        write_theme_snapshot_cache,
+    )
+
+    class Redis:
+        def __init__(self):
+            self.values = {}
+            self.ttls = {}
+
+        def set(self, key, value, ex):
+            self.values[key] = value
+            self.ttls[key] = ex
+
+        def get(self, key):
+            return self.values.get(key)
+
+    redis = Redis()
+    snapshot = load_kaipan_theme_snapshot(
+        None, report_date="2026-10-16", previous_trade_date="2026-10-15",
+        observed_at="2026-10-16T08:50:00+08:00", plate_names={"801001": "昨日题材"},
+        pool_rows=[{"symbol": "000001", "plate": "昨日题材"}],
+        reason_rows=[{"symbol": "000001", "Date": "2026-10-15", "Type": "0",
+                      "ZSCode": ["801001"], "Reason": "昨日题材"}],
+        trading_dates=["2026-10-14", "2026-10-15"],
+    )
+
+    assert write_theme_snapshot_cache(
+        redis, "2026-10-16", "2026-10-15", snapshot,
+        as_of="2026-10-16T08:50:00+08:00", version="sha256-test")
+    cached = read_theme_snapshot_cache(
+        redis, "2026-10-16", "2026-10-15", asof="2026-10-16T09:26:00+08:00")
+
+    assert cached == snapshot
+    key = "core:cache:data:theme_snapshot:2026-10-16"
+    assert redis.ttls[key] == 7 * 86400
+    assert read_theme_snapshot_cache(
+        redis, "2026-10-16", "2026-10-15", asof="2026-10-16T09:26:00+08:00",
+        version="sha256-different-inputs") is None
+    assert read_theme_snapshot_cache(
+        redis, "2026-10-16", "2026-10-14", asof="2026-10-16T09:26:00+08:00") is None
+    assert read_theme_snapshot_cache(
+        redis, "2026-10-16", "2026-10-15", asof="2026-10-16T08:00:00+08:00") is None
+
+    class UnavailableRedis:
+        def get(self, key):
+            raise ConnectionError("unavailable")
+
+    assert read_theme_snapshot_cache(
+        UnavailableRedis(), "2026-10-16", "2026-10-15",
+        asof="2026-10-16T09:26:00+08:00") is None
+
+
+def test_cached_cold_theme_snapshot_plus_runtime_static_matches_direct_snapshot():
+    from engine_core.limit_reason_theme import merge_theme_snapshot_static_fallback
+
+    pool = [{"symbol": "000001", "plate": "昨日题材"}]
+    reasons = [
+        {"symbol": "000001", "Date": "2026-10-15", "Type": "0",
+         "ZSCode": ["801001"], "Reason": "昨日原因"},
+        {"symbol": "000002", "Date": "2026-10-14", "Type": "0",
+         "ZSCode": [], "Reason": "无代码原因"},
+        {"symbol": "000003", "Date": "2026-10-15", "Type": "0",
+         "ZSCode": ["801001"], "Reason": "代码映射原因"},
+    ]
+    static = {
+        "000001": [{"name": "静态甲", "class": "THEME", "size": 20}],
+        "000002": [{"name": "静态乙", "class": "THEME", "size": 25}],
+        "000003": [{"name": "静态丙", "class": "NICHE", "size": 12}],
+    }
+    common = dict(report_date="2026-10-16", previous_trade_date="2026-10-15",
+                  observed_at="2026-10-16T09:26:00+08:00",
+                  plate_names={"801001": "原因题材"}, pool_rows=pool,
+                  reason_rows=reasons, trading_dates=["2026-10-14", "2026-10-15"])
+    cold = load_kaipan_theme_snapshot(
+        None, **{**common, "plate_names": {"801001": "旧版名称"}})
+    merged = merge_theme_snapshot_static_fallback(
+        cold, static, expected_previous_date="2026-10-15",
+        plate_names=common["plate_names"], trading_dates=common["trading_dates"])
+    direct = load_kaipan_theme_snapshot(
+        None, **common, static_themes_by_symbol=static)
+
+    assert merged == direct
