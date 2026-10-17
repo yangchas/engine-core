@@ -266,3 +266,78 @@ def test_sealed_up_label_is_price_proxy_everywhere():
     assert "收盘价=涨停价(价格代理)" in html + plain
     assert "涨停：1" not in html + plain
 
+
+
+def test_email_starts_with_manifest_quality_and_keeps_unknowns_unknown():
+    report = {
+        "stage": "auction",
+        "auction_terminal_0925": {"vs_amount_baseline": 25.0},
+        "chapters": {"market_price_volume": {"symbol_count": None}},
+    }
+    manifest = {
+        "trade_date": "2026-10-16", "elapsed_seconds": 3.2,
+        "degraded": ["Q2_REDIS_UNAVAILABLE"],
+        "sources": {
+            "auction_baseline": {"status": "PARTIAL", "coverage": "15/64"},
+            "plate_members": {"status": "MISSING", "reason": "incomplete"},
+            "hot_rank": {"status": "DEGRADED", "reason": "stale"},
+            "q2_redis": {"status": "PARTIAL", "coverage": "12/20"},
+            "td": {"status": "PARTIAL", "coverage": {"priced_symbols": 3, "symbols": 10}},
+        },
+    }
+    html, plain = render_email_html(report, "auction", "2026-10-16", manifest)
+    assert "[PARTIAL]" in plain and "[PARTIAL]" in html
+    assert "竞价基线：PARTIAL 15/64" in plain
+    assert "板块成员：MISSING" in plain
+    assert "热榜：DEGRADED" in plain
+    assert "Q2：PARTIAL 12/20" in plain
+    assert "耗时：3.2s" in plain and "used_date：UNKNOWN（报告交易日 2026-10-16）" in plain
+    assert "疑似异常" in plain and "25" in plain and "缺失率 70.0%" in plain
+    assert "None" not in plain and "—" in plain
+
+
+def test_email_quality_uses_slice_meta_and_reports_missing_provenance_reason():
+    report = {"stage": "auction", "manifest": {"inputs": {}}}
+    manifest = {
+        "trade_date": "2026-10-16", "elapsed_seconds": 2.0,
+        "used_dates": {"daily_history": ["2026-10-15"], "plate_members": ["2026-10-16"]},
+        "slices": {
+            "daily_history": {"source": "core_data", "status": "READY", "rows": 5226,
+                              "version": "sha256-daily", "used_date": ["2026-10-15"]},
+            "plate_members": {"source": "core_data", "status": "READY", "rows": 88646,
+                              "version": "sha256-plates", "used_date": ["2026-10-16"]},
+            "plate_registry": {"source": "core_data", "status": "READY", "rows": 709,
+                               "version": "sha256-registry", "used_date": ["2026-10-13"]},
+            "auction_baseline": {"source": "import_from_validation", "status": "PARTIAL", "rows": 65,
+                                 "version": "v2-import", "coverage": {"sample_days": 15, "expected_days": 64}},
+            "hot_rank": {"source": "ths_hot_rank", "status": "MISSING", "rows": 0,
+                         "reason": "NO_DATA_FOR_DATE", "version": None},
+            "unavailable_slice": {"source": None, "status": None, "reason": "catalog entry absent"},
+        },
+    }
+    _, plain = render_email_html(report, "auction", "2026-10-16", manifest)
+    assert "日K/指标：READY 5226行" in plain
+    assert "板块成员：READY 88646行；709板块" in plain
+    assert "竞价基线：PARTIAL 样本 15/64 日" in plain
+    assert "65行" in plain and "v2-import" in plain and "import_from_validation" in plain
+    assert "热榜：MISSING 0行（NO_DATA_FOR_DATE）" in plain
+    assert "unavailable_slice：UNKNOWN（catalog entry absent）" in plain
+    assert "用 D-1 数据" in plain
+
+
+def test_four_preview_contexts_reconcile_disabled_inputs_and_baseline_coverage():
+    cases = [("2026-10-15", "auction", 65), ("2026-10-15", "open", 65),
+             ("2026-10-16", "auction", 15), ("2026-10-16", "open", 15)]
+    for trade_date, stage, sample_days in cases:
+        report = {"stage": stage, "manifest": {"inputs": {
+            "auction_baseline": {"provided": True, "sample_days": sample_days},
+            "optional_feed": {"provided": False}}},
+            "chapters": {"market_price_volume": {"auction_baseline_comparison": {
+                "sample_days": sample_days}}}}
+        manifest = {"trade_date": trade_date, "slices": {
+            "auction_baseline": {"status": "PARTIAL", "coverage": {"sample_days": sample_days,
+                                                                          "expected_days": 64}}}}
+        _, plain = render_email_html(report, stage, trade_date, manifest)
+        assert f"竞价基线：PARTIAL 样本 {sample_days}/64 日" in plain
+        assert "optional_feed：NOT_ENABLED（未启用）" in plain
+        assert "optional_feed：UNKNOWN" not in plain

@@ -93,15 +93,20 @@ def _command_handler(name: str, opts, root: Path):
             stage = {"auction_report": "auction", "open_report": "open", "close_report": "close"}[name]
             cmd = [py, str(repo / "examples/run_daily_reports.py"), "--stage", stage,
                    "--trade-date", day, "--out-root", str(root / "reports")]
-            if not opts.write and not opts.email_self:
+            if opts.simulate_clock:
+                cmd.append("--dry-run")
+            elif not opts.write and not opts.email_self:
                 cmd.append("--dry-run")
             elif name == "close_report":
                 cmd.append("--publish")
-            if opts.email_self:
+            if getattr(opts, "email_self", False):
                 marker = root / "guardian" / day / "audit_ok" / stage
                 if not marker.is_file():
                     raise RuntimeError("audit_ok_missing:" + stage)
-                cmd.extend(["--email-send", "--email-to", "412826313@qq.com"])
+                if opts.simulate_clock:
+                    cmd.extend(["--email-to", "412826313@qq.com"])
+                else:
+                    cmd.extend(["--email-send", "--email-to", "412826313@qq.com"])
         elif name == "kaipan_fetch":
             from engine_core.data_pipeline.storage import ArtifactCatalog
             catalog = ArtifactCatalog(root)
@@ -184,11 +189,59 @@ def _command_handler(name: str, opts, root: Path):
             if report.get("status") != "READY":
                 raise RuntimeError("prep_status_invalid:" + str(report.get("status")))
         return result.stdout[-500:]
-    return handler
+    def notifying_handler(event: EventSpec, now: datetime, context, degraded: bool):
+        try:
+            return handler(event, now, context, degraded)
+        except Exception as exc:
+            if getattr(opts, "email_self", False):
+                try:
+                    from engine_core.report_mailer import build_alert_message, load_smtp_config, send_message
+                    config = load_smtp_config() if opts.run and not opts.simulate_clock else None
+                    alert = build_alert_message(now.date().isoformat(), event.event_id, exc,
+                                                "412826313@qq.com",
+                                                config.from_addr if config else "reports@localhost")
+                    receipt = send_message(config, alert, dry_run=not opts.run or opts.simulate_clock,
+                                           allow_recipients=["412826313@qq.com"])
+                    print(json.dumps({"event": event.event_id, "alert_status": receipt.status,
+                                      "error_type": type(exc).__name__, "alert_subject": alert["Subject"]},
+                                     ensure_ascii=False), flush=True)
+                except Exception as alert_exc:
+                    print(json.dumps({"event": event.event_id, "alert_status": "failed",
+                                      "error_type": type(alert_exc).__name__}, ensure_ascii=False), flush=True)
+            raise
+    return notifying_handler
 
 
-def _simulate(guardian: Guardian, trade_date: str, clock_range: str, tick_seconds: int):
+def _notify_gate_missed(rows, events, opts, now):
+    if not getattr(opts, "email_self", False):
+        return
+    by_id = {event.event_id: event for event in events}
+    for row in rows:
+        if row.get("status") != "MISSED" or row.get("event") not in by_id:
+            continue
+        event = by_id[row["event"]]
+        try:
+            from engine_core.report_mailer import build_alert_message, load_smtp_config, send_message
+            config = load_smtp_config() if opts.run and not opts.simulate_clock else None
+            error = RuntimeError(f"gate_blocked:{event.gate}; missing readiness data for {event.gate}")
+            alert = build_alert_message(now.date().isoformat(), event.event_id, error,
+                                        "412826313@qq.com",
+                                        config.from_addr if config else "reports@localhost")
+            receipt = send_message(config, alert, dry_run=not opts.run or opts.simulate_clock,
+                                   allow_recipients=["412826313@qq.com"])
+            print(json.dumps({"event": event.event_id, "alert_status": receipt.status,
+                              "error_type": "GateBlocked", "alert_subject": alert["Subject"]},
+                             ensure_ascii=False), flush=True)
+        except Exception as exc:
+            print(json.dumps({"event": event.event_id, "alert_status": "failed",
+                              "error_type": type(exc).__name__}, ensure_ascii=False), flush=True)
+
+
+def _simulate(guardian: Guardian, trade_date: str, clock_range: str, tick_seconds: int,
+              *, opts=None, events=()):
     start_text, sep, end_text = clock_range.partition("..")
+    if not sep:
+        start_text, sep, end_text = clock_range.partition("-")
     if not sep:
         raise ValueError("--simulate-clock must be HH:MM[:SS]..HH:MM[:SS]")
     def parse(value):
@@ -198,9 +251,10 @@ def _simulate(guardian: Guardian, trade_date: str, clock_range: str, tick_second
     cursor, end = parse(start_text), parse(end_text)
     while cursor <= end:
         result = guardian.tick(cursor)
+        if opts is not None:
+            _notify_gate_missed(result, events, opts, cursor)
         for row in result:
-            if row.get("status", "").startswith("WOULD") or row.get("status") in {"MISSED", "CALENDAR_UNAVAILABLE"}:
-                print(json.dumps({"at": cursor.strftime("%H:%M:%S"), **row}, ensure_ascii=False, sort_keys=True))
+            print(json.dumps({"at": cursor.strftime("%H:%M:%S"), **row}, ensure_ascii=False, sort_keys=True))
         cursor += timedelta(seconds=tick_seconds)
 
 
@@ -228,8 +282,8 @@ def main(argv=None) -> int:
         parser.error("--td-write requires --write")
     if args.email_self and not args.run:
         parser.error("--email-self requires --run")
-    if args.run and (args.simulate_clock or args.once_now or args.list):
-        parser.error("--run cannot be combined with --simulate-clock, --once-now, or --list")
+    if args.run and (args.once_now or args.list):
+        parser.error("--run cannot be combined with --once-now or --list")
     if args.tick_seconds <= 0:
         parser.error("--tick-seconds must be positive")
     root = Path(args.artifact_root).expanduser()
@@ -278,7 +332,8 @@ def main(argv=None) -> int:
     if args.simulate_clock:
         if not args.simulate_date:
             parser.error("--simulate-clock requires --simulate-date")
-        _simulate(guardian, trade_date, args.simulate_clock, max(1, int(args.tick_seconds)))
+        _simulate(guardian, trade_date, args.simulate_clock, max(1, int(args.tick_seconds)),
+                  opts=args, events=selected)
         return 0
     if args.once_now:
         lock = FileInstanceLock(root / "guardian" / "guardian.lock")
@@ -290,6 +345,7 @@ def main(argv=None) -> int:
         try:
             now = datetime.now().astimezone()
             actions = guardian.tick(now)
+            _notify_gate_missed(actions, selected, args, now)
             guardian.write_heartbeat(now)
             for row in actions:
                 print(json.dumps(row, ensure_ascii=False, sort_keys=True))
@@ -313,6 +369,7 @@ def main(argv=None) -> int:
         while True:
             now = datetime.now().astimezone()
             for row in guardian.tick(now):
+                _notify_gate_missed([row], selected, args, now)
                 print(json.dumps({"at": now.isoformat(), **row}, ensure_ascii=False, sort_keys=True), flush=True)
             if time.monotonic() - last_heartbeat >= 5.0:
                 guardian.write_heartbeat(now)

@@ -80,6 +80,13 @@ def _plates(row: Mapping[str, Any], relations: Mapping[str, Sequence[str]] | Non
             metadata: Mapping[str, Mapping[str, Any]] | None = None,
             selection_cache: dict[tuple[Any, ...], str | None] | None = None,
             *, min_size: int = 8, max_size: int = 150) -> list[str]:
+    assignment = row.get("theme_assignment")
+    if isinstance(assignment, Mapping):
+        primary = assignment.get("primary_theme")
+        if assignment.get("source") not in (None, "UNKNOWN") and isinstance(primary, Mapping):
+            name = str(primary.get("name") or "").strip()
+            return [name] if name else []
+        return []
     ordered = [row.get("pool_plate"), row.get("reason_plate"), row.get("static_plate"),
                row.get("main_plate"), row.get("hot_plate")]
     plates = row.get("plates")
@@ -115,6 +122,13 @@ def _qualified_plates(row: Mapping[str, Any], relations: Mapping[str, Sequence[s
                       metadata: Mapping[str, Mapping[str, Any]] | None,
                       eligibility_cache: dict[str, bool] | None = None,
                       *, min_size: int, max_size: int) -> set[str]:
+    assignment = row.get("theme_assignment")
+    if isinstance(assignment, Mapping):
+        primary = assignment.get("primary_theme")
+        if assignment.get("source") in (None, "UNKNOWN") or not isinstance(primary, Mapping):
+            return set()
+        name = str(primary.get("name") or "").strip()
+        return {name} if name else set()
     candidates = [str(value) for value in (
         row.get("pool_plate"), row.get("reason_plate"), row.get("static_plate"),
         row.get("main_plate"), row.get("hot_plate"))

@@ -71,3 +71,18 @@ def test_plate_linkage_keeps_missing_limit_state_unknown_in_report():
     assert row["limit_up_unknown_count"] == 1
     assert row["limit_up_unknown_coverage_pct"] == pytest.approx(12.5)
     assert row["limit_up_amount_share_pct"] is None
+
+
+def test_primary_theme_clustering_does_not_change_legacy_plate_metrics():
+    states = {f"s{i}": {"symbol": f"s{i}", "pct_change": i - 3.5,
+                         "match_amount_yuan": 100 + i, "limit_state": 1 if i == 0 else 0}
+              for i in range(8)}
+    themes = {symbol: {"source": "reason", "primary_theme": {
+        "id": f"theme-{int(symbol[1:]) // 4}", "name": f"主题{int(symbol[1:]) // 4}"}}
+        for symbol in states}
+    before = build_plate_linkage(states, {"original": set(states)}, {"original": "原板块"},
+                                 min_members=8)
+    after = build_plate_linkage(states, {"original": set(states)}, {"original": "原板块"},
+                                theme_assignments=themes, min_members=8)
+    assert after["rows"] == before["rows"]
+    assert after["primary_theme_rows"] == []

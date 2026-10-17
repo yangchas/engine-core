@@ -4,11 +4,17 @@ from pathlib import Path
 from engine_core.limit_reason_theme import (
     build_limit_reason_themes,
     load_kaipan_theme_snapshot,
+    theme_snapshot_visibility,
 )
 from engine_core.ladder_cluster import build_ladder_clusters
 
 
 SAMPLE = Path("/home/exedev/validation/kaipan-daily/2026-10-16-085002")
+
+
+def test_theme_snapshot_visibility_omits_rows_without_visibility_boundaries():
+    assert theme_snapshot_visibility({"members": [{"symbol": "000001"},
+                                                   {"symbol": "000002"}]}) == {"members": []}
 
 
 def test_1016_snapshot_uses_pool_theme_labels_before_stale_static_membership():

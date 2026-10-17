@@ -137,12 +137,14 @@ class SliceProviders:
         "stock_name_map": "stock_static", "plate_registry": "plate_registry",
         "plate_members": "plate_members", "daily_history": "daily_history_compact",
         "auction_baseline": "auction_baseline", "yest_limit_pool": "limit_up_pool",
+        "plate_amount_baseline": "plate_amount_baseline",
         "limit_reason_history": "limit_reasons", "hot_plates_today": "hot_plates",
         "hot_plates_yesterday": "hot_plates", "hot_rank": "hot_rank",
         "hot_plate_minutes": "hot_plate_minutes",
         "auction_points": "auction_points",
         "trading_calendar": "trade_calendar", "path_stats": "path_stats",
         "daily_report_features": "daily_report_features",
+        "stock_theme_assignment": "stock_theme_assignment",
     }
 
     def __init__(self, *, catalog: Any = None, redis: Any = None, artifact_root: str | Path | None = None,
@@ -172,6 +174,38 @@ class SliceProviders:
     def _core(self, reader: SliceReader, request: SliceRequest) -> SliceResult:
         dataset = self.DATASETS[request.slice_id]
         date = request.trade_date
+        if request.slice_id == "stock_theme_assignment":
+            # Prefer the prepared hot view; a stale or malformed view falls
+            # through to the immutable cold artifact below.
+            previous = str(request.params.get("prior_trade_date") or "")
+            cutoff = _parse_pit_timestamp(request.asof)
+            key = f"core:cache:data:stock_theme_assignment:{request.trade_date}"
+            try:
+                raw = self.redis.get(key) if self.redis is not None else None
+                payload = json.loads(raw.decode() if isinstance(raw, bytes) else raw) if raw else None
+                available = _parse_pit_timestamp((payload or {}).get("as_of"))
+                assignments = (payload or {}).get("assignments", {})
+                rows = list(assignments.values()) if isinstance(assignments, dict) else []
+                if (isinstance(payload, dict) and payload.get("trade_date") == request.trade_date
+                        and payload.get("used_date") == previous and payload.get("input_version")
+                        and payload.get("visibility_sha256") and rows
+                        and available is not None and cutoff is not None and available <= cutoff
+                        and all(row.get("available_at") == payload.get("as_of")
+                                and row.get("input_version") == payload.get("input_version")
+                                and row.get("visibility_sha256") == payload.get("visibility_sha256")
+                                for row in rows)):
+                    for row in rows:
+                        row.setdefault("trade_date", request.trade_date)
+                        row.setdefault("used_date", payload["used_date"])
+                        row.setdefault("as_of", payload["as_of"])
+                    return _result(request, rows, source="core_redis", status="READY",
+                                   version=str(payload.get("version") or payload["input_version"]),
+                                   available_at=payload.get("as_of"), pit_date=previous,
+                                   quality={"coverage": len(rows), "partial": False},
+                                   lineage=[{"dataset": dataset, "hot_view": True,
+                                             "used_date": previous}])
+            except Exception:
+                pass
         if request.slice_id == "hot_plates_today":
             # Kaipan D-day hot plates become available at D+1 00:00. A report
             # for D must therefore resolve only the latest prior-day artifact.
@@ -333,6 +367,8 @@ class SliceProviders:
                                reason="CALENDAR_DATA_UNAVAILABLE")
         if request.slice_id in {"hot_plates_yesterday", "yest_limit_pool"}:
             date = str(request.params.get("source_date") or "")
+        if request.slice_id == "plate_members":
+            date = str(request.params.get("source_date") or date)
         if request.slice_id == "limit_reason_history":
             try:
                 dates = self.catalog.read().get("datasets", {}).get(dataset, {}).get("dates", {})
@@ -379,7 +415,7 @@ class SliceProviders:
                            reason="PREVIOUS_TRADE_DATE_MISSING")
         exact_date = request.slice_id in {"hot_plates_today", "hot_plates_yesterday", "hot_rank",
                                          "hot_plate_minutes",
-                                         "yest_limit_pool"}
+                                         "yest_limit_pool", "stock_theme_assignment"}
         manifest_path = self._select_manifest(dataset, date or request.trade_date, request.asof,
                                               exact_date=exact_date)
         discovered_by = "artifact"
@@ -397,6 +433,11 @@ class SliceProviders:
                 except (ValueError, TypeError, KeyError):
                     manifest_path = None
         if manifest_path is None or not manifest_path.is_file():
+            if request.slice_id == "plate_amount_baseline":
+                return _result(request, [], source="core_data", status="PARTIAL",
+                               reason="PLATE_AMOUNT_BASELINE_UNAVAILABLE",
+                               quality={"coverage": 0, "partial": True,
+                                        "fallback": "UNKNOWN_NO_ON_DEMAND_RECOMPUTE"})
             return _result(request, [], source="core_data", status="MISSING", reason="DATASET_NOT_FOUND")
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

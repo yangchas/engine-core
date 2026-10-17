@@ -10,6 +10,10 @@ from .plate_kind import classify_plate_kind
 from .plate_rules import is_generic_plate
 
 
+_VERIFIED_PLATE_NAMES = {"801827": "AI视频"}
+_VERIFIED_PLATE_ALIASES = {"801827": ["AI应用(AI视频)"]}
+
+
 def _family_representatives(
     members_by_plate: Mapping[str, Collection[str]],
 ) -> dict[str, str]:
@@ -75,7 +79,8 @@ def build_registry(
     codes = set(map(str, members_by_plate)) | set(map(str, names))
     for child, parent in parent_map.items():
         codes.update((child, parent))
-    sizes = {code: len(set(map(str, members_by_plate.get(code, ())))) for code in codes}
+    sizes = {code: (len(set(map(str, members_by_plate[code]))) if code in members_by_plate else None)
+             for code in codes}
     children_by_parent: dict[str, list[str]] = defaultdict(list)
     for child, parent in parent_map.items():
         if child != parent:
@@ -85,27 +90,31 @@ def build_registry(
 
     rows = []
     for code in sorted(codes):
-        name = names.get(code)
+        name = names.get(code) or _VERIFIED_PLATE_NAMES.get(code)
         if name is not None:
             name = str(name)
         size = sizes[code]
         children = sorted(set(children_by_parent.get(code, ())))
         flags: list[str] = []
-        if (name is not None and classify_plate_kind(name) in {"EVENT", "NOISE"}) or (
-            name is None and size == 0
-        ):
+        if name is not None and classify_plate_kind(name) in {"EVENT", "NOISE"}:
             flags.append("EVENT")
         if name is not None and (is_generic_plate(name) or name in generic):
             flags.append("GENERIC_FACTOR")
-        if (bool(children) and size >= 150) or size >= 500:
+        # At least 300 members is the explicit broad-industry cut. Parent rows
+        # with children qualify at 150; large themes never become NICHE.
+        if size is not None and (size >= 300 or (bool(children) and size >= 150)):
             flags.append("BROAD")
-        if size <= 15:
+        if size is not None and size <= 15 and "BROAD" not in flags:
             flags.append("NICHE")
         priority = ("EVENT", "GENERIC_FACTOR", "BROAD", "NICHE", "THEME")
-        plate_class = next((candidate for candidate in priority if candidate in flags), "THEME")
+        plate_class = (next((candidate for candidate in priority if candidate in flags), "THEME")
+                       if name is not None else "UNKNOWN")
+        if plate_class == "UNKNOWN":
+            flags.append("UNKNOWN")
         rows.append({
             "code": code,
             "name": name,
+            "aliases": list(_VERIFIED_PLATE_ALIASES.get(code, ())),
             "size": size,
             "class": plate_class,
             "parent": parent_map.get(code),

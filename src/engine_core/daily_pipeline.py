@@ -13,7 +13,8 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from . import live_pages
 from .close_review import (assemble_close_review, attach_close_sections, _attach_auction_baseline,
@@ -27,6 +28,21 @@ STAGE_NAMES = {"auction": "auction_0926", "open": "open_0946", "close": "close_r
 def _fact_auction_amount(fact: Mapping[str, Any]) -> Any:
     matched = fact.get("auction_match_amount_yuan")
     return matched if matched is not None else fact.get("p0925_cumulative_amount_yuan")
+
+
+def _numeric(value: Any) -> float | None:
+    try:
+        result = float(value)
+        return result if result == result and abs(result) != float("inf") else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _d06_persisted_assignments(slice_result: Any, *, trade_date: str, used_date: str,
+                               asof: str, input_version: str,
+                               visibility_sha256: str) -> dict[str, dict[str, Any]]:
+    """D06 prep products are audit-only until producer and consumer share inputs."""
+    return {}
 
 
 @dataclass
@@ -55,8 +71,25 @@ class _MissingTD:
 
 def _shrink_live_report(report: dict[str, Any], *, plate_cap: int = 20, row_cap: int = 30) -> dict[str, Any]:
     """Bound list sizes in the persisted live-stage JSON; the HTML page is rendered beforehand."""
+    omitted = report.setdefault("omitted_blocks", [])
+    def locate(target: Any) -> str:
+        stack = [("", report)]
+        while stack:
+            path, value = stack.pop()
+            if value is target:
+                return path
+            if isinstance(value, dict):
+                stack.extend((f"{path}.{key}" if path else str(key), child)
+                             for key, child in value.items())
+            elif isinstance(value, list):
+                stack.extend((f"{path}[{index}]", child) for index, child in enumerate(value))
+        return "UNKNOWN"
     def cut(container: Any, key: str, cap: int) -> None:
         if isinstance(container, dict) and isinstance(container.get(key), list) and len(container[key]) > cap:
+            removed = container[key][cap:]
+            encoded = json.dumps(removed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            omitted.append({"path": f"{locate(container)}.{key}".lstrip("."), "rows": len(removed),
+                           "sha256": hashlib.sha256(encoded.encode("utf-8")).hexdigest()})
             container[f"{key}_total"] = len(container[key])
             container[key] = container[key][:cap]
     themes = report.get("limit_reason_themes")
@@ -68,10 +101,35 @@ def _shrink_live_report(report: dict[str, Any], *, plate_cap: int = 20, row_cap:
             by_source[key] = by_source.get(key, 0) + 1
         report["limit_reason_themes"] = {"count": len(rows), "by_source": by_source,
                                          "note": "full mapping omitted from report.json; see ladder clusters"}
+        encoded = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        omitted.append({"path": "limit_reason_themes", "rows": len(rows),
+                        "sha256": hashlib.sha256(encoded.encode("utf-8")).hexdigest()})
     chapters = report.get("chapters") if isinstance(report.get("chapters"), dict) else {}
     cut(chapters.get("market_price_volume"), "top_plates_by_share", plate_cap)
-    cut(chapters.get("plate_quadrants"), "rows", row_cap)
+    cut(chapters.get("plate_quadrants"), "rows", 30)
     cut(chapters.get("watchlist"), "behavior_candidates", 5)
+    cut(chapters.get("watchlist"), "amount_top50", 15)
+    cut(chapters.get("plate_linkage"), "rows", 10)
+    cut(chapters.get("plate_linkage"), "opening_changes", 8)
+    cut(chapters.get("plate_linkage"), "cross_table_rows", 0)
+    cut(chapters.get("plate_cross_table"), "rows", 10)
+    cross_table = chapters.get("plate_cross_table")
+    if isinstance(cross_table, dict) and isinstance(cross_table.get("main_rows"), list):
+        cut(cross_table, "main_rows", 10)
+    dictionary = report.get("plate_dictionary")
+    if isinstance(dictionary, dict) and isinstance(dictionary.get("rows"), list):
+        original = dictionary["rows"]
+        prior_hash = dictionary.get("omitted_rows_sha256")
+        prior_count = dictionary.get("rows_total")
+        if original or not (isinstance(prior_hash, str) and prior_count is not None):
+            encoded = json.dumps(original, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            prior_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+            prior_count = len(original)
+        omitted.append({"path": "plate_dictionary.rows", "rows": prior_count,
+                        "sha256": prior_hash})
+        dictionary["rows_total"] = prior_count
+        dictionary["omitted_rows_sha256"] = prior_hash
+        dictionary["rows"] = []
     extremes = chapters.get("extremes_board")
     if isinstance(extremes, dict):
         stage = str(report.get("stage", ""))
@@ -83,9 +141,27 @@ def _shrink_live_report(report: dict[str, Any], *, plate_cap: int = 20, row_cap:
                 for key in ("rows", "rebound_top8", "weak_top8", "amount_cohort"):
                     if isinstance(block.get(key), list):
                         block[key] = []
+        active = extremes.get("open" if stage.startswith("open") else "auction")
+        if isinstance(active, dict):
+            cut(active, "rows", 15)
     for snap in report.get("snapshots", []) if isinstance(report.get("snapshots"), list) else []:
         cut(snap, "top_plates_by_share", plate_cap)
     cut(report, "snapshots", 10)
+    front_page = report.get("front_page")
+    if isinstance(front_page, dict):
+        cut(front_page.get("plate_strength"), "rows", 20)
+    a_to_b = report.get("a_to_b")
+    if isinstance(a_to_b, list) and len(a_to_b) > 5:
+        report["a_to_b_total"] = len(a_to_b)
+        report["a_to_b"] = a_to_b[:5]
+    # Full D09 rows are stored in the immutable cold product. The hot report
+    # carries only checkpoint matrices and coverage metadata.
+    feedback = report.get("streak_feedback")
+    if isinstance(feedback, dict):
+        for point in feedback.get("checkpoints", {}).values():
+            if isinstance(point, dict) and isinstance(point.get("rows"), list):
+                point["rows_count"] = len(point["rows"])
+                point.pop("rows", None)
     terminal = report.get("auction_terminal_0925")
     if isinstance(terminal, dict):
         cut(terminal, "top_plates_by_share", plate_cap)
@@ -330,11 +406,47 @@ def _attach_range_positions(stocks: list[dict[str, Any]], history_path: str | Pa
         row["prior_range_position20_pct"] = (auction_price - low) / (high - low) * 100
 
 
+def _observed_seal_paths(td: Any, trade_date: str, asof: str,
+                         symbols: set[str]) -> dict[str, list[str]]:
+    """Read actual opening ticks for the yesterday pool and retain sealed timestamps."""
+    symbols = {"".join(ch for ch in str(symbol) if ch.isdigit())[-6:].zfill(6)
+               for symbol in symbols}
+    symbols.discard("000000")
+    if not symbols or td is None:
+        return {}
+    from .limit_price import is_limit_up
+    cursor = td.cursor() if callable(getattr(td, "cursor", None)) else td
+    clauses = ",".join("'" + symbol + "'" for symbol in sorted(symbols))
+    end = str(asof)[-8:]
+    cursor.execute(
+        "select ts,px_milli,pc_milli,bp1_milli,bv2,symbol from stock_tick_v2 "
+        f"where ts>='{trade_date} 09:30:00' and ts<='{trade_date} {end}' "
+        f"and symbol in ({clauses}) order by ts,symbol")
+    rows = cursor.fetchall()
+    columns = ("ts", "px_milli", "pc_milli", "bp1_milli", "bv2", "symbol")
+    sealed: dict[str, list[str]] = {}
+    for raw in rows:
+        row = raw if isinstance(raw, Mapping) else dict(zip(columns, raw))
+        symbol = str(row.get("symbol") or "")[-6:].zfill(6)
+        try:
+            price = float(row["px_milli"]) / 1000
+            previous = float(row["pc_milli"]) / 1000
+            bid = float(row["bv2"]) * float(row["bp1_milli"]) / 10
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if symbol in symbols and bid > 0 and is_limit_up(price, previous, symbol):
+            stamp = row.get("ts")
+            text = stamp.isoformat(sep=" ") if hasattr(stamp, "isoformat") else str(stamp)
+            sealed.setdefault(symbol, []).append(text)
+    return sealed
+
+
 def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
                          relations: Mapping[str, list[str]], plate_names: Mapping[str, str],
                          stock_names: Mapping[str, str], history_path: str | Path | None,
                          plate_metadata: Mapping[str, Mapping[str, Any]] | None = None,
                          report_features: list[Mapping[str, Any]] | None = None,
+                         path_symbols: set[str] | None = None,
                          td_connection_factory=None) -> list[dict[str, Any]]:
     """Build full-universe, as-of stock rows for the live A→B and ladder sections."""
     from .live_session import daily_history_context, load_daily_history_csv, states_at
@@ -365,6 +477,17 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
         snapshots.update(fetch_one(fetch[0]) for _ in (0,))
     if not snapshots:
         return []
+    seal_paths: dict[str, list[str]] = {}
+    if stage == "open" and path_symbols:
+        path_td = td_connection_factory() if td_connection_factory else td
+        try:
+            seal_paths = _observed_seal_paths(path_td, trade_date, asof, path_symbols)
+        except Exception:
+            seal_paths = {}
+        finally:
+            if td_connection_factory:
+                close = getattr(path_td, "close", None)
+                if callable(close): close()
     symbols = set().union(*(set(rows) for rows in snapshots.values()))
     context = {}
     if report_features:
@@ -376,6 +499,18 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
         except (OSError, ValueError, TypeError):
             context = {}
     from .a_to_b import select_main_plate
+    from .auction_tracking import _at_limit_pair
+
+    def checkpoint_limit_state(symbol: str, state: Mapping[str, Any]) -> int | None:
+        up, down = _at_limit_pair({**state, "symbol": symbol})
+        if up is True:
+            return 1
+        if down is True:
+            return -1
+        if up is False and down is False:
+            return 0
+        return None
+
     plate_metadata = plate_metadata or {}
     symbol_plates: dict[str, list[str]] = {}
     for code, members in relations.items():
@@ -410,8 +545,16 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
             "p0925_amount_yuan": auction.get("match_amount_yuan"),
             "p0945_amount_yuan": snapshots.get("0945", {}).get(symbol, {}).get("amt_yuan"),
             "auction_price_status": auction.get("status", "UNKNOWN"),
-            "auction_limit_state": auction.get("auction_limit_state"),
+            "auction_limit_state": checkpoint_limit_state(symbol, auction),
+            "open_limit_state": checkpoint_limit_state(symbol, snapshots.get("0945", {}).get(symbol, {})),
             "rest_bid_yuan": auction.get("rest_bid_yuan"),
+            "p0925_price": auction.get("price_milli") / 1000 if isinstance(auction.get("price_milli"), (int, float)) else None,
+            "p0925_pre_close": auction.get("prev_close_milli") / 1000 if isinstance(auction.get("prev_close_milli"), (int, float)) else None,
+            "p0925_rest_bid": auction.get("rest_bid_yuan"), "p0925_rest_ask": auction.get("rest_ask_yuan"),
+            "p0925_limit_state": checkpoint_limit_state(symbol, auction),
+            "p0925_high": auction.get("high_milli") / 1000 if isinstance(auction.get("high_milli"), (int, float)) else None,
+            "p0925_source_ts": auction.get("source_ts"),
+            "observed_seal_timestamps": seal_paths.get(symbol, []),
             "price": (cutoff_state.get("price_milli") / 1000
                       if isinstance(cutoff_state.get("price_milli"), (int, float)) else None),
             "pre_close": (cutoff_state.get("prev_close_milli") / 1000
@@ -423,6 +566,16 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
             state = snapshots.get(label, {}).get(symbol)
             if state:
                 row[field] = state.get("pct_change")
+                row[f"p{label}_price"] = (state.get("price_milli") / 1000
+                                           if isinstance(state.get("price_milli"), (int, float)) else None)
+                row[f"p{label}_pre_close"] = (state.get("prev_close_milli") / 1000
+                                               if isinstance(state.get("prev_close_milli"), (int, float)) else None)
+                row[f"p{label}_rest_bid"] = state.get("rest_bid_yuan")
+                row[f"p{label}_rest_ask"] = state.get("rest_ask_yuan")
+                row[f"p{label}_amount"] = state.get("amt_yuan", state.get("match_amount_yuan"))
+                row[f"p{label}_high"] = state.get("high_milli") / 1000 if isinstance(state.get("high_milli"), (int, float)) else None
+                row[f"p{label}_low"] = state.get("low_milli") / 1000 if isinstance(state.get("low_milli"), (int, float)) else None
+                row[f"p{label}_source_ts"] = state.get("source_ts")
         rows.append(row)
     _attach_range_positions(rows, history_path, trade_date)
     return rows
@@ -536,9 +689,9 @@ def _eligible_front_plate(name: str, metadata: Mapping[str, Mapping[str, Any]]) 
 
 def _latest_report(root: Path, trade_date: str, stage: str) -> Path | None:
     parent = root / trade_date
-    candidates = [parent / stage / "report.json"]
-    candidates.extend(sorted(parent.glob(f"{stage}-*/report.json"), reverse=True))
-    return next((p for p in candidates if p.is_file()), None)
+    candidates = [parent / stage / "report.json", *parent.glob(f"{stage}-*/report.json")]
+    existing = [path for path in candidates if path.is_file()]
+    return max(existing, key=lambda path: path.stat().st_mtime_ns) if existing else None
 
 
 def _previous_report(root: Path, trade_date: str, stages: tuple[str, ...]) -> Path | None:
@@ -635,8 +788,9 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         SliceProviders(redis=src.redis).providers(), snapshot_id=f"{trade_date}:{stage}")
     point = asof or ("09:26:00" if stage == "auction" else "09:46:00" if stage == "open" else "17:40:00")
     slice_asof = f"{trade_date}T{point}+08:00"
-    slice_names = ("stock_name_map", "plate_registry", "plate_members", "daily_report_features", "daily_history",
-                   "auction_baseline", "yest_limit_pool", "limit_reason_history", "hot_plates_today",
+    slice_names = ("stock_name_map", "plate_registry", "plate_members", "stock_theme_assignment",
+                   "daily_report_features", "daily_history",
+                   "auction_baseline", "plate_amount_baseline", "yest_limit_pool", "limit_reason_history", "hot_plates_today",
                    "hot_plates_yesterday", "hot_rank", "trading_calendar", "path_stats")
     slice_results = {}
     slice_timings = {}
@@ -649,8 +803,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                         "stock_name_map": "stock_names"}.get(name)
         if fallback_key and refs.get(fallback_key) is not None:
             params["fallback_file"] = str(refs[fallback_key])
-        if name in {"daily_history", "daily_report_features", "hot_plates_today",
-                    "hot_plates_yesterday", "yest_limit_pool"}:
+        if name in {"daily_history", "daily_report_features", "hot_plates_today", "plate_members",
+                    "hot_plates_yesterday", "yest_limit_pool", "stock_theme_assignment"}:
             calendar_rows = slice_results.get("trading_calendar")
             if calendar_rows:
                 prior_candidates = sorted({str(row.get("date") or "")[:10]
@@ -665,10 +819,57 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 params["history_days"] = (5 if features_ready and stage in {"auction", "open"} else 75)
             if name == "daily_report_features":
                 params["prior_trade_date"] = prior_candidates[-1] if prior_candidates else None
-            if name in {"hot_plates_yesterday", "yest_limit_pool"}:
+            if name in {"hot_plates_yesterday", "yest_limit_pool", "plate_members"}:
                 params["source_date"] = params["prior_trade_date"]
+        if name == "stock_theme_assignment":
+            params["source_date"] = trade_date
         slice_results[name] = slice_reader.get(name, trade_date=trade_date, asof=slice_asof, **params)
         slice_timings[name] = round(time.monotonic() - slice_started, 3)
+    # Persist the exact slice facts used by both the email preview and the
+    # report manifest. Catalog paths retain import provenance that SliceResult
+    # intentionally abstracts away from its provider contract.
+    try:
+        from .data_pipeline.storage import ArtifactCatalog
+        catalog_root = Path(os.getenv("CORE_DATA_ROOT", "/home/exedev/core-data")).expanduser()
+        catalog_datasets = ArtifactCatalog(catalog_root).read().get("datasets", {})
+    except (OSError, ValueError, TypeError):
+        catalog_datasets = {}
+    dataset_aliases = {"daily_history": "daily_history_compact", "daily_report_features": "daily_report_features",
+                       "auction_baseline": "auction_baseline", "plate_members": "plate_members",
+                       "hot_rank": "hot_rank", "hot_plates_today": "hot_plates",
+                       "hot_plates_yesterday": "hot_plates"}
+    slice_manifest: dict[str, dict[str, Any]] = {}
+    used_dates: dict[str, list[str]] = {}
+    for name, result in slice_results.items():
+        meta = result.meta
+        dates = sorted({str(row.get("trade_date") or row.get("date") or "")[:10]
+                        for row in result.rows if row.get("trade_date") or row.get("date")})
+        lineage_dates = sorted({str(item.get("used_date"))[:10] for item in meta.get("lineage", [])
+                                if isinstance(item, Mapping) and item.get("used_date")})
+        actual_dates = lineage_dates or dates
+        if actual_dates:
+            used_dates[name] = actual_dates
+        provenance = meta.get("source")
+        version_source = None
+        version = meta.get("version")
+        alias = dataset_aliases.get(name, name)
+        entries = catalog_datasets.get(alias, {}).get("dates", {}) if isinstance(catalog_datasets, Mapping) else {}
+        matched = next((entry for versions in entries.values() for entry in versions
+                        if entry.get("version") == version), None) if isinstance(entries, Mapping) else None
+        if matched and matched.get("manifest"):
+            manifest_path = Path(matched["manifest"])
+            version_source = manifest_path.parent.parent.name.removeprefix("source=")
+        quality = meta.get("quality") if isinstance(meta.get("quality"), Mapping) else {}
+        coverage = quality.get("coverage") if isinstance(quality.get("coverage"), Mapping) else None
+        if name == "auction_baseline" and coverage is None:
+            # Row count is an artifact size, not a sample-day count.
+            coverage = None
+        slice_manifest[name] = {"source": provenance, "version_source": version_source,
+                                "status": meta.get("status"),
+                                "asof": meta.get("asof"), "available_at": meta.get("available_at"),
+                                "rows": len(result.rows), "reason": meta.get("reason"),
+                                "version": version, "quality": quality,
+                                "used_date": actual_dates or None, "coverage": coverage}
     if src.td is None and not (stage == "close" and refs.get("stock_day_facts")):
         src.td, src.td_error = _connect_td()
         if not src.td_error:
@@ -738,6 +939,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 relations.setdefault(code, []).append(symbol)
         plate_names = {str(row.get("code") or row.get("plate_code") or row.get("plateid")): str(row.get("name") or "")
                        for row in registry_rows if row.get("name")}
+        plate_names.setdefault("801827", "AI视频")
         relation_asof = str(slice_results["plate_members"].meta.get("pit_date") or
                              slice_results["plate_members"].meta.get("asof") or "UNKNOWN")
     plate_metadata = _relation_plate_metadata(relation_dir, relations, plate_names)
@@ -848,13 +1050,18 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         from .ladder_section import build_ladder_section
         point = f"{trade_date}T{asof or '09:45:00'}"
         live_stocks = payload.get("stocks") if isinstance(payload.get("stocks"), list) else []
+        feedback_symbols: set[str] = set()
         if not live_stocks:
+            from .limit_reason_theme import _pool_rows, _pool_values
+            feedback_symbols = {symbol for raw in _pool_rows(slice_results["yest_limit_pool"].rows)
+                                if (symbol := _pool_values(raw)[0])}
             live_stocks = _live_section_stocks(
                 src.td or _MissingTD(), trade_date=trade_date, stage=stage,
                 asof=asof or ("09:26:00" if stage == "auction" else "09:46:00"),
                 relations=relations, plate_names=plate_names, stock_names=stock_names,
         history_path=slice_results["daily_history"].rows, plate_metadata=plate_metadata,
         report_features=slice_results["daily_report_features"].rows or None,
+        path_symbols=feedback_symbols,
         td_connection_factory=src.td_connection_factory)
         _attach_range_positions(live_stocks, slice_results["daily_history"].rows, trade_date,
                                 report_features=slice_results["daily_report_features"].rows or None)
@@ -1091,18 +1298,12 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                                if str(row.get("date") or "")[:10] < trade_date})
         previous_trade_date = max(calendar_days or history_days, default=None)
         static_by_symbol: dict[str, list[dict[str, Any]]] = {}
-        for stock in live_stocks:
-            if not isinstance(stock, Mapping):
-                continue
-            symbol = str(stock.get("symbol", stock.get("code", ""))).zfill(6)
-            names = stock.get("plates", [])
-            if not isinstance(names, list):
-                names = [stock.get("main_plate")] if stock.get("main_plate") else []
-            for plate_name in names:
-                plate_name = str(plate_name or "")
-                if plate_name and _eligible_front_plate(plate_name, plate_metadata):
-                    static_by_symbol.setdefault(symbol, []).append({"name": plate_name,
-                        **plate_metadata.get(plate_name, {})})
+        for relation in slice_results["plate_members"].rows:
+            symbol = str(relation.get("symbol", relation.get("stock_code", relation.get("stockid", ""))) or "")[-6:].zfill(6)
+            code = str(relation.get("plate_code", relation.get("plateid", relation.get("code", ""))) or "").strip()
+            name = str(plate_names.get(code) or "").strip()
+            if symbol and code and name:
+                static_by_symbol.setdefault(symbol, []).append({"id": code, "name": name})
         reason_versions = {
             str(item.get("trade_date")): str(item.get("version") or "unknown")
             for item in slice_results["limit_reason_history"].meta.get("lineage", [])
@@ -1114,6 +1315,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             "pool_version": slice_results["yest_limit_pool"].meta.get("version"),
             "hot_version": slice_results["hot_plates_yesterday"].meta.get("version"),
             "registry_version": slice_results["plate_registry"].meta.get("version"),
+            "members_version": slice_results["plate_members"].meta.get("version"),
             "reason_versions": reason_versions,
             "calendar_dates": calendar_days,
             # Versions identify artifacts; PIT visibility boundaries detect rows
@@ -1121,11 +1323,17 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             "visibility": theme_snapshot_visibility({
                 "pool": slice_results["yest_limit_pool"].rows,
                 "registry": slice_results["plate_registry"].rows,
+                "members": slice_results["plate_members"].rows,
+                "hot": slice_results["hot_plates_yesterday"].rows,
+                "reasons": slice_results["limit_reason_history"].rows,
             }),
         }
         cache_version = (theme_snapshot_version(cache_inputs)
                          if previous_trade_date and cache_inputs["pool_version"]
                          and cache_inputs["registry_version"] and reason_versions else None)
+        cache_visibility_sha256 = hashlib.sha256(json.dumps(
+            cache_inputs["visibility"], ensure_ascii=False, sort_keys=True,
+            separators=(",", ":")).encode("utf-8")).hexdigest()
         theme_snapshot = (read_theme_snapshot_cache(
             src.redis, trade_date, previous_trade_date or "", asof=slice_asof,
             version=cache_version) if cache_version else None)
@@ -1145,7 +1353,384 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 hot_rows=slice_results["hot_plates_yesterday"].rows,
                 trading_dates=calendar_days)
             degraded.append("THEME_SNAPSHOT_CACHE_MISS_FALLBACK_COMPUTE")
+        # D06 is the one primary-theme authority for ladder, A→B and tracking.
+        from .stock_theme_assignment import build_stock_theme_assignments
+        from .limit_reason_theme import _pool_rows, _pool_values
+        pool_labels: dict[str, list[dict[str, str]]] = {}
+        for raw in _pool_rows(slice_results["yest_limit_pool"].rows):
+            symbol, label, topics, code, _tier = _pool_values(raw)
+            candidates = ([{"id": code, "name": str(plate_names.get(code) or label or code)}]
+                          if code else [])
+            candidates.extend({"id": name, "name": name} for name in topics if name)
+            if symbol and candidates:
+                pool_labels[symbol] = candidates
+        pit_members: dict[str, set[str]] = {}
+        for relation in slice_results["plate_members"].rows:
+            symbol = str(relation.get("symbol", relation.get("stock_code",
+                          relation.get("stockid", relation.get("code", "")))) or "")[-6:].zfill(6)
+            code = str(relation.get("plate_code", relation.get("plateid",
+                        relation.get("code_plate", relation.get("plate", "")))) or "").strip()
+            if symbol and code:
+                pit_members.setdefault(symbol, set()).add(code)
+        hot_by_code = {}
+        for row in slice_results["hot_plates_yesterday"].rows:
+            code = str(row.get("plate_code", row.get("code", "")) or "").strip()
+            name = str(row.get("name", row.get("plate_name", "")) or "").strip()
+            if code and name:
+                hot_by_code[code] = {"id": code, "name": name}
+        hot_by_symbol = {symbol: [hot_by_code[code] for code in sorted(codes) if code in hot_by_code]
+                         for symbol, codes in pit_members.items()}
+        reason_rows = []
+        for row in slice_results["limit_reason_history"].rows:
+            normalized = dict(row)
+            codes = row.get("ZSCode", row.get("zs_code", []))
+            if isinstance(codes, str):
+                codes = [codes]
+            if isinstance(codes, list):
+                normalized["ZSCode"] = [{"id": str(code), "name": str(plate_names.get(str(code), str(code)))}
+                                        for code in codes if str(code).strip()]
+            reason_rows.append(normalized)
+        d06_slice = slice_results.get("stock_theme_assignment")
+        persisted_assignments = (_d06_persisted_assignments(
+            d06_slice, trade_date=trade_date, used_date=previous_trade_date or "",
+            asof=slice_asof, input_version=cache_version,
+            visibility_sha256=cache_visibility_sha256) if cache_version else {})
+        stock_assignment = persisted_assignments or build_stock_theme_assignments(
+            trade_date=trade_date, previous_trade_date=previous_trade_date or "",
+            pool_labels=pool_labels, reason_rows=reason_rows, static_themes=static_by_symbol,
+            hot_plate_names=hot_by_symbol,
+            members={symbol: sorted(codes | {item["id"] for item in pool_labels.get(symbol, [])})
+                     for symbol, codes in pit_members.items()} |
+                    {symbol: [item["id"] for item in candidates]
+                     for symbol, candidates in pool_labels.items()},
+            trading_dates=calendar_days)
+        # D09/D10: use the complete visible previous-day limit pool and same-cutoff
+        # quote fields. Missing per-checkpoint evidence stays UNKNOWN.
+        from .streak_feedback import build_streak_feedback, persist_streak_feedback
+        feedback_pool = []
+        for raw in _pool_rows(slice_results["yest_limit_pool"].rows):
+            symbol, _label, _topics, _code, _tier = _pool_values(raw)
+            level = raw.get("lb_days", raw.get("streak")) if isinstance(raw, Mapping) else (
+                raw[15] if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)) and len(raw) > 15 else None)
+            try:
+                level = int(level)
+            except (TypeError, ValueError, OverflowError):
+                level = None
+            if symbol and level and level > 0:
+                feedback_pool.append({"symbol": symbol, "name": stock_names.get(symbol, symbol), "lb_days": level})
+        feedback_snapshots: dict[str, dict[str, dict[str, Any]]] = {}
+        checkpoint_field = {"0925": "0925", "0932": "0932", "0938": "0938", "0945": "0945"}
+        for checkpoint, suffix in checkpoint_field.items():
+            snapshot_rows = {}
+            checkpoint_time = {"0925": "09:25:06", "0932": "09:32:00",
+                               "0938": "09:38:00", "0945": "09:45:00"}[checkpoint]
+            for stock in live_stocks:
+                if not isinstance(stock, Mapping):
+                    continue
+                symbol = str(stock.get("symbol", stock.get("code", ""))).zfill(6)
+                if not symbol:
+                    continue
+                snapshot_rows[symbol] = {
+                    "price": stock.get(f"p{suffix}_price"),
+                    "pre_close": stock.get(f"p{suffix}_pre_close"),
+                    "rest_bid": stock.get(f"p{suffix}_rest_bid", stock.get("rest_bid_yuan") if checkpoint == "0925" else None),
+                    "rest_ask": stock.get(f"p{suffix}_rest_ask"),
+                    "limit_state": stock.get(f"p{suffix}_limit_state", stock.get("auction_limit_state") if checkpoint == "0925" else None),
+                    "high": stock.get(f"p{suffix}_high"),
+                    "prior_seal_observed": any(
+                        str(stamp) <= f"{trade_date} {checkpoint_time}"
+                        for stamp in stock.get("observed_seal_timestamps", [])
+                    ),
+                    "source_ts": stock.get(f"p{suffix}_source_ts"),
+                    "return_pct": stock.get(f"p{suffix}_pct", stock.get("auction_pct") if checkpoint == "0925" else None),
+                    "amount": stock.get(f"p{suffix}_amount", stock.get("auction_amount_yuan") if checkpoint == "0925" else None),
+                }
+            feedback_snapshots[checkpoint] = snapshot_rows
+        feedback = build_streak_feedback(
+            trade_date=trade_date, used_date=previous_trade_date or "UNKNOWN",
+            version=slice_results["yest_limit_pool"].meta.get("version"),
+            pool=feedback_pool, snapshots=feedback_snapshots, stage=stage,
+            theme_assignments=stock_assignment)
+        payload["streak_feedback"] = feedback
+        try:
+            persist_streak_feedback(os.getenv("CORE_DATA_ROOT", "/home/exedev/core-data"), feedback)
+        except OSError:
+            degraded.append("STREAK_FEEDBACK_COLD_WRITE_FAILED")
+        active_time = point[-8:]
+        active_candidates = [checkpoint for checkpoint, clock in
+                             (("0925", "09:25:00"), ("0932", "09:32:00"),
+                              ("0938", "09:38:00"), ("0945", "09:45:00"))
+                             if clock <= active_time]
+        active_checkpoint = active_candidates[-1] if active_candidates else "0925"
+        active_matrix = feedback["checkpoints"].get(active_checkpoint, {}).get("matrix", {})
+        active_levels = active_matrix.get("by_level", {})
+        ladder = payload.get("ladder_section")
+        if isinstance(ladder, dict):
+            ladder["promotion_checkpoint"] = active_checkpoint
+            ladder["promotion_by_previous_level"] = active_levels
+            active_rows = feedback["checkpoints"].get(active_checkpoint, {}).get("rows", [])
+            active_evaluable = any(row.get("status") != "UNKNOWN" for row in active_rows)
+            ladder["promotion_status"] = (
+                "MISSING_YESTERDAY_POOL" if not feedback_pool else
+                "READY" if active_evaluable else "UNKNOWN")
+            ladder["promotion_used_date"] = previous_trade_date or "UNKNOWN"
+            ladder["promotion_version"] = feedback.get("content_version")
+        for symbol, assignment in stock_assignment.items():
+            primary = assignment.get("primary_theme")
+            snapshot_row = theme_snapshot.setdefault("assignments", {}).setdefault(symbol, {})
+            snapshot_row.update({"theme_key": primary.get("id") if primary else "NONE",
+                                 "theme_name": primary.get("name") if primary else "无题材",
+                                 "theme_source": assignment["source"],
+                                 "secondary_themes": [{"code": row["id"], "name": row["name"]}
+                                                      for row in assignment["secondary_themes"]],
+                                 "primary_theme": primary, "source": assignment["source"],
+                                 "as_of": assignment["as_of"], "version": assignment["version"]})
+        # Rebuild the displayed plate linkage from the same primary assignments.
+        current_label = "p0945" if stage == "open" else "p0925"
+        linkage_states = {}
+        for stock in live_stocks:
+            symbol = str(stock.get("symbol", stock.get("code", ""))).zfill(6)
+            if symbol not in stock_assignment:
+                continue
+            linkage_states[symbol] = {
+                "pct_change": stock.get(f"{current_label}_pct"),
+                "match_amount_yuan": stock.get(f"{current_label}_amount_yuan",
+                                                stock.get("auction_amount_yuan")),
+                "limit_state": stock.get("auction_limit_state" if stage != "open" else "open_limit_state"),
+            }
+        if linkage_states:
+            from .plate_linkage import build_plate_linkage
+            linkage = build_plate_linkage(
+                linkage_states, {str(code): set(members) for code, members in relations.items()}, plate_names,
+                stock_names=stock_names,
+                theme_assignments=stock_assignment, min_members=8, top_n=None)
+            existing = payload.get("chapters", {}).get("plate_linkage", {})
+            if isinstance(existing, Mapping):
+                payload["chapters"]["plate_linkage"] = {
+                    **existing, "available": bool(linkage["rows"]),
+                    "slice_label": "0945" if stage == "open" else "0925",
+                    "rows": linkage["rows"][:15],
+                    "primary_theme_rows": (linkage.get("primary_theme_rows") or [])[:15],
+                    "down_limit_top5": linkage["down_limit_top5"],
+                    "changes": None,
+                }
+        # D13/D14/D15: one table uses the exact same primary-theme assignments
+        # and active quote checkpoint as linkage. Previous-day rows are accepted
+        # only from an earlier report at the same stage/checkpoint.
+        if linkage_states:
+            from .plate_cross_table import build_plate_cross_table
+            # Cross-plate aggregation uses the full point-in-time membership
+            # slice. Primary-theme assignments remain specific to promotion
+            # feedback and must not erase overlapping plate membership here.
+            current_relations = {str(code): set(members) for code, members in relations.items()}
+            current_names = dict(plate_names)
+            pool_by_symbol = {}
+            for raw in _pool_rows(slice_results["yest_limit_pool"].rows):
+                symbol, _label, _topics, _code, _tier = _pool_values(raw)
+                if symbol:
+                    pool_by_symbol[symbol] = raw
+            reason_by_symbol = {}
+            for reason in reason_rows:
+                symbol = str(reason.get("StockID", reason.get("stock_id", reason.get("symbol", ""))))
+                if symbol:
+                    reason_by_symbol[symbol[-6:].zfill(6)] = reason
+            table_states = {}
+            for stock in live_stocks:
+                if not isinstance(stock, Mapping):
+                    continue
+                symbol = str(stock.get("symbol", stock.get("code", ""))).zfill(6)
+                if symbol not in stock_assignment:
+                    continue
+                raw_pool = pool_by_symbol.get(symbol, {})
+                pool_map = raw_pool if isinstance(raw_pool, Mapping) else {}
+                reason = reason_by_symbol.get(symbol, {})
+                table_states[symbol] = {
+                    "name": stock_names.get(symbol, stock.get("name") or symbol),
+                    "pct_change": stock.get(f"{current_label}_pct"),
+                    "amount_yuan": stock.get(f"{current_label}_amount_yuan"),
+                    "limit_state": stock.get("auction_limit_state" if stage != "open" else "open_limit_state"),
+                    "sealed": stock.get("close_seal_up"),
+                    "lb_days": (pool_map.get("lb_days", pool_map.get("streak"))
+                                if isinstance(pool_map, Mapping) else None),
+                    "seal_time": stock.get("seal_time", stock.get("first_seal_time")),
+                    "reason_sclt": reason.get("SCLT", reason.get("sclt")),
+                }
+            previous_rows = None
+            previous_path = _previous_report(
+                Path(refs.get("prev_reports_root") or out_root), trade_date,
+                (STAGE_NAMES[stage],))
+            if previous_path:
+                try:
+                    previous_payload = json.loads(previous_path.read_text(encoding="utf-8"))
+                    previous_chapters = previous_payload.get("chapters", {})
+                    previous_product = previous_chapters.get("plate_cross_table", {})
+                    previous_rows = (previous_product.get("rows") if isinstance(previous_product, Mapping)
+                                     else None)
+                    if previous_rows is None:
+                        old_linkage = previous_chapters.get("plate_linkage", {})
+                        expected_label = "0945" if stage == "open" else "0925"
+                        if (isinstance(old_linkage, Mapping)
+                                and str(old_linkage.get("slice_label") or "") == expected_label):
+                            previous_rows = [
+                                {"code": row.get("code"),
+                                 "equal_weight_pct": row.get("equal_weight_pct", row.get("equal_weight_mean_pct"))}
+                                for row in old_linkage.get("rows", []) if isinstance(row, Mapping)
+                            ]
+                except (OSError, ValueError, TypeError):
+                    previous_rows = None
+            market_total = None
+            market_volume = payload.get("chapters", {}).get("market_price_volume", {})
+            if isinstance(market_volume, Mapping):
+                market_total = market_volume.get("market_match_amount_yuan")
+            active_theme_matrix = feedback["checkpoints"].get(active_checkpoint, {}).get("matrix", {})
+            theme_stats = active_theme_matrix.get("by_theme", {})
+            registry_by_code = {str(row.get("code") or row.get("plate_code") or row.get("plateid") or ""): row
+                                for row in registry_rows if isinstance(row, Mapping)}
+            promotion_by_theme = {}
+            promotion_crosswalk = {"matched": {}, "unmatched_theme_ids": []}
+            for theme_id, stats in theme_stats.items():
+                theme_name = str(stats.get("theme") or "") if isinstance(stats, Mapping) else ""
+                candidates = []
+                for code in current_relations:
+                    entry = registry_by_code.get(code, {})
+                    aliases = entry.get("aliases", [])
+                    aliases = aliases if isinstance(aliases, list) else []
+                    known_ids = {code, str(entry.get("name") or ""), *map(str, aliases)}
+                    if str(theme_id) in known_ids or (theme_name and theme_name in known_ids):
+                        candidates.append(code)
+                if len(candidates) == 1:
+                    code = candidates[0]
+                    promotion_by_theme[code] = stats
+                    promotion_crosswalk["matched"][str(theme_id)] = code
+                else:
+                    promotion_crosswalk["unmatched_theme_ids"].append(str(theme_id))
+            class_by_code = {}
+            for code, members in current_relations.items():
+                registry_row = registry_by_code.get(code, {})
+                count = len(members)
+                children = registry_row.get("children", [])
+                class_by_code[code] = ("BROAD" if count >= 300 or
+                                       (isinstance(children, list) and bool(children) and count >= 150)
+                                       else "NICHE" if count <= 15 else "MID")
+            cross_rows = build_plate_cross_table(
+                states=table_states, relations=current_relations, plate_names=current_names,
+                market_amount_yuan=market_total, previous_rows=previous_rows,
+                promotion_by_theme=promotion_by_theme, class_by_code=class_by_code,
+                historical_by_code={str(row.get("plate_code")): {
+                    "median_yuan": row.get("median_yuan"), "amounts_yuan": row.get("amounts_yuan", []),
+                    "sample_days": row.get("sample_days", 0), "slot": row.get("slot"),
+                    "version": slice_results["plate_amount_baseline"].meta.get("version"),
+                    "used_date": slice_results["plate_amount_baseline"].meta.get("pit_date") or
+                                 slice_results["plate_amount_baseline"].meta.get("trade_date")}
+                    for row in slice_results["plate_amount_baseline"].rows
+                    if row.get("slot") == ("0945" if stage == "open" else "0925")})
+            broad_codes = {code for code, label in class_by_code.items() if label == "BROAD"}
+            broad_symbols = set().union(*(set(current_relations.get(code, ())) for code in broad_codes)) if broad_codes else set()
+            broad_facts = [table_states[symbol] for symbol in sorted(broad_symbols)
+                           if isinstance(table_states.get(symbol), Mapping)]
+            broad_amounts = [value for row in broad_facts
+                             if (value := _numeric(row.get("amount_yuan", row.get("match_amount_yuan")))) is not None
+                             and value >= 0]
+            broad_returns = [value for row in broad_facts
+                             if (value := _numeric(row.get("pct_change"))) is not None]
+            broad_amount = sum(broad_amounts) if len(broad_amounts) == len(broad_symbols) and broad_symbols else None
+            chapters = payload.setdefault("chapters", {})
+            chapters["plate_cross_table"] = {
+                "checkpoint": active_checkpoint,
+                "members_version": slice_results["plate_members"].meta.get("version"),
+                "members_asof": relation_asof,
+                "comparison_label": ("昨日同截点" if previous_rows is not None else "昨日同截点 UNKNOWN"),
+                "previous_report": str(previous_path) if previous_path else None,
+                "amount_basis": "成员合计额；成员重叠重复计入，不是守恒分摊额",
+                "rows": cross_rows[:15],
+                "main_rows": [row for row in cross_rows if row.get("class") != "BROAD"][:10],
+                "broad_summary": {
+                    "count": len(broad_codes),
+                    "distinct_stock_count": len(broad_facts),
+                    "distinct_market_share_pct": (100.0 * broad_amount / market_total
+                        if broad_amount is not None and market_total is not None and market_total > 0 else None),
+                    "equal_weight_pct_mean": sum(broad_returns) / len(broad_returns) if broad_returns else None,
+                    "names": [current_names.get(code, code) for code in sorted(broad_codes)],
+                },
+                "promotion_theme_crosswalk": promotion_crosswalk,
+            }
+            requested_codes = set(current_relations)
+            requested_codes.update(str(row.get("code") or row.get("plate_code") or "")
+                                    for row in slice_results["hot_plates_today"].rows[:50])
+            dictionary_rows = []
+            for code in sorted(requested_codes - {""}):
+                row = registry_by_code.get(code, {})
+                name = str(row.get("name") or current_names.get(code) or plate_names.get(code) or code)
+                if code == "801827" and name == code:
+                    name = "AI视频"
+                try:
+                    registry_size = int(row.get("size", row.get("members")))
+                except (TypeError, ValueError, OverflowError):
+                    registry_size = None
+                member_count = (len(current_relations[code]) if code in current_relations
+                                else registry_size)
+                raw_class = str(row.get("class", row.get("kind", "UNKNOWN"))).upper()
+                children = row.get("children", [])
+                if member_count is None:
+                    plate_class = "UNKNOWN"
+                elif member_count >= 300 or (isinstance(children, list) and children and member_count >= 150):
+                    plate_class = "BROAD"
+                elif member_count <= 15:
+                    plate_class = "NICHE"
+                elif raw_class in {"EVENT", "GENERIC", "GENERIC_FACTOR", "NOISE"}:
+                    plate_class = raw_class
+                else:
+                    plate_class = "THEME"
+                dictionary_rows.append({
+                    "code": code, "name": name,
+                    "class": plate_class, "member_count": member_count,
+                    "aliases": row.get("aliases", ["AI应用(AI视频)"] if code == "801827" else []),
+                    "parent": row.get("parent"), "children": row.get("children", []),
+                })
+            payload["plate_dictionary"] = {
+                "registry_version": slice_results["plate_registry"].meta.get("version"),
+                "members_version": slice_results["plate_members"].meta.get("version"),
+                "members_asof": relation_asof,
+                "source": "PIT_SLICE",
+                "rows": dictionary_rows,
+            }
+            linkage_product = chapters.get("plate_linkage")
+            if isinstance(linkage_product, dict):
+                linkage_product["cross_table_rows"] = cross_rows[:15]
+            leader_by_name = {row["name"]: row["leaders"].get("amount_max")
+                              for row in cross_rows if row.get("leaders", {}).get("amount_max")}
+            ladder = payload.get("front_page", {}).get("ladder", {})
+            for cluster in ladder.get("clusters", []) if isinstance(ladder, Mapping) else []:
+                if not isinstance(cluster, dict) or cluster.get("leader"):
+                    continue
+                leader = leader_by_name.get(str(cluster.get("name") or ""))
+                if leader:
+                    cluster["leader"] = {"symbol": leader["symbol"], "name": leader["name"],
+                                          "basis": "AMOUNT_MAX"}
+        # Tracking extremes are rendered from the live page built earlier in this
+        # pipeline; overwrite their independently selected main plate in place.
+        def assign_extreme_rows(value: Any) -> None:
+            if isinstance(value, dict):
+                symbol = str(value.get("symbol", "")).zfill(6)
+                assignment = stock_assignment.get(symbol, {})
+                primary = assignment.get("primary_theme") if isinstance(assignment, Mapping) else None
+                if "main_plate" in value:
+                    value["main_plate"] = primary.get("name") if isinstance(primary, Mapping) else None
+                for child in value.values():
+                    assign_extreme_rows(child)
+            elif isinstance(value, list):
+                for child in value:
+                    assign_extreme_rows(child)
+        assign_extreme_rows(payload.get("chapters", {}).get("extremes_board"))
         payload["limit_reason_themes"] = theme_snapshot["assignments"]
+        payload["stock_theme_assignment"] = {
+            "trade_date": trade_date, "used_date": previous_trade_date,
+            "as_of": previous_trade_date,
+            "version": next(iter(stock_assignment.values())).get("version") if stock_assignment else None,
+            "count": len(stock_assignment), "source_counts": {
+                source: sum(row.get("source") == source for row in stock_assignment.values())
+                for source in ("POOL_LABEL", "REASON_LATEST", "STATIC", "HOT_PLATE_NAME", "UNKNOWN")},
+        }
         payload["theme_attribution_basis"] = theme_snapshot["basis"]
         payload["hot_plate_names"] = theme_snapshot["hot_plate_names"]
         payload["theme_snapshot_status"] = theme_snapshot["status"]
@@ -1161,9 +1746,10 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             name = str(assignment.get("theme_name") or "") if isinstance(assignment, Mapping) else ""
             if name and name != "无题材" and assignment.get("theme_source") not in (None, "NONE"):
                 assigned_counts[name] = assigned_counts.get(name, 0) + 1
-                themed_stocks.append({**stock, "plates": [name], "main_plate": name})
+                themed_stocks.append({**stock, "plates": [name], "main_plate": name,
+                                      "theme_assignment": assignment})
             else:
-                themed_stocks.append({**stock, "plates": []})
+                themed_stocks.append({**stock, "plates": [], "theme_assignment": assignment})
         theme_metadata = dict(plate_metadata)
         for name, count in assigned_counts.items():
             theme_metadata.setdefault(name, {"class": "THEME", "size": count, "generic": False})
@@ -1176,11 +1762,19 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             theme_assignments=theme_snapshot["assignments"], theme_basis=theme_snapshot["basis"],
             hot_plate_names=theme_snapshot["hot_plate_names"], relation_asof=relation_asof,
             relation_lag_trading_days=relation_lag)
+        # Ladder rows are rendered before the front-page cluster block; project
+        # the shared primary assignment there as well.
+        for row in payload.get("ladder_section", {}).get("rows", []):
+            assignment = stock_assignment.get(str(row.get("symbol", "")).zfill(6), {})
+            primary = assignment.get("primary_theme") if isinstance(assignment, Mapping) else None
+            row["main_plate"] = primary.get("name") if isinstance(primary, Mapping) else None
         from .email_render import render_email_html
         pipeline_timings["compute"] = round(time.monotonic() - compute_started, 3)
         render_started = time.monotonic()
         email_page, _ = render_email_html(payload, stage, trade_date, {
-            "asof": asof, "sources": {"td": td_source_manifest}, "degraded": degraded})
+            "trade_date": trade_date, "asof": asof, "sources": {"td": td_source_manifest},
+            "slices": slice_manifest, "used_dates": used_dates, "degraded": degraded,
+            "elapsed_seconds": round(time.monotonic() - started, 3)})
         pipeline_timings["render"] = round(time.monotonic() - render_started, 3)
         write_started = time.monotonic()
         (out / "report.html").write_text(email_page, encoding="utf-8")
@@ -1473,13 +2067,10 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 "degraded": sorted(set(degraded)), "close_review_manifest": close_manifest,
                 "elapsed_seconds": round(time.monotonic() - started, 3),
                 "timings": pipeline_timings,
-                "slices": {name: {"source": result.meta.get("source"),
-                                   "status": result.meta.get("status"),
-                                   "asof": result.meta.get("asof"),
-                                   "available_at": result.meta.get("available_at"),
-                                   "elapsed_seconds": slice_timings[name], "rows": len(result.rows),
-                                   "reason": result.meta.get("reason"), "version": result.meta.get("version")}
-                           for name, result in slice_results.items()},
+                "slices": {name: {**slice_manifest[name], "elapsed_seconds": slice_timings[name]}
+                           for name in slice_results},
+                "used_date": used_dates,
+                "used_dates": used_dates,
                 "data_provenance_flags": sorted({
                     "FILE_FALLBACK" if result.meta.get("source") == "FILE_FALLBACK" else
                     "NO_ASOF" if result.meta.get("reason") == "NO_ASOF" else

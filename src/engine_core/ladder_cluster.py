@@ -98,10 +98,12 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
         row["pct"] = _number(source.get(field, source.get("auction_pct" if stage == "auction" else "p0945_pct")))
         row["streak"] = _number(source.get("streak", source.get("prior_streak")))
         theme = assignments.get(symbol)
-        if theme and theme.get("theme_source") not in (None, "NONE"):
-            key = str(theme.get("theme_key") or theme.get("theme_name") or "NONE")
-            name = str(theme.get("theme_name") or "无题材")
-            row["theme_source"] = theme.get("theme_source")
+        if theme and (theme.get("theme_source") not in (None, "NONE") or
+                      theme.get("source") not in (None, "UNKNOWN")):
+            primary = theme.get("primary_theme") if isinstance(theme.get("primary_theme"), Mapping) else {}
+            key = str(theme.get("theme_key") or primary.get("id") or theme.get("theme_name") or "NONE")
+            name = str(theme.get("theme_name") or primary.get("name") or "无题材")
+            row["theme_source"] = theme.get("theme_source", theme.get("source"))
             row["reason_text_short"] = theme.get("reason_text_short")
             row["tier_label"] = theme.get("tier_label")
             row["secondary_themes"] = list(theme.get("secondary_themes") or [])
@@ -223,7 +225,7 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
                 details.append(f"{row.get('name') or row.get('symbol')} {pct:+.1f}% {topic}")
             first_summary += ("；昨首板竞价最强：" if stage == "auction" else "；昨首板0945最强：") + "、".join(details)
     basis = theme_basis or ("登记表回退" if fallback_used else "昨日涨停池题材/历史原因")
-    return {"clusters": clusters[:8], "other_cluster_count": max(0, len(clusters) - 8),
+    return {"clusters": clusters, "other_cluster_count": 0,
             "cluster_count": len(clusters), "empty_message": empty_message,
             "first_board_summary": first_summary, "cutoff_field": field,
             "attribution_basis": basis}

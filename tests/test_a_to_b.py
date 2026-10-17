@@ -62,6 +62,22 @@ def test_main_plate_uses_qualified_theme_and_common_membership_breaks_peer_ties(
     assert result[0]["candidates"][0]["common_plate_count"] == 2
 
 
+def test_shared_theme_assignment_is_authoritative_for_a_to_b():
+    assignment = {"source": "POOL_LABEL", "primary_theme": {"id": "pool-id", "name": "池主题"}}
+    rows = [
+        {"symbol": "600001", "lb_days": 2, "plates": ["静态板块"], "main_plate": "静态板块",
+         "theme_assignment": assignment, "p0925_pct": 0, "auction_amount_yuan": 100},
+        {"symbol": "600002", "plates": ["池主题"], "theme_assignment": assignment,
+         "p0925_pct": 1, "auction_amount_yuan": 50},
+    ]
+    result = build_a_to_b(rows, trade_date="2026-10-15", plate_metadata={
+        "静态板块": {"class": "THEME", "size": 30},
+        "池主题": {"class": "THEME", "size": 30},
+    })
+    assert len(result) == 1
+    assert result[0]["plate"] == "池主题"
+
+
 def test_no_qualified_theme_plate_has_explicit_reason():
     result = build_a_to_b([{"symbol": "600001", "lb_days": 2, "plates": ["物流"],
                             "p0925_pct": 0}], trade_date="2026-10-15",

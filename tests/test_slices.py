@@ -139,6 +139,37 @@ def test_hot_plate_minute_slice_filters_by_plate_and_available_at(tmp_path):
     assert before_available.rows == []
 
 
+def test_stock_theme_assignment_slice_reads_only_pit_valid_hot_product(tmp_path):
+    import json
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.slices import SliceProviders
+
+    payload = {"trade_date": "2026-10-16", "used_date": "2026-10-15",
+               "as_of": "2026-10-16T08:50:00+08:00", "version": "v1",
+               "input_version": "inputs-v1", "visibility_sha256": "visible-v1",
+               "assignments": {"600001": {"symbol": "600001", "source": "reason",
+                   "available_at": "2026-10-16T08:50:00+08:00", "input_version": "inputs-v1",
+                   "visibility_sha256": "visible-v1", "trade_date": "2026-10-16",
+                   "used_date": "2026-10-15"}}}
+
+    class Redis:
+        def get(self, key):
+            assert key == "core:cache:data:stock_theme_assignment:2026-10-16"
+            return json.dumps(payload).encode()
+
+    reader = SliceReader(SliceProviders(catalog=ArtifactCatalog(tmp_path / "core"),
+                                        redis=Redis(), file_fallback=False).providers())
+    result = reader.get("stock_theme_assignment", trade_date="2026-10-16",
+                        asof="2026-10-16T09:32:00+08:00", prior_trade_date="2026-10-15")
+    assert result.meta["source"] == "core_redis"
+    assert result.meta["pit_date"] == "2026-10-15"
+    assert result.rows[0]["symbol"] == "600001"
+
+    too_early = reader.get("stock_theme_assignment", trade_date="2026-10-16",
+                           asof="2026-10-16T08:40:00+08:00", prior_trade_date="2026-10-15")
+    assert too_early.meta["status"] == "MISSING"
+
+
 def test_pit_rejects_future_available_at_even_when_event_time_is_missing_and_normalizes_naive():
     from engine_core.slices import _pit_rows
 

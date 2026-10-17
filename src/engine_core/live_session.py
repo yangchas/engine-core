@@ -314,14 +314,16 @@ def _sql_states(td: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
     start = cutoff.replace(hour=9, minute=14, second=0, microsecond=0)
     query = ("select last(ts),last(px_milli),last(pc_milli),last(bp1_milli),last(ap1_milli),"
              "last(bv1),last(av1),last(bp2_milli),last(ap2_milli),last(bv2),last(av2),"
-             "last(amt_yuan),last(vol_units),symbol from stock_tick_v2 "
+             "last(amt_yuan),last(vol_units),last(h_milli),last(l_milli),symbol from stock_tick_v2 "
              f"where ts>='{start:%Y-%m-%d %H:%M:%S}' and ts<='{cutoff:%Y-%m-%d %H:%M:%S}' group by symbol")
     cursor.execute(query)
     result = {}
     columns = ("ts", "px_milli", "pc_milli", "bp1_milli", "ap1_milli", "bv1", "av1",
-               "bp2_milli", "ap2_milli", "bv2", "av2", "amt_yuan", "vol_units", "symbol")
+               "bp2_milli", "ap2_milli", "bv2", "av2", "amt_yuan", "vol_units",
+               "h_milli", "l_milli", "symbol")
+    legacy_columns = columns[:13] + ("symbol",)
     for raw in cursor.fetchall():
-        row = raw if isinstance(raw, Mapping) else dict(zip(columns, raw))
+        row = raw if isinstance(raw, Mapping) else dict(zip(columns if len(raw) >= len(columns) else legacy_columns, raw))
         symbol, pc, ts = row.get("symbol"), row.get("pc_milli"), row.get("ts")
         if symbol is None or not pc or not ts:
             continue
@@ -359,6 +361,8 @@ def _sql_states(td: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
             state[key] = None
         state["field_quality"] = {key: "MISSING" for key in missing}
         state["missing_field_count"] = len(missing)
+        state["high_milli"] = row.get("h_milli")
+        state["low_milli"] = row.get("l_milli")
         result[tick.symbol] = state
         result[tick.symbol]["source_ts"] = ts.isoformat(sep=" ") if isinstance(ts, datetime) else str(ts)
     return result
@@ -368,16 +372,18 @@ def states_at(td: Any, cutoff: datetime | str) -> dict[str, dict[str, Any]]:
     """Get per-symbol state at cutoff from an injected fake/provider or bounded TD last() query."""
     cutoff = _as_datetime(cutoff)
     cacheable = cutoff < datetime.now() and _state_cache_enabled()
+    def cache_has_range_fields(value: Mapping[str, Mapping[str, Any]] | None) -> bool:
+        return bool(value) and all("high_milli" in row and "low_milli" in row for row in value.values())
     if cacheable:
         from . import live_state_cache
         cached = live_state_cache.read(cutoff)
-        if cached is not None:
+        if cache_has_range_fields(cached):
             return cached
         # Preserve the explicit legacy test/caller override; production reads use
         # the verified Core cache so old metadata-free blobs cannot shadow it.
         if os.environ.get("CORE_SLICE_ROOT"):
             cached = _read_checkpoint_cache(cutoff)
-            if cached is not None:
+            if cache_has_range_fields(cached):
                 return cached
     provider = getattr(td, "states_at", None)
     sql_path = not callable(provider)

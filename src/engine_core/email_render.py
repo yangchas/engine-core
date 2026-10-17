@@ -260,6 +260,171 @@ def _conclusions(report: Mapping[str, Any], stage: str) -> list[str]:
     return points
 
 
+def _quality_banner(manifest: Mapping[str, Any], report: Mapping[str, Any]) -> tuple[str, str, str]:
+    """Build the first email block from persisted manifest/report facts only."""
+    sources = manifest.get("sources") if isinstance(manifest.get("sources"), Mapping) else {}
+    slices = manifest.get("slices") if isinstance(manifest.get("slices"), Mapping) else {}
+    report_manifest = report.get("manifest") if isinstance(report.get("manifest"), Mapping) else {}
+    input_manifest = report_manifest.get("inputs") if isinstance(report_manifest.get("inputs"), Mapping) else {}
+    market_volume = (report.get("chapters", {}).get("market_price_volume", {})
+                     if isinstance(report.get("chapters"), Mapping) else {})
+    baseline_comparison = (market_volume.get("auction_baseline_comparison", {})
+                           if isinstance(market_volume, Mapping) else {})
+    if not isinstance(baseline_comparison, Mapping):
+        baseline_comparison = {}
+    datasets: list[str] = []
+    labels = {"auction_baseline": "竞价基线", "plate_members": "板块成员",
+              "hot_rank": "热榜", "hot_plates_today": "当日热板", "hot_plates_yesterday": "昨日热板",
+              "q2_redis": "Q2", "kaipan_relation": "板块关系", "td": "TD",
+              "daily_history": "日K/指标", "daily_report_features": "日K/指标",
+              "daily_kline": "日K", "unavailable_slice": "unavailable_slice"}
+    def source_entry(key: str, value: Mapping[str, Any], *, is_slice: bool) -> str:
+        state = value.get("status")
+        if value.get("provided") is False:
+            state = "NOT_ENABLED"
+        if state is None and value.get("available") is not None:
+            state = "READY" if value.get("available") else "MISSING"
+        state = str(state or "UNKNOWN")
+        count = value.get("rows")
+        if count is None:
+            count = value.get("coverage")
+        detail = f"{count}行" if isinstance(count, (int, float)) else ""
+        if isinstance(count, str):
+            detail = count
+        if key == "auction_baseline":
+            coverage_value = value.get("coverage") if isinstance(value.get("coverage"), Mapping) else {}
+            input_value = input_manifest.get(key) if isinstance(input_manifest.get(key), Mapping) else {}
+            sample = coverage_value.get("sample_days", value.get("sample_days",
+                     input_value.get("sample_days", baseline_comparison.get("sample_days"))))
+            expected = coverage_value.get("expected_days", 64)
+            if sample is not None:
+                detail = f"样本 {sample}/{expected} 日" + (f"；{detail}" if detail else "")
+            elif state in {"READY", "PARTIAL"}:
+                detail = f"{detail}；样本天数 UNKNOWN（切片未提供 coverage）" if detail else "样本天数 UNKNOWN（切片未提供 coverage）"
+        if key == "plate_members":
+            registry = slices.get("plate_registry")
+            if isinstance(registry, Mapping) and isinstance(registry.get("rows"), (int, float)):
+                detail = "；".join(part for part in (detail, f"{registry['rows']}板块") if part)
+        reason = value.get("reason")
+        if reason and state in {"UNKNOWN", "MISSING", "PARTIAL", "DEGRADED"}:
+            detail = f"{detail}（{reason}）" if detail else f"（{reason}）"
+        source = value.get("version_source") or value.get("source")
+        version = value.get("version")
+        if source or version:
+            detail = "；".join(part for part in (detail, f"来源 {source}" if source else None,
+                                                f"版本 {version}" if version else None) if part)
+        if not is_slice and not detail and state == "UNKNOWN":
+            detail = "状态缺项"
+        separator = "" if detail.startswith("（") else " "
+        return f"{labels.get(key, key)}：{state}" + (f"{separator}{detail}" if detail else "")
+
+    chosen: dict[str, Mapping[str, Any]] = {str(k): v for k, v in sources.items() if isinstance(v, Mapping)}
+    chosen.update({str(k): v for k, v in slices.items() if isinstance(v, Mapping)})
+    ready_daily_alias = any(
+        key in chosen and str(chosen[key].get("status") or "").upper() == "READY"
+        for key in ("daily_history", "daily_report_features"))
+    for key, value in chosen.items():
+        if not isinstance(value, Mapping):
+            continue
+        if key == "daily_kline" and ready_daily_alias:
+            continue
+        datasets.append(source_entry(key, value, is_slice=key in slices))
+    for key, value in input_manifest.items():
+        if key not in chosen and isinstance(value, Mapping):
+            if value.get("provided") is False:
+                datasets.append(f"{labels.get(str(key), str(key))}：NOT_ENABLED（未启用）")
+            else:
+                datasets.append(f"{labels.get(str(key), str(key))}：UNKNOWN（来源未进入 report manifest）")
+    daily_sources = ("daily_history", "daily_report_features", "daily_kline")
+    present_daily = [key for key in daily_sources if key in chosen]
+    if not present_daily:
+        datasets.append("日K/指标：UNKNOWN（无切片记录）")
+    elif not any(str(chosen[key].get("status") or "").upper() == "READY"
+                 for key in present_daily):
+        # The banner describes the usable daily slice, not an obsolete alias
+        # that may still be present in manifests from older report versions.
+        daily = chosen[present_daily[0]]
+        datasets.append(source_entry("daily_history", daily, is_slice=True))
+    if "plate_members" not in chosen:
+        datasets.append("板块成员：UNKNOWN（无切片记录）")
+    quality = report.get("data_quality") if isinstance(report.get("data_quality"), Mapping) else {}
+    for key, value in quality.items():
+        if isinstance(value, Mapping) and value.get("status") and key not in sources:
+            datasets.append(f"{labels.get(str(key), str(key))}：{value['status']}")
+    degraded = manifest.get("degraded") or []
+    if not isinstance(degraded, list):
+        degraded = [degraded]
+    states = []
+    for value in chosen.values():
+        if isinstance(value, Mapping):
+            state = value.get("status")
+            if state is None and value.get("available") is not None:
+                state = "READY" if value.get("available") else "MISSING"
+            states.append(str(state or ""))
+    if any(state in {"MISSING", "PARTIAL"} for state in states):
+        status = "PARTIAL"
+    elif degraded or any(state == "DEGRADED" for state in states):
+        status = "DEGRADED"
+    elif states and all(state == "READY" for state in states):
+        status = "READY"
+    else:
+        status = "UNKNOWN"
+    used_dates = manifest.get("used_dates") if isinstance(manifest.get("used_dates"), Mapping) else {}
+    used_date = manifest.get("used_date") or report.get("used_date")
+    if used_date is None and used_dates:
+        used_date = used_dates
+    trade_date = str(manifest.get("trade_date") or report.get("trade_date") or "—")
+    used_values = sorted({str(day) for dates in used_dates.values()
+                          for day in (dates if isinstance(dates, (list, tuple, set)) else [dates])
+                          if day})
+    date_note = "；用 D-1 数据" if used_values and any(day < trade_date for day in used_values) else ""
+    visible_dates = {key: value for key, value in used_dates.items() if key != "trading_calendar"}
+    if isinstance(visible_dates, Mapping) and visible_dates:
+        def compact_dates(value):
+            days = sorted(map(str, value if isinstance(value, (list, tuple, set)) else [value]))
+            if len(days) > 3:
+                return f"{days[0]}..{days[-1]}（{len(days)}日）"
+            return ",".join(days)
+        used_text = "；".join(f"{key}={compact_dates(value)}" for key, value in visible_dates.items())
+    elif isinstance(used_date, Mapping):
+        used_text = "；".join(f"{key}={value}" for key, value in used_date.items())
+    else:
+        used_text = str(used_date) if used_date is not None else ""
+    elapsed = manifest.get("elapsed_seconds")
+    lines = [f"数据完整度与异常 [{status}]",
+             "输入数据集：" + ("；".join(datasets) if datasets else "UNKNOWN（无数据集状态记录）"),
+             f"耗时：{elapsed}s" if elapsed is not None else "耗时：—",
+             (f"used_date：{used_text}{date_note}" if used_text else
+              f"used_date：UNKNOWN（报告交易日 {trade_date}）[manifest 未记录实际使用日期]"),
+             "降级标记：" + ("；".join(map(str, degraded)) if degraded else "无")]
+    anomalies = []
+    def walk_numbers(value: Any, path: str = ""):
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                yield from walk_numbers(child, f"{path}.{key}" if path else str(key))
+        elif isinstance(value, list):
+            return
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            yield path, value
+    for name, value in walk_numbers(report):
+        if any(token in name.lower() for token in ("multiple", "倍数")) and (value > 20 or value < 0.05):
+            anomalies.append(f"{name}={value}（倍数超出 0.05–20）")
+    for key, source in sources.items():
+        if not isinstance(source, Mapping) or not isinstance(source.get("coverage"), Mapping):
+            continue
+        coverage = source["coverage"]
+        numerator = next((coverage.get(name) for name in ("priced_symbols", "matched", "available")
+                          if isinstance(coverage.get(name), (int, float))), None)
+        denominator = next((coverage.get(name) for name in ("symbols", "expected", "total")
+                            if isinstance(coverage.get(name), (int, float)) and coverage.get(name) > 0), None)
+        if numerator is not None and denominator is not None and numerator / denominator < 0.8:
+            anomalies.append(f"{key} 缺失率 {1 - numerator / denominator:.1%}（超过 20%）")
+    lines.append("疑似异常：" + ("；".join(anomalies[:8]) if anomalies else "未检出已配置数值异常"))
+    plain = "\n".join(lines)
+    html_block = '<section style="background:#fff4d6;padding:12px 14px;margin-bottom:14px"><strong>' + "</strong><br>".join(_esc(line) for line in lines) + "</section>"
+    return status, plain, html_block
+
+
 def _metrics(report: Mapping[str, Any], stage: str) -> list[tuple[str, Any, str]]:
     if stage == "close" or "market" in report:
         market = report.get("market") if isinstance(report.get("market"), dict) else {}
@@ -556,6 +721,23 @@ def _chapters(report: Mapping[str, Any]) -> list[tuple[str, list[dict[str, Any]]
             if isinstance(row, Mapping):
                 ladder_rows.append(dict(row))
         out.append(("连板梯队与路径", ladder_rows or [{"status": "无可展示梯队行"}]))
+    feedback = report.get("streak_feedback")
+    if isinstance(feedback, Mapping):
+        checkpoint = "0925" if str(report.get("stage", "")).lower().startswith("auction") else "0945"
+        point = feedback.get("checkpoints", {}).get(checkpoint, {})
+        matrix = point.get("matrix", {}) if isinstance(point, Mapping) else {}
+        detail_rows = []
+        for level, counts in matrix.get("by_level", {}).items() if isinstance(matrix, Mapping) else ():
+            detail_rows.append({"维度": "板高", "名称": level, **dict(counts), "状态": "竞价暂时" if point.get("provisional") else "截点状态"})
+        themes = matrix.get("by_theme", {}) if isinstance(matrix, Mapping) else {}
+        for key, counts in sorted(themes.items(), key=lambda item: (-item[1].get("total", 0), item[0]))[:10]:
+            detail_rows.append({"维度": "主主题", "名称": counts.get("theme", key), **dict(counts), "状态": "竞价暂时" if point.get("provisional") else "截点状态"})
+        overall = matrix.get("overall", {}) if isinstance(matrix, Mapping) else {}
+        if overall:
+            detail_rows.insert(0, {"维度": "昨日连板整体", "名称": "涨幅", "mean_return_pct": overall.get("mean_return_pct"),
+                                   "median_return_pct": overall.get("median_return_pct"), "red_share": overall.get("red_share"),
+                                   "return_count": overall.get("return_count"), "unknown": overall.get("unknown")})
+        out.append(("昨日连板今日表现", detail_rows or [{"status": "昨日连板池或截点字段缺失；状态 UNKNOWN"}]))
     priority = {"市场量价与历史位置": 0, "全天成交额历史基线（共同池）": 0,
                 "竞价额历史基线（竞价池）": 0, "大盘竞价/开盘量价": 0, "数据质量": 1,
                 "市场路径": 2, "市场路径（各时点有值样本均值）": 2,
@@ -646,13 +828,17 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
                 return [strip_close(item) for item in value]
             return value
         report = strip_close(report)
+    manifest = manifest or (report.get("manifest") if isinstance(report.get("manifest"), Mapping) else {})
+    quality_status, quality_plain, quality_html = _quality_banner(manifest, report)
     ladder = report.get("ladder_section")
     if (isinstance(report.get("stocks"), list)
             or (isinstance(ladder, Mapping) and bool(ladder.get("rows")))
             or report.get("email_layout") == "board"):
-        return render_email_board(report, stage_key, trade_date)
+        board_html, board_plain = render_email_board(report, stage_key, trade_date)
+        board_html = re.sub(r"(<body\b[^>]*>)", lambda match: match.group(1) + quality_html, board_html, count=1)
+        return (board_html,
+                quality_plain + "\n\n" + board_plain)
     stage_name = "收盘" if "close" in stage_key else "开盘" if "open" in stage_key else "竞价"
-    manifest = manifest or (report.get("manifest") if isinstance(report.get("manifest"), Mapping) else {})
     meta = _metadata(manifest, report, stage_key)
     conclusions = _conclusions(report, stage_key)
     daily_stage = any(token in stage_key for token in ("close", "auction", "open"))
@@ -821,14 +1007,14 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
         front_html, front_text = _front_page_view(report, story_stage)
         appendix_open, appendix_close = '<details><summary style="padding:8px;background:#e9eef5">附表</summary>', "</details>"
     appendix_story = story_text if story_stage == "close" else "故事摘要见首屏"
-    plain = f"{title} | {trade_date}\n" + "\n".join(meta) + "\n\n" + front_text + "\n\n附表\n" + appendix_story + "\n\n一屏结论\n" + "\n".join(f"• {p}" for p in conclusions)
+    plain = quality_plain + "\n\n" + f"{title} | {trade_date}\n" + "\n".join(meta) + "\n\n" + front_text + "\n\n附表\n" + appendix_story + "\n\n一屏结论\n" + "\n".join(f"• {p}" for p in conclusions)
     if metrics:
         plain += "\n\n关键指标\n" + "\n".join(f"{label}：{_num(value,key) if not isinstance(value,str) else value}" for label,value,key in metrics)
     if gap_text:
         plain += "\n\n数据缺口与降级\n" + gap_text
     plain += "\n\n" + "\n\n".join(plain_sections) + "\n\n" + footer
     appendix_story_html = story_html if story_stage == "close" else ""
-    content = f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>{_esc(title)}</title><style>@media (prefers-color-scheme: dark) {{ .page{{background:#111827!important;color:#e5e7eb!important}} }}</style></head><body style="margin:0;padding:16px;background:#eef2f6;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#26364a"><table role="presentation" width="100%"><tr><td align="center"><table class="page" role="presentation" width="100%" style="max-width:680px;background:#fff;border-radius:12px"><tr><td style="background:#172b43;padding:22px 24px;color:#fff"><div style="font-size:21px;font-weight:700">{_esc(title)}</div><div style="font-size:12px;padding-top:7px">{_esc(trade_date)}　{meta_html}</div></td></tr><tr><td style="padding:18px 20px">{front_html}{appendix_open}{appendix_story_html}<section style="background:#f6f8fb;padding:14px 16px"><strong>一屏结论</strong><table width="100%">{points_html}</table></section><table width="100%" cellspacing="8" style="margin-top:14px"><tr>{metric_html}</tr></table>{gap_html}{''.join(sections)}{close_extra}{appendix_close}<div style="border-top:1px solid #e5eaf0;margin-top:22px;padding:13px 0;color:#667085;font-size:11px">{_esc(footer)}</div></td></tr></table></td></tr></table></body></html>'''
+    content = f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>{_esc(title)}</title><style>@media (prefers-color-scheme: dark) {{ .page{{background:#111827!important;color:#e5e7eb!important}} }}</style></head><body style="margin:0;padding:16px;background:#eef2f6;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#26364a">{quality_html}<table role="presentation" width="100%"><tr><td align="center"><table class="page" role="presentation" width="100%" style="max-width:680px;background:#fff;border-radius:12px"><tr><td style="background:#172b43;padding:22px 24px;color:#fff"><div style="font-size:21px;font-weight:700">{_esc(title)}</div><div style="font-size:12px;padding-top:7px">{_esc(trade_date)}　{meta_html}</div></td></tr><tr><td style="padding:18px 20px">{front_html}{appendix_open}{appendix_story_html}<section style="background:#f6f8fb;padding:14px 16px"><strong>一屏结论</strong><table width="100%">{points_html}</table></section><table width="100%" cellspacing="8" style="margin-top:14px"><tr>{metric_html}</tr></table>{gap_html}{''.join(sections)}{close_extra}{appendix_close}<div style="border-top:1px solid #e5eaf0;margin-top:22px;padding:13px 0;color:#667085;font-size:11px">{_esc(footer)}</div></td></tr></table></td></tr></table></body></html>'''
     if len(content.encode("utf-8")) > MAX_EMAIL_HTML_BYTES:
         raise ValueError(f"rendered email exceeds 100 KB ({len(content.encode('utf-8'))} bytes)")
     if story_stage != "close":

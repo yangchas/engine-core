@@ -6,6 +6,8 @@ from pathlib import Path
 
 from engine_core.report_mailer import build_report_message, load_smtp_config, send_message
 
+ALLOWED_RECIPIENT = "412826313@qq.com"
+
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -20,6 +22,8 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if any(address.strip().lower() != ALLOWED_RECIPIENT for address in args.to):
+        raise SystemExit("recipient policy allows only 412826313@qq.com")
     report_html = args.report_dir / "report.html"
     report_json = args.report_dir / "report.json"
     data = report_json if report_json.is_file() else None
@@ -42,9 +46,9 @@ def main(argv=None):
     print(f"subject={msg['Subject']}")
     print(f"recipients={len(args.to)} attachment_bytes={attached_bytes}")
     print("summary:")
-    for line in plain[:5]:
+    for line in plain[:8]:
         print(line)
-    receipt = send_message(config, msg, dry_run=not args.send, allow_recipients=args.allow)
+    receipt = send_message(config, msg, dry_run=not args.send, allow_recipients=[ALLOWED_RECIPIENT])
     print(f"status={receipt.status} message_bytes={receipt.message_bytes}")
     return 0
 

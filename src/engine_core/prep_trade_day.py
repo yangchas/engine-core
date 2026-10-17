@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -190,12 +191,89 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
         trading_dates=calendar_dates)
     if snapshot.get("status") not in {"READY", "PARTIAL"}:
         return False
+    # Keep a cold, immutable D06 assignment artifact beside the report snapshot.
+    # The existing theme snapshot remains for compatibility during migration.
+    from .stock_theme_assignment import build_stock_theme_assignments
+    from .limit_reason_theme import _pool_rows, _pool_values
+    pool_labels: dict[str, list[dict[str, str]]] = {}
+    for raw in _pool_rows(pool[0]):
+        symbol, label, topics, code, _tier = _pool_values(raw)
+        candidates = []
+        for candidate_code, candidate_name in ([(code, plate_names.get(code, label or code))]
+                                                if code else []):
+            if candidate_code:
+                candidates.append({"id": candidate_code, "name": candidate_name})
+        candidates.extend({"id": name, "name": name} for name in topics if name)
+        if symbol and candidates:
+            pool_labels[symbol] = candidates
+    assignment_reasons = []
+    for row in reasons:
+        normalized = dict(row)
+        codes = row.get("ZSCode", row.get("zs_code", []))
+        if isinstance(codes, str):
+            codes = [codes]
+        if isinstance(codes, list):
+            normalized["ZSCode"] = [{"id": str(code),
+                                     "name": str(plate_names.get(str(code), str(code)))}
+                                    for code in codes if str(code).strip()]
+        assignment_reasons.append(normalized)
+    member_codes: dict[str, set[str]] = {}
+    members_data = load("plate_members", previous)
+    if members_data:
+        member_rows, _ = _pit_rows(members_data[0], asof)
+        for row in member_rows:
+            symbol = str(row.get("symbol", row.get("stock_code", row.get("stockid", row.get("code", "")))) or "")[-6:].zfill(6)
+            code = str(row.get("plate_code", row.get("plateid", row.get("code_plate", row.get("plate", "")))) or "").strip()
+            if symbol and code:
+                member_codes.setdefault(symbol, set()).add(code)
+    static_by_symbol = {
+        symbol: [{"id": code, "name": plate_names[code]} for code in sorted(codes)
+                 if code in plate_names]
+        for symbol, codes in member_codes.items()
+    }
+    hot_by_code = {}
+    for row in hot[0] if hot else ():
+        code = str(row.get("plate_code", row.get("code", "")) or "").strip()
+        name = str(row.get("name", row.get("plate_name", "")) or "").strip()
+        if code and name:
+            hot_by_code[code] = {"id": code, "name": name}
+    hot_by_symbol = {symbol: [hot_by_code[code] for code in sorted(codes) if code in hot_by_code]
+                     for symbol, codes in member_codes.items()}
+    assignment = build_stock_theme_assignments(
+        trade_date=trade_date, previous_trade_date=previous,
+        pool_labels=pool_labels, reason_rows=assignment_reasons, static_themes=static_by_symbol,
+        hot_plate_names=hot_by_symbol,
+        members={symbol: sorted(codes | {item["id"] for item in pool_labels.get(symbol, [])})
+                 for symbol, codes in member_codes.items()} |
+                 {symbol: [item["id"] for item in candidates]
+                  for symbol, candidates in pool_labels.items()},
+        trading_dates=calendar_dates)
     inputs = {"trade_date": trade_date, "previous_trade_date": previous,
               "pool_version": pool[1].get("version"), "hot_version": hot[1].get("version") if hot else None,
               "registry_version": registry_manifest.get("version"),
+              "members_version": members_data[1].get("version") if members_data else None,
               "reason_versions": reason_manifests, "calendar_dates": calendar_dates,
               "visibility": theme_snapshot_visibility({
-                  "pool": pool[0], "registry": registry_rows})}
+                  "pool": pool[0], "registry": registry_rows,
+                  "members": members_data[0] if members_data else [],
+                  "hot": hot[0] if hot else [], "reasons": reasons})}
+    input_version = theme_snapshot_version(inputs)
+    visibility_sha256 = hashlib.sha256(json.dumps(
+        inputs["visibility"], ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    assignment_rows = [{"trade_date": trade_date, "previous_trade_date": previous,
+                        "used_date": previous,
+                        "as_of": asof, "input_version": input_version,
+                        "visibility_sha256": visibility_sha256, **row}
+                       for row in assignment.values()]
+    cold_manifest = {"trade_date": trade_date, "point_in_time_date": previous,
+                     "available_at": asof, "as_of": asof,
+                     "input_version": input_version, "used_date": previous,
+                     "visibility_sha256": visibility_sha256,
+                     "authority": "NON_AUTHORITATIVE_AUDIT_ONLY",
+                     "report_consumed": False,
+                     "business_status": "READY", "quality": {"status": "READY"}}
+    catalog.commit("stock_theme_assignment", trade_date, assignment_rows,
+                   cold_manifest, source="prep_trade_day")
     return write_theme_snapshot_cache(
         redis, trade_date, previous, snapshot, as_of=asof,
         version=theme_snapshot_version(inputs))
@@ -229,6 +307,8 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
               reason="previous_trade_date_unavailable" if previous is None else None),
         _step("auction_baseline", "auction_baseline", trade_date, catalog, asof=asof,
               reason="previous_trade_date_unavailable" if previous is None else None),
+        _step("plate_amount_baseline", "plate_amount_baseline", trade_date, catalog, asof=asof,
+              reason="NO_HISTORICAL_PLATE_MEMBERS" if previous is None else None),
         {"step": "monday_live_auction_inputs", "dataset": "auction_snapshot_v2", "trade_date": trade_date,
          "status": "SKIPPED_REASON", "reason": "待交易日09:15起产生，盘前准备不读取未来竞价数据",
          "row_count": None, "version": None, "elapsed_ms": 0.0},
@@ -293,6 +373,12 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
         timings["auction_baseline"] = round((time.monotonic() - started) * 1000, 3)
         if rc:
             errors.append("auction_baseline:COMMAND_FAILED:" + out[-240:])
+        started = time.monotonic()
+        rc, out = _run(repo, "build_plate_amount_baseline.py", ["--date", trade_date, "--write",
+            "--artifact-root", str(root)])
+        timings["plate_amount_baseline"] = round((time.monotonic() - started) * 1000, 3)
+        if rc:
+            errors.append("plate_amount_baseline:COMMAND_FAILED:" + out[-240:])
         try:
             redis = None
             if os.getenv("REDIS_URL"):

@@ -156,7 +156,8 @@ def test_states_at_reuses_past_ready_checkpoint_cache(tmp_path, monkeypatch):
         calls = 0
         def states_at(self, requested):
             self.calls += 1
-            return {f"{n:06d}": {"symbol": f"{n:06d}", "pct_change": 1.0}
+            return {f"{n:06d}": {"symbol": f"{n:06d}", "pct_change": 1.0,
+                                 "high_milli": 1000, "low_milli": 900}
                     for n in range(1, 4001)}
         def latest_tick_ts(self): return cutoff
     td = TD()

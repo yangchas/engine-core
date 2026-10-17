@@ -9,7 +9,8 @@ from collections import Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 
 _SPLIT = re.compile(r"[、,，/；;]+")
@@ -39,7 +40,8 @@ def theme_snapshot_visibility(rows_by_input: Mapping[str, Sequence[Any]]) -> dic
         for row in rows:
             if isinstance(row, Mapping):
                 boundary = {key: row[key] for key in fields if row.get(key) not in (None, "")}
-                visible.append(boundary)
+                if boundary:
+                    visible.append(boundary)
         result[name] = sorted(visible, key=_cache_json)
     return result
 

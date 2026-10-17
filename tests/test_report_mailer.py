@@ -10,23 +10,23 @@ def _config(port=465, starttls=False):
                                     starttls=starttls)
 
 
-def _message(tmp_path):
+def _message(tmp_path, recipient=report_mailer.ALLOWED_RECIPIENT):
     html = tmp_path / "report.html"
     payload = tmp_path / "report.json"
     html.write_text("<h1>summary</h1>", encoding="utf-8")
     payload.write_text(json.dumps({"conclusion": "第一句。第二句。", "degraded": ["MISSING_X"],
                                    "count": 12}, ensure_ascii=False), encoding="utf-8")
     return report_mailer.build_report_message("Core", "2026-10-15", "auction", html, payload,
-                                              ["me@example.test"], "reports@example.test")
+                                              [recipient], "reports@example.test")
 
 
 def test_allowlist_rejects_before_transport(tmp_path, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("transport must not be constructed")
     monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", forbidden)
-    with pytest.raises(ValueError, match="allowlist"):
-        report_mailer.send_message(_config(), _message(tmp_path), dry_run=False,
-                                   allow_recipients=["other@example.test"], state_dir=tmp_path / "state")
+    with pytest.raises(ValueError, match="fixed recipient policy"):
+        report_mailer.send_message(_config(), _message(tmp_path, "other@example.test"), dry_run=False,
+                                   allow_recipients=[report_mailer.ALLOWED_RECIPIENT], state_dir=tmp_path / "state")
 
 
 def test_dry_run_does_not_touch_transport(tmp_path, monkeypatch):
@@ -51,7 +51,7 @@ def test_selects_ssl_or_starttls_transport(tmp_path, monkeypatch, port, starttls
     monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", FakeSmtp)
     monkeypatch.setattr(report_mailer.smtplib, "SMTP", FakeSmtp)
     receipt = report_mailer.send_message(_config(port, starttls), _message(tmp_path), dry_run=False,
-                                         allow_recipients=["me@example.test"], state_dir=tmp_path / "state")
+                                         allow_recipients=["other@example.test"], state_dir=tmp_path / "state")
     assert receipt.status == "sent"
     assert ("starttls",) in calls if expected == "starttls" else ("starttls",) not in calls
 
@@ -70,7 +70,7 @@ def test_password_never_in_repr_or_transport_exception(tmp_path, monkeypatch, ca
     monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", BrokenSmtp)
     with pytest.raises(RuntimeError) as exc:
         report_mailer.send_message(config, _message(tmp_path), dry_run=False,
-                                   allow_recipients=["me@example.test"], state_dir=tmp_path / "state")
+                                   allow_recipients=[report_mailer.ALLOWED_RECIPIENT], state_dir=tmp_path / "state")
     assert "super-secret" not in str(exc.value)
     assert "super-secret" not in caplog.text
 
@@ -84,7 +84,7 @@ def test_dedupe_skips_successful_repeat(tmp_path, monkeypatch):
         def send_message(self, message, **kwargs): pass
 
     monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", FakeSmtp)
-    kwargs = dict(dry_run=False, allow_recipients=["me@example.test"], state_dir=tmp_path / "state")
+    kwargs = dict(dry_run=False, allow_recipients=["other@example.test"], state_dir=tmp_path / "state")
     assert report_mailer.send_message(_config(), _message(tmp_path), **kwargs).status == "sent"
     assert report_mailer.send_message(_config(), _message(tmp_path), **kwargs).status == "skipped"
 
@@ -127,7 +127,7 @@ def test_attach_full_html_is_opt_in_and_size_limited(tmp_path):
     assert "超过 1.5 MB" in oversized.get_body(preferencelist=("plain",)).get_content()
 
 
-def test_dedupe_key_includes_recipient_set_and_render_version(tmp_path, monkeypatch):
+def test_fixed_recipient_cannot_be_changed_by_caller_allowlist(tmp_path, monkeypatch):
     class FakeSmtp:
         def __init__(self, *args, **kwargs): pass
         def __enter__(self): return self
@@ -139,8 +139,8 @@ def test_dedupe_key_includes_recipient_set_and_render_version(tmp_path, monkeypa
     state = tmp_path / "state"
     first = _message(tmp_path)
     assert report_mailer.send_message(_config(), first, dry_run=False,
-        allow_recipients=["me@example.test"], state_dir=state).status == "sent"
-    second = report_mailer.build_report_message("Core", "2026-10-15", "auction", tmp_path / "report.html",
-        tmp_path / "report.json", ["other@example.test"], "reports@example.test")
-    assert report_mailer.send_message(_config(), second, dry_run=False,
         allow_recipients=["other@example.test"], state_dir=state).status == "sent"
+    second = _message(tmp_path, "other@example.test")
+    with pytest.raises(ValueError, match="fixed recipient policy"):
+        report_mailer.send_message(_config(), second, dry_run=False,
+            allow_recipients=["other@example.test"], state_dir=state)

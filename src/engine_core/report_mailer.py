@@ -10,14 +10,15 @@ import ssl
 import time
 from dataclasses import dataclass, field
 from email.message import EmailMessage
-from email.utils import make_msgid
+from email.utils import getaddresses, make_msgid
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from .email_render import RENDER_VERSION, render_email_html
+from .email_render import RENDER_VERSION, _quality_banner, render_email_html
 
 logger = logging.getLogger(__name__)
 MAX_HTML_ATTACHMENT_BYTES = int(1.5 * 1024 * 1024)
+ALLOWED_RECIPIENT = "412826313@qq.com"
 DEFAULT_CONFIG_PATH = Path("/home/exedev/services/engine-next/shared/secrets/engine_next_notify.json")
 
 
@@ -146,7 +147,8 @@ def build_report_message(subject_prefix: str, trade_date: str, stage: str,
     if not isinstance(report_data, dict):
         report_data = {}
     rendered_html, plain_text = render_email_html(report_data, stage, trade_date, manifest)
-    subject = f"{subject_prefix} [{trade_date}] {stage} 报告"
+    quality_status, _, _ = _quality_banner(manifest or {}, report_data)
+    subject = f"{subject_prefix} [{quality_status}] [{trade_date}] {stage} 报告"
     message = EmailMessage()
     message["Subject"] = subject
     message["Message-ID"] = make_msgid()
@@ -174,10 +176,35 @@ def build_report_message(subject_prefix: str, trade_date: str, stage: str,
     return message
 
 
+def build_alert_message(trade_date: str, stage: str, error: BaseException,
+                        to_addr: str, from_addr: str) -> EmailMessage:
+    """Build a path-free alert with a stable, controlled failure fingerprint."""
+    raw = str(error).replace("\n", " ")
+    match = __import__("re").match(r"([A-Za-z][A-Za-z0-9_.-]{0,63})", raw)
+    kind = match.group(1).lower() if match else type(error).__name__.lower()
+    if kind not in {"command_exit", "audit_ok_missing", "gate_blocked", "prep_errors",
+                    "prep_critical_missing", "prep_status_invalid", "prep_report_invalid_json",
+                    "prep_report_invalid_shape", "previous_trade_date_unavailable"}:
+        kind = type(error).__name__.lower()
+    missing_match = __import__("re").search(r"missing[:=]([A-Za-z0-9_,.-]{1,160})", raw, flags=__import__("re").I)
+    missing = missing_match.group(1) if missing_match else (kind if "missing" in kind else "检查阶段 manifest 与输入切片")
+    message = EmailMessage()
+    message["Subject"] = f"Core [ALERT] [{trade_date}] {stage} 阶段失败"
+    message["Message-ID"] = make_msgid()
+    message["From"] = from_addr
+    message["To"] = to_addr
+    message["X-Core-Alert-Fingerprint"] = hashlib.sha256(
+        f"{kind}\0{missing}".encode("utf-8")).hexdigest()
+    message.set_content(f"阶段：{stage}\n错误码：{kind}\n缺失数据/检查项：{missing}")
+    message["X-Core-Alert"] = "stage-failure"
+    return message
+
+
 def _report_digest(message: EmailMessage) -> str:
     header_digest = message.get("X-Core-Report-SHA256")
     digest = hashlib.sha256()
     digest.update(str(header_digest or "").encode("ascii", errors="ignore"))
+    digest.update(str(message.get("X-Core-Alert-Fingerprint", "")).encode("ascii", errors="ignore"))
     digest.update(RENDER_VERSION.encode("ascii"))
     recipients = sorted({part.strip().lower() for part in str(message.get("To", "")).split(",") if part.strip()})
     digest.update(json.dumps(recipients, separators=(",", ":")).encode("utf-8"))
@@ -202,9 +229,12 @@ def send_message(config: SmtpConfig | None, msg: EmailMessage, *, dry_run: bool 
     digest = _report_digest(msg)
     marker = _state_path(state_dir, msg, digest)
     if not dry_run:
-        allow = {str(address).strip().lower() for address in (allow_recipients or ())}
-        if not recipients or any(address.lower() not in allow for address in recipients):
-            raise ValueError("recipient allowlist rejected one or more recipients")
+        header_recipients = [address.strip().lower() for _, address in getaddresses(
+            [str(msg.get(key, "")) for key in ("To", "Cc", "Bcc") if msg.get(key)])
+                             if address.strip()]
+        envelope = [address.strip().lower() for address in recipients]
+        if header_recipients != [ALLOWED_RECIPIENT] or envelope != [ALLOWED_RECIPIENT]:
+            raise ValueError("fixed recipient policy rejected message")
     if marker.is_file():
         return SendReceipt("skipped", len(recipients), len(wire), 0.0, msg.get("Message-ID"))
     if dry_run:
@@ -216,7 +246,7 @@ def send_message(config: SmtpConfig | None, msg: EmailMessage, *, dry_run: bool 
         if config.port == 465 and not config.starttls:
             with smtplib.SMTP_SSL(config.host, config.port, context=ssl.create_default_context(), timeout=10) as client:
                 client.login(config.user, config.password)
-                client.send_message(msg, to_addrs=recipients)
+                client.send_message(msg, to_addrs=[ALLOWED_RECIPIENT])
         else:
             with smtplib.SMTP(config.host, config.port, timeout=10) as client:
                 client.ehlo()
@@ -224,7 +254,7 @@ def send_message(config: SmtpConfig | None, msg: EmailMessage, *, dry_run: bool 
                     client.starttls(context=ssl.create_default_context())
                     client.ehlo()
                 client.login(config.user, config.password)
-                client.send_message(msg, to_addrs=recipients)
+                client.send_message(msg, to_addrs=[ALLOWED_RECIPIENT])
     except Exception as exc:
         logger.error("report email delivery failed (%s)", type(exc).__name__)
         raise RuntimeError(f"SMTP delivery failed ({type(exc).__name__})") from None

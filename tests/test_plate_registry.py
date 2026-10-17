@@ -33,13 +33,31 @@ def test_family_union_find_threshold_and_largest_representative():
 
 
 def test_parent_children_broad_classification():
-    members = {"801000": set(f"{i:06d}" for i in range(150)), "801001": {"900001"}}
+    members = {"801000": set(f"{i:06d}" for i in range(300)), "801001": {"900001"}}
     row = {row["code"]: row for row in build_registry(
         members, {"801000": "芯片", "801001": "先进封装"}, {"801001": "801000"}
     )["plates"]}
     assert row["801000"]["children"] == ["801001"]
     assert row["801000"]["class"] == "BROAD"
     assert row["801001"]["parent"] == "801000"
+
+
+def test_large_industry_and_unmapped_known_code_are_not_misclassified_as_niche():
+    rows = {row["code"]: row for row in build_registry(
+        {"801000": set(f"{i:06d}" for i in range(758)),
+         "801827": set(f"{i:06d}" for i in range(20))},
+        {"801000": "通信"},
+    )["plates"]}
+    assert rows["801000"]["class"] == "BROAD"
+    assert rows["801827"]["name"] == "AI视频"
+    assert rows["801827"]["class"] == "THEME"
+
+
+def test_missing_registry_name_or_member_set_stays_unknown():
+    rows = {row["code"]: row for row in build_registry({}, {"801999": None})["plates"]}
+    assert rows["801999"]["name"] is None
+    assert rows["801999"]["size"] is None
+    assert rows["801999"]["class"] == "UNKNOWN"
 
 
 def test_relation_arrays_and_degree_are_stably_sorted():

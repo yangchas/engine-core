@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from collections import defaultdict
 from collections.abc import Mapping, Set
 from typing import Any
 
@@ -24,6 +25,7 @@ def build_plate_linkage(states: Mapping[str, Mapping[str, Any]],
                         plate_names: Mapping[str, str] | None = None, *,
                         stock_names: Mapping[str, str] | None = None,
                         generic_names: Set[str] | None = None,
+                        theme_assignments: Mapping[str, Mapping[str, Any]] | None = None,
                         min_members: int = 8, top_n: int | None = 15) -> dict[str, Any]:
     """Aggregate supplied stock slices; absent returns and amounts remain unavailable.
 
@@ -33,6 +35,20 @@ def build_plate_linkage(states: Mapping[str, Mapping[str, Any]],
     """
     plate_names, stock_names = plate_names or {}, stock_names or {}
     generic_names = generic_names or set()
+    themed: dict[str, set[str]] = defaultdict(set)
+    themed_names: dict[str, str] = {}
+    if theme_assignments is not None:
+        for symbol, assignment in theme_assignments.items():
+            if not isinstance(assignment, Mapping):
+                continue
+            primary = assignment.get("primary_theme")
+            if not isinstance(primary, Mapping) or assignment.get("source") in (None, "UNKNOWN"):
+                continue
+            code = str(primary.get("id") or "").strip()
+            name = str(primary.get("name") or "").strip()
+            if code and name and symbol in states:
+                themed[code].add(str(symbol))
+                themed_names[code] = name
     result = []
     for code, members in relations.items():
         name = plate_names.get(code, code)
@@ -114,7 +130,14 @@ def build_plate_linkage(states: Mapping[str, Mapping[str, Any]],
                        key=lambda row: (-row["limit_down_count"],
                                         -(row["amount_yuan"] if row["amount_yuan"] is not None else -1),
                                         row["code"]))[:5]
+    primary_rows = None
+    if theme_assignments is not None:
+        primary = build_plate_linkage(states, themed, themed_names, stock_names=stock_names,
+                                      generic_names=generic_names, min_members=min_members,
+                                      top_n=top_n)
+        primary_rows = primary["rows"]
     return {"available": bool(result), "rows": result[:top_n] if top_n is not None else result,
+            "primary_theme_rows": primary_rows,
             "down_limit_top5": down_top5,
             "method_note": ("成员上涨占比/中位涨幅仅计有涨幅成员；等权均值及额加权涨幅用于(b)，"
                             "额加权仅计同时有额和涨幅成员；封板额占比以已知成员额为分母；"

@@ -799,6 +799,106 @@ def _spark(values: Sequence[Any]) -> str:
 
 def _plates(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     chapters = report.get("chapters") if isinstance(report.get("chapters"), Mapping) else {}
+    cross = chapters.get("plate_cross_table") if isinstance(chapters.get("plate_cross_table"), Mapping) else {}
+    all_cross_rows = _rows(cross.get("rows"))
+    broad_rows = [row for row in all_cross_rows if row.get("class") == "BROAD"]
+    cross_rows = _rows(cross.get("main_rows"))[:10] or [row for row in all_cross_rows if row.get("class") != "BROAD"][:10]
+    if cross_rows:
+        checkpoint = str(cross.get("checkpoint") or ("0945" if stage == "open" else "0925"))
+        headers = ("板块", "成员", "成员合计额", "金额覆盖", "份额", "自身历史倍数/分位/n", "等权涨幅", "涨/跌停", "最高板", "晋级率", "较昨日同截点", "龙头事实")
+        html_rows, text_rows = [], []
+        for row in cross_rows:
+            amount = row.get("amount_yuan")
+            share = row.get("market_share_pct")
+            pct = row.get("equal_weight_pct")
+            promotion = row.get("promotion_rate")
+            promotion_status = row.get("promotion_status")
+            yesterday = row.get("yesterday_same_checkpoint", {})
+            yesterday_text = (f"{float(yesterday['change_pp']):+.2f}pp"
+                              if isinstance(yesterday, Mapping) and isinstance(yesterday.get("change_pp"), (int, float))
+                              else "UNKNOWN")
+            leaders = row.get("leaders") if isinstance(row.get("leaders"), Mapping) else {}
+            amount_coverage = row.get("amount_coverage") if isinstance(row.get("amount_coverage"), Mapping) else {}
+            lead_bits = []
+            for key, prefix in (("amount_max", "额"), ("highest_board", "板"), ("earliest_seal", "封")):
+                lead = leaders.get(key)
+                if isinstance(lead, Mapping):
+                    suffix = f"{lead.get('value')}板" if key == "highest_board" else str(lead.get("seal_time") or "") if key == "earliest_seal" else ""
+                    lead_bits.append(f"{prefix}:{lead.get('name') or lead.get('symbol')}{suffix}")
+            if leaders.get("reason_sclt"):
+                lead_bits.append("因:" + "/".join(map(str, leaders["reason_sclt"][:2])))
+            hist_multiple = row.get("historical_amount_multiple")
+            hist_percentile = row.get("historical_amount_percentile")
+            hist_n = row.get("historical_amount_sample_days", 0)
+            historical = (f"{float(hist_multiple):.2f}×/P{float(hist_percentile):.0f}/n={hist_n}"
+                          if isinstance(hist_multiple, (int, float)) and isinstance(hist_percentile, (int, float))
+                          else "样本少" if row.get("historical_amount_status") == "样本少"
+                          else f"UNKNOWN/n={hist_n}")
+            overlap = row.get("overlap_with") if isinstance(row.get("overlap_with"), list) else []
+            overlap_text = ("；重叠≥0.8:" + "/".join(str(item.get("name") or item.get("code")) for item in overlap)
+                            if overlap else "")
+            promotion_text = (f"{row.get('promotion_numerator')}/{row.get('promotion_denominator')}({float(promotion):.0%})"
+                              if promotion is not None and promotion_status == "READY" else
+                              "样本少" if promotion_status == "样本少" else "未知")
+            cells = [str(row.get("name") or row.get("code") or "—") + overlap_text, str(row.get("member_count", "—")),
+                     "—" if amount is None else f"{float(amount) / 1e8:.2f}亿",
+                     f"{amount_coverage.get('known', 0)}/{amount_coverage.get('members', 0)}",
+                     "—" if share is None else f"{float(share):.2f}%",
+                     historical,
+                     "—" if pct is None else f"{float(pct):+.2f}%",
+                     f"{row.get('limit_up_count', '—')}/{row.get('limit_down_count', '—')}",
+                     "—" if row.get("highest_board") is None else f"{row['highest_board']}板",
+                     promotion_text,
+                     yesterday_text, "；".join(lead_bits) or "—"]
+            html_rows.append("<tr>" + "".join(f"<td>{_esc(value)}</td>" for value in cells) + "</tr>")
+            text_rows.append(" | ".join(cells))
+        table = ("<div style=\"overflow-x:auto\"><table><thead><tr>" +
+                 "".join(f"<th>{_esc(header)}</th>" for header in headers) +
+                 "</tr></thead><tbody>" + "".join(html_rows) + "</tbody></table></div>")
+        note = (f"{checkpoint} 同截点；金额=成员合计，重叠成员在不同板块重复计入；金额覆盖为有额成员/总成员；"
+                "较昨日仅使用前一交易日同截点，缺失显示 UNKNOWN。龙头按金额最大/最高板/最早封板/原因SCLT分列。")
+        broad_summary = ""
+        broad_data = cross.get("broad_summary") if isinstance(cross.get("broad_summary"), Mapping) else {}
+        broad_names = broad_data.get("names") if isinstance(broad_data.get("names"), list) else [row.get("name") for row in broad_rows]
+        broad_count = broad_data.get("count", len(broad_rows))
+        if broad_count:
+            distinct_count = broad_data.get("distinct_stock_count")
+            distinct_share = broad_data.get("distinct_market_share_pct")
+            mean_return = broad_data.get("equal_weight_pct_mean")
+            if isinstance(mean_return, (int, float)):
+                broad_summary = (f"宽概念 {broad_count} 个，去重后覆盖股票 {distinct_count if distinct_count is not None else '未知'} 只，"
+                                f"占全市场成交 {float(distinct_share):.2f}%" if isinstance(distinct_share, (int, float)) else
+                                f"宽概念 {broad_count} 个，去重后覆盖股票 {distinct_count if distinct_count is not None else '未知'} 只，占全市场成交未知")
+                broad_summary += (
+                                f"；等权涨幅均值 {float(mean_return):+.2f}%：" + "、".join(map(str, broad_names)))
+            else:
+                broad_summary = (f"宽概念 {broad_count} 个，去重后覆盖股票 {distinct_count if distinct_count is not None else '未知'} 只，"
+                                f"占全市场成交 {float(distinct_share):.2f}%" if isinstance(distinct_share, (int, float)) else
+                                f"宽概念 {broad_count} 个，去重后覆盖股票 {distinct_count if distinct_count is not None else '未知'} 只，占全市场成交未知")
+                broad_summary += (
+                                "；等权涨幅未知：" + "、".join(map(str, broad_names)))
+        html = _section(f"板块横向比较 @{checkpoint}", ("<p>" + _esc(broad_summary) + "</p>" if broad_summary else "") + table, note)
+        text = "板块横向比较：\n" + (broad_summary + "\n" if broad_summary else "") + "\n".join(text_rows)
+        if stage == "open":
+            linkage = chapters.get("plate_linkage") if isinstance(chapters.get("plate_linkage"), Mapping) else {}
+            changes = _rows(linkage.get("opening_changes"))[:8]
+            if changes:
+                change_headers = ("板块", "上涨占比变化(pp)", "等权中位涨幅变化(pp)", "涨停数变化", "跌停数变化")
+                change_rows, change_text = [], []
+                for row in changes:
+                    delta = row.get("delta") if isinstance(row.get("delta"), Mapping) else {}
+                    cells = [str(row.get("name") or row.get("code") or "—"),
+                             "—" if delta.get("up_share_pct") is None else f"{float(delta['up_share_pct']):+.2f}",
+                             "—" if delta.get("equal_weight_median_pct") is None else f"{float(delta['equal_weight_median_pct']):+.2f}",
+                             str(delta.get("limit_up_count", "—")), str(delta.get("limit_down_count", "—"))]
+                    change_rows.append("<tr>" + "".join(f"<td>{_esc(value)}</td>" for value in cells) + "</tr>")
+                    change_text.append(" | ".join(cells))
+                change_table = ("<div style=\"overflow-x:auto\"><table><thead><tr>" +
+                                "".join(f"<th>{_esc(header)}</th>" for header in change_headers) +
+                                "</tr></thead><tbody>" + "".join(change_rows) + "</tbody></table></div>")
+                html += _section("0925→0945 盘中变化", change_table, "当日 09:25 至 09:45 的变化窗口；与较昨日同截点分开。")
+                text += "\n0925→0945 盘中变化：\n" + "\n".join(change_text)
+        return html, text
     data = report.get("plates") if isinstance(report.get("plates"), Mapping) else {}
     market = chapters.get("market_price_volume") if isinstance(chapters.get("market_price_volume"), Mapping) else {}
     if stage == "auction" and not data.get("auction_amount_top10"):
@@ -1154,11 +1254,32 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
         headline = f"{amount_short}｜{amount_comparison}｜中{_num(median)}｜涨{_num(up_share)}｜昨板{_num(carry)}"
     cutoff_label = "0945" if stage == "open" else "0925"
     lines = [f"{cutoff_label}｜{headline}", "【昨高标·题材聚类】"]
+    feedback = report.get("streak_feedback") if isinstance(report.get("streak_feedback"), Mapping) else {}
+    feedback_point = feedback.get("checkpoints", {}).get(cutoff_label, {}) if isinstance(feedback, Mapping) else {}
+    feedback_matrix = feedback_point.get("matrix", {}) if isinstance(feedback_point, Mapping) else {}
+    feedback_levels = feedback_matrix.get("by_level", {}) if isinstance(feedback_matrix, Mapping) else {}
+    if feedback_levels:
+        rates = [f"{level}晋级{stats.get('promoted', 0)}/{stats.get('total', 0)}({stats.get('promotion_rate'):.0%})"
+                 for level, stats in feedback_levels.items() if isinstance(stats.get("promotion_rate"), (int, float))]
+        feedback_overall = feedback_matrix.get("overall", {})
+        if rates:
+            themes = feedback_matrix.get("by_theme", {})
+            theme_rates = [f"{stats.get('theme', key)} {stats.get('promoted', 0)}/{stats.get('total', 0)}"
+                           f"({stats.get('promotion_rate'):.0%},未知{stats.get('unknown', 0)})"
+                           for key, stats in sorted(themes.items(), key=lambda item: (-item[1].get("total", 0), item[0]))[:3]
+                           if isinstance(stats.get("promotion_rate"), (int, float))]
+            lines.insert(1, "【昨日连板今日表现】" + "、".join(rates[:5]) +
+                         ("；主题 " + "、".join(theme_rates) if theme_rates else "") +
+                         ("；竞价暂时" if feedback_point.get("provisional") else "") +
+                         (f"；均值{feedback_overall['mean_return_pct']:+.2f}%/中位{feedback_overall['median_return_pct']:+.2f}%/红盘{feedback_overall['red_share']:.0%}"
+                          if isinstance(feedback_overall.get("mean_return_pct"), (int, float))
+                          and isinstance(feedback_overall.get("median_return_pct"), (int, float))
+                          and isinstance(feedback_overall.get("red_share"), (int, float)) else "；涨幅统计 UNKNOWN"))
     ladder = data.get("ladder") if isinstance(data.get("ladder"), Mapping) else {}
     clusters = ladder.get("clusters", []) if isinstance(ladder.get("clusters"), list) else []
     if not clusters:
         lines.append(str(ladder.get("empty_message") or "无昨高标簇：数据缺失"))
-    visible_clusters = clusters[:2]
+    visible_clusters = clusters
     for cluster in visible_clusters:
         share = cluster.get("share_bp")
         delta = cluster.get("delta_share_bp")
@@ -1203,10 +1324,13 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
         delta_text = "" if delta is None else f" Δ{float(delta):+.0f}bp"
         leader = cluster.get("leader", {}) if isinstance(cluster.get("leader"), Mapping) else {}
         leader_name = _short(leader.get("name") or (cluster.get("paths") or [{}])[0].get("name") or "高标", 5)
-        lines.append(f"{_short(cluster.get('name'), 8)}{hot_note}{delta_text} 等权{eq} {leader_name}{judgement}")
-    folded = max(0, len(clusters) - len(visible_clusters)) + int(ladder.get("other_cluster_count") or 0)
-    if folded:
-        lines.append(f"其余{folded}簇见附表")
+        paths = cluster.get("paths", []) if isinstance(cluster.get("paths"), list) else []
+        members_text = "、".join(f"{row.get('name') or '名称未知'}昨{int(row.get('streak') or 0)}板"
+                                 for row in paths)
+        amount = cluster.get("amount_yuan")
+        amount_text = "簇额—" if amount is None else f"簇额{float(amount) / 1e8:.2f}亿"
+        lines.append(f"{_short(cluster.get('name'), 8)}{hot_note}{delta_text} {members_text or '成员—'} "
+                     f"{amount_text}/{share_text} 等权{eq} {leader_name}{judgement}")
     lines.append(str(ladder.get("first_board_summary") or "昨首板反馈缺失"))
     lines.append(f"【板块强弱@{cutoff_label}｜市场额同截点】")
     strength = data.get("plate_strength") if isinstance(data.get("plate_strength"), Mapping) else {}
@@ -1292,9 +1416,9 @@ def render_email_board(report: Mapping[str, Any], stage: str, trade_date: str) -
     _story, story_html, story_text = _story_view(report, stage_key, trade_date)
     front_html, front_text = _front_page_view(report, stage_key)
     appendix_html = (f'<section style="margin:12px 0"><h2 style="font-size:13px;color:#475467">附表：完整事实章节</h2>'
-                     f'{_section("情绪温度计", tile_html)}{ladder_html}{extreme_html}{plate_html}{ab_html}{other_html}</section>')
-    main_html = (f'{story_html}{appendix_html}' if stage_key == "close" else
-                 f'{front_html}<details style="margin:8px 0"><summary style="padding:8px;background:#e9eef5">附表（极值、完整梯队、盘面、A→B、温度计）</summary>{appendix_html}</details>')
+                     f'{_section("情绪温度计", tile_html)}{ladder_html}{extreme_html}{ab_html}{other_html}</section>')
+    main_html = (f'{story_html}{plate_html}{appendix_html}' if stage_key == "close" else
+                 f'{front_html}{plate_html}<details style="margin:8px 0"><summary style="padding:8px;background:#e9eef5">附表（极值、完整梯队、盘面、A→B、温度计）</summary>{appendix_html}</details>')
     body = (f'<div style="max-width:680px;margin:0 auto;background:#f5f7fa;color:#263445;font-family:Arial,"Microsoft YaHei",sans-serif;font-size:12px;line-height:1.45;font-variant-numeric:tabular-nums">'
             f'<header style="padding:10px 2px"><b>{_esc(trade_date)} {stage_label}盘面</b></header>'
             f'{main_html}'

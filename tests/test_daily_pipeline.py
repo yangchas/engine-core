@@ -13,6 +13,34 @@ def test_zero_auction_amount_does_not_fall_back_to_another_source():
                                  "p0925_cumulative_amount_yuan": 123}) == 123
 
 
+def test_live_report_shrink_keeps_original_dictionary_omission_hash_idempotently():
+    from engine_core.daily_pipeline import _shrink_live_report
+    report = {"plate_dictionary": {"rows": [{"code": "A"}, {"code": "B"}]}}
+    _shrink_live_report(report)
+    first = report["omitted_blocks"][-1].copy()
+    _shrink_live_report(report)
+    assert first["rows"] == 2
+    assert report["omitted_blocks"][-1] == first
+
+
+def test_d06_audit_only_product_is_never_consumed():
+    from engine_core.daily_pipeline import _d06_persisted_assignments
+    from engine_core.slices import SliceResult
+
+    row = {"symbol": "600001", "trade_date": "2026-10-16", "used_date": "2026-10-15",
+           "as_of": "2026-10-15", "input_version": "inputs-v1",
+           "visibility_sha256": "visible-v1", "primary_theme": {"id": "801001"}}
+    result = SliceResult.create([row], {"slice_id": "stock_theme_assignment", "status": "READY",
+        "pit_date": "2026-10-15", "available_at": "2026-10-16T08:50:00+08:00"})
+    kwargs = dict(trade_date="2026-10-16", used_date="2026-10-15",
+                  asof="2026-10-16T09:32:00+08:00", input_version="inputs-v1",
+                  visibility_sha256="visible-v1")
+    assert _d06_persisted_assignments(result, **kwargs) == {}
+    assert _d06_persisted_assignments(result, **{**kwargs, "input_version": "inputs-v2"}) == {}
+    assert _d06_persisted_assignments(result, **{**kwargs, "visibility_sha256": "visible-v2"}) == {}
+    assert _d06_persisted_assignments(result, **{**kwargs, "used_date": "2026-10-14"}) == {}
+
+
 class FakeTD:
     def states_at(self, cutoff):
         return {}
@@ -414,15 +442,18 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
     redis = ByteRedis()
     reader = SliceReader(SliceProviders(catalog=catalog, redis=redis, file_fallback=False).providers())
     sources = DailySources(td=DataTD(), redis=redis, slice_reader=reader)
-    for stage, asof in (("auction", "09:26:00"), ("open", "09:46:00")):
+    for stage, asof in (("auction", "09:26:00"), ("open", "09:32:00")):
         result = run_daily_pipeline(stage=stage, trade_date=trade_date, asof=asof,
                                     out_root=tmp_path / "reports", sources=sources, dry_run=True)
         report_path = result["out_dir"] / "report.json"
         report = json.loads(report_path.read_text(encoding="utf-8"))
         manifest = json.loads((result["out_dir"] / "manifest.json").read_text(encoding="utf-8"))
-        assert {row["status"] for row in manifest["slices"].values()} <= {"READY", "PARTIAL"}, {
-            name: row for name, row in manifest["slices"].items() if row["status"] == "MISSING"}
-        assert all(row["source"].startswith("core_data") for row in manifest["slices"].values())
+        assert {row["status"] for name, row in manifest["slices"].items()
+                if name != "stock_theme_assignment"} <= {"READY", "PARTIAL"}, {
+            name: row for name, row in manifest["slices"].items()
+            if name != "stock_theme_assignment" and row["status"] == "MISSING"}
+        assert all(row["source"].startswith("core_data") for name, row in manifest["slices"].items()
+                   if name != "stock_theme_assignment")
         assert "front_page" in report and "plate_strength" in report["front_page"]
         assert "ladder" in report["front_page"]
         paths = [path for cluster in report["front_page"]["ladder"]["clusters"]
@@ -431,6 +462,8 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
         if stage == "auction":
             assert labels["600001"] == "封停价代理"
         else:
+            assert report["ladder_section"]["promotion_checkpoint"] == "0932"
+            assert report["ladder_section"]["promotion_status"] in {"READY", "UNKNOWN"}
             assert labels["600001"] != "封停价代理"
         assert labels["600002"] != "封停价代理"
 def test_repeat_run_uses_numbered_directory_without_overwriting(tmp_path):
