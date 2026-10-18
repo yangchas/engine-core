@@ -100,11 +100,12 @@ def test_large_html_is_ignored_by_default(tmp_path):
     assert message.get_content_type() == "multipart/alternative"
 
 
-def test_structured_report_is_html_body_without_default_attachment(tmp_path):
+def test_auction_report_attaches_full_html_by_default(tmp_path):
     message = _message(tmp_path)
-    assert message.get_content_type() == "multipart/alternative"
-    assert [part.get_content_type() for part in message.iter_parts()] == ["text/plain", "text/html"]
-    assert list(message.iter_attachments()) == []
+    assert message.get_content_type() == "multipart/mixed"
+    assert [part.get_content_type() for part in message.iter_parts()] == ["multipart/alternative", "text/html"]
+    assert [part.get_content_type() for part in message.iter_parts().__next__().iter_parts()] == ["text/plain", "text/html"]
+    assert [part.get_filename() for part in message.iter_attachments()] == ["report.html"]
     assert "第一句" in message.get_body(preferencelist=("html",)).get_content()
 
 

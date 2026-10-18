@@ -117,6 +117,7 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
                                                     _symbol(r.get("symbol"))))[:3]
         top3 = [{"symbol": _symbol(r.get("symbol")), "name": _name(_symbol(r.get("symbol")), r, names),
                  "amount_yuan": _num(r.get("auction_amount_yuan")),
+                 "pct_change": _num(r.get("pct_change")),
                  "amount_rank": r.get("amount_rank")} for r in top3_rows]
         evidence = {"plate_id": pid, "name": meta["name"], "n": n,
                     "price_coverage": price_cov, "price_n": len(priced),
@@ -275,6 +276,74 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
              f"风险 {multi_text}；{weak_text}；{seal_text}", f"结论 {status}"]
     lines.append("阈值为 V1 冻结工程阈值,非市场规律,未回测")
 
+    # Public email copy is intentionally separate from the diagnostic lines
+    # above, which remain in report.json for review and evidence.
+    email_lines = [f"09:26 竞价速览 · {stock_facts.get('trade_date', '')}"]
+    if replay:
+        email_lines.append("历史回放样本,非当时实时生成的交易信号")
+    if coverage is None or coverage < QUICKBRIEF_THRESHOLDS_V1["market_price_coverage"]:
+        email_market_line = "市场:覆盖不足,不下结论。"
+    elif not market_ready:
+        email_market_line = "市场:样本不足,不下结论。"
+    elif not market_open:
+        email_market_line = "市场:未触发普遍高开。"
+    elif len(pool_rows) < QUICKBRIEF_THRESHOLDS_V1["relay_min_n"]:
+        email_market_line = "市场:普遍高开,接力样本不足,不下结论。"
+    elif relay:
+        email_market_line = "市场:普遍高开,昨日涨停接力明显落后。"
+    else:
+        email_market_line = "市场:普遍高开,昨日涨停接力未明显落后。"
+    email_lines.append(email_market_line)
+    if market_ready:
+        relay_summary = (f"昨板高开{pool_up}/{len(pool_rows)}({pool_ratio:.1%})，落后市场{abs(lag):.2f}个百分点"
+                         if relay else "昨日涨停接力未触发明显落后")
+        if len(pool_rows) < QUICKBRIEF_THRESHOLDS_V1["relay_min_n"]:
+            relay_summary = "昨板接力样本不足,不下结论"
+        baseline_summary = (f"历史基线{len(baseline)}/64日不足" if len(baseline) < 64 else
+                            f"历史基线64/64日,中位{baseline_median / 1e8:.2f}亿" if baseline_median is not None else
+                            "历史基线样本不足,不下结论")
+        email_lines.append(f"{ratio*100:.1f}%上涨、中位{median:+.2f}%;{relay_summary}。竞价额{market_amount/1e8:.2f}亿,{baseline_summary}。"
+                           if market_amount is not None else f"{ratio*100:.1f}%上涨、中位{median:+.2f}%;{relay_summary}。竞价额样本不足,不下结论。")
+
+    def public_candidate_lines(label: str, candidate: Mapping[str, Any] | None,
+                               fallback: str) -> list[str]:
+        if not candidate:
+            return [f"{label}:{fallback}"]
+        amount_stocks = candidate["top_amount_stocks"]
+        top_text = "、".join(f"{item['name']}金额全市场#{item['amount_rank']}"
+                             for item in amount_stocks[:2] if item.get("amount_rank") is not None)
+        header = f"{label}:{candidate['name']}"
+        metrics = (f"中位{candidate['d_pct']:+.2f}%(超市场{candidate['d_excess_pp']:.2f}pp),"
+                   f"上涨{candidate['up_n']}/{candidate['price_n']}(超市场{candidate['e_pp']:.1f}pp),"
+                   f"竞价{candidate['auction_amount_yuan']/1e8:.2f}亿。{top_text}")
+        if label == "备看" and amount_stocks:
+            top = amount_stocks[0]
+            pct = top.get("pct_change")
+            state = "平开" if pct == 0 else "高开" if isinstance(pct, (int, float)) and pct > 0 else "低开" if isinstance(pct, (int, float)) else None
+            if state:
+                metrics += f"。金额Top1{top['name']}竞价{state}"
+        return [header, metrics]
+
+    email_lines.extend(public_candidate_lines("主看", main, "暂无符合广泛强势条件的板块"))
+    email_lines.extend(public_candidate_lines("备看", backup, "暂无符合广泛强势条件的板块"))
+    email_lines.append("风险:高标接力分化" if relay or (multi_pool_symbols and not confirmed_next)
+                       else "风险:未见明确高标接力负反馈")
+    email_lines.append(f"{multi_text.replace('下一板 ', '下一板')};{weak_text}" if relay or (multi_pool_symbols and not confirmed_next)
+                       else "高标接力负反馈样本不足,不下结论")
+    if seal_top and seal_total:
+        seal_name = _name(_symbol(seal_top.get("symbol")), seal_top, names)
+        seal_amount = _num(seal_top["seal"]["seal_amount_yuan"])
+        email_lines.extend([f"封单极值:{seal_name}{seal_amount / 1e8:.2f}亿",
+                            f"全市场封单{seal_total / 1e8:.2f}亿,{seal_name}占{100*seal_amount/seal_total:.1f}%;"
+                            "封单金额不等于实际成交。"])
+    else:
+        email_lines.extend(["封单极值:样本不足,不下结论", "全市场封单样本不足,不下结论"])
+    email_lines.append("结论:有板块观察候选,09:32等待开盘验证;尚无开盘成交确认"
+                       if (main or backup) and not verified_0932 else
+                       "结论:暂无符合广泛强势条件的板块" if not (main or backup) else
+                       "结论:09:32开盘成交已验证")
+    email_lines.append("阈值为 V1 冻结工程阈值,非市场规律,未回测")
+
     def public_candidate(candidate: Mapping[str, Any] | None) -> dict[str, Any] | None:
         return ({k: candidate[k] for k in ("plate_id", "name", "n", "price_n", "price_coverage",
                                             "amount_n", "amount_coverage", "median_pct", "up_ratio",
@@ -320,5 +389,5 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
                   "backup_top_scores": backup_top_scores,
                   "rejected_backup_scores": rejected_backup_scores,
                   "weak_multi_board": [_symbol(r.get("symbol")) for r in weak]},
-        "lines": lines,
+        "lines": lines, "email_lines": email_lines,
     }

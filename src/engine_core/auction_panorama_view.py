@@ -223,9 +223,15 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
         f'<div style="font-size:10px;color:#667085;margin-top:12px">{_esc(hot_coverage_note)} 缺失字段留白或待核实；名次为全市场口径。</div></td></tr></table></td></tr></table></body></html>')
     quickbrief = product.get("quickbrief")
     if isinstance(quickbrief, Mapping) and isinstance(quickbrief.get("lines"), list):
-        quick_lines = [str(line) for line in quickbrief["lines"]]
+        quick_lines = [str(line) for line in quickbrief.get("email_lines", quickbrief["lines"])]
+        diagnostics = [str(line) for line in quickbrief["lines"]
+                       if str(line).startswith(("备看排序", "流动性门槛排除"))]
         quick_plain = "\n".join(quick_lines) + "\n\n"
         quick_html = '<div style="padding:10px 12px;margin:8px 0;background:#f2f6fb;border-left:4px solid #2471a3;font-size:13px;line-height:1.7">' + "<br>".join(_esc(line) for line in quick_lines) + "</div>"
+        if diagnostics:
+            quick_html += ('<details style="margin:4px 0 10px;color:#667085;font-size:11px"><summary>速览计算诊断</summary>'
+                           + '<br>'.join(_esc(line) for line in diagnostics) + '</details>')
+            quick_plain += "速览计算诊断：\n" + "\n".join(diagnostics) + "\n\n"
         text = text.replace("竞价全景 V6 |", quick_plain + "竞价全景 V6 |", 1)
         document = document.replace('<tr><td style="padding:10px">', '<tr><td style="padding:10px">' + quick_html, 1)
     return document, text

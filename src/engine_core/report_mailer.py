@@ -153,7 +153,23 @@ def build_report_message(subject_prefix: str, trade_date: str, stage: str,
         saved_html = html_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"report HTML unavailable ({type(exc).__name__})") from None
-    rendered_html = (saved_html if "竞价全景 V6" in saved_html else rendered_from_data)
+    panorama = report_data.get("auction_panorama")
+    quickbrief = panorama.get("quickbrief") if isinstance(panorama, Mapping) else None
+    if not isinstance(quickbrief, Mapping):
+        quickbrief = report_data.get("auction_quickbrief")
+    brief_ready = ("auction" in str(stage).lower() and isinstance(quickbrief, Mapping)
+                   and isinstance(quickbrief.get("email_lines"), list)
+                   and bool(quickbrief.get("email_lines")))
+    rendered_html = (rendered_from_data if brief_ready else
+                     saved_html if "竞价全景 V6" in saved_html else rendered_from_data)
+    if "auction" in str(stage).lower() and not brief_ready:
+        fallback_notice = "竞价速览构建失败,以下为完整报告回退。"
+        if fallback_notice not in plain_text:
+            plain_text = fallback_notice + "\n\n" + plain_text
+        if fallback_notice not in rendered_html:
+            rendered_html = rendered_html.replace(
+                "</body>", '<div role="alert" style="padding:12px;background:#fff0e5;border:2px solid #c2410c;font-weight:700">'
+                + fallback_notice + "</div></body>", 1)
     quality_status, _, _ = _quality_banner(manifest or {}, report_data)
     subject = f"{subject_prefix} [{quality_status}] [{trade_date}] {stage} 报告"
     message = EmailMessage()
@@ -170,7 +186,7 @@ def build_report_message(subject_prefix: str, trade_date: str, stage: str,
         except OSError:
             pass
     message["X-Core-Report-SHA256"] = report_digest.hexdigest()
-    if attach_full_html:
+    if attach_full_html or "auction" in str(stage).lower():
         try:
             html_bytes = html_path.read_bytes()
         except OSError as exc:
@@ -186,15 +202,17 @@ def build_report_message(subject_prefix: str, trade_date: str, stage: str,
 def build_alert_message(trade_date: str, stage: str, error: BaseException,
                         to_addr: str, from_addr: str) -> EmailMessage:
     """Build a path-free alert with a stable, controlled failure fingerprint."""
-    raw = str(error).replace("\n", " ")
-    match = __import__("re").match(r"([A-Za-z][A-Za-z0-9_.-]{0,63})", raw)
-    kind = match.group(1).lower() if match else type(error).__name__.lower()
-    if kind not in {"command_exit", "audit_ok_missing", "gate_blocked", "prep_errors",
-                    "prep_critical_missing", "prep_status_invalid", "prep_report_invalid_json",
-                    "prep_report_invalid_shape", "previous_trade_date_unavailable"}:
-        kind = type(error).__name__.lower()
-    missing_match = __import__("re").search(r"missing[:=]([A-Za-z0-9_,.-]{1,160})", raw, flags=__import__("re").I)
-    missing = missing_match.group(1) if missing_match else (kind if "missing" in kind else "检查阶段 manifest 与输入切片")
+    error_name = type(error).__name__.lower()
+    error_text = str(error).lower()
+    if "permission" in error_name or "permission" in error_text:
+        kind = "PERMISSION"
+    elif "timeout" in error_name or "timeout" in error_text:
+        kind = "TIMEOUT"
+    elif "missing" in error_name or "notfound" in error_name or "missing" in error_text:
+        kind = "DATA_MISSING"
+    else:
+        kind = "INTERNAL_ERROR"
+    missing = "检查阶段 manifest 与输入切片"
     message = EmailMessage()
     message["Subject"] = f"Core [ALERT] [{trade_date}] {stage} 阶段失败"
     message["Message-ID"] = make_msgid()
@@ -202,7 +220,7 @@ def build_alert_message(trade_date: str, stage: str, error: BaseException,
     message["To"] = to_addr
     message["X-Core-Alert-Fingerprint"] = hashlib.sha256(
         f"{kind}\0{missing}".encode("utf-8")).hexdigest()
-    message.set_content(f"阶段：{stage}\n错误码：{kind}\n缺失数据/检查项：{missing}")
+    message.set_content(f"阶段：{stage}\n错误码：{kind}\n检查项：{missing}")
     message["X-Core-Alert"] = "stage-failure"
     return message
 

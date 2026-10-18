@@ -9,10 +9,36 @@ from typing import Any, Mapping
 
 from .email_board import render_email_board
 
-RENDER_VERSION = "core-mail-v3"
+RENDER_VERSION = "core-mail-v4"
 MAX_EMAIL_HTML_BYTES = 100_000
 _RED = "#c83b3b"
 _GREEN = "#16835d"
+
+
+def _v6_failure_category(raw: Any) -> str:
+    name = str(raw).split(":", 1)[0].strip().lower()
+    if "permission" in name or "accessdenied" in name:
+        return "PERMISSION"
+    if "missing" in name or "notfound" in name or "filenotfound" in name:
+        return "DATA_MISSING"
+    if "timeout" in name:
+        return "TIMEOUT"
+    return "INTERNAL_ERROR"
+
+
+def v6_failure_public_code(raw: Any) -> str:
+    """Return a stable, path-free public diagnostic for a V6 failure."""
+    match = re.fullmatch(r"V6_PANORAMA_MISSING:(PERMISSION|DATA_MISSING|TIMEOUT|INTERNAL_ERROR)", str(raw))
+    if match:
+        return str(raw)
+    return "V6_PANORAMA_MISSING:" + _v6_failure_category(raw)
+
+
+def v6_failure_internal(raw: Any) -> str:
+    """Keep useful internal context while removing filesystem locations."""
+    text = re.sub(r"[A-Za-z]:\\(?:[^\\\s<>\"']+\\?)*[^\\\s<>\"']*", "<path>", str(raw))
+    text = re.sub(r"(?<![\w.])/(?:home|tmp|var/tmp|private/tmp|Users)/[^\s<>\"']+", "<path>", text)
+    return text[:500]
 
 # User-visible fields are allow-listed. Unknown machine fields are omitted.
 FIELD_LABELS = {
@@ -792,7 +818,8 @@ def _metadata(manifest: Mapping[str, Any], report: Mapping[str, Any], stage: str
 
 
 def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
-                      trade_date: str, manifest: Mapping[str, Any] | None = None) -> tuple[str, str]:
+                      trade_date: str, manifest: Mapping[str, Any] | None = None, *,
+                      full_report: bool = False) -> tuple[str, str]:
     """Render report JSON into compact HTML and readable plain text."""
     report = json.loads(report_json) if isinstance(report_json, (str, bytes)) else report_json
     if not isinstance(report, Mapping):
@@ -830,14 +857,56 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
         report = strip_close(report)
     manifest = manifest or (report.get("manifest") if isinstance(report.get("manifest"), Mapping) else {})
     panorama = report.get("auction_panorama")
-    if "auction" in stage_key and isinstance(panorama, Mapping):
-        from .auction_panorama_view import render_auction_panorama
-        return render_auction_panorama(panorama)
+    if "auction" in stage_key:
+        quickbrief = (panorama.get("quickbrief") if isinstance(panorama, Mapping) else None)
+        if not isinstance(quickbrief, Mapping):
+            quickbrief = report.get("auction_quickbrief")
+        public_lines = quickbrief.get("email_lines") if isinstance(quickbrief, Mapping) else None
+        if isinstance(public_lines, list) and public_lines and not full_report:
+            status, _, _ = _quality_banner(manifest, report)
+            warning = status != "READY"
+            title = str(public_lines[0])
+            replay_note = (str(public_lines[1]) if len(public_lines) > 1 and
+                           str(public_lines[1]).startswith("历史回放样本") else None)
+            content_lines = public_lines[2:] if replay_note else public_lines[1:]
+            public_html = [f'<h1 style="font-size:18px;margin:0 0 3px">{_esc(title)}</h1>']
+            if replay_note:
+                public_html.append(f'<div style="font-size:11px;color:#667085;margin-bottom:10px">{_esc(replay_note)}</div>')
+            if warning:
+                public_html.append(f'<div style="font-size:11px;color:#7c2d12;margin:5px 0">数据完整度与异常 [{_esc(status)}]</div>')
+            for line in content_lines:
+                label = line if line.endswith(":") else None
+                public_html.append((f'<div style="font-weight:700;margin-top:8px">{_esc(label)}</div>'
+                                    if label else f'<div style="line-height:1.55">{_esc(str(line))}</div>'))
+            plain = "\n".join(str(line) for line in public_lines)
+            if warning:
+                plain = plain.replace("\n", f"\n数据完整度与异常 [{status}]\n", 1)
+            plain += "\n明细见附件 report.html"
+            public_html.append('<div style="margin-top:10px;font-size:11px;color:#667085">明细见附件 report.html</div>')
+            return (('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"></head>'
+                     '<body style="font-family:-apple-system,BlinkMacSystemFont,\'PingFang SC\',sans-serif;color:#26364a">'
+                     '<main style="max-width:680px;margin:auto;padding:12px">' + ''.join(public_html) +
+                     '</main></body></html>'), plain)
+        if isinstance(panorama, Mapping):
+            from .auction_panorama_view import render_auction_panorama
+            full_html, full_plain = render_auction_panorama(panorama)
+            if full_report:
+                _quality_status, quality_plain, quality_html = _quality_banner(manifest, report)
+                quality_section = ('<section style="margin:14px auto;padding:12px;background:#fff;padding:12px;'
+                                   'max-width:760px"><h2 style="font-size:15px">数据完整度与异常摘要</h2>'
+                                   + quality_html + '</section>')
+                full_html = full_html.replace('</body>', quality_section + '</body>', 1)
+                full_plain += "\n\n" + quality_plain
+                return full_html, full_plain
+            warning = '<div role="alert" style="padding:12px;background:#fff0e5;border:2px solid #c2410c;font-weight:700">竞价速览构建失败,以下为完整报告回退。</div>'
+            return (full_html.replace('</body>', warning + '</body>', 1),
+                    "竞价速览构建失败,以下为完整报告回退。\n\n" + full_plain)
     quality_status, quality_plain, quality_html = _quality_banner(manifest, report)
     failure = report.get("v6_panorama_failure")
+    failure_code = v6_failure_public_code(failure) if failure else ""
     warning = (f'<div role="alert" style="margin:10px;padding:12px;background:#fff0e5;border:2px solid #c2410c;color:#7c2d12;font-weight:700">'
-               f'V6 全景缺失：{_esc(failure)}</div>' if "auction" in stage_key and failure else "")
-    warning_text = f"V6 全景缺失：{failure}\n\n" if "auction" in stage_key and failure else ""
+               f'V6 全景缺失：{_esc(failure_code)}</div>' if "auction" in stage_key and failure else "")
+    warning_text = f"V6 全景缺失：{failure_code}\n\n" if "auction" in stage_key and failure else ""
     ladder = report.get("ladder_section")
     if (isinstance(report.get("stocks"), list)
             or (isinstance(ladder, Mapping) and bool(ladder.get("rows")))

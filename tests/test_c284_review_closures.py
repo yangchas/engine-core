@@ -100,3 +100,45 @@ def test_actual_mail_preserves_v6_panorama_tables(tmp_path):
     mailed = message.get_body(preferencelist=("html",)).get_content()
     assert "竞价全景 V6" in mailed
     assert "①" in mailed and "②" in mailed
+
+
+def test_auction_email_body_is_quickbrief_and_full_v6_is_attachment(tmp_path):
+    from engine_core import report_mailer
+    from engine_core.report_mailer import build_report_message
+
+    report_html = tmp_path / "report.html"
+    report_json = tmp_path / "report.json"
+    brief = {"email_lines": ["09:26 竞价速览 · 2026-10-16", "市场:普遍高开", "90.2%上涨",
+                       "主看:光模块", "中位+2.16%", "备看:复合集流体", "中位+1.00%",
+                       "风险:高标接力分化", "昨日≥2板竞价封下一板0/6", "封单极值:新华传媒17.65亿",
+                       "全市场封单46.86亿", "结论:有板块观察候选", "阈值说明"],
+              "lines": ["备看排序 diagnostic"]}
+    full_html = "<html><body>竞价全景 V6 ① 板块竞价全景 ② 昨日连板梯队</body></html>"
+    report_html.write_text(full_html, encoding="utf-8")
+    report_json.write_text(json.dumps({"stage": "auction", "auction_panorama": {
+        "trade_date": "2026-10-16", "quickbrief": brief, "overview": {},
+        "plates": [], "yesterday_ladder": []}}), encoding="utf-8")
+
+    message = build_report_message("Core", "2026-10-16", "auction", report_html, report_json,
+        [report_mailer.ALLOWED_RECIPIENT], "reports@localhost", attach_full_html=True)
+    body = message.get_body(preferencelist=("plain",)).get_content()
+    attachments = list(message.iter_attachments())
+    assert "主看:光模块" in body and "明细见附件 report.html" in body
+    assert "① 板块竞价全景" not in body and "② 昨日连板梯队" not in body
+    assert len(attachments) == 1 and attachments[0].get_filename() == "report.html"
+    attached = attachments[0].get_payload(decode=True).decode("utf-8")
+    assert "① 板块竞价全景" in attached and "② 昨日连板梯队" in attached
+    from engine_core.email_render import render_email_html
+    page, _ = render_email_html({"auction_panorama": json.loads(report_json.read_text())[
+        "auction_panorama"]}, "auction", "2026-10-16", {"degraded": ["SAMPLE_DEGRADED"]},
+        full_report=True)
+    assert page.index("09:26 竞价速览") < page.index("① 板块竞价全景")
+    assert "备看排序 diagnostic" in page and "数据完整度与异常摘要" in page
+
+    report_json.write_text(json.dumps({"stage": "auction"}), encoding="utf-8")
+    fallback = build_report_message("Core", "2026-10-16", "auction", report_html, report_json,
+        [report_mailer.ALLOWED_RECIPIENT], "reports@localhost")
+    fallback_plain = fallback.get_body(preferencelist=("plain",)).get_content()
+    fallback_html = fallback.get_body(preferencelist=("html",)).get_content()
+    assert "竞价速览构建失败" in fallback_plain and 'role="alert"' in fallback_html
+    assert "① 板块竞价全景" in fallback_html

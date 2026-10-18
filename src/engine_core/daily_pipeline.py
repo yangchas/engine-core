@@ -1022,6 +1022,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                   if (row.get("symbol") or row.get("code")) and row.get("real_market_cap") is not None}
     td_source_manifest = {"available": src.td is not None and not src.td_error,
                           "data_lag_seconds": None, "coverage": None}
+    v6_failure_internal_detail = None
     daily_coverage = None
     if refs["daily_capture_manifest"]:
         try:
@@ -1961,7 +1962,10 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 store_auction_panorama(panorama, redis=src.redis)
                 payload["auction_panorama"] = panorama
             except Exception as exc:
-                payload["v6_panorama_failure"] = f"{type(exc).__name__}: {exc}"
+                from .email_render import v6_failure_internal, v6_failure_public_code
+                raw_failure = f"{type(exc).__name__}: {exc}"
+                payload["v6_panorama_failure"] = v6_failure_public_code(raw_failure)
+                v6_failure_internal_detail = v6_failure_internal(raw_failure)
                 payload["v6_degraded_code"] = "V6_PANORAMA_MISSING"
                 degraded.append("V6_PANORAMA_MISSING")
                 failed_facts_result = slice_results.get("auction_stock_facts")
@@ -1985,7 +1989,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         email_page, email_plain = render_email_html(payload, stage, trade_date, {
             "trade_date": trade_date, "asof": asof, "sources": {"td": td_source_manifest},
             "slices": slice_manifest, "used_dates": used_dates, "degraded": degraded,
-            "elapsed_seconds": round(time.monotonic() - started, 3)})
+            "elapsed_seconds": round(time.monotonic() - started, 3)}, full_report=True)
         pipeline_timings["render"] = round(time.monotonic() - render_started, 3)
         write_started = time.monotonic()
         (out / "report.html").write_text(email_page, encoding="utf-8")
@@ -2298,6 +2302,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     result.meta.get("source") == "legacy_redis" else ""
                     for result in slice_results.values()} - {""}),
                 "report_json_bytes": len(report_text.encode("utf-8")), "allow_wencai_fallback": allow_wencai_fallback}
+    if v6_failure_internal_detail:
+        manifest["v6_panorama_failure_internal"] = v6_failure_internal_detail
     if report_json_warning:
         manifest["warnings"] = [report_json_warning]
     print("REPORT_TIMINGS " + " ".join(f"{key}={value:.3f}s" for key, value in pipeline_timings.items()),

@@ -15,6 +15,11 @@ def test_quickbrief_thresholds_and_replay_banner():
     assert "普遍高开" in result["lines"][1]
     assert "历史回放样本" in result["lines"][0]
     assert len(result["lines"]) == 8
+    assert result["email_lines"][0] == "09:26 竞价速览 · 2026-10-16"
+    assert result["email_lines"][1] == "历史回放样本,非当时实时生成的交易信号"
+    assert result["email_lines"][2] == "市场:普遍高开,接力样本不足,不下结论。"
+    assert any(line.startswith("封单极值:") for line in result["email_lines"])
+    assert result["email_lines"][-1] == "阈值为 V1 冻结工程阈值,非市场规律,未回测"
 
 
 def test_quickbrief_low_price_coverage_and_missing_prices_do_not_count():
@@ -28,6 +33,8 @@ def test_quickbrief_low_price_coverage_and_missing_prices_do_not_count():
     assert result["rules"]["market_coverage_sufficient"] is False
     assert result["lines"][1] == "市场 覆盖不足,不下结论"
     assert "暂无观察候选" in result["lines"][-2]
+    assert result["email_lines"][1] == "市场:覆盖不足,不下结论。"
+    assert any("暂无符合广泛强势条件的板块" in line for line in result["email_lines"])
 
 
 def test_quickbrief_excludes_missing_zero_negative_and_nan_prices_everywhere():
@@ -144,7 +151,26 @@ def test_quickbrief_no_candidates_and_market_relay_sentence():
     assert result["rules"]["relay_lag"] is True
     assert "接力明显落后" in result["lines"][1]
     assert "昨板高开20/36" in result["lines"][1]
+    assert result["email_lines"][1] == "市场:普遍高开,昨日涨停接力明显落后。"
     assert "暂无观察候选" in result["lines"][-2]
+
+
+def test_quickbrief_email_market_heading_reports_relay_not_lagging():
+    facts = {"trade_date": "2026-10-16", "rows": [
+        {"symbol": f"{i:06d}", "valid_price": True, "price": 10, "pct_change": 1.2,
+         "auction_amount_yuan": 100} for i in range(1, 31)]}
+    pool = [{"symbol": f"{i:06d}"} for i in range(1, 21)]
+    result = build_auction_quickbrief(facts, plate_members=[], yesterday_pool=pool)
+    assert result["email_lines"][1] == "市场:普遍高开,昨日涨停接力未明显落后。"
+
+
+def test_quickbrief_email_market_heading_reports_insufficient_relay_sample():
+    facts = {"trade_date": "2026-10-16", "rows": [
+        {"symbol": f"{i:06d}", "valid_price": True, "price": 10, "pct_change": 1.2,
+         "auction_amount_yuan": 100} for i in range(1, 21)]}
+    pool = [{"symbol": f"{i:06d}"} for i in range(1, 20)]
+    result = build_auction_quickbrief(facts, plate_members=[], yesterday_pool=pool)
+    assert result["email_lines"][1] == "市场:普遍高开,接力样本不足,不下结论。"
 
 
 def test_quickbrief_market_amount_share_boundary_refill_and_empty():

@@ -45,8 +45,8 @@ def main(argv=None):
     plain = msg.get_body(preferencelist=("plain",)).get_content().splitlines()
     print(f"subject={msg['Subject']}")
     print(f"recipients={len(args.to)} attachment_bytes={attached_bytes}")
-    print("summary:")
-    for line in plain[:8]:
+    print("body:")
+    for line in plain:
         print(line)
     receipt = send_message(config, msg, dry_run=not args.send, allow_recipients=[ALLOWED_RECIPIENT])
     print(f"status={receipt.status} message_bytes={receipt.message_bytes}")
