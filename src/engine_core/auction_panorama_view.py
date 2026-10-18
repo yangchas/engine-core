@@ -102,9 +102,19 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
                  if isinstance(seal_sum, (int, float)) else f"待核实（{seal_scope}）")
     cards = [("竞价匹配额", amount + " · " + history_text), ("上涨 / 中位涨幅", up_text),
              ("昨日涨停高开", high_open + "（按竞价价>昨收）"), ("竞价涨停封单合计", seal_text)]
-    rule_sentence = (f"竞价额{amount}（{history_text}）；上涨占比{_fmt(up_ratio * 100 if isinstance(up_ratio, (int, float)) else None, 1, '%')}；"
-                     f"昨日涨停高开{yesterday.get('numerator', '—')}/{yesterday.get('denominator', '—')}，较市场"
-                     f"{_fmt(overview.get('yesterday_vs_market_pp'), 2, 'pp')}（均按竞价价>昨收）；封单合计{_money(seal_sum)}")
+    conclusions = []
+    if not history_ready:
+        conclusions.append("竞价额基线不足，仅参考")
+    yn, yd = yesterday.get("numerator"), yesterday.get("denominator")
+    market_ratio = up.get("ratio")
+    if (isinstance(yn, (int, float)) and isinstance(yd, (int, float)) and yd > 0
+            and isinstance(market_ratio, (int, float))):
+        yesterday_ratio = yn / yd
+        if yesterday_ratio < market_ratio:
+            conclusions.append(f"昨日涨停高开率{_fmt(yesterday_ratio * 100, 1, '%')}低于市场{_fmt(market_ratio * 100, 1, '%')}")
+        else:
+            conclusions.append(f"昨日涨停高开率{_fmt(yesterday_ratio * 100, 1, '%')}不低于市场{_fmt(market_ratio * 100, 1, '%')}")
+    rule_sentence = "；".join(conclusions) or "暂无可核实的结论"
     pool_amount = overview.get("yesterday_pool_auction_amount_yuan")
     pool_share = overview.get("yesterday_pool_market_share")
     open_counts = overview.get("yesterday_pool_open_counts", {})
@@ -120,7 +130,16 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
                            for row in worst if isinstance(row, Mapping)) or "待核实"
     verified_n = overview.get("yesterday_pool_verified_seal_n")
     verified_sum = overview.get("yesterday_pool_verified_seal_sum_yuan")
-    feedback_summary = (f"昨日池最弱：{worst_text}；封单已核实 {verified_n if verified_n is not None else '—'} 只、合计 {_money(verified_sum)}")
+    global_verified_n = None
+    if isinstance(seal_scope, str) and "/" in seal_scope:
+        try:
+            global_verified_n = int(seal_scope.split("/", 1)[0])
+        except ValueError:
+            pass
+    pool_seal_share = (verified_sum / seal_sum if isinstance(verified_sum, (int, float))
+                       and isinstance(seal_sum, (int, float)) and seal_sum > 0 else None)
+    feedback_summary = (f"昨日池最弱：{worst_text}；全市场已核实封单 {global_verified_n if global_verified_n is not None else '—'} 只、合计 {_money(seal_sum)}；"
+                        f"昨日涨停池内已核实封单 {verified_n if verified_n is not None else '—'} 只、合计 {_money(verified_sum)}，占全市场 {_fmt(pool_seal_share * 100 if pool_seal_share is not None else None, 1, '%')}")
     summaries = [pool_summary, bias_summary, feedback_summary]
     cards_html = '<table role="presentation" width="100%"><tr>' + ''.join(
         f'<td style="width:50%;padding:4px;vertical-align:top"><div style="background:#f6f8fb;border:1px solid #e4e7ec;padding:9px">'
@@ -143,8 +162,7 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
                 else "热榜名次按报告前真实抓取快照展示。" if hot_basis == "PIT_LIVE"
                 else "热榜名次暂无可用快照。")
     hot_note = f"{hot_basis}：{hot_note}；热榜覆盖 {hot_n}/{len(plates)}"
-    hot_coverage_note = ("开盘啦热榜口径=热板Top50；258行版本为更宽的列表，当前默认选用50行版本，预览覆盖0/10为实情。"
-                         "覆盖分母为本页选中板块，未收录于热榜计为 —。")
+    hot_coverage_note = (f"热榜覆盖 {hot_n}/{len(plates)}；覆盖分母为本页选中板块，未收录于热榜计为 —。")
     plate_rows, plate_text = [], []
     for plate in plates:
         name = plate.get("plate_name") or plate.get("plate_id") or "板块待核实"

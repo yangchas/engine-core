@@ -47,7 +47,7 @@ def test_panorama_view_renders_two_complete_tables_and_preserves_unknowns():
     assert "基线样本14/64（样本不足，仅参考）" in plain
     assert "0.98倍 / 42.9分位" not in plain
     assert "规则一句话：" in plain
-    assert "（均按竞价价>昨收）" in plain
+    assert "昨日涨停高开率55.6%低于市场90.2%" in plain
     assert "市场结构" not in plain
     assert "成员涨幅中位数" in plain
     assert "本层占比" not in plain
@@ -66,12 +66,33 @@ def test_posthoc_hot_coverage_and_readable_amounts_and_selection_reasons():
     html, plain = render_auction_panorama(product)
     assert "收盘后回溯，非09:26快照，仅供开发评估" in plain
     assert "热榜覆盖 0/1" in plain
-    assert "开盘啦热榜口径=热板Top50；258行版本为更宽的列表" in plain
+    assert "预览覆盖0/10" not in plain
+    assert "覆盖分母为本页选中板块" in plain
     assert "未收录于热榜计为 —" in html + plain
     assert "封单金额/名次待核实" not in plain
     assert "1.20亿" in plain and "1.23亿" in plain
     assert "Top1金额占比" not in plain
     assert "选择：强/金额Top3" in plain
+
+
+def test_seal_summary_scopes_are_explicit_and_hot_coverage_is_single_source():
+    product = {"overview": {"verified_seal_sum_yuan": 4_686_000_000,
+        "verified_seal_scope": "7/7", "yesterday_pool_verified_seal_n": 3,
+        "yesterday_pool_verified_seal_sum_yuan": 1_424_000_000,
+        "yesterday_pool_market_share": .304}, "plates": [
+            {"plate_name": "甲", "hot_rank": 1, "stocks": []},
+            {"plate_name": "乙", "hot_rank": None, "stocks": []}],
+        "yesterday_ladder": []}
+    _html, plain = render_auction_panorama(product)
+    assert "竞价涨停封单合计：46.86亿（核实 7/7" in plain
+    assert "全市场已核实封单 7 只、合计 46.86亿" in plain
+    assert "昨日涨停池内已核实封单 3 只、合计 14.24亿" in plain
+    assert "占全市场 30.4%" in plain
+    assert "热榜覆盖 1/2" in plain
+    assert "预览覆盖0/10" not in plain
+    rule = plain.split("规则一句话：", 1)[1].splitlines()[0]
+    assert "封单合计" not in rule
+    assert "（（" not in rule
 
 
 def test_ready_baseline_keeps_multiple_and_partial_baseline_is_gray():
@@ -111,4 +132,4 @@ def test_unverified_promotion_is_displayed_as待核实():
     assert "原因未核实" in html + plain and "关联板块：冰雪产业" in html + plain
     assert "昨日涨停池竞价额 1.00亿" in plain
     assert "高/平/低开 1/1/1" in plain and "未控制流动性" in plain
-    assert "最弱股 -5.00%" in plain and "封单已核实 2 只、合计 3.00亿" in plain
+    assert "最弱股 -5.00%" in plain and "昨日涨停池内已核实封单 2 只、合计 3.00亿" in plain
