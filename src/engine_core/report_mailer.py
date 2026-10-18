@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import smtplib
 import ssl
 import time
@@ -20,6 +21,38 @@ logger = logging.getLogger(__name__)
 MAX_HTML_ATTACHMENT_BYTES = int(1.5 * 1024 * 1024)
 ALLOWED_RECIPIENT = "412826313@qq.com"
 DEFAULT_CONFIG_PATH = Path("/home/exedev/services/engine-next/shared/secrets/engine_next_notify.json")
+
+
+def _load_matching_panorama(report_data: Mapping[str, object], report_dir: Path) -> dict | None:
+    """Load the panorama saved beside this report and verify its content hash."""
+    filename = report_data.get("auction_panorama_file")
+    expected_hash = report_data.get("auction_panorama_sha256")
+    trade_date = report_data.get("trade_date")
+    asof = report_data.get("asof")
+    if (filename != "auction_panorama.json" or not isinstance(expected_hash, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_hash)
+            or not isinstance(trade_date, str) or not isinstance(asof, str)):
+        return None
+    try:
+        raw = (report_dir / filename).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != expected_hash:
+            return None
+        artifact = json.loads(raw)
+        if (not isinstance(artifact, dict) or artifact.get("trade_date") != trade_date
+                or artifact.get("asof") != asof or not isinstance(artifact.get("version"), str)
+                or not isinstance(artifact.get("sha256"), str)):
+            return None
+        panorama_raw = json.dumps(artifact.get("panorama"), ensure_ascii=False,
+                                  allow_nan=False, separators=(",", ":")).encode("utf-8")
+        if hashlib.sha256(panorama_raw).hexdigest() != artifact["sha256"]:
+            return None
+        panorama = artifact.get("panorama")
+        if (not isinstance(panorama, dict) or panorama.get("trade_date") != trade_date
+                or panorama.get("asof") != asof):
+            return None
+        return panorama
+    except (OSError, ValueError, TypeError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -146,6 +179,18 @@ def build_report_message(subject_prefix: str, trade_date: str, stage: str,
             report_data = {}
     if not isinstance(report_data, dict):
         report_data = {}
+    panorama_recovery_failed = False
+    auction_stage = "auction" in str(stage).lower()
+    if auction_stage:
+        stored_panorama = _load_matching_panorama(report_data, json_path.parent) if json_path else None
+        if stored_panorama is not None:
+            report_data["auction_panorama"] = stored_panorama
+        else:
+            report_data.pop("auction_panorama", None)
+            panorama_recovery_failed = True
+            report_data["v6_panorama_failure"] = "V6_PANORAMA_MISSING:DATA_MISSING"
+    elif not isinstance(report_data.get("auction_panorama"), Mapping):
+        report_data.pop("auction_panorama", None)
     rendered_from_data, plain_text = render_email_html(report_data, stage, trade_date, manifest)
     # The report page is rendered from the full in-memory product before the
     # bounded JSON projection is persisted. Reuse that exact HTML for email.
@@ -162,6 +207,14 @@ def build_report_message(subject_prefix: str, trade_date: str, stage: str,
                    and bool(quickbrief.get("email_lines")))
     rendered_html = (rendered_from_data if brief_ready else
                      saved_html if "竞价全景 V6" in saved_html else rendered_from_data)
+    if panorama_recovery_failed:
+        rendered_html = saved_html
+        notice = "报告目录中的 V6 全景文件缺失或校验失败，已降级：V6_PANORAMA_MISSING:DATA_MISSING"
+        alert = ('<div role="alert" style="margin:10px;padding:12px;background:#fff0e5;'
+                 'border:2px solid #c2410c;font-weight:700">' + notice + "</div>")
+        rendered_html = (rendered_html.replace("</body>", alert + "</body>", 1)
+                         if "</body>" in rendered_html else rendered_html + alert)
+        plain_text = notice + "\n\n" + plain_text
     if "auction" in str(stage).lower() and not brief_ready:
         fallback_notice = "竞价速览构建失败,以下为完整报告回退。"
         if fallback_notice not in plain_text:

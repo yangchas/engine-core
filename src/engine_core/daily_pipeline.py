@@ -814,6 +814,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         raise ValueError("--publish and --dry-run cannot be combined")
     started = time.monotonic()
     pipeline_timings: dict[str, float] = {}
+    auction_panorama_artifact = None
     src = sources or DailySources(reference_root=reference_root)
     if src.redis is None:
         try:
@@ -1956,10 +1957,26 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     name_map=stock_names,
                     market_amount_history=baseline_history,
                     replay=baseline_replay or hot_ranks.get("basis") == "POSTHOC_DEV")
+                relay_buckets = panorama.get("overview", {}).get("yesterday_reason_buckets", [])
+                relay_candidates = [bucket for bucket in relay_buckets
+                    if isinstance(bucket, Mapping) and bucket.get("willingness") != "不适用·非共同题材"]
+                lead_relay = relay_candidates[0].get("willingness") if relay_candidates else "样本不足"
+                highboards = panorama.get("overview", {}).get("yesterday_pool_high_boards", [])
+                high_statuses = [item.get("promotion_status") for item in highboards if isinstance(item, Mapping)]
+                highboard_state = ("有拟晋级迹象" if "PROVISIONAL" in high_statuses else
+                    "暂无可核实高标" if not high_statuses or all(value == "UNVERIFIED" for value in high_statuses) else
+                    "未见封板晋级")
+                quickbrief.setdefault("rules", {})["panorama_relay_label"] = lead_relay
+                quickbrief["rules"]["panorama_highboard_state"] = highboard_state
+                quickbrief["email_lines"] = [
+                    f"结论:题材接力意愿{lead_relay}；高标{highboard_state}"
+                    if str(line).startswith("结论:") else line
+                    for line in quickbrief.get("email_lines", [])]
                 panorama["quickbrief"] = quickbrief
                 payload["auction_quickbrief"] = quickbrief
                 panorama["lineage"]["hot_rank_basis"] = hot_ranks.get("basis", "UNKNOWN")
                 store_auction_panorama(panorama, redis=src.redis)
+                auction_panorama_artifact = panorama
                 payload["auction_panorama"] = panorama
             except Exception as exc:
                 from .email_render import v6_failure_internal, v6_failure_public_code
@@ -2259,6 +2276,23 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                       if stage == "close" else
                       live_pages._json_report_payload(persisted_payload if stage == "auction" else payload))
     _shrink_live_report(compact_report)
+    if stage == "auction":
+        compact_report["trade_date"] = trade_date
+        if isinstance(auction_panorama_artifact, Mapping):
+            compact_report["asof"] = auction_panorama_artifact.get("asof")
+            panorama_bytes = json.dumps(auction_panorama_artifact, ensure_ascii=False,
+                                        allow_nan=False, separators=(",", ":")).encode("utf-8")
+            panorama_hash = hashlib.sha256(panorama_bytes).hexdigest()
+            panorama_sidecar = {"trade_date": trade_date, "asof": auction_panorama_artifact.get("asof"),
+                "version": auction_panorama_artifact.get("version") or auction_panorama_artifact.get("schema"),
+                "sha256": panorama_hash, "panorama": auction_panorama_artifact}
+            sidecar_bytes = json.dumps(panorama_sidecar, ensure_ascii=False, allow_nan=False,
+                                       separators=(",", ":")).encode("utf-8")
+            (out / "auction_panorama.json").write_bytes(sidecar_bytes)
+            compact_report["auction_panorama_file"] = "auction_panorama.json"
+            compact_report["auction_panorama_sha256"] = hashlib.sha256(sidecar_bytes).hexdigest()
+        elif asof:
+            compact_report["asof"] = asof
     report_text = json.dumps(compact_report,
                              ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
     report_json_warning = None

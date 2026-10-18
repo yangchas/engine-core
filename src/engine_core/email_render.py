@@ -864,6 +864,29 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
         public_lines = quickbrief.get("email_lines") if isinstance(quickbrief, Mapping) else None
         if isinstance(public_lines, list) and public_lines and not full_report:
             status, _, _ = _quality_banner(manifest, report)
+            if isinstance(panorama, Mapping):
+                from .auction_panorama_view import render_auction_email_digest
+                degraded_note = ""
+                if status != "READY":
+                    for group_name in ("slices", "sources"):
+                        group = manifest.get(group_name) if isinstance(manifest, Mapping) else None
+                        if not isinstance(group, Mapping):
+                            continue
+                        issue = next(((str(name), value) for name, value in group.items()
+                                      if isinstance(value, Mapping)
+                                      and str(value.get("status", "UNKNOWN")).upper() != "READY"), None)
+                        if issue:
+                            name, detail = issue
+                            reason = detail.get("reason")
+                            degraded_note = f"原因：{name} {detail.get('status', 'UNKNOWN')}"
+                            if reason:
+                                degraded_note += f" [{v6_failure_public_code(reason)}]"
+                            break
+                    if not degraded_note:
+                        degraded_note = "原因：数据覆盖或来源状态未完整"
+                return render_auction_email_digest(panorama, quickbrief,
+                                                   completeness=status,
+                                                   degraded_note=degraded_note)
             warning = status != "READY"
             title = str(public_lines[0])
             replay_note = (str(public_lines[1]) if len(public_lines) > 1 and
@@ -874,6 +897,10 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
                 public_html.append(f'<div style="font-size:11px;color:#667085;margin-bottom:10px">{_esc(replay_note)}</div>')
             if warning:
                 public_html.append(f'<div style="font-size:11px;color:#7c2d12;margin:5px 0">数据完整度与异常 [{_esc(status)}]</div>')
+            failure = report.get("v6_panorama_failure")
+            failure_code = v6_failure_public_code(failure) if failure else ""
+            if failure_code:
+                public_html.append(f'<div role="alert" style="font-size:11px;color:#7c2d12;margin:5px 0">V6 全景缺失：{_esc(failure_code)}</div>')
             for line in content_lines:
                 label = line if line.endswith(":") else None
                 public_html.append((f'<div style="font-weight:700;margin-top:8px">{_esc(label)}</div>'
@@ -881,6 +908,8 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
             plain = "\n".join(str(line) for line in public_lines)
             if warning:
                 plain = plain.replace("\n", f"\n数据完整度与异常 [{status}]\n", 1)
+            if failure_code:
+                plain = f"V6 全景缺失：{failure_code}\n" + plain
             plain += "\n明细见附件 report.html"
             public_html.append('<div style="margin-top:10px;font-size:11px;color:#667085">明细见附件 report.html</div>')
             return (('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"></head>'

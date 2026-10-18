@@ -14,6 +14,11 @@ from .data_pipeline.storage import ArtifactCatalog
 
 TZ = ZoneInfo("Asia/Shanghai")
 SCHEMA = "auction_panorama_v1"
+EXTREME_DEVIATION_THRESHOLD_PP_V1 = 3.0
+DISPERSION_VISIBLE_THRESHOLD_PP_V1 = 4.0
+RELAY_THRESHOLD_PP_V1 = 15.0
+RELAY_MIN_N_V1 = 3
+RELAY_MEDIAN_GAP_PP_V1 = 1.0
 
 
 def _num(value: Any) -> float | None:
@@ -44,6 +49,20 @@ def _at_official_limit(row: Mapping[str, Any]) -> bool | None:
     if not _has_valid_auction_price(row) or limit is None or limit <= 0:
         return None
     return round(price * 100) == round(limit * 100)
+
+
+def _promotion_status(row: Mapping[str, Any]) -> str:
+    """Return the sole per-stock promotion state used by all panorama views."""
+    valid_price = _has_valid_auction_price(row)
+    seal = row.get("seal", {})
+    seal_verified = isinstance(seal, Mapping) and seal.get("status") in ("VERIFIED", "VERIFIED_REPLAY")
+    at_limit = _at_official_limit(row)
+    pct_change = _num(row.get("pct_change"))
+    if valid_price and (seal_verified or at_limit is True):
+        return "PROVISIONAL"
+    if not valid_price or at_limit is None or pct_change is None:
+        return "UNVERIFIED"
+    return "NOT_PROMOTED"
 
 
 def _median(values: Sequence[float]) -> float | None:
@@ -127,6 +146,20 @@ def _rank(rows: Sequence[Mapping[str, Any]], value_fn) -> dict[str, int]:
     values = [(str(row["symbol"]), value_fn(row)) for row in rows]
     values = [(symbol, value) for symbol, value in values if value is not None]
     return {symbol: 1 + sum(other > value for _s, other in values) for symbol, value in values}
+
+
+def _percentile(values: Sequence[float], fraction: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * fraction
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+
+def _open_bucket(value: float) -> str:
+    return "high" if value > 0 else "flat" if value == 0 else "low"
 
 
 def normalize_hot_plates(rows: Sequence[Mapping[str, Any]], *, fetched_at: str,
@@ -254,16 +287,105 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
         size = len(plate["symbols"])
         scale = "小" if 5 <= size <= 19 else "中" if 20 <= size <= 99 else "大" if size >= 100 else None
         member_amount = [_num(row.get("auction_amount_yuan")) for row in members]
-        valid_member_amount = [v for v in member_amount if v is not None and v >= 0]
+        valid_member_amount = [v for v in member_amount if v is not None and v > 0]
         total = sum(valid_member_amount) if valid_member_amount else None
-        ordered_amount = sorted((( _num(row.get("auction_amount_yuan")), row) for row in members
-                                 if _num(row.get("auction_amount_yuan")) is not None), key=lambda x: (-x[0], x[1]["symbol"]))
+        ordered_amount = sorted(((_num(row.get("auction_amount_yuan")), row) for row in members
+                                 if _num(row.get("auction_amount_yuan")) is not None and
+                                 _num(row.get("auction_amount_yuan")) > 0), key=lambda x: (-x[0], x[1]["symbol"]))
         up = sum(value > 0 for value in pcts)
+        plate_median = _median(pcts)
+        ge_3 = sum(value >= 3 for value in pcts)
+        zero_to_3 = sum(0 <= value < 3 for value in pcts)
+        lt_0 = sum(value < 0 for value in pcts)
+        distribution_counts = {"≥+3%": ge_3, "0~+3%": zero_to_3, "<0": lt_0}
+        majority = (next((label for label, count in distribution_counts.items()
+                          if pcts and count / len(pcts) > .5), "分散") if pcts else None)
+        plate_extremes: dict[str, Any] = {"strongest": None, "weakest": None,
+            "threshold_pp": EXTREME_DEVIATION_THRESHOLD_PP_V1,
+            "threshold_note": "工程阈值非市场规律未回测"}
+        if pcts and plate_median is not None:
+            strongest = max(valid, key=lambda row: (_num(row.get("pct_change")), row["symbol"]))
+            weakest = min(valid, key=lambda row: (_num(row.get("pct_change")), row["symbol"]))
+            if _num(strongest.get("pct_change")) - plate_median >= EXTREME_DEVIATION_THRESHOLD_PP_V1:
+                plate_extremes["strongest"] = {"symbol": strongest["symbol"],
+                    "name": stock_name(strongest["symbol"], strongest),
+                    "pct_change": _num(strongest.get("pct_change")),
+                    "amount_rank": amount_ranks.get(strongest["symbol"])}
+            if plate_median - _num(weakest.get("pct_change")) >= EXTREME_DEVIATION_THRESHOLD_PP_V1:
+                plate_extremes["weakest"] = {"symbol": weakest["symbol"],
+                    "name": stock_name(weakest["symbol"], weakest),
+                    "pct_change": _num(weakest.get("pct_change")),
+                    "amount_rank": amount_ranks.get(weakest["symbol"])}
+        member_symbols = {row["symbol"] for row in members}
+        yesterday_theme_rows = []
+        for symbol, pool_row in pool_by_symbol.items():
+            assignment = (theme_assignments or {}).get(symbol, {})
+            primary = assignment.get("primary_theme") if isinstance(assignment, Mapping) else None
+            assigned_id = str(primary.get("id", primary.get("code", ""))) if isinstance(primary, Mapping) else ""
+            assigned_name = str(primary.get("name", "")) if isinstance(primary, Mapping) else ""
+            reason = _primary_reason(pool_row, {"reasons": (yesterday_reasons or {}).get(
+                symbol, (yesterday_reasons or {}).get(symbol.lstrip("0"), []))}, previous_trade_date)
+            if (symbol in member_symbols or assigned_id == code or assigned_name == plate["plate_name"]
+                    or reason == plate["plate_name"]):
+                yesterday_theme_rows.append((symbol, pool_row, by_symbol.get(symbol, {})))
+        relay_valid = [(symbol, pool_row, row) for symbol, pool_row, row in yesterday_theme_rows
+                       if _has_valid_auction_price(row) and _num(row.get("pct_change")) is not None]
+        relay_counts = {"high": sum(_num(row.get("pct_change")) > 0 for _, _, row in relay_valid),
+                        "flat": sum(_num(row.get("pct_change")) == 0 for _, _, row in relay_valid),
+                        "low": sum(_num(row.get("pct_change")) < 0 for _, _, row in relay_valid)}
+        relay_n = len(relay_valid)
+        market_high_ratio = market_up_ratio
+        relay_high_ratio = relay_counts["high"] / relay_n if relay_n else None
+        relay_gap_pp = ((relay_high_ratio - market_high_ratio) * 100
+                        if relay_high_ratio is not None and market_high_ratio is not None else None)
+        relay_median = _median([_num(row.get("pct_change")) for _, _, row in relay_valid
+                                if _num(row.get("pct_change")) is not None])
+        median_gap_pp = relay_median - market_median if relay_median is not None and market_median is not None else None
+        relay_label = ("样本不足" if relay_n < RELAY_MIN_N_V1 else
+                       "接力偏弱" if ((relay_gap_pp is not None and relay_gap_pp <= -RELAY_THRESHOLD_PP_V1) or
+                                       (median_gap_pp is not None and median_gap_pp <= -RELAY_MEDIAN_GAP_PP_V1)) else
+                       "接力偏强" if relay_gap_pp is not None and relay_gap_pp >= 0 and
+                                      median_gap_pp is not None and median_gap_pp >= RELAY_MEDIAN_GAP_PP_V1 else "分歧")
+        verified_member_seals = [row for row in members if row.get("seal", {}).get("status") in
+            ("VERIFIED", "VERIFIED_REPLAY") and
+            _num(row.get("seal", {}).get("seal_amount_yuan")) is not None]
+        seal_extreme_row = max(verified_member_seals,
+            key=lambda row: (_num(row["seal"].get("seal_amount_yuan")), row["symbol"]), default=None)
         plate_stats.append({"plate_id": code, "plate_name": plate["plate_name"], "count": size,
                             "class": plate_classes.get(code, "UNKNOWN"),
                             "scale": scale, "amount_yuan": total,
                             "market_share": total / market_amount if total is not None and market_amount else None,
-                            "member_median_pct": _median(pcts), "equal_weight_pct": _median(pcts),
+                            "member_median_pct": plate_median, "equal_weight_pct": plate_median,
+                            "distribution": {"ge_3_n": ge_3, "zero_to_3_n": zero_to_3,
+                                "lt_0_n": lt_0, "valid_n": len(pcts), "majority": majority},
+                            "dispersion_p75_p25_pp": (_percentile(pcts, .75) - _percentile(pcts, .25)
+                                                       if len(pcts) >= 2 else None),
+                            "dispersion_visible_threshold_pp": DISPERSION_VISIBLE_THRESHOLD_PP_V1,
+                            "extremes": plate_extremes,
+                            "extreme_threshold_pp": EXTREME_DEVIATION_THRESHOLD_PP_V1,
+                            "extreme_threshold_note": "工程阈值非市场规律未回测",
+                            "yesterday_relay": {"n": len(yesterday_theme_rows),
+                                "valid_n": len(yesterday_theme_rows), "open_counts": relay_counts,
+                                "provisional_n": sum(_promotion_status(row) == "PROVISIONAL"
+                                    for _, _, row in yesterday_theme_rows),
+                                "not_promoted_n": sum(_promotion_status(row) == "NOT_PROMOTED"
+                                    for _, _, row in yesterday_theme_rows),
+                                "unverified_n": sum(_promotion_status(row) == "UNVERIFIED"
+                                    for _, _, row in yesterday_theme_rows),
+                                "high_rate_gap_pp": relay_gap_pp, "willingness": relay_label},
+                            "verified_seal_n": sum(row.get("seal", {}).get("status") in
+                                ("VERIFIED", "VERIFIED_REPLAY") and
+                                _num(row.get("seal", {}).get("seal_amount_yuan")) is not None for row in members),
+                            "verified_seal_amount_yuan": sum(_num(row["seal"].get("seal_amount_yuan"))
+                                for row in members if row.get("seal", {}).get("status") in
+                                ("VERIFIED", "VERIFIED_REPLAY") and
+                                _num(row.get("seal", {}).get("seal_amount_yuan")) is not None) or None,
+                            "seal_extreme": ({"symbol": seal_extreme_row["symbol"],
+                                "name": stock_name(seal_extreme_row["symbol"], seal_extreme_row),
+                                "seal_amount_yuan": _num(seal_extreme_row["seal"].get("seal_amount_yuan")),
+                                "seal_rank": seal_ranks.get(seal_extreme_row["symbol"]),
+                                "amount_rank": amount_ranks.get(seal_extreme_row["symbol"])}
+                                if seal_extreme_row else None),
                             "up_count": up, "valid_price_count": len(pcts),
                             "valid_amount_count": len(valid_member_amount),
                             "up_label": f"上涨 {up}/{len(pcts)}",
@@ -348,8 +470,9 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
     global_amount_top3 = {symbol for symbol, rank in amount_ranks.items()
                           if _num(rank) is not None and _num(rank) <= 3}
     plates_out = []
-    for plate in sorted((p for p in plate_stats if p["plate_id"] in selected),
-                        key=lambda p: (p["scale"] or "", p["plate_id"])):
+    selected_for_report = sorted((p for p in plate_stats if p["plate_id"] in selected),
+                                 key=lambda p: (p["scale"] or "", p["plate_id"]))[:10]
+    for plate in selected_for_report:
         members = plate["_members"]
         member_symbols = {row["symbol"] for row in members}
         picks: set[str] = {row["symbol"] for row in members
@@ -440,12 +563,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
         valid_auction_price = _has_valid_auction_price(row)
         seal_verified = seal.get("status") in ("VERIFIED", "VERIFIED_REPLAY")
         at_limit = _at_official_limit(row)
-        if valid_auction_price and (seal_verified or at_limit is True):
-            promotion_status = "PROVISIONAL"
-        elif not valid_auction_price or at_limit is None or pct_change is None:
-            promotion_status = "UNVERIFIED"
-        else:
-            promotion_status = "NOT_PROMOTED"
+        promotion_status = _promotion_status(row)
         pool_cause = next((pool_row.get(key) for key in ("pool_reason", "primary_reason", "reason", "limit_reason")
                            if pool_row.get(key) not in (None, "")), None)
         reason_source_date = None
@@ -521,6 +639,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
               key=lambda row: (_num(row.get("pct_change")), row["symbol"]), default=None)
     low_symbol = low["symbol"] if low else None
     yesterday_rows = [row for symbol, row in by_symbol.items() if symbol in pool_by_symbol]
+    _, yesterday_pool_positive_total = _positive_auction_amount_aggregate(yesterday_rows)
     yesterday_amounts = [_num(row.get("auction_amount_yuan")) for row in yesterday_rows]
     yesterday_valid_amounts = [value for value in yesterday_amounts if value is not None and value >= 0]
     yesterday_total = (sum(yesterday_valid_amounts)
@@ -547,10 +666,111 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                              key=lambda row: (_num(row.get("pct_change")), row["symbol"]))[:2]
     pool_seals = [row for row in yesterday_rows if row.get("seal", {}).get("status") in ("VERIFIED", "VERIFIED_REPLAY")
                   and _num(row.get("seal", {}).get("seal_amount_yuan")) is not None]
+    def market_extreme(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        price = _num(row.get("price", row.get("price_yuan")))
+        up_limit = _num(row.get("official_limit_up_price"))
+        down_limit = _num(row.get("official_limit_down_price"))
+        mark = ("涨停封" if price is not None and up_limit is not None and
+                round(price * 100) == round(up_limit * 100) else
+                "跌停封" if price is not None and down_limit is not None and
+                round(price * 100) == round(down_limit * 100) else None)
+        return {"symbol": row["symbol"], "name": stock_name(row["symbol"], row),
+                "pct_change": _num(row.get("pct_change")),
+                "auction_amount_yuan": _num(row.get("auction_amount_yuan")),
+                "amount_rank": amount_ranks.get(row["symbol"]), "limit_mark": mark}
+    highest_row = max(price_rows, key=lambda row: (_num(row.get("pct_change")), row["symbol"]), default=None)
+    lowest_row = min(price_rows, key=lambda row: (_num(row.get("pct_change")), row["symbol"]), default=None)
+    verified_seals = [row for row in by_symbol.values() if row.get("seal", {}).get("status") in
+                      ("VERIFIED", "VERIFIED_REPLAY") and
+                      _num(row.get("seal", {}).get("seal_amount_yuan")) is not None]
+    max_seal_row = max(verified_seals, key=lambda row: (_num(row["seal"].get("seal_amount_yuan")),
+                            row["symbol"]), default=None)
+    yesterday_down_symbols = [symbol for symbol, row in pool_by_symbol.items()
+        if any(row.get(key) is True for key in ("was_limit_down", "is_limit_down", "limit_down"))]
+    yesterday_down_rows = [by_symbol[symbol] for symbol in yesterday_down_symbols if symbol in by_symbol and
+        _has_valid_auction_price(by_symbol[symbol]) and _num(by_symbol[symbol].get("pct_change")) is not None]
+    yesterday_down_counts = {"high": sum(_num(row.get("pct_change")) > 0 for row in yesterday_down_rows),
+        "flat": sum(_num(row.get("pct_change")) == 0 for row in yesterday_down_rows),
+        "low": sum(_num(row.get("pct_change")) < 0 for row in yesterday_down_rows)}
+    yesterday_down = ({"status": "VERIFIED", "source": "yesterday_pool.explicit_limit_down_flag",
+        "n": len(yesterday_down_symbols), "valid_n": len(yesterday_down_rows),
+        "open_counts": yesterday_down_counts} if yesterday_down_symbols else
+        {"status": "UNVERIFIED", "source": None, "n": None, "valid_n": None,
+         "open_counts": None})
+    high_boards = sorted((row for row in yesterday_rows if (_streak(row) or 0) >= 2),
+        key=lambda row: (-(_streak(row) or 0), _num(amount_ranks.get(row["symbol"])) or 999999,
+                         row["symbol"]))
+    yesterday_pool_median = _median([_num(row.get("pct_change")) for row in yesterday_price_rows
+                                     if _num(row.get("pct_change")) is not None])
+    reason_groups: dict[str, list[dict[str, Any]]] = {}
+    for symbol, pool_row in pool_by_symbol.items():
+        reason = _primary_reason(pool_row, {"reasons": (yesterday_reasons or {}).get(
+            symbol, (yesterday_reasons or {}).get(symbol.lstrip("0"), []))}, previous_trade_date)
+        row = by_symbol.get(symbol, {})
+        reason_groups.setdefault(reason, []).append({"symbol": symbol, "pool": pool_row, "row": row})
+    small_reasons = {reason: rows for reason, rows in reason_groups.items() if len(rows) < 2}
+    reason_groups = {reason: rows for reason, rows in reason_groups.items() if len(rows) >= 2}
+    if small_reasons:
+        reason_groups[f"其他单只题材({sum(len(rows) for rows in small_reasons.values())}只)"] = [
+            item for rows in small_reasons.values() for item in rows]
+    yesterday_reason_buckets = []
+    for reason, entries in reason_groups.items():
+        entries.sort(key=lambda item: item["symbol"])
+        valid_entries = [item for item in entries if _has_valid_auction_price(item["row"])
+                         and _num(item["row"].get("pct_change")) is not None]
+        vals = [_num(item["row"].get("pct_change")) for item in valid_entries]
+        median = _median(vals)
+        strongest = max(valid_entries, key=lambda item: (_num(item["row"].get("pct_change")),
+                           item["symbol"]), default=None)
+        weakest = min(valid_entries, key=lambda item: (_num(item["row"].get("pct_change")),
+                           item["symbol"]), default=None)
+        extremes_for_reason = {"strongest": None, "weakest": None}
+        if median is not None and strongest and _num(strongest["row"].get("pct_change")) - median >= EXTREME_DEVIATION_THRESHOLD_PP_V1:
+            stock = strongest["row"]
+            extremes_for_reason["strongest"] = {"symbol": stock["symbol"],
+                "name": stock_name(stock["symbol"], stock, strongest["pool"]),
+                "pct_change": _num(stock.get("pct_change")), "amount_rank": amount_ranks.get(stock["symbol"])}
+        if median is not None and weakest and median - _num(weakest["row"].get("pct_change")) >= EXTREME_DEVIATION_THRESHOLD_PP_V1:
+            stock = weakest["row"]
+            extremes_for_reason["weakest"] = {"symbol": stock["symbol"],
+                "name": stock_name(stock["symbol"], stock, weakest["pool"]),
+                "pct_change": _num(stock.get("pct_change")), "amount_rank": amount_ranks.get(stock["symbol"])}
+        open_counts = {"high": sum(value > 0 for value in vals), "flat": sum(value == 0 for value in vals),
+                       "low": sum(value < 0 for value in vals)}
+        high_rate = open_counts["high"] / len(vals) if vals else None
+        gap_pp = (high_rate - market_up_ratio) * 100 if high_rate is not None and market_up_ratio is not None else None
+        median_gap_pp = median - market_median if median is not None and market_median is not None else None
+        is_other_single = reason.startswith("其他单只题材(")
+        willingness = ("不适用·非共同题材" if is_other_single else
+            "样本不足" if len(vals) < RELAY_MIN_N_V1 else
+            "接力偏弱" if ((gap_pp is not None and gap_pp <= -RELAY_THRESHOLD_PP_V1) or
+                           (median_gap_pp is not None and median_gap_pp <= -RELAY_MEDIAN_GAP_PP_V1)) else
+            "接力偏强" if gap_pp is not None and gap_pp >= 0 and median_gap_pp is not None and median_gap_pp >= RELAY_MEDIAN_GAP_PP_V1 else "分歧")
+        promotion_counts = {status: sum(_promotion_status(item["row"]) == status for item in entries)
+                            for status in ("PROVISIONAL", "NOT_PROMOTED", "UNVERIFIED")}
+        provisional = promotion_counts["PROVISIONAL"]
+        unverified = promotion_counts["UNVERIFIED"]
+        amounts = [_num(item["row"].get("auction_amount_yuan")) for item in entries]
+        positive_amounts = [amount for amount in amounts if amount is not None and amount > 0]
+        bucket_amount = sum(positive_amounts) if positive_amounts else None
+        top_streak = max((_num(item["pool"].get("lb_days", item["pool"].get("streak", 1))) or 1
+                          for item in entries), default=None)
+        bucket_result = {"reason": reason, "count": len(entries),
+            "willingness": willingness, "auction_amount_yuan": bucket_amount,
+            "market_amount_share": bucket_amount / market_amount if bucket_amount is not None and market_amount else None}
+        if not is_other_single:
+            bucket_result.update({"highest_streak": top_streak, "valid_n": len(entries), "open_counts": open_counts,
+                "median_pct": median, "provisional_n": provisional,
+                "not_promoted_n": promotion_counts["NOT_PROMOTED"],
+                "unverified_n": unverified, "extremes": extremes_for_reason})
+        yesterday_reason_buckets.append(bucket_result)
+    yesterday_reason_buckets.sort(key=lambda item: (-item["count"], item["reason"]))
     overview = {"auction_amount_yuan": market_amount, "auction_amount_yi": market_amount / 1e8 if market_amount is not None else None,
         "yesterday_pool_auction_amount_yuan": yesterday_total,
-        "yesterday_pool_market_share": (yesterday_total / market_amount
-                                        if yesterday_total is not None and market_amount else None),
+        "yesterday_pool_market_share": (yesterday_pool_positive_total / market_amount
+                                        if yesterday_pool_positive_total is not None and market_amount else None),
         "yesterday_pool_open_counts": yesterday_open_counts,
         "yesterday_pool_open_valid_n": len(yesterday_pcts),
         "multi_board_mean_auction_amount_yuan": multi_mean,
@@ -561,6 +781,34 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
         "yesterday_pool_verified_seal_n": len(pool_seals),
         "yesterday_pool_verified_seal_sum_yuan": (sum(_num(row["seal"]["seal_amount_yuan"]) for row in pool_seals)
                                                    if pool_seals else None),
+        "yesterday_pool_n": len(pool_by_symbol), "yesterday_pool_median_pct": yesterday_pool_median,
+        "yesterday_pool_high_open_gap_pp": high_open_pp,
+        "yesterday_limit_down": yesterday_down,
+        "yesterday_pool_high_boards": [{"symbol": row["symbol"],
+            "name": stock_name(row["symbol"], row, pool_by_symbol[row["symbol"]]),
+            "yesterday_streak": _streak(row),
+            "primary_reason": _primary_reason(pool_by_symbol[row["symbol"]],
+                {"reasons": (yesterday_reasons or {}).get(row["symbol"],
+                    (yesterday_reasons or {}).get(row["symbol"].lstrip("0"), []))}, previous_trade_date),
+            "pct_change": _num(row.get("pct_change")),
+            "auction_amount_yuan": _num(row.get("auction_amount_yuan")),
+            "amount_rank": amount_ranks.get(row["symbol"]),
+            "promotion_status": _promotion_status(row)} for row in high_boards],
+        "yesterday_reason_buckets": yesterday_reason_buckets,
+        "relay_thresholds_v1": {"min_n": RELAY_MIN_N_V1,
+            "strong_pp": RELAY_THRESHOLD_PP_V1, "weak_pp": -RELAY_THRESHOLD_PP_V1,
+            "median_gap_pp": RELAY_MEDIAN_GAP_PP_V1,
+            "note": "V1冻结工程阈值,非市场规律未回测"},
+        "extreme_threshold_pp_v1": EXTREME_DEVIATION_THRESHOLD_PP_V1,
+        "extreme_threshold_note": "工程阈值非市场规律未回测",
+        "dispersion_visible_threshold_pp_v1": DISPERSION_VISIBLE_THRESHOLD_PP_V1,
+        "market_extremes": {"highest": market_extreme(highest_row),
+            "lowest": market_extreme(lowest_row),
+            "verified_seal_max": ({"symbol": max_seal_row["symbol"],
+                "name": stock_name(max_seal_row["symbol"], max_seal_row),
+                "seal_amount_yuan": _num(max_seal_row["seal"].get("seal_amount_yuan")),
+                "seal_rank": seal_ranks.get(max_seal_row["symbol"]),
+                "amount_rank": amount_ranks.get(max_seal_row["symbol"])} if max_seal_row else None)},
         "amount_multiple_64d": {"value": multiple, "percentile": percentile,
             "sample_n": len(history_values), "window_n": 64,
             "basis": amount_baseline_basis,
@@ -599,7 +847,8 @@ def store_auction_panorama(product: Mapping[str, Any], *, artifact_root: str | P
     available_at = datetime.now(TZ).isoformat()
     manifest = catalog.commit("auction_panorama", str(product["trade_date"]), rows,
         {"schema": SCHEMA, "trade_date": product["trade_date"], "as_of": product["asof"],
-         "available_at": available_at, "business_status": product.get("status", "PARTIAL"),
+         "available_at": available_at, "visibility": "VISIBLE",
+         "business_status": product.get("status", "PARTIAL"),
          "quality": {"plate_count": len(product.get("plates", [])),
                      "yesterday_stock_count": sum(bucket["count"] for layer in product.get("yesterday_ladder", [])
                                                    for bucket in layer.get("buckets", []))}},

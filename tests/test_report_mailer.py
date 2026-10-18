@@ -35,6 +35,36 @@ def test_dry_run_does_not_touch_transport(tmp_path, monkeypatch):
     assert receipt.status == "dry_run"
 
 
+def test_message_recovers_matching_panorama_for_compact_auction_body(tmp_path, monkeypatch):
+    import hashlib
+
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path / "empty-core-data"))
+    quickbrief = {"email_lines": ["09:26 竞价速览 · 2026-10-16", "市场:覆盖不足,不下结论。",
+        "主看:暂无", "备看:暂无", "风险:待核实", "阈值为 V1 冻结工程阈值,非市场规律,未回测"]}
+    product = {"schema": "auction_panorama_v1", "trade_date": "2026-10-16",
+        "asof": "2026-10-16T09:26:00+08:00", "overview": {"status": "PARTIAL"},
+        "quickbrief": quickbrief, "plates": [], "yesterday_ladder": [], "lineage": {}}
+    report = tmp_path / "reports"
+    report.mkdir()
+    (report / "report.html").write_text("<h1>full V6</h1>", encoding="utf-8")
+    panorama_bytes = json.dumps(product, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    sidecar = {"trade_date": product["trade_date"], "asof": product["asof"],
+        "version": product["schema"], "sha256": hashlib.sha256(panorama_bytes).hexdigest(),
+        "panorama": product}
+    sidecar_bytes = json.dumps(sidecar, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(sidecar_bytes).hexdigest()
+    (report / "auction_panorama.json").write_bytes(sidecar_bytes)
+    (report / "report.json").write_text(json.dumps({"trade_date": "2026-10-16", "asof": product["asof"],
+        "auction_quickbrief": quickbrief, "auction_panorama_file": "auction_panorama.json",
+        "auction_panorama_sha256": digest}), encoding="utf-8")
+    message = report_mailer.build_report_message("Core", "2026-10-16", "auction",
+        report / "report.html", report / "report.json", [report_mailer.ALLOWED_RECIPIENT],
+        "reports@example.test")
+    html = message.get_body(preferencelist=("html",)).get_content()
+    assert "竞价速览卡" in html and "题材横向对比" in html
+    assert "明细见附件 report.html" in message.get_body(preferencelist=("plain",)).get_content()
+
+
 @pytest.mark.parametrize("port,starttls,expected", [(465, False, "ssl"), (587, True, "starttls")])
 def test_selects_ssl_or_starttls_transport(tmp_path, monkeypatch, port, starttls, expected):
     calls = []
@@ -106,7 +136,7 @@ def test_auction_report_attaches_full_html_by_default(tmp_path):
     assert [part.get_content_type() for part in message.iter_parts()] == ["multipart/alternative", "text/html"]
     assert [part.get_content_type() for part in message.iter_parts().__next__().iter_parts()] == ["text/plain", "text/html"]
     assert [part.get_filename() for part in message.iter_attachments()] == ["report.html"]
-    assert "第一句" in message.get_body(preferencelist=("html",)).get_content()
+    assert "V6_PANORAMA_MISSING:DATA_MISSING" in message.get_body(preferencelist=("html",)).get_content()
 
 
 def test_attach_full_html_is_opt_in_and_size_limited(tmp_path):
@@ -126,6 +156,38 @@ def test_attach_full_html_is_opt_in_and_size_limited(tmp_path):
                                                    attach_full_html=True)
     assert list(oversized.iter_attachments()) == []
     assert "超过 1.5 MB" in oversized.get_body(preferencelist=("plain",)).get_content()
+
+
+def test_panorama_hash_mismatch_degrades_to_controlled_error(tmp_path):
+    product = {"trade_date": "2026-10-16", "asof": "2026-10-16T09:30:00+08:00",
+               "quickbrief": {"email_lines": ["09:30 竞价速览"]}, "plates": []}
+    report = tmp_path / "reports"
+    report.mkdir()
+    (report / "report.html").write_text("<h1>09:26 full V6</h1>", encoding="utf-8")
+    import hashlib
+    panorama_bytes = json.dumps(product, ensure_ascii=False, allow_nan=False,
+                                 separators=(",", ":")).encode("utf-8")
+    sidecar = {"trade_date": product["trade_date"], "asof": product["asof"],
+        "version": "auction_panorama_v1", "sha256": hashlib.sha256(panorama_bytes).hexdigest(),
+        "panorama": product}
+    sidecar_bytes = json.dumps(sidecar, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    (report / "auction_panorama.json").write_bytes(sidecar_bytes)
+    (report / "report.json").write_text(json.dumps({"trade_date": "2026-10-16",
+        "asof": "2026-10-16T09:26:00+08:00", "auction_quickbrief": product["quickbrief"],
+        "auction_panorama": product,
+        "auction_panorama_file": "auction_panorama.json", "auction_panorama_sha256": "0" * 64}),
+        encoding="utf-8")
+    message = report_mailer.build_report_message("Core", "2026-10-16", "auction",
+        report / "report.html", report / "report.json", [report_mailer.ALLOWED_RECIPIENT],
+        "reports@example.test")
+    html = message.get_body(preferencelist=("html",)).get_content()
+    plain = message.get_body(preferencelist=("plain",)).get_content()
+    assert "V6_PANORAMA_MISSING:DATA_MISSING" in html
+    assert "V6_PANORAMA_MISSING:DATA_MISSING" in plain
+    assert "09:30 竞价速览" not in html
+    attachments = list(message.iter_attachments())
+    assert [part.get_filename() for part in attachments] == ["report.html"]
+    assert "09:26 full V6" in attachments[0].get_payload(decode=True).decode("utf-8")
 
 
 def test_fixed_recipient_cannot_be_changed_by_caller_allowlist(tmp_path, monkeypatch):

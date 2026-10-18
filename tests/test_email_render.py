@@ -30,6 +30,98 @@ def test_v6_panorama_failure_is_prominent_and_carries_a_degraded_code():
     assert "V6 全景缺失" in html and "V6 全景缺失" in plain
 
 
+def test_degraded_reason_paths_are_not_rendered(monkeypatch):
+    from engine_core import auction_panorama_view
+
+    captured = {}
+    def fake_digest(panorama, quickbrief, *, completeness, degraded_note):
+        captured["note"] = degraded_note
+        return "<html>ok</html>", "ok"
+    monkeypatch.setattr(auction_panorama_view, "render_auction_email_digest", fake_digest)
+    paths = ["/home/exedev/private/input.csv", "/tmp/private/input.csv",
+             "C:\\Users\\alice\\secret.csv"]
+    for path in paths:
+        html, plain = render_email_html({
+            "auction_panorama": {"trade_date": "2026-10-16"},
+            "auction_quickbrief": {"email_lines": ["09:26 竞价速览"]}},
+            "auction", "2026-10-16", manifest={"slices": {
+                "private_input": {"status": "DEGRADED", "reason": path}}})
+        assert path not in html + plain + captured["note"]
+        assert "V6_PANORAMA_MISSING:INTERNAL_ERROR" in captured["note"]
+
+
+def test_auction_email_uses_quickbrief_card_and_curated_evidence_tables():
+    report = {"stage": "auction", "auction_panorama": {
+        "trade_date": "2026-10-16", "asof": "2026-10-16T09:26:00+08:00",
+        "overview": {"status": "READY", "auction_amount_yi": 12.5,
+            "amount_multiple_64d": {"sample_n": 12, "window_n": 64, "status": "PARTIAL",
+                                    "value": 1.25, "percentile": .5},
+            "up_ratio": {"ratio": .75}, "market_median_pct": 1.2,
+            "yesterday_limit_high_open": {"numerator": 20, "denominator": 36},
+            "verified_seal_sum_yuan": 200000000, "verified_seal_scope": "2/2",
+            "yesterday_pool_n": 36, "yesterday_pool_open_valid_n": 36,
+            "yesterday_pool_open_counts": {"high": 20, "flat": 4, "low": 12},
+            "yesterday_pool_high_open_gap_pp": 8.3, "yesterday_pool_market_share": .2,
+            "yesterday_pool_median_pct": 1.7,
+            "yesterday_limit_down": {"status": "UNVERIFIED"},
+            "market_extremes": {"highest": {"name": "甲股", "symbol": "000001", "pct_change": 2.0,
+                "auction_amount_yuan": 100000000, "amount_rank": 7},
+                "lowest": {"name": "乙股", "symbol": "000002", "pct_change": -1.2,
+                    "auction_amount_yuan": 20000000, "amount_rank": 18},
+                "verified_seal_max": {"name": "甲股", "symbol": "000001", "seal_amount_yuan": 50000000,
+                    "seal_rank": 2, "amount_rank": 7}},
+            "yesterday_reason_buckets": [{"reason": "首板题材", "count": 2,
+                "highest_streak": 1, "valid_n": 2, "open_counts": {"high": 2, "flat": 0, "low": 0},
+                "median_pct": 1.0, "provisional_n": 1, "not_promoted_n": 1,
+                "unverified_n": 0, "willingness": "样本不足", "auction_amount_yuan": 30000000,
+                "market_amount_share": .01, "extremes": {"strongest": None, "weakest": None}}],
+            "yesterday_pool_high_boards": [{"name": "甲股", "symbol": "000001", "yesterday_streak": 2,
+                "primary_reason": "人工智能", "pct_change": 2.0, "auction_amount_yuan": 100000000,
+                "amount_rank": 7}]},
+        "lineage": {"hot_rank_basis": "PIT_LIVE"},
+        "quickbrief": {"rules": {"replay_banner": True}, "email_lines": ["09:26 竞价速览 · 2026-10-16",
+            "市场:普遍高开,昨日涨停接力未明显落后。", "主看:人工智能", "备看:机器人",
+            "风险:未见明确高标接力负反馈", "阈值为 V1 冻结工程阈值,非市场规律,未回测"]},
+        "plates": [{"plate_id": "p1", "plate_name": "人工智能", "member_count": 5,
+            "selection_reasons": ["主看"], "amount_yuan": 500000000,
+            "market_share": .1, "member_median_pct": 2.0, "up_count": 4,
+            "valid_price_count": 5, "count": 5, "up_ratio": .8,
+            "distribution": {"ge_3_n": 1, "zero_to_3_n": 3, "lt_0_n": 1, "valid_n": 5, "majority": "0~+3%"},
+                "dispersion_p75_p25_pp": 1.2, "extremes": {"strongest": {"symbol": "000001", "name": "甲股",
+                    "pct_change": 2.0, "amount_rank": 7}, "weakest": {"symbol": "000002", "name": "乙股",
+                    "pct_change": -1.2, "amount_rank": 18}},
+            "yesterday_relay": {"n": 2, "valid_n": 2, "open_counts": {"high": 2, "flat": 0, "low": 0},
+                "provisional_n": 1, "not_promoted_n": 1, "unverified_n": 0, "willingness": "样本不足"},
+            "verified_seal_n": 1, "verified_seal_amount_yuan": 50000000,
+            "seal_extreme": {"symbol": "000001", "name": "甲股", "seal_amount_yuan": 50000000,
+                "seal_rank": 2, "amount_rank": 7}, "stocks": [{"symbol": "000001", "name": "甲股",
+                "pct_change": 2.0, "auction_amount_yuan": 100000000, "amount_rank": 7,
+                "seal_amount_yuan": 50000000, "seal_rank": 2}, {"symbol": "000002", "name": "缺值股",
+                "pct_change": -1.2, "auction_amount_yuan": None, "amount_rank": None,
+                "seal_amount_yuan": None, "seal_rank": None}]}],
+        "yesterday_ladder": [{"yesterday_streak": 2, "buckets": [{"reason": "人工智能",
+            "count": 1, "auction_amount_yuan": 100000000, "median_pct": 2.0,
+            "stocks": [{"symbol": "000001", "name": "甲股", "yesterday_streak": 2,
+                "primary_reason": "人工智能", "pct_change": 2.0, "amount_rank": 7,
+                "auction_amount_yuan": 100000000, "seal_amount_yuan": 50000000,
+                "seal_rank": 2, "promotion_status": "PROVISIONAL"}]}]},
+            {"yesterday_streak": 1, "buckets": [{"reason": "首板题材", "count": 2,
+                "auction_amount_yuan": 30000000, "median_pct": 1.0,
+                "stocks": [{"name": "首板甲", "pct_change": .5}, {"name": "首板乙", "pct_change": 1.5}]}]}]},
+        "manifest": {}}
+    html, plain = render_email_html(report, "auction_0926", "2026-10-16")
+    assert "速览卡" in html and "题材横向对比" in html and "接力意愿" in html
+    assert 'role="table"' in html and "人工智能" in html and "额#7" in html
+    assert "1.00亿 额#7" in html and "封单#2 额#7" in html
+    assert "2.00%" in html and "封单" in html
+    assert "#c83b3b" in html and "#17804a" in html and "—" in html
+    assert "12/64" in html
+    assert "首板题材" in html and "2" in html and "首板乙" not in html
+    assert "<script" not in html.lower() and "https://" not in html.lower()
+    assert "历史回放样本" in html and "非当时实时信号" in plain
+    assert "明显极值：距题材中位≥" in plain and "接力意愿V1" in plain
+
+
 def test_stale_intraday_report_does_not_present_missing_coverage_as_zero():
     report = {"trade_date": "2026-10-15", "chapters": {
         "market_price_volume": {"status": "STALE", "symbol_count": None,

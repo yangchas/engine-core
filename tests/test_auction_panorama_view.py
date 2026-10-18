@@ -1,4 +1,4 @@
-from engine_core.auction_panorama_view import render_auction_panorama
+from engine_core.auction_panorama_view import render_auction_email_digest, render_auction_panorama
 
 
 def test_panorama_view_renders_two_complete_tables_and_preserves_unknowns():
@@ -136,3 +136,57 @@ def test_unverified_promotion_is_displayed_as待核实():
     assert "昨日涨停池竞价额 1.00亿" in plain
     assert "高/平/低开 1/1/1" in plain and "未控制流动性" in plain
     assert "最弱股 -5.00%" in plain and "昨日涨停池内已核实封单 2 只、合计 3.00亿" in plain
+
+
+def test_c302_digest_two_tables_six_blocks_and_only_authorized_stock_names():
+    product = {"trade_date": "2026-10-16", "asof": "2026-10-16T09:26:00+08:00",
+        "overview": {"auction_amount_yi": 10, "up_ratio": {"ratio": .5},
+            "market_median_pct": 0, "yesterday_pool_n": 4, "yesterday_pool_open_valid_n": 4,
+            "yesterday_pool_open_counts": {"high": 2, "flat": 1, "low": 1},
+            "yesterday_pool_high_open_gap_pp": 5, "yesterday_pool_market_share": .2,
+            "yesterday_pool_median_pct": .8, "yesterday_limit_down": {"status": "UNVERIFIED"},
+            "extreme_threshold_pp_v1": 3.0,
+            "relay_thresholds_v1": {"min_n": 3, "strong_pp": 15, "weak_pp": -15},
+            "amount_multiple_64d": {"sample_n": 64, "window_n": 64},
+            "market_extremes": {"highest": {"name": "极值股", "symbol": "000001", "pct_change": 5,
+                "auction_amount_yuan": 100000, "amount_rank": 1, "limit_mark": "涨停封"},
+                "lowest": None, "verified_seal_max": {"name": "封单股", "symbol": "000002",
+                    "seal_amount_yuan": 300000, "seal_rank": 1, "amount_rank": 2}},
+            "yesterday_pool_high_boards": [{"name": "高标股", "yesterday_streak": 3,
+                "primary_reason": "题材", "pct_change": 2, "auction_amount_yuan": 200000,
+                "amount_rank": 2}],
+            "yesterday_reason_buckets": [{"reason": "题材", "count": 3, "highest_streak": 3,
+                "open_counts": {"high": 2, "flat": 0, "low": 1}, "median_pct": 1,
+                "provisional_n": 1, "not_promoted_n": 1, "unverified_n": 1,
+                "willingness": "分歧", "auction_amount_yuan": 200000,
+                "market_amount_share": .02, "extremes": {"strongest": None, "weakest": None}}]},
+        "plates": [{"plate_id": "P", "plate_name": "题材", "selection_reasons": ["强"],
+            "count": 3, "valid_price_count": 3, "amount_yuan": 200000, "market_share": .02,
+            "member_median_pct": 1, "up_count": 2, "up_ratio": 2/3,
+            "distribution": {"ge_3_n": 0, "zero_to_3_n": 2, "lt_0_n": 1, "valid_n": 3, "majority": "0~+3%"},
+            "dispersion_p75_p25_pp": 1.5, "extremes": {"strongest": None, "weakest": None},
+            "yesterday_relay": {"n": 3, "open_counts": {"high": 2, "flat": 0, "low": 1},
+                "provisional_n": 1, "not_promoted_n": 1, "unverified_n": 1, "willingness": "分歧"},
+            "verified_seal_n": 1, "verified_seal_amount_yuan": 300000,
+            "seal_extreme": {"name": "封单股", "seal_amount_yuan": 300000, "seal_rank": 1, "amount_rank": 2},
+            "stocks": [{"name": "不应出现股", "symbol": "000003"}]}]}
+    quickbrief = {"email_lines": ["结论:题材接力意愿分歧；高标有拟晋级迹象"],
+                  "metrics": {"market": {"auction_amount_yuan": 1_000_000_000}}}
+    html, plain = render_auction_email_digest(product, quickbrief, completeness="READY")
+    assert html.count('role="table"') == 2
+    assert "昨日整批统计" in html and "昨日跌停:待核实" in html
+    assert "题材横向对比" in html and "昨日涨停×题材 接力意愿" in html
+    assert all(name in html for name in ("极值股", "封单股", "高标股"))
+    assert "不应出现股" not in html
+    assert "明显极值：距题材中位≥3.00pp" in html
+    assert "明显分化：P75−P25≥4.0pp" in html
+    assert "偏弱=高开率低于市场≥15pp" in html
+    assert "离散度—" in plain
+    assert len(html.encode()) <= 30_000
+    assert "<script" not in html.lower() and "https://" not in html.lower()
+    assert len(plain.split("\n\n")) == 5
+    assert "<span" not in plain and "</span>" not in plain
+    assert "分档≥+3%" in plain
+    assert html.count("高标股 · 昨3板") == 1
+    assert "高标股 · 昨3板" in html
+    assert html.index("① 题材横向对比") < html.index("② 昨日涨停×题材 接力意愿") < html.index("高标与封单极值")

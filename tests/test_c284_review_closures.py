@@ -102,7 +102,8 @@ def test_actual_mail_preserves_v6_panorama_tables(tmp_path):
     assert "①" in mailed and "②" in mailed
 
 
-def test_auction_email_body_is_quickbrief_and_full_v6_is_attachment(tmp_path):
+def test_auction_email_body_is_compact_panorama_and_full_v6_is_attachment(tmp_path):
+    import hashlib
     from engine_core import report_mailer
     from engine_core.report_mailer import build_report_message
 
@@ -115,24 +116,34 @@ def test_auction_email_body_is_quickbrief_and_full_v6_is_attachment(tmp_path):
               "lines": ["备看排序 diagnostic"]}
     full_html = "<html><body>竞价全景 V6 ① 板块竞价全景 ② 昨日连板梯队</body></html>"
     report_html.write_text(full_html, encoding="utf-8")
-    report_json.write_text(json.dumps({"stage": "auction", "auction_panorama": {
-        "trade_date": "2026-10-16", "quickbrief": brief, "overview": {},
-        "plates": [], "yesterday_ladder": []}}), encoding="utf-8")
+    panorama = {"trade_date": "2026-10-16", "asof": "2026-10-16T09:26:00+08:00",
+        "quickbrief": brief, "overview": {}, "plates": [], "yesterday_ladder": []}
+    panorama_bytes = json.dumps(panorama, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    panorama_sidecar = {"trade_date": panorama["trade_date"], "asof": panorama["asof"],
+        "version": "auction_panorama_v1", "sha256": hashlib.sha256(panorama_bytes).hexdigest(),
+        "panorama": panorama}
+    sidecar_bytes = json.dumps(panorama_sidecar, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    (tmp_path / "auction_panorama.json").write_bytes(sidecar_bytes)
+    report_json.write_text(json.dumps({"stage": "auction", "trade_date": panorama["trade_date"],
+        "asof": panorama["asof"], "auction_quickbrief": brief,
+        "auction_panorama_file": "auction_panorama.json",
+        "auction_panorama_sha256": hashlib.sha256(sidecar_bytes).hexdigest()}), encoding="utf-8")
 
     message = build_report_message("Core", "2026-10-16", "auction", report_html, report_json,
         [report_mailer.ALLOWED_RECIPIENT], "reports@localhost", attach_full_html=True)
     body = message.get_body(preferencelist=("plain",)).get_content()
     attachments = list(message.iter_attachments())
-    assert "主看:光模块" in body and "明细见附件 report.html" in body
-    assert "① 板块竞价全景" not in body and "② 昨日连板梯队" not in body
+    assert "昨日整批统计" in body and "①题材横向对比" in body
+    assert "明细见附件 report.html" in body
+    assert "竞价全景 V6" not in body and "② 昨日连板梯队" not in body
     assert len(attachments) == 1 and attachments[0].get_filename() == "report.html"
     attached = attachments[0].get_payload(decode=True).decode("utf-8")
     assert "① 板块竞价全景" in attached and "② 昨日连板梯队" in attached
     from engine_core.email_render import render_email_html
-    page, _ = render_email_html({"auction_panorama": json.loads(report_json.read_text())[
-        "auction_panorama"]}, "auction", "2026-10-16", {"degraded": ["SAMPLE_DEGRADED"]},
+    page, _ = render_email_html({"auction_panorama": panorama}, "auction", "2026-10-16",
+        {"degraded": ["SAMPLE_DEGRADED"]},
         full_report=True)
-    assert page.index("09:26 竞价速览") < page.index("① 板块竞价全景")
+    assert page.index("竞价全景 V6") < page.index("① 板块竞价全景")
     assert "备看排序 diagnostic" in page and "数据完整度与异常摘要" in page
 
     report_json.write_text(json.dumps({"stage": "auction"}), encoding="utf-8")
