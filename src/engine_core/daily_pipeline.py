@@ -1891,12 +1891,21 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 for reason_row in reason_rows:
                     if not isinstance(reason_row, Mapping):
                         continue
+                    reason_type = reason_row.get("Type", reason_row.get("type"))
+                    if reason_type not in (None, "", 0, "0"):
+                        continue
                     symbol = str(reason_row.get("StockID", reason_row.get("stock_id", reason_row.get("symbol", ""))))
                     if symbol:
                         key = symbol[-6:].zfill(6)
-                        label = reason_row.get("SCLT", reason_row.get("sclt"))
+                        # Reason is the concrete limit-up explanation; SCLT is a
+                        # streak classification and must not be presented as cause.
+                        label = reason_row.get("Reason", reason_row.get("reason"))
                         if label not in (None, ""):
-                            yesterday_reasons.setdefault(key, []).append(str(label))
+                            event_date = reason_row.get("Date", reason_row.get("date", reason_row.get("event_date")))
+                            yesterday_reasons.setdefault(key, []).append({
+                                "event_date": str(event_date or "")[:10],
+                                "reason": str(label),
+                            })
                 baseline_rows = slice_results["auction_baseline"].rows
                 baseline_replay = trade_date < date.today().isoformat()
                 baseline_history = _auction_baseline_history(
@@ -1937,7 +1946,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     market_amount_history=baseline_history,
                     amount_baseline_basis="REPLAY_EVENT_TIME" if baseline_replay else "PIT",
                     hot_plate_ranks=hot_ranks.get("ranks", {}),
-                    plate_classes=class_by_code)
+                    plate_classes=class_by_code,
+                    previous_trade_date=previous_trade_date)
                 panorama["lineage"]["hot_rank_basis"] = hot_ranks.get("basis", "UNKNOWN")
                 store_auction_panorama(panorama, redis=src.redis)
                 payload["auction_panorama"] = panorama

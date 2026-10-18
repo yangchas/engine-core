@@ -56,9 +56,11 @@ def _facts():
     rows = [
         {"symbol": "000001", "name": "A", "auction_amount_yuan": 300, "amount_rank": 1,
          "amount_top50": True, "price": 10, "pct_change": 2.0, "valid_price": True,
+         "official_limit_up_price": 10,
          "seal": {"status": "VERIFIED_REPLAY", "seal_amount_yuan": 900, "seal_rank": 1}},
         {"symbol": "000002", "name": "B", "auction_amount_yuan": 200, "amount_rank": 2,
          "amount_top50": True, "price": 10, "pct_change": -1.0, "valid_price": True,
+         "official_limit_up_price": 11,
          "seal": {"status": "UNKNOWN", "seal_amount_yuan": None, "seal_rank": None}},
         {"symbol": "000003", "name": "C", "auction_amount_yuan": 100, "amount_rank": 3,
          "amount_top50": True, "pct_change": None, "valid_price": False,
@@ -92,7 +94,7 @@ def test_panorama_preserves_missing_values_and_global_ranks_across_plates():
     assert {row["amount_rank"] for row in copies} == {1}
     assert {row["seal_rank"] for row in copies} == {1}
     assert result["yesterday_ladder"][0]["buckets"][0]["reason"] == "池原因"
-    assert result["yesterday_ladder"][0]["buckets"][0]["stocks"][0]["promotion_status"] == "UNVERIFIED"
+    assert result["yesterday_ladder"][0]["buckets"][0]["stocks"][0]["promotion_status"] == "PROVISIONAL"
 
 
 def test_panorama_c285_filters_broad_renames_median_and_corrects_ladder():
@@ -121,9 +123,40 @@ def test_panorama_c285_filters_broad_renames_median_and_corrects_ladder():
     assert result["overview"]["amount_multiple_64d"]["status"] == "PARTIAL"
     assert result["yesterday_ladder"][0]["buckets"][0]["stocks"][0]["promotion_status"] == "PROVISIONAL"
     lower = result["yesterday_ladder"][1]
-    assert len(lower["buckets"]) == 1 and lower["buckets"][0]["reason"] == "其他/单只"
+    assert len(lower["buckets"]) == 1 and lower["buckets"][0]["reason"] == "单只原因合集"
     assert all("同身位最大分歧" not in stock["extremes"]
                for bucket in lower["buckets"] for stock in bucket["stocks"])
+
+
+def test_c289_keeps_single_reasons_and_calculates_yesterday_pool_rollup():
+    facts = _facts()
+    facts["rows"][0].update({"auction_amount_yuan": 100, "pct_change": -3.0})
+    facts["rows"][1].update({"auction_amount_yuan": 300, "pct_change": 0.0})
+    facts["rows"][2].update({"auction_amount_yuan": 600, "pct_change": 2.0,
+                              "price": 10, "valid_price": True})
+    result = build_auction_panorama(
+        facts, plate_members=[],
+        yesterday_pool=[
+            {"symbol": "000001", "lb_days": 3, "primary_reason": "池原因一"},
+            {"symbol": "000002", "lb_days": 2},
+            {"symbol": "000003", "lb_days": 1},
+        ],
+        yesterday_reasons={"000002": ["历史原因二"]},
+        theme_assignments={"000003": {"primary_theme": {"name": "冰雪产业"}, "source": "STATIC"}},
+    )
+    level2 = next(layer for layer in result["yesterday_ladder"] if layer["yesterday_streak"] == 2)
+    assert len(level2["buckets"]) == 1
+    assert level2["buckets"][0]["reason"] == "单只原因合集"
+    stocks = {row["symbol"]: row for layer in result["yesterday_ladder"]
+              for bucket in layer["buckets"] for row in bucket["stocks"]}
+    assert stocks["000001"]["primary_reason"] == "池原因一"
+    assert stocks["000002"]["primary_reason"] == "历史原因二"
+    assert stocks["000003"]["primary_reason"] == "原因未核实"
+    assert stocks["000003"]["related_theme"] == "冰雪产业"
+    assert result["overview"]["yesterday_pool_auction_amount_yuan"] == 1000
+    assert result["overview"]["yesterday_pool_open_counts"] == {"high": 1, "flat": 1, "low": 1}
+    assert result["overview"]["multi_board_mean_auction_amount_yuan"] == 200
+    assert result["overview"]["first_board_mean_auction_amount_yuan"] == 600
 
 
 def test_promotion_requires_valid_positive_auction_price():
@@ -134,6 +167,8 @@ def test_promotion_requires_valid_positive_auction_price():
         {"symbol": "000004", "price": 10, "valid_price": True, "pct_change": 9.5},
         {"symbol": "000005", "price": 10, "valid_price": True, "pct_change": 9.4},
     ]
+    rows[3]["official_limit_up_price"] = 10
+    rows[4]["official_limit_up_price"] = 10.01
     facts = {**_facts(), "rows": rows}
     result = build_auction_panorama(
         facts, plate_members=[],
@@ -142,9 +177,71 @@ def test_promotion_requires_valid_positive_auction_price():
     states = {row["symbol"]: row["promotion_status"] for row in bucket["stocks"]}
     assert states == {"000001": "UNVERIFIED", "000002": "UNVERIFIED",
                       "000003": "UNVERIFIED", "000004": "PROVISIONAL",
-                      "000005": "UNVERIFIED"}
+                      "000005": "NOT_PROMOTED"}
     assert bucket["provisional_promotion_count"] == 1
-    assert bucket["unverified_promotion_count"] == 4
+    assert bucket["unverified_promotion_count"] == 3
+    assert bucket["not_promoted_count"] == 1
+
+
+def test_official_limit_price_and_verified_seal_drive_promotion_consistently():
+    rows = [
+        {"symbol": "300001", "price": 10.83, "valid_price": True,
+         "pct_change": 8.3, "official_limit_up_price": 12.0,
+         "seal": {"status": "UNKNOWN"}},
+        {"symbol": "600001", "price": None, "valid_price": False,
+         "pct_change": 9.9, "official_limit_up_price": 11.0,
+         "seal": {"status": "VERIFIED_REPLAY", "seal_amount_yuan": 123}},
+        {"symbol": "600002", "price": 0, "valid_price": False,
+         "pct_change": 9.9, "official_limit_up_price": 11.0,
+         "seal": {"status": "VERIFIED_REPLAY", "seal_amount_yuan": 124}},
+        {"symbol": "000001", "price": 10.95, "valid_price": True,
+         "pct_change": 9.5, "official_limit_up_price": 11.0,
+         "seal": {"status": "UNKNOWN"}},
+        {"symbol": "000002", "price": 11.0, "valid_price": True,
+         "pct_change": 10.0, "official_limit_up_price": 11.0,
+         "seal": {"status": "VERIFIED_REPLAY", "seal_amount_yuan": 456}},
+    ]
+    result = build_auction_panorama(
+        {**_facts(), "rows": rows,
+         "summary": {"limit_candidate_n": 4},
+         "seal_label": "回放·按事件时间"},
+        plate_members=[],
+        yesterday_pool=[{"symbol": row["symbol"], "lb_days": 1} for row in rows],
+    )
+
+    bucket = result["yesterday_ladder"][0]["buckets"][0]
+    states = {row["symbol"]: row["promotion_status"] for row in bucket["stocks"]}
+    assert states == {"300001": "NOT_PROMOTED", "600001": "UNVERIFIED",
+                      "600002": "UNVERIFIED", "000001": "NOT_PROMOTED", "000002": "PROVISIONAL"}
+    assert bucket["provisional_promotion_count"] == 1
+    assert bucket["unverified_promotion_count"] == 2
+    assert bucket["not_promoted_count"] == 2
+    assert bucket["verified_seal_amount_yuan"] == 703
+    assert result["overview"]["verified_seal_scope"] == "3/4"
+    assert result["overview"]["verified_seal_sum_yuan"] == 703
+
+
+def test_yesterday_reason_uses_only_reason_rows_from_previous_session():
+    facts = {**_facts(), "rows": [
+        {"symbol": "000001", "price": 10, "valid_price": True,
+         "pct_change": 1.0, "official_limit_up_price": 11},
+    ]}
+    result = build_auction_panorama(
+        facts, plate_members=[], yesterday_pool=[{"symbol": "000001", "lb_days": 2}],
+        yesterday_reasons={"000001": [
+            {"event_date": "2026-10-14", "reason": "旧原因排序靠前"},
+            {"event_date": "2026-10-15", "reason": "昨日具体原因"},
+        ]},
+        previous_trade_date="2026-10-15",
+    )
+    stock = result["yesterday_ladder"][0]["buckets"][0]["stocks"][0]
+    assert stock["primary_reason"] == "昨日具体原因"
+    missing_date = build_auction_panorama(
+        facts, plate_members=[], yesterday_pool=[{"symbol": "000001", "lb_days": 2}],
+        yesterday_reasons={"000001": [{"event_date": "2026-10-14", "reason": "旧原因"}]},
+    )
+    missing_stock = missing_date["yesterday_ladder"][0]["buckets"][0]["stocks"][0]
+    assert missing_stock["primary_reason"] == "原因未核实"
 
 
 def test_panorama_caps_amount_history_to_latest_64_days():
@@ -160,7 +257,7 @@ def test_panorama_lists_all_36_yesterday_limit_stocks_and_empty_reason_bucket():
                                     market_amount_history=[])
     assert sum(len(bucket["stocks"]) for layer in result["yesterday_ladder"]
                for bucket in layer["buckets"]) == 36
-    assert result["yesterday_ladder"][0]["buckets"][0]["reason"] == "UNKNOWN"
+    assert result["yesterday_ladder"][0]["buckets"][0]["reason"] == "原因未核实"
     assert result["overview"]["yesterday_limit_high_open"]["numerator"] == 1
     assert result["overview"]["yesterday_limit_high_open"]["denominator"] == 2
     assert result["overview"]["yesterday_limit_high_open"]["pool_n"] == 36
@@ -181,16 +278,69 @@ def test_panorama_uses_fixed_reason_precedence_and_handles_no_members_or_prices(
     assert result["extremes"]["largest_gap_down"] == {"symbol": "000002", "pct_change": -1.0}
 
 
-def test_pool_label_assignment_precedes_historical_and_static_reasons():
+def test_pool_label_is_association_not_limit_up_cause():
     result = build_auction_panorama(
         _facts(), plate_members=[],
         yesterday_pool=[{"symbol": "000001", "lb_days": 1}],
-        yesterday_reasons={"000001": ["D-1历史原因"]},
         theme_assignments={"000001": {"source": "POOL_LABEL",
                                       "primary_theme": {"name": "昨日池标签"}}},
     )
     stock = result["yesterday_ladder"][0]["buckets"][0]["stocks"][0]
-    assert stock["primary_reason"] == "昨日池标签"
+    assert stock["primary_reason"] == "原因未核实"
+    assert stock["related_theme"] == "昨日池标签"
+
+
+def test_c290_forces_high_and_verified_seal_themes_and_orders_member_rows():
+    rows = []
+    for index in range(1, 9):
+        symbol = f"0000{index:02d}"
+        rows.append({"symbol": symbol, "name": f"股{index}",
+                     "auction_amount_yuan": 1000 - index * 10,
+                     "amount_rank": index, "amount_top50": True,
+                     "price": 10, "pct_change": float(index), "valid_price": True,
+                     "official_limit_up_price": 11,
+                     "seal": ({"status": "VERIFIED_REPLAY", "seal_amount_yuan": 9_000_000,
+                               "seal_rank": 1} if index == 2 else
+                              {"status": "UNKNOWN", "seal_amount_yuan": None, "seal_rank": None})})
+    rows.append({"symbol": "000009", "name": "股9", "auction_amount_yuan": 910,
+                 "amount_rank": 9, "amount_top50": True, "price": 10,
+                 "pct_change": 9.0, "valid_price": True, "official_limit_up_price": 11,
+                 "seal": {"status": "VERIFIED_REPLAY", "seal_amount_yuan": 8_000_000,
+                          "seal_rank": 3}})
+    members = []
+    for code, name, symbols in (
+        ("PSTR", "规模强板", [f"0000{i:02d}" for i in range(1, 7)]),
+        ("PHIGH", "AI应用", ["000001", "000007"]),
+        ("PSEAL", "封单关联", ["000002", "000008"]),
+    ):
+        members.extend({"plate_id": code, "plate_name": name, "symbol": symbol}
+                       for symbol in symbols)
+    product = build_auction_panorama(
+        {**_facts(), "rows": rows}, plate_members=members,
+        yesterday_pool=[{"symbol": "000001", "lb_days": 2, "pool_reason": "算力租赁"}],
+        theme_assignments={"000001": {"primary_theme": {"id": "PHIGH", "name": "AI应用"}},
+                           "000002": {"primary_theme": {"id": "PSEAL", "name": "封单关联"}},
+                           "000009": {"primary_theme": {"id": "PSEAL", "name": "封单关联"}}},
+        plate_classes={"PHIGH": "BROAD"},
+    )
+
+    plates = {row["plate_id"]: row for row in product["plates"]}
+    assert {"PHIGH", "PSEAL"} <= set(plates)
+    assert "高标" in plates["PHIGH"]["selection_reasons"]
+    assert "关联" in plates["PHIGH"]["selection_reasons"]
+    assert "封单" in plates["PSEAL"]["selection_reasons"]
+    unlisted_seal = next(row for row in plates["PSEAL"]["stocks"] if row["symbol"] == "000009")
+    assert unlisted_seal["membership_status"] == "THEME_ASSOCIATION_ONLY"
+    assert plates["PHIGH"]["count"] == 2
+    assert plates["PHIGH"]["valid_price_count"] == 2
+    assert plates["PHIGH"]["valid_amount_count"] == 2
+    assert plates["PHIGH"]["up_label"] == "上涨 2/2"
+    assert [row["symbol"] for row in plates["PSTR"]["stocks"]] == ["000001", "000002", "000003", "000006"]
+    assert len({row["symbol"] for row in plates["PHIGH"]["stocks"]}) == len(plates["PHIGH"]["stocks"])
+    duplicated = [stock for plate in product["plates"] for stock in plate["stocks"]
+                  if stock["symbol"] == "000002"]
+    assert len(duplicated) >= 2
+    assert {(row["amount_rank"], row["seal_rank"]) for row in duplicated} == {(2, 1)}
 
 
 def test_stock_name_map_fills_names_missing_from_auction_facts():

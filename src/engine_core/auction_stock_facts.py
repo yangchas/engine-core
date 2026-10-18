@@ -32,6 +32,44 @@ def _number(value: Any) -> float | None:
         return None
 
 
+def _snapshot_price_milli(snapshot: Mapping[str, Any]) -> float | None:
+    """Select a final 0925 price; quote sides are usable only when they agree."""
+    zero_fallback = None
+    for key in ("price_milli", "px_milli", "final_price_milli", "effective_price_milli"):
+        value = _number(snapshot.get(key))
+        if value is not None and value > 0:
+            return value
+        if value is not None and zero_fallback is None:
+            zero_fallback = value
+    for key in ("final_price", "price_yuan", "price"):
+        value = _number(snapshot.get(key))
+        if value is not None and value > 0:
+            return value * 1000
+        if value is not None and zero_fallback is None:
+            zero_fallback = value * 1000
+    bid = _number(snapshot.get("bp_milli"))
+    ask = _number(snapshot.get("ap_milli"))
+    if bid is not None and bid > 0 and ask is not None and ask > 0 and round(bid) == round(ask):
+        return bid
+    return zero_fallback
+
+
+def _official_limit_up(snapshot: Mapping[str, Any], symbol: str,
+                       preclose: float | None, *, is_st: bool, unlimited: bool) -> float | None:
+    if unlimited:
+        return None
+    for key in ("limit_up_price", "official_limit_up_price"):
+        value = _number(snapshot.get(key))
+        if value is not None and value > 0:
+            return value
+    for key in ("limit_up_milli", "limit_up_price_milli"):
+        value = _number(snapshot.get(key))
+        if value is not None and value > 0:
+            return value / 1000
+    official = limit_prices(preclose, symbol, is_st=is_st, unlimited=unlimited) if preclose else None
+    return official[0] if official else None
+
+
 def build_auction_stock_facts(trade_date: str, asof: str,
                               snapshots: Sequence[Mapping[str, Any]],
                               ticks: Sequence[Mapping[str, Any]], *,
@@ -67,19 +105,22 @@ def build_auction_stock_facts(trade_date: str, asof: str,
         amount = _number(snap.get("auction_amount_yuan"))
         if amount is not None and amount <= 0:
             amount = None
-        px = _number(snap.get("price_milli"))
+        px = _snapshot_price_milli(snap)
         change = _number(snap.get("change_bp"))
+        if change is None:
+            change = _number(snap.get("chg_bp"))
         preclose_milli = _number(snap.get("pre_close_milli"))
         preclose = preclose_milli / 1000 if preclose_milli is not None else None
-        official = limit_prices(preclose, symbol, is_st=symbol in (st_symbols or set()),
-                                unlimited=symbol in (unlimited_symbols or set())) if preclose else None
-        limit_yuan = official[0] if official else None
+        is_st = symbol in (st_symbols or set())
+        unlimited = (symbol in (unlimited_symbols or set())
+                     or bool(snap.get("unlimited") or snap.get("is_unlimited_price_band")))
+        limit_yuan = _official_limit_up(snap, symbol, preclose, is_st=is_st, unlimited=unlimited)
         tick = latest_ticks.get(symbol)
         status, reason, seal_amount = "UNKNOWN", "NO_FINAL_TICK", None
         limit_source = "Core.limit_price" if limit_yuan is not None else None
         tick_ts = _dt(tick.get("source_ts") or tick.get("ts")) if tick else None
         received = read_time if tick and live else (_dt(tick.get("received_at")) if tick else None)
-        if official is None:
+        if limit_yuan is None:
             reason = "OFFICIAL_LIMIT_UNAVAILABLE"
         elif tick:
             px_tick, amt_tick = _number(tick.get("px_milli")), _number(tick.get("amt_yuan"))
@@ -97,10 +138,19 @@ def build_auction_stock_facts(trade_date: str, asof: str,
             else:
                 status, reason = ("VERIFIED", None) if live else ("VERIFIED_REPLAY", None)
                 seal_amount = round(limit_yuan * bv1 * 100)
+        if (px is None or px <= 0) and tick:
+            # The final tick used to verify the seal is also an authoritative
+            # final auction price when it contains an actual matched trade.
+            px_tick = _number(tick.get("px_milli"))
+            amt_tick = _number(tick.get("amt_yuan"))
+            if px_tick is not None and px_tick > 0 and amt_tick is not None and amt_tick > 0:
+                px = px_tick
         facts.append({"symbol": symbol, "name": snap.get("name"),
                       "auction_amount_yuan": amount, "amount_rank": None,
                       "amount_top50": False,
                       "price": px / 1000 if px is not None else None,
+                      "pre_close_price": preclose,
+                      "official_limit_up_price": limit_yuan,
                       "pct_change": change / 100 if change is not None else None,
                       "valid_price": px is not None and px > 0,
                       "seal": {"status": status, "reason": reason,

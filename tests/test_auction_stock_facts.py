@@ -7,12 +7,16 @@ def test_stock_facts_rank_amounts_without_price_and_use_final_buy1_for_seal():
          "pre_close_milli": 23250},
         {"symbol": "000001", "name": "平安", "auction_amount_yuan": 100, "price_milli": None,
          "pre_close_milli": None},
+        {"symbol": "000002", "name": "乙", "auction_amount_yuan": 100, "price_milli": 0,
+         "pre_close_milli": 10000},
         {"symbol": "600001", "name": "甲", "auction_amount_yuan": None},
     ]
     ticks = [{"symbol": "002815", "source_ts": "2026-10-16T09:25:00+08:00",
               "px_milli": 25580, "amt_yuan": 100, "bp1_milli": 25580, "bv1": 350287},
              {"symbol": "002815", "source_ts": "2026-10-16T09:26:01+08:00",
-              "px_milli": 25580, "amt_yuan": 200, "bp1_milli": 25580, "bv1": 999999}]
+              "px_milli": 25580, "amt_yuan": 200, "bp1_milli": 25580, "bv1": 999999},
+             {"symbol": "000002", "source_ts": "2026-10-16T09:25:00+08:00",
+              "px_milli": 11000, "amt_yuan": 100, "bp1_milli": 11000, "bv1": 10}]
 
     result = build_auction_stock_facts(
         "2026-10-16", "2026-10-16T09:26:00+08:00", snapshots, ticks,
@@ -27,7 +31,10 @@ def test_stock_facts_rank_amounts_without_price_and_use_final_buy1_for_seal():
     assert rows["002815"]["seal"]["status"] == "VERIFIED"
     assert rows["002815"]["seal"]["seal_amount_yuan"] == 896034146
     assert rows["600001"]["amount_rank"] is None
-    assert result["summary"]["valid_amount_n"] == 2
+    assert result["summary"]["valid_amount_n"] == 3
+    assert rows["000002"]["price"] == 11.0
+    assert rows["000002"]["valid_price"] is True
+    assert rows["000002"]["seal"]["status"] == "VERIFIED"
     assert rows["002815"]["seal"]["basis"] == "LIVE_READ"
     assert rows["002815"]["seal"]["tick_source_ts"] == "2026-10-16T09:25:00+08:00"
     assert rows["002815"]["seal"]["read_at"] == "2026-10-16T09:26:05+08:00"
@@ -50,3 +57,17 @@ def test_replay_uses_event_time_and_excludes_after_asof_ticks():
     assert seal["tick_source_ts"] == "2026-10-15T09:26:00+08:00"
     assert result["summary"]["verified_live_n"] == 0
     assert result["summary"]["verified_replay_n"] == 1
+
+
+def test_snapshot_px_milli_is_the_effective_0925_price():
+    result = build_auction_stock_facts(
+        "2026-10-16", "2026-10-16T09:26:00+08:00",
+        [{"symbol": "002815", "price_milli": 0, "px_milli": 25580, "chg_bp": 1002,
+          "pre_close_milli": 23250}], [],
+    )
+
+    row = result["rows"][0]
+    assert row["price"] == 25.58
+    assert row["valid_price"] is True
+    assert row["pct_change"] == 10.02
+    assert row["official_limit_up_price"] == 25.58

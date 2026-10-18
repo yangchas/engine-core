@@ -89,10 +89,26 @@ def test_ready_baseline_keeps_multiple_and_partial_baseline_is_gray():
 
 
 def test_unverified_promotion_is_displayed_as待核实():
-    product = {"plates": [], "yesterday_ladder": [{"yesterday_streak": 1, "count": 1,
-        "buckets": [{"reason": "原因", "count": 1, "provisional_promotion_count": 0,
-            "unverified_promotion_count": 1, "stocks": [{"symbol": "000001",
-                "promotion_status": "UNVERIFIED", "pct_change": 10.0}]}]}]}
+    product = {"overview": {"yesterday_pool_auction_amount_yuan": 100000000,
+        "yesterday_pool_market_share": .2, "yesterday_pool_open_counts": {"high": 1, "flat": 1, "low": 1},
+        "yesterday_pool_open_valid_n": 3, "multi_board_mean_auction_amount_yuan": 20000000,
+        "first_board_mean_auction_amount_yuan": 10000000,
+        "multi_to_first_board_mean_multiple": 2, "yesterday_pool_worst_two": [
+            {"symbol": "000001", "name": "最弱股", "pct_change": -5}],
+        "yesterday_pool_verified_seal_n": 2, "yesterday_pool_verified_seal_sum_yuan": 300000000},
+        "plates": [], "yesterday_ladder": [{"yesterday_streak": 1, "count": 1,
+        "buckets": [{"reason": "原因", "count": 3, "provisional_promotion_count": 1,
+            "unverified_promotion_count": 1, "not_promoted_count": 1, "stocks": [
+                {"symbol": "000001", "promotion_status": "UNVERIFIED", "pct_change": 10.0,
+                 "primary_reason": "原因未核实", "related_theme": "冰雪产业"},
+                {"symbol": "000002", "promotion_status": "NOT_PROMOTED", "pct_change": 8.3},
+                {"symbol": "000003", "promotion_status": "PROVISIONAL", "pct_change": 8.3,
+                 "at_official_limit": True}]}]}]}
     html, plain = render_auction_panorama(product)
     assert "待核实" in html + plain
-    assert "未晋级迹象" not in html + plain
+    assert "未晋级迹象" in html + plain
+    assert "封单金额/名次待核实" in html + plain
+    assert "原因未核实" in html + plain and "关联板块：冰雪产业" in html + plain
+    assert "昨日涨停池竞价额 1.00亿" in plain
+    assert "高/平/低开 1/1/1" in plain and "未控制流动性" in plain
+    assert "最弱股 -5.00%" in plain and "封单已核实 2 只、合计 3.00亿" in plain
