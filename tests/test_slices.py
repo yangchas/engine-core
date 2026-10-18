@@ -1,6 +1,32 @@
 from engine_core.slices import SliceReader, SliceResult
 
 
+def test_reader_reuses_manifest_rows_conversion_and_pit_filter(tmp_path):
+    import json
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"available_at": "2026-10-16T09:00:00+08:00"}), encoding="utf-8")
+
+    class Catalog:
+        calls = 0
+
+        def read_rows(self, _path):
+            self.calls += 1
+            return [{"symbol": "000001", "available_at": "2026-10-16T09:00:00+08:00"}]
+
+    catalog = Catalog()
+    reader = SliceReader()
+    assert reader.read_manifest(manifest) is reader.read_manifest(manifest)
+    raw_rows = reader.read_rows(catalog, manifest)
+    assert raw_rows is reader.read_rows(catalog, manifest)
+    rows = reader.as_rows(raw_rows)
+    assert rows is reader.as_rows(raw_rows)
+    filtered = reader.pit_rows(rows, "2026-10-16T09:26:00+08:00")
+    assert filtered is reader.pit_rows(rows, "2026-10-16T09:26:00+08:00")
+    assert catalog.calls == 1
+    assert filtered[0] == [{"symbol": "000001", "available_at": "2026-10-16T09:00:00+08:00"}]
+
+
 def test_core_data_root_is_isolated_per_test(tmp_path):
     import os
 

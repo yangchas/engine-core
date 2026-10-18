@@ -1,5 +1,5 @@
 from engine_core.auction_quickbrief import build_auction_quickbrief
-from engine_core.auction_panorama import build_auction_panorama
+from engine_core.auction_panorama import build_auction_panorama, normalize_auction_stock_rows
 
 
 def test_quickbrief_thresholds_and_replay_banner():
@@ -20,6 +20,21 @@ def test_quickbrief_thresholds_and_replay_banner():
     assert result["email_lines"][2] == "市场:普遍高开,接力样本不足,不下结论。"
     assert any(line.startswith("封单极值:") for line in result["email_lines"])
     assert result["email_lines"][-1] == "阈值为 V1 冻结工程阈值,非市场规律,未回测"
+
+
+def test_panorama_and_quickbrief_accept_the_same_normalized_stock_rows():
+    facts = {"trade_date": "2026-10-16", "asof": "2026-10-16T09:26:00+08:00",
+        "rows": [{"symbol": "sh.000001", "valid_price": True, "price": 10,
+                  "pct_change": 1.0, "auction_amount_yuan": 100,
+                  "seal": {"status": "UNKNOWN"}}]}
+    rows = normalize_auction_stock_rows(facts)
+    shared_panorama = build_auction_panorama(facts, plate_members=[], yesterday_pool=[],
+                                              normalized_rows=rows)
+    shared_quickbrief = build_auction_quickbrief(facts, plate_members=[], yesterday_pool=[],
+                                                 normalized_rows=rows)
+    assert rows["000001"]["symbol"] == "000001"
+    assert shared_panorama["overview"]["valid_price_n"] == 1
+    assert shared_quickbrief["metrics"]["market"]["valid_n"] == 1
 
 
 def test_quickbrief_low_price_coverage_and_missing_prices_do_not_count():

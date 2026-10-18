@@ -837,23 +837,42 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
                           "relative_to_plate_pp", "p0932", "p0945"}
         auction_only = "auction" in stage_key
         def strip_close(value):
-            if isinstance(value, Mapping):
-                cleaned = {}
-                for key, item in value.items():
-                    if key in forbidden:
-                        continue
-                    if auction_only and key in {"0932", "0945", "close"}:
-                        continue
-                    if auction_only and key in {"equal_weight_0945_pct", "equal_weight_close_pct",
-                                                "relative_to_plate_0945_pp", "relative_to_plate_close_pp"}:
-                        continue
-                    if not auction_only and key == "close":
-                        continue
-                    cleaned[key] = strip_close(item)
-                return cleaned
-            if isinstance(value, list):
-                return [strip_close(item) for item in value]
-            return value
+            if not isinstance(value, (Mapping, list)):
+                return value
+            root = {} if isinstance(value, Mapping) else []
+            pending = [(value, root)]
+            while pending:
+                source, target = pending.pop()
+                if isinstance(source, Mapping):
+                    for key, item in source.items():
+                        if (key in forbidden or (auction_only and key in {"0932", "0945", "close"})
+                                or (auction_only and key in {"equal_weight_0945_pct", "equal_weight_close_pct",
+                                    "relative_to_plate_0945_pp", "relative_to_plate_close_pp"})
+                                or (not auction_only and key == "close")):
+                            continue
+                        if isinstance(item, Mapping):
+                            child = {}
+                            target[key] = child
+                            pending.append((item, child))
+                        elif isinstance(item, list):
+                            child = []
+                            target[key] = child
+                            pending.append((item, child))
+                        else:
+                            target[key] = item
+                else:
+                    for item in source:
+                        if isinstance(item, Mapping):
+                            child = {}
+                            target.append(child)
+                            pending.append((item, child))
+                        elif isinstance(item, list):
+                            child = []
+                            target.append(child)
+                            pending.append((item, child))
+                        else:
+                            target.append(item)
+            return root
         report = strip_close(report)
     manifest = manifest or (report.get("manifest") if isinstance(report.get("manifest"), Mapping) else {})
     panorama = report.get("auction_panorama")

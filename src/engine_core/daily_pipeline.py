@@ -2287,7 +2287,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                      "symbol": symbol}
                     for code, members in relations.items() for symbol in members
                 ]
-                from .auction_panorama import build_auction_panorama, store_auction_panorama, normalize_hot_plates
+                from .auction_panorama import (build_auction_panorama, store_auction_panorama,
+                                               normalize_auction_stock_rows, normalize_hot_plates)
                 from .data_pipeline.storage import ArtifactCatalog
                 hot_catalog = ArtifactCatalog(os.environ.get("CORE_DATA_ROOT", "~/core-data")).locate(
                     "hot_plates", str(stock_facts.get("trade_date")))
@@ -2299,6 +2300,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                         available_at=hot_meta.get("available_at"),
                         asof=stock_facts["asof"], trade_date=stock_facts["trade_date"],
                         now=datetime.now(TZ).isoformat())
+                normalized_stock_rows = normalize_auction_stock_rows(stock_facts)
                 panorama = build_auction_panorama(
                     stock_facts, plate_members=panorama_members,
                     yesterday_pool=yesterday_pool_rows, yesterday_reasons=yesterday_reasons,
@@ -2308,14 +2310,16 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     amount_baseline_basis="REPLAY_EVENT_TIME" if baseline_replay else "PIT",
                     hot_plate_ranks=hot_ranks.get("ranks", {}),
                     plate_classes=class_by_code,
-                    previous_trade_date=previous_trade_date)
+                    previous_trade_date=previous_trade_date,
+                    normalized_rows=normalized_stock_rows)
                 from .auction_quickbrief import build_auction_quickbrief
                 quickbrief = build_auction_quickbrief(
                     stock_facts, plate_members=panorama_members,
                     yesterday_pool=yesterday_pool_rows, plate_classes=class_by_code,
                     name_map=stock_names,
                     market_amount_history=baseline_history,
-                    replay=baseline_replay or hot_ranks.get("basis") == "POSTHOC_DEV")
+                    replay=baseline_replay or hot_ranks.get("basis") == "POSTHOC_DEV",
+                    normalized_rows=normalized_stock_rows)
                 relay_buckets = panorama.get("overview", {}).get("yesterday_reason_buckets", [])
                 relay_candidates = [bucket for bucket in relay_buckets
                     if isinstance(bucket, Mapping) and bucket.get("willingness") != "不适用·非共同题材"]

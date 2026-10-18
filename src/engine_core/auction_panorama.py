@@ -81,6 +81,20 @@ def _symbol(value: Any) -> str:
     return digits[-6:].zfill(6) if digits else raw
 
 
+def normalize_auction_stock_rows(stock_facts: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Copy and key auction rows once for the panorama and quickbrief products."""
+    by_symbol: dict[str, dict[str, Any]] = {}
+    for raw in stock_facts.get("rows", []):
+        if not isinstance(raw, Mapping):
+            continue
+        row = dict(raw)
+        symbol = _symbol(row.get("symbol"))
+        if symbol:
+            row["symbol"] = symbol
+            by_symbol[symbol] = row
+    return by_symbol
+
+
 def _members(rows: Any) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     if isinstance(rows, Mapping):
@@ -209,20 +223,15 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                            hot_plate_ranks: Mapping[str, Any] | None = None,
                            plate_classes: Mapping[str, str] | None = None,
                            amount_baseline_basis: str = "PIT",
-                           previous_trade_date: str | None = None) -> dict[str, Any]:
+                           previous_trade_date: str | None = None,
+                           normalized_rows: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """Build the schema-versioned facts. All monetary values are yuan; pct_change is percent."""
     trade_date = str(stock_facts.get("trade_date", ""))
     asof = str(stock_facts.get("asof", ""))
     cutoff = datetime.fromisoformat(asof.replace("Z", "+00:00"))
     if cutoff.tzinfo is None or cutoff.date().isoformat() != trade_date or cutoff.timetz().replace(tzinfo=None).isoformat() > "09:26:00":
         raise ValueError("invalid_panorama_asof")
-    source_rows = [dict(row) for row in stock_facts.get("rows", []) if isinstance(row, Mapping)]
-    by_symbol: dict[str, dict[str, Any]] = {}
-    for row in source_rows:
-        symbol = _symbol(row.get("symbol"))
-        if symbol:
-            row["symbol"] = symbol
-            by_symbol[symbol] = row
+    by_symbol = normalized_rows if normalized_rows is not None else normalize_auction_stock_rows(stock_facts)
     normalized_names = {_symbol(symbol): (value.get("name") if isinstance(value, Mapping) else value)
                         for symbol, value in (name_map or {}).items()}
     def stock_name(symbol: str, row: Mapping[str, Any] | None = None,
@@ -265,6 +274,12 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
     for raw in yesterday_pool or []:
         if isinstance(raw, Mapping) and (symbol := _symbol(raw.get("symbol", raw.get("code")))):
             pool_by_symbol[symbol] = {**dict(raw), "symbol": symbol}
+    yesterday_reasons = yesterday_reasons or {}
+    primary_reason_by_symbol = {
+        symbol: _primary_reason(pool_row, {"reasons": yesterday_reasons.get(
+            symbol, yesterday_reasons.get(symbol.lstrip("0"), []))}, previous_trade_date)
+        for symbol, pool_row in pool_by_symbol.items()
+    }
     pool_price_rows = [by_symbol[s] for s in pool_by_symbol if s in by_symbol and _has_valid_auction_price(by_symbol[s])
                        and _num(by_symbol[s].get("pct_change")) is not None]
     pool_changes = [_num(row.get("pct_change")) for row in pool_price_rows]
@@ -286,12 +301,13 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
         pcts = [v for v in pcts if v is not None]
         size = len(plate["symbols"])
         scale = "小" if 5 <= size <= 19 else "中" if 20 <= size <= 99 else "大" if size >= 100 else None
-        member_amount = [_num(row.get("auction_amount_yuan")) for row in members]
-        valid_member_amount = [v for v in member_amount if v is not None and v > 0]
-        total = sum(valid_member_amount) if valid_member_amount else None
-        ordered_amount = sorted(((_num(row.get("auction_amount_yuan")), row) for row in members
-                                 if _num(row.get("auction_amount_yuan")) is not None and
-                                 _num(row.get("auction_amount_yuan")) > 0), key=lambda x: (-x[0], x[1]["symbol"]))
+        amount_rows = []
+        for row in members:
+            value = _num(row.get("auction_amount_yuan"))
+            if value is not None and value > 0:
+                amount_rows.append((value, row))
+        total = sum(value for value, _row in amount_rows) or None
+        ordered_amount = sorted(amount_rows, key=lambda item: (-item[0], item[1]["symbol"]))
         up = sum(value > 0 for value in pcts)
         plate_median = _median(pcts)
         ge_3 = sum(value >= 3 for value in pcts)
@@ -323,8 +339,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
             primary = assignment.get("primary_theme") if isinstance(assignment, Mapping) else None
             assigned_id = str(primary.get("id", primary.get("code", ""))) if isinstance(primary, Mapping) else ""
             assigned_name = str(primary.get("name", "")) if isinstance(primary, Mapping) else ""
-            reason = _primary_reason(pool_row, {"reasons": (yesterday_reasons or {}).get(
-                symbol, (yesterday_reasons or {}).get(symbol.lstrip("0"), []))}, previous_trade_date)
+            reason = primary_reason_by_symbol[symbol]
             if (symbol in member_symbols or assigned_id == code or assigned_name == plate["plate_name"]
                     or reason == plate["plate_name"]):
                 yesterday_theme_rows.append((symbol, pool_row, by_symbol.get(symbol, {})))
@@ -387,7 +402,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                                 "amount_rank": amount_ranks.get(seal_extreme_row["symbol"])}
                                 if seal_extreme_row else None),
                             "up_count": up, "valid_price_count": len(pcts),
-                            "valid_amount_count": len(valid_member_amount),
+                            "valid_amount_count": len(amount_rows),
                             "up_label": f"上涨 {up}/{len(pcts)}",
                             "strength_vs_market_pct": _median(pcts) - market_median if pcts and market_median is not None else None,
                             "up_ratio": up / len(pcts) if pcts else None,
@@ -448,8 +463,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
     for symbol, pool_row in pool_by_symbol.items():
         if (streak_for(symbol) or 0) < 2:
             continue
-        reason = _primary_reason(pool_row, {"reasons": (yesterday_reasons or {}).get(
-            symbol, (yesterday_reasons or {}).get(symbol.lstrip("0"), []))}, previous_trade_date)
+        reason = primary_reason_by_symbol[symbol]
         exact_codes = plate_by_name.get(reason, [])
         if exact_codes:
             for code in exact_codes:
@@ -555,7 +569,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
         source = assignment.get("source") if isinstance(assignment, Mapping) else None
         reasons = yesterday_reasons.get(symbol, yesterday_reasons.get(symbol.lstrip("0"), []))
         reason_input = {"reasons": reasons}
-        reason = _primary_reason(pool_row, reason_input, previous_trade_date)
+        reason = primary_reason_by_symbol[symbol]
         row = by_symbol.get(symbol, {})
         seal = row.get("seal", {})
         layer = layers.setdefault(level, {})
@@ -706,8 +720,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                                      if _num(row.get("pct_change")) is not None])
     reason_groups: dict[str, list[dict[str, Any]]] = {}
     for symbol, pool_row in pool_by_symbol.items():
-        reason = _primary_reason(pool_row, {"reasons": (yesterday_reasons or {}).get(
-            symbol, (yesterday_reasons or {}).get(symbol.lstrip("0"), []))}, previous_trade_date)
+        reason = primary_reason_by_symbol[symbol]
         row = by_symbol.get(symbol, {})
         reason_groups.setdefault(reason, []).append({"symbol": symbol, "pool": pool_row, "row": row})
     small_reasons = {reason: rows for reason, rows in reason_groups.items() if len(rows) < 2}
@@ -787,9 +800,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
         "yesterday_pool_high_boards": [{"symbol": row["symbol"],
             "name": stock_name(row["symbol"], row, pool_by_symbol[row["symbol"]]),
             "yesterday_streak": _streak(row),
-            "primary_reason": _primary_reason(pool_by_symbol[row["symbol"]],
-                {"reasons": (yesterday_reasons or {}).get(row["symbol"],
-                    (yesterday_reasons or {}).get(row["symbol"].lstrip("0"), []))}, previous_trade_date),
+            "primary_reason": primary_reason_by_symbol[row["symbol"]],
             "pct_change": _num(row.get("pct_change")),
             "auction_amount_yuan": _num(row.get("auction_amount_yuan")),
             "amount_rank": amount_ranks.get(row["symbol"]),

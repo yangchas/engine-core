@@ -47,6 +47,72 @@ class SliceReader:
         self.snapshot_id = snapshot_id
         self._lock = threading.Lock()
         self._cache: dict[tuple[Any, ...], Future[SliceResult]] = {}
+        self._manifest_cache: dict[tuple[Any, ...], Future[dict[str, Any]]] = {}
+        self._row_cache: dict[tuple[Any, ...], Future[list[dict[str, Any]]]] = {}
+        self._as_rows_cache: dict[tuple[Any, ...], Future[list[dict[str, Any]]]] = {}
+        self._pit_cache: dict[tuple[Any, ...], Future[tuple[list[dict[str, Any]], bool]]] = {}
+
+    def read_manifest(self, path: str | Path) -> dict[str, Any]:
+        key = str(Path(path).resolve())
+        with self._lock:
+            future = self._manifest_cache.get((key,))
+            owner = future is None
+            if owner:
+                future = Future()
+                self._manifest_cache[(key,)] = future
+        if owner:
+            try:
+                future.set_result(json.loads(Path(path).read_text(encoding="utf-8")))
+            except BaseException as exc:
+                future.set_exception(exc)
+        return future.result()
+
+    def read_rows(self, catalog: Any, path: str | Path) -> list[dict[str, Any]]:
+        """Read and convert an immutable artifact once per report run."""
+        key = str(Path(path).resolve())
+        with self._lock:
+            future = self._row_cache.get((key,))
+            owner = future is None
+            if owner:
+                future = Future()
+                self._row_cache[(key,)] = future
+        if owner:
+            try:
+                future.set_result(catalog.read_rows(path))
+            except BaseException as exc:
+                future.set_exception(exc)
+        return future.result()
+
+    def as_rows(self, rows: Any) -> list[dict[str, Any]]:
+        key = (id(rows),)
+        with self._lock:
+            future = self._as_rows_cache.get(key)
+            owner = future is None
+            if owner:
+                future = Future()
+                self._as_rows_cache[key] = future
+        if owner:
+            try:
+                future.set_result(_as_rows(rows))
+            except BaseException as exc:
+                future.set_exception(exc)
+        return future.result()
+
+    def pit_rows(self, rows: list[dict[str, Any]], asof: str) -> tuple[list[dict[str, Any]], bool]:
+        """Apply the same PIT cutoff once to the same loaded artifact rows."""
+        key = (id(rows), asof)
+        with self._lock:
+            future = self._pit_cache.get(key)
+            owner = future is None
+            if owner:
+                future = Future()
+                self._pit_cache[key] = future
+        if owner:
+            try:
+                future.set_result(_pit_rows(rows, asof))
+            except BaseException as exc:
+                future.set_exception(exc)
+        return future.result()
 
     def get(self, slice_id: str, *, trade_date: str, asof: str | None = None,
             **params: Any) -> SliceResult:
@@ -85,7 +151,7 @@ class SliceReader:
                     source_rows = _canonical_hot_plate_rows(source_rows)
                 pit_filtered = bool(result.meta.get("_pit_filtered"))
                 rows, unknown = ((source_rows, result.meta.get("reason") == "NO_ASOF")
-                                 if pit_filtered else _pit_rows(source_rows, request.asof))
+                                 if pit_filtered else self.pit_rows(source_rows, request.asof))
                 if request.slice_id in {"hot_plates_today", "hot_plates_yesterday"}:
                     rows = _latest_hot_plate_rows(rows, request.asof)
                 available_at = result.meta.get("available_at")
@@ -179,18 +245,18 @@ class SliceProviders:
         if request.slice_id == "auction_stock_facts":
             # Hot Top50/seal projections are lookup aids, never a complete
             # market universe for panorama aggregation.
-            manifest_path = self._select_manifest(dataset, date, request.asof, exact_date=True)
+            manifest_path = self._select_manifest(dataset, date, request.asof, reader=reader, exact_date=True)
             if manifest_path is None or not manifest_path.is_file():
                 return _result(request, [], source="core_data", status="MISSING",
                                reason="AUCTION_STOCK_FACTS_NOT_IMPORTED",
                                quality={"coverage": 0, "partial": True})
             try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest = reader.read_manifest(manifest_path)
                 if manifest.get("trade_date") != date:
                     return _result(request, [], source="core_data", status="MISSING",
                                    reason="AUCTION_STOCK_FACTS_TRADE_DATE_MISMATCH",
                                    quality={"coverage": 0, "partial": True})
-                rows = self.catalog.read_rows(manifest_path)
+                rows = reader.read_rows(self.catalog, manifest_path)
             except (OSError, ValueError, TypeError, KeyError):
                 manifest, rows = {}, []
             if not rows:
@@ -219,13 +285,13 @@ class SliceProviders:
                     hot = None
             except (OSError, ValueError, TypeError):
                 hot = None
-            manifest_path = self._select_manifest(dataset, date, request.asof)
+            manifest_path = self._select_manifest(dataset, date, request.asof, reader=reader)
             if manifest_path is None or not manifest_path.is_file():
                 return _result(request, [], source="core_data", status="MISSING",
                                reason="AUCTION_PANORAMA_NOT_IMPORTED", quality={"coverage": 0})
             try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                product_rows = self.catalog.read_rows(manifest_path)
+                manifest = reader.read_manifest(manifest_path)
+                product_rows = reader.read_rows(self.catalog, manifest_path)
                 rows = []
                 for row in product_rows:
                     payload = row.get("product_json")
@@ -309,13 +375,13 @@ class SliceProviders:
                                reason="DAILY_REPORT_FEATURES_NOT_IMPORTED",
                                quality={"coverage": 0, "partial": True, "fallback": "daily_history"})
             try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest = reader.read_manifest(manifest_path)
                 available = _parse_pit_timestamp(manifest.get("available_at"))
                 if available is None or cutoff is None or available > cutoff:
                     return _result(request, [], source="core_data", status="PARTIAL",
                                    reason="DAILY_REPORT_FEATURES_NOT_PIT_READY",
                                    quality={"coverage": 0, "partial": True, "fallback": "daily_history"})
-                rows = self.catalog.read_rows(manifest_path)
+                rows = reader.read_rows(self.catalog, manifest_path)
             except (OSError, ValueError, TypeError, KeyError):
                 rows, manifest = [], {}
             if not rows:
@@ -350,15 +416,15 @@ class SliceProviders:
                 rows, history_meta = [], {"row_count": 0, "history_trade_dates": 0,
                                            "available_at": None, "unknown_availability": True}
             if not rows:
-                compact_path = self._select_manifest(dataset, through_date, request.asof)
+                compact_path = self._select_manifest(dataset, through_date, request.asof, reader=reader)
                 if compact_path is not None and compact_path.is_file():
                     try:
-                        compact_manifest = json.loads(compact_path.read_text(encoding="utf-8"))
-                        compact_rows = self.catalog.read_rows(compact_path)
+                        compact_manifest = reader.read_manifest(compact_path)
+                        compact_rows = reader.read_rows(self.catalog, compact_path)
                         for row in compact_rows:
                             row.setdefault("available_at", compact_manifest.get("available_at"))
                             row.setdefault("source", compact_manifest.get("source") or "core_data")
-                        compact_rows, unknown = _pit_rows(compact_rows, request.asof)
+                        compact_rows, unknown = reader.pit_rows(compact_rows, request.asof)
                         if compact_rows:
                             return _result(request, compact_rows, source="core_data:daily_history_compact",
                                            status="PARTIAL" if unknown else "READY",
@@ -382,12 +448,12 @@ class SliceProviders:
                     manifest_path = self.catalog.locate("daily_indicators", indicator_date)
                     if manifest_path is None or not manifest_path.is_file():
                         continue
-                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    manifest = reader.read_manifest(manifest_path)
                     available = _parse_pit_timestamp(manifest.get("available_at"))
                     if available is None or cutoff is None or available > cutoff:
                         continue
                     indicator_rows = {str(row.get("symbol", "")).zfill(6): row
-                                      for row in self.catalog.read_rows(manifest_path)}
+                                      for row in reader.read_rows(self.catalog, manifest_path)}
                     indicator_available_at = manifest.get("available_at")
                     indicator_date_used = indicator_date
                     break
@@ -452,15 +518,16 @@ class SliceProviders:
                 lineage = []
                 unknown = False
                 for day in eligible:
-                    manifest_path = self._select_manifest(dataset, day, request.asof, exact_date=True)
+                    manifest_path = self._select_manifest(dataset, day, request.asof,
+                                                          reader=reader, exact_date=True)
                     if manifest_path is None or not manifest_path.is_file():
                         continue
-                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    day_rows = self.catalog.read_rows(manifest_path)
+                    manifest = reader.read_manifest(manifest_path)
+                    day_rows = reader.read_rows(self.catalog, manifest_path)
                     for row in day_rows:
                         row.setdefault("available_at", manifest.get("available_at"))
                         row.setdefault("dataset_date", day)
-                    kept, day_unknown = _pit_rows(_as_rows(day_rows), request.asof)
+                    kept, day_unknown = reader.pit_rows(reader.as_rows(day_rows), request.asof)
                     unknown = unknown or day_unknown
                     rows.extend(kept)
                     lineage.append({"dataset": dataset, "trade_date": day,
@@ -488,7 +555,7 @@ class SliceProviders:
                                          "hot_plate_minutes",
                                          "yest_limit_pool", "stock_theme_assignment"}
         manifest_path = self._select_manifest(dataset, date or request.trade_date, request.asof,
-                                              exact_date=exact_date)
+                                              reader=reader, exact_date=exact_date)
         discovered_by = "artifact"
         if manifest_path is None and callable(getattr(self.redis, "get", None)):
             pointer_key = f"core:cache:data:{dataset}:{date or 'latest'}"
@@ -511,11 +578,11 @@ class SliceProviders:
                                         "fallback": "UNKNOWN_NO_ON_DEMAND_RECOMPUTE"})
             return _result(request, [], source="core_data", status="MISSING", reason="DATASET_NOT_FOUND")
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            rows = self.catalog.read_rows(manifest_path)
+            manifest = reader.read_manifest(manifest_path)
+            rows = reader.read_rows(self.catalog, manifest_path)
         except (OSError, ValueError, KeyError):
             return _result(request, [], source="core_data", status="MISSING", reason="CORRUPT_DATASET")
-        rows = _as_rows(rows)
+        rows = reader.as_rows(rows)
         if request.slice_id == "hot_plate_minutes":
             plate_code = str(request.params.get("plate_code") or "")
             if plate_code:
@@ -523,7 +590,7 @@ class SliceProviders:
         for row in rows:
             row.setdefault("available_at", manifest.get("available_at"))
         original_count = len(rows)
-        rows, unknown = _pit_rows(rows, request.asof)
+        rows, unknown = reader.pit_rows(rows, request.asof)
         source = "core_redis" if discovered_by == "core_redis" else "core_data"
         filtered = len(rows) < original_count
         manifest_quality = manifest.get("quality")
@@ -544,7 +611,8 @@ class SliceProviders:
                                 "available_at": manifest.get("available_at")}])
 
     def _select_manifest(self, dataset: str, max_trade_date: str,
-                         asof: str, *, exact_date: bool = False) -> Path | None:
+                         asof: str, *, reader: SliceReader,
+                         exact_date: bool = False) -> Path | None:
         """Select the newest artifact version whose date and availability are PIT eligible."""
         try:
             dates = self.catalog.read().get("datasets", {}).get(dataset, {}).get("dates", {})
@@ -556,7 +624,7 @@ class SliceProviders:
                 for entry in versions:
                     path = Path(entry["manifest"])
                     try:
-                        manifest = json.loads(path.read_text(encoding="utf-8"))
+                        manifest = reader.read_manifest(path)
                     except (OSError, ValueError, KeyError):
                         continue
                     available = _parse_pit_timestamp(manifest.get("available_at"))
@@ -578,7 +646,7 @@ class SliceProviders:
             rows = None
         if rows is None:
             return _result(request, [], source="legacy_redis", status="MISSING", reason="LEGACY_KEY_MISSING")
-        rows, unknown = _pit_rows(rows, request.asof)
+        rows, unknown = reader.pit_rows(rows, request.asof)
         if request.slice_id == "daily_history":
             for row in rows:
                 row.setdefault("available_at", None)
@@ -672,7 +740,7 @@ class SliceProviders:
                     rows = list(csv.DictReader(handle))
         except (OSError, ValueError, UnicodeError):
             return _result(request, [], source="FILE_FALLBACK", status="MISSING", reason="FILE_UNREADABLE")
-        rows, unknown = _pit_rows(rows, request.asof)
+        rows, unknown = reader.pit_rows(rows, request.asof)
         return _result(request, rows, source="FILE_FALLBACK", status="PARTIAL",
                        reason="NO_ASOF" if unknown else "EXPLICIT_FILE_FALLBACK",
                        quality={"coverage": len(rows) or None, "missing": "NO_ASOF" if unknown else None,

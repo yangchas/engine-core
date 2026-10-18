@@ -54,10 +54,18 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
                              name_map: Mapping[str, Any] | None = None,
                              market_amount_history: Sequence[float] = (),
                              replay: bool = False,
-                             verified_0932: bool = False) -> dict[str, Any]:
+                             verified_0932: bool = False,
+                             normalized_rows: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
     names = name_map or {}
-    rows = {_symbol(r.get("symbol")): dict(r) for r in stock_facts.get("rows", [])
-            if isinstance(r, Mapping) and _symbol(r.get("symbol"))}
+    normalized_symbols: dict[str, str] = {}
+    def normalize_symbol(value: Any) -> str:
+        key = str(value or "")
+        if key not in normalized_symbols:
+            normalized_symbols[key] = _symbol(value)
+        return normalized_symbols[key]
+    rows = (normalized_rows if normalized_rows is not None else
+            {normalize_symbol(r.get("symbol")): dict(r) for r in stock_facts.get("rows", [])
+             if isinstance(r, Mapping) and normalize_symbol(r.get("symbol"))})
     valid = [r for r in rows.values()
              if _has_valid_auction_price(r) and _num(r.get("pct_change")) is not None]
     changes = [_num(r.get("pct_change")) for r in valid]
@@ -70,8 +78,8 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
     market_open = bool(market_ready and ratio >= QUICKBRIEF_THRESHOLDS_V1["market_up_ratio"]
                        and median >= QUICKBRIEF_THRESHOLDS_V1["market_median_pct"])
 
-    pool_syms = {_symbol(r.get("symbol", r.get("code"))): r for r in yesterday_pool
-                 if isinstance(r, Mapping) and _symbol(r.get("symbol", r.get("code")))}
+    pool_syms = {normalize_symbol(r.get("symbol", r.get("code"))): r for r in yesterday_pool
+                 if isinstance(r, Mapping) and normalize_symbol(r.get("symbol", r.get("code")))}
     pool_rows = [rows[s] for s in pool_syms if s in rows and _has_valid_auction_price(rows[s])
                  and _num(rows[s].get("pct_change")) is not None]
     pool_up = sum(_num(r.get("pct_change")) > 0 for r in pool_rows)
@@ -85,12 +93,12 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
         if not isinstance(member, Mapping):
             continue
         pid = str(member.get("plate_id", member.get("plate_code", member.get("plate", ""))))
-        symbol = _symbol(member.get("symbol", member.get("stock_code")))
-        if not pid or not symbol:
+        member_symbol = normalize_symbol(member.get("symbol", member.get("stock_code")))
+        if not pid or not member_symbol:
             continue
         meta = member_map.setdefault(pid, {"name": str(member.get("plate_name", member.get("name", pid))),
                                            "symbols": set()})
-        meta["symbols"].add(symbol)
+        meta["symbols"].add(member_symbol)
 
     amount_rows = [r for r in rows.values()
                    if (_num(r.get("auction_amount_yuan")) or 0) > 0]
@@ -114,8 +122,8 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
         amount = sum(_num(r["auction_amount_yuan"]) for r in amounts) if amounts else None
         amount_share = amount / market_amount if amount is not None and market_amount and market_amount > 0 else None
         top3_rows = sorted(amounts, key=lambda r: (-_num(r.get("auction_amount_yuan")),
-                                                    _symbol(r.get("symbol"))))[:3]
-        top3 = [{"symbol": _symbol(r.get("symbol")), "name": _name(_symbol(r.get("symbol")), r, names),
+                                                    normalize_symbol(r.get("symbol"))))[:3]
+        top3 = [{"symbol": normalize_symbol(r.get("symbol")), "name": _name(normalize_symbol(r.get("symbol")), r, names),
                  "amount_yuan": _num(r.get("auction_amount_yuan")),
                  "pct_change": _num(r.get("pct_change")),
                  "amount_rank": r.get("amount_rank")} for r in top3_rows]
@@ -180,7 +188,7 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
              and r["seal"].get("status") in ("VERIFIED", "VERIFIED_REPLAY")
              and _num(r["seal"].get("seal_amount_yuan")) is not None]
     seal_total = sum(_num(r["seal"]["seal_amount_yuan"]) for r in seals)
-    seal_top = max(seals, key=lambda r: (_num(r["seal"]["seal_amount_yuan"]), _symbol(r.get("symbol"))), default=None)
+    seal_top = max(seals, key=lambda r: (_num(r["seal"]["seal_amount_yuan"]), normalize_symbol(r.get("symbol"))), default=None)
 
     multi_pool = []
     multi_pool_symbols: set[str] = set()
@@ -198,10 +206,10 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
                       and r.get("limit_up_candidate") is True]
     weak = sorted((r for r in multi_pool if _has_valid_auction_price(r)
                    and (_num(r.get("pct_change")) or 0) <= -3),
-                  key=lambda r: (_num(r.get("pct_change")), _symbol(r.get("symbol"))))[:2]
-    weak_text = "、".join(f"{_name(_symbol(r.get('symbol')), r, names)} {_num(r.get('pct_change')):+.2f}%"
+                  key=lambda r: (_num(r.get("pct_change")), normalize_symbol(r.get("symbol"))))[:2]
+    weak_text = "、".join(f"{_name(normalize_symbol(r.get('symbol')), r, names)} {_num(r.get('pct_change')):+.2f}%"
                           for r in weak) or "无符合阈值的昨日≥2板弱势股"
-    seal_text = (f"封单极值 {_name(_symbol(seal_top.get('symbol')), seal_top, names)} "
+    seal_text = (f"封单极值 {_name(normalize_symbol(seal_top.get('symbol')), seal_top, names)} "
                  f"{_num(seal_top['seal']['seal_amount_yuan']) / 1e8:.2f}亿"
                  if seal_top else "封单极值 待核实")
     if seal_top and seal_total:
@@ -331,7 +339,7 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
     email_lines.append(f"{multi_text.replace('下一板 ', '下一板')};{weak_text}" if relay or (multi_pool_symbols and not confirmed_next)
                        else "高标接力负反馈样本不足,不下结论")
     if seal_top and seal_total:
-        seal_name = _name(_symbol(seal_top.get("symbol")), seal_top, names)
+        seal_name = _name(normalize_symbol(seal_top.get("symbol")), seal_top, names)
         seal_amount = _num(seal_top["seal"]["seal_amount_yuan"])
         email_lines.extend([f"封单极值:{seal_name}{seal_amount / 1e8:.2f}亿",
                             f"全市场封单{seal_total / 1e8:.2f}亿,{seal_name}占{100*seal_amount/seal_total:.1f}%;"
@@ -371,8 +379,8 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
                    "yesterday_pool": {"valid_n": len(pool_rows), "up_n": pool_up,
                                       "up_ratio": pool_ratio, "lag_pp": lag},
                    "seal": {"verified_n": len(seals), "total_yuan": seal_total,
-                            "top_symbol": _symbol(seal_top.get("symbol")) if seal_top else None,
-                            "top_name": _name(_symbol(seal_top.get("symbol")), seal_top, names) if seal_top else None,
+                            "top_symbol": normalize_symbol(seal_top.get("symbol")) if seal_top else None,
+                            "top_name": _name(normalize_symbol(seal_top.get("symbol")), seal_top, names) if seal_top else None,
                             "top_amount_yuan": _num(seal_top["seal"]["seal_amount_yuan"]) if seal_top else None},
                    "multi_board": {"n": len(multi_pool_symbols), "observed_n": len(multi_pool),
                                    "unobserved_n": len(multi_pool_symbols) - len(multi_pool),
@@ -388,6 +396,6 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
              "backup_overlap_rejections": backup_overlap, "replay_banner": bool(replay),
                   "backup_top_scores": backup_top_scores,
                   "rejected_backup_scores": rejected_backup_scores,
-                  "weak_multi_board": [_symbol(r.get("symbol")) for r in weak]},
+                  "weak_multi_board": [normalize_symbol(r.get("symbol")) for r in weak]},
         "lines": lines, "email_lines": email_lines,
     }

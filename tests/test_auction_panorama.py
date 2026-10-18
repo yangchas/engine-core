@@ -1,6 +1,29 @@
 from engine_core.auction_panorama import build_auction_panorama, normalize_hot_plates
 
 
+def test_panorama_primary_reason_is_computed_once_per_pool_symbol(monkeypatch):
+    import engine_core.auction_panorama as panorama_module
+
+    calls = 0
+    original = panorama_module._primary_reason
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(panorama_module, "_primary_reason", counted)
+    facts = _facts()
+    members = [
+        {"plate_id": f"P{index}", "plate_name": f"主题{index}", "symbol": "000001"}
+        for index in range(12)
+    ]
+    build_auction_panorama(facts, plate_members=members,
+        yesterday_pool=[{"symbol": "000001", "lb_days": 2, "primary_reason": "主题0"}],
+        previous_trade_date="2026-10-15")
+    assert calls == 1
+
+
 def test_hot_plate_rank_basis_ties_and_live_rejects_posthoc(monkeypatch):
     rows = [{"code": "B", "strength": 10, "change_pct": 2.5},
             {"code": "A", "strength": 10, "change_pct": -1.0},

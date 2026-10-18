@@ -6,6 +6,24 @@ from engine_core.limit_reason_theme import (
     load_kaipan_theme_snapshot,
     theme_snapshot_visibility,
 )
+
+
+def test_theme_snapshot_visibility_reuses_sort_key_for_repeated_boundaries(monkeypatch):
+    import engine_core.limit_reason_theme as theme_module
+
+    calls = 0
+    original = theme_module._cache_json
+
+    def counted(value):
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(theme_module, "_cache_json", counted)
+    row = {"available_at": "2026-10-16T08:00:00+08:00", "sampled_at": "08:01:00"}
+    result = theme_module.theme_snapshot_visibility({"pool": [row, dict(row), dict(row)]})
+    assert result == {"pool": [{"available_at": row["available_at"], "sampled_at": row["sampled_at"]}] * 3}
+    assert calls == 1
 from engine_core.ladder_cluster import build_ladder_clusters
 
 

@@ -35,14 +35,23 @@ def theme_snapshot_visibility(rows_by_input: Mapping[str, Sequence[Any]]) -> dic
     fields = ("available_at", "sampled_at", "captured_local", "capture_time",
               "event_time", "event_at", "Date")
     result: dict[str, list[dict[str, Any]]] = {}
+    sort_keys: dict[tuple[tuple[str, Any], ...], bytes] = {}
     for name, rows in rows_by_input.items():
         visible = []
         for row in rows:
             if isinstance(row, Mapping):
                 boundary = {key: row[key] for key in fields if row.get(key) not in (None, "")}
                 if boundary:
-                    visible.append(boundary)
-        result[name] = sorted(visible, key=_cache_json)
+                    try:
+                        cache_key = tuple(sorted(boundary.items()))
+                        sort_key = sort_keys.get(cache_key)
+                        if sort_key is None:
+                            sort_key = _cache_json(boundary)
+                            sort_keys[cache_key] = sort_key
+                    except TypeError:
+                        sort_key = _cache_json(boundary)
+                    visible.append((sort_key, boundary))
+        result[name] = [boundary for _key, boundary in sorted(visible, key=lambda item: item[0])]
     return result
 
 
