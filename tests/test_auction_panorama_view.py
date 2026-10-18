@@ -54,6 +54,8 @@ def test_panorama_view_renders_two_complete_tables_and_preserves_unknowns():
     assert "市场结构" not in plain
     assert "成员涨幅中位数" in plain
     assert "本层占比" not in plain
+    assert "附件" not in html + plain
+    assert "完整明细已存档于 Core 报告目录" in html + plain
 
 
 def test_posthoc_hot_coverage_and_readable_amounts_and_selection_reasons():

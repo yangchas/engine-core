@@ -910,8 +910,8 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
                 plain = plain.replace("\n", f"\n数据完整度与异常 [{status}]\n", 1)
             if failure_code:
                 plain = f"V6 全景缺失：{failure_code}\n" + plain
-            plain += "\n明细见附件 report.html"
-            public_html.append('<div style="margin-top:10px;font-size:11px;color:#667085">明细见附件 report.html</div>')
+            plain += "\n完整明细已存档于 Core 报告目录"
+            public_html.append('<div style="margin-top:10px;font-size:11px;color:#667085">完整明细已存档于 Core 报告目录</div>')
             return (('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"></head>'
                      '<body style="font-family:-apple-system,BlinkMacSystemFont,\'PingFang SC\',sans-serif;color:#26364a">'
                      '<main style="max-width:680px;margin:auto;padding:12px">' + ''.join(public_html) +

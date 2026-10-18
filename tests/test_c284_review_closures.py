@@ -102,7 +102,7 @@ def test_actual_mail_preserves_v6_panorama_tables(tmp_path):
     assert "①" in mailed and "②" in mailed
 
 
-def test_auction_email_body_is_compact_panorama_and_full_v6_is_attachment(tmp_path):
+def test_auction_email_body_is_compact_panorama_without_attachment_by_default(tmp_path):
     import hashlib
     from engine_core import report_mailer
     from engine_core.report_mailer import build_report_message
@@ -130,15 +130,21 @@ def test_auction_email_body_is_compact_panorama_and_full_v6_is_attachment(tmp_pa
         "auction_panorama_sha256": hashlib.sha256(sidecar_bytes).hexdigest()}), encoding="utf-8")
 
     message = build_report_message("Core", "2026-10-16", "auction", report_html, report_json,
-        [report_mailer.ALLOWED_RECIPIENT], "reports@localhost", attach_full_html=True)
+        [report_mailer.ALLOWED_RECIPIENT], "reports@localhost")
     body = message.get_body(preferencelist=("plain",)).get_content()
     attachments = list(message.iter_attachments())
     assert "昨日整批统计" in body and "①题材横向对比" in body
-    assert "明细见附件 report.html" in body
+    assert "附件" not in body
     assert "竞价全景 V6" not in body and "② 昨日连板梯队" not in body
-    assert len(attachments) == 1 and attachments[0].get_filename() == "report.html"
-    attached = attachments[0].get_payload(decode=True).decode("utf-8")
-    assert "① 板块竞价全景" in attached and "② 昨日连板梯队" in attached
+    assert attachments == []
+    assert "昨日整批统计" in body and "①题材横向对比" in body
+    assert "②昨日涨停×题材接力意愿" in body
+    assert len(body.encode("utf-8")) <= 30_000
+    html_body = message.get_body(preferencelist=("html",)).get_content()
+    assert len(html_body.encode("utf-8")) <= 30_000
+    explicit = build_report_message("Core", "2026-10-16", "auction", report_html, report_json,
+        [report_mailer.ALLOWED_RECIPIENT], "reports@localhost", attach_full_html=True)
+    assert [part.get_filename() for part in explicit.iter_attachments()] == ["report.html"]
     from engine_core.email_render import render_email_html
     page, _ = render_email_html({"auction_panorama": panorama}, "auction", "2026-10-16",
         {"degraded": ["SAMPLE_DEGRADED"]},
@@ -153,3 +159,4 @@ def test_auction_email_body_is_compact_panorama_and_full_v6_is_attachment(tmp_pa
     fallback_html = fallback.get_body(preferencelist=("html",)).get_content()
     assert "竞价速览构建失败" in fallback_plain and 'role="alert"' in fallback_html
     assert "① 板块竞价全景" in fallback_html
+    assert list(fallback.iter_attachments()) == []

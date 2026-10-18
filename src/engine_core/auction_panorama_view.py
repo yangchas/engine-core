@@ -270,13 +270,13 @@ def render_auction_email_digest(product: Mapping[str, Any], quickbrief: Mapping[
         f'<div style="font-size:10px;color:#667085">{_esc(threshold)}</div><h2>① 题材横向对比</h2>{plate_table}'
         f'<h2>② 昨日涨停×题材 接力意愿</h2>{bucket_table}'
         f'<h2>高标与封单极值</h2><p style="font-size:10px">高标（昨≥2板）</p><div>{highboard_html}</div><p>{market_extremes_html}</p>'
-        '<p style="font-size:10px;color:#667085">完整 V6 明细与36只全列见附件 report.html；个股点名仅用于极值、封单和高标。缺失不补0。</p>'
+        '<p style="font-size:10px;color:#667085">完整明细已存档于 Core 报告目录；个股点名仅用于极值、封单和高标。缺失不补0。</p>'
         '</td></tr></table></td></tr></table></body></html>')
     plain_blocks = [f"09:26竞价速览 | {date} {asof} {('历史回放样本,非当时实时信号' if replay else '')}",
         f"昨日整批统计 / 市场整体：{whole_batch}",
         "①题材横向对比：" + ("\n".join(plate_text) or "无可展示题材"),
         "②昨日涨停×题材接力意愿：" + ("\n".join(bucket_text) or "无可展示题材"),
-        "高标与封单极值：" + highboard_text + "；" + market_extreme_text + f"；{threshold}；完整明细见附件 report.html"]
+        "高标与封单极值：" + highboard_text + "；" + market_extreme_text + f"；{threshold}；完整明细已存档于 Core 报告目录"]
     return html, "\n\n".join(plain_blocks)
 
 def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
@@ -439,4 +439,6 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
             quick_plain += "速览计算诊断：\n" + "\n".join(diagnostics) + "\n\n"
         text = text.replace("竞价全景 V6 |", quick_plain + "竞价全景 V6 |", 1)
         document = document.replace('<tr><td style="padding:10px">', '<tr><td style="padding:10px">' + quick_html, 1)
-    return document, text
+    archive_note = "完整明细已存档于 Core 报告目录"
+    document = document.replace("</body>", f'<p style="font-size:10px;color:#667085">{archive_note}</p></body>', 1)
+    return document, text + "\n\n" + archive_note

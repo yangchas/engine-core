@@ -239,7 +239,9 @@ def build_report_message(subject_prefix: str, trade_date: str, stage: str,
         except OSError:
             pass
     message["X-Core-Report-SHA256"] = report_digest.hexdigest()
-    if attach_full_html or "auction" in str(stage).lower():
+    # Attachments are an explicit opt-in and are suppressed on degraded
+    # auction fallbacks so the fallback remains self-contained.
+    if attach_full_html and not panorama_recovery_failed and ("auction" not in str(stage).lower() or brief_ready):
         try:
             html_bytes = html_path.read_bytes()
         except OSError as exc:

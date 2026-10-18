@@ -62,7 +62,8 @@ def test_message_recovers_matching_panorama_for_compact_auction_body(tmp_path, m
         "reports@example.test")
     html = message.get_body(preferencelist=("html",)).get_content()
     assert "竞价速览卡" in html and "题材横向对比" in html
-    assert "明细见附件 report.html" in message.get_body(preferencelist=("plain",)).get_content()
+    assert "附件" not in message.get_body(preferencelist=("plain",)).get_content()
+    assert "完整明细已存档于 Core 报告目录" in message.get_body(preferencelist=("plain",)).get_content()
 
 
 @pytest.mark.parametrize("port,starttls,expected", [(465, False, "ssl"), (587, True, "starttls")])
@@ -130,12 +131,13 @@ def test_large_html_is_ignored_by_default(tmp_path):
     assert message.get_content_type() == "multipart/alternative"
 
 
-def test_auction_report_attaches_full_html_by_default(tmp_path):
+def test_auction_report_has_no_attachment_or_attachment_copy_by_default(tmp_path):
     message = _message(tmp_path)
-    assert message.get_content_type() == "multipart/mixed"
-    assert [part.get_content_type() for part in message.iter_parts()] == ["multipart/alternative", "text/html"]
-    assert [part.get_content_type() for part in message.iter_parts().__next__().iter_parts()] == ["text/plain", "text/html"]
-    assert [part.get_filename() for part in message.iter_attachments()] == ["report.html"]
+    assert message.get_content_type() == "multipart/alternative"
+    assert [part.get_content_type() for part in message.iter_parts()] == ["text/plain", "text/html"]
+    assert list(message.iter_attachments()) == []
+    assert "附件" not in message.get_body(preferencelist=("plain",)).get_content()
+    assert "附件" not in message.get_body(preferencelist=("html",)).get_content()
     assert "V6_PANORAMA_MISSING:DATA_MISSING" in message.get_body(preferencelist=("html",)).get_content()
 
 
@@ -144,14 +146,14 @@ def test_attach_full_html_is_opt_in_and_size_limited(tmp_path):
     json_path = tmp_path / "report.json"
     html_path.write_text("<h1>full</h1>", encoding="utf-8")
     json_path.write_text('{"conclusion":["ok"]}', encoding="utf-8")
-    message = report_mailer.build_report_message("Core", "2026-10-15", "auction", html_path, json_path,
+    message = report_mailer.build_report_message("Core", "2026-10-15", "close", html_path, json_path,
                                                  ["me@example.test"], "reports@example.test",
                                                  attach_full_html=True)
     assert message.get_content_type() == "multipart/mixed"
     assert [part.get_filename() for part in message.iter_attachments()] == ["report.html"]
 
     html_path.write_bytes(b"x" * (report_mailer.MAX_HTML_ATTACHMENT_BYTES + 1))
-    oversized = report_mailer.build_report_message("Core", "2026-10-15", "auction", html_path, json_path,
+    oversized = report_mailer.build_report_message("Core", "2026-10-15", "close", html_path, json_path,
                                                    ["me@example.test"], "reports@example.test",
                                                    attach_full_html=True)
     assert list(oversized.iter_attachments()) == []
@@ -186,8 +188,7 @@ def test_panorama_hash_mismatch_degrades_to_controlled_error(tmp_path):
     assert "V6_PANORAMA_MISSING:DATA_MISSING" in plain
     assert "09:30 竞价速览" not in html
     attachments = list(message.iter_attachments())
-    assert [part.get_filename() for part in attachments] == ["report.html"]
-    assert "09:26 full V6" in attachments[0].get_payload(decode=True).decode("utf-8")
+    assert attachments == []
 
 
 def test_fixed_recipient_cannot_be_changed_by_caller_allowlist(tmp_path, monkeypatch):

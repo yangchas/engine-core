@@ -4,7 +4,7 @@ from engine_core.email_render import render_email_html, v6_failure_internal, v6_
 from engine_core.report_mailer import build_alert_message, build_report_message
 
 
-def test_fallback_attachment_does_not_leak_exception_path(tmp_path):
+def test_fallback_email_does_not_attach_or_leak_exception_path(tmp_path):
     raw = ("PermissionError: denied /home/alice/private/data.csv "
            r"C:\Users\alice\secret\input.csv /tmp/c299-audit/private.json")
     html, plain = render_email_html({"v6_panorama_failure": raw}, "auction", "2026-10-19")
@@ -23,11 +23,11 @@ def test_fallback_attachment_does_not_leak_exception_path(tmp_path):
     message = build_report_message("Core", "2026-10-19", "auction", html_path, json_path,
                                    ["reports@example.test"], "reports@example.test")
     body = message.get_body(preferencelist=("html",)).get_content()
-    attachment = next(message.iter_attachments()).get_content()
-    for rendered in (body, attachment):
-        assert "V6_PANORAMA_MISSING:PERMISSION" in rendered
-        for secret in ("/home/alice", r"C:\\Users\\alice", "/tmp/c299-audit"):
-            assert secret not in rendered
+    assert list(message.iter_attachments()) == []
+    assert "附件" not in body
+    assert "V6_PANORAMA_MISSING:PERMISSION" in body
+    for secret in ("/home/alice", r"C:\\Users\\alice", "/tmp/c299-audit"):
+        assert secret not in body
 
     outward_json = json.dumps({"v6_panorama_failure": v6_failure_public_code(raw)})
     internal_detail = v6_failure_internal(raw)
