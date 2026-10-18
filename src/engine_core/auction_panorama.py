@@ -138,6 +138,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                            streak_feedback: Mapping[str, Any] | None = None,
                            market_amount_history: Sequence[Any] | Mapping[str, Any] | None = None,
                            hot_plate_ranks: Mapping[str, Any] | None = None,
+                           plate_classes: Mapping[str, str] | None = None,
                            amount_baseline_basis: str = "PIT") -> dict[str, Any]:
     """Build the schema-versioned facts. All monetary values are yuan; pct_change is percent."""
     trade_date = str(stock_facts.get("trade_date", ""))
@@ -199,14 +200,15 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                        and _num(by_symbol[s].get("pct_change")) is not None]
     pool_changes = [_num(row.get("pct_change")) for row in pool_price_rows]
     pool_up = sum(value > 0 for value in pool_changes)
-    pool_open = {"numerator": pool_up, "denominator": len(pool_by_symbol),
-                 "ratio": pool_up / len(pool_by_symbol) if pool_by_symbol else None,
-                 "valid_price_n": len(pool_changes)}
+    pool_open = {"numerator": pool_up, "denominator": len(pool_changes),
+                 "ratio": pool_up / len(pool_changes) if pool_changes else None,
+                 "valid_price_n": len(pool_changes), "pool_n": len(pool_by_symbol)}
     market_up_ratio = up_n / len(changes) if changes else None
     high_open_pp = (pool_open["ratio"] - market_up_ratio) * 100 if pool_open["ratio"] is not None and market_up_ratio is not None else None
 
     plate_map = _members(plate_members)
     plate_stats = []
+    plate_classes = plate_classes or {}
     for code, plate in plate_map.items():
         members = [by_symbol[s] for s in sorted(plate["symbols"]) if s in by_symbol]
         valid = [row for row in members if row.get("valid_price") and _num(row.get("pct_change")) is not None]
@@ -221,9 +223,11 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                                  if _num(row.get("auction_amount_yuan")) is not None), key=lambda x: (-x[0], x[1]["symbol"]))
         up = sum(value > 0 for value in pcts)
         plate_stats.append({"plate_id": code, "plate_name": plate["plate_name"], "count": size,
+                            "class": plate_classes.get(code, "UNKNOWN"),
                             "scale": scale, "amount_yuan": total,
                             "market_share": total / market_amount if total is not None and market_amount else None,
-                            "equal_weight_pct": _median(pcts), "up_count": up, "valid_price_count": len(pcts),
+                            "member_median_pct": _median(pcts), "equal_weight_pct": _median(pcts),
+                            "up_count": up, "valid_price_count": len(pcts),
                             "strength_vs_market_pct": _median(pcts) - market_median if pcts and market_median is not None else None,
                             "up_ratio": up / len(pcts) if pcts else None,
                             "top1_share": ordered_amount[0][0] / total if ordered_amount and total else None,
@@ -236,19 +240,20 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
               key=lambda row: (_num(row.get("pct_change")), row["symbol"]), default=None)
     low_symbol = low["symbol"] if low else None
     selected: set[str] = set()
+    selectable_plates = [p for p in plate_stats if p["class"] != "BROAD"]
     for scale in ("小", "中", "大"):
-        group = [p for p in plate_stats if p["scale"] == scale and p["strength_vs_market_pct"] is not None]
+        group = [p for p in selectable_plates if p["scale"] == scale and p["strength_vs_market_pct"] is not None]
         strength = sorted(group, key=lambda p: (-p["strength_vs_market_pct"], -(p["up_ratio"] or 0), p["plate_id"]))
         if len(strength) >= 2:
             selected.update(p["plate_id"] for p in strength[:2])
         if strength:
             selected.add(min(strength, key=lambda p: (p["strength_vs_market_pct"], p["up_ratio"] or 0, p["plate_id"]))["plate_id"])
-    selected.update(p["plate_id"] for p in sorted((p for p in plate_stats if p["amount_yuan"] is not None),
+    selected.update(p["plate_id"] for p in sorted((p for p in selectable_plates if p["amount_yuan"] is not None),
                                                     key=lambda p: (-p["amount_yuan"], p["plate_id"]))[:3])
-    amount_top3 = {p["plate_id"] for p in sorted((p for p in plate_stats if p["amount_yuan"] is not None),
+    amount_top3 = {p["plate_id"] for p in sorted((p for p in selectable_plates if p["amount_yuan"] is not None),
                                                   key=lambda p: (-p["amount_yuan"], p["plate_id"]))[:3]}
     for scale in ("小", "中", "大"):
-        group = [p for p in plate_stats if p["scale"] == scale and p["strength_vs_market_pct"] is not None]
+        group = [p for p in selectable_plates if p["scale"] == scale and p["strength_vs_market_pct"] is not None]
         strength = sorted(group, key=lambda p: (-p["strength_vs_market_pct"], -(p["up_ratio"] or 0), p["plate_id"]))
         weak = min(group, key=lambda p: (p["strength_vs_market_pct"], p["up_ratio"] or 0, p["plate_id"])) if group else None
         for index, plate in enumerate(strength):
@@ -259,7 +264,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
             plate["selection_reasons"] = reasons
     yesterday_symbols = set(pool_by_symbol)
     plates_out = []
-    for plate in sorted((p for p in plate_stats if p["plate_id"] in selected),
+    for plate in sorted((p for p in selectable_plates if p["plate_id"] in selected),
                         key=lambda p: (p["scale"] or "", p["plate_id"])):
         members = plate["_members"]
         picks: set[str] = {row["symbol"] for _, row in plate["_ordered_amount"][:3]}
@@ -292,6 +297,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                 stock["extremes"].append("最大低开")
             if stock["seal_rank"] != "UNKNOWN" and stock["seal_rank"] is not None and int(stock["seal_rank"]) <= 10:
                 stock["extremes"].append("封单Top10")
+            stock["extremes"] = stock["extremes"][:3]
             stock_out.append(stock)
         if plate["top1_share"] is not None and plate["_ordered_amount"]:
             top_symbol = plate["_ordered_amount"][0][1]["symbol"]
@@ -325,12 +331,17 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
         row = by_symbol.get(symbol, {})
         seal = row.get("seal", {})
         layer = layers.setdefault(level, {})
+        pct_change = _num(row.get("pct_change"))
+        auction_price = _num(row.get("price", row.get("price_yuan")))
+        valid_auction_price = row.get("valid_price") is True and auction_price is not None and auction_price > 0
+        promotion_status = ("PROVISIONAL" if valid_auction_price and pct_change is not None and pct_change >= 9.5
+                            else "UNVERIFIED")
         output_row = {"symbol": symbol, "name": stock_name(symbol, row, pool_row),
             "auction_amount_yuan": _num(row.get("auction_amount_yuan")), "pct_change": _num(row.get("pct_change")),
             "amount_rank": amount_ranks.get(symbol), "amount_top50": bool(row.get("amount_top50")),
             "seal_amount_yuan": _num(seal.get("seal_amount_yuan")) if seal.get("status") in ("VERIFIED", "VERIFIED_REPLAY") else None,
             "seal_rank": seal_ranks.get(symbol) if seal.get("status") in ("VERIFIED", "VERIFIED_REPLAY") else "UNKNOWN",
-            "primary_reason": reason, "promotion_status": "PROVISIONAL", "extremes": []}
+            "primary_reason": reason, "promotion_status": promotion_status, "extremes": []}
         if output_row["amount_top50"]:
             output_row["extremes"].append("额Top50")
         if output_row["seal_rank"] not in (None, "UNKNOWN") and int(output_row["seal_rank"]) <= 10:
@@ -339,6 +350,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
             output_row["extremes"].append("最大低开")
         layer.setdefault(reason, []).append(output_row)
     ladder = []
+    highest_level = max(layers, default=0)
     for level in sorted(layers, reverse=True):
         buckets = []
         n_layer = sum(len(rows) for rows in layers[level].values())
@@ -347,12 +359,20 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
         if level_rows:
             lo = min(row["pct_change"] for row in level_rows)
             hi = max(row["pct_change"] for row in level_rows)
-            for row in level_rows:
-                if row["pct_change"] in (lo, hi):
-                    row["extremes"].append("同身位最大分歧")
+            for reason, reason_rows in layers[level].items():
+                for row in reason_rows:
+                    if len(reason_rows) > 1 and row["pct_change"] in (lo, hi):
+                        row["extremes"].append("同身位最大分歧")
         layer_amount = sum(_num(by_symbol.get(row["symbol"], {}).get("auction_amount_yuan")) or 0
                            for rows in layers[level].values() for row in rows)
-        for reason, rows in sorted(layers[level].items()):
+        reason_groups = {reason: list(rows) for reason, rows in layers[level].items()}
+        if level < highest_level:
+            singletons = [row for reason, rows in reason_groups.items() if len(rows) == 1
+                          for row in rows]
+            if singletons:
+                reason_groups = {reason: rows for reason, rows in reason_groups.items() if len(rows) != 1}
+                reason_groups.setdefault("其他/单只", []).extend(singletons)
+        for reason, rows in sorted(reason_groups.items()):
             rows.sort(key=lambda row: (row["seal_amount_yuan"] is None,
                                        -(row["seal_amount_yuan"] or 0),
                                        -(row["auction_amount_yuan"] or 0), row["symbol"]))
@@ -365,6 +385,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                 "low_open_ratio": sum(value < 0 for value in vals) / len(vals) if vals else None,
                 "valid_price_count": len(vals), "median_pct": _median(vals),
                 "provisional_promotion_count": sum(row["promotion_status"] == "PROVISIONAL" for row in rows),
+                "unverified_promotion_count": sum(row["promotion_status"] != "PROVISIONAL" for row in rows),
                 "verified_seal_amount_yuan": sum(row["seal_amount_yuan"] or 0 for row in rows if row["seal_amount_yuan"] is not None) if any(row["seal_amount_yuan"] is not None for row in rows) else None,
                 "stocks": rows})
         ladder.append({"yesterday_streak": level, "count": n_layer, "buckets": buckets})
@@ -397,6 +418,8 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
             f"竞价金额Top1占比 {max((p['top1_share'] for p in plate_stats if p['top1_share'] is not None), default=0):.1%}"]))}
     return {"schema": SCHEMA, "trade_date": trade_date, "asof": asof, "status": "PARTIAL",
             "overview": overview, "plates": plates_out, "yesterday_ladder": ladder, "extremes": extremes,
+            "compatibility_aliases": {"equal_weight_pct": {"alias_for": "member_median_pct",
+                                                               "label": "兼容别名"}},
             "lineage": {"auction_stock_facts": stock_facts.get("version"), "hot_plate_ranks": "UNKNOWN" if not hot_plate_ranks else "PROVIDED"}}
 
 

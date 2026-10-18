@@ -44,6 +44,13 @@ def test_panorama_view_renders_two_complete_tables_and_preserves_unknowns():
     assert "收盘后回溯，非09:26快照，仅供开发评估" in html + plain
     assert "金额待核实" not in html + plain
     assert "<details" not in html and "000001" not in html
+    assert "基线样本14/64（样本不足，仅参考）" in plain
+    assert "0.98倍 / 42.9分位" not in plain
+    assert "规则一句话：" in plain
+    assert "（均按竞价价>昨收）" in plain
+    assert "市场结构" not in plain
+    assert "成员涨幅中位数" in plain
+    assert "本层占比" not in plain
 
 
 def test_posthoc_hot_coverage_and_readable_amounts_and_selection_reasons():
@@ -59,7 +66,33 @@ def test_posthoc_hot_coverage_and_readable_amounts_and_selection_reasons():
     html, plain = render_auction_panorama(product)
     assert "收盘后回溯，非09:26快照，仅供开发评估" in plain
     assert "热榜覆盖 0/1" in plain
+    assert "开盘啦热榜口径=热板Top50；258行版本为更宽的列表" in plain
+    assert "未收录于热榜计为 —" in html + plain
     assert "封单金额/名次待核实" not in plain
     assert "1.20亿" in plain and "1.23亿" in plain
     assert "Top1金额占比" not in plain
     assert "选择：强/金额Top3" in plain
+
+
+def test_ready_baseline_keeps_multiple_and_partial_baseline_is_gray():
+    product = {"trade_date": "2026-10-16", "overview": {
+        "auction_amount_yi": 10,
+        "amount_multiple_64d": {"value": 1.25, "percentile": .5, "sample_n": 64,
+            "window_n": 64, "status": "READY"}}, "plates": [], "yesterday_ladder": []}
+    _html, ready = render_auction_panorama(product)
+    assert "1.25倍 / 50.0分位" in ready
+    product["overview"]["amount_multiple_64d"].update({"sample_n": 8, "status": "PARTIAL"})
+    html, partial = render_auction_panorama(product)
+    assert "1.25倍 / 50.0分位" not in partial
+    assert "基线样本8/64（样本不足，仅参考）" in partial
+    assert "color:#98a2b3" in html
+
+
+def test_unverified_promotion_is_displayed_as待核实():
+    product = {"plates": [], "yesterday_ladder": [{"yesterday_streak": 1, "count": 1,
+        "buckets": [{"reason": "原因", "count": 1, "provisional_promotion_count": 0,
+            "unverified_promotion_count": 1, "stocks": [{"symbol": "000001",
+                "promotion_status": "UNVERIFIED", "pct_change": 10.0}]}]}]}
+    html, plain = render_auction_panorama(product)
+    assert "待核实" in html + plain
+    assert "未晋级迹象" not in html + plain

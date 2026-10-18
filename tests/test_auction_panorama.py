@@ -29,13 +29,36 @@ def test_hot_plate_rank_basis_ties_and_live_rejects_posthoc(monkeypatch):
     assert development["coverage"] == "3/3"
 
 
+def test_c286_posthoc_hot_rank_is_historical_only(monkeypatch):
+    rows = [{"code": "801027", "strength": 32}]
+    kwargs = dict(fetched_at="2026-10-17T20:00:00+08:00",
+        available_at="2026-10-17T20:00:00+08:00",
+        asof="2026-10-16T09:26:00+08:00", trade_date="2026-10-16",
+        now="2026-10-18T10:00:00+08:00")
+    monkeypatch.delenv("POSTHOC_DEV", raising=False)
+    without_switch = normalize_hot_plates(rows, **kwargs)
+    assert without_switch["basis"] == "UNKNOWN" and without_switch["ranks"] == {}
+
+    monkeypatch.setenv("POSTHOC_DEV", "1")
+    historical = normalize_hot_plates(rows, **kwargs)
+    assert historical["basis"] == "POSTHOC_DEV"
+    assert historical["ranks"]["801027"]["hot_rank"] == 1
+
+    live_kwargs = {**kwargs, "trade_date": "2026-10-18",
+        "fetched_at": "2026-10-18T09:27:00+08:00",
+        "available_at": "2026-10-18T09:27:00+08:00",
+        "asof": "2026-10-18T09:26:00+08:00"}
+    live = normalize_hot_plates(rows, **live_kwargs)
+    assert live["basis"] == "UNKNOWN" and live["ranks"] == {}
+
+
 def _facts():
     rows = [
         {"symbol": "000001", "name": "A", "auction_amount_yuan": 300, "amount_rank": 1,
-         "amount_top50": True, "pct_change": 2.0, "valid_price": True,
+         "amount_top50": True, "price": 10, "pct_change": 2.0, "valid_price": True,
          "seal": {"status": "VERIFIED_REPLAY", "seal_amount_yuan": 900, "seal_rank": 1}},
         {"symbol": "000002", "name": "B", "auction_amount_yuan": 200, "amount_rank": 2,
-         "amount_top50": True, "pct_change": -1.0, "valid_price": True,
+         "amount_top50": True, "price": 10, "pct_change": -1.0, "valid_price": True,
          "seal": {"status": "UNKNOWN", "seal_amount_yuan": None, "seal_rank": None}},
         {"symbol": "000003", "name": "C", "auction_amount_yuan": 100, "amount_rank": 3,
          "amount_top50": True, "pct_change": None, "valid_price": False,
@@ -69,7 +92,59 @@ def test_panorama_preserves_missing_values_and_global_ranks_across_plates():
     assert {row["amount_rank"] for row in copies} == {1}
     assert {row["seal_rank"] for row in copies} == {1}
     assert result["yesterday_ladder"][0]["buckets"][0]["reason"] == "池原因"
+    assert result["yesterday_ladder"][0]["buckets"][0]["stocks"][0]["promotion_status"] == "UNVERIFIED"
+
+
+def test_panorama_c285_filters_broad_renames_median_and_corrects_ladder():
+    facts = _facts()
+    facts["rows"][0]["pct_change"] = 10.0
+    facts["rows"][1]["pct_change"] = 0.0
+    facts["rows"][2]["pct_change"] = -2.0
+    members = []
+    for index, row in enumerate(facts["rows"]):
+        members.append({"plate_id": "BROAD", "plate_name": "全行业", "symbol": row["symbol"]})
+        members.append({"plate_id": "NICHE", "plate_name": "小主题", "symbol": row["symbol"]})
+    # Sizes are taken from the plate dictionary membership, not observed price rows.
+    members.extend({"plate_id": "BROAD", "plate_name": "全行业", "symbol": f"{i:06d}"}
+                   for i in range(4, 304))
+    result = build_auction_panorama(
+        facts, plate_members=members,
+        yesterday_pool=[{"symbol": "000001", "lb_days": 3, "primary_reason": "主因"},
+                        {"symbol": "000002", "lb_days": 2, "primary_reason": "碎因一"},
+                        {"symbol": "000003", "lb_days": 2, "primary_reason": "碎因二"}],
+        market_amount_history={"values": [100, 200, 300], "status": "PARTIAL"},
+        plate_classes={"BROAD": "BROAD", "NICHE": "NICHE"})
+    assert all(row["plate_id"] != "BROAD" for row in result["plates"])
+    assert result["plates"] and result["plates"][0]["count"] == 3
+    assert result["plates"][0]["member_median_pct"] == 5.0
+    assert result["plates"][0]["equal_weight_pct"] == 5.0
+    assert result["overview"]["amount_multiple_64d"]["status"] == "PARTIAL"
     assert result["yesterday_ladder"][0]["buckets"][0]["stocks"][0]["promotion_status"] == "PROVISIONAL"
+    lower = result["yesterday_ladder"][1]
+    assert len(lower["buckets"]) == 1 and lower["buckets"][0]["reason"] == "其他/单只"
+    assert all("同身位最大分歧" not in stock["extremes"]
+               for bucket in lower["buckets"] for stock in bucket["stocks"])
+
+
+def test_promotion_requires_valid_positive_auction_price():
+    rows = [
+        {"symbol": "000001", "price": None, "valid_price": True, "pct_change": 10.0},
+        {"symbol": "000002", "price": 0, "valid_price": True, "pct_change": 10.0},
+        {"symbol": "000003", "price": 10, "valid_price": False, "pct_change": 10.0},
+        {"symbol": "000004", "price": 10, "valid_price": True, "pct_change": 9.5},
+        {"symbol": "000005", "price": 10, "valid_price": True, "pct_change": 9.4},
+    ]
+    facts = {**_facts(), "rows": rows}
+    result = build_auction_panorama(
+        facts, plate_members=[],
+        yesterday_pool=[{"symbol": row["symbol"], "lb_days": 2} for row in rows])
+    bucket = result["yesterday_ladder"][0]["buckets"][0]
+    states = {row["symbol"]: row["promotion_status"] for row in bucket["stocks"]}
+    assert states == {"000001": "UNVERIFIED", "000002": "UNVERIFIED",
+                      "000003": "UNVERIFIED", "000004": "PROVISIONAL",
+                      "000005": "UNVERIFIED"}
+    assert bucket["provisional_promotion_count"] == 1
+    assert bucket["unverified_promotion_count"] == 4
 
 
 def test_panorama_caps_amount_history_to_latest_64_days():
@@ -87,7 +162,8 @@ def test_panorama_lists_all_36_yesterday_limit_stocks_and_empty_reason_bucket():
                for bucket in layer["buckets"]) == 36
     assert result["yesterday_ladder"][0]["buckets"][0]["reason"] == "UNKNOWN"
     assert result["overview"]["yesterday_limit_high_open"]["numerator"] == 1
-    assert result["overview"]["yesterday_limit_high_open"]["denominator"] == 36
+    assert result["overview"]["yesterday_limit_high_open"]["denominator"] == 2
+    assert result["overview"]["yesterday_limit_high_open"]["pool_n"] == 36
 
 
 def test_panorama_uses_fixed_reason_precedence_and_handles_no_members_or_prices():

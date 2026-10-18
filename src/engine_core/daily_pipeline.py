@@ -1603,6 +1603,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                                                 stock.get("auction_amount_yuan")),
                 "limit_state": stock.get("auction_limit_state" if stage != "open" else "open_limit_state"),
             }
+        class_by_code = {}
         if linkage_states:
             from .plate_linkage import build_plate_linkage
             linkage = build_plate_linkage(
@@ -1935,7 +1936,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     streak_feedback=payload.get("streak_feedback"),
                     market_amount_history=baseline_history,
                     amount_baseline_basis="REPLAY_EVENT_TIME" if baseline_replay else "PIT",
-                    hot_plate_ranks=hot_ranks.get("ranks", {}))
+                    hot_plate_ranks=hot_ranks.get("ranks", {}),
+                    plate_classes=class_by_code)
                 panorama["lineage"]["hot_rank_basis"] = hot_ranks.get("basis", "UNKNOWN")
                 store_auction_panorama(panorama, redis=src.redis)
                 payload["auction_panorama"] = panorama
