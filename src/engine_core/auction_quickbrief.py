@@ -4,12 +4,13 @@ from __future__ import annotations
 import statistics
 from typing import Any, Mapping, Sequence
 
-from .auction_panorama import _has_valid_auction_price
+from .auction_panorama import _has_valid_auction_price, _positive_auction_amount_aggregate
 
 QUICKBRIEF_THRESHOLDS_V1 = {
     "version": "V1", "market_up_ratio": 0.70, "market_median_pct": 0.5,
     "market_price_coverage": 0.95, "relay_lag_pp": -15.0, "relay_min_n": 20,
     "plate_min_n": 5, "plate_price_coverage": 0.90, "plate_amount_coverage": 0.90,
+    "min_plate_amount_share": 0.005,
     "plate_d_pct": 0.5, "plate_e_pp": 5.0, "broad_min_n": 100,
     "backup_overlap_max": 1,
 }
@@ -91,6 +92,10 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
                                            "symbols": set()})
         meta["symbols"].add(symbol)
 
+    amount_rows = [r for r in rows.values()
+                   if (_num(r.get("auction_amount_yuan")) or 0) > 0]
+    _, market_amount = _positive_auction_amount_aggregate(list(rows.values()))
+
     candidates: list[dict[str, Any]] = []
     rejections: dict[str, dict[str, Any]] = {}
     metrics_by_plate: dict[str, dict[str, Any]] = {}
@@ -98,7 +103,7 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
         symbols = meta["symbols"]
         present = [rows[s] for s in symbols if s in rows]
         priced = [r for r in present if _has_valid_auction_price(r) and _num(r.get("pct_change")) is not None]
-        amounts = [r for r in present if _num(r.get("auction_amount_yuan")) is not None]
+        amounts = [r for r in present if (_num(r.get("auction_amount_yuan")) or 0) > 0]
         n = len(symbols)
         price_cov = len(priced) / n if n else 0
         amount_cov = len(amounts) / n if n else 0
@@ -107,6 +112,7 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
         d_excess = plate_median - median if plate_median is not None and median is not None else None
         e = (sum(_num(r["pct_change"]) > 0 for r in priced) / len(priced) - ratio) * 100 if priced and ratio is not None else None
         amount = sum(_num(r["auction_amount_yuan"]) for r in amounts) if amounts else None
+        amount_share = amount / market_amount if amount is not None and market_amount and market_amount > 0 else None
         top3_rows = sorted(amounts, key=lambda r: (-_num(r.get("auction_amount_yuan")),
                                                     _symbol(r.get("symbol"))))[:3]
         top3 = [{"symbol": _symbol(r.get("symbol")), "name": _name(_symbol(r.get("symbol")), r, names),
@@ -120,23 +126,28 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
                     "d_pct": d, "d_excess_pp": d_excess, "e_pp": e,
                     "up_n": sum(_num(r["pct_change"]) > 0 for r in priced),
                     "auction_amount_yuan": amount,
+                    "market_amount_share": amount_share,
                     "top_amount_stocks": top3}
         metrics_by_plate[pid] = {key: evidence[key] for key in (
             "plate_id", "name", "n", "price_coverage", "price_n", "amount_coverage",
             "amount_n", "median_pct", "median_excess_pp", "up_ratio", "d_pct",
-            "d_excess_pp", "e_pp", "up_n", "auction_amount_yuan")}
+            "d_excess_pp", "e_pp", "up_n", "auction_amount_yuan", "market_amount_share")}
         reasons = []
         if (plate_classes or {}).get(pid) == "BROAD": reasons.append("BROAD")
         if not market_ready: reasons.append("MARKET_COVERAGE_INSUFFICIENT")
         if n < QUICKBRIEF_THRESHOLDS_V1["plate_min_n"]: reasons.append("MEMBERS_BELOW_MIN")
         if price_cov < QUICKBRIEF_THRESHOLDS_V1["plate_price_coverage"]: reasons.append("PRICE_COVERAGE_BELOW_MIN")
         if amount_cov < QUICKBRIEF_THRESHOLDS_V1["plate_amount_coverage"]: reasons.append("AMOUNT_COVERAGE_BELOW_MIN")
+        if (amount_share is None or amount_share + 1e-12 <
+                QUICKBRIEF_THRESHOLDS_V1["min_plate_amount_share"]):
+            reasons.append("PLATE_AMOUNT_SHARE_BELOW_MIN")
         if d is None or d + 1e-9 < QUICKBRIEF_THRESHOLDS_V1["plate_d_pct"]: reasons.append("D_BELOW_MIN")
         if e is None or e + 1e-9 < QUICKBRIEF_THRESHOLDS_V1["plate_e_pp"]: reasons.append("E_BELOW_MIN")
         if reasons:
             rejections[pid] = {"reasons": reasons, "n": n,
                                "price_coverage": price_cov, "amount_coverage": amount_cov,
-                               "d_pct": d, "d_excess_pp": d_excess, "e_pp": e}
+                               "d_pct": d, "d_excess_pp": d_excess, "e_pp": e,
+                               "auction_amount_yuan": amount, "market_amount_share": amount_share}
         else:
             candidates.append({**evidence, "top3_symbols": {item["symbol"] for item in top3}})
 
@@ -159,8 +170,6 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
     elif small:
         backup = small[0]
 
-    amount_rows = [r for r in rows.values() if _num(r.get("auction_amount_yuan")) is not None]
-    market_amount = sum(_num(r.get("auction_amount_yuan")) for r in amount_rows) if amount_rows else None
     baseline = [_num(value) for value in market_amount_history]
     baseline = [value for value in baseline if value is not None and value > 0]
     baseline_median = statistics.median(baseline) if baseline else None
@@ -230,15 +239,34 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
     backup_top_scores = [{"plate_id": candidate["plate_id"], "name": candidate["name"],
                           "d_pct": candidate["d_pct"], "e_pp": candidate["e_pp"],
                           "auction_amount_yuan": candidate["auction_amount_yuan"],
+                          "market_amount_share": candidate["market_amount_share"],
                           "selected": candidate is backup,
                           "reason": ("SELECTED" if candidate is backup else
                                      "TOP3_OVERLAP" if candidate["plate_id"] in overlap_ids else "LOWER_SCORE")}
                          for candidate in small[:3]]
+    share_rejected = [metrics_by_plate[pid] for pid in rejections
+                      if QUICKBRIEF_THRESHOLDS_V1["plate_min_n"] <= metrics_by_plate[pid]["n"]
+                      < QUICKBRIEF_THRESHOLDS_V1["broad_min_n"]
+                      and rejections[pid]["reasons"] == ["PLATE_AMOUNT_SHARE_BELOW_MIN"]]
+    share_rejected.sort(key=lambda c: (-c["d_pct"], -c["e_pp"], -(c["auction_amount_yuan"] or 0), c["plate_id"]))
+    rejected_backup_scores = {
+        candidate["plate_id"]: {"name": candidate["name"],
+                                "market_amount_share": candidate["market_amount_share"],
+                                "reason": "PLATE_AMOUNT_SHARE_BELOW_MIN"}
+        for candidate in share_rejected[:3]
+    }
     backup_rank_line = ("备看排序 " + "；".join(
         f"{index}. {candidate['name']} D={candidate['d_pct']:+.2f}% E={candidate['e_pp']:+.1f}pp"
+        f" 占比={candidate['market_amount_share']:.2%}"
         f"（{'入选' if candidate['selected'] else 'Top3重叠淘汰' if candidate['reason'] == 'TOP3_OVERLAP' else '排序靠后'}）"
         for index, candidate in enumerate(backup_top_scores, start=1))
         if backup_top_scores else "备看排序 无合格中小板块")
+    excluded_share_line = ("流动性门槛排除 " + "；".join(
+        f"{item['name']}占比{item['market_amount_share']:.2%}" if item["market_amount_share"] is not None
+        else f"{item['name']}占比待核实"
+        for item in rejected_backup_scores.values()) if rejected_backup_scores else None)
+    if excluded_share_line:
+        backup_rank_line += "；" + excluded_share_line
     status = ("有观察候选,等待09:32开盘验证;尚无开盘成交确认" if (main or backup) and not verified_0932
               else "暂无观察候选" if not (main or backup) else "09:32开盘成交已验证")
     lines = [f"09:26 竞价速览 | {stock_facts.get('trade_date', '')}"
@@ -251,11 +279,11 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
         return ({k: candidate[k] for k in ("plate_id", "name", "n", "price_n", "price_coverage",
                                             "amount_n", "amount_coverage", "median_pct", "up_ratio",
                                             "d_pct", "d_excess_pp", "e_pp", "up_n",
-                                            "auction_amount_yuan", "top_amount_stocks")}
+                                            "auction_amount_yuan", "market_amount_share", "top_amount_stocks")}
                 if candidate else None)
 
-    plate_metric_fields = ["name", "n", "price_coverage", "amount_coverage",
-                           "d_pct", "d_excess_pp", "e_pp", "auction_amount_yuan"]
+    plate_metric_fields = ["n", "price_coverage", "amount_coverage",
+                           "d_pct", "e_pp", "auction_amount_yuan"]
     packed_plate_metrics = {
         pid: [evidence.get(field) for field in plate_metric_fields]
         for pid, evidence in sorted(metrics_by_plate.items())
@@ -263,7 +291,7 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
 
     return {
         "schema": "auction_quickbrief_v1", "threshold_version": "V1",
-        "threshold_note": "V1 冻结工程阈值,非市场规律、未回测",
+        "threshold_note": "V1 冻结工程阈值,非市场规律、未回测；板块竞价额占市场下限0.5%",
         "thresholds": QUICKBRIEF_THRESHOLDS_V1,
         "metrics": {"market": {"valid_n": len(valid), "universe_n": len(rows), "coverage": coverage,
                                 "up_n": up_n, "up_ratio": ratio, "median_pct": median,
@@ -288,8 +316,9 @@ def build_auction_quickbrief(stock_facts: Mapping[str, Any], *, plate_members: A
                   "plate_metrics": packed_plate_metrics, "rejections": {pid: item["reasons"]
                                                                           for pid, item in sorted(rejections.items())},
                   "main": public_candidate(main), "backup": public_candidate(backup),
-                  "backup_overlap_rejections": backup_overlap, "replay_banner": bool(replay),
+             "backup_overlap_rejections": backup_overlap, "replay_banner": bool(replay),
                   "backup_top_scores": backup_top_scores,
+                  "rejected_backup_scores": rejected_backup_scores,
                   "weak_multi_board": [_symbol(r.get("symbol")) for r in weak]},
         "lines": lines,
     }

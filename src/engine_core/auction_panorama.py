@@ -26,6 +26,13 @@ def _num(value: Any) -> float | None:
         return None
 
 
+def _positive_auction_amount_aggregate(rows: Sequence[Mapping[str, Any]]) -> tuple[list[float], float | None]:
+    """Return V6's effective market amount rows and their single total."""
+    amounts = [_num(row.get("auction_amount_yuan")) for row in rows]
+    valid = [value for value in amounts if value is not None and value > 0]
+    return valid, sum(valid) if valid else None
+
+
 def _has_valid_auction_price(row: Mapping[str, Any]) -> bool:
     price = _num(row.get("price", row.get("price_yuan")))
     return row.get("valid_price") is True and price is not None and price > 0
@@ -197,9 +204,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
     if not any(value is not None for value in seal_ranks.values()):
         seal_ranks = _rank(list(by_symbol.values()), lambda row: _num(row.get("seal", {}).get("seal_amount_yuan"))
                             if row.get("seal", {}).get("status") in ("VERIFIED", "VERIFIED_REPLAY") else None)
-    amounts = [_num(row.get("auction_amount_yuan")) for row in by_symbol.values()]
-    valid_amounts = [value for value in amounts if value is not None and value > 0]
-    market_amount = sum(valid_amounts) if valid_amounts else None
+    valid_amounts, market_amount = _positive_auction_amount_aggregate(list(by_symbol.values()))
     price_rows = [row for row in by_symbol.values() if _has_valid_auction_price(row)
                   and _num(row.get("pct_change")) is not None]
     changes = [_num(row.get("pct_change")) for row in price_rows]

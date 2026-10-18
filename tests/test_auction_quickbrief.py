@@ -1,4 +1,5 @@
 from engine_core.auction_quickbrief import build_auction_quickbrief
+from engine_core.auction_panorama import build_auction_panorama
 
 
 def test_quickbrief_thresholds_and_replay_banner():
@@ -144,3 +145,63 @@ def test_quickbrief_no_candidates_and_market_relay_sentence():
     assert "接力明显落后" in result["lines"][1]
     assert "昨板高开20/36" in result["lines"][1]
     assert "暂无观察候选" in result["lines"][-2]
+
+
+def test_quickbrief_market_amount_share_boundary_refill_and_empty():
+    facts = {"trade_date": "2026-10-16", "rows": [
+        {"symbol": f"{i:06d}", "valid_price": True, "price": 10,
+         "pct_change": 0.5 if i <= 8 or 11 <= i <= 18 or 20 <= i <= 147 else -1.0,
+         "auction_amount_yuan": 10.0 if i <= 18 else 110.0}
+        for i in range(1, 181)]}
+    facts["asof"] = "2026-10-16T09:26:00+08:00"
+    # Total market auction amount is 18,000: X and Y each meet exactly 0.5%.
+    members = ([{"plate_id": plate, "symbol": f"{i:06d}"}
+                for plate, start in (("X", 1), ("Y", 10)) for i in range(start, start + 9)])
+    result = build_auction_quickbrief(facts, plate_members=members, yesterday_pool=[])
+    v6 = build_auction_panorama(facts, plate_members=members, yesterday_pool=[])
+    assert result["metrics"]["market"]["auction_amount_yuan"] == v6["overview"]["auction_amount_yuan"]
+    assert result["metrics"]["market"]["auction_amount_yuan"] == 18000.0
+    assert result["thresholds"]["min_plate_amount_share"] == 0.005
+    assert result["rules"]["backup"]["plate_id"] == "X"
+    assert result["rules"]["backup"]["market_amount_share"] == 0.005
+
+    # C296 audit probe: negative amounts must not change V6's denominator.
+    facts["rows"][-1]["auction_amount_yuan"] = -10000.0
+    result = build_auction_quickbrief(facts, plate_members=members, yesterday_pool=[])
+    v6 = build_auction_panorama(facts, plate_members=members, yesterday_pool=[])
+    assert result["metrics"]["market"]["auction_amount_yuan"] == v6["overview"]["auction_amount_yuan"]
+    assert result["metrics"]["market"]["auction_amount_yuan"] == 17890.0
+    assert result["metrics"]["market"]["auction_amount_yuan"] == 17890.0
+    facts["rows"][-1]["auction_amount_yuan"] = 110.0
+
+    # X falls just below the boundary; Y must move into its place.
+    facts["rows"][0]["auction_amount_yuan"] = 9.99
+    result = build_auction_quickbrief(facts, plate_members=members, yesterday_pool=[])
+    assert result["rules"]["backup"]["plate_id"] == "Y"
+    assert "PLATE_AMOUNT_SHARE_BELOW_MIN" in result["rules"]["rejections"]["X"]
+    assert result["rules"]["backup_top_scores"][0]["plate_id"] == "Y"
+    assert result["rules"]["rejected_backup_scores"]["X"]["reason"] == "PLATE_AMOUNT_SHARE_BELOW_MIN"
+
+    facts["rows"][9]["auction_amount_yuan"] = 9.99
+    result = build_auction_quickbrief(facts, plate_members=members, yesterday_pool=[])
+    assert result["rules"]["backup"] is None
+    assert "暂无观察候选" in result["lines"][-2]
+
+    # Exact C296 erroneous-admission probe: 499 / 100,000 is below 0.5%;
+    # counting the -10,000 row would shrink the denominator to 90,000.
+    audit_rows = [{"symbol": f"{i:06d}", "valid_price": True, "price": 10,
+                   "pct_change": 4 if i <= 5 else 3 if i <= 10 else -1,
+                   "auction_amount_yuan": None} for i in range(1, 1001)]
+    for row in audit_rows[:5]:
+        row["auction_amount_yuan"] = 499 / 5
+    audit_rows[-1]["auction_amount_yuan"] = 100000 - 499
+    audit_rows[-2]["auction_amount_yuan"] = -10000
+    audit_facts = {"trade_date": "2026-10-16", "asof": "2026-10-16T09:26:00+08:00",
+                   "rows": audit_rows}
+    audit_members = [{"plate_id": "A", "symbol": f"{i:06d}"} for i in range(1, 6)]
+    quick = build_auction_quickbrief(audit_facts, plate_members=audit_members, yesterday_pool=[])
+    panorama = build_auction_panorama(audit_facts, plate_members=audit_members, yesterday_pool=[])
+    assert panorama["overview"]["auction_amount_yuan"] == 100000.0
+    assert quick["metrics"]["market"]["auction_amount_yuan"] == 100000.0
+    assert quick["rules"]["backup"] is None
+    assert "PLATE_AMOUNT_SHARE_BELOW_MIN" in quick["rules"]["rejections"]["A"]
