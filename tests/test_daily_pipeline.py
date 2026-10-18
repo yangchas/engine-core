@@ -13,6 +13,33 @@ def test_zero_auction_amount_does_not_fall_back_to_another_source():
                                  "p0925_cumulative_amount_yuan": 123}) == 123
 
 
+def test_auction_assembly_switch_defaults_to_v6_and_can_restore_legacy(monkeypatch):
+    from engine_core.daily_pipeline import _auction_assembly_mode
+
+    monkeypatch.delenv("CORE_AUCTION_ASSEMBLY", raising=False)
+    assert _auction_assembly_mode() == "v6"
+    monkeypatch.setenv("CORE_AUCTION_ASSEMBLY", "legacy")
+    assert _auction_assembly_mode() == "legacy"
+    monkeypatch.setenv("CORE_AUCTION_ASSEMBLY", "invalid")
+    with pytest.raises(ValueError, match="CORE_AUCTION_ASSEMBLY"):
+        _auction_assembly_mode()
+
+
+def test_v6_auction_inputs_are_minimal_and_preserve_missing_values():
+    from engine_core.auction_v6_inputs import prepare_auction_v6_inputs
+
+    payload = prepare_auction_v6_inputs(
+        trade_date="2026-10-16", asof="2026-10-16T09:26:00+08:00",
+        stock_facts=[{"symbol": "000001", "auction_amount_yuan": None,
+                      "pct_change": None, "valid_price": False,
+                      "seal": {"status": "UNKNOWN"}}],
+        stock_names={"000001": "测试股"})
+    assert payload["chapters"] == {}
+    assert payload["stocks"][0]["name"] == "测试股"
+    assert payload["stocks"][0]["auction_amount_yuan"] is None
+    assert payload["snapshots"][0]["market_match_amount_yuan"] is None
+
+
 def test_live_report_shrink_keeps_original_dictionary_omission_hash_idempotently():
     from engine_core.daily_pipeline import _shrink_live_report
     report = {"plate_dictionary": {"rows": [{"code": "A"}, {"code": "B"}]}}
@@ -669,6 +696,77 @@ def test_live_report_json_drops_full_universe_rows_after_basis_note():
     import json
     assert "behavior_rows" not in out.get("chapters", {})
     assert len(json.dumps(out, ensure_ascii=False)) < 250_000
+
+
+def test_auction_baseline_uses_only_pit_td0925_market_rows_and_deduplicates_days():
+    from engine_core.daily_pipeline import _auction_baseline_history
+
+    rows = [
+        {"date": "2026-10-01", "row_kind": "market_observation", "source": "td_0925",
+         "auction_amount_yuan": 100, "available_at": "2026-10-02T08:00:00+08:00"},
+        {"date": "2026-10-01", "row_kind": "market_observation", "source": "td_0925",
+         "auction_amount_yuan": 100, "available_at": "2026-10-02T08:00:00+08:00"},
+        {"date": "2026-10-02", "row_kind": None, "source": "td_0925",
+         "auction_amount_yuan": 200, "available_at": "2026-10-03T08:00:00+08:00"},
+        {"date": "2026-10-03", "row_kind": "market_observation", "source": "daily_kline",
+         "auction_amount_yuan": 300, "available_at": "2026-10-04T08:00:00+08:00"},
+        {"date": "2026-10-04", "row_kind": "market_observation", "source": "td_0925",
+         "sum_yi": 4, "available_at": "2026-10-05T08:00:00+08:00"},
+        {"date": "2026-10-07", "row_kind": None, "source": "td_0925",
+         "sum_yi": 9, "available_at": "2026-10-08T08:00:00+08:00"},
+        {"date": "2026-10-05", "row_kind": "market_observation", "source": "td_0925",
+         "auction_amount_yuan": 500, "available_at": "2026-10-17T08:00:00+08:00"},
+        {"date": "2026-10-06", "row_kind": "market_observation", "source": "td_0925",
+         "auction_amount_yuan": 550, "available_at": "2026-10-16T01:26:01+00:00"},
+        {"date": "2026-10-16", "row_kind": "market_observation", "source": "td_0925",
+         "auction_amount_yuan": 600, "available_at": "2026-10-15T08:00:00+08:00"},
+    ]
+    assert _auction_baseline_history(rows, trade_date="2026-10-16",
+                                    asof="2026-10-16T09:26:00+08:00") == [100.0, 400_000_000.0]
+
+
+def test_auction_baseline_historical_replay_accepts_late_rows_and_marks_basis():
+    from engine_core.daily_pipeline import _auction_baseline_history
+    from engine_core.auction_panorama import build_auction_panorama
+
+    rows = [
+        {"date": "2026-10-01", "row_kind": "market_observation", "source": "td_0925",
+         "auction_amount_yuan": 100, "available_at": "2026-10-17T08:00:00+08:00"},
+        {"date": "2026-10-01", "row_kind": "market_observation", "source": "td_0925",
+         "auction_amount_yuan": 200, "available_at": "2026-10-17T08:00:00+08:00"},
+        {"date": "2026-10-02", "row_kind": "market_observation", "source": "other",
+         "auction_amount_yuan": 300, "available_at": "2026-10-17T08:00:00+08:00"},
+        {"date": "2026-10-03", "row_kind": None, "source": "td_0925",
+         "sum_yi": 9, "available_at": "2026-10-17T08:00:00+08:00"},
+        {"date": "2026-10-16", "row_kind": "market_observation", "source": "td_0925",
+         "auction_amount_yuan": 400, "available_at": "2026-10-17T08:00:00+08:00"},
+    ]
+    history = _auction_baseline_history(rows, trade_date="2026-10-16",
+        asof="2026-10-16T09:26:00+08:00", replay_event_time=True)
+    assert history == [200.0]
+    product = build_auction_panorama({"trade_date": "2026-10-16",
+        "asof": "2026-10-16T09:26:00+08:00", "rows": [{"symbol": "000001",
+        "auction_amount_yuan": 100, "valid_price": True, "pct_change": 1.0}]},
+        plate_members=[], yesterday_pool=[], market_amount_history=history,
+        amount_baseline_basis="REPLAY_EVENT_TIME")
+    assert product["overview"]["amount_multiple_64d"]["basis"] == "REPLAY_EVENT_TIME"
+    assert product["overview"]["amount_multiple_64d"]["status"] == "PARTIAL"
+
+
+def test_v6_report_projection_omits_full_stocks_but_keeps_top_stocks():
+    import json
+    from engine_core import live_pages
+
+    rows = [{"symbol": f"{i:06d}", "name": "股票" * 5, "auction_amount_yuan": i}
+            for i in range(5200)]
+    payload = {"manifest": {"assembly": "v6"}, "stocks": rows,
+               "snapshots": [{"top_stocks_by_amount": rows[:20]}]}
+    report = live_pages._json_report_payload(payload)
+    assert "stocks" not in report
+    assert report["manifest"]["omitted_blocks"]["stocks"]["row_count"] == 5200
+    assert "snapshots" not in report
+    assert report["manifest"]["omitted_blocks"]["snapshots"]["row_count"] == 1
+    assert len(json.dumps(report, ensure_ascii=False)) < 250_000
 
 
 def test_relation_snapshot_date_ignores_dates_in_parent_path(tmp_path):

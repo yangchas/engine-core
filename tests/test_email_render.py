@@ -21,6 +21,15 @@ def test_renderer_escapes_structured_report_and_marks_missing():
     assert len(html.encode("utf-8")) <= 120 * 1024
 
 
+def test_v6_panorama_failure_is_prominent_and_carries_a_degraded_code():
+    html, plain = render_email_html(
+        {"stage": "auction", "v6_panorama_failure": "NameError: TZ",
+         "v6_degraded_code": "V6_PANORAMA_MISSING", "chapters": {}},
+        "auction", "2026-10-16", manifest={"degraded": ["V6_PANORAMA_MISSING"]})
+    assert 'role="alert"' in html
+    assert "V6 全景缺失" in html and "V6 全景缺失" in plain
+
+
 def test_stale_intraday_report_does_not_present_missing_coverage_as_zero():
     report = {"trade_date": "2026-10-15", "chapters": {
         "market_price_volume": {"status": "STALE", "symbol_count": None,

@@ -1,0 +1,159 @@
+"""Single page email presentation for the V6 auction panorama product."""
+from __future__ import annotations
+
+import html
+import re
+from typing import Any, Mapping
+
+
+def _esc(value: Any) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def _fmt(value: Any, digits: int = 2, suffix: str = "") -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "—"
+    return f"{value:,.{digits}f}{suffix}"
+
+
+def _money(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "—"
+    return f"{value / 1e8:.2f}亿" if abs(value) >= 1e8 else f"{value / 1e4:.2f}万"
+
+
+def _rank(value: Any) -> str:
+	return f"第{value}名" if isinstance(value, int) and not isinstance(value, bool) else "待核实"
+
+
+def _hot_rank(value: Any) -> str:
+	return f"第{value}名" if isinstance(value, int) and not isinstance(value, bool) else "—"
+
+
+def _stock_text(stock: Mapping[str, Any]) -> str:
+    name = stock.get("name") or "名称待核实"
+    pct = _fmt(stock.get("pct_change"), 2, "%")
+    amount = _money(stock.get("auction_amount_yuan"))
+    rank = _rank(stock.get("amount_rank"))
+    tags = list(stock.get("extremes") or [])
+    top = " · 额Top50" if stock.get("amount_top50") and "额Top50" not in tags else ""
+    streak = f" · 昨{stock['yesterday_streak']}板" if stock.get("yesterday_streak") is not None else ""
+    seal_amount = _money(stock.get("seal_amount_yuan")) if stock.get("seal_amount_yuan") is not None else "待核实"
+    seal_rank = _rank(stock.get("seal_rank"))
+    is_limit = isinstance(stock.get("pct_change"), (int, float)) and stock["pct_change"] >= 9.5
+    seal = (f" · 封单{seal_amount}/{seal_rank}" if stock.get("seal_amount_yuan") is not None
+            else (" · 封单金额/名次待核实" if is_limit else ""))
+    tags = [tag for tag in tags if tag != "Top1金额占比" or stock.get("top1_amount_share") is not None]
+    tags = [f"Top1金额占比{_fmt(stock['top1_amount_share'] * 100, 1, '%')}" if tag == "Top1金额占比" else tag for tag in tags]
+    suffix = f" · {'/'.join(str(tag) for tag in tags)}" if tags else ""
+    return (f"{name}（{pct} · {amount} · 全市额{rank}{top}{streak}"
+            f"{seal}{suffix}）")
+
+
+def _table_style() -> str:
+    return "border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px"
+
+
+def _th(text: str, width: str = "") -> str:
+    return (f'<th style="text-align:left;padding:7px 5px;background:#e9eef5;color:#344054;'
+            f'border-bottom:1px solid #d0d5dd;{f"width:{width};" if width else ""}">{_esc(text)}</th>')
+
+
+def _td(text: str, *, secondary: bool = False) -> str:
+    return (f'<td style="vertical-align:top;padding:7px 5px;border-bottom:1px solid #eaecf0;'
+            f'word-break:break-word;color:{"#667085" if secondary else "#26364a"}">{text}</td>')
+
+
+def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
+    """Render a complete two-table V6 page and its matching plain-text version."""
+    overview = product.get("overview") if isinstance(product.get("overview"), Mapping) else {}
+    history = overview.get("amount_multiple_64d") if isinstance(overview.get("amount_multiple_64d"), Mapping) else {}
+    up = overview.get("up_ratio") if isinstance(overview.get("up_ratio"), Mapping) else {}
+    yesterday = overview.get("yesterday_limit_high_open") if isinstance(overview.get("yesterday_limit_high_open"), Mapping) else {}
+    amount = _fmt(overview.get("auction_amount_yi"), 2, "亿")
+    multiple_value, percentile = history.get("value"), history.get("percentile")
+    history_text = (f"{_fmt(multiple_value, 2)}倍 / {_fmt(percentile * 100 if isinstance(percentile, (int, float)) else None, 1)}分位"
+                    if multiple_value is not None or percentile is not None else "待核实")
+    if history.get("status") != "READY":
+        history_text += f"（PARTIAL {history.get('sample_n', 0)}/{history.get('window_n', 64)}）"
+    if history.get("basis") == "REPLAY_EVENT_TIME":
+        history_text += "（回放·按事件时间）"
+    up_ratio = up.get("ratio")
+    up_text = (f"{_fmt(up_ratio * 100, 1, '%')} · 中位{_fmt(overview.get('market_median_pct'), 2, '%')}"
+               if isinstance(up_ratio, (int, float)) else "待核实")
+    high_open = (f"{yesterday.get('numerator', '—')}/{yesterday.get('denominator', '—')} · 较市场"
+                 f" {_fmt(overview.get('yesterday_vs_market_pp'), 2, 'pp')}" )
+    seal_scope = overview.get("verified_seal_scope") or "待核实"
+    seal_sum = overview.get("verified_seal_sum_yuan")
+    seal_text = (f"{_fmt(seal_sum / 1e8, 2, '亿')}（核实 {seal_scope}，{overview.get('verified_seal_label') or '待核实'}）"
+                 if isinstance(seal_sum, (int, float)) else f"待核实（{seal_scope}）")
+    cards = [("竞价匹配额", amount + " · " + history_text), ("上涨 / 中位涨幅", up_text),
+             ("昨日涨停高开", high_open), ("竞价涨停封单合计", seal_text),
+             ("市场结构", str(overview.get("market_structure") or "待核实"))]
+    # Two rows keep the five overview cards readable on narrow clients.
+    cards_html = '<table role="presentation" width="100%"><tr>' + ''.join(
+        f'<td style="width:50%;padding:4px;vertical-align:top"><div style="background:#f6f8fb;border:1px solid #e4e7ec;padding:9px">'
+        f'<div style="font-size:10px;color:#667085">{_esc(label)}</div><strong style="display:block;padding-top:3px;font-size:13px">{_esc(value)}</strong></div></td>'
+        for label, value in cards[:2]) + '</tr><tr>' + ''.join(
+        f'<td style="width:50%;padding:4px;vertical-align:top"><div style="background:#f6f8fb;border:1px solid #e4e7ec;padding:9px">'
+        f'<div style="font-size:10px;color:#667085">{_esc(label)}</div><strong style="display:block;padding-top:3px;font-size:13px">{_esc(value)}</strong></div></td>'
+        for label, value in cards[2:4]) + '</tr><tr><td colspan="2" style="padding:4px"><div style="background:#f6f8fb;border:1px solid #e4e7ec;padding:9px">'
+    cards_html += (f'<div style="font-size:10px;color:#667085">{_esc(cards[4][0])}</div>'
+                   f'<strong style="display:block;padding-top:3px;font-size:13px">{_esc(cards[4][1])}</strong>'
+                   '</div></td></tr></table>')
+
+    plates = [row for row in product.get("plates", []) if isinstance(row, Mapping)]
+    hot_n = sum(1 for row in plates if isinstance(row.get("hot_rank"), int))
+    lineage = product.get("lineage") if isinstance(product.get("lineage"), Mapping) else {}
+    hot_basis = lineage.get("hot_rank_basis", "UNKNOWN")
+    hot_note = ("收盘后回溯，非09:26快照，仅供开发评估" if hot_basis == "POSTHOC_DEV"
+                else "热榜名次按报告前真实抓取快照展示。" if hot_basis == "PIT_LIVE"
+                else "热榜名次暂无可用快照。")
+    hot_note = f"{hot_basis}：{hot_note}；热榜覆盖 {hot_n}/{len(plates)}"
+    plate_rows, plate_text = [], []
+    for plate in plates:
+        name = plate.get("plate_name") or plate.get("plate_id") or "板块待核实"
+        size = plate.get("count", plate.get("member_count"))
+        scale = plate.get("scale") or "待核实"
+        count = f"{scale}({size if size is not None else '—'}只)" 
+        stats = (f"板块额 {_money(plate.get('amount_yuan'))} · 占市场 {_fmt((plate.get('market_share') or 0) * 100 if plate.get('market_share') is not None else None, 1, '%')}"
+                 f"<br>等权涨幅 {_fmt(plate.get('equal_weight_pct'), 2, '%')} · 上涨 {plate.get('up_count', '—')}/{plate.get('valid_price_count', '—')}"
+                 f"<br>Top1占比 {_fmt((plate.get('top1_share') or 0) * 100 if plate.get('top1_share') is not None else None, 1, '%')} · 开盘啦热板名次：{_esc(_hot_rank(plate.get('hot_rank')))}")
+        stock_list = plate.get("stocks") if isinstance(plate.get("stocks"), list) else []
+        stocks = "<br>".join(_esc(_stock_text(stock)) for stock in stock_list if isinstance(stock, Mapping)) or "个股待核实"
+        plate_rows.append("<tr>" + _td(f"{_esc(name)}<br><span style=\"color:#667085\">{_esc(count)}</span>") + _td(stats + "<br>" + stocks) + "</tr>")
+        reasons = plate.get("selection_reasons", plate.get("selection_reason", []))
+        if isinstance(reasons, str): reasons = [reasons]
+        reason_text = "/".join(str(reason) for reason in reasons or [])
+        plate_text.append(f"{name}（{count}；选择：{reason_text or '待核实'}）：板块额 {_money(plate.get('amount_yuan'))}；占市场 {_fmt((plate.get('market_share') or 0) * 100 if plate.get('market_share') is not None else None, 1, '%')}；等权涨幅 {_fmt(plate.get('equal_weight_pct'), 2, '%')}；上涨 {plate.get('up_count', '—')}/{plate.get('valid_price_count', '—')}；Top1占比 {_fmt((plate.get('top1_share') or 0) * 100 if plate.get('top1_share') is not None else None, 1, '%')}；开盘啦热板名次：{_hot_rank(plate.get('hot_rank'))}\n" + "\n".join(_stock_text(stock) for stock in stock_list if isinstance(stock, Mapping)))
+    plate_table = (f'<table style="{_table_style()}" role="table"><thead><tr>{_th("板块（规模·只数）", "25%")}{_th("竞价数据与内部个股")}</tr></thead><tbody>{"".join(plate_rows)}</tbody></table>')
+
+    ladder = [row for row in product.get("yesterday_ladder", []) if isinstance(row, Mapping)]
+    ladder_rows, ladder_text = [], []
+    for layer in sorted(ladder, key=lambda row: -(row.get("yesterday_streak") or 0)):
+        level = layer.get("yesterday_streak", "—")
+        for bucket in layer.get("buckets", []) if isinstance(layer.get("buckets"), list) else []:
+            if not isinstance(bucket, Mapping):
+                continue
+            bucket_meta = (f"昨{level}板 · {_esc(bucket.get('reason') or '原因待核实')} · {bucket.get('count', '—')}只"
+                f"<br>竞价额 {_money(bucket.get('auction_amount_yuan'))} · 本层占比 {_fmt((bucket.get('layer_amount_share') or 0) * 100 if bucket.get('layer_amount_share') is not None else None, 1, '%')}"
+                f" · 高开/低开 {_fmt((bucket.get('high_open_ratio') or 0) * 100 if bucket.get('high_open_ratio') is not None else None, 1, '%')}/{_fmt((bucket.get('low_open_ratio') or 0) * 100 if bucket.get('low_open_ratio') is not None else None, 1, '%')}"
+                f" · 中位 {_fmt(bucket.get('median_pct'), 2, '%')} · 拟晋级 {bucket.get('provisional_promotion_count', '—')} · 真实封单额 {_money(bucket.get('verified_seal_amount_yuan'))}")
+            stocks = bucket.get("stocks") if isinstance(bucket.get("stocks"), list) else []
+            stock_html = "<br>".join(_esc(_stock_text(stock)) for stock in stocks if isinstance(stock, Mapping)) or "个股待核实"
+            ladder_rows.append("<tr>" + _td(bucket_meta) + _td(stock_html) + "</tr>")
+            ladder_text.append(f"昨{level}板 · {bucket.get('reason') or '原因待核实'} · {bucket.get('count', '—')}只；竞价额 {_money(bucket.get('auction_amount_yuan'))}；本层占比 {_fmt((bucket.get('layer_amount_share') or 0) * 100 if bucket.get('layer_amount_share') is not None else None, 1, '%')}；中位 {_fmt(bucket.get('median_pct'), 2, '%')}；拟晋级 {bucket.get('provisional_promotion_count', '—')}；真实封单额 {_money(bucket.get('verified_seal_amount_yuan'))}\n" + "\n".join(_stock_text(stock) for stock in stocks if isinstance(stock, Mapping)))
+    ladder_table = f'<table style="{_table_style()}" role="table"><thead><tr>{_th("昨日板高·原因桶", "42%")}{_th("个股明细（全部昨日涨停股）")}</tr></thead><tbody>{"".join(ladder_rows)}</tbody></table>'
+    text = (f"竞价全景 V6 | {product.get('trade_date', '日期待核实')} | {product.get('asof', '时点待核实')}\n"
+        + " | ".join(f"{label}：{value}" for label, value in cards) + f"\n{hot_note}\n\n① 板块竞价全景\n"
+        + "\n\n".join(plate_text) + "\n\n② 昨日连板梯队×涨停原因\n" + "\n\n".join(ladder_text)
+        + "\n\n缺失字段留白或待核实；名次为全市场口径。")
+    document = (f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>竞价全景 V6</title></head><body style="margin:0;padding:10px;background:#eef2f6;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;color:#26364a">'
+        f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center"><table role="presentation" width="100%" style="max-width:760px;background:#fff">'
+        f'<tr><td style="padding:12px 14px;background:#172b43;color:#fff"><div style="font-size:16px;font-weight:700">竞价全景 V6　·　{_esc(product.get("trade_date", "日期待核实"))}　·　{_esc(product.get("asof", "时点待核实"))}　·　{_esc(overview.get("status", "PARTIAL"))}</div></td></tr>'
+        f'<tr><td style="padding:10px">{cards_html}<div style="margin:6px 0;color:#7a4b00;font-size:11px">{_esc(hot_note)}</div>'
+        f'<h2 style="font-size:16px;margin:18px 0 7px">① 板块竞价全景</h2>{plate_table}'
+        f'<h2 style="font-size:16px;margin:18px 0 7px">② 昨日连板梯队×涨停原因</h2>{ladder_table}'
+        f'<div style="font-size:10px;color:#667085;margin-top:12px">缺失字段留白或待核实；名次为全市场口径。</div></td></tr></table></td></tr></table></body></html>')
+    return document, text

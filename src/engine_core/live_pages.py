@@ -1015,6 +1015,11 @@ def _json_report_payload(payload, *, full_json=False):
     result = dict(payload)
     omitted = {}
     if not full_json:
+        if result.get("manifest", {}).get("assembly") == "v6" and isinstance(result.get("stocks"), list):
+            value = result.pop("stocks")
+            raw = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            omitted["stocks"] = {"size_bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+                                  "row_count": len(value)}
         if "snapshots" in result:
             result.pop("snapshots")
             value = payload["snapshots"]

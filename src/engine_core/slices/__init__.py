@@ -142,6 +142,8 @@ class SliceProviders:
         "hot_plates_yesterday": "hot_plates", "hot_rank": "hot_rank",
         "hot_plate_minutes": "hot_plate_minutes",
         "auction_points": "auction_points",
+        "auction_stock_facts": "auction_stock_facts",
+        "auction_panorama": "auction_panorama",
         "trading_calendar": "trade_calendar", "path_stats": "path_stats",
         "daily_report_features": "daily_report_features",
         "stock_theme_assignment": "stock_theme_assignment",
@@ -174,6 +176,71 @@ class SliceProviders:
     def _core(self, reader: SliceReader, request: SliceRequest) -> SliceResult:
         dataset = self.DATASETS[request.slice_id]
         date = request.trade_date
+        if request.slice_id == "auction_stock_facts":
+            # Hot Top50/seal projections are lookup aids, never a complete
+            # market universe for panorama aggregation.
+            manifest_path = self._select_manifest(dataset, date, request.asof, exact_date=True)
+            if manifest_path is None or not manifest_path.is_file():
+                return _result(request, [], source="core_data", status="MISSING",
+                               reason="AUCTION_STOCK_FACTS_NOT_IMPORTED",
+                               quality={"coverage": 0, "partial": True})
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if manifest.get("trade_date") != date:
+                    return _result(request, [], source="core_data", status="MISSING",
+                                   reason="AUCTION_STOCK_FACTS_TRADE_DATE_MISMATCH",
+                                   quality={"coverage": 0, "partial": True})
+                rows = self.catalog.read_rows(manifest_path)
+            except (OSError, ValueError, TypeError, KeyError):
+                manifest, rows = {}, []
+            if not rows:
+                return _result(request, [], source="core_data", status="MISSING",
+                               reason="AUCTION_STOCK_FACTS_EMPTY",
+                               quality={**manifest.get("quality", {}), "coverage": 0, "partial": True},
+                               version=str(manifest.get("version") or "unknown"),
+                               available_at=manifest.get("available_at"), pit_date=manifest.get("trade_date"))
+            return _result(request, rows, source="core_data", status="PARTIAL",
+                           version=str(manifest.get("version") or "unknown"),
+                           available_at=manifest.get("available_at"), pit_date=date,
+                           quality={**manifest.get("quality", {}), "partial": True},
+                           lineage=[{"dataset": dataset, "source": "core_data",
+                                     "requested_date": date, "used_date": manifest.get("trade_date")}])
+        if request.slice_id == "auction_panorama":
+            cutoff = _parse_pit_timestamp(request.asof)
+            key = f"core:cache:data:auction_panorama:{date}"
+            hot = None
+            try:
+                raw = self.redis.get(key) if self.redis is not None else None
+                hot = json.loads(raw.decode() if isinstance(raw, bytes) else raw) if raw else None
+                available = _parse_pit_timestamp((hot or {}).get("available_at"))
+                if not (isinstance(hot, dict) and hot.get("trade_date") == date
+                        and hot.get("schema") == "auction_panorama_v1" and hot.get("version")
+                        and available is not None and cutoff is not None and available <= cutoff):
+                    hot = None
+            except (OSError, ValueError, TypeError):
+                hot = None
+            manifest_path = self._select_manifest(dataset, date, request.asof)
+            if manifest_path is None or not manifest_path.is_file():
+                return _result(request, [], source="core_data", status="MISSING",
+                               reason="AUCTION_PANORAMA_NOT_IMPORTED", quality={"coverage": 0})
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                product_rows = self.catalog.read_rows(manifest_path)
+                rows = []
+                for row in product_rows:
+                    payload = row.get("product_json")
+                    product = json.loads(payload) if payload else row.get("product")
+                    if isinstance(product, dict):
+                        rows.append(product)
+            except (OSError, ValueError, TypeError, KeyError):
+                manifest, rows = {}, []
+            return _result(request, rows, source="core_data", status="PARTIAL",
+                           version=str(manifest.get("version") or "unknown"),
+                           available_at=manifest.get("available_at"), pit_date=date,
+                           quality={**manifest.get("quality", {}), "partial": True,
+                                    "hot_view": "INDEX" if hot else "COLD_SLICE"},
+                           lineage=[{"dataset": dataset, "source": "core_data", "used_date": date,
+                                     "hot_index": bool(hot)}])
         if request.slice_id == "stock_theme_assignment":
             # Prefer the prepared hot view; a stale or malformed view falls
             # through to the immutable cold artifact below.

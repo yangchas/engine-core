@@ -829,15 +829,23 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
             return value
         report = strip_close(report)
     manifest = manifest or (report.get("manifest") if isinstance(report.get("manifest"), Mapping) else {})
+    panorama = report.get("auction_panorama")
+    if "auction" in stage_key and isinstance(panorama, Mapping):
+        from .auction_panorama_view import render_auction_panorama
+        return render_auction_panorama(panorama)
     quality_status, quality_plain, quality_html = _quality_banner(manifest, report)
+    failure = report.get("v6_panorama_failure")
+    warning = (f'<div role="alert" style="margin:10px;padding:12px;background:#fff0e5;border:2px solid #c2410c;color:#7c2d12;font-weight:700">'
+               f'V6 全景缺失：{_esc(failure)}</div>' if "auction" in stage_key and failure else "")
+    warning_text = f"V6 全景缺失：{failure}\n\n" if "auction" in stage_key and failure else ""
     ladder = report.get("ladder_section")
     if (isinstance(report.get("stocks"), list)
             or (isinstance(ladder, Mapping) and bool(ladder.get("rows")))
             or report.get("email_layout") == "board"):
         board_html, board_plain = render_email_board(report, stage_key, trade_date)
-        board_html = re.sub(r"(<body\b[^>]*>)", lambda match: match.group(1) + quality_html, board_html, count=1)
+        board_html = re.sub(r"(<body\b[^>]*>)", lambda match: match.group(1) + quality_html + warning, board_html, count=1)
         return (board_html,
-                quality_plain + "\n\n" + board_plain)
+                quality_plain + "\n\n" + warning_text + board_plain)
     stage_name = "收盘" if "close" in stage_key else "开盘" if "open" in stage_key else "竞价"
     meta = _metadata(manifest, report, stage_key)
     conclusions = _conclusions(report, stage_key)
@@ -1005,6 +1013,8 @@ def render_email_html(report_json: Mapping[str, Any] | str | bytes, stage: str,
         front_html, front_text, appendix_open, appendix_close = "", story_text, "", ""
     else:
         front_html, front_text = _front_page_view(report, story_stage)
+        front_html = warning + front_html
+        front_text = warning_text + front_text
         appendix_open, appendix_close = '<details><summary style="padding:8px;background:#e9eef5">附表</summary>', "</details>"
     appendix_story = story_text if story_stage == "close" else "故事摘要见首屏"
     plain = quality_plain + "\n\n" + f"{title} | {trade_date}\n" + "\n".join(meta) + "\n\n" + front_text + "\n\n附表\n" + appendix_story + "\n\n一屏结论\n" + "\n".join(f"• {p}" for p in conclusions)

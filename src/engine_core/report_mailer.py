@@ -146,7 +146,14 @@ def build_report_message(subject_prefix: str, trade_date: str, stage: str,
             report_data = {}
     if not isinstance(report_data, dict):
         report_data = {}
-    rendered_html, plain_text = render_email_html(report_data, stage, trade_date, manifest)
+    rendered_from_data, plain_text = render_email_html(report_data, stage, trade_date, manifest)
+    # The report page is rendered from the full in-memory product before the
+    # bounded JSON projection is persisted. Reuse that exact HTML for email.
+    try:
+        saved_html = html_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"report HTML unavailable ({type(exc).__name__})") from None
+    rendered_html = (saved_html if "竞价全景 V6" in saved_html else rendered_from_data)
     quality_status, _, _ = _quality_banner(manifest or {}, report_data)
     subject = f"{subject_prefix} [{quality_status}] [{trade_date}] {stage} 报告"
     message = EmailMessage()

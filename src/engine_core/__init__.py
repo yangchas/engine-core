@@ -106,6 +106,8 @@ from .plate_cohesion_phases import (
     compute_phase_cohesion,
 )
 from .auction_book import AuctionBookState, AuctionBookTick, derive_auction_book
+from .auction_stock_facts import build_auction_stock_facts, store_auction_stock_facts
+from .auction_panorama import build_auction_panorama, store_auction_panorama
 from .stock_plate_assignment import (
     PlateAssignments,
     StockPlateAssignment,

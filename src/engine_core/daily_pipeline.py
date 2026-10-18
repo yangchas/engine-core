@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import live_pages
 from .close_review import (assemble_close_review, attach_close_sections, _attach_auction_baseline,
@@ -23,6 +24,15 @@ from .core_cache_writer import CoreCacheWriter
 from .daily_kline_capture import write_capture
 
 STAGE_NAMES = {"auction": "auction_0926", "open": "open_0946", "close": "close_review"}
+TZ = ZoneInfo("Asia/Shanghai")
+
+
+def _auction_assembly_mode() -> str:
+    """Select the auction product assembly; V6 is the default with legacy rollback."""
+    mode = os.getenv("CORE_AUCTION_ASSEMBLY", "v6").strip().lower()
+    if mode not in {"v6", "legacy"}:
+        raise ValueError("CORE_AUCTION_ASSEMBLY must be 'v6' or 'legacy'")
+    return mode
 
 
 def _fact_auction_amount(fact: Mapping[str, Any]) -> Any:
@@ -36,6 +46,40 @@ def _numeric(value: Any) -> float | None:
         return result if result == result and abs(result) != float("inf") else None
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _auction_baseline_history(rows: Any, *, trade_date: str, asof: str,
+                              replay_event_time: bool = False) -> list[float]:
+    """Return one daily td_0925 auction match total under PIT or event-time rules."""
+    totals: dict[str, float] = {}
+    try:
+        cutoff = datetime.fromisoformat(str(asof))
+    except (TypeError, ValueError):
+        return []
+    for row in rows if isinstance(rows, (list, tuple)) else ():
+        if not isinstance(row, Mapping):
+            continue
+        day = str(row.get("date") or "")[:10]
+        if replay_event_time:
+            pit_visible = True
+        else:
+            try:
+                available = datetime.fromisoformat(str(row.get("available_at") or ""))
+                pit_visible = available <= cutoff
+            except (TypeError, ValueError):
+                pit_visible = False
+        if (not day or day >= trade_date or row.get("row_kind") != "market_observation"
+                or row.get("source") != "td_0925" or not pit_visible):
+            continue
+        value = _numeric(row.get("auction_amount_yuan"))
+        if value is None:
+            sum_yi = _numeric(row.get("sum_yi"))
+            value = sum_yi * 1e8 if sum_yi is not None else None
+        if value is None or value <= 0:
+            continue
+        # Duplicate revisions are one observation per market date, never additive.
+        totals[day] = max(totals.get(day, 0.0), value)
+    return [totals[day] for day in sorted(totals)]
 
 
 def _d06_persisted_assignments(slice_result: Any, *, trade_date: str, used_date: str,
@@ -792,6 +836,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                    "daily_report_features", "daily_history",
                    "auction_baseline", "plate_amount_baseline", "yest_limit_pool", "limit_reason_history", "hot_plates_today",
                    "hot_plates_yesterday", "hot_rank", "trading_calendar", "path_stats")
+    if stage == "auction":
+        slice_names += ("auction_stock_facts",)
     slice_results = {}
     slice_timings = {}
     ordered_slices = ("trading_calendar",) + tuple(name for name in slice_names if name != "trading_calendar")
@@ -997,21 +1043,72 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 hotfiles = [path for path in hotfiles if path.stem.split("_")[-1] <= cutoff_tag]
             hot_path = str(hotfiles[-1]) if hotfiles else None
         baseline_csv = slice_results["auction_baseline"].rows
-        page, payload = live_pages.render_page(
-            src.td or _MissingTD(), trade_date=trade_date, stage=render_stage,
-            relations=relations, plate_names=plate_names, stock_names=stock_names,
-            daily_history_csv=slice_results["daily_history"].rows,
-            daily_report_features=slice_results["daily_report_features"].rows or None,
-            auction_baseline_csv=baseline_csv, kaipan_hot_json=hot_path,
-            kaipan_hot_rows=slice_results["hot_plates_today"].rows or None,
-            member_snapshot_date=relation_asof, member_lag_trading_days=relation_lag,
-            asof=asof_cutoff, td_connection_factory=src.td_connection_factory)
+        if stage == "auction" and _auction_assembly_mode() == "v6":
+            facts_result = slice_results.get("auction_stock_facts")
+            facts_rows = facts_result.rows if facts_result is not None else []
+            facts_meta = facts_result.meta if facts_result is not None else {}
+            if not facts_rows and trade_date < date.today().isoformat():
+                # Historical development previews may use event-time facts even
+                # when storage availability is later than the report cutoff.
+                from .data_pipeline.storage import ArtifactCatalog
+                catalog = ArtifactCatalog(os.getenv("CORE_DATA_ROOT", "/home/exedev/core-data"))
+                facts_path = catalog.locate("auction_stock_facts", trade_date)
+                if facts_path is not None and facts_path.is_file():
+                    historical_manifest = json.loads(facts_path.read_text(encoding="utf-8"))
+                    if historical_manifest.get("as_of") == slice_asof:
+                        facts_rows = catalog.read_rows(facts_path)
+                        facts_meta = {**historical_manifest, "source": "core_data_event_time_replay"}
+                        from .slices import SliceResult
+                        facts_status = ((facts_meta.get("quality") or {}).get("status") or "PARTIAL")
+                        facts_meta.update({"slice_id": "auction_stock_facts", "status": facts_status,
+                            "asof": facts_meta["as_of"], "reason": "EVENT_TIME_REPLAY",
+                            "lineage": [{"source": "core_data_event_time_replay",
+                                         "used_date": trade_date,
+                                         "available_at": facts_meta.get("available_at")}]})
+                        slice_results["auction_stock_facts"] = SliceResult.create(facts_rows, facts_meta)
+                        slice_manifest["auction_stock_facts"] = {
+                            "source": "core_data_event_time_replay", "version_source": "auction_stock_facts",
+                            "status": facts_status, "asof": facts_meta.get("asof"),
+                            "available_at": facts_meta.get("available_at"), "rows": len(facts_rows),
+                            "reason": "EVENT_TIME_REPLAY", "version": facts_meta.get("version"),
+                            "quality": facts_meta.get("quality", {}), "used_date": [trade_date],
+                            "coverage": facts_meta.get("quality", {}).get("coverage")}
+            from .auction_v6_inputs import prepare_auction_v6_inputs
+            fallback_stocks = []
+            if not facts_rows:
+                # Keep report.json/email observations available during slice
+                # migration without invoking the legacy page or its chapters.
+                fallback_stocks = _live_section_stocks(
+                    src.td or _MissingTD(), trade_date=trade_date, stage=stage,
+                    asof=asof or "09:26:00", relations=relations, plate_names=plate_names,
+                    stock_names=stock_names, history_path=slice_results["daily_history"].rows,
+                    report_features=slice_results["daily_report_features"].rows or None,
+                    td_connection_factory=src.td_connection_factory)
+            page = ""
+            payload = prepare_auction_v6_inputs(
+                trade_date=trade_date, asof=slice_asof, stock_facts=facts_rows,
+                stock_names=stock_names, fallback_stocks=fallback_stocks,
+                limitations=("V6 竞价事实；章节仅由已装配产品提供。" if facts_rows
+                             else "竞价事实缺失；不调用旧版章节计算。"))
+            payload["status"] = facts_meta.get("status", "MISSING")
+        else:
+            page, payload = live_pages.render_page(
+                src.td or _MissingTD(), trade_date=trade_date, stage=render_stage,
+                relations=relations, plate_names=plate_names, stock_names=stock_names,
+                daily_history_csv=slice_results["daily_history"].rows,
+                daily_report_features=slice_results["daily_report_features"].rows or None,
+                auction_baseline_csv=baseline_csv, kaipan_hot_json=hot_path,
+                kaipan_hot_rows=slice_results["hot_plates_today"].rows or None,
+                member_snapshot_date=relation_asof, member_lag_trading_days=relation_lag,
+                asof=asof_cutoff, td_connection_factory=src.td_connection_factory)
         payload.setdefault("chapters", {})["reference_data"] = {
             "stock_names": {"status": "READY" if stock_names else "MISSING",
                             "reason": None if stock_names else "名称表缺失，名称显示为名称未知"},
             "daily_report_features": dict(slice_results["daily_report_features"].meta),
             "stock_caps": {"status": "READY" if stock_caps else "MISSING",
                            "reason": None if stock_caps else "市值表缺失"}}
+        if stage == "auction" and _auction_assembly_mode() == "v6":
+            payload["chapters"].setdefault("extremes_board", {})
         if not stock_names or not stock_caps:
             old_limitations = payload["limitations"]
             payload["limitations"] += " 参考数据：" + "；".join(
@@ -1051,7 +1148,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         point = f"{trade_date}T{asof or '09:45:00'}"
         live_stocks = payload.get("stocks") if isinstance(payload.get("stocks"), list) else []
         feedback_symbols: set[str] = set()
-        if not live_stocks:
+        if not live_stocks and not (stage == "auction" and _auction_assembly_mode() == "v6"):
             from .limit_reason_theme import _pool_rows, _pool_values
             feedback_symbols = {symbol for raw in _pool_rows(slice_results["yest_limit_pool"].rows)
                                 if (symbol := _pool_values(raw)[0])}
@@ -1076,6 +1173,9 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                           plate_metadata=plate_metadata)
                              if live_stocks else [{"a_symbol": "—", "reason": "缺关系数据：本时点报告无全量个股与板块成员"}])
         highboards = payload.get("chapters", {}).get("yesterday_highboards", []) if isinstance(payload.get("chapters"), Mapping) else []
+        if stage == "auction" and _auction_assembly_mode() == "v6" and not highboards:
+            from .limit_reason_theme import _pool_rows
+            highboards = _pool_rows(slice_results["yest_limit_pool"].rows)
         stock_by_symbol = {str(row.get("symbol", row.get("code", ""))).zfill(6): row
                            for row in live_stocks if isinstance(row, Mapping)}
         for row in highboards if isinstance(highboards, list) else []:
@@ -1087,7 +1187,12 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 row.setdefault("0932", live.get("p0932_pct"))
                 row["0938"] = live.get("p0938_pct")
                 row["0945"] = live.get("p0945_pct")
+                row["price"] = live.get("price") or live.get("p0925_price")
+                row["pre_close"] = live.get("pre_close") or live.get("p0925_pre_close")
                 row["match_amount_yuan"] = live.get("auction_amount_yuan")
+        if stage == "auction" and _auction_assembly_mode() == "v6":
+            payload["chapters"]["yesterday_highboards"] = highboards
+            payload["chapters"]["yesterday_limit_pool"] = highboards
         payload["ladder_section"] = build_ladder_section(
             highboards if isinstance(highboards, list) else [], stage=stage, asof=point,
             frequencies=path_frequencies, market_stocks=live_stocks)
@@ -1762,6 +1867,91 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             theme_assignments=theme_snapshot["assignments"], theme_basis=theme_snapshot["basis"],
             hot_plate_names=theme_snapshot["hot_plate_names"], relation_asof=relation_asof,
             relation_lag_trading_days=relation_lag)
+        if stage == "auction" and _auction_assembly_mode() == "v6":
+            try:
+                facts_result = slice_results.get("auction_stock_facts")
+                facts_rows = facts_result.rows if facts_result is not None else []
+                facts_meta = facts_result.meta if facts_result is not None else {}
+                if not facts_rows:
+                    raise ValueError("AUCTION_STOCK_FACTS_MISSING")
+                facts_quality = facts_meta.get("quality", {}) if isinstance(facts_meta.get("quality"), Mapping) else {}
+                facts_asof = facts_meta.get("as_of") or facts_meta.get("asof") or slice_asof
+                event_time_replay = facts_meta.get("source") == "core_data_event_time_replay"
+                stock_facts = {
+                    "trade_date": trade_date, "asof": facts_asof,
+                    "version": facts_meta.get("version"), "rows": facts_rows,
+                    "summary": facts_quality,
+                    "seal_label": facts_quality.get("seal_label") or
+                        ("回放·按事件时间" if event_time_replay
+                         else "已核实"),
+                }
+                yesterday_pool_rows = _pool_rows(slice_results["yest_limit_pool"].rows)
+                yesterday_reasons = {}
+                for reason_row in reason_rows:
+                    if not isinstance(reason_row, Mapping):
+                        continue
+                    symbol = str(reason_row.get("StockID", reason_row.get("stock_id", reason_row.get("symbol", ""))))
+                    if symbol:
+                        key = symbol[-6:].zfill(6)
+                        label = reason_row.get("SCLT", reason_row.get("sclt"))
+                        if label not in (None, ""):
+                            yesterday_reasons.setdefault(key, []).append(str(label))
+                baseline_rows = slice_results["auction_baseline"].rows
+                baseline_replay = trade_date < date.today().isoformat()
+                baseline_history = _auction_baseline_history(
+                    baseline_rows, trade_date=trade_date, asof=slice_asof,
+                    replay_event_time=baseline_replay)
+                if baseline_replay and not baseline_history:
+                    # Historical previews may read the immutable stored version
+                    # whose availability is later than the historical report as-of.
+                    from .data_pipeline.storage import ArtifactCatalog
+                    baseline_catalog = ArtifactCatalog(os.getenv("CORE_DATA_ROOT", "/home/exedev/core-data"))
+                    baseline_path = baseline_catalog.locate("auction_baseline", trade_date)
+                    if baseline_path is not None and baseline_path.is_file():
+                        baseline_history = _auction_baseline_history(
+                            baseline_catalog.read_rows(baseline_path), trade_date=trade_date,
+                            asof=slice_asof, replay_event_time=True)
+                panorama_members = [
+                    {"plate_id": str(code), "plate_name": str(plate_names.get(code) or code),
+                     "symbol": symbol}
+                    for code, members in relations.items() for symbol in members
+                ]
+                from .auction_panorama import build_auction_panorama, store_auction_panorama, normalize_hot_plates
+                from .data_pipeline.storage import ArtifactCatalog
+                hot_catalog = ArtifactCatalog(os.environ.get("CORE_DATA_ROOT", "~/core-data")).locate(
+                    "hot_plates", str(stock_facts.get("trade_date")))
+                hot_rows, hot_ranks = [], {}
+                if hot_catalog and hot_catalog.is_file():
+                    hot_meta = json.loads(hot_catalog.read_text(encoding="utf-8"))
+                    hot_rows = ArtifactCatalog(os.environ.get("CORE_DATA_ROOT", "~/core-data")).read_rows(hot_catalog)
+                    hot_ranks = normalize_hot_plates(hot_rows, fetched_at=hot_meta["fetched_at"],
+                        available_at=hot_meta.get("available_at"),
+                        asof=stock_facts["asof"], trade_date=stock_facts["trade_date"],
+                        now=datetime.now(TZ).isoformat())
+                panorama = build_auction_panorama(
+                    stock_facts, plate_members=panorama_members,
+                    yesterday_pool=yesterday_pool_rows, yesterday_reasons=yesterday_reasons,
+                    theme_assignments=theme_snapshot["assignments"], name_map=stock_names,
+                    streak_feedback=payload.get("streak_feedback"),
+                    market_amount_history=baseline_history,
+                    amount_baseline_basis="REPLAY_EVENT_TIME" if baseline_replay else "PIT",
+                    hot_plate_ranks=hot_ranks.get("ranks", {}))
+                panorama["lineage"]["hot_rank_basis"] = hot_ranks.get("basis", "UNKNOWN")
+                store_auction_panorama(panorama, redis=src.redis)
+                payload["auction_panorama"] = panorama
+            except Exception as exc:
+                payload["v6_panorama_failure"] = f"{type(exc).__name__}: {exc}"
+                payload["v6_degraded_code"] = "V6_PANORAMA_MISSING"
+                degraded.append("V6_PANORAMA_MISSING")
+                failed_facts_result = slice_results.get("auction_stock_facts")
+                if failed_facts_result is None or not failed_facts_result.rows:
+                    # The optional V6 facts slice is represented by the explicit
+                    # panorama failure warning when unavailable, avoiding a false
+                    # report-level mandatory-slice failure for legacy rendering.
+                    slice_manifest.pop("auction_stock_facts", None)
+                    slice_results.pop("auction_stock_facts", None)
+                    slice_timings.pop("auction_stock_facts", None)
+                    used_dates.pop("auction_stock_facts", None)
         # Ladder rows are rendered before the front-page cluster block; project
         # the shared primary assignment there as well.
         for row in payload.get("ladder_section", {}).get("rows", []):
@@ -1771,14 +1961,21 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         from .email_render import render_email_html
         pipeline_timings["compute"] = round(time.monotonic() - compute_started, 3)
         render_started = time.monotonic()
-        email_page, _ = render_email_html(payload, stage, trade_date, {
+        email_page, email_plain = render_email_html(payload, stage, trade_date, {
             "trade_date": trade_date, "asof": asof, "sources": {"td": td_source_manifest},
             "slices": slice_manifest, "used_dates": used_dates, "degraded": degraded,
             "elapsed_seconds": round(time.monotonic() - started, 3)})
         pipeline_timings["render"] = round(time.monotonic() - render_started, 3)
         write_started = time.monotonic()
         (out / "report.html").write_text(email_page, encoding="utf-8")
-        report_json = _shrink_live_report(live_pages._json_report_payload(payload))
+        if stage == "auction":
+            (out / "report.txt").write_text(email_plain, encoding="utf-8")
+        persisted_payload = dict(payload)
+        if stage == "auction":
+            # The complete immutable panorama is separately stored in Core data;
+            # keep the general report JSON below the live-report size ceiling.
+            persisted_payload.pop("auction_panorama", None)
+        report_json = _shrink_live_report(live_pages._json_report_payload(persisted_payload))
         report_text = json.dumps(report_json, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
         pipeline_timings["prepare_output"] = round(time.monotonic() - write_started, 3)
     else:
@@ -2034,7 +2231,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         written = (head + note_html + sep + tail) if sep else (written + note_html)
         html_path.write_text(written, encoding="utf-8")
     compact_report = ({key: value for key, value in data.items() if key != "stocks"}
-                      if stage == "close" else live_pages._json_report_payload(payload))
+                      if stage == "close" else
+                      live_pages._json_report_payload(persisted_payload if stage == "auction" else payload))
     _shrink_live_report(compact_report)
     report_text = json.dumps(compact_report,
                              ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
@@ -2054,6 +2252,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         close_manifest = {}
     manifest = {"contract": "DailyPipelineManifestV1", "trade_date": trade_date,
                 "stage": stage, "asof": asof, "outputs": str(out), "input_files": inputs,
+                "auction_assembly": (_auction_assembly_mode() if stage == "auction" else None),
                 "sources": {"td": td_source_manifest,
                             "q2_redis": {"available": src.redis is not None and not degraded_q2,
                                          "coverage": q2_coverage if src.redis is not None and not degraded_q2 else None},
