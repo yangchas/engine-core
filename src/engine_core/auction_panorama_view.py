@@ -221,4 +221,11 @@ def render_auction_panorama(product: Mapping[str, Any]) -> tuple[str, str]:
         f'<h2 style="font-size:16px;margin:18px 0 7px">① 板块竞价全景</h2>{plate_table}'
         f'<h2 style="font-size:16px;margin:18px 0 7px">② 昨日连板梯队×涨停原因</h2>{ladder_table}'
         f'<div style="font-size:10px;color:#667085;margin-top:12px">{_esc(hot_coverage_note)} 缺失字段留白或待核实；名次为全市场口径。</div></td></tr></table></td></tr></table></body></html>')
+    quickbrief = product.get("quickbrief")
+    if isinstance(quickbrief, Mapping) and isinstance(quickbrief.get("lines"), list):
+        quick_lines = [str(line) for line in quickbrief["lines"]]
+        quick_plain = "\n".join(quick_lines) + "\n\n"
+        quick_html = '<div style="padding:10px 12px;margin:8px 0;background:#f2f6fb;border-left:4px solid #2471a3;font-size:13px;line-height:1.7">' + "<br>".join(_esc(line) for line in quick_lines) + "</div>"
+        text = text.replace("竞价全景 V6 |", quick_plain + "竞价全景 V6 |", 1)
+        document = document.replace('<tr><td style="padding:10px">', '<tr><td style="padding:10px">' + quick_html, 1)
     return document, text

@@ -1948,6 +1948,15 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     hot_plate_ranks=hot_ranks.get("ranks", {}),
                     plate_classes=class_by_code,
                     previous_trade_date=previous_trade_date)
+                from .auction_quickbrief import build_auction_quickbrief
+                quickbrief = build_auction_quickbrief(
+                    stock_facts, plate_members=panorama_members,
+                    yesterday_pool=yesterday_pool_rows, plate_classes=class_by_code,
+                    name_map=stock_names,
+                    market_amount_history=baseline_history,
+                    replay=baseline_replay or hot_ranks.get("basis") == "POSTHOC_DEV")
+                panorama["quickbrief"] = quickbrief
+                payload["auction_quickbrief"] = quickbrief
                 panorama["lineage"]["hot_rank_basis"] = hot_ranks.get("basis", "UNKNOWN")
                 store_auction_panorama(panorama, redis=src.redis)
                 payload["auction_panorama"] = panorama

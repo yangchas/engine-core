@@ -33,6 +33,7 @@ def test_panorama_view_renders_two_complete_tables_and_preserves_unknowns():
                 "promotion_status": "PROVISIONAL", "extremes": []}]}]}],
         "extremes": {"footer": "最大低开 000001 -2.00%"},
         "lineage": {"hot_plate_ranks": "PROVIDED", "hot_rank_basis": "POSTHOC_DEV"},
+        "quickbrief": {"lines": ["09:26 竞价速览 | 测试", "市场普遍高开"]},
     }
     html, plain = render_auction_panorama(panorama)
     assert html.count('role="table"') == 2
@@ -43,6 +44,8 @@ def test_panorama_view_renders_two_complete_tables_and_preserves_unknowns():
     assert "POSTHOC_DEV" in html + plain
     assert "收盘后回溯，非09:26快照，仅供开发评估" in html + plain
     assert "金额待核实" not in html + plain
+    assert "09:26 竞价速览 | 测试" in html + plain
+    assert "市场普遍高开" in html + plain
     assert "<details" not in html and "000001" not in html
     assert "基线样本14/64（样本不足，仅参考）" in plain
     assert "0.98倍 / 42.9分位" not in plain
