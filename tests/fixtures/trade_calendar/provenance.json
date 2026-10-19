@@ -1,0 +1,19 @@
+{
+  "provenance": "C325 real captured responses; copied byte-for-byte from /home/exedev/fw/research/data-layer/calendar/samples. Original retrieval details and upstream source hashes are in manifest.json.",
+  "sha256": {
+    "manifest.json": "a805f3ab5e2272dd9ef74250a77502e7ca61819c5b96b09eb06b53c49c63ccf2",
+    "baostock-2026-01-01_2026-12-31.json": "bbe28cebc7ab5e70b64ca0d68528d203258b7d1e4f9b7b682fef53fd496d7b1e",
+    "szse-2026-01.json": "a5af35e3da3e5e7ab03ce71ddfc6c60f116fb8e9e7e06e29bcb48f7e97a1a96d",
+    "szse-2026-02.json": "8d06c0051cb6ee8895bfc2fb6710284d6d13c457fa550ad6657217fecc827802",
+    "szse-2026-03.json": "07cd044ecf1225b42b7555e6f5b3c1298db46c0acb647f8124c9fc7d3328bf48",
+    "szse-2026-04.json": "ed5d6a95390257bb18ff6aedc63b22dfc4635368dfd996833e6270ad61788179",
+    "szse-2026-05.json": "66a6f4594fb00fe7c4bf5fa315b8a8ccd32851ef428d4aa91d17130caf113a88",
+    "szse-2026-06.json": "3206691a1607021197aa78f29461dfaffd72456c231e9021abb00a4eaee63f83",
+    "szse-2026-07.json": "a622f8f3bcb50ba808faba389823994da812b208582ee2f535d66ae7df118a51",
+    "szse-2026-08.json": "f82c51965b3922e86c3eb3ad6f3b15349f572a1b13414d4d8dc60acbbd0fd95a",
+    "szse-2026-09.json": "8baf05693ec4a5b4683c1899d74991d81a55eb0dfa9add7ed33323a9ddaf1471",
+    "szse-2026-10.json": "afc00dbfb8a7e9c7a0e82fdfb4986c1791ab1c86dd0f58a5befed02dd2aa2142",
+    "szse-2026-11.json": "82b69174ad64c3e213ebb46a42ddb31e2dfe98e8d41d4633c8d045ecfda41bc6",
+    "szse-2026-12.json": "d6640f26f80a3967fb9b907fd36f8c5531b9cdd4a4fc8028185f83130fb09b93"
+  }
+}

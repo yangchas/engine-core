@@ -73,6 +73,7 @@ def phase_at(value: datetime | str) -> str:
 
 def default_events() -> list[EventSpec]:
     events = [
+        EventSpec("calendar_refresh_0800", "PREMARKET", "08:00:00", "08:15:00", "always", "calendar_refresh", max_attempts=1),
         EventSpec("startup_0830", "PREMARKET", "08:30:00", "08:45:00", "calendar_ready", "premarket_data"),
         EventSpec("kaipan_refresh_0850", "PREMARKET", "08:50:00", "09:05:00", "calendar_ready", "kaipan_fetch", max_attempts=1,
                   available_after="00:00:00", data_date_offset=-1),
@@ -165,6 +166,8 @@ class Guardian:
                  schedule_path: str | Path | None = None, config_revision: int = 1,
                  config_payload: Mapping[str, Any] | None = None):
         self.events = tuple(events)
+        self.calendar_coverage = (getattr(calendar_dates, "coverage_start", None),
+                                  getattr(calendar_dates, "coverage_end", None))
         self.calendar_dates = None if calendar_dates is None else frozenset(calendar_dates)
         self.state_root = Path(state_root)
         self.gates = dict(gates or {})
@@ -188,6 +191,9 @@ class Guardian:
         local = value.astimezone(TZ) if value.tzinfo else value.replace(tzinfo=TZ)
         if self.calendar_dates is None:
             return "UNKNOWN_CALENDAR"
+        start, end = self.calendar_coverage
+        if start and end and not start <= local.date().isoformat() <= end:
+            return "UNKNOWN_CALENDAR"
         return phase_at(local) if local.date().isoformat() in self.calendar_dates else "HOLIDAY"
 
     def status(self, trade_date: str, event_id: str) -> str:
@@ -207,14 +213,37 @@ class Guardian:
             if self._dirty:
                 self._save(trade_date, local)
             return actions + [{"status": "PAUSED"}]
-        if self.calendar_dates is None:
-            self.degraded = True
-            actions.append({"status": "CALENDAR_UNAVAILABLE", "at": local.isoformat()})
-            return actions
-        if trade_date not in self.calendar_dates:
+        # Calendar maintenance is a control-plane event: it must be considered
+        # before calendar coverage and holiday checks, and always uses the same
+        # timeout and dry-run path as other scheduled work.
+        for event in self.events:
+            if event.handler != "calendar_refresh":
+                continue
+            row = self._states.get(event.event_id, {"status": "PENDING", "attempts": 0})
+            if row.get("status") in {"SUCCEEDED", "SUCCEEDED_DEGRADED", "MISSED", "CIRCUIT_OPEN"}:
+                continue
+            event_start = datetime.combine(local.date(), _clock(event.start), TZ)
+            event_deadline = datetime.combine(local.date(), _clock(event.deadline), TZ)
+            if local < event_start or local > event_deadline:
+                continue
+            if self.dry_run:
+                token = (trade_date, event.event_id)
+                if token not in self._dry_seen:
+                    self._dry_seen.add(token)
+                    actions.append({"event": event.event_id, "status": "WOULD_RUN"})
+                continue
+            row = self._states.setdefault(event.event_id, {"status": "PENDING", "attempts": 0})
+            self._run(event, local, row, False, actions)
             if self._dirty:
                 self._save(trade_date, local)
-            return [{"status": "HOLIDAY", "at": local.isoformat()}]
+        if self.calendar_dates is None:
+            self.degraded = True
+            return actions + [{"status": "CALENDAR_UNAVAILABLE", "at": local.isoformat()}]
+        if trade_date not in self.calendar_dates:
+            start, end = self.calendar_coverage
+            if start and end and not start <= trade_date <= end:
+                return actions + [{"status": "CALENDAR_COVERAGE_UNKNOWN", "at": local.isoformat()}]
+            return actions + [{"status": "HOLIDAY", "at": local.isoformat()}]
         if self.degraded and self._load_error:
             return [{"status": "DEGRADED_STATE", "reason": self._load_error}]
         for event in self.events:
@@ -297,9 +326,22 @@ class Guardian:
             def persist_worker(pid):
                 row.update(worker_pid=pid, attempt_id=uuid.uuid4().hex)
                 self._save(now.date().isoformat(), now)
-            result = _invoke_with_timeout(handler, (event, now, self.context, degraded),
-                                          event.timeout_seconds, on_started=persist_worker)
+            if event.handler == "calendar_refresh":
+                result = _invoke_calendar_with_timeout(
+                    handler, (event, now, self.context, degraded), event.timeout_seconds)
+            else:
+                result = _invoke_with_timeout(handler, (event, now, self.context, degraded),
+                                              event.timeout_seconds, on_started=persist_worker)
             result_degraded = isinstance(result, str) and result.startswith("DEGRADED:")
+            if event.handler == "calendar_refresh" and isinstance(result, str) and not result_degraded:
+                try:
+                    payload = json.loads(result)
+                    self.calendar_dates = frozenset(payload.get("trading_dates", [])) or None
+                    coverage = payload.get("calendar", {})
+                    self.calendar_coverage = (coverage.get("coverage_start"), coverage.get("coverage_end"))
+                    self.degraded = self.calendar_dates is None
+                except (ValueError, TypeError):
+                    result_degraded = True
             row.update(status="SUCCEEDED_DEGRADED" if degraded or result_degraded else "SUCCEEDED",
                         completed_at=now.isoformat(), duration_seconds=round(time.monotonic() - started, 3),
                         result=str(result)[:500])
@@ -536,6 +578,31 @@ def _invoke_with_timeout(handler: Callable[..., Any], args: tuple[Any, ...], tim
     if not ok:
         raise RuntimeError(f"{value[0]}:{value[1]}")
     return value
+
+
+def _invoke_calendar_with_timeout(handler: Callable[..., Any], args: tuple[Any, ...], timeout: int) -> Any:
+    """Bound calendar maintenance while keeping its durable alert route in this process."""
+    import signal
+    import threading
+    if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "setitimer"):
+        return _invoke_with_timeout(handler, args, timeout)
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    started = time.monotonic()
+
+    def expired(_signum, _frame):
+        raise TimeoutError(f"handler_timeout:{timeout}s")
+
+    signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, timeout)
+    try:
+        return handler(*args)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        remaining, interval = previous_timer
+        if remaining > 0:
+            signal.setitimer(signal.ITIMER_REAL, max(0.000001, remaining - (time.monotonic() - started)), interval)
 
 
 def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:

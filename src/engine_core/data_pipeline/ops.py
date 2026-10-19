@@ -14,6 +14,7 @@ from .registry import DATASETS, get_dataset
 from .storage import ArtifactCatalog, _atomic_write, canonical_json
 from ..limit_price import limit_percent
 from ..live_session import append_auction_amount_baseline
+from .trade_calendar import TradeCalendarStore
 
 
 class FileLock:
@@ -46,10 +47,13 @@ class FileLock:
 
 
 def is_trading_day(value: str, trading_dates: Iterable[str] | None = None) -> bool:
-    day = date.fromisoformat(value)
     if trading_dates is not None:
         return value in set(trading_dates)
-    return day.weekday() < 5
+    from .trade_calendar import TradeCalendarStore
+    try:
+        return TradeCalendarStore().is_trading_day(value)
+    except ValueError:
+        return False
 
 
 def retry_window_for(dataset: str, local_time: str) -> int | None:
@@ -77,17 +81,15 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
         raise ValueError("unknown_phase")
     root = Path(root)
     status_path = root / "daily_status.json"
-    if trading_dates is None:
-        calendar = root / "trade_dates.json"
-        if calendar.is_file():
-            try: trading_dates = json.loads(calendar.read_text(encoding="utf-8"))
-            except (OSError, ValueError): trading_dates = None
-        if trading_dates is None:
-            result = {"phase": phase, "trade_date": trade_date,
-                      "status": "FAILED_CALENDAR_UNAVAILABLE", "jobs": [], "errors": []}
-            if write: _atomic_write(status_path, canonical_json(result) + b"\n")
-            return result
-    if not is_trading_day(trade_date, trading_dates):
+    try:
+        calendar = TradeCalendarStore(root)
+        calendar_is_trading = calendar.is_trading_day(trade_date)
+    except ValueError:
+        result = {"phase": phase, "trade_date": trade_date,
+                  "status": "FAILED_CALENDAR_UNAVAILABLE", "jobs": [], "errors": []}
+        if write: _atomic_write(status_path, canonical_json(result) + b"\n")
+        return result
+    if not calendar_is_trading:
         result = {"phase": phase, "trade_date": trade_date, "status": "SKIPPED_NON_TRADING_DAY",
                   "jobs": []}
         if write:
@@ -98,13 +100,13 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
     errors = []
     job_trade_date = trade_date
     if phase == "premarket":
-        prior_dates = sorted(day for day in trading_dates if day < trade_date)
-        if not prior_dates:
+        try:
+            job_trade_date = calendar.previous_trade_date(trade_date).isoformat()
+        except ValueError:
             result = {"phase": phase, "trade_date": trade_date,
                       "status": "FAILED_CALENDAR_UNAVAILABLE", "jobs": [], "errors": []}
             if write: _atomic_write(status_path, canonical_json(result) + b"\n")
             return result
-        job_trade_date = prior_dates[-1]
     with lock_context:
         runner = JobRunner(artifact_root=root, redis=redis, td_adapter=td_adapter,
                            budget=RequestBudget(max_requests=100, min_interval_seconds=0))

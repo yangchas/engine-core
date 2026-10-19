@@ -334,7 +334,7 @@ def test_previous_trade_date_uses_observed_core_dates_and_fails_closed():
         def __init__(self, dates): self.dates = dates
         def read(self): return {"datasets": {"daily_kline": {"dates": {day: [] for day in self.dates}}}}
 
-    assert previous_trade_date(Catalog(["2026-10-14", "2026-10-16"]), "2026-10-17") == "2026-10-16"
+    assert previous_trade_date(Catalog(["2026-10-14", "2026-10-16"]), "2026-10-17") is None
     assert previous_trade_date(Catalog([]), "2026-10-17") is None
 
 

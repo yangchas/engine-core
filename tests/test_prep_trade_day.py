@@ -1,4 +1,15 @@
 import json
+from pathlib import Path
+
+def _seed_c325(root):
+    fixture = Path(__file__).parent / "fixtures" / "trade_calendar"
+    payload = json.loads((fixture / "baostock-2026-01-01_2026-12-31.json").read_bytes())
+    dates = [row["calendar_date"] for row in payload["rows"] if row["is_trading_day"] == "1"]
+    raw = {path.name: path.read_bytes() for path in fixture.glob("*.json")}
+    from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+    TradeCalendarStore(root).publish_confirmed(dates, source="C325 BaoStock+SZSE",
+        fetched_at="2026-10-20T00:00:00+00:00", coverage_start="2026-01-01",
+        coverage_end="2026-12-31", raw_responses=raw)
 
 from engine_core.prep_trade_day import build_prep_report, previous_trade_date
 from examples.core_guardian import HANDLER_IMPLEMENTATIONS
@@ -11,6 +22,7 @@ def test_all_guardian_handlers_have_explicit_core_mapping_or_not_implemented():
         "night_report", "premarket_data", "kaipan_fetch", "auction_watch",
         "kaipan_hot_capture", "snapshot_check", "auction_report", "open_report",
         "intraday_data", "postmarket_data", "baostock_probe", "close_capture", "close_report",
+        "calendar_refresh",
     }
     assert set(HANDLER_IMPLEMENTATIONS) == expected
     assert all(value and value != "" for value in HANDLER_IMPLEMENTATIONS.values())
@@ -18,13 +30,11 @@ def test_all_guardian_handlers_have_explicit_core_mapping_or_not_implemented():
     assert HANDLER_IMPLEMENTATIONS["premarket_data"] == "examples/prep_trade_day.py:premarket_and_auction_baseline"
 
 
-def test_previous_trade_date_uses_calendar_or_committed_daily_kline(tmp_path):
-    calendar = tmp_path / "trade_dates.json"
-    calendar.write_text(json.dumps(["2026-10-16", "2026-10-19"]), encoding="utf-8")
+def test_previous_trade_date_uses_calendar_and_never_guesses_from_supplied_dates(tmp_path):
+    _seed_c325(tmp_path)
     assert previous_trade_date(tmp_path, "2026-10-19") == "2026-10-16"
-    calendar.unlink()
-    assert previous_trade_date(tmp_path, "2026-10-19", known_trade_dates=["2026-10-15", "2026-10-16"]) == "2026-10-16"
-    assert previous_trade_date(tmp_path, "2026-10-19", known_trade_dates=[]) is None
+    (tmp_path / "trade_dates.json").unlink()
+    assert previous_trade_date(tmp_path, "2027-01-04", known_trade_dates=["2026-10-15", "2026-10-16"]) is None
 
 
 def test_dry_run_reports_missing_without_mutating_artifact_root(tmp_path):
@@ -48,8 +58,7 @@ def test_kaipan_adapter_reads_plate_registry_from_core_catalog(tmp_path):
 def test_prep_baseline_target_is_report_day(tmp_path, monkeypatch):
     import engine_core.prep_trade_day as prep
 
-    (tmp_path / "trade_dates.json").write_text(
-        json.dumps(["2026-10-16", "2026-10-19"]), encoding="utf-8")
+    _seed_c325(tmp_path)
     calls = []
     def fake_run(_repo, script, args):
         calls.append((script, list(args)))
@@ -69,6 +78,7 @@ def test_prep_baseline_target_is_report_day(tmp_path, monkeypatch):
 
 
 def test_prep_does_not_mark_future_artifact_ready(tmp_path):
+    _seed_c325(tmp_path)
     catalog = ArtifactCatalog(tmp_path)
     catalog.commit("daily_kline", "2026-10-16", [{"symbol": "600001"}], {
         "trade_date": "2026-10-16", "row_count": 1,
@@ -85,4 +95,4 @@ def test_prep_does_not_mark_future_artifact_ready(tmp_path):
         "available_at": "2026-10-20T00:00:00+08:00",
     }, source="fixture")
     from engine_core.auction_baseline import _existing
-    assert _existing(catalog, "2026-10-19") is None
+    assert _existing(catalog, "2026-10-19", asof="2026-10-19T08:00:00+08:00") is None

@@ -423,15 +423,19 @@ class SliceProviders:
         if request.slice_id == "trading_calendar":
             calendar_manifest = self.catalog.locate(dataset, date or None)
             if calendar_manifest is None:
-                dates = trading_dates_from_catalog(self.catalog)
-                if dates:
-                    rows = [{"date": day} for day in dates if day <= request.trade_date]
-                    return _result(request, rows, source="core_data:daily_kline_or_symbol_universe",
-                                   status="PARTIAL", reason="CALENDAR_DERIVED_FROM_CORE_DATASETS",
-                                   version="derived", quality={"coverage": len(rows), "missing": None,
-                                                                "partial": True})
-                return _result(request, [], source="core_data", status="MISSING",
-                               reason="CALENDAR_DATA_UNAVAILABLE")
+                from ..data_pipeline.trade_calendar import TradeCalendarStore
+                store = TradeCalendarStore(self.catalog.root)
+                try:
+                    data, covered_date = store._covered(request.trade_date)
+                except ValueError:
+                    return _result(request, [], source="core_data:trade_calendar", status="MISSING",
+                                   reason="CALENDAR_COVERAGE_UNKNOWN")
+                rows = [{"date": day} for day in data["trading_dates"] if day <= covered_date]
+                return _result(request, rows, source="core_data:trade_calendar",
+                               status="READY", reason=None, version=data.get("version"),
+                               quality={"coverage_start": data.get("coverage_start"),
+                                        "coverage_end": data.get("coverage_end"),
+                                        "coverage": len(rows), "partial": False})
         if request.slice_id in {"hot_plates_yesterday", "yest_limit_pool"}:
             date = str(request.params.get("source_date") or "")
         if request.slice_id == "plate_members":
@@ -809,8 +813,15 @@ def trading_dates_from_catalog(catalog: Any) -> list[str]:
 
 def previous_trade_date(catalog: Any, trade_date: str) -> str | None:
     """Find the previous date backed by Core calendar data, or fail closed."""
-    eligible = [day for day in trading_dates_from_catalog(catalog) if day < trade_date]
-    return eligible[-1] if eligible else None
+    from ..data_pipeline.trade_calendar import TradeCalendarStore
+    root = getattr(catalog, "root", None)
+    store = TradeCalendarStore(root) if root is not None else None
+    if store and store.load():
+        try:
+            return store.previous_trade_date(trade_date).isoformat()
+        except ValueError:
+            return None
+    return None
 
 
 __all__ += ["trading_dates_from_catalog", "previous_trade_date"]

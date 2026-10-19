@@ -5,7 +5,7 @@ import json
 import math
 import os
 import statistics
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -217,17 +217,24 @@ def _read_td_window(target_date: str) -> tuple[list[str], list[dict[str, Any]]]:
 
 
 def _expected_sessions(catalog: ArtifactCatalog, target_date: str, td_dates: Sequence[str]) -> list[str]:
-    calendar_path = catalog.root / "trade_dates.json"
+    from .calendar import CalendarCoverageError
+    from .data_pipeline.trade_calendar import TradeCalendarStore
     try:
-        payload = json.loads(calendar_path.read_text(encoding="utf-8"))
-        calendar_dates = payload if isinstance(payload, list) else payload.get("trading_dates", [])
-    except (OSError, ValueError, TypeError):
-        calendar_dates = []
-    if not calendar_dates:
-        calendar_dates = catalog.read().get("datasets", {}).get("daily_kline", {}).get("dates", {}).keys()
-    prior = sorted({str(item)[:10] for item in calendar_dates if str(item)[:10] < target_date})
-    dates = prior[-WINDOW_DAYS:] if prior else sorted(set(td_dates))[-WINDOW_DAYS:]
-    return dates
+        store = TradeCalendarStore(catalog.root)
+        previous = store.previous_trade_date(target_date).isoformat()
+        snapshot = store.load()
+        if not snapshot:
+            return []
+        covered = [day for day in snapshot["trading_dates"]
+                   if snapshot["coverage_start"] <= day <= previous]
+        if len(covered) < WINDOW_DAYS:
+            raise CalendarCoverageError(
+                f"calendar_history_insufficient:required={WINDOW_DAYS}:available={len(covered)}")
+        return covered[-WINDOW_DAYS:]
+    except CalendarCoverageError as exc:
+        if str(exc).startswith("calendar_history_insufficient:"):
+            raise
+        return []
 
 
 def _auction_points_fallback(catalog: ArtifactCatalog, dates: Sequence[str]) -> tuple[dict[str, int], list[dict[str, Any]]]:

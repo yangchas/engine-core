@@ -21,8 +21,33 @@ from engine_core.guardian.scheduler import EventSpec, FileInstanceLock, Guardian
 from engine_core.guardian.management import append_record, load_schedule
 from engine_core.guardian.gates import default_gates
 from engine_core.prep_trade_day import previous_trade_date
+from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
 
 _ALERTED: set[tuple[str, str, str]] = set()
+_ACTIVE_GUARDIAN = None
+
+class _CoveredDates(set):
+    def __init__(self, dates, start, end):
+        super().__init__(dates)
+        self.coverage_start = start
+        self.coverage_end = end
+
+def _calendar_alert_once(root: Path, day: str, reason: str) -> bool:
+    marker = root / "guardian" / "calendar_alerts.json"
+    try:
+        payload = json.loads(marker.read_text())
+    except (OSError, ValueError):
+        payload = {}
+    reasons = payload.get(day, [])
+    if isinstance(reasons, str):
+        reasons = [reasons]
+    if reason in reasons:
+        return False
+    payload[day] = sorted({*reasons, reason})
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps(payload, sort_keys=True) + "\n")
+    _ALERTED.add(("calendar", day, reason))
+    return True
 
 
 # Configured handlers either call an existing Core job/report or fail visibly.
@@ -40,17 +65,23 @@ HANDLER_IMPLEMENTATIONS = {
     "baostock_probe": "examples/core_data_daily.py:postmarket (Baostock daily job)",
     "close_capture": "NOT_IMPLEMENTED",
     "close_report": "examples/run_daily_reports.py:close",
+    "calendar_refresh": "Core versioned trading calendar refresh",
 }
 
 
 def _load_dates(root: Path, explicit: str | None):
+    if not explicit:
+        data = TradeCalendarStore(root).load()
+        if not data:
+            return None
+        return _CoveredDates(data["trading_dates"], data.get("coverage_start"), data.get("coverage_end"))
     path = Path(explicit).expanduser() if explicit else root / "trade_dates.json"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         values = payload.get("trading_dates", payload) if isinstance(payload, dict) else payload
         if not isinstance(values, list):
             return None
-        return {str(item) for item in values}
+        return None  # unversioned lists have no coverage proof
     except (OSError, ValueError, TypeError):
         return None
 
@@ -73,6 +104,18 @@ def _build_gate_status(path: str | None):
 def _command_handler(name: str, opts, root: Path):
     def handler(event: EventSpec, now: datetime, _context, degraded: bool):
         day = now.date().isoformat()
+        if name == "calendar_refresh":
+            store = TradeCalendarStore(root)
+            result = store.refresh_if_needed(now=now)
+            if result.get("status") != "CONFIRMED":
+                status = "STALE" if result.get("version") else result.get("status", "UNKNOWN")
+                reason = str(result.get("reason_code", "REFRESH_FAILED"))
+                raise RuntimeError(f"DEGRADED:calendar_refresh_{status}:{reason}")
+            snapshot = store.load()
+            if not snapshot or snapshot.get("version") != result.get("version"):
+                raise RuntimeError("DEGRADED:calendar_refresh_snapshot_unavailable")
+            return json.dumps({"calendar": result,
+                               "trading_dates": snapshot["trading_dates"]}, ensure_ascii=False)
         if name in {"snapshot_check", "auction_watch"}:
             from engine_core.guardian.gates import _query, auction_snapshot_stats
             if name == "snapshot_check":
@@ -186,10 +229,9 @@ def _command_handler(name: str, opts, root: Path):
             if opts.td_write:
                 cmd.extend(["--write", "--td-write"])
         elif name == "night_report":
-            dates = sorted(_load_dates(root, opts.calendar) or [])
-            previous = [item for item in dates if item < day]
-            previous_day = previous[-1] if previous else previous_trade_date(root, day)
-            if previous_day is None:
+            try:
+                previous_day = TradeCalendarStore(root).previous_trade_date(day).isoformat()
+            except ValueError:
                 raise RuntimeError("previous_trade_date_unavailable")
             cmd = [py, str(repo / "examples/run_daily_reports.py"), "--stage", "close",
                    "--trade-date", previous_day, "--out-root", str(root / "reports"), "--dry-run"]
@@ -224,10 +266,15 @@ def _command_handler(name: str, opts, root: Path):
         try:
             return handler(event, now, context, degraded)
         except Exception as exc:
-            alert_key = (now.date().isoformat(), getattr(event, "event_id", name),
-                         type(exc).__name__ + ":" + str(exc))
-            if getattr(opts, "email_self", False) and alert_key not in _ALERTED:
+            reason = type(exc).__name__ + ":" + str(exc)
+            if name == "calendar_refresh":
+                reason = str(exc).split(":", 2)[-1]
+                should_alert = _calendar_alert_once(root, now.date().isoformat(), reason)
+            else:
+                alert_key = (now.date().isoformat(), getattr(event, "event_id", name), reason)
+                should_alert = alert_key not in _ALERTED
                 _ALERTED.add(alert_key)
+            if getattr(opts, "email_self", False) and should_alert:
                 try:
                     from engine_core.report_mailer import build_alert_message, load_smtp_config, send_message
                     config = load_smtp_config() if opts.run and not opts.simulate_clock else None
@@ -242,6 +289,8 @@ def _command_handler(name: str, opts, root: Path):
                 except Exception as alert_exc:
                     print(json.dumps({"event": event.event_id, "alert_status": "failed",
                                       "error_type": type(alert_exc).__name__}, ensure_ascii=False), flush=True)
+            if name == "calendar_refresh":
+                return "DEGRADED:calendar_refresh:" + reason
             raise
     return notifying_handler
 
@@ -330,6 +379,9 @@ def main(argv=None) -> int:
     root = Path(args.artifact_root).expanduser()
     execute = args.run and not args.simulate_clock
     if execute:
+        print(json.dumps({"calendar_startup_self_check":
+                          TradeCalendarStore(root).refresh_if_needed()}, ensure_ascii=False))
+    if execute:
         state_root = root / "guardian"
     else:
         # Simulations and inspection commands must never touch the live guardian
@@ -352,6 +404,10 @@ def main(argv=None) -> int:
     except (OSError, ValueError, TypeError) as exc:
         print("schedule_invalid:" + str(exc), file=sys.stderr)
         return 2
+    if not any(event.event_id == "calendar_refresh_0800" for event in configured):
+        refresh_event = next(event for event in default_events()
+                             if event.event_id == "calendar_refresh_0800")
+        configured = tuple(sorted((*configured, refresh_event), key=lambda item: (item.start, item.event_id)))
     disabled = [event.event_id for event in configured if event.handler == "close_capture"]
     if disabled:
         print(json.dumps({"status": "SKIPPED", "handler": "close_capture",
@@ -366,6 +422,7 @@ def main(argv=None) -> int:
     gates = default_gates()
     gates.update({name: (lambda _event, _now, _ctx, value=value: bool(value))
                   for name, value in gates_data.items()})
+    gates.setdefault("always", lambda *_: True)
     gates.setdefault("calendar_ready", lambda *_: True)
     handlers = {name: _command_handler(name, args, root) for name in
                 {event.handler for event in selected}}
@@ -378,6 +435,8 @@ def main(argv=None) -> int:
                         dry_run=not execute, context={"write": args.write, "td_write": args.td_write},
                         schedule_path=schedule_path if schedule_path.exists() else None,
                         config_revision=schedule_config["revision"], config_payload=schedule_config)
+    global _ACTIVE_GUARDIAN
+    _ACTIVE_GUARDIAN = guardian
     if args.list:
         for event in selected:
             print(json.dumps({"id": event.event_id, "phase": event.phase, "window": [event.start, event.deadline],

@@ -21,9 +21,8 @@ def main(argv=None) -> int:
         if not os.getenv("CORE_REDIS_URL"): parser.error("CORE_REDIS_URL is required for --redis")
         import redis as redis_package
         redis = redis_package.Redis.from_url(os.environ["CORE_REDIS_URL"], decode_responses=True)
-    dates = None
-    calendar = root / "trade_dates.json"
-    if calendar.is_file(): dates = json.loads(calendar.read_text(encoding="utf-8"))
+    from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+    dates = TradeCalendarStore(root).all_trading_dates() or None
     report = dataset_health(root, redis=redis, trade_dates=dates)
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     return 0 if report["summary"] == "GREEN" else 2

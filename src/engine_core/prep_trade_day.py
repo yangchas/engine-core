@@ -7,29 +7,28 @@ import os
 import subprocess
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
 from .data_pipeline.storage import ArtifactCatalog
+from .data_pipeline.trade_calendar import TradeCalendarStore
 
 
 def previous_trade_date(root: str | Path, trade_date: str, *,
                         known_trade_dates: Iterable[str] | None = None) -> str | None:
     root = Path(root)
     candidates: set[str] = set(known_trade_dates or ())
+    store = TradeCalendarStore(root)
     if known_trade_dates is None:
-        calendar = root / "trade_dates.json"
         try:
-            payload = json.loads(calendar.read_text(encoding="utf-8"))
-            candidates.update(payload if isinstance(payload, list) else payload.get("trading_dates", []))
-        except (OSError, ValueError, TypeError):
-            pass
-        if not candidates:
-            catalog = ArtifactCatalog(root).read().get("datasets", {})
-            candidates.update(catalog.get("daily_kline", {}).get("dates", {}).keys())
-    prior = sorted(day for day in candidates if day < trade_date)
-    return prior[-1] if prior else None
+            return store.previous_trade_date(trade_date).isoformat()
+        except ValueError:
+            return None
+    try:
+        return store.previous_trade_date(trade_date).isoformat()
+    except ValueError:
+        return None
 
 
 def _pit_time(value: Any) -> datetime | None:
@@ -179,11 +178,13 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
         name = str(row.get("name", "") or "").strip()
         if code and name:
             plate_names[code] = name
-    calendar_dates = sorted(day for day in catalog.read().get("datasets", {})
-                            .get("trade_calendar", {}).get("dates", {}) if day < trade_date)
-    if not calendar_dates:
-        calendar_dates = sorted(day for day in catalog.read().get("datasets", {})
-                                .get("daily_kline", {}).get("dates", {}) if day < trade_date)
+    try:
+        calendar = TradeCalendarStore(catalog.root)
+        previous_session = calendar.previous_trade_date(trade_date)
+        calendar_dates = calendar.trading_dates(
+            (previous_session - timedelta(days=90)).isoformat(), previous_session.isoformat())
+    except ValueError:
+        return False
     snapshot = load_kaipan_theme_snapshot(
         None, report_date=trade_date, previous_trade_date=previous, observed_at=asof,
         plate_names=plate_names, static_themes_by_symbol={},

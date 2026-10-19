@@ -127,13 +127,11 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         from datetime import datetime
         if context is not None:
             context.request()
-        calendar = Path(artifact_root) / "trade_dates.json"
-        dates = json.loads(calendar.read_text(encoding="utf-8"))
-        if isinstance(dates, dict): dates = dates.get("trading_dates", [])
-        prior = sorted(str(item) for item in dates if str(item) < day)
-        if not prior:
+        from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+        try:
+            asof = TradeCalendarStore(artifact_root).previous_trade_date(day).isoformat()
+        except ValueError:
             raise RuntimeError("symbol_universe_prior_trade_date_required:" + day)
-        asof = prior[-1]
         import baostock as bs
         from engine_core.daily_kline_capture import BaostockClient
         client = BaostockClient(bs)

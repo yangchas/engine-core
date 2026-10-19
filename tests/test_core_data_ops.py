@@ -10,6 +10,16 @@ from engine_core.data_pipeline.ops import (
     reconcile_daily_rows, retry_window_for, run_daily_phase,
 )
 
+def _seed_c325_calendar(root):
+    fixture = Path(__file__).parent / "fixtures" / "trade_calendar"
+    payload = json.loads((fixture / "baostock-2026-01-01_2026-12-31.json").read_bytes())
+    dates = [row["calendar_date"] for row in payload["rows"] if row["is_trading_day"] == "1"]
+    raw = {path.name: path.read_bytes() for path in fixture.glob("*.json")}
+    from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+    TradeCalendarStore(root).publish_confirmed(dates, source="C325 BaoStock+SZSE",
+        fetched_at="2026-10-20T00:00:00+00:00", coverage_start="2026-01-01",
+        coverage_end="2026-12-31", raw_responses=raw)
+
 
 def test_file_lock_prevents_overlapping_runs(tmp_path):
     lock = FileLock(tmp_path / "job.lock")
@@ -23,9 +33,10 @@ def test_file_lock_prevents_overlapping_runs(tmp_path):
 
 
 def test_non_trading_day_is_recorded_without_fetch(tmp_path):
+    _seed_c325_calendar(tmp_path)
     calls = []
     result = run_daily_phase("premarket", "2026-10-18", root=tmp_path,
-                             adapters={}, trading_dates={"2026-10-16"},
+                             adapters={}, trading_dates=None,
                              write=True, redis=None)
     assert result["status"] == "SKIPPED_NON_TRADING_DAY"
     assert calls == []
@@ -147,6 +158,7 @@ def test_trading_day_uses_supplied_calendar():
 
 
 def test_postmarket_appends_injected_auction_total_to_core_baseline(tmp_path):
+    _seed_c325_calendar(tmp_path)
     from engine_core.data_pipeline.storage import ArtifactCatalog
 
     catalog = ArtifactCatalog(tmp_path)
@@ -156,7 +168,7 @@ def test_postmarket_appends_injected_auction_total_to_core_baseline(tmp_path):
     result = run_daily_phase("postmarket", "2026-10-16", root=tmp_path,
         adapters={"auction_amount_provider": lambda day: {
             "amount_yuan": 250_000_000, "available_at": "2026-10-16T17:30:00+08:00"}},
-        trading_dates=["2026-10-14", "2026-10-15", "2026-10-16"], write=True,
+        trading_dates=None, write=True,
         now="2026-10-16T18:00:00+08:00", lock=False)
     assert result["auction_baseline_append"]["status"] == "READY"
     rows = catalog.read_rows(catalog.locate("auction_baseline", "2026-10-16"))
@@ -166,6 +178,7 @@ def test_postmarket_appends_injected_auction_total_to_core_baseline(tmp_path):
 
 
 def test_premarket_jobs_use_previous_trading_date_for_kaipan_products(tmp_path):
+    _seed_c325_calendar(tmp_path)
     called = []
 
     def fetch(day):
@@ -175,6 +188,6 @@ def test_premarket_jobs_use_previous_trading_date_for_kaipan_products(tmp_path):
     run_daily_phase("premarket", "2026-10-16", root=tmp_path,
         adapters={name: fetch for name in ("plate_members", "limit_up_pool",
                                            "limit_reasons", "hot_plates")},
-        trading_dates=["2026-10-15", "2026-10-16"], write=False,
+        trading_dates=None, write=False,
         now="2026-10-16T08:50:00+08:00", lock=False)
     assert called == ["2026-10-15"] * 4

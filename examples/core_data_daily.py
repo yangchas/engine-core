@@ -38,10 +38,8 @@ def main(argv=None) -> int:
     if args.write and os.getenv("CORE_REDIS_URL"):
         import redis as redis_package
         redis = redis_package.Redis.from_url(os.environ["CORE_REDIS_URL"], decode_responses=True)
-    trade_dates = None
-    calendar_file = root / "trade_dates.json"
-    if calendar_file.is_file():
-        trade_dates = json.loads(calendar_file.read_text(encoding="utf-8"))
+    from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+    trade_dates = TradeCalendarStore(root).all_trading_dates() or None
     result = run_daily_phase(args.phase, args.date, root=root, adapters=adapters,
         trading_dates=trade_dates, write=args.write, redis=redis,
         td_adapter=adapters.get("td_writer"), td_write=args.td_write, lock=not args.no_lock)
