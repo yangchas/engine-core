@@ -225,8 +225,8 @@ def _expected_sessions(catalog: ArtifactCatalog, target_date: str, td_dates: Seq
         snapshot = store.load()
         if not snapshot:
             return []
-        covered = [day for day in snapshot["trading_dates"]
-                   if snapshot["coverage_start"] <= day <= previous]
+        covered = [day for day in store.all_trading_dates()
+                   if snapshot["lit_from"] <= day <= previous]
         if len(covered) < WINDOW_DAYS:
             raise CalendarCoverageError(
                 f"calendar_history_insufficient:required={WINDOW_DAYS}:available={len(covered)}")

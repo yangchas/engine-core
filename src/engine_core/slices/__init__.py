@@ -430,11 +430,11 @@ class SliceProviders:
                 except ValueError:
                     return _result(request, [], source="core_data:trade_calendar", status="MISSING",
                                    reason="CALENDAR_COVERAGE_UNKNOWN")
-                rows = [{"date": day} for day in data["trading_dates"] if day <= covered_date]
+                rows = [{"date": item["d"]} for item in data["days"] if item["t"] and item["d"] <= covered_date]
                 return _result(request, rows, source="core_data:trade_calendar",
-                               status="READY", reason=None, version=data.get("version"),
-                               quality={"coverage_start": data.get("coverage_start"),
-                                        "coverage_end": data.get("coverage_end"),
+                               status="READY", reason=None, version=data.get("last_ok_at"),
+                               quality={"coverage_start": data.get("lit_from"),
+                                        "coverage_end": data.get("lit_to"),
                                         "coverage": len(rows), "partial": False})
         if request.slice_id in {"hot_plates_yesterday", "yest_limit_pool"}:
             date = str(request.params.get("source_date") or "")

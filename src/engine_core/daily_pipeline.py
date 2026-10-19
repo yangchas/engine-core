@@ -833,6 +833,17 @@ def _previous_report(root: Path, trade_date: str, stages: tuple[str, ...]) -> Pa
     return max(candidates, default=("", None), key=lambda item: item[0])[1]
 
 
+def _read_optional_json(path: Path, degraded: list[str], label: str) -> Any:
+    """Read a referenced JSON report, recording controlled missing/invalid states."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        degraded.append(f"MISSING_REFERENCE_JSON:{label}")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        degraded.append(f"INVALID_REFERENCE_JSON:{label}")
+    return None
+
+
 def _close_fallback(trade_date: str, missing: list[str]) -> tuple[dict[str, Any], dict[str, Any]]:
     data = {"contract": "CloseReviewV1", "trade_date": trade_date,
             "status": "DEGRADED_MISSING_INPUTS", "stocks": [], "big_meat": [], "big_loss": [],
@@ -2255,8 +2266,10 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             prev_path = _previous_report(Path(refs.get("prev_reports_root") or root), trade_date,
                                          (STAGE_NAMES["close"], STAGE_NAMES["open"]))
             data = derive_close_review(fact_stocks, trade_date=trade_date,
-                live_report=_json(live_path) if live_path and live_path.is_file() else None,
-                prev_live=_json(prev_path) if prev_path and prev_path.is_file() else None,
+                live_report=_read_optional_json(live_path, degraded, "SAME_DAY_REPORT")
+                    if live_path and live_path.is_file() else None,
+                prev_live=_read_optional_json(prev_path, degraded, "PREVIOUS_REPORT")
+                    if prev_path and prev_path.is_file() else None,
                 market={"amount_yuan": sum(amounts) if amounts else None,
                         "amount_coverage": len(amounts), "daily_source": "STOCK_DAY_FACTS"},
                 checkpoint_status={tag: "READY" if any(r.get(f"p{tag}_pct") is not None for r in fact_stocks) else "MISSING"
@@ -2330,10 +2343,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             ladder = _load_ladder_summary(slice_results["path_stats"].rows, trade_date)
         previous_streaks = {}
         if prev_path and prev_path.is_file():
-            try:
-                previous_streaks = _yesterday_lb_days(_json(prev_path))
-            except (OSError, ValueError, json.JSONDecodeError):
-                previous_streaks = {}
+            previous_streaks = _yesterday_lb_days(
+                _read_optional_json(prev_path, degraded, "PREVIOUS_REPORT"))
         data["ladder_summary"] = ladder
         if not ladder:
             limitations = data.get("limitations")

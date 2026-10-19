@@ -390,6 +390,38 @@ def test_yesterday_streaks_preserve_missing_as_missing():
     assert _prior_streak("600002", _yesterday_lb_days(report)) is None
 
 
+def test_daily_pipeline_json_reader_accepts_real_same_day_and_previous_reports():
+    from pathlib import Path
+    from engine_core.daily_pipeline import _read_optional_json
+
+    # Copied from C341's real TD runs: /tmp/c341-20261020/close-1019/.../report.json
+    # and /tmp/c341-20261020/close-1016/.../report.json.
+    fixtures = Path(__file__).parent / "fixtures" / "daily_pipeline" / "c343"
+    degraded = []
+    same_day = _read_optional_json(fixtures / "close-2026-10-19.json", degraded, "SAME_DAY_REPORT")
+    previous = _read_optional_json(fixtures / "close-2026-10-16.json", degraded, "PREVIOUS_REPORT")
+
+    assert same_day["trade_date"] == "2026-10-19"
+    assert previous["trade_date"] == "2026-10-16"
+    assert degraded == []
+
+
+def test_daily_pipeline_json_reader_degrades_corrupt_previous_report(tmp_path):
+    from engine_core.daily_pipeline import _read_optional_json
+
+    corrupt = tmp_path / "report.json"
+    corrupt.write_text('{"trade_date":', encoding="utf-8")
+    degraded = []
+
+    assert _read_optional_json(corrupt, degraded, "PREVIOUS_REPORT") is None
+    assert degraded == ["INVALID_REFERENCE_JSON:PREVIOUS_REPORT"]
+
+    missing = _read_optional_json(tmp_path / "missing.json", degraded, "SAME_DAY_REPORT")
+    assert missing is None
+    assert degraded == ["INVALID_REFERENCE_JSON:PREVIOUS_REPORT",
+                        "MISSING_REFERENCE_JSON:SAME_DAY_REPORT"]
+
+
 def test_three_stages_write_reports_and_explicit_missing_references(tmp_path, monkeypatch):
     from engine_core.slices import SliceReader, SliceResult
 

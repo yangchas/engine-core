@@ -253,3 +253,16 @@ def test_alert_entrypoint_still_deduplicates_calendar_failure(tmp_path, monkeypa
         assert cli._command_handler("calendar_refresh", opts, tmp_path)(event, now, {}, False).startswith("DEGRADED:")
         cli._ALERTED.clear()
     assert len(sent) == 2
+
+
+def test_slice_and_baseline_consumers_read_matrix_calendar(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import trade_calendar
+    from engine_core.auction_baseline import _expected_sessions
+    monkeypatch.setattr(trade_calendar, "_market_today", lambda: date(2026, 10, 20))
+    store = _copy_real_legacy_latest(tmp_path)
+    store.load()
+    data, covered = store._covered("2026-10-16")
+    assert data["lit_from"] == "2026-01-01"
+    catalog = SimpleNamespace(root=tmp_path)
+    sessions = _expected_sessions(catalog, "2026-10-16", [])
+    assert sessions and sessions[-1] == "2026-10-15"
