@@ -282,6 +282,7 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
 def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                       asof: str | None = None) -> dict[str, Any]:
     date.fromisoformat(trade_date)
+    live_default_asof = asof is None
     asof = asof or datetime.now().astimezone().isoformat()
     if _pit_time(asof) is None:
         raise ValueError("invalid_preparation_asof")
@@ -290,6 +291,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
     previous = previous_trade_date(root, trade_date)
     repo = Path(__file__).resolve().parents[2]
     steps = [
+        _step("symbol_universe", "symbol_universe", trade_date, catalog, asof=asof),
         _step("previous_daily_kline", "daily_kline", previous, catalog, asof=asof,
               reason="previous_trade_date_unavailable" if previous is None else None),
         _step("daily_indicators", "daily_indicators", previous, catalog, asof=asof,
@@ -316,6 +318,18 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
     errors: list[str] = []
     timings: dict[str, float] = {}
     if write and previous:
+        if not _manifest(catalog, "symbol_universe", trade_date, asof=asof):
+            started = time.monotonic()
+            rc, out = _run(repo, "run_data_jobs.py", ["--job", "symbol_universe", "--date", trade_date,
+                "--execute", "--artifact-root", str(root)])
+            timings["symbol_universe"] = round((time.monotonic() - started) * 1000, 3)
+            if rc:
+                import logging
+                logging.getLogger(__name__).error("symbol_universe preparation failed: %s", out[-2000:])
+                errors.append("symbol_universe:COMMAND_FAILED")
+            elif live_default_asof:
+                # A successful real-time fetch becomes visible at completion, never retroactively.
+                asof = datetime.now().astimezone().isoformat()
         # Reuse committed input when present; each existing provider/job owns cache and quality rules.
         if not _manifest(catalog, "daily_kline", previous, asof=asof):
             started = time.monotonic()

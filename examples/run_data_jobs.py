@@ -68,6 +68,50 @@ def _is_complete_member_manifest(manifest: dict[str, Any]) -> bool:
     return True
 
 
+def _universe_delta(current: set[str], previous: set[str], *, reject_ratio: float = 0.10) -> tuple[int, float]:
+    delta = len(current ^ previous)
+    ratio = delta / max(1, len(previous))
+    if ratio > reject_ratio:
+        raise RuntimeError("quality_invalid:universe_change_over_10pct")
+    return delta, ratio
+
+
+def _normalize_universe_rows(source_rows: list[list[str]]) -> list[dict[str, str]]:
+    """Normalize real query_all_stock tuples, keeping exchange-qualified identity."""
+    by_symbol: dict[str, dict[str, str]] = {}
+    possible_identities: dict[str, set[str]] = {}
+    for source_row in source_rows:
+        if len(source_row) < 3:
+            continue
+        code, status, name = map(str, source_row[:3])
+        exchange, sep, symbol = code.partition(".")
+        exchange, symbol = exchange.lower(), symbol.strip()
+        if not sep or len(symbol) != 6 or not symbol.isdigit():
+            continue
+        eligible = ((exchange == "sh" and symbol.startswith(("60", "68"))) or
+                    (exchange == "sz" and symbol.startswith(("00", "30"))))
+        # 000xxx Shanghai codes are index families, including known collisions
+        # with Shenzhen A shares; they must not be treated as competing stocks.
+        plausible_stock_code = symbol.startswith(("60", "68", "00", "30")) and not (
+            exchange == "sh" and symbol.startswith("000"))
+        if plausible_stock_code:
+            possible_identities.setdefault(symbol, set()).add(f"{exchange}.{symbol}")
+        if not eligible:
+            continue
+        row = {"symbol": symbol, "code": f"{exchange}.{symbol}", "name": name,
+               "trade_status": status, "universe_asof": "", "source": "baostock_query_all_stock"}
+        previous = by_symbol.get(symbol)
+        if previous is not None and previous["code"] != row["code"]:
+            raise RuntimeError("quality_invalid:universe_identity_conflict")
+        if previous is not None and previous != row:
+            raise RuntimeError("quality_invalid:universe_duplicate_conflict")
+        by_symbol[symbol] = row
+    for symbol, codes in possible_identities.items():
+        if symbol in by_symbol and len(codes) > 1:
+            raise RuntimeError("quality_invalid:universe_identity_conflict")
+    return [by_symbol[symbol] for symbol in sorted(by_symbol)]
+
+
 def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
                       write_enabled: bool) -> dict[str, Any]:
     """Construct lazy read-only adapters; optional SDK imports happen on fetch."""
@@ -78,6 +122,50 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
             raise RuntimeError("symbol_universe_artifact_required:" + day)
         return [str(row.get("symbol", row.get("code", ""))).zfill(6) for row in found.rows]
 
+    def universe_fetch(day: str, context: Any = None) -> dict[str, Any]:
+        """Build a PIT-safe target-day snapshot from the preceding session's exchange list."""
+        from datetime import datetime
+        if context is not None:
+            context.request()
+        calendar = Path(artifact_root) / "trade_dates.json"
+        dates = json.loads(calendar.read_text(encoding="utf-8"))
+        if isinstance(dates, dict): dates = dates.get("trading_dates", [])
+        prior = sorted(str(item) for item in dates if str(item) < day)
+        if not prior:
+            raise RuntimeError("symbol_universe_prior_trade_date_required:" + day)
+        asof = prior[-1]
+        import baostock as bs
+        from engine_core.daily_kline_capture import BaostockClient
+        client = BaostockClient(bs)
+        client.login()
+        try:
+            result = bs.query_all_stock(day=asof)
+            if getattr(result, "error_code", "0") != "0":
+                raise RuntimeError("symbol_universe_source_failed")
+            raw_rows = []
+            while result.next():
+                raw_rows.append(result.get_row_data())
+        finally:
+            client.logout()
+        rows = _normalize_universe_rows(raw_rows)
+        for row in rows:
+            row["universe_asof"] = asof
+        symbols = [row["symbol"] for row in rows]
+        if not rows: raise RuntimeError("quality_invalid:empty_response")
+        if any(not row["name"] or not row["trade_status"] for row in rows):
+            raise RuntimeError("schema_invalid:required_field_missing")
+        delta_count = 0
+        change = 0.0
+        previous = load_dataset("symbol_universe", asof, prefer="file",
+                                catalog=ArtifactCatalog(artifact_root))
+        if previous is not None:
+            old = {str(row["symbol"]) for row in previous.rows}
+            delta_count, change = _universe_delta(set(symbols), old)
+        return {"rows": rows, "expected_count": len(rows), "as_of": asof,
+                "partial": change > 0.02,
+                "universe_delta_count": delta_count,
+                "available_at": datetime.now().astimezone().isoformat()}
+
     def daily_fetch(day: str, context: Any = None) -> Any:
         from engine_core.daily_kline_capture import BaostockClient
         from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider
@@ -87,7 +175,19 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
             return BaostockClient(bs)
         provider = BaostockDailyProvider(client_factory=client_factory, symbols=symbols_for,
                                          checkpoint_path=checkpoint)
-        return provider.fetch(day, context)
+        result = provider.fetch(day, context)
+        universe = load_dataset("symbol_universe", day, prefer="file",
+                                catalog=ArtifactCatalog(artifact_root))
+        if universe is None:
+            raise RuntimeError("symbol_universe_artifact_required:" + day)
+        identity = {str(row.get("symbol", "")).zfill(6): row
+                    for row in universe.rows if row.get("symbol")}
+        for row in result.get("rows", []):
+            source = identity.get(str(row.get("symbol", "")).zfill(6))
+            if source is not None:
+                row["code"] = source.get("code")
+                row["universe_version"] = universe.manifest.get("version")
+        return result
 
     class LazyKaipanClient:
         def _sdk(self):
@@ -143,7 +243,7 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
                                   reasons_checkpoint_path=checkpoint)
         return provider.limit_reasons(day, context=context)
 
-    return {"daily_kline": daily_fetch, "limit_up_pool": pool_fetch,
+    return {"symbol_universe": universe_fetch, "daily_kline": daily_fetch, "limit_up_pool": pool_fetch,
             "plate_members": members_fetch, "hot_plates": hot_fetch,
             "limit_reasons": reasons_fetch}
 

@@ -62,7 +62,7 @@ def retry_window_for(dataset: str, local_time: str) -> int | None:
 
 
 _PHASE_JOBS = {
-    "premarket": ("plate_members", "limit_up_pool", "limit_reasons", "hot_plates"),
+    "premarket": ("symbol_universe", "plate_members", "limit_up_pool", "limit_reasons", "hot_plates"),
     "intraday": ("hot_plates",),
     "postmarket": ("daily_kline", "ladder_daily", "stock_day_facts"),
 }
@@ -112,7 +112,8 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
             if name not in DATASETS:
                 errors.append({"job": name, "status": "NOT_REGISTERED"})
                 continue
-            existing_path = runner.catalog.locate(name, job_trade_date)
+            dataset_day = trade_date if name == "symbol_universe" else job_trade_date
+            existing_path = runner.catalog.locate(name, dataset_day)
             if existing_path is not None and name != "hot_plates":
                 try:
                     existing_manifest = json.loads(existing_path.read_text(encoding="utf-8"))
@@ -145,6 +146,8 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                         symbol = str(source_row.get("symbol", "")).zfill(6)
                         if not symbol.strip("0"): continue
                         facts.append({"symbol": symbol, "trade_date": day,
+                            "code": source_row.get("code"),
+                            "universe_version": source_row.get("universe_version"),
                             "close": source_row.get("close"), "pre_close": source_row.get("pre_close"),
                             "pct_chg": source_row.get("pct_chg"),
                             "amount_yuan": source_row.get("amount_yuan", source_row.get("amount")),
@@ -157,7 +160,7 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                 errors.append({"job": name, "status": "FETCHER_NOT_CONFIGURED"})
                 continue
             try:
-                job = runner.run(name, job_trade_date, fetch=fetch, now=now,
+                job = runner.run(name, dataset_day, fetch=fetch, now=now,
                                  publish=bool(write and redis is not None),
                                  td_write=bool(td_write and name in {"daily_kline", "auction_baseline"}),
                                  dry_run=not write)

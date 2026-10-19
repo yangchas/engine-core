@@ -58,6 +58,10 @@ def test_prep_baseline_target_is_report_day(tmp_path, monkeypatch):
     report = prep.build_prep_report(tmp_path, "2026-10-19", write=True,
                                     asof="2026-10-19T08:00:00+08:00")
     baseline_calls = [(script, args) for script, args in calls if script == "build_auction_baseline.py"]
+    universe_calls = [(script, args) for script, args in calls if script == "run_data_jobs.py"
+                      and args[:2] == ["--job", "symbol_universe"]]
+    assert len(universe_calls) == 1
+    assert "--execute" in universe_calls[0][1]
     assert len(baseline_calls) == 1
     assert baseline_calls[0][1][baseline_calls[0][1].index("--date") + 1] == "2026-10-19"
     baseline_step = next(step for step in report["steps"] if step["step"] == "auction_baseline")

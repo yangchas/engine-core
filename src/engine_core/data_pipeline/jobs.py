@@ -103,6 +103,13 @@ def _clean_rows(spec: DatasetSpec, raw_rows: Any) -> list[dict[str, Any]]:
             if isinstance(value, float) and not math.isfinite(value):
                 row[key] = None
         rows.append(row)
+    if spec.name == "symbol_universe":
+        for row in rows:
+            if any(row.get(key) in (None, "") for key in spec.required_fields):
+                raise ValueError("schema_invalid:required_field_missing")
+        symbols = [row["symbol"] for row in rows]
+        if len(symbols) != len(set(symbols)):
+            raise ValueError("quality_invalid:duplicate_symbol")
     if not rows and not spec.empty_is_valid:
         raise ValueError("quality_invalid:empty_response")
     return rows
@@ -234,7 +241,7 @@ class JobRunner:
             "schema_version": 1, "dataset": name, "trade_date": trade_date,
             "source": safe_source, "source_dependency": spec.source_dependency,
             "fetched_at": fetched, "available_at": available_at or fetched,
-            "as_of": as_of or trade_date, "source_event_at": source_event_at,
+            "as_of": as_of or fetch_meta.get("as_of") or trade_date, "source_event_at": source_event_at,
             "point_in_time": spec.point_in_time, "algorithm_version": algorithm_version,
             "quality": quality, "quality_checks": ["schema", "finite_numbers", "coverage"],
             "row_count": len(rows), "request_count": fetch_meta.get("request_count"),
@@ -242,7 +249,8 @@ class JobRunner:
         }
         provider_details = {key: fetch_meta[key] for key in
                             ("failed_plates", "completed_plate_count", "queried_plate_count",
-                             "unqueried_plate_count") if key in fetch_meta}
+                             "unqueried_plate_count", "universe_duplicate_conflicts",
+                             "universe_delta_count") if key in fetch_meta}
         if provider_details:
             manifest["provider_details"] = provider_details
         if name == "daily_kline":

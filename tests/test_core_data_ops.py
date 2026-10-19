@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from pathlib import Path
+import pytest
 
 from engine_core.data_pipeline.ops import (
     FileLock, backfill_daily_kline, dataset_health, is_trading_day,
@@ -35,6 +38,61 @@ def test_daily_kline_retry_windows_are_bounded_and_ladder_computation_is_gated()
     assert retry_window_for("daily_kline", "18:30") == 1
     assert retry_window_for("daily_kline", "20:00") == 2
     assert retry_window_for("daily_kline", "20:01") is None
+
+
+def test_symbol_universe_rejects_fixture_derived_empty_duplicate_and_missing_fields(tmp_path):
+    from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
+    from examples.run_data_jobs import _normalize_universe_rows
+    fixture = Path(__file__).parent / "fixtures" / "symbol_universe" / "baostock_query_all_stock_20261016.json"
+    source = json.loads(fixture.read_text(encoding="utf-8"))
+    rows = _normalize_universe_rows(source)
+    for row in rows:
+        row["universe_asof"] = "2026-10-16"
+    with pytest.raises(ValueError, match="quality_invalid:empty_response"):
+        JobRunner(artifact_root=tmp_path, budget=RequestBudget(min_interval_seconds=0)).run(
+            "symbol_universe", "2026-10-16", fetch=lambda _: [], now="2026-10-16T08:30:00+08:00", dry_run=True)
+    duplicate = [rows[0], rows[0]]
+    with pytest.raises(ValueError, match="quality_invalid:duplicate_symbol"):
+        JobRunner(artifact_root=tmp_path, budget=RequestBudget(min_interval_seconds=0)).run(
+            "symbol_universe", "2026-10-16", fetch=lambda _: duplicate,
+            now="2026-10-16T08:30:00+08:00", dry_run=True)
+    missing = [dict(rows[0])]
+    missing[0].pop("name")
+    runner = JobRunner(artifact_root=tmp_path, budget=RequestBudget(min_interval_seconds=0))
+    with pytest.raises(ValueError, match="schema_invalid:required_field_missing"):
+        runner.run("symbol_universe", "2026-10-16", fetch=lambda _: missing,
+                   now="2026-10-16T08:30:00+08:00", dry_run=True)
+
+
+def test_symbol_universe_rejects_excessive_change_from_previous_snapshot():
+    from examples.run_data_jobs import _normalize_universe_rows, _universe_delta
+    fixture = Path(__file__).parent / "fixtures" / "symbol_universe" / "baostock_query_all_stock_20261016.json"
+    actual_rows = _normalize_universe_rows(json.loads(fixture.read_text(encoding="utf-8")))
+    previous = {row["symbol"] for row in actual_rows[:100]}
+    current = {actual_rows[0]["symbol"]}
+    with pytest.raises(RuntimeError, match="quality_invalid:universe_change_over_10pct"):
+        _universe_delta(current, previous)
+
+
+def test_baostock_fixture_adapter_filters_exchange_security_type_and_rejects_identity_conflict():
+    from examples.run_data_jobs import _normalize_universe_rows
+    fixture = Path(__file__).parent / "fixtures" / "symbol_universe" / "baostock_query_all_stock_20261016.json"
+    raw = fixture.read_bytes()
+    rows = json.loads(raw)
+    provenance = json.loads(fixture.with_suffix(".provenance.json").read_text(encoding="utf-8"))
+    assert hashlib.sha256(raw).hexdigest() == provenance["sha256"]
+    # Transform actual source rows, retaining their provenance and original exchange code.
+    stock = next(row for row in rows if row[0].startswith(("sh.60", "sh.68", "sz.00", "sz.30")))
+    index = next(row for row in rows if row[0].startswith(("sh.000", "sz.399")))
+    converted = _normalize_universe_rows([*rows, index])
+    assert all(row["code"].startswith(("sh.60", "sh.68", "sz.00", "sz.30")) for row in converted)
+    assert any(row["code"] == stock[0] for row in converted)
+    sh_stock = next(row for row in rows if row[0].startswith("sh.60"))
+    with pytest.raises(RuntimeError, match="quality_invalid:universe_identity_conflict"):
+        _normalize_universe_rows([*rows, ["sz." + sh_stock[0][3:], *sh_stock[1:]]])
+    conflict = [*rows, [stock[0], stock[1], stock[2] + " conflicting identity"]]
+    with pytest.raises(RuntimeError, match="quality_invalid:universe_duplicate_conflict"):
+        _normalize_universe_rows(conflict)
 
 
 def test_backfill_resume_skips_existing_artifacts_and_respects_budget(tmp_path):
