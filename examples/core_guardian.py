@@ -71,10 +71,11 @@ HANDLER_IMPLEMENTATIONS = {
 
 def _load_dates(root: Path, explicit: str | None):
     if not explicit:
-        data = TradeCalendarStore(root).load()
+        store = TradeCalendarStore(root)
+        data = store.load()
         if not data:
             return None
-        return _CoveredDates(data["trading_dates"], data.get("coverage_start"), data.get("coverage_end"))
+        return _CoveredDates(store.all_trading_dates(), data.get("lit_from"), data.get("lit_to"))
     path = Path(explicit).expanduser() if explicit else root / "trade_dates.json"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -112,10 +113,9 @@ def _command_handler(name: str, opts, root: Path):
                 reason = str(result.get("reason_code", "REFRESH_FAILED"))
                 raise RuntimeError(f"DEGRADED:calendar_refresh_{status}:{reason}")
             snapshot = store.load()
-            if not snapshot or snapshot.get("version") != result.get("version"):
+            if not snapshot:
                 raise RuntimeError("DEGRADED:calendar_refresh_snapshot_unavailable")
-            return json.dumps({"calendar": result,
-                               "trading_dates": snapshot["trading_dates"]}, ensure_ascii=False)
+            return json.dumps({"calendar": result}, ensure_ascii=False)
         if name in {"snapshot_check", "auction_watch"}:
             from engine_core.guardian.gates import _query, auction_snapshot_stats
             if name == "snapshot_check":

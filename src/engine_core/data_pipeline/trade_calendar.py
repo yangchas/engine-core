@@ -1,7 +1,6 @@
-"""Versioned Core trading calendar with fail-closed reads and explicit refresh."""
+"""Cumulative, coverage-aware Core trading calendar."""
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import time
@@ -29,10 +28,6 @@ def _json_bytes(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
-def _sha(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def _atomic(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
@@ -41,30 +36,24 @@ def _atomic(path: Path, data: bytes) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temp, path)
-
-
-def _month_start(value: date) -> date:
-    return value.replace(day=1)
-
-
-def _months_between(start: date, end: date) -> list[date]:
-    cursor = _month_start(start)
-    result = []
-    while cursor <= end:
-        result.append(cursor)
-        cursor = (cursor.replace(day=28) + timedelta(days=4)).replace(day=1)
-    return result
+    descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _market_today() -> date:
     return datetime.now(ZoneInfo("Asia/Shanghai")).date()
 
 
-def _shift_month(value: date, offset: int) -> date:
-    ordinal = value.year * 12 + value.month - 1 + offset
-    year, month = divmod(ordinal, 12)
-    month += 1
-    return date(year, month, min(value.day, monthrange(year, month)[1]))
+def _months_between(start: date, end: date) -> list[date]:
+    cursor = start.replace(day=1)
+    result = []
+    while cursor <= end:
+        result.append(cursor)
+        cursor = (cursor.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return result
 
 
 def fetch_baostock(start: date, end: date) -> tuple[list[str], bytes, str]:
@@ -86,7 +75,7 @@ def fetch_baostock(start: date, end: date) -> tuple[list[str], bytes, str]:
             payload = {"fields": fields, "rows": rows}
             index = {name: fields.index(name) for name in ("calendar_date", "is_trading_day")}
             dates = [row[index["calendar_date"]] for row in rows if row[index["is_trading_day"]] == "1"]
-            return dates, _json_bytes(payload), "BaoStock"
+            return dates, _json_bytes(payload), "BS"
         finally:
             bs.logout()
     except CalendarSourceError:
@@ -96,25 +85,20 @@ def fetch_baostock(start: date, end: date) -> tuple[list[str], bytes, str]:
 
 
 def fetch_szse_month(year: int, month: int) -> tuple[list[str], bytes]:
-    # Public endpoint observed with a 250 ms spacing in the C325 capture.
     time.sleep(0.25)
     query = urllib.parse.urlencode({"month": f"{year}-{month:02d}", "random": str(time.time())})
     request = urllib.request.Request(
         "https://www.szse.cn/api/report/exchange/onepersistenthour/monthList?" + query,
-        headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/128.0 Safari/537.36",
-                 "Referer": "https://www.szse.cn/"},
-    )
+        headers={"User-Agent": "Mozilla/5.0 Chrome/128.0 Safari/537.36", "Referer": "https://www.szse.cn/"})
     try:
         with urllib.request.urlopen(request, timeout=12) as response:
             raw = response.read()
         payload = json.loads(raw)
         rows = payload.get("data") if isinstance(payload, dict) else payload[0].get("data")
         dates = [row["jyrq"] for row in rows if str(row.get("jybz")) == "1"]
-        row_dates = [row.get("jyrq") for row in rows]
-        row_flags = [str(row.get("jybz")) for row in rows]
-        expected = [date(year, month, day).isoformat()
-                    for day in range(1, monthrange(year, month)[1] + 1)]
-        if row_dates != expected or any(flag not in {"0", "1"} for flag in row_flags):
+        expected = [(date(year, month, 1) + timedelta(days=offset)).isoformat()
+                    for offset in range(monthrange(year, month)[1])]
+        if [row.get("jyrq") for row in rows] != expected or any(str(row.get("jybz")) not in {"0", "1"} for row in rows):
             raise CalendarSourceError("SZSE_ROW_COUNT_INVALID")
         return dates, raw
     except CalendarSourceError:
@@ -123,241 +107,233 @@ def fetch_szse_month(year: int, month: int) -> tuple[list[str], bytes]:
         raise CalendarSourceError("SZSE_UNAVAILABLE") from exc
 
 
+def _validated_baostock_dates(raw: bytes, start: date, end: date, returned: list[str]) -> set[str]:
+    try:
+        payload = json.loads(raw)
+        rows = payload["rows"]
+        if rows and isinstance(rows[0], dict):
+            row_dates = [row["calendar_date"] for row in rows]
+            flags = [str(row["is_trading_day"]) for row in rows]
+        else:
+            fields = payload["fields"]
+            row_dates = [row[fields.index("calendar_date")] for row in rows]
+            flags = [str(row[fields.index("is_trading_day")]) for row in rows]
+        expected = [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
+        if row_dates != expected or any(flag not in {"0", "1"} for flag in flags):
+            raise ValueError("coverage")
+        dates = {day for day, flag in zip(row_dates, flags) if flag == "1"}
+        if dates != set(returned):
+            raise ValueError("trade-date set")
+        return dates
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise CalendarSourceError("BAOSTOCK_COVERAGE_INVALID") from exc
+
+
 class TradeCalendarStore:
     def __init__(self, root: str | Path | None = None):
         self.root = Path(root or os.getenv("CORE_DATA_ROOT", "~/core-data")).expanduser()
         self.directory = self.root / "trade_calendar"
+        self.path = self.directory / "calendar.json"
 
-    def _latest_version(self) -> str | None:
-        try:
-            value = (self.directory / "latest").read_text().strip()
-            return value if value and "/" not in value and ".." not in value else None
-        except OSError:
-            return None
+    @staticmethod
+    def _expand(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(entries, key=lambda item: item["d"])
 
     def load(self) -> dict[str, Any] | None:
-        version = self._latest_version()
-        if not version:
-            return None
         try:
-            data = json.loads((self.directory / "versions" / version / "snapshot.json").read_text())
-            dates = data["trading_dates"]
-            if not isinstance(dates, list) or dates != sorted(set(dates)):
+            matrix = json.loads(self.path.read_text(encoding="utf-8"))
+            days = matrix["days"]
+            if matrix.get("schema") != "CoreTradeCalendarMatrixV1" or not days:
                 return None
+            if days[0]["d"] != matrix["lit_from"] or days[-1]["d"] != matrix["lit_to"]:
+                return None
+            return matrix
+        except (OSError, ValueError, KeyError, TypeError):
+            return self._migrate_latest()
+
+    def _migrate_latest(self) -> dict[str, Any] | None:
+        try:
+            version = (self.directory / "latest").read_text().strip()
+            if not version or "/" in version or ".." in version:
+                return None
+            snapshot = json.loads((self.directory / "versions" / version / "snapshot.json").read_text())
             manifest = json.loads((self.directory / "versions" / version / "manifest.json").read_text())
-            snapshot_bytes = _json_bytes(data)
-            if manifest.get("snapshot_sha256") != _sha(snapshot_bytes):
-                return None
-            return data
+            dates = snapshot["trading_dates"]
+            start, end = snapshot["coverage_start"], snapshot["coverage_end"]
+            sources = manifest.get("raw_responses", {})
+            dual = any("baostock" in name.lower() for name in sources) and any("szse" in name.lower() for name in sources)
+            updated = manifest.get("fetched_at", datetime.now(timezone.utc).isoformat())
+            entries = []
+            cursor = date.fromisoformat(start)
+            while cursor <= date.fromisoformat(end):
+                day = cursor.isoformat()
+                entries.append({"d": day, "t": int(day in dates), "src": "BS+SZ" if dual else "BS", "u": updated})
+                cursor += timedelta(days=1)
+            matrix = {"schema": "CoreTradeCalendarMatrixV1", "lit_from": start, "lit_to": end,
+                      "last_refresh_at": updated, "last_ok_at": updated, "last_error": None,
+                      "conflicts": [], "days": entries}
+            _atomic(self.path, _json_bytes(matrix))
+            return matrix
         except (OSError, ValueError, KeyError, TypeError):
             return None
+
+    def _write(self, matrix: dict[str, Any]) -> None:
+        _atomic(self.path, _json_bytes(matrix))
+        self._export(matrix)
+
+    def _export(self, matrix: dict[str, Any]) -> None:
+        dates = [item["d"] for item in matrix["days"] if item["t"]]
+        _atomic(self.root / "trade_dates.json", _json_bytes(dates))
 
     def publish_confirmed(self, dates: Iterable[str], *, source: str, fetched_at: str,
                           coverage_start: str, coverage_end: str,
                           raw_responses: dict[str, bytes], source_rows: int | None = None) -> dict[str, Any]:
-        candidate = sorted(set(str(parse_trade_date(item)) for item in dates))
-        if not candidate or any(not coverage_start <= item <= coverage_end for item in candidate):
-            raise CalendarSourceError("CANDIDATE_COVERAGE_INVALID")
-        previous = self.load()
-        previous_dates = previous["trading_dates"] if previous else []
-        prior_map = set(previous_dates)
-        new_map = set(candidate)
-        # Historical source corrections require manual review. Keep old history and
-        # only append genuinely unseen dates after confirming the overlap.
-        market_today = _market_today().isoformat()
-        old_window = {item for item in prior_map if coverage_start <= item <= coverage_end and
-                      item <= market_today}
-        new_window = {item for item in new_map if coverage_start <= item <= coverage_end and
-                      item <= market_today}
-        if previous and old_window != new_window:
-            self._save_pending(candidate, source, fetched_at, coverage_start, coverage_end, raw_responses,
-                               "HISTORICAL_CONFLICT")
-            raise CalendarConflict("HISTORICAL_CONFLICT")
-        # Source window must not delete older calendar history.
-        window_prior = {item for item in prior_map if coverage_start <= item <= coverage_end}
-        merged = sorted((prior_map - window_prior) | new_map)
-        version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-        raw_meta = {name: {"sha256": _sha(value), "bytes": len(value)} for name, value in raw_responses.items()}
-        snapshot = {"schema": "CoreTradeCalendarV1", "version": version,
-                    "coverage_start": min(previous.get("coverage_start", coverage_start), coverage_start) if previous else coverage_start,
-                    "coverage_end": max(previous.get("coverage_end", coverage_end), coverage_end) if previous else coverage_end,
-                    "trading_dates": merged}
-        diffs = {"added": sorted(new_map - prior_map), "removed": sorted(window_prior - new_map),
-                 "retained": len(new_map & prior_map)}
-        manifest = {"schema": "CoreTradeCalendarManifestV1", "version": version,
-                    "status": "CONFIRMED", "source": source, "fetched_at": fetched_at,
-                    "available_at": None,
-                    "window": {"start": snapshot["coverage_start"], "end": snapshot["coverage_end"]},
-                    "refresh_window": {"start": coverage_start, "end": coverage_end},
-                    "coverage_start": snapshot["coverage_start"],
-                    "coverage_end": snapshot["coverage_end"],
-                    "row_count": len(merged), "candidate_row_count": source_rows or len(candidate),
-                    "raw_responses": raw_meta, "snapshot_sha256": _sha(_json_bytes(snapshot)),
-                    "semantic_sha256": _sha(_json_bytes(merged)),
-                    "diff_from_previous": diffs, "validation": {"status": "AGREED",
-                    "confirmed_segments": [{"start": coverage_start, "end": coverage_end,
-                        "sources": sorted(raw_meta),
-                        "evidence_sha256": {k: v["sha256"] for k, v in raw_meta.items()}}]}}
-        version_dir = self.directory / "versions" / version
-        version_dir.mkdir(parents=True, exist_ok=False)
-        for name, raw in raw_responses.items():
-            _atomic(version_dir / "raw" / Path(name).name, raw)
-        _atomic(version_dir / "snapshot.json", _json_bytes(snapshot))
-        _atomic(version_dir / "manifest.json", _json_bytes(manifest))
-        _atomic(self.directory / "latest", (version + "\n").encode())
-        _atomic(self.root / "trade_dates.json", _json_bytes(merged))
-        return {**manifest, "trading_dates": merged}
+        """Compatibility writer for archived confirmations and old callers."""
+        del source_rows
+        return self._merge({str(parse_trade_date(item)) for item in dates}, set(), None,
+                           date.fromisoformat(coverage_start), date.fromisoformat(coverage_end),
+                           fetched_at, "BS+SZ" if "SZ" in source.upper() or any("szse" in n.lower() for n in raw_responses) else "BS")
 
-    def _save_pending(self, dates: list[str], source: str, fetched_at: str, start: str, end: str,
-                      raw: dict[str, bytes], reason: str) -> None:
-        version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ") + "-pending"
-        directory = self.directory / "pending-review" / version
-        directory.mkdir(parents=True, exist_ok=False)
-        for name, body in raw.items():
-            _atomic(directory / "raw" / Path(name).name, body)
-        manifest = {"version": version, "status": "PENDING_REVIEW", "reason_code": reason,
-                    "source": source, "fetched_at": fetched_at,
-                    "window": {"start": start, "end": end}, "row_count": len(dates),
-                    "raw_sha256": {name: _sha(body) for name, body in raw.items()}}
-        _atomic(directory / "manifest.json", _json_bytes(manifest))
-        _atomic(directory / "snapshot.json", _json_bytes({"trading_dates": dates}))
+    def _merge(self, bs_days: set[str], sz_days: set[str], scope: set[str] | None, start: date, end: date,
+               fetched_at: str, source: str) -> dict[str, Any]:
+        today = _market_today().isoformat()
+        matrix = self.load()
+        old = {item["d"]: item for item in (matrix or {}).get("days", [])}
+        conflicts = list((matrix or {}).get("conflicts", []))
+        merged = dict(old)
+        cursor = start
+        while cursor <= end:
+            key = cursor.isoformat()
+            if scope is not None and key not in scope:
+                cursor += timedelta(days=1)
+                continue
+            b, s = key in bs_days, key in sz_days
+            if source == "BS+SZ":
+                # publish_confirmed is already cross-validated by its caller.
+                value, src = b, source
+            elif b and s:
+                value, src = True, "BS+SZ"
+            elif b or s:
+                value, src = b or s, "BS" if b else "SZ"
+            else:
+                # source membership sets encode open days only; scope enables closed days
+                value, src = False, "BS+SZ" if source == "BS+SZ" else source
+            prior = old.get(key)
+            if key < today and prior:
+                if int(prior["t"]) != int(value):
+                    conflicts.append({"d": key, "old": int(prior["t"]), "new": int(value), "at": fetched_at})
+                cursor += timedelta(days=1)
+                continue
+            merged[key] = {"d": key, "t": int(value), "src": src, "u": fetched_at}
+            cursor += timedelta(days=1)
+        all_days = self._expand(list(merged.values()))
+        if not all_days:
+            raise CalendarSourceError("EMPTY_CALENDAR")
+        matrix = {"schema": "CoreTradeCalendarMatrixV1", "lit_from": all_days[0]["d"],
+                  "lit_to": all_days[-1]["d"], "last_refresh_at": fetched_at, "last_ok_at": fetched_at,
+                  "last_error": None, "conflicts": conflicts[-500:], "days": all_days}
+        self._write(matrix)
+        return {"status": "CONFIRMED", "reason_code": None, "lit_from": matrix["lit_from"],
+                "lit_to": matrix["lit_to"], "last_ok_at": matrix["last_ok_at"]}
 
     def refresh(self, *, now: date | None = None, window_days: int = 30,
                 baostock_fetch: Callable[[date, date], tuple[list[str], bytes, str]] = fetch_baostock,
                 szse_fetch: Callable[[int, int], tuple[list[str], bytes]] = fetch_szse_month) -> dict[str, Any]:
         today = now or _market_today()
-        if window_days == 30:
-            start, end = _shift_month(today, -1), _shift_month(today, 1)
-        else:
-            start, end = today - timedelta(days=window_days), today + timedelta(days=window_days)
-        previous = self.load()
-        fetch_start = date(2026, 1, 1) if not previous else start
-        fetched_at = datetime.now(timezone.utc).isoformat()
-        raw: dict[str, bytes] = {}
+        start = date(2026, 1, 1) if not self.load() else today - timedelta(days=window_days)
+        end = today + timedelta(days=window_days)
+        refreshed = datetime.now(timezone.utc).isoformat()
+        bao: set[str] | None = None
+        szse: set[str] | None = None
+        errors = []
         try:
-            candidate_dates: list[str] = []
-            bao_dates, bao_raw, _ = baostock_fetch(fetch_start, end)
-            candidate_dates = list(bao_dates)
-            raw["baostock.json"] = bao_raw
-            bao_payload = json.loads(bao_raw)
-            bao_rows = bao_payload.get("rows", [])
-            expected_days = [(fetch_start + timedelta(days=offset)).isoformat()
-                             for offset in range((end - fetch_start).days + 1)]
-            row_dates = [row[bao_payload["fields"].index("calendar_date")] for row in bao_rows]
-            flags = [row[bao_payload["fields"].index("is_trading_day")] for row in bao_rows]
-            if row_dates != expected_days or any(flag not in {"0", "1"} for flag in flags):
-                raise CalendarSourceError("BAOSTOCK_COVERAGE_INVALID")
-            szse_dates: set[str] = set()
-            for month in _months_between(fetch_start, end):
-                values, body = szse_fetch(month.year, month.month)
-                szse_dates.update(values)
-                raw[f"szse-{month.year}-{month.month:02d}.json"] = body
-            queried_window_bao = {d for d in bao_dates if fetch_start.isoformat() <= d <= end.isoformat()}
-            queried_window_szse = {d for d in szse_dates if fetch_start.isoformat() <= d <= end.isoformat()}
-            if queried_window_bao != queried_window_szse:
-                self._save_pending(sorted(set(bao_dates) | szse_dates), "BaoStock+SZSE", fetched_at,
-                                   fetch_start.isoformat(), end.isoformat(), raw, "SOURCE_CONFLICT")
-                return {"status": "PENDING_REVIEW", "reason_code": "SOURCE_CONFLICT",
-                        "version": self._latest_version()}
-            if not previous:
-                legacy_path = self.root / "trade_dates.json"
-                if legacy_path.is_file():
-                    try:
-                        legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
-                        legacy_dates = set(legacy if isinstance(legacy, list) else legacy["trading_dates"])
-                        lo, hi = min(legacy_dates), max(legacy_dates)
-                        fetched_legacy_span = {d for d in bao_dates if lo <= d <= hi}
-                        if fetched_legacy_span != legacy_dates:
-                            self._save_pending(sorted(set(bao_dates)), "BaoStock+SZSE", fetched_at,
-                                               fetch_start.isoformat(), end.isoformat(), raw,
-                                               "LEGACY_CROSSCHECK_CONFLICT")
-                            return {"status": "PENDING_REVIEW", "reason_code": "LEGACY_CROSSCHECK_CONFLICT",
-                                    "version": self._latest_version()}
-                    except (OSError, ValueError, TypeError, KeyError):
-                        return {"status": "UNKNOWN", "reason_code": "LEGACY_CROSSCHECK_INVALID",
-                                "version": None}
-            dates = set(bao_dates)
-            candidate_dates = sorted(dates)
-            if previous:
-                old = set(previous["trading_dates"])
-                historical_window = {d for d in dates if d <= today.isoformat()}
-                if {d for d in old if fetch_start.isoformat() <= d <= today.isoformat()} != historical_window & old:
-                    self._save_pending(sorted(dates), "BaoStock+SZSE", fetched_at,
-                                       fetch_start.isoformat(), end.isoformat(), raw, "HISTORICAL_CONFLICT")
-                    return {"status": "PENDING_REVIEW", "reason_code": "HISTORICAL_CONFLICT",
-                            "version": self._latest_version()}
-            return self.publish_confirmed(dates, source="BaoStock+SZSE", fetched_at=fetched_at,
-                                          coverage_start=fetch_start.isoformat(), coverage_end=end.isoformat(),
-                                          raw_responses=raw, source_rows=len(bao_dates))
-        except CalendarConflict:
-            return {"status": "PENDING_REVIEW", "reason_code": "HISTORICAL_CONFLICT",
-                    "version": self._latest_version()}
+            values, raw, _ = baostock_fetch(start, end)
+            returned = {str(parse_trade_date(item)) for item in values}
+            bao = _validated_baostock_dates(raw, start, end, sorted(returned))
         except Exception as exc:
-            reason = exc.args[0] if isinstance(exc, CalendarSourceError) else "REFRESH_FAILED"
-            self._save_pending(candidate_dates if "candidate_dates" in locals() else [],
-                               "BaoStock+SZSE", fetched_at, fetch_start.isoformat(),
-                               end.isoformat(), raw, reason)
-            return {"status": "STALE" if previous else "UNKNOWN", "reason_code": reason,
-                    "version": self._latest_version()}
+            errors.append(exc.args[0] if isinstance(exc, CalendarSourceError) else "BAOSTOCK_UNAVAILABLE")
+        try:
+            szse = set()
+            for month in _months_between(start, end):
+                values, _ = szse_fetch(month.year, month.month)
+                szse.update(str(parse_trade_date(item)) for item in values)
+        except Exception as exc:
+            szse = None
+            errors.append(exc.args[0] if isinstance(exc, CalendarSourceError) else "SZSE_UNAVAILABLE")
+        matrix = self.load()
+        if bao is None and szse is None:
+            return {"status": "STALE" if matrix else "UNKNOWN", "reason_code": errors[0] if errors else "REFRESH_FAILED"}
+        scope = {(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)}
+        if bao is not None and szse is not None:
+            conflicts = {key for key in scope if (key in bao) != (key in szse)}
+            if conflicts == scope and not matrix:
+                # No agreed dates exist to illuminate on a cold start.
+                return {"status": "PARTIAL", "reason_code": "SOURCE_CONFLICT", "lit_from": None,
+                        "lit_to": None, "last_ok_at": None}
+            result = self._merge(bao, szse, scope - conflicts, start, end, refreshed, "BS+SZ")
+            if conflicts:
+                loaded = self.load()
+                loaded["conflicts"].extend({"d": key, "bs": int(key in bao), "sz": int(key in szse), "at": refreshed}
+                                           for key in sorted(conflicts))
+                loaded["conflicts"] = loaded["conflicts"][-500:]
+                self._write(loaded)
+                result.update(status="PARTIAL", reason_code="SOURCE_CONFLICT")
+            return result
+        values = bao if bao is not None else szse
+        result = self._merge(values or set(), set(), scope, start, end, refreshed, "BS" if bao is not None else "SZ")
+        result.update(status="PARTIAL", reason_code=errors[0] if errors else "SINGLE_SOURCE")
+        return result
 
     def refresh_if_needed(self, *, now: datetime | None = None) -> dict[str, Any]:
-        local = (now or datetime.now(ZoneInfo("Asia/Shanghai"))).astimezone(ZoneInfo("Asia/Shanghai")).date() \
-            if (now or datetime.now(ZoneInfo("Asia/Shanghai"))).tzinfo else (now or _market_today())
+        local = (now.astimezone(ZoneInfo("Asia/Shanghai")).date() if now and now.tzinfo else
+                 now.date() if now else _market_today())
         status = self.calendar_status(local)
-        if status["status"] == "UNKNOWN" or status["age_days"] > 7 or status["coverage_end"] is None or \
-                status["coverage_end"] < (local + timedelta(days=20)).isoformat():
+        matrix = self.load()
+        age = 999 if not matrix else max(0, (datetime.now(timezone.utc) -
+            datetime.fromisoformat(matrix["last_ok_at"].replace("Z", "+00:00")).astimezone(timezone.utc)).days)
+        if not matrix or age > 7 or status["lit_days_ahead"] is None or status["lit_days_ahead"] < 20:
             return self.refresh(now=local)
-        return status
+        return {**status, "status": "CONFIRMED"}
 
     def calendar_status(self, now: date | datetime | None = None) -> dict[str, Any]:
         today = (now.astimezone(ZoneInfo("Asia/Shanghai")).date() if now.tzinfo else now.date()) \
             if isinstance(now, datetime) else (now or _market_today())
-        data = self.load()
-        if not data:
+        matrix = self.load()
+        if not matrix:
             return {"status": "UNKNOWN", "as_of": today.isoformat(), "is_trading_day": None,
-                    "version": None, "age_days": None,
-                    "coverage_start": None, "coverage_end": None}
-        version = data["version"]
-        try:
-            manifest = json.loads((self.directory / "versions" / version / "manifest.json").read_text())
-            fetched = datetime.fromisoformat(manifest["fetched_at"].replace("Z", "+00:00"))
-            age = max(0, (datetime.now(timezone.utc) - fetched.astimezone(timezone.utc)).days)
-        except Exception:
-            manifest, age = {}, None
-        start, end = data.get("coverage_start"), data.get("coverage_end")
-        status = "CONFIRMED" if manifest.get("status") == "CONFIRMED" else "UNKNOWN"
-        if age is None or age > 7 or not start or not end or end < (today + timedelta(days=20)).isoformat():
-            status = "STALE" if status == "CONFIRMED" else "UNKNOWN"
-        return {"status": status, "as_of": today.isoformat(),
-                "is_trading_day": today.isoformat() in data["trading_dates"]
-                if start and end and start <= today.isoformat() <= end else None,
-                "version": version, "age_days": age,
-                "coverage_start": start, "coverage_end": end,
-                "window": {"start": start, "end": end},
-                "trading_dates": data["trading_dates"],
-                "trading_date_count": len(data["trading_dates"])}
+                    "lit_from": None, "lit_to": None, "lit_days_ahead": None, "last_ok_at": None, "conflicts": 0}
+        covered = matrix["lit_from"] <= today.isoformat() <= matrix["lit_to"]
+        ahead = (date.fromisoformat(matrix["lit_to"]) - today).days
+        age = max(0, (datetime.now(timezone.utc) - datetime.fromisoformat(matrix["last_ok_at"].replace("Z", "+00:00")).astimezone(timezone.utc)).days)
+        status = "UNKNOWN" if not covered else "STALE" if age > 7 or ahead < 7 or matrix.get("last_error") else "CONFIRMED"
+        day_map = {item["d"]: item["t"] for item in matrix["days"]}
+        return {"status": status, "as_of": today.isoformat(), "is_trading_day": bool(day_map[today.isoformat()])
+                if covered and today.isoformat() in day_map else None,
+                "lit_from": matrix["lit_from"], "lit_to": matrix["lit_to"], "lit_days_ahead": ahead if covered else None,
+                "last_ok_at": matrix["last_ok_at"], "conflicts": len(matrix.get("conflicts", []))}
 
     def _covered(self, value: date | str) -> tuple[dict[str, Any], str]:
         parsed = parse_trade_date(value).isoformat()
         data = self.load()
-        if not data or not data.get("coverage_start", "9999") <= parsed <= data.get("coverage_end", "0000"):
+        if (not data or not data["lit_from"] <= parsed <= data["lit_to"] or
+                not any(item["d"] == parsed for item in data["days"])):
             raise CalendarCoverageError("calendar coverage UNKNOWN")
         return data, parsed
 
     def is_trading_day(self, value: date | str) -> bool:
         data, parsed = self._covered(value)
-        return parsed in data["trading_dates"]
+        return bool(next(item["t"] for item in data["days"] if item["d"] == parsed))
 
     def previous_trade_date(self, value: date | str) -> date:
         data, parsed = self._covered(value)
-        prior = [d for d in data["trading_dates"] if d < parsed]
+        prior = [item["d"] for item in data["days"] if item["t"] and item["d"] < parsed]
         if not prior:
             raise CalendarCoverageError("previous trade date UNKNOWN")
         return date.fromisoformat(prior[-1])
 
     def next_trade_date(self, value: date | str) -> date:
         data, parsed = self._covered(value)
-        following = [d for d in data["trading_dates"] if d > parsed]
+        following = [item["d"] for item in data["days"] if item["t"] and item["d"] > parsed]
         if not following:
             raise CalendarCoverageError("next trade date UNKNOWN")
         return date.fromisoformat(following[0])
@@ -366,14 +342,11 @@ class TradeCalendarStore:
         left, right = parse_trade_date(start).isoformat(), parse_trade_date(end).isoformat()
         data, _ = self._covered(left)
         self._covered(right)
-        return [d for d in data["trading_dates"] if left <= d <= right]
+        return [item["d"] for item in data["days"] if item["t"] and left <= item["d"] <= right]
 
     def all_trading_dates(self) -> list[str]:
         data = self.load()
-        return list(data["trading_dates"]) if data else []
-
-
-_DEFAULT = TradeCalendarStore()
+        return [item["d"] for item in data["days"] if item["t"]] if data else []
 
 
 def is_trading_day(value: date | str, *, root: str | Path | None = None) -> bool:
