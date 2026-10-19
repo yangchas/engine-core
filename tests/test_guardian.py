@@ -133,6 +133,60 @@ def test_instance_lock_is_exclusive(tmp_path):
     two.release()
 
 
+def test_atomic_json_concurrent_writers_leave_complete_json(tmp_path, monkeypatch):
+    import json
+    import threading
+    import engine_core.guardian.scheduler as scheduler
+
+    path = tmp_path / "heartbeat.json"
+    barrier = threading.Barrier(2)
+    replace = scheduler.os.replace
+    monkeypatch.setattr(scheduler.os, "replace", lambda src, dst: (barrier.wait(), replace(src, dst))[1])
+    errors = []
+
+    def write(value):
+        try:
+            barrier.wait()
+            scheduler._atomic_json(path, {"writer": value, "payload": [value] * 100})
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=write, args=(n,)) for n in (1, 2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert json.loads(path.read_text()) in (
+        {"writer": 1, "payload": [1] * 100},
+        {"writer": 2, "payload": [2] * 100},
+    )
+
+
+def test_heartbeat_write_failure_is_retried_without_crashing(tmp_path, monkeypatch, caplog):
+    import engine_core.guardian.scheduler as scheduler
+
+    guardian = Guardian([], calendar_dates={"2026-10-16"}, state_root=tmp_path)
+    monkeypatch.setattr(scheduler, "_atomic_json", lambda *_: (_ for _ in ()).throw(OSError("disk")))
+    guardian.write_heartbeat(datetime.fromisoformat("2026-10-16T12:40:00+08:00"))
+    assert "retrying on next tick" in caplog.text
+
+
+@pytest.mark.parametrize("mode", [["--once-now"], ["--simulate-date", "2026-10-16", "--simulate-clock", "09:20..09:20"], ["--list"], ["--run", "--simulate-date", "2026-10-16", "--simulate-clock", "09:20..09:20", "--events", "unknown"]])
+def test_guardian_cli_dry_run_does_not_touch_real_state_root(tmp_path, mode):
+    import examples.core_guardian as core_guardian
+
+    real_guardian = tmp_path / "guardian"
+    real_guardian.mkdir()
+    heartbeat = real_guardian / "heartbeat.json"
+    heartbeat.write_text('{"sentinel": true}\n')
+    before = {path.name: path.read_bytes() for path in real_guardian.iterdir()}
+
+    assert core_guardian.main([*mode, "--artifact-root", str(tmp_path)]) == 0
+
+    assert {path.name: path.read_bytes() for path in real_guardian.iterdir()} == before
+
+
 @pytest.mark.parametrize("event_id,expected", [
     ("open_report_0932", "09:32:10"),
     ("open_report_0938", "09:38:10"),

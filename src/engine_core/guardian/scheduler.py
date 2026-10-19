@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -21,6 +23,7 @@ from typing import Any, Callable, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("Asia/Shanghai")
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -367,10 +370,13 @@ class Guardian:
                      "health": "DEGRADED" if self.degraded else "READY", "events": self._states,
                      "paused": self.paused, "config_revision": self.config_revision}
         _atomic_json(path, {"trade_date": trade_date, "events": self._states, "heartbeat": heartbeat})
-        _atomic_json(self.state_root / "heartbeat.json", heartbeat)
         os.chmod(self.state_root, 0o700)
         os.chmod(path, 0o600)
-        os.chmod(self.state_root / "heartbeat.json", 0o600)
+        try:
+            _atomic_json(self.state_root / "heartbeat.json", heartbeat)
+            os.chmod(self.state_root / "heartbeat.json", 0o600)
+        except OSError:
+            _LOGGER.exception("guardian heartbeat write failed; retrying on next tick")
         self._dirty = False
 
     def heartbeat(self, now: datetime) -> dict[str, Any]:
@@ -386,9 +392,12 @@ class Guardian:
     def write_heartbeat(self, now: datetime) -> None:
         """Persist a heartbeat independently of event-state changes."""
         payload = self.heartbeat(now)
-        _atomic_json(self.state_root / "heartbeat.json", payload)
-        os.chmod(self.state_root, 0o700)
-        os.chmod(self.state_root / "heartbeat.json", 0o600)
+        try:
+            _atomic_json(self.state_root / "heartbeat.json", payload)
+            os.chmod(self.state_root, 0o700)
+            os.chmod(self.state_root / "heartbeat.json", 0o600)
+        except OSError:
+            _LOGGER.exception("guardian heartbeat write failed; retrying on next tick")
 
     def _consume_control(self, trade_date: str, now: datetime, actions: list[dict[str, Any]]) -> None:
         path = self.state_root / "control.jsonl"
@@ -531,7 +540,19 @@ def _invoke_with_timeout(handler: Callable[..., Any], args: tuple[Any, ...], tim
 
 def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    os.replace(temp, path)
+    fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=f".{os.getpid()}.{uuid.uuid4().hex}.tmp",
+                                     dir=path.parent)
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 

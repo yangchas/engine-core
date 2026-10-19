@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import importlib
 import json
 import os
 import shlex
 import subprocess
 import sys
+import shutil
+import tempfile
 import time
 import threading
 from datetime import date, datetime, timedelta
@@ -291,13 +294,21 @@ def main(argv=None) -> int:
     if args.tick_seconds <= 0:
         parser.error("--tick-seconds must be positive")
     root = Path(args.artifact_root).expanduser()
+    execute = args.run and not args.simulate_clock
+    if execute:
+        state_root = root / "guardian"
+    else:
+        # Simulations and inspection commands must never touch the live guardian
+        # state or contend for its process lock.
+        state_root = Path(tempfile.mkdtemp(prefix="core-guardian-dry-run-"))
+        atexit.register(shutil.rmtree, state_root, ignore_errors=True)
     trade_date = args.simulate_date or date.today().isoformat()
     schedule_path = Path(args.schedule).expanduser() if args.schedule else root / "guardian" / "schedule.json"
     packaged_schedule = Path(__file__).resolve().parents[1] / "src" / "engine_core" / "guardian" / "schedule.json"
     try:
         if schedule_path.exists():
             configured, schedule_config = load_schedule(schedule_path, create_default=False)
-        elif args.run:
+        elif execute:
             configured, schedule_config = load_schedule(schedule_path, create_default=True)
             append_record(schedule_path.parent, {"type": "CONFIG_APPLIED", "revision": schedule_config["revision"],
                                                  "new_hash": __import__("engine_core.guardian.management", fromlist=["schedule_hash"]).schedule_hash(schedule_config),
@@ -323,8 +334,8 @@ def main(argv=None) -> int:
         gates.update(adapter.get("gates", {}))
         handlers.update(adapter.get("handlers", {}))
     guardian = Guardian(selected, calendar_dates=_load_dates(root, args.calendar),
-                        state_root=root / "guardian", gates=gates, handlers=handlers,
-                        dry_run=not args.run, context={"write": args.write, "td_write": args.td_write},
+                        state_root=state_root, gates=gates, handlers=handlers,
+                        dry_run=not execute, context={"write": args.write, "td_write": args.td_write},
                         schedule_path=schedule_path if schedule_path.exists() else None,
                         config_revision=schedule_config["revision"], config_payload=schedule_config)
     if args.list:
@@ -340,7 +351,7 @@ def main(argv=None) -> int:
                   opts=args, events=selected)
         return 0
     if args.once_now:
-        lock = FileInstanceLock(root / "guardian" / "guardian.lock")
+        lock = FileInstanceLock(state_root / "guardian.lock")
         try:
             lock.acquire()
         except RuntimeError as exc:
@@ -356,7 +367,7 @@ def main(argv=None) -> int:
             return 0
         finally:
             lock.release()
-    lock = FileInstanceLock(root / "guardian" / "guardian.lock")
+    lock = FileInstanceLock(state_root / "guardian.lock")
     try:
         lock.acquire()
     except RuntimeError as exc:
