@@ -123,6 +123,7 @@ def _amount_weighted_outcome(rows: Sequence[Mapping[str, Any]], field: str) -> d
 
 def build_extremes_board(rows: Sequence[Mapping[str, Any]], *,
                          stage: str | None = None,
+                         checkpoint: str | None = None,
                          k_abs: int = DEFAULT_K_ABS,
                          k_amount: int = DEFAULT_K_AMOUNT,
                          min_auction_amount_yuan: float = DEFAULT_MIN_AUCTION_AMOUNT_YUAN,
@@ -169,6 +170,10 @@ def build_extremes_board(rows: Sequence[Mapping[str, Any]], *,
     amount_cohort = [row for row in selected if row["symbol"] in amount_symbols]
     auction_rows = [{**row, "tracking": None} for row in selected]
     traced = [{**row, "tracking": _track(row)} for row in selected]
+    if stage == "open" and checkpoint is None:
+        checkpoint = next((str(row.get("current_checkpoint")) for row in normalized
+                           if row.get("current_checkpoint")), "0945")
+    current_pct_key = f"p{checkpoint}_pct" if checkpoint else "p0945_pct"
     endpoint = "close" if stage == "close" else "latest" if stage == "open" else None
     outcome = {}
     if endpoint:
@@ -182,12 +187,13 @@ def build_extremes_board(rows: Sequence[Mapping[str, Any]], *,
             "endpoint": endpoint,
             "rebound_top8": rebounds,
             "weak_top8": weakened,
-            "high_open_group": _red_rate(high, "p0945_pct" if endpoint == "latest" else "close_pct"),
-            "low_open_group": _red_rate(low, "p0945_pct" if endpoint == "latest" else "close_pct"),
+            "high_open_group": _red_rate(high, current_pct_key if endpoint == "latest" else "close_pct"),
+            "low_open_group": _red_rate(low, current_pct_key if endpoint == "latest" else "close_pct"),
             "amount_top20": _amount_weighted_outcome(
-                amount_cohort, "p0945_pct" if endpoint == "latest" else "close_pct"),
+                amount_cohort, current_pct_key if endpoint == "latest" else "close_pct"),
             "missing_close_count": sum(row["tracking"]["close_pct"] is None for row in traced),
             "sample_label": "当日描述",
+            "checkpoint": checkpoint if endpoint == "latest" else None,
         }
     result = {
         "schema_version": 1,

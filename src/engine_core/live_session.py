@@ -8,6 +8,7 @@ import csv
 import functools
 import hashlib
 import os
+import re
 import sys
 import time
 from collections import defaultdict
@@ -22,6 +23,126 @@ MARKET_VOLUME_THRESHOLDS = {"high_amount_multiple": 1.25, "low_amount_multiple":
                             "down_up_share_pct": 25.0, "up_up_share_pct": 50.0}
 TOP100_NORMAL_RANGE_PCT = (40.0, 47.0)
 TOP100_NORMAL_MIDPOINT_PCT = sum(TOP100_NORMAL_RANGE_PCT) / 2
+OPEN_CHECKPOINTS = (("0925", "09:25:06"), ("0932", "09:32:00"),
+                    ("0935", "09:35:00"), ("0938", "09:38:00"),
+                    ("0940", "09:40:00"), ("0945", "09:45:30"))
+_CHECKPOINT_INDEX = {label: index for index, (label, _) in enumerate(OPEN_CHECKPOINTS)}
+_CHECKPOINT_FIELD = re.compile(r"^(?:p)?(09\d{2})(?:_|$)")
+_REPORT_TIME_LABEL = re.compile(r"(?<!\d)(09:\d{2}|09\d{2})(?!\d)")
+
+
+def open_checkpoint_for_asof(asof: str | datetime | None) -> str:
+    """Return the latest opening checkpoint available by the requested time."""
+    if isinstance(asof, datetime):
+        clock = asof.strftime("%H:%M:%S")
+    elif isinstance(asof, str) and asof:
+        try:
+            clock = datetime.fromisoformat(asof).strftime("%H:%M:%S")
+        except ValueError:
+            clock = asof[-8:]
+    else:
+        clock = "09:46:00"
+    available = [label for label, cutoff in OPEN_CHECKPOINTS if cutoff <= clock]
+    return available[-1] if available else "0925"
+
+
+class ReportCheckpointInvariantError(ValueError):
+    """A report claims data or a slice later than its requested observation time."""
+
+    code = "REPORT_CHECKPOINT_INVARIANT_VIOLATION"
+
+    def __init__(self, message: str, path: str | None = None):
+        super().__init__(message)
+        self.path = path
+
+
+def assert_report_checkpoint_invariant(report: Mapping[str, Any], checkpoint: str) -> None:
+    """Reject report fields that exceed the request checkpoint and root report asof."""
+    if checkpoint not in _CHECKPOINT_INDEX:
+        raise ValueError(f"unknown report checkpoint: {checkpoint}")
+    report_asof = report.get("asof")
+    try:
+        report_date = datetime.fromisoformat(str(report.get("trade_date"))).date()
+    except (TypeError, ValueError):
+        report_date = datetime.now().date()
+    if report_asof:
+        try:
+            anchor = (report_asof if isinstance(report_asof, datetime)
+                      else datetime.fromisoformat(str(report_asof)))
+        except ValueError:
+            try:
+                anchor = datetime.combine(report_date,
+                                          datetime.strptime(str(report_asof)[-8:], "%H:%M:%S").time())
+            except ValueError:
+                anchor = None
+        if anchor is not None:
+            asof_checkpoint = open_checkpoint_for_asof(report_asof)
+            if asof_checkpoint != checkpoint:
+                raise ReportCheckpointInvariantError(
+                    f"requested checkpoint {checkpoint} disagrees with report asof {asof_checkpoint}")
+        else:
+            anchor = datetime.strptime(dict(OPEN_CHECKPOINTS)[checkpoint], "%H:%M:%S")
+    else:
+        anchor = datetime.combine(report_date,
+                                  datetime.strptime(dict(OPEN_CHECKPOINTS)[checkpoint], "%H:%M:%S").time())
+    ceiling = _CHECKPOINT_INDEX[checkpoint]
+    label_keys = {"checkpoint", "slice_label", "current_checkpoint", "chapter_title",
+                  "chapter", "title", "heading", "section_title", "count_label",
+                  "emotion_asof", "label"}
+    checkpoint_alias_keys = {"promotion_checkpoint", "open_checkpoint"}
+    observation_time_keys = {"asof", "source_ts", "ts", "observed_at"}
+
+    def later_than_anchor(value: str) -> bool:
+        try:
+            observed = datetime.fromisoformat(value)
+        except ValueError:
+            try:
+                observed = datetime.combine(anchor.date(), datetime.strptime(value, "%H:%M:%S").time())
+            except ValueError:
+                return False
+        try:
+            return observed > anchor
+        except TypeError:
+            if observed.tzinfo is not None and anchor.tzinfo is None:
+                observed = observed.replace(tzinfo=None)
+            elif anchor.tzinfo is not None and observed.tzinfo is None:
+                observed = observed.replace(tzinfo=anchor.tzinfo)
+            return observed > anchor
+
+    def visit(value: Any, path: str) -> None:
+        if isinstance(value, Mapping):
+            for raw_key, child in value.items():
+                key = str(raw_key)
+                if key in checkpoint_alias_keys and isinstance(child, str):
+                    if child in _CHECKPOINT_INDEX and _CHECKPOINT_INDEX[child] > ceiling:
+                        raise ReportCheckpointInvariantError(f"future checkpoint alias at {path}.{key}", f"{path}.{key}")
+                if key in observation_time_keys and isinstance(child, str):
+                    # The report root supplies the authority; nested values are claims to validate.
+                    if not (path == "report" and key == "asof") and later_than_anchor(child):
+                        raise ReportCheckpointInvariantError(f"future observation time at {path}.{key}", f"{path}.{key}")
+                match = _CHECKPOINT_FIELD.match(key)
+                if match and match.group(1) in _CHECKPOINT_INDEX:
+                    if _CHECKPOINT_INDEX[match.group(1)] > ceiling and child is not None:
+                        raise ReportCheckpointInvariantError(f"future checkpoint value at {path}.{key}", f"{path}.{key}")
+                if key in label_keys and isinstance(child, str):
+                    for token in _REPORT_TIME_LABEL.findall(child):
+                        label = token.replace(":", "")
+                        if label in _CHECKPOINT_INDEX and _CHECKPOINT_INDEX[label] > ceiling:
+                            raise ReportCheckpointInvariantError(f"future checkpoint label at {path}.{key}: {token}", f"{path}.{key}")
+                if key in {"sections", "chapter_titles"} and isinstance(child, (list, tuple)):
+                    for item in child:
+                        if not isinstance(item, str):
+                            continue
+                        for token in _REPORT_TIME_LABEL.findall(item):
+                            label = token.replace(":", "")
+                            if label in _CHECKPOINT_INDEX and _CHECKPOINT_INDEX[label] > ceiling:
+                                raise ReportCheckpointInvariantError(f"future checkpoint label at {path}.{key}: {token}", f"{path}.{key}")
+                visit(child, f"{path}.{key}")
+        elif isinstance(value, (list, tuple)):
+            for index, child in enumerate(value):
+                visit(child, f"{path}[{index}]")
+
+    visit(report, "report")
 
 
 def market_price_volume_status(amount_multiple: float | None, weighted_pct: float | None,

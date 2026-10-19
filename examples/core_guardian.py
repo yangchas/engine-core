@@ -93,6 +93,10 @@ def _command_handler(name: str, opts, root: Path):
             stage = {"auction_report": "auction", "open_report": "open", "close_report": "close"}[name]
             cmd = [py, str(repo / "examples/run_daily_reports.py"), "--stage", stage,
                    "--trade-date", day, "--out-root", str(root / "reports")]
+            if name == "auction_report":
+                cmd.extend(["--asof", "09:26:00"])
+            elif name == "open_report":
+                cmd.extend(["--asof", event.start])
             if opts.simulate_clock:
                 cmd.append("--dry-run")
             elif not opts.write and not opts.email_self:

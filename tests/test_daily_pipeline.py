@@ -301,7 +301,7 @@ def test_live_section_stocks_does_not_request_future_checkpoints():
     assert source.cutoffs == ["09:24:10", "09:25:06", "09:32:00"]
 
 
-def test_live_section_stocks_includes_0945_at_exact_cutoff():
+def test_live_section_stocks_includes_0945_at_exact_094530_cutoff():
     from engine_core.daily_pipeline import _live_section_stocks
 
     class States:
@@ -312,11 +312,57 @@ def test_live_section_stocks_includes_0945_at_exact_cutoff():
                                "amt_yuan": 20}}
 
     source = States()
-    rows = _live_section_stocks(source, trade_date="2026-10-15", stage="open", asof="09:45:00",
+    rows = _live_section_stocks(source, trade_date="2026-10-15", stage="open", asof="09:45:30",
                                 relations={}, plate_names={}, stock_names={}, history_path=None)
-    assert source.cutoffs == ["09:24:10", "09:25:06", "09:32:00", "09:38:00", "09:45:00"]
+    assert source.cutoffs == ["09:24:10", "09:25:06", "09:32:00", "09:35:00",
+                             "09:38:00", "09:40:00", "09:45:30"]
     assert rows[0]["p0945_pct"] == 1.0
     assert rows[0]["p0945_amount_yuan"] == 20
+
+
+def test_live_section_stocks_keeps_0945_missing_at_094529():
+    from engine_core.daily_pipeline import _live_section_stocks
+
+    class States:
+        def __init__(self): self.cutoffs = []
+        def states_at(self, cutoff):
+            self.cutoffs.append(cutoff.strftime("%H:%M:%S"))
+            return {"600001": {"pct_change": 1.0, "match_amount_yuan": 10,
+                               "amt_yuan": 20}}
+
+    source = States()
+    rows = _live_section_stocks(source, trade_date="2026-10-15", stage="open", asof="09:45:29",
+                                relations={}, plate_names={}, stock_names={}, history_path=None)
+    assert "09:45:30" not in source.cutoffs
+    assert rows[0]["p0945_pct"] is None
+    assert rows[0]["p0945_amount_yuan"] is None
+    assert rows[0]["current_checkpoint"] == "0940"
+
+
+@pytest.mark.parametrize(("asof", "label", "price"), [("09:32:10", "0932", 10.32),
+                                                          ("09:38:10", "0938", 10.38)])
+def test_live_section_stocks_current_price_and_limit_state_use_asof_checkpoint(asof, label, price):
+    from engine_core.daily_pipeline import _live_section_stocks
+
+    class States:
+        def states_at(self, cutoff):
+            clock = cutoff.strftime("%H:%M:%S")
+            if clock == "09:25:06":
+                return {"600001": {"pct_change": 1, "price_milli": 10_000,
+                                    "prev_close_milli": 10_000, "rest_bid_shares": 0,
+                                    "rest_ask_shares": 0, "amt_yuan": 100}}
+            current = 10.32 if clock == "09:32:00" else 10.38 if clock == "09:38:00" else 10.45
+            return {"600001": {"pct_change": current - 10, "price_milli": round(current * 1000),
+                                "prev_close_milli": 10_000, "rest_bid_shares": 10 if clock == "09:32:00" else 0,
+                                "rest_ask_shares": 0, "amt_yuan": 500}}
+
+    rows = _live_section_stocks(States(), trade_date="2026-10-16", stage="open", asof=asof,
+                                relations={}, plate_names={}, stock_names={}, history_path=None)
+    row = rows[0]
+    assert row["price"] == price
+    assert row["open_limit_state"] == 0
+    assert row.get("p0945_pct") is None
+    assert row.get(f"p{label}_pct") is not None
 
 
 def test_ladder_summary_uses_dated_daily_rows_and_marks_close_price_proxy(tmp_path):
@@ -344,7 +390,7 @@ def test_yesterday_streaks_preserve_missing_as_missing():
     assert _prior_streak("600002", _yesterday_lb_days(report)) is None
 
 
-def test_three_stages_write_reports_and_explicit_missing_references(tmp_path):
+def test_three_stages_write_reports_and_explicit_missing_references(tmp_path, monkeypatch):
     from engine_core.slices import SliceReader, SliceResult
 
     references = tmp_path / "references"
@@ -374,6 +420,22 @@ def test_three_stages_write_reports_and_explicit_missing_references(tmp_path):
     slices = SliceReader({name: [fixture_provider] for name in slice_ids})
     sources = DailySources(td=FakeTD(), reference_root=references, slice_reader=slices)
     for stage in ("auction", "open", "close"):
+        if stage == "open":
+            from engine_core import live_session
+            original_check = live_session.assert_report_checkpoint_invariant
+            injected = False
+
+            def inject_future_asof(report, checkpoint):
+                nonlocal injected
+                if not injected:
+                    report.setdefault("chapters", {}).setdefault("market_price_volume", {})[
+                        "asof"] = "2026-10-16T09:45:30+08:00"
+                    report["chapters"]["market_price_volume"]["median_pct_change"] = 9.876543
+                    report["chapters"]["market_price_volume"]["market_match_amount_yuan"] = 123456789
+                    injected = True
+                return original_check(report, checkpoint)
+
+            monkeypatch.setattr(live_session, "assert_report_checkpoint_invariant", inject_future_asof)
         result = run_daily_pipeline(stage=stage, trade_date="2026-10-15", out_root=output,
                                     reference_root=references, sources=sources, dry_run=True)
         folder = result["out_dir"]
@@ -391,12 +453,24 @@ def test_three_stages_write_reports_and_explicit_missing_references(tmp_path):
         if stage in ("auction", "open"):
             assert {"td_fetch", "compute", "render", "prepare_output", "write_json"} <= set(manifest["timings"])
         if stage in ("auction", "open"):
-            assert result["report"]["chapters"]["reference_data"]["stock_names"]["status"] == "MISSING"
-            assert result["report"]["chapters"]["reference_data"]["stock_caps"]["status"] == "MISSING"
-            assert "plate_strength" in report["front_page"]
-            assert "ladder" in report["front_page"]
-            assert "extremes_board" in report["chapters"]
-            assert "a_to_b" in report and "front_page" in report
+            if stage == "auction":
+                assert result["report"]["chapters"]["reference_data"]["stock_names"]["status"] == "MISSING"
+                assert result["report"]["chapters"]["reference_data"]["stock_caps"]["status"] == "MISSING"
+                assert "plate_strength" in report["front_page"]
+                assert "ladder" in report["front_page"]
+                assert "extremes_board" in report["chapters"]
+            if stage == "open":
+                assert report["status"] == "DEGRADED"
+                assert "chapters" not in report and "stocks" not in report
+                assert "9.876543" not in json.dumps(report)
+                assert "123456789" not in json.dumps(report)
+                assert "REPORT_CHECKPOINT_INVARIANT_VIOLATION" in manifest["degraded"]
+                assert manifest["degraded_counts"]["REPORT_CHECKPOINT_INVARIANT_VIOLATION"] == 1
+                html = (folder / "report.html").read_text()
+                assert "报告包含时点校验失败字段" in html
+                assert "9.876543" not in html
+            if stage != "open":
+                assert "a_to_b" in report and "front_page" in report
             assert all({"source", "status", "elapsed_seconds", "rows"} <= set(row)
                        for row in manifest["slices"].values())
             assert any(row["source"] == "fixture" for row in manifest["slices"].values())

@@ -47,7 +47,7 @@ def test_auction_stage_never_classifies_future_emotion():
     section = build_ladder_section([], stage="auction", asof="2026-10-15T09:26:00",
                                    market_stocks=[{"p0945_pct": -2, "p0925_pct": 0}])
     assert section["emotion"]["state"] == "UNKNOWN"
-    assert section["emotion"]["label"] == "无09:45全市场截面"
+    assert section["emotion"]["label"] == "无当前时点全市场截面"
 
 
 def test_auction_stage_does_not_reuse_later_path_or_frequency():

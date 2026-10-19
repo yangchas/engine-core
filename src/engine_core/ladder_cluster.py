@@ -64,7 +64,8 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
                           plate_share_changes: Mapping[str, tuple[float | None, float | None]] | None = None,
                           theme_assignments: Mapping[str, Mapping[str, Any]] | None = None,
                           theme_basis: str | None = None,
-                          hot_plate_names: Iterable[str] = ()) -> dict[str, Any]:
+                          hot_plate_names: Iterable[str] = (),
+                          checkpoint: str | None = None) -> dict[str, Any]:
     """Cluster yesterday's highboards using dated pool/reason themes when supplied."""
     plate_by_symbol: dict[str, str] = {}
     name_by_symbol: dict[str, str] = {}
@@ -85,7 +86,11 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
         old_share, delta = (plate_share_changes or {}).get(plate, (None, None))
         if share is not None:
             share_data[plate] = (share, delta)
-    field = "0925" if stage == "auction" else "0945"
+    checkpoint = ("0925" if stage == "auction" else checkpoint or
+                  next((str(row.get("current_checkpoint")) for row in highboards
+                        if isinstance(row, Mapping) and row.get("current_checkpoint")), "0945"))
+    field = checkpoint
+    pct_field = f"p{checkpoint}_pct"
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     group_names: dict[str, str] = {}
     hot_names = set(hot_plate_names)
@@ -95,7 +100,8 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
         symbol = str(source.get("symbol", source.get("code", ""))).zfill(6)
         row = dict(source)
         row["symbol"] = symbol
-        row["pct"] = _number(source.get(field, source.get("auction_pct" if stage == "auction" else "p0945_pct")))
+        row["pct"] = _number(source.get("current_pct" if stage == "open" else field,
+                                        source.get(field, source.get("auction_pct" if stage == "auction" else pct_field))))
         row["streak"] = _number(source.get("streak", source.get("prior_streak")))
         theme = assignments.get(symbol)
         if theme and (theme.get("theme_source") not in (None, "NONE") or
@@ -155,6 +161,7 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
                           "0925": _number(row.get("0925", row.get("auction_pct"))),
                           "0932": _number(row.get("0932")), "0938": _number(row.get("0938")),
                           "0945": _number(row.get("0945", row.get("p0945_pct"))),
+                          "current_checkpoint": checkpoint, "current_pct": pct,
                           "status": price_label})
         known_streaks = [r["streak"] for r in rows if r["streak"] is not None]
         clusters.append({"key": theme_key, "name": plate, "count": len(rows), "max_streak": max(known_streaks) if known_streaks else None,
@@ -201,20 +208,20 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
                          for row in first for value in [_number(row.get(field, row.get(fallback)))] if value is not None)
             return up, down, flat, locked, len(first) - len(values)
         auction_counts = counts("0925", "auction_pct")
-        current_counts = counts("0945", "p0945_pct")
+        current_counts = counts(checkpoint, pct_field)
         shown_counts = auction_counts if stage == "auction" else current_counts
         up, down, flat, locked, missing = shown_counts
         first_summary = (f"昨首板竞价高{auction_counts[0]}/低{auction_counts[1]}/平{auction_counts[2]}"
                          if stage == "open" else
                          f"昨首板竞价高{up}/低{down}/平{flat}")
         if stage == "open":
-            first_summary += f"→0945高{up}/低{down}/平{flat}"
+            first_summary += f"→{checkpoint}高{up}/低{down}/平{flat}"
         if locked:
             first_summary += f" 封停价代理{locked}"
         if missing:
             first_summary += f" 缺{missing}只"
-        pct_key = "0925" if stage == "auction" else "0945"
-        fallback_key = "auction_pct" if stage == "auction" else "p0945_pct"
+        pct_key = "0925" if stage == "auction" else checkpoint
+        fallback_key = "auction_pct" if stage == "auction" else pct_field
         strongest = sorted((row for row in first if _number(row.get(pct_key, row.get(fallback_key))) is not None),
                            key=lambda row: -(_number(row.get(pct_key, row.get(fallback_key))) or 0))[:3]
         if strongest:
@@ -223,9 +230,9 @@ def build_ladder_clusters(highboards: Sequence[Mapping[str, Any]], a_to_b: Seque
                 pct = _number(row.get(pct_key, row.get(fallback_key)))
                 topic = row.get("theme") or row.get("theme_name") or row.get("main_plate") or "主题缺失"
                 details.append(f"{row.get('name') or row.get('symbol')} {pct:+.1f}% {topic}")
-            first_summary += ("；昨首板竞价最强：" if stage == "auction" else "；昨首板0945最强：") + "、".join(details)
+            first_summary += ("；昨首板竞价最强：" if stage == "auction" else f"；昨首板{checkpoint}最强：") + "、".join(details)
     basis = theme_basis or ("登记表回退" if fallback_used else "昨日涨停池题材/历史原因")
-    return {"clusters": clusters, "other_cluster_count": 0,
+    return {"checkpoint": checkpoint, "clusters": clusters, "other_cluster_count": 0,
             "cluster_count": len(clusters), "empty_message": empty_message,
             "first_board_summary": first_summary, "cutoff_field": field,
             "attribution_basis": basis}
@@ -264,7 +271,8 @@ def select_plate_strength(current: Sequence[Mapping[str, Any]], previous: Sequen
 
 def build_plate_strength_from_stocks(stocks: Sequence[Mapping[str, Any]],
                                      plate_metadata: Mapping[str, Mapping[str, Any]], *,
-                                     stage: str = "auction") -> dict[str, Any]:
+                                     stage: str = "auction",
+                                     checkpoint: str | None = None) -> dict[str, Any]:
     """Aggregate registered themes from the full point-in-time stock universe."""
     grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for stock in stocks:
@@ -276,9 +284,12 @@ def build_plate_strength_from_stocks(stocks: Sequence[Mapping[str, Any]],
         for name in set(str(value) for value in names if value):
             if _eligible(name, plate_metadata):
                 grouped[name].append(stock)
-    current_key = "p0945_amount_yuan" if stage == "open" else "p0925_amount_yuan"
+    checkpoint = checkpoint or next((str(row.get("current_checkpoint")) for row in stocks
+                                     if isinstance(row, Mapping) and row.get("current_checkpoint")),
+                                    "0945" if stage == "open" else "0925")
+    current_key = "current_amount_yuan" if stage == "open" else "p0925_amount_yuan"
     previous_key = "p0925_amount_yuan" if stage == "open" else "p0924_amount_yuan"
-    pct_key = "p0945_pct" if stage == "open" else "p0925_pct"
+    pct_key = "current_pct" if stage == "open" else "p0925_pct"
     def amount(row: Mapping[str, Any], key: str) -> float | None:
         value = _number(row.get(key))
         return max(0.0, value) if value is not None and isfinite(value) else None
@@ -347,7 +358,8 @@ def build_front_page_data(report: Mapping[str, Any], *, stage: str,
                           theme_basis: str | None = None,
                           hot_plate_names: Iterable[str] = (),
                           relation_asof: str | None = None,
-                          relation_lag_trading_days: int | None = None) -> dict[str, Any]:
+                          relation_lag_trading_days: int | None = None,
+                          checkpoint: str | None = None) -> dict[str, Any]:
     chapters = report.get("chapters") if isinstance(report.get("chapters"), Mapping) else {}
     highboards = chapters.get("yesterday_highboards", []) if isinstance(chapters.get("yesterday_highboards"), list) else []
     a_to_b = report.get("a_to_b", []) if isinstance(report.get("a_to_b"), list) else []
@@ -357,6 +369,7 @@ def build_front_page_data(report: Mapping[str, Any], *, stage: str,
     linkage_rows = linkage.get("rows", []) if isinstance(linkage.get("rows"), list) else []
     if linkage_rows:
         current = linkage_rows
+    checkpoint = checkpoint or str(report.get("checkpoint") or "0945")
     if stage == "open":
         handoff = report.get("handoff") if isinstance(report.get("handoff"), Mapping) else {}
         auction = handoff.get("auction_0925") if isinstance(handoff.get("auction_0925"), Mapping) else {}
@@ -384,11 +397,15 @@ def build_front_page_data(report: Mapping[str, Any], *, stage: str,
         eligible = {str(row.get("name")) for row in current if isinstance(row, Mapping)
                     and str(row.get("name", "")) and metadata and _eligible(str(row.get("name")), metadata)}
     leaders: dict[str, dict[str, Any]] = {}
+    current_amount_key = f"p{checkpoint}_amount_yuan"
+    current_pct_key = f"p{checkpoint}_pct"
     for stock in stocks:
         if not isinstance(stock, Mapping):
             continue
-        amount = _number(stock.get("p0945_amount_yuan", stock.get("amount_yuan", stock.get("auction_amount_yuan"))))
-        pct = _number(stock.get("p0945_pct", stock.get("auction_pct", stock.get("p0925_pct"))))
+        amount = _number(stock.get("current_amount_yuan", stock.get(current_amount_key,
+                                                                  stock.get("amount_yuan", stock.get("auction_amount_yuan")))))
+        pct = _number(stock.get("current_pct", stock.get(current_pct_key,
+                                                           stock.get("auction_pct", stock.get("p0925_pct")))))
         names = stock.get("plates", [])
         if not isinstance(names, list):
             names = [stock.get("main_plate")] if stock.get("main_plate") else []
@@ -422,9 +439,11 @@ def build_front_page_data(report: Mapping[str, Any], *, stage: str,
         first = annotated
     stock_by_symbol = {str(row.get("symbol", row.get("code", ""))).zfill(6): row
                        for row in stocks if isinstance(row, Mapping)}
+    current_pct_key = f"p{checkpoint}_pct"
     first = [{**row, **({"0925": stock_by_symbol[str(row.get("symbol", "")).zfill(6)].get("p0925_pct")}
                         if stage == "auction" and str(row.get("symbol", "")).zfill(6) in stock_by_symbol else
-                        {"0945": stock_by_symbol[str(row.get("symbol", "")).zfill(6)].get("p0945_pct")}
+                        {checkpoint: stock_by_symbol[str(row.get("symbol", "")).zfill(6)].get("current_pct",
+                                                                                              stock_by_symbol[str(row.get("symbol", "")).zfill(6)].get(current_pct_key))}
                         if stage == "open" and str(row.get("symbol", "")).zfill(6) in stock_by_symbol else {})}
              for row in first]
     current_norm = normalize(current, total)
@@ -447,8 +466,10 @@ def build_front_page_data(report: Mapping[str, Any], *, stage: str,
                                              plate_leaders=leaders, plate_share_changes=plate_share_changes,
                                              theme_assignments=theme_assignments or report.get("limit_reason_themes"),
                                              theme_basis=theme_basis or report.get("theme_attribution_basis"),
-                                             hot_plate_names=hot_plate_names or report.get("hot_plate_names", ())),
-            "plate_strength": build_plate_strength_from_stocks(stocks, metadata, stage=stage),
+                                             hot_plate_names=hot_plate_names or report.get("hot_plate_names", ()),
+                                             checkpoint=checkpoint),
+            "plate_strength": build_plate_strength_from_stocks(stocks, metadata, stage=stage,
+                                                                checkpoint=checkpoint),
             "eligible_plate_count": len(eligible),
             "basis": f"PIT {relation_asof} (滞后{relation_lag_trading_days}个交易日)"
             if relation_asof and relation_asof != "UNKNOWN" and relation_lag_trading_days is not None else

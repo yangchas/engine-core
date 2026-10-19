@@ -21,7 +21,8 @@ def _number(source: Mapping[str, Any], *keys: str) -> float | None:
 
 
 def _candidate_language(source: Mapping[str, Any], bucket: str, status: str,
-                        position: Any, relative: float | None, stage: str) -> tuple[str, str]:
+                        position: Any, relative: float | None, stage: str,
+                        checkpoint: str) -> tuple[str, str]:
     reason = str(source.get("reason") or source.get("reasons") or "").strip()
     if isinstance(source.get("reasons"), Sequence) and not isinstance(source.get("reasons"), str):
         reason = "；".join(str(x) for x in source["reasons"] if x)
@@ -29,9 +30,9 @@ def _candidate_language(source: Mapping[str, Any], bucket: str, status: str,
     risk = str(source.get("risk") or "").strip()
     position_value = _number(source, "position_asof", "position20_prior", "position")
     own_move = (_number(source, "auction_pct", "p0925_pct") if stage == "auction" else
-                _number(source, "p0945_pct", "intraday_pct"))
+                _number(source, f"p{checkpoint}_pct", "current_pct", "intraday_pct"))
     auction_move = _number(source, "auction_pct", "p0925_pct")
-    plate_move = _number(source, "plate0945", "plate_pct")
+    plate_move = _number(source, f"plate{checkpoint}", "plate_current_pct", "plate_pct")
     if condition in {"等待信号确认", "风险未明", "等待信号", "先确认后观察"}:
         condition = ""
     if not condition:
@@ -42,7 +43,7 @@ def _candidate_language(source: Mapping[str, Any], bucket: str, status: str,
                 condition = (f"竞价指示{reference_move:+.1f}%，终价确认后看0932仍≥{floor:.0f}%且不弱于板块"
                              if floor else f"竞价指示{reference_move:+.1f}%，终价确认后看0932保持红盘且不弱于板块")
             elif reference_move is not None and stage == "open":
-                condition = f"竞价指示{reference_move:+.1f}%，0945{own_move:+.1f}%，看后续保持红盘且不弱于板块"
+                condition = f"竞价指示{reference_move:+.1f}%，{checkpoint}{own_move:+.1f}%，看后续保持红盘且不弱于板块"
             elif reference_move is not None:
                 condition = f"参考涨幅{reference_move:+.1f}%，终价确认后再复核"
         elif bucket == "exclude" and position_value is not None and position_value >= 0.67:
@@ -51,9 +52,9 @@ def _candidate_language(source: Mapping[str, Any], bucket: str, status: str,
             floor = 5.0 if auction_move >= 5.0 else 0.0
             condition = (f"竞价{auction_move:+.1f}%，看0932仍≥{floor:.0f}%且相对板块不转弱"
                          if floor else f"竞价{auction_move:+.1f}%，看0932保持红盘且不弱于板块")
-        elif stage == "open" and own_move is not None:
-            condition = (f"竞价{auction_move:+.1f}%后0945{own_move:+.1f}%，看后续保持红盘且不弱于板块"
-                         if auction_move is not None else f"0945{own_move:+.1f}%，看后续保持红盘且不弱于板块")
+        elif stage in {"open", "close"} and own_move is not None:
+            condition = (f"竞价{auction_move:+.1f}%后{checkpoint}{own_move:+.1f}%，看后续保持红盘且不弱于板块"
+                         if auction_move is not None else f"{checkpoint}{own_move:+.1f}%，看后续保持红盘且不弱于板块")
         elif relative is not None and relative < -0.5:
             condition = f"个股落后所属板块{abs(relative):.1f}个百分点；重回开盘价并缩小差距后复核"
         elif relative is not None and relative > 0.5:
@@ -72,7 +73,7 @@ def _candidate_language(source: Mapping[str, Any], bucket: str, status: str,
         elif relative is not None and relative > 0.5:
             reason = f"早盘跑赢所属板块{relative:.1f}个百分点"
         elif own_move is not None:
-            prefix = "0945" if stage == "open" else "竞价"
+            prefix = checkpoint if stage in {"open", "close"} else "竞价"
             reason = f"{prefix}个股涨跌{own_move:+.1f}%，板块约{plate_move:+.1f}%" if plate_move is not None else f"{prefix}个股涨跌{own_move:+.1f}%"
         else:
             reason = "当前候选事实不足，保留观察"
@@ -95,8 +96,19 @@ def _candidate_language(source: Mapping[str, Any], bucket: str, status: str,
 
 
 def filter_candidates(candidates: Sequence[Mapping[str, Any]], features: Mapping[str, Any], *,
-                      asof: str, policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                      asof: str, policy: Mapping[str, Any] | None = None,
+                      checkpoint: str | None = None) -> dict[str, Any]:
     stage = str(features.get("stage", "auction"))
+    if stage == "open":
+        if checkpoint is None:
+            checkpoint = str(features.get("checkpoint") or "")
+        if not checkpoint:
+            from .live_session import open_checkpoint_for_asof
+            checkpoint = open_checkpoint_for_asof(asof)
+    elif stage == "close":
+        checkpoint = "0945"
+    else:
+        checkpoint = "0925"
     metrics = features.get("metrics", {}) if isinstance(features.get("metrics"), Mapping) else {}
     rows, counts = {k: [] for k in _LABEL}, {k: 0 for k in _LABEL}
     seen: dict[str, dict[str, Any]] = {}
@@ -110,7 +122,7 @@ def filter_candidates(candidates: Sequence[Mapping[str, Any]], features: Mapping
         position = source.get("position_asof", source.get("position20_prior"))
         if source.get("auction_price_status"):
             status = str(source["auction_price_status"])
-        required_price_keys = ("p0945_pct", "intraday_pct") if stage == "open" else ("auction_pct", "p0925_pct")
+        required_price_keys = (f"p{checkpoint}_pct", "current_pct", "intraday_pct") if stage == "open" else ("auction_pct", "p0925_pct")
         price_field_present = any(key in source for key in required_price_keys)
         required_price = _number(source, *required_price_keys)
         if (symbol.strip().lower() in {"", "none", "null", "unknown"}
@@ -158,8 +170,9 @@ def filter_candidates(candidates: Sequence[Mapping[str, Any]], features: Mapping
                 filter_reasons.append("价格或成交数据缺失")
             else:
                 filter_reasons.append("当前截点条件尚未满足")
-        relative = _number(source, "relative0945", "relative_pct", "relative_to_plate_pp")
-        condition, risk = _candidate_language(source, bucket, status, position, relative, stage)
+        relative = (_number(source, f"relative_to_plate_{checkpoint}_pp", f"relative{checkpoint}",
+                            "relative_pct", "relative_to_plate_pp"))
+        condition, risk = _candidate_language(source, bucket, status, position, relative, stage, checkpoint)
         if not condition or not risk:
             continue
         if not reasons:

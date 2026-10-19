@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .extremes_board import build_extremes_board
+from .live_session import OPEN_CHECKPOINTS
 from .limit_price import state_at_close
 from .story_features import build_story_features
 from .anomaly_detector import detect_anomalies
@@ -40,6 +41,14 @@ def _num(value: Any, digits: int = 1) -> str:
     if not math.isfinite(x):
         return "—"
     return f"{x:+.{digits}f}%" if x > 0 else f"{x:.{digits}f}%"
+
+
+def _open_checkpoint_label(report: Mapping[str, Any]) -> str:
+    value = report.get("checkpoint")
+    if isinstance(value, str) and value in {"0925", "0932", "0935", "0938", "0940", "0945"}:
+        return value
+    from .live_session import open_checkpoint_for_asof
+    return open_checkpoint_for_asof(report.get("asof"))
 
 
 def _amount(value: Any) -> str:
@@ -90,8 +99,10 @@ def _tiles(report: Mapping[str, Any], stage: str) -> list[tuple[str, str]]:
     market_valid = (market.get("status") not in {"STALE", "NOT_READY", "NOT_YET_AVAILABLE"}
                     and market.get("symbol_count") != 0)
     tiles: list[tuple[str, str]] = []
-    median_key = "close_median" if stage == "close" else "p0945_median" if stage == "open" else "auction_median"
-    median_label = "收盘中位" if stage == "close" else "09:45中位" if stage == "open" else "竞价中位"
+    checkpoint = _open_checkpoint_label(report) if stage == "open" else None
+    median_key = "close_median" if stage == "close" else f"p{checkpoint}_median" if stage == "open" else "auction_median"
+    median_label = ("收盘中位" if stage == "close" else
+                    f"{checkpoint[:2]}:{checkpoint[2:]}中位" if stage == "open" else "竞价中位")
     median_value = (_first(market, median_key, "median_pct_change" if stage != "close" else "close_median_pct")
                     if market_valid else None)
     if median_value is not None:
@@ -510,6 +521,9 @@ def _story_view(report: Mapping[str, Any], stage: str, trade_date: str) -> tuple
 
 
 def _ladder(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
+    checkpoint = _open_checkpoint_label(report) if stage == "open" else "0925"
+    current_pct_key = f"p{checkpoint}_pct"
+    current_prefix = f"p{checkpoint}_"
     data = report.get("ladder_section")
     if not isinstance(data, Mapping):
         msg = "数据缺口：未生成连板梯队"
@@ -572,7 +586,7 @@ def _ladder(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
         chips = []
         plain_chips = []
         for row in sorted(items, key=lambda r: (-float(r.get("auction_amount_yuan") or 0), str(r.get("symbol", ""))))[:12]:
-            pct = row.get("close_pct") if stage == "close" else row.get("p0945_pct") if stage == "open" else _first(row, "p0925_pct", "auction_pct")
+            pct = row.get("close_pct") if stage == "close" else _first(row, "current_pct", current_pct_key) if stage == "open" else _first(row, "p0925_pct", "auction_pct")
             limit = row.get("limit_pct")
             is_new = row.get("is_new_listing") or row.get("is_unlimited_price_band")
             if is_new:
@@ -580,8 +594,8 @@ def _ladder(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
             elif stage == "close":
                 state = _exact_price_state(row)
             elif stage == "open":
-                state = (_exact_price_state(row, prefix="p0945_")
-                         if any(row.get(f"p0945_{field}") is not None for field in ("open_pct", "high_pct", "low_pct", "close_pct"))
+                state = (_exact_price_state(row, prefix=current_prefix)
+                         if any(row.get(f"{current_prefix}{field}") is not None for field in ("open_pct", "high_pct", "low_pct", "close_pct"))
                          else "")
             else:
                 state = "封" if row.get("auction_limit_state") in (1, "1", "UP") else ""
@@ -596,7 +610,7 @@ def _ladder(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     firsts = [r for r in rows if _first(r, "prior_streak", "lb_days", "streak") in (0, "0")]
     firsts.sort(key=lambda r: (-float(r.get("auction_amount_yuan") or 0), str(r.get("symbol", ""))))
     if firsts:
-        chips = "　".join(f"{_display_name(r, 8)} {_num(r.get('close_pct') if stage == 'close' else r.get('p0945_pct') if stage == 'open' else _first(r, 'p0925_pct', 'auction_pct'))}" for r in firsts[:8])
+        chips = "　".join(f"{_display_name(r, 8)} {_num(r.get('close_pct') if stage == 'close' else _first(r, 'current_pct', current_pct_key) if stage == 'open' else _first(r, 'p0925_pct', 'auction_pct'))}" for r in firsts[:8])
         lines.append(f'<div style="line-height:23px"><b>首板 {len(firsts)}只</b>　{_esc(chips)}</div>')
     gap_note = "" if data.get("promotion_status") != "MISSING_YESTERDAY_POOL" else "；数据缺口：缺昨日涨停池，晋级率不可算"
     space = f'<div style="font-size:10px;color:#667085;margin-top:3px">空间板 {max(levels) if levels else "—"}板；封/触为价格代理，非封单{gap_note}</div>'
@@ -605,6 +619,9 @@ def _ladder(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
 
 
 def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
+    checkpoint = _open_checkpoint_label(report) if stage == "open" else "0925"
+    current_pct_key = f"p{checkpoint}_pct"
+    current_prefix = f"p{checkpoint}_"
     attached = report.get("extremes_board")
     chapters = report.get("chapters") if isinstance(report.get("chapters"), Mapping) else {}
     if not isinstance(attached, Mapping):
@@ -612,7 +629,8 @@ def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     if isinstance(attached, Mapping) and isinstance(attached.get(stage), list):
         attached = {**attached, stage: {"rows": attached[stage]}}
     if not isinstance(attached, Mapping):
-        attached = build_extremes_board(_rows(report.get("stocks")), stage=stage)
+        attached = build_extremes_board(_rows(report.get("stocks")), stage=stage,
+                                        checkpoint=checkpoint if stage == "open" else None)
     board = attached.get(stage) if isinstance(attached, Mapping) else None
     if isinstance(board, Mapping) and isinstance(board.get("rows"), list):
         blocks, plain = _selected_extremes(board, stage, report)
@@ -634,19 +652,19 @@ def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     if stage == "close":
         groups = [("big_meat", "大肉 TOP8"), ("big_loss", "大面 TOP8")]
     else:
-        key = "p0925_pct" if stage == "auction" else "p0945_pct"
-        title_up = "竞价强 TOP8" if stage == "auction" else "开盘强 TOP8"
-        title_down = "竞价弱 TOP8" if stage == "auction" else "开盘弱 TOP8"
+        key = "p0925_pct" if stage == "auction" else current_pct_key
+        title_up = "竞价强 TOP8" if stage == "auction" else f"{checkpoint}强 TOP8"
+        title_down = "竞价弱 TOP8" if stage == "auction" else f"{checkpoint}弱 TOP8"
         source_rows = _rows(report.get("stocks"))
         if not source_rows:
             chapters = report.get("chapters") if isinstance(report.get("chapters"), Mapping) else {}
             source_rows = _rows(chapters.get("yesterday_highboards"))
         values = [r for r in source_rows if not (r.get("is_new_listing") or r.get("is_unlimited_price_band") or r.get("unlimited_price_band"))
-                  and isinstance(_first(r, key, "auction_pct" if stage == "auction" else "p0945_pct"), (int, float))]
+                  and isinstance(_first(r, "current_pct", key, "auction_pct" if stage == "auction" else current_pct_key), (int, float))]
         groups = [("__stage_up", title_up), ("__stage_down", title_down)]
         report = dict(report)
-        report["__stage_up"] = sorted(values, key=lambda r: -float(_first(r, key, "auction_pct" if stage == "auction" else "p0945_pct")))
-        report["__stage_down"] = sorted(values, key=lambda r: float(_first(r, key, "auction_pct" if stage == "auction" else "p0945_pct")))
+        report["__stage_up"] = sorted(values, key=lambda r: -float(_first(r, "current_pct", key, "auction_pct" if stage == "auction" else current_pct_key)))
+        report["__stage_down"] = sorted(values, key=lambda r: float(_first(r, "current_pct", key, "auction_pct" if stage == "auction" else current_pct_key)))
     for key, title in groups:
         raw = _rows(report.get(key))
         exceptional.extend(r for r in raw if r.get("is_new_listing") or r.get("is_unlimited_price_band") or r.get("unlimited_price_band"))
@@ -658,7 +676,7 @@ def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
             continue
         headers = ["名称", "板块", "竞价%"]
         if stage != "auction":
-            headers.append("09:45")
+            headers.append(f"{checkpoint[:2]}:{checkpoint[2:]}")
         headers.append("额")
         if stage == "close":
             headers.insert(4, "收盘%")
@@ -668,7 +686,7 @@ def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
             name = _display_name(row, 10)
             plate = _short(row.get("main_plate") or "—", 4)
             auction = _first(row, "auction_pct", "p0925_pct")
-            p945 = row.get("p0945_pct") if stage != "auction" else None
+            p945 = _first(row, "current_pct", current_pct_key) if stage == "open" else row.get("p0925_pct") if stage == "auction" else None
             amount = _amount(_first(row, "auction_amount_yuan", "match_amount_yuan"))
             limit = row.get("limit_pct")
             close = row.get("close_pct")
@@ -676,7 +694,7 @@ def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
             if stage == "close":
                 state = _exact_price_state(row)
             elif stage == "open":
-                state = _exact_price_state(row, prefix="p0945_")
+                state = _exact_price_state(row, prefix=current_prefix)
             states.append(state)
             cells = [_esc(name), _esc(plate), _esc(_num(auction))]
             if stage != "auction":
@@ -695,7 +713,7 @@ def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
         th = "".join(f'<th style="text-align:left;padding:4px 5px;background:#e9eef5;white-space:nowrap">{_esc(h)}</th>' for h in headers)
         table = f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:11px"><thead><tr>{th}</tr></thead><tbody>{"".join(body)}</tbody></table>'
         blocks.append(_section(title, table, "状态仅标价格代理" if any(states) else "状态列省略；状态仅标价格代理"))
-        plain.append(f"{title}：" + "、".join(f"{_display_name(r, 8)} {_num(r.get('close_pct') if stage == 'close' else r.get('p0945_pct') if stage == 'open' else _first(r, 'auction_pct', 'p0925_pct'))}" for r in source))
+        plain.append(f"{title}：" + "、".join(f"{_display_name(r, 8)} {_num(r.get('close_pct') if stage == 'close' else _first(r, 'current_pct', current_pct_key) if stage == 'open' else _first(r, 'auction_pct', 'p0925_pct'))}" for r in source))
     exceptional = list({str(r.get("symbol") or r.get("name")): r for r in exceptional}.values())
     if exceptional:
         names = "、".join(_display_name(r, 8) for r in exceptional[:8])
@@ -708,9 +726,11 @@ def _extremes(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
 def _selected_extremes(board: Mapping[str, Any], stage: str,
                        report: Mapping[str, Any]) -> tuple[str, str]:
     rows = _rows(board.get("rows"))
+    checkpoint = _open_checkpoint_label(report) if stage == "open" else "0945"
     headers = ["名称", "板块", "入选", "竞价%", "额(亿)"]
     if stage != "auction":
-        headers.extend(["0932", "0935", "0940", "0945", "高/低Δ"])
+        visible = [label for label, _ in OPEN_CHECKPOINTS if label <= checkpoint]
+        headers.extend(visible + ["高/低Δ"])
     if stage == "open":
         headers.append("实时")
     if stage == "close":
@@ -723,9 +743,9 @@ def _selected_extremes(board: Mapping[str, Any], stage: str,
                 row.get("selection_reason") or "—", _num(row.get("auction_pct")),
                 _amount(row.get("auction_amount_yuan"))]
         if stage != "auction":
-            vals.extend([_num(row.get("p0932_pct")), _num(row.get("p0935_pct")),
-                         _num(row.get("p0940_pct")), _num(row.get("p0945_pct")),
-                         f"{_num(track.get('high_vs_auction_pp'))}/{_num(track.get('low_vs_auction_pp'))}"])
+            visible = [label for label, _ in OPEN_CHECKPOINTS if label <= checkpoint]
+            vals.extend([_num(row.get(f"p{label}_pct")) for label in visible])
+            vals.append(f"{_num(track.get('high_vs_auction_pp'))}/{_num(track.get('low_vs_auction_pp'))}")
         if stage == "open":
             vals.append(_num(track.get("latest_pct")))
         if stage == "close":
@@ -743,7 +763,7 @@ def _selected_extremes(board: Mapping[str, Any], stage: str,
     if stage == "close":
         note += " 兑现/修复与回落/走弱榜仅在该集合内排序。"
     if stage == "open":
-        note += " 开盘追踪点为0932、09:45及当前可得实时值。"
+        note += f" 开盘追踪截至{checkpoint}及当前可得实时值。"
     legend = str(board.get("rank_legend") or "绝对值#=竞价涨跌幅绝对值排名；额#=竞价匹配额排名。")
     note += " " + legend
     blocks = [_section(title, table if rows else "<p>缺少符合门槛的竞价样本。</p>", note)]
@@ -751,7 +771,7 @@ def _selected_extremes(board: Mapping[str, Any], stage: str,
     if stage != "auction":
         delta_key = "delta_latest_pp" if stage == "open" else "delta_close_pp"
         endpoint_label = "实时" if stage == "open" else "收盘"
-        group_label = "09:45" if stage == "open" else "收盘"
+        group_label = f"09:{checkpoint[-2:]}" if stage == "open" else "收盘"
         for label, key in (("兑现/修复 Top8", "rebound_top8"), ("回落/走弱 Top8", "weak_top8")):
             names = [f"{_display_name(row, 10)} {_num((row.get('tracking') or {}).get(delta_key)).rstrip('%')}pp"
                      for row in _rows(board.get(key))]
@@ -896,8 +916,9 @@ def _plates(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
                 change_table = ("<div style=\"overflow-x:auto\"><table><thead><tr>" +
                                 "".join(f"<th>{_esc(header)}</th>" for header in change_headers) +
                                 "</tr></thead><tbody>" + "".join(change_rows) + "</tbody></table></div>")
-                html += _section("0925→0945 盘中变化", change_table, "当日 09:25 至 09:45 的变化窗口；与较昨日同截点分开。")
-                text += "\n0925→0945 盘中变化：\n" + "\n".join(change_text)
+                html += _section(f"0925→{checkpoint} 盘中变化", change_table,
+                                 f"当日 09:25 至 {checkpoint} 的变化窗口；与较昨日同截点分开。")
+                text += f"\n0925→{checkpoint} 盘中变化：\n" + "\n".join(change_text)
         return html, text
     data = report.get("plates") if isinstance(report.get("plates"), Mapping) else {}
     market = chapters.get("market_price_volume") if isinstance(chapters.get("market_price_volume"), Mapping) else {}
@@ -1099,7 +1120,8 @@ def _a_to_b_v2(report: Mapping[str, Any], entries: Sequence[Mapping[str, Any]], 
         proxy = "（价格代理）" if entry.get("a_status_is_price_proxy") else ""
         title = f"A {name} · 昨{streak if streak is not None else '—'}板→今日{today}{proxy} · 板块:{plate_name}({plate.get('member_count') if plate.get('member_count') is not None else '—'}人,{plate.get('class') or '类别未知'})"
         track = strength.get("price_track_pct") or {}
-        track_keys = ["0925"] if stage == "auction" else ["0925", "0932", "0945"]
+        track_keys = (["0925"] if stage == "auction" else [
+            label for label, _ in OPEN_CHECKPOINTS if label <= _open_checkpoint_label(report)])
         if stage == "close": track_keys.append("close")
         trajectory = "→".join(f"{'收盘' if key == 'close' else key} {pct(track.get(key))}" for key in track_keys)
         amount_rank = strength.get("auction_amount_rank")
@@ -1112,7 +1134,7 @@ def _a_to_b_v2(report: Mapping[str, Any], entries: Sequence[Mapping[str, Any]], 
             "板块状态：竞价额 " + yi(plate.get('auction_amount_yuan')) + "，占大盘 " + val(plate.get('auction_amount_share_bp')) + "bp（重叠不可加）"
             + (f"；对64日/前日 {val(plate.get('relative_64d_multiple'))}/{val(plate.get('relative_prev_multiple'))}倍" if plate.get('relative_64d_multiple') is not None or plate.get('relative_prev_multiple') is not None else "")
             + f"；成员上涨占比 {val(plate.get('up_share') * 100 if plate.get('up_share') is not None else None)}%"
-            + f"；等权涨幅 {pct(plate.get('equal_weight_pct'))}→{pct(plate.get('equal_weight_0945_pct'))}"
+            + f"；等权涨幅 {pct(plate.get('equal_weight_pct'))}→{pct(plate.get('current_equal_weight_pct'))}"
             + (f"→{pct(plate.get('equal_weight_close_pct'))}" if stage == "close" else "")
             + (f"；涨停价 {plate.get('limit_up_count')}只" if plate.get('limit_up_count') is not None else "")
             + ("；当日强势板块" if plate.get('strength_top') is True else "；当日弱势板块" if plate.get('weak_top') is True else "")
@@ -1135,7 +1157,8 @@ def _a_to_b_v2(report: Mapping[str, Any], entries: Sequence[Mapping[str, Any]], 
                         f"{yi(bm.get('auction_amount_yuan'))}/板块额{pct((bm.get('plate_amount_share') or 0) * 100 if bm.get('plate_amount_share') is not None else None)} | "
                         f"{position_text} | {buyable}（竞价未涨停/非接近涨跌停）")
                 if stage != "auction":
-                    line += f" | 0945相对板块 {pp(bm.get('relative_to_plate_0945_pp'))}"
+                    cp = _open_checkpoint_label(report)
+                    line += f" | {cp}相对板块 {pp(bm.get(f'relative_to_plate_{cp}_pp'))}"
                 if stage == "close":
                     line += f" | 收盘相对板块 {pp(bm.get('relative_to_plate_close_pp'))}"
                 metrics.append(line)
@@ -1252,7 +1275,7 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
     else:
         amount_short = "开盘缺失" if amount is None else f"开盘{float(amount) / 1e8:.0f}亿"
         headline = f"{amount_short}｜{amount_comparison}｜中{_num(median)}｜涨{_num(up_share)}｜昨板{_num(carry)}"
-    cutoff_label = "0945" if stage == "open" else "0925"
+    cutoff_label = _open_checkpoint_label(report) if stage == "open" else "0925"
     lines = [f"{cutoff_label}｜{headline}", "【昨高标·题材聚类】"]
     feedback = report.get("streak_feedback") if isinstance(report.get("streak_feedback"), Mapping) else {}
     feedback_point = feedback.get("checkpoints", {}).get(cutoff_label, {}) if isinstance(feedback, Mapping) else {}
@@ -1294,14 +1317,15 @@ def _front_page_view(report: Mapping[str, Any], stage: str) -> tuple[str, str]:
                 judgement += f"·较竞价{trend}"
         lead_text = ""
         if stage == "open":
+            path_tags = [label for label, _ in OPEN_CHECKPOINTS
+                         if label <= cutoff_label]
             paths = cluster.get("paths", [])
             row = paths[0] if paths else {}
-            members = (f"高标{row.get('name')}昨{int(row.get('streak') or 0)}板 "
-                       f"{_num(row.get('0925'))}→{_num(row.get('0932'))}→"
-                       f"{_num(row.get('0938'))}→{_num(row.get('0945'))}"
+            members = (f"高标{row.get('name')}昨{int(row.get('streak') or 0)}板 " +
+                       "→".join(_num(row.get(tag)) for tag in path_tags)
                        if row else "路径缺失")
             for row in paths[:1]:
-                auction_pct, open_pct = row.get("0925"), row.get("0945")
+                auction_pct, open_pct = row.get("0925"), row.get(cutoff_label)
                 symbol = str(row.get("symbol") or "")
                 limit = 20.0 if symbol.startswith(("300", "301", "688", "689")) else 30.0 if symbol.startswith(("4", "8", "92")) else 10.0
                 if auction_pct is not None and auction_pct >= limit - 0.2 and open_pct is not None and open_pct < limit - 0.2:

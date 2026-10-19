@@ -149,6 +149,11 @@ def build_live_story_features(report: Mapping[str, Any], *, stage: str, cutoff: 
         market = chapters.get("market_price_volume", {})
     market = market if isinstance(market, Mapping) else {}
     facts: dict[str, Any] = {"trade_date": report.get("trade_date") or report.get("date")}
+    from .live_session import OPEN_CHECKPOINTS, open_checkpoint_for_asof
+    checkpoint_order = {tag: index for index, (tag, _time) in enumerate(OPEN_CHECKPOINTS)}
+    selected_checkpoint = (str(report.get("checkpoint")) if report.get("checkpoint") in checkpoint_order
+                           else open_checkpoint_for_asof(cutoff))
+    checkpoint_ceiling = checkpoint_order[selected_checkpoint]
     refs = ["live_report:market_price_volume"]
     def add(key: str, value: Any, source: str, unit: str | None = None,
             event_cutoff: Any = None) -> None:
@@ -189,7 +194,7 @@ def build_live_story_features(report: Mapping[str, Any], *, stage: str, cutoff: 
         add("auction_limit_down_price_count", terminal.get("limit_down") if valid_terminal else None, "auction_terminal_0925", "count", event_at)
     if market and (stage == "auction" or phase in {"AUCTION", "OPEN"}):
         prefix = "auction" if stage == "auction" else (
-            "p0945" if _at_or_before("09:45:00", cutoff) else "open")
+            "p0945" if checkpoint_order.get("0945", 0) <= checkpoint_ceiling else "open")
         event_at = market.get("asof") or cutoff
         valid_market = (market.get("status") not in {"STALE", "NOT_READY", "NOT_YET_AVAILABLE"}
                         and market.get("symbol_count") != 0 and _at_or_before(event_at, cutoff))
@@ -205,7 +210,7 @@ def build_live_story_features(report: Mapping[str, Any], *, stage: str, cutoff: 
             add("open_up_share", float(share) / 100 if isinstance(share, (int, float)) else None,
                 "market_price_volume", "ratio", event_at)
             add("open_amount_yuan", amount, "market_price_volume", "yuan", event_at)
-            if _at_or_before("09:45:00", cutoff):
+            if checkpoint_order.get("0945", 0) <= checkpoint_ceiling:
                 add("p0945_amount_yuan", amount, "market_price_volume", "yuan", event_at)
                 add("p0945_median", median, "market_price_volume", "pp", event_at)
                 add("p0945_up_share", float(share) / 100 if isinstance(share, (int, float)) else None,
@@ -230,6 +235,8 @@ def build_live_story_features(report: Mapping[str, Any], *, stage: str, cutoff: 
         if row.get("status") in {"STALE", "NOT_READY", "NOT_YET_AVAILABLE"} or row.get("symbol_count") == 0:
             continue
         label = str(row.get("label") or row.get("tag") or "").replace(":", "")
+        if label in checkpoint_order and checkpoint_order[label] > checkpoint_ceiling:
+            continue
         stamp = row.get("asof") or row.get("observed_at") or row.get("timestamp")
         if not stamp or not _at_or_before(stamp, cutoff):
             continue
@@ -291,5 +298,8 @@ def build_live_story_features(report: Mapping[str, Any], *, stage: str, cutoff: 
     if degradation:
         facts["source_refs"] = refs + ["degraded:" + str(x) for x in degradation[:5]]
     provenance = {"source_fidelity": "LIVE_REPORT", "refs": refs}
-    return build_story_features(facts, stage=stage, cutoff=cutoff,
-                                observed_at=observed_at, provenance=provenance)
+    result = build_story_features(facts, stage=stage, cutoff=cutoff,
+                                  observed_at=observed_at, provenance=provenance)
+    if stage == "open":
+        result["checkpoint"] = selected_checkpoint
+    return result

@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -131,6 +131,27 @@ def test_instance_lock_is_exclusive(tmp_path):
     one.release()
     two.acquire()
     two.release()
+
+
+@pytest.mark.parametrize("event_id,expected", [
+    ("open_report_0932", "09:32:10"),
+    ("open_report_0938", "09:38:10"),
+    ("open_report_0945", "09:45:30"),
+    ("auction_report_0926", "09:26:00"),
+])
+def test_report_handler_passes_event_asof(monkeypatch, tmp_path, event_id, expected):
+    from types import SimpleNamespace
+    from examples import core_guardian
+
+    event = next(event for event in default_events() if event.event_id == event_id)
+    captured = {}
+    monkeypatch.setattr(core_guardian.subprocess, "run", lambda cmd, **kwargs: (
+        captured.update(cmd=cmd) or SimpleNamespace(returncode=0, stdout="", stderr="")))
+    now = datetime.fromisoformat(f"2026-10-19T{event.start}+08:00") + timedelta(minutes=1)
+    handler = core_guardian._command_handler(event.handler, SimpleNamespace(
+        simulate_clock=True, write=False, email_self=False, td_write=False), tmp_path)
+    handler(event, now, None, False)
+    assert captured["cmd"][captured["cmd"].index("--asof") + 1] == expected
 
 
 def test_calendar_missing_fails_closed_and_holiday_does_not_trigger(tmp_path):

@@ -10,7 +10,9 @@ from typing import Any, Mapping, Sequence
 from .limit_price import is_limit_down, is_limit_up, limit_prices, touched_limit
 
 
-CHECKPOINTS = ("0925", "0932", "0938", "0945")
+from .live_session import OPEN_CHECKPOINTS
+
+CHECKPOINTS = tuple(label for label, _ in OPEN_CHECKPOINTS)
 STATUSES = ("PROMOTED", "HIT_LIMIT_NOT_SEALED", "BROKEN", "FELL_BACK", "LIMIT_DOWN", "UNKNOWN")
 
 
@@ -90,6 +92,7 @@ def build_streak_feedback(*, trade_date: str, used_date: str, version: str | Non
                           pool: Sequence[Mapping[str, Any]],
                           snapshots: Mapping[str, Mapping[str, Mapping[str, Any]]],
                           stage: str,
+                          checkpoint: str | None = None,
                           theme_assignments: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """Build per-checkpoint D09 rows and D10 board-height/theme matrices.
 
@@ -110,13 +113,18 @@ def build_streak_feedback(*, trade_date: str, used_date: str, version: str | Non
             normalized_pool[symbol] = {**dict(raw), "symbol": symbol, "lb_days": level}
     assignments = theme_assignments or {}
     checkpoints: dict[str, Any] = {}
-    for checkpoint in CHECKPOINTS:
-        source = snapshots.get(checkpoint, {})
+    visible_checkpoints = CHECKPOINTS
+    if stage == "open" and checkpoint is not None:
+        if checkpoint not in CHECKPOINTS:
+            raise ValueError(f"unknown feedback checkpoint: {checkpoint}")
+        visible_checkpoints = CHECKPOINTS[:CHECKPOINTS.index(checkpoint) + 1]
+    for checkpoint_label in visible_checkpoints:
+        source = snapshots.get(checkpoint_label, {})
         rows: list[dict[str, Any]] = []
         for symbol, pool_row in sorted(normalized_pool.items()):
             quote = source.get(symbol)
             quote = quote if isinstance(quote, Mapping) else {}
-            index = CHECKPOINTS.index(checkpoint)
+            index = CHECKPOINTS.index(checkpoint_label)
             prior_sealed = any(
                 isinstance(snapshots.get(previous_checkpoint, {}).get(symbol), Mapping)
                 and _sealed(snapshots[previous_checkpoint][symbol], symbol)
@@ -157,8 +165,8 @@ def build_streak_feedback(*, trade_date: str, used_date: str, version: str | Non
                             if isinstance(assignments.get(row["symbol"]), Mapping)), None)
             theme_stats[key] = {"theme": primary.get("name") if isinstance(primary, Mapping) else key,
                                 **_stats(group)}
-        checkpoints[checkpoint] = {
-            "provisional": checkpoint == "0925", "rows": rows,
+        checkpoints[checkpoint_label] = {
+            "provisional": checkpoint_label == "0925", "rows": rows,
             "matrix": {"by_level": level_stats, "by_theme": theme_stats,
                        "overall": _stats(rows, with_return=True)},
         }

@@ -26,8 +26,8 @@ def _int(value: Any) -> int | None:
 def _emotion_bucket(stocks: Sequence[Mapping[str, Any]], asof: str) -> dict[str, Any]:
     """Apply C184's fixed open-to-0945 descriptive buckets when covered."""
     clock = asof[11:16] if len(asof) >= 16 else ""
-    if clock and clock < "09:45":
-        return {"state": "UNKNOWN", "label": "未到09:45截点", "asof": asof}
+    if clock and clock < "09:45:30":
+        return {"state": "UNKNOWN", "label": "当前报告截点尚未就绪", "asof": asof}
     total = len(stocks)
     if not total:
         return {"state": "UNKNOWN", "label": "无全市场样本", "asof": asof}
@@ -70,10 +70,15 @@ def _emotion_bucket(stocks: Sequence[Mapping[str, Any]], asof: str) -> dict[str,
 def build_ladder_section(stocks: Sequence[Mapping[str, Any]], *, stage: str,
                          asof: str, frequencies: Mapping[str, Mapping[str, Any]] | None = None,
                          summary: Sequence[Mapping[str, Any]] = (),
-                         market_stocks: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+                         market_stocks: Sequence[Mapping[str, Any]] | None = None,
+                         checkpoint: str | None = None) -> dict[str, Any]:
     stage_key = stage.lower()
     close_visible = stage_key in {"close", "closing", "eod"}
     auction_only = stage_key in {"auction", "auction_0926", "auction_0925"}
+    checkpoint = checkpoint or next((str(row.get("current_checkpoint")) for row in stocks
+                                     if isinstance(row, Mapping) and row.get("current_checkpoint")),
+                                    "0925" if auction_only else "0945")
+    current_pct_key = f"p{checkpoint}_pct"
     market_by_symbol = {str(row.get("symbol", row.get("code", ""))).zfill(6): row
                         for row in (market_stocks or ())}
     rows = []
@@ -100,6 +105,9 @@ def build_ladder_section(stocks: Sequence[Mapping[str, Any]], *, stage: str,
                 "p0925_pct": row.get("p0925_pct", row.get("auction_pct", row.get("0925"))),
                 "p0932_pct": None if auction_only else row.get("p0932_pct", row.get("0932")),
                 "p0945_pct": None if auction_only else row.get("p0945_pct", row.get("0945")),
+                "current_checkpoint": checkpoint,
+                "current_pct": (row.get("p0925_pct", row.get("0925", row.get("auction_pct")))
+                                if auction_only else row.get("current_pct", row.get(current_pct_key))),
                 "path_type": path, "path_label": PATH_LABELS[path],
                 "history_frequency": hist, "asof": asof,
                 "limit_status": "收盘涨停价代理；封单状态未知" if close_visible else "涨停价代理；封单状态未知"}
@@ -128,7 +136,7 @@ def build_ladder_section(stocks: Sequence[Mapping[str, Any]], *, stage: str,
     if close_visible:
         states = [exact_state(r) for r in price_rows]
     elif not auction_only:
-        states = [exact_state(r, "p0945_") for r in price_rows]
+        states = [exact_state(r, f"p{checkpoint}_") for r in price_rows]
     else:
         states = []
     known_states = [state for state in states if state != "缺价格字段"]
@@ -160,19 +168,19 @@ def build_ladder_section(stocks: Sequence[Mapping[str, Any]], *, stage: str,
                     promoted += 1
             promotion_by_level[f"{level}板"] = {"promoted": promoted, "total": total}
     emotion = (_emotion_bucket(market_stocks, asof) if not auction_only and market_stocks is not None
-               else {"state": "UNKNOWN", "label": "无09:45全市场截面", "asof": asof})
+               else {"state": "UNKNOWN", "label": "无当前时点全市场截面", "asof": asof})
     result = {"asof": asof, "stage": stage, "rows": rows,
               "yesterday_board_counts": yesterday_counts,
               "today_promotion_or_price_proxy_count": close_up if close_visible else current,
               "today_limit_down_price_count": exact_down_count if count_status == "READY" else None,
               "today_touched_limit_count": exact_touch_count if count_status == "READY" else None,
               "price_count_status": count_status,
-              "count_label": "收盘涨停价代理家数" if close_visible else "截至0945涨停价代理家数",
+              "count_label": "收盘涨停价代理家数" if close_visible else f"截至{checkpoint}涨停价代理家数",
               "summary": [dict(r) for r in summary],
               "promotion_status": "READY" if has_pool_field and pool_rows and promotion_by_level
               else "MISSING_YESTERDAY_POOL",
               "promotion_by_previous_level": promotion_by_level,
-              "emotion_asof": "0945前可见状态；研究分档为14日描述，非预测",
+              "emotion_asof": f"{checkpoint}前可见状态；研究分档为14日描述，非预测",
               "emotion": emotion,
               "postmarket_label": "事后对照，非开盘信息" if close_visible else None}
     return result

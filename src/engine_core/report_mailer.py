@@ -224,7 +224,10 @@ def build_report_message(subject_prefix: str, trade_date: str, stage: str,
                 "</body>", '<div role="alert" style="padding:12px;background:#fff0e5;border:2px solid #c2410c;font-weight:700">'
                 + fallback_notice + "</div></body>", 1)
     quality_status, _, _ = _quality_banner(manifest or {}, report_data)
-    subject = f"{subject_prefix} [{quality_status}] [{trade_date}] {stage} 报告"
+    report_asof = (manifest or {}).get("asof") or report_data.get("asof")
+    time_label = (str(report_asof)[11:16] if isinstance(report_asof, str) and len(report_asof) >= 16
+                  else str(report_asof)[:5] if isinstance(report_asof, str) and len(report_asof) >= 5 else None)
+    subject = f"{subject_prefix} [{quality_status}] [{trade_date}] {stage} {time_label or ''}报告".replace("  报告", " 报告")
     message = EmailMessage()
     message["Subject"] = subject
     message["Message-ID"] = make_msgid()

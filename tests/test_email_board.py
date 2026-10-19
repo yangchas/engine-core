@@ -1,4 +1,5 @@
 from engine_core.email_board import render_email_board
+import pytest
 
 
 def _cells(markup):
@@ -100,6 +101,20 @@ def test_intraday_board_hides_close_fields_and_shows_missing_blocks():
     assert "收盘" not in rendered + plain
     assert "数据缺口：未生成" in rendered
     assert "竞价" in rendered and "09:45" in rendered
+
+
+@pytest.mark.parametrize(("checkpoint", "clock"), [("0932", "09:32"), ("0938", "09:38")])
+def test_actual_mail_body_header_matches_asof(checkpoint, clock):
+    market = {"market_match_amount_yuan": 111_000_000_000,
+              f"p{checkpoint}_median": 1.5, "median_pct_change": 1.5,
+              "up_share_pct": 90, "symbol_count": 5000}
+    report = {"checkpoint": checkpoint, "asof": f"2026-10-16T{clock}:10+08:00",
+              "market": market, "chapters": {"market_price_volume": market}}
+    rendered, plain = render_email_board(report, "open", "2026-10-16")
+    assert f"{checkpoint}｜" in rendered and f"{checkpoint}｜" in plain
+    assert f"{clock}中位" in rendered and f"{clock}中位" in plain
+    assert "0945｜" not in rendered + plain
+    assert "09:45中位" not in rendered + plain
 
 
 def test_a_to_b_v2_is_explanatory_name_only_and_stage_bounded():

@@ -27,6 +27,14 @@ STAGE_NAMES = {"auction": "auction_0926", "open": "open_0946", "close": "close_r
 TZ = ZoneInfo("Asia/Shanghai")
 
 
+def _degraded_checkpoint_report(report: Mapping[str, Any], trade_date: str,
+                               checkpoint: str, asof: str | None) -> dict[str, Any]:
+    """Keep control metadata while hiding observations and every derived value."""
+    return {"trade_date": trade_date,
+            "asof": f"{trade_date}T{asof}" if asof else report.get("asof"),
+            "checkpoint": checkpoint, "status": "DEGRADED"}
+
+
 def _auction_assembly_mode() -> str:
     """Select the auction product assembly; V6 is the default with legacy rollback."""
     mode = os.getenv("CORE_AUCTION_ASSEMBLY", "v6").strip().lower()
@@ -547,13 +555,16 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
                          plate_metadata: Mapping[str, Mapping[str, Any]] | None = None,
                          report_features: list[Mapping[str, Any]] | None = None,
                          path_symbols: set[str] | None = None,
+                         checkpoint: str | None = None,
                          td_connection_factory=None) -> list[dict[str, Any]]:
     """Build full-universe, as-of stock rows for the live A→B and ladder sections."""
-    from .live_session import daily_history_context, load_daily_history_csv, states_at
+    from .live_session import (OPEN_CHECKPOINTS, daily_history_context, load_daily_history_csv,
+                               open_checkpoint_for_asof, states_at)
 
-    clocks = {"0924": "09:24:10", "0925": "09:25:06", "0932": "09:32:00",
-              "0938": "09:38:00", "0945": "09:45:00"}
-    requested = ["0924", "0925"] if stage == "auction" else ["0924", "0925", "0932", "0938", "0945"]
+    clocks = {"0924": "09:24:10", **dict(OPEN_CHECKPOINTS)}
+    selected_checkpoint = checkpoint or (open_checkpoint_for_asof(asof) if stage == "open" else "0925")
+    requested = (["0924", "0925"] if stage == "auction" else
+                 ["0924", *(label for label, _ in OPEN_CHECKPOINTS)])
     end = datetime.fromisoformat(f"{trade_date}T{asof}")
     snapshots: dict[str, dict[str, Any]] = {}
     fetch = []
@@ -624,7 +635,7 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
     rows = []
     for symbol in sorted(str(value).zfill(6) for value in symbols):
         auction = snapshots.get("0925", {}).get(symbol, {})
-        cutoff_state = (snapshots.get("0945", {}).get(symbol, {})
+        cutoff_state = (snapshots.get(selected_checkpoint, {}).get(symbol, {})
                         if stage == "open" else auction)
         history_row = context.get(symbol, {})
         streak = history_row.get("streak")
@@ -646,7 +657,12 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
             "p0945_amount_yuan": snapshots.get("0945", {}).get(symbol, {}).get("amt_yuan"),
             "auction_price_status": auction.get("status", "UNKNOWN"),
             "auction_limit_state": checkpoint_limit_state(symbol, auction),
-            "open_limit_state": checkpoint_limit_state(symbol, snapshots.get("0945", {}).get(symbol, {})),
+            "open_limit_state": checkpoint_limit_state(symbol, cutoff_state),
+            "open_checkpoint": selected_checkpoint if stage == "open" else None,
+            "current_checkpoint": selected_checkpoint if stage == "open" else "0925",
+            "current_pct": cutoff_state.get("pct_change") if cutoff_state else None,
+            "current_amount_yuan": (cutoff_state.get("amt_yuan", cutoff_state.get("match_amount_yuan"))
+                                     if cutoff_state else None),
             "rest_bid_yuan": auction.get("rest_bid_yuan"),
             "p0925_price": auction.get("price_milli") / 1000 if isinstance(auction.get("price_milli"), (int, float)) else None,
             "p0925_pre_close": auction.get("prev_close_milli") / 1000 if isinstance(auction.get("prev_close_milli"), (int, float)) else None,
@@ -660,9 +676,15 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
             "pre_close": (cutoff_state.get("prev_close_milli") / 1000
                           if isinstance(cutoff_state.get("prev_close_milli"), (int, float)) else None),
         }
+        for label, field in (("0932", "p0932_pct"), ("0935", "p0935_pct"),
+                             ("0938", "p0938_pct"), ("0940", "p0940_pct"),
+                             ("0945", "p0945_pct")):
+            row[field] = None
         if total_auction and row["auction_amount_yuan"] is not None:
             row["auction_amount_bp"] = 10000 * row["auction_amount_yuan"] / total_auction
-        for label, field in (("0932", "p0932_pct"), ("0938", "p0938_pct"), ("0945", "p0945_pct")):
+        for label, field in (("0932", "p0932_pct"), ("0935", "p0935_pct"),
+                             ("0938", "p0938_pct"), ("0940", "p0940_pct"),
+                             ("0945", "p0945_pct")):
             state = snapshots.get(label, {}).get(symbol)
             if state:
                 row[field] = state.get("pct_change")
@@ -790,6 +812,8 @@ def _eligible_front_plate(name: str, metadata: Mapping[str, Mapping[str, Any]]) 
 def _latest_report(root: Path, trade_date: str, stage: str) -> Path | None:
     parent = root / trade_date
     candidates = [parent / stage / "report.json", *parent.glob(f"{stage}-*/report.json")]
+    if stage == STAGE_NAMES["open"]:
+        candidates.extend(parent.glob("open_*/report.json"))
     existing = [path for path in candidates if path.is_file()]
     return max(existing, key=lambda path: path.stat().st_mtime_ns) if existing else None
 
@@ -1072,7 +1096,16 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 degraded.append("WENCAI_FALLBACK_PARTIAL")
     root = Path(out_root)
     actual_stage = STAGE_NAMES[stage]
-    out = _next_output(root, trade_date, actual_stage)
+    output_stage = actual_stage
+    chosen_checkpoint = None
+    if stage == "open":
+        from .live_session import open_checkpoint_for_asof
+        chosen_checkpoint = open_checkpoint_for_asof(asof)
+        if asof is not None:
+            output_stage = f"open_{chosen_checkpoint}"
+    elif stage == "auction" and asof is not None:
+        output_stage = f"auction_{(asof or '09:26:00').replace(':', '')[:4]}"
+    out = _next_output(root, trade_date, output_stage)
     out.mkdir(parents=True, exist_ok=False)
     inputs: dict[str, Any] = {}
     for key, path in refs.items():
@@ -1215,6 +1248,9 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 kaipan_hot_rows=slice_results["hot_plates_today"].rows or None,
                 member_snapshot_date=relation_asof, member_lag_trading_days=relation_lag,
                 asof=asof_cutoff, td_connection_factory=src.td_connection_factory)
+        if stage == "open":
+            payload["checkpoint"] = chosen_checkpoint
+            payload["asof"] = f"{trade_date}T{asof}"
         payload.setdefault("chapters", {})["reference_data"] = {
             "stock_names": {"status": "READY" if stock_names else "MISSING",
                             "reason": None if stock_names else "名称表缺失，名称显示为名称未知"},
@@ -1259,7 +1295,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 degraded.append("MISSING_SAME_DAY_AUCTION_REPORT")
         from .a_to_b import build_a_to_b
         from .ladder_section import build_ladder_section
-        point = f"{trade_date}T{asof or '09:45:00'}"
+        point = f"{trade_date}T{asof or '09:45:30'}"
         live_stocks = payload.get("stocks") if isinstance(payload.get("stocks"), list) else []
         feedback_symbols: set[str] = set()
         if not live_stocks and not (stage == "auction" and _auction_assembly_mode() == "v6"):
@@ -1273,6 +1309,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         history_path=slice_results["daily_history"].rows, plate_metadata=plate_metadata,
         report_features=slice_results["daily_report_features"].rows or None,
         path_symbols=feedback_symbols,
+                checkpoint=chosen_checkpoint,
         td_connection_factory=src.td_connection_factory)
         _attach_range_positions(live_stocks, slice_results["daily_history"].rows, trade_date,
                                 report_features=slice_results["daily_report_features"].rows or None)
@@ -1301,7 +1338,13 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 row.setdefault("0932", live.get("p0932_pct"))
                 row["0938"] = live.get("p0938_pct")
                 row["0945"] = live.get("p0945_pct")
-                row["price"] = live.get("price") or live.get("p0925_price")
+                row["current_checkpoint"] = chosen_checkpoint if stage == "open" else "0925"
+                row["current_pct"] = (live.get("current_pct", live.get(f"p{chosen_checkpoint}_pct")) if stage == "open"
+                                       else live.get("p0925_pct"))
+                row["current_amount_yuan"] = (live.get("current_amount_yuan") if stage == "open"
+                                               else live.get("p0925_amount_yuan"))
+                row["price"] = (live.get("price") if stage == "open" else
+                                live.get("price") or live.get("p0925_price"))
                 row["pre_close"] = live.get("pre_close") or live.get("p0925_pre_close")
                 row["match_amount_yuan"] = live.get("auction_amount_yuan")
         if stage == "auction" and _auction_assembly_mode() == "v6":
@@ -1309,7 +1352,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             payload["chapters"]["yesterday_limit_pool"] = highboards
         payload["ladder_section"] = build_ladder_section(
             highboards if isinstance(highboards, list) else [], stage=stage, asof=point,
-            frequencies=path_frequencies, market_stocks=live_stocks)
+            frequencies=path_frequencies, market_stocks=live_stocks,
+            checkpoint=chosen_checkpoint if stage == "open" else "0925")
         # Build the story from the same live payload used by the appendices. Keep
         # the auction terminal as an explicit handoff in open reports.
         from .story_features import build_live_story_features
@@ -1332,8 +1376,9 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     "bucket": candidate.get("bucket", "wait"),
                     "auction_price_status": candidate.get("auction_price_status", "UNKNOWN"),
                     "auction_pct": metrics.get("auction_pct"),
-                    "p0945_pct": metrics.get("p0945_pct"),
-                    "relative0945": metrics.get("relative_to_plate_0945_pp"),
+                    f"p{chosen_checkpoint or '0925'}_pct": metrics.get(f"p{chosen_checkpoint}_pct", metrics.get("current_pct")) if stage == "open" else metrics.get("auction_pct"),
+                    "current_pct": metrics.get("current_pct"),
+                    f"relative_to_plate_{chosen_checkpoint or '0925'}_pp": metrics.get(f"relative_to_plate_{chosen_checkpoint}_pp") if stage == "open" else None,
                     "position20_prior": metrics.get("position20_prior", metrics.get("position20")),
                     "reasons": candidate.get("reasons", []),
                     "origin": "A_TO_B"})
@@ -1350,23 +1395,28 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             if not symbol or symbol in known_symbols or not auction:
                 continue
             pct = auction.get("auction_pct", auction.get("p0925_pct"))
+            current_pct = (auction.get(f"p{chosen_checkpoint}_pct") if stage == "open"
+                           else auction.get("p0925_pct"))
             funnel_candidates.append({"symbol": symbol, "name": row.get("name", symbol),
                 "bucket": "wait", "selection_reason": "昨日高标，跟踪竞价承接",
                 "condition": ((f"竞价{float(pct):+.1f}%，开盘确认仍封住" if pct is not None else "")
                               if auction.get("auction_limit_state") in (1, "1") else
                               (f"竞价{float(pct):+.1f}%，看0932仍≥{5 if pct is not None and pct >= 5 else 0}%且不弱于板块"
                                if stage == "auction" and pct is not None else
-                               (f"竞价{float(pct):+.1f}%后0945{float(auction.get('p0945_pct')):+.1f}%，看后续保持红盘且不弱于板块"
-                                if stage == "open" and pct is not None and auction.get("p0945_pct") is not None else ""))),
+                              (f"竞价{float(pct):+.1f}%后{chosen_checkpoint}{float(current_pct):+.1f}%，看后续保持红盘且不弱于板块"
+                                if stage == "open" and pct is not None and current_pct is not None else ""))),
                 "risk": (f"竞价涨幅{float(pct):+.1f}%，需复核承接" if pct is not None else ""),
                 "auction_price_status": auction.get("auction_price_status", "UNKNOWN"),
                 "auction_pct": pct, "match_amount_yuan": auction.get("auction_amount_yuan"),
-                "p0945_pct": auction.get("p0945_pct"),
+                "current_checkpoint": chosen_checkpoint if stage == "open" else "0925",
+                "current_pct": current_pct,
+                f"p{chosen_checkpoint or '0925'}_pct": current_pct,
                 "auction_limit_state": auction.get("auction_limit_state"), "origin": "YESTERDAY_HIGHBOARD"})
             known_symbols.add(symbol)
             if len(funnel_candidates) >= 30:
                 break
-        story_funnel = filter_candidates(funnel_candidates, features, asof=point)
+        story_funnel = filter_candidates(funnel_candidates, features, asof=point,
+                                         checkpoint=chosen_checkpoint if stage == "open" else None)
         previous_acts = []
         if stage == "open" and isinstance(payload.get("handoff"), Mapping):
             handoff = payload["handoff"].get("auction_0925")
@@ -1638,11 +1688,11 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             if symbol and level and level > 0:
                 feedback_pool.append({"symbol": symbol, "name": stock_names.get(symbol, symbol), "lb_days": level})
         feedback_snapshots: dict[str, dict[str, dict[str, Any]]] = {}
-        checkpoint_field = {"0925": "0925", "0932": "0932", "0938": "0938", "0945": "0945"}
+        from .live_session import OPEN_CHECKPOINTS
+        checkpoint_field = {tag: tag for tag, _ in OPEN_CHECKPOINTS}
         for checkpoint, suffix in checkpoint_field.items():
             snapshot_rows = {}
-            checkpoint_time = {"0925": "09:25:06", "0932": "09:32:00",
-                               "0938": "09:38:00", "0945": "09:45:00"}[checkpoint]
+            checkpoint_time = dict(OPEN_CHECKPOINTS)[checkpoint]
             for stock in live_stocks:
                 if not isinstance(stock, Mapping):
                     continue
@@ -1669,18 +1719,14 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             trade_date=trade_date, used_date=previous_trade_date or "UNKNOWN",
             version=slice_results["yest_limit_pool"].meta.get("version"),
             pool=feedback_pool, snapshots=feedback_snapshots, stage=stage,
+            checkpoint=chosen_checkpoint if stage == "open" else None,
             theme_assignments=stock_assignment)
         payload["streak_feedback"] = feedback
         try:
             persist_streak_feedback(os.getenv("CORE_DATA_ROOT", "/home/exedev/core-data"), feedback)
         except OSError:
             degraded.append("STREAK_FEEDBACK_COLD_WRITE_FAILED")
-        active_time = point[-8:]
-        active_candidates = [checkpoint for checkpoint, clock in
-                             (("0925", "09:25:00"), ("0932", "09:32:00"),
-                              ("0938", "09:38:00"), ("0945", "09:45:00"))
-                             if clock <= active_time]
-        active_checkpoint = active_candidates[-1] if active_candidates else "0925"
+        active_checkpoint = chosen_checkpoint if stage == "open" else "0925"
         active_matrix = feedback["checkpoints"].get(active_checkpoint, {}).get("matrix", {})
         active_levels = active_matrix.get("by_level", {})
         ladder = payload.get("ladder_section")
@@ -1705,7 +1751,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                                  "primary_theme": primary, "source": assignment["source"],
                                  "as_of": assignment["as_of"], "version": assignment["version"]})
         # Rebuild the displayed plate linkage from the same primary assignments.
-        current_label = "p0945" if stage == "open" else "p0925"
+        current_checkpoint = chosen_checkpoint if stage == "open" else "0925"
+        current_label = f"p{current_checkpoint}"
         linkage_states = {}
         for stock in live_stocks:
             symbol = str(stock.get("symbol", stock.get("code", ""))).zfill(6)
@@ -1714,7 +1761,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             linkage_states[symbol] = {
                 "pct_change": stock.get(f"{current_label}_pct"),
                 "match_amount_yuan": stock.get(f"{current_label}_amount_yuan",
-                                                stock.get("auction_amount_yuan")),
+                                                stock.get(f"{current_label}_amount",
+                                                          stock.get("auction_amount_yuan"))),
                 "limit_state": stock.get("auction_limit_state" if stage != "open" else "open_limit_state"),
             }
         class_by_code = {}
@@ -1728,7 +1776,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             if isinstance(existing, Mapping):
                 payload["chapters"]["plate_linkage"] = {
                     **existing, "available": bool(linkage["rows"]),
-                    "slice_label": "0945" if stage == "open" else "0925",
+                    "slice_label": current_checkpoint,
                     "rows": linkage["rows"][:15],
                     "primary_theme_rows": (linkage.get("primary_theme_rows") or [])[:15],
                     "down_limit_top5": linkage["down_limit_top5"],
@@ -1767,7 +1815,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 table_states[symbol] = {
                     "name": stock_names.get(symbol, stock.get("name") or symbol),
                     "pct_change": stock.get(f"{current_label}_pct"),
-                    "amount_yuan": stock.get(f"{current_label}_amount_yuan"),
+                    "amount_yuan": stock.get(f"{current_label}_amount_yuan",
+                                              stock.get(f"{current_label}_amount")),
                     "limit_state": stock.get("auction_limit_state" if stage != "open" else "open_limit_state"),
                     "sealed": stock.get("close_seal_up"),
                     "lb_days": (pool_map.get("lb_days", pool_map.get("streak"))
@@ -1788,7 +1837,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                                      else None)
                     if previous_rows is None:
                         old_linkage = previous_chapters.get("plate_linkage", {})
-                        expected_label = "0945" if stage == "open" else "0925"
+                        expected_label = current_checkpoint
                         if (isinstance(old_linkage, Mapping)
                                 and str(old_linkage.get("slice_label") or "") == expected_label):
                             previous_rows = [
@@ -1843,7 +1892,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     "used_date": slice_results["plate_amount_baseline"].meta.get("pit_date") or
                                  slice_results["plate_amount_baseline"].meta.get("trade_date")}
                     for row in slice_results["plate_amount_baseline"].rows
-                    if row.get("slot") == ("0945" if stage == "open" else "0925")})
+                    if row.get("slot") == current_checkpoint})
             broad_codes = {code for code, label in class_by_code.items() if label == "BROAD"}
             broad_symbols = set().union(*(set(current_relations.get(code, ())) for code in broad_codes)) if broad_codes else set()
             broad_facts = [table_states[symbol] for symbol in sorted(broad_symbols)
@@ -1981,7 +2030,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             payload, stage=stage, plate_metadata=theme_metadata, stocks=themed_stocks,
             theme_assignments=theme_snapshot["assignments"], theme_basis=theme_snapshot["basis"],
             hot_plate_names=theme_snapshot["hot_plate_names"], relation_asof=relation_asof,
-            relation_lag_trading_days=relation_lag)
+            relation_lag_trading_days=relation_lag,
+            checkpoint=chosen_checkpoint if stage == "open" else "0925")
         if stage == "auction" and _auction_assembly_mode() == "v6":
             try:
                 facts_result = slice_results.get("auction_stock_facts")
@@ -2405,6 +2455,37 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             compact_report["auction_panorama_sha256"] = hashlib.sha256(sidecar_bytes).hexdigest()
         elif asof:
             compact_report["asof"] = asof
+    elif stage == "open" and asof:
+        compact_report["asof"] = f"{trade_date}T{asof}"
+        compact_report["checkpoint"] = chosen_checkpoint
+        stamp = f"报告时点：{asof[:5]}；数据截点：{chosen_checkpoint or '无'}"
+        import html
+        rendered = (out / "report.html").read_text(encoding="utf-8")
+        notice = f'<p class="report-asof">{html.escape(stamp)}</p>'
+        (out / "report.html").write_text(rendered.replace("</body>", notice + "</body>", 1),
+                                         encoding="utf-8")
+    elif stage == "open" and chosen_checkpoint:
+        from .live_session import OPEN_CHECKPOINTS
+        cutoff = dict(OPEN_CHECKPOINTS)[chosen_checkpoint]
+        compact_report["asof"] = f"{trade_date}T{cutoff}"
+        compact_report["checkpoint"] = chosen_checkpoint
+    if stage == "open" and chosen_checkpoint:
+        from .live_session import (ReportCheckpointInvariantError,
+                                   assert_report_checkpoint_invariant)
+        checkpoint_violation_count = 0
+        while True:
+            try:
+                assert_report_checkpoint_invariant(compact_report, chosen_checkpoint)
+                break
+            except ReportCheckpointInvariantError as exc:
+                checkpoint_violation_count += 1
+                degraded.append(exc.code)
+                compact_report = _degraded_checkpoint_report(
+                    compact_report, trade_date, chosen_checkpoint, asof)
+                banner = ('<!doctype html><html><body><div class="report-degraded">'
+                          '报告包含时点校验失败字段，相关数据已隐藏。</div></body></html>')
+                html_path = out / "report.html"
+                html_path.write_text(banner, encoding="utf-8")
     report_text = json.dumps(compact_report,
                              ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
     report_json_warning = None
@@ -2422,7 +2503,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     if stage != "close":
         close_manifest = {}
     manifest = {"contract": "DailyPipelineManifestV1", "trade_date": trade_date,
-                "stage": stage, "asof": asof, "outputs": str(out), "input_files": inputs,
+                "stage": stage, "asof": asof, "checkpoint": chosen_checkpoint,
+                "outputs": str(out), "input_files": inputs,
                 "auction_assembly": (_auction_assembly_mode() if stage == "auction" else None),
                 "sources": {"td": td_source_manifest,
                             "q2_redis": {"available": src.redis is not None and not degraded_q2,
@@ -2435,6 +2517,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                                             "path": str(refs["daily_capture_manifest"]) if refs["daily_capture_manifest"] else None,
                                             "coverage": daily_coverage}},
                 "degraded": sorted(set(degraded)), "close_review_manifest": close_manifest,
+                "degraded_counts": ({"REPORT_CHECKPOINT_INVARIANT_VIOLATION": checkpoint_violation_count}
+                                    if stage == "open" and checkpoint_violation_count else {}),
                 "elapsed_seconds": round(time.monotonic() - started, 3),
                 "timings": pipeline_timings,
                 "slices": {name: {**slice_manifest[name], "elapsed_seconds": slice_timings[name]}

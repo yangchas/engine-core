@@ -69,6 +69,36 @@ def test_render_page_fetches_independent_cutoffs_concurrently_and_keeps_stage_or
     assert [snap["label"] for snap in payload["snapshots"]] == ["0920", "0924", "0925"]
 
 
+def test_open_asof_uses_latest_ready_0932_and_0938_checkpoint():
+    class TD:
+        def states_at(self, cutoff):
+            return {"000001": _state("000001", cutoff.minute, 1_000_000,
+                                      ts=cutoff.strftime("%H:%M:%S"))}
+
+    for asof, checkpoint in (("2026-10-15T09:32:10", "0932"),
+                             ("2026-10-15T09:38:10", "0938")):
+        _, payload = render_page(TD(), trade_date="2026-10-15", stage="open_0946", asof=asof)
+        ready = [snap for snap in payload["snapshots"] if snap["status"] != "NOT_YET_AVAILABLE"]
+        assert ready[-1]["label"] == checkpoint
+        assert ready[-1]["asof"].endswith({"0932": "09:32:00", "0938": "09:38:00"}[checkpoint])
+
+
+@pytest.mark.parametrize(("asof", "checkpoint"), [("2026-10-15T09:32:10", "0932"),
+                                                    ("2026-10-15T09:38:10", "0938")])
+def test_open_current_plate_linkage_uses_asof_checkpoint(asof, checkpoint):
+    class TD:
+        def states_at(self, cutoff):
+            return {f"{i:06d}": _state(f"{i:06d}", cutoff.minute / 10, 1_000_000,
+                                        ts=cutoff.strftime("%H:%M:%S")) for i in range(1, 9)}
+
+    _, payload = render_page(
+        TD(), trade_date="2026-10-15", stage="open_0946", asof=asof,
+        relations={"p1": {f"{i:06d}" for i in range(1, 9)}}, plate_names={"p1": "测试主题"})
+    linkage = payload["chapters"]["plate_linkage"]
+    assert linkage["available"] is True
+    assert linkage["slice_label"] == checkpoint
+
+
 def test_write_page_refuses_nonempty_directory(tmp_path):
     output = tmp_path / "out"
     output.mkdir()

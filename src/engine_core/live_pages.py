@@ -17,7 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from engine_core.live_session import (market_price_volume_status, build_live_slice, checkpoint_ready, daily_history_context,
+from engine_core.live_session import (OPEN_CHECKPOINTS, market_price_volume_status, build_live_slice, checkpoint_ready, daily_history_context,
+                                      open_checkpoint_for_asof,
                                       load_auction_amount_baseline_csv, auction_amount_baseline_comparison,
                                       load_daily_history_csv, states_at)
 from engine_core.plate_enrichment import infer_plate_enrichment
@@ -25,8 +26,7 @@ from engine_core.plate_linkage import build_plate_linkage
 from engine_core.extremes_board import build_extremes_board
 
 STAGES = {"auction_0926": [("0920", "09:20:00"), ("0924", "09:24:00"), ("0925", "09:25:06")],
-          "open_0946": [("0925", "09:25:06"), ("0932", "09:32:00"), ("0935", "09:35:00"),
-                        ("0940", "09:40:00"), ("0945", "09:45:30")]}
+          "open_0946": list(OPEN_CHECKPOINTS)}
 SECTIONS = {"auction_0926": ["一屏结论", "大盘", "竞价先选极值集合", "板块份额", "板块象限", "板块联动与跌停影响", "封涨停质量", "封跌停质量", "昨日连板高标", "竞价内变化", "看A做B", "近72日对比"],
             "open_0946": ["一屏结论", "大盘", "竞价集合开盘追踪", "板块象限", "昨日连板高标分化", "昨日涨停池", "竞价后新冒头", "板块回升榜", "板块回落榜", "板块联动与跌停影响", "封涨停质量", "封跌停质量", "竞价内变化", "看A做B", "近72日对比"]}
 GENERIC_NAMES_PATH = Path(__file__).resolve().parents[2] / "examples" / "data" / "plate_generic_factor_names.json"
@@ -99,9 +99,10 @@ def _generic_factor_names():
     return set(data if isinstance(data, list) else data.get("names", []))
 
 
-def _plate_linkage_chapter(raw_states, stage, relations, plate_names, stock_names):
+def _plate_linkage_chapter(raw_states, stage, relations, plate_names, stock_names,
+                           current_checkpoint=None):
     generic_names = _generic_factor_names() | set(EVENT_NAME_MARKERS)
-    current_label = "0945" if stage == "open_0946" else "0925"
+    current_label = (current_checkpoint or "0945") if stage == "open_0946" else "0925"
     current = build_plate_linkage(raw_states.get(current_label, {}), relations, plate_names,
                                   stock_names=stock_names, generic_names=generic_names,
                                   min_members=8, top_n=None)
@@ -302,6 +303,8 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
     baseline_yuan = _load_amount_baseline(amount_baseline_json)
     auction_baseline_rows = load_auction_amount_baseline_csv(auction_baseline_csv, trade_date)
     asof_cutoff = datetime.fromisoformat(asof) if isinstance(asof, str) else asof
+    current_checkpoint = (open_checkpoint_for_asof(asof_cutoff)
+                          if stage == "open_0946" else "0925")
     cutoffs = {label: datetime.fromisoformat(f"{trade_date}T{clock}")
                for label, clock in STAGES[stage]}
     fetchable = {}
@@ -382,7 +385,7 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
         snaps.append(snap)
     sections = SECTIONS[stage]
     relations, plate_names, stock_names = relations or {}, plate_names or {}, stock_names or {}
-    final_label = "0945" if stage == "open_0946" else "0925"
+    final_label = current_checkpoint
     current = raw_states.get(final_label, {})
     history_rows = (daily_report_features if daily_report_features else
                     load_daily_history_csv(daily_history_csv, trade_date=trade_date) if daily_history_csv else None)
@@ -390,16 +393,18 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
     stock_context = context["stocks"] if context else {}
     history = context["history"] if context else None
     chapters = _build_chapters(snaps, raw_states, stage, relations, plate_names,
-                               stock_names, stock_context, history, history_rows is not None)
+                               stock_names, stock_context, history, history_rows is not None,
+                               current_checkpoint=current_checkpoint)
     chapters["plate_linkage"] = _plate_linkage_chapter(
-        raw_states, stage, relations, plate_names, stock_names)
+        raw_states, stage, relations, plate_names, stock_names,
+        current_checkpoint=current_checkpoint)
     chapters["plate_enrichment"] = {"status": "仅开盘更新页面计算；当前阶段不适用",
                                     "emerging_count": 0, "N": 0,
                                     "member_snapshot_date": member_snapshot_date,
                                     "plates": [], "method_note": "仅称关联不称买点"}
     if stage == "open_0946":
         chapters["plate_enrichment"] = infer_plate_enrichment(
-            raw_states.get("0925", {}), raw_states.get("0945", {}), relations,
+            raw_states.get("0925", {}), raw_states.get(current_checkpoint, {}), relations,
             plate_names=plate_names, stock_names=stock_names,
             generic_names=_generic_factor_names(), member_snapshot_date=member_snapshot_date)
         enrichment = chapters["plate_enrichment"]
@@ -420,13 +425,15 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
     aggregation_seconds = max(0.0, time.perf_counter() - aggregation_started - td_fetch_seconds)
     lag_text = (f"关系快照 {member_snapshot_date}，滞后 {member_lag_trading_days} 个交易日。"
                 if member_lag_trading_days is not None else f"关系快照 {member_snapshot_date}，滞后 UNKNOWN。")
-    limitations = f"板块关系使用调用方提供的点时关系；{lag_text}名称来自可选名称表或代码。日线输入缺失时，昨日连板、A/B位置与72日比较明确降级；缺失字段不补零。09:45 切片未追平时标记 NOT_READY/STALE。"
+    limitations = f"板块关系使用调用方提供的点时关系；{lag_text}名称来自可选名称表或代码。日线输入缺失时，昨日连板、A/B位置与72日比较明确降级；缺失字段不补零。切片未追平时标记 NOT_READY/STALE。"
     manifest = {"inputs": {"kaipan_hot": _input_manifest(kaipan_hot_json, "kaipan_hot"),
                             "strength_anchor": _input_manifest(strength_anchor_json, "strength_anchor"),
                             "amount_baseline": _input_manifest(amount_baseline_json, "amount_baseline"),
                             "auction_baseline": _auction_baseline_manifest(auction_baseline_csv,
                                                                             auction_baseline_rows)}}
-    payload = {"trade_date": trade_date, "stage": stage, "snapshots": snaps, "sections": sections,
+    payload = {"trade_date": trade_date, "stage": stage, "checkpoint": current_checkpoint,
+               "asof": asof_cutoff.isoformat() if asof_cutoff else None,
+               "snapshots": snaps, "sections": sections,
                "conclusion": conclusion, "history": history, "chapters": chapters,
                "manifest": manifest,
                "limitations": limitations,
@@ -472,12 +479,12 @@ def _complete_limit_count(states, rows, side):
 
 
 def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_names,
-                    stock_context, history, has_history):
+                    stock_context, history, has_history, current_checkpoint=None):
     from engine_core.behavior_tags import calculate_stock_tags, summarize
     from engine_core.extremes_review import limit_percent
     labels = {snap["label"]: snap for snap in snaps}
     auction = raw_states.get("0925", {})
-    last_label = "0945" if stage == "open_0946" else "0925"
+    last_label = (current_checkpoint or "0945") if stage == "open_0946" else "0925"
     latest = raw_states.get(last_label, {})
     chapters = {"yesterday_highboards": "缺少输入" if not has_history else [],
                 "yesterday_highboards_summary": None,
@@ -584,9 +591,10 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
         candidates = [(symbol, ctx["streak"]) for symbol, ctx in stock_context.items() if ctx["streak"] >= 2 and symbol in auction]
         highboards = []
         for symbol, streak in candidates:
-            vals = {tag: raw_states.get(tag, {}).get(symbol, {}).get("pct_change") for tag in ("0925", "0932", "0940", "0945")}
-            states = {tag: raw_states.get(tag, {}).get(symbol, {}) for tag in ("0925", "0932", "0940", "0945")}
-            cutoff_state = states["0945"] if stage == "open_0946" else states["0925"]
+            checkpoint_tags = ("0925", "0932", "0935", "0938", "0940", "0945")
+            vals = {tag: raw_states.get(tag, {}).get(symbol, {}).get("pct_change") for tag in checkpoint_tags}
+            states = {tag: raw_states.get(tag, {}).get(symbol, {}) for tag in checkpoint_tags}
+            cutoff_state = states.get(last_label, {})
             status = _board_status(states)
             highboards.append({"symbol": symbol, "name": stock_names.get(symbol, symbol), "streak": streak,
                                "status": status, "match_amount_yuan": auction[symbol].get("match_amount_yuan"),
@@ -709,17 +717,18 @@ def _build_chapters(snaps, raw_states, stage, relations, plate_names, stock_name
             "latest_pct": latest.get(symbol, {}).get("pct_change"),
         })
     chapters["extremes_board"] = build_extremes_board(
-        extreme_rows, stage="open" if stage == "open_0946" else None)
+        extreme_rows, stage="open" if stage == "open_0946" else None,
+        checkpoint=last_label if stage == "open_0946" else None)
     if stage == "open_0946" and latest:
         chapters["emerging"] = sorted([{"symbol": symbol, "name": stock_names.get(symbol, row.get("name") or symbol),
                                        "0925": base.get(symbol, {}).get("pct_change"), "0932": raw_states.get("0932", {}).get(symbol, {}).get("pct_change"),
-                                       "0945": row.get("pct_change"), "match_amount_yuan": row.get("match_amount_yuan")}
+                                       last_label: row.get("pct_change"), "match_amount_yuan": row.get("match_amount_yuan")}
                                       for symbol, row in latest.items() if base.get(symbol, {}).get("pct_change") is not None
                                       and base[symbol]["pct_change"] < 3 and row.get("pct_change") is not None and row["pct_change"] >= 5],
                                      key=lambda row: (row.get("match_amount_yuan") is None,
                                                       -(row["match_amount_yuan"] if row.get("match_amount_yuan") is not None else 0)))[:30]
         old_plates = labels.get("0925", {}).get("top_plates_by_share", [])
-        new_plates = labels.get("0945", {}).get("top_plates_by_share", [])
+        new_plates = labels.get(last_label, {}).get("top_plates_by_share", [])
         old = {row["code"]: row for row in old_plates}
         changed = []
         for row in new_plates:

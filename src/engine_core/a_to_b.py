@@ -194,6 +194,14 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
                              min_size=min_plate_size,
                              max_size=max_plate_size):
             by_plate[plate].append(row)
+    checkpoint = ("0925" if auction_only else
+                  next((str(row.get("current_checkpoint")) for row in normalized
+                        if row.get("current_checkpoint")), None))
+    if live and checkpoint is None:
+        from .live_session import open_checkpoint_for_asof
+        checkpoint = open_checkpoint_for_asof(asof)
+    checkpoint = checkpoint or "0945"
+    current_pct_key = f"p{checkpoint}_pct"
     result = []
     def average(rows, key):
         values = [_number(row, key) for row in rows]
@@ -202,8 +210,9 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
     plate_average_0925 = {plate: average(rows, "p0925_pct") for plate, rows in by_plate.items()}
     plate_average_0945 = {plate: average(rows, "p0945_pct") for plate, rows in by_plate.items()}
     plate_average_close = {plate: average(rows, "close_pct") for plate, rows in by_plate.items()}
-    visible_key = "p0925_pct" if auction_only else "close_pct" if not live else "p0945_pct"
-    plate_current_average = {plate: average(rows, visible_key) for plate, rows in by_plate.items()}
+    visible_key = "p0925_pct" if auction_only else "close_pct" if not live else current_pct_key
+    plate_current_average = {plate: (average(rows, "current_pct") if live else average(rows, visible_key))
+                             for plate, rows in by_plate.items()}
     market_amount = sum(value for row in normalized
                         if (value := _number(row, "auction_amount_yuan")) is not None and value > 0)
     amount_ranked = sorted((row for row in normalized if _number(row, "auction_amount_yuan") is not None),
@@ -241,7 +250,8 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
         rest_bid = _number(anchor, "rest_bid_yuan", "rest_bid")
         is_sealed = state_up and rest_bid is not None and rest_bid > 0
         visible_pct = (_number(anchor, "p0925_pct") if auction_only else
-                       _number(anchor, "close_pct") if not live else _number(anchor, "p0945_pct"))
+                       _number(anchor, "close_pct") if not live else
+                       _number(anchor, "current_pct", current_pct_key))
         visible_high = _number(anchor, "high_pct") if not live and not auction_only else None
         limit_pct = _number(anchor, "limit_pct")
         exact_close_state = None
@@ -326,8 +336,8 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
                               "同伴全部买不到" if buyable_peers == 0 else "无合格同伴")
         base["excluded_small_amount"] = excluded_small_amount
         for amount, common_count, peer in eligible[:max_candidates]:
-            peer_plate_pct = plate_average_0945.get(anchor_plates[0])
-            peer_0945 = _number(peer, "p0945_pct", "0945")
+            peer_plate_pct = plate_current_average.get(anchor_plates[0])
+            peer_0945 = _number(peer, "current_pct", current_pct_key, checkpoint)
             range_position = _number(peer, "prior_range_position20_pct", "p0925_range_position20_pct")
             position_label = ("越界↑" if range_position is not None and range_position > 100 else
                               "越界↓" if range_position is not None and range_position < 0 else
@@ -345,6 +355,8 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
                     "p0925_pct": _number(peer, "p0925_pct", "auction_pct", "0925"),
                     "p0932_pct": None if auction_only else _number(peer, "p0932_pct", "0932"),
                     "p0945_pct": None if auction_only else _number(peer, "p0945_pct", "0945"),
+                    "current_checkpoint": checkpoint if live else None,
+                    "current_pct": peer_0945 if live else None,
                     "auction_price_status": peer.get("auction_price_status"),
                     "in_yest_pool": peer.get("in_yest_pool"),
                     "prior_streak": _prior_streak(peer)[0],
@@ -425,7 +437,7 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
         total_price_count = sum(1 for row in normalized if _number(row, "p0925_pct") is not None)
         up_share = (sum(1 for row in normalized if (_number(row, "p0925_pct") or 0) > 0) / total_price_count
                     if total_price_count else None)
-        stage_pct = plate_average_0945.get(str(plate)) if not auction_only else None
+        stage_pct = plate_current_average.get(str(plate)) if not auction_only else None
         visible_limit_values = [row for row in peers if _number(row, visible_key) is not None and
                                 _number(row, "limit_pct") is not None]
         visible_limit_count = (sum(1 for row in visible_limit_values
@@ -434,17 +446,17 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
         state_label = str((market_state or {}).get("auction_regime") or "UNKNOWN") if auction_only else "UNKNOWN"
         if not auction_only:
             p25 = [_number(row, "p0925_pct") for row in normalized]
-            p45 = [_number(row, "p0945_pct") for row in normalized]
+            p45 = [_number(row, "current_pct", current_pct_key) for row in normalized]
             v25, v45 = [x for x in p25 if x is not None], [x for x in p45 if x is not None]
             if normalized and len(v25) / len(normalized) >= .8 and len(v45) / len(normalized) >= .8:
                 med25, med45 = sorted(v25)[len(v25) // 2], sorted(v45)[len(v45) // 2]
                 up25, up45 = sum(x > 0 for x in v25) / len(v25), sum(x > 0 for x in v45) / len(v45)
-                up_count = sum(1 for row in normalized if _number(row, "p0945_pct") is not None and
+                up_count = sum(1 for row in normalized if _number(row, "current_pct", current_pct_key) is not None and
                                _number(row, "limit_pct") is not None and
-                               _number(row, "p0945_pct") >= _number(row, "limit_pct") - .2)
-                down_count = sum(1 for row in normalized if _number(row, "p0945_pct") is not None and
+                               _number(row, "current_pct", current_pct_key) >= _number(row, "limit_pct") - .2)
+                down_count = sum(1 for row in normalized if _number(row, "current_pct", current_pct_key) is not None and
                                  _number(row, "limit_pct") is not None and
-                                 _number(row, "p0945_pct") <= -_number(row, "limit_pct") + .2)
+                                 _number(row, "current_pct", current_pct_key) <= -_number(row, "limit_pct") + .2)
                 if med45 <= -1 or up45 <= .30 or down_count >= max(20, up_count):
                     state_label = "WEAK"
                 elif (med25 <= -.5 or up25 <= .35) and med45 - med25 >= .5 and up45 - up25 >= .10:
@@ -486,7 +498,11 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
                                                if p_amount and peer.get("auction_amount_yuan") is not None else None),
                        "position20": peer.get("position"), "buyable": True,
                        "buyable_evidence": "竞价未涨停且未接近涨跌停",
-                       "relative_to_plate_0945_pp": peer.get("relative_to_plate_pp"),
+                       "relative_to_plate_0945_pp": (
+                           _number(peer, "p0945_pct", "0945") - plate_average_0945[str(plate)]
+                           if plate and _number(peer, "p0945_pct", "0945") is not None
+                           and plate_average_0945.get(str(plate)) is not None else None),
+                       f"relative_to_plate_{checkpoint}_pp": peer.get("relative_to_plate_pp"),
                        "relative_to_plate_close_pp": ((peer.get("close_pct") - plate_average_close[str(plate)])
                            if not live and peer.get("close_pct") is not None and plate_average_close.get(str(plate)) is not None else None)}
             if auction_only:
@@ -506,7 +522,9 @@ def build_a_to_b(stocks: Sequence[Mapping[str, Any]], *, trade_date: str,
                           "relative_64d_multiple": None, "relative_prev_multiple": None,
                           "up_share": plate_up_share.get(str(plate)) if plate else None,
                           "equal_weight_pct": plate_average_0925.get(str(plate)) if plate else None,
-                          "equal_weight_0945_pct": stage_pct,
+                          "equal_weight_0945_pct": plate_average_0945.get(str(plate)) if plate else None,
+                          "current_checkpoint": checkpoint if live else None,
+                          "current_equal_weight_pct": stage_pct,
                           "equal_weight_close_pct": None if live else plate_average_close.get(str(plate)),
                           "limit_up_count": visible_limit_count,
                           "strength_top": (plate_strength_ranked.index(str(plate)) + 1 <= 10) if plate in plate_strength_ranked else None,

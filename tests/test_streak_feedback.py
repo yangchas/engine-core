@@ -1,6 +1,18 @@
 from engine_core.streak_feedback import build_streak_feedback
 
 
+def test_open_feedback_includes_all_available_intermediate_checkpoints():
+    result = build_streak_feedback(
+        trade_date="2026-10-16", used_date="2026-10-15", version="v1",
+        pool=[{"symbol": "600001", "lb_days": 2}],
+        snapshots={label: {"600001": {"price": 10.1, "pre_close": 10,
+                                       "rest_bid": 0, "rest_ask": 0,
+                                       "high": 10.1, "return_pct": 1}}
+                   for label in ("0932", "0935", "0938", "0940", "0945")},
+        stage="open")
+    assert all(label in result["checkpoints"] for label in ("0935", "0940"))
+
+
 def test_checkpoint_state_uses_event_priority_and_marks_auction_provisional():
     pool = [
         {"symbol": "600001", "lb_days": 2},
@@ -76,3 +88,15 @@ def test_theme_matrix_uses_shared_primary_assignment_and_keeps_unknown_explicit(
     assert result["checkpoints"]["0945"]["matrix"]["by_theme"]["T1"]["promoted"] == 1
     assert result["checkpoints"]["0945"]["matrix"]["by_theme"]["T2"]["unknown"] == 1
     assert result["checkpoints"]["0945"]["matrix"]["by_theme"]["T2"]["promotion_rate"] == 0
+
+
+def test_open_report_feedback_omits_future_checkpoints():
+    result = build_streak_feedback(
+        trade_date="2026-10-16", used_date="2026-10-15", version="v1",
+        pool=[{"symbol": "600001", "lb_days": 2}],
+        snapshots={label: {"600001": {"price": 10.1, "pre_close": 10,
+                                       "rest_bid": 0, "rest_ask": 0,
+                                       "high": 10.1, "return_pct": 1}}
+                   for label in ("0925", "0932", "0935", "0938", "0940", "0945")},
+        stage="open", checkpoint="0932")
+    assert list(result["checkpoints"]) == ["0925", "0932"]

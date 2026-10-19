@@ -54,6 +54,20 @@ def test_stage_projection_and_funnel_ignore_future_results():
                                                                                    asof="09:45")
 
 
+def test_open_funnel_uses_selected_checkpoint_and_never_later_0945_value():
+    features = {"stage": "open", "metrics": {}}
+    candidate = {"symbol": "000001", "name": "甲", "bucket": "wait",
+                 "price_status": "FINAL", "p0932_pct": 2.0, "p0945_pct": 8.0,
+                 "relative_to_plate_0932_pp": 1.2, "relative_to_plate_0945_pp": 7.0,
+                 "selection_reason": "板内观察", "risk": "需复核"}
+    funnel = filter_candidates([candidate], features, asof="09:32:10", checkpoint="0932")
+    item = funnel["shown"]["wait"][0]
+    assert "0932+2.0%" in item["condition"]["text"]
+    assert "0945" not in item["condition"]["text"]
+    assert "+2.0%" in item["risk"]
+    assert "0945" not in item["risk"]
+
+
 def test_story_caps_unobserved_act_and_json_safety():
     bundle = build_story_features({"trade_date": "2026-10-15", "auction_up_share": 0.2},
                                   stage="auction", cutoff="09:25", observed_at=None,
@@ -247,12 +261,26 @@ def test_open_story_compares_auction_to_opening_path_and_keeps_missing_explicit(
                 ("0945", "09:45", -1.8, 9.9))],
         "handoff": {"auction_0925": {"final_0925": {"status": "READY", "symbol_count": 5000,
             "asof": "09:25:06", "median_pct_change": -1.92, "up_share_pct": 1.9}}}}
-    features = build_live_story_features(report, stage="open", cutoff="09:45:00")
+    features = build_live_story_features(report, stage="open", cutoff="09:45:30")
     story = compose_story(features, [], {"shown": {}}, previous_acts=[])
     text = "\n".join(_story_text(story, report))
     assert "1.9%" in text and "5.7%" in text and "12.0%" in text and "9.9%" in text
     assert "改善但仍是少数个股上涨" in text
     assert "第三、四幕未到" in text
+
+
+def test_open_story_keeps_0945_metrics_missing_until_094530():
+    report = {"trade_date": "2026-10-15", "checkpoint": "0940",
+        "market_price_volume": {"asof": "2026-10-15T09:45:00", "phase": "OPEN",
+            "status": "FRESH", "symbol_count": 5000, "median_pct_change": 2.0,
+            "up_share_pct": 60.0},
+        "snapshots": [{"label": "0945", "asof": "2026-10-15T09:45:00",
+                       "median_pct": 2.0, "up_share_pct": 60.0}]}
+    early = build_live_story_features(report, stage="open", cutoff="09:45:29")
+    assert early["metrics"].get("p0945_median") is None
+    assert "p0945_median_pct" not in early["metrics"]
+    ready = build_live_story_features(dict(report, checkpoint="0945"), stage="open", cutoff="09:45:30")
+    assert ready["metrics"]["p0945_median_pct"]["value"] == 2.0
 
 
 def test_auction_events_are_presented_as_three_observation_items():
