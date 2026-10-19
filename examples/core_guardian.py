@@ -19,7 +19,10 @@ from pathlib import Path
 
 from engine_core.guardian.scheduler import EventSpec, FileInstanceLock, Guardian, default_events
 from engine_core.guardian.management import append_record, load_schedule
+from engine_core.guardian.gates import default_gates
 from engine_core.prep_trade_day import previous_trade_date
+
+_ALERTED: set[tuple[str, str, str]] = set()
 
 
 # Configured handlers either call an existing Core job/report or fail visibly.
@@ -27,9 +30,9 @@ HANDLER_IMPLEMENTATIONS = {
     "night_report": "examples/run_daily_reports.py:close dry-run",
     "premarket_data": "examples/prep_trade_day.py:premarket_and_auction_baseline",
     "kaipan_fetch": "examples/run_data_jobs.py:limit_up_pool,limit_reasons,hot_plates,plate_members",
-    "auction_watch": "NOT_IMPLEMENTED",
+    "auction_watch": "Core read-only TD arrival sample",
     "kaipan_hot_capture": "examples/capture_kaipan_plates.py:hot_plates",
-    "snapshot_check": "NOT_IMPLEMENTED",
+    "snapshot_check": "Core read-only TD snapshot count and coverage",
     "auction_report": "examples/run_daily_reports.py:auction",
     "open_report": "examples/run_daily_reports.py:open",
     "intraday_data": "examples/core_data_daily.py:intraday",
@@ -70,6 +73,31 @@ def _build_gate_status(path: str | None):
 def _command_handler(name: str, opts, root: Path):
     def handler(event: EventSpec, now: datetime, _context, degraded: bool):
         day = now.date().isoformat()
+        if name in {"snapshot_check", "auction_watch"}:
+            from engine_core.guardian.gates import _query, auction_snapshot_stats
+            if name == "snapshot_check":
+                tag = "0920" if "0920" in event.gate else "0924" if "0924" in event.gate else "0925"
+                metrics = auction_snapshot_stats(now, tag)
+                count = metrics["row_count"]
+                ready = metrics["coverage"] >= 0.90
+                outcome = "SUCCEEDED" if ready else ("SUCCEEDED_DEGRADED" if degraded else "INSUFFICIENT")
+                record = {"event": event.event_id, "trade_date": day, "tag": tag,
+                          **metrics, "outcome": outcome, "observed_at": now.isoformat()}
+            else:
+                rows = _query(f"SELECT symbol, ts FROM market_data1.auction_snapshot_v2 WHERE trade_date='{day.replace('-', '')}' AND auction_tag='0920'")
+                count = len({str(row[0]) for row in rows})
+                first = min((row[1] for row in rows), default=None)
+                last = max((row[1] for row in rows), default=None)
+                record = {"event": event.event_id, "trade_date": day, "tag": "0920",
+                          "row_count": int(count), "first_at": str(first), "last_at": str(last),
+                          "observed_at": now.isoformat()}
+            target = root / "guardian" / day / "status_events.jsonl"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            return "DEGRADED:insufficient_snapshot" if record.get("outcome") == "INSUFFICIENT" else json.dumps(record, ensure_ascii=False)
+        if name == "close_capture":
+            return "DEGRADED:disabled_not_implemented"
         if event.data_date_offset < 0:
             day = previous_trade_date(root, day) or ""
             if not day:
@@ -148,8 +176,6 @@ def _command_handler(name: str, opts, root: Path):
                    "--dataset", "hot_plates", "--artifact-root", str(root)]
             if opts.write:
                 cmd.append("--execute")
-        elif name == "close_capture":
-            raise RuntimeError("NOT_IMPLEMENTED: no existing Core close raw-capture job")
         elif name == "baostock_probe":
             external = os.getenv("CORE_BAOSTOCK_PROBE_COMMAND")
             cmd = (shlex.split(external) + [day] if external else
@@ -159,8 +185,6 @@ def _command_handler(name: str, opts, root: Path):
                 cmd.append("--write")
             if opts.td_write:
                 cmd.extend(["--write", "--td-write"])
-        elif name in {"snapshot_check", "auction_watch"}:
-            raise RuntimeError("NOT_IMPLEMENTED: no existing Core " + name + " implementation")
         elif name == "night_report":
             dates = sorted(_load_dates(root, opts.calendar) or [])
             previous = [item for item in dates if item < day]
@@ -200,7 +224,10 @@ def _command_handler(name: str, opts, root: Path):
         try:
             return handler(event, now, context, degraded)
         except Exception as exc:
-            if getattr(opts, "email_self", False):
+            alert_key = (now.date().isoformat(), getattr(event, "event_id", name),
+                         type(exc).__name__ + ":" + str(exc))
+            if getattr(opts, "email_self", False) and alert_key not in _ALERTED:
+                _ALERTED.add(alert_key)
                 try:
                     from engine_core.report_mailer import build_alert_message, load_smtp_config, send_message
                     config = load_smtp_config() if opts.run and not opts.simulate_clock else None
@@ -224,13 +251,20 @@ def _notify_gate_missed(rows, events, opts, now):
         return
     by_id = {event.event_id: event for event in events}
     for row in rows:
-        if row.get("status") != "MISSED" or row.get("event") not in by_id:
+        event_status = row.get("status")
+        if event_status not in {"MISSED", "SUCCEEDED_DEGRADED"} or row.get("event") not in by_id:
             continue
         event = by_id[row["event"]]
+        if event_status == "SUCCEEDED_DEGRADED" and not event.degraded_at_deadline:
+            continue
+        alert_key = (now.date().isoformat(), event.event_id, "GateBlocked:" + event.gate)
+        if alert_key in _ALERTED:
+            continue
+        _ALERTED.add(alert_key)
         try:
             from engine_core.report_mailer import build_alert_message, load_smtp_config, send_message
             config = load_smtp_config() if opts.run and not opts.simulate_clock else None
-            error = RuntimeError(f"gate_blocked:{event.gate}; missing readiness data for {event.gate}")
+            error = RuntimeError(f"gate_blocked:{event.gate}; final status={event_status}")
             alert = build_alert_message(now.date().isoformat(), event.event_id, error,
                                         "412826313@qq.com",
                                         config.from_addr if config else "reports@localhost")
@@ -318,14 +352,20 @@ def main(argv=None) -> int:
     except (OSError, ValueError, TypeError) as exc:
         print("schedule_invalid:" + str(exc), file=sys.stderr)
         return 2
+    disabled = [event.event_id for event in configured if event.handler == "close_capture"]
+    if disabled:
+        print(json.dumps({"status": "SKIPPED", "handler": "close_capture",
+                          "reason": "DISABLED_NOT_IMPLEMENTED", "events": disabled}, ensure_ascii=False), flush=True)
     selected = [event for event in configured
-                if not args.events or event.event_id in set(args.events.split(","))]
+                if event.handler != "close_capture" and
+                (not args.events or event.event_id in set(args.events.split(",")))]
     gates_data = _build_gate_status(args.gate_status)
     if args.simulate_clock and args.simulate_date and not args.gate_status:
         # A simulation can exercise the time sequence without data connections.
         gates_data = {event.gate: True for event in selected}
-    gates = {name: (lambda _event, _now, _ctx, value=value: bool(value))
-             for name, value in gates_data.items()}
+    gates = default_gates()
+    gates.update({name: (lambda _event, _now, _ctx, value=value: bool(value))
+                  for name, value in gates_data.items()})
     gates.setdefault("calendar_ready", lambda *_: True)
     handlers = {name: _command_handler(name, args, root) for name in
                 {event.handler for event in selected}}

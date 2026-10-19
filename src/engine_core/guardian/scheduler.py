@@ -79,9 +79,9 @@ def default_events() -> list[EventSpec]:
         EventSpec("premarket_slice_0850", "PREMARKET", "08:50:00", "09:10:00", "calendar_ready", "premarket_data"),
         EventSpec("startup_0900", "PREMARKET", "09:00:00", "09:10:00", "calendar_ready", "premarket_data"),
         EventSpec("auction_watch_0915", "AUCTION", "09:15:00", "09:20:00", "calendar_ready", "auction_watch"),
-        EventSpec("auction_0920_check", "AUCTION", "09:20:03", "09:23:59", "snapshot_0920_ready", "snapshot_check", max_attempts=1),
-        EventSpec("auction_0924_check", "AUCTION", "09:24:10", "09:24:59", "snapshot_0924_ready", "snapshot_check", max_attempts=1),
-        EventSpec("auction_0925_check", "AUCTION", "09:25:10", "09:29:59", "snapshot_0925_ready", "snapshot_check", max_attempts=1),
+        EventSpec("auction_0920_check", "AUCTION", "09:20:03", "09:23:59", "snapshot_0920_ready", "snapshot_check", max_attempts=1, degraded_at_deadline=True),
+        EventSpec("auction_0924_check", "AUCTION", "09:24:10", "09:24:59", "snapshot_0924_ready", "snapshot_check", max_attempts=1, degraded_at_deadline=True),
+        EventSpec("auction_0925_check", "AUCTION", "09:25:10", "09:29:59", "snapshot_0925_ready", "snapshot_check", max_attempts=1, degraded_at_deadline=True),
         EventSpec("auction_report_0926", "AUCTION", "09:26:30", "09:29:00", "auction_coverage", "auction_report", degraded_at_deadline=True),
     ]
     hot_times = ("09:16:00", "09:21:00", "09:26:30", "09:28:30", "09:31:00", "09:33:00",
