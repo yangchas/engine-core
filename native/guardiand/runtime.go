@@ -551,8 +551,6 @@ func (r *liveRunner) execute(x Instance, date string) {
 		r.classSlots[class] = slots
 	}
 	r.mu.Unlock()
-	slots <- struct{}{}
-	defer func() { <-slots }()
 	st := instanceState{Status: "RUNNING", StartedAt: r.clock.Now().Format(time.RFC3339)}
 	if prior.Status == "RUNNING" {
 		st.Attempts = prior.Attempts
@@ -595,6 +593,9 @@ func (r *liveRunner) execute(x Instance, date string) {
 			return
 		}
 	}
+	// Gate polling must not hold a class slot, or a blocked gate starves every other event of the class.
+	slots <- struct{}{}
+	defer func() { <-slots }()
 	h := c.Handlers[event.Handler]
 	if len(h.Argv) == 0 {
 		r.setState(x, date, instanceState{Status: "FAILED_FINAL", Attempts: 1, LastError: "handler argv empty", CompletedAt: r.clock.Now().Format(time.RFC3339)})
@@ -1191,6 +1192,9 @@ func (r *liveRunner) serve(c net.Conn) {
 				event, _ := a["event"].(string)
 				date, _ := a["date"].(string)
 				reason, _ := a["reason"].(string)
+				if date == "" {
+					date = r.clock.Now().In(r.loc).Format("2006-01-02")
+				}
 				r.configMu.RLock()
 				c := r.c
 				r.configMu.RUnlock()
@@ -1300,10 +1304,25 @@ func (r *liveRunner) serve(c net.Conn) {
 		if ok {
 			resp["result"] = result
 		} else {
-			resp["error"] = map[string]any{"code": code, "msg": "unsupported operation"}
+			resp["error"] = map[string]any{"code": code, "msg": errorMessage(code)}
 		}
 		b, _ := json.Marshal(resp)
 		_, _ = w.Write(append(b, '\n'))
 		_ = w.Flush()
+	}
+}
+
+func errorMessage(code string) string {
+	switch code {
+	case "UNKNOWN_EVENT":
+		return "no such event in the active config (or no instance on that date)"
+	case "NOT_ALLOWED_IN_MODE":
+		return "operation not allowed now (outside the event window, or not in fake-clock mode)"
+	case "CONFIG_INVALID":
+		return "configuration rejected; the previous config stays active"
+	case "BAD_REQUEST":
+		return "bad request: unknown operation or invalid arguments"
+	default:
+		return code
 	}
 }
