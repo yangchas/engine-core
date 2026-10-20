@@ -285,6 +285,7 @@ type liveRunner struct {
 	clock            Clock
 	fake             *fakeClock
 	classSlots       map[string]chan struct{}
+	listening        bool
 	heavyRunning     bool
 	processSlots     chan struct{}
 	loadavg          func() (float64, error)
@@ -510,6 +511,11 @@ func runCmd(args []string) error {
 	if err = r.ledger.append("BOOT", map[string]any{"config_version": c.ConfigVersion, "config_hash": h, "build": "dev", "boot_id": r.boot}); err != nil {
 		return err
 	}
+	// Control socket first: boot events can take minutes and must stay observable (status/pause) meanwhile.
+	if err = r.listen(); err != nil {
+		return err
+	}
+	r.listening = true
 	if err = r.runBootEvents(now); err != nil {
 		return err
 	}
@@ -1529,8 +1535,10 @@ func (r *liveRunner) alert(reason string, data any) error {
 }
 
 func (r *liveRunner) loop() error {
-	if err := r.listen(); err != nil {
-		return err
+	if !r.listening {
+		if err := r.listen(); err != nil {
+			return err
+		}
 	}
 	defer os.Remove(filepath.Join(r.root, "guardiand.sock"))
 	lastWall := r.clock.Now().In(r.loc)
@@ -1743,7 +1751,7 @@ func (r *liveRunner) schedule(now time.Time) {
 			st instanceState
 		}, 0)
 		for key, state := range r.states {
-			if strings.HasPrefix(key, prefix) && (state.Status == "DEFERRED" || state.Status == "DEFER_LOAD" || state.Status == "RETRY_WAIT") {
+			if strings.HasPrefix(key, prefix) && (state.Status == "DEFERRED" || state.Status == "DEFER_LOAD" || state.Status == "RETRY_WAIT" || state.Status == "QUEUED_HEAVY") {
 				pending = append(pending, struct {
 					id string
 					st instanceState
@@ -1752,7 +1760,8 @@ func (r *liveRunner) schedule(now time.Time) {
 		}
 		r.mu.Unlock()
 		for _, item := range pending {
-			if item.st.NextPhase != "" && item.st.NextPhase != phase {
+			// A queued item already passed its phase check once; it is re-dispatched in any allowed phase.
+			if item.st.Status != "QUEUED_HEAVY" && item.st.NextPhase != "" && item.st.NextPhase != phase {
 				continue
 			}
 			r.mu.Lock()
