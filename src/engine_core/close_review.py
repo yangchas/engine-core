@@ -577,6 +577,10 @@ def render_close_markdown(data: Mapping[str, Any]) -> str:
              "## 竞价先选、后追踪极值（当日描述）", "",
              "选入集合仅使用≤09:25竞价涨幅绝对值前K与竞价金额前K的并集；金额阈值默认3000万元，FINAL/INDICATIVE按来源标注。", "",
              "名称 | 板块 | 入选 | 竞价% | 额(亿) | 0932 | 0945 | 收盘% | Δ(pp) | 状态", "---|---|---|---:|---:|---:|---:|---:|---:|---"]
+    quality = data.get("data_quality", {})
+    if quality.get("basis") == "POSTHOC_REVIEW":
+        sources = ", ".join(quality.get("late_sources") or []) or "无已识别晚到来源"
+        lines[2:2] = ["", f"**历史回放口径**：事后回放，basis=POSTHOC_REVIEW；晚到来源：{sources}。", ""]
     board_rows = data.get("extremes_board", {}).get("close", {}).get("rows", [])
     for r in board_rows:
         tr = r.get("tracking", {})
@@ -708,7 +712,7 @@ def _attach_auction_baseline(data: dict[str, Any], path: Path | list[dict[str, A
                   (comparison is not None and comparison["sample_days"] < window_days))
     market["auction_baseline_status"] = (
         "MISSING" if not comparison else "PARTIAL" if incomplete else "READY")
-    market["auction_baseline_source"] = str(path)
+    market["auction_baseline_source"] = ("CORE_SLICE:auction_baseline" if isinstance(path, list) else str(path))
     if not comparison:
         gaps = data.setdefault("data_gaps", [])
         if not isinstance(gaps, list):

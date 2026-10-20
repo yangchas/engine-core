@@ -854,6 +854,180 @@ def _close_fallback(trade_date: str, missing: list[str]) -> tuple[dict[str, Any]
                   "input_files": {}, "missing": missing}
 
 
+def load_close_catalog_inputs(catalog: Any, trade_date: str,
+                              prior_trade_date: str | None, *, asof: str | None = None,
+                              basis: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read the date-pinned Core close artifacts and normalize their available fields."""
+    basis = basis or ("POSTHOC_REVIEW" if os.getenv("POSTHOC_DEV") == "1" else "LIVE_PIT")
+    if basis not in {"LIVE_PIT", "POSTHOC_REVIEW"}:
+        raise ValueError("basis must be LIVE_PIT or POSTHOC_REVIEW")
+    if basis == "POSTHOC_REVIEW" and trade_date >= date.today().isoformat():
+        raise ValueError("POSTHOC_REVIEW requires a trade_date strictly before the current market day")
+    cutoff = datetime.fromisoformat(asof) if asof else datetime.fromisoformat(f"{trade_date}T15:00:00+08:00")
+    specifications = {
+        "daily_kline": trade_date,
+        "stock_day_facts": trade_date,
+        "auction_stock_facts": trade_date,
+        "auction_panorama": trade_date,
+        "limit_up_pool": prior_trade_date,
+        "plate_members": trade_date,
+        "stock_theme_assignment": trade_date,
+    }
+    selected: dict[str, dict[str, Any]] = {}
+    provenance: dict[str, Any] = {}
+    for dataset, source_date in specifications.items():
+        manifest_path = catalog.locate(dataset, source_date) if source_date else None
+        if not manifest_path or not manifest_path.is_file():
+            provenance[dataset] = {"status": "MISSING", "trade_date": source_date}
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("trade_date") != source_date:
+                raise ValueError("catalog date mismatch")
+            available = manifest.get("available_at")
+            try:
+                available_dt = datetime.fromisoformat(str(available).replace("Z", "+00:00"))
+                normalized_cutoff = cutoff if cutoff.tzinfo else cutoff.replace(tzinfo=TZ)
+                visible = available_dt <= normalized_cutoff
+            except (TypeError, ValueError):
+                visible = False
+            if basis == "LIVE_PIT" and not visible:
+                provenance[dataset] = {"status": "UNAVAILABLE", "trade_date": source_date,
+                                       "reason": "LATE_OR_UNKNOWN_AVAILABLE_AT", "available_at": available,
+                                       "manifest": str(manifest_path)}
+                continue
+            rows = catalog.read_rows(manifest_path)
+        except (OSError, ValueError, TypeError, KeyError):
+            provenance[dataset] = {"status": "INVALID", "trade_date": source_date,
+                                   "manifest": str(manifest_path)}
+            continue
+        selected[dataset] = {"manifest": manifest, "path": str(manifest_path), "rows": rows}
+        provenance[dataset] = {"status": "READY" if rows else "EMPTY", "trade_date": source_date,
+                               "version": manifest.get("version"), "sha256": manifest.get("sha256"),
+                               "manifest": str(manifest_path), "row_count": len(rows),
+                               "available_at": manifest.get("available_at"),
+                               "storage_format": manifest.get("storage_format"),
+                               "quality": manifest.get("quality")}
+
+    daily_rows = selected.get("daily_kline", {}).get("rows", [])
+    facts = {str(row.get("symbol") or "").zfill(6): row
+             for row in selected.get("stock_day_facts", {}).get("rows", []) if row.get("symbol")}
+    auction = {str(row.get("symbol") or "").zfill(6): row
+               for row in selected.get("auction_stock_facts", {}).get("rows", []) if row.get("symbol")}
+    pool = {str(row.get("symbol") or row.get("code") or "").zfill(6): row
+            for row in selected.get("limit_up_pool", {}).get("rows", []) if row.get("symbol") or row.get("code")}
+    assignments = {str(row.get("symbol") or "").zfill(6): row
+                   for row in selected.get("stock_theme_assignment", {}).get("rows", []) if row.get("symbol")}
+    member_labels: dict[str, set[str]] = {}
+    for row in selected.get("plate_members", {}).get("rows", []):
+        symbol = str(row.get("symbol") or "").zfill(6)
+        label = str(row.get("plate_member_label") or "")
+        member_labels.setdefault(symbol, set()).update(part.strip() for part in label.split("、") if part.strip())
+
+    normalized: list[dict[str, Any]] = []
+    for bar in daily_rows:
+        symbol = str(bar.get("symbol") or bar.get("code") or "").zfill(6)
+        if len(symbol) != 6 or not symbol.isdigit() or bar.get("date", trade_date) != trade_date:
+            continue
+        fact = facts.get(symbol, {})
+        auc = auction.get(symbol, {})
+        previous = pool.get(symbol, {})
+        assignment = assignments.get(symbol, {})
+        primary = assignment.get("primary_theme")
+        primary = primary if isinstance(primary, Mapping) else {}
+        secondary = assignment.get("secondary_themes")
+        secondary = secondary if isinstance(secondary, list) else []
+        themes = [str(item.get("name")) for item in secondary if isinstance(item, Mapping) and item.get("name")]
+        if primary.get("name"):
+            themes.insert(0, str(primary["name"]))
+        themes.extend(sorted(member_labels.get(symbol, set())))
+        def first_value(*values: Any) -> Any:
+            return next((value for value in values if value is not None), None)
+        close = first_value(bar.get("close"), fact.get("close"))
+        pre_close = first_value(bar.get("pre_close"), fact.get("pre_close"))
+        pct = first_value(bar.get("pct_chg"), fact.get("pct_chg"))
+        high = bar.get("high")
+        low = bar.get("low")
+        normalized.append({
+            "symbol": symbol, "name": auc.get("name") or "名称未知", "open": bar.get("open"),
+            "high": high, "low": low, "close": close, "pre_close": pre_close,
+            "close_pct": pct,
+            "high_pct": ((high / pre_close - 1) * 100 if isinstance(high, (int, float))
+                         and isinstance(pre_close, (int, float)) and pre_close else None),
+            "low_pct": ((low / pre_close - 1) * 100 if isinstance(low, (int, float))
+                        and isinstance(pre_close, (int, float)) and pre_close else None),
+            "amount_yuan": first_value(bar.get("amount_yuan"), fact.get("amount_yuan")),
+            "volume_shares": first_value(bar.get("volume"), fact.get("volume_shares")),
+            "suspended": bar.get("suspended"),
+            "auction_pct": auc.get("pct_change"), "p0925_pct": auc.get("pct_change"),
+            "auction_price": auc.get("price"), "auction_amount_yuan": auc.get("auction_amount_yuan"),
+            "auction_price_status": "VALID" if auc.get("valid_price") else "UNKNOWN",
+            "auction_limit_state": auc.get("seal"), "limit_pct": fact.get("limit_pct"),
+            "in_yest_pool": (bool(previous) if provenance.get("limit_up_pool", {}).get("status") == "READY" else None),
+            "lb_days": previous.get("lb_days"),
+            "yesterday_limit_up": (bool(previous) if provenance.get("limit_up_pool", {}).get("status") == "READY" else None), "yesterday_lb_days": previous.get("lb_days"),
+            "main_plate": primary.get("name"), "plates": list(dict.fromkeys(themes)),
+            "daily_source": "CORE_CATALOG:daily_kline", "checkpoint_status": "MISSING",
+        })
+
+    fields = {
+        "close": ("daily_kline", "close"), "pre_close": ("daily_kline", "pre_close"),
+        "pct_chg": ("daily_kline", "pct_chg"), "amount_yuan": ("daily_kline", "amount_yuan"),
+        "volume_shares": ("daily_kline", "volume"), "suspended": ("daily_kline", "suspended"),
+        "auction_pct": ("auction_stock_facts", "pct_change"),
+        "auction_price": ("auction_stock_facts", "price"),
+        "auction_amount_yuan": ("auction_stock_facts", "auction_amount_yuan"),
+        "p0932_pct": ("stock_day_facts", "p0932_pct"),
+        "p0935_pct": ("stock_day_facts", "p0935_pct"),
+        "p0940_pct": ("stock_day_facts", "p0940_pct"),
+        "p0945_pct": ("stock_day_facts", "p0945_pct"),
+        "yesterday_limit_up": ("limit_up_pool", "symbol"),
+        "theme": ("stock_theme_assignment", "primary_theme"),
+        "plate_members": ("plate_members", "symbol"),
+    }
+    field_coverage = {}
+    expected = len(daily_rows)
+    for name, (dataset, column) in fields.items():
+        source_rows = selected.get(dataset, {}).get("rows", [])
+        if name.startswith("p09"):
+            by_symbol = {str(row.get("symbol") or "").zfill(6): row for row in source_rows}
+            valid = sum(isinstance(by_symbol.get(row["symbol"], {}).get(column), (int, float))
+                        for row in normalized)
+        elif dataset == "limit_up_pool":
+            valid = sum(row["in_yest_pool"] is not None for row in normalized)
+        elif dataset == "plate_members":
+            valid = sum(bool(member_labels.get(row["symbol"])) for row in normalized)
+        elif dataset == "stock_theme_assignment":
+            valid = sum(bool(assignments.get(row["symbol"], {}).get(column)) for row in normalized)
+        else:
+            by_symbol = {str(row.get("symbol") or "").zfill(6): row for row in source_rows}
+            valid = sum(by_symbol.get(row["symbol"], {}).get(column) is not None for row in normalized)
+        entry = {"expected_n": expected, "valid_n": valid,
+                                "missing_n": max(0, expected - valid),
+                                "source_manifest": provenance.get(dataset, {}).get("manifest")}
+        if name == "yesterday_limit_up":
+            entry.update(positive_n=sum(r["in_yest_pool"] is True for r in normalized),
+                         negative_n=sum(r["in_yest_pool"] is False for r in normalized),
+                         unknown_n=sum(r["in_yest_pool"] is None for r in normalized))
+        field_coverage[name] = entry
+    panorama_rows = selected.get("auction_panorama", {}).get("rows", [])
+    panorama = panorama_rows[0] if panorama_rows else None
+    if panorama and isinstance(panorama.get("product_json"), str):
+        try:
+            panorama = json.loads(panorama["product_json"])
+        except ValueError:
+            panorama = None
+    manifest = {"source": "CORE_CATALOG", "trade_date": trade_date, "basis": basis,
+                "asof": cutoff.isoformat(),
+                "late_sources": [name for name, info in provenance.items()
+                                 if basis == "POSTHOC_REVIEW" and info.get("available_at") and
+                                 (datetime.fromisoformat(str(info["available_at"]).replace("Z", "+00:00")) > (cutoff if cutoff.tzinfo else cutoff.replace(tzinfo=TZ)))],
+                "prior_trade_date": prior_trade_date, "datasets": provenance,
+                "field_coverage": field_coverage, "checkpoint_status": "MISSING",
+                "auction_panorama": panorama}
+    return normalized, manifest
+
+
 def _td_daily_rows(td: Any, trade_date: str, injected: Any = None) -> list[dict[str, Any]]:
     """Read one day's TD daily bars; injected callback is the test/source boundary."""
     if injected is not None:
@@ -894,7 +1068,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                        sources: DailySources | None = None, publish: bool = False,
                        dry_run: bool = False, allow_wencai_fallback: bool = False,
                        reference_catalog: str | Path | None = None,
-                       email_to: tuple[str, ...] | list[str] = (), email_send: bool = False) -> dict[str, Any]:
+                       email_to: tuple[str, ...] | list[str] = (), email_send: bool = False,
+                       close_basis: str = "LIVE_PIT") -> dict[str, Any]:
     if stage not in STAGE_NAMES:
         raise ValueError("stage must be auction, open, or close")
     datetime.strptime(trade_date, "%Y-%m-%d")
@@ -902,11 +1077,13 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         datetime.strptime(asof, "%H:%M:%S")
     if publish and dry_run:
         raise ValueError("--publish and --dry-run cannot be combined")
+    if stage == "close" and close_basis == "POSTHOC_REVIEW" and trade_date >= date.today().isoformat():
+        raise ValueError("POSTHOC_REVIEW requires a trade_date strictly before the current market day")
     started = time.monotonic()
     pipeline_timings: dict[str, float] = {}
     auction_panorama_artifact = None
     src = sources or DailySources(reference_root=reference_root)
-    if src.redis is None:
+    if src.redis is None and stage != "close":
         try:
             src.redis = _connect_redis()
         except Exception:
@@ -920,7 +1097,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                                                   stage=stage, redis=None)
     from .slices import SliceProviders, SliceReader
     slice_reader = src.slice_reader or SliceReader(
-        SliceProviders(redis=src.redis).providers(), snapshot_id=f"{trade_date}:{stage}")
+        SliceProviders(redis=None if stage == "close" else src.redis).providers(), snapshot_id=f"{trade_date}:{stage}")
     point = asof or ("09:26:00" if stage == "auction" else "09:46:00" if stage == "open" else "17:40:00")
     slice_asof = f"{trade_date}T{point}+08:00"
     slice_names = ("stock_name_map", "plate_registry", "plate_members", "stock_theme_assignment",
@@ -961,6 +1138,10 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         if name == "stock_theme_assignment":
             params["source_date"] = trade_date
         slice_results[name] = slice_reader.get(name, trade_date=trade_date, asof=slice_asof, **params)
+        if name == "trading_calendar" and stage == "close":
+            prior_candidates = sorted({str(row.get("date") or "")[:10]
+                                       for row in slice_results[name].rows
+                                       if str(row.get("date") or "")[:10] < trade_date})
         slice_timings[name] = round(time.monotonic() - slice_started, 3)
     # Persist the exact slice facts used by both the email preview and the
     # report manifest. Catalog paths retain import provenance that SliceResult
@@ -2194,10 +2375,26 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         report_text = json.dumps(report_json, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
         pipeline_timings["prepare_output"] = round(time.monotonic() - write_started, 3)
     else:
+        close_catalog_rows: list[dict[str, Any]] = []
+        close_catalog_manifest: dict[str, Any] = {}
+        close_catalog_ready = False
+        if stage == "close":
+            from .data_pipeline.storage import ArtifactCatalog
+            core_root = Path(os.getenv("CORE_DATA_ROOT", "/home/exedev/core-data")).expanduser()
+            close_catalog_rows, close_catalog_manifest = load_close_catalog_inputs(
+                ArtifactCatalog(core_root), trade_date, prior_candidates[-1] if prior_candidates else None,
+                asof=(f"{trade_date}T{asof}+08:00" if asof else f"{trade_date}T15:00:00+08:00"),
+                basis=close_basis)
+            close_catalog_ready = bool(close_catalog_rows)
+            for dataset, dataset_info in close_catalog_manifest.get("datasets", {}).items():
+                if dataset_info.get("status") == "READY":
+                    inputs[f"close_catalog:{dataset}"] = {
+                        "manifest": dataset_info.get("manifest"), "version": dataset_info.get("version"),
+                        "sha256": dataset_info.get("sha256")}
         capture_manifest = refs["daily_capture_manifest"]
         daily_capture_dir = capture_manifest.parent if capture_manifest else None
         td_daily_error = None
-        if not refs.get("stock_day_facts") and not src.td_error:
+        if stage != "close" and not refs.get("stock_day_facts") and not close_catalog_ready and not src.td_error:
             try:
                 td_rows = _td_daily_rows(src.td, trade_date, src.daily_kline_rows)
                 if td_rows:
@@ -2227,105 +2424,46 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     daily_capture_dir = None
             except (OSError, ValueError):
                 daily_capture_dir = None
-        if daily_capture_dir is None:
+        if daily_capture_dir is None and not close_catalog_ready:
             if td_daily_error:
                 degraded.append(td_daily_error)
             degraded.append("MISSING_DAILY_KLINE: need TD daily_kline or a local same-date capture")
         elif td_daily_error:
             degraded.append(f"DAILY_KLINE_FALLBACK_LOCAL:{td_daily_error}")
-        if refs.get("stock_day_facts"):
-            from .stock_day_facts import read_facts
-            fact_rows, facts_manifest = read_facts(refs["stock_day_facts"])
-            fact_stocks = []
-            for fact in fact_rows:
-                pre = fact.get("pre_close_milli")
-                hi, lo = fact.get("day_high_milli"), fact.get("day_low_milli")
-                fact_stocks.append({
-                    "symbol": fact.get("symbol"), "name": fact.get("name") or "名称未知",
-                    "auction_pct": fact.get("p0925_pct"), "p0925_pct": fact.get("p0925_pct"),
-                    "p0932_pct": fact.get("p0932_pct"), "p0935_pct": fact.get("p0935_pct"),
-                    "p0940_pct": fact.get("p0940_pct"), "p0945_pct": fact.get("p0945_pct"),
-                    "close_pct": fact.get("day_pct"),
-                    "high_pct": (hi / pre - 1) * 100 if isinstance(hi, (int, float)) and isinstance(pre, (int, float)) and pre else None,
-                    "low_pct": (lo / pre - 1) * 100 if isinstance(lo, (int, float)) and isinstance(pre, (int, float)) and pre else None,
-                    "auction_amount_yuan": _fact_auction_amount(fact),
-                    "amount_yuan": fact.get("day_amount_yuan"), "limit_pct": fact.get("limit_pct"),
-                    "lb_days": fact.get("yesterday_lb_days"), "in_yest_pool": fact.get("yesterday_limit_up"),
-                    "main_plate": fact.get("main_plate_name"), "plates": fact.get("plate_list_summary") or [],
-                    "auction_price_status": fact.get("p0925_price_status"),
-                    "auction_limit_state": fact.get("auction_limit_state"),
-                    "rest_bid_yuan": fact.get("auction_rest_bid_yuan"),
-                    "close_seal_up": fact.get("close_seal_up"),
-                    "is_new_listing": fact.get("is_new_listing"),
-                    "is_unlimited_price_band": bool(fact.get("is_new_listing")),
-                    "p0925_range_position20_pct": fact.get("position20_0925_pct"),
-                    "daily_source": fact.get("field_provenance_ref"),
-                    "caps": {"float_cap": fact.get("float_cap_yuan"), "total_cap": fact.get("total_cap_yuan")}})
+        prev_path = None if stage == "close" else _previous_report(Path(refs.get("prev_reports_root") or root), trade_date,
+                                     (STAGE_NAMES["close"], STAGE_NAMES["open"]))
+        if close_catalog_ready:
+            fact_stocks = close_catalog_rows
+            fact_rows = [{"symbol": row["symbol"], "yesterday_limit_up": row["in_yest_pool"],
+                          "yesterday_lb_days": row["lb_days"]} for row in fact_stocks]
             amounts = [row["amount_yuan"] for row in fact_stocks if isinstance(row.get("amount_yuan"), (int, float))]
-            live_path = open_ref or auction_ref
-            prev_path = _previous_report(Path(refs.get("prev_reports_root") or root), trade_date,
-                                         (STAGE_NAMES["close"], STAGE_NAMES["open"]))
+            live_path = None
             data = derive_close_review(fact_stocks, trade_date=trade_date,
                 live_report=_read_optional_json(live_path, degraded, "SAME_DAY_REPORT")
                     if live_path and live_path.is_file() else None,
                 prev_live=_read_optional_json(prev_path, degraded, "PREVIOUS_REPORT")
                     if prev_path and prev_path.is_file() else None,
                 market={"amount_yuan": sum(amounts) if amounts else None,
-                        "amount_coverage": len(amounts), "daily_source": "STOCK_DAY_FACTS"},
+                        "amount_coverage": len(amounts), "daily_source": "CORE_CATALOG:daily_kline"},
                 checkpoint_status={tag: "READY" if any(r.get(f"p{tag}_pct") is not None for r in fact_stocks) else "MISSING"
                                    for tag in ("0932", "0935", "0940", "0945")})
-            data["data_quality"]["daily_source"] = "STOCK_DAY_FACTS"
-            data["data_quality"]["facts_manifest_sha256"] = facts_manifest.get("sha256")
-            close_manifest = {"facts_source": "STOCK_DAY_FACTS", "facts_manifest": facts_manifest,
-                              "legacy_fallback": False}
+            data["data_quality"]["daily_source"] = "CORE_CATALOG:daily_kline"
+            data["data_quality"]["catalog_field_coverage"] = close_catalog_manifest["field_coverage"]
+            data["data_quality"]["checkpoints"] = "MISSING; close market statistics remain available"
+            close_manifest = close_catalog_manifest
+            if close_catalog_manifest.get("field_coverage", {}).get("p0932_pct", {}).get("valid_n", 0) == 0:
+                degraded.append("MISSING_CLOSE_CHECKPOINTS:0932-0945")
             markdown = render_close_markdown(data)
             page = render_close_html(data, markdown)
-            required = {}
         else:
-            required = {"daily_capture": daily_capture_dir, "report_dir": None,
-                    "checkpoints_csv": None, "auction_snapshot_csv": None}
-        replay_root = Path(reference_root) if reference_root else Path("/__core_file_inputs_disabled__")
-        report_dir_candidates = _dated_candidates(replay_root, ("stocks.json",), trade_date)
-        checkpoint_candidates = _dated_candidates(replay_root, ("checkpoints.csv",), trade_date)
-        auction_candidates = _dated_candidates(replay_root, ("*auction*snapshot*.csv",), trade_date)
-        report_dir = report_dir_candidates[0].parent if report_dir_candidates else None
-        live_path = open_ref or auction_ref
-        reports_root = refs.get("prev_reports_root") or root
-        prev_path = _previous_report(Path(reports_root), trade_date, (STAGE_NAMES["close"], STAGE_NAMES["open"]))
-        missing = [name for name, value in required.items() if value is None]
-        if report_dir is None: missing.append("report_dir")
-        if not checkpoint_candidates: missing.append("checkpoints_csv")
-        if not auction_candidates: missing.append("auction_snapshot_csv")
-        if refs.get("stock_day_facts"):
-            missing = []
-        if missing:
-            data, close_manifest = _close_fallback(trade_date, missing)
+            data, close_manifest = _close_fallback(trade_date, ["daily_kline"])
             data["reference_data"] = {
                 "stock_names": {"status": "READY" if refs["stock_names"] else "MISSING"},
                 "stock_caps": {"status": "READY" if refs["stock_caps"] else "MISSING"}}
-            degraded.extend(f"MISSING_CLOSE_INPUT:{name}" for name in missing)
-            reference_state = "；".join(
-                f"{name}{'可用' if refs[key] else '缺失'}"
-                for key, name in (("stock_names", "名称表"), ("stock_caps", "市值表")))
-            markdown = ("# 收盘复盘\n\n" + "\n".join(f"- {name}: 缺失" for name in missing)
-                        + f"\n- 参考数据: {reference_state}。\n")
+            degraded.append("MISSING_CLOSE_INPUT:daily_kline")
+            markdown = "# 收盘复盘\n\n- Core catalog daily_kline: 缺失\n"
             page = "<!doctype html><meta charset='utf-8'><title>收盘复盘</title><pre>" + markdown + "</pre>"
-        elif not refs.get("stock_day_facts"):
-            data, close_manifest = assemble_close_review(
-                trade_date, str(report_dir), str(checkpoint_candidates[0]),
-                str(auction_candidates[0]), str(daily_capture_dir),
-                daily_history_csv=slice_results["daily_history"].rows,
-                relation_dir=str(relation_dir) if relation_dir else None,
-                stock_caps_json=str(refs["stock_caps"]) if refs["stock_caps"] else None,
-                live_report_json=str(live_path) if live_path else None,
-                prev_live_json=str(prev_path) if prev_path else None,
-                kaipan_hot_dir=str(refs["kaipan_hot_dir"]) if refs["kaipan_hot_dir"] else None)
-            data["reference_data"] = {
-                "stock_names": {"status": "READY" if refs["stock_names"] else "MISSING"},
-                "stock_caps": {"status": "READY" if refs["stock_caps"] else "MISSING"}}
-            markdown = render_close_markdown(data)
-            page = render_close_html(data, markdown)
-        if refs.get("stock_day_facts"):
+        if close_catalog_ready:
             streak_counts: dict[int, int] = {}
             for row in fact_rows:
                 level = row.get("yesterday_lb_days")
@@ -2342,7 +2480,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         else:
             ladder = _load_ladder_summary(slice_results["path_stats"].rows, trade_date)
         previous_streaks = {}
-        if prev_path and prev_path.is_file():
+        if prev_path and prev_path.is_file() and not close_catalog_ready:
             previous_streaks = _yesterday_lb_days(
                 _read_optional_json(prev_path, degraded, "PREVIOUS_REPORT"))
         data["ladder_summary"] = ladder
@@ -2369,7 +2507,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                     "close_pct": stock.get("close_pct"), "in_yest_pool": stock.get("in_yest_pool"),
                     "status": "今日最高板；收盘涨停价代理，封单/炸板路径 UNKNOWN"})
             data["ladder_summary"].extend(highboard_rows)
-        if isinstance(data.get("stocks"), list) and not refs.get("stock_day_facts"):
+        if isinstance(data.get("stocks"), list) and not close_catalog_ready:
             _attach_range_positions(data["stocks"], slice_results["daily_history"].rows, trade_date,
                                     report_features=slice_results["daily_report_features"].rows or None)
         ladder_rows = []
@@ -2396,6 +2534,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             ladder_summary=ladder, path_frequencies=path_frequencies)
         _attach_auction_baseline(data, slice_results["auction_baseline"].rows)
         quality = data.setdefault("data_quality", {})
+        quality["basis"] = close_catalog_manifest.get("basis")
+        quality["late_sources"] = close_catalog_manifest.get("late_sources", [])
         quality["relation_snapshot_date"] = reference_meta.get("relation_dir", {}).get("as_of")
         quality["relation_lag_trading_days"] = relation_lag
         quality["checkpoint_coverage"] = close_manifest.get("checkpoint_coverage") if isinstance(close_manifest, Mapping) else None
@@ -2409,6 +2549,23 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         (out / "report.html").write_text(email_page, encoding="utf-8")
         # The wide facts table is the detail store; keep the pipeline JSON under
         # its existing size contract while retaining codes in the compact data.
+        gaps = data.get("main_plate_gaps", [])
+        gap_total = len(gaps)
+        gap_limit = 80
+        quality = data.setdefault("data_quality", {})
+        quality["main_plate_gaps_total"] = gap_total
+        quality["main_plate_gaps_omitted"] = max(0, gap_total - gap_limit)
+        if gap_total > gap_limit:
+            (out / "main_plate_gaps.json").write_text(
+                json.dumps({"trade_date": trade_date, "total": gap_total, "rows": gaps},
+                           ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n",
+                encoding="utf-8")
+            data["main_plate_gaps"] = gaps[:gap_limit]
+        # Final quality metadata must be present in every human and machine view.
+        if data.get("status") != "DEGRADED_MISSING_INPUTS":
+            markdown = render_close_markdown(data)
+            (out / "report.md").write_text(markdown, encoding="utf-8")
+            (out / "report.html").write_text(render_close_html(data, markdown), encoding="utf-8")
         report_payload = {key: value for key, value in data.items() if key != "stocks"}
         report_text = json.dumps(report_payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
         close_manifest["input_files"] = close_manifest.get("input_files", {})
@@ -2603,7 +2760,9 @@ def main(argv: list[str] | None = None, *, sources: DailySources | None = None) 
                                 sources=sources, publish=args.publish, dry_run=args.dry_run,
                                 allow_wencai_fallback=args.allow_wencai_fallback,
                                 reference_catalog=args.reference_catalog,
-                                email_to=args.email_to, email_send=args.email_send)
+                                email_to=args.email_to, email_send=args.email_send,
+                                close_basis=("POSTHOC_REVIEW" if args.stage == "close" and
+                                             os.getenv("POSTHOC_DEV") == "1" and args.dry_run else "LIVE_PIT"))
     print(f"trade_date={args.trade_date} stage={args.stage} out={result['out_dir']} "
           f"degraded={len(result['manifest']['degraded'])} report_json_bytes={result['manifest']['report_json_bytes']}")
     return 0

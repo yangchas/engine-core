@@ -664,7 +664,7 @@ def test_publish_and_dry_run_are_mutually_exclusive(tmp_path):
                            sources=DailySources(td=FakeTD()), publish=True, dry_run=True)
 
 
-def test_close_stage_captures_injected_td_daily_kline(tmp_path):
+def test_close_stage_never_reads_td_daily_kline_when_core_catalog_is_missing(tmp_path):
     sources = DailySources(td=FakeTD(), reference_root=tmp_path / "refs",
                            daily_kline_rows=lambda day: [{
                                "ts": f"{day} 00:00:00", "open": 10, "high": 11, "low": 9,
@@ -672,12 +672,8 @@ def test_close_stage_captures_injected_td_daily_kline(tmp_path):
                                "turnover": 1.2, "pct_chg": 5, "tbname": "d_000001"}])
     result = run_daily_pipeline(stage="close", trade_date="2026-10-15", out_root=tmp_path / "out",
                                 reference_root=tmp_path / "refs", sources=sources, dry_run=True)
-    capture = result["out_dir"] / "daily_capture"
-    meta = json.loads((capture / "manifest.json").read_text())
-    row = json.loads((capture / "daily_kline.jsonl").read_text())
-    assert meta["source"] == "td_daily_kline"
-    assert row["date"] == "2026-10-15"
-    assert row["symbol"] == "000001"
+    assert not (result["out_dir"] / "daily_capture").exists()
+    assert result["manifest"]["close_review_manifest"]["missing"] == ["daily_kline"]
 
 
 def test_reference_catalog_is_explicit_and_recursive_fallback_is_disabled(tmp_path):
@@ -919,3 +915,42 @@ def test_relation_snapshot_date_ignores_dates_in_parent_path(tmp_path):
     undated = tmp_path / "run_20261016" / "relation"
     undated.mkdir()
     assert _relation_snapshot_date(undated) == "UNKNOWN"
+
+
+def test_close_catalog_inputs_join_frozen_market_and_auction_facts(tmp_path):
+    from engine_core.daily_pipeline import load_close_catalog_inputs
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from pathlib import Path
+    import json
+
+    root = Path(__file__).parent / "fixtures" / "c345"
+    samples = json.loads((root / "core_samples.json").read_text())
+    catalog = ArtifactCatalog(tmp_path / "catalog")
+    for trade_date in ("2026-10-16", "2026-10-19"):
+        source_date = "2026-10-15" if trade_date == "2026-10-16" else "2026-10-16"
+        for dataset, artifact_date in (("daily_kline", trade_date), ("stock_day_facts", trade_date),
+                                       ("auction_stock_facts", trade_date), ("auction_panorama", trade_date),
+                                       ("limit_up_pool", source_date), ("plate_members", trade_date),
+                                       ("stock_theme_assignment", trade_date)):
+            rows_to_commit = samples[trade_date].get(dataset, [])
+            if rows_to_commit:
+                catalog.commit(dataset, artifact_date, rows_to_commit,
+                               {"trade_date": artifact_date, "available_at": "2026-10-20T00:00:00Z"},
+                               source="fixture")
+        rows, manifest = load_close_catalog_inputs(catalog, trade_date, source_date,
+                                                  asof="2026-10-20T00:00:00+00:00",
+                                                  basis="POSTHOC_REVIEW")
+        assert rows
+        assert manifest["datasets"]["daily_kline"]["version"]
+        assert manifest["datasets"]["auction_stock_facts"]["version"]
+        assert manifest["basis"] == "POSTHOC_REVIEW"
+        assert manifest["field_coverage"]["close"]["valid_n"] > 0
+        assert manifest["field_coverage"]["auction_pct"]["valid_n"] > 0
+        assert manifest["field_coverage"]["p0932_pct"]["missing_n"] == manifest["field_coverage"]["p0932_pct"]["expected_n"]
+        by_symbol = {row["symbol"]: row for row in rows}
+        sample = next(iter(by_symbol.values()))
+        assert sample["close"] is not None and sample["auction_pct"] is not None
+        assert sample["amount_yuan"] is not None
+        assert sample["checkpoint_status"] == "MISSING"
+
+
