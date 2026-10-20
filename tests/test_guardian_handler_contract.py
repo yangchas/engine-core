@@ -22,15 +22,15 @@ def _core_request(event_id, trade_date="2026-10-19"):
             "gate": {"ref": "", "params": None, "probe": False}}
 
 
-def test_handler_run_contract_round_trip_close_capture_not_implemented():
+def test_handler_run_contract_round_trip_close_capture_not_applicable():
     event_id = next(e["event_id"] for e in _schedule_events() if e["handler"] == "close_capture")
     result = subprocess.run([sys.executable, "examples/guardian_handler.py", "run"],
                             cwd=ROOT, input=json.dumps(_core_request(event_id)), text=True,
                             capture_output=True)
     payload = json.loads(result.stdout.splitlines()[-1])
     assert result.returncode == 0
-    assert payload["contract"] == 1 and payload["status"] == "failed"
-    assert payload["error_code"] == "NOT_IMPLEMENTED"
+    assert payload["contract"] == 1 and payload["status"] == "not_applicable"
+    assert payload["error_code"] == ""
 
 
 def test_unknown_event_id_is_config_error():
@@ -76,14 +76,47 @@ def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
         seen_opts.append(opts)
         return lambda *_: "dispatched"
     monkeypatch.setattr(core_guardian, "_command_handler", fake_factory)
+    from engine_core.guardian import commands
+    monkeypatch.setattr(commands, "validate_handler_postcondition", lambda *_: (True, ""))
     for event in events:
         _, payload = guardian_handler._run(_core_request(event["event_id"]))
         if event["handler"] == "close_capture":
-            assert payload["error_code"] == "NOT_IMPLEMENTED"
+            assert payload["status"] == "not_applicable"
         else:
             assert payload["status"] == "ok", (event["event_id"], payload)
     assert set(called) == {e["handler"] for e in events} - {"close_capture"}
     assert all(o.write and o.run for o in seen_opts)  # live mode writes, like the old guardian
+
+
+def test_successful_command_fails_when_postcondition_is_missing(monkeypatch):
+    from examples import guardian_handler
+    from examples import core_guardian
+    from engine_core.guardian import commands
+
+    event = next(e for e in _schedule_events() if e["handler"] == "premarket_data")
+    monkeypatch.setattr(core_guardian, "_command_handler",
+                        lambda *_: (lambda *_args: "command_succeeded"))
+    monkeypatch.setattr(commands, "validate_handler_postcondition",
+                        lambda *_: (False, "symbol_universe_manifest_missing"))
+    _, payload = guardian_handler._run(_core_request(event["event_id"]))
+    assert payload["status"] == "failed"
+    assert payload["error_code"] == "POSTCONDITION_FAILED"
+    assert payload["retryable"] is True
+
+
+def test_dry_run_skips_postcondition_validation(monkeypatch):
+    from examples import guardian_handler
+    from examples import core_guardian
+    from engine_core.guardian import commands
+
+    event = next(e for e in _schedule_events() if e["handler"] == "premarket_data")
+    monkeypatch.setattr(core_guardian, "_command_handler",
+                        lambda *_: (lambda *_args: "command_succeeded"))
+    monkeypatch.setattr(commands, "validate_handler_postcondition",
+                        lambda *_: (_ for _ in ()).throw(AssertionError("validation called")))
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    _, payload = guardian_handler._run(_core_request(event["event_id"]))
+    assert payload["status"] == "ok"
 
 
 def test_dry_run_env_disables_writes_and_mail(monkeypatch):

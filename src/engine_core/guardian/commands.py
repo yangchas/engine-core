@@ -2,7 +2,59 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
+
+
+def validate_handler_postcondition(name: str, day: str, root: str | Path) -> tuple[bool, str]:
+    """Read Core catalog/file outputs after a successful guardian command."""
+    root = Path(root).expanduser()
+    if name == "calendar_refresh":
+        path = root / "trade_calendar" / "calendar.json"
+        try:
+            matrix = json.loads(path.read_text(encoding="utf-8"))
+            ok = (isinstance(matrix, dict) and
+                  matrix.get("lit_from", "") <= day <= matrix.get("lit_to", ""))
+            return (True, "") if ok else (False, "calendar_missing_or_not_lit")
+        except (OSError, ValueError, TypeError, AttributeError):
+            return False, "calendar_missing_or_invalid"
+    if name not in {"premarket_data", "kaipan_fetch", "kaipan_hot_capture",
+                    "postmarket_data", "baostock_probe"}:
+        return True, ""
+    from ..data_pipeline.storage import ArtifactCatalog
+    catalog = ArtifactCatalog(root)
+    if name == "premarket_data":
+        # prep_trade_day materializes the target-day universe. stock_name_map is
+        # a report slice backed by stock_static, and plate_registry is a
+        # versioned reference input; neither is emitted for each trade date.
+        datasets = ("symbol_universe",)
+    elif name == "kaipan_fetch":
+        datasets = ("limit_up_pool",)
+    elif name == "kaipan_hot_capture":
+        datasets = ("hot_plates",)
+    else:
+        datasets = ("daily_kline",)
+    for dataset in datasets:
+        target = day
+        if name == "kaipan_fetch":
+            # The morning limit-up pool is the previous trade day's pool.
+            from ..data_pipeline.trade_calendar import previous_trade_date
+            try:
+                target = previous_trade_date(day, root=root).isoformat()
+            except Exception:
+                return False, "previous_trade_date_unavailable"
+        manifest_path = catalog.locate(dataset, target)
+        if manifest_path is None or not manifest_path.is_file():
+            if name == "kaipan_fetch":
+                return False, "limit_up_pool_missing_or_empty"
+            return False, dataset + "_manifest_missing"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if name == "kaipan_fetch" and int(manifest.get("row_count", 0)) <= 0:
+                return False, "limit_up_pool_missing_or_empty"
+        except (OSError, ValueError, TypeError):
+            return False, dataset + "_manifest_invalid"
+    return True, ""
 
 
 def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo: Path):

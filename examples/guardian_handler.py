@@ -43,6 +43,7 @@ def _run(request):
                     "retryable": False, "detail": "trade_date_required"}
     root = Path(os.environ.get("CORE_DATA_ROOT", "~/core-data")).expanduser()
     dry = os.environ.get("GUARDIAN_DRY_RUN") == "1"
+    target_day = str(request.get("data_date") or trade_date)
     opts = SimpleNamespace(write=not dry, td_write=False, simulate_clock=dry,
                            email_self=not dry and os.environ.get("GUARDIAN_EMAIL_SELF", "1") == "1",
                            run=not dry)
@@ -51,11 +52,17 @@ def _run(request):
                             data_date_offset=base.data_date_offset)
     now = datetime.fromisoformat(f"{trade_date}T{base.start}+08:00")
     if name == "close_capture":
-        return 0, {"contract": 1, "status": "failed", "error_code": "NOT_IMPLEMENTED",
+        return 0, {"contract": 1, "status": "not_applicable", "error_code": "",
                    "retryable": False, "artifacts": [], "detail": "close_capture_not_implemented"}
     try:
         result = _command_handler(name, opts, root)(event, now, {},
                                                     bool(request.get("degrade_requested")))
+        if not dry:
+            from engine_core.guardian.commands import validate_handler_postcondition
+            ok, reason = validate_handler_postcondition(name, target_day, root)
+            if not ok:
+                return 0, {"contract": 1, "status": "failed", "error_code": "POSTCONDITION_FAILED",
+                           "retryable": True, "artifacts": [], "detail": reason}
         degraded = isinstance(result, str) and result.startswith("DEGRADED:")
         return 0, {"contract": 1, "status": "degraded" if degraded else "ok",
                    "error_code": "", "retryable": False, "artifacts": [], "detail": result}
