@@ -16,6 +16,7 @@ import time
 import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from engine_core.guardian.scheduler import EventSpec, FileInstanceLock, Guardian, default_events
 from engine_core.guardian.management import append_record, load_schedule
