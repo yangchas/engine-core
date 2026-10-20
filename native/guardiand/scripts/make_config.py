@@ -34,8 +34,6 @@ for event in cfg["events"]:
     handler = event.get("handler", "")
     canonical_handler = handler.removeprefix("legacy_")
     late_until = late_by_handler.get(handler)
-    if event_id.startswith("kaipan_hot") or "kaipan_hot" in handler:
-        late_until = max(late_until or "00:00:00", event.get("trigger", {}).get("deadline", "00:00:00"), "15:30:00")
     if late_until:
         event["late_until"] = late_until
     if handler in {"legacy_postmarket_data", "legacy_baostock_probe", "legacy_close_report", "legacy_night_report"}:
@@ -49,7 +47,8 @@ for event in cfg["events"]:
         event["late_until"] = "09:10:00"
     elif canonical_handler in {"kaipan_fetch", "calendar_refresh", "kaipan_hot_capture", "snapshot_check", "auction_watch"}:
         event["cost"] = "light"
-    is_data_event = handler in late_by_handler or bool(late_until) or event_id.startswith("kaipan_hot") or "kaipan_hot" in handler
+    # time-point captures (kaipan_hot_*) are gap-only: a missed point is recorded as a gap, never re-captured late
+    is_data_event = handler in late_by_handler or bool(late_until)
     if is_data_event:
         retry = event.setdefault("retry", {})
         retry["until_late"] = True
