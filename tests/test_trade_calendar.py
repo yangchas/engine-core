@@ -266,3 +266,44 @@ def test_slice_and_baseline_consumers_read_matrix_calendar(tmp_path, monkeypatch
     catalog = SimpleNamespace(root=tmp_path)
     sessions = _expected_sessions(catalog, "2026-10-16", [])
     assert sessions and sessions[-1] == "2026-10-15"
+
+
+def test_initialize_cold_starts_without_legacy_migration_and_is_noop_when_present(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import trade_calendar
+    monkeypatch.setattr(trade_calendar, "_market_today", lambda: date(2026, 10, 20))
+    store = _copy_real_legacy_latest(tmp_path)          # legacy versions/latest exist, no calendar.json
+    bao, sz = _source_fetchers()
+    result = store.initialize(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)
+    assert result["status"] == "CONFIRMED"
+    assert store.path.exists() and len(store.all_trading_dates()) > 0
+    assert store.initialize(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)["status"] == "EXISTS"
+
+
+def test_force_refresh_fetches_even_when_matrix_is_fresh(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import trade_calendar
+    monkeypatch.setattr(trade_calendar, "_market_today", lambda: date(2026, 10, 20))
+    store = TradeCalendarStore(tmp_path)
+    bao, sz = _source_fetchers()
+    store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)
+    calls = []
+    def counting(start, end):
+        calls.append(1)
+        return bao(start, end)
+    assert store.refresh_if_needed() ["status"] == "CONFIRMED" and not calls   # fresh: no fetch
+    store.force_refresh(now=date(2026, 10, 20), baostock_fetch=counting, szse_fetch=sz)
+    assert calls                                                              # forced: fetched
+
+
+def test_szse_month_transient_error_is_retried(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import trade_calendar
+    monkeypatch.setattr(trade_calendar.time, "sleep", lambda _s: None)
+    store = TradeCalendarStore(tmp_path)
+    bao, sz = _source_fetchers()
+    failed = []
+    def flaky(year, month):
+        if month == 10 and not failed:
+            failed.append(1)
+            raise trade_calendar.CalendarSourceError("SZSE_UNAVAILABLE")
+        return sz(year, month)
+    result = store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=flaky)
+    assert failed and result["status"] == "CONFIRMED"

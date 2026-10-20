@@ -134,6 +134,7 @@ class TradeCalendarStore:
         self.root = Path(root or os.getenv("CORE_DATA_ROOT", "~/core-data")).expanduser()
         self.directory = self.root / "trade_calendar"
         self.path = self.directory / "calendar.json"
+        self._migrate = True
 
     @staticmethod
     def _expand(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -149,7 +150,7 @@ class TradeCalendarStore:
                 return None
             return matrix
         except (OSError, ValueError, KeyError, TypeError):
-            return self._migrate_latest()
+            return self._migrate_latest() if self._migrate else None
 
     def _migrate_latest(self) -> dict[str, Any] | None:
         try:
@@ -255,7 +256,14 @@ class TradeCalendarStore:
         try:
             szse = set()
             for month in _months_between(start, end):
-                values, _ = szse_fetch(month.year, month.month)
+                for attempt in range(3):  # a transient network error must not discard the whole second source
+                    try:
+                        values, _ = szse_fetch(month.year, month.month)
+                        break
+                    except CalendarSourceError:
+                        if attempt == 2:
+                            raise
+                        time.sleep(1.5 * (attempt + 1))
                 szse.update(str(parse_trade_date(item)) for item in values)
         except Exception as exc:
             szse = None
@@ -284,9 +292,28 @@ class TradeCalendarStore:
         result.update(status="PARTIAL", reason_code=errors[0] if errors else "SINGLE_SOURCE")
         return result
 
+    def initialize(self, *, now: date | None = None, **fetchers: Any) -> dict[str, Any]:
+        """First run: with no matrix file, light the calendar from a cold start (real fetch, no legacy migration)."""
+        if self.path.exists():
+            return {"status": "EXISTS", "reason_code": "MATRIX_PRESENT"}
+        self._migrate = False
+        try:
+            result = self.refresh(now=now, **fetchers)
+        finally:
+            self._migrate = True
+        return result
+
+    def force_refresh(self, *, now: date | None = None, **fetchers: Any) -> dict[str, Any]:
+        """Forced update: fetch the window now regardless of age or lit-ahead; failures leave the file unchanged."""
+        return self.refresh(now=now, **fetchers)
+
     def refresh_if_needed(self, *, now: datetime | None = None) -> dict[str, Any]:
         local = (now.astimezone(ZoneInfo("Asia/Shanghai")).date() if now and now.tzinfo else
                  now.date() if now else _market_today())
+        if not self.path.exists() and self._migrate:
+            first = self.initialize(now=local)   # first run: light from real sources, do not adopt legacy versions
+            if first.get("status") == "CONFIRMED" or self.path.exists():
+                return first
         status = self.calendar_status(local)
         matrix = self.load()
         age = 999 if not matrix else max(0, (datetime.now(timezone.utc) -
