@@ -66,7 +66,14 @@
         "clear": "clear then rebuild"
       },
       "notes": "prep_trade_day and run_data_jobs produce; guardian startup_0830/premarket_slice_0850/startup_0900 share broad handler.",
-      "guardian_event": "startup_0830"
+      "guardian_event": "startup_0830",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "08:30",
+        "valid_until": null,
+        "depends_on": [],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "daily_kline",
@@ -97,7 +104,14 @@
         "clear": "clear then rebuild"
       },
       "notes": "15:05/17:30 are knowledge recommendations and current schedule baostock probe starts 17:30; later availability seen in facts. Ask data operator to confirm freshness cutoff.",
-      "guardian_event": "postmarket_publish"
+      "guardian_event": "postmarket_publish",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "17:30",
+        "valid_until": null,
+        "depends_on": [],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "daily_indicators",
@@ -125,7 +139,16 @@
         "clear": "clear then rebuild"
       },
       "notes": "prep_trade_day can materialize after daily_kline; retry owner/late cutoff UNKNOWN.",
-      "guardian_event": "postmarket_publish"
+      "guardian_event": "postmarket_publish",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "17:30",
+        "valid_until": null,
+        "depends_on": [
+          "daily_kline"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "daily_report_features",
@@ -153,7 +176,17 @@
         "clear": "clear then rebuild"
       },
       "notes": "prep_trade_day can materialize after prerequisites; report-specific freshness cutoff UNKNOWN.",
-      "guardian_event": "postmarket_publish"
+      "guardian_event": "postmarket_publish",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "17:30",
+        "valid_until": null,
+        "depends_on": [
+          "daily_kline",
+          "daily_indicators"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "limit_up_pool",
@@ -181,7 +214,14 @@
         "clear": "clear then rebuild"
       },
       "notes": "schedule kaipan_refresh_0850; source adapter in run_data_jobs; ask data operator about retry policy.",
-      "guardian_event": "kaipan_refresh_0850"
+      "guardian_event": "kaipan_refresh_0850",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "08:50",
+        "valid_until": null,
+        "depends_on": [],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "limit_reasons",
@@ -209,7 +249,16 @@
         "clear": "clear then rebuild"
       },
       "notes": "schedule kaipan_refresh_0850; source adapter in run_data_jobs; ask data operator about retry policy.",
-      "guardian_event": "kaipan_refresh_0850"
+      "guardian_event": "kaipan_refresh_0850",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "08:50",
+        "valid_until": null,
+        "depends_on": [
+          "limit_up_pool"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "hot_plates",
@@ -244,7 +293,14 @@
         "clear": "not provided"
       },
       "notes": "guardian kaipan_hot_capture scheduled many points; schedule currently has no explicit MIDDAY_BREAK phase semantics.",
-      "guardian_event": "kaipan_hot_capture"
+      "guardian_event": "kaipan_hot_capture",
+      "late_policy": {
+        "mode": "gap_only",
+        "ready_after": "09:16",
+        "valid_until": "11:30",
+        "depends_on": [],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "plate_members",
@@ -272,7 +328,16 @@
         "clear": "move aside to timestamped .bak; restore on failure"
       },
       "notes": "C328 recommendation; current prep path loads previous-date members; verify weekly/new-symbol trigger with data operator.",
-      "guardian_event": "premarket_slice_0850"
+      "guardian_event": "premarket_slice_0850",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "08:50",
+        "valid_until": null,
+        "depends_on": [
+          "symbol_universe"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "plate_registry",
@@ -323,7 +388,14 @@
         "clear": "move aside to timestamped .bak; restore on failure"
       },
       "notes": "name_map is represented by stock_static; ask data operator about refresh trigger and PIT semantics.",
-      "guardian_event": "premarket_slice_0850"
+      "guardian_event": "premarket_slice_0850",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "08:30",
+        "valid_until": null,
+        "depends_on": [],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "auction_snapshot_v2",
@@ -376,7 +448,17 @@
         "clear": "clear then rebuild"
       },
       "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
-      "guardian_event": "premarket_slice_0850"
+      "guardian_event": "premarket_slice_0850",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "08:50",
+        "valid_until": null,
+        "depends_on": [
+          "daily_kline",
+          "symbol_universe"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "auction_stock_facts",
@@ -406,7 +488,16 @@
         "clear": "clear then rebuild"
       },
       "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
-      "guardian_event": "auction_report_0926"
+      "guardian_event": "auction_report_0926",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "09:25:10",
+        "valid_until": null,
+        "depends_on": [
+          "auction_baseline"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "auction_points",
@@ -436,7 +527,16 @@
         "clear": "clear then rebuild"
       },
       "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
-      "guardian_event": "auction_report_0926"
+      "guardian_event": "auction_report_0926",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "09:25:10",
+        "valid_until": null,
+        "depends_on": [
+          "auction_stock_facts"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "auction_points_raw",
@@ -491,7 +591,16 @@
         "clear": "clear then rebuild"
       },
       "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
-      "guardian_event": "auction_report_0926"
+      "guardian_event": "auction_report_0926",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "09:25:10",
+        "valid_until": null,
+        "depends_on": [
+          "auction_stock_facts"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "ladder_daily",
@@ -519,7 +628,16 @@
         "clear": "clear then rebuild"
       },
       "notes": "Catalog contains this dataset. guardian owner event not directly assigned by current schedule.",
-      "guardian_event": "postmarket_publish"
+      "guardian_event": "postmarket_publish",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "17:30",
+        "valid_until": null,
+        "depends_on": [
+          "daily_kline"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "hot_rank",
@@ -547,7 +665,14 @@
         "clear": "clear then rebuild"
       },
       "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
-      "guardian_event": "premarket_slice_0850"
+      "guardian_event": "premarket_slice_0850",
+      "late_policy": {
+        "mode": "gap_only",
+        "ready_after": "09:16",
+        "valid_until": "15:05",
+        "depends_on": [],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "hot_plate_minutes",
@@ -598,7 +723,16 @@
         "clear": "clear then rebuild"
       },
       "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
-      "guardian_event": "premarket_slice_0850"
+      "guardian_event": "premarket_slice_0850",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "08:50",
+        "valid_until": null,
+        "depends_on": [
+          "daily_kline"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "stock_day_facts",
@@ -626,7 +760,16 @@
         "clear": "clear then rebuild"
       },
       "notes": "Catalog contains this dataset. guardian owner event not directly assigned by current schedule.",
-      "guardian_event": "postmarket_publish"
+      "guardian_event": "postmarket_publish",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "17:30",
+        "valid_until": null,
+        "depends_on": [
+          "daily_kline"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "stock_theme_assignment",
@@ -654,7 +797,17 @@
         "clear": "clear then rebuild"
       },
       "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
-      "guardian_event": "premarket_slice_0850"
+      "guardian_event": "premarket_slice_0850",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "08:50",
+        "valid_until": null,
+        "depends_on": [
+          "plate_members",
+          "limit_reasons"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "intraday_tick_stream",
@@ -877,7 +1030,16 @@
         "clear": "move aside to timestamped .bak; restore on failure"
       },
       "notes": "Alias requested by C352; no separate catalog dataset. Ask data operator whether it should remain a separate item.",
-      "guardian_event": "premarket_slice_0850"
+      "guardian_event": "premarket_slice_0850",
+      "late_policy": {
+        "mode": "fetch_now",
+        "ready_after": "08:30",
+        "valid_until": null,
+        "depends_on": [
+          "stock_static"
+        ],
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      }
     },
     {
       "id": "path_stats",
