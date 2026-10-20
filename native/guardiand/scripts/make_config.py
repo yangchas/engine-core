@@ -8,6 +8,8 @@ bridge = f"{repo}/examples/guardian_handler.py"
 env = ["REDIS_URL", "CORE_REDIS_URL", "CORE_DATA_ROOT", "TD_CONFIG", "PYTHONHASHSEED", "PYTHONPATH",
        "GUARDIAN_DRY_RUN", "GUARDIAN_EMAIL_SELF", "HOME", "POSTHOC_DEV", "CORE_BAOSTOCK_PROBE_COMMAND"]
 cfg["handlers"]["legacy_calendar_refresh"] = {"supports_degrade": True}
+for name in ("legacy_boot_trade_day", "legacy_boot_data_health", "legacy_boot_reconcile"):
+    cfg["handlers"].setdefault(name, {})
 if not any(e["id"] == "calendar_refresh_0800" for e in cfg["events"]):
     cfg["events"].insert(0, {"id": "calendar_refresh_0800", "enabled": True, "calendar": "every_day",
         "trigger": {"type": "window", "start": "08:00:00", "deadline": "08:15:00"},
@@ -30,15 +32,23 @@ for event in cfg["events"]:
     handler = event.get("handler", "")
     late_until = late_by_handler.get(handler)
     if event_id.startswith("kaipan_hot") or "kaipan_hot" in handler:
-        late_until = "15:00:00"
+        late_until = max(late_until or "00:00:00", event.get("trigger", {}).get("deadline", "00:00:00"), "15:30:00")
     if late_until:
         event["late_until"] = late_until
-    is_data_event = handler in late_by_handler or event_id.startswith("kaipan_hot") or "kaipan_hot" in handler
+    is_data_event = handler in late_by_handler or bool(late_until) or event_id.startswith("kaipan_hot") or "kaipan_hot" in handler
     if is_data_event:
         retry = event.setdefault("retry", {})
         retry["until_late"] = True
         retry["backoff"] = "60s"
+        event["on_start"] = "reconcile"
     if handler == "legacy_baostock_probe" and event_id.endswith(("1730", "1740", "1830")):
         event.setdefault("retry", {})["silent_until_last"] = True
+boot_events = [
+    {"id": "boot_trade_day", "enabled": True, "calendar": "every_day", "trigger": {"type": "startup", "order": 10}, "handler": "legacy_boot_trade_day", "timeout": "20s", "retry": {"max_attempts": 2}},
+    {"id": "boot_data_health", "enabled": True, "calendar": "every_day", "trigger": {"type": "startup", "order": 20, "after": ["boot_trade_day"]}, "handler": "legacy_boot_data_health", "timeout": "60s", "retry": {"max_attempts": 2}, "phases": ["any"]},
+    {"id": "boot_reconcile", "enabled": True, "calendar": "every_day", "trigger": {"type": "startup", "order": 30, "after": ["boot_data_health"]}, "handler": "legacy_boot_reconcile", "timeout": "60s", "retry": {"max_attempts": 2}},
+]
+existing = {e.get("id") for e in cfg["events"]}
+cfg["events"] = boot_events + [e for e in cfg["events"] if e.get("id") not in {x["id"] for x in boot_events}]
 json.dump(cfg, open(dst, "w"), ensure_ascii=False, indent=1)
 print("handlers:", len(cfg["handlers"]), "events:", len(cfg["events"]))

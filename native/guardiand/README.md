@@ -38,3 +38,17 @@ probe alerts at its own cutoff. Auction, open, and close report events do not
 use `until_late`; their in-window degrade handling remains in effect.
 
 The local Unix socket is `<state-root>/guardiand.sock` (mode `0600`). Send one UTF-8 JSON line and read one response line. For example, Python can send `{"t":"req","id":"1","op":"status","args":{}}`; `hello` uses `{"t":"hello","proto":1,"client":"local"}`. Supported operations include `status`, `list`, `trigger`, `pause`, `resume`, `skip`, `reload`, and `config.validate`. In `fakeclock` mode, `clock.advance` advances the injected clock without sleeping.
+
+`phases` is an ordered, contiguous full-day list of `{name,start,end}` using
+`HH:MM` boundaries; when omitted, guardiand uses the twelve A-share phases
+from NIGHT through POST_MARKET. On dates absent from the configured trading
+calendar, the current phase is `NON_TRADING`. Events may set `phases` to a
+whitelist (or `any`) and `on_start: "reconcile"` to request a late catch-up
+after boot. Window events outside their phase are recorded as `SKIPPED_PHASE`.
+
+Startup events use `trigger: {"type":"startup","order":N,"after":[...]}`.
+They run once per process boot in order after their listed startup dependencies;
+failed dependencies produce `SKIPPED_DEP`. Handler requests include `phase`
+and `now`, and `status` reports `phase`, `next_phase`, and the `boot` result
+summary. Startup and reconciliation outcomes are included in the batched
+startup `MISSED` summary.

@@ -24,6 +24,7 @@ type Instance struct {
 	Catchup     string `json:"catchup"`
 	OnDeadline  string `json:"on_deadline"`
 	Calendar    string `json:"calendar"`
+	TriggerType string `json:"trigger_type,omitempty"`
 }
 
 func main() {
@@ -153,6 +154,9 @@ func instances(c config.Config, date string) ([]Instance, string, error) {
 	}
 	var out []Instance
 	for _, e := range c.Events {
+		if e.Trigger.Type == "startup" {
+			continue
+		}
 		status := calendarStatus(e.Calendar, date, ds, source)
 		if strings.HasPrefix(status, "EXCLUDED") {
 			continue

@@ -288,7 +288,65 @@ type liveRunner struct {
 	gateAlerted      map[string]bool
 	idempotency      map[string]any
 	cfgPath          string
+	bootSummary      map[string]string
 }
+
+func phaseIn(now time.Time, phases []config.Phase, tradingDay bool) (string, string) {
+	if !tradingDay {
+		return "NON_TRADING", ""
+	}
+	sec := now.Hour()*3600 + now.Minute()*60 + now.Second()
+	for i, p := range phases {
+		start, _ := time.Parse("15:04", p.Start)
+		end := 0
+		if p.End == "24:00" {
+			end = 86400
+		} else {
+			t, _ := time.Parse("15:04", p.End)
+			end = t.Hour()*3600 + t.Minute()*60
+		}
+		if sec >= start.Hour()*3600+start.Minute()*60 && sec < end {
+			next := ""
+			if i+1 < len(phases) {
+				next = phases[i+1].Name
+			}
+			return p.Name, next
+		}
+	}
+	return "NON_TRADING", ""
+}
+func (r *liveRunner) currentPhase(now time.Time) (string, string) {
+	r.configMu.RLock()
+	c := r.c
+	r.configMu.RUnlock()
+	trading := true
+	if cal, ok := c.Calendars["trading"]; ok {
+		if ds, _, err := dateSet(cal.File); err == nil {
+			date := now.In(r.loc).Format("2006-01-02")
+			trading = ds[date]
+			if !trading && len(ds) > 0 {
+				min, max := "9999-12-31", "0000-01-01"
+				for d := range ds {
+					if d < min {
+						min = d
+					}
+					if d > max {
+						max = d
+					}
+				}
+				if date < min || date > max {
+					return "CALENDAR_UNKNOWN", ""
+				}
+			}
+		} else {
+			return "CALENDAR_UNKNOWN", ""
+		}
+	} else {
+		return "CALENDAR_UNKNOWN", ""
+	}
+	return phaseIn(now.In(r.loc), c.EffectivePhases(), trading)
+}
+func (r *liveRunner) phaseAt(now time.Time) (string, string) { return r.currentPhase(now) }
 
 func runCmd(args []string) error {
 	f := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -360,6 +418,9 @@ func runCmd(args []string) error {
 	if err = r.ledger.append("BOOT", map[string]any{"config_version": c.ConfigVersion, "config_hash": h, "build": "dev", "boot_id": r.boot}); err != nil {
 		return err
 	}
+	if err = r.runBootEvents(now); err != nil {
+		return err
+	}
 	missed, active := startupClassify(c, now)
 	if err = r.applyStartup(now, missed, active); err != nil {
 		return err
@@ -370,6 +431,143 @@ func runCmd(args []string) error {
 	return r.loop()
 }
 
+func (r *liveRunner) runBootEvents(now time.Time) error {
+	r.configMu.RLock()
+	c := r.c
+	r.configMu.RUnlock()
+	var events []config.Event
+	for _, e := range c.Events {
+		if e.Trigger.Type == "startup" {
+			events = append(events, e)
+		}
+	}
+	eventByID := map[string]config.Event{}
+	for _, e := range events {
+		eventByID[e.ID] = e
+	}
+	ordered := make([]config.Event, 0, len(events))
+	emitted := map[string]bool{}
+	for len(ordered) < len(events) {
+		eligible := []config.Event{}
+		for _, e := range events {
+			if emitted[e.ID] {
+				continue
+			}
+			ready := true
+			for _, d := range e.Trigger.After {
+				if _, isBoot := eventByID[d]; isBoot && !emitted[d] {
+					ready = false
+					break
+				}
+			}
+			if ready {
+				eligible = append(eligible, e)
+			}
+		}
+		if len(eligible) == 0 {
+			return fmt.Errorf("startup dependency cycle")
+		}
+		sort.Slice(eligible, func(i, j int) bool {
+			if eligible[i].Trigger.Order == eligible[j].Trigger.Order {
+				return eligible[i].ID < eligible[j].ID
+			}
+			return eligible[i].Trigger.Order < eligible[j].Trigger.Order
+		})
+		e := eligible[0]
+		ordered = append(ordered, e)
+		emitted[e.ID] = true
+	}
+	events = ordered
+	date := now.In(r.loc).Format("2006-01-02")
+	seq := r.ledger.sequence()
+	boot := fmt.Sprint(seq)
+	results := map[string]string{}
+	for _, e := range events {
+		blocked := ""
+		for _, dep := range e.Trigger.After {
+			s := results[dep]
+			if s != "SUCCEEDED" && s != "SUCCEEDED_DEGRADED" {
+				blocked = dep
+				break
+			}
+		}
+		x := Instance{ID: e.ID + "@boot" + boot, EventID: e.ID, Start: "00:00:00", Deadline: "23:59:59", Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Calendar: "BOOT", TriggerType: "startup"}
+		var calendarDays map[string]bool
+		calendarSource := "unconfigured"
+		if tc, ok := c.Calendars["trading"]; ok {
+			calendarDays, calendarSource, _ = dateSet(tc.File)
+		}
+		if strings.HasPrefix(calendarStatus(e.Calendar, date, calendarDays, calendarSource), "EXCLUDED") {
+			st := instanceState{Status: "SKIPPED_NA", LastError: "calendar excluded", CompletedAt: r.clock.Now().Format(time.RFC3339)}
+			r.setState(x, date, st)
+			results[e.ID] = st.Status
+			_, _ = r.appendLedger(date, "BOOT_CHECK", map[string]any{"event": e.ID, "instance": x.ID, "status": st.Status, "order": e.Trigger.Order})
+			continue
+		}
+		phase, _ := r.currentPhase(now)
+		phaseAllowed := len(e.Phases) == 0
+		for _, p := range e.Phases {
+			if p == "any" || p == phase {
+				phaseAllowed = true
+			}
+		}
+		if phase == "NON_TRADING" || phase == "CALENDAR_UNKNOWN" {
+			phaseAllowed = e.ID == "boot_trade_day"
+		}
+		if !phaseAllowed {
+			st := instanceState{Status: "SKIPPED_PHASE", LastError: phase, CompletedAt: r.clock.Now().Format(time.RFC3339)}
+			r.setState(x, date, st)
+			results[e.ID] = st.Status
+			_, _ = r.appendLedger(date, "BOOT_CHECK", map[string]any{"event": e.ID, "instance": x.ID, "status": st.Status, "order": e.Trigger.Order})
+			continue
+		}
+		if blocked != "" {
+			st := instanceState{Status: "SKIPPED_DEP", LastError: "dependency failed: " + blocked, CompletedAt: r.clock.Now().Format(time.RFC3339)}
+			r.setState(x, date, st)
+			results[e.ID] = st.Status
+			_, _ = r.appendLedger(date, "BOOT_CHECK", map[string]any{"event": e.ID, "instance": x.ID, "status": st.Status, "order": e.Trigger.Order})
+			continue
+		}
+		r.execute(x, date)
+		r.mu.Lock()
+		st := r.states[date+"/"+x.ID]
+		r.mu.Unlock()
+		results[e.ID] = st.Status
+		_, _ = r.appendLedger(date, "BOOT_CHECK", map[string]any{"event": e.ID, "instance": x.ID, "status": st.Status, "order": e.Trigger.Order})
+	}
+	r.bootSummary = results
+	// Reconcile windows that have passed their normal start while their late cutoff remains open.
+	xs, _, err := instances(c, date)
+	if err == nil {
+		for _, x := range xs {
+			e := findEvent(c, x.EventID)
+			if e == nil || e.OnStart != "reconcile" {
+				continue
+			}
+			end, parseErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
+			if parseErr != nil || now.Before(end) {
+				continue
+			}
+			key := date + "/" + x.ID
+			r.mu.Lock()
+			prior, exists := r.states[key]
+			r.mu.Unlock()
+			if exists && (prior.Status == "SUCCEEDED" || prior.Status == "SUCCEEDED_DEGRADED") {
+				continue
+			}
+			if x.LateUntil == "" {
+				r.bootSummary["gap:"+x.ID] = "MISSED_NO_LATE_UNTIL"
+				continue
+			}
+			cutoff, pe := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.LateUntil, r.loc)
+			if pe == nil && now.Before(cutoff) {
+				go r.execute(x, date)
+			}
+		}
+	}
+	return nil
+}
+
 func (r *liveRunner) applyStartup(now time.Time, missed, active []Instance) error {
 	for _, x := range missed {
 		if _, exists := r.states[now.Format("2006-01-02")+"/"+x.ID]; exists {
@@ -378,11 +576,24 @@ func (r *liveRunner) applyStartup(now time.Time, missed, active []Instance) erro
 		r.setState(x, now.Format("2006-01-02"), instanceState{Status: "MISSED", CompletedAt: now.Format(time.RFC3339)})
 		r.missedStartup = append(r.missedStartup, x.ID)
 	}
-	if len(missed) > 0 {
-		if len(r.missedStartup) > 0 {
-			if err := r.alert("MISSED", map[string]any{"count": len(r.missedStartup), "instances": r.missedStartup, "summary": true}); err != nil {
-				return err
-			}
+	var summary []string
+	for id, status := range r.bootSummary {
+		if status != "SUCCEEDED" && status != "SUCCEEDED_DEGRADED" && status != "SKIPPED_PHASE" && status != "SKIPPED_NA" {
+			summary = append(summary, id+":"+status)
+		}
+	}
+	if len(r.missedStartup) > 0 {
+		summary = append(summary, r.missedStartup...)
+	}
+	for id, status := range r.bootSummary {
+		if strings.HasPrefix(id, "gap:") {
+			summary = append(summary, id+":"+status)
+		}
+	}
+	if len(summary) > 0 {
+		sort.Strings(summary)
+		if err := r.alert("MISSED", map[string]any{"count": len(summary), "instances": summary, "boot": r.bootSummary, "summary": true}); err != nil {
+			return err
 		}
 	}
 	for _, x := range active {
@@ -605,7 +816,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 	}
 	r.mu.Unlock()
 	deadlineAt, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
-	isLate := !r.clock.Now().Before(deadlineAt)
+	isLate := x.TriggerType != "startup" && !r.clock.Now().Before(deadlineAt)
 	st := instanceState{Status: "RUNNING", StartedAt: r.clock.Now().Format(time.RFC3339), Late: isLate}
 	if isLate {
 		st.Status = "LATE_RUN"
@@ -682,16 +893,16 @@ func (r *liveRunner) execute(x Instance, date string) {
 		cutoff = x.LateUntil
 	}
 	startCutoff, parseErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
-	if parseErr == nil && !r.clock.Now().Before(startCutoff) && prior.Status == "RETRY_WAIT" {
+	if x.TriggerType != "startup" && parseErr == nil && !r.clock.Now().Before(startCutoff) && prior.Status == "RETRY_WAIT" {
 		r.finishLateRetries(x, date, event, st)
 		return
 	}
-	if parseErr == nil && !r.clock.Now().Before(startCutoff) {
+	if x.TriggerType != "startup" && parseErr == nil && !r.clock.Now().Before(startCutoff) {
 		r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: "START_DEADLINE_EXPIRED"})
 		_ = r.alert("MISSED", map[string]any{"event": x.EventID, "date": date, "error": "START_DEADLINE_EXPIRED"})
 		return
 	}
-	if !r.clock.Now().Before(deadlineAt) {
+	if x.TriggerType != "startup" && !r.clock.Now().Before(deadlineAt) {
 		st.Late = true
 		st.Status = "LATE_RUN"
 	}
@@ -786,7 +997,9 @@ func (r *liveRunner) execute(x Instance, date string) {
 		status = "CIRCUIT_OPEN"
 	}
 	r.setState(x, date, instanceState{Status: status, Attempts: st.Attempts, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: last})
-	_ = r.alert(status, map[string]any{"event": x.EventID, "date": date, "error": last})
+	if event.Trigger.Type != "startup" {
+		_ = r.alert(status, map[string]any{"event": x.EventID, "date": date, "error": last})
+	}
 }
 
 func retryBackoff(value string, attempts, maxAttempts int) time.Duration {
@@ -879,6 +1092,9 @@ func (r *liveRunner) invoke(argv []string, e *config.Event, x Instance, date str
 		}
 	}
 	in := map[string]any{"contract": 1, "event": e.ID, "instance": x.ID, "attempt": attempt, "run_id": r.boot + "-" + x.ID, "idem_key": date + "/" + x.ID, "trade_date": date, "data_date": date, "asof": date + "T" + x.Start + "+08:00", "deadline_at": date + "T" + x.Deadline + "+08:00", "degrade_requested": false, "sandbox": map[string]any{"on": false, "root": ""}, "args": e.Args, "gate": map[string]any{"ref": e.Gate.Ref, "params": e.Gate.Params, "probe": gate}}
+	phase, _ := r.currentPhase(r.clock.Now())
+	in["phase"] = phase
+	in["now"] = r.clock.Now().In(r.loc).Format(time.RFC3339)
 	b, _ := json.Marshal(in)
 	cmd.Stdin = strings.NewReader(string(b) + "\n")
 	err := cmd.Start()
@@ -1173,6 +1389,25 @@ func (r *liveRunner) schedule(now time.Time) {
 	r.mu.Unlock()
 	var missedNow []string
 	for _, x := range xs {
+		if event := findEvent(c, x.EventID); event != nil && len(event.Phases) > 0 {
+			phase, _ := r.currentPhase(now)
+			allowed := false
+			for _, p := range event.Phases {
+				if p == "any" || p == phase {
+					allowed = true
+				}
+			}
+			if !allowed {
+				key := date + "/" + x.ID
+				r.mu.Lock()
+				_, seen := r.states[key]
+				r.mu.Unlock()
+				if !seen {
+					r.setState(x, date, instanceState{Status: "SKIPPED_PHASE", LastError: phase, CompletedAt: now.Format(time.RFC3339)})
+				}
+				continue
+			}
+		}
 		start, e1 := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Start, r.loc)
 		cutoff := x.Deadline
 		if x.LateUntil != "" {
@@ -1353,7 +1588,8 @@ func (r *liveRunner) serve(c net.Conn) {
 				result = map[string]any{"proto": 1, "build": "dev", "config_version": version, "mode": r.mode}
 			case "status":
 				r.mu.Lock()
-				result = map[string]any{"tick_seq": r.tick, "running": r.running, "states": r.states, "next_due": r.nextDue}
+				phase, nextPhase := r.currentPhase(r.clock.Now())
+				result = map[string]any{"tick_seq": r.tick, "running": r.running, "states": r.states, "next_due": r.nextDue, "phase": phase, "next_phase": nextPhase, "boot": r.bootSummary}
 				r.mu.Unlock()
 			case "list":
 				date, _ := q["date"].(string)

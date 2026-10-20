@@ -25,7 +25,13 @@ type Config struct {
 	Handlers    map[string]Handler         `json:"handlers,omitempty"`
 	Alerts      map[string]json.RawMessage `json:"alerts,omitempty"`
 	Events      []Event                    `json:"events"`
+	Phases      []Phase                    `json:"phases,omitempty"`
 	Datasets    json.RawMessage            `json:"datasets,omitempty"`
+}
+type Phase struct {
+	Name  string `json:"name"`
+	Start string `json:"start"`
+	End   string `json:"end"`
 }
 type Handler struct {
 	Argv            []string `json:"argv,omitempty"`
@@ -37,14 +43,16 @@ type Handler struct {
 	SupportsDegrade bool     `json:"supports_degrade,omitempty"`
 }
 type Trigger struct {
-	Type     string `json:"type"`
-	Start    string `json:"start,omitempty"`
-	Deadline string `json:"deadline,omitempty"`
-	Until    string `json:"until,omitempty"`
-	Every    string `json:"every,omitempty"`
-	Offset   string `json:"offset,omitempty"`
-	Window   string `json:"window,omitempty"`
-	At       string `json:"time,omitempty"`
+	Type     string   `json:"type"`
+	Start    string   `json:"start,omitempty"`
+	Deadline string   `json:"deadline,omitempty"`
+	Until    string   `json:"until,omitempty"`
+	Every    string   `json:"every,omitempty"`
+	Offset   string   `json:"offset,omitempty"`
+	Window   string   `json:"window,omitempty"`
+	At       string   `json:"time,omitempty"`
+	Order    int      `json:"order,omitempty"`
+	After    []string `json:"after,omitempty"`
 }
 type Gate struct {
 	Ref        string         `json:"ref,omitempty"`
@@ -87,7 +95,20 @@ type Event struct {
 	Priority       int             `json:"priority,omitempty"`
 	Alert          json.RawMessage `json:"alert,omitempty"`
 	DependsOn      []Dependency    `json:"depends_on,omitempty"`
+	Phases         []string        `json:"phases,omitempty"`
+	OnStart        string          `json:"on_start,omitempty"`
 }
+
+func DefaultPhases() []Phase {
+	return []Phase{{"NIGHT", "00:00", "08:00"}, {"PRE_MARKET", "08:00", "09:15"}, {"AUCTION", "09:15", "09:25"}, {"AUCTION_END", "09:25", "09:30"}, {"OPEN", "09:30", "09:45"}, {"INTRADAY_AM", "09:45", "11:30"}, {"MIDDAY_BREAK", "11:30", "13:00"}, {"PM_OPEN", "13:00", "13:15"}, {"INTRADAY_PM", "13:15", "14:57"}, {"CLOSE_AUCTION", "14:57", "15:00"}, {"CLOSE", "15:00", "15:30"}, {"POST_MARKET", "15:30", "24:00"}}
+}
+func (c Config) EffectivePhases() []Phase {
+	if c.Phases == nil {
+		return DefaultPhases()
+	}
+	return c.Phases
+}
+
 type Issue struct {
 	Path    string `json:"path"`
 	Code    string `json:"code"`
@@ -141,6 +162,48 @@ func Validate(c Config) []Issue {
 			add("timezone", "TIMEZONE", e.Error())
 		}
 	}
+	phases := c.EffectivePhases()
+	phaseNames := map[string]bool{}
+	phaseTime := func(v string, end bool) int {
+		if end && v == "24:00" {
+			return 86400
+		}
+		t, e := time.Parse("15:04", v)
+		if e != nil {
+			return -1
+		}
+		return t.Hour()*3600 + t.Minute()*60
+	}
+	last := 0
+	for i, p := range phases {
+		a, b := phaseTime(p.Start, false), phaseTime(p.End, true)
+		path := fmt.Sprintf("phases[%d]", i)
+		if p.Name == "" || phaseNames[p.Name] {
+			add(path+".name", "PHASE_NAME", "phase names must be nonempty and unique")
+		}
+		phaseNames[p.Name] = true
+		if a < 0 {
+			add(path+".start", "PHASE_TIME", "expected HH:MM")
+		}
+		if b < 0 {
+			add(path+".end", "PHASE_TIME", "expected HH:MM or 24:00")
+		}
+		if a >= 0 && b >= 0 {
+			if a >= b {
+				add(path, "PHASE_ORDER", "start must be before end")
+			}
+			if i == 0 && a != 0 {
+				add(path+".start", "PHASE_COVERAGE", "phases must start at 00:00")
+			}
+			if i > 0 && a != last {
+				add(path+".start", "PHASE_COVERAGE", "phases must be contiguous and non-overlapping")
+			}
+			last = b
+		}
+	}
+	if len(phases) > 0 && last != 86400 {
+		add("phases", "PHASE_COVERAGE", "phases must end at 24:00")
+	}
 	ids := map[string]int{}
 	by := map[string]Event{}
 	for i, e := range c.Events {
@@ -163,6 +226,8 @@ func Validate(c Config) []Issue {
 		}
 		start, end := -1, -1
 		switch e.Trigger.Type {
+		case "startup":
+			// Startup events are dispatched once per process boot.
 		case "window":
 			start = checkTime(p+".trigger.start", e.Trigger.Start)
 			end = checkTime(p+".trigger.deadline", e.Trigger.Deadline)
@@ -182,6 +247,14 @@ func Validate(c Config) []Issue {
 			}
 		default:
 			add(p+".trigger.type", "TRIGGER_TYPE", "unsupported trigger type")
+		}
+		if e.OnStart != "" && e.OnStart != "reconcile" {
+			add(p+".on_start", "ENUM", "invalid on_start")
+		}
+		for _, name := range e.Phases {
+			if name != "any" && !phaseNames[name] {
+				add(p+".phases", "PHASE_UNKNOWN", "unknown phase "+name)
+			}
 		}
 		if start >= 0 && end >= 0 && start > end {
 			add(p+".trigger.deadline", "WINDOW_ORDER", "start must not exceed deadline")
@@ -243,6 +316,13 @@ func Validate(c Config) []Issue {
 				add(fmt.Sprintf("events[%d].depends_on", i), "DEPENDENCY_MISSING", "unknown dependency "+d.ID)
 			} else {
 				graph[e.ID] = append(graph[e.ID], d.ID)
+			}
+		}
+		for _, dep := range e.Trigger.After {
+			if _, ok := by[dep]; !ok {
+				add(fmt.Sprintf("events[%d].trigger.after", i), "DEPENDENCY_MISSING", "unknown dependency "+dep)
+			} else {
+				graph[e.ID] = append(graph[e.ID], dep)
 			}
 		}
 	}

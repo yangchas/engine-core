@@ -37,3 +37,20 @@ func TestRetryUntilLateFieldsDecodeAndBackoffLimit(t *testing.T) {
 	}
 	t.Fatalf("backoff above 10m was accepted: %+v", issues)
 }
+
+func TestPhasesAndStartupTriggerConfig(t *testing.T) {
+	c := Config{SchemaVersion: 1, ConfigVersion: 1, Name: "x", Timezone: "Asia/Shanghai", Events: []Event{{
+		ID: "boot", Trigger: Trigger{Type: "startup", Order: 10},
+	}}}
+	if issues := Validate(c); len(issues) != 0 {
+		t.Fatalf("defaults/startup rejected: %+v", issues)
+	}
+	c.Phases = []Phase{{Name: "A", Start: "00:00", End: "12:00"}, {Name: "B", Start: "12:00", End: "24:00"}}
+	if issues := Validate(c); len(issues) != 0 {
+		t.Fatalf("contiguous phases rejected: %+v", issues)
+	}
+	c.Phases[1].Start = "11:00"
+	if issues := Validate(c); len(issues) == 0 {
+		t.Fatal("overlapping phases accepted")
+	}
+}

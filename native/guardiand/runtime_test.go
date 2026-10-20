@@ -32,6 +32,61 @@ func TestStartupMissedIsBatched(t *testing.T) {
 	}
 }
 
+func TestPhaseAtUsesInjectedFakeClock(t *testing.T) {
+	fc := newFakeClock(time.Date(2026, 10, 20, 9, 20, 0, 0, time.FixedZone("CST", 8*3600)))
+	phases := config.DefaultPhases()
+	if got, _ := phaseIn(fc.Now(), phases, true); got != "AUCTION" {
+		t.Fatalf("phase=%s", got)
+	}
+	fc.Advance(4 * time.Hour)
+	if got, _ := phaseIn(fc.Now(), phases, true); got != "INTRADAY_PM" {
+		t.Fatalf("phase after advance=%s", got)
+	}
+	if got, _ := phaseIn(fc.Now(), phases, false); got != "NON_TRADING" {
+		t.Fatalf("non-trading phase=%s", got)
+	}
+}
+
+func TestStartupEventsFollowAfterOrderWithFakeClock(t *testing.T) {
+	root := t.TempDir()
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now := time.Date(2026, 10, 20, 9, 20, 0, 0, loc)
+	fc := newFakeClock(now)
+	log := filepath.Join(root, "order.log")
+	calendar := filepath.Join(root, "calendar.json")
+	if err := os.WriteFile(calendar, []byte(`["2026-10-20"]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a := filepath.Join(root, "a.sh")
+	b := filepath.Join(root, "b.sh")
+	for path, name := range map[string]string{a: "a", b: "b"} {
+		body := "#!/bin/sh\necho " + name + " >> " + log + "\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"
+		if err := os.WriteFile(path, []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := config.Config{ConfigVersion: 1, Timezone: "Asia/Shanghai", Calendars: map[string]struct {
+		File string `json:"file"`
+	}{"trading": {File: calendar}}, Handlers: map[string]config.Handler{"ha": {Argv: []string{a}}, "hb": {Argv: []string{b}}}, Events: []config.Event{{ID: "boot_a", Trigger: config.Trigger{Type: "startup", Order: 20}, Handler: "ha"}, {ID: "boot_b", Trigger: config.Trigger{Type: "startup", Order: 10, After: []string{"boot_a"}}, Handler: "hb"}}}
+	l, err := openLedger(root, now.Format("2006-01-02"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, states: map[string]instanceState{}, running: map[string]bool{}, paused: map[string]bool{}, boot: "test", clock: fc, fake: fc, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}, ledger: l}
+	if err = r.runBootEvents(now); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "a\nb\n" {
+		t.Fatalf("startup order=%q", got)
+	}
+}
+
 func TestLedgerTruncatesCorruptTailAndResumesSequence(t *testing.T) {
 	root := t.TempDir()
 	fc := newFakeClock(time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC))
