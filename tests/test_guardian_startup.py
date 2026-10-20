@@ -98,8 +98,37 @@ def test_boot_apply_plan_executes_jobs_defers_and_appends_gaps(tmp_path, monkeyp
                                                   "run_in_phases": ["MIDDAY_BREAK"]}]
     gap_path = tmp_path / "guardian-native" / "gaps" / "2026-10-20.json"
     assert json.loads(gap_path.read_text())[0]["id"] == "capture"
+    boot_apply_plan("2026-10-20", [{"id": "capture", "partition": "2026-10-20",
+        "action": "GAP", "reason": "repeat"}], tmp_path,
+        now="2026-10-20T09:37:00+08:00", phase="OPEN")
+    gap_rows = json.loads(gap_path.read_text())
+    assert len(gap_rows) == 1 and gap_rows[0]["reason"] == "repeat"
+    assert gap_rows[0]["observed_at"] == "2026-10-20T09:37:00+08:00"
     assert {x["id"]: x["action"] for x in result["detail"]["results"]} == {
         "light": "FETCH_NOW", "heavy": "DEFER", "capture": "GAP"}
+
+
+def test_boot_apply_plan_isolates_failed_fetch_and_keeps_later_item_running(tmp_path, monkeypatch):
+    import sys
+    from engine_core.guardian import startup
+
+    registry = [
+        {"id": "broken", "fetch_job": {"argv": [sys.executable, "-c",
+            "import sys;sys.stderr.write('x'*450);sys.exit(3)"]}},
+        {"id": "good", "fetch_job": {"argv": [sys.executable, "-c",
+            "import json;print(json.dumps(dict(status='ok'))) "]}},
+    ]
+    monkeypatch.setattr(startup, "load_registry", lambda: registry)
+    result = startup.boot_apply_plan("2026-10-20", [
+        {"id": "broken", "partition": "2026-10-20", "action": "FETCH_NOW"},
+        {"id": "good", "partition": "2026-10-20", "action": "FETCH_NOW"},
+    ], tmp_path, now="2026-10-20T09:36:00+08:00", phase="OPEN")
+    rows = {row["id"]: row for row in result["detail"]["results"]}
+    assert result["status"] == "degraded" and result["retryable"] is True
+    assert rows["broken"]["status"] == "failed"
+    assert rows["broken"]["error_code"] == "FETCH_EXIT_3"
+    assert len(rows["broken"]["stderr"]) == 300
+    assert rows["good"]["status"] == "ok"
 
 
 def test_fetch_item_dry_run_does_not_call_job(tmp_path, monkeypatch):

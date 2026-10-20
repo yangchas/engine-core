@@ -1,0 +1,14 @@
+{
+  "provenance": {
+    "source_manifest": "/home/exedev/core-data/daily_kline/trade_date=2026-10-19/source=baostock>wencai>q2_final/sha256-cb546c396601fe48/manifest.json",
+    "source_sha256": "cb546c396601fe48cbefbd84acb2778509ccc6a545380739f232891a8a104ec1",
+    "selection": "first five rows from the immutable rows.jsonl.gz source"
+  },
+  "rows": [
+    {"amount_yuan":1466720689.33,"close":11.65,"date":"2026-10-19","high":11.68,"low":11.41,"mismatch":false,"open":11.48,"pct_chg":1.3043,"pre_close":11.5,"suspended":false,"symbol":"000001","turnover":0.6533,"turnover_pct":0.6533,"volume":126779262.0},
+    {"amount_yuan":1182136843.92,"close":3.5,"date":"2026-10-19","high":3.65,"low":3.47,"mismatch":false,"open":3.59,"pct_chg":-4.3716,"pre_close":3.66,"suspended":false,"symbol":"000002","turnover":3.4495,"turnover_pct":3.4495,"volume":335126076.0},
+    {"amount_yuan":153042689.94,"close":6.49,"date":"2026-10-19","high":6.76,"low":6.37,"mismatch":false,"open":6.66,"pct_chg":-3.8519,"pre_close":6.75,"suspended":false,"symbol":"000006","turnover":1.7447,"turnover_pct":1.7447,"volume":23553383.0},
+    {"amount_yuan":85660849.28,"close":9.72,"date":"2026-10-19","high":10.28,"low":9.39,"mismatch":false,"open":10.28,"pct_chg":-4.7059,"pre_close":10.2,"suspended":false,"symbol":"000007","turnover":2.5353,"turnover_pct":2.5353,"volume":8783381.0},
+    {"amount_yuan":44437779.0,"close":2.32,"date":"2026-10-19","high":2.34,"low":2.29,"mismatch":false,"open":2.32,"pct_chg":0.0,"pre_close":2.32,"suspended":false,"symbol":"000008","turnover":0.7076,"turnover_pct":0.7076,"volume":19221200.0}
+  ]
+}

@@ -150,11 +150,17 @@ def _command_handler(name: str, opts, root: Path):
         repo = Path(__file__).resolve().parents[1]
         env = os.environ.copy()
         env["PYTHONPATH"] = str(repo / "src") + os.pathsep + str(repo)
-        if name in {"auction_report", "open_report", "close_report"} and getattr(opts, "email_self", False):
-            stage = {"auction_report": "auction", "open_report": "open", "close_report": "close"}[name]
+        if name == "night_report":
+            try:
+                day = TradeCalendarStore(root).previous_trade_date(day).isoformat()
+            except ValueError:
+                raise RuntimeError("previous_trade_date_unavailable")
+        if name in {"auction_report", "open_report", "close_report", "night_report"} and getattr(opts, "email_self", False):
+            stage = {"auction_report": "auction", "open_report": "open",
+                     "close_report": "close", "night_report": "night"}[name]
             marker = root / "guardian" / day / "audit_ok" / stage
             if not marker.is_file():
-                raise RuntimeError("audit_ok_missing:" + stage)
+                return "NOT_APPLICABLE:waiting_audit_ok:" + stage
         if name == "kaipan_fetch":
             from engine_core.data_pipeline.storage import ArtifactCatalog
             catalog = ArtifactCatalog(root)
@@ -183,11 +189,6 @@ def _command_handler(name: str, opts, root: Path):
             return "Core Kaipan jobs checked; existing date versions reused"
         elif name in {"premarket_data", "intraday_data", "postmarket_data", "auction_report",
                       "open_report", "close_report", "kaipan_hot_capture", "baostock_probe", "night_report"}:
-            if name == "night_report":
-                try:
-                    day = TradeCalendarStore(root).previous_trade_date(day).isoformat()
-                except ValueError:
-                    raise RuntimeError("previous_trade_date_unavailable")
             cmd = build_handler_command(name, event, opts, root, day, py, repo)
         else:
             raise RuntimeError("handler_not_implemented:" + name)

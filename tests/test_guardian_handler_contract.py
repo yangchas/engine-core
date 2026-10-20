@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +33,54 @@ def test_handler_run_contract_round_trip_close_capture_not_applicable():
     assert result.returncode == 0
     assert payload["contract"] == 1 and payload["status"] == "not_applicable"
     assert payload["error_code"] == ""
+
+
+def test_report_commands_wait_for_audit_marker_without_raising(tmp_path, monkeypatch):
+    from datetime import date, datetime
+    from examples import core_guardian
+
+    class Calendar:
+        def __init__(self, _root): pass
+        def previous_trade_date(self, _day): return date(2026, 10, 19)
+
+    calls = []
+    monkeypatch.setattr(core_guardian, "TradeCalendarStore", Calendar)
+    monkeypatch.setattr("examples.core_guardian.subprocess.run", lambda *a, **k:
+                        calls.append(a) or SimpleNamespace(returncode=0, stdout="report ok", stderr=""))
+    opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False,
+                           email_self=True, run=True, job="")
+    names = {"auction_report": "auction", "open_report": "open",
+             "close_report": "close", "night_report": "night"}
+    for name, stage in names.items():
+        event = SimpleNamespace(data_date_offset=0, timeout_seconds=10, start="09:26:00")
+        handler = core_guardian._command_handler(name, opts, tmp_path)
+        waiting = handler(event, datetime.fromisoformat("2026-10-20T18:19:00+08:00"), {}, False)
+        target_day = "2026-10-19" if name == "night_report" else "2026-10-20"
+        assert waiting == "NOT_APPLICABLE:waiting_audit_ok:" + stage
+        assert calls == []
+        marker = tmp_path / "guardian" / target_day / "audit_ok" / stage
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        assert handler(event, datetime.fromisoformat("2026-10-20T18:19:00+08:00"), {}, False) == "report ok"
+        assert len(calls) == 1
+        calls.clear()
+
+
+def test_missing_close_audit_marker_is_not_applicable_contract(tmp_path, monkeypatch):
+    from examples import core_guardian, guardian_handler
+    from engine_core.guardian.scheduler import default_events
+
+    event = next(item for item in default_events() if item.handler == "close_report")
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "0")
+    monkeypatch.setenv("GUARDIAN_EMAIL_SELF", "1")
+    monkeypatch.setattr(core_guardian, "_command_handler", lambda *_:
+                        lambda *_args: "NOT_APPLICABLE:waiting_audit_ok:close")
+    code, payload = guardian_handler._run({"event": event.event_id, "trade_date": "2026-10-20"})
+    assert code == 0
+    assert payload["status"] == "not_applicable"
+    assert payload["detail"] == "waiting_audit_ok:close"
+    assert payload["retryable"] is False
 
 
 def test_unknown_event_id_is_config_error():

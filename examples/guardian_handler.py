@@ -83,6 +83,9 @@ def _run(request):
     try:
         result = _command_handler(name, opts, root)(event, now, {},
                                                     bool(request.get("degrade_requested")))
+        if isinstance(result, str) and result.startswith("NOT_APPLICABLE:waiting_audit_ok:"):
+            return 0, {"contract": 1, "status": "not_applicable", "error_code": "",
+                       "retryable": False, "artifacts": [], "detail": result.split(":", 1)[1]}
         if not dry:
             from engine_core.guardian.commands import validate_handler_postcondition
             ok, reason = validate_handler_postcondition(name, target_day, root)

@@ -32,6 +32,30 @@ def test_file_lock_prevents_overlapping_runs(tmp_path):
             assert str(exc) == "job_already_running"
 
 
+def test_ladder_daily_backfill_accepts_real_daily_bar_fixture(tmp_path):
+    from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
+    from engine_core.data_pipeline.ops import backfill_ladder_daily
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+
+    fixture = json.loads((Path(__file__).parent / "fixtures/data/daily_kline_20261019_ladder_subset.json")
+                         .read_text(encoding="utf-8"))
+    assert fixture["provenance"]["source_sha256"].startswith("cb546c396601fe48")
+    catalog = ArtifactCatalog(tmp_path)
+    catalog.commit("daily_kline", "2026-10-19", fixture["rows"],
+        {"trade_date": "2026-10-19", "available_at": "2026-10-19T14:34:56Z",
+         "quality": {"partial": True}}, source="fixture_real_daily_kline")
+    runner = JobRunner(artifact_root=tmp_path,
+                       budget=RequestBudget(max_requests=10, min_interval_seconds=0))
+    report = backfill_ladder_daily(runner, "2026-10-19", "2026-10-19")
+    assert report["processed"] == ["2026-10-19"]
+    assert report["row_count"] == len(fixture["rows"]) == 5
+    output = catalog.read_rows(catalog.locate("ladder_daily", "2026-10-19"))
+    assert len(output) == 5
+    assert {row["status"] for row in output} == {"PRICE_CLOSE_PROXY"}
+    assert all(row["seal_source"] == "PRICE_CLOSE_PROXY" and
+               row["st_filter"] == "UNAVAILABLE" for row in output)
+
+
 def test_non_trading_day_is_recorded_without_fetch(tmp_path):
     _seed_c325_calendar(tmp_path)
     calls = []

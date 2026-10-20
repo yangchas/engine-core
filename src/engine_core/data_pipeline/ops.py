@@ -327,8 +327,10 @@ def backfill_ladder_daily(runner: JobRunner, start: str, end: str, *,
                             "seal_source": "PRICE_CLOSE_PROXY", "st_filter": "UNAVAILABLE"})
         # Name-based ST/new-listing exclusions used by the study cannot be
         # reconstructed from a daily bar that has no point-in-time name field.
-        runner.run("ladder_daily", day, fetch=lambda _day, rows=derived: {
-            "rows": rows, "expected_count": len(rows), "partial": True},
+        # JobRunner detects the optional FetchContext by positional arity; a
+        # default-bound rows parameter incorrectly looks like that context.
+        runner.run("ladder_daily", day, fetch=lambda _day: {
+            "rows": derived, "expected_count": len(derived), "partial": True},
             source="core_price_close_proxy", dry_run=False)
         processed.append(day)
     comparison = compare_ladder_reference(catalog, reference_path) if reference_path else None

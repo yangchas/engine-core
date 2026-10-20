@@ -251,13 +251,26 @@ def _fetch_spec(item: dict[str, Any]) -> tuple[list[str], float]:
     raise ValueError("fetch_job_unconfigured:" + str(item.get("id")))
 
 
+class FetchJobError(RuntimeError):
+    def __init__(self, message: str, error_code: str, stderr: str = ""):
+        super().__init__(message)
+        self.error_code = error_code
+        self.stderr = stderr[-300:]
+
+
 def _run_fetch_job(item: dict[str, Any], day: str, timeout: float) -> dict[str, Any]:
     argv, configured_timeout = _fetch_spec(item)
     timeout = min(timeout, configured_timeout)
     replacements = {"date": day, "trade_date": day, "item": str(item["id"]), "python": sys.executable}
     command = [part.format_map(replacements) for part in argv]
-    completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout,
-                               check=False, env=os.environ.copy())
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout,
+                                   check=False, env=os.environ.copy())
+    except subprocess.TimeoutExpired as exc:
+        stderr = exc.stderr or ""
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        raise FetchJobError("fetch_job_timeout", "FETCH_TIMEOUT", str(stderr)) from None
     payload: dict[str, Any] = {}
     for line in reversed(completed.stdout.splitlines()):
         try:
@@ -268,8 +281,11 @@ def _run_fetch_job(item: dict[str, Any], day: str, timeout: float) -> dict[str, 
         except ValueError:
             continue
     if completed.returncode or payload.get("status") not in {"ok", "degraded"}:
-        raise RuntimeError(str(payload.get("error") or payload.get("error_code") or
-                               "fetch_job_failed:" + str(completed.returncode)))
+        stderr = completed.stderr or ""
+        raise FetchJobError(str(payload.get("error") or payload.get("error_code") or
+                                "fetch_job_failed:" + str(completed.returncode)),
+                            "FETCH_EXIT_" + str(completed.returncode) if completed.returncode else
+                            str(payload.get("error_code") or "FETCH_JOB_FAILED"), stderr)
     return payload
 
 
@@ -299,7 +315,13 @@ def _append_gap(root: Path, trade_date: str, gap: dict[str, Any], observed_at: s
             rows = []
     except (OSError, ValueError):
         rows = []
-    rows.append({**gap, "observed_at": observed_at})
+    key = (gap.get("id"), gap.get("partition"))
+    for index, row in enumerate(rows):
+        if (row.get("id"), row.get("partition")) == key:
+            rows[index] = {**row, **gap, "observed_at": observed_at}
+            break
+    else:
+        rows.append({**gap, "observed_at": observed_at})
     _atomic_write(path, (json.dumps(rows, ensure_ascii=False, sort_keys=True) + "\n").encode())
 
 
@@ -320,32 +342,45 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
         item = by_id.get(item_id)
         kind = action.get("action")
         started = time.monotonic()
-        if not item:
-            results.append({"id": item_id, "action": kind, "status": "failed", "error": "unknown_item", "elapsed_ms": 0})
-        elif kind == "GAP":
-            if not dry_run:
-                _append_gap(root, trade_date, action, clock.isoformat())
-            results.append({"id": item_id, "action": kind, "status": "recorded" if not dry_run else "dry_run",
+        try:
+            if not item:
+                results.append({"id": item_id, "action": kind, "status": "failed",
+                                "error_code": "UNKNOWN_ITEM", "error": "unknown_item", "stderr": "",
+                                "elapsed_ms": 0})
+            elif kind == "GAP":
+                if not dry_run:
+                    _append_gap(root, trade_date, action, clock.isoformat())
+                results.append({"id": item_id, "action": kind, "status": "recorded" if not dry_run else "dry_run",
+                                "elapsed_ms": round((time.monotonic() - started) * 1000)})
+            elif kind == "DEFER":
+                if not item.get("fetch_job"):
+                    results.append({"id": item_id, "action": kind, "status": "failed",
+                                    "error_code": "FETCH_JOB_UNAVAILABLE",
+                                    "error": "independent_fetch_job_unconfigured", "stderr": "",
+                                    "elapsed_ms": 0})
+                    continue
+                phases = _quiet_targets(item, phase, clock)
+                deferred.append({"id": item_id, "partition": action.get("partition"),
+                                 "fetch_job": item.get("fetch_job"), "run_in_phases": phases})
+                results.append({"id": item_id, "action": kind, "status": "deferred", "run_in_phases": phases,
+                                "elapsed_ms": 0})
+            elif kind == "FETCH_NOW":
+                destination = light if action.get("lane") == "parallel" else serial
+                destination.append((item, action))
+            elif kind == "NO_FETCH_JOB":
+                results.append({"id": item_id, "action": kind, "status": "failed",
+                                "error_code": "FETCH_JOB_UNAVAILABLE",
+                                "error": action.get("reason", "independent_fetch_job_unconfigured"),
+                                "stderr": "", "elapsed_ms": 0})
+            else:
+                results.append({"id": item_id, "action": kind, "status": "skipped", "elapsed_ms": 0})
+        except Exception as exc:
+            results.append({"id": item_id, "action": kind, "status": "failed",
+                            "error_code": getattr(exc, "error_code", "PLAN_ITEM_FAILED"),
+                            "error": type(exc).__name__ + ":" + str(exc),
+                            "stderr": str(getattr(exc, "stderr", ""))[-300:],
+                            "retryable": True,
                             "elapsed_ms": round((time.monotonic() - started) * 1000)})
-        elif kind == "DEFER":
-            if not item.get("fetch_job"):
-                results.append({"id": item_id, "action": kind, "status": "unavailable",
-                                "error": "independent_fetch_job_unconfigured", "elapsed_ms": 0})
-                continue
-            phases = _quiet_targets(item, phase, clock)
-            deferred.append({"id": item_id, "partition": action.get("partition"),
-                             "fetch_job": item.get("fetch_job"), "run_in_phases": phases})
-            results.append({"id": item_id, "action": kind, "status": "deferred", "run_in_phases": phases,
-                            "elapsed_ms": 0})
-        elif kind == "FETCH_NOW":
-            destination = light if action.get("lane") == "parallel" else serial
-            destination.append((item, action))
-        elif kind == "NO_FETCH_JOB":
-            results.append({"id": item_id, "action": kind, "status": "unavailable",
-                            "error": action.get("reason", "independent_fetch_job_unconfigured"),
-                            "elapsed_ms": 0})
-        else:
-            results.append({"id": item_id, "action": kind, "status": "skipped", "elapsed_ms": 0})
 
     def execute(pair):
         item, action = pair
@@ -358,7 +393,10 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
                 timeout = float(item.get("fetch_job", {}).get("timeout_seconds", 300)) if isinstance(item.get("fetch_job"), dict) else 300
                 row.update(status="ok", detail=_run_fetch_job(item, str(action["partition"]), timeout))
             except Exception as exc:
-                row.update(status="failed", retryable=True, error=type(exc).__name__ + ":" + str(exc))
+                error_code = getattr(exc, "error_code", "FETCH_JOB_FAILED")
+                stderr = getattr(exc, "stderr", "")
+                row.update(status="failed", retryable=True, error_code=error_code,
+                           error=type(exc).__name__ + ":" + str(exc), stderr=str(stderr)[-300:])
         row["elapsed_ms"] = round((time.monotonic() - started) * 1000)
         return row
 
@@ -369,9 +407,10 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
         results.append(execute(pair))
     detail = {"trade_date": trade_date, "results": results, "deferred": deferred,
               "dry_run": dry_run}
-    status = ("failed" if any(x.get("status") == "failed" for x in results) else
-              "degraded" if any(x.get("status") == "unavailable" for x in results) else "ok")
-    return _result(status, detail, retryable=status == "failed")
+    failures = sum(x.get("status") in {"failed", "unavailable"} for x in results)
+    successes = len(results) - failures
+    status = "failed" if failures and not successes else "degraded" if failures else "ok"
+    return _result(status, detail, retryable=bool(failures))
 
 
 def fetch_item(item_id: str, partition: str, root: str | Path, *,
@@ -390,5 +429,6 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
         return _result("ok", {"id": item_id, "partition": partition, "result": result})
     except Exception as exc:
         return _result("failed", {"id": item_id, "partition": partition,
-                                   "error": type(exc).__name__ + ":" + str(exc)},
-                       error_code="FETCH_FAILED", retryable=True)
+                                   "error": type(exc).__name__ + ":" + str(exc),
+                                   "stderr": str(getattr(exc, "stderr", ""))[-300:]},
+                       error_code=getattr(exc, "error_code", "FETCH_FAILED"), retryable=True)
