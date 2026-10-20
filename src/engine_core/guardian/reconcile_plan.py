@@ -4,7 +4,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Mapping
 
-from .registry import load_registry, stale_items
+import json
+
+from .registry import REGISTRY_PATH, load_registry, stale_items
+
+
+def load_quiet_phases() -> list[str]:
+    return json.loads(REGISTRY_PATH.read_text(encoding="utf-8")).get("quiet_phases_for_heavy", [])
 
 
 def _hms(value: str) -> tuple[int, int, int]:
@@ -17,15 +23,19 @@ def _clock(now: datetime) -> tuple[int, int, int]:
 
 
 def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_date: str,
-                   prev_trade_date: str | None, registry: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+                   prev_trade_date: str | None, registry: list[dict[str, Any]] | None = None,
+                   phase: str | None = None, load1: float | None = None, cpus: int | None = None) -> list[dict[str, Any]]:
     """Ordered actions for items not OK on a trading day.
 
     FETCH_NOW  refetchable/rebuildable and its source is ready (dependencies first);
+    DEFER      refetchable but heavy: not run in a busy phase (or while load is high); run_at names
+               the next quiet phase. Keeps a late start from competing with the auction/open reports;
     WAIT       source not ready yet (``ready_after`` in the future) or a dependency is still pending;
     GAP        a time-point capture that cannot be backfilled: record the gap, do not fabricate;
     NO_POLICY  overdue but the registry has no late_policy (needs a decision, never guessed).
     """
     items = load_registry() if registry is None else registry
+    quiet_phases = set(load_quiet_phases())
     by_id = {item["id"]: item for item in items}
     states = {row["id"]: row for row in stale_items(now, catalog, items, trade_date=trade_date,
                                                     prev_trade_date=prev_trade_date)}
@@ -56,7 +66,17 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
         if blocked:
             plan.append({"id": item_id, "action": "WAIT", "blocked_by": blocked})
             return
-        plan.append({"id": item_id, "action": "FETCH_NOW", "event": by_id[item_id].get("guardian_event")})
+        cost = (by_id[item_id].get("cost") or {}).get("class", "medium")
+        if cost == "heavy":
+            quiet = quiet_phases
+            if phase is not None and phase not in quiet:
+                plan.append({"id": item_id, "action": "DEFER", "reason": "busy_phase:" + phase,
+                             "run_at": "next of " + "/".join(sorted(quiet)), "cost": cost})
+                return
+            if load1 is not None and cpus and load1 > cpus:
+                plan.append({"id": item_id, "action": "DEFER", "reason": f"load1={load1}>cpus={cpus}", "cost": cost})
+                return
+        plan.append({"id": item_id, "action": "FETCH_NOW", "event": by_id[item_id].get("guardian_event"), "cost": cost})
 
     for item_id in [i["id"] for i in items if i["id"] in todo]:
         visit(item_id)

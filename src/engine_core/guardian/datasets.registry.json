@@ -73,6 +73,11 @@
         "valid_until": null,
         "depends_on": [],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "prep_trade_day ~55s covers universe+baselines",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -111,6 +116,11 @@
         "valid_until": null,
         "depends_on": [],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "heavy",
+        "basis": "formal Baostock pull; guardian dry-run exceeded 60s (measuring)",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -148,6 +158,11 @@
           "daily_kline"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "heavy",
+        "basis": "UNKNOWN duration; conservative",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -186,6 +201,11 @@
           "daily_indicators"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "heavy",
+        "basis": "observed ~51s (C-line timing)",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -221,6 +241,11 @@
         "valid_until": null,
         "depends_on": [],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "single Kaipan ladder, seconds",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -258,6 +283,11 @@
           "limit_up_pool"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "Kaipan",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -300,6 +330,11 @@
         "valid_until": "11:30",
         "depends_on": [],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "one Kaipan call",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -337,6 +372,11 @@
           "symbol_universe"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "10-day member backfill is long; daily refresh unknown",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -395,6 +435,11 @@
         "valid_until": null,
         "depends_on": [],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "UNKNOWN",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -458,6 +503,11 @@
           "symbol_universe"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "part of prep_trade_day ~55s",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -497,6 +547,11 @@
           "auction_baseline"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "built inside auction report (~10s compute)",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -536,6 +591,11 @@
           "auction_stock_facts"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "inside auction report",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -600,6 +660,11 @@
           "auction_stock_facts"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "inside auction report",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -637,6 +702,11 @@
           "daily_kline"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "UNKNOWN duration",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -672,6 +742,11 @@
         "valid_until": "15:05",
         "depends_on": [],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "one call",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -732,6 +807,11 @@
           "daily_kline"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "inside prep",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -769,6 +849,11 @@
           "daily_kline"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "UNKNOWN duration",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -807,6 +892,11 @@
           "limit_reasons"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "UNKNOWN",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -1039,6 +1129,11 @@
           "stock_static"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "derived from stock_static",
+        "set_by": "claude 2026-10-20 default"
       }
     },
     {
@@ -1089,5 +1184,22 @@
       },
       "notes": "Current schedule intraday events continue after 09:45 although this source table is observed through 09:45:59; ask data operator whether design or retention window."
     }
-  ]
+  ],
+  "quiet_phases_for_heavy": [
+    "NIGHT",
+    "MIDDAY_BREAK",
+    "CLOSE",
+    "POST_MARKET"
+  ],
+  "heavy_rules": {
+    "max_concurrent_heavy": 1,
+    "defer_if_load1_above_cores": true,
+    "never_during": [
+      "AUCTION",
+      "AUCTION_END",
+      "OPEN",
+      "CLOSE_AUCTION"
+    ],
+    "if_consumer_needs_before_quiet": "use degrade chain / previous available version, labelled; fetch fully in the next quiet phase"
+  }
 }
