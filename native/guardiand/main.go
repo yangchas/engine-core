@@ -25,6 +25,7 @@ type Instance struct {
 	OnDeadline  string `json:"on_deadline"`
 	Calendar    string `json:"calendar"`
 	TriggerType string `json:"trigger_type,omitempty"`
+	DataDate    string `json:"data_date,omitempty"`
 }
 
 func main() {

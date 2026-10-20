@@ -98,6 +98,56 @@ func TestScheduleDefersPhaseMismatchUntilWhitelistedPhase(t *testing.T) {
 	}
 }
 
+func TestBootApplyPlanSchedulesDeferredFetchItemOnceAllowed(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
+	fc := newFakeClock(now)
+	boot := filepath.Join(root, "boot.sh")
+	fetch := filepath.Join(root, "fetch.sh")
+	if err := os.WriteFile(boot, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\",\"detail\":{\"deferred\":[{\"id\":\"daily_kline\",\"partition\":\"2026-10-19\",\"run_in_phases\":[\"MIDDAY_BREAK\"]}]}}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fetch, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	calendar := filepath.Join(root, "calendar.json")
+	if err := os.WriteFile(calendar, []byte(`["2026-10-20"]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := config.Config{Events: []config.Event{
+		{ID: "boot_apply_plan", Handler: "boot", Trigger: config.Trigger{Type: "startup"}},
+		{ID: "fetch_item", Handler: "fetch", Trigger: config.Trigger{Type: "startup"}, Phases: []string{"MIDDAY_BREAK"}},
+	}, Handlers: map[string]config.Handler{"boot": {Argv: []string{boot}}, "fetch": {Argv: []string{fetch}}},
+		Calendars: map[string]struct {
+			File string `json:"file"`
+		}{"trading": {File: calendar}}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	getState := func(id string) instanceState { r.mu.Lock(); defer r.mu.Unlock(); return r.states[date+"/"+id] }
+	r.execute(Instance{ID: "boot_apply_plan", EventID: "boot_apply_plan", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}, date)
+	deferred := getState("fetch_item:daily_kline")
+	if deferred.Status != "DEFERRED" || deferred.NextPhase != "MIDDAY_BREAK" || deferred.DataDate != "2026-10-19" {
+		t.Fatalf("deferred item state=%+v", deferred)
+	}
+	fc.Advance(90 * time.Minute)
+	r.schedule(fc.Now())
+	waitFor(t, func() bool { return getState("fetch_item:daily_kline").Status == "SUCCEEDED" })
+	if got := getState("fetch_item:daily_kline"); got.DataDate != "2026-10-19" {
+		t.Fatalf("fetch item lost target partition: %+v", got)
+	}
+	r.schedule(fc.Now())
+	time.Sleep(20 * time.Millisecond)
+	if got := getState("fetch_item:daily_kline"); got.Attempts != 1 {
+		t.Fatalf("successful fetch repeated: %+v", got)
+	}
+}
+
 func TestHeavyLoadDeferralUsesFakeClockWithoutAttempts(t *testing.T) {
 	root, date := t.TempDir(), "2026-10-20"
 	loc, _ := time.LoadLocation("Asia/Shanghai")

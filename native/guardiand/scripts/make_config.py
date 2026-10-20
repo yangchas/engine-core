@@ -9,7 +9,8 @@ bridge = f"{repo}/examples/guardian_handler.py"
 env = ["REDIS_URL", "CORE_REDIS_URL", "CORE_DATA_ROOT", "TD_CONFIG", "PYTHONHASHSEED", "PYTHONPATH",
        "GUARDIAN_DRY_RUN", "GUARDIAN_EMAIL_SELF", "HOME", "POSTHOC_DEV", "CORE_BAOSTOCK_PROBE_COMMAND"]
 cfg["handlers"]["legacy_calendar_refresh"] = {"supports_degrade": True}
-for name in ("legacy_boot_trade_day", "legacy_boot_data_health", "legacy_boot_reconcile"):
+for name in ("legacy_boot_trade_day", "legacy_boot_data_health", "legacy_boot_reconcile",
+             "legacy_boot_apply_plan", "legacy_fetch_item"):
     cfg["handlers"].setdefault(name, {})
 if not any(e["id"] == "calendar_refresh_0800" for e in cfg["events"]):
     cfg["events"].insert(0, {"id": "calendar_refresh_0800", "enabled": True, "calendar": "every_day",
@@ -60,8 +61,11 @@ boot_events = [
     {"id": "boot_trade_day", "enabled": True, "calendar": "every_day", "trigger": {"type": "startup", "order": 10}, "handler": "legacy_boot_trade_day", "timeout": "20s", "retry": {"max_attempts": 2}},
     {"id": "boot_data_health", "enabled": True, "calendar": "every_day", "trigger": {"type": "startup", "order": 20, "after": ["boot_trade_day"]}, "handler": "legacy_boot_data_health", "timeout": "60s", "retry": {"max_attempts": 2}, "phases": ["any"]},
     {"id": "boot_reconcile", "enabled": True, "calendar": "every_day", "trigger": {"type": "startup", "order": 30, "after": ["boot_data_health"]}, "handler": "legacy_boot_reconcile", "timeout": "60s", "retry": {"max_attempts": 2}},
+    {"id": "boot_apply_plan", "enabled": True, "calendar": "every_day", "trigger": {"type": "startup", "order": 40, "after": ["boot_reconcile"]}, "handler": "legacy_boot_apply_plan", "timeout": "300s", "retry": {"max_attempts": 2}},
+    {"id": "fetch_item", "enabled": True, "calendar": "every_day", "trigger": {"type": "startup", "order": 50, "after": ["boot_apply_plan"]}, "handler": "legacy_fetch_item", "timeout": "300s", "cost": "heavy", "phases": ["NIGHT", "PRE_MARKET", "MIDDAY_BREAK", "CLOSE", "POST_MARKET"], "retry": {"max_attempts": 2}},
 ]
 existing = {e.get("id") for e in cfg["events"]}
-cfg["events"] = boot_events + [e for e in cfg["events"] if e.get("id") not in {x["id"] for x in boot_events}]
+boot_ids = {x["id"] for x in boot_events}
+cfg["events"] = boot_events + [e for e in cfg["events"] if e.get("id") not in boot_ids]
 json.dump(cfg, open(dst, "w"), ensure_ascii=False, indent=1)
 print("handlers:", len(cfg["handlers"]), "events:", len(cfg["events"]))

@@ -169,6 +169,7 @@ type instanceState struct {
 	NextAttemptAt string `json:"next_attempt_at,omitempty"`
 	Late          bool   `json:"late,omitempty"`
 	NextPhase     string `json:"next_phase,omitempty"`
+	DataDate      string `json:"data_date,omitempty"`
 }
 type runState struct {
 	EventID   string        `json:"event_id"`
@@ -574,6 +575,11 @@ func (r *liveRunner) runBootEvents(now time.Time) error {
 	boot := fmt.Sprint(seq)
 	results := map[string]string{}
 	for _, e := range events {
+		// The startup event exists as a template; only deferred per-item instances run it.
+		if e.ID == "fetch_item" {
+			results[e.ID] = "SUCCEEDED"
+			continue
+		}
 		blocked := ""
 		for _, dep := range e.Trigger.After {
 			s := results[dep]
@@ -1110,7 +1116,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 		out, err := r.invoke(h.Argv, event, x, date, n, false)
 		status, code, retryable := decodeResult(out, err)
 		if status == "not_applicable" {
-			r.setState(x, date, instanceState{Status: "SKIPPED_NA", Attempts: n, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339)})
+			r.setState(x, date, instanceState{Status: "SKIPPED_NA", Attempts: n, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), DataDate: x.DataDate})
 			return
 		}
 		if status == "ok" || status == "degraded" {
@@ -1118,7 +1124,36 @@ func (r *liveRunner) execute(x Instance, date string) {
 			if status == "degraded" {
 				stateStatus = "SUCCEEDED_DEGRADED"
 			}
-			r.setState(x, date, instanceState{Status: stateStatus, Attempts: n, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), Late: st.Late})
+			r.setState(x, date, instanceState{Status: stateStatus, Attempts: n, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), Late: st.Late, DataDate: x.DataDate})
+			if event.ID == "boot_apply_plan" {
+				var response struct {
+					Detail struct {
+						Deferred []struct {
+							ID          string   `json:"id"`
+							Partition   string   `json:"partition"`
+							RunInPhases []string `json:"run_in_phases"`
+						} `json:"deferred"`
+					} `json:"detail"`
+				}
+				lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+				if len(lines) > 0 && json.Unmarshal([]byte(lines[len(lines)-1]), &response) == nil {
+					for _, deferred := range response.Detail.Deferred {
+						if deferred.ID == "" || len(deferred.RunInPhases) == 0 {
+							continue
+						}
+						instanceID := "fetch_item:" + deferred.ID
+						key := date + "/" + instanceID
+						r.mu.Lock()
+						prior, exists := r.states[key]
+						r.mu.Unlock()
+						if exists && (prior.Status == "SUCCEEDED" || prior.Status == "SUCCEEDED_DEGRADED") {
+							continue
+						}
+						deferredInstance := Instance{ID: instanceID, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}
+						r.setState(deferredInstance, date, instanceState{Status: "DEFERRED", LastError: "waiting for " + deferred.RunInPhases[0], NextPhase: deferred.RunInPhases[0], DataDate: deferred.Partition})
+					}
+				}
+			}
 			r.mu.Lock()
 			wasBlocked := r.gateAlerted != nil && r.gateAlerted[event.Handler]
 			if wasBlocked {
@@ -1268,7 +1303,14 @@ func (r *liveRunner) invoke(argv []string, e *config.Event, x Instance, date str
 			cmd.Env = append(cmd.Env, name+"="+value)
 		}
 	}
-	in := map[string]any{"contract": 1, "event": e.ID, "instance": x.ID, "attempt": attempt, "run_id": r.boot + "-" + x.ID, "idem_key": date + "/" + x.ID, "trade_date": date, "data_date": date, "asof": date + "T" + x.Start + "+08:00", "deadline_at": date + "T" + x.Deadline + "+08:00", "degrade_requested": false, "sandbox": map[string]any{"on": false, "root": ""}, "args": e.Args, "gate": map[string]any{"ref": e.Gate.Ref, "params": e.Gate.Params, "probe": gate}}
+	dataDate := x.DataDate
+	if dataDate == "" {
+		dataDate = date
+	}
+	in := map[string]any{"contract": 1, "event": e.ID, "instance": x.ID, "attempt": attempt, "run_id": r.boot + "-" + x.ID, "idem_key": date + "/" + x.ID, "trade_date": date, "data_date": dataDate, "asof": date + "T" + x.Start + "+08:00", "deadline_at": date + "T" + x.Deadline + "+08:00", "degrade_requested": false, "sandbox": map[string]any{"on": false, "root": ""}, "args": e.Args, "gate": map[string]any{"ref": e.Gate.Ref, "params": e.Gate.Params, "probe": gate}}
+	if e.ID == "fetch_item" {
+		in["item_id"] = strings.TrimPrefix(x.ID, "fetch_item:")
+	}
 	phase, _ := r.currentPhase(r.clock.Now())
 	in["phase"] = phase
 	in["now"] = r.clock.Now().In(r.loc).Format(time.RFC3339)
@@ -1667,6 +1709,44 @@ func (r *liveRunner) schedule(now time.Time) {
 		}
 		if phase != "NON_TRADING" && phase != "CALENDAR_UNKNOWN" && phaseAllowed(&event, phase) && !running {
 			x := Instance{ID: deferredID, EventID: event.ID, Start: "00:00:00", Deadline: "23:59:59", LateUntil: event.LateUntil, Timeout: event.Timeout, MaxAttempts: event.Retry.MaxAttempts, TriggerType: "startup"}
+			go r.execute(x, date)
+		}
+	}
+	if event := findEvent(c, "fetch_item"); event != nil {
+		prefix := date + "/fetch_item:"
+		r.mu.Lock()
+		pending := make([]struct {
+			id string
+			st instanceState
+		}, 0)
+		for key, state := range r.states {
+			if strings.HasPrefix(key, prefix) && (state.Status == "DEFERRED" || state.Status == "DEFER_LOAD" || state.Status == "RETRY_WAIT") {
+				pending = append(pending, struct {
+					id string
+					st instanceState
+				}{id: strings.TrimPrefix(key, date+"/"), st: state})
+			}
+		}
+		r.mu.Unlock()
+		for _, item := range pending {
+			if item.st.NextPhase != "" && item.st.NextPhase != phase {
+				continue
+			}
+			r.mu.Lock()
+			running := r.running[item.id]
+			paused := r.paused["fetch_item"] || r.paused["*"]
+			r.mu.Unlock()
+			if running || paused || phase == "NON_TRADING" || phase == "CALENDAR_UNKNOWN" || !phaseAllowed(event, phase) {
+				continue
+			}
+			if item.st.Status == "RETRY_WAIT" {
+				next, err := time.Parse(time.RFC3339, item.st.NextAttemptAt)
+				if err == nil && now.Before(next) {
+					continue
+				}
+			}
+			x := Instance{ID: item.id, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", Timeout: event.Timeout, DataDate: item.st.DataDate,
+				MaxAttempts: event.Retry.MaxAttempts, TriggerType: "startup"}
 			go r.execute(x, date)
 		}
 	}
