@@ -1,0 +1,127 @@
+"""Read and validate the data inventory used by guardian health checks."""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Mapping
+
+REGISTRY_PATH = Path(__file__).with_name("datasets.registry.json")
+PHASES = frozenset({
+    "NIGHT", "PRE_MARKET", "AUCTION", "AUCTION_END", "OPEN",
+    "INTRADAY_AM", "MIDDAY_BREAK", "PM_OPEN", "INTRADAY_PM",
+    "CLOSE_AUCTION", "CLOSE", "POST_MARKET",
+})
+_REQUIRED = {"id", "owner", "artifact", "phases", "cadence", "rule",
+             "freshness", "retry", "degrade", "lifecycle", "notes", "guardian_event"}
+
+
+def load_registry(path: str | Path | None = None) -> list[dict[str, Any]]:
+    """Load the checked-in registry and reject malformed or duplicate entries."""
+    source = Path(path) if path is not None else REGISTRY_PATH
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or set(payload.get("phase_names", [])) != PHASES or len(payload.get("phase_names", [])) != 12:
+        raise ValueError("registry phase_names must declare the 12 supported phases")
+    items = payload.get("items")
+    validate_registry(items)
+    return items
+
+
+def validate_registry(items: Any) -> int:
+    """Validate entries and return the count of explicit UNKNOWN values."""
+    if not isinstance(items, list):
+        raise ValueError("registry items must be a list")
+    seen: set[str] = set()
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValueError(f"item {index} must be an object")
+        missing = _REQUIRED - item.keys()
+        if missing:
+            raise ValueError(f"item {index} missing required fields: {sorted(missing)}")
+        if not isinstance(item["id"], str) or not item["id"] or item["id"] in seen:
+            raise ValueError(f"item {index} has empty or duplicate id")
+        seen.add(item["id"])
+        if not isinstance(item["phases"], list) or not item["phases"]:
+            raise ValueError(f"item {item['id']} phases must be a non-empty list")
+        invalid = set(item["phases"]) - PHASES
+        if invalid:
+            raise ValueError(f"item {item['id']} has invalid phase(s): {sorted(invalid)}")
+        if not isinstance(item["artifact"], dict) or not isinstance(item["lifecycle"], dict):
+            raise ValueError(f"item {item['id']} artifact and lifecycle must be objects")
+        if not isinstance(item["degrade"], list):
+            raise ValueError(f"item {item['id']} degrade must be a list")
+        for field in ("owner", "cadence", "rule", "freshness", "retry", "notes"):
+            if item[field] is None and field != "owner":
+                raise ValueError(f"item {item['id']} field {field} must be explicit")
+    return _count_unknown(items)
+
+
+def _count_unknown(value: Any) -> int:
+    if value == "UNKNOWN":
+        return 1
+    if isinstance(value, Mapping):
+        return sum(_count_unknown(child) for child in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_count_unknown(child) for child in value)
+    return 0
+
+
+def items_for_phase(phase: str, registry: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Return entries expected or allowed in one of the 12 design phases."""
+    if phase not in PHASES:
+        raise ValueError(f"invalid phase: {phase}")
+    items = load_registry() if registry is None else registry
+    validate_registry(items)
+    return [item for item in items if phase in item["phases"]]
+
+
+def stale_items(now: datetime, catalog: str | Path | Mapping[str, Any],
+                registry: list[dict[str, Any]] | None = None, *,
+                trade_date: str | None = None, prev_trade_date: str | None = None) -> list[dict[str, Any]]:
+    """Per-item status for a trading day, from registry metadata and the catalog only.
+
+    ``freshness`` = {partition: "D"|"D-1", expected_by: "HH:MM"}. The item is OK when the
+    catalog holds that partition, PENDING before ``expected_by`` (local time of ``now``),
+    OVERDUE after it. Items without a structured rule or catalog dataset stay UNKNOWN;
+    a dataset absent from the catalog entirely is MISSING.
+    """
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    payload = catalog if isinstance(catalog, Mapping) else json.loads(Path(catalog).read_text(encoding="utf-8"))
+    datasets = payload.get("datasets", {}) if isinstance(payload, Mapping) else {}
+    items = load_registry() if registry is None else registry
+    validate_registry(items)
+    day = trade_date or now.date().isoformat()
+    result = []
+    for item in items:
+        dataset = item["artifact"].get("catalog_dataset")
+        rule = item["freshness"]
+        if not dataset:
+            result.append({"id": item["id"], "status": "UNKNOWN", "reason": "no catalog dataset"})
+            continue
+        record = datasets.get(dataset)
+        if not isinstance(record, Mapping):
+            result.append({"id": item["id"], "status": "MISSING", "dataset": dataset})
+            continue
+        if not isinstance(rule, Mapping) or "partition" not in rule or ("expected_by" not in rule and rule["partition"] != "latest"):
+            result.append({"id": item["id"], "status": "UNKNOWN", "dataset": dataset,
+                           "reason": "no structured freshness rule"})
+            continue
+        if rule["partition"] == "latest":
+            keys = sorted(k for k, v in record.get("dates", {}).items() if v)
+            age = (datetime.fromisoformat(day) - datetime.fromisoformat(keys[-1])).days if keys else None
+            result.append({"id": item["id"], "dataset": dataset, "partition": keys[-1] if keys else None,
+                           "status": "MISSING" if age is None else ("OK" if age <= rule.get("max_age_days", 8) else "STALE")})
+            continue
+        want = day if rule["partition"] == "D" else prev_trade_date
+        if not want:
+            result.append({"id": item["id"], "status": "UNKNOWN", "dataset": dataset,
+                           "reason": "partition date unavailable"})
+            continue
+        present = bool(record.get("dates", {}).get(want))
+        hh, mm = (int(part) for part in str(rule["expected_by"]).split(":"))
+        due = (now.hour, now.minute) >= (hh, mm)
+        status = "OK" if present else ("OVERDUE" if due else "PENDING")
+        result.append({"id": item["id"], "dataset": dataset, "status": status,
+                       "partition": want, "expected_by": rule["expected_by"]})
+    return result

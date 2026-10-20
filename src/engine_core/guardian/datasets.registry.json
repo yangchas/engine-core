@@ -1,0 +1,931 @@
+{
+  "schema_version": 1,
+  "phase_names": [
+    "NIGHT",
+    "PRE_MARKET",
+    "AUCTION",
+    "AUCTION_END",
+    "OPEN",
+    "INTRADAY_AM",
+    "MIDDAY_BREAK",
+    "PM_OPEN",
+    "INTRADAY_PM",
+    "CLOSE_AUCTION",
+    "CLOSE",
+    "POST_MARKET"
+  ],
+  "items": [
+    {
+      "id": "trade_calendar",
+      "owner": "calendar_maintenance",
+      "artifact": {
+        "catalog_dataset": null,
+        "source_dataset": "local trade calendar matrix",
+        "date_basis": "覆盖历史/当前/未来交易日"
+      },
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET"
+      ],
+      "cadence": "每周全量+每日读取",
+      "rule": "日历为交易日主判据；预测与已冻结历史不可被失败更新覆盖。",
+      "freshness": "UNKNOWN",
+      "retry": "none (no guardian event)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "cold fetch when absent",
+        "force": "fetch regardless of freshness",
+        "clear": "move aside to timestamped .bak; restore on failure"
+      },
+      "notes": "calendar maintenance event exists in code; exact guardian schedule event id not visible in schedule.json.",
+      "guardian_event": null
+    },
+    {
+      "id": "symbol_universe",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "symbol_universe",
+        "date_basis": "目标交易日；universe_asof=前一交易日"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每交易日 08:30",
+      "rule": "以前一交易日证券清单构造当日 A 股 universe；覆盖/身份变化质量门槛。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "08:45",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "prep_trade_day and run_data_jobs produce; guardian startup_0830/premarket_slice_0850/startup_0900 share broad handler.",
+      "guardian_event": "startup_0830"
+    },
+    {
+      "id": "daily_kline",
+      "owner": "postmarket_data",
+      "artifact": {
+        "catalog_dataset": "daily_kline",
+        "date_basis": "被查询的交易日 D；文件可于 D+1 到达"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "15:05 降级探测；17:30 正式",
+      "rule": "Baostock 日线；日历/universe 与来源覆盖质量门槛。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "18:30",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [
+        "15:05 首次/降级探测",
+        "17:30 正式获取"
+      ],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "15:05/17:30 are knowledge recommendations and current schedule baostock probe starts 17:30; later availability seen in facts. Ask data operator to confirm freshness cutoff.",
+      "guardian_event": "postmarket_publish"
+    },
+    {
+      "id": "daily_indicators",
+      "owner": "postmarket_data",
+      "artifact": {
+        "catalog_dataset": "daily_indicators",
+        "date_basis": "daily_kline trade_date D"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "日K就绪后重算",
+      "rule": "从 daily_kline 派生；要求前置日K与足够历史窗口。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "19:00",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "prep_trade_day can materialize after daily_kline; retry owner/late cutoff UNKNOWN.",
+      "guardian_event": "postmarket_publish"
+    },
+    {
+      "id": "daily_report_features",
+      "owner": "postmarket_data",
+      "artifact": {
+        "catalog_dataset": "daily_report_features",
+        "date_basis": "特征 trade_date D；盘前消费前一交易日"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "日K与指标就绪后重算",
+      "rule": "派生报告特征；依赖 daily_kline/daily_indicators。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "19:00",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "prep_trade_day can materialize after prerequisites; report-specific freshness cutoff UNKNOWN.",
+      "guardian_event": "postmarket_publish"
+    },
+    {
+      "id": "limit_up_pool",
+      "owner": "kaipan_fetch",
+      "artifact": {
+        "catalog_dataset": "limit_up_pool",
+        "date_basis": "08:50 目标交易日 D 获取前一交易日 D-1 池/原因"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每交易日 08:50",
+      "rule": "Kaipan 历史接口获取昨日条目；限频和分页由 provider 执行。",
+      "freshness": {
+        "partition": "D-1",
+        "expected_by": "09:05",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "schedule max_attempts=1; provider-level retry UNKNOWN",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "schedule kaipan_refresh_0850; source adapter in run_data_jobs; ask data operator about retry policy.",
+      "guardian_event": "kaipan_refresh_0850"
+    },
+    {
+      "id": "limit_reasons",
+      "owner": "kaipan_fetch",
+      "artifact": {
+        "catalog_dataset": "limit_reasons",
+        "date_basis": "08:50 目标交易日 D 获取前一交易日 D-1 池/原因"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每交易日 08:50",
+      "rule": "Kaipan 历史接口获取昨日条目；限频和分页由 provider 执行。",
+      "freshness": {
+        "partition": "D-1",
+        "expected_by": "09:05",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "schedule max_attempts=1; provider-level retry UNKNOWN",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "schedule kaipan_refresh_0850; source adapter in run_data_jobs; ask data operator about retry policy.",
+      "guardian_event": "kaipan_refresh_0850"
+    },
+    {
+      "id": "hot_plates",
+      "owner": "kaipan_hot_capture",
+      "artifact": {
+        "catalog_dataset": "hot_plates",
+        "date_basis": "目标交易日 D + captured_at；历史接口仅有限回溯"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END",
+        "OPEN",
+        "INTRADAY_AM",
+        "MIDDAY_BREAK",
+        "PM_OPEN",
+        "INTRADAY_PM",
+        "CLOSE"
+      ],
+      "cadence": "按消费点采样；schedule 多时点",
+      "rule": "Kaipan 当日热板快照；保留采样时点与 source/as-of。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:20",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "guardian kaipan_hot_capture scheduled many points; schedule currently has no explicit MIDDAY_BREAK phase semantics.",
+      "guardian_event": "kaipan_hot_capture"
+    },
+    {
+      "id": "plate_members",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "plate_members",
+        "date_basis": "trade_date snapshot; source as_of may precede target date"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每周+新证券触发",
+      "rule": "按板块码获取成员快照；目标日结论只消费可用的点时成员。",
+      "freshness": {
+        "partition": "latest",
+        "max_age_days": 8,
+        "basis": "calendar_days",
+        "set_by": "claude 2026-10-20 default (cadence is weekly + new-security trigger)"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "cold fetch when absent",
+        "force": "fetch regardless of freshness",
+        "clear": "move aside to timestamped .bak; restore on failure"
+      },
+      "notes": "C328 recommendation; current prep path loads previous-date members; verify weekly/new-symbol trigger with data operator.",
+      "guardian_event": "premarket_slice_0850"
+    },
+    {
+      "id": "plate_registry",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "plate_registry",
+        "date_basis": "snapshot trade_date"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "UNKNOWN",
+      "rule": "板块代码登记/名称映射，需与成员关系身份一致。",
+      "freshness": "UNKNOWN",
+      "retry": "none (no guardian event)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "cold fetch when absent",
+        "force": "fetch regardless of freshness",
+        "clear": "move aside to timestamped .bak; restore on failure"
+      },
+      "notes": "No schedule event identified; ask plate-data owner about provider and cadence.",
+      "guardian_event": null
+    },
+    {
+      "id": "stock_static",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "stock_static",
+        "date_basis": "snapshot trade_date; point-in-time semantics UNKNOWN"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每周+新证券触发",
+      "rule": "静态证券属性/名称映射；不可将非点时快照作为历史真值。",
+      "freshness": {
+        "partition": "latest",
+        "max_age_days": 8,
+        "basis": "calendar_days",
+        "set_by": "claude 2026-10-20 default (cadence is weekly + new-security trigger)"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "cold fetch when absent",
+        "force": "fetch regardless of freshness",
+        "clear": "move aside to timestamped .bak; restore on failure"
+      },
+      "notes": "name_map is represented by stock_static; ask data operator about refresh trigger and PIT semantics.",
+      "guardian_event": "premarket_slice_0850"
+    },
+    {
+      "id": "auction_snapshot_v2",
+      "owner": "snapshot_check",
+      "artifact": {
+        "catalog_dataset": null,
+        "source_dataset": "TD market_data1.auction_snapshot_v2",
+        "date_basis": "same-day D; label timestamps 09:20/09:24/09:25; 09:25 final arrivals may follow"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END"
+      ],
+      "cadence": "09:20/09:24/09:25 source snapshots",
+      "rule": "TD market_data1 read-only; tags indicate source snapshots, not complete arrival time.",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "none",
+        "force": "none",
+        "clear": "none"
+      },
+      "notes": "External TD dataset, not Core catalog; Core guardian checks readiness. TD freshness threshold UNKNOWN; ask data operator.",
+      "guardian_event": "auction_0920_check"
+    },
+    {
+      "id": "auction_baseline",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "auction_baseline",
+        "date_basis": "target trade_date D"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每日盘前构建",
+      "rule": "由历史竞价快照计算基线；窗口/覆盖率规则待核。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:20",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "guardian_event": "premarket_slice_0850"
+    },
+    {
+      "id": "auction_stock_facts",
+      "owner": "auction_report",
+      "artifact": {
+        "catalog_dataset": "auction_stock_facts",
+        "date_basis": "same-day D; cutoff from snapshot availability"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END",
+        "AUCTION_END"
+      ],
+      "cadence": "竞价快照到达后构建",
+      "rule": "PIT 读取当日竞价快照；保留缺失/部分状态。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:30",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "guardian_event": "auction_report_0926"
+    },
+    {
+      "id": "auction_points",
+      "owner": "auction_report",
+      "artifact": {
+        "catalog_dataset": "auction_points",
+        "date_basis": "same-day D and tagged point"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END",
+        "AUCTION_END"
+      ],
+      "cadence": "竞价报告消费时构建",
+      "rule": "由竞价 snapshot/points 聚合；精确前置门槛待核。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:30",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "guardian_event": "auction_report_0926"
+    },
+    {
+      "id": "auction_points_raw",
+      "owner": "auction_report",
+      "artifact": {
+        "catalog_dataset": "auction_points_raw",
+        "date_basis": "same-day D and tagged point"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END",
+        "AUCTION_END"
+      ],
+      "cadence": "竞价报告消费时构建",
+      "rule": "原始竞价点保留来源时点，不补造缺失。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "guardian_event": "auction_report_0926"
+    },
+    {
+      "id": "auction_panorama",
+      "owner": "auction_report",
+      "artifact": {
+        "catalog_dataset": "auction_panorama",
+        "date_basis": "same-day D"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END",
+        "AUCTION_END"
+      ],
+      "cadence": "竞价报告消费时构建",
+      "rule": "报告侧车绑定 sha256；需通过报告门槛。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:30",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "guardian_event": "auction_report_0926"
+    },
+    {
+      "id": "ladder_daily",
+      "owner": "postmarket_data",
+      "artifact": {
+        "catalog_dataset": "ladder_daily",
+        "date_basis": "trade_date D"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "盘后生成",
+      "rule": "依赖涨停/连板事实；构建门槛待核。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "19:00",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. guardian owner event not directly assigned by current schedule.",
+      "guardian_event": "postmarket_publish"
+    },
+    {
+      "id": "hot_rank",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "hot_rank",
+        "date_basis": "capture trade_date/time"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "按报告消费点采样",
+      "rule": "外部热榜快照；来源/排名定义需保留。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:40",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "guardian_event": "premarket_slice_0850"
+    },
+    {
+      "id": "hot_plate_minutes",
+      "owner": "postmarket_data",
+      "artifact": {
+        "catalog_dataset": "hot_plate_minutes",
+        "date_basis": "UNKNOWN"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "UNKNOWN",
+      "rule": "分钟级热板/汇总数据；生成方式及消费方待核。",
+      "freshness": "UNKNOWN",
+      "retry": "none (no guardian event)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. guardian owner event not directly assigned by current schedule.",
+      "guardian_event": null
+    },
+    {
+      "id": "plate_amount_baseline",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "plate_amount_baseline",
+        "date_basis": "target trade_date D"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每日盘前构建",
+      "rule": "根据历史板块金额生成基线。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:20",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "guardian_event": "premarket_slice_0850"
+    },
+    {
+      "id": "stock_day_facts",
+      "owner": "postmarket_data",
+      "artifact": {
+        "catalog_dataset": "stock_day_facts",
+        "date_basis": "trade_date D"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "盘后构建",
+      "rule": "每日个股事实派生；字段/依赖确认中。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "19:00",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. guardian owner event not directly assigned by current schedule.",
+      "guardian_event": "postmarket_publish"
+    },
+    {
+      "id": "stock_theme_assignment",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "stock_theme_assignment",
+        "date_basis": "target trade_date D; input as-of recorded"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每日盘前准备",
+      "rule": "基于当时可用的成员/原因/板块登记；保留 source as-of。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "09:20",
+        "basis": "trading_day",
+        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "guardian_event": "premarket_slice_0850"
+    },
+    {
+      "id": "intraday_tick_stream",
+      "owner": "intraday_data",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "OPEN",
+        "INTRADAY_AM",
+        "PM_OPEN",
+        "INTRADAY_PM",
+        "CLOSE_AUCTION"
+      ],
+      "cadence": "3-minute schedule checkpoints; TD stock_tick currently observed only through 09:45:59",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "intraday_33"
+    },
+    {
+      "id": "intraday_report",
+      "owner": "intraday_data",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "OPEN",
+        "INTRADAY_AM",
+        "PM_OPEN",
+        "INTRADAY_PM"
+      ],
+      "cadence": "schedule checkpoints; report artifact catalog location UNKNOWN",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "intraday_33"
+    },
+    {
+      "id": "night_report",
+      "owner": "night_report",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "NIGHT"
+      ],
+      "cadence": "night_recap 01:00",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "night_recap"
+    },
+    {
+      "id": "premarket_report",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "startup_0830/premarket_slice_0850/startup_0900",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "startup_0830"
+    },
+    {
+      "id": "auction_report",
+      "owner": "auction_report",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "AUCTION_END"
+      ],
+      "cadence": "auction_report_0926 with 09:29 degraded deadline",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "auction_report_0926"
+    },
+    {
+      "id": "open_report",
+      "owner": "open_report",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "OPEN"
+      ],
+      "cadence": "open_report checkpoints starting 09:32:10",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "open_report_0932"
+    },
+    {
+      "id": "close_report",
+      "owner": "close_report",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "close_recap starting 17:40",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "close_recap"
+    },
+    {
+      "id": "intraday_analysis",
+      "owner": "intraday_data",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+      },
+      "phases": [
+        "OPEN",
+        "INTRADAY_AM",
+        "MIDDAY_BREAK",
+        "PM_OPEN",
+        "INTRADAY_PM"
+      ],
+      "cadence": "3-minute schedule events",
+      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "UNKNOWN",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "guardian_event": "intraday_33"
+    },
+    {
+      "id": "name_map",
+      "owner": "premarket_data",
+      "artifact": {
+        "catalog_dataset": "stock_static",
+        "date_basis": "stock_static trade_date snapshot"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "与 stock_static 同步；具体触发 UNKNOWN",
+      "rule": "名称映射视图；实际 catalog artifact is stock_static。",
+      "freshness": {
+        "partition": "latest",
+        "max_age_days": 8,
+        "basis": "calendar_days",
+        "set_by": "claude 2026-10-20 default (cadence is weekly + new-security trigger)"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "cold fetch when absent",
+        "force": "fetch regardless of freshness",
+        "clear": "move aside to timestamped .bak; restore on failure"
+      },
+      "notes": "Alias requested by C352; no separate catalog dataset. Ask data operator whether it should remain a separate item.",
+      "guardian_event": "premarket_slice_0850"
+    },
+    {
+      "id": "path_stats",
+      "owner": "UNKNOWN",
+      "guardian_event": null,
+      "artifact": {
+        "catalog_dataset": "path_stats",
+        "date_basis": "trade_date UNKNOWN"
+      },
+      "phases": [
+        "POST_MARKET"
+      ],
+      "cadence": "UNKNOWN",
+      "rule": "Catalog 历史统计条目；生成来源与消费方待确认。",
+      "freshness": "UNKNOWN",
+      "retry": "none (no guardian event)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute",
+        "clear": "clear then rebuild"
+      },
+      "notes": "No guardian event found; ask data pipeline owner."
+    },
+    {
+      "id": "stock_tick_v2",
+      "owner": "intraday_data",
+      "guardian_event": "intraday_33",
+      "artifact": {
+        "catalog_dataset": null,
+        "source_dataset": "TD market_data1.stock_tick_v2",
+        "date_basis": "same-day D; observed ts range is bounded to source availability"
+      },
+      "phases": [
+        "OPEN",
+        "INTRADAY_AM"
+      ],
+      "cadence": "3-minute event checks; source table observed only through 09:45:59",
+      "rule": "TD market_data1 read-only; no write action.",
+      "freshness": "UNKNOWN",
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "none",
+        "force": "none",
+        "clear": "none"
+      },
+      "notes": "Current schedule intraday events continue after 09:45 although this source table is observed through 09:45:59; ask data operator whether design or retention window."
+    }
+  ]
+}
