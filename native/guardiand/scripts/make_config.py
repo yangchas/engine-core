@@ -30,6 +30,15 @@ late_by_handler = {
     "legacy_baostock_probe": "23:30:00",
     "legacy_night_report": "23:59:00",
 }
+registry_path = f"{repo}/src/engine_core/guardian/datasets.registry.json"
+try:
+    registry_doc = json.load(open(registry_path, encoding="utf-8"))
+    registry = registry_doc.get("items", [])
+    cfg["heavy_cutoffs"] = registry_doc.get("heavy_cutoffs", {})
+except (OSError, json.JSONDecodeError):
+    registry = []
+fetch_events = {item.get("guardian_event") for item in registry
+                if item.get("guardian_event") and item.get("fetch_job")}
 for event in cfg["events"]:
     event.pop("late_until", None)
     event_id = event.get("id", event.get("event_id", ""))
@@ -55,7 +64,10 @@ for event in cfg["events"]:
         retry = event.setdefault("retry", {})
         retry["until_late"] = True
         retry["backoff"] = "60s"
-        event["on_start"] = "reconcile"
+        if event_id not in fetch_events:
+            event["on_start"] = "reconcile"
+        else:
+            event.pop("on_start", None)
     if canonical_handler in {"premarket_data", "kaipan_fetch", "postmarket_data", "baostock_probe", "calendar_refresh", "night_report"}:
         retry = event.setdefault("retry", {})
         retry["max_attempts"] = 3

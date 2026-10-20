@@ -47,6 +47,84 @@ func TestPhaseAtUsesInjectedFakeClock(t *testing.T) {
 	}
 }
 
+func TestHeavyPreMarketCutoffUsesConfiguredTime(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	event := &config.Event{ID: "fetch_item", Cost: "heavy", Phases: []string{"PRE_MARKET", "MIDDAY_BREAK"}}
+	c := config.Config{HeavyCutoffs: map[string]string{"PRE_MARKET": "09:10:00"}}
+	before := time.Date(2026, 10, 20, 9, 9, 59, 0, loc)
+	after := before.Add(time.Second)
+	if !phaseAllowedAt(event, "PRE_MARKET", before, c, loc) {
+		t.Fatal("heavy item rejected before cutoff")
+	}
+	if phaseAllowedAt(event, "PRE_MARKET", after, c, loc) {
+		t.Fatal("heavy item allowed at cutoff")
+	}
+}
+
+func TestCalendarRecoveryRerunsFailedBootChainWithFakeClock(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now := time.Date(2026, 10, 20, 8, 30, 0, 0, loc)
+	fc := newFakeClock(now)
+	calendar := filepath.Join(root, "calendar.json")
+	tradeDay := filepath.Join(root, "trade_day.sh")
+	health := filepath.Join(root, "health.sh")
+	if err := os.WriteFile(tradeDay, []byte("#!/bin/sh\nif [ ! -f \""+calendar+"\" ]; then printf '%s\\n' '{\"contract\":1,\"status\":\"failed\",\"error_code\":\"CALENDAR_UNKNOWN\",\"retryable\":true}'; exit 0; fi\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(health, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c := config.Config{ConfigVersion: 1, Timezone: "Asia/Shanghai",
+		Calendars: map[string]struct {
+			File string `json:"file"`
+		}{"trading": {File: calendar}},
+		Handlers: map[string]config.Handler{"trade_day": {Argv: []string{tradeDay}}, "health": {Argv: []string{health}}},
+		Events: []config.Event{
+			{ID: "boot_trade_day", Trigger: config.Trigger{Type: "startup", Order: 10}, Handler: "trade_day"},
+			{ID: "boot_data_health", Trigger: config.Trigger{Type: "startup", Order: 20, After: []string{"boot_trade_day"}}, Handler: "health"},
+		},
+	}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{},
+		running: map[string]bool{}, paused: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	if err := r.runBootEvents(now); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	initial := r.bootSummary["boot_trade_day"]
+	r.mu.Unlock()
+	if initial != "FAILED_FINAL" {
+		t.Fatalf("initial boot status=%s", initial)
+	}
+	if err := os.WriteFile(calendar, []byte(`["2026-10-20"]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r.scheduleBootRerun(date)
+	waitFor(t, func() bool { return fc.waitCount() > 0 })
+	fc.Advance(time.Minute)
+	waitFor(t, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.bootSummary["boot_trade_day"] == "SUCCEEDED" && r.bootSummary["boot_data_health"] == "SUCCEEDED"
+	})
+	if r.bootSequence == "" || r.bootReruns != 1 {
+		t.Fatalf("rerun identity/count sequence=%q reruns=%d", r.bootSequence, r.bootReruns)
+	}
+	b, err := os.ReadFile(filepath.Join(root, "ledger", date+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"type":"BOOT_RERUN"`) {
+		t.Fatalf("BOOT_RERUN missing from ledger: %s", b)
+	}
+}
+
 func TestScheduleDefersPhaseMismatchUntilWhitelistedPhase(t *testing.T) {
 	root, date := t.TempDir(), "2026-10-20"
 	loc, _ := time.LoadLocation("Asia/Shanghai")

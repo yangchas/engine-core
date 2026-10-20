@@ -23,6 +23,7 @@ type Config struct {
 	} `json:"calendars,omitempty"`
 	Concurrency   map[string]json.RawMessage `json:"concurrency,omitempty"`
 	HeavyMaxLoad1 json.RawMessage            `json:"heavy_max_load1,omitempty"`
+	HeavyCutoffs  map[string]string          `json:"heavy_cutoffs,omitempty"`
 	Handlers      map[string]Handler         `json:"handlers,omitempty"`
 	Alerts        map[string]json.RawMessage `json:"alerts,omitempty"`
 	Events        []Event                    `json:"events"`

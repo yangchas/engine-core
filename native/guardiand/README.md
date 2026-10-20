@@ -57,6 +57,12 @@ current phase reason, and `next_phase`; scheduling starts the instance when an
 allowed phase arrives. A deferred instance past its `late_until` (or deadline
 when absent) becomes `MISSED` and is included in the missed summary.
 
+Late data with a registry `fetch_job` has one startup catch-up path:
+`boot_apply_plan` owns the fetch, so its matching window event does not also
+set `on_start: "reconcile"`. The window event remains scheduled and retains
+its late retry window for failures while the process is running. Report events
+without a registry fetch job may keep `on_start` for late reporting.
+
 Events may set `cost` to `light`, `medium` (the default), or `heavy`. Light
 work bypasses class concurrency limits; medium work uses the configured class
 slot; heavy work uses one independent global slot and reports waiters as

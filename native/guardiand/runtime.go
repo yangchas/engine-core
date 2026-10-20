@@ -297,6 +297,10 @@ type liveRunner struct {
 	idempotency      map[string]any
 	cfgPath          string
 	bootSummary      map[string]string
+	bootSequence     string
+	bootReruns       int
+	bootRerunIDs     map[string]bool
+	bootRerunPending bool
 }
 
 func phaseIn(now time.Time, phases []config.Phase, tradingDay bool) (string, string) {
@@ -365,6 +369,22 @@ func phaseAllowed(event *config.Event, phase string) bool {
 		}
 	}
 	return false
+}
+
+func phaseAllowedAt(event *config.Event, phase string, now time.Time, c config.Config, loc *time.Location) bool {
+	if !phaseAllowed(event, phase) {
+		return false
+	}
+	cutoff, ok := c.HeavyCutoffs[phase]
+	if !ok || eventCost(event) != "heavy" {
+		return true
+	}
+	limit, err := time.ParseInLocation("15:04:05", cutoff, loc)
+	if err != nil {
+		return true
+	}
+	local := now.In(loc)
+	return local.Hour()*3600+local.Minute()*60+local.Second() < limit.Hour()*3600+limit.Minute()*60+limit.Second()
 }
 
 func nextAllowedPhase(event *config.Event, phases []config.Phase, current string) string {
@@ -529,7 +549,70 @@ func runCmd(args []string) error {
 	return r.loop()
 }
 
+func (r *liveRunner) scheduleBootRerun(date string) {
+	r.mu.Lock()
+	if r.bootReruns >= 3 || r.bootRerunPending {
+		r.mu.Unlock()
+		return
+	}
+	ids := map[string]bool{}
+	for id, status := range r.bootSummary {
+		if status != "SUCCEEDED" && status != "SUCCEEDED_DEGRADED" && status != "SKIPPED_NA" {
+			ids[id] = true
+		}
+	}
+	r.mu.Unlock()
+	r.configMu.RLock()
+	events := append([]config.Event(nil), r.c.Events...)
+	r.configMu.RUnlock()
+	changed := true
+	for changed {
+		changed = false
+		for _, event := range events {
+			if event.Trigger.Type != "startup" || ids[event.ID] {
+				continue
+			}
+			for _, dep := range event.Trigger.After {
+				if ids[dep] {
+					ids[event.ID] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	r.mu.Lock()
+	if r.bootReruns >= 3 || r.bootRerunPending {
+		r.mu.Unlock()
+		return
+	}
+	r.bootReruns++
+	r.bootRerunPending = true
+	attempt := r.bootReruns
+	r.bootRerunIDs = ids
+	r.mu.Unlock()
+	go func() {
+		r.waitClock(time.Duration(60*(1<<(attempt-1))) * time.Second)
+		_, _ = r.appendLedger(date, "BOOT_RERUN", map[string]any{"attempt": attempt, "events": ids, "sequence": r.bootSequence})
+		_ = r.runBootEvents(r.clock.Now())
+		r.mu.Lock()
+		r.bootRerunIDs = nil
+		r.bootRerunPending = false
+		r.mu.Unlock()
+	}()
+}
+
 func (r *liveRunner) runBootEvents(now time.Time) error {
+	r.mu.Lock()
+	rerunOnly := r.bootRerunIDs
+	priorSummary := make(map[string]string, len(r.bootSummary))
+	for id, status := range r.bootSummary {
+		priorSummary[id] = status
+	}
+	r.mu.Unlock()
 	r.configMu.RLock()
 	c := r.c
 	r.configMu.RUnlock()
@@ -577,10 +660,16 @@ func (r *liveRunner) runBootEvents(now time.Time) error {
 	}
 	events = ordered
 	date := now.In(r.loc).Format("2006-01-02")
-	seq := r.ledger.sequence()
-	boot := fmt.Sprint(seq)
+	if r.bootSequence == "" {
+		r.bootSequence = fmt.Sprint(r.ledger.sequence())
+	}
+	boot := r.bootSequence
 	results := map[string]string{}
 	for _, e := range events {
+		if rerunOnly != nil && !rerunOnly[e.ID] {
+			results[e.ID] = priorSummary[e.ID]
+			continue
+		}
 		// The startup event exists as a template; only deferred per-item instances run it.
 		if e.ID == "fetch_item" {
 			results[e.ID] = "SUCCEEDED"
@@ -642,7 +731,9 @@ func (r *liveRunner) runBootEvents(now time.Time) error {
 		results[e.ID] = st.Status
 		_, _ = r.appendLedger(date, "BOOT_CHECK", map[string]any{"event": e.ID, "instance": x.ID, "status": st.Status, "order": e.Trigger.Order})
 	}
+	r.mu.Lock()
 	r.bootSummary = results
+	r.mu.Unlock()
 	// Reconcile windows that have passed their normal start while their late cutoff remains open.
 	xs, _, err := instances(c, date)
 	if err == nil {
@@ -927,7 +1018,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 			return
 		}
 	}
-	if x.TriggerType != "startup" && !phaseAllowed(event, func() string { p, _ := r.currentPhase(r.clock.Now()); return p }()) {
+	if (x.TriggerType != "startup" || x.EventID == "fetch_item") && !phaseAllowedAt(event, func() string { p, _ := r.currentPhase(r.clock.Now()); return p }(), r.clock.Now(), c, r.loc) {
 		phase, _ := r.currentPhase(r.clock.Now())
 		if event.OnPhaseMismatch == "defer" {
 			r.setState(x, date, instanceState{Status: "DEFERRED", LastError: "phase " + phase + " is not allowed", NextPhase: nextAllowedPhase(event, c.EffectivePhases(), phase)})
@@ -1135,6 +1226,9 @@ func (r *liveRunner) execute(x Instance, date string) {
 				stateStatus = "SUCCEEDED_DEGRADED"
 			}
 			r.setState(x, date, instanceState{Status: stateStatus, Attempts: n, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), Late: st.Late, DataDate: x.DataDate})
+			if strings.Contains(event.ID, "calendar_refresh") {
+				r.scheduleBootRerun(date)
+			}
 			if event.ID == "boot_apply_plan" {
 				var response struct {
 					Detail struct {
@@ -1664,7 +1758,7 @@ func (r *liveRunner) schedule(now time.Time) {
 			missedNow = append(missedNow, x.ID)
 			continue
 		}
-		if event != nil && !phaseAllowed(event, phase) {
+		if event != nil && !phaseAllowedAt(event, phase, now, c, r.loc) {
 			if event.OnPhaseMismatch == "defer" {
 				if !exists || st.Status != "DEFERRED" || st.NextPhase != nextAllowedPhase(event, c.EffectivePhases(), phase) {
 					r.setState(x, date, instanceState{Status: "DEFERRED", LastError: "phase " + phase + " is not allowed", NextPhase: nextAllowedPhase(event, c.EffectivePhases(), phase)})
@@ -1768,7 +1862,13 @@ func (r *liveRunner) schedule(now time.Time) {
 			running := r.running[item.id]
 			paused := r.paused["fetch_item"] || r.paused["*"]
 			r.mu.Unlock()
-			if running || paused || phase == "NON_TRADING" || phase == "CALENDAR_UNKNOWN" || !phaseAllowed(event, phase) {
+			if running || paused || phase == "NON_TRADING" || phase == "CALENDAR_UNKNOWN" {
+				continue
+			}
+			if !phaseAllowedAt(event, phase, now, c, r.loc) {
+				if item.st.Status == "QUEUED_HEAVY" {
+					r.setState(Instance{ID: item.id, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", DataDate: item.st.DataDate, TriggerType: "startup"}, date, instanceState{Status: "DEFERRED", LastError: "phase " + phase + " is not allowed", NextPhase: nextAllowedPhase(event, c.EffectivePhases(), phase), DataDate: item.st.DataDate})
+				}
 				continue
 			}
 			if item.st.Status == "RETRY_WAIT" {
