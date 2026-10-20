@@ -535,7 +535,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 	if class == "" {
 		class = "default"
 	}
-	limit := 1
+	limit := 4 // unconfigured classes: one slow handler must not starve the rest of the day
 	if raw := c.Concurrency[class]; len(raw) > 0 {
 		var v struct {
 			Max int `json:"max"`
