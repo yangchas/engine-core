@@ -33,6 +33,24 @@ def _run(request):
     from examples.core_guardian import _command_handler
 
     base, event_id = _event_from_request(request)
+    if event_id in {"boot_trade_day", "boot_data_health", "boot_reconcile"}:
+        from engine_core.guardian.startup import boot_data_health, boot_reconcile, boot_trade_day
+        trade_date = request.get("trade_date")
+        if not trade_date:
+            return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                        "retryable": False, "detail": "trade_date_required"}
+        root = Path(os.environ.get("CORE_DATA_ROOT", "~/core-data")).expanduser()
+        dry = os.environ.get("GUARDIAN_DRY_RUN") == "1"
+        now = request.get("now")
+        if event_id == "boot_trade_day":
+            result = boot_trade_day(str(trade_date), root)
+        elif event_id == "boot_data_health":
+            result = boot_data_health(str(trade_date), request.get("prev_trade_date"), root,
+                                      now=now, dry_run=dry)
+        else:
+            result = boot_reconcile(str(trade_date), str(request.get("phase") or ""),
+                                    request.get("health"), root, now=now)
+        return (75 if result["status"] == "failed" and result.get("retryable") else 0), result
     if base is None:
         return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
                     "retryable": False, "detail": "unknown_event:" + event_id}

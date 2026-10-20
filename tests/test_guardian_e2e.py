@@ -33,6 +33,16 @@ def test_guardiand_python_bridge_end_to_end(tmp_path):
     gate = [sys.executable, "-c", "import sys; print('{\"status\":\"not_ready\",\"reason\":\"test\"}')"]
     alert = [sys.executable, str(ROOT / "examples/guardian_handler.py"), "alert", "--dry-run"]
     events = []
+    for event_id, order, after in [
+        ("boot_trade_day", 10, []),
+        ("boot_data_health", 20, ["boot_trade_day"]),
+        ("boot_reconcile", 30, ["boot_data_health"]),
+    ]:
+        events.append({"id": event_id, "enabled": True, "calendar": "every_day",
+                       "trigger": {"type": "startup", "order": order, "after": after},
+                       "phases": ["any"],
+                       "handler": event_id, "timeout": "10s",
+                       "retry": {"max_attempts": 1}})
     for event_id, hname, gate_ref, start in [
         ("calendar_refresh_0800", "calendar_refresh", "", starts[0]),
         ("kaipan_hot_092100", "kaipan_hot_capture", "", starts[1]),
@@ -44,17 +54,20 @@ def test_guardiand_python_bridge_end_to_end(tmp_path):
                        "handler": hname, "gate": {"ref": gate_ref, "poll": "1s"} if gate_ref else {},
                        "timeout": "10s", "retry": {"max_attempts": 1}, "on_deadline": "missed",
                        "catchup": "run_in_window"})
+    core_root = tmp_path / "core"
     config = {"schema_version": 1, "config_version": 1, "name": "bridge-e2e",
               "timezone": "Asia/Shanghai",
+              "calendars": {"trading": {"file": str(core_root / "trade_dates.json")}},
               "handlers": {h: {"argv": handler, "env_allow": ["CORE_DATA_ROOT", "GUARDIAN_DRY_RUN"]}
                            for h in ("calendar_refresh", "kaipan_hot_capture", "close_capture", "intraday_data")},
               "events": events}
+    for h in ("boot_trade_day", "boot_data_health", "boot_reconcile"):
+        config["handlers"][h] = {"argv": handler, "env_allow": ["CORE_DATA_ROOT", "GUARDIAN_DRY_RUN"]}
     config["handlers"]["alert"] = {"argv": alert, "env_allow": ["CORE_DATA_ROOT", "GUARDIAN_DRY_RUN"]}
     config["handlers"]["intraday_data"]["gate_argv"] = gate
     cfg = tmp_path / "config.json"
     cfg.write_text(json.dumps(config))
     state = tmp_path / "state"
-    core_root = tmp_path / "core"
     cal_dir = core_root / "trade_calendar"
     cal_dir.mkdir(parents=True)
     days = []
@@ -65,6 +78,7 @@ def test_guardiand_python_bridge_end_to_end(tmp_path):
               "lit_to": days[-1]["d"], "last_refresh_at": now.isoformat(),
               "last_ok_at": now.isoformat(), "last_error": None, "conflicts": [], "days": days}
     (cal_dir / "calendar.json").write_text(json.dumps(matrix))
+    (core_root / "trade_dates.json").write_text(json.dumps([day["d"] for day in days]))
     sys.path.insert(0, str(ROOT / "src"))
     from engine_core.data_pipeline.storage import ArtifactCatalog
     hot_rows = [{"plate_code": f"BK{i:03d}", "requested_date": now.date().isoformat(),
@@ -86,7 +100,7 @@ def test_guardiand_python_bridge_end_to_end(tmp_path):
                 states = [r for r in records if r["type"] == "INSTANCE_STATE"]
                 terminal = {r["data"].get("event_id") for r in states
                             if r["data"].get("state", {}).get("status") not in {"RUNNING"}}
-                if len(terminal) == 4 and any(r["type"] == "ALERT_OUT" for r in records):
+                if len(terminal) == 7 and any(r["type"] == "ALERT_OUT" for r in records):
                     break
             if proc.poll() is not None:
                 break
@@ -94,6 +108,9 @@ def test_guardiand_python_bridge_end_to_end(tmp_path):
         statuses = {r["data"].get("event_id"): r["data"].get("state", {}).get("status")
                     for r in records if r["type"] == "INSTANCE_STATE"}
         assert statuses.get("calendar_refresh_0800") == "SUCCEEDED", (statuses, proc.poll(), proc.communicate(timeout=1) if proc.poll() is not None else "running")
+        assert statuses.get("boot_trade_day") == "SUCCEEDED", statuses
+        assert statuses.get("boot_data_health") in {"SUCCEEDED", "SUCCEEDED_DEGRADED"}, statuses
+        assert statuses.get("boot_reconcile") in {"SUCCEEDED", "SUCCEEDED_DEGRADED"}, statuses
         assert statuses.get("kaipan_hot_092100") == "SUCCEEDED", statuses
         assert statuses.get("close_mark_1505") == "SKIPPED_NA", statuses
         assert statuses.get("intraday_100005") == "GATE_BLOCKED", statuses
