@@ -20,6 +20,7 @@ from pathlib import Path
 from engine_core.guardian.scheduler import EventSpec, FileInstanceLock, Guardian, default_events
 from engine_core.guardian.management import append_record, load_schedule
 from engine_core.guardian.gates import default_gates
+from engine_core.guardian.commands import build_handler_command
 from engine_core.prep_trade_day import previous_trade_date
 from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
 
@@ -149,43 +150,12 @@ def _command_handler(name: str, opts, root: Path):
         repo = Path(__file__).resolve().parents[1]
         env = os.environ.copy()
         env["PYTHONPATH"] = str(repo / "src") + os.pathsep + str(repo)
-        if name == "premarket_data":
-            cmd = [py, str(repo / "examples/prep_trade_day.py"), "--date", day,
-                   "--artifact-root", str(root)]
-            if opts.write:
-                cmd.append("--write")
-        elif name in {"intraday_data", "postmarket_data"}:
-            phase = {"premarket_data": "premarket", "intraday_data": "intraday",
-                     "postmarket_data": "postmarket"}[name]
-            cmd = [py, str(repo / "examples/core_data_daily.py"), "--phase", phase, "--date", day,
-                   "--artifact-root", str(root)]
-            if opts.write:
-                cmd.append("--write")
-            if opts.td_write:
-                cmd.extend(["--write", "--td-write"])
-        elif name in {"auction_report", "open_report", "close_report"}:
+        if name in {"auction_report", "open_report", "close_report"} and getattr(opts, "email_self", False):
             stage = {"auction_report": "auction", "open_report": "open", "close_report": "close"}[name]
-            cmd = [py, str(repo / "examples/run_daily_reports.py"), "--stage", stage,
-                   "--trade-date", day, "--out-root", str(root / "reports")]
-            if name == "auction_report":
-                cmd.extend(["--asof", "09:26:00"])
-            elif name == "open_report":
-                cmd.extend(["--asof", event.start])
-            if opts.simulate_clock:
-                cmd.append("--dry-run")
-            elif not opts.write and not opts.email_self:
-                cmd.append("--dry-run")
-            elif name == "close_report":
-                cmd.append("--publish")
-            if getattr(opts, "email_self", False):
-                marker = root / "guardian" / day / "audit_ok" / stage
-                if not marker.is_file():
-                    raise RuntimeError("audit_ok_missing:" + stage)
-                if opts.simulate_clock:
-                    cmd.extend(["--email-to", "412826313@qq.com"])
-                else:
-                    cmd.extend(["--email-send", "--email-to", "412826313@qq.com"])
-        elif name == "kaipan_fetch":
+            marker = root / "guardian" / day / "audit_ok" / stage
+            if not marker.is_file():
+                raise RuntimeError("audit_ok_missing:" + stage)
+        if name == "kaipan_fetch":
             from engine_core.data_pipeline.storage import ArtifactCatalog
             catalog = ArtifactCatalog(root)
             for job in ("limit_up_pool", "limit_reasons", "hot_plates", "plate_members"):
@@ -198,43 +168,27 @@ def _command_handler(name: str, opts, root: Path):
                             from examples.run_data_jobs import _is_complete_member_manifest
                             reusable = _is_complete_member_manifest(manifest)
                         else:
-                            reusable = (isinstance(quality, dict) and
-                                        quality.get("status") == "READY" and
-                                        int(manifest.get("row_count", 0)) > 0)
+                            reusable = (isinstance(quality, dict) and quality.get("status") == "READY"
+                                        and int(manifest.get("row_count", 0)) > 0)
                         if reusable:
                             continue
                     except (OSError, ValueError, TypeError):
                         pass
-                cmd = [py, str(repo / "examples/run_data_jobs.py"), "--job", job, "--date", day,
-                       "--artifact-root", str(root)]
-                if opts.write:
-                    cmd.append("--write")
+                job_opts = SimpleNamespace(job=job, write=opts.write)
+                cmd = build_handler_command("kaipan_job", event, job_opts, root, day, py, repo)
                 result = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True,
                                         timeout=event.timeout_seconds, check=False)
                 if result.returncode:
                     raise RuntimeError(f"command_exit={result.returncode}: {result.stderr[-500:]}")
             return "Core Kaipan jobs checked; existing date versions reused"
-        elif name == "kaipan_hot_capture":
-            cmd = [py, str(repo / "examples/capture_kaipan_plates.py"), "--trade-date", day,
-                   "--dataset", "hot_plates", "--artifact-root", str(root)]
-            if opts.write:
-                cmd.append("--execute")
-        elif name == "baostock_probe":
-            external = os.getenv("CORE_BAOSTOCK_PROBE_COMMAND")
-            cmd = (shlex.split(external) + [day] if external else
-                   [py, str(repo / "examples/core_data_daily.py"), "--phase", "postmarket", "--date", day,
-                    "--artifact-root", str(root)])
-            if opts.write:
-                cmd.append("--write")
-            if opts.td_write:
-                cmd.extend(["--write", "--td-write"])
-        elif name == "night_report":
-            try:
-                previous_day = TradeCalendarStore(root).previous_trade_date(day).isoformat()
-            except ValueError:
-                raise RuntimeError("previous_trade_date_unavailable")
-            cmd = [py, str(repo / "examples/run_daily_reports.py"), "--stage", "close",
-                   "--trade-date", previous_day, "--out-root", str(root / "reports"), "--dry-run"]
+        elif name in {"premarket_data", "intraday_data", "postmarket_data", "auction_report",
+                      "open_report", "close_report", "kaipan_hot_capture", "baostock_probe", "night_report"}:
+            if name == "night_report":
+                try:
+                    day = TradeCalendarStore(root).previous_trade_date(day).isoformat()
+                except ValueError:
+                    raise RuntimeError("previous_trade_date_unavailable")
+            cmd = build_handler_command(name, event, opts, root, day, py, repo)
         else:
             raise RuntimeError("handler_not_implemented:" + name)
         result = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True,
