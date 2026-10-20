@@ -121,6 +121,9 @@ class KaipanProvider:
                 if level > 1 and str(exc) == "kaipan_request_failed:TypeError":
                     break  # SDK returns None past the highest populated level
                 raise
+            if (level > 1 and isinstance(response, Mapping) and "info" not in response
+                    and str(response.get("errcode")) == "1020"):
+                break  # real Kaipan 2026-10-20: errcode 1020 past the highest populated level
             for raw in _pool_rows(response):
                 # The legacy pool contract requires the complete positional
                 # record (16 fields). Short tuples are metadata/noise and must
