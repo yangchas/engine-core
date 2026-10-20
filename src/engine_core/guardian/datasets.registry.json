@@ -69,10 +69,10 @@
       "guardian_event": "startup_0830",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "08:30",
         "valid_until": null,
         "depends_on": [],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "08:30"
       },
       "cost": {
         "class": "medium",
@@ -112,10 +112,11 @@
       "guardian_event": "postmarket_publish",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "17:30",
         "valid_until": null,
         "depends_on": [],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "17:30",
+        "partition_before_trigger": "D-1"
       },
       "cost": {
         "class": "heavy",
@@ -152,12 +153,13 @@
       "guardian_event": "postmarket_publish",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "17:30",
         "valid_until": null,
         "depends_on": [
           "daily_kline"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "17:30",
+        "partition_before_trigger": "D-1"
       },
       "cost": {
         "class": "heavy",
@@ -194,13 +196,14 @@
       "guardian_event": "postmarket_publish",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "17:30",
         "valid_until": null,
         "depends_on": [
           "daily_kline",
           "daily_indicators"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "17:30",
+        "partition_before_trigger": "D-1"
       },
       "cost": {
         "class": "heavy",
@@ -237,10 +240,10 @@
       "guardian_event": "kaipan_refresh_0850",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "08:50",
         "valid_until": null,
         "depends_on": [],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "08:50"
       },
       "cost": {
         "class": "light",
@@ -277,12 +280,12 @@
       "guardian_event": "kaipan_refresh_0850",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "08:50",
         "valid_until": null,
         "depends_on": [
           "limit_up_pool"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "08:50"
       },
       "cost": {
         "class": "light",
@@ -326,10 +329,10 @@
       "guardian_event": "kaipan_hot_capture",
       "late_policy": {
         "mode": "gap_only",
-        "ready_after": "09:16",
         "valid_until": "11:30",
         "depends_on": [],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "09:16"
       },
       "cost": {
         "class": "light",
@@ -366,12 +369,12 @@
       "guardian_event": "premarket_slice_0850",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "08:50",
         "valid_until": null,
         "depends_on": [
           "symbol_universe"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "08:50"
       },
       "cost": {
         "class": "medium",
@@ -431,10 +434,10 @@
       "guardian_event": "premarket_slice_0850",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "08:30",
         "valid_until": null,
         "depends_on": [],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "08:30"
       },
       "cost": {
         "class": "light",
@@ -496,13 +499,13 @@
       "guardian_event": "premarket_slice_0850",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "08:50",
         "valid_until": null,
         "depends_on": [
           "daily_kline",
           "symbol_universe"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "08:50"
       },
       "cost": {
         "class": "medium",
@@ -541,12 +544,12 @@
       "guardian_event": "auction_report_0926",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "09:25:10",
         "valid_until": null,
         "depends_on": [
           "auction_baseline"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "09:25:10"
       },
       "cost": {
         "class": "medium",
@@ -585,12 +588,12 @@
       "guardian_event": "auction_report_0926",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "09:25:10",
         "valid_until": null,
         "depends_on": [
           "auction_stock_facts"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "09:25:10"
       },
       "cost": {
         "class": "medium",
@@ -654,12 +657,12 @@
       "guardian_event": "auction_report_0926",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "09:25:10",
         "valid_until": null,
         "depends_on": [
           "auction_stock_facts"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "09:25:10"
       },
       "cost": {
         "class": "medium",
@@ -696,12 +699,13 @@
       "guardian_event": "postmarket_publish",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "17:30",
         "valid_until": null,
         "depends_on": [
           "daily_kline"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "17:30",
+        "partition_before_trigger": "D-1"
       },
       "cost": {
         "class": "medium",
@@ -738,10 +742,10 @@
       "guardian_event": "premarket_slice_0850",
       "late_policy": {
         "mode": "gap_only",
-        "ready_after": "09:16",
         "valid_until": "15:05",
         "depends_on": [],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "09:16"
       },
       "cost": {
         "class": "light",
@@ -801,12 +805,12 @@
       "guardian_event": "premarket_slice_0850",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "08:50",
         "valid_until": null,
         "depends_on": [
           "daily_kline"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "08:50"
       },
       "cost": {
         "class": "medium",
@@ -843,12 +847,13 @@
       "guardian_event": "postmarket_publish",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "17:30",
         "valid_until": null,
         "depends_on": [
           "daily_kline"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "17:30",
+        "partition_before_trigger": "D-1"
       },
       "cost": {
         "class": "medium",
@@ -885,13 +890,13 @@
       "guardian_event": "premarket_slice_0850",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "08:50",
         "valid_until": null,
         "depends_on": [
           "plate_members",
           "limit_reasons"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "08:50"
       },
       "cost": {
         "class": "medium",
@@ -1123,12 +1128,12 @@
       "guardian_event": "premarket_slice_0850",
       "late_policy": {
         "mode": "fetch_now",
-        "ready_after": "08:30",
         "valid_until": null,
         "depends_on": [
           "stock_static"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)"
+        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "trigger_at": "08:30"
       },
       "cost": {
         "class": "light",
@@ -1187,6 +1192,7 @@
   ],
   "quiet_phases_for_heavy": [
     "NIGHT",
+    "PRE_MARKET",
     "MIDDAY_BREAK",
     "CLOSE",
     "POST_MARKET"
@@ -1198,8 +1204,12 @@
       "AUCTION",
       "AUCTION_END",
       "OPEN",
+      "INTRADAY_AM",
+      "PM_OPEN",
+      "INTRADAY_PM",
       "CLOSE_AUCTION"
     ],
-    "if_consumer_needs_before_quiet": "use degrade chain / previous available version, labelled; fetch fully in the next quiet phase"
+    "if_consumer_needs_before_quiet": "use degrade chain / previous available version, labelled; fetch fully in the next quiet phase",
+    "pre_market_heavy_cutoff": "09:10"
   }
 }
