@@ -95,10 +95,15 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
         if policy["mode"] == "gap_only":
             plan.append({"id": item_id, "action": "GAP", "partition": target, "valid_until": policy.get("valid_until")})
             return
+        if not by_id[item_id].get("fetch_job"):
+            plan.append({"id": item_id, "partition": target, "action": "NO_FETCH_JOB",
+                         "reason": "independent_fetch_job_unconfigured"})
+            return
         blocked = [dep for dep in policy.get("depends_on", [])
                    if dep in due and next(r["action"] for r in plan if r["id"] == dep) not in {"FETCH_NOW"}]
         cost = (by_id[item_id].get("cost") or {}).get("class", "medium")
-        entry = {"id": item_id, "partition": target, "cost": cost, "event": by_id[item_id].get("guardian_event")}
+        entry = {"id": item_id, "partition": target, "cost": cost, "event": by_id[item_id].get("guardian_event"),
+                 "fetch_job": by_id[item_id].get("fetch_job"), "phase": phase}
         if blocked:
             plan.append({**entry, "action": "DEFER", "reason": "blocked_by:" + ",".join(blocked)})
             return

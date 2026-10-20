@@ -33,8 +33,8 @@ def _run(request):
     from examples.core_guardian import _command_handler
 
     base, event_id = _event_from_request(request)
-    if event_id in {"boot_trade_day", "boot_data_health", "boot_reconcile"}:
-        from engine_core.guardian.startup import boot_data_health, boot_reconcile, boot_trade_day
+    if event_id in {"boot_trade_day", "boot_data_health", "boot_reconcile", "boot_apply_plan", "fetch_item"}:
+        from engine_core.guardian.startup import boot_apply_plan, boot_data_health, boot_reconcile, boot_trade_day, fetch_item
         trade_date = request.get("trade_date")
         if not trade_date:
             return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
@@ -47,9 +47,17 @@ def _run(request):
         elif event_id == "boot_data_health":
             result = boot_data_health(str(trade_date), request.get("prev_trade_date"), root,
                                       now=now, dry_run=dry)
-        else:
+        elif event_id == "boot_reconcile":
             result = boot_reconcile(str(trade_date), str(request.get("phase") or ""),
                                     request.get("health"), root, now=now)
+        elif event_id == "boot_apply_plan":
+            reconciled = boot_reconcile(str(trade_date), str(request.get("phase") or ""),
+                                        request.get("health"), root, now=now)
+            result = boot_apply_plan(str(trade_date), reconciled["detail"].get("plan", []), root,
+                                     now=now, phase=str(request.get("phase") or ""), dry_run=dry)
+        else:
+            result = fetch_item(str(request.get("item_id") or ""), str(request.get("data_date") or trade_date),
+                                root, dry_run=dry)
         return (75 if result["status"] == "failed" and result.get("retryable") else 0), result
     if base is None:
         return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",

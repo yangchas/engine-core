@@ -70,3 +70,79 @@ def test_health_catalog_statuses_and_reconcile_owner_events(tmp_path, monkeypatc
                          now=datetime.fromisoformat("2026-10-20T20:00:00+08:00"))
     assert rec["status"] == "degraded"
     assert any(x.get("recommendation") == "NO_OWNER_EVENT" for x in rec["detail"]["gaps"])
+
+
+def test_boot_apply_plan_executes_jobs_defers_and_appends_gaps(tmp_path, monkeypatch):
+    from engine_core.guardian.startup import boot_apply_plan
+
+    registry = [
+        {"id": "light", "artifact": {"catalog_dataset": "light"},
+         "fetch_job": ["stub", "{date}", "{item}"]},
+        {"id": "heavy", "artifact": {"catalog_dataset": "heavy"},
+         "fetch_job": ["stub", "{date}", "{item}"]},
+        {"id": "capture", "artifact": {"catalog_dataset": "capture"}},
+    ]
+    plan = [
+        {"id": "light", "partition": "2026-10-20", "action": "FETCH_NOW", "lane": "parallel"},
+        {"id": "heavy", "partition": "2026-10-19", "action": "DEFER", "run_at": "MIDDAY_BREAK"},
+        {"id": "capture", "partition": "2026-10-20", "action": "GAP"},
+    ]
+    calls = []
+    monkeypatch.setattr("engine_core.guardian.startup.load_registry", lambda: registry)
+    monkeypatch.setattr("engine_core.guardian.startup._run_fetch_job",
+                        lambda item, day, timeout: calls.append((item["id"], day)) or {"status": "ok"})
+    result = boot_apply_plan("2026-10-20", plan, tmp_path, now="2026-10-20T09:36:00+08:00", phase="OPEN")
+    assert calls == [("light", "2026-10-20")]
+    assert result["detail"]["deferred"] == [{"id": "heavy", "partition": "2026-10-19",
+                                                  "fetch_job": ["stub", "{date}", "{item}"],
+                                                  "run_in_phases": ["MIDDAY_BREAK"]}]
+    gap_path = tmp_path / "guardian-native" / "gaps" / "2026-10-20.json"
+    assert json.loads(gap_path.read_text())[0]["id"] == "capture"
+    assert {x["id"]: x["action"] for x in result["detail"]["results"]} == {
+        "light": "FETCH_NOW", "heavy": "DEFER", "capture": "GAP"}
+
+
+def test_fetch_item_dry_run_does_not_call_job(tmp_path, monkeypatch):
+    from engine_core.guardian.startup import fetch_item
+
+    monkeypatch.setattr("engine_core.guardian.startup.load_registry", lambda: [
+        {"id": "sample", "fetch_job": ["stub"]}])
+    monkeypatch.setattr("engine_core.guardian.startup._run_fetch_job",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("executed")))
+    result = fetch_item("sample", "2026-10-19", tmp_path, dry_run=True)
+    assert result["status"] == "ok" and result["detail"]["dry_run"] is True
+
+
+def test_boot_apply_plan_runs_stub_job_into_temporary_catalog(tmp_path, monkeypatch):
+    import os
+    import subprocess
+    import sys
+
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.guardian import startup
+
+    stub = tmp_path / "stub_fetch.py"
+    stub.write_text(
+        "import json, os, sys\n"
+        "from engine_core.data_pipeline.storage import ArtifactCatalog\n"
+        "day, item = sys.argv[1:]\n"
+        "catalog = ArtifactCatalog(os.environ['CORE_DATA_ROOT'])\n"
+        "manifest = catalog.commit(item, day, [{'trade_date': day, 'symbol': '000001'}],\n"
+        "    {'trade_date': day, 'available_at': '2026-10-20T09:36:01+08:00'}, source='stub')\n"
+        "print(json.dumps({'status':'ok','version':manifest['version']}))\n",
+        encoding="utf-8")
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path / "catalog"))
+    source_root = str(__import__("pathlib").Path(__file__).resolve().parents[1] / "src")
+    monkeypatch.setenv("PYTHONPATH", source_root + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    registry = [{"id": "stub_dataset", "artifact": {"catalog_dataset": "stub_dataset"},
+                 "fetch_job": {"argv": [sys.executable, str(stub), "{date}", "{item}"],
+                               "timeout_seconds": 10}}]
+    monkeypatch.setattr(startup, "load_registry", lambda: registry)
+    result = startup.boot_apply_plan("2026-10-20", [{"id": "stub_dataset", "partition": "2026-10-20",
+        "action": "FETCH_NOW", "lane": "parallel"}], tmp_path,
+        now="2026-10-20T09:36:00+08:00", phase="OPEN")
+    assert result["status"] == "ok"
+    manifest_path = ArtifactCatalog(tmp_path / "catalog").locate("stub_dataset", "2026-10-20")
+    assert manifest_path is not None
+    manifest = __import__("json").loads(manifest_path.read_text())
+    assert manifest["available_at"] == "2026-10-20T09:36:01+08:00"

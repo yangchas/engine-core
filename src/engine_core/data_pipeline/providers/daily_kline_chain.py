@@ -59,7 +59,12 @@ class Q2FinalProvider:
         current = _clock(now)
         if current < _available_at(trade_date, "q2_final"):
             return {"status": "PROVIDER_UNAVAILABLE", "reason": "not_yet_available", "rows": []}
-        symbols = sorted({_text(value).zfill(6) for value in self.redis.smembers(f"q2:active:{trade_date}")})
+        compact_date = trade_date.replace("-", "")
+        symbols = self.redis.smembers(f"q2:active:{trade_date}")
+        if not symbols:
+            # Production q2 uses compact dates; archived fixtures use ISO dates.
+            symbols = self.redis.smembers(f"q2:active:{compact_date}")
+        symbols = sorted({_text(value).zfill(6) for value in symbols})
         pipe = self.redis.pipeline(transaction=False)
         for symbol in symbols:
             pipe.hgetall(f"q2:{symbol}")
@@ -152,14 +157,15 @@ class WencaiDailyProvider:
     source_dependency = "independent_wencai"
     available_at_rule = "trade_date 15:05 Asia/Shanghai"
 
-    def __init__(self, fetch: Callable[..., Any], *, state_path: str | Path,
+    def __init__(self, fetch: Callable[..., Any], *, state_path: str | Path | None,
                  max_requests: int = 15, min_interval_seconds: float = 10.0,
                  breaker_seconds: int = 3 * 60 * 60, windows: tuple[tuple[str, str], ...] = (),
                  expected_count: int | Callable[[str], int] | None = None,
                  sleep_fn: Callable[[float], None] = time.sleep,
                  clock_fn: Callable[[], float] = time.time):
         self.fetcher = fetch
-        self.state_path = Path(state_path)
+        self.state_path = Path(state_path) if state_path is not None else None
+        self._memory_state: dict[str, Any] = {}
         self.max_requests = min(15, max(1, int(max_requests)))
         self.min_interval_seconds = max(10.0, float(min_interval_seconds))
         self.breaker_seconds = breaker_seconds
@@ -168,11 +174,19 @@ class WencaiDailyProvider:
         self.sleep_fn, self.clock_fn = sleep_fn, clock_fn
 
     def _state(self) -> dict[str, Any]:
+        if self.state_path is None:
+            return dict(self._memory_state)
         try:
             value = json.loads(self.state_path.read_text(encoding="utf-8"))
             return value if isinstance(value, dict) else {}
         except (OSError, ValueError):
             return {}
+
+    def _save_state(self, value: Mapping[str, Any]) -> None:
+        if self.state_path is None:
+            self._memory_state = dict(value)
+        else:
+            _atomic_write(self.state_path, canonical_json(dict(value)) + b"\n")
 
     def _blocked_by_window(self, current: datetime) -> bool:
         return any(start <= current.strftime("%H:%M") < end for start, end in self.windows)
@@ -199,7 +213,7 @@ class WencaiDailyProvider:
             return {**unavailable, "reason": "rate_limited"}
         history.append(wall)
         state.update({"requests": history, "last_request": wall})
-        _atomic_write(self.state_path, canonical_json(state) + b"\n")
+        self._save_state(state)
 
         class Context:
             # The first call is already accounted for below; fetchers call request()
@@ -218,7 +232,7 @@ class WencaiDailyProvider:
                 entries.append(now_wall)
                 current_state = self._state()
                 current_state.update({"requests": entries, "last_request": now_wall})
-                _atomic_write(self.state_path, canonical_json(current_state) + b"\n")
+                self._save_state(current_state)
                 inner_self.request_count += 1
 
         context = Context()
@@ -235,7 +249,7 @@ class WencaiDailyProvider:
             if (isinstance(raw, Mapping) and raw.get("status_code") == 403) or re.search(r"403|forbidden", marker, re.I):
                 state = self._state()
                 state["blocked_until"] = self.clock_fn() + self.breaker_seconds
-                _atomic_write(self.state_path, canonical_json(state) + b"\n")
+                self._save_state(state)
                 return {**unavailable, "reason": "provider_blocked", "status_code": 403}
             payload = dict(raw) if isinstance(raw, Mapping) else {"rows": raw}
             payload["rows"] = self._normalize_rows(payload.get("rows", []), trade_date)
@@ -250,7 +264,7 @@ class WencaiDailyProvider:
             if re.search(r"403|forbidden", str(exc), re.I):
                 state = self._state()
                 state["blocked_until"] = self.clock_fn() + self.breaker_seconds
-                _atomic_write(self.state_path, canonical_json(state) + b"\n")
+                self._save_state(state)
                 return {**unavailable, "reason": "provider_blocked", "status_code": 403}
             return {**unavailable, "reason": f"fetch_failed:{type(exc).__name__}"}
 

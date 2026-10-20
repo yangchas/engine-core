@@ -78,6 +78,18 @@
         "class": "medium",
         "basis": "prep_trade_day ~55s covers universe+baselines",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/run_data_jobs.py",
+          "--job",
+          "symbol_universe",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 300
       }
     },
     {
@@ -100,7 +112,7 @@
       },
       "retry": "per guardian_event (until_late/backoff, see C350)",
       "degrade": [
-        "15:05 首次/降级探测",
+        "15:05 q2_final→wencai: q2 优先，问财只补空字段；逐行/逐字段标来源，coverage/missing 明示，quality.status 固定 PARTIAL；不得推进 latest 或冒充正式版",
         "17:30 正式获取"
       ],
       "lifecycle": {
@@ -122,6 +134,31 @@
         "class": "heavy",
         "basis": "formal Baostock pull; guardian dry-run exceeded 60s (measuring)",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/run_data_jobs.py",
+          "--job",
+          "daily_kline",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 300,
+        "degraded": {
+          "argv": [
+            "{python}",
+            "examples/capture_daily_kline_degraded.py",
+            "--date",
+            "{date}",
+            "--artifact-root",
+            "{artifact_root}"
+          ],
+          "timeout_seconds": 300,
+          "default_mode": "dry-run",
+          "write_flag": "--write"
+        }
       }
     },
     {
@@ -165,6 +202,19 @@
         "class": "heavy",
         "basis": "UNKNOWN duration; conservative",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/backfill_daily_history.py",
+          "--from",
+          "{date}",
+          "--to",
+          "{date}",
+          "--reindex-only",
+          "--write"
+        ],
+        "timeout_seconds": 600
       }
     },
     {
@@ -209,6 +259,15 @@
         "class": "heavy",
         "basis": "observed ~51s (C-line timing)",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/build_daily_report_features.py",
+          "--date",
+          "{date}"
+        ],
+        "timeout_seconds": 300
       }
     },
     {
@@ -249,6 +308,18 @@
         "class": "light",
         "basis": "single Kaipan ladder, seconds",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/run_data_jobs.py",
+          "--job",
+          "limit_up_pool",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 300
       }
     },
     {
@@ -291,6 +362,18 @@
         "class": "light",
         "basis": "Kaipan",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/run_data_jobs.py",
+          "--job",
+          "limit_reasons",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 300
       }
     },
     {
@@ -380,6 +463,18 @@
         "class": "medium",
         "basis": "10-day member backfill is long; daily refresh unknown",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/run_data_jobs.py",
+          "--job",
+          "plate_members",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 300
       }
     },
     {
@@ -511,6 +606,16 @@
         "class": "medium",
         "basis": "part of prep_trade_day ~55s",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/build_auction_baseline.py",
+          "--date",
+          "{date}",
+          "--write"
+        ],
+        "timeout_seconds": 300
       }
     },
     {
@@ -555,6 +660,18 @@
         "class": "medium",
         "basis": "built inside auction report (~10s compute)",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/fetch_auction_item.py",
+          "--item",
+          "{item}",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 180
       }
     },
     {
@@ -599,6 +716,18 @@
         "class": "medium",
         "basis": "inside auction report",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/fetch_auction_item.py",
+          "--item",
+          "{item}",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 180
       }
     },
     {
@@ -668,6 +797,18 @@
         "class": "medium",
         "basis": "inside auction report",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/fetch_auction_item.py",
+          "--item",
+          "{item}",
+          "--date",
+          "{date}",
+          "--execute"
+        ],
+        "timeout_seconds": 180
       }
     },
     {
@@ -711,6 +852,20 @@
         "class": "medium",
         "basis": "UNKNOWN duration",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/core_data_backfill.py",
+          "--dataset",
+          "ladder_daily",
+          "--from",
+          "{date}",
+          "--to",
+          "{date}",
+          "--write"
+        ],
+        "timeout_seconds": 600
       }
     },
     {
@@ -816,6 +971,16 @@
         "class": "medium",
         "basis": "inside prep",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/build_plate_amount_baseline.py",
+          "--date",
+          "{date}",
+          "--write"
+        ],
+        "timeout_seconds": 300
       }
     },
     {

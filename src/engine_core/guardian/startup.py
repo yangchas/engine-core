@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .registry import items_for_phase, load_registry, stale_items
+from .registry import REGISTRY_PATH, items_for_phase, load_registry, stale_items
 
 PHASES = ("NIGHT", "PRE_MARKET", "AUCTION", "AUCTION_END", "OPEN",
           "INTRADAY_AM", "MIDDAY_BREAK", "PM_OPEN", "INTRADAY_PM",
@@ -237,3 +240,155 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
     detail = {"phase": phase, "trade_date": trade_date, "gaps": gaps, "plan": plan,
               "recheck_required": bool(health.get("status") == "failed" or health.get("calendar", {}).get("status") == "failed")}
     return _result("degraded" if gaps or detail["recheck_required"] else "ok", detail)
+
+
+def _fetch_spec(item: dict[str, Any]) -> tuple[list[str], float]:
+    spec = item.get("fetch_job")
+    if isinstance(spec, list):
+        return [str(x) for x in spec], 300.0
+    if isinstance(spec, dict) and isinstance(spec.get("argv"), list):
+        return [str(x) for x in spec["argv"]], float(spec.get("timeout_seconds", 300))
+    raise ValueError("fetch_job_unconfigured:" + str(item.get("id")))
+
+
+def _run_fetch_job(item: dict[str, Any], day: str, timeout: float) -> dict[str, Any]:
+    argv, configured_timeout = _fetch_spec(item)
+    timeout = min(timeout, configured_timeout)
+    replacements = {"date": day, "trade_date": day, "item": str(item["id"]), "python": sys.executable}
+    command = [part.format_map(replacements) for part in argv]
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout,
+                               check=False, env=os.environ.copy())
+    payload: dict[str, Any] = {}
+    for line in reversed(completed.stdout.splitlines()):
+        try:
+            value = json.loads(line)
+            if isinstance(value, dict):
+                payload = value
+                break
+        except ValueError:
+            continue
+    if completed.returncode or payload.get("status") not in {"ok", "degraded"}:
+        raise RuntimeError(str(payload.get("error") or payload.get("error_code") or
+                               "fetch_job_failed:" + str(completed.returncode)))
+    return payload
+
+
+def _quiet_targets(item: dict[str, Any], phase: str, now: datetime) -> list[str]:
+    rules = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+    quiet = list(rules.get("quiet_phases_for_heavy", []))
+    if phase == "PRE_MARKET" and now.strftime("%H:%M") < rules.get("heavy_rules", {}).get("pre_market_heavy_cutoff", "09:10"):
+        return ["PRE_MARKET"]
+    if phase in quiet:
+        return [phase]
+    order = list(PHASES)
+    try:
+        index = order.index(phase)
+    except ValueError:
+        index = -1
+    future = [p for p in quiet if p in order and order.index(p) > index]
+    return [future[0] if future else (quiet[0] if quiet else "POST_MARKET")]
+
+
+def _append_gap(root: Path, trade_date: str, gap: dict[str, Any], observed_at: str) -> None:
+    from ..data_pipeline.storage import _atomic_write
+
+    path = root / "guardian-native" / "gaps" / f"{trade_date}.json"
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(rows, list):
+            rows = []
+    except (OSError, ValueError):
+        rows = []
+    rows.append({**gap, "observed_at": observed_at})
+    _atomic_write(path, (json.dumps(rows, ensure_ascii=False, sort_keys=True) + "\n").encode())
+
+
+def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Path, *,
+                    now: datetime | str | None = None, phase: str = "", dry_run: bool | None = None) -> dict[str, Any]:
+    """Execute the startup plan with bounded light concurrency and explicit deferred work."""
+    root = Path(root).expanduser()
+    clock = _now(now, trade_date)
+    if dry_run is None:
+        dry_run = os.environ.get("GUARDIAN_DRY_RUN") == "1"
+    by_id = {item["id"]: item for item in load_registry()}
+    results: list[dict[str, Any]] = []
+    deferred: list[dict[str, Any]] = []
+    light: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    serial: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for action in plan:
+        item_id = str(action.get("id", ""))
+        item = by_id.get(item_id)
+        kind = action.get("action")
+        started = time.monotonic()
+        if not item:
+            results.append({"id": item_id, "action": kind, "status": "failed", "error": "unknown_item", "elapsed_ms": 0})
+        elif kind == "GAP":
+            if not dry_run:
+                _append_gap(root, trade_date, action, clock.isoformat())
+            results.append({"id": item_id, "action": kind, "status": "recorded" if not dry_run else "dry_run",
+                            "elapsed_ms": round((time.monotonic() - started) * 1000)})
+        elif kind == "DEFER":
+            if not item.get("fetch_job"):
+                results.append({"id": item_id, "action": kind, "status": "unavailable",
+                                "error": "independent_fetch_job_unconfigured", "elapsed_ms": 0})
+                continue
+            phases = _quiet_targets(item, phase, clock)
+            deferred.append({"id": item_id, "partition": action.get("partition"),
+                             "fetch_job": item.get("fetch_job"), "run_in_phases": phases})
+            results.append({"id": item_id, "action": kind, "status": "deferred", "run_in_phases": phases,
+                            "elapsed_ms": 0})
+        elif kind == "FETCH_NOW":
+            destination = light if action.get("lane") == "parallel" else serial
+            destination.append((item, action))
+        elif kind == "NO_FETCH_JOB":
+            results.append({"id": item_id, "action": kind, "status": "unavailable",
+                            "error": action.get("reason", "independent_fetch_job_unconfigured"),
+                            "elapsed_ms": 0})
+        else:
+            results.append({"id": item_id, "action": kind, "status": "skipped", "elapsed_ms": 0})
+
+    def execute(pair):
+        item, action = pair
+        started = time.monotonic()
+        row = {"id": item["id"], "action": "FETCH_NOW"}
+        if dry_run:
+            row.update(status="dry_run")
+        else:
+            try:
+                timeout = float(item.get("fetch_job", {}).get("timeout_seconds", 300)) if isinstance(item.get("fetch_job"), dict) else 300
+                row.update(status="ok", detail=_run_fetch_job(item, str(action["partition"]), timeout))
+            except Exception as exc:
+                row.update(status="failed", retryable=True, error=type(exc).__name__ + ":" + str(exc))
+        row["elapsed_ms"] = round((time.monotonic() - started) * 1000)
+        return row
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(execute, pair) for pair in light]
+        results.extend(f.result() for f in futures)
+    for pair in serial:
+        results.append(execute(pair))
+    detail = {"trade_date": trade_date, "results": results, "deferred": deferred,
+              "dry_run": dry_run}
+    status = ("failed" if any(x.get("status") == "failed" for x in results) else
+              "degraded" if any(x.get("status") == "unavailable" for x in results) else "ok")
+    return _result(status, detail, retryable=status == "failed")
+
+
+def fetch_item(item_id: str, partition: str, root: str | Path, *,
+               dry_run: bool | None = None) -> dict[str, Any]:
+    root = Path(root).expanduser()
+    if dry_run is None:
+        dry_run = os.environ.get("GUARDIAN_DRY_RUN") == "1"
+    item = next((x for x in load_registry() if x["id"] == item_id), None)
+    if item is None:
+        return _result("failed", {"id": item_id}, error_code="UNKNOWN_ITEM")
+    if dry_run:
+        return _result("ok", {"id": item_id, "partition": partition, "dry_run": True})
+    try:
+        _argv, timeout = _fetch_spec(item)
+        result = _run_fetch_job(item, partition, timeout)
+        return _result("ok", {"id": item_id, "partition": partition, "result": result})
+    except Exception as exc:
+        return _result("failed", {"id": item_id, "partition": partition,
+                                   "error": type(exc).__name__ + ":" + str(exc)},
+                       error_code="FETCH_FAILED", retryable=True)
