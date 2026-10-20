@@ -56,6 +56,9 @@ type Retry struct {
 	MaxAttempts      int      `json:"max_attempts,omitempty"`
 	Base             string   `json:"base,omitempty"`
 	Max              string   `json:"max,omitempty"`
+	Backoff          string   `json:"backoff,omitempty"`
+	UntilLate        bool     `json:"until_late,omitempty"`
+	SilentUntilLast  bool     `json:"silent_until_last,omitempty"`
 	Jitter           float64  `json:"jitter,omitempty"`
 	RetryOn          []string `json:"retry_on,omitempty"`
 	NoRetryOnTimeout bool     `json:"no_retry_on_timeout,omitempty"`
@@ -189,6 +192,12 @@ func Validate(c Config) []Issue {
 				add(p+".timeout", "DURATION", "invalid positive duration")
 			} else if to > int64(24*time.Hour) {
 				add(p+".timeout", "DURATION", "timeout must not exceed 24h")
+			}
+		}
+		if e.Retry.Backoff != "" {
+			backoff, err := time.ParseDuration(e.Retry.Backoff)
+			if err != nil || backoff <= 0 || backoff > 10*time.Minute {
+				add(p+".retry.backoff", "DURATION", "backoff must be positive and at most 10m")
 			}
 		}
 		if e.LateUntil != "" {

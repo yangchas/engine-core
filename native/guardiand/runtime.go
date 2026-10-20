@@ -159,12 +159,13 @@ func (l *ledger) close() error {
 }
 
 type instanceState struct {
-	Status      string `json:"status"`
-	Attempts    int    `json:"attempts"`
-	StartedAt   string `json:"started_at"`
-	CompletedAt string `json:"completed_at"`
-	LastError   string `json:"last_error"`
-	Late        bool   `json:"late,omitempty"`
+	Status        string `json:"status"`
+	Attempts      int    `json:"attempts"`
+	StartedAt     string `json:"started_at"`
+	CompletedAt   string `json:"completed_at"`
+	LastError     string `json:"last_error"`
+	NextAttemptAt string `json:"next_attempt_at,omitempty"`
+	Late          bool   `json:"late,omitempty"`
 }
 type runState struct {
 	EventID   string        `json:"event_id"`
@@ -570,6 +571,12 @@ func (r *liveRunner) execute(x Instance, date string) {
 	prior := r.states[date+"/"+x.ID]
 	r.mu.Unlock()
 	defer func() { r.mu.Lock(); delete(r.running, x.ID); r.mu.Unlock() }()
+	if prior.Status == "RETRY_WAIT" {
+		next, err := time.Parse(time.RFC3339, prior.NextAttemptAt)
+		if err == nil && r.clock.Now().Before(next) {
+			return
+		}
+	}
 	r.configMu.RLock()
 	c := r.c
 	r.configMu.RUnlock()
@@ -603,7 +610,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 	if isLate {
 		st.Status = "LATE_RUN"
 	}
-	if prior.Status == "RUNNING" || prior.Status == "LATE_RUN" {
+	if prior.Status == "RUNNING" || prior.Status == "LATE_RUN" || prior.Status == "RETRY_WAIT" {
 		st.Attempts = prior.Attempts
 		if prior.StartedAt != "" {
 			st.StartedAt = prior.StartedAt
@@ -664,12 +671,21 @@ func (r *liveRunner) execute(x Instance, date string) {
 	}
 	// Gate polling must not hold a class slot, or a blocked gate starves every other event of the class.
 	slots <- struct{}{}
-	defer func() { <-slots }()
+	slotHeld := true
+	defer func() {
+		if slotHeld {
+			<-slots
+		}
+	}()
 	cutoff := x.Deadline
 	if x.LateUntil != "" {
 		cutoff = x.LateUntil
 	}
 	startCutoff, parseErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
+	if parseErr == nil && !r.clock.Now().Before(startCutoff) && prior.Status == "RETRY_WAIT" {
+		r.finishLateRetries(x, date, event, st)
+		return
+	}
 	if parseErr == nil && !r.clock.Now().Before(startCutoff) {
 		r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: "START_DEADLINE_EXPIRED"})
 		_ = r.alert("MISSED", map[string]any{"event": x.EventID, "date": date, "error": "START_DEADLINE_EXPIRED"})
@@ -689,12 +705,16 @@ func (r *liveRunner) execute(x Instance, date string) {
 		max = 1
 	}
 	var last string
-	if st.Attempts >= max {
-		r.setState(x, date, instanceState{Status: "FAILED_FINAL", Attempts: max, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: "RECOVERY_ATTEMPTS_EXHAUSTED"})
-		_ = r.alert("FAILED_FINAL", map[string]any{"event": x.EventID, "date": date, "error": "RECOVERY_ATTEMPTS_EXHAUSTED"})
-		return
+	cycleEnd := max
+	if event.Retry.UntilLate && event.LateUntil != "" {
+		cycleEnd = st.Attempts + max
 	}
-	for n := st.Attempts + 1; n <= max; n++ {
+	var lastRetryable bool
+	for n := st.Attempts + 1; n <= cycleEnd; n++ {
+		if !slotHeld {
+			slots <- struct{}{}
+			slotHeld = true
+		}
 		st.Attempts = n
 		st.Status = "RUNNING"
 		if st.Late {
@@ -726,9 +746,13 @@ func (r *liveRunner) execute(x Instance, date string) {
 			return
 		}
 		last = code
-		if !retryable || n == max || (code == "HANDLER_TIMEOUT" && event.Retry.NoRetryOnTimeout) {
+		lastRetryable = retryable && !(code == "HANDLER_TIMEOUT" && event.Retry.NoRetryOnTimeout)
+		_, _ = r.appendLedger(date, "FAILURE_OBSERVED", map[string]any{"event": x.EventID, "date": date, "attempt": n, "error_code": code, "retryable": lastRetryable})
+		if !lastRetryable || n == cycleEnd {
 			break
 		}
+		<-slots
+		slotHeld = false
 		delay := time.Duration(n) * time.Second
 		if event.Retry.Base != "" {
 			if d, e := time.ParseDuration(event.Retry.Base); e == nil {
@@ -737,12 +761,61 @@ func (r *liveRunner) execute(x Instance, date string) {
 		}
 		r.waitClock(delay)
 	}
+	if lastRetryable && event.Retry.UntilLate && event.LateUntil != "" {
+		cutoff, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+event.LateUntil, r.loc)
+		if err == nil && r.clock.Now().Before(cutoff) {
+			delay := retryBackoff(event.Retry.Backoff, st.Attempts, max)
+			next := r.clock.Now().Add(delay)
+			if next.After(cutoff) {
+				next = cutoff
+			}
+			st.Status = "RETRY_WAIT"
+			st.LastError = last
+			st.CompletedAt = ""
+			st.NextAttemptAt = next.Format(time.RFC3339)
+			r.setState(x, date, st)
+			return
+		}
+		if err == nil {
+			r.finishLateRetries(x, date, event, st)
+			return
+		}
+	}
 	status := "FAILED_FINAL"
-	if last == "HANDLER_TIMEOUT" && !event.Retry.NoRetryOnTimeout || retryableFailure(last) {
+	if lastRetryable && retryableFailure(last) {
 		status = "CIRCUIT_OPEN"
 	}
 	r.setState(x, date, instanceState{Status: status, Attempts: st.Attempts, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: last})
 	_ = r.alert(status, map[string]any{"event": x.EventID, "date": date, "error": last})
+}
+
+func retryBackoff(value string, attempts, maxAttempts int) time.Duration {
+	base := time.Minute
+	if d, err := time.ParseDuration(value); err == nil && d > 0 {
+		base = d
+	}
+	shift := 0
+	if maxAttempts > 0 && attempts > 0 {
+		shift = (attempts - 1) / maxAttempts
+	}
+	if shift > 20 {
+		shift = 20
+	}
+	for i := 0; i < shift && base < 10*time.Minute; i++ {
+		base *= 2
+	}
+	if base > 10*time.Minute {
+		base = 10 * time.Minute
+	}
+	return base
+}
+
+func (r *liveRunner) finishLateRetries(x Instance, date string, event *config.Event, prior instanceState) {
+	st := instanceState{Status: "FAILED_FINAL", Attempts: prior.Attempts, StartedAt: prior.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: "RETRIES_EXHAUSTED_BY_LATE_UNTIL"}
+	r.setState(x, date, st)
+	if !event.Retry.SilentUntilLast {
+		_ = r.alert("RETRIES_EXHAUSTED_BY_LATE_UNTIL", map[string]any{"event": x.EventID, "date": date, "error": st.LastError})
+	}
 }
 func retryableFailure(code string) bool {
 	return code == "HANDLER_TIMEOUT" || code == "INTERNAL_ERROR" || strings.Contains(code, "DEPENDENCY")
@@ -1115,6 +1188,12 @@ func (r *liveRunner) schedule(now time.Time) {
 		running := r.running[x.ID]
 		paused := r.paused[x.EventID] || r.paused["*"]
 		r.mu.Unlock()
+		if exists && st.Status == "RETRY_WAIT" && !now.Before(end) {
+			if event := findEvent(c, x.EventID); event != nil {
+				r.finishLateRetries(x, date, event, st)
+			}
+			continue
+		}
 		if exists && isTerminal(st.Status) {
 			continue
 		}
@@ -1123,7 +1202,12 @@ func (r *liveRunner) schedule(now time.Time) {
 			missedNow = append(missedNow, x.ID)
 			continue
 		}
-		if !now.Before(start) && now.Before(end) && !running && !paused {
+		retryDue := true
+		if exists && st.Status == "RETRY_WAIT" {
+			next, err := time.Parse(time.RFC3339, st.NextAttemptAt)
+			retryDue = err != nil || !now.Before(next)
+		}
+		if !now.Before(start) && now.Before(end) && !running && !paused && retryDue {
 			go r.execute(x, date)
 		}
 		if start.After(now) {

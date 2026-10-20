@@ -23,13 +23,22 @@ late_by_handler = {
     "legacy_postmarket_data": "23:30:00",
     "legacy_baostock_probe": "23:30:00",
     "legacy_night_report": "23:59:00",
-    "legacy_auction_report": "11:30:00",
-    "legacy_open_report": "11:30:00",
 }
 for event in cfg["events"]:
     event.pop("late_until", None)
-    late_until = late_by_handler.get(event.get("handler"))
+    event_id = event.get("id", event.get("event_id", ""))
+    handler = event.get("handler", "")
+    late_until = late_by_handler.get(handler)
+    if event_id.startswith("kaipan_hot") or "kaipan_hot" in handler:
+        late_until = "15:00:00"
     if late_until:
         event["late_until"] = late_until
+    is_data_event = handler in late_by_handler or event_id.startswith("kaipan_hot") or "kaipan_hot" in handler
+    if is_data_event:
+        retry = event.setdefault("retry", {})
+        retry["until_late"] = True
+        retry["backoff"] = "60s"
+    if handler == "legacy_baostock_probe" and event_id.endswith(("1730", "1740", "1830")):
+        event.setdefault("retry", {})["silent_until_last"] = True
 json.dump(cfg, open(dst, "w"), ensure_ascii=False, indent=1)
 print("handlers:", len(cfg["handlers"]), "events:", len(cfg["events"]))
