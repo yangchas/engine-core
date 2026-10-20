@@ -19,6 +19,8 @@ if not any(e["id"] == "calendar_refresh_0800" for e in cfg["events"]):
         "on_deadline": "missed", "catchup": "run_in_window"})
 for name, h in cfg["handlers"].items():
     h.update({"argv": [py, bridge, "run"], "gate_argv": [py, bridge, "gate"], "cwd": repo, "env_allow": env})
+# idle load on this 2-CPU box is ~1.6; defer heavy jobs above 1.5x CPUs (default chosen 2026-10-20, tune with data)
+cfg["heavy_max_load1"] = 3.0
 cfg["handlers"]["alert"] = {"argv": [py, bridge, "alert"], "cwd": repo, "env_allow": env}
 late_by_handler = {
     "legacy_premarket_data": "09:10:00",
