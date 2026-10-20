@@ -47,6 +47,180 @@ func TestPhaseAtUsesInjectedFakeClock(t *testing.T) {
 	}
 }
 
+func TestScheduleDefersPhaseMismatchUntilWhitelistedPhase(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
+	fc := newFakeClock(now)
+	calendar := filepath.Join(root, "calendar.json")
+	if err := os.WriteFile(calendar, []byte(`["2026-10-20"]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "ok.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	decoded, issues := config.Decode([]byte(`{"schema_version":1,"config_version":1,"name":"test","timezone":"Asia/Shanghai","events":[{"id":"heavy","trigger":{"type":"window","start":"09:00:00","deadline":"09:10:00"},"late_until":"13:00:00","phases":["MIDDAY_BREAK"],"on_phase_mismatch":"defer","on_start":"reconcile","handler":"h"}],"handlers":{"h":{"argv":["` + script + `"]}}}`))
+	if len(issues) != 0 {
+		t.Fatalf("defer config rejected: %+v", issues)
+	}
+	c := decoded
+	c.Calendars = map[string]struct {
+		File string `json:"file"`
+	}{"trading": {File: calendar}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	getState := func(id string) instanceState { r.mu.Lock(); defer r.mu.Unlock(); return r.states[date+"/"+id] }
+	if err := r.runBootEvents(now); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return getState("heavy").Status == "DEFERRED" })
+	r.schedule(now)
+	st := getState("heavy")
+	if st.Status != "DEFERRED" || st.LastError != "phase INTRADAY_AM is not allowed" || st.Attempts != 0 {
+		t.Fatalf("deferred state=%+v", st)
+	}
+	b, _ := json.Marshal(st)
+	if !strings.Contains(string(b), `"next_phase":"MIDDAY_BREAK"`) {
+		t.Fatalf("deferred state omitted next phase: %s", b)
+	}
+	fc.Advance(90 * time.Minute)
+	waitFor(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return !r.running["heavy"] })
+	r.schedule(fc.Now())
+	waitFor(t, func() bool { return isTerminal(getState("heavy").Status) })
+	if got := getState("heavy").Status; got != "SUCCEEDED" {
+		t.Fatalf("resumed status=%s", got)
+	}
+}
+
+func TestHeavyLoadDeferralUsesFakeClockWithoutAttempts(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
+	fc := newFakeClock(now)
+	script := filepath.Join(root, "ok.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	loads := 0
+	e := config.Event{ID: "heavy", Handler: "h", Cost: "heavy", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "10:30:00"}, LateUntil: "11:00:00"}
+	c := config.Config{HeavyMaxLoad1: json.RawMessage(`1`), Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, loadavg: func() (float64, error) {
+		loads++
+		if loads == 1 {
+			return 2, nil
+		}
+		return 0, nil
+	}}
+	getState := func() instanceState { r.mu.Lock(); defer r.mu.Unlock(); return r.states[date+"/heavy"] }
+	go r.execute(Instance{ID: "heavy", EventID: "heavy", Start: "09:00:00", Deadline: "10:30:00", LateUntil: "11:00:00"}, date)
+	waitFor(t, func() bool { return getState().Status == "DEFER_LOAD" })
+	waitFor(t, func() bool { return fc.waitCount() > 0 })
+	if st := getState(); st.Attempts != 0 || ledgerTypeCounts(t, root, date)["ALERT_OUT"] != 0 {
+		t.Fatalf("load deferral state=%+v alerts=%d", st, ledgerTypeCounts(t, root, date)["ALERT_OUT"])
+	}
+	fc.Advance(time.Minute)
+	waitFor(t, func() bool { return isTerminal(getState().Status) })
+	if st := getState(); st.Status != "SUCCEEDED" || st.Attempts != 1 || loads != 2 {
+		t.Fatalf("heavy result=%+v load checks=%d", st, loads)
+	}
+}
+
+func TestHeavyInstancesQueueOutsideClassSlots(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
+	fc := newFakeClock(now)
+	script := filepath.Join(root, "slow.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 0.3\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	events := []config.Event{
+		{ID: "heavy_a", Handler: "h", Cost: "heavy", Class: "shared"},
+		{ID: "heavy_b", Handler: "h", Cost: "heavy", Class: "shared"},
+	}
+	c := config.Config{Concurrency: map[string]json.RawMessage{"shared": json.RawMessage(`{"max":10}`)}, Events: events, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	getState := func(id string) instanceState { r.mu.Lock(); defer r.mu.Unlock(); return r.states[date+"/"+id] }
+	x1 := Instance{ID: "heavy_a", EventID: "heavy_a", Start: "09:00:00", Deadline: "11:00:00"}
+	x2 := Instance{ID: "heavy_b", EventID: "heavy_b", Start: "09:00:00", Deadline: "11:00:00"}
+	go r.execute(x1, date)
+	waitFor(t, func() bool { return getState("heavy_a").Status == "RUNNING" })
+	r.execute(x2, date)
+	if got := getState("heavy_b").Status; got != "QUEUED_HEAVY" {
+		t.Fatalf("second heavy status=%s", got)
+	}
+	waitFor(t, func() bool { return isTerminal(getState("heavy_a").Status) })
+	waitFor(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return !r.heavyRunning })
+	r.execute(x2, date)
+	waitFor(t, func() bool { return isTerminal(getState("heavy_b").Status) })
+	if got := getState("heavy_b").Status; got != "SUCCEEDED" {
+		t.Fatalf("queued heavy final status=%s", got)
+	}
+	if len(r.classSlots) != 0 {
+		t.Fatalf("heavy used ordinary class slots: %v", r.classSlots)
+	}
+}
+
+func TestLightInstancesBypassClassConcurrencyLimit(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
+	fc := newFakeClock(now)
+	firstStarted := filepath.Join(root, "first.started")
+	firstEnded := filepath.Join(root, "first.ended")
+	secondStarted := filepath.Join(root, "second.started")
+	first := filepath.Join(root, "first.sh")
+	second := filepath.Join(root, "second.sh")
+	if err := os.WriteFile(first, []byte("#!/bin/sh\nprintf started > '"+firstStarted+"'\nsleep 0.5\nprintf ended > '"+firstEnded+"'\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("#!/bin/sh\nprintf started > '"+secondStarted+"'\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	events := []config.Event{{ID: "light_a", Handler: "a", Class: "shared", Cost: "light"}, {ID: "light_b", Handler: "b", Class: "shared", Cost: "light"}}
+	c := config.Config{Concurrency: map[string]json.RawMessage{"shared": json.RawMessage(`{"max":1}`)}, Events: events, Handlers: map[string]config.Handler{"a": {Argv: []string{first}}, "b": {Argv: []string{second}}}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	go r.execute(Instance{ID: "light_a", EventID: "light_a", Start: "09:00:00", Deadline: "11:00:00"}, date)
+	waitFor(t, func() bool { _, err := os.Stat(firstStarted); return err == nil })
+	go r.execute(Instance{ID: "light_b", EventID: "light_b", Start: "09:00:00", Deadline: "11:00:00"}, date)
+	waitFor(t, func() bool { _, err := os.Stat(secondStarted); return err == nil })
+	if _, err := os.Stat(firstEnded); err == nil {
+		t.Fatal("second light handler started only after first completed")
+	}
+	waitFor(t, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return isTerminal(r.states[date+"/light_a"].Status) && isTerminal(r.states[date+"/light_b"].Status)
+	})
+	if len(r.classSlots) != 0 {
+		t.Fatalf("light work used ordinary class slots: %v", r.classSlots)
+	}
+}
+
 func TestStartupEventsFollowAfterOrderWithFakeClock(t *testing.T) {
 	root := t.TempDir()
 	loc, _ := time.LoadLocation("Asia/Shanghai")

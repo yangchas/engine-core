@@ -54,3 +54,15 @@ func TestPhasesAndStartupTriggerConfig(t *testing.T) {
 		t.Fatal("overlapping phases accepted")
 	}
 }
+
+func TestCostPhaseMismatchAndHeavyLoadConfig(t *testing.T) {
+	valid := []byte(`{"schema_version":1,"config_version":1,"name":"x","timezone":"Asia/Shanghai","heavy_max_load1":"cpus","events":[{"id":"heavy","trigger":{"type":"window","start":"09:00:00","deadline":"09:01:00"},"cost":"heavy","on_phase_mismatch":"defer","phases":["NIGHT"]}]}`)
+	if _, issues := Decode(valid); len(issues) != 0 {
+		t.Fatalf("valid scheduling config rejected: %+v", issues)
+	}
+	invalid := []byte(`{"schema_version":1,"config_version":1,"name":"x","timezone":"Asia/Shanghai","heavy_max_load1":-1,"events":[{"id":"heavy","trigger":{"type":"window","start":"09:00:00","deadline":"09:01:00"},"cost":"huge","on_phase_mismatch":"later"}]}`)
+	_, issues := Decode(invalid)
+	if len(issues) < 3 {
+		t.Fatalf("invalid scheduling config accepted or underreported: %+v", issues)
+	}
+}

@@ -16,7 +16,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -166,6 +168,7 @@ type instanceState struct {
 	LastError     string `json:"last_error"`
 	NextAttemptAt string `json:"next_attempt_at,omitempty"`
 	Late          bool   `json:"late,omitempty"`
+	NextPhase     string `json:"next_phase,omitempty"`
 }
 type runState struct {
 	EventID   string        `json:"event_id"`
@@ -281,6 +284,9 @@ type liveRunner struct {
 	clock            Clock
 	fake             *fakeClock
 	classSlots       map[string]chan struct{}
+	heavyRunning     bool
+	processSlots     chan struct{}
+	loadavg          func() (float64, error)
 	alertSeen        map[string]bool
 	alertMinutes     map[int64]int
 	alertDaily       int
@@ -345,6 +351,91 @@ func (r *liveRunner) currentPhase(now time.Time) (string, string) {
 		return "CALENDAR_UNKNOWN", ""
 	}
 	return phaseIn(now.In(r.loc), c.EffectivePhases(), trading)
+}
+
+func phaseAllowed(event *config.Event, phase string) bool {
+	if event == nil || len(event.Phases) == 0 {
+		return true
+	}
+	for _, p := range event.Phases {
+		if p == "any" || p == phase {
+			return true
+		}
+	}
+	return false
+}
+
+func nextAllowedPhase(event *config.Event, phases []config.Phase, current string) string {
+	if event == nil {
+		return ""
+	}
+	if len(phases) == 0 {
+		phases = config.DefaultPhases()
+	}
+	allowed := map[string]bool{}
+	for _, p := range event.Phases {
+		allowed[p] = true
+	}
+	idx := -1
+	for i, p := range phases {
+		if p.Name == current {
+			idx = i
+			break
+		}
+	}
+	for step := 1; step <= len(phases); step++ {
+		p := phases[(idx+step+len(phases))%len(phases)].Name
+		if allowed[p] {
+			return p
+		}
+	}
+	if len(event.Phases) > 0 {
+		return event.Phases[0]
+	}
+	return ""
+}
+
+func eventCost(event *config.Event) string {
+	if event == nil || event.Cost == "" {
+		return "medium"
+	}
+	return event.Cost
+}
+
+func configuredHeavyLoad(c config.Config) float64 {
+	if len(c.HeavyMaxLoad1) == 0 {
+		return 0
+	}
+	var number float64
+	if json.Unmarshal(c.HeavyMaxLoad1, &number) == nil {
+		return number
+	}
+	var value string
+	if json.Unmarshal(c.HeavyMaxLoad1, &value) == nil && value == "cpus" {
+		return float64(runtime.NumCPU())
+	}
+	return 0
+}
+
+func readLoad1() (float64, error) {
+	b, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(string(b))
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("empty /proc/loadavg")
+	}
+	return strconv.ParseFloat(fields[0], 64)
+}
+
+func (r *liveRunner) processSemaphore() chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.processSlots == nil {
+		r.processSlots = make(chan struct{}, 16)
+	}
+	return r.processSlots
 }
 func (r *liveRunner) phaseAt(now time.Time) (string, string) { return r.currentPhase(now) }
 
@@ -491,7 +582,7 @@ func (r *liveRunner) runBootEvents(now time.Time) error {
 				break
 			}
 		}
-		x := Instance{ID: e.ID + "@boot" + boot, EventID: e.ID, Start: "00:00:00", Deadline: "23:59:59", Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Calendar: "BOOT", TriggerType: "startup"}
+		x := Instance{ID: e.ID + "@boot" + boot, EventID: e.ID, Start: "00:00:00", Deadline: "23:59:59", LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Calendar: "BOOT", TriggerType: "startup"}
 		var calendarDays map[string]bool
 		calendarSource := "unconfigured"
 		if tc, ok := c.Calendars["trading"]; ok {
@@ -515,7 +606,11 @@ func (r *liveRunner) runBootEvents(now time.Time) error {
 			phaseAllowed = e.ID == "boot_trade_day"
 		}
 		if !phaseAllowed {
-			st := instanceState{Status: "SKIPPED_PHASE", LastError: phase, CompletedAt: r.clock.Now().Format(time.RFC3339)}
+			status := "SKIPPED_PHASE"
+			st := instanceState{Status: status, LastError: phase, CompletedAt: r.clock.Now().Format(time.RFC3339)}
+			if e.OnPhaseMismatch == "defer" && phase != "NON_TRADING" && phase != "CALENDAR_UNKNOWN" {
+				st = instanceState{Status: "DEFERRED", LastError: "phase " + phase + " is not allowed", NextPhase: nextAllowedPhase(&e, c.EffectivePhases(), phase)}
+			}
 			r.setState(x, date, st)
 			results[e.ID] = st.Status
 			_, _ = r.appendLedger(date, "BOOT_CHECK", map[string]any{"event": e.ID, "instance": x.ID, "status": st.Status, "order": e.Trigger.Order})
@@ -606,7 +701,7 @@ func (r *liveRunner) applyStartup(now time.Time, missed, active []Instance) erro
 }
 func isTerminal(status string) bool {
 	switch status {
-	case "SUCCEEDED", "SUCCEEDED_DEGRADED", "FAILED_FINAL", "CIRCUIT_OPEN", "MISSED", "GATE_BLOCKED", "SKIPPED", "SKIPPED_NA":
+	case "SUCCEEDED", "SUCCEEDED_DEGRADED", "FAILED_FINAL", "CIRCUIT_OPEN", "MISSED", "GATE_BLOCKED", "SKIPPED", "SKIPPED_NA", "SKIPPED_PHASE":
 		return true
 	}
 	return false
@@ -696,6 +791,12 @@ func (r *liveRunner) setState(x Instance, date string, s instanceState) {
 	key := date + "/" + x.ID
 	r.mu.Lock()
 	r.states[key] = s
+	if x.TriggerType == "startup" {
+		if r.bootSummary == nil {
+			r.bootSummary = map[string]string{}
+		}
+		r.bootSummary[x.EventID] = s.Status
+	}
 	r.mu.Unlock()
 	seq, err := r.appendLedger(date, "INSTANCE_STATE", runState{EventID: x.EventID, Instance: x.ID, TradeDate: date, State: s})
 	if err == nil && seq > 0 {
@@ -773,21 +874,6 @@ func (r *liveRunner) exportState(date string) {
 	_ = atomicFile(filepath.Join(r.root, date, "state.json"), b, 0640)
 }
 func (r *liveRunner) execute(x Instance, date string) {
-	r.mu.Lock()
-	if r.running[x.ID] {
-		r.mu.Unlock()
-		return
-	}
-	r.running[x.ID] = true
-	prior := r.states[date+"/"+x.ID]
-	r.mu.Unlock()
-	defer func() { r.mu.Lock(); delete(r.running, x.ID); r.mu.Unlock() }()
-	if prior.Status == "RETRY_WAIT" {
-		next, err := time.Parse(time.RFC3339, prior.NextAttemptAt)
-		if err == nil && r.clock.Now().Before(next) {
-			return
-		}
-	}
 	r.configMu.RLock()
 	c := r.c
 	r.configMu.RUnlock()
@@ -795,26 +881,72 @@ func (r *liveRunner) execute(x Instance, date string) {
 	if event == nil {
 		return
 	}
-	class := event.Class
-	if class == "" {
-		class = "default"
-	}
-	limit := 4 // unconfigured classes: one slow handler must not starve the rest of the day
-	if raw := c.Concurrency[class]; len(raw) > 0 {
-		var v struct {
-			Max int `json:"max"`
-		}
-		if json.Unmarshal(raw, &v) == nil && v.Max > 0 {
-			limit = v.Max
-		}
-	}
+	cost := eventCost(event)
 	r.mu.Lock()
-	slots := r.classSlots[class]
-	if slots == nil {
-		slots = make(chan struct{}, limit)
-		r.classSlots[class] = slots
+	if r.running[x.ID] {
+		r.mu.Unlock()
+		return
 	}
+	if cost == "heavy" && r.heavyRunning {
+		prior := r.states[date+"/"+x.ID]
+		r.mu.Unlock()
+		if prior.Status != "QUEUED_HEAVY" {
+			r.setState(x, date, instanceState{Status: "QUEUED_HEAVY", LastError: "heavy slot occupied", NextPhase: prior.NextPhase})
+		}
+		return
+	}
+	if cost == "heavy" {
+		r.heavyRunning = true
+	}
+	r.running[x.ID] = true
+	prior := r.states[date+"/"+x.ID]
 	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		delete(r.running, x.ID)
+		if cost == "heavy" {
+			r.heavyRunning = false
+		}
+		r.mu.Unlock()
+	}()
+	if prior.Status == "RETRY_WAIT" {
+		next, err := time.Parse(time.RFC3339, prior.NextAttemptAt)
+		if err == nil && r.clock.Now().Before(next) {
+			return
+		}
+	}
+	if x.TriggerType != "startup" && !phaseAllowed(event, func() string { p, _ := r.currentPhase(r.clock.Now()); return p }()) {
+		phase, _ := r.currentPhase(r.clock.Now())
+		if event.OnPhaseMismatch == "defer" {
+			r.setState(x, date, instanceState{Status: "DEFERRED", LastError: "phase " + phase + " is not allowed", NextPhase: nextAllowedPhase(event, c.EffectivePhases(), phase)})
+		} else {
+			r.setState(x, date, instanceState{Status: "SKIPPED_PHASE", LastError: phase, CompletedAt: r.clock.Now().Format(time.RFC3339)})
+		}
+		return
+	}
+	var slots chan struct{}
+	if cost == "medium" {
+		class := event.Class
+		if class == "" {
+			class = "default"
+		}
+		limit := 4 // unconfigured classes: one slow handler must not starve the rest of the day
+		if raw := c.Concurrency[class]; len(raw) > 0 {
+			var v struct {
+				Max int `json:"max"`
+			}
+			if json.Unmarshal(raw, &v) == nil && v.Max > 0 {
+				limit = v.Max
+			}
+		}
+		r.mu.Lock()
+		slots = r.classSlots[class]
+		if slots == nil {
+			slots = make(chan struct{}, limit)
+			r.classSlots[class] = slots
+		}
+		r.mu.Unlock()
+	}
 	deadlineAt, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
 	isLate := x.TriggerType != "startup" && !r.clock.Now().Before(deadlineAt)
 	st := instanceState{Status: "RUNNING", StartedAt: r.clock.Now().Format(time.RFC3339), Late: isLate}
@@ -845,7 +977,10 @@ func (r *liveRunner) execute(x Instance, date string) {
 			if len(h.GateArgv) == 0 {
 				break
 			}
+			processSlots := r.processSemaphore()
+			processSlots <- struct{}{}
 			out, err := r.invoke(h.GateArgv, event, x, date, 1, true)
+			<-processSlots
 			if err == nil && gateReady(out) && r.clock.Now().Before(deadline) {
 				ready = true
 				break
@@ -880,9 +1015,49 @@ func (r *liveRunner) execute(x Instance, date string) {
 			return
 		}
 	}
-	// Gate polling must not hold a class slot, or a blocked gate starves every other event of the class.
-	slots <- struct{}{}
-	slotHeld := true
+	// Gate polling must not hold a worker or concurrency slot.
+	if cost == "heavy" {
+		threshold := configuredHeavyLoad(c)
+		if threshold > 0 {
+			loader := r.loadavg
+			if loader == nil {
+				loader = readLoad1
+			}
+			cutoff := x.Deadline
+			if x.LateUntil != "" {
+				cutoff = x.LateUntil
+			}
+			end, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
+			for {
+				load, err := loader()
+				if err == nil && load <= threshold {
+					break
+				}
+				reason := fmt.Sprintf("load1 %.2f exceeds %.2f", load, threshold)
+				if err != nil {
+					reason = "load1 unavailable: " + err.Error()
+				}
+				if !r.clock.Now().Before(end) || r.clock.Now().In(r.loc).Format("2006-01-02") != date {
+					r.setState(x, date, instanceState{Status: "MISSED", LastError: "DEFER_LOAD_EXPIRED: " + reason, CompletedAt: r.clock.Now().Format(time.RFC3339)})
+					_ = r.alert("MISSED", map[string]any{"date": date, "instances": []string{x.ID}, "count": 1, "summary": true})
+					return
+				}
+				r.setState(x, date, instanceState{Status: "DEFER_LOAD", LastError: reason, NextAttemptAt: r.clock.Now().Add(time.Minute).Format(time.RFC3339), Late: st.Late})
+				delay := time.Minute
+				if left := end.Sub(r.clock.Now()); left < delay {
+					delay = left
+				}
+				r.waitClock(delay)
+			}
+		}
+	}
+	processSlots := r.processSemaphore()
+	processSlots <- struct{}{}
+	defer func() { <-processSlots }()
+	if slots != nil {
+		slots <- struct{}{}
+	}
+	slotHeld := slots != nil
 	defer func() {
 		if slotHeld {
 			<-slots
@@ -922,7 +1097,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 	}
 	var lastRetryable bool
 	for n := st.Attempts + 1; n <= cycleEnd; n++ {
-		if !slotHeld {
+		if !slotHeld && slots != nil {
 			slots <- struct{}{}
 			slotHeld = true
 		}
@@ -962,8 +1137,10 @@ func (r *liveRunner) execute(x Instance, date string) {
 		if !lastRetryable || n == cycleEnd {
 			break
 		}
-		<-slots
-		slotHeld = false
+		if slotHeld {
+			<-slots
+			slotHeld = false
+		}
 		delay := time.Duration(n) * time.Second
 		if event.Retry.Base != "" {
 			if d, e := time.ParseDuration(event.Retry.Base); e == nil {
@@ -1389,25 +1566,7 @@ func (r *liveRunner) schedule(now time.Time) {
 	r.mu.Unlock()
 	var missedNow []string
 	for _, x := range xs {
-		if event := findEvent(c, x.EventID); event != nil && len(event.Phases) > 0 {
-			phase, _ := r.currentPhase(now)
-			allowed := false
-			for _, p := range event.Phases {
-				if p == "any" || p == phase {
-					allowed = true
-				}
-			}
-			if !allowed {
-				key := date + "/" + x.ID
-				r.mu.Lock()
-				_, seen := r.states[key]
-				r.mu.Unlock()
-				if !seen {
-					r.setState(x, date, instanceState{Status: "SKIPPED_PHASE", LastError: phase, CompletedAt: now.Format(time.RFC3339)})
-				}
-				continue
-			}
-		}
+		event := findEvent(c, x.EventID)
 		start, e1 := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Start, r.loc)
 		cutoff := x.Deadline
 		if x.LateUntil != "" {
@@ -1423,13 +1582,36 @@ func (r *liveRunner) schedule(now time.Time) {
 		running := r.running[x.ID]
 		paused := r.paused[x.EventID] || r.paused["*"]
 		r.mu.Unlock()
+		if exists && isTerminal(st.Status) {
+			continue
+		}
+		phase, _ := r.currentPhase(now)
+		if exists && st.Status == "DEFERRED" && !now.Before(end) {
+			r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: now.Format(time.RFC3339), LastError: "PHASE_DEFER_EXPIRED"})
+			missedNow = append(missedNow, x.ID)
+			continue
+		}
+		if event != nil && !phaseAllowed(event, phase) {
+			if event.OnPhaseMismatch == "defer" {
+				if !exists || st.Status != "DEFERRED" || st.NextPhase != nextAllowedPhase(event, c.EffectivePhases(), phase) {
+					r.setState(x, date, instanceState{Status: "DEFERRED", LastError: "phase " + phase + " is not allowed", NextPhase: nextAllowedPhase(event, c.EffectivePhases(), phase)})
+				}
+				continue
+			}
+			if !exists {
+				r.setState(x, date, instanceState{Status: "SKIPPED_PHASE", LastError: phase, CompletedAt: now.Format(time.RFC3339)})
+			}
+			continue
+		}
 		if exists && st.Status == "RETRY_WAIT" && !now.Before(end) {
 			if event := findEvent(c, x.EventID); event != nil {
 				r.finishLateRetries(x, date, event, st)
 			}
 			continue
 		}
-		if exists && isTerminal(st.Status) {
+		if exists && !running && !now.Before(end) && !isTerminal(st.Status) {
+			r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: now.Format(time.RFC3339), LastError: "SCHEDULING_WINDOW_EXPIRED"})
+			missedNow = append(missedNow, x.ID)
 			continue
 		}
 		if !now.Before(end) && !exists {
@@ -1451,6 +1633,41 @@ func (r *liveRunner) schedule(now time.Time) {
 				r.nextDue = x.Start
 			}
 			r.mu.Unlock()
+		}
+	}
+	phase, _ := r.currentPhase(now)
+	for _, event := range c.Events {
+		if event.Trigger.Type != "startup" || event.OnPhaseMismatch != "defer" {
+			continue
+		}
+		prefix := date + "/" + event.ID + "@boot"
+		r.mu.Lock()
+		var deferredID string
+		for key, state := range r.states {
+			if strings.HasPrefix(key, prefix) && state.Status == "DEFERRED" {
+				deferredID = strings.TrimPrefix(key, date+"/")
+				break
+			}
+		}
+		running := r.running[deferredID]
+		r.mu.Unlock()
+		if deferredID == "" {
+			continue
+		}
+		cutoff := event.LateUntil
+		if cutoff == "" {
+			cutoff = "23:59:59"
+		}
+		end, parseErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
+		if parseErr == nil && !now.Before(end) {
+			x := Instance{ID: deferredID, EventID: event.ID, Start: "00:00:00", Deadline: "23:59:59", LateUntil: event.LateUntil, TriggerType: "startup"}
+			r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: now.Format(time.RFC3339), LastError: "PHASE_DEFER_EXPIRED"})
+			missedNow = append(missedNow, deferredID)
+			continue
+		}
+		if phase != "NON_TRADING" && phase != "CALENDAR_UNKNOWN" && phaseAllowed(&event, phase) && !running {
+			x := Instance{ID: deferredID, EventID: event.ID, Start: "00:00:00", Deadline: "23:59:59", LateUntil: event.LateUntil, Timeout: event.Timeout, MaxAttempts: event.Retry.MaxAttempts, TriggerType: "startup"}
+			go r.execute(x, date)
 		}
 	}
 	if len(missedNow) > 0 {

@@ -44,7 +44,20 @@ The local Unix socket is `<state-root>/guardiand.sock` (mode `0600`). Send one U
 from NIGHT through POST_MARKET. On dates absent from the configured trading
 calendar, the current phase is `NON_TRADING`. Events may set `phases` to a
 whitelist (or `any`) and `on_start: "reconcile"` to request a late catch-up
-after boot. Window events outside their phase are recorded as `SKIPPED_PHASE`.
+after boot. `on_phase_mismatch` defaults to `skip`, preserving the legacy
+`SKIPPED_PHASE` terminal state. Set it to `defer` to record `DEFERRED`, its
+current phase reason, and `next_phase`; scheduling starts the instance when an
+allowed phase arrives. A deferred instance past its `late_until` (or deadline
+when absent) becomes `MISSED` and is included in the missed summary.
+
+Events may set `cost` to `light`, `medium` (the default), or `heavy`. Light
+work bypasses class concurrency limits; medium work uses the configured class
+slot; heavy work uses one independent global slot and reports waiters as
+`QUEUED_HEAVY`. All work shares a 16-process hard cap. `heavy_max_load1`
+defaults to `0` (disabled), accepts a numeric load-1 threshold or `"cpus"`,
+and delays heavy starts by 60 seconds while `/proc/loadavg` is above the
+threshold. Load deferrals are recorded as `DEFER_LOAD` without consuming
+attempts or emitting alerts.
 
 Startup events use `trigger: {"type":"startup","order":N,"after":[...]}`.
 They run once per process boot in order after their listed startup dependencies;

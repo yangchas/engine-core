@@ -4,6 +4,7 @@ import json, sys
 
 src, dst, repo, py = sys.argv[1:5]
 cfg = json.load(open(src))
+cfg.setdefault("heavy_max_load1", 0)
 bridge = f"{repo}/examples/guardian_handler.py"
 env = ["REDIS_URL", "CORE_REDIS_URL", "CORE_DATA_ROOT", "TD_CONFIG", "PYTHONHASHSEED", "PYTHONPATH",
        "GUARDIAN_DRY_RUN", "GUARDIAN_EMAIL_SELF", "HOME", "POSTHOC_DEV", "CORE_BAOSTOCK_PROBE_COMMAND"]
@@ -19,7 +20,7 @@ for name, h in cfg["handlers"].items():
     h.update({"argv": [py, bridge, "run"], "gate_argv": [py, bridge, "gate"], "cwd": repo, "env_allow": env})
 cfg["handlers"]["alert"] = {"argv": [py, bridge, "alert"], "cwd": repo, "env_allow": env}
 late_by_handler = {
-    "legacy_premarket_data": "15:00:00",
+    "legacy_premarket_data": "09:10:00",
     "legacy_kaipan_fetch": "15:00:00",
     "legacy_calendar_refresh": "15:00:00",
     "legacy_postmarket_data": "23:30:00",
@@ -30,11 +31,23 @@ for event in cfg["events"]:
     event.pop("late_until", None)
     event_id = event.get("id", event.get("event_id", ""))
     handler = event.get("handler", "")
+    canonical_handler = handler.removeprefix("legacy_")
     late_until = late_by_handler.get(handler)
     if event_id.startswith("kaipan_hot") or "kaipan_hot" in handler:
         late_until = max(late_until or "00:00:00", event.get("trigger", {}).get("deadline", "00:00:00"), "15:30:00")
     if late_until:
         event["late_until"] = late_until
+    if handler in {"legacy_postmarket_data", "legacy_baostock_probe", "legacy_close_report", "legacy_night_report"}:
+        event["cost"] = "heavy"
+        event["on_phase_mismatch"] = "defer"
+        event["phases"] = ["NIGHT", "PRE_MARKET", "MIDDAY_BREAK", "CLOSE", "POST_MARKET"]
+    elif handler == "legacy_premarket_data":
+        event["cost"] = "medium"
+        event["on_phase_mismatch"] = "defer"
+        event["phases"] = ["NIGHT", "PRE_MARKET"]
+        event["late_until"] = "09:10:00"
+    elif canonical_handler in {"kaipan_fetch", "calendar_refresh", "kaipan_hot_capture", "snapshot_check", "auction_watch"}:
+        event["cost"] = "light"
     is_data_event = handler in late_by_handler or bool(late_until) or event_id.startswith("kaipan_hot") or "kaipan_hot" in handler
     if is_data_event:
         retry = event.setdefault("retry", {})

@@ -21,12 +21,13 @@ type Config struct {
 	Calendars     map[string]struct {
 		File string `json:"file"`
 	} `json:"calendars,omitempty"`
-	Concurrency map[string]json.RawMessage `json:"concurrency,omitempty"`
-	Handlers    map[string]Handler         `json:"handlers,omitempty"`
-	Alerts      map[string]json.RawMessage `json:"alerts,omitempty"`
-	Events      []Event                    `json:"events"`
-	Phases      []Phase                    `json:"phases,omitempty"`
-	Datasets    json.RawMessage            `json:"datasets,omitempty"`
+	Concurrency   map[string]json.RawMessage `json:"concurrency,omitempty"`
+	HeavyMaxLoad1 json.RawMessage            `json:"heavy_max_load1,omitempty"`
+	Handlers      map[string]Handler         `json:"handlers,omitempty"`
+	Alerts        map[string]json.RawMessage `json:"alerts,omitempty"`
+	Events        []Event                    `json:"events"`
+	Phases        []Phase                    `json:"phases,omitempty"`
+	Datasets      json.RawMessage            `json:"datasets,omitempty"`
 }
 type Phase struct {
 	Name  string `json:"name"`
@@ -76,27 +77,29 @@ type Dependency struct {
 	AcceptDegraded bool   `json:"accept_degraded,omitempty"`
 }
 type Event struct {
-	ID             string          `json:"id"`
-	Enabled        bool            `json:"enabled,omitempty"`
-	Description    string          `json:"description,omitempty"`
-	Calendar       json.RawMessage `json:"calendar,omitempty"`
-	Trigger        Trigger         `json:"trigger"`
-	DataDateOffset int             `json:"data_date_offset,omitempty"`
-	AvailableAfter *string         `json:"available_after,omitempty"`
-	Handler        string          `json:"handler,omitempty"`
-	Args           map[string]any  `json:"args,omitempty"`
-	Gate           Gate            `json:"gate,omitempty"`
-	Timeout        string          `json:"timeout,omitempty"`
-	LateUntil      string          `json:"late_until,omitempty"`
-	Retry          Retry           `json:"retry,omitempty"`
-	OnDeadline     string          `json:"on_deadline,omitempty"`
-	Catchup        string          `json:"catchup,omitempty"`
-	Class          string          `json:"class,omitempty"`
-	Priority       int             `json:"priority,omitempty"`
-	Alert          json.RawMessage `json:"alert,omitempty"`
-	DependsOn      []Dependency    `json:"depends_on,omitempty"`
-	Phases         []string        `json:"phases,omitempty"`
-	OnStart        string          `json:"on_start,omitempty"`
+	ID              string          `json:"id"`
+	Enabled         bool            `json:"enabled,omitempty"`
+	Description     string          `json:"description,omitempty"`
+	Calendar        json.RawMessage `json:"calendar,omitempty"`
+	Trigger         Trigger         `json:"trigger"`
+	DataDateOffset  int             `json:"data_date_offset,omitempty"`
+	AvailableAfter  *string         `json:"available_after,omitempty"`
+	Handler         string          `json:"handler,omitempty"`
+	Args            map[string]any  `json:"args,omitempty"`
+	Gate            Gate            `json:"gate,omitempty"`
+	Timeout         string          `json:"timeout,omitempty"`
+	LateUntil       string          `json:"late_until,omitempty"`
+	Retry           Retry           `json:"retry,omitempty"`
+	OnDeadline      string          `json:"on_deadline,omitempty"`
+	Catchup         string          `json:"catchup,omitempty"`
+	Class           string          `json:"class,omitempty"`
+	Priority        int             `json:"priority,omitempty"`
+	Alert           json.RawMessage `json:"alert,omitempty"`
+	DependsOn       []Dependency    `json:"depends_on,omitempty"`
+	Phases          []string        `json:"phases,omitempty"`
+	OnStart         string          `json:"on_start,omitempty"`
+	OnPhaseMismatch string          `json:"on_phase_mismatch,omitempty"`
+	Cost            string          `json:"cost,omitempty"`
 }
 
 func DefaultPhases() []Phase {
@@ -251,6 +254,12 @@ func Validate(c Config) []Issue {
 		if e.OnStart != "" && e.OnStart != "reconcile" {
 			add(p+".on_start", "ENUM", "invalid on_start")
 		}
+		if e.OnPhaseMismatch != "" && e.OnPhaseMismatch != "defer" && e.OnPhaseMismatch != "skip" {
+			add(p+".on_phase_mismatch", "ENUM", "expected defer or skip")
+		}
+		if e.Cost != "" && e.Cost != "light" && e.Cost != "medium" && e.Cost != "heavy" {
+			add(p+".cost", "ENUM", "expected light, medium, or heavy")
+		}
 		for _, name := range e.Phases {
 			if name != "any" && !phaseNames[name] {
 				add(p+".phases", "PHASE_UNKNOWN", "unknown phase "+name)
@@ -306,6 +315,25 @@ func Validate(c Config) []Issue {
 			}
 			if e.Gate.BackoffMax != "" && durationSeconds(e.Gate.BackoffMax) <= 0 {
 				add(p+".gate.backoff_max", "DURATION", "invalid duration")
+			}
+		}
+	}
+	if len(c.HeavyMaxLoad1) > 0 {
+		var value any
+		if err := json.Unmarshal(c.HeavyMaxLoad1, &value); err != nil {
+			add("heavy_max_load1", "LOAD_THRESHOLD", "expected nonnegative number or cpus")
+		} else {
+			switch v := value.(type) {
+			case float64:
+				if v < 0 {
+					add("heavy_max_load1", "LOAD_THRESHOLD", "must be nonnegative")
+				}
+			case string:
+				if v != "cpus" {
+					add("heavy_max_load1", "LOAD_THRESHOLD", "expected nonnegative number or cpus")
+				}
+			default:
+				add("heavy_max_load1", "LOAD_THRESHOLD", "expected nonnegative number or cpus")
 			}
 		}
 	}
