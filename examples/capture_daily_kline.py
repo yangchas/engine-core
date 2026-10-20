@@ -21,6 +21,7 @@ class _SleepClient:
     def __init__(self, client: Any, sleep_ms: int):
         self.client = client
         self.sleep_ms = sleep_ms
+        self.timeout_seconds = getattr(client, "timeout_seconds", 30.0)
 
     def login(self):
         return self.client.login()
@@ -47,11 +48,14 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None) -> int:
     parser.add_argument("--prev-close-json")
     parser.add_argument("--max-errors", type=int, default=50)
     parser.add_argument("--sleep-ms", type=int, default=0)
+    parser.add_argument("--timeout-seconds", type=float, default=30.0)
     args = parser.parse_args(argv)
     try:
         datetime.strptime(args.date, "%Y-%m-%d")
         if args.sleep_ms < 0:
             raise ValueError("--sleep-ms must be non-negative")
+        if args.timeout_seconds <= 0:
+            raise ValueError("--timeout-seconds must be positive")
         symbols_value = _load_json(args.symbols_json)
         symbols = symbols_value.get("symbols") if isinstance(symbols_value, dict) else symbols_value
         if not isinstance(symbols, list):
@@ -64,7 +68,7 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None) -> int:
                 import baostock as bs
             except ImportError as exc:
                 raise RuntimeError("Baostock library is required for live capture") from exc
-            client = BaostockClient(bs)
+            client = BaostockClient(bs, timeout_seconds=args.timeout_seconds)
         rows, fetch_report = fetch_day(_SleepClient(client, args.sleep_ms), symbols, args.date, max_errors=args.max_errors)
         quality = validate(rows, prev_close_by_symbol=prev_close)
         manifest_meta = {

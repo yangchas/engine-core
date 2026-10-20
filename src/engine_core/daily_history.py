@@ -329,7 +329,12 @@ class BaostockRangeClient:
         self.read_timeout = read_timeout
 
     def login(self) -> None:
-        result = self.module.login()
+        previous_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(self.read_timeout)
+        try:
+            result = self.module.login()
+        finally:
+            socket.setdefaulttimeout(previous_timeout)
         if getattr(result, "error_code", "0") != "0":
             raise RuntimeError("baostock_login_failed")
         from baostock.common import context
@@ -372,6 +377,10 @@ class BaostockRangeClient:
                 return rows
             except Exception as exc:
                 last_error = exc
+                if isinstance(exc, (TimeoutError, socket.timeout)):
+                    raise TimeoutError("BAOSTOCK_TIMEOUT") from None
+                if isinstance(exc, (ConnectionError, OSError)):
+                    raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from exc
                 if attempt:
                     break
                 self.reconnect()

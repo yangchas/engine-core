@@ -3,6 +3,52 @@ from datetime import datetime
 import pytest
 
 
+def test_baostock_login_hang_on_local_socket_is_retryable_timeout():
+    import socket
+    import threading
+    import time
+    from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    accepted = threading.Event()
+    release = threading.Event()
+
+    def server():
+        connection, _ = listener.accept()
+        accepted.set()
+        release.wait(2)
+        connection.close()
+
+    server_thread = threading.Thread(target=server, daemon=True)
+    server_thread.start()
+
+    class Client:
+        def login(self):
+            sock = socket.create_connection(listener.getsockname())
+            try:
+                sock.recv(1)
+            finally:
+                sock.close()
+
+        def logout(self):
+            pass
+
+    provider = BaostockDailyProvider(client_factory=Client, symbols=["600000"], timeout_seconds=0.1)
+    assert provider.timeout_seconds == 0.1
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError, match="BAOSTOCK_TIMEOUT"):
+            provider.fetch("2026-10-19")
+        assert accepted.wait(0.2)
+        assert time.monotonic() - started < 0.5
+    finally:
+        release.set()
+        listener.close()
+        server_thread.join(0.5)
+
+
 def test_daily_kline_chain_gates_by_available_at_and_uses_quality_priority(tmp_path):
     from engine_core.data_pipeline.providers.daily_kline_chain import DailyKlineProviderChain
 

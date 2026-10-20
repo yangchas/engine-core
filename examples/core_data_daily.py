@@ -19,6 +19,9 @@ def main(argv=None) -> int:
     parser.add_argument("--td-write", action="store_true")
     parser.add_argument("--adapter", help="module:function returning adapter mapping")
     parser.add_argument("--max-requests", type=int, default=30)
+    parser.add_argument("--baostock-timeout-seconds", type=float, default=30.0)
+    parser.add_argument("--baostock-total-timeout-seconds", type=float,
+                        help="optional wall-clock budget for the daily_kline task")
     parser.add_argument("--artifact-root", default=os.getenv("CORE_DATA_ROOT", "~/core-data"))
     parser.add_argument("--no-lock", action="store_true")
     args = parser.parse_args(argv)
@@ -29,7 +32,9 @@ def main(argv=None) -> int:
     root = Path(args.artifact_root).expanduser()
     from examples.run_data_jobs import _default_adapters
     adapters = _default_adapters(str(root), os.getenv("ENGINE_LEGACY_ROOT", "/home/exedev/repos/stock-situation-runtime"),
-                                  args.max_requests, args.write)
+                                  args.max_requests, args.write,
+                                  baostock_timeout_seconds=args.baostock_timeout_seconds,
+                                  baostock_total_timeout_seconds=args.baostock_total_timeout_seconds)
     if args.adapter:
         module_name, sep, function = args.adapter.partition(":")
         if not sep: parser.error("--adapter must be module:function")

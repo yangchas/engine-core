@@ -113,7 +113,8 @@ def _normalize_universe_rows(source_rows: list[list[str]]) -> list[dict[str, str
 
 
 def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
-                      write_enabled: bool) -> dict[str, Any]:
+                      write_enabled: bool, *, baostock_timeout_seconds: float = 30.0,
+                      baostock_total_timeout_seconds: float | None = None) -> dict[str, Any]:
     """Construct lazy read-only adapters; optional SDK imports happen on fetch."""
     def symbols_for(day: str) -> list[str]:
         found = load_dataset("symbol_universe", day, prefer="file",
@@ -133,18 +134,21 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         except ValueError:
             raise RuntimeError("symbol_universe_prior_trade_date_required:" + day)
         import baostock as bs
-        from engine_core.daily_kline_capture import BaostockClient
+        from engine_core.daily_kline_capture import BaostockClient, call_with_timeout
         client = BaostockClient(bs)
-        client.login()
+        call_with_timeout(client.login, timeout_seconds=client.timeout_seconds)
         try:
-            result = bs.query_all_stock(day=asof)
-            if getattr(result, "error_code", "0") != "0":
-                raise RuntimeError("symbol_universe_source_failed")
-            raw_rows = []
-            while result.next():
-                raw_rows.append(result.get_row_data())
+            def read_all_stock():
+                result = bs.query_all_stock(day=asof)
+                if getattr(result, "error_code", "0") != "0":
+                    raise RuntimeError("symbol_universe_source_failed")
+                rows = []
+                while result.next():
+                    rows.append(result.get_row_data())
+                return rows
+            raw_rows = call_with_timeout(read_all_stock, timeout_seconds=client.timeout_seconds)
         finally:
-            client.logout()
+            call_with_timeout(client.logout, timeout_seconds=client.timeout_seconds)
         rows = _normalize_universe_rows(raw_rows)
         for row in rows:
             row["universe_asof"] = asof
@@ -172,7 +176,9 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
             import baostock as bs
             return BaostockClient(bs)
         provider = BaostockDailyProvider(client_factory=client_factory, symbols=symbols_for,
-                                         checkpoint_path=checkpoint)
+                                         checkpoint_path=checkpoint,
+                                         timeout_seconds=baostock_timeout_seconds,
+                                         total_timeout_seconds=baostock_total_timeout_seconds)
         result = provider.fetch(day, context)
         universe = load_dataset("symbol_universe", day, prefer="file",
                                 catalog=ArtifactCatalog(artifact_root))
@@ -256,6 +262,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="fetch and validate without persisting (default)")
     parser.add_argument("--execute", action="store_true", help="run fetch and commit the artifact version")
     parser.add_argument("--max-requests", type=int, default=30)
+    parser.add_argument("--baostock-timeout-seconds", type=float, default=30.0,
+                        help="hard caller wait for each Baostock operation")
+    parser.add_argument("--baostock-total-timeout-seconds", type=float,
+                        help="optional wall-clock budget for the complete daily_kline fetch")
     parser.add_argument("--backfill-days", type=int, default=10,
                         help="plate_members trading dates, newest first")
     parser.add_argument("--providers", default="baostock,wencai,q2_final",
@@ -270,7 +280,9 @@ def main(argv: list[str] | None = None) -> int:
     names = list(DATASETS) if args.job == "all" else [args.job]
     adapters = _default_adapters(args.artifact_root,
         "",
-        args.max_requests, args.write or args.execute)
+        args.max_requests, args.write or args.execute,
+        baostock_timeout_seconds=args.baostock_timeout_seconds,
+        baostock_total_timeout_seconds=args.baostock_total_timeout_seconds)
     adapters.update(_load_adapter(args.adapter))
     daily_providers = [name.strip() for name in args.providers.split(",") if name.strip()]
     unknown_providers = set(daily_providers) - {"baostock", "wencai", "q2_final"}

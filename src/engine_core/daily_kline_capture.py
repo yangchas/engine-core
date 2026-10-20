@@ -5,6 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import queue
+import socket
+import threading
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,6 +70,32 @@ def _symbol(value: Any) -> str:
     return symbol
 
 
+def call_with_timeout(fn: Any, *args: Any, timeout_seconds: float = 30.0) -> Any:
+    """Run one blocking Baostock operation with a bounded caller wait."""
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds_must_be_positive")
+    result: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+    def invoke() -> None:
+        try:
+            result.put((True, fn(*args)))
+        except BaseException as exc:
+            result.put((False, exc))
+
+    threading.Thread(target=invoke, name="baostock-call", daemon=True).start()
+    try:
+        succeeded, value = result.get(timeout=timeout_seconds)
+    except queue.Empty:
+        raise TimeoutError("BAOSTOCK_TIMEOUT") from None
+    if succeeded:
+        return value
+    if isinstance(value, TimeoutError):
+        raise TimeoutError("BAOSTOCK_TIMEOUT") from None
+    if isinstance(value, (ConnectionError, OSError)):
+        raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from value
+    raise value
+
+
 def parse_row(raw: Mapping[str, Any] | Sequence[Any]) -> dict[str, Any]:
     data = _raw_mapping(raw)
     code = data.get("symbol", data.get("code"))
@@ -92,13 +121,14 @@ def fetch_day(
     errors: list[dict[str, str]] = []
     missing: list[str] = []
     partial = False
-    client.login()
+    call_with_timeout(client.login, timeout_seconds=getattr(client, "timeout_seconds", 30.0))
     try:
         for raw_symbol in symbols:
             symbol = _symbol(raw_symbol)
             code = to_baostock_code(symbol)
             try:
-                result = client.query(code, date)
+                result = call_with_timeout(client.query, code, date,
+                                           timeout_seconds=getattr(client, "timeout_seconds", 30.0))
                 found = list(result or [])
                 if not found:
                     missing.append(symbol)
@@ -109,6 +139,10 @@ def fetch_day(
                         raise ValueError(f"response identity mismatch for {symbol} on {date}")
                     rows.append(row)
             except Exception as exc:  # isolate a failed symbol from the remaining universe
+                if "BAOSTOCK_TIMEOUT" in str(exc):
+                    raise TimeoutError("BAOSTOCK_TIMEOUT") from None
+                if isinstance(exc, (ConnectionError, OSError)):
+                    raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from exc
                 errors.append({"symbol": symbol, "code": code, "msg": str(exc)})
                 if len(errors) > max_errors:
                     partial = True
@@ -198,13 +232,28 @@ def load_capture(directory: str | Path) -> dict[str, dict[str, Any]]:
 class BaostockClient:
     """Small adapter around Baostock; it performs reads only."""
 
-    def __init__(self, module: Any):
+    def __init__(self, module: Any, *, timeout_seconds: float = 30.0):
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds_must_be_positive")
         self.module = module
+        self.timeout_seconds = float(timeout_seconds)
 
     def login(self) -> None:
-        result = self.module.login()
+        previous_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(self.timeout_seconds)
+        try:
+            result = self.module.login()
+        finally:
+            socket.setdefaulttimeout(previous_timeout)
         if getattr(result, "error_code", "0") != "0":
             raise RuntimeError(f"Baostock login failed: {getattr(result, 'error_msg', '')}")
+        try:
+            from baostock.common import context
+            active_socket = getattr(context, "default_socket", None)
+            if active_socket is not None:
+                active_socket.settimeout(self.timeout_seconds)
+        except (ImportError, OSError, AttributeError):
+            pass
 
     def query(self, code: str, date: str) -> list[dict[str, str]]:
         result = self.module.query_history_k_data_plus(
