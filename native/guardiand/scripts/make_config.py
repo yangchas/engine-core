@@ -64,7 +64,8 @@ for event in cfg["events"]:
         retry = event.setdefault("retry", {})
         retry["until_late"] = True
         retry["backoff"] = "60s"
-        if event_id not in fetch_events:
+        # baostock probe checkpoints fetch daily_kline, which the registry already covers (daily_kline.fetch_job)
+        if event_id not in fetch_events and handler != "legacy_baostock_probe":
             event["on_start"] = "reconcile"
         else:
             event.pop("on_start", None)
