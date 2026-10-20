@@ -16,5 +16,20 @@ if not any(e["id"] == "calendar_refresh_0800" for e in cfg["events"]):
 for name, h in cfg["handlers"].items():
     h.update({"argv": [py, bridge, "run"], "gate_argv": [py, bridge, "gate"], "cwd": repo, "env_allow": env})
 cfg["handlers"]["alert"] = {"argv": [py, bridge, "alert"], "cwd": repo, "env_allow": env}
+late_by_handler = {
+    "legacy_premarket_data": "15:00:00",
+    "legacy_kaipan_fetch": "15:00:00",
+    "legacy_calendar_refresh": "15:00:00",
+    "legacy_postmarket_data": "23:30:00",
+    "legacy_baostock_probe": "23:30:00",
+    "legacy_night_report": "23:59:00",
+    "legacy_auction_report": "11:30:00",
+    "legacy_open_report": "11:30:00",
+}
+for event in cfg["events"]:
+    event.pop("late_until", None)
+    late_until = late_by_handler.get(event.get("handler"))
+    if late_until:
+        event["late_until"] = late_until
 json.dump(cfg, open(dst, "w"), ensure_ascii=False, indent=1)
 print("handlers:", len(cfg["handlers"]), "events:", len(cfg["events"]))

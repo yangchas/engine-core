@@ -10,3 +10,14 @@ func TestStrictDecodeAndVersion(t *testing.T) {
 		t.Fatal("same version with changed hash accepted")
 	}
 }
+
+func TestTimeoutIsIndependentOfWindow(t *testing.T) {
+	c := Config{SchemaVersion: 1, ConfigVersion: 1, Name: "x", Events: []Event{{
+		ID: "long", Trigger: Trigger{Type: "window", Start: "09:00:00", Deadline: "09:01:00"}, Timeout: "300s",
+	}}}
+	for _, issue := range Validate(c) {
+		if issue.Code == "TIMEOUT_WINDOW" {
+			t.Fatalf("runtime budget was constrained by start deadline: %+v", issue)
+		}
+	}
+}

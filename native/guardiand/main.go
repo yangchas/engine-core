@@ -18,6 +18,7 @@ type Instance struct {
 	EventID     string `json:"event_id"`
 	Start       string `json:"start"`
 	Deadline    string `json:"deadline"`
+	LateUntil   string `json:"late_until,omitempty"`
 	Timeout     string `json:"timeout"`
 	MaxAttempts int    `json:"max_attempts"`
 	Catchup     string `json:"catchup"`
@@ -161,13 +162,13 @@ func instances(c config.Config, date string) ([]Instance, string, error) {
 			if catch == "" {
 				catch = "skip"
 			}
-			out = append(out, Instance{e.ID, e.ID, e.Trigger.Start, e.Trigger.Deadline, e.Timeout, e.Retry.MaxAttempts, catch, e.OnDeadline, status})
+			out = append(out, Instance{ID: e.ID, EventID: e.ID, Start: e.Trigger.Start, Deadline: e.Trigger.Deadline, LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: catch, OnDeadline: e.OnDeadline, Calendar: status})
 			continue
 		}
 		if e.Trigger.Type == "at" {
 			d := time.Duration(configDuration(e.Trigger.Window))
 			end := clock(e.Trigger.At).Add(d)
-			out = append(out, Instance{e.ID, e.ID, e.Trigger.At, end.Format("15:04:05"), e.Timeout, e.Retry.MaxAttempts, e.Catchup, e.OnDeadline, status})
+			out = append(out, Instance{ID: e.ID, EventID: e.ID, Start: e.Trigger.At, Deadline: end.Format("15:04:05"), LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: e.Catchup, OnDeadline: e.OnDeadline, Calendar: status})
 			continue
 		}
 		start, end := clock(e.Trigger.Start), clock(e.Trigger.Until)
@@ -183,7 +184,7 @@ func instances(c config.Config, date string) ([]Instance, string, error) {
 			if catch == "" {
 				catch = "skip"
 			}
-			out = append(out, Instance{e.ID + "@" + s, e.ID, s, t.Add(win).Format("15:04:05"), e.Timeout, e.Retry.MaxAttempts, catch, e.OnDeadline, status})
+			out = append(out, Instance{ID: e.ID + "@" + s, EventID: e.ID, Start: s, Deadline: t.Add(win).Format("15:04:05"), LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: catch, OnDeadline: e.OnDeadline, Calendar: status})
 			if len(out) > 10000 {
 				return nil, "", fmt.Errorf("interval instance limit exceeded")
 			}
@@ -335,7 +336,6 @@ func migrateCmd(a []string) error {
 	}{"trading": {File: "/home/exedev/core-data/trade_dates.json"}}}
 	c.Handlers = map[string]config.Handler{}
 	gates := map[string]bool{}
-	var clamped []string
 	for _, o := range old.Events {
 		cal := "trading_day"
 		gate := o.Gate
@@ -346,11 +346,7 @@ func migrateCmd(a []string) error {
 			// Legacy registered gates retain their names as gate.ref.
 			gates[gate] = true
 		}
-		seconds, changed := clampTimeout(o.Start, o.Deadline, o.Timeout)
-		if changed {
-			clamped = append(clamped, fmt.Sprintf("%s: %ds -> %ds", o.ID, o.Timeout, seconds))
-		}
-		ev := config.Event{ID: o.ID, Enabled: true, Calendar: raw(cal), Trigger: config.Trigger{Type: "window", Start: o.Start, Deadline: o.Deadline}, DataDateOffset: o.Offset, AvailableAfter: o.Available, Handler: "legacy_" + o.Handler, Gate: config.Gate{Ref: gate}, Timeout: fmt.Sprintf("%ds", seconds), Retry: config.Retry{MaxAttempts: o.Attempts}, OnDeadline: "missed", Catchup: "skip", DependsOn: o.Depends}
+		ev := config.Event{ID: o.ID, Enabled: true, Calendar: raw(cal), Trigger: config.Trigger{Type: "window", Start: o.Start, Deadline: o.Deadline}, DataDateOffset: o.Offset, AvailableAfter: o.Available, Handler: "legacy_" + o.Handler, Gate: config.Gate{Ref: gate}, Timeout: fmt.Sprintf("%ds", o.Timeout), Retry: config.Retry{MaxAttempts: o.Attempts}, OnDeadline: "missed", Catchup: "skip", DependsOn: o.Depends}
 		c.Handlers[ev.Handler] = config.Handler{SupportsDegrade: true}
 		if o.Catchup {
 			ev.Catchup = "run_in_window"
@@ -362,9 +358,6 @@ func migrateCmd(a []string) error {
 	}
 	if issues := config.Validate(c); len(issues) != 0 {
 		return fmt.Errorf("migrated config invalid: %s %s", issues[0].Path, issues[0].Code)
-	}
-	for _, item := range clamped {
-		fmt.Fprintf(os.Stderr, "timeout clamped: %s\n", item)
 	}
 	if !*expand {
 		fmt.Fprintln(os.Stderr, "compression unavailable: preserving all legacy events in expanded form")
@@ -394,16 +387,4 @@ func migrateCmd(a []string) error {
 	return nil
 }
 
-func clampTimeout(start, deadline string, timeoutSeconds int) (int, bool) {
-	startAt, e1 := time.Parse("15:04:05", start)
-	deadlineAt, e2 := time.Parse("15:04:05", deadline)
-	if e1 != nil || e2 != nil || timeoutSeconds <= 0 {
-		return timeoutSeconds, false
-	}
-	window := int(deadlineAt.Sub(startAt).Seconds())
-	if timeoutSeconds >= window && window > 1 {
-		return window - 1, true
-	}
-	return timeoutSeconds, false
-}
 func raw(s string) json.RawMessage { b, _ := json.Marshal(s); return b }

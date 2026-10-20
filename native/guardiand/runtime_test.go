@@ -34,10 +34,12 @@ func TestStartupMissedIsBatched(t *testing.T) {
 
 func TestLedgerTruncatesCorruptTailAndResumesSequence(t *testing.T) {
 	root := t.TempDir()
+	fc := newFakeClock(time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC))
 	l, err := openLedger(root, "2026-10-20")
 	if err != nil {
 		t.Fatal(err)
 	}
+	l.now = fc.Now
 	if err = l.append("INSTANCE_STATE", map[string]any{"event": "done"}); err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +51,10 @@ func TestLedgerTruncatesCorruptTailAndResumesSequence(t *testing.T) {
 	}
 	_, _ = f.WriteString("{\"seq\":2,\"truncated\":")
 	_ = f.Close()
+	original, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
 	l, err = openLedger(root, "2026-10-20")
 	if err != nil {
 		t.Fatal(err)
@@ -74,6 +80,111 @@ func TestLedgerTruncatesCorruptTailAndResumesSequence(t *testing.T) {
 	if len(records) != 3 || records[1].Seq != 2 || records[1].Type != "TAIL_TRUNCATED" || records[2].Seq != 3 || records[2].Type != "CHECK" {
 		t.Fatalf("tail not recovered: %#v", records)
 	}
+	data, _ := json.Marshal(records[1].Data)
+	var tail struct {
+		BackupPath string `json:"backup_path"`
+	}
+	_ = json.Unmarshal(data, &tail)
+	backup, err := os.ReadFile(tail.BackupPath)
+	if err != nil || string(backup) != string(original) || !strings.Contains(tail.BackupPath, ".corrupt-") {
+		t.Fatalf("corrupt ledger backup=%q err=%v", tail.BackupPath, err)
+	}
+}
+
+func TestLateWindowRunsAndMarksLedgerWithFakeClock(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	start, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:02:00", loc)
+	fc := newFakeClock(start)
+	script := filepath.Join(root, "ok.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	e := config.Event{ID: "late", Handler: "h", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:01:00"}, LateUntil: "09:03:00"}
+	c := config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, start: start, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, paused: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	r.schedule(start)
+	getState := func() instanceState { r.mu.Lock(); defer r.mu.Unlock(); return r.states[date+"/late"] }
+	waitFor(t, func() bool { return isTerminal(getState().Status) })
+	if st := getState(); st.Status != "SUCCEEDED" || !st.Late {
+		t.Fatalf("late result=%+v", st)
+	}
+	missed, active := startupClassify(c, start)
+	if len(missed) != 0 || len(active) != 1 {
+		t.Fatalf("late recovery classify missed=%d active=%d", len(missed), len(active))
+	}
+	fc.Advance(time.Minute)
+	missed, active = startupClassify(c, fc.Now())
+	if len(missed) != 1 || len(active) != 0 {
+		t.Fatalf("expired late recovery classify missed=%d active=%d", len(missed), len(active))
+	}
+	lateLedger := string(mustRead(t, filepath.Join(root, "ledger", date+".jsonl")))
+	if !strings.Contains(lateLedger, `"status":"LATE_RUN"`) || !strings.Contains(lateLedger, `"late":true`) {
+		t.Fatal("ledger omitted LATE_RUN marker")
+	}
+}
+
+func TestNotApplicableIsSkippedWithoutAlertUsingFakeClock(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:00", loc)
+	fc := newFakeClock(now)
+	script := filepath.Join(root, "na.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"not_applicable\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	e := config.Event{ID: "na", Handler: "h"}
+	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}}, root: root, loc: loc, clock: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
+	r.execute(Instance{ID: "na", EventID: "na", Start: "09:00:00", Deadline: "09:01:00"}, date)
+	if got := r.states[date+"/na"].Status; got != "SKIPPED_NA" {
+		t.Fatalf("status=%s", got)
+	}
+	if ledgerTypeCounts(t, root, date)["ALERT_OUT"] != 0 {
+		t.Fatal("not_applicable emitted an alert")
+	}
+}
+
+func TestSuccessfulHandlerResetsGateBlockAlertWithFakeClock(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
+	fc := newFakeClock(now)
+	script := filepath.Join(root, "ok.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	e := config.Event{ID: "after_block", Handler: "h"}
+	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}}, root: root, loc: loc, clock: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{date + "/after_block/GATE_BLOCKED_FIRST": true}, gateAlerted: map[string]bool{"h": true}}
+	r.execute(Instance{ID: "after_block", EventID: "after_block", Start: "10:00:00", Deadline: "10:01:00"}, date)
+	if r.gateAlerted["h"] || r.alertSeen[date+"/after_block/GATE_BLOCKED_FIRST"] {
+		t.Fatal("success did not reset gate alert suppression")
+	}
+}
+
+func mustRead(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 func TestFakeStartup40MissedUsesOneAlertRequest(t *testing.T) {
@@ -673,7 +784,7 @@ func TestGateDeadlineAndDailySummary(t *testing.T) {
 	now, _ := time.ParseInLocation(time.RFC3339, date+"T10:34:00+08:00", loc)
 	gateScript := filepath.Join(root, "gate.sh")
 	calls := filepath.Join(root, "gate-calls")
-	if err := os.WriteFile(gateScript, []byte("#!/bin/sh\necho x >> \"$GATE_CALLS\"\nprintf '{\"status\":\"not_ready\"}\\n'\n"), 0700); err != nil {
+	if err := os.WriteFile(gateScript, []byte("#!/bin/sh\necho x >> \"$GATE_CALLS\"\nprintf '{\"status\":\"not_ready\",\"reason\":\"source_stale\"}\\n'\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("GATE_CALLS", calls)
@@ -714,8 +825,33 @@ func TestGateDeadlineAndDailySummary(t *testing.T) {
 	_ = r.alert("GATE_BLOCKED", map[string]any{"events": []string{"gated"}, "summary": true})
 	_ = r.alert("GATE_BLOCKED", map[string]any{"events": []string{"gated"}, "summary": true})
 	counts := ledgerTypeCounts(t, root, date)
-	if counts["ALERT_OUT"] != 1 {
-		t.Fatalf("gate deadline summary alerts=%d, want one", counts["ALERT_OUT"])
+	if counts["ALERT_OUT"] != 2 {
+		t.Fatalf("gate first and daily summary alerts=%d, want two", counts["ALERT_OUT"])
+	}
+	ledgerBytes := mustRead(t, filepath.Join(root, "ledger", date+".jsonl"))
+	foundFirst := false
+	for _, line := range strings.Split(strings.TrimSpace(string(ledgerBytes)), "\n") {
+		var rec ledgerRecord
+		_ = json.Unmarshal([]byte(line), &rec)
+		if rec.Type != "ALERT_OUT" {
+			continue
+		}
+		encoded, _ := json.Marshal(rec.Data)
+		var alert struct {
+			Reason  string `json:"reason"`
+			Request struct {
+				Event      string `json:"event"`
+				Handler    string `json:"handler"`
+				GateReason string `json:"gate_reason"`
+			} `json:"request"`
+		}
+		_ = json.Unmarshal(encoded, &alert)
+		if alert.Reason == "GATE_BLOCKED_FIRST" {
+			foundFirst = alert.Request.Event == "gated" && alert.Request.Handler == "h" && alert.Request.GateReason == "source_stale"
+		}
+	}
+	if !foundFirst {
+		t.Fatal("first gate alert omitted event, handler, or gate reason")
 	}
 	_ = l.close()
 	l2, err := openLedger(root, date)
@@ -728,7 +864,7 @@ func TestGateDeadlineAndDailySummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = restarted.alert("GATE_BLOCKED", map[string]any{"events": []string{"gated"}, "summary": true})
-	if got := ledgerTypeCounts(t, root, date)["ALERT_OUT"]; got != 1 {
+	if got := ledgerTypeCounts(t, root, date)["ALERT_OUT"]; got != 2 {
 		t.Fatalf("gate summary repeated after restart: alerts=%d", got)
 	}
 }

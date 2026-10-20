@@ -76,6 +76,7 @@ type Event struct {
 	Args           map[string]any  `json:"args,omitempty"`
 	Gate           Gate            `json:"gate,omitempty"`
 	Timeout        string          `json:"timeout,omitempty"`
+	LateUntil      string          `json:"late_until,omitempty"`
 	Retry          Retry           `json:"retry,omitempty"`
 	OnDeadline     string          `json:"on_deadline,omitempty"`
 	Catchup        string          `json:"catchup,omitempty"`
@@ -182,19 +183,18 @@ func Validate(c Config) []Issue {
 		if start >= 0 && end >= 0 && start > end {
 			add(p+".trigger.deadline", "WINDOW_ORDER", "start must not exceed deadline")
 		}
-		win := int64(end - start)
-		if e.Trigger.Type == "at" {
-			win = durationSeconds(e.Trigger.Window)
-		}
-		if e.Trigger.Type == "interval" {
-			win = durationSeconds(e.Trigger.Window)
-		}
 		if e.Timeout != "" {
 			to := durationSeconds(e.Timeout)
 			if to <= 0 {
 				add(p+".timeout", "DURATION", "invalid positive duration")
-			} else if win >= 0 && to >= win {
-				add(p+".timeout", "TIMEOUT_WINDOW", "timeout must be shorter than window")
+			} else if to > int64(24*time.Hour) {
+				add(p+".timeout", "DURATION", "timeout must not exceed 24h")
+			}
+		}
+		if e.LateUntil != "" {
+			late := checkTime(p+".late_until", e.LateUntil)
+			if end >= 0 && late >= 0 && late < end {
+				add(p+".late_until", "LATE_UNTIL_ORDER", "late_until must not precede deadline")
 			}
 		}
 		if e.Handler != "" {

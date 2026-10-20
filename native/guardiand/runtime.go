@@ -70,6 +70,7 @@ func openLedger(root, date string) (*ledger, error) {
 	reader := bufio.NewReader(f)
 	var good int64
 	truncated := false
+	backup := ""
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
@@ -89,6 +90,29 @@ func openLedger(root, date string) (*ledger, error) {
 		}
 	}
 	if truncated {
+		backup = p + ".corrupt-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+		original, readErr := os.ReadFile(p)
+		if readErr != nil {
+			f.Close()
+			return nil, readErr
+		}
+		bf, createErr := os.OpenFile(backup, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0640)
+		if createErr != nil {
+			f.Close()
+			return nil, createErr
+		}
+		_, copyErr := bf.Write(original)
+		if copyErr == nil {
+			copyErr = bf.Sync()
+		}
+		closeErr := bf.Close()
+		if copyErr != nil || closeErr != nil {
+			f.Close()
+			if copyErr != nil {
+				return nil, copyErr
+			}
+			return nil, closeErr
+		}
 		if err = f.Truncate(good); err != nil {
 			f.Close()
 			return nil, err
@@ -99,7 +123,7 @@ func openLedger(root, date string) (*ledger, error) {
 		return nil, err
 	}
 	if truncated {
-		if err = l.append("TAIL_TRUNCATED", map[string]any{"valid_bytes": good}); err != nil {
+		if err = l.append("TAIL_TRUNCATED", map[string]any{"valid_bytes": good, "backup_path": backup}); err != nil {
 			f.Close()
 			return nil, err
 		}
@@ -140,6 +164,7 @@ type instanceState struct {
 	StartedAt   string `json:"started_at"`
 	CompletedAt string `json:"completed_at"`
 	LastError   string `json:"last_error"`
+	Late        bool   `json:"late,omitempty"`
 }
 type runState struct {
 	EventID   string        `json:"event_id"`
@@ -201,10 +226,13 @@ func startupClassify(c config.Config, now time.Time) (missed, active []Instance)
 	for _, x := range xs {
 		start, e1 := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Start, now.Location())
 		end, e2 := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, now.Location())
+		if x.LateUntil != "" {
+			end, e2 = time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.LateUntil, now.Location())
+		}
 		if e1 != nil || e2 != nil {
 			continue
 		}
-		if now.After(end) {
+		if !now.Before(end) {
 			missed = append(missed, x)
 		} else if !now.Before(start) {
 			active = append(active, x)
@@ -218,7 +246,11 @@ func triggerWindowAllowed(x Instance, date string, now time.Time, loc *time.Loca
 	if e != nil {
 		return e
 	}
-	end, e := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, loc)
+	cutoff := x.Deadline
+	if x.LateUntil != "" {
+		cutoff = x.LateUntil
+	}
+	end, e := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, loc)
 	if e != nil {
 		return e
 	}
@@ -252,6 +284,7 @@ type liveRunner struct {
 	alertMinutes     map[int64]int
 	alertDaily       int
 	gateBlocked      []string
+	gateAlerted      map[string]bool
 	idempotency      map[string]any
 	cfgPath          string
 }
@@ -361,7 +394,7 @@ func (r *liveRunner) applyStartup(now time.Time, missed, active []Instance) erro
 }
 func isTerminal(status string) bool {
 	switch status {
-	case "SUCCEEDED", "SUCCEEDED_DEGRADED", "FAILED_FINAL", "CIRCUIT_OPEN", "MISSED", "GATE_BLOCKED", "SKIPPED":
+	case "SUCCEEDED", "SUCCEEDED_DEGRADED", "FAILED_FINAL", "CIRCUIT_OPEN", "MISSED", "GATE_BLOCKED", "SKIPPED", "SKIPPED_NA":
 		return true
 	}
 	return false
@@ -429,6 +462,19 @@ func (r *liveRunner) recover() error {
 			}
 			if v.Op == "pause" || v.Op == "resume" {
 				r.paused[v.Event] = v.Op == "pause"
+			}
+		}
+		if rec.Type == "GATE_HANDLER_BLOCKED" || rec.Type == "GATE_HANDLER_RECOVERED" {
+			b, _ := json.Marshal(rec.Data)
+			var v struct {
+				Handler string `json:"handler"`
+			}
+			_ = json.Unmarshal(b, &v)
+			if v.Handler != "" {
+				if r.gateAlerted == nil {
+					r.gateAlerted = map[string]bool{}
+				}
+				r.gateAlerted[v.Handler] = rec.Type == "GATE_HANDLER_BLOCKED"
 			}
 		}
 	}
@@ -551,8 +597,13 @@ func (r *liveRunner) execute(x Instance, date string) {
 		r.classSlots[class] = slots
 	}
 	r.mu.Unlock()
-	st := instanceState{Status: "RUNNING", StartedAt: r.clock.Now().Format(time.RFC3339)}
-	if prior.Status == "RUNNING" {
+	deadlineAt, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
+	isLate := !r.clock.Now().Before(deadlineAt)
+	st := instanceState{Status: "RUNNING", StartedAt: r.clock.Now().Format(time.RFC3339), Late: isLate}
+	if isLate {
+		st.Status = "LATE_RUN"
+	}
+	if prior.Status == "RUNNING" || prior.Status == "LATE_RUN" {
 		st.Attempts = prior.Attempts
 		if prior.StartedAt != "" {
 			st.StartedAt = prior.StartedAt
@@ -565,16 +616,25 @@ func (r *liveRunner) execute(x Instance, date string) {
 		if d, e := time.ParseDuration(event.Gate.Poll); e == nil && d > 0 {
 			poll = d
 		}
-		deadline, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
+		cutoff := x.Deadline
+		if x.LateUntil != "" {
+			cutoff = x.LateUntil
+		}
+		deadline, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
 		ready := false
+		lastGateReason := "gate not ready"
 		for r.clock.Now().Before(deadline) {
 			if len(h.GateArgv) == 0 {
 				break
 			}
 			out, err := r.invoke(h.GateArgv, event, x, date, 1, true)
-			if err == nil && gateReady(out) {
+			if err == nil && gateReady(out) && r.clock.Now().Before(deadline) {
 				ready = true
 				break
+			}
+			lastGateReason = gateReason(out, err)
+			if err == nil && gateReady(out) && !r.clock.Now().Before(deadline) {
+				lastGateReason = "start deadline expired while waiting for gate"
 			}
 			left := deadline.Sub(r.clock.Now())
 			if left <= 0 {
@@ -589,13 +649,36 @@ func (r *liveRunner) execute(x Instance, date string) {
 			r.setState(x, date, instanceState{Status: "GATE_BLOCKED", LastError: "gate not ready", CompletedAt: r.clock.Now().Format(time.RFC3339)})
 			r.mu.Lock()
 			r.gateBlocked = append(r.gateBlocked, x.EventID)
+			if r.gateAlerted == nil {
+				r.gateAlerted = map[string]bool{}
+			}
+			first := !r.gateAlerted[event.Handler]
+			r.gateAlerted[event.Handler] = true
 			r.mu.Unlock()
+			if first {
+				_, _ = r.appendLedger(date, "GATE_HANDLER_BLOCKED", map[string]any{"handler": event.Handler, "event": x.EventID})
+				_ = r.alert("GATE_BLOCKED_FIRST", map[string]any{"event": x.EventID, "handler": event.Handler, "gate_reason": lastGateReason})
+			}
 			return
 		}
 	}
 	// Gate polling must not hold a class slot, or a blocked gate starves every other event of the class.
 	slots <- struct{}{}
 	defer func() { <-slots }()
+	cutoff := x.Deadline
+	if x.LateUntil != "" {
+		cutoff = x.LateUntil
+	}
+	startCutoff, parseErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
+	if parseErr == nil && !r.clock.Now().Before(startCutoff) {
+		r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: "START_DEADLINE_EXPIRED"})
+		_ = r.alert("MISSED", map[string]any{"event": x.EventID, "date": date, "error": "START_DEADLINE_EXPIRED"})
+		return
+	}
+	if !r.clock.Now().Before(deadlineAt) {
+		st.Late = true
+		st.Status = "LATE_RUN"
+	}
 	h := c.Handlers[event.Handler]
 	if len(h.Argv) == 0 {
 		r.setState(x, date, instanceState{Status: "FAILED_FINAL", Attempts: 1, LastError: "handler argv empty", CompletedAt: r.clock.Now().Format(time.RFC3339)})
@@ -614,15 +697,32 @@ func (r *liveRunner) execute(x Instance, date string) {
 	for n := st.Attempts + 1; n <= max; n++ {
 		st.Attempts = n
 		st.Status = "RUNNING"
+		if st.Late {
+			st.Status = "LATE_RUN"
+		}
 		r.setState(x, date, st)
 		out, err := r.invoke(h.Argv, event, x, date, n, false)
 		status, code, retryable := decodeResult(out, err)
+		if status == "not_applicable" {
+			r.setState(x, date, instanceState{Status: "SKIPPED_NA", Attempts: n, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339)})
+			return
+		}
 		if status == "ok" || status == "degraded" {
 			stateStatus := "SUCCEEDED"
 			if status == "degraded" {
 				stateStatus = "SUCCEEDED_DEGRADED"
 			}
-			r.setState(x, date, instanceState{Status: stateStatus, Attempts: n, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339)})
+			r.setState(x, date, instanceState{Status: stateStatus, Attempts: n, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), Late: st.Late})
+			r.mu.Lock()
+			wasBlocked := r.gateAlerted != nil && r.gateAlerted[event.Handler]
+			if wasBlocked {
+				r.gateAlerted[event.Handler] = false
+			}
+			delete(r.alertSeen, date+"/"+x.EventID+"/GATE_BLOCKED_FIRST")
+			r.mu.Unlock()
+			if wasBlocked {
+				_, _ = r.appendLedger(date, "GATE_HANDLER_RECOVERED", map[string]any{"handler": event.Handler, "event": x.EventID})
+			}
 			return
 		}
 		last = code
@@ -666,6 +766,22 @@ func (r *liveRunner) invoke(argv []string, e *config.Event, x Instance, date str
 	timeout := configDuration(e.Timeout)
 	if timeout <= 0 {
 		timeout = int64(60 * time.Second)
+	}
+	if gate {
+		cutoff := e.Trigger.Deadline
+		if e.LateUntil != "" {
+			cutoff = e.LateUntil
+		}
+		deadline, parseErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
+		if parseErr == nil {
+			remaining := deadline.Sub(r.clock.Now())
+			if remaining <= 0 {
+				return nil, fmt.Errorf("GATE_DEADLINE_EXPIRED")
+			}
+			if int64(remaining) < timeout {
+				timeout = int64(remaining)
+			}
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout))
 	defer cancel()
@@ -773,6 +889,21 @@ func gateReady(b []byte) bool {
 		return false
 	}
 	return v["ready"] == true || v["status"] == "ok" || v["status"] == "ready"
+}
+func gateReason(b []byte, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) > 0 {
+		var v struct {
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal([]byte(lines[len(lines)-1]), &v) == nil && v.Reason != "" {
+			return v.Reason
+		}
+	}
+	return "gate not ready"
 }
 func findEvent(c config.Config, id string) *config.Event {
 	for i := range c.Events {
@@ -944,6 +1075,7 @@ func (r *liveRunner) rollDate(wall time.Time) error {
 	r.start = wall
 	r.mu.Lock()
 	r.states = map[string]instanceState{}
+	r.gateAlerted = map[string]bool{}
 	for key := range r.alertSeen {
 		if !strings.HasPrefix(key, date+"/") {
 			delete(r.alertSeen, key)
@@ -969,7 +1101,11 @@ func (r *liveRunner) schedule(now time.Time) {
 	var missedNow []string
 	for _, x := range xs {
 		start, e1 := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Start, r.loc)
-		end, e2 := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
+		cutoff := x.Deadline
+		if x.LateUntil != "" {
+			cutoff = x.LateUntil
+		}
+		end, e2 := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
 		if e1 != nil || e2 != nil {
 			continue
 		}
