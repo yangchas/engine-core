@@ -256,9 +256,9 @@
         "partition_before_trigger": "D-1"
       },
       "cost": {
-        "class": "heavy",
-        "basis": "observed ~51s (C-line timing)",
-        "set_by": "claude 2026-10-20 default"
+        "class": "medium",
+        "basis": "measured C366 sandbox 2026-10-20: 11.5s median x3, 5227 rows",
+        "set_by": "claude 2026-10-21 from fw/research/C366/timings.json"
       },
       "fetch_job": {
         "argv": [
@@ -609,9 +609,9 @@
         "trigger_at": "08:50"
       },
       "cost": {
-        "class": "medium",
-        "basis": "part of prep_trade_day ~55s",
-        "set_by": "claude 2026-10-20 default"
+        "class": "light",
+        "basis": "measured C366 sandbox 2026-10-20: 0.9s median x3, 88816 rows",
+        "set_by": "claude 2026-10-21 from fw/research/C366/timings.json"
       },
       "fetch_job": {
         "argv": [
@@ -974,9 +974,9 @@
         "trigger_at": "08:50"
       },
       "cost": {
-        "class": "medium",
-        "basis": "inside prep",
-        "set_by": "claude 2026-10-20 default"
+        "class": "light",
+        "basis": "measured C366 sandbox 2026-10-20: 0.3s median x3",
+        "set_by": "claude 2026-10-21 from fw/research/C366/timings.json"
       },
       "fetch_job": {
         "argv": [
@@ -1027,9 +1027,9 @@
         "partition_before_trigger": "D-1"
       },
       "cost": {
-        "class": "medium",
-        "basis": "UNKNOWN duration",
-        "set_by": "claude 2026-10-20 default"
+        "class": "light",
+        "basis": "measured C366 sandbox 2026-10-20: 0.5s median x3, 5224 rows",
+        "set_by": "claude 2026-10-21 from fw/research/C366/timings.json"
       },
       "fetch_job": {
         "argv": [
@@ -1084,9 +1084,9 @@
         "trigger_at": "08:50"
       },
       "cost": {
-        "class": "medium",
-        "basis": "UNKNOWN",
-        "set_by": "claude 2026-10-20 default"
+        "class": "light",
+        "basis": "measured C366 sandbox 2026-10-20: 4.5s median x3, 5876 rows",
+        "set_by": "claude 2026-10-21 from fw/research/C366/timings.json"
       },
       "fetch_job": {
         "argv": [
