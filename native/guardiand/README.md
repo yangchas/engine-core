@@ -26,16 +26,23 @@ gate. `timeout` is the independent runtime budget (up to 24 hours). Optional
 start or resume after its deadline; if omitted, the event is missed at its
 deadline as before.
 
-For data events, `retry.until_late: true` keeps retryable handler failures in
-`RETRY_WAIT` through `late_until`; `retry.backoff` is the exponential base
-(capped at 10 minutes). Each retry wait is written to the ledger with its next
-attempt time, and emits no alert while waiting. At the cutoff, the event is
-`FAILED_FINAL` with `RETRIES_EXHAUSTED_BY_LATE_UNTIL` and one alert. Permanent
-failures and timeouts configured with `no_retry_on_timeout` remain immediate
-terminal failures. The generated config marks the first three Baostock probes
-(17:30, 17:40, 18:30) `silent_until_last`, so their cutoff is quiet; the 20:00
-probe alerts at its own cutoff. Auction, open, and close report events do not
-use `until_late`; their in-window degrade handling remains in effect.
+`retry.max_attempts` is the total failed-attempt limit for one instance, including
+all `RETRY_WAIT` rounds; zero or omission uses one attempt. An event with
+`retry.until_late: true` must set `late_until` and runs one attempt per round.
+Retryable failures wait `retry.backoff × 2^(attempts-1)` (default 60 seconds,
+capped at 10 minutes and at `late_until`). The attempt count and next due time
+are persisted, so a restart resumes the same retry sequence. Exhausting the
+attempt limit ends with `FAILED_FINAL` / `RETRIES_EXHAUSTED`; reaching
+`late_until` first ends with `RETRIES_EXHAUSTED_BY_LATE_UNTIL`.
+
+For events without `until_late`, retries run inside the event and delay by
+`retry.base × 2^(attempts-1)` (default 1 second, capped at 5 minutes). The
+generated config sets `max_attempts: 3` and `backoff: "60s"` for premarket,
+Kaipan fetch, postmarket, Baostock probe, calendar refresh, and night report
+data events. Other events retain their configured attempt limit. Events marked
+`silent_until_last` suppress the terminal retry alert; other exhausted events
+emit one alert. Auction, open, and close report events retain their in-window
+degrade handling.
 
 The local Unix socket is `<state-root>/guardiand.sock` (mode `0600`). Send one UTF-8 JSON line and read one response line. For example, Python can send `{"t":"req","id":"1","op":"status","args":{}}`; `hello` uses `{"t":"hello","proto":1,"client":"local"}`. Supported operations include `status`, `list`, `trigger`, `pause`, `resume`, `skip`, `reload`, and `config.validate`. In `fakeclock` mode, `clock.advance` advances the injected clock without sleeping.
 

@@ -282,6 +282,18 @@ func Validate(c Config) []Issue {
 				add(p+".retry.backoff", "DURATION", "backoff must be positive and at most 10m")
 			}
 		}
+		if e.Retry.MaxAttempts < 0 {
+			add(p+".retry.max_attempts", "RETRY_ATTEMPTS", "must be zero (default) or positive")
+		}
+		if e.Retry.Base != "" {
+			base, err := time.ParseDuration(e.Retry.Base)
+			if err != nil || base <= 0 || base > 5*time.Minute {
+				add(p+".retry.base", "DURATION", "base must be positive and at most 5m")
+			}
+		}
+		if e.Retry.UntilLate && e.LateUntil == "" {
+			add(p+".retry.until_late", "LATE_UNTIL_REQUIRED", "until_late requires late_until")
+		}
 		if e.LateUntil != "" {
 			late := checkTime(p+".late_until", e.LateUntil)
 			if end >= 0 && late >= 0 && late < end {

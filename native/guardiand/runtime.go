@@ -1099,7 +1099,11 @@ func (r *liveRunner) execute(x Instance, date string) {
 	var last string
 	cycleEnd := max
 	if event.Retry.UntilLate && event.LateUntil != "" {
-		cycleEnd = st.Attempts + max
+		if st.Attempts >= max {
+			r.finishRetriesExhausted(x, date, event, st)
+			return
+		}
+		cycleEnd = st.Attempts + 1
 	}
 	var lastRetryable bool
 	for n := st.Attempts + 1; n <= cycleEnd; n++ {
@@ -1176,15 +1180,15 @@ func (r *liveRunner) execute(x Instance, date string) {
 			<-slots
 			slotHeld = false
 		}
-		delay := time.Duration(n) * time.Second
-		if event.Retry.Base != "" {
-			if d, e := time.ParseDuration(event.Retry.Base); e == nil {
-				delay = d * time.Duration(n)
-			}
+		if !(event.Retry.UntilLate && event.LateUntil != "") {
+			r.waitClock(eventRetryDelay(event.Retry.Base, n))
 		}
-		r.waitClock(delay)
 	}
 	if lastRetryable && event.Retry.UntilLate && event.LateUntil != "" {
+		if st.Attempts >= max {
+			r.finishRetriesExhausted(x, date, event, st)
+			return
+		}
 		cutoff, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+event.LateUntil, r.loc)
 		if err == nil && r.clock.Now().Before(cutoff) {
 			delay := retryBackoff(event.Retry.Backoff, st.Attempts, max)
@@ -1219,20 +1223,39 @@ func retryBackoff(value string, attempts, maxAttempts int) time.Duration {
 	if d, err := time.ParseDuration(value); err == nil && d > 0 {
 		base = d
 	}
-	shift := 0
-	if maxAttempts > 0 && attempts > 0 {
-		shift = (attempts - 1) / maxAttempts
+	return exponentialDelay(base, attempts, 10*time.Minute)
+}
+
+func eventRetryDelay(value string, attempts int) time.Duration {
+	base := time.Second
+	if d, err := time.ParseDuration(value); err == nil && d > 0 {
+		base = d
 	}
-	if shift > 20 {
-		shift = 20
+	return exponentialDelay(base, attempts, 5*time.Minute)
+}
+
+func exponentialDelay(base time.Duration, attempts int, cap time.Duration) time.Duration {
+	if attempts < 1 {
+		attempts = 1
 	}
-	for i := 0; i < shift && base < 10*time.Minute; i++ {
+	for i := 1; i < attempts && base < cap; i++ {
+		if base > cap/2 {
+			return cap
+		}
 		base *= 2
 	}
-	if base > 10*time.Minute {
-		base = 10 * time.Minute
+	if base > cap {
+		return cap
 	}
 	return base
+}
+
+func (r *liveRunner) finishRetriesExhausted(x Instance, date string, event *config.Event, prior instanceState) {
+	st := instanceState{Status: "FAILED_FINAL", Attempts: prior.Attempts, StartedAt: prior.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: "RETRIES_EXHAUSTED"}
+	r.setState(x, date, st)
+	if !event.Retry.SilentUntilLast {
+		_ = r.alert("RETRIES_EXHAUSTED", map[string]any{"event": x.EventID, "date": date, "error": st.LastError})
+	}
 }
 
 func (r *liveRunner) finishLateRetries(x Instance, date string, event *config.Event, prior instanceState) {

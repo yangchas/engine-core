@@ -55,6 +55,10 @@ for event in cfg["events"]:
         retry["until_late"] = True
         retry["backoff"] = "60s"
         event["on_start"] = "reconcile"
+    if canonical_handler in {"premarket_data", "kaipan_fetch", "postmarket_data", "baostock_probe", "calendar_refresh", "night_report"}:
+        retry = event.setdefault("retry", {})
+        retry["max_attempts"] = 3
+        retry["backoff"] = "60s"
     if handler == "legacy_baostock_probe" and event_id.endswith(("1730", "1740", "1830")):
         event.setdefault("retry", {})["silent_until_last"] = True
 boot_events = [

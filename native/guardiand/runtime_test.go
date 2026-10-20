@@ -1056,16 +1056,175 @@ func TestRetryCountAndNoRetryOnTimeout(t *testing.T) {
 	}
 }
 
-func TestRetryBackoffIsExponentialPerExhaustedBatchAndCapped(t *testing.T) {
-	if got := retryBackoff("60s", 3, 3); got != time.Minute {
-		t.Fatalf("first exhausted batch delay=%s, want 1m", got)
+func TestRetryBackoffIsExponentialPerAttemptAndCapped(t *testing.T) {
+	if got := retryBackoff("60s", 3, 3); got != 4*time.Minute {
+		t.Fatalf("attempt 3 delay=%s, want 4m", got)
 	}
-	if got := retryBackoff("60s", 6, 3); got != 2*time.Minute {
-		t.Fatalf("second exhausted batch delay=%s, want 2m", got)
+	if got := retryBackoff("60s", 2, 3); got != 2*time.Minute {
+		t.Fatalf("attempt 2 delay=%s, want 2m", got)
 	}
 	if got := retryBackoff("10m", 100, 1); got != 10*time.Minute {
 		t.Fatalf("capped delay=%s, want 10m", got)
 	}
+}
+
+func TestUntilLateTotalAttemptsAreCappedAcrossRestarts(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation(time.RFC3339, date+"T10:34:00+08:00", loc)
+	script := filepath.Join(root, "always-fail.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"failed\",\"error_code\":\"TEMP\",\"retryable\":true}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	e := config.Event{ID: "capped", Handler: "h", Trigger: config.Trigger{Type: "window", Start: "10:30:00", Deadline: "10:34:30"}, LateUntil: "11:00:00", Retry: config.Retry{MaxAttempts: 3, UntilLate: true, Backoff: "60s"}}
+	x := Instance{ID: e.ID, EventID: e.ID, Start: "10:30:00", Deadline: "10:34:30", LateUntil: e.LateUntil}
+	fc := newFakeClock(now)
+	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}}, root: root, loc: loc, start: now, clock: fc, fake: fc, ledger: l, boot: "test", states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
+	r.execute(x, date)
+	waiting := r.states[date+"/"+e.ID]
+	if waiting.Status != "RETRY_WAIT" || waiting.Attempts != 1 || waiting.NextAttemptAt != now.Add(time.Minute).Format(time.RFC3339) {
+		t.Fatalf("first retry state=%+v", waiting)
+	}
+	// Rebuild state from the ledger to prove the cumulative attempt count survives restart.
+	r.states = map[string]instanceState{}
+	if err := r.recover(); err != nil {
+		t.Fatal(err)
+	}
+	if recovered := r.states[date+"/"+e.ID]; recovered.Attempts != 1 || recovered.NextAttemptAt != waiting.NextAttemptAt {
+		t.Fatalf("recovered retry state=%+v", recovered)
+	}
+	fc.Advance(time.Minute)
+	r.execute(x, date)
+	second := r.states[date+"/"+e.ID]
+	if second.Status != "RETRY_WAIT" || second.Attempts != 2 || second.NextAttemptAt != now.Add(3*time.Minute).Format(time.RFC3339) {
+		t.Fatalf("second retry state=%+v, want due at +3m", second)
+	}
+	fc.Advance(2 * time.Minute)
+	r.execute(x, date)
+	final := r.states[date+"/"+e.ID]
+	if final.Status != "FAILED_FINAL" || final.Attempts != 3 || final.LastError != "RETRIES_EXHAUSTED" || r.alertDaily != 1 {
+		t.Fatalf("exhausted state=%+v alerts=%d", final, r.alertDaily)
+	}
+}
+
+func TestRetryBackoffIsExponentialPerAttempt(t *testing.T) {
+	if got := retryBackoff("60s", 1, 3); got != time.Minute {
+		t.Fatalf("attempt 1 delay=%s", got)
+	}
+	if got := retryBackoff("60s", 2, 3); got != 2*time.Minute {
+		t.Fatalf("attempt 2 delay=%s, want 2m", got)
+	}
+}
+
+func TestUntilLateSuccessOnSecondAttemptAndSilentExhaustion(t *testing.T) {
+	t.Run("success on second attempt", func(t *testing.T) {
+		root, date := t.TempDir(), "2026-10-20"
+		loc, _ := time.LoadLocation("Asia/Shanghai")
+		now, _ := time.ParseInLocation(time.RFC3339, date+"T10:34:00+08:00", loc)
+		calls := filepath.Join(root, "calls")
+		script := filepath.Join(root, "fail-once.sh")
+		body := `#!/bin/sh
+n=0; [ -f "$CALLS" ] && n=$(cat "$CALLS"); n=$((n+1)); echo $n > "$CALLS"
+if [ $n -eq 1 ]; then printf '%s\n' '{"contract":1,"status":"failed","error_code":"TEMP","retryable":true}'; else printf '%s\n' '{"contract":1,"status":"ok"}'; fi
+`
+		if err := os.WriteFile(script, []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("CALLS", calls)
+		l, err := openLedger(root, date)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.close()
+		e := config.Event{ID: "success", Handler: "h", LateUntil: "11:00:00", Retry: config.Retry{MaxAttempts: 3, UntilLate: true, Backoff: "60s"}}
+		fc := newFakeClock(now)
+		r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}, EnvAllow: []string{"CALLS"}}}}, root: root, loc: loc, start: now, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
+		x := Instance{ID: e.ID, EventID: e.ID, Start: "10:30:00", Deadline: "10:34:30", LateUntil: e.LateUntil}
+		r.execute(x, date)
+		fc.Advance(time.Minute)
+		r.execute(x, date)
+		if got := r.states[date+"/"+e.ID]; got.Status != "SUCCEEDED" || got.Attempts != 2 {
+			t.Fatalf("second attempt result=%+v", got)
+		}
+	})
+
+	t.Run("silent checkpoint exhausts without alert", func(t *testing.T) {
+		root, date := t.TempDir(), "2026-10-20"
+		loc, _ := time.LoadLocation("Asia/Shanghai")
+		now, _ := time.ParseInLocation(time.RFC3339, date+"T10:34:00+08:00", loc)
+		script := filepath.Join(root, "always-fail.sh")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"failed\",\"error_code\":\"TEMP\",\"retryable\":true}'\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		l, err := openLedger(root, date)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.close()
+		e := config.Event{ID: "silent", Handler: "h", LateUntil: "11:00:00", Retry: config.Retry{MaxAttempts: 3, UntilLate: true, Backoff: "1s", SilentUntilLast: true}}
+		fc := newFakeClock(now)
+		r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}}, root: root, loc: loc, start: now, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
+		x := Instance{ID: e.ID, EventID: e.ID, Start: "10:30:00", Deadline: "10:34:30", LateUntil: e.LateUntil}
+		for i, advance := range []time.Duration{0, time.Minute, 2 * time.Minute} {
+			if advance > 0 {
+				fc.Advance(advance)
+			}
+			r.execute(x, date)
+			if i < 2 && r.states[date+"/"+e.ID].Status != "RETRY_WAIT" {
+				t.Fatalf("checkpoint %d state=%+v", i+1, r.states[date+"/"+e.ID])
+			}
+		}
+		if got := r.states[date+"/"+e.ID]; got.Status != "FAILED_FINAL" || got.Attempts != 3 || got.LastError != "RETRIES_EXHAUSTED" || r.alertDaily != 0 {
+			t.Fatalf("silent exhausted state=%+v alerts=%d", got, r.alertDaily)
+		}
+	})
+}
+
+func TestEventRetryRealClockUsesTwoAndFourSecondBackoff(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	script := filepath.Join(root, "fail-and-record.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ndate +%s%N >> \"$TIMES\"\nprintf '%s\\n' '{\"contract\":1,\"status\":\"failed\",\"error_code\":\"TEMP\",\"retryable\":true}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TIMES", filepath.Join(root, "times"))
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	start := time.Now()
+	e := config.Event{ID: "real_retry", Handler: "h", Retry: config.Retry{MaxAttempts: 3, Base: "2s"}}
+	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}, EnvAllow: []string{"TIMES"}}}}, root: root, loc: time.Local, start: start, clock: realClock{}, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
+	r.execute(Instance{ID: e.ID, EventID: e.ID, TriggerType: "startup"}, date)
+	if got := r.states[date+"/"+e.ID]; got.Status != "FAILED_FINAL" || got.Attempts != 3 {
+		t.Fatalf("real retry result=%+v", got)
+	}
+	b, err := os.ReadFile(filepath.Join(root, "times"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Fields(string(b))
+	if len(lines) != 3 {
+		t.Fatalf("recorded attempts=%d, want 3", len(lines))
+	}
+	var at [3]int64
+	for i, line := range lines {
+		at[i], err = strconv.ParseInt(line, 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, bounds := range [][2]int64{{1_800_000_000, 3_500_000_000}, {3_800_000_000, 5_500_000_000}} {
+		if delta := at[i+1] - at[i]; delta < bounds[0] || delta > bounds[1] {
+			t.Fatalf("attempt interval %d=%dns, expected approximately %d..%dns", i+1, delta, bounds[0], bounds[1])
+		}
+	}
+	t.Logf("real handler retries: attempts=3 intervals=%s,%s", time.Duration(at[1]-at[0]), time.Duration(at[2]-at[1]))
 }
 
 func TestRetryUntilLatePersistsWaitAndSucceedsWithoutAlert(t *testing.T) {
@@ -1084,8 +1243,8 @@ func TestRetryUntilLatePersistsWaitAndSucceedsWithoutAlert(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.close()
-	e := config.Event{ID: "until_late", Handler: "h", LateUntil: "10:35:00", Retry: config.Retry{MaxAttempts: 1, UntilLate: true, Backoff: "1s"}}
-	x := Instance{ID: e.ID, EventID: e.ID, Start: "10:30:00", Deadline: "10:34:30", LateUntil: e.LateUntil, MaxAttempts: 1}
+	e := config.Event{ID: "until_late", Handler: "h", LateUntil: "10:35:00", Retry: config.Retry{MaxAttempts: 3, UntilLate: true, Backoff: "1s"}}
+	x := Instance{ID: e.ID, EventID: e.ID, Start: "10:30:00", Deadline: "10:34:30", LateUntil: e.LateUntil, MaxAttempts: 3}
 	fc := newFakeClock(now)
 	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}, EnvAllow: []string{"CALLS"}}}}, root: root, loc: loc, start: now, clock: fc, fake: fc, ledger: l, boot: "test", states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
 	r.execute(x, date)
@@ -1144,7 +1303,7 @@ func TestRetryUntilLateExpiryFinalizesAndAlerts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.close()
-	e := config.Event{ID: "expiry", Handler: "h", Trigger: config.Trigger{Type: "window", Start: "10:30:00", Deadline: "10:34:00"}, LateUntil: "10:35:00", Retry: config.Retry{MaxAttempts: 1, UntilLate: true, Backoff: "60s"}}
+	e := config.Event{ID: "expiry", Handler: "h", Trigger: config.Trigger{Type: "window", Start: "10:30:00", Deadline: "10:34:00"}, LateUntil: "10:35:00", Retry: config.Retry{MaxAttempts: 3, UntilLate: true, Backoff: "60s"}}
 	fc := newFakeClock(now)
 	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}}, root: root, loc: loc, start: now, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
 	xs, _, err := instances(r.c, date)

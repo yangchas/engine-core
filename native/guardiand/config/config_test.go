@@ -38,6 +38,18 @@ func TestRetryUntilLateFieldsDecodeAndBackoffLimit(t *testing.T) {
 	t.Fatalf("backoff above 10m was accepted: %+v", issues)
 }
 
+func TestRetryConfigurationRejectsInvalidAttemptAndBase(t *testing.T) {
+	invalid := []byte(`{"schema_version":1,"config_version":1,"name":"x","timezone":"Asia/Shanghai","events":[{"id":"bad","trigger":{"type":"window","start":"09:00:00","deadline":"09:01:00"},"retry":{"max_attempts":-1,"base":"6m","until_late":true}}]}`)
+	_, issues := Decode(invalid)
+	found := map[string]bool{}
+	for _, issue := range issues {
+		found[issue.Code] = true
+	}
+	if !found["RETRY_ATTEMPTS"] || !found["DURATION"] || !found["LATE_UNTIL_REQUIRED"] {
+		t.Fatalf("invalid retry settings were not all rejected: %+v", issues)
+	}
+}
+
 func TestPhasesAndStartupTriggerConfig(t *testing.T) {
 	c := Config{SchemaVersion: 1, ConfigVersion: 1, Name: "x", Timezone: "Asia/Shanghai", Events: []Event{{
 		ID: "boot", Trigger: Trigger{Type: "startup", Order: 10},
