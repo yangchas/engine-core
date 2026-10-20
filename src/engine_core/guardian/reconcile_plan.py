@@ -50,7 +50,8 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
         catalog = json.loads(Path(catalog).read_text(encoding="utf-8"))
     rules = _rules()
     quiet = set(rules.get("quiet_phases_for_heavy", []))
-    cutoff = rules.get("heavy_rules", {}).get("pre_market_heavy_cutoff", "09:10")
+    cutoff = rules.get("heavy_cutoffs", {}).get(
+        "PRE_MARKET", rules.get("heavy_rules", {}).get("pre_market_heavy_cutoff", "09:10:00"))
     by_id = {item["id"]: item for item in items}
 
     due: dict[str, tuple[str | None, dict[str, Any]]] = {}
@@ -91,6 +92,10 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
         done.add(item_id)
         if not policy:
             plan.append({"id": item_id, "action": "NO_POLICY"})
+            return
+        if policy["mode"] == "manual":
+            plan.append({"id": item_id, "action": "NEEDS_OPERATOR", "partition": target,
+                         "reason": "manual_reference_import_required"})
             return
         if policy["mode"] == "gap_only":
             plan.append({"id": item_id, "action": "GAP", "partition": target, "valid_until": policy.get("valid_until")})

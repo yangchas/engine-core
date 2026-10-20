@@ -2,6 +2,28 @@ from datetime import datetime, timedelta, timezone
 
 from engine_core.guardian.reconcile_plan import reconcile_plan
 
+
+def test_registry_heavy_cutoff_is_the_shared_0910_boundary():
+    import json
+    from engine_core.guardian.registry import REGISTRY_PATH
+
+    rules = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+    assert rules["heavy_cutoffs"]["PRE_MARKET"] == "09:10:00"
+    assert rules["heavy_rules"]["pre_market_heavy_cutoff"] == "09:10:00"
+
+
+def test_manual_reference_items_are_operator_actions_without_gap_noise():
+    items = [
+        {"id": "stock_static", "artifact": {"catalog_dataset": "stock_static"},
+         "late_policy": {"mode": "manual", "trigger_at": "08:30", "depends_on": []},
+         "freshness": {"partition": "latest", "max_age_days": 8}},
+    ]
+    plan = reconcile_plan(datetime(2026, 10, 20, 9, 0, tzinfo=TZ), {"datasets": {}},
+                          registry=items, trade_date="2026-10-20", prev_trade_date="2026-10-19",
+                          phase="PRE_MARKET")
+    assert plan == [{"id": "stock_static", "action": "NEEDS_OPERATOR", "partition": "2026-10-20",
+                     "reason": "manual_reference_import_required"}]
+
 TZ = timezone(timedelta(hours=8))
 NAMES = ("limit_up_pool", "limit_reasons", "daily_kline", "daily_indicators", "daily_report_features", "ladder_daily",
          "stock_day_facts", "hot_plates", "hot_rank", "auction_stock_facts", "auction_points", "auction_panorama",

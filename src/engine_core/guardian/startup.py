@@ -352,6 +352,10 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
                     _append_gap(root, trade_date, action, clock.isoformat())
                 results.append({"id": item_id, "action": kind, "status": "recorded" if not dry_run else "dry_run",
                                 "elapsed_ms": round((time.monotonic() - started) * 1000)})
+            elif kind == "NEEDS_OPERATOR":
+                results.append({"id": item_id, "action": kind, "status": "needs_operator",
+                                "detail": action.get("reason", "manual_reference_import_required"),
+                                "partition": action.get("partition"), "elapsed_ms": 0})
             elif kind == "DEFER":
                 if not item.get("fetch_job"):
                     results.append({"id": item_id, "action": kind, "status": "failed",

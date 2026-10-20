@@ -497,7 +497,13 @@
         "force": "fetch regardless of freshness",
         "clear": "move aside to timestamped .bak; restore on failure"
       },
-      "notes": "No schedule event identified; ask plate-data owner about provider and cadence.",
+      "notes": "需人工/外部参考数据导入；参考 examples/import_reference_to_core_store.py。catalog 只有 2026-10-14 版，available_at 为脚本硬编码，真实刷新源未配置。",
+      "late_policy": {
+        "mode": "manual",
+        "trigger_at": "08:30",
+        "depends_on": [],
+        "set_by": "C360: no configured automatic refresh source"
+      },
       "guardian_event": null
     },
     {
@@ -525,13 +531,13 @@
         "force": "fetch regardless of freshness",
         "clear": "move aside to timestamped .bak; restore on failure"
       },
-      "notes": "name_map is represented by stock_static; ask data operator about refresh trigger and PIT semantics.",
+      "notes": "需人工/外部参考数据导入；参考 examples/import_reference_to_core_store.py。catalog 只有 2026-10-14 版，available_at 为脚本硬编码，真实刷新源未配置。",
       "guardian_event": "premarket_slice_0850",
       "late_policy": {
-        "mode": "fetch_now",
+        "mode": "manual",
         "valid_until": null,
         "depends_on": [],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "set_by": "C360: no configured automatic refresh source",
         "trigger_at": "08:30"
       },
       "cost": {
@@ -1008,7 +1014,7 @@
         "force": "recompute",
         "clear": "clear then rebuild"
       },
-      "notes": "Catalog contains this dataset. guardian owner event not directly assigned by current schedule.",
+      "notes": "C360: stock_day_facts 从 D 日 daily_kline 派生收盘代理 CLOSE_PRICE_PROXY；早盘字段不可由日K补齐。",
       "guardian_event": "postmarket_publish",
       "late_policy": {
         "mode": "fetch_now",
@@ -1024,6 +1030,20 @@
         "class": "medium",
         "basis": "UNKNOWN duration",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/fetch_registry_item.py",
+          "--item",
+          "stock_day_facts",
+          "--date",
+          "{date}",
+          "--artifact-root",
+          "{artifact_root}",
+          "--execute"
+        ],
+        "timeout_seconds": 300
       }
     },
     {
@@ -1051,7 +1071,7 @@
         "force": "recompute",
         "clear": "clear then rebuild"
       },
-      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
+      "notes": "C360: 输入为 PIT 可见 D-1 涨停池/热板/成员/原因及板块登记；晚到版本 NON_AUTHORITATIVE_AUDIT_ONLY，与 09:08 原快照并存。",
       "guardian_event": "premarket_slice_0850",
       "late_policy": {
         "mode": "fetch_now",
@@ -1067,6 +1087,20 @@
         "class": "medium",
         "basis": "UNKNOWN",
         "set_by": "claude 2026-10-20 default"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/fetch_registry_item.py",
+          "--item",
+          "stock_theme_assignment",
+          "--date",
+          "{date}",
+          "--artifact-root",
+          "{artifact_root}",
+          "--execute"
+        ],
+        "timeout_seconds": 300
       }
     },
     {
@@ -1289,15 +1323,15 @@
         "force": "fetch regardless of freshness",
         "clear": "move aside to timestamped .bak; restore on failure"
       },
-      "notes": "Alias requested by C352; no separate catalog dataset. Ask data operator whether it should remain a separate item.",
+      "notes": "需人工/外部参考数据导入；参考 examples/import_reference_to_core_store.py。catalog 只有 2026-10-14 版，available_at 为脚本硬编码，真实刷新源未配置。",
       "guardian_event": "premarket_slice_0850",
       "late_policy": {
-        "mode": "fetch_now",
+        "mode": "manual",
         "valid_until": null,
         "depends_on": [
           "stock_static"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
+        "set_by": "C360: no configured automatic refresh source",
         "trigger_at": "08:30"
       },
       "cost": {
@@ -1362,6 +1396,9 @@
     "CLOSE",
     "POST_MARKET"
   ],
+  "heavy_cutoffs": {
+    "PRE_MARKET": "09:10:00"
+  },
   "heavy_rules": {
     "max_concurrent_heavy": 1,
     "defer_if_load1_above_cores": true,
@@ -1375,6 +1412,6 @@
       "CLOSE_AUCTION"
     ],
     "if_consumer_needs_before_quiet": "use degrade chain / previous available version, labelled; fetch fully in the next quiet phase",
-    "pre_market_heavy_cutoff": "09:10"
+    "pre_market_heavy_cutoff": "09:10:00"
   }
 }
