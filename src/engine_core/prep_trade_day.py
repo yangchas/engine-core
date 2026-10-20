@@ -108,6 +108,45 @@ def _latest_step(name: str, dataset: str, before: str, catalog: ArtifactCatalog,
     return item
 
 
+def build_and_commit_stock_theme_assignment(
+        catalog: ArtifactCatalog, *, trade_date: str, previous_trade_date: str,
+        pool_labels: dict[str, list[dict[str, str]]], reason_rows: list[dict[str, Any]],
+        static_themes: dict[str, list[dict[str, str]]],
+        hot_plate_names: dict[str, list[dict[str, str]]],
+        members: dict[str, list[str]], trading_dates: Iterable[str],
+        available_at: str, source_versions: dict[str, Any] | None, as_of: str,
+        row_prefix: dict[str, Any] | None = None,
+        row_metadata: dict[str, Any] | None = None,
+        manifest_metadata: dict[str, Any] | None = None,
+        commit_catalog: bool = True,
+        source: str = "prep_trade_day") -> dict[str, Any]:
+    """Build and publish a theme assignment from retained inputs only.
+
+    Callers provide provenance and authority metadata so normal preparation
+    and late audit rebuilds share the same assignment builder and catalog path.
+    """
+    from .stock_theme_assignment import build_stock_theme_assignments
+
+    assignment = build_stock_theme_assignments(
+        trade_date=trade_date, previous_trade_date=previous_trade_date,
+        pool_labels=pool_labels, reason_rows=reason_rows,
+        static_themes=static_themes, hot_plate_names=hot_plate_names,
+        members=members, trading_dates=trading_dates)
+    prefix = row_prefix or {}
+    suffix = row_metadata or {}
+    rows = [{**prefix, **row, **suffix} for row in assignment.values()]
+    manifest = {"trade_date": trade_date, "point_in_time_date": previous_trade_date,
+                "used_date": previous_trade_date, "available_at": available_at,
+                "as_of": as_of,
+                "business_status": "READY", "quality": {"status": "READY"}}
+    if source_versions is not None:
+        manifest["source_versions"] = source_versions
+    manifest.update(manifest_metadata or {})
+    if not commit_catalog:
+        return {"rows": rows, "manifest": manifest, "row_count": len(rows)}
+    return catalog.commit("stock_theme_assignment", trade_date, rows, manifest, source=source)
+
+
 def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
                                   previous: str, asof: str, redis: Any) -> bool:
     """Build the target-day theme view from PIT-ready Core artifacts only."""
@@ -194,7 +233,6 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
         return False
     # Keep a cold, immutable D06 assignment artifact beside the report snapshot.
     # The existing theme snapshot remains for compatibility during migration.
-    from .stock_theme_assignment import build_stock_theme_assignments
     from .limit_reason_theme import _pool_rows, _pool_values
     pool_labels: dict[str, list[dict[str, str]]] = {}
     for raw in _pool_rows(pool[0]):
@@ -240,15 +278,6 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
             hot_by_code[code] = {"id": code, "name": name}
     hot_by_symbol = {symbol: [hot_by_code[code] for code in sorted(codes) if code in hot_by_code]
                      for symbol, codes in member_codes.items()}
-    assignment = build_stock_theme_assignments(
-        trade_date=trade_date, previous_trade_date=previous,
-        pool_labels=pool_labels, reason_rows=assignment_reasons, static_themes=static_by_symbol,
-        hot_plate_names=hot_by_symbol,
-        members={symbol: sorted(codes | {item["id"] for item in pool_labels.get(symbol, [])})
-                 for symbol, codes in member_codes.items()} |
-                 {symbol: [item["id"] for item in candidates]
-                  for symbol, candidates in pool_labels.items()},
-        trading_dates=calendar_dates)
     inputs = {"trade_date": trade_date, "previous_trade_date": previous,
               "pool_version": pool[1].get("version"), "hot_version": hot[1].get("version") if hot else None,
               "registry_version": registry_manifest.get("version"),
@@ -261,20 +290,26 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
     input_version = theme_snapshot_version(inputs)
     visibility_sha256 = hashlib.sha256(json.dumps(
         inputs["visibility"], ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-    assignment_rows = [{"trade_date": trade_date, "previous_trade_date": previous,
-                        "used_date": previous,
-                        "as_of": asof, "input_version": input_version,
-                        "visibility_sha256": visibility_sha256, **row}
-                       for row in assignment.values()]
-    cold_manifest = {"trade_date": trade_date, "point_in_time_date": previous,
-                     "available_at": asof, "as_of": asof,
-                     "input_version": input_version, "used_date": previous,
-                     "visibility_sha256": visibility_sha256,
-                     "authority": "NON_AUTHORITATIVE_AUDIT_ONLY",
-                     "report_consumed": False,
-                     "business_status": "READY", "quality": {"status": "READY"}}
-    catalog.commit("stock_theme_assignment", trade_date, assignment_rows,
-                   cold_manifest, source="prep_trade_day")
+    build_and_commit_stock_theme_assignment(
+        catalog, trade_date=trade_date, previous_trade_date=previous,
+        pool_labels=pool_labels, reason_rows=assignment_reasons,
+        static_themes=static_by_symbol, hot_plate_names=hot_by_symbol,
+        members={symbol: sorted(codes | {item["id"] for item in pool_labels.get(symbol, [])})
+                 for symbol, codes in member_codes.items()} |
+                {symbol: [item["id"] for item in candidates]
+                 for symbol, candidates in pool_labels.items()},
+        trading_dates=calendar_dates, available_at=asof,
+        source_versions=None,
+        as_of=asof,
+        row_prefix={"trade_date": trade_date, "previous_trade_date": previous,
+                    "used_date": previous, "as_of": asof,
+                    "input_version": input_version,
+                    "visibility_sha256": visibility_sha256},
+        manifest_metadata={"input_version": input_version, "used_date": previous,
+                           "visibility_sha256": visibility_sha256,
+                           "authority": "NON_AUTHORITATIVE_AUDIT_ONLY",
+                           "report_consumed": False},
+        source="prep_trade_day")
     return write_theme_snapshot_cache(
         redis, trade_date, previous, snapshot, as_of=asof,
         version=theme_snapshot_version(inputs))

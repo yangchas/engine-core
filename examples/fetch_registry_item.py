@@ -39,23 +39,9 @@ def _previous(root, day):
     return previous_trade_date(root, day)
 
 
-def _stock_day_facts_from_rows(day, source_rows):
-    facts = []
-    for row in source_rows:
-        symbol = str(row.get("symbol", "")).zfill(6)
-        if not symbol.strip("0"):
-            continue
-        facts.append({"symbol": symbol, "trade_date": day, "code": row.get("code"),
-                      "universe_version": row.get("universe_version"), "close": row.get("close"),
-                      "pre_close": row.get("pre_close"), "pct_chg": row.get("pct_chg"),
-                      "amount_yuan": row.get("amount_yuan", row.get("amount")),
-                      "volume_shares": row.get("volume"), "fact_source": "daily_kline",
-                      "quality": "CLOSE_PRICE_PROXY"})
-    return facts
-
-
 def fetch_item(item: str, day: str, artifact_root: str | Path, *, execute: bool = False):
     from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.data_pipeline.ops import derive_stock_day_facts
     root = Path(artifact_root).expanduser()
     catalog = ArtifactCatalog(root)
     if item not in {"stock_day_facts", "stock_theme_assignment"}:
@@ -65,9 +51,8 @@ def fetch_item(item: str, day: str, artifact_root: str | Path, *, execute: bool 
         if source is None:
             return {"status": "failed", "error": "daily_kline_missing", "retryable": True}
         rows, source_manifest = source
-        facts = _stock_day_facts_from_rows(day, rows)
-        for fact in facts:
-            fact["source_version"] = source_manifest.get("version")
+        facts, _quality = derive_stock_day_facts(
+            day, rows, {"source_version": source_manifest.get("version")})
         available_at = datetime.now(TZ).isoformat()
         manifest = {"trade_date": day, "as_of": available_at, "available_at": available_at,
                     "source_dataset": "daily_kline", "source_version": source_manifest.get("version"),
@@ -97,7 +82,7 @@ def fetch_item(item: str, day: str, artifact_root: str | Path, *, execute: bool 
         missing.append("plate_registry")
     if missing:
         return {"status": "failed", "error": "inputs_missing:" + ",".join(missing), "retryable": True}
-    from engine_core.stock_theme_assignment import build_stock_theme_assignments
+    from engine_core.prep_trade_day import build_and_commit_stock_theme_assignment
     pool_rows, pool_manifest = loaded["limit_up_pool"]
     hot_rows, hot_manifest = loaded["hot_plates"]
     member_rows, member_manifest = loaded["plate_members"]
@@ -151,27 +136,31 @@ def fetch_item(item: str, day: str, artifact_root: str | Path, *, execute: bool 
             hot_codes[code] = {"id": code, "name": name}
     hot_by_symbol = {sym: [hot_codes[code] for code in sorted(codes) if code in hot_codes]
                      for sym, codes in members.items()}
-    assignment = build_stock_theme_assignments(
-        trade_date=day, previous_trade_date=previous, pool_labels=pool_labels,
-        reason_rows=reasons, static_themes={s: [{"id": c, "name": names[c]} for c in cs if c in names]
-                                                 for s, cs in members.items()},
-        hot_plate_names=hot_by_symbol, members={s: sorted(cs) for s, cs in members.items()},
-        trading_dates=trading_dates)
     available_at = datetime.now(TZ).isoformat()
-    rows = [{**row, "late_audit_rebuild": True,
-             "authority": "NON_AUTHORITATIVE_AUDIT_ONLY"} for row in assignment.values()]
-    manifest = {"trade_date": day, "point_in_time_date": previous, "used_date": previous,
-                "available_at": available_at, "as_of": previous + "T23:59:59+08:00",
-                "late_audit_rebuild": True, "authority": "NON_AUTHORITATIVE_AUDIT_ONLY",
-                "report_consumed": False, "business_status": "READY", "quality": {"status": "READY"},
-                "source_versions": {"pool": pool_manifest.get("version"), "hot": hot_manifest.get("version"),
-                                    "members": member_manifest.get("version"),
-                                    "reasons": reason_versions,
-                                    "registry": registry[1].get("version")}}
-    result = {"item": item, "trade_date": day, "rows": len(rows), "read_only": not execute,
+    manifest_fields = {"late_audit_rebuild": True,
+                       "authority": "NON_AUTHORITATIVE_AUDIT_ONLY",
+                       "report_consumed": False}
+    source_versions = {"pool": pool_manifest.get("version"), "hot": hot_manifest.get("version"),
+                       "members": member_manifest.get("version"), "reasons": reason_versions,
+                       "registry": registry[1].get("version")}
+    committed = build_and_commit_stock_theme_assignment(
+        catalog, trade_date=day, previous_trade_date=previous,
+        pool_labels=pool_labels, reason_rows=reasons,
+        static_themes={s: [{"id": c, "name": names[c]} for c in cs if c in names]
+                       for s, cs in members.items()},
+        hot_plate_names=hot_by_symbol,
+        members={s: sorted(cs) for s, cs in members.items()},
+        trading_dates=trading_dates, available_at=available_at,
+        source_versions=source_versions, as_of=previous + "T23:59:59+08:00",
+        row_metadata={"late_audit_rebuild": True,
+                      "authority": "NON_AUTHORITATIVE_AUDIT_ONLY"},
+        manifest_metadata=manifest_fields, commit_catalog=execute,
+        source="late_audit_rebuild")
+    row_count = committed["row_count"]
+    result = {"item": item, "trade_date": day, "rows": row_count, "read_only": not execute,
               "late_audit_rebuild": True, "authority": "NON_AUTHORITATIVE_AUDIT_ONLY"}
     if execute:
-        result["version"] = catalog.commit(item, day, rows, manifest, source="late_audit_rebuild")["version"]
+        result["version"] = committed["version"]
     return {"status": "ok", **result}
 
 

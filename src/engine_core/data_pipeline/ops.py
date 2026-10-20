@@ -17,6 +17,29 @@ from ..live_session import append_auction_amount_baseline
 from .trade_calendar import TradeCalendarStore
 
 
+def derive_stock_day_facts(day: str, source_rows: Iterable[Mapping[str, Any]],
+                           metadata: Mapping[str, Any] | None = None
+                           ) -> tuple[list[dict[str, Any]], str]:
+    """Derive close-price proxy facts from daily bars without side effects."""
+    metadata = metadata or {}
+    facts = []
+    for source_row in source_rows:
+        symbol = str(source_row.get("symbol", "")).zfill(6)
+        if not symbol.strip("0"):
+            continue
+        fact = {"symbol": symbol, "trade_date": day, "code": source_row.get("code"),
+                "universe_version": source_row.get("universe_version"),
+                "close": source_row.get("close"), "pre_close": source_row.get("pre_close"),
+                "pct_chg": source_row.get("pct_chg"),
+                "amount_yuan": source_row.get("amount_yuan", source_row.get("amount")),
+                "volume_shares": source_row.get("volume"),
+                "fact_source": "daily_kline", "quality": "CLOSE_PRICE_PROXY"}
+        if metadata.get("source_version") is not None:
+            fact["source_version"] = metadata["source_version"]
+        facts.append(fact)
+    return facts, "CLOSE_PRICE_PROXY"
+
+
 class FileLock:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -143,18 +166,7 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                     manifest_path = runner.catalog.locate("daily_kline", day)
                     if manifest_path is None: raise RuntimeError("daily_kline_artifact_required")
                     source_rows = runner.catalog.read_rows(manifest_path)
-                    facts = []
-                    for source_row in source_rows:
-                        symbol = str(source_row.get("symbol", "")).zfill(6)
-                        if not symbol.strip("0"): continue
-                        facts.append({"symbol": symbol, "trade_date": day,
-                            "code": source_row.get("code"),
-                            "universe_version": source_row.get("universe_version"),
-                            "close": source_row.get("close"), "pre_close": source_row.get("pre_close"),
-                            "pct_chg": source_row.get("pct_chg"),
-                            "amount_yuan": source_row.get("amount_yuan", source_row.get("amount")),
-                            "volume_shares": source_row.get("volume"),
-                            "fact_source": "daily_kline", "quality": "CLOSE_PRICE_PROXY"})
+                    facts, _quality = derive_stock_day_facts(day, source_rows)
                     return {"rows": facts, "expected_count": len(facts),
                             "partial": not bool(facts)}
                 fetch = fetch_stock_day_facts
