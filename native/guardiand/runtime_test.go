@@ -1721,3 +1721,18 @@ func TestKill9RestartRestoresAttemptsMissedSummaryAndSocketIdem(t *testing.T) {
 		t.Fatalf("handler attempts after kill/restart=%v, want [1 2]", attempts)
 	}
 }
+
+func TestDecodeResultKeepsHandlerDetailOnNonZeroExit(t *testing.T) {
+	out := []byte(`{"contract":1,"status":"failed","error_code":"TYPEERROR","retryable":true,"detail":"ladder boom"}` + "\n")
+	_, code, retry, detail := decodeResult(out, exec.Command("sh", "-c", "exit 75").Run())
+	if code != "INTERNAL_ERROR" || !retry || detail != "TYPEERROR: ladder boom" {
+		t.Fatalf("got %s %v %q", code, retry, detail)
+	}
+	status, _, _, objDetail := decodeResult([]byte(`{"contract":1,"status":"ok","error_code":"","retryable":false,"detail":{"plan":[]}}`+"\n"), nil)
+	if status != "ok" || objDetail == "" {
+		t.Fatalf("object detail must not break contract parsing: %s %q", status, objDetail)
+	}
+	if _, code, _, _ := decodeResult([]byte("garbage\n"), nil); code != "CONTRACT_INVALID" {
+		t.Fatal(code)
+	}
+}

@@ -1215,7 +1215,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 		}
 		r.setState(x, date, st)
 		out, err := r.invoke(h.Argv, event, x, date, n, false)
-		status, code, retryable := decodeResult(out, err)
+		status, code, retryable, detail := decodeResult(out, err)
 		if status == "not_applicable" {
 			r.setState(x, date, instanceState{Status: "SKIPPED_NA", Attempts: n, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), DataDate: x.DataDate})
 			return
@@ -1272,7 +1272,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 		}
 		last = code
 		lastRetryable = retryable && !(code == "HANDLER_TIMEOUT" && event.Retry.NoRetryOnTimeout)
-		_, _ = r.appendLedger(date, "FAILURE_OBSERVED", map[string]any{"event": x.EventID, "date": date, "attempt": n, "error_code": code, "retryable": lastRetryable})
+		_, _ = r.appendLedger(date, "FAILURE_OBSERVED", map[string]any{"event": x.EventID, "date": date, "attempt": n, "error_code": code, "retryable": lastRetryable, "detail": detail})
 		if !lastRetryable || n == cycleEnd {
 			break
 		}
@@ -1485,30 +1485,47 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 	return n, nil
 }
 func (b *limitedBuffer) Bytes() []byte { return b.b }
-func decodeResult(out []byte, err error) (status, code string, retry bool) {
-	if err != nil {
-		if strings.Contains(err.Error(), "HANDLER_TIMEOUT") {
-			return "failed", "HANDLER_TIMEOUT", true
-		}
-		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 64 {
-			return "failed", "CONFIG_ERROR", false
-		}
-		return "failed", "INTERNAL_ERROR", true
+func decodeResult(out []byte, err error) (status, code string, retry bool, detail string) {
+	var v struct {
+		Contract  int             `json:"contract"`
+		Status    string          `json:"status"`
+		ErrorCode string          `json:"error_code"`
+		Retryable bool            `json:"retryable"`
+		Detail    json.RawMessage `json:"detail"`
 	}
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) == 0 {
-		return "failed", "CONTRACT_INVALID", false
+	parsed := json.Unmarshal([]byte(lines[len(lines)-1]), &v) == nil && v.Contract == 1
+	detailText := strings.TrimSpace(string(v.Detail))
+	var asString string
+	if json.Unmarshal(v.Detail, &asString) == nil {
+		detailText = asString
 	}
-	var v struct {
-		Contract  int    `json:"contract"`
-		Status    string `json:"status"`
-		ErrorCode string `json:"error_code"`
-		Retryable bool   `json:"retryable"`
+	if len(detailText) > 300 {
+		detailText = detailText[:300]
 	}
-	if json.Unmarshal([]byte(lines[len(lines)-1]), &v) != nil || v.Contract != 1 {
-		return "failed", "CONTRACT_INVALID", false
+	if err != nil {
+		if strings.Contains(err.Error(), "HANDLER_TIMEOUT") {
+			return "failed", "HANDLER_TIMEOUT", true, ""
+		}
+		// A non-zero exit that still printed a contract-1 failure keeps the INTERNAL_ERROR class (retry rules key on it)
+		// but the handler's own code and detail are recorded instead of being dropped.
+		if parsed && v.Status == "failed" && v.ErrorCode != "" && v.Retryable {
+			if len(detailText) > 0 {
+				detailText = v.ErrorCode + ": " + detailText
+			} else {
+				detailText = v.ErrorCode
+			}
+			return "failed", "INTERNAL_ERROR", true, detailText
+		}
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 64 {
+			return "failed", "CONFIG_ERROR", false, ""
+		}
+		return "failed", "INTERNAL_ERROR", true, err.Error()
 	}
-	return v.Status, v.ErrorCode, v.Retryable
+	if !parsed {
+		return "failed", "CONTRACT_INVALID", false, ""
+	}
+	return v.Status, v.ErrorCode, v.Retryable, detailText
 }
 func gateReady(b []byte) bool {
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
