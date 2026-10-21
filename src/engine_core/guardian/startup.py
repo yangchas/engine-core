@@ -293,7 +293,11 @@ def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | P
             continue
     has_committed_artifact = isinstance(payload.get("version"), str) and isinstance(payload.get("row_count"), int)
     explicit_failure = payload.get("status") in {"failed", "error"}
-    if completed.returncode or explicit_failure or (payload.get("status") not in {"ok", "degraded"} and not has_committed_artifact):
+    # Jobs that report no "status" at all (reindex: {"cache_rows":..,"days_reindexed":..}, backfills) succeed on exit 0
+    # with a non-empty JSON result; an empty/unparseable stdout or an unknown explicit status stays a failure.
+    reported_ok = bool(payload) and "status" not in payload and not payload.get("error")
+    if completed.returncode or explicit_failure or not (
+            payload.get("status") in {"ok", "degraded"} or has_committed_artifact or reported_ok):
         stderr = completed.stderr or ""
         error_code = "FETCH_EXIT_" + str(completed.returncode) if completed.returncode else str(
             payload.get("error_code") or "FETCH_JOB_FAILED")

@@ -268,3 +268,20 @@ def test_boot_apply_plan_runs_dependency_layers_and_propagates_failure(tmp_path,
          "lane": "parallel", "depends_on": []},
     ], tmp_path, now="2026-10-20T09:36:00+08:00", phase="OPEN")
     assert calls == ["plate_members", "stock_theme_assignment"]
+
+
+def test_fetch_job_without_status_key_succeeds_on_exit_zero_but_empty_or_explicit_failure_does_not(monkeypatch):
+    """Shape of the real reindex job output on 2026-10-21: {"cache_rows": 5218, "days_reindexed": 1, ...} (no status)."""
+    import sys
+    import pytest
+    from engine_core.guardian import startup
+
+    def item(code):
+        return {"id": "x", "fetch_job": {"argv": [sys.executable, "-c", code], "timeout_seconds": 20}}
+
+    ok = startup._run_fetch_job(item('import json;print(json.dumps(dict(cache_rows=5218,days_reindexed=1)))'), "2026-10-21", 20)
+    assert ok["days_reindexed"] == 1
+    for code in ("print('no json at all')", 'import json;print(json.dumps(dict(status="failed")))',
+                 'import json;print(json.dumps(dict(error="boom")))', 'import json;print(json.dumps(dict(status="weird")))'):
+        with pytest.raises(startup.FetchJobError):
+            startup._run_fetch_job(item(code), "2026-10-21", 20)
