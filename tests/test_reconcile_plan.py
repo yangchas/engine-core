@@ -105,3 +105,12 @@ def test_retired_item_is_never_planned_and_production_registry_has_no_policyless
     plan = reconcile_plan(now, {"datasets": {}}, trade_date="2026-10-21",
                           prev_trade_date="2026-10-20", phase="MIDDAY_BREAK")
     assert not [p for p in plan if p["action"] == "NO_POLICY"]
+
+
+def test_retired_registry_item_is_reported_retired_not_missing_in_health():
+    from engine_core.guardian.registry import load_registry, stale_items
+
+    now = datetime(2026, 10, 21, 16, 45, tzinfo=TZ)
+    states = {item["id"]: item for item in stale_items(now, {"datasets": {}}, load_registry(),
+                                                       trade_date="2026-10-21", prev_trade_date="2026-10-20")}
+    assert states["auction_points_raw"]["status"] == "RETIRED"

@@ -144,6 +144,10 @@ def stale_items(now: datetime, catalog: str | Path | Mapping[str, Any],
     for item in items:
         dataset = item["artifact"].get("catalog_dataset")
         rule = item["freshness"]
+        if item.get("retired"):
+            result.append({"id": item["id"], "status": "RETIRED", "dataset": dataset,
+                           "reason": str(item["retired"].get("reason", ""))[:120]})
+            continue
         if not dataset:
             result.append({"id": item["id"], "status": "UNKNOWN", "reason": "no catalog dataset"})
             continue
