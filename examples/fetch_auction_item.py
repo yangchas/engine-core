@@ -125,8 +125,8 @@ def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catal
         prior_plate_dates = (value for value in plate_dates if value < day)
         # Yesterday's pool must be the immediately preceding trade day: an older day is stale, never a stand-in.
         try:
-            from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
-            previous_day = TradeCalendarStore(source_root).previous_trade_date(day).isoformat()
+            from engine_core.trade_day_context import previous_trade_date as context_previous
+            previous_day = context_previous(source_root, day)
         except Exception:
             previous_day = None
         prior_pool_dates = [previous_day] if previous_day and previous_day in pool_dates else []

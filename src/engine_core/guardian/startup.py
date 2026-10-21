@@ -31,9 +31,11 @@ def _calendar(root: Path, trade_date: str) -> tuple[dict[str, Any], dict[str, An
     matrix = store.load()
     if not matrix or not matrix.get("lit_from", "") <= trade_date <= matrix.get("lit_to", ""):
         raise ValueError("calendar_missing_or_uncovered")
-    trading = store.is_trading_day(trade_date)
-    previous = store.previous_trade_date(trade_date).isoformat()
-    following = store.next_trade_date(trade_date).isoformat()
+    from ..trade_day_context import load_context
+    context = load_context(root, trade_date)
+    trading = context["today_is_trading_day"]
+    previous = context["prev_trade_date"]
+    following = context["next_trade_date"]
     days = matrix.get("days", [])
     index = next(i for i, item in enumerate(days) if item["d"] == trade_date)
     window = days[max(0, index - 3):index + 4]
@@ -55,6 +57,13 @@ def boot_trade_day(trade_date: str, root: str | Path, *, probes: bool = True) ->
         return _result("failed", {"trade_date": trade_date, "calendar": "UNKNOWN"},
                        error_code="CALENDAR_UNKNOWN", retryable=True)
     detail: dict[str, Any] = {"trade_date": trade_date, **summary}
+    try:
+        from ..trade_day_context import refresh_context
+        context = refresh_context(root, trade_date)
+        detail["day_context"] = {key: context[key] for key in ("today", "yesterday", "tomorrow", "prev_trade_date",
+                                                              "prev2_trade_date", "next_trade_date", "next2_trade_date")}
+    except Exception as exc:  # the persisted copy is a convenience; consumers recompute from the calendar
+        detail["day_context"] = "UNWRITTEN:" + type(exc).__name__
     if probes:
         # Historical auction evidence is strictly advisory and cannot affect the calendar verdict.
         try:

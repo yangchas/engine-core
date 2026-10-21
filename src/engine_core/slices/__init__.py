@@ -813,15 +813,14 @@ def trading_dates_from_catalog(catalog: Any) -> list[str]:
 
 def previous_trade_date(catalog: Any, trade_date: str) -> str | None:
     """Find the previous date backed by Core calendar data, or fail closed."""
-    from ..data_pipeline.trade_calendar import TradeCalendarStore
+    from ..trade_day_context import previous_trade_date as context_previous
     root = getattr(catalog, "root", None)
-    store = TradeCalendarStore(root) if root is not None else None
-    if store and store.load():
-        try:
-            return store.previous_trade_date(trade_date).isoformat()
-        except ValueError:
-            return None
-    return None
+    if root is None:
+        return None
+    try:
+        return context_previous(root, trade_date)
+    except ValueError:
+        return None
 
 
 __all__ += ["trading_dates_from_catalog", "previous_trade_date"]

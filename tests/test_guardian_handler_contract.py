@@ -1,3 +1,4 @@
+import pytest
 import json
 import os
 import subprocess
@@ -39,12 +40,18 @@ def test_report_commands_wait_for_audit_marker_without_raising(tmp_path, monkeyp
     from datetime import date, datetime
     from examples import core_guardian
 
-    class Calendar:
-        def __init__(self, _root): pass
-        def previous_trade_date(self, _day): return date(2026, 10, 19)
+    import shutil
+    from pathlib import Path
+    real_calendar = Path.home() / "core-data" / "trade_calendar"
+    if not real_calendar.is_dir():
+        pytest.skip("real Core trade calendar not available")
+    shutil.copytree(real_calendar, tmp_path / "trade_calendar")  # real calendar copy: previous(10-20) == 10-19
 
     calls = []
-    monkeypatch.setattr(core_guardian, "TradeCalendarStore", Calendar)
+    # A failing handler raises an alert; tests must never reach real SMTP.
+    monkeypatch.setattr("engine_core.report_mailer.load_smtp_config", lambda *a, **k: None)
+    monkeypatch.setattr("engine_core.report_mailer.send_message",
+                        lambda *a, **k: SimpleNamespace(status="test_suppressed"))
     monkeypatch.setattr("examples.core_guardian.subprocess.run", lambda *a, **k:
                         calls.append(a) or SimpleNamespace(returncode=0, stdout="report ok", stderr=""))
     opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False,

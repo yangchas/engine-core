@@ -130,7 +130,8 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
             context.request()
         from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
         try:
-            asof = TradeCalendarStore(artifact_root).previous_trade_date(day).isoformat()
+            from engine_core.trade_day_context import previous_trade_date as context_previous
+            asof = context_previous(artifact_root, day)
         except ValueError:
             raise RuntimeError("symbol_universe_prior_trade_date_required:" + day)
         import baostock as bs

@@ -38,9 +38,9 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path) -> tup
         target = day
         if name == "kaipan_fetch":
             # The morning limit-up pool is the previous trade day's pool.
-            from ..data_pipeline.trade_calendar import previous_trade_date
+            from ..trade_day_context import previous_trade_date
             try:
-                target = previous_trade_date(day, root=root).isoformat()
+                target = previous_trade_date(root, day)
             except Exception:
                 return False, "previous_trade_date_unavailable"
         manifest_path = catalog.locate(dataset, target)

@@ -17,16 +17,9 @@ from .data_pipeline.trade_calendar import TradeCalendarStore
 
 def previous_trade_date(root: str | Path, trade_date: str, *,
                         known_trade_dates: Iterable[str] | None = None) -> str | None:
-    root = Path(root)
-    candidates: set[str] = set(known_trade_dates or ())
-    store = TradeCalendarStore(root)
-    if known_trade_dates is None:
-        try:
-            return store.previous_trade_date(trade_date).isoformat()
-        except ValueError:
-            return None
+    from .trade_day_context import previous_trade_date as context_previous
     try:
-        return store.previous_trade_date(trade_date).isoformat()
+        return context_previous(root, trade_date)
     except ValueError:
         return None
 

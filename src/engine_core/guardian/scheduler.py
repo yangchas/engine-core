@@ -73,6 +73,8 @@ def phase_at(value: datetime | str) -> str:
 
 def default_events() -> list[EventSpec]:
     events = [
+        # Midnight roll: the persisted trade-day context (today/yesterday/tomorrow) must not stay a day behind until 08:00.
+        EventSpec("calendar_refresh_0005", "PREMARKET", "00:05:00", "00:30:00", "always", "calendar_refresh", max_attempts=1),
         EventSpec("calendar_refresh_0800", "PREMARKET", "08:00:00", "08:15:00", "always", "calendar_refresh", max_attempts=1),
         EventSpec("startup_0830", "PREMARKET", "08:30:00", "08:45:00", "calendar_ready", "premarket_data"),
         EventSpec("kaipan_refresh_0850", "PREMARKET", "08:50:00", "09:05:00", "calendar_ready", "kaipan_fetch", max_attempts=1,

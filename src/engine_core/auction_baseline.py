@@ -221,7 +221,8 @@ def _expected_sessions(catalog: ArtifactCatalog, target_date: str, td_dates: Seq
     from .data_pipeline.trade_calendar import TradeCalendarStore
     try:
         store = TradeCalendarStore(catalog.root)
-        previous = store.previous_trade_date(target_date).isoformat()
+        from .trade_day_context import previous_trade_date as context_previous
+        previous = context_previous(catalog.root, target_date)
         snapshot = store.load()
         if not snapshot:
             return []

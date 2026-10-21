@@ -118,7 +118,10 @@ def _command_handler(name: str, opts, root: Path):
             snapshot = store.load()
             if not snapshot:
                 raise RuntimeError("DEGRADED:calendar_refresh_snapshot_unavailable")
-            return json.dumps({"calendar": result}, ensure_ascii=False)
+            from engine_core.trade_day_context import refresh_context
+            context = refresh_context(root, day)
+            return json.dumps({"calendar": result, "day_context": {
+                key: context[key] for key in ("today", "prev_trade_date", "next_trade_date")}}, ensure_ascii=False)
         if name in {"snapshot_check", "auction_watch"}:
             from engine_core.guardian.gates import _query, auction_snapshot_stats
             if name == "snapshot_check":
@@ -170,7 +173,8 @@ def _command_handler(name: str, opts, root: Path):
             return "DEGRADED:" + detail if degraded_items else detail
         if name == "night_report":
             try:
-                day = TradeCalendarStore(root).previous_trade_date(day).isoformat()
+                from engine_core.trade_day_context import previous_trade_date as context_previous
+                day = context_previous(root, day)
             except ValueError:
                 raise RuntimeError("previous_trade_date_unavailable")
         if (name in {"auction_report", "open_report", "close_report", "night_report"}
