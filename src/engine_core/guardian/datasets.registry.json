@@ -759,7 +759,12 @@
         "clear": "not provided"
       },
       "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
-      "guardian_event": "auction_report_0926"
+      "guardian_event": "auction_report_0926",
+      "retired": {
+        "since": "2026-10-21",
+        "reason": "raw t1_v2 Redis archive captures last written 2026-10-16 (dirs trade_date=2026-10-15/16 only); auction_points is now rebuilt from TD (C373) and nothing in the production path reads this archive",
+        "set_by": "claude 2026-10-21"
+      }
     },
     {
       "id": "auction_panorama",

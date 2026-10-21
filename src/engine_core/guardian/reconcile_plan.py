@@ -53,7 +53,7 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
     for item in items:
         dataset = item["artifact"].get("catalog_dataset")
         policy = item.get("late_policy")
-        if not dataset:
+        if not dataset or item.get("retired"):
             continue
         if not policy:
             if item["id"] == "auction_points_raw" or (item.get("freshness") and isinstance(item["freshness"], Mapping)):

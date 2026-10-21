@@ -94,3 +94,14 @@ def test_heavy_deferred_under_load():
     busy = _plan(19, 30, phase="POST_MARKET", load1=9.0, cpus=4)
     assert busy["daily_kline"]["action"] == "DEFER"
     assert _plan(19, 30, phase="POST_MARKET", load1=1.0, cpus=4)["daily_kline"]["action"] == "FETCH_NOW"
+
+
+def test_retired_item_is_never_planned_and_production_registry_has_no_policyless_gap():
+    items = [{"id": "auction_points_raw", "artifact": {"catalog_dataset": "auction_points_raw"},
+              "retired": {"since": "2026-10-21", "reason": "archive no longer written"}}]
+    now = datetime(2026, 10, 21, 11, 0, tzinfo=TZ)
+    assert reconcile_plan(now, {"datasets": {}}, registry=items, trade_date="2026-10-21",
+                          prev_trade_date="2026-10-20", phase="MIDDAY_BREAK") == []
+    plan = reconcile_plan(now, {"datasets": {}}, trade_date="2026-10-21",
+                          prev_trade_date="2026-10-20", phase="MIDDAY_BREAK")
+    assert not [p for p in plan if p["action"] == "NO_POLICY"]
