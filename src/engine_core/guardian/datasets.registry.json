@@ -882,7 +882,14 @@
         "date_basis": "capture trade_date/time"
       },
       "phases": [
-        "PRE_MARKET"
+        "PRE_MARKET",
+        "AUCTION",
+        "AUCTION_END",
+        "OPEN",
+        "INTRADAY_AM",
+        "MIDDAY_BREAK",
+        "PM_OPEN",
+        "INTRADAY_PM"
       ],
       "cadence": "按报告消费点采样",
       "rule": "外部热榜快照；来源/排名定义需保留。",
@@ -902,16 +909,28 @@
       "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
       "guardian_event": "premarket_slice_0850",
       "late_policy": {
-        "mode": "gap_only",
+        "mode": "fetch_now",
         "valid_until": "15:05",
         "depends_on": [],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "09:16"
+        "trigger_at": "08:50",
+        "set_by": "C370: live snapshot, late start captures now with honest captured_at (never backdated)"
       },
       "cost": {
         "class": "light",
-        "basis": "one call",
-        "set_by": "claude 2026-10-20 default"
+        "basis": "measured one call ~3s (2026-10-21 capture)",
+        "set_by": "claude 2026-10-21"
+      },
+      "fetch_job": {
+        "argv": [
+          "{python}",
+          "examples/capture_ths_hot_rank.py",
+          "--trade-date",
+          "{date}",
+          "--artifact-root",
+          "{artifact_root}",
+          "--execute"
+        ],
+        "timeout_seconds": 120
       }
     },
     {
