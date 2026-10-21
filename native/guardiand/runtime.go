@@ -1281,10 +1281,39 @@ func (r *liveRunner) execute(x Instance, date string) {
 							Partition   string   `json:"partition"`
 							RunInPhases []string `json:"run_in_phases"`
 						} `json:"deferred"`
+						Results []struct {
+							ID        string          `json:"id"`
+							Status    string          `json:"status"`
+							Partition string          `json:"partition"`
+							Retryable bool            `json:"retryable"`
+							ErrorCode string          `json:"error_code"`
+							Detail    json.RawMessage `json:"detail"`
+						} `json:"results"`
 					} `json:"detail"`
 				}
 				lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 				if len(lines) > 0 && json.Unmarshal([]byte(lines[len(lines)-1]), &response) == nil {
+					// Items that failed inside the plan are not silently dropped: record the detail and requeue them as
+					// independent fetch_item instances so the normal 3-attempt/backoff/one-alert rules apply.
+					phaseNow, _ := r.currentPhase(r.clock.Now())
+					for _, res := range response.Detail.Results {
+						if res.Status != "failed" && res.Status != "DEPENDENCY_FAILED" {
+							continue
+						}
+						_, _ = r.appendLedger(date, "APPLY_ITEM_FAILED", map[string]any{"item": res.ID, "status": res.Status, "error_code": res.ErrorCode, "retryable": res.Retryable, "detail": res.Detail})
+						if res.ID == "" || res.Partition == "" || !res.Retryable {
+							continue
+						}
+						instanceID := "fetch_item:" + res.ID
+						r.mu.Lock()
+						_, exists := r.states[date+"/"+instanceID]
+						r.mu.Unlock()
+						if exists {
+							continue
+						}
+						r.setState(Instance{ID: instanceID, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}, date,
+							instanceState{Status: "DEFERRED", LastError: "requeued after failed plan item " + res.ErrorCode, NextPhase: phaseNow, DataDate: res.Partition})
+					}
 					for _, deferred := range response.Detail.Deferred {
 						if deferred.ID == "" || len(deferred.RunInPhases) == 0 {
 							continue

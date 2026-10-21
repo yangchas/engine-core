@@ -80,7 +80,7 @@ boot_events = [
     {"id": "boot_data_health", "enabled": True, "calendar": "every_day", "trigger": {"type": "startup", "order": 20, "after": ["boot_trade_day"]}, "handler": "legacy_boot_data_health", "timeout": "60s", "retry": {"max_attempts": 2}, "phases": ["any"]},
     {"id": "boot_reconcile", "enabled": True, "calendar": "every_day", "trigger": {"type": "startup", "order": 30, "after": ["boot_data_health"]}, "handler": "legacy_boot_reconcile", "timeout": "60s", "retry": {"max_attempts": 2}},
     {"id": "boot_apply_plan", "enabled": True, "calendar": "every_day", "trigger": {"type": "startup", "order": 40, "after": ["boot_reconcile"]}, "handler": "legacy_boot_apply_plan", "timeout": "300s", "retry": {"max_attempts": 2}},
-    {"id": "fetch_item", "enabled": True, "calendar": "every_day", "trigger": {"type": "startup", "order": 50, "after": ["boot_apply_plan"]}, "handler": "legacy_fetch_item", "timeout": "300s", "cost": "heavy", "phases": ["NIGHT", "PRE_MARKET", "MIDDAY_BREAK", "CLOSE", "POST_MARKET"], "retry": {"max_attempts": 2}},
+    {"id": "fetch_item", "enabled": True, "calendar": "every_day", "trigger": {"type": "startup", "order": 50, "after": ["boot_apply_plan"]}, "handler": "legacy_fetch_item", "timeout": "300s", "cost": "heavy", "phases": ["NIGHT", "PRE_MARKET", "MIDDAY_BREAK", "CLOSE", "POST_MARKET"], "retry": {"max_attempts": 3, "backoff": "60s"}},
 ]
 existing = {e.get("id") for e in cfg["events"]}
 boot_ids = {x["id"] for x in boot_events}
