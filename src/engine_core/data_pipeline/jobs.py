@@ -117,7 +117,7 @@ def _clean_rows(spec: DatasetSpec, raw_rows: Any) -> list[dict[str, Any]]:
 
 def _quality(rows: list[dict[str, Any]], fetch_meta: Mapping[str, Any]) -> dict[str, Any]:
     expected = fetch_meta.get("expected_count")
-    actual = len(rows)
+    actual = fetch_meta.get("coverage_count", len(rows))
     coverage = actual / expected if isinstance(expected, (int, float)) and expected > 0 else None
     missing = int(max(0, expected - actual)) if isinstance(expected, (int, float)) else None
     partial = bool(fetch_meta.get("partial"))
@@ -211,7 +211,7 @@ class JobRunner:
                     self._record_failure(name, trade_date, "provider_blocked", clock)
             elif not dry_run:
                 self._record_failure(name, trade_date, f"fetch_failed:{type(exc).__name__}", clock)
-            raise RuntimeError(f"fetch_failed:{type(exc).__name__}") from None
+            raise RuntimeError(f"fetch_failed:{type(exc).__name__}:{exc}") from None
         fetch_meta = dict(raw) if isinstance(raw, Mapping) else {}
         raw_rows = fetch_meta.get("rows", raw) if fetch_meta else raw
         response_marker = str(fetch_meta.get("status", "")).lower() + " " + str(fetch_meta.get("error", "")).lower()
@@ -250,6 +250,7 @@ class JobRunner:
         provider_details = {key: fetch_meta[key] for key in
                             ("failed_plates", "completed_plate_count", "queried_plate_count",
                              "unqueried_plate_count", "universe_duplicate_conflicts",
+                             "queried_symbol_count", "unqueried_symbol_count",
                              "universe_delta_count") if key in fetch_meta}
         if provider_details:
             manifest["provider_details"] = provider_details

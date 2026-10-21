@@ -243,7 +243,16 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
     def reasons_fetch(day: str, context: Any = None) -> Any:
         from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
         checkpoint = Path(artifact_root) / ".checkpoints" / f"limit_reasons-{day}.json" if write_enabled else None
-        provider = KaipanProvider(LazyKaipanClient(), symbols=symbols_for(day), max_requests=max_requests,
+        pool = load_dataset("limit_up_pool", day, prefer="file",
+                            catalog=ArtifactCatalog(artifact_root))
+        if pool is None:
+            raise RuntimeError("limit_up_pool_artifact_required:" + day)
+        symbols = sorted({str(row.get("symbol", row.get("code", ""))).zfill(6)
+                          for row in pool.rows if row.get("symbol") or row.get("code")})
+        if not symbols:
+            raise RuntimeError("limit_up_pool_has_no_symbols:" + day)
+        provider = KaipanProvider(LazyKaipanClient(), symbols=symbols,
+                                  max_requests=max(max_requests, len(symbols)),
                                   reasons_checkpoint_path=checkpoint)
         return provider.limit_reasons(day, context=context)
 

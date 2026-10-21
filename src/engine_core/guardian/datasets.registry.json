@@ -58,7 +58,7 @@
         "basis": "trading_day",
         "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
       },
-      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "retry": "Python schedule kaipan_refresh_0850 max_attempts=1; fetch_item per-item requeue/Go retries UNKNOWN",
       "degrade": [],
       "lifecycle": {
         "init": "rebuild from retained source/artifacts",
@@ -359,8 +359,8 @@
         "trigger_at": "08:50"
       },
       "cost": {
-        "class": "light",
-        "basis": "Kaipan",
+        "class": "medium",
+        "basis": "C379 真实取数 531.854s/54 symbols；只查当日涨停池成员，900s timeout，逐证券 checkpoint 可续跑",
         "set_by": "claude 2026-10-20 default"
       },
       "fetch_job": {
@@ -373,7 +373,53 @@
           "{date}",
           "--execute"
         ],
-        "timeout_seconds": 300
+        "timeout_seconds": 900
+      }
+    },
+    {
+      "id": "hot_plates_yesterday",
+      "owner": "kaipan_hot_capture",
+      "artifact": {
+        "catalog_dataset": "hot_plates",
+        "date_basis": "D-1 历史接口取数；只供昨日热板报告消费，不代表盘中时点抓拍"
+      },
+      "phases": [
+        "PRE_MARKET",
+        "MIDDAY_BREAK",
+        "PM_OPEN",
+        "INTRADAY_PM",
+        "CLOSE",
+        "POST_MARKET"
+      ],
+      "cadence": "D 日 09:16 起时点抓拍；D+1 缺失只记缺口",
+      "rule": "Kaipan getHisPlates 对历史日期返回的是当前交易日(Day=最新)，不能回补昨日；缺失只记缺口，绝不用当日数据冒充(provider 响应日期校验会拒绝)。",
+      "freshness": {
+        "partition": "D-1",
+        "expected_by": "08:50",
+        "basis": "trading_day",
+        "set_by": "C379 2026-10-21"
+      },
+      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "degrade": [],
+      "lifecycle": {
+        "init": "fetch historical date when absent",
+        "force": "append a new version",
+        "clear": "not provided"
+      },
+      "notes": "C379 实测:请求 2026-10-20 返回 response_day=2026-10-21，故 D-1 热板无法回补(gap_only)。原抓拍版本需保留。",
+      "guardian_event": "kaipan_refresh_0850",
+      "late_policy": {
+        "mode": "gap_only",
+        "valid_until": null,
+        "depends_on": [],
+        "set_by": "C379 2026-10-21",
+        "trigger_at": "08:50",
+        "partition_before_trigger": "D-1"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "gap record only",
+        "set_by": "C379/claude 2026-10-21"
       }
     },
     {

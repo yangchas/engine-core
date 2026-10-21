@@ -58,7 +58,9 @@ def test_real_catalog_pit_inputs_and_temporally_missing_case():
     for dataset in ("plate_members", "limit_up_pool"):
         dates = datasets[dataset]["dates"]
         rows, meta = _pit_rows(catalog, dataset, (day for day in dates if day < "2026-10-21"), target_cutoff)
-        assert rows and meta and meta["trade_date"] == "2026-10-20"
+        # A late-recovered version carries its refetch time as available_at, so the newest visible day may be older.
+        assert rows and meta and meta["trade_date"] < "2026-10-21"
+        assert datetime.fromisoformat(meta["available_at"].replace("Z", "+00:00")) <= target_cutoff
     # The real 2026-10-20 plate snapshot was not yet visible at this earlier cutoff.
     rows, meta = _pit_rows(
         catalog, "plate_members", ["2026-10-20"],

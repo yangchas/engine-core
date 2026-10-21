@@ -282,12 +282,18 @@ def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | P
                 break
         except ValueError:
             continue
-    if completed.returncode or payload.get("status") not in {"ok", "degraded"}:
+    has_committed_artifact = isinstance(payload.get("version"), str) and isinstance(payload.get("row_count"), int)
+    explicit_failure = payload.get("status") in {"failed", "error"}
+    if completed.returncode or explicit_failure or (payload.get("status") not in {"ok", "degraded"} and not has_committed_artifact):
         stderr = completed.stderr or ""
+        error_code = "FETCH_EXIT_" + str(completed.returncode) if completed.returncode else str(
+            payload.get("error_code") or "FETCH_JOB_FAILED")
+        for marker in ("kaipan_hot_plates_response_date_mismatch",):
+            if marker in stderr:
+                error_code = marker
         raise FetchJobError(str(payload.get("error") or payload.get("error_code") or
                                 "fetch_job_failed:" + str(completed.returncode)),
-                            "FETCH_EXIT_" + str(completed.returncode) if completed.returncode else
-                            str(payload.get("error_code") or "FETCH_JOB_FAILED"), stderr)
+                            error_code, stderr)
     return payload
 
 
@@ -352,7 +358,13 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
                 stderr = getattr(exc, "stderr", "")
                 row.update(status="failed", retryable=True, error_code=error_code,
                            error=type(exc).__name__ + ":" + str(exc), stderr=str(stderr)[-300:])
+                row["detail"] = {"item_id": item["id"], "error_code": error_code,
+                                  "stderr_tail": str(stderr)[-300:],
+                                  "elapsed_ms": round((time.monotonic() - started) * 1000)}
         row["elapsed_ms"] = round((time.monotonic() - started) * 1000)
+        if row.get("status") != "failed":
+            row["detail"] = {"item_id": item["id"], "error_code": None,
+                              "stderr_tail": "", "elapsed_ms": row["elapsed_ms"]}
         return row
 
     indexed = {str(action.get("id", "")): action for action in plan}
@@ -462,6 +474,7 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
 
 def fetch_item(item_id: str, partition: str, root: str | Path, *,
                dry_run: bool | None = None) -> dict[str, Any]:
+    started = time.monotonic()
     root = Path(root).expanduser()
     if dry_run is None:
         dry_run = os.environ.get("GUARDIAN_DRY_RUN") == "1"
@@ -475,7 +488,10 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
         result = _run_fetch_job(item, partition, timeout, root)
         return _result("ok", {"id": item_id, "partition": partition, "result": result})
     except Exception as exc:
-        return _result("failed", {"id": item_id, "partition": partition,
+        code = getattr(exc, "error_code", "FETCH_FAILED")
+        detail = {"item_id": item_id, "partition": partition,
                                    "error": type(exc).__name__ + ":" + str(exc),
-                                   "stderr": str(getattr(exc, "stderr", ""))[-300:]},
-                       error_code=getattr(exc, "error_code", "FETCH_FAILED"), retryable=True)
+                                   "error_code": code,
+                                   "stderr_tail": str(getattr(exc, "stderr", ""))[-300:],
+                                   "elapsed_ms": round((time.monotonic() - started) * 1000)}
+        return _result("failed", detail, error_code=code, retryable=True)

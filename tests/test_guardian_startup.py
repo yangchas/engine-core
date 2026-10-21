@@ -129,7 +129,36 @@ def test_boot_apply_plan_isolates_failed_fetch_and_keeps_later_item_running(tmp_
     assert rows["broken"]["status"] == "failed"
     assert rows["broken"]["error_code"] == "FETCH_EXIT_3"
     assert len(rows["broken"]["stderr"]) == 300
+    assert rows["broken"]["detail"]["item_id"] == "broken"
+    assert rows["broken"]["detail"]["error_code"] == "FETCH_EXIT_3"
+    assert rows["broken"]["detail"]["elapsed_ms"] == rows["broken"]["elapsed_ms"]
     assert rows["good"]["status"] == "ok"
+
+
+def test_historical_hot_plates_is_reconciled_separately_from_daily_capture():
+    from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+    from engine_core.guardian.reconcile_plan import reconcile_plan
+    from engine_core.guardian.registry import load_registry
+    import pytest
+
+    items = load_registry()
+    catalog = {"datasets": {"hot_plates": {"dates": {"2026-10-21": [{"version": "today"}]}}}}
+    plan = reconcile_plan(datetime.fromisoformat("2026-10-21T12:30:00+08:00"), catalog,
+                          trade_date="2026-10-21", prev_trade_date="2026-10-20",
+                          phase="MIDDAY_BREAK", registry=items)
+    prior = [item for item in plan if item["id"] == "hot_plates_yesterday"]
+    assert len(prior) == 1
+    # Kaipan history cannot return a past day's plates (see Client below), so D-1 is a recorded gap, never a fetch.
+    assert prior[0]["action"] == "GAP" and prior[0]["partition"] == "2026-10-20"
+
+    class Client:
+        def get_his_plates(self, *_args):
+            # Captured from real Kaipan: request 2026-10-20 returned Day=2026-10-21.
+            return {"Day": ["2026-10-21"], "Min": "0925", "Max": "1500",
+                    "List": [{"code": "801159"}]}
+
+    with pytest.raises(ValueError, match="kaipan_hot_plates_response_date_mismatch"):
+        KaipanProvider(Client()).hot_plates("2026-10-20")
 
 
 def test_fetch_item_dry_run_does_not_call_job(tmp_path, monkeypatch):
@@ -159,7 +188,7 @@ def test_boot_apply_plan_runs_stub_job_into_temporary_catalog(tmp_path, monkeypa
         "catalog = ArtifactCatalog(os.environ['CORE_DATA_ROOT'])\n"
         "manifest = catalog.commit(item, day, [{'trade_date': day, 'symbol': '000001'}],\n"
         "    {'trade_date': day, 'available_at': '2026-10-20T09:36:01+08:00'}, source='stub')\n"
-        "print(json.dumps({'status':'ok','version':manifest['version']}))\n",
+        "print(json.dumps({'version':manifest['version'],'row_count':manifest['row_count']}))\n",
         encoding="utf-8")
     monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path / "catalog"))
     source_root = str(__import__("pathlib").Path(__file__).resolve().parents[1] / "src")

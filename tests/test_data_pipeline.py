@@ -386,9 +386,9 @@ def test_kaipan_provider_keeps_response_day_as_metadata_not_requested_date():
                     "Day": ["2026-10-16"], "Time": 1792220400,
                     "Min": "0925", "Max": "1500"}
 
-    result = KaipanProvider(SDK(), sleep_fn=lambda _: None).hot_plates("2026-10-15")
-    assert result["rows"][0]["trade_date"] == "2026-10-15"
-    assert result["requested_date"] == "2026-10-15"
+    result = KaipanProvider(SDK(), sleep_fn=lambda _: None).hot_plates("2026-10-16")
+    assert result["rows"][0]["trade_date"] == "2026-10-16"
+    assert result["requested_date"] == "2026-10-16"
     assert result["response_time"] == 1792220400
     assert result["response_min"] == "0925"
     assert result["response_max"] == "1500"

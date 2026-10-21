@@ -225,6 +225,13 @@ class KaipanProvider:
                               trade_date, "0", str(page_size))
         response_metadata = {key: response.get(key) for key in ("Time", "Min", "Max", "Day")
                              if response.get(key) is not None} if isinstance(response, Mapping) else {}
+        response_days = response_metadata.get("Day")
+        if response_days is not None:
+            if not isinstance(response_days, (list, tuple, set)):
+                response_days = [response_days]
+            normalized_days = {str(day)[:10] for day in response_days if day is not None}
+            if normalized_days and trade_date not in normalized_days:
+                raise ValueError("kaipan_hot_plates_response_date_mismatch")
         rows = []
         for raw in _list_rows(response)[:page_size]:
             if isinstance(raw, Mapping):
@@ -287,6 +294,9 @@ class KaipanProvider:
                 done = set(map(str, checkpoint.get("done_symbols", ())))
                 rows = [dict(row) for row in checkpoint.get("rows", ()) if isinstance(row, Mapping)]
         requested = tuple(symbols if symbols is not None else self.symbols)
+        requested_set = {str(symbol).zfill(6) for symbol in requested}
+        rows = [row for row in rows if str(row.get("symbol", "")).zfill(6) in requested_set]
+        done.intersection_update(requested_set)
         queried_now = 0
         for raw_symbol in requested:
             symbol = str(raw_symbol).zfill(6)
@@ -314,7 +324,8 @@ class KaipanProvider:
                              "parent_plate_code": entry.get("PZSCode"), "trade_date": trade_date})
             self._save_reasons_checkpoint(trade_date, done, rows)
         remaining = [str(symbol).zfill(6) for symbol in requested if str(symbol).zfill(6) not in done]
-        return {"rows": rows, "expected_count": len(rows), "queried_symbol_count": queried_now,
+        return {"rows": rows, "expected_count": len(requested), "coverage_count": len(done),
+                "queried_symbol_count": queried_now,
                 "unqueried_symbol_count": len(remaining), "partial": bool(remaining),
                 "request_count": self._requests}
 
