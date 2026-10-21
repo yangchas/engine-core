@@ -448,7 +448,7 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
             if not isinstance(deps, list):
                 deps = (spec.get("late_policy") or {}).get("depends_on", [])
             failed_deps = [str(dep) for dep in deps if str(dep) in indexed and
-                           action_status.get(str(dep)) not in {"ok", "dry_run", "recorded"}]
+                           action_status.get(str(dep)) not in {"ok", "dry_run", "recorded", "queued"}]
             if failed_deps and action.get("action") == "FETCH_NOW":
                 row = {"id": item_id, "action": "FETCH_NOW", "partition": str(action.get("partition", "")),
                        "status": "DEPENDENCY_FAILED",
@@ -466,12 +466,27 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
                 row = record_nonfetch(action)
             results.append(row)
             action_status[item_id] = row["status"]
-        light = [pair for pair in ready if pair[1].get("lane") == "parallel"]
-        serial = [pair for pair in ready if pair[1].get("lane") != "parallel"]
+        def after_queued(pair):
+            deps = pair[1].get("depends_on")
+            if not isinstance(deps, list):
+                deps = (pair[0].get("late_policy") or {}).get("depends_on", [])
+            return any(action_status.get(str(dep)) == "queued" for dep in deps)
+
+        light = [pair for pair in ready if pair[1].get("lane") == "parallel" and not after_queued(pair)]
+        serial = [pair for pair in ready if pair[1].get("lane") != "parallel" or after_queued(pair)]
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = [pool.submit(execute, pair) for pair in light]
             layer_results = [future.result() for future in futures]
-        layer_results.extend(execute(pair) for pair in serial)
+        for item, action in serial:
+            # Non-light fetches (minutes: limit_reasons ~9min, daily bars) must not hold the boot chain, which blocks the
+            # scheduler. Hand them to the scheduler as independent fetch_item instances (3 attempts, backoff, one alert).
+            if dry_run:
+                layer_results.append(execute((item, action)))
+                continue
+            deferred.append({"id": item["id"], "partition": action.get("partition"),
+                             "fetch_job": item.get("fetch_job"), "run_in_phases": [phase] if phase else ["NIGHT"]})
+            layer_results.append({"id": item["id"], "action": "FETCH_NOW", "partition": str(action.get("partition", "")),
+                                  "status": "queued", "run_in_phases": [phase] if phase else ["NIGHT"], "elapsed_ms": 0})
         results.extend(layer_results)
         action_status.update({row["id"]: row["status"] for row in layer_results})
     detail = {"trade_date": trade_date, "results": results, "deferred": deferred,

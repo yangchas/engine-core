@@ -121,8 +121,8 @@ def test_boot_apply_plan_isolates_failed_fetch_and_keeps_later_item_running(tmp_
     ]
     monkeypatch.setattr(startup, "load_registry", lambda: registry)
     result = startup.boot_apply_plan("2026-10-20", [
-        {"id": "broken", "partition": "2026-10-20", "action": "FETCH_NOW"},
-        {"id": "good", "partition": "2026-10-20", "action": "FETCH_NOW"},
+        {"id": "broken", "partition": "2026-10-20", "action": "FETCH_NOW", "lane": "parallel"},
+        {"id": "good", "partition": "2026-10-20", "action": "FETCH_NOW", "lane": "parallel"},
     ], tmp_path, now="2026-10-20T09:36:00+08:00", phase="OPEN")
     rows = {row["id"]: row for row in result["detail"]["results"]}
     assert result["status"] == "degraded" and result["retryable"] is True
@@ -133,6 +133,29 @@ def test_boot_apply_plan_isolates_failed_fetch_and_keeps_later_item_running(tmp_
     assert rows["broken"]["detail"]["error_code"] == "FETCH_EXIT_3"
     assert rows["broken"]["detail"]["elapsed_ms"] == rows["broken"]["elapsed_ms"]
     assert rows["good"]["status"] == "ok"
+
+
+def test_boot_apply_plan_queues_non_light_items_instead_of_running_them_inline(tmp_path, monkeypatch):
+    import sys
+    from engine_core.guardian import startup
+
+    marker = tmp_path / "ran"
+    job = {"argv": [sys.executable, "-c", f"open({str(marker)!r},'w').write('x');print('{{}}')"]}
+    registry = [{"id": "slow", "fetch_job": job}, {"id": "after_slow", "fetch_job": job,
+                                                  "late_policy": {"depends_on": ["slow"]}}]
+    monkeypatch.setattr(startup, "load_registry", lambda: registry)
+    result = startup.boot_apply_plan("2026-10-21", [
+        {"id": "slow", "partition": "2026-10-20", "action": "FETCH_NOW", "lane": "serial"},
+        {"id": "after_slow", "partition": "2026-10-20", "action": "FETCH_NOW", "lane": "parallel",
+         "depends_on": ["slow"]},
+    ], tmp_path, now="2026-10-21T14:30:00+08:00", phase="INTRADAY_PM")
+    rows = {row["id"]: row for row in result["detail"]["results"]}
+    assert not marker.exists()
+    assert rows["slow"]["status"] == "queued" and rows["after_slow"]["status"] == "queued"
+    assert [d["id"] for d in result["detail"]["deferred"]] == ["slow", "after_slow"]
+    assert all(d["partition"] == "2026-10-20" and d["run_in_phases"] == ["INTRADAY_PM"]
+               for d in result["detail"]["deferred"])
+    assert result["status"] == "ok"
 
 
 def test_historical_hot_plates_is_reconciled_separately_from_daily_capture():
