@@ -317,6 +317,15 @@ func migrateCmd(a []string) error {
 	if e != nil {
 		return e
 	}
+	var header struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if e = json.Unmarshal(b, &header); e != nil {
+		return e
+	}
+	if header.SchemaVersion == 2 {
+		return migrateScheduleV2(b, *to, *expand, *js)
+	}
 	var old struct {
 		Events []struct {
 			ID        string              `json:"event_id"`
@@ -387,6 +396,113 @@ func migrateCmd(a []string) error {
 	}
 	fmt.Printf("migrated events=%d mode=%s output=%s\n", len(c.Events), map[bool]string{true: "expanded", false: "compressed"}[*expand], *to)
 	if *js {
+		fmt.Println(string(bb))
+	}
+	return nil
+}
+
+func migrateScheduleV2(b []byte, outputPath string, expand, printJSON bool) error {
+	var source struct {
+		SchemaVersion int    `json:"schema_version"`
+		Revision      int    `json:"revision"`
+		Timezone      string `json:"timezone"`
+		Global        struct {
+			HeavyMaxLoad1 json.RawMessage   `json:"heavy_max_load1"`
+			HeavyCutoffs  map[string]string `json:"heavy_cutoffs"`
+			Phases        []config.Phase    `json:"phases"`
+		} `json:"global"`
+		Events []struct {
+			ID              string         `json:"event_id"`
+			Enabled         bool           `json:"enabled"`
+			Calendar        string         `json:"calendar"`
+			TriggerType     string         `json:"trigger_type"`
+			Start           string         `json:"start"`
+			Deadline        string         `json:"deadline"`
+			Order           int            `json:"order"`
+			After           []string       `json:"after"`
+			Gate            string         `json:"gate"`
+			Handler         string         `json:"handler"`
+			Timeout         int            `json:"timeout_seconds"`
+			MaxAttempts     int            `json:"max_attempts"`
+			RetryBackoff    string         `json:"retry_backoff"`
+			RetryUntilLate  bool           `json:"retry_until_late"`
+			SilentUntilLast bool           `json:"silent_until_last"`
+			Catchup         string         `json:"catchup_mode"`
+			OnDeadline      string         `json:"on_deadline"`
+			LateUntil       string         `json:"late_until"`
+			Cost            string         `json:"cost"`
+			Phases          []string       `json:"phases"`
+			OnPhaseMismatch string         `json:"on_phase_mismatch"`
+			OnStart         string         `json:"on_start"`
+			DataDateOffset  int            `json:"data_date_offset"`
+			AvailableAfter  *string        `json:"available_after"`
+			DependsOn       []string       `json:"depends_on"`
+			Args            map[string]any `json:"args"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(b, &source); err != nil {
+		return err
+	}
+	if source.SchemaVersion != 2 || source.Timezone != "Asia/Shanghai" {
+		return fmt.Errorf("schedule v2 schema/timezone invalid")
+	}
+	availableHandlers := []string{"auction_report", "auction_watch", "baostock_probe", "boot_apply_plan",
+		"boot_data_health", "boot_reconcile", "boot_trade_day", "calendar_refresh", "close_capture",
+		"close_report", "fetch_item", "intraday_data", "kaipan_fetch", "kaipan_hot_capture",
+		"night_report", "open_report", "postmarket_data", "premarket_data", "snapshot_check"}
+	validHandlers := make(map[string]bool, len(availableHandlers))
+	for _, name := range availableHandlers {
+		validHandlers[name] = true
+	}
+	c := config.Config{SchemaVersion: 1, ConfigVersion: 1, Name: "migrated", Timezone: source.Timezone,
+		Calendars: map[string]struct {
+			File string `json:"file"`
+		}{"trading": {File: "/home/exedev/core-data/trade_dates.json"}},
+		Handlers: map[string]config.Handler{}, HeavyMaxLoad1: source.Global.HeavyMaxLoad1,
+		HeavyCutoffs: source.Global.HeavyCutoffs, Phases: source.Global.Phases}
+	for _, event := range source.Events {
+		if event.Timeout < 1 || event.MaxAttempts < 1 || event.Handler == "" {
+			return fmt.Errorf("invalid event in schedule v2: %s", event.ID)
+		}
+		if !validHandlers[event.Handler] {
+			return fmt.Errorf("unknown handler %q; available=%s", event.Handler, strings.Join(availableHandlers, ","))
+		}
+		trigger := config.Trigger{Type: event.TriggerType, Start: event.Start, Deadline: event.Deadline, Order: event.Order, After: event.After}
+		deps := make([]config.Dependency, 0, len(event.DependsOn))
+		for _, id := range event.DependsOn {
+			deps = append(deps, config.Dependency{ID: id})
+		}
+		handler := "legacy_" + event.Handler
+		ev := config.Event{ID: event.ID, Enabled: event.Enabled, Calendar: raw(event.Calendar), Trigger: trigger,
+			DataDateOffset: event.DataDateOffset, AvailableAfter: event.AvailableAfter, Handler: handler,
+			Gate: config.Gate{Ref: event.Gate}, Timeout: fmt.Sprintf("%ds", event.Timeout), LateUntil: event.LateUntil,
+			Retry: config.Retry{MaxAttempts: event.MaxAttempts, Backoff: event.RetryBackoff,
+				UntilLate: event.RetryUntilLate, SilentUntilLast: event.SilentUntilLast},
+			OnDeadline: event.OnDeadline, Catchup: event.Catchup, Cost: event.Cost, Phases: event.Phases,
+			OnPhaseMismatch: event.OnPhaseMismatch, OnStart: event.OnStart, DependsOn: deps}
+		ev.Args = event.Args
+		c.Events = append(c.Events, ev)
+		if event.TriggerType == "window" {
+			c.Handlers[handler] = config.Handler{SupportsDegrade: true}
+		} else {
+			c.Handlers[handler] = config.Handler{}
+		}
+	}
+	if issues := config.Validate(c); len(issues) != 0 {
+		return fmt.Errorf("schedule v2 invalid: %s %s", issues[0].Path, issues[0].Code)
+	}
+	bb, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err = os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		return err
+	}
+	if err = os.WriteFile(outputPath, bb, 0644); err != nil {
+		return err
+	}
+	fmt.Printf("migrated events=%d mode=%s output=%s\n", len(c.Events), map[bool]string{true: "expanded", false: "compressed"}[expand], outputPath)
+	if printJSON {
 		fmt.Println(string(bb))
 	}
 	return nil
