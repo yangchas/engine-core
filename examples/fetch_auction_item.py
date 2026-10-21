@@ -131,6 +131,9 @@ def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catal
             previous_day = None
         prior_pool_dates = [previous_day] if previous_day and previous_day in pool_dates else []
         plate_members, plate_meta = _pit_rows(source_catalog, "plate_members", prior_plate_dates, cutoff_dt)
+        if plate_meta and previous_day and plate_meta["trade_date"] != previous_day:
+            # Membership may legitimately be the newest visible older day, but never silently: say how stale it is.
+            plate_meta["stale_vs_previous_trade_day"] = previous_day
         pool, pool_meta = _pit_rows(source_catalog, "limit_up_pool", prior_pool_dates, cutoff_dt,
                                     late_cutoff=None if live else datetime.now(cutoff_dt.tzinfo))
         missing = [name for name, value in (("plate_members", plate_members),
