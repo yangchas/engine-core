@@ -1062,6 +1062,11 @@ def _td_daily_rows(td: Any, trade_date: str, injected: Any = None) -> list[dict[
     return rows
 
 
+def _dry_run_artifact_root(out_root: str | Path, dry_run: bool) -> Path | None:
+    """A dry-run replay must not append versions to the production catalog (None = default CORE_DATA_ROOT)."""
+    return Path(out_root) / ".dry_run_artifacts" if dry_run else None
+
+
 def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                        out_root: str | Path = "/home/exedev/validation/daily-reports",
                        reference_root: str | Path | None = None,
@@ -1225,7 +1230,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                         (name_result.rows if name_result is not None else [])
                         if row.get("is_new_stock")},
                     now=now_dt.isoformat(), read_at=now_dt.isoformat())
-                stored = store_auction_stock_facts(facts, redis=src.redis)
+                stored = store_auction_stock_facts(facts, redis=src.redis, artifact_root=_dry_run_artifact_root(out_root, dry_run))
                 from .slices import SliceResult
                 quality = {**facts["summary"], "coverage": len(facts["rows"]), "partial": True}
                 facts_meta = {"slice_id": "auction_stock_facts", "status": "PARTIAL",
@@ -2329,7 +2334,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 panorama["quickbrief"] = quickbrief
                 payload["auction_quickbrief"] = quickbrief
                 panorama["lineage"]["hot_rank_basis"] = hot_ranks.get("basis", "UNKNOWN")
-                store_auction_panorama(panorama, redis=src.redis)
+                store_auction_panorama(panorama, redis=src.redis, artifact_root=_dry_run_artifact_root(out_root, dry_run))
                 auction_panorama_artifact = panorama
                 payload["auction_panorama"] = panorama
             except Exception as exc:

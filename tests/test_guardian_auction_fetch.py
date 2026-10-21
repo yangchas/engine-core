@@ -83,3 +83,10 @@ def test_real_historical_auction_with_no_pit_references_is_saved_partial(tmp_pat
     product = json.loads(catalog.read_rows(manifest_path)[0]["product_json"])
     assert product["status"] == "PARTIAL"
     assert manifest["quality"]["missing_inputs"] == result["missing_inputs"]
+
+
+def test_dry_run_replay_never_targets_the_production_catalog(tmp_path):
+    from engine_core.daily_pipeline import _dry_run_artifact_root
+
+    assert _dry_run_artifact_root(tmp_path, False) is None
+    assert _dry_run_artifact_root(tmp_path, True) == tmp_path / ".dry_run_artifacts"
