@@ -652,7 +652,7 @@
         "clear": "clear then rebuild"
       },
       "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
-      "guardian_event": "auction_report_0926",
+      "guardian_event": "auction_facts_0925",
       "late_policy": {
         "mode": "fetch_now",
         "valid_until": null,
@@ -663,7 +663,7 @@
         "trigger_at": "09:25:10"
       },
       "cost": {
-        "class": "medium",
+        "class": "light",
         "basis": "built inside auction report (~10s compute)",
         "set_by": "claude 2026-10-20 default"
       },
@@ -708,7 +708,7 @@
         "clear": "clear then rebuild"
       },
       "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
-      "guardian_event": "auction_report_0926",
+      "guardian_event": "auction_facts_0925",
       "late_policy": {
         "mode": "fetch_now",
         "valid_until": null,
@@ -719,7 +719,7 @@
         "trigger_at": "09:25:10"
       },
       "cost": {
-        "class": "medium",
+        "class": "light",
         "basis": "inside auction report",
         "set_by": "claude 2026-10-20 default"
       },
@@ -789,7 +789,7 @@
         "clear": "clear then rebuild"
       },
       "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
-      "guardian_event": "auction_report_0926",
+      "guardian_event": "auction_facts_0925",
       "late_policy": {
         "mode": "fetch_now",
         "valid_until": null,
@@ -800,7 +800,7 @@
         "trigger_at": "09:25:10"
       },
       "cost": {
-        "class": "medium",
+        "class": "light",
         "basis": "inside auction report",
         "set_by": "claude 2026-10-20 default"
       },

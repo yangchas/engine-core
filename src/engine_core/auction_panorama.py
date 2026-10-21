@@ -262,7 +262,7 @@ def build_auction_panorama(stock_facts: Mapping[str, Any], *,
                   if market_amount is not None and history_values else None)
 
     pool_by_symbol: dict[str, dict[str, Any]] = {}
-    for raw in yesterday_pool:
+    for raw in yesterday_pool or []:
         if isinstance(raw, Mapping) and (symbol := _symbol(raw.get("symbol", raw.get("code")))):
             pool_by_symbol[symbol] = {**dict(raw), "symbol": symbol}
     pool_price_rows = [by_symbol[s] for s in pool_by_symbol if s in by_symbol and _has_valid_auction_price(by_symbol[s])
@@ -851,7 +851,11 @@ def store_auction_panorama(product: Mapping[str, Any], *, artifact_root: str | P
          "business_status": product.get("status", "PARTIAL"),
          "quality": {"plate_count": len(product.get("plates", [])),
                      "yesterday_stock_count": sum(bucket["count"] for layer in product.get("yesterday_ladder", [])
-                                                   for bucket in layer.get("buckets", []))}},
+                                                   for bucket in layer.get("buckets", [])),
+                     "missing_inputs": product.get("input_quality", {}).get("missing_inputs", []),
+                     "input_versions": {key: value for key, value in product.get("input_quality", {}).items()
+                                        if key != "missing_inputs"},
+                     "capture_semantics": product.get("capture_semantics", "unspecified")}},
         source="auction_panorama")
     if redis is not None:
         hot = {"schema": SCHEMA, "version": manifest["version"], "trade_date": product["trade_date"],

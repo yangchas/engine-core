@@ -106,6 +106,7 @@ def _build_gate_status(path: str | None):
 
 def _command_handler(name: str, opts, root: Path):
     def handler(event: EventSpec, now: datetime, _context, degraded: bool):
+        event_id = getattr(event, "event_id", name)
         day = now.date().isoformat()
         if name == "calendar_refresh":
             store = TradeCalendarStore(root)
@@ -151,12 +152,29 @@ def _command_handler(name: str, opts, root: Path):
         repo = Path(__file__).resolve().parents[1]
         env = os.environ.copy()
         env["PYTHONPATH"] = str(repo / "src") + os.pathsep + str(repo)
+        if name == "auction_report" and event_id == "auction_facts_0925":
+            from examples import fetch_auction_item
+            snapshots, ticks = fetch_auction_item._source_rows(day)
+            outputs = []
+            degraded_items = []
+            for item in ("auction_stock_facts", "auction_points", "auction_panorama"):
+                payload = fetch_auction_item._products(day, item, root, snapshots, ticks)
+                if payload.get("status") not in {"ok", "degraded"}:
+                    raise RuntimeError(f"auction_item_failed:{item}:{payload}")
+                outputs.append(payload)
+                if payload.get("status") == "degraded":
+                    degraded_items.append({"item": item, "missing_inputs": payload.get("missing_inputs", [])})
+            detail = json.dumps({"status": "degraded" if degraded_items else "ok",
+                                 "items": outputs, "degraded": degraded_items},
+                                ensure_ascii=False, separators=(",", ":"))
+            return "DEGRADED:" + detail if degraded_items else detail
         if name == "night_report":
             try:
                 day = TradeCalendarStore(root).previous_trade_date(day).isoformat()
             except ValueError:
                 raise RuntimeError("previous_trade_date_unavailable")
-        if name in {"auction_report", "open_report", "close_report", "night_report"} and getattr(opts, "email_self", False):
+        if (name in {"auction_report", "open_report", "close_report", "night_report"}
+                and event_id != "auction_facts_0925" and getattr(opts, "email_self", False)):
             stage = {"auction_report": "auction", "open_report": "open",
                      "close_report": "close", "night_report": "night"}[name]
             marker = root / "guardian" / day / "audit_ok" / stage
@@ -219,6 +237,7 @@ def _command_handler(name: str, opts, root: Path):
                 raise RuntimeError("prep_status_invalid:" + str(report.get("status")))
         return result.stdout[-500:]
     def notifying_handler(event: EventSpec, now: datetime, context, degraded: bool):
+        event_id = getattr(event, "event_id", name)
         try:
             return handler(event, now, context, degraded)
         except Exception as exc:
@@ -227,23 +246,23 @@ def _command_handler(name: str, opts, root: Path):
                 reason = str(exc).split(":", 2)[-1]
                 should_alert = _calendar_alert_once(root, now.date().isoformat(), reason)
             else:
-                alert_key = (now.date().isoformat(), getattr(event, "event_id", name), reason)
+                alert_key = (now.date().isoformat(), event_id, reason)
                 should_alert = alert_key not in _ALERTED
                 _ALERTED.add(alert_key)
             if getattr(opts, "email_self", False) and should_alert:
                 try:
                     from engine_core.report_mailer import build_alert_message, load_smtp_config, send_message
                     config = load_smtp_config() if opts.run and not opts.simulate_clock else None
-                    alert = build_alert_message(now.date().isoformat(), event.event_id, exc,
+                    alert = build_alert_message(now.date().isoformat(), event_id, exc,
                                                 "412826313@qq.com",
                                                 config.from_addr if config else "reports@localhost")
                     receipt = send_message(config, alert, dry_run=not opts.run or opts.simulate_clock,
                                            allow_recipients=["412826313@qq.com"])
-                    print(json.dumps({"event": event.event_id, "alert_status": receipt.status,
+                    print(json.dumps({"event": event_id, "alert_status": receipt.status,
                                       "error_type": type(exc).__name__, "alert_subject": alert["Subject"]},
                                      ensure_ascii=False), flush=True)
                 except Exception as alert_exc:
-                    print(json.dumps({"event": event.event_id, "alert_status": "failed",
+                    print(json.dumps({"event": event_id, "alert_status": "failed",
                                       "error_type": type(alert_exc).__name__}, ensure_ascii=False), flush=True)
             if name == "calendar_refresh":
                 return "DEGRADED:calendar_refresh:" + reason

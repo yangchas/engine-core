@@ -1,0 +1,36 @@
+{
+  "auction_tag": "0925",
+  "captured_at": "2026-10-21T10:46:31.475590+08:00",
+  "query_order": "ORDER BY symbol, ts LIMIT 3",
+  "rows": [
+    {
+      "auction_amount_yuan": 4335760,
+      "auction_tag": "0925",
+      "change_bp": null,
+      "price_milli": null,
+      "symbol": "000001",
+      "trade_date": "20261021",
+      "ts": "2026-10-21 09:25:06.275000"
+    },
+    {
+      "auction_amount_yuan": 2877216,
+      "auction_tag": "0925",
+      "change_bp": null,
+      "price_milli": null,
+      "symbol": "000002",
+      "trade_date": "20261021",
+      "ts": "2026-10-21 09:25:06.275000"
+    },
+    {
+      "auction_amount_yuan": 825500,
+      "auction_tag": "0925",
+      "change_bp": 74,
+      "price_milli": 6750,
+      "symbol": "000006",
+      "trade_date": "20261021",
+      "ts": "2026-10-21 09:25:06.275000"
+    }
+  ],
+  "source": "TD market_data1.auction_snapshot_v2; read-only SELECT",
+  "trade_date": "2026-10-21"
+}

@@ -183,6 +183,7 @@ def build_auction_stock_facts(trade_date: str, asof: str,
     live_n = sum(row["seal"]["status"] == "VERIFIED" for row in facts)
     replay_n = sum(row["seal"]["status"] == "VERIFIED_REPLAY" for row in facts)
     limit_candidates = sum(row["limit_up_candidate"] for row in facts)
+    facts.sort(key=lambda row: str(row.get("symbol") or ""))
     return {"trade_date": trade_date, "asof": cutoff.isoformat(), "rank_method": "competition",
             "seal_label": "已核实" if live else "回放·按事件时间",
             "seal_scope_label": f"已核实子集 {live_n if live else replay_n}/{limit_candidates}",
@@ -195,7 +196,8 @@ def build_auction_stock_facts(trade_date: str, asof: str,
 
 
 def store_auction_stock_facts(facts: Mapping[str, Any], *, artifact_root: str | Path | None = None,
-                              redis: Any = None, ttl: int = 3600) -> dict[str, Any]:
+                              redis: Any = None, ttl: int = 3600,
+                              capture_semantics: str = "unspecified") -> dict[str, Any]:
     """Write immutable cold version and a bounded Core-only hot projection."""
     root = Path(artifact_root or os.getenv("CORE_DATA_ROOT", str(Path.home() / "core-data")))
     dataset, day = "auction_stock_facts", str(facts["trade_date"])
@@ -207,10 +209,12 @@ def store_auction_stock_facts(facts: Mapping[str, Any], *, artifact_root: str | 
                               {"schema": "auction_stock_facts_v1", "trade_date": day,
                                "as_of": facts["asof"], "available_at": available_at,
                                "rank_method": facts["rank_method"],
+                               "capture_semantics": capture_semantics,
                                "summary": summary, "business_status": "PARTIAL",
                                "quality": {"universe_n": summary["universe_n"],
                                            "valid_amount_n": summary["valid_amount_n"],
-                                           "verified_seal_n": summary["verified_seal_n"]}},
+                                           "verified_seal_n": summary["verified_seal_n"],
+                                           "capture_semantics": capture_semantics}},
                               source="auction_stock_facts")
     if redis is not None:
         view = {"version": manifest["version"], "trade_date": day, "used_date": day,

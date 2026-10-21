@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from datetime import datetime
+from datetime import datetime, time as clock_time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -30,53 +30,110 @@ def _source_rows(day: str):
     try:
         cursor = connection.cursor()
         compact = day.replace("-", "")
+        now = datetime.now(TZ)
+        live = now.date().isoformat() == day and clock_time(9, 25, 10) <= now.timetz().replace(tzinfo=None) < clock_time(9, 30)
+        source_cutoff = now.strftime("%Y-%m-%d %H:%M:%S") if live else f"{day} 09:26:00"
         snaps = _query(cursor,
             "SELECT ts,symbol,px_milli AS price_milli,chg_bp AS change_bp,"
             "match_amt_yuan AS auction_amount_yuan,trade_date,auction_tag "
-            f'FROM auction_snapshot_v2 WHERE trade_date="{compact}" AND ts<="{day} 09:26:00"')
+            f'FROM auction_snapshot_v2 WHERE trade_date="{compact}" AND ts<="{source_cutoff}" '
+            "ORDER BY symbol, ts")
         return snaps, []
     finally:
         connection.close()
 
 
-def _products(day: str, item: str, root: Path, snapshots, ticks):
+def _pit_rows(catalog, dataset: str, dates, cutoff: datetime):
+    """Read the newest catalog version whose availability proves PIT visibility."""
+    data = catalog.read().get("datasets", {}).get(dataset, {})
+    by_date = data.get("dates", {})
+    for day in sorted((str(value) for value in dates if str(value) in by_date), reverse=True):
+        for entry in reversed(by_date.get(day, [])):
+            manifest_path = Path(entry.get("manifest", ""))
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                available = datetime.fromisoformat(str(manifest.get("available_at", "")).replace("Z", "+00:00"))
+                if available.tzinfo is None or available > cutoff:
+                    continue
+                rows = catalog.read_rows(manifest_path)
+                return rows, {"dataset": dataset, "trade_date": day,
+                              "version": manifest.get("version"), "available_at": manifest.get("available_at")}
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
+    return None, None
+
+
+def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catalog_root=None):
     from engine_core.auction_stock_facts import build_auction_stock_facts, store_auction_stock_facts
-    cutoff = f"{day}T09:26:00+08:00"
     read_at = datetime.now(TZ).isoformat()
-    final_snapshots = [row for row in snapshots if str(row.get("auction_tag") or "") == "0925"]
+    today = datetime.fromisoformat(read_at).date().isoformat() == day
+    local_now = datetime.fromisoformat(read_at).timetz().replace(tzinfo=None)
+    live = today and clock_time(9, 25, 10) <= local_now < clock_time(9, 30)
+    capture_semantics = "live_0925_capture" if live else "late_td_rebuild"
+    cutoff = f"{day}T09:25:10+08:00"
+    cutoff_text = cutoff.replace("T", " ")[:19]
+    visible_snapshots = [row for row in snapshots
+                         if str(row.get("ts") or "")[:19] <= cutoff_text]
+    final_snapshots = [row for row in visible_snapshots
+                       if str(row.get("auction_tag") or "") == "0925"]
     facts = build_auction_stock_facts(day, cutoff, final_snapshots, ticks,
-                                     now=read_at, read_at=read_at)
+                                     now=read_at if live else None,
+                                     read_at=read_at if live else None)
     if item == "auction_stock_facts":
-        stored = store_auction_stock_facts(facts, artifact_root=root)
-        return {"dataset": item, "version": stored.get("version"), "rows": len(facts["rows"])}
+        stored = store_auction_stock_facts(facts, artifact_root=root,
+                                           capture_semantics=capture_semantics)
+        return {"dataset": item, "version": stored.get("version"), "rows": len(facts["rows"]),
+                "status": "ok", "capture_semantics": capture_semantics}
     from engine_core.data_pipeline.storage import ArtifactCatalog
     catalog = ArtifactCatalog(root)
     if item == "auction_points":
         rows = []
-        for tag in sorted({str(row.get("auction_tag") or "") for row in snapshots}):
-            tagged = [row for row in snapshots if str(row.get("auction_tag") or "") == tag]
-            tagged.sort(key=lambda row: float(row.get("auction_amount_yuan") or 0), reverse=True)
+        for tag in sorted({str(row.get("auction_tag") or "") for row in visible_snapshots}):
+            tagged = [row for row in visible_snapshots if str(row.get("auction_tag") or "") == tag]
+            tagged.sort(key=lambda row: (-float(row.get("auction_amount_yuan") or 0),
+                                         str(row.get("symbol") or "")))
             rows.extend({"trade_date": day, "tag": tag, "rank_name": "amount", "rank": rank,
                          "symbol": str(row.get("symbol") or "").zfill(6),
                          "auction_amount_yuan": row.get("auction_amount_yuan"),
                          "pct_change": (float(row["change_bp"]) / 100 if row.get("change_bp") is not None else None),
-                         "source": "TD auction_snapshot_v2", "late_rebuild": True}
+                         "source": "TD auction_snapshot_v2", "late_rebuild": not live}
                         for rank, row in enumerate(tagged[:100], 1))
         available_at = datetime.now(TZ).isoformat()
         manifest = catalog.commit(item, day, rows,
-            {"schema": "auction_points_late_rebuild_v1", "trade_date": day,
-             "as_of": cutoff, "available_at": available_at, "late_rebuild": True,
-             "not_a_0925_live_capture": True, "source": "TD auction_snapshot_v2"},
+            {"schema": "auction_points_v1", "trade_date": day,
+             "as_of": cutoff, "available_at": available_at,
+             "late_rebuild": not live, "not_a_0925_live_capture": not live,
+             "capture_semantics": capture_semantics,
+             "quality": {"capture_semantics": capture_semantics},
+             "source": "TD auction_snapshot_v2"},
             source="TD auction_snapshot_v2 late rebuild")
-        return {"dataset": item, "version": manifest.get("version"), "rows": len(rows)}
+        return {"dataset": item, "version": manifest.get("version"), "rows": len(rows),
+                "status": "ok", "capture_semantics": capture_semantics}
     if item == "auction_panorama":
         from engine_core.auction_panorama import build_auction_panorama, store_auction_panorama
-        product = build_auction_panorama(facts, plate_members=[], yesterday_pool=[],
-                                         previous_trade_date=None)
-        product["late_rebuild"] = True
-        product["capture_semantics"] = "late TD auction_snapshot_v2 rebuild; not 09:25 live product"
+        cutoff_dt = datetime.fromisoformat(cutoff)
+        source_root = Path(source_catalog_root or os.environ.get("CORE_DATA_ROOT", root)).expanduser()
+        source_catalog = ArtifactCatalog(source_root)
+        plate_dates = source_catalog.read().get("datasets", {}).get("plate_members", {}).get("dates", {})
+        pool_dates = source_catalog.read().get("datasets", {}).get("limit_up_pool", {}).get("dates", {})
+        prior_plate_dates = (value for value in plate_dates if value < day)
+        prior_pool_dates = (value for value in pool_dates if value < day)
+        plate_members, plate_meta = _pit_rows(source_catalog, "plate_members", prior_plate_dates, cutoff_dt)
+        pool, pool_meta = _pit_rows(source_catalog, "limit_up_pool", prior_pool_dates, cutoff_dt)
+        missing = [name for name, value in (("plate_members", plate_members),
+                                             ("yesterday_pool", pool)) if value is None]
+        product = build_auction_panorama(facts, plate_members=plate_members,
+                                         yesterday_pool=pool, previous_trade_date=None)
+        product["late_rebuild"] = not live
+        product["capture_semantics"] = capture_semantics
+        product["input_quality"] = {"missing_inputs": missing,
+                                    "plate_members": plate_meta, "yesterday_pool": pool_meta}
+        if missing:
+            product["status"] = "PARTIAL"
         stored = store_auction_panorama(product, artifact_root=root)
-        return {"dataset": item, "version": stored.get("version"), "rows": 1}
+        return {"dataset": item, "version": stored.get("version"), "rows": 1,
+                "status": "degraded" if missing else "ok", "missing_inputs": missing,
+                "capture_semantics": capture_semantics}
     raise ValueError("unsupported_auction_item:" + item)
 
 
@@ -94,7 +151,12 @@ def main(argv=None):
               "capture_semantics": "late TD auction_snapshot_v2 rebuild; not 09:25 live product"}
     if args.execute:
         result.update(_products(args.date, args.item, Path(args.artifact_root).expanduser(), snapshots, ticks))
-    print(json.dumps({"status": "ok", **result}, ensure_ascii=False, separators=(",", ":")))
+    payload = {"status": "ok", **result}
+    if args.execute:
+        payload.update({key: value for key, value in result.items() if key in {"status", "missing_inputs"}})
+        if payload.get("status") == "ok" and result.get("missing_inputs"):
+            payload["status"] = "degraded"
+    print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     return 0
 
 
