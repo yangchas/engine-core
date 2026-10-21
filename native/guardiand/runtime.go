@@ -302,6 +302,7 @@ type liveRunner struct {
 	alertDaily       int
 	gateBlocked      []gateBlockRecord
 	gateAlerted      map[string]bool
+	gateSummaryHour  string
 	idempotency      map[string]any
 	cfgPath          string
 	bootSummary      map[string]string
@@ -1788,9 +1789,19 @@ func (r *liveRunner) loop() error {
 		r.tick++
 		r.mu.Unlock()
 		r.schedule(wall)
+		// One summary per clock hour: a persistently blocked 3-minute family must not mail every cycle
+		// (the first block per handler is already alerted separately).
+		var blocks []gateBlockRecord
 		r.mu.Lock()
-		blocks := append([]gateBlockRecord(nil), r.gateBlocked...)
-		r.gateBlocked = nil
+		if hour := wall.Format("2006-01-02T15"); len(r.gateBlocked) > 0 && r.gateSummaryHour != hour {
+			if r.gateSummaryHour != "" {
+				blocks = append(blocks, r.gateBlocked...)
+				r.gateBlocked = nil
+			}
+			r.gateSummaryHour = hour
+		} else if len(r.gateBlocked) == 0 && r.gateSummaryHour == "" {
+			r.gateSummaryHour = hour
+		}
 		r.mu.Unlock()
 		if len(blocks) > 0 {
 			ids := make([]string, 0, len(blocks))
