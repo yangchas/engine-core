@@ -91,6 +91,29 @@ class BaostockDailyProvider:
             raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from value
         raise value
 
+    LOGIN_TIMEOUT_FACTOR = 5.0  # login gets 5x the per-query bound (30s -> 150s)
+
+    def _login(self, client: Any) -> None:
+        """Baostock login latency spikes to ~50s under load (seen 2026-10-21 evening vs 0.4s normally): give it its own,
+        longer bound and retry it, instead of abandoning the whole pull on the per-query 30s limit."""
+        last: BaseException | None = None
+        for attempt in range(self.retries + 1):
+            saved = self.timeout_seconds
+            try:
+                self.timeout_seconds = saved * self.LOGIN_TIMEOUT_FACTOR if self.timeout_call == self._timeout_call else saved
+                self.timeout_call(client.login)
+                return
+            except (TimeoutError, RuntimeError) as exc:
+                last = exc
+                if attempt < self.retries:
+                    self.sleep_fn(min(2 ** (attempt + 2), 30))
+            finally:
+                self.timeout_seconds = saved
+        raise last if last is not None else RuntimeError("BAOSTOCK_LOGIN_FAILED")
+
+    def _deadline_left(self) -> bool:
+        return self.deadline is None or self.deadline - time.monotonic() > 0
+
     def _query(self, client: Any, code: str, day: str) -> Any:
         query = client.query
         try:
@@ -118,7 +141,7 @@ class BaostockDailyProvider:
         consecutive = 0
         transport_failed = False
         unsaved = 0
-        self.timeout_call(client.login)
+        self._login(client)
         try:
             for symbol in expected:
                 if symbol in checkpoint:
@@ -133,11 +156,25 @@ class BaostockDailyProvider:
                         break
                     except Exception as exc:
                         last_error = exc
-                        if isinstance(exc, TimeoutError) or "BAOSTOCK_TIMEOUT" in str(exc):
+                        transport = (isinstance(exc, (TimeoutError, ConnectionError, OSError))
+                                     or "BAOSTOCK_TIMEOUT" in str(exc) or "BAOSTOCK_CONNECTION_ERROR" in str(exc))
+                        if transport:
+                            # A stalled session (Baostock "接收数据异常" / hung call) is usually cured by a fresh login:
+                            # back off, re-login and retry this symbol before giving the whole pull up.
+                            if attempt < self.retries and self._deadline_left():
+                                self.sleep_fn(min(2 ** (attempt + 2), 30))
+                                try:
+                                    self.timeout_call(client.logout)
+                                except Exception:
+                                    pass
+                                try:
+                                    self.timeout_call(client.login)
+                                except Exception:
+                                    pass
+                                continue
                             transport_failed = True
-                            raise TimeoutError("BAOSTOCK_TIMEOUT") from None
-                        if isinstance(exc, (ConnectionError, OSError)):
-                            transport_failed = True
+                            if isinstance(exc, TimeoutError) or "BAOSTOCK_TIMEOUT" in str(exc):
+                                raise TimeoutError("BAOSTOCK_TIMEOUT") from None
                             raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from exc
                         if attempt < self.retries:
                             self.sleep_fn(min(2 ** attempt, 8))

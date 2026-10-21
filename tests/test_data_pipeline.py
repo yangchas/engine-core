@@ -468,3 +468,25 @@ def test_baostock_capture_resumes_from_checkpoint_after_a_mid_run_timeout_withou
                                    checkpoint_path=checkpoint).fetch("2026-10-21")
     assert result["resumed_count"] == 40 and len(calls) == 20 and len(result["rows"]) == 60
     assert result["partial"] is False
+
+
+def test_baostock_stalled_call_triggers_relogin_and_retry_before_the_pull_is_abandoned():
+    """STUB client: real Baostock 2026-10-21 20:0x answered the first call after a resume with '接收数据异常'/30s hang."""
+    from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider
+
+    events = []
+
+    class Client:
+        def login(self): events.append("login")
+        def logout(self): events.append("logout")
+        def query(self, code, day, timeout_seconds):
+            events.append("q" + code[-6:])
+            if events.count("q000001") == 1:
+                raise TimeoutError("BAOSTOCK_TIMEOUT")
+            return [{"date": day, "code": code, "open": "10", "high": "11", "low": "9", "close": "10",
+                     "preclose": "10", "volume": "100", "amount": "1000", "turn": "1", "pctChg": "0"}]
+
+    result = BaostockDailyProvider(client_factory=Client, symbols=["000001", "000002"],
+                                   sleep_fn=lambda _: None).fetch("2026-10-21")
+    assert len(result["rows"]) == 2 and result["partial"] is False
+    assert events[:5] == ["login", "q000001", "logout", "login", "q000001"]

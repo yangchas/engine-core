@@ -35,14 +35,16 @@ def test_baostock_login_hang_on_local_socket_is_retryable_timeout():
         def logout(self):
             pass
 
-    provider = BaostockDailyProvider(client_factory=Client, symbols=["600000"], timeout_seconds=0.1)
+    provider = BaostockDailyProvider(client_factory=Client, symbols=["600000"], timeout_seconds=0.1,
+                                     sleep_fn=lambda _: None)
     assert provider.timeout_seconds == 0.1
     started = time.monotonic()
     try:
         with pytest.raises(TimeoutError, match="BAOSTOCK_TIMEOUT"):
             provider.fetch("2026-10-19")
         assert accepted.wait(0.2)
-        assert time.monotonic() - started < 0.5
+        # login gets 5x the per-query bound and 3 tries (C395): bounded, but no longer sub-second
+        assert time.monotonic() - started < 5
     finally:
         release.set()
         listener.close()
