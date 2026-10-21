@@ -155,6 +155,7 @@ def test_boot_apply_plan_queues_non_light_items_instead_of_running_them_inline(t
     assert [d["id"] for d in result["detail"]["deferred"]] == ["slow", "after_slow"]
     assert all(d["partition"] == "2026-10-20" and d["run_in_phases"] == ["INTRADAY_PM"]
                for d in result["detail"]["deferred"])
+    assert [d["depends_on"] for d in result["detail"]["deferred"]] == [[], ["slow"]]
     assert result["status"] == "ok"
 
 

@@ -483,8 +483,12 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
             if dry_run:
                 layer_results.append(execute((item, action)))
                 continue
+            deps = action.get("depends_on")
+            if not isinstance(deps, list):
+                deps = (item.get("late_policy") or {}).get("depends_on", [])
             deferred.append({"id": item["id"], "partition": action.get("partition"),
-                             "fetch_job": item.get("fetch_job"), "run_in_phases": [phase] if phase else ["NIGHT"]})
+                             "fetch_job": item.get("fetch_job"), "run_in_phases": [phase] if phase else ["NIGHT"],
+                             "depends_on": [str(dep) for dep in deps if str(dep) in indexed]})
             layer_results.append({"id": item["id"], "action": "FETCH_NOW", "partition": str(action.get("partition", "")),
                                   "status": "queued", "run_in_phases": [phase] if phase else ["NIGHT"], "elapsed_ms": 0})
         results.extend(layer_results)
