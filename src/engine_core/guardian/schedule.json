@@ -763,7 +763,7 @@
       "retry_base_seconds": 5,
       "retry_max_seconds": 300,
       "start": "17:30:00",
-      "timeout_seconds": 1800
+      "timeout_seconds": 3600
     },
     {
       "available_after": "17:30:00",
@@ -780,7 +780,7 @@
       "retry_base_seconds": 5,
       "retry_max_seconds": 300,
       "start": "17:40:00",
-      "timeout_seconds": 1800
+      "timeout_seconds": 3600
     },
     {
       "available_after": null,
@@ -831,7 +831,7 @@
       "retry_base_seconds": 5,
       "retry_max_seconds": 300,
       "start": "18:30:00",
-      "timeout_seconds": 1800
+      "timeout_seconds": 3600
     },
     {
       "available_after": "17:30:00",
@@ -848,7 +848,7 @@
       "retry_base_seconds": 5,
       "retry_max_seconds": 300,
       "start": "20:00:00",
-      "timeout_seconds": 1800
+      "timeout_seconds": 3600
     }
   ],
   "revision": 1,

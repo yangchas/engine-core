@@ -39,6 +39,8 @@ class BaostockDailyProvider:
         self.timeout_call = timeout_call or self._timeout_call
         self.checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else None
 
+    CHECKPOINT_EVERY = 25
+
     def _load_checkpoint(self, trade_date: str) -> dict[str, dict[str, Any]]:
         if self.checkpoint_path is None or not self.checkpoint_path.is_file():
             return {}
@@ -115,6 +117,7 @@ class BaostockDailyProvider:
         errors: list[dict[str, str]] = []
         consecutive = 0
         transport_failed = False
+        unsaved = 0
         self.timeout_call(client.login)
         try:
             for symbol in expected:
@@ -163,8 +166,15 @@ class BaostockDailyProvider:
                     row["turnover"] = row.get("turnover_pct")
                     rows.append(row)
                     checkpoint[symbol] = row
-                self._save_checkpoint(trade_date, checkpoint)
+                    unsaved += 1
+                # Resume point: rewriting the whole checkpoint per symbol made the capture O(n^2) (~1.5 symbols/s instead
+                # of the ~5/s Baostock answers at), so persist every CHECKPOINT_EVERY symbols and always on the way out.
+                if unsaved >= self.CHECKPOINT_EVERY:
+                    self._save_checkpoint(trade_date, checkpoint)
+                    unsaved = 0
         finally:
+            if unsaved:
+                self._save_checkpoint(trade_date, checkpoint)
             if not transport_failed:
                 self.timeout_call(client.logout)
         suspended = sum(bool(row.get("suspended")) for row in rows)

@@ -434,3 +434,37 @@ def test_limit_reasons_marks_symbols_whose_target_day_reason_was_overwritten_as_
     assert [row["symbol"] for row in result["rows"]] == ["600178"]
     assert result["expected_count"] == 2 and result["coverage_count"] == 1
     assert result["overwritten_symbol_count"] == 1 and result["partial"] is True
+
+
+def test_baostock_capture_resumes_from_checkpoint_after_a_mid_run_timeout_without_losing_progress(tmp_path):
+    """STUB client for the unreachable/timeout branch (the real resume was verified live on 2026-10-21: 1774 -> full)."""
+    import json
+    from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider
+
+    symbols = [f"{i:06d}" for i in range(1, 61)]
+    calls = []
+
+    class Client:
+        stop_after = 40
+        def login(self): pass
+        def logout(self): pass
+        def query(self, code, day, timeout_seconds):
+            calls.append(code)
+            if len(calls) > self.stop_after:
+                raise TimeoutError("BAOSTOCK_TIMEOUT")
+            return [{"date": day, "code": code, "open": "10", "high": "11", "low": "9", "close": "10",
+                     "preclose": "10", "volume": "100", "amount": "1000", "turn": "1", "pctChg": "0"}]
+
+    checkpoint = tmp_path / "kline.json"
+    provider = BaostockDailyProvider(client_factory=Client, symbols=symbols, sleep_fn=lambda _: None,
+                                     checkpoint_path=checkpoint)
+    with pytest.raises(TimeoutError):
+        provider.fetch("2026-10-21")
+    # progress up to the timeout is on disk (batched saves + save-on-exit), not lost
+    assert len(json.loads(checkpoint.read_text())["rows"]) == 40
+    Client.stop_after = 10_000
+    calls.clear()
+    result = BaostockDailyProvider(client_factory=Client, symbols=symbols, sleep_fn=lambda _: None,
+                                   checkpoint_path=checkpoint).fetch("2026-10-21")
+    assert result["resumed_count"] == 40 and len(calls) == 20 and len(result["rows"]) == 60
+    assert result["partial"] is False
