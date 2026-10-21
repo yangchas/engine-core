@@ -203,7 +203,8 @@ def _command_handler(name: str, opts, root: Path):
                             continue
                     except (OSError, ValueError, TypeError):
                         pass
-                job_opts = SimpleNamespace(job=job, write=opts.write)
+                job_opts = SimpleNamespace(job=job, write=opts.write,
+                                            simulate_clock=getattr(opts, "simulate_clock", False))
                 cmd = build_handler_command("kaipan_job", event, job_opts, root, day, py, repo)
                 result = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True,
                                         timeout=event.timeout_seconds, check=False)

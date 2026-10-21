@@ -48,8 +48,8 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
         catalog = json.loads(Path(catalog).read_text(encoding="utf-8"))
     rules = _rules()
     quiet = set(rules.get("quiet_phases_for_heavy", []))
-    cutoff = rules.get("heavy_cutoffs", {}).get(
-        "PRE_MARKET", rules.get("heavy_rules", {}).get("pre_market_heavy_cutoff", "09:10:00"))
+    from .scheduler import _schedule_source
+    cutoff = _schedule_source()["global"]["heavy_cutoffs"]["PRE_MARKET"]
     by_id = {item["id"]: item for item in items}
 
     due: dict[str, tuple[str | None, dict[str, Any]]] = {}

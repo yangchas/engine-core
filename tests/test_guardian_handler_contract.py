@@ -136,12 +136,15 @@ def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
     from engine_core.guardian import commands
     monkeypatch.setattr(commands, "validate_handler_postcondition", lambda *_: (True, ""))
     for event in events:
+        if event.get("trigger_type") == "startup":
+            continue
         _, payload = guardian_handler._run(_core_request(event["event_id"]))
         if event["handler"] == "close_capture":
             assert payload["status"] == "not_applicable"
         else:
             assert payload["status"] == "ok", (event["event_id"], payload)
-    assert set(called) == {e["handler"] for e in events} - {"close_capture"}
+    assert set(called) == {e["handler"] for e in events
+                           if e.get("trigger_type") != "startup"} - {"close_capture"}
     assert all(o.write and o.run for o in seen_opts)  # live mode writes, like the old guardian
 
 
@@ -184,8 +187,24 @@ def test_dry_run_env_disables_writes_and_mail(monkeypatch):
     monkeypatch.setattr(core_guardian, "_command_handler",
                         lambda name, opts, root: (seen.append(opts), (lambda *_: "x"))[1])
     monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
-    guardian_handler._run(_core_request(_schedule_events()[0]["event_id"]))
+    event = next(e for e in _schedule_events() if e.get("trigger_type") == "window")
+    guardian_handler._run(_core_request(event["event_id"]))
     assert seen and not seen[0].write and not seen[0].email_self and not seen[0].run
+
+
+def test_new_event_id_dispatches_from_configured_handler_without_python_event_entry(monkeypatch):
+    from examples import guardian_handler, core_guardian
+    from engine_core.guardian import commands
+
+    seen = []
+    monkeypatch.setattr(core_guardian, "_command_handler",
+                        lambda name, *_: (seen.append(name), lambda *_args: "dispatched")[1])
+    monkeypatch.setattr(commands, "validate_handler_postcondition", lambda *_: (True, ""))
+    request = _core_request("config_only_extension")
+    request.update(handler="kaipan_fetch", asof="2026-10-19T08:03:00+08:00", args={"job": "watch"})
+    code, payload = guardian_handler._run(request)
+    assert code == 0 and payload["status"] == "ok"
+    assert seen == ["kaipan_fetch"]
 
 
 def test_gate_names_from_stdin_and_cli_are_recognized_and_unknown_is_not_ready():
@@ -218,3 +237,15 @@ def test_shared_command_builder_preserves_legacy_command_shape():
                        "--stage", "auction", "--trade-date", "2026-10-19",
                        "--out-root", str(ROOT / "artifacts/reports"), "--asof", "09:26:00",
                        "--dry-run"]
+
+
+def test_fakeclock_kaipan_job_persists_only_to_artifact_root():
+    from engine_core.guardian.commands import build_handler_command
+    from types import SimpleNamespace
+
+    opts = SimpleNamespace(write=False, td_write=False, simulate_clock=True,
+                           email_self=False, job="limit_up_pool")
+    command = build_handler_command("kaipan_job", SimpleNamespace(), opts,
+                                    ROOT / "artifacts", "2026-10-21", sys.executable, ROOT)
+    assert command[-1] == "--execute"
+    assert "--write" not in command

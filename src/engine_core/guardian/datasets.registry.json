@@ -72,7 +72,7 @@
         "valid_until": null,
         "depends_on": [],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "08:30"
+        "trigger_event": "startup_0830"
       },
       "cost": {
         "class": "medium",
@@ -127,8 +127,8 @@
         "valid_until": null,
         "depends_on": [],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "17:30",
-        "partition_before_trigger": "D-1"
+        "partition_before_trigger": "D-1",
+        "trigger_event": "baostock_probe_1730"
       },
       "cost": {
         "class": "heavy",
@@ -195,8 +195,8 @@
           "daily_kline"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "17:30",
-        "partition_before_trigger": "D-1"
+        "partition_before_trigger": "D-1",
+        "trigger_event": "baostock_probe_1730"
       },
       "cost": {
         "class": "heavy",
@@ -252,8 +252,8 @@
           "daily_indicators"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "17:30",
-        "partition_before_trigger": "D-1"
+        "partition_before_trigger": "D-1",
+        "trigger_event": "baostock_probe_1730"
       },
       "cost": {
         "class": "medium",
@@ -302,7 +302,7 @@
         "valid_until": null,
         "depends_on": [],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "08:50"
+        "trigger_event": "kaipan_refresh_0850"
       },
       "cost": {
         "class": "light",
@@ -356,7 +356,7 @@
           "limit_up_pool"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "08:50"
+        "trigger_event": "kaipan_refresh_0850"
       },
       "cost": {
         "class": "medium",
@@ -413,8 +413,8 @@
         "valid_until": null,
         "depends_on": [],
         "set_by": "C379 2026-10-21",
-        "trigger_at": "08:50",
-        "partition_before_trigger": "D-1"
+        "partition_before_trigger": "D-1",
+        "trigger_event": "kaipan_refresh_0850"
       },
       "cost": {
         "class": "light",
@@ -461,7 +461,7 @@
         "valid_until": "11:30",
         "depends_on": [],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "09:16"
+        "trigger_event": "kaipan_hot_091600"
       },
       "cost": {
         "class": "light",
@@ -503,7 +503,7 @@
           "symbol_universe"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "08:50"
+        "trigger_event": "premarket_slice_0850"
       },
       "cost": {
         "class": "medium",
@@ -546,9 +546,9 @@
       "notes": "需人工/外部参考数据导入；参考 examples/import_reference_to_core_store.py。catalog 只有 2026-10-14 版，available_at 为脚本硬编码，真实刷新源未配置。",
       "late_policy": {
         "mode": "manual",
-        "trigger_at": "08:30",
         "depends_on": [],
-        "set_by": "C360: no configured automatic refresh source"
+        "set_by": "C360: no configured automatic refresh source",
+        "trigger_event": "startup_0830"
       },
       "guardian_event": null
     },
@@ -584,7 +584,7 @@
         "valid_until": null,
         "depends_on": [],
         "set_by": "C360: no configured automatic refresh source",
-        "trigger_at": "08:30"
+        "trigger_event": "startup_0830"
       },
       "cost": {
         "class": "light",
@@ -652,7 +652,7 @@
           "symbol_universe"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "08:50"
+        "trigger_event": "premarket_slice_0850"
       },
       "cost": {
         "class": "light",
@@ -706,7 +706,7 @@
           "auction_baseline"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "09:25:10"
+        "trigger_event": "auction_facts_0925"
       },
       "cost": {
         "class": "light",
@@ -762,7 +762,7 @@
           "auction_stock_facts"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "09:25:10"
+        "trigger_event": "auction_facts_0925"
       },
       "cost": {
         "class": "light",
@@ -848,7 +848,7 @@
           "auction_stock_facts"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "09:25:10"
+        "trigger_event": "auction_facts_0925"
       },
       "cost": {
         "class": "light",
@@ -899,12 +899,12 @@
         "mode": "fetch_now",
         "valid_until": null,
         "depends_on": [
-        "daily_kline",
-        "daily_indicators"
+          "daily_kline",
+          "daily_indicators"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "17:30",
-        "partition_before_trigger": "D-1"
+        "partition_before_trigger": "D-1",
+        "trigger_event": "baostock_probe_1730"
       },
       "cost": {
         "class": "medium",
@@ -964,8 +964,8 @@
         "mode": "fetch_now",
         "valid_until": "15:05",
         "depends_on": [],
-        "trigger_at": "08:50",
-        "set_by": "C370: live snapshot, late start captures now with honest captured_at (never backdated)"
+        "set_by": "C370: live snapshot, late start captures now with honest captured_at (never backdated)",
+        "trigger_event": "premarket_slice_0850"
       },
       "cost": {
         "class": "light",
@@ -1042,7 +1042,7 @@
           "daily_kline"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "08:50"
+        "trigger_event": "premarket_slice_0850"
       },
       "cost": {
         "class": "light",
@@ -1095,8 +1095,8 @@
           "daily_indicators"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "17:30",
-        "partition_before_trigger": "D-1"
+        "partition_before_trigger": "D-1",
+        "trigger_event": "baostock_probe_1730"
       },
       "cost": {
         "class": "light",
@@ -1153,7 +1153,7 @@
           "limit_reasons"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_at": "08:50"
+        "trigger_event": "premarket_slice_0850"
       },
       "cost": {
         "class": "light",
@@ -1404,7 +1404,7 @@
           "stock_static"
         ],
         "set_by": "C360: no configured automatic refresh source",
-        "trigger_at": "08:30"
+        "trigger_event": "startup_0830"
       },
       "cost": {
         "class": "light",
@@ -1468,9 +1468,6 @@
     "CLOSE",
     "POST_MARKET"
   ],
-  "heavy_cutoffs": {
-    "PRE_MARKET": "09:10:00"
-  },
   "heavy_rules": {
     "max_concurrent_heavy": 1,
     "defer_if_load1_above_cores": true,
@@ -1483,7 +1480,6 @@
       "INTRADAY_PM",
       "CLOSE_AUCTION"
     ],
-    "if_consumer_needs_before_quiet": "use degrade chain / previous available version, labelled; fetch fully in the next quiet phase",
-    "pre_market_heavy_cutoff": "09:10:00"
+    "if_consumer_needs_before_quiet": "use degrade chain / previous available version, labelled; fetch fully in the next quiet phase"
   }
 }

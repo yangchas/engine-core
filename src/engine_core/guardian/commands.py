@@ -85,7 +85,7 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
         cmd = [py, str(repo / "examples/run_daily_reports.py"), "--stage", stage,
                "--trade-date", day, "--out-root", str(root / "reports")]
         if name == "auction_report":
-            cmd.extend(["--asof", "09:26:00"])
+            cmd.extend(["--asof", str((getattr(event, "args", None) or {}).get("asof", event.start))])
         elif name == "open_report":
             cmd.extend(["--asof", event.start])
         if opts.simulate_clock or (not opts.write and not opts.email_self):
@@ -103,6 +103,11 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
                "--date", day, "--artifact-root", str(root)]
         if opts.write:
             cmd.append("--write")
+        elif getattr(opts, "simulate_clock", False):
+            # Fakeclock acceptance runs against a temporary artifact root. Persist
+            # there so dependent jobs can consume the real provider result, while
+            # leaving Redis publication disabled.
+            cmd.append("--execute")
         return cmd
     if name == "kaipan_hot_capture":
         cmd = [py, str(repo / "examples/capture_kaipan_plates.py"), "--trade-date", day,

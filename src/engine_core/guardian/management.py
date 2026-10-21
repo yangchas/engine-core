@@ -6,21 +6,25 @@ import json
 import os
 import time
 import uuid
-from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .scheduler import EventSpec, TZ, _atomic_json, default_events
 
-SCHEMA_VERSION = 1
-HANDLERS = {event.handler for event in default_events()}
+SCHEMA_VERSION = 2
+HANDLERS = {"auction_report", "auction_watch", "baostock_probe", "boot_apply_plan",
+            "boot_data_health", "boot_reconcile", "boot_trade_day", "calendar_refresh",
+            "close_capture", "close_report", "fetch_item", "intraday_data", "kaipan_fetch",
+            "kaipan_hot_capture", "night_report", "open_report", "postmarket_data",
+            "premarket_data", "snapshot_check"}
 GATES = {event.gate for event in default_events()} | {"daily_kline_ready"}
 
 
 def schedule_payload(revision: int = 1) -> dict[str, Any]:
-    return {"schema_version": SCHEMA_VERSION, "revision": revision, "timezone": "Asia/Shanghai",
-            "events": [asdict(e) for e in default_events()]}
+    payload = json.loads(Path(__file__).with_name("schedule.json").read_text(encoding="utf-8"))
+    payload["revision"] = revision
+    return payload
 
 
 def validate_schedule(payload: dict[str, Any], previous: dict[str, Any] | None = None) -> tuple[EventSpec, ...]:
@@ -28,6 +32,9 @@ def validate_schedule(payload: dict[str, Any], previous: dict[str, Any] | None =
         raise ValueError("schedule_schema_or_timezone_invalid")
     if not isinstance(payload.get("revision"), int) or payload["revision"] < 1:
         raise ValueError("schedule_revision_invalid")
+    global_config = payload.get("global")
+    if not isinstance(global_config, dict) or not isinstance(global_config.get("phases"), list):
+        raise ValueError("schedule_global_invalid")
     raw_events = payload.get("events")
     if not isinstance(raw_events, list) or not raw_events:
         raise ValueError("schedule_events_invalid")
@@ -36,8 +43,15 @@ def validate_schedule(payload: dict[str, Any], previous: dict[str, Any] | None =
     for raw in raw_events:
         if not isinstance(raw, dict):
             raise ValueError("schedule_event_invalid")
-        if raw.get("handler") not in HANDLERS or raw.get("gate") not in GATES:
-            raise ValueError("schedule_allowlist_invalid")
+        if raw.get("handler") not in HANDLERS:
+            raise ValueError("schedule_handler_unknown:" + str(raw.get("handler")) + ";available=" + ",".join(sorted(HANDLERS)))
+        if raw.get("gate") not in GATES:
+            raise ValueError("schedule_gate_unknown:" + str(raw.get("gate")))
+        raw = dict(raw)
+        raw["depends_on"] = tuple(raw.get("depends_on") or ())
+        raw["after"] = tuple(raw.get("after") or ())
+        if raw.get("phases") is not None:
+            raw["phases"] = tuple(raw["phases"])
         try:
             event = EventSpec(**raw)
         except (TypeError, ValueError) as exc:
@@ -53,7 +67,7 @@ def validate_schedule(payload: dict[str, Any], previous: dict[str, Any] | None =
             from .scheduler import _clock
             _clock(event.available_after)
         events.append(event)
-    graph = {e.event_id: set(e.depends_on) for e in events}
+    graph = {e.event_id: set(e.depends_on) | set(e.after) for e in events}
     if any(dep not in graph for deps in graph.values() for dep in deps):
         raise ValueError("schedule_dependency_unknown")
     visiting, visited = set(), set()

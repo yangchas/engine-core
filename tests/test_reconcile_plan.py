@@ -3,13 +3,13 @@ from datetime import datetime, timedelta, timezone
 from engine_core.guardian.reconcile_plan import reconcile_plan
 
 
-def test_registry_heavy_cutoff_is_the_shared_0910_boundary():
+def test_schedule_source_heavy_cutoff_is_the_shared_0910_boundary():
     import json
-    from engine_core.guardian.registry import REGISTRY_PATH
+    from engine_core.guardian import management
 
-    rules = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
-    assert rules["heavy_cutoffs"]["PRE_MARKET"] == "09:10:00"
-    assert rules["heavy_rules"]["pre_market_heavy_cutoff"] == "09:10:00"
+    schedule_path = management.Path(management.__file__).with_name("schedule.json")
+    schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
+    assert schedule["global"]["heavy_cutoffs"]["PRE_MARKET"] == "09:10:00"
 
 
 def test_manual_reference_items_are_operator_actions_without_gap_noise():

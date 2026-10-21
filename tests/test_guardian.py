@@ -17,10 +17,10 @@ def test_event_order_and_phase_windows():
     assert [event.event_id for event in events if event.start == "09:20:03"] == [
         "auction_0920_check"
     ]
-    assert phase_at("08:30") == "PREMARKET"
+    assert phase_at("08:30") == "PRE_MARKET"
     assert phase_at("09:20") == "AUCTION"
-    assert phase_at("10:00") == "INTRADAY"
-    assert phase_at("17:40") == "POSTMARKET"
+    assert phase_at("10:00") == "INTRADAY_AM"
+    assert phase_at("17:40") == "POST_MARKET"
     assert phase_at("02:00") == "NIGHT"
 
 

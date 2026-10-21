@@ -28,7 +28,8 @@ def test_auction_facts_event_is_scheduled_and_registered_consistently():
     items = {item["id"]: item for item in registry["items"]}
     for item_id in ("auction_stock_facts", "auction_points", "auction_panorama"):
         assert items[item_id]["guardian_event"] == event.event_id
-        assert items[item_id]["late_policy"]["trigger_at"] == event.start
+        assert items[item_id]["late_policy"]["trigger_event"] == event.event_id
+        assert "trigger_at" not in items[item_id]["late_policy"]
 
 
 def test_real_td_snapshot_rows_sort_and_repeat_to_one_version(tmp_path):

@@ -379,7 +379,9 @@ def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | P
 def _quiet_targets(item: dict[str, Any], phase: str, now: datetime) -> list[str]:
     rules = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
     quiet = list(rules.get("quiet_phases_for_heavy", []))
-    if phase == "PRE_MARKET" and now.strftime("%H:%M") < rules.get("heavy_rules", {}).get("pre_market_heavy_cutoff", "09:10"):
+    from .scheduler import _schedule_source
+    cutoff = _schedule_source()["global"]["heavy_cutoffs"]["PRE_MARKET"]
+    if phase == "PRE_MARKET" and now.strftime("%H:%M:%S") < cutoff:
         return ["PRE_MARKET"]
     if phase in quiet:
         return [phase]

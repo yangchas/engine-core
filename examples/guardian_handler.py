@@ -33,7 +33,8 @@ def _run(request):
     from examples.core_guardian import _command_handler
 
     base, event_id = _event_from_request(request)
-    if event_id in {"boot_trade_day", "boot_data_health", "boot_reconcile", "boot_apply_plan", "fetch_item"}:
+    configured_handler = str(request.get("handler") or (base.handler if base else ""))
+    if configured_handler in {"boot_trade_day", "boot_data_health", "boot_reconcile", "boot_apply_plan", "fetch_item"}:
         from engine_core.guardian.startup import boot_apply_plan, boot_data_health, boot_reconcile, boot_trade_day, fetch_item
         trade_date = request.get("trade_date")
         if not trade_date:
@@ -42,15 +43,15 @@ def _run(request):
         root = Path(os.environ.get("CORE_DATA_ROOT", "~/core-data")).expanduser()
         dry = os.environ.get("GUARDIAN_DRY_RUN") == "1"
         now = request.get("now")
-        if event_id == "boot_trade_day":
+        if configured_handler == "boot_trade_day":
             result = boot_trade_day(str(trade_date), root)
-        elif event_id == "boot_data_health":
+        elif configured_handler == "boot_data_health":
             result = boot_data_health(str(trade_date), request.get("prev_trade_date"), root,
                                       now=now, dry_run=dry)
-        elif event_id == "boot_reconcile":
+        elif configured_handler == "boot_reconcile":
             result = boot_reconcile(str(trade_date), str(request.get("phase") or ""),
                                     request.get("health"), root, now=now)
-        elif event_id == "boot_apply_plan":
+        elif configured_handler == "boot_apply_plan":
             reconciled = boot_reconcile(str(trade_date), str(request.get("phase") or ""),
                                         request.get("health"), root, now=now)
             result = boot_apply_plan(str(trade_date), reconciled["detail"].get("plan", []), root,
@@ -59,10 +60,13 @@ def _run(request):
             result = fetch_item(str(request.get("item_id") or ""), str(request.get("data_date") or trade_date),
                                 root, dry_run=dry)
         return (75 if result["status"] == "failed" and result.get("retryable") else 0), result
-    if base is None:
+    if not configured_handler:
         return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
                     "retryable": False, "detail": "unknown_event:" + event_id}
-    name = base.handler
+    if base is not None and request.get("handler") and base.handler != configured_handler:
+        return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                    "retryable": False, "detail": "handler_event_mismatch:" + event_id}
+    name = configured_handler
     trade_date = request.get("trade_date")
     if not trade_date:
         return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
@@ -73,10 +77,13 @@ def _run(request):
     opts = SimpleNamespace(write=not dry, td_write=False, simulate_clock=dry,
                            email_self=not dry and os.environ.get("GUARDIAN_EMAIL_SELF", "1") == "1",
                            run=not dry)
-    event = SimpleNamespace(event_id=base.event_id, handler=name, gate=base.gate, start=base.start,
-                            timeout_seconds=int(request.get("timeout_seconds") or base.timeout_seconds),
-                            data_date_offset=base.data_date_offset)
-    now = datetime.fromisoformat(f"{trade_date}T{base.start}+08:00")
+    asof = str(request.get("asof") or f"{trade_date}T{getattr(base, 'start', '00:00:00')}+08:00")
+    start = datetime.fromisoformat(asof).strftime("%H:%M:%S")
+    args = request.get("args") if isinstance(request.get("args"), dict) else {}
+    event = SimpleNamespace(event_id=event_id, handler=name, gate=getattr(base, "gate", "always"), start=start,
+                            args=args, timeout_seconds=int(request.get("timeout_seconds") or getattr(base, "timeout_seconds", 300)),
+                            data_date_offset=getattr(base, "data_date_offset", 0))
+    now = datetime.fromisoformat(asof)
     if name == "close_capture":
         return 0, {"contract": 1, "status": "not_applicable", "error_code": "",
                    "retryable": False, "artifacts": [], "detail": "close_capture_not_implemented"}
@@ -165,7 +172,8 @@ def _alert(request, dry_run):
 def main(argv=None):
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("run")
+    run = sub.add_parser("run")
+    run.add_argument("--handler", default="")
     gate = sub.add_parser("gate")
     gate.add_argument("name", nargs="?", default="")
     alert = sub.add_parser("alert")
@@ -174,6 +182,8 @@ def main(argv=None):
     try:
         request = json.load(sys.stdin) if args.command in {"run", "alert", "gate"} else {}
         if args.command == "run":
+            if args.handler:
+                request["handler"] = args.handler
             code, result = _run(request)
             _json(result)
             return code
