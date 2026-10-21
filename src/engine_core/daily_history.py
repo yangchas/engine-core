@@ -556,6 +556,10 @@ def reindex_daily_indicators(catalog: ArtifactCatalog, *, start: str, end: str, 
             kline_at = datetime.fromisoformat(str(kline_meta.get("available_at", "")).replace("Z", "+00:00"))
         except (OSError, ValueError, TypeError) as exc:
             raise RuntimeError(f"daily_kline_manifest_unreadable:{day}:{type(exc).__name__}") from exc
+        from .guardian.registry import kline_coverage_problem
+        problem = kline_coverage_problem(kline_meta.get("quality"))
+        if problem:
+            raise RuntimeError(f"{problem}:{day}")
         if kline_at.tzinfo is not None and kline_at.astimezone(SHANGHAI) > available:
             available = kline_at.astimezone(SHANGHAI)
         history, _meta = core_history_rows(catalog, through_date=day, asof=available.isoformat(), max_days=120)

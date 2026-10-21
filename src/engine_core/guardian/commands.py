@@ -52,6 +52,11 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path) -> tup
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             if name == "kaipan_fetch" and int(manifest.get("row_count", 0)) <= 0:
                 return False, "limit_up_pool_missing_or_empty"
+            if dataset == "daily_kline":
+                from .registry import kline_coverage_problem
+                problem = kline_coverage_problem(manifest.get("quality"))
+                if problem:
+                    return False, problem
         except (OSError, ValueError, TypeError):
             return False, dataset + "_manifest_invalid"
     return True, ""

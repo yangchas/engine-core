@@ -14,6 +14,21 @@ PHASES = frozenset({
 })
 _REQUIRED = {"id", "owner", "artifact", "phases", "cadence", "rule",
              "freshness", "retry", "degrade", "lifecycle", "notes", "guardian_event"}
+# A daily-bar partition is only "present" when it covers (almost) the whole universe: a checkpointed partial capture
+# (e.g. 1774 of 5224 symbols after a timed-out attempt) must keep being fetched, and nothing may derive from it.
+MIN_KLINE_COVERAGE = 0.99
+
+
+def kline_coverage_problem(quality: Any) -> str | None:
+    """None when a daily_kline manifest quality block is complete enough; else a short reason."""
+    if not isinstance(quality, Mapping):
+        return None
+    coverage = quality.get("coverage")
+    if isinstance(coverage, (int, float)) and coverage < MIN_KLINE_COVERAGE:
+        return f"daily_kline_partial:{coverage:.3f}"
+    return None
+
+
 _NONEMPTY_DATASETS = frozenset({"daily_kline", "daily_indicators", "symbol_universe",
                                "stock_day_facts", "auction_stock_facts", "plate_members"})
 
@@ -48,6 +63,8 @@ def catalog_partition_present(catalog: Mapping[str, Any], dataset: str, day: str
         quality = metadata.get("quality")
         quality_status = quality.get("status") if isinstance(quality, Mapping) else quality
         if str(quality_status or "").upper() == "FAILED":
+            continue
+        if dataset == "daily_kline" and kline_coverage_problem(quality):
             continue
         available_at = metadata.get("available_at")
         if not available_at:
