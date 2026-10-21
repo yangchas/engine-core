@@ -548,16 +548,20 @@ def reindex_daily_indicators(catalog: ArtifactCatalog, *, start: str, end: str, 
     for day in days:
         available = datetime.combine(date.fromisoformat(day), day_time(17, 30), SHANGHAI)
         kline_manifest = catalog.locate("daily_kline", day)
-        if kline_manifest is not None and kline_manifest.is_file():
-            # Indicators cannot be visible before the daily_kline they derive from (kline may land after 17:30).
-            try:
-                kline_at = datetime.fromisoformat(str(json.loads(kline_manifest.read_text(encoding="utf-8")).get("available_at", "")).replace("Z", "+00:00"))
-                if kline_at.tzinfo is not None and kline_at.astimezone(SHANGHAI) > available:
-                    available = kline_at.astimezone(SHANGHAI)
-            except (OSError, ValueError):
-                pass
+        if kline_manifest is None or not kline_manifest.is_file():
+            raise RuntimeError(f"daily_kline_manifest_missing:{day}")
+        # Indicators cannot be visible before the daily_kline they derive from (kline may land after 17:30).
+        try:
+            kline_meta = json.loads(kline_manifest.read_text(encoding="utf-8"))
+            kline_at = datetime.fromisoformat(str(kline_meta.get("available_at", "")).replace("Z", "+00:00"))
+        except (OSError, ValueError, TypeError) as exc:
+            raise RuntimeError(f"daily_kline_manifest_unreadable:{day}:{type(exc).__name__}") from exc
+        if kline_at.tzinfo is not None and kline_at.astimezone(SHANGHAI) > available:
+            available = kline_at.astimezone(SHANGHAI)
         history, _meta = core_history_rows(catalog, through_date=day, asof=available.isoformat(), max_days=120)
         indicators = build_indicator_rows(history, trade_date=day)
+        if not indicators:
+            raise RuntimeError(f"daily_indicators_empty:{day}")
         catalog.commit("daily_indicators", day, indicators,
                        {"schema_version": 1, "dataset": "daily_indicators", "trade_date": day,
                         "source": "core_derived", "available_at": available.isoformat(),

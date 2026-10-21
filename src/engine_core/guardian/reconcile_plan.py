@@ -11,7 +11,7 @@ import json
 from datetime import datetime
 from typing import Any, Mapping
 
-from .registry import REGISTRY_PATH, load_registry
+from .registry import REGISTRY_PATH, catalog_partition_present, load_registry
 
 
 def _hms(value: str) -> tuple[int, int, int]:
@@ -25,11 +25,6 @@ def _clock(now: datetime) -> tuple[int, int, int]:
 
 def _rules() -> dict[str, Any]:
     return json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
-
-
-def _present(catalog: Mapping[str, Any], dataset: str, day: str | None) -> bool:
-    record = catalog.get("datasets", {}).get(dataset)
-    return bool(day and isinstance(record, Mapping) and record.get("dates", {}).get(day))
 
 
 def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_date: str,
@@ -72,11 +67,12 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
         if rule.get("partition") == "D-1" and triggered:
             target = prev_trade_date
         if rule.get("partition") == "latest":
-            keys = [k for k, v in catalog.get("datasets", {}).get(dataset, {}).get("dates", {}).items() if v]
+            keys = [k for k, v in catalog.get("datasets", {}).get(dataset, {}).get("dates", {}).items()
+                    if catalog_partition_present(catalog, dataset, k, now)]
             if keys and (datetime.fromisoformat(trade_date) - datetime.fromisoformat(max(keys))).days <= rule.get("max_age_days", 8):
                 continue
             target = trade_date
-        if not _present(catalog, dataset, target):
+        if not catalog_partition_present(catalog, dataset, target, now):
             due[item["id"]] = (target, policy)
 
     plan: list[dict[str, Any]] = []
@@ -108,7 +104,8 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                    if dep in due and next(r["action"] for r in plan if r["id"] == dep) not in {"FETCH_NOW"}]
         cost = (by_id[item_id].get("cost") or {}).get("class", "medium")
         entry = {"id": item_id, "partition": target, "cost": cost, "event": by_id[item_id].get("guardian_event"),
-                 "fetch_job": by_id[item_id].get("fetch_job"), "phase": phase}
+                 "fetch_job": by_id[item_id].get("fetch_job"), "phase": phase,
+                 "depends_on": list(policy.get("depends_on", []))}
         if blocked:
             plan.append({**entry, "action": "DEFER", "reason": "blocked_by:" + ",".join(blocked)})
             return

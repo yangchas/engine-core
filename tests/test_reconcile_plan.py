@@ -24,6 +24,25 @@ def test_manual_reference_items_are_operator_actions_without_gap_noise():
     assert plan == [{"id": "stock_static", "action": "NEEDS_OPERATOR", "partition": "2026-10-20",
                      "reason": "manual_reference_import_required"}]
 
+
+def test_required_empty_version_is_a_fetch_gap():
+    import json
+    from pathlib import Path
+
+    core_root = Path("/home/exedev/core-data")
+    catalog = json.loads((core_root / "catalog.json").read_text(encoding="utf-8"))
+    day = "2026-10-20"
+    empty_versions = [version for version in catalog["datasets"]["daily_indicators"]["dates"][day]
+                      if version.get("row_count") == 0]
+    assert empty_versions, "expected authentic 2026-10-20 zero-row daily_indicators version"
+    items = [{"id": "daily_indicators", "artifact": {"catalog_dataset": "daily_indicators"},
+              "late_policy": {"mode": "fetch_now", "trigger_at": "08:00:00", "depends_on": []},
+              "freshness": {"partition": "D", "expected_by": "08:00"},
+              "cost": {"class": "light"}, "fetch_job": ["stub"]}]
+    plan = reconcile_plan(datetime(2026, 10, 20, 9, 0, tzinfo=TZ), catalog,
+                          trade_date=day, prev_trade_date="2026-10-19", registry=items)
+    assert plan[0]["action"] == "FETCH_NOW"
+
 TZ = timezone(timedelta(hours=8))
 NAMES = ("limit_up_pool", "limit_reasons", "daily_kline", "daily_indicators", "daily_report_features", "ladder_daily",
          "stock_day_facts", "hot_plates", "hot_rank", "auction_stock_facts", "auction_points", "auction_panorama",

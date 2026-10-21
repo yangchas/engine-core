@@ -337,57 +337,6 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
     by_id = {item["id"]: item for item in load_registry()}
     results: list[dict[str, Any]] = []
     deferred: list[dict[str, Any]] = []
-    light: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    serial: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for action in plan:
-        item_id = str(action.get("id", ""))
-        item = by_id.get(item_id)
-        kind = action.get("action")
-        started = time.monotonic()
-        try:
-            if not item:
-                results.append({"id": item_id, "action": kind, "status": "failed",
-                                "error_code": "UNKNOWN_ITEM", "error": "unknown_item", "stderr": "",
-                                "elapsed_ms": 0})
-            elif kind == "GAP":
-                if not dry_run:
-                    _append_gap(root, trade_date, action, clock.isoformat())
-                results.append({"id": item_id, "action": kind, "status": "recorded" if not dry_run else "dry_run",
-                                "elapsed_ms": round((time.monotonic() - started) * 1000)})
-            elif kind == "NEEDS_OPERATOR":
-                results.append({"id": item_id, "action": kind, "status": "needs_operator",
-                                "detail": action.get("reason", "manual_reference_import_required"),
-                                "partition": action.get("partition"), "elapsed_ms": 0})
-            elif kind == "DEFER":
-                if not item.get("fetch_job"):
-                    results.append({"id": item_id, "action": kind, "status": "failed",
-                                    "error_code": "FETCH_JOB_UNAVAILABLE",
-                                    "error": "independent_fetch_job_unconfigured", "stderr": "",
-                                    "elapsed_ms": 0})
-                    continue
-                phases = _quiet_targets(item, phase, clock)
-                deferred.append({"id": item_id, "partition": action.get("partition"),
-                                 "fetch_job": item.get("fetch_job"), "run_in_phases": phases})
-                results.append({"id": item_id, "action": kind, "status": "deferred", "run_in_phases": phases,
-                                "elapsed_ms": 0})
-            elif kind == "FETCH_NOW":
-                destination = light if action.get("lane") == "parallel" else serial
-                destination.append((item, action))
-            elif kind == "NO_FETCH_JOB":
-                results.append({"id": item_id, "action": kind, "status": "failed",
-                                "error_code": "FETCH_JOB_UNAVAILABLE",
-                                "error": action.get("reason", "independent_fetch_job_unconfigured"),
-                                "stderr": "", "elapsed_ms": 0})
-            else:
-                results.append({"id": item_id, "action": kind, "status": "skipped", "elapsed_ms": 0})
-        except Exception as exc:
-            results.append({"id": item_id, "action": kind, "status": "failed",
-                            "error_code": getattr(exc, "error_code", "PLAN_ITEM_FAILED"),
-                            "error": type(exc).__name__ + ":" + str(exc),
-                            "stderr": str(getattr(exc, "stderr", ""))[-300:],
-                            "retryable": True,
-                            "elapsed_ms": round((time.monotonic() - started) * 1000)})
-
     def execute(pair):
         item, action = pair
         started = time.monotonic()
@@ -406,11 +355,103 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
         row["elapsed_ms"] = round((time.monotonic() - started) * 1000)
         return row
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = [pool.submit(execute, pair) for pair in light]
-        results.extend(f.result() for f in futures)
-    for pair in serial:
-        results.append(execute(pair))
+    indexed = {str(action.get("id", "")): action for action in plan}
+    levels: dict[str, int] = {}
+
+    def level(item_id: str, stack: tuple[str, ...] = ()) -> int:
+        if item_id in levels:
+            return levels[item_id]
+        if item_id in stack:
+            return len(plan) + 1
+        action = indexed[item_id]
+        spec = by_id.get(item_id, {})
+        deps = action.get("depends_on")
+        if not isinstance(deps, list):
+            deps = (spec.get("late_policy") or {}).get("depends_on", [])
+        level_value = 0 if not deps else max(
+            (level(str(dep), stack + (item_id,)) + 1 for dep in deps if str(dep) in indexed), default=0)
+        levels[item_id] = level_value
+        return level_value
+
+    for item_id in indexed:
+        level(item_id)
+    action_status: dict[str, str] = {}
+
+    def record_nonfetch(action: dict[str, Any]) -> dict[str, Any]:
+        item_id = str(action.get("id", ""))
+        item = by_id.get(item_id)
+        kind = action.get("action")
+        started = time.monotonic()
+        try:
+            if not item:
+                return {"id": item_id, "action": kind, "status": "failed",
+                        "error_code": "UNKNOWN_ITEM", "error": "unknown_item", "stderr": "", "elapsed_ms": 0}
+            if kind == "GAP":
+                if not dry_run:
+                    _append_gap(root, trade_date, action, clock.isoformat())
+                return {"id": item_id, "action": kind, "status": "recorded" if not dry_run else "dry_run",
+                        "elapsed_ms": round((time.monotonic() - started) * 1000)}
+            if kind == "NEEDS_OPERATOR":
+                return {"id": item_id, "action": kind, "status": "needs_operator",
+                        "detail": action.get("reason", "manual_reference_import_required"),
+                        "partition": action.get("partition"), "elapsed_ms": 0}
+            if kind == "DEFER":
+                if not item.get("fetch_job"):
+                    return {"id": item_id, "action": kind, "status": "failed",
+                            "error_code": "FETCH_JOB_UNAVAILABLE", "error": "independent_fetch_job_unconfigured",
+                            "stderr": "", "elapsed_ms": 0}
+                phases = _quiet_targets(item, phase, clock)
+                deferred.append({"id": item_id, "partition": action.get("partition"),
+                                 "fetch_job": item.get("fetch_job"), "run_in_phases": phases})
+                return {"id": item_id, "action": kind, "status": "deferred", "run_in_phases": phases,
+                        "elapsed_ms": 0}
+            if kind == "NO_FETCH_JOB":
+                return {"id": item_id, "action": kind, "status": "failed",
+                        "error_code": "FETCH_JOB_UNAVAILABLE",
+                        "error": action.get("reason", "independent_fetch_job_unconfigured"), "stderr": "", "elapsed_ms": 0}
+            return {"id": item_id, "action": kind, "status": "skipped", "elapsed_ms": 0}
+        except Exception as exc:
+            return {"id": item_id, "action": kind, "status": "failed",
+                    "error_code": getattr(exc, "error_code", "PLAN_ITEM_FAILED"),
+                    "error": type(exc).__name__ + ":" + str(exc),
+                    "stderr": str(getattr(exc, "stderr", ""))[-300:], "retryable": True,
+                    "elapsed_ms": round((time.monotonic() - started) * 1000)}
+
+    for current_level in sorted(set(levels.values())):
+        actions = [indexed[item_id] for item_id in indexed if levels[item_id] == current_level]
+        ready: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for action in actions:
+            item_id = str(action.get("id", ""))
+            spec = by_id.get(item_id, {})
+            deps = action.get("depends_on")
+            if not isinstance(deps, list):
+                deps = (spec.get("late_policy") or {}).get("depends_on", [])
+            failed_deps = [str(dep) for dep in deps if str(dep) in indexed and
+                           action_status.get(str(dep)) not in {"ok", "dry_run", "recorded"}]
+            if failed_deps and action.get("action") == "FETCH_NOW":
+                row = {"id": item_id, "action": "FETCH_NOW", "status": "DEPENDENCY_FAILED",
+                       "error_code": "DEPENDENCY_FAILED", "failed_dependencies": failed_deps,
+                       "retryable": True, "elapsed_ms": 0}
+            elif action.get("action") == "FETCH_NOW":
+                item = by_id.get(item_id)
+                if item is None:
+                    row = {"id": item_id, "action": "FETCH_NOW", "status": "failed",
+                           "error_code": "UNKNOWN_ITEM", "retryable": True, "elapsed_ms": 0}
+                else:
+                    ready.append((item, action))
+                    continue
+            else:
+                row = record_nonfetch(action)
+            results.append(row)
+            action_status[item_id] = row["status"]
+        light = [pair for pair in ready if pair[1].get("lane") == "parallel"]
+        serial = [pair for pair in ready if pair[1].get("lane") != "parallel"]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(execute, pair) for pair in light]
+            layer_results = [future.result() for future in futures]
+        layer_results.extend(execute(pair) for pair in serial)
+        results.extend(layer_results)
+        action_status.update({row["id"]: row["status"] for row in layer_results})
     detail = {"trade_date": trade_date, "results": results, "deferred": deferred,
               "dry_run": dry_run}
     failures = sum(x.get("status") in {"failed", "unavailable"} for x in results)

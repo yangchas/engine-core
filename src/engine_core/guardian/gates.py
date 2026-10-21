@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import threading
 import time
 from datetime import datetime, timedelta
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 LOG = logging.getLogger(__name__)
-_CACHE: dict[tuple[str, str, str], tuple[float, bool]] = {}
+_CACHE: dict[tuple[str, str, str], tuple[float, "GateResult"]] = {}
 _LOCK = threading.Lock()
 
 # Guardian startup scheduling thresholds are engineering thresholds, not market
@@ -19,6 +20,14 @@ SNAPSHOT_COVERAGE_THRESHOLD = 0.90
 AUCTION_COVERAGE_THRESHOLD = 0.85
 MIN_CHECKPOINT_SYMBOLS = 4000
 FALLBACK_UNIVERSE_COUNT = 4500
+TD_QUERY_TIMEOUT_SECONDS = 15.0
+
+
+class GateResult(dict):
+    """JSON-ready diagnostics whose truth value remains the readiness result."""
+
+    def __bool__(self) -> bool:
+        return self.get("status") == "ready"
 
 
 def _td():
@@ -38,6 +47,30 @@ def _query(sql: str):
         connection.close()
 
 
+def _query_bounded(sql: str):
+    try:
+        timeout = max(0.01, float(os.environ.get("GUARDIAN_TD_QUERY_TIMEOUT_SECONDS",
+                                                  TD_QUERY_TIMEOUT_SECONDS)))
+    except (TypeError, ValueError):
+        timeout = TD_QUERY_TIMEOUT_SECONDS
+    result: queue.Queue = queue.Queue(maxsize=1)
+
+    def run():
+        try:
+            result.put((True, _query(sql)))
+        except BaseException as exc:
+            result.put((False, exc))
+
+    threading.Thread(target=run, name="guardian-td-gate-query", daemon=True).start()
+    try:
+        ok, value = result.get(timeout=timeout)
+    except queue.Empty:
+        raise TimeoutError("TD_QUERY_TIMEOUT") from None
+    if not ok:
+        raise value
+    return value, timeout
+
+
 def _day(now: datetime) -> str:
     return now.date().strftime("%Y%m%d")
 
@@ -46,7 +79,7 @@ def _timestamp(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
-def _cached(name: str, event: Any, now: datetime, identity: str, fn) -> bool:
+def _cached(name: str, event: Any, now: datetime, identity: str, fn) -> GateResult:
     key = (now.date().isoformat(), now.replace(microsecond=0).isoformat(),
            f"{name}:{getattr(event, 'event_id', '')}:{identity}")
     with _LOCK:
@@ -54,10 +87,12 @@ def _cached(name: str, event: Any, now: datetime, identity: str, fn) -> bool:
         if cached and time.monotonic() - cached[0] < 1.0:
             return cached[1]
     try:
-        value = bool(fn())
+        value = fn()
     except Exception as exc:
         LOG.warning("guardian gate failed gate=%s reason=%s", name, type(exc).__name__)
-        value = False
+        value = GateResult(status="not_ready", reason=("TD_QUERY_TIMEOUT" if isinstance(exc, TimeoutError)
+                                                       else "TD_QUERY_FAILED"),
+                           exception_type=type(exc).__name__, elapsed_ms=0)
     with _LOCK:
         _CACHE[key] = (time.monotonic(), value)
         if len(_CACHE) > 256:
@@ -83,7 +118,7 @@ def auction_snapshot_stats(now: datetime, tag: str, ctx: Any = None) -> dict[str
         count = int(td.snapshot_count(_day(now), tag))
     else:
         upper = _timestamp(now.replace(tzinfo=None))
-        rows = _query(f"SELECT symbol FROM market_data1.auction_snapshot_v2 WHERE trade_date='{_day(now)}' AND auction_tag='{tag}' AND ts <= '{upper}'")
+        rows, _timeout = _query_bounded(f"SELECT symbol FROM market_data1.auction_snapshot_v2 WHERE trade_date='{_day(now)}' AND auction_tag='{tag}' AND ts <= '{upper}'")
         count = len({str(row[0]) for row in rows})
     universe = ctx.get("universe_count") if isinstance(ctx, dict) else None
     if not universe:
@@ -93,39 +128,72 @@ def auction_snapshot_stats(now: datetime, tag: str, ctx: Any = None) -> dict[str
             "coverage": count / int(universe) if universe else 0.0}
 
 
-def auction_snapshot_ready(event: Any, now: datetime, ctx: Any) -> bool:
+def auction_snapshot_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
     gate = event.gate
     tag = _tag(event)
     def check():
-        stats = auction_snapshot_stats(now, tag, ctx)
         threshold = AUCTION_COVERAGE_THRESHOLD if gate == "auction_coverage" else SNAPSHOT_COVERAGE_THRESHOLD
-        return stats["coverage"] >= threshold
+        started = time.monotonic()
+        upper = _timestamp(now.replace(tzinfo=None))
+        try:
+            stats = auction_snapshot_stats(now, tag, ctx)
+            return GateResult(status="ready" if stats["coverage"] >= threshold else "not_ready",
+                              reason="coverage_threshold_met" if stats["coverage"] >= threshold else "coverage_below_threshold",
+                              query_window={"trade_date": _day(now), "auction_tag": tag, "upper_ts": upper},
+                              row_count=stats["row_count"], coverage=stats["coverage"],
+                              threshold=threshold, elapsed_ms=round((time.monotonic() - started) * 1000))
+        except Exception as exc:
+            return GateResult(status="not_ready", reason="TD_QUERY_TIMEOUT" if isinstance(exc, TimeoutError) else "TD_QUERY_FAILED",
+                              query_window={"trade_date": _day(now), "auction_tag": tag, "upper_ts": upper},
+                              threshold=threshold, exception_type=type(exc).__name__,
+                              elapsed_ms=round((time.monotonic() - started) * 1000))
     threshold = AUCTION_COVERAGE_THRESHOLD if gate == "auction_coverage" else SNAPSHOT_COVERAGE_THRESHOLD
     return _cached(gate, event, now, f"{tag}:{threshold}", check)
 
 
-def checkpoint_ready(event: Any, now: datetime, ctx: Any) -> bool:
+def checkpoint_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
     def check():
-        if isinstance(ctx, dict) and ctx.get("td_unavailable"):
-            return False
+        started = time.monotonic()
         cutoff = _checkpoint_cutoff(event, now.date())
+        stamp = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+        end = (cutoff + timedelta(seconds=3)).strftime("%Y-%m-%d %H:%M:%S")
+        detail = {"query_window": [stamp, end], "threshold": MIN_CHECKPOINT_SYMBOLS}
+        if isinstance(ctx, dict) and ctx.get("td_unavailable"):
+            return GateResult(status="not_ready", reason="TD_UNAVAILABLE", row_count=0,
+                              elapsed_ms=round((time.monotonic() - started) * 1000), **detail)
         if cutoff > now.replace(tzinfo=None):
-            return False
+            return GateResult(status="not_ready", reason="WINDOW_NOT_REACHED", row_count=0,
+                              elapsed_ms=round((time.monotonic() - started) * 1000), **detail)
         if isinstance(ctx, dict) and "checkpoint_count" in ctx:
             tick_ts = str(ctx.get("checkpoint_ts", ""))
             if len(tick_ts) == 8:
                 tick_ts = now.date().isoformat() + " " + tick_ts
-            return int(ctx["checkpoint_count"]) >= MIN_CHECKPOINT_SYMBOLS and tick_ts[:19] >= cutoff.strftime("%Y-%m-%d %H:%M:%S") and tick_ts[:26] <= _timestamp(now.replace(tzinfo=None))
-        stamp = cutoff.strftime("%Y-%m-%d %H:%M:%S")
-        end = (cutoff + timedelta(seconds=3)).strftime("%Y-%m-%d %H:%M:%S")
+            count = int(ctx["checkpoint_count"])
+            ready = count >= MIN_CHECKPOINT_SYMBOLS and tick_ts[:19] >= stamp and tick_ts[:26] <= _timestamp(now.replace(tzinfo=None))
+            return GateResult(status="ready" if ready else "not_ready",
+                              reason="checkpoint_threshold_met" if ready else "checkpoint_below_threshold",
+                              row_count=count, checkpoint_ts=tick_ts, elapsed_ms=round((time.monotonic() - started) * 1000),
+                              **detail)
         if cutoff + timedelta(seconds=3) > now.replace(tzinfo=None):
             end = _timestamp(now.replace(tzinfo=None))
             if end <= stamp:
-                return False
-        symbols = _query(f"SELECT symbol FROM market_data1.stock_tick_v2 WHERE ts >= '{stamp}' AND ts < '{end}' AND ts <= '{_timestamp(now.replace(tzinfo=None))}'")
+                return GateResult(status="not_ready", reason="WINDOW_NOT_REACHED", row_count=0,
+                                  elapsed_ms=round((time.monotonic() - started) * 1000), **detail)
+        detail["query_window"] = [stamp, end]
+        try:
+            symbols, timeout = _query_bounded(f"SELECT symbol FROM market_data1.stock_tick_v2 WHERE ts >= '{stamp}' AND ts < '{end}' AND ts <= '{_timestamp(now.replace(tzinfo=None))}'")
+        except Exception as exc:
+            return GateResult(status="not_ready", reason="TD_QUERY_TIMEOUT" if isinstance(exc, TimeoutError) else "TD_QUERY_FAILED",
+                              exception_type=type(exc).__name__, elapsed_ms=round((time.monotonic() - started) * 1000),
+                              timeout_seconds=float(os.environ.get("GUARDIAN_TD_QUERY_TIMEOUT_SECONDS", TD_QUERY_TIMEOUT_SECONDS)),
+                              **detail)
         # Any row in the cutoff window proves the day's latest timestamp is at
         # least the cutoff; avoid a second full-day scan.
-        return len({str(row[0]) for row in symbols}) >= MIN_CHECKPOINT_SYMBOLS
+        count = len({str(row[0]) for row in symbols})
+        return GateResult(status="ready" if count >= MIN_CHECKPOINT_SYMBOLS else "not_ready",
+                          reason="checkpoint_threshold_met" if count >= MIN_CHECKPOINT_SYMBOLS else "checkpoint_below_threshold",
+                          row_count=count, timeout_seconds=timeout,
+                          elapsed_ms=round((time.monotonic() - started) * 1000), **detail)
     return _cached("checkpoint_ready", event, now, f"{getattr(event, 'start', '')}:{getattr(event, 'handler', '')}", check)
 
 

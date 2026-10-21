@@ -39,3 +39,37 @@ def test_reindex_counts_kline_that_landed_after_1730(tmp_path):
  assert len(rows)==1 and rows[0]['rsi_6'] is not None
  meta=__import__('json').loads(c.locate('daily_indicators','2026-10-08').read_text())
  assert meta['available_at'].startswith('2026-10-08T18:15:04')
+
+def test_reindex_missing_kline_manifest_raises_without_committing_empty_version(tmp_path):
+ import json
+ from pathlib import Path
+ import pytest
+ from engine_core.daily_history import reindex_daily_indicators
+ core_root=Path('/home/exedev/core-data')
+ production=json.loads((core_root/'catalog.json').read_text())
+ day='2026-10-20'
+ assert production['datasets']['daily_kline']['dates'][day]
+ c=ArtifactCatalog(tmp_path)
+ c.path.parent.mkdir(parents=True, exist_ok=True)
+ production['datasets']['daily_kline']['dates'][day][-1]['manifest']=str(tmp_path/'unavailable-manifest.json')
+ c.path.write_text(json.dumps(production))
+ before=c.read()['datasets']['daily_indicators']['dates'][day]
+ with pytest.raises(RuntimeError, match='daily_kline_manifest_missing'):
+  reindex_daily_indicators(c,start=day,end=day)
+ assert c.read()['datasets']['daily_indicators']['dates'][day] == before
+
+def test_reindex_real_core_history_and_preserves_late_kline_availability(tmp_path):
+ import json
+ from pathlib import Path
+ from engine_core.daily_history import reindex_daily_indicators
+ c=ArtifactCatalog(tmp_path)
+ core_root=Path('/home/exedev/core-data')
+ payload=json.loads((core_root/'catalog.json').read_text())
+ day='2026-10-20'
+ c.path.parent.mkdir(parents=True, exist_ok=True)
+ c.path.write_text(json.dumps(payload))
+ result=reindex_daily_indicators(c,start=day,end=day)
+ rows=c.read_rows(c.locate('daily_indicators',day))
+ manifest=json.loads(c.locate('daily_indicators',day).read_text())
+ assert result['days_reindexed']==1 and len(rows)==5224
+ assert manifest['available_at']=='2026-10-20T18:15:04.129576+08:00'

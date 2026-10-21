@@ -14,6 +14,54 @@ PHASES = frozenset({
 })
 _REQUIRED = {"id", "owner", "artifact", "phases", "cadence", "rule",
              "freshness", "retry", "degrade", "lifecycle", "notes", "guardian_event"}
+_NONEMPTY_DATASETS = frozenset({"daily_kline", "daily_indicators", "symbol_universe",
+                               "stock_day_facts", "auction_stock_facts", "plate_members"})
+
+
+def catalog_partition_present(catalog: Mapping[str, Any], dataset: str, day: str | None,
+                              now: datetime) -> bool:
+    record = catalog.get("datasets", {}).get(dataset)
+    versions = record.get("dates", {}).get(day) if day and isinstance(record, Mapping) else None
+    if not versions:
+        return False
+    if dataset not in _NONEMPTY_DATASETS:
+        return bool(versions)
+    if not isinstance(versions, list):
+        versions = [versions]
+    for version in versions:
+        if not isinstance(version, Mapping):
+            continue
+        metadata: Mapping[str, Any] = version
+        manifest = version.get("manifest")
+        if manifest:
+            try:
+                loaded = json.loads(Path(str(manifest)).read_text(encoding="utf-8"))
+                if isinstance(loaded, Mapping):
+                    metadata = {**loaded, **version}
+            except (OSError, ValueError, TypeError):
+                continue
+        try:
+            if int(metadata.get("row_count", 0) or 0) <= 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        quality = metadata.get("quality")
+        quality_status = quality.get("status") if isinstance(quality, Mapping) else quality
+        if str(quality_status or "").upper() == "FAILED":
+            continue
+        available_at = metadata.get("available_at")
+        if not available_at:
+            continue
+        try:
+            available = datetime.fromisoformat(str(available_at).replace("Z", "+00:00"))
+            if available.tzinfo is None:
+                available = available.replace(tzinfo=now.tzinfo)
+            current = now if now.tzinfo else now.astimezone()
+            if available <= current:
+                return True
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return False
 
 
 def load_registry(path: str | Path | None = None) -> list[dict[str, Any]]:
@@ -108,7 +156,7 @@ def stale_items(now: datetime, catalog: str | Path | Mapping[str, Any],
                            "reason": "no structured freshness rule"})
             continue
         if rule["partition"] == "latest":
-            keys = sorted(k for k, v in record.get("dates", {}).items() if v)
+            keys = sorted(k for k in record.get("dates", {}) if catalog_partition_present(payload, dataset, k, now))
             age = (datetime.fromisoformat(day) - datetime.fromisoformat(keys[-1])).days if keys else None
             result.append({"id": item["id"], "dataset": dataset, "partition": keys[-1] if keys else None,
                            "status": "MISSING" if age is None else ("OK" if age <= rule.get("max_age_days", 8) else "STALE")})
@@ -118,7 +166,7 @@ def stale_items(now: datetime, catalog: str | Path | Mapping[str, Any],
             result.append({"id": item["id"], "status": "UNKNOWN", "dataset": dataset,
                            "reason": "partition date unavailable"})
             continue
-        present = bool(record.get("dates", {}).get(want))
+        present = catalog_partition_present(payload, dataset, want, now)
         hh, mm = (int(part) for part in str(rule["expected_by"]).split(":"))
         due = (now.hour, now.minute) >= (hh, mm)
         status = "OK" if present else ("OVERDUE" if due else "PENDING")

@@ -94,3 +94,35 @@ def test_checkpoint_never_queries_future_window(monkeypatch):
     now = datetime.fromisoformat("2026-10-19T09:45:10+08:00")
     assert not checkpoint_ready(event, now, {})
     assert calls == []
+
+
+def test_checkpoint_timeout_returns_diagnostic_reason(monkeypatch):
+    import time
+    import engine_core.guardian.gates as gates
+    from engine_core.guardian.scheduler import default_events
+
+    event = next(e for e in default_events() if e.event_id == "intraday_33")
+    monkeypatch.setenv("GUARDIAN_TD_QUERY_TIMEOUT_SECONDS", "0.01")
+    monkeypatch.setattr(gates, "_query", lambda _sql: (time.sleep(0.1), [])[1])
+    gates._CACHE.clear()
+    result = checkpoint_ready(event, datetime.fromisoformat("2026-10-19T09:33:05+08:00"), {})
+    assert not result
+    assert result["reason"] == "TD_QUERY_TIMEOUT"
+    assert result["query_window"] == ["2026-10-19 09:33:00", "2026-10-19 09:33:03"]
+    assert result["threshold"] == gates.MIN_CHECKPOINT_SYMBOLS
+    assert result["elapsed_ms"] < 100
+
+
+def test_handler_gate_emits_diagnostic_reason_json(monkeypatch, capsys):
+    import json
+    from examples import guardian_handler
+    from engine_core.guardian import gates
+
+    monkeypatch.setattr(gates, "default_gates", lambda: {"checkpoint_ready": lambda *_: {
+        "status": "not_ready", "reason": "TD_QUERY_TIMEOUT", "row_count": 0,
+        "query_window": ["09:33:00", "09:33:03"], "elapsed_ms": 15,
+        "exception_type": "TimeoutError"}})
+    code = guardian_handler._gate("checkpoint_ready", {"event": "intraday_33"})
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 75 and payload["reason"] == "TD_QUERY_TIMEOUT"
+    assert payload["query_window"] == ["09:33:00", "09:33:03"]

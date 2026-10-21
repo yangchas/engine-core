@@ -57,7 +57,8 @@ def test_health_catalog_statuses_and_reconcile_owner_events(tmp_path, monkeypatc
 
     _matrix(tmp_path, [("2026-10-19", True), ("2026-10-20", True), ("2026-10-21", True)])
     (tmp_path / "catalog.json").write_text(json.dumps({"datasets": {
-        "symbol_universe": {"dates": {"2026-10-20": [{}]}},
+        "symbol_universe": {"dates": {"2026-10-20": [{"row_count": 1,
+            "available_at": "2026-10-20T08:00:00+08:00", "quality": {"status": "OK"}}]}},
         "daily_kline": {"dates": {}}, "stock_static": {"dates": {}}
     }}))
     monkeypatch.setattr("engine_core.guardian.startup._health_probes",
@@ -90,7 +91,7 @@ def test_boot_apply_plan_executes_jobs_defers_and_appends_gaps(tmp_path, monkeyp
     calls = []
     monkeypatch.setattr("engine_core.guardian.startup.load_registry", lambda: registry)
     monkeypatch.setattr("engine_core.guardian.startup._run_fetch_job",
-                        lambda item, day, timeout: calls.append((item["id"], day)) or {"status": "ok"})
+                        lambda item, day, timeout, _root: calls.append((item["id"], day)) or {"status": "ok"})
     result = boot_apply_plan("2026-10-20", plan, tmp_path, now="2026-10-20T09:36:00+08:00", phase="OPEN")
     assert calls == [("light", "2026-10-20")]
     assert result["detail"]["deferred"] == [{"id": "heavy", "partition": "2026-10-19",
@@ -175,3 +176,42 @@ def test_boot_apply_plan_runs_stub_job_into_temporary_catalog(tmp_path, monkeypa
     assert manifest_path is not None
     manifest = __import__("json").loads(manifest_path.read_text())
     assert manifest["available_at"] == "2026-10-20T09:36:01+08:00"
+
+
+def test_boot_apply_plan_runs_dependency_layers_and_propagates_failure(tmp_path, monkeypatch):
+    from engine_core.guardian import startup
+
+    registry = [
+        {"id": "plate_members", "fetch_job": {"argv": ["stub"]}},
+        {"id": "stock_theme_assignment", "fetch_job": {"argv": ["stub"]}},
+    ]
+    monkeypatch.setattr(startup, "load_registry", lambda: registry)
+    calls = []
+
+    def run(item, _day, _timeout, _root):
+        calls.append(item["id"])
+        if item["id"] == "plate_members":
+            raise RuntimeError("upstream failed")
+        return {"status": "ok"}
+
+    monkeypatch.setattr(startup, "_run_fetch_job", run)
+    result = startup.boot_apply_plan("2026-10-20", [
+        {"id": "stock_theme_assignment", "partition": "2026-10-20", "action": "FETCH_NOW",
+         "lane": "parallel", "depends_on": ["plate_members"]},
+        {"id": "plate_members", "partition": "2026-10-20", "action": "FETCH_NOW",
+         "lane": "parallel", "depends_on": []},
+    ], tmp_path, now="2026-10-20T09:36:00+08:00", phase="OPEN")
+    rows = {row["id"]: row for row in result["detail"]["results"]}
+    assert calls == ["plate_members"]
+    assert rows["stock_theme_assignment"]["status"] == "DEPENDENCY_FAILED"
+    assert rows["stock_theme_assignment"]["retryable"] is True
+    calls.clear()
+    monkeypatch.setattr(startup, "_run_fetch_job",
+                        lambda item, _day, _timeout, _root: calls.append(item["id"]) or {"status": "ok"})
+    startup.boot_apply_plan("2026-10-20", [
+        {"id": "stock_theme_assignment", "partition": "2026-10-20", "action": "FETCH_NOW",
+         "lane": "parallel", "depends_on": ["plate_members"]},
+        {"id": "plate_members", "partition": "2026-10-20", "action": "FETCH_NOW",
+         "lane": "parallel", "depends_on": []},
+    ], tmp_path, now="2026-10-20T09:36:00+08:00", phase="OPEN")
+    assert calls == ["plate_members", "stock_theme_assignment"]

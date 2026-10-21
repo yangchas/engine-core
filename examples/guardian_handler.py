@@ -118,9 +118,12 @@ def _gate(name, request=None):
         return 64
     now = datetime.now().astimezone()
     try:
-        ready = bool(fn(event, now, {}))
-        _json({"status": "ready" if ready else "not_ready",
-               "reason": "gate_satisfied" if ready else "gate_condition_false"})
+        result = fn(event, now, {})
+        payload = dict(result) if isinstance(result, dict) else {
+            "status": "ready" if bool(result) else "not_ready",
+            "reason": "gate_satisfied" if bool(result) else "gate_condition_false"}
+        ready = payload.get("status") == "ready"
+        _json(payload)
         return 0 if ready else 75
     except Exception as exc:
         _json({"status": "not_ready", "reason": f"{type(exc).__name__}:{exc}"})
