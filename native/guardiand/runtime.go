@@ -545,7 +545,27 @@ func runCmd(args []string) error {
 		return err
 	}
 	r.listening = true
-	if err = r.runBootEvents(now); err != nil {
+	// Boot events can run for minutes (real-source backfills); keep the heartbeat advancing so keepalive does not
+	// mistake the busy boot chain for a stalled daemon and kill it mid-fetch.
+	bootDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-bootDone:
+				return
+			case <-ticker.C:
+				r.mu.Lock()
+				r.tick++
+				r.mu.Unlock()
+				_ = r.heartbeat(r.clock.Now())
+			}
+		}
+	}()
+	err = r.runBootEvents(now)
+	close(bootDone)
+	if err != nil {
 		return err
 	}
 	missed, active := startupClassify(c, now)
