@@ -121,7 +121,7 @@ def _quality(rows: list[dict[str, Any]], fetch_meta: Mapping[str, Any]) -> dict[
     coverage = actual / expected if isinstance(expected, (int, float)) and expected > 0 else None
     missing = int(max(0, expected - actual)) if isinstance(expected, (int, float)) else None
     partial = bool(fetch_meta.get("partial"))
-    return {"coverage": coverage, "missing": missing, "row_count": actual,
+    return {"coverage": coverage, "missing": missing, "row_count": len(rows),
             "status": "PARTIAL" if partial or (coverage is not None and coverage < 1) else "READY",
             "partial": partial}
 
@@ -250,7 +250,7 @@ class JobRunner:
         provider_details = {key: fetch_meta[key] for key in
                             ("failed_plates", "completed_plate_count", "queried_plate_count",
                              "unqueried_plate_count", "universe_duplicate_conflicts",
-                             "queried_symbol_count", "unqueried_symbol_count",
+                             "queried_symbol_count", "unqueried_symbol_count", "overwritten_symbol_count",
                              "universe_delta_count") if key in fetch_meta}
         if provider_details:
             manifest["provider_details"] = provider_details

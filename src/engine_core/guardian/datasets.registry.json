@@ -347,7 +347,7 @@
         "force": "recompute",
         "clear": "clear then rebuild"
       },
-      "notes": "schedule kaipan_refresh_0850; source adapter in run_data_jobs; ask data operator about retry policy.",
+      "notes": "schedule kaipan_refresh_0850; source adapter in run_data_jobs; ask data operator about retry policy. | C389 2026-10-21: Kaipan getBanReasons returns only the LATEST reason per stock; a symbol that limited up again on D loses its D-1 entry. Late backfill after D's reasons start (>~09:20) is therefore PARTIAL: overwritten symbols are counted missing (quality.partial, provider_details.overwritten_symbol_count). The 08:50 capture is the only complete one.",
       "guardian_event": "kaipan_refresh_0850",
       "late_policy": {
         "mode": "fetch_now",

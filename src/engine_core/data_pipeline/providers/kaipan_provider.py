@@ -285,6 +285,9 @@ class KaipanProvider:
                       symbols: Iterable[str] | None = None) -> dict[str, Any]:
         rows: list[dict[str, Any]] = []
         done: set[str] = set()
+        # getBanReasons returns only a stock's LATEST reason: once it limits up again, the target day's entry is gone.
+        # Such symbols are counted as overwritten (missing for this day), never silently as covered.
+        overwritten: set[str] = set()
         if self.reasons_checkpoint_path is not None and self.reasons_checkpoint_path.is_file():
             try:
                 checkpoint = json.loads(self.reasons_checkpoint_path.read_text(encoding="utf-8"))
@@ -293,6 +296,7 @@ class KaipanProvider:
             if checkpoint.get("trade_date") == trade_date:
                 done = set(map(str, checkpoint.get("done_symbols", ())))
                 rows = [dict(row) for row in checkpoint.get("rows", ()) if isinstance(row, Mapping)]
+                overwritten = set(map(str, checkpoint.get("overwritten_symbols", ())))
         requested = tuple(symbols if symbols is not None else self.symbols)
         requested_set = {str(symbol).zfill(6) for symbol in requested}
         rows = [row for row in rows if str(row.get("symbol", "")).zfill(6) in requested_set]
@@ -312,31 +316,36 @@ class KaipanProvider:
             entries = response.get("List", response.get("list", []))
             if not isinstance(entries, (list, tuple)):
                 raise ValueError("kaipan_unexpected_reason_shape")
+            kept = 0
             for entry in entries:
                 if not isinstance(entry, Mapping):
                     continue
                 event_date = str(entry.get("Date") or "")[:10]
                 if event_date and event_date > trade_date:
                     continue
+                kept += 1
                 rows.append({"symbol": symbol, "event_date": event_date,
                              "type": str(entry.get("Type", "")), "reason": entry.get("Reason"),
                              "plate_codes": entry.get("ZSCode", []),
                              "parent_plate_code": entry.get("PZSCode"), "trade_date": trade_date})
-            self._save_reasons_checkpoint(trade_date, done, rows)
+            if entries and not kept:
+                overwritten.add(symbol)
+            self._save_reasons_checkpoint(trade_date, done, rows, overwritten)
         remaining = [str(symbol).zfill(6) for symbol in requested if str(symbol).zfill(6) not in done]
-        return {"rows": rows, "expected_count": len(requested), "coverage_count": len(done),
-                "queried_symbol_count": queried_now,
-                "unqueried_symbol_count": len(remaining), "partial": bool(remaining),
+        overwritten &= requested_set
+        return {"rows": rows, "expected_count": len(requested), "coverage_count": len(done - overwritten),
+                "queried_symbol_count": queried_now, "overwritten_symbol_count": len(overwritten),
+                "unqueried_symbol_count": len(remaining), "partial": bool(remaining or overwritten),
                 "request_count": self._requests}
 
     def _save_reasons_checkpoint(self, trade_date: str, done: set[str],
-                                 rows: Sequence[Mapping[str, Any]]) -> None:
+                                 rows: Sequence[Mapping[str, Any]], overwritten: set[str] = frozenset()) -> None:
         if self.reasons_checkpoint_path is None:
             return
         self.reasons_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.reasons_checkpoint_path.with_name(self.reasons_checkpoint_path.name + ".tmp")
         temporary.write_text(json.dumps({"trade_date": trade_date, "done_symbols": sorted(done),
-            "rows": list(rows)}, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+            "overwritten_symbols": sorted(overwritten), "rows": list(rows)}, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
             encoding="utf-8")
         os.replace(temporary, self.reasons_checkpoint_path)
 

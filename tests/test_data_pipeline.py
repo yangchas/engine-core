@@ -418,3 +418,19 @@ def test_kaipan_provider_normalizes_historical_plate_minute_trend():
     assert result["metadata"] == {"begin_px": 12.0, "hprice": 12.4,
                                   "lprice": 11.9, "preclose_px": 12.1,
                                   "day": "2026-10-15"}
+
+
+def test_limit_reasons_marks_symbols_whose_target_day_reason_was_overwritten_as_partial():
+    """STUB client (shape captured from real Kaipan 2026-10-21: only the latest reason is returned, dated today)."""
+    from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+
+    class Client:
+        def get_ban_reasons(self, symbol):
+            date = "2026-10-21" if symbol == "001239" else "2026-10-20"
+            return {"StockID": symbol, "List": [{"Date": date, "Type": "0", "Reason": "r", "ZSCode": []}]}
+
+    result = KaipanProvider(Client(), max_requests=10, min_interval_seconds=0).limit_reasons(
+        "2026-10-20", symbols=["001239", "600178"])
+    assert [row["symbol"] for row in result["rows"]] == ["600178"]
+    assert result["expected_count"] == 2 and result["coverage_count"] == 1
+    assert result["overwritten_symbol_count"] == 1 and result["partial"] is True
