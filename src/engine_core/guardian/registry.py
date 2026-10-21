@@ -29,6 +29,57 @@ def kline_coverage_problem(quality: Any) -> str | None:
     return None
 
 
+def catalog_manifest(catalog: Mapping[str, Any], dataset: str, day: str | None) -> dict[str, Any] | None:
+    """Read the newest catalogued manifest for one partition, if it is retained."""
+    record = catalog.get("datasets", {}).get(dataset, {})
+    versions = record.get("dates", {}).get(day, []) if day else []
+    if isinstance(versions, Mapping):
+        versions = [versions]
+    for version in reversed(versions if isinstance(versions, list) else []):
+        if not isinstance(version, Mapping):
+            continue
+        metadata = dict(version)
+        manifest_path = version.get("manifest")
+        if manifest_path:
+            try:
+                manifest = json.loads(Path(str(manifest_path)).read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                continue
+            if isinstance(manifest, Mapping):
+                metadata = {**manifest, **metadata}
+        if metadata.get("version"):
+            return metadata
+    return None
+
+
+def daily_kline_needs_upgrade(manifest: Mapping[str, Any] | None) -> bool:
+    if not isinstance(manifest, Mapping):
+        return False
+    quality = manifest.get("quality")
+    status = quality.get("status") if isinstance(quality, Mapping) else quality
+    completeness = manifest.get("field_completeness")
+    if not isinstance(completeness, Mapping) and isinstance(quality, Mapping):
+        completeness = quality.get("field_completeness")
+    return (str(status or "").upper() in {"DEGRADED", "PROVISIONAL", "PARTIAL"}
+            or str(manifest.get("business_status", "")).upper() == "PROVISIONAL"
+            or bool(manifest.get("degraded"))
+            or (isinstance(completeness, Mapping)
+                and str(completeness.get("open", "")).upper() in {"MISSING", "PARTIAL"}))
+
+
+def derived_daily_kline_input_stale(catalog: Mapping[str, Any], dataset: str, day: str) -> bool:
+    """Old manifests without inputs are intentionally unknown, not retroactively stale."""
+    if dataset not in {"daily_indicators", "ladder_daily", "stock_day_facts", "daily_report_features"}:
+        return False
+    derived = catalog_manifest(catalog, dataset, day)
+    inputs = derived.get("inputs") if isinstance(derived, Mapping) else None
+    recorded = inputs.get("daily_kline") if isinstance(inputs, Mapping) else None
+    if not isinstance(recorded, Mapping) or not recorded.get("version"):
+        return False
+    current = catalog_manifest(catalog, "daily_kline", day)
+    return bool(current and current.get("version") and recorded["version"] != current["version"])
+
+
 _NONEMPTY_DATASETS = frozenset({"daily_kline", "daily_indicators", "symbol_universe",
                                "stock_day_facts", "auction_stock_facts", "plate_members"})
 
@@ -188,9 +239,11 @@ def stale_items(now: datetime, catalog: str | Path | Mapping[str, Any],
                            "reason": "partition date unavailable"})
             continue
         present = catalog_partition_present(payload, dataset, want, now)
+        lineage_stale = present and derived_daily_kline_input_stale(payload, dataset, want)
         hh, mm = (int(part) for part in str(rule["expected_by"]).split(":"))
         due = (now.hour, now.minute) >= (hh, mm)
-        status = "OK" if present else ("OVERDUE" if due else "PENDING")
+        status = "OVERDUE" if lineage_stale else ("OK" if present else ("OVERDUE" if due else "PENDING"))
         result.append({"id": item["id"], "dataset": dataset, "status": status,
-                       "partition": want, "expected_by": rule["expected_by"]})
+                       "partition": want, "expected_by": rule["expected_by"],
+                       **({"reason": "daily_kline_version_changed"} if lineage_stale else {})})
     return result

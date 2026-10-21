@@ -16,6 +16,68 @@ from .registry import REGISTRY_PATH, items_for_phase, load_registry, stale_items
 PHASES = ("NIGHT", "PRE_MARKET", "AUCTION", "AUCTION_END", "OPEN",
           "INTRADAY_AM", "MIDDAY_BREAK", "PM_OPEN", "INTRADAY_PM",
           "CLOSE_AUCTION", "CLOSE", "POST_MARKET")
+DAILY_KLINE_UPGRADE_MAX_ATTEMPTS = 3
+
+
+def _record_daily_kline_upgrade(root: Path, partition: str, *, succeeded: bool) -> dict[str, Any] | None:
+    """Bound retries for upgrading one degraded daily_kline version."""
+    from .registry import catalog_manifest, daily_kline_needs_upgrade
+    from ..data_pipeline.storage import _atomic_write, canonical_json
+
+    state_path = root / "guardian-upgrade-attempts.json"
+    try:
+        states = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(states, dict):
+            states = {}
+    except (OSError, ValueError):
+        states = {}
+    budget_key = partition
+    state = states.get(budget_key)
+    if not isinstance(state, dict):
+        legacy_key = next((key for key, value in states.items()
+                           if key.startswith(f"{partition}:") and isinstance(value, dict)
+                           and value.get("status") == "queued"), None)
+        if legacy_key:
+            state = states.pop(legacy_key)
+    if not isinstance(state, dict):
+        try:
+            catalog = json.loads((root / "catalog.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            catalog = {"datasets": {}}
+        state = {"status": "queued", "attempts": 0}
+    else:
+        state = dict(state)
+    if succeeded:
+        try:
+            catalog = json.loads((root / "catalog.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            catalog = {"datasets": {}}
+        manifest = catalog_manifest(catalog, "daily_kline", partition)
+        if not daily_kline_needs_upgrade(manifest):
+            state.update(status="resolved", reason="formal_version_available")
+        else:
+            state["attempts"] = int(state.get("attempts", 0)) + 1
+            state.update(status=("exhausted" if state["attempts"] >= DAILY_KLINE_UPGRADE_MAX_ATTEMPTS else "queued"),
+                         reason=("upgrade_attempt_budget_exhausted" if state["attempts"] >= DAILY_KLINE_UPGRADE_MAX_ATTEMPTS
+                                 else "degraded_version_remains"))
+    else:
+        state["attempts"] = int(state.get("attempts", 0)) + 1
+        state.update(status=("exhausted" if state["attempts"] >= DAILY_KLINE_UPGRADE_MAX_ATTEMPTS else "queued"),
+                     reason=("upgrade_attempt_budget_exhausted" if state["attempts"] >= DAILY_KLINE_UPGRADE_MAX_ATTEMPTS
+                             else "fetch_failed"))
+    states[budget_key] = state
+    _atomic_write(state_path, canonical_json(states) + b"\n")
+    return state
+
+
+def _record_daily_kline_upgrade_gap(root: Path, partition: str, state: dict[str, Any]) -> None:
+    if state.get("status") != "exhausted":
+        return
+    _append_gap(root, partition, {"id": "daily_kline", "status": "GAP",
+                                 "reason": state.get("reason", "upgrade_attempt_budget_exhausted"),
+                                 "attempts": state.get("attempts", DAILY_KLINE_UPGRADE_MAX_ATTEMPTS),
+                                 "recommendation": "inspect_daily_kline_source"},
+                datetime.now().astimezone().isoformat())
 
 
 def _now(value: datetime | str | None, trade_date: str) -> datetime:
@@ -242,8 +304,13 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
             previous = calendar["prev"]
         except Exception:
             previous = None
+        try:
+            upgrade_attempts = json.loads((root / "guardian-upgrade-attempts.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            upgrade_attempts = {}
         plan = reconcile_plan(clock, catalog, trade_date=trade_date, prev_trade_date=previous,
-                              phase=phase, load1=os.getloadavg()[0], cpus=os.cpu_count())
+                              phase=phase, load1=os.getloadavg()[0], cpus=os.cpu_count(),
+                              upgrade_attempts=upgrade_attempts)
     except Exception as exc:  # the plan is advisory; never fail the boot check for it
         plan = [{"id": "*", "action": "PLAN_ERROR", "error": type(exc).__name__}]
     detail = {"phase": phase, "trade_date": trade_date, "gaps": gaps, "plan": plan,
@@ -409,6 +476,7 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
         deps = action.get("depends_on")
         if not isinstance(deps, list):
             deps = (spec.get("late_policy") or {}).get("depends_on", [])
+        deps = [dep for dep in deps if not indexed.get(str(dep), {}).get("upgrade_daily_kline")]
         level_value = 0 if not deps else max(
             (level(str(dep), stack + (item_id,)) + 1 for dep in deps if str(dep) in indexed), default=0)
         levels[item_id] = level_value
@@ -467,6 +535,7 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
             deps = action.get("depends_on")
             if not isinstance(deps, list):
                 deps = (spec.get("late_policy") or {}).get("depends_on", [])
+            deps = [dep for dep in deps if not indexed.get(str(dep), {}).get("upgrade_daily_kline")]
             failed_deps = [str(dep) for dep in deps if str(dep) in indexed and
                            action_status.get(str(dep)) not in {"ok", "dry_run", "recorded", "queued"}]
             if failed_deps and action.get("action") == "FETCH_NOW":
@@ -490,6 +559,7 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
             deps = pair[1].get("depends_on")
             if not isinstance(deps, list):
                 deps = (pair[0].get("late_policy") or {}).get("depends_on", [])
+            deps = [dep for dep in deps if not indexed.get(str(dep), {}).get("upgrade_daily_kline")]
             return any(action_status.get(str(dep)) == "queued" for dep in deps)
 
         light = [pair for pair in ready if pair[1].get("lane") == "parallel" and not after_queued(pair)]
@@ -509,6 +579,16 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
             deferred.append({"id": item["id"], "partition": action.get("partition"),
                              "fetch_job": item.get("fetch_job"), "run_in_phases": [phase] if phase else ["NIGHT"],
                              "depends_on": [str(dep) for dep in deps if str(dep) in indexed]})
+            if action.get("upgrade_daily_kline") and not dry_run:
+                state_path = root / "guardian-upgrade-attempts.json"
+                try:
+                    upgrade_attempts = json.loads(state_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    upgrade_attempts = {}
+                budget_key = str(action.get("partition"))
+                upgrade_attempts.setdefault(budget_key, {"status": "queued", "attempts": 0})
+                from ..data_pipeline.storage import _atomic_write, canonical_json
+                _atomic_write(state_path, canonical_json(upgrade_attempts) + b"\n")
             layer_results.append({"id": item["id"], "action": "FETCH_NOW", "partition": str(action.get("partition", "")),
                                   "status": "queued", "run_in_phases": [phase] if phase else ["NIGHT"], "elapsed_ms": 0})
         results.extend(layer_results)
@@ -532,16 +612,31 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
         return _result("failed", {"id": item_id}, error_code="UNKNOWN_ITEM")
     if dry_run:
         return _result("ok", {"id": item_id, "partition": partition, "dry_run": True})
+    upgrade = item_id == "daily_kline"
     try:
         _argv, timeout = _fetch_spec(item)
         result = _run_fetch_job(item, partition, timeout, root)
         _verify_partition(item, partition, root)
+        if upgrade:
+            state = _record_daily_kline_upgrade(root, partition, succeeded=True)
+            if state:
+                _record_daily_kline_upgrade_gap(root, partition, state)
+            if state and state.get("status") in {"queued", "exhausted"}:
+                return _result("failed", {"id": item_id, "partition": partition, "result": result,
+                                           "upgrade": state}, error_code="DAILY_KLINE_UPGRADE_INCOMPLETE",
+                               retryable=state.get("status") == "queued")
         return _result("ok", {"id": item_id, "partition": partition, "result": result})
     except Exception as exc:
+        upgrade_state = _record_daily_kline_upgrade(root, partition, succeeded=False) if upgrade else None
+        if upgrade_state:
+            _record_daily_kline_upgrade_gap(root, partition, upgrade_state)
         code = getattr(exc, "error_code", "FETCH_FAILED")
         detail = {"item_id": item_id, "partition": partition,
                                    "error": type(exc).__name__ + ":" + str(exc),
                                    "error_code": code,
                                    "stderr_tail": str(getattr(exc, "stderr", ""))[-300:],
                                    "elapsed_ms": round((time.monotonic() - started) * 1000)}
-        return _result("failed", detail, error_code=code, retryable=True)
+        if upgrade_state:
+            detail["upgrade"] = upgrade_state
+        return _result("failed", detail, error_code=code,
+                       retryable=not upgrade_state or upgrade_state.get("status") == "queued")

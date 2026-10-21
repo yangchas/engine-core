@@ -51,12 +51,18 @@ def fetch_item(item: str, day: str, artifact_root: str | Path, *, execute: bool 
         if source is None:
             return {"status": "failed", "error": "daily_kline_missing", "retryable": True}
         rows, source_manifest = source
+        source_quality = source_manifest.get("quality")
+        source_quality_status = (source_quality.get("status") if isinstance(source_quality, dict)
+                                 else source_quality)
         facts, _quality = derive_stock_day_facts(
             day, rows, {"source_version": source_manifest.get("version")})
         available_at = datetime.now(TZ).isoformat()
         manifest = {"trade_date": day, "as_of": available_at, "available_at": available_at,
                     "source_dataset": "daily_kline", "source_version": source_manifest.get("version"),
-                    "quality": {"status": "READY"}, "business_status": "READY"}
+                    "quality": {"status": "READY"}, "business_status": "READY",
+                    "inputs": {"daily_kline": {"version": source_manifest.get("version"),
+                                                 "quality_status": source_quality_status,
+                                                 "source": source_manifest.get("source")}}}
         result = {"item": item, "trade_date": day, "rows": len(facts), "read_only": not execute,
                   "source_version": source_manifest.get("version"), "available_at": available_at,
                   "quality": "CLOSE_PRICE_PROXY", "early_fields": "missing"}

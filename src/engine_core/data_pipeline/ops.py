@@ -282,6 +282,8 @@ def backfill_ladder_daily(runner: JobRunner, start: str, end: str, *,
     days = [(first + timedelta(days=offset)).isoformat()
             for offset in range((last - first).days + 1)]
     catalog = runner.catalog
+    from ..guardian.registry import derived_daily_kline_input_stale
+    from .lineage import daily_kline_input
     source_rows = {}
     missing = []
     for day in days:
@@ -304,7 +306,8 @@ def backfill_ladder_daily(runner: JobRunner, start: str, end: str, *,
     processed = []
     for day in days:
         if day not in source_rows: continue
-        if catalog.locate("ladder_daily", day):
+        if (catalog.locate("ladder_daily", day)
+                and not derived_daily_kline_input_stale(catalog.read(), "ladder_daily", day)):
             continue
         day_rows = {str(row.get("symbol", "")).zfill(6): row for row in source_rows[day] if row.get("symbol")}
         derived = []
@@ -342,7 +345,8 @@ def backfill_ladder_daily(runner: JobRunner, start: str, end: str, *,
         # JobRunner detects the optional FetchContext by positional arity; a
         # default-bound rows parameter incorrectly looks like that context.
         runner.run("ladder_daily", day, fetch=lambda _day: {
-            "rows": derived, "expected_count": len(derived), "partial": True},
+            "rows": derived, "expected_count": len(derived), "partial": True,
+            "inputs": daily_kline_input(catalog, day)},
             source="core_price_close_proxy", dry_run=False)
         processed.append(day)
     comparison = compare_ladder_reference(catalog, reference_path) if reference_path else None

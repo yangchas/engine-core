@@ -247,6 +247,8 @@ class JobRunner:
             "row_count": len(rows), "request_count": fetch_meta.get("request_count"),
             "raw_sha256": raw_digest,
         }
+        if isinstance(fetch_meta.get("inputs"), Mapping):
+            manifest["inputs"] = dict(fetch_meta["inputs"])
         provider_details = {key: fetch_meta[key] for key in
                             ("failed_plates", "completed_plate_count", "queried_plate_count",
                              "unqueried_plate_count", "universe_duplicate_conflicts",

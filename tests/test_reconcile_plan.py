@@ -114,3 +114,51 @@ def test_retired_registry_item_is_reported_retired_not_missing_in_health():
     states = {item["id"]: item for item in stale_items(now, {"datasets": {}}, load_registry(),
                                                        trade_date="2026-10-21", prev_trade_date="2026-10-20")}
     assert states["auction_points_raw"]["status"] == "RETIRED"
+
+
+def test_real_degraded_daily_kline_is_scheduled_for_upgrade_without_blocking_derivations():
+    """Reproduce the 2026-10-21 backed-up 5216-row q2_final version before Baostock arrived."""
+    import copy
+    import json
+    from pathlib import Path
+
+    backup = Path("/home/exedev/core-data-backup-derived-20261021-234502")
+    catalog = json.loads((backup / "catalog.json").read_text(encoding="utf-8"))
+    kline_versions = catalog["datasets"]["daily_kline"]["dates"]["2026-10-21"]
+    degraded = next(version for version in kline_versions
+                    if version["version"] == "sha256-b9968b2b7331b1a4")
+    catalog = copy.deepcopy(catalog)
+    catalog["datasets"]["daily_kline"]["dates"]["2026-10-21"] = [degraded]
+    for dataset in ("daily_indicators", "ladder_daily", "stock_day_facts", "daily_report_features"):
+        catalog.get("datasets", {}).get(dataset, {}).get("dates", {}).pop("2026-10-21", None)
+    now = datetime(2026, 10, 21, 19, 0, tzinfo=TZ)
+
+    plan = reconcile_plan(now, catalog, trade_date="2026-10-21", prev_trade_date="2026-10-20",
+                          phase="POST_MARKET")
+    by_id = {row["id"]: row for row in plan}
+
+    assert by_id["daily_kline"]["action"] == "FETCH_NOW"
+    assert by_id["daily_kline"]["reason"] == "upgrade_degraded_daily_kline"
+    assert by_id["daily_indicators"]["action"] == "FETCH_NOW"
+    assert by_id["ladder_daily"]["action"] == "FETCH_NOW"
+    assert by_id["stock_day_facts"]["action"] == "FETCH_NOW"
+    assert by_id["daily_report_features"]["action"] == "FETCH_NOW"
+
+    exhausted = reconcile_plan(now, catalog, trade_date="2026-10-21", prev_trade_date="2026-10-20",
+                               phase="POST_MARKET", upgrade_attempts={
+                                   "2026-10-21": {
+                                       "status": "exhausted", "attempts": 3,
+                                       "reason": "upgrade_attempt_budget_exhausted"}})
+    exhausted_by_id = {row["id"]: row for row in exhausted}
+    assert "daily_kline" not in exhausted_by_id
+    assert exhausted_by_id["daily_indicators"]["action"] == "FETCH_NOW"
+
+
+def test_real_legacy_derived_manifest_without_inputs_is_not_retroactively_stale():
+    import json
+    from pathlib import Path
+    from engine_core.guardian.registry import derived_daily_kline_input_stale
+
+    backup = Path("/home/exedev/core-data-backup-derived-20261021-234502")
+    catalog = json.loads((backup / "catalog.json").read_text(encoding="utf-8"))
+    assert not derived_daily_kline_input_stale(catalog, "daily_indicators", "2026-10-21")

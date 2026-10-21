@@ -50,7 +50,12 @@ class ArtifactCatalog:
                manifest: Mapping[str, Any], *, source: str) -> dict[str, Any]:
         payload = b"\n".join(canonical_json(dict(row)) for row in rows) + (b"\n" if rows else b"")
         digest = sha256(payload)
-        version = f"sha256-{digest[:16]}"
+        identity = {"payload_sha256": digest}
+        inputs = manifest.get("inputs")
+        if isinstance(inputs, Mapping) and inputs:
+            identity["inputs"] = dict(inputs)
+        version_digest = hashlib.sha256(canonical_json(identity)).hexdigest() if "inputs" in identity else digest
+        version = f"sha256-{version_digest[:16]}"
         day_root = self.root / dataset / f"trade_date={trade_date}" / f"source={source}"
         run_dir = day_root / version
         data_path = run_dir / "rows.jsonl.gz"

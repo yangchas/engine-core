@@ -239,12 +239,14 @@ def materialize_daily_report_features(catalog: ArtifactCatalog, *, trade_date: s
     """Read canonical history, persist immutable features, and publish a compressed hot view."""
     history, history_meta = core_history_rows(catalog, through_date=trade_date, asof=asof, max_days=120)
     rows = build_daily_report_features(history, trade_date=trade_date)
+    from .data_pipeline.lineage import daily_kline_input
+    inputs = daily_kline_input(catalog, trade_date)
     available_at = history_meta.get("available_at")
     manifest = catalog.commit("daily_report_features", trade_date, rows,
                               {"dataset": "daily_report_features", "source": "core_data",
                                "available_at": available_at, "as_of": asof,
                                "quality": {"row_count": len(rows), "history_trade_dates": history_meta.get("history_trade_dates")},
-                               "dependencies": ["daily_kline"]}, source="core_derived")
+                               "dependencies": ["daily_kline"], "inputs": inputs}, source="core_derived")
     cache = {"schema_version": 1, "dataset": "daily_report_features", "trade_date": trade_date,
              "source": "core_data", "available_at": available_at, "row_count": len(rows), "rows": rows}
     encoded = gzip.compress(canonical_json(cache), mtime=0)
@@ -511,10 +513,12 @@ def backfill_daily_history(catalog: ArtifactCatalog, *, start: str, end: str,
                                         manifest, source="baostock"))
         history, _meta = core_history_rows(catalog, through_date=day, asof=available.isoformat(), max_days=120)
         indicators = build_indicator_rows(history, trade_date=day)
+        from .data_pipeline.lineage import daily_kline_input
         catalog.commit("daily_indicators", day, indicators,
                        {"schema_version": 1, "dataset": "daily_indicators", "trade_date": day,
                         "source": "core_derived", "available_at": available.isoformat(),
-                        "field_units": {"avg_turnover_5d": "UNVERIFIED"}, "row_count": len(indicators)},
+                        "field_units": {"avg_turnover_5d": "UNVERIFIED"}, "row_count": len(indicators),
+                        "inputs": daily_kline_input(catalog, day)},
                        source="core_derived")
     cache_rows, cache_meta = core_history_rows(catalog, through_date=end,
                                                asof=datetime.combine(date.fromisoformat(end), day_time(23, 59), SHANGHAI).isoformat(),
@@ -566,11 +570,12 @@ def reindex_daily_indicators(catalog: ArtifactCatalog, *, start: str, end: str, 
         indicators = build_indicator_rows(history, trade_date=day)
         if not indicators:
             raise RuntimeError(f"daily_indicators_empty:{day}")
+        from .data_pipeline.lineage import daily_kline_input
         catalog.commit("daily_indicators", day, indicators,
                        {"schema_version": 1, "dataset": "daily_indicators", "trade_date": day,
                         "source": "core_derived", "available_at": available.isoformat(),
                         "field_units": {"avg_turnover_5d": "UNVERIFIED"}, "row_count": len(indicators),
-                        "reindex": True},
+                        "reindex": True, "inputs": daily_kline_input(catalog, day)},
                        source="core_derived")
     cache_rows, cache_meta = core_history_rows(catalog, through_date=end,
                                                asof=datetime.combine(date.fromisoformat(end), day_time(23, 59), SHANGHAI).isoformat(),

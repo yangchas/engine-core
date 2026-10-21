@@ -11,7 +11,9 @@ import json
 from datetime import datetime
 from typing import Any, Mapping
 
-from .registry import REGISTRY_PATH, catalog_partition_present, load_registry
+from .registry import (REGISTRY_PATH, catalog_manifest, catalog_partition_present,
+                       daily_kline_needs_upgrade, derived_daily_kline_input_stale,
+                       load_registry)
 
 
 def _hms(value: str) -> tuple[int, int, int]:
@@ -30,7 +32,8 @@ def _rules() -> dict[str, Any]:
 def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_date: str,
                    prev_trade_date: str | None, registry: list[dict[str, Any]] | None = None,
                    phase: str | None = None, load1: float | None = None,
-                   cpus: int | None = None) -> list[dict[str, Any]]:
+                   cpus: int | None = None,
+                   upgrade_attempts: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     """Ordered actions for late items on a trading day (dependencies first).
 
     FETCH_NOW  late and cheap enough to run now; ``lane`` is ``parallel`` (light) or ``serial``;
@@ -50,6 +53,7 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
     by_id = {item["id"]: item for item in items}
 
     due: dict[str, tuple[str | None, dict[str, Any]]] = {}
+    upgrade_versions: dict[str, str] = {}
     for item in items:
         dataset = item["artifact"].get("catalog_dataset")
         policy = item.get("late_policy")
@@ -72,7 +76,21 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
             if keys and (datetime.fromisoformat(trade_date) - datetime.fromisoformat(max(keys))).days <= rule.get("max_age_days", 8):
                 continue
             target = trade_date
-        if not catalog_partition_present(catalog, dataset, target, now):
+        if item["id"] == "daily_kline":
+            current_manifest = catalog_manifest(catalog, dataset, target)
+            version = str((current_manifest or {}).get("version", ""))
+            budget_key = target
+            if daily_kline_needs_upgrade(current_manifest) and version:
+                attempt = (upgrade_attempts or {}).get(budget_key)
+                if attempt is None:
+                    attempt = (upgrade_attempts or {}).get(f"{target}:{version}")
+                attempt_status = attempt.get("status") if isinstance(attempt, Mapping) else attempt
+                if attempt_status not in {"queued", "exhausted"}:
+                    due[item["id"]] = (target, policy)
+                    upgrade_versions[item["id"]] = version
+                continue
+        if (not catalog_partition_present(catalog, dataset, target, now)
+                or derived_daily_kline_input_stale(catalog, dataset, target)):
             due[item["id"]] = (target, policy)
 
     plan: list[dict[str, Any]] = []
@@ -106,6 +124,9 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
         entry = {"id": item_id, "partition": target, "cost": cost, "event": by_id[item_id].get("guardian_event"),
                  "fetch_job": by_id[item_id].get("fetch_job"), "phase": phase,
                  "depends_on": list(policy.get("depends_on", []))}
+        if item_id in upgrade_versions:
+            entry.update({"upgrade_daily_kline": True, "upgrade_version": upgrade_versions[item_id],
+                          "reason": "upgrade_degraded_daily_kline", "depends_on": []})
         if blocked:
             plan.append({**entry, "action": "DEFER", "reason": "blocked_by:" + ",".join(blocked)})
             return

@@ -899,7 +899,8 @@
         "mode": "fetch_now",
         "valid_until": null,
         "depends_on": [
-          "daily_kline"
+        "daily_kline",
+        "daily_indicators"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
         "trigger_at": "17:30",
@@ -1090,7 +1091,8 @@
         "mode": "fetch_now",
         "valid_until": null,
         "depends_on": [
-          "daily_kline"
+          "daily_kline",
+          "daily_indicators"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
         "trigger_at": "17:30",

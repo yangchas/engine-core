@@ -196,6 +196,38 @@ def test_fetch_item_dry_run_does_not_call_job(tmp_path, monkeypatch):
     assert result["status"] == "ok" and result["detail"]["dry_run"] is True
 
 
+def test_real_degraded_daily_kline_upgrade_budget_exhausts_without_repeat_queue(tmp_path):
+    import json
+    from pathlib import Path
+    from engine_core.guardian.startup import (_record_daily_kline_upgrade,
+                                              _record_daily_kline_upgrade_gap)
+    from engine_core.guardian.reconcile_plan import reconcile_plan
+
+    backup = Path("/home/exedev/core-data-backup-derived-20261021-234502")
+    catalog = json.loads((backup / "catalog.json").read_text(encoding="utf-8"))
+    day = "2026-10-21"
+    degraded = next(version for version in catalog["datasets"]["daily_kline"]["dates"][day]
+                    if version["version"] == "sha256-b9968b2b7331b1a4")
+    catalog["datasets"]["daily_kline"]["dates"][day] = [degraded]
+    (tmp_path / "catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+    key = day
+    (tmp_path / "guardian-upgrade-attempts.json").write_text(
+        json.dumps({key: {"status": "queued", "attempts": 0}}), encoding="utf-8")
+
+    for expected in (1, 2, 3):
+        state = _record_daily_kline_upgrade(tmp_path, day, succeeded=True)
+        assert state["attempts"] == expected
+    assert state["status"] == "exhausted"
+    assert state["reason"] == "upgrade_attempt_budget_exhausted"
+    _record_daily_kline_upgrade_gap(tmp_path, day, state)
+    gap = json.loads((tmp_path / "guardian-native" / "gaps" / f"{day}.json").read_text())
+    assert gap[0]["id"] == "daily_kline" and gap[0]["reason"] == "upgrade_attempt_budget_exhausted"
+    plan = reconcile_plan(datetime.fromisoformat("2026-10-21T19:00:00+08:00"), catalog,
+                          trade_date=day, prev_trade_date="2026-10-20", phase="POST_MARKET",
+                          upgrade_attempts=json.loads((tmp_path / "guardian-upgrade-attempts.json").read_text()))
+    assert "daily_kline" not in {row["id"] for row in plan}
+
+
 def test_boot_apply_plan_runs_stub_job_into_temporary_catalog(tmp_path, monkeypatch):
     import os
     import subprocess
