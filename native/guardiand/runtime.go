@@ -1348,9 +1348,9 @@ func (r *liveRunner) execute(x Instance, date string) {
 						}
 						instanceID := "fetch_item:" + res.ID
 						r.mu.Lock()
-						_, exists := r.states[date+"/"+instanceID]
+						priorResult, exists := r.states[date+"/"+instanceID]
 						r.mu.Unlock()
-						if exists {
+						if exists && priorResult.Status != "SUCCEEDED" && priorResult.Status != "SUCCEEDED_DEGRADED" {
 							continue
 						}
 						r.setState(Instance{ID: instanceID, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}, date,
@@ -1365,10 +1365,10 @@ func (r *liveRunner) execute(x Instance, date string) {
 						r.mu.Lock()
 						prior, exists := r.states[key]
 						r.mu.Unlock()
-						if exists && (prior.Status == "SUCCEEDED" || prior.Status == "SUCCEEDED_DEGRADED") {
-							continue
-						}
-						if exists {
+						// The plan lists an item only when its partition is missing in the catalog. A recorded success means the
+						// data was removed or invalidated since (e.g. rebuilt after a partial input): the old success is stale,
+						// so re-arm it with a fresh budget. Terminal failures stay for the operator (requeue).
+						if exists && prior.Status != "SUCCEEDED" && prior.Status != "SUCCEEDED_DEGRADED" {
 							continue
 						}
 						deferredInstance := Instance{ID: instanceID, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}
