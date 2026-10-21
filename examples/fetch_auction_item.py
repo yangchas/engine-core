@@ -43,8 +43,11 @@ def _source_rows(day: str):
         connection.close()
 
 
-def _pit_rows(catalog, dataset: str, dates, cutoff: datetime):
-    """Read the newest catalog version whose availability proves PIT visibility."""
+def _pit_rows(catalog, dataset: str, dates, cutoff: datetime, *, late_cutoff: datetime | None = None):
+    """Read the newest catalog version whose availability proves PIT visibility.
+
+    ``late_cutoff`` (late rebuilds only, prior-day content): a version stored after ``cutoff`` is still accepted when
+    stored before ``late_cutoff``; it is reported with ``late_visible`` so consumers can see it was not live-visible."""
     data = catalog.read().get("datasets", {}).get(dataset, {})
     by_date = data.get("dates", {})
     for day in sorted((str(value) for value in dates if str(value) in by_date), reverse=True):
@@ -53,11 +56,14 @@ def _pit_rows(catalog, dataset: str, dates, cutoff: datetime):
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 available = datetime.fromisoformat(str(manifest.get("available_at", "")).replace("Z", "+00:00"))
-                if available.tzinfo is None or available > cutoff:
+                if available.tzinfo is None or available > (late_cutoff or cutoff):
                     continue
                 rows = catalog.read_rows(manifest_path)
-                return rows, {"dataset": dataset, "trade_date": day,
-                              "version": manifest.get("version"), "available_at": manifest.get("available_at")}
+                meta = {"dataset": dataset, "trade_date": day,
+                        "version": manifest.get("version"), "available_at": manifest.get("available_at")}
+                if available > cutoff:
+                    meta["late_visible"] = True
+                return rows, meta
             except (OSError, ValueError, TypeError, KeyError):
                 continue
     return None, None
@@ -117,9 +123,16 @@ def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catal
         plate_dates = source_catalog.read().get("datasets", {}).get("plate_members", {}).get("dates", {})
         pool_dates = source_catalog.read().get("datasets", {}).get("limit_up_pool", {}).get("dates", {})
         prior_plate_dates = (value for value in plate_dates if value < day)
-        prior_pool_dates = (value for value in pool_dates if value < day)
+        # Yesterday's pool must be the immediately preceding trade day: an older day is stale, never a stand-in.
+        try:
+            from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+            previous_day = TradeCalendarStore(source_root).previous_trade_date(day).isoformat()
+        except Exception:
+            previous_day = None
+        prior_pool_dates = [previous_day] if previous_day and previous_day in pool_dates else []
         plate_members, plate_meta = _pit_rows(source_catalog, "plate_members", prior_plate_dates, cutoff_dt)
-        pool, pool_meta = _pit_rows(source_catalog, "limit_up_pool", prior_pool_dates, cutoff_dt)
+        pool, pool_meta = _pit_rows(source_catalog, "limit_up_pool", prior_pool_dates, cutoff_dt,
+                                    late_cutoff=None if live else datetime.now(cutoff_dt.tzinfo))
         missing = [name for name, value in (("plate_members", plate_members),
                                              ("yesterday_pool", pool)) if value is None]
         product = build_auction_panorama(facts, plate_members=plate_members,

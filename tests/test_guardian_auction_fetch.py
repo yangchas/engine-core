@@ -90,3 +90,17 @@ def test_dry_run_replay_never_targets_the_production_catalog(tmp_path):
 
     assert _dry_run_artifact_root(tmp_path, False) is None
     assert _dry_run_artifact_root(tmp_path, True) == tmp_path / ".dry_run_artifacts"
+
+
+def test_real_late_rebuild_accepts_late_stored_prior_day_pool_but_flags_it():
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from examples.fetch_auction_item import _pit_rows
+
+    catalog = ArtifactCatalog(Path.home() / "core-data")
+    cutoff = datetime.fromisoformat("2026-10-21T09:25:10+08:00")
+    # 2026-10-20 limit_up_pool was (re)stored at 12:26 on 10-21 by the guardian's own backfill.
+    live_rows, live_meta = _pit_rows(catalog, "limit_up_pool", ["2026-10-20"], cutoff)
+    assert live_rows is None and live_meta is None
+    rows, meta = _pit_rows(catalog, "limit_up_pool", ["2026-10-20"], cutoff,
+                           late_cutoff=datetime.fromisoformat("2026-10-21T15:00:00+08:00"))
+    assert rows and meta["trade_date"] == "2026-10-20" and meta["late_visible"] is True
