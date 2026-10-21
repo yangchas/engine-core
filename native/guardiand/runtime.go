@@ -162,15 +162,16 @@ func (l *ledger) close() error {
 }
 
 type instanceState struct {
-	Status        string `json:"status"`
-	Attempts      int    `json:"attempts"`
-	StartedAt     string `json:"started_at"`
-	CompletedAt   string `json:"completed_at"`
-	LastError     string `json:"last_error"`
-	NextAttemptAt string `json:"next_attempt_at,omitempty"`
-	Late          bool   `json:"late,omitempty"`
-	NextPhase     string `json:"next_phase,omitempty"`
-	DataDate      string `json:"data_date,omitempty"`
+	Status        string   `json:"status"`
+	Attempts      int      `json:"attempts"`
+	StartedAt     string   `json:"started_at"`
+	CompletedAt   string   `json:"completed_at"`
+	LastError     string   `json:"last_error"`
+	NextAttemptAt string   `json:"next_attempt_at,omitempty"`
+	Late          bool     `json:"late,omitempty"`
+	NextPhase     string   `json:"next_phase,omitempty"`
+	DataDate      string   `json:"data_date,omitempty"`
+	WaitFor       []string `json:"wait_for,omitempty"`
 }
 type runState struct {
 	EventID   string        `json:"event_id"`
@@ -1300,6 +1301,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 							ID          string   `json:"id"`
 							Partition   string   `json:"partition"`
 							RunInPhases []string `json:"run_in_phases"`
+							DependsOn   []string `json:"depends_on"`
 						} `json:"deferred"`
 						Results []struct {
 							ID        string          `json:"id"`
@@ -1350,7 +1352,11 @@ func (r *liveRunner) execute(x Instance, date string) {
 							continue
 						}
 						deferredInstance := Instance{ID: instanceID, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}
-						r.setState(deferredInstance, date, instanceState{Status: "DEFERRED", LastError: "waiting for " + deferred.RunInPhases[0], NextPhase: deferred.RunInPhases[0], DataDate: deferred.Partition})
+						wait := make([]string, 0, len(deferred.DependsOn))
+						for _, dep := range deferred.DependsOn {
+							wait = append(wait, "fetch_item:"+dep)
+						}
+						r.setState(deferredInstance, date, instanceState{Status: "DEFERRED", LastError: "waiting for " + deferred.RunInPhases[0], NextPhase: deferred.RunInPhases[0], DataDate: deferred.Partition, WaitFor: wait})
 					}
 				}
 			}
@@ -2067,6 +2073,19 @@ func (r *liveRunner) schedule(now time.Time) {
 			if running || paused || phase == "NON_TRADING" || phase == "CALENDAR_UNKNOWN" {
 				continue
 			}
+			// A fetch that derives from another queued fetch waits for it (no attempts burned on a missing input).
+			waiting := false
+			r.mu.Lock()
+			for _, dep := range item.st.WaitFor {
+				if depState, exists := r.states[date+"/"+dep]; exists && depState.Status != "SUCCEEDED" && depState.Status != "SUCCEEDED_DEGRADED" {
+					waiting = true
+					break
+				}
+			}
+			r.mu.Unlock()
+			if waiting {
+				continue
+			}
 			if !phaseAllowedAt(event, phase, now, c, r.loc) {
 				if item.st.Status == "QUEUED_HEAVY" {
 					st := item.st
@@ -2308,6 +2327,29 @@ func (r *liveRunner) serve(c net.Conn) {
 				} else {
 					result = map[string]any{"event": event, "status": "SKIPPED"}
 				}
+			case "requeue":
+				// Operator re-arm of a fetch_item that ended terminal (CIRCUIT_OPEN/FAILED_FINAL/MISSED): back to DEFERRED
+				// with a fresh attempt budget, same data date. Never touches non-fetch events or live/succeeded instances.
+				a, _ := q["args"].(map[string]any)
+				instance, _ := a["instance"].(string)
+				date, _ := a["trade_date"].(string)
+				if date == "" {
+					date = r.clock.Now().In(r.loc).Format("2006-01-02")
+				}
+				r.mu.Lock()
+				prior, exists := r.states[date+"/"+instance]
+				r.mu.Unlock()
+				terminal := prior.Status == "CIRCUIT_OPEN" || prior.Status == "FAILED_FINAL" || prior.Status == "MISSED"
+				if !exists || !strings.HasPrefix(instance, "fetch_item:") || !terminal {
+					ok = false
+					code = "BAD_REQUEST"
+					break
+				}
+				phaseNow, _ := r.currentPhase(r.clock.Now())
+				r.setState(Instance{ID: instance, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", DataDate: prior.DataDate, TriggerType: "startup"}, date,
+					instanceState{Status: "DEFERRED", LastError: "requeued by operator", NextPhase: phaseNow, DataDate: prior.DataDate, WaitFor: prior.WaitFor})
+				_, _ = r.appendLedger(date, "OPERATOR_REQUEUE", map[string]any{"instance": instance, "was": prior.Status})
+				result = map[string]any{"instance": instance, "status": "DEFERRED"}
 			case "trigger":
 				a, _ := q["args"].(map[string]any)
 				event, _ := a["event"].(string)
