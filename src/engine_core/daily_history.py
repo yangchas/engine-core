@@ -547,6 +547,15 @@ def reindex_daily_indicators(catalog: ArtifactCatalog, *, start: str, end: str, 
                   if start <= day <= end)
     for day in days:
         available = datetime.combine(date.fromisoformat(day), day_time(17, 30), SHANGHAI)
+        kline_manifest = catalog.locate("daily_kline", day)
+        if kline_manifest is not None and kline_manifest.is_file():
+            # Indicators cannot be visible before the daily_kline they derive from (kline may land after 17:30).
+            try:
+                kline_at = datetime.fromisoformat(str(json.loads(kline_manifest.read_text(encoding="utf-8")).get("available_at", "")).replace("Z", "+00:00"))
+                if kline_at.tzinfo is not None and kline_at.astimezone(SHANGHAI) > available:
+                    available = kline_at.astimezone(SHANGHAI)
+            except (OSError, ValueError):
+                pass
         history, _meta = core_history_rows(catalog, through_date=day, asof=available.isoformat(), max_days=120)
         indicators = build_indicator_rows(history, trade_date=day)
         catalog.commit("daily_indicators", day, indicators,

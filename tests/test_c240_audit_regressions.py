@@ -26,3 +26,16 @@ def test_reindex_appends_corrected_indicators_without_network(tmp_path):
   c.commit('daily_kline',d,[{'symbol':'000001','date':d,'close':v,'open':v,'high':v,'low':v,'volume':1,'amount':1}],{'available_at':d+'T17:30:00+08:00'},source='baostock')
  r=reindex_daily_indicators(c,start='2026-10-01',end='2026-10-08')
  assert r['days_reindexed']==8
+
+def test_reindex_counts_kline_that_landed_after_1730(tmp_path):
+ from engine_core.daily_history import reindex_daily_indicators
+ c=ArtifactCatalog(tmp_path)
+ for i,v in enumerate([10,11,10,11,10,11,10,12]):
+  d=f'2026-10-{i+1:02d}'
+  at=d+('T18:15:04+08:00' if i==7 else 'T17:30:00+08:00')
+  c.commit('daily_kline',d,[{'symbol':'000001','date':d,'close':v,'open':v,'high':v,'low':v,'volume':1,'amount':1}],{'available_at':at},source='baostock')
+ reindex_daily_indicators(c,start='2026-10-08',end='2026-10-08')
+ rows=c.read_rows(c.locate('daily_indicators','2026-10-08'))
+ assert len(rows)==1 and rows[0]['rsi_6'] is not None
+ meta=__import__('json').loads(c.locate('daily_indicators','2026-10-08').read_text())
+ assert meta['available_at'].startswith('2026-10-08T18:15:04')
