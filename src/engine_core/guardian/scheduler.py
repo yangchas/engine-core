@@ -107,11 +107,7 @@ def default_events() -> list[EventSpec]:
             continue
         events.append(EventSpec(f"intraday_{minute:02d}", "INTRADAY", f"09:{minute:02d}:05", f"09:{minute:02d}:59",
                                 "checkpoint_ready", "intraday_data", max_attempts=1))
-    for hour in range(10, 15):
-        for minute in (0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57):
-            stamp = f"{hour:02d}:{minute:02d}:05"
-            events.append(EventSpec("intraday_" + stamp.replace(":", ""), "INTRADAY", stamp,
-                                    f"{hour:02d}:{minute:02d}:59", "checkpoint_ready", "intraday_data", max_attempts=1))
+    # TD stops storing stock_tick_v2 after 09:45 (user, 2026-10-21): no intraday checkpoints are schedulable later.
     events.extend([
         EventSpec("close_mark_1505", "POSTMARKET", "15:05:00", "15:20:00", "calendar_ready", "close_capture"),
         EventSpec("baostock_probe_1730", "POSTMARKET", "17:30:00", "17:39:59", "calendar_ready", "baostock_probe", max_attempts=1,

@@ -47,7 +47,7 @@ def test_guardiand_python_bridge_end_to_end(tmp_path):
         ("calendar_refresh_0800", "calendar_refresh", "", starts[0]),
         ("kaipan_hot_092100", "kaipan_hot_capture", "", starts[1]),
         ("close_mark_1505", "close_capture", "", starts[2]),
-        ("intraday_100005", "intraday_data", "test_block", starts[3]),
+        ("intraday_42", "intraday_data", "test_block", starts[3]),
     ]:
         events.append({"id": event_id, "enabled": True, "calendar": "every_day",
                        "trigger": {"type": "window", "start": start, "deadline": deadline},
@@ -113,7 +113,7 @@ def test_guardiand_python_bridge_end_to_end(tmp_path):
         assert statuses.get("boot_reconcile") in {"SUCCEEDED", "SUCCEEDED_DEGRADED"}, statuses
         assert statuses.get("kaipan_hot_092100") == "SUCCEEDED", statuses
         assert statuses.get("close_mark_1505") == "SKIPPED_NA", statuses
-        assert statuses.get("intraday_100005") == "GATE_BLOCKED", statuses
+        assert statuses.get("intraday_42") == "GATE_BLOCKED", statuses
         assert sum(r["type"] == "ALERT_OUT" for r in records) == 1
     finally:
         proc.terminate()
