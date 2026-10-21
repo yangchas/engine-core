@@ -258,10 +258,12 @@ class FetchJobError(RuntimeError):
         self.stderr = stderr[-300:]
 
 
-def _run_fetch_job(item: dict[str, Any], day: str, timeout: float) -> dict[str, Any]:
+def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | Path | None = None) -> dict[str, Any]:
     argv, configured_timeout = _fetch_spec(item)
     timeout = min(timeout, configured_timeout)
-    replacements = {"date": day, "trade_date": day, "item": str(item["id"]), "python": sys.executable}
+    artifact_root = str(Path(root or os.environ.get("CORE_DATA_ROOT") or "~/core-data").expanduser())
+    replacements = {"date": day, "trade_date": day, "item": str(item["id"]), "python": sys.executable,
+                    "artifact_root": artifact_root}
     command = [part.format_map(replacements) for part in argv]
     try:
         completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout,
@@ -395,7 +397,7 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
         else:
             try:
                 timeout = float(item.get("fetch_job", {}).get("timeout_seconds", 300)) if isinstance(item.get("fetch_job"), dict) else 300
-                row.update(status="ok", detail=_run_fetch_job(item, str(action["partition"]), timeout))
+                row.update(status="ok", detail=_run_fetch_job(item, str(action["partition"]), timeout, root))
             except Exception as exc:
                 error_code = getattr(exc, "error_code", "FETCH_JOB_FAILED")
                 stderr = getattr(exc, "stderr", "")
@@ -429,7 +431,7 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
         return _result("ok", {"id": item_id, "partition": partition, "dry_run": True})
     try:
         _argv, timeout = _fetch_spec(item)
-        result = _run_fetch_job(item, partition, timeout)
+        result = _run_fetch_job(item, partition, timeout, root)
         return _result("ok", {"id": item_id, "partition": partition, "result": result})
     except Exception as exc:
         return _result("failed", {"id": item_id, "partition": partition,
