@@ -2073,3 +2073,18 @@ func TestDecodeResultKeepsHandlerDetailOnNonZeroExit(t *testing.T) {
 		t.Fatal(code)
 	}
 }
+
+func TestRecoveredRunningFetchItemIsRearmedWithoutCountingTheInterruptedAttempt(t *testing.T) {
+	r := &liveRunner{states: map[string]instanceState{
+		"2026-10-21/fetch_item:daily_kline": {Status: "RUNNING", Attempts: 3, DataDate: "2026-10-21", NextPhase: "POST_MARKET"},
+		"2026-10-21/baostock_probe_1730":    {Status: "RUNNING", Attempts: 1},
+	}}
+	r.rearmInterruptedFetchItems()
+	got := r.states["2026-10-21/fetch_item:daily_kline"]
+	if got.Status != "DEFERRED" || got.Attempts != 2 || got.DataDate != "2026-10-21" || got.NextPhase != "" {
+		t.Fatalf("fetch_item not rearmed: %+v", got)
+	}
+	if r.states["2026-10-21/baostock_probe_1730"].Status != "RUNNING" {
+		t.Fatal("non fetch_item state must be left to the normal startup recovery")
+	}
+}

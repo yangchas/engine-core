@@ -840,6 +840,25 @@ func isTerminal(status string) bool {
 	return false
 }
 
+// rearmInterruptedFetchItems: a fetch_item recovered as RUNNING lost its process with the previous daemon. Put it back
+// in the queue (the interrupted attempt does not count) so the job resumes from its own checkpoint instead of being
+// ignored forever as "already running".
+func (r *liveRunner) rearmInterruptedFetchItems() {
+	for key, st := range r.states {
+		if !strings.Contains(key, "/fetch_item:") || st.Status != "RUNNING" {
+			continue
+		}
+		if st.Attempts > 0 {
+			st.Attempts--
+		}
+		st.Status = "DEFERRED"
+		st.LastError = "interrupted by restart"
+		st.NextPhase = ""
+		st.NextAttemptAt = ""
+		r.states[key] = st
+	}
+}
+
 func (r *liveRunner) recover() error {
 	date := r.start.Format("2006-01-02")
 	if b, err := os.ReadFile(filepath.Join(r.root, "ledger", "snapshot-"+date+".json")); err == nil {
@@ -861,6 +880,7 @@ func (r *liveRunner) recover() error {
 		return e
 	}
 	defer f.Close()
+	defer r.rearmInterruptedFetchItems()
 	scan := bufio.NewScanner(f)
 	for scan.Scan() {
 		var rec ledgerRecord
