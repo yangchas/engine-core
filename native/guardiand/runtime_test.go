@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,8 +62,66 @@ func TestHeavyPreMarketCutoffUsesConfiguredTime(t *testing.T) {
 	}
 }
 
+func TestDeferredAndQueuedFetchRetainsRetryPartitionAndAttempts(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-21"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
+	fc := newFakeClock(now)
+	input := filepath.Join(root, "input.jsonl")
+	script := filepath.Join(root, "fetch.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat >> '"+input+"'\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	e := config.Event{ID: "fetch_item", Handler: "h", Cost: "heavy", Trigger: config.Trigger{Type: "startup"}, Phases: []string{"MIDDAY_BREAK"}, OnPhaseMismatch: "defer", Retry: config.Retry{MaxAttempts: 3}}
+	calendar := "/home/exedev/core-data/trade_dates.json"
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}, Calendars: map[string]struct {
+		File string `json:"file"`
+	}{"trading": {File: calendar}}}, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	id := "fetch_item:daily_kline"
+	r.setState(Instance{ID: id, EventID: e.ID, TriggerType: "startup"}, date, instanceState{Status: "RETRY_WAIT", Attempts: 1, NextAttemptAt: now.Format(time.RFC3339), DataDate: "2026-10-20"})
+	r.execute(Instance{ID: id, EventID: e.ID, TriggerType: "startup", DataDate: "2026-10-20"}, date)
+	deferred := r.states[date+"/"+id]
+	if deferred.Status != "DEFERRED" || deferred.Attempts != 1 || deferred.DataDate != "2026-10-20" || deferred.NextAttemptAt == "" {
+		t.Fatalf("deferred state lost retry metadata: %+v", deferred)
+	}
+	fc.Advance(2 * time.Hour)
+	r.mu.Lock()
+	r.heavyRunning = true
+	r.mu.Unlock()
+	r.execute(Instance{ID: id, EventID: e.ID, TriggerType: "startup", DataDate: "2026-10-20"}, date)
+	queued := r.states[date+"/"+id]
+	if queued.Status != "QUEUED_HEAVY" || queued.Attempts != 1 || queued.DataDate != "2026-10-20" || queued.NextAttemptAt == "" {
+		t.Fatalf("queued state lost retry metadata: %+v", queued)
+	}
+	r.mu.Lock()
+	r.heavyRunning = false
+	r.mu.Unlock()
+	r.execute(Instance{ID: id, EventID: e.ID, TriggerType: "startup", DataDate: queued.DataDate}, date)
+	got := r.states[date+"/"+id]
+	if got.Status != "SUCCEEDED" || got.Attempts != 2 || got.DataDate != "2026-10-20" {
+		t.Fatalf("released state=%+v", got)
+	}
+	b, err := os.ReadFile(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var in map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(b), &in); err != nil {
+		t.Fatal(err)
+	}
+	if in["attempt"] != float64(2) || in["data_date"] != "2026-10-20" {
+		t.Fatalf("redispatch input=%v", in)
+	}
+}
+
 func TestCalendarRecoveryRerunsFailedBootChainWithFakeClock(t *testing.T) {
-	root, date := t.TempDir(), "2026-10-20"
+	root, date := t.TempDir(), "2026-10-21"
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	now := time.Date(2026, 10, 20, 8, 30, 0, 0, loc)
 	fc := newFakeClock(now)
@@ -112,6 +171,11 @@ func TestCalendarRecoveryRerunsFailedBootChainWithFakeClock(t *testing.T) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		return r.bootSummary["boot_trade_day"] == "SUCCEEDED" && r.bootSummary["boot_data_health"] == "SUCCEEDED"
+	})
+	waitFor(t, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return !r.running["boot_trade_day@boot"+r.bootSequence] && !r.running["boot_data_health@boot"+r.bootSequence]
 	})
 	if r.bootSequence == "" || r.bootReruns != 1 {
 		t.Fatalf("rerun identity/count sequence=%q reruns=%d", r.bootSequence, r.bootReruns)
@@ -171,6 +235,7 @@ func TestScheduleDefersPhaseMismatchUntilWhitelistedPhase(t *testing.T) {
 	waitFor(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return !r.running["heavy"] })
 	r.schedule(fc.Now())
 	waitFor(t, func() bool { return isTerminal(getState("heavy").Status) })
+	waitFor(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return !r.running["heavy"] })
 	if got := getState("heavy").Status; got != "SUCCEEDED" {
 		t.Fatalf("resumed status=%s", got)
 	}
@@ -344,6 +409,7 @@ func TestLightInstancesBypassClassConcurrencyLimit(t *testing.T) {
 		defer r.mu.Unlock()
 		return isTerminal(r.states[date+"/light_a"].Status) && isTerminal(r.states[date+"/light_b"].Status)
 	})
+	waitFor(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return !r.running["light_a"] && !r.running["light_b"] })
 	if len(r.classSlots) != 0 {
 		t.Fatalf("light work used ordinary class slots: %v", r.classSlots)
 	}
@@ -547,7 +613,7 @@ func mustRead(t *testing.T, p string) []byte {
 func TestFakeStartup40MissedUsesOneAlertRequest(t *testing.T) {
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	now, _ := time.ParseInLocation("2006-01-02 15:04:05", "2026-10-20 10:34:00", loc)
-	c := config.Config{Timezone: "Asia/Shanghai"}
+	c := config.Config{Timezone: "Asia/Shanghai", Handlers: map[string]config.Handler{"alert": {Argv: []string{"/bin/true"}}}}
 	for i := 0; i < 45; i++ {
 		c.Events = append(c.Events, config.Event{ID: fmt.Sprintf("event_%02d", i), Enabled: true, Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:01:00"}})
 	}
@@ -1020,7 +1086,7 @@ func TestAlertDailyLimitWritesSuppressionSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.close()
-	r := &liveRunner{c: config.Config{}, root: root, loc: loc, clock: newFakeClock(now), ledger: l, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
+	r := &liveRunner{c: config.Config{Handlers: map[string]config.Handler{"alert": {Argv: []string{"/bin/true"}}}}, root: root, loc: loc, clock: newFakeClock(now), ledger: l, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
 	for n := 0; n < 31; n++ {
 		if n > 0 {
 			r.clock.(*fakeClock).Advance(time.Minute)
@@ -1032,6 +1098,77 @@ func TestAlertDailyLimitWritesSuppressionSummary(t *testing.T) {
 	counts := ledgerTypeCounts(t, root, date)
 	if counts["ALERT_OUT"] != 30 || counts["ALERT_SUPPRESSED"] != 1 {
 		t.Fatalf("alert ledger counts=%v, want 30 sent and 1 suppressed", counts)
+	}
+}
+
+func TestAlertFailedDeliveryCanRetryAndDistinctSummariesAreNotDeduped(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation(time.RFC3339, date+"T10:34:00+08:00", loc)
+	countPath := filepath.Join(root, "count")
+	script := filepath.Join(root, "alert.sh")
+	body := "#!/bin/sh\nn=0; [ -f '" + countPath + "' ] && n=$(cat '" + countPath + "'); n=$((n+1)); echo $n > '" + countPath + "'; [ $n -gt 1 ]\n"
+	if err := os.WriteFile(script, []byte(body), 0700); err != nil {
+		t.Fatal(err)
+	}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = func() time.Time { return now }
+	r := &liveRunner{c: config.Config{Handlers: map[string]config.Handler{"alert": {Argv: []string{script}}}}, root: root, loc: loc, clock: newFakeClock(now), ledger: l, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
+	if err := r.alert("FAILED", map[string]any{"event": "e"}); err == nil {
+		t.Fatal("first failed delivery reported success")
+	}
+	if r.alertSeen[date+"/e/FAILED"] {
+		t.Fatal("failed delivery marked alert as sent")
+	}
+	if err := r.alert("FAILED", map[string]any{"event": "e"}); err != nil {
+		t.Fatalf("retry failed: %v", err)
+	}
+	r.clock.(*fakeClock).Advance(time.Minute)
+	r.alert("GATE_BLOCKED", map[string]any{"events": []string{"a"}, "blocks": []map[string]string{{"event": "a", "reason": "stale", "at": "2026-10-20T10:35:00+08:00"}}, "count": 1, "summary": true})
+	r.alert("GATE_BLOCKED", map[string]any{"events": []string{"a"}, "blocks": []map[string]string{{"event": "a", "reason": "timeout", "at": "2026-10-20T10:36:00+08:00"}}, "count": 1, "summary": true})
+	r.alert("GATE_BLOCKED", map[string]any{"events": []string{"a"}, "blocks": []map[string]string{{"event": "a", "reason": "stale", "at": "2026-10-20T10:37:00+08:00"}}, "count": 1, "summary": true})
+	counts := ledgerTypeCounts(t, root, date)
+	if counts["ALERT_FAILED"] != 1 || counts["ALERT_OUT"] != 3 {
+		t.Fatalf("alert outcomes=%v, want failed=1 sent=3", counts)
+	}
+}
+
+func TestBootApplyPlanPreservesRecoveredPendingFetchState(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
+	fc := newFakeClock(now)
+	boot := filepath.Join(root, "boot.sh")
+	if err := os.WriteFile(boot, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\",\"detail\":{\"deferred\":[{\"id\":\"daily_kline\",\"partition\":\"2026-10-20\",\"run_in_phases\":[\"MIDDAY_BREAK\"]}]}}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.now = fc.Now
+	x := Instance{ID: "fetch_item:daily_kline", EventID: "fetch_item", TriggerType: "startup"}
+	if err = l.append("INSTANCE_STATE", runState{EventID: "fetch_item", Instance: x.ID, TradeDate: date, State: instanceState{Status: "RETRY_WAIT", Attempts: 1, NextAttemptAt: now.Add(2 * time.Minute).Format(time.RFC3339), DataDate: "2026-10-20"}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = l.close()
+	l, err = openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	r := &liveRunner{c: config.Config{Events: []config.Event{{ID: "boot_apply_plan", Handler: "boot", Trigger: config.Trigger{Type: "startup"}}}, Handlers: map[string]config.Handler{"boot": {Argv: []string{boot}}}}, root: root, loc: loc, start: now, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	if err := r.recover(); err != nil {
+		t.Fatal(err)
+	}
+	r.execute(Instance{ID: "boot_apply_plan", EventID: "boot_apply_plan", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}, date)
+	got := r.states[date+"/"+x.ID]
+	if got.Status != "RETRY_WAIT" || got.Attempts != 1 || got.NextAttemptAt != now.Add(2*time.Minute).Format(time.RFC3339) || got.DataDate != "2026-10-20" {
+		t.Fatalf("boot plan overwrote recovered state: %+v", got)
 	}
 }
 
@@ -1430,7 +1567,7 @@ func TestGateDeadlineAndDailySummary(t *testing.T) {
 	now, _ := time.ParseInLocation(time.RFC3339, date+"T10:34:00+08:00", loc)
 	gateScript := filepath.Join(root, "gate.sh")
 	calls := filepath.Join(root, "gate-calls")
-	if err := os.WriteFile(gateScript, []byte("#!/bin/sh\necho x >> \"$GATE_CALLS\"\nprintf '{\"status\":\"not_ready\",\"reason\":\"source_stale\"}\\n'\n"), 0700); err != nil {
+	if err := os.WriteFile(gateScript, []byte("#!/bin/sh\necho x >> \"$GATE_CALLS\"\n[ $(wc -l < \"$GATE_CALLS\") -eq 1 ] && sleep 1\nprintf '{\"status\":\"not_ready\",\"reason\":\"source_stale\"}\\n'\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("GATE_CALLS", calls)
@@ -1439,8 +1576,8 @@ func TestGateDeadlineAndDailySummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.close()
-	e := config.Event{ID: "gated", Handler: "h", Gate: config.Gate{Ref: "ready", Poll: "10s"}}
-	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {GateArgv: []string{gateScript}, EnvAllow: []string{"GATE_CALLS"}}}}, root: root, loc: loc, start: now, clock: newFakeClock(now), fake: newFakeClock(now), ledger: l, boot: "test", states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
+	e := config.Event{ID: "gated", Handler: "h", Timeout: "60s", Gate: config.Gate{Ref: "ready", Poll: "10s", Timeout: "100ms"}}
+	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {GateArgv: []string{gateScript}, EnvAllow: []string{"GATE_CALLS"}}, "alert": {Argv: []string{"/bin/true"}}}}, root: root, loc: loc, start: now, clock: newFakeClock(now), fake: newFakeClock(now), ledger: l, boot: "test", states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
 	// Keep the runner clock and its wait clock on the same fake source.
 	r.clock = r.fake
 	done := make(chan struct{})
@@ -1467,6 +1604,9 @@ func TestGateDeadlineAndDailySummary(t *testing.T) {
 	}
 	if got := r.states[date+"/gated"].Status; got != "GATE_BLOCKED" {
 		t.Fatalf("gate status=%s, want GATE_BLOCKED", got)
+	}
+	if got := r.states[date+"/gated"].LastError; got != "source_stale" {
+		t.Fatalf("gate reason=%q, want source_stale", got)
 	}
 	_ = r.alert("GATE_BLOCKED", map[string]any{"events": []string{"gated"}, "summary": true})
 	_ = r.alert("GATE_BLOCKED", map[string]any{"events": []string{"gated"}, "summary": true})
@@ -1513,6 +1653,98 @@ func TestGateDeadlineAndDailySummary(t *testing.T) {
 	if got := ledgerTypeCounts(t, root, date)["ALERT_OUT"]; got != 2 {
 		t.Fatalf("gate summary repeated after restart: alerts=%d", got)
 	}
+}
+
+func TestRealDataGatePollingAgainstCurrentConfig(t *testing.T) {
+	configPath := os.Getenv("GUARDIAN_REAL_CONFIG")
+	if configPath == "" {
+		t.Skip("GUARDIAN_REAL_CONFIG not set; run explicitly against the read-only production config")
+	}
+	c, _, _, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const eventID = "intraday_33"
+	var event *config.Event
+	for i := range c.Events {
+		if c.Events[i].ID == eventID {
+			event = &c.Events[i]
+			break
+		}
+	}
+	if event == nil || event.Gate.Ref == "" {
+		t.Fatalf("real config has no gated %s event", eventID)
+	}
+	var postmarket *config.Event
+	for i := range c.Events {
+		if c.Events[i].ID == "postmarket_publish" {
+			postmarket = &c.Events[i]
+			break
+		}
+	}
+	if postmarket == nil || postmarket.Retry.MaxAttempts != 3 || !postmarket.Retry.UntilLate {
+		t.Fatalf("real postmarket retry policy=%+v, want max_attempts=3 until_late=true", postmarket)
+	}
+	root := t.TempDir()
+	noop := filepath.Join(root, "isolated-handler.sh")
+	if err := os.WriteFile(noop, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Keep the configured real gate command and its read-only inputs. Prevent
+	// the downstream fetch and alert handlers from producing external effects.
+	h := c.Handlers[event.Handler]
+	h.Argv = []string{noop}
+	c.Handlers[event.Handler] = h
+	alert := c.Handlers["alert"]
+	alert.Argv = nil
+	c.Handlers["alert"] = alert
+	loc, err := time.LoadLocation(c.Timezone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	date := "2026-10-21"
+	now, err := time.ParseInLocation(time.RFC3339, date+"T09:33:05+08:00", loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc := newFakeClock(now)
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, start: now, clock: fc, fake: fc, ledger: l, boot: "real-data-gate", states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
+	x := Instance{ID: event.ID, EventID: event.ID, Start: event.Trigger.Start, Deadline: event.Trigger.Deadline, LateUntil: event.LateUntil, TriggerType: event.Trigger.Type}
+	done := make(chan struct{})
+	go func() { r.execute(x, date); close(done) }()
+	deadline := time.Now().Add(20 * time.Second)
+	advanced := false
+	for {
+		select {
+		case <-done:
+			goto finished
+		default:
+		}
+		if !advanced && fc.waitCount() > 0 {
+			fc.Advance(60 * time.Second)
+			advanced = true
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("real-data gate command did not return within its configured timeout")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+finished:
+	state := r.states[date+"/"+event.ID]
+	if state.Status != "GATE_BLOCKED" && state.Status != "SUCCEEDED" {
+		t.Fatalf("real-data gate returned unexpected state: %+v", state)
+	}
+	if state.Status == "GATE_BLOCKED" && state.LastError == "" {
+		t.Fatal("real-data gate block omitted its final reason")
+	}
+	t.Logf("real_config=%s event=%s gate=%s status=%s reason=%q postmarket_max_attempts=%d until_late=%t temp_state_root=%s", configPath, event.ID, event.Gate.Ref, state.Status, state.LastError, postmarket.Retry.MaxAttempts, postmarket.Retry.UntilLate, root)
 }
 
 func lineCount(t *testing.T, path string) int {
@@ -1607,7 +1839,7 @@ func TestKill9RestartRestoresAttemptsMissedSummaryAndSocketIdem(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfgPath := filepath.Join(root, "config.json")
-	c := config.Config{SchemaVersion: 1, ConfigVersion: 1, Name: "kill9", Timezone: "Asia/Shanghai", Handlers: map[string]config.Handler{"h": {Argv: []string{handler}, EnvAllow: []string{"COUNT_FILE", "PID_FILE", "MARKER", "RELEASE_FILE", "REQUESTS"}}}, Events: []config.Event{
+	c := config.Config{SchemaVersion: 1, ConfigVersion: 1, Name: "kill9", Timezone: "Asia/Shanghai", Handlers: map[string]config.Handler{"h": {Argv: []string{handler}, EnvAllow: []string{"COUNT_FILE", "PID_FILE", "MARKER", "RELEASE_FILE", "REQUESTS"}}, "alert": {Argv: []string{"/bin/true"}}}, Events: []config.Event{
 		{ID: "missed", Enabled: true, Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:01:00"}},
 		{ID: "active", Enabled: true, Handler: "h", Timeout: "5m", Trigger: config.Trigger{Type: "window", Start: "10:30:00", Deadline: "10:40:00"}, Retry: config.Retry{MaxAttempts: 3}},
 	}}

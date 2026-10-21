@@ -61,6 +61,7 @@ type Gate struct {
 	Params     map[string]any `json:"params,omitempty"`
 	Poll       string         `json:"poll,omitempty"`
 	BackoffMax string         `json:"backoff_max,omitempty"`
+	Timeout    string         `json:"timeout,omitempty"`
 }
 type Retry struct {
 	MaxAttempts      int      `json:"max_attempts,omitempty"`

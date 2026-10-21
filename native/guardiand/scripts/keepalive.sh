@@ -16,17 +16,30 @@ CONFIRM=${GUARDIAN_CONFIRM_SECONDS:-2}
 TERM_WAIT=${GUARDIAN_TERM_SECONDS:-10}
 now() { printf '%s' "${GUARDIAN_NOW:-$(date +%s)}"; }
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
+proc_identity() {
+  GUARDIAN_PROC_ROOT=${GUARDIAN_PROC_ROOT:-/proc} python3 - "$1" <<'PY'
+import os
+import sys
+try:
+    raw = open(f"{os.environ['GUARDIAN_PROC_ROOT']}/{sys.argv[1]}/stat").read().strip()
+    left, right = raw.rsplit(")", 1)
+    comm = left[left.index("(") + 1:]
+    fields = right.split()
+    print(comm, fields[19]) # field 22 (starttime), after pid/comm fields 1-2
+except Exception:
+    print(" ")
+PY
+}
 
 check_stall() {
-  local pid hb1 hb2 tick1 tick2 age started current recent count
+  local pid hb1 hb2 tick1 tick2 age started current recent count identity comm starttime current_identity
   pid=${GUARDIAN_TEST_PID:-$(cat "$PID_FILE" 2>/dev/null || true)}
   if [[ -z "$pid" ]]; then pid=$(pgrep -x guardiand 2>/dev/null | head -n 1 || true); fi
   [[ "$pid" =~ ^[0-9]+$ ]] || return 0
   kill -0 "$pid" 2>/dev/null || return 0
-  # Production accepts only a process whose kernel comm is exactly guardiand.
-  if [[ -z "${GUARDIAN_TEST_PID:-}" ]]; then
-    [[ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" == guardiand ]] || return 0
-  fi
+  identity=$(proc_identity "$pid")
+  read -r comm starttime <<<"$identity"
+  [[ "$comm" == guardiand && "$starttime" =~ ^[0-9]+$ ]] || return 0
   [[ -r "$HEARTBEAT" ]] || return 0
   hb1=$(python3 - "$HEARTBEAT" <<'PY'
 import json,sys
@@ -76,11 +89,15 @@ PY
     if [[ -n "${GUARDIAN_ALERT_COMMAND:-}" ]]; then "$GUARDIAN_ALERT_COMMAND" "guardiand stalled; restart limit reached" >> "$LOG" 2>&1 || true; fi
     return 0
   fi
+  current_identity=$(proc_identity "$pid")
+  [[ "$current_identity" == "$identity" ]] || { log "pid=$pid identity changed before SIGTERM; skip stale recovery"; return 0; }
   log "stalled pid=$pid tick_seq=$tick1_seq age=${age}s; sending SIGTERM"
   printf '%s\n' "$current" >> "$RESTARTS"
   kill -TERM "$pid" 2>/dev/null || return 0
   sleep "$TERM_WAIT"
   if kill -0 "$pid" 2>/dev/null; then
+    current_identity=$(proc_identity "$pid")
+    [[ "$current_identity" == "$identity" ]] || { log "pid=$pid identity changed before SIGKILL; skip stale recovery"; return 0; }
     log "pid=$pid remained after ${TERM_WAIT}s; sending SIGKILL"
     kill -KILL "$pid" 2>/dev/null || true
   fi

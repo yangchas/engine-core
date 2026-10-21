@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -177,6 +178,11 @@ type runState struct {
 	TradeDate string        `json:"trade_date"`
 	State     instanceState `json:"state"`
 }
+type gateBlockRecord struct {
+	Event  string `json:"event"`
+	Reason string `json:"reason"`
+	At     string `json:"at"`
+}
 
 type Clock interface{ Now() time.Time }
 type realClock struct{}
@@ -290,9 +296,11 @@ type liveRunner struct {
 	processSlots     chan struct{}
 	loadavg          func() (float64, error)
 	alertSeen        map[string]bool
+	alertAttempts    map[string]int
+	alertInFlight    map[string]bool
 	alertMinutes     map[int64]int
 	alertDaily       int
-	gateBlocked      []string
+	gateBlocked      []gateBlockRecord
 	gateAlerted      map[string]bool
 	idempotency      map[string]any
 	cfgPath          string
@@ -844,17 +852,28 @@ func (r *liveRunner) recover() error {
 				r.states[s.TradeDate+"/"+s.Instance] = s.State
 			}
 		}
-		if rec.Type == "ALERT_OUT" {
+		if rec.Type == "ALERT_OUT" || rec.Type == "ALERT_FAILED" {
 			b, _ := json.Marshal(rec.Data)
 			var v struct {
-				Key string `json:"key"`
+				Key      string `json:"key"`
+				Attempts int    `json:"attempts"`
 			}
 			_ = json.Unmarshal(b, &v)
 			if v.Key != "" {
-				r.alertSeen[v.Key] = true
-				r.alertDaily++
+				if r.alertAttempts == nil {
+					r.alertAttempts = map[string]int{}
+				}
+				if v.Attempts > r.alertAttempts[v.Key] {
+					r.alertAttempts[v.Key] = v.Attempts
+				} else {
+					r.alertAttempts[v.Key]++
+				}
 				if at, e := time.Parse(time.RFC3339Nano, rec.TS); e == nil {
 					r.alertMinutes[at.Unix()/60]++
+				}
+				r.alertDaily++
+				if rec.Type == "ALERT_OUT" {
+					r.alertSeen[v.Key] = true
 				}
 			}
 		}
@@ -994,7 +1013,13 @@ func (r *liveRunner) execute(x Instance, date string) {
 		prior := r.states[date+"/"+x.ID]
 		r.mu.Unlock()
 		if prior.Status != "QUEUED_HEAVY" {
-			r.setState(x, date, instanceState{Status: "QUEUED_HEAVY", LastError: "heavy slot occupied", NextPhase: prior.NextPhase})
+			prior.Status = "QUEUED_HEAVY"
+			prior.LastError = "heavy slot occupied"
+			prior.CompletedAt = ""
+			if prior.DataDate == "" {
+				prior.DataDate = x.DataDate
+			}
+			r.setState(x, date, prior)
 		}
 		return
 	}
@@ -1012,7 +1037,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 		}
 		r.mu.Unlock()
 	}()
-	if prior.Status == "RETRY_WAIT" {
+	if prior.NextAttemptAt != "" {
 		next, err := time.Parse(time.RFC3339, prior.NextAttemptAt)
 		if err == nil && r.clock.Now().Before(next) {
 			return
@@ -1021,7 +1046,15 @@ func (r *liveRunner) execute(x Instance, date string) {
 	if (x.TriggerType != "startup" || x.EventID == "fetch_item") && !phaseAllowedAt(event, func() string { p, _ := r.currentPhase(r.clock.Now()); return p }(), r.clock.Now(), c, r.loc) {
 		phase, _ := r.currentPhase(r.clock.Now())
 		if event.OnPhaseMismatch == "defer" {
-			r.setState(x, date, instanceState{Status: "DEFERRED", LastError: "phase " + phase + " is not allowed", NextPhase: nextAllowedPhase(event, c.EffectivePhases(), phase)})
+			deferred := prior
+			deferred.Status = "DEFERRED"
+			deferred.LastError = "phase " + phase + " is not allowed"
+			deferred.CompletedAt = ""
+			deferred.NextPhase = nextAllowedPhase(event, c.EffectivePhases(), phase)
+			if deferred.DataDate == "" {
+				deferred.DataDate = x.DataDate
+			}
+			r.setState(x, date, deferred)
 		} else {
 			r.setState(x, date, instanceState{Status: "SKIPPED_PHASE", LastError: phase, CompletedAt: r.clock.Now().Format(time.RFC3339)})
 		}
@@ -1056,8 +1089,13 @@ func (r *liveRunner) execute(x Instance, date string) {
 	if isLate {
 		st.Status = "LATE_RUN"
 	}
-	if prior.Status == "RUNNING" || prior.Status == "LATE_RUN" || prior.Status == "RETRY_WAIT" {
+	if prior.Status == "RUNNING" || prior.Status == "LATE_RUN" || prior.Status == "RETRY_WAIT" || prior.Status == "DEFERRED" || prior.Status == "DEFER_LOAD" || prior.Status == "QUEUED_HEAVY" {
 		st.Attempts = prior.Attempts
+		st.DataDate = prior.DataDate
+		if st.DataDate == "" {
+			st.DataDate = x.DataDate
+		}
+		st.NextAttemptAt = prior.NextAttemptAt
 		if prior.StartedAt != "" {
 			st.StartedAt = prior.StartedAt
 		}
@@ -1082,7 +1120,12 @@ func (r *liveRunner) execute(x Instance, date string) {
 			}
 			processSlots := r.processSemaphore()
 			processSlots <- struct{}{}
-			out, err := r.invoke(h.GateArgv, event, x, date, 1, true)
+			gateEvent := *event
+			gateEvent.Timeout = event.Gate.Timeout
+			if gateEvent.Timeout == "" {
+				gateEvent.Timeout = "15s"
+			}
+			out, err := r.invoke(h.GateArgv, &gateEvent, x, date, 1, true)
 			<-processSlots
 			if err == nil && gateReady(out) && r.clock.Now().Before(deadline) {
 				ready = true
@@ -1102,9 +1145,9 @@ func (r *liveRunner) execute(x Instance, date string) {
 			r.waitClock(poll)
 		}
 		if !ready {
-			r.setState(x, date, instanceState{Status: "GATE_BLOCKED", LastError: "gate not ready", CompletedAt: r.clock.Now().Format(time.RFC3339)})
+			r.setState(x, date, instanceState{Status: "GATE_BLOCKED", LastError: lastGateReason, CompletedAt: r.clock.Now().Format(time.RFC3339)})
 			r.mu.Lock()
-			r.gateBlocked = append(r.gateBlocked, x.EventID)
+			r.gateBlocked = append(r.gateBlocked, gateBlockRecord{Event: x.EventID, Reason: lastGateReason, At: r.clock.Now().Format(time.RFC3339Nano)})
 			if r.gateAlerted == nil {
 				r.gateAlerted = map[string]bool{}
 			}
@@ -1251,6 +1294,9 @@ func (r *liveRunner) execute(x Instance, date string) {
 						prior, exists := r.states[key]
 						r.mu.Unlock()
 						if exists && (prior.Status == "SUCCEEDED" || prior.Status == "SUCCEEDED_DEGRADED") {
+							continue
+						}
+						if exists {
 							continue
 						}
 						deferredInstance := Instance{ID: instanceID, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}
@@ -1568,28 +1614,49 @@ func (r *liveRunner) alert(reason string, data any) error {
 		event, _ = m["event"].(string)
 	}
 	key := date + "/" + event + "/" + reason
+	if m, ok := data.(map[string]any); ok && m["summary"] == true {
+		b, _ := json.Marshal(alertSummaryIdentity(data))
+		sum := sha256.Sum256(b)
+		key += "/" + hex.EncodeToString(sum[:8])
+	}
 	r.mu.Lock()
 	if r.alertSeen[key] {
 		r.mu.Unlock()
 		return nil
 	}
-	r.alertSeen[key] = true
+	if r.alertInFlight == nil {
+		r.alertInFlight = map[string]bool{}
+	}
+	if r.alertAttempts == nil {
+		r.alertAttempts = map[string]int{}
+	}
+	if r.alertInFlight[key] {
+		r.mu.Unlock()
+		return nil
+	}
+	if r.alertAttempts[key] >= 3 {
+		r.mu.Unlock()
+		_ = r.appendCurrentLedger("ALERT_RETRY_EXHAUSTED", map[string]any{"key": key, "reason": reason, "request": data})
+		return errors.New("alert delivery retry limit reached")
+	}
 	minute := r.clock.Now().Unix() / 60
 	if r.alertDaily >= 30 || r.alertMinutes[minute] >= 3 {
 		r.mu.Unlock()
 		_ = r.appendCurrentLedger("ALERT_SUPPRESSED", map[string]any{"key": key, "reason": reason, "request": data})
 		return nil
 	}
-	r.alertDaily++
 	r.alertMinutes[minute]++
+	r.alertDaily++
+	r.alertAttempts[key]++
+	attempt := r.alertAttempts[key]
+	r.alertInFlight[key] = true
 	r.mu.Unlock()
-	_ = r.appendCurrentLedger("ALERT_OUT", map[string]any{"key": key, "reason": reason, "request": data})
 	r.configMu.RLock()
 	c := r.c
 	r.configMu.RUnlock()
 	h, ok := c.Handlers["alert"]
 	if !ok || len(h.Argv) == 0 {
-		return nil
+		return r.finishAlert(key, reason, data, attempt, errors.New("alert handler argv empty"))
 	}
 	b, _ := json.Marshal(map[string]any{"contract": 1, "event": "alert", "reason": reason, "request": data})
 	args := make([]string, len(h.Argv))
@@ -1609,7 +1676,9 @@ func (r *liveRunner) alert(reason string, data any) error {
 			return m
 		})
 	}
-	cmd := exec.Command(args[0], args[1:]...)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdin = strings.NewReader(string(b) + "\n")
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LANG=C.UTF-8"}
@@ -1621,28 +1690,75 @@ func (r *liveRunner) alert(reason string, data any) error {
 	if h.Cwd != "" {
 		cmd.Dir = h.Cwd
 	}
-	if err := cmd.Start(); err != nil {
-		return err
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		err = ctx.Err()
 	}
-	go func() {
-		wait := make(chan error, 1)
-		go func() { wait <- cmd.Wait() }()
-		timer := time.NewTimer(30 * time.Second)
-		defer timer.Stop()
-		select {
-		case <-wait:
-			return
-		case <-timer.C:
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-			select {
-			case <-wait:
-			case <-time.After(time.Second):
-				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-				<-wait
+	return r.finishAlert(key, reason, data, attempt, err)
+}
+
+// alertSummaryIdentity keeps a summary's event/reason content in its key while
+// excluding observation timestamps, which otherwise defeat same-content dedup.
+func alertSummaryIdentity(data any) any {
+	b, err := json.Marshal(data)
+	if err != nil {
+		return data
+	}
+	var value any
+	if json.Unmarshal(b, &value) != nil {
+		return data
+	}
+	var normalize func(any) any
+	normalize = func(v any) any {
+		switch x := v.(type) {
+		case map[string]any:
+			out := make(map[string]any, len(x))
+			for k, item := range x {
+				if k == "at" || k == "timestamp" || k == "created_at" {
+					continue
+				}
+				normalized := normalize(item)
+				if k == "events" || k == "instances" || k == "blocks" {
+					if values, ok := normalized.([]any); ok {
+						sort.Slice(values, func(i, j int) bool {
+							left, _ := json.Marshal(values[i])
+							right, _ := json.Marshal(values[j])
+							return string(left) < string(right)
+						})
+					}
+				}
+				out[k] = normalized
 			}
+			return out
+		case []any:
+			out := make([]any, len(x))
+			for i, item := range x {
+				out[i] = normalize(item)
+			}
+			return out
+		default:
+			return v
 		}
-	}()
-	return nil // alert delivery is asynchronous; the ledger records the request before dispatch
+	}
+	return normalize(value)
+}
+
+func (r *liveRunner) finishAlert(key, reason string, data any, attempt int, deliveryErr error) error {
+	r.mu.Lock()
+	delete(r.alertInFlight, key)
+	if deliveryErr == nil {
+		r.alertSeen[key] = true
+	}
+	r.mu.Unlock()
+	typ := "ALERT_OUT"
+	if deliveryErr != nil {
+		typ = "ALERT_FAILED"
+	}
+	ledgerErr := r.appendCurrentLedger(typ, map[string]any{"key": key, "reason": reason, "request": data, "attempts": attempt, "error": fmt.Sprint(deliveryErr)})
+	if deliveryErr != nil {
+		return deliveryErr
+	}
+	return ledgerErr
 }
 
 func (r *liveRunner) loop() error {
@@ -1673,11 +1789,16 @@ func (r *liveRunner) loop() error {
 		r.mu.Unlock()
 		r.schedule(wall)
 		r.mu.Lock()
-		ids := append([]string(nil), r.gateBlocked...)
+		blocks := append([]gateBlockRecord(nil), r.gateBlocked...)
 		r.gateBlocked = nil
 		r.mu.Unlock()
-		if len(ids) > 0 {
-			_ = r.alert("GATE_BLOCKED", map[string]any{"events": ids, "count": len(ids), "summary": true})
+		if len(blocks) > 0 {
+			ids := make([]string, 0, len(blocks))
+			for _, block := range blocks {
+				ids = append(ids, block.Event)
+			}
+			sort.Strings(ids)
+			_ = r.alert("GATE_BLOCKED", map[string]any{"events": ids, "blocks": blocks, "count": len(ids), "summary": true})
 		}
 		_ = r.heartbeat(wall)
 		if r.fake != nil {
@@ -1778,7 +1899,11 @@ func (r *liveRunner) schedule(now time.Time) {
 		if event != nil && !phaseAllowedAt(event, phase, now, c, r.loc) {
 			if event.OnPhaseMismatch == "defer" {
 				if !exists || st.Status != "DEFERRED" || st.NextPhase != nextAllowedPhase(event, c.EffectivePhases(), phase) {
-					r.setState(x, date, instanceState{Status: "DEFERRED", LastError: "phase " + phase + " is not allowed", NextPhase: nextAllowedPhase(event, c.EffectivePhases(), phase)})
+					st.Status = "DEFERRED"
+					st.LastError = "phase " + phase + " is not allowed"
+					st.CompletedAt = ""
+					st.NextPhase = nextAllowedPhase(event, c.EffectivePhases(), phase)
+					r.setState(x, date, st)
 				}
 				continue
 			}
@@ -1884,7 +2009,11 @@ func (r *liveRunner) schedule(now time.Time) {
 			}
 			if !phaseAllowedAt(event, phase, now, c, r.loc) {
 				if item.st.Status == "QUEUED_HEAVY" {
-					r.setState(Instance{ID: item.id, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", DataDate: item.st.DataDate, TriggerType: "startup"}, date, instanceState{Status: "DEFERRED", LastError: "phase " + phase + " is not allowed", NextPhase: nextAllowedPhase(event, c.EffectivePhases(), phase), DataDate: item.st.DataDate})
+					st := item.st
+					st.Status = "DEFERRED"
+					st.LastError = "phase " + phase + " is not allowed"
+					st.NextPhase = nextAllowedPhase(event, c.EffectivePhases(), phase)
+					r.setState(Instance{ID: item.id, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", DataDate: item.st.DataDate, TriggerType: "startup"}, date, st)
 				}
 				continue
 			}
