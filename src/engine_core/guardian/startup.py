@@ -293,11 +293,10 @@ def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | P
             continue
     has_committed_artifact = isinstance(payload.get("version"), str) and isinstance(payload.get("row_count"), int)
     explicit_failure = payload.get("status") in {"failed", "error"}
-    # Jobs that report no "status" at all (reindex: {"cache_rows":..,"days_reindexed":..}, backfills) succeed on exit 0
-    # with a non-empty JSON result; an empty/unparseable stdout or an unknown explicit status stays a failure.
-    reported_ok = bool(payload) and "status" not in payload and not payload.get("error")
-    if completed.returncode or explicit_failure or not (
-            payload.get("status") in {"ok", "degraded"} or has_committed_artifact or reported_ok):
+    # Exit status and explicit failure markers decide failure; success is then PROVEN by the catalog postcondition
+    # (_verify_partition), not by guessing each job's stdout dialect (reindex prints no status, ladder prints
+    # PARTIAL_*, daily_kline prints degraded, ...).
+    if completed.returncode or explicit_failure or payload.get("error") or not payload:
         stderr = completed.stderr or ""
         error_code = "FETCH_EXIT_" + str(completed.returncode) if completed.returncode else str(
             payload.get("error_code") or "FETCH_JOB_FAILED")
@@ -346,6 +345,21 @@ def _append_gap(root: Path, trade_date: str, gap: dict[str, Any], observed_at: s
     _atomic_write(path, (json.dumps(rows, ensure_ascii=False, sort_keys=True) + "\n").encode())
 
 
+def _verify_partition(item: dict[str, Any], day: str, root: str | Path | None) -> None:
+    """After a fetch job exited cleanly, the catalog must now hold the partition (non-empty, complete enough)."""
+    dataset = (item.get("artifact") or {}).get("catalog_dataset")
+    if not dataset:
+        return
+    base = Path(root or os.environ.get("CORE_DATA_ROOT") or "~/core-data").expanduser()
+    try:
+        catalog = json.loads((base / "catalog.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise FetchJobError("catalog_unreadable_after_fetch", "POSTCONDITION_FAILED") from None
+    from .registry import catalog_partition_present
+    if not catalog_partition_present(catalog, dataset, day, datetime.now().astimezone()):
+        raise FetchJobError(f"partition_missing_after_fetch:{dataset}:{day}", "POSTCONDITION_FAILED")
+
+
 def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Path, *,
                     now: datetime | str | None = None, phase: str = "", dry_run: bool | None = None) -> dict[str, Any]:
     """Execute the startup plan with bounded light concurrency and explicit deferred work."""
@@ -365,7 +379,9 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
         else:
             try:
                 timeout = float(item.get("fetch_job", {}).get("timeout_seconds", 300)) if isinstance(item.get("fetch_job"), dict) else 300
-                row.update(status="ok", detail=_run_fetch_job(item, str(action["partition"]), timeout, root))
+                detail = _run_fetch_job(item, str(action["partition"]), timeout, root)
+                _verify_partition(item, str(action["partition"]), root)
+                row.update(status="ok", detail=detail)
             except Exception as exc:
                 error_code = getattr(exc, "error_code", "FETCH_JOB_FAILED")
                 stderr = getattr(exc, "stderr", "")
@@ -519,6 +535,7 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
     try:
         _argv, timeout = _fetch_spec(item)
         result = _run_fetch_job(item, partition, timeout, root)
+        _verify_partition(item, partition, root)
         return _result("ok", {"id": item_id, "partition": partition, "result": result})
     except Exception as exc:
         code = getattr(exc, "error_code", "FETCH_FAILED")

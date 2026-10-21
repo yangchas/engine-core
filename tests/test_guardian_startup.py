@@ -222,7 +222,7 @@ def test_boot_apply_plan_runs_stub_job_into_temporary_catalog(tmp_path, monkeypa
                                "timeout_seconds": 10}}]
     monkeypatch.setattr(startup, "load_registry", lambda: registry)
     result = startup.boot_apply_plan("2026-10-20", [{"id": "stub_dataset", "partition": "2026-10-20",
-        "action": "FETCH_NOW", "lane": "parallel"}], tmp_path,
+        "action": "FETCH_NOW", "lane": "parallel"}], tmp_path / "catalog",
         now="2026-10-20T09:36:00+08:00", phase="OPEN")
     assert result["status"] == "ok"
     manifest_path = ArtifactCatalog(tmp_path / "catalog").locate("stub_dataset", "2026-10-20")
@@ -282,6 +282,28 @@ def test_fetch_job_without_status_key_succeeds_on_exit_zero_but_empty_or_explici
     ok = startup._run_fetch_job(item('import json;print(json.dumps(dict(cache_rows=5218,days_reindexed=1)))'), "2026-10-21", 20)
     assert ok["days_reindexed"] == 1
     for code in ("print('no json at all')", 'import json;print(json.dumps(dict(status="failed")))',
-                 'import json;print(json.dumps(dict(error="boom")))', 'import json;print(json.dumps(dict(status="weird")))'):
+                 'import json;print(json.dumps(dict(error="boom")))'):
         with pytest.raises(startup.FetchJobError):
             startup._run_fetch_job(item(code), "2026-10-21", 20)
+
+
+def test_fetch_item_success_requires_the_partition_to_exist_in_the_catalog_afterwards(tmp_path):
+    """A job that exits 0 with an unfamiliar status (real ladder_daily prints PARTIAL_ST_FILTER_UNAVAILABLE) is judged by the catalog."""
+    import sys
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.guardian.startup import fetch_item
+    import engine_core.guardian.startup as startup
+
+    item = {"id": "ladder_daily", "artifact": {"catalog_dataset": "ladder_daily"},
+            "fetch_job": {"argv": [sys.executable, "-c", "import json;print(json.dumps(dict(status='PARTIAL_ST_FILTER_UNAVAILABLE',row_count=0)))"],
+                          "timeout_seconds": 20}}
+    original = startup.load_registry
+    startup.load_registry = lambda: [item]
+    try:
+        missing = fetch_item("ladder_daily", "2026-10-21", tmp_path, dry_run=False)
+        assert missing["status"] == "failed" and missing["error_code"] == "POSTCONDITION_FAILED"
+        ArtifactCatalog(tmp_path).commit("ladder_daily", "2026-10-21", [{"symbol": "000001"}],
+                                         {"available_at": "2026-10-21T15:05:00+08:00"}, source="test")
+        assert fetch_item("ladder_daily", "2026-10-21", tmp_path, dry_run=False)["status"] == "ok"
+    finally:
+        startup.load_registry = original
