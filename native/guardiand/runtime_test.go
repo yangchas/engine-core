@@ -2127,3 +2127,45 @@ func TestRecoveredRunningFetchItemIsRearmedWithoutCountingTheInterruptedAttempt(
 		t.Fatal("non fetch_item state must be left to the normal startup recovery")
 	}
 }
+
+func TestFetchItemRetriesBackOffFromTheConfiguredBaseAndAlertsOnceWhenSpent(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-21"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation(time.RFC3339, date+"T22:30:00+08:00", loc)
+	fail := filepath.Join(root, "fail.sh")
+	if err := os.WriteFile(fail, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"failed\",\"error_code\":\"FETCH_JOB_FAILED\",\"retryable\":true}'\nexit 75\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	e := config.Event{ID: "fetch_item", Handler: "h", Timeout: "60s", Trigger: config.Trigger{Type: "startup"},
+		Retry: config.Retry{MaxAttempts: 3, Backoff: "60s"}}
+	fc := newFakeClock(now)
+	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{fail}}, "alert": {Argv: []string{"/bin/true"}}}}, root: root, loc: loc, start: now, clock: fc, fake: fc, ledger: l, boot: "test", states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
+	done := make(chan struct{})
+	go func() {
+		r.execute(Instance{ID: "fetch_item:daily_kline", EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup", DataDate: date}, date)
+		close(done)
+	}()
+	for finished := false; !finished; {
+		select {
+		case <-done:
+			finished = true
+		case <-time.After(20 * time.Millisecond):
+			fc.Advance(30 * time.Second)
+		}
+	}
+	got := r.states[date+"/fetch_item:daily_kline"]
+	if got.Attempts != 3 || (got.Status != "CIRCUIT_OPEN" && got.Status != "FAILED_FINAL") {
+		t.Fatalf("state=%+v, want three attempts then a terminal state", got)
+	}
+	if elapsed := fc.Now().Sub(now); elapsed < 3*time.Minute {
+		t.Fatalf("retries took %v of fake time, want >= 60s+120s exponential backoff", elapsed)
+	}
+	if counts := ledgerTypeCounts(t, root, date); counts["ALERT_OUT"] != 1 {
+		t.Fatalf("spent fetch_item alerts=%d, want exactly one", counts["ALERT_OUT"])
+	}
+}

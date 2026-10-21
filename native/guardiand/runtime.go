@@ -1403,7 +1403,13 @@ func (r *liveRunner) execute(x Instance, date string) {
 			slotHeld = false
 		}
 		if !(event.Retry.UntilLate && event.LateUntil != "") {
-			r.waitClock(eventRetryDelay(event.Retry.Base, n))
+			// config generators set "backoff" (60s) for data events; "base" is the legacy field. Using only Base made
+			// fetch_item retry after 1s,2s (all three attempts inside seconds) instead of exponentially from 60s.
+			base := event.Retry.Base
+			if base == "" {
+				base = event.Retry.Backoff
+			}
+			r.waitClock(eventRetryDelay(base, n))
 		}
 	}
 	if lastRetryable && event.Retry.UntilLate && event.LateUntil != "" {
@@ -1437,6 +1443,10 @@ func (r *liveRunner) execute(x Instance, date string) {
 	r.setState(x, date, instanceState{Status: status, Attempts: st.Attempts, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: last})
 	if event.Trigger.Type != "startup" {
 		_ = r.alert(status, map[string]any{"event": x.EventID, "date": date, "error": last})
+	} else if x.EventID == "fetch_item" {
+		// Queued data fetches are startup-type instances but are real work: a spent budget must reach a human once,
+		// keyed by the item so different items are not collapsed into one alert.
+		_ = r.alert(status, map[string]any{"event": x.ID, "date": date, "error": last})
 	}
 }
 
