@@ -346,7 +346,7 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
     def execute(pair):
         item, action = pair
         started = time.monotonic()
-        row = {"id": item["id"], "action": "FETCH_NOW"}
+        row = {"id": item["id"], "action": "FETCH_NOW", "partition": str(action.get("partition", ""))}
         if dry_run:
             row.update(status="dry_run")
         else:
@@ -441,7 +441,8 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
             failed_deps = [str(dep) for dep in deps if str(dep) in indexed and
                            action_status.get(str(dep)) not in {"ok", "dry_run", "recorded"}]
             if failed_deps and action.get("action") == "FETCH_NOW":
-                row = {"id": item_id, "action": "FETCH_NOW", "status": "DEPENDENCY_FAILED",
+                row = {"id": item_id, "action": "FETCH_NOW", "partition": str(action.get("partition", "")),
+                       "status": "DEPENDENCY_FAILED",
                        "error_code": "DEPENDENCY_FAILED", "failed_dependencies": failed_deps,
                        "retryable": True, "elapsed_ms": 0}
             elif action.get("action") == "FETCH_NOW":
