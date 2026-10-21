@@ -132,7 +132,7 @@
       },
       "cost": {
         "class": "heavy",
-        "basis": "formal Baostock pull; guardian dry-run exceeded 60s (measuring)",
+        "basis": "formal Baostock pull; guardian dry-run exceeded 60s (measuring) | C394 2026-10-21: real run is ~1 symbol/s (Baostock ~0.9s/query) => full 5224 pull ~85min, resumable per 25 symbols; fetch_job timeout 3600s",
         "set_by": "claude 2026-10-20 default"
       },
       "fetch_job": {
@@ -145,7 +145,7 @@
           "{date}",
           "--execute"
         ],
-        "timeout_seconds": 300,
+        "timeout_seconds": 3600,
         "degraded": {
           "argv": [
             "{python}",
