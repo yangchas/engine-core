@@ -202,7 +202,8 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                 captured_at = observed.get("captured_at") or now
                 updated = append_auction_amount_baseline(
                     previous_rows, trade_date=trade_date,
-                    amount_yuan=observed.get("amount_yuan"), available_at=declared_available_at or "UNKNOWN")
+                    amount_yuan=observed.get("amount_yuan"),
+                    available_at=declared_available_at or captured_at or datetime.now().astimezone().isoformat())
                 committed = None
                 if write and observed.get("amount_yuan") is not None:
                     manifest = {"trade_date": trade_date, "as_of": observed.get("as_of", "UNKNOWN"),
