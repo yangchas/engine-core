@@ -56,6 +56,8 @@ class ArtifactCatalog:
         payload = b"\n".join(canonical_json(dict(row)) for row in rows) + (b"\n" if rows else b"")
         digest = sha256(payload)
         identity = {"payload_sha256": digest}
+        if "node_fingerprint" in manifest:
+            identity["node_fingerprint"] = manifest["node_fingerprint"]
         inputs = manifest.get("inputs")
         if isinstance(inputs, Mapping) and inputs:
             identity["inputs"] = dict(inputs)
@@ -115,7 +117,13 @@ class ArtifactCatalog:
             versions.append({"version": version, "manifest": str(manifest_path),
                              "sha256": digest, "row_count": len(rows), "as_of": result.get("as_of"),
                              **{key: result[key] for key in ("available_at", "committed_at", "authority")
-                                if key in result}})
+                                if key in result},
+                             **({"node_fingerprint": result["node_fingerprint"]}
+                                if "node_fingerprint" in result else {})})
+        else:
+            for item in versions:
+                if item.get("version") == version and "node_fingerprint" in result:
+                    item["node_fingerprint"] = result["node_fingerprint"]
         current_latest = entry.get("latest")
         if (result.get("business_status") != "PROVISIONAL"
                 and (current_latest is None or trade_date >= current_latest.get("trade_date", ""))):
