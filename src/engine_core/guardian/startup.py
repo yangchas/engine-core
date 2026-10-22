@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -430,19 +431,29 @@ def _verify_partition(item: dict[str, Any], day: str, root: str | Path | None) -
 
 
 def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Path, *,
-                    now: datetime | str | None = None, phase: str = "", dry_run: bool | None = None) -> dict[str, Any]:
+                    now: datetime | str | None = None, phase: str = "", dry_run: bool | None = None,
+                    enqueue_only: bool = False,
+                    active_events: Mapping[str, str] | list[str] | None = None) -> dict[str, Any]:
     """Execute the startup plan with bounded light concurrency and explicit deferred work."""
     root = Path(root).expanduser()
     clock = _now(now, trade_date)
     if dry_run is None:
         dry_run = os.environ.get("GUARDIAN_DRY_RUN") == "1"
     by_id = {item["id"]: item for item in load_registry()}
+    active_owners = set(active_events or [])
+    if active_owners:
+        plan = [action for action in plan
+                if not (by_id.get(str(action.get("id", "")), {}).get("guardian_event") in active_owners
+                        and (not isinstance(active_events, Mapping)
+                             or str(action.get("partition", "")) == str(active_events.get(
+                                 by_id.get(str(action.get("id", "")), {}).get("guardian_event"), ""))))]
     results: list[dict[str, Any]] = []
     deferred: list[dict[str, Any]] = []
     def execute(pair):
         item, action = pair
         started = time.monotonic()
-        row = {"id": item["id"], "action": "FETCH_NOW", "partition": str(action.get("partition", ""))}
+        row = {"id": item["id"], "action": "FETCH_NOW", "partition": str(action.get("partition", "")),
+               "cost": (item.get("cost") or {}).get("class", "medium")}
         if dry_run:
             row.update(status="dry_run")
         else:
@@ -513,7 +524,8 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
                             "stderr": "", "elapsed_ms": 0}
                 phases = _quiet_targets(item, phase, clock)
                 deferred.append({"id": item_id, "partition": action.get("partition"),
-                                 "fetch_job": item.get("fetch_job"), "run_in_phases": phases})
+                                 "fetch_job": item.get("fetch_job"), "run_in_phases": phases,
+                                 "cost": (item.get("cost") or {}).get("class", "medium")})
                 return {"id": item_id, "action": kind, "status": "deferred", "run_in_phases": phases,
                         "elapsed_ms": 0}
             if kind == "NO_FETCH_JOB":
@@ -544,7 +556,8 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
                 row = {"id": item_id, "action": "FETCH_NOW", "partition": str(action.get("partition", "")),
                        "status": "DEPENDENCY_FAILED",
                        "error_code": "DEPENDENCY_FAILED", "failed_dependencies": failed_deps,
-                       "retryable": True, "elapsed_ms": 0}
+                       "retryable": True, "cost": (by_id.get(item_id, {}).get("cost") or {}).get("class", "medium"),
+                       "elapsed_ms": 0}
             elif action.get("action") == "FETCH_NOW":
                 item = by_id.get(item_id)
                 if item is None:
@@ -567,9 +580,43 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
         light = [pair for pair in ready if pair[1].get("lane") == "parallel" and not after_queued(pair)]
         serial = [pair for pair in ready if pair[1].get("lane") != "parallel" or after_queued(pair)]
         with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = [pool.submit(execute, pair) for pair in light]
-            layer_results = [future.result() for future in futures]
+            if enqueue_only:
+                layer_results = []
+                for item, action in light:
+                    deps = action.get("depends_on")
+                    if not isinstance(deps, list):
+                        deps = (item.get("late_policy") or {}).get("depends_on", [])
+                    item_cost = (item.get("cost") or {}).get("class", "medium")
+                    run_phases = ([phase] if phase else ["NIGHT"]) if item_cost == "light" else _quiet_targets(item, phase, clock)
+                    deferred.append({"id": item["id"], "partition": action.get("partition"),
+                                     "fetch_job": item.get("fetch_job"), "run_in_phases": run_phases,
+                                     "cost": item_cost,
+                                     "depends_on": [str(dep) for dep in deps if str(dep) in indexed]})
+                    layer_results.append({"id": item["id"], "action": "FETCH_NOW",
+                                          "partition": str(action.get("partition", "")),
+                                          "status": "queued", "run_in_phases": run_phases,
+                                          "cost": item_cost,
+                                          "elapsed_ms": 0})
+            else:
+                futures = [pool.submit(execute, pair) for pair in light]
+                layer_results = [future.result() for future in futures]
         for item, action in serial:
+            if enqueue_only:
+                deps = action.get("depends_on")
+                if not isinstance(deps, list):
+                    deps = (item.get("late_policy") or {}).get("depends_on", [])
+                item_cost = (item.get("cost") or {}).get("class", "medium")
+                run_phases = ([phase] if phase else ["NIGHT"]) if item_cost == "light" else _quiet_targets(item, phase, clock)
+                deferred.append({"id": item["id"], "partition": action.get("partition"),
+                                 "fetch_job": item.get("fetch_job"), "run_in_phases": run_phases,
+                                 "cost": item_cost,
+                                 "depends_on": [str(dep) for dep in deps if str(dep) in indexed]})
+                layer_results.append({"id": item["id"], "action": "FETCH_NOW",
+                                      "partition": str(action.get("partition", "")),
+                                      "status": "queued", "run_in_phases": run_phases,
+                                      "cost": item_cost,
+                                      "elapsed_ms": 0})
+                continue
             # Non-light fetches (minutes: limit_reasons ~9min, daily bars) must not hold the boot chain, which blocks the
             # scheduler. Hand them to the scheduler as independent fetch_item instances (3 attempts, backoff, one alert).
             if dry_run:
@@ -580,6 +627,7 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
                 deps = (item.get("late_policy") or {}).get("depends_on", [])
             deferred.append({"id": item["id"], "partition": action.get("partition"),
                              "fetch_job": item.get("fetch_job"), "run_in_phases": [phase] if phase else ["NIGHT"],
+                             "cost": (item.get("cost") or {}).get("class", "medium"),
                              "depends_on": [str(dep) for dep in deps if str(dep) in indexed]})
             if action.get("upgrade_daily_kline") and not dry_run:
                 state_path = root / "guardian-upgrade-attempts.json"
@@ -592,7 +640,8 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
                 from ..data_pipeline.storage import _atomic_write, canonical_json
                 _atomic_write(state_path, canonical_json(upgrade_attempts) + b"\n")
             layer_results.append({"id": item["id"], "action": "FETCH_NOW", "partition": str(action.get("partition", "")),
-                                  "status": "queued", "run_in_phases": [phase] if phase else ["NIGHT"], "elapsed_ms": 0})
+                                  "status": "queued", "run_in_phases": [phase] if phase else ["NIGHT"],
+                                  "cost": (item.get("cost") or {}).get("class", "medium"), "elapsed_ms": 0})
         results.extend(layer_results)
         action_status.update({row["id"]: row["status"] for row in layer_results})
     detail = {"trade_date": trade_date, "results": results, "deferred": deferred,

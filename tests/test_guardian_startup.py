@@ -96,7 +96,7 @@ def test_boot_apply_plan_executes_jobs_defers_and_appends_gaps(tmp_path, monkeyp
     assert calls == [("light", "2026-10-20")]
     assert result["detail"]["deferred"] == [{"id": "heavy", "partition": "2026-10-19",
                                                   "fetch_job": ["stub", "{date}", "{item}"],
-                                                  "run_in_phases": ["MIDDAY_BREAK"]}]
+                                                  "run_in_phases": ["MIDDAY_BREAK"], "cost": "medium"}]
     gap_path = tmp_path / "guardian-native" / "gaps" / "2026-10-20.json"
     assert json.loads(gap_path.read_text())[0]["id"] == "capture"
     boot_apply_plan("2026-10-20", [{"id": "capture", "partition": "2026-10-20",
@@ -156,6 +156,7 @@ def test_boot_apply_plan_queues_non_light_items_instead_of_running_them_inline(t
     assert all(d["partition"] == "2026-10-20" and d["run_in_phases"] == ["INTRADAY_PM"]
                for d in result["detail"]["deferred"])
     assert [d["depends_on"] for d in result["detail"]["deferred"]] == [[], ["slow"]]
+    assert [d["cost"] for d in result["detail"]["deferred"]] == ["medium", "medium"]
     assert result["status"] == "ok"
 
 
@@ -339,3 +340,57 @@ def test_fetch_item_success_requires_the_partition_to_exist_in_the_catalog_after
         assert fetch_item("ladder_daily", "2026-10-21", tmp_path, dry_run=False)["status"] == "ok"
     finally:
         startup.load_registry = original
+
+
+def test_runtime_reconcile_enqueues_fetches_without_running_them_inline(tmp_path, monkeypatch):
+    from engine_core.guardian import startup
+
+    registry = [{"id": "light", "artifact": {"catalog_dataset": "light"},
+                 "fetch_job": ["stub", "{date}", "{item}"],
+                 "cost": {"class": "light"}, "late_policy": {"depends_on": []}}]
+    calls = []
+    monkeypatch.setattr(startup, "load_registry", lambda: registry)
+    monkeypatch.setattr(startup, "_run_fetch_job",
+                        lambda *args: calls.append(args) or {"status": "ok"})
+
+    result = startup.boot_apply_plan(
+        "2026-10-22", [{"id": "light", "partition": "2026-10-22", "action": "FETCH_NOW",
+                        "lane": "parallel"}], tmp_path,
+        now="2026-10-22T09:00:00+08:00", phase="PRE_MARKET", enqueue_only=True)
+
+    assert calls == []
+    assert result["detail"]["results"][0]["status"] == "queued"
+    assert result["detail"]["deferred"] == [{
+        "id": "light", "partition": "2026-10-22", "fetch_job": ["stub", "{date}", "{item}"],
+        "run_in_phases": ["PRE_MARKET"], "cost": "light", "depends_on": []}]
+
+
+def test_boot_apply_plan_skips_items_owned_by_open_event_window(tmp_path):
+    from engine_core.guardian.startup import boot_apply_plan
+
+    result = boot_apply_plan(
+        "2026-10-22",
+        [{"id": "symbol_universe", "partition": "2026-10-22", "action": "FETCH_NOW",
+          "cost": "medium"}],
+        tmp_path,
+        now="2026-10-22T08:30:00+08:00",
+        phase="PRE_MARKET",
+        dry_run=True,
+        enqueue_only=True,
+        active_events={"startup_0830": "2026-10-22"},
+    )
+
+    assert result["detail"]["results"] == []
+    assert result["detail"]["deferred"] == []
+
+    heavy = boot_apply_plan(
+        "2026-10-22",
+        [{"id": "daily_kline", "partition": "2026-10-22", "action": "FETCH_NOW",
+          "cost": "heavy"}],
+        tmp_path,
+        now="2026-10-22T10:00:00+08:00",
+        phase="INTRADAY_AM",
+        dry_run=False,
+        enqueue_only=True,
+    )
+    assert heavy["detail"]["deferred"][0]["run_in_phases"] == ["MIDDAY_BREAK"]

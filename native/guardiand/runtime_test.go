@@ -291,6 +291,159 @@ func TestBootApplyPlanSchedulesDeferredFetchItemOnceAllowed(t *testing.T) {
 	}
 }
 
+func TestConfiguredRuntimeReconcileHandlerSchedulesDeferredFetchItem(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:00", loc)
+	fc := newFakeClock(now)
+	boot := filepath.Join(root, "reconcile.sh")
+	if err := os.WriteFile(boot, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\",\"detail\":{\"results\":[{\"id\":\"auction_baseline\",\"status\":\"DEPENDENCY_FAILED\",\"partition\":\"2026-10-20\",\"retryable\":true,\"error_code\":\"DEPENDENCY_FAILED\",\"failed_dependencies\":[\"symbol_universe\"],\"cost\":\"light\"}]}}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c := config.Config{Events: []config.Event{
+		{ID: "runtime_reconcile_0900", Handler: "legacy_boot_apply_plan", Trigger: config.Trigger{Type: "window"}},
+		{ID: "fetch_item", Handler: "fetch", Trigger: config.Trigger{Type: "startup"}, Phases: []string{"PRE_MARKET"}},
+	}, Handlers: map[string]config.Handler{"legacy_boot_apply_plan": {Argv: []string{boot}}}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l,
+		states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	r.execute(Instance{ID: "runtime_reconcile_0900", EventID: "runtime_reconcile_0900", Start: "09:00:00",
+		Deadline: "09:10:00", TriggerType: "window"}, date)
+	r.mu.Lock()
+	got := r.states[date+"/fetch_item:auction_baseline"]
+	r.mu.Unlock()
+	if got.Status != "DEFERRED" || got.DataDate != date || got.Cost != "light" || len(got.WaitFor) != 1 || got.WaitFor[0] != "fetch_item:symbol_universe" {
+		t.Fatalf("runtime reconcile did not enqueue fetch item: %+v", got)
+	}
+}
+
+func TestRuntimeReconcileDoesNotRearmAnInFlightFetchItem(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:00", loc)
+	fc := newFakeClock(now)
+	boot := filepath.Join(root, "reconcile.sh")
+	if err := os.WriteFile(boot, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\",\"detail\":{\"deferred\":[{\"id\":\"symbol_universe\",\"partition\":\"2026-10-20\",\"run_in_phases\":[\"PRE_MARKET\"],\"cost\":\"light\"}]}}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c := config.Config{Events: []config.Event{
+		{ID: "runtime_reconcile_0900", Handler: "legacy_boot_apply_plan", Trigger: config.Trigger{Type: "window"}},
+		{ID: "fetch_item", Handler: "fetch", Trigger: config.Trigger{Type: "startup"}, Phases: []string{"PRE_MARKET"}},
+	}, Handlers: map[string]config.Handler{"legacy_boot_apply_plan": {Argv: []string{boot}}}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	key := date + "/fetch_item:symbol_universe"
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l,
+		states:  map[string]instanceState{key: {Status: "RUNNING", Attempts: 1, DataDate: date, Cost: "light"}},
+		running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	r.execute(Instance{ID: "runtime_reconcile_0900", EventID: "runtime_reconcile_0900", Start: "09:00:00",
+		Deadline: "09:10:00", TriggerType: "window"}, date)
+	r.mu.Lock()
+	got := r.states[key]
+	r.mu.Unlock()
+	if got.Status != "RUNNING" || got.Attempts != 1 {
+		t.Fatalf("runtime reconcile duplicated in-flight fetch: %+v", got)
+	}
+}
+
+func TestPendingOwnerEventsSuppressDuplicateSameDateFetches(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-22"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation(time.RFC3339, date+"T08:30:00+08:00", loc)
+	r := &liveRunner{c: config.Config{Events: []config.Event{{
+		ID: "startup_0830", Trigger: config.Trigger{Type: "window", Start: "08:30:00", Deadline: "08:45:00"},
+		LateUntil: "09:10:00",
+	}, {
+		ID: "postmarket_publish", Trigger: config.Trigger{Type: "window", Start: "15:00:00", Deadline: "16:00:00"},
+		LateUntil: "21:00:00",
+	}}}, root: root, loc: loc, clock: newFakeClock(now), states: map[string]instanceState{}}
+	if got := r.pendingOwnerEvents(date, now); got["startup_0830"] != date {
+		t.Fatalf("open owner window was not reported: %v", got)
+	}
+	if got := r.pendingOwnerEvents(date, now); len(got) != 1 {
+		t.Fatalf("future owner window must not suppress current reconciliation: %v", got)
+	}
+	r.states[date+"/startup_0830"] = instanceState{Status: "FAILED_FINAL", Attempts: 3}
+	if got := r.pendingOwnerEvents(date, now); len(got) != 0 {
+		t.Fatalf("terminal owner event must allow reconciliation to backfill: %v", got)
+	}
+}
+
+func TestLightFetchItemUsesInstanceCostAndMayRunDuringIntraday(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
+	fc := newFakeClock(now)
+	fetch := filepath.Join(root, "fetch.sh")
+	if err := os.WriteFile(fetch, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c := config.Config{Events: []config.Event{
+		{ID: "fetch_item", Handler: "fetch", Trigger: config.Trigger{Type: "startup"}, Cost: "heavy", Phases: []string{"NIGHT"}, OnPhaseMismatch: "defer"},
+	}, Handlers: map[string]config.Handler{"fetch": {Argv: []string{fetch}}}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l,
+		states:  map[string]instanceState{date + "/fetch_item:auction_baseline": {Status: "DEFERRED", DataDate: date, Cost: "light"}},
+		running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	r.execute(Instance{ID: "fetch_item:auction_baseline", EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", DataDate: date, TriggerType: "startup"}, date)
+	r.mu.Lock()
+	got := r.states[date+"/fetch_item:auction_baseline"]
+	heavyRunning := r.heavyRunning
+	r.mu.Unlock()
+	if got.Status != "SUCCEEDED" || heavyRunning {
+		t.Fatalf("light fetch item inherited template restrictions: state=%+v heavy_running=%v", got, heavyRunning)
+	}
+}
+
+func TestHeavyDeferredFetchMovesToNextAllowedPhaseAfterCutoff(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:10:00", loc)
+	fc := newFakeClock(now)
+	calendar := filepath.Join(root, "calendar.json")
+	if err := os.WriteFile(calendar, []byte(`["2026-10-20"]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := config.Config{
+		Events: []config.Event{{ID: "fetch_item", Handler: "fetch", Trigger: config.Trigger{Type: "startup"},
+			Cost: "heavy", Phases: []string{"PRE_MARKET", "MIDDAY_BREAK"}, OnPhaseMismatch: "defer"}},
+		HeavyCutoffs: map[string]string{"PRE_MARKET": "09:10:00"},
+		Calendars: map[string]struct {
+			File string `json:"file"`
+		}{"trading": {File: calendar}},
+	}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l,
+		states:  map[string]instanceState{date + "/fetch_item:daily_kline": {Status: "DEFERRED", DataDate: "2026-10-19", NextPhase: "PRE_MARKET", Cost: "heavy"}},
+		running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	r.schedule(fc.Now())
+	r.mu.Lock()
+	got := r.states[date+"/fetch_item:daily_kline"]
+	r.mu.Unlock()
+	if got.Status != "DEFERRED" || got.NextPhase != "MIDDAY_BREAK" {
+		t.Fatalf("heavy fetch was not moved past PRE_MARKET cutoff: %+v", got)
+	}
+}
+
 func TestPlanListingAnItemWhoseRecordedFetchSucceededRearmsIt(t *testing.T) {
 	root, date := t.TempDir(), "2026-10-20"
 	loc, _ := time.LoadLocation("Asia/Shanghai")

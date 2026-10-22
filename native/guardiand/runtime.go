@@ -172,6 +172,7 @@ type instanceState struct {
 	NextPhase     string   `json:"next_phase,omitempty"`
 	DataDate      string   `json:"data_date,omitempty"`
 	WaitFor       []string `json:"wait_for,omitempty"`
+	Cost          string   `json:"cost,omitempty"`
 }
 type runState struct {
 	EventID   string        `json:"event_id"`
@@ -432,6 +433,18 @@ func eventCost(event *config.Event) string {
 		return "medium"
 	}
 	return event.Cost
+}
+
+func fetchItemEvent(event *config.Event, state instanceState) *config.Event {
+	if event == nil || state.Cost == "" {
+		return event
+	}
+	copy := *event
+	copy.Cost = state.Cost
+	if state.Cost == "light" {
+		copy.Phases = nil
+	}
+	return &copy
 }
 
 func configuredHeavyLoad(c config.Config) float64 {
@@ -840,6 +853,60 @@ func isTerminal(status string) bool {
 	return false
 }
 
+func fetchItemDependencies(ids []string) []string {
+	waitFor := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			waitFor = append(waitFor, "fetch_item:"+id)
+		}
+	}
+	return waitFor
+}
+
+// pendingOwnerEvents returns same-date data owners whose scheduled window can
+// still perform the fetch. Their registry entries must not also be queued as
+// fetch_item work by a reconciliation pass.
+func (r *liveRunner) pendingOwnerEvents(date string, now time.Time) map[string]string {
+	r.configMu.RLock()
+	c := r.c
+	r.configMu.RUnlock()
+	xs, _, err := instances(c, date)
+	if err != nil {
+		return nil
+	}
+	pending := map[string]string{}
+	for _, x := range xs {
+		e := findEvent(c, x.EventID)
+		if e == nil || e.Trigger.Type != "window" {
+			continue
+		}
+		key := date + "/" + x.ID
+		r.mu.Lock()
+		prior, exists := r.states[key]
+		r.mu.Unlock()
+		if exists && isTerminal(prior.Status) {
+			continue
+		}
+		if !exists {
+			start, startErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Start, r.loc)
+			cutoff := x.Deadline
+			if x.LateUntil != "" {
+				cutoff = x.LateUntil
+			}
+			end, parseErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
+			if startErr != nil || parseErr != nil || now.Before(start) || !now.Before(end) {
+				continue
+			}
+		}
+		dataDate := x.DataDate
+		if dataDate == "" {
+			dataDate = date
+		}
+		pending[x.EventID] = dataDate
+	}
+	return pending
+}
+
 // rearmInterruptedFetchItems: a fetch_item recovered as RUNNING lost its process with the previous daemon. Put it back
 // in the queue (the interrupted attempt does not count) so the job resumes from its own checkpoint instead of being
 // ignored forever as "already running".
@@ -1045,6 +1112,12 @@ func (r *liveRunner) execute(x Instance, date string) {
 	if event == nil {
 		return
 	}
+	r.mu.Lock()
+	prior := r.states[date+"/"+x.ID]
+	r.mu.Unlock()
+	if x.EventID == "fetch_item" {
+		event = fetchItemEvent(event, prior)
+	}
 	cost := eventCost(event)
 	r.mu.Lock()
 	if r.running[x.ID] {
@@ -1069,7 +1142,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 		r.heavyRunning = true
 	}
 	r.running[x.ID] = true
-	prior := r.states[date+"/"+x.ID]
+	prior = r.states[date+"/"+x.ID]
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
@@ -1314,7 +1387,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 			if strings.Contains(event.ID, "calendar_refresh") {
 				r.scheduleBootRerun(date)
 			}
-			if event.ID == "boot_apply_plan" {
+			if event.ID == "boot_apply_plan" || strings.TrimPrefix(event.Handler, "legacy_") == "boot_apply_plan" {
 				var response struct {
 					Detail struct {
 						Deferred []struct {
@@ -1322,14 +1395,17 @@ func (r *liveRunner) execute(x Instance, date string) {
 							Partition   string   `json:"partition"`
 							RunInPhases []string `json:"run_in_phases"`
 							DependsOn   []string `json:"depends_on"`
+							Cost        string   `json:"cost"`
 						} `json:"deferred"`
 						Results []struct {
-							ID        string          `json:"id"`
-							Status    string          `json:"status"`
-							Partition string          `json:"partition"`
-							Retryable bool            `json:"retryable"`
-							ErrorCode string          `json:"error_code"`
-							Detail    json.RawMessage `json:"detail"`
+							ID                 string          `json:"id"`
+							Status             string          `json:"status"`
+							Partition          string          `json:"partition"`
+							Retryable          bool            `json:"retryable"`
+							ErrorCode          string          `json:"error_code"`
+							FailedDependencies []string        `json:"failed_dependencies"`
+							Cost               string          `json:"cost"`
+							Detail             json.RawMessage `json:"detail"`
 						} `json:"results"`
 					} `json:"detail"`
 				}
@@ -1354,7 +1430,8 @@ func (r *liveRunner) execute(x Instance, date string) {
 							continue
 						}
 						r.setState(Instance{ID: instanceID, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}, date,
-							instanceState{Status: "DEFERRED", LastError: "requeued after failed plan item " + res.ErrorCode, NextPhase: phaseNow, DataDate: res.Partition})
+							instanceState{Status: "DEFERRED", LastError: "requeued after failed plan item " + res.ErrorCode,
+								NextPhase: phaseNow, DataDate: res.Partition, Cost: res.Cost, WaitFor: fetchItemDependencies(res.FailedDependencies)})
 					}
 					for _, deferred := range response.Detail.Deferred {
 						if deferred.ID == "" || len(deferred.RunInPhases) == 0 {
@@ -1376,7 +1453,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 						for _, dep := range deferred.DependsOn {
 							wait = append(wait, "fetch_item:"+dep)
 						}
-						r.setState(deferredInstance, date, instanceState{Status: "DEFERRED", LastError: "waiting for " + deferred.RunInPhases[0], NextPhase: deferred.RunInPhases[0], DataDate: deferred.Partition, WaitFor: wait})
+						r.setState(deferredInstance, date, instanceState{Status: "DEFERRED", LastError: "waiting for " + deferred.RunInPhases[0], NextPhase: deferred.RunInPhases[0], DataDate: deferred.Partition, WaitFor: wait, Cost: deferred.Cost})
 					}
 				}
 			}
@@ -1569,6 +1646,7 @@ func (r *liveRunner) invoke(argv []string, e *config.Event, x Instance, date str
 	phase, _ := r.currentPhase(r.clock.Now())
 	in["phase"] = phase
 	in["now"] = r.clock.Now().In(r.loc).Format(time.RFC3339)
+	in["active_events"] = r.pendingOwnerEvents(date, r.clock.Now())
 	b, _ := json.Marshal(in)
 	cmd.Stdin = strings.NewReader(string(b) + "\n")
 	err := cmd.Start()
@@ -2092,8 +2170,9 @@ func (r *liveRunner) schedule(now time.Time) {
 		}
 		r.mu.Unlock()
 		for _, item := range pending {
+			itemEvent := fetchItemEvent(event, item.st)
 			// A queued item already passed its phase check once; it is re-dispatched in any allowed phase.
-			if item.st.Status != "QUEUED_HEAVY" && item.st.NextPhase != "" && item.st.NextPhase != phase {
+			if item.st.Cost != "light" && item.st.Status != "QUEUED_HEAVY" && item.st.NextPhase != "" && item.st.NextPhase != phase {
 				continue
 			}
 			r.mu.Lock()
@@ -2116,12 +2195,14 @@ func (r *liveRunner) schedule(now time.Time) {
 			if waiting {
 				continue
 			}
-			if !phaseAllowedAt(event, phase, now, c, r.loc) {
-				if item.st.Status == "QUEUED_HEAVY" {
+			if !phaseAllowedAt(itemEvent, phase, now, c, r.loc) {
+				if item.st.Status == "QUEUED_HEAVY" || item.st.Status == "DEFERRED" || item.st.Status == "RETRY_WAIT" {
 					st := item.st
-					st.Status = "DEFERRED"
+					if st.Status == "QUEUED_HEAVY" {
+						st.Status = "DEFERRED"
+					}
 					st.LastError = "phase " + phase + " is not allowed"
-					st.NextPhase = nextAllowedPhase(event, c.EffectivePhases(), phase)
+					st.NextPhase = nextAllowedPhase(itemEvent, c.EffectivePhases(), phase)
 					r.setState(Instance{ID: item.id, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", DataDate: item.st.DataDate, TriggerType: "startup"}, date, st)
 				}
 				continue
@@ -2132,7 +2213,7 @@ func (r *liveRunner) schedule(now time.Time) {
 					continue
 				}
 			}
-			x := Instance{ID: item.id, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", Timeout: event.Timeout, DataDate: item.st.DataDate,
+			x := Instance{ID: item.id, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", Timeout: itemEvent.Timeout, DataDate: item.st.DataDate,
 				MaxAttempts: event.Retry.MaxAttempts, TriggerType: "startup"}
 			go r.execute(x, date)
 		}

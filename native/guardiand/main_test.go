@@ -67,7 +67,7 @@ func TestMigrationV2PreservesConfiguredStartupAndWindowPolicies(t *testing.T) {
 	if err = json.Unmarshal(b, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.HeavyMaxLoad1 != 3 || got.HeavyCutoffs["PRE_MARKET"] != "09:10:00" || len(got.Events) != 55 {
+	if got.HeavyMaxLoad1 != 3 || got.HeavyCutoffs["PRE_MARKET"] != "09:10:00" || len(got.Events) != 65 {
 		t.Fatalf("global config/events lost: maxload=%v cutoffs=%v count=%d", got.HeavyMaxLoad1, got.HeavyCutoffs, len(got.Events))
 	}
 	byID := map[string]struct {

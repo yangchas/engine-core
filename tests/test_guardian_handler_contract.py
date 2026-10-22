@@ -158,7 +158,9 @@ def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
     from engine_core.guardian import commands
     monkeypatch.setattr(commands, "validate_handler_postcondition", lambda *_: (True, ""))
     for event in events:
-        if event.get("trigger_type") == "startup":
+        # boot_apply_plan uses the direct reconciliation/fetch_item bridge and
+        # is exercised by the configured runtime-reconciliation Go test.
+        if event.get("trigger_type") == "startup" or event.get("handler") == "boot_apply_plan":
             continue
         _, payload = guardian_handler._run(_core_request(event["event_id"]))
         if event["handler"] == "close_capture":
@@ -166,7 +168,7 @@ def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
         else:
             assert payload["status"] == "ok", (event["event_id"], payload)
     assert set(called) == {e["handler"] for e in events
-                           if e.get("trigger_type") != "startup"} - {"close_capture"}
+                           if e.get("trigger_type") != "startup" and e.get("handler") != "boot_apply_plan"} - {"close_capture"}
     assert all(o.write and o.run for o in seen_opts)  # live mode writes, like the old guardian
 
 
@@ -184,6 +186,29 @@ def test_successful_command_fails_when_postcondition_is_missing(monkeypatch):
     assert payload["status"] == "failed"
     assert payload["error_code"] == "POSTCONDITION_FAILED"
     assert payload["retryable"] is True
+
+
+def test_runtime_reconciliation_uses_enqueue_only_bridge(monkeypatch, tmp_path):
+    from examples import guardian_handler
+    from engine_core.guardian import startup
+
+    called = {}
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(startup, "boot_reconcile", lambda *args, **kwargs: {
+        "status": "ok", "detail": {"plan": [{"id": "light", "partition": "2026-10-22",
+                                                    "action": "FETCH_NOW"}]}})
+
+    def apply(*args, **kwargs):
+        called.update(kwargs)
+        return {"status": "ok", "detail": {"results": [], "deferred": []}}
+
+    monkeypatch.setattr(startup, "boot_apply_plan", apply)
+    code, payload = guardian_handler._run({
+        "event": "runtime_reconcile_0900", "handler": "boot_apply_plan",
+        "trade_date": "2026-10-22", "phase": "PRE_MARKET", "now": "2026-10-22T09:00:00+08:00"})
+
+    assert code == 0 and payload["status"] == "ok"
+    assert called["enqueue_only"] is True
 
 
 def test_dry_run_skips_postcondition_validation(monkeypatch):
@@ -284,3 +309,15 @@ def test_auction_report_asof_is_clamped_to_0926_when_started_later(monkeypatch, 
     code, payload = guardian_handler._run(_core_request("auction_report_0926", "2026-10-22"))
     assert code == 0 and payload["status"] == "ok"
     assert seen["start"] == "09:26:00" and seen["now"].startswith("2026-10-22T09:26:00")
+
+
+def test_premarket_handler_defers_when_another_same_date_owner_is_running():
+    from examples import guardian_handler
+
+    request = _core_request("startup_0900", "2026-10-22")
+    request.update(handler="premarket_data", active_events={"startup_0830": "2026-10-22"})
+    code, payload = guardian_handler._run(request)
+    assert code == 0 and payload["status"] == "ok"
+    assert payload["detail"] == "same_date_premarket_owner_still_running"
+    request["event"] = "startup_0830"
+    assert guardian_handler._premarket_owner_is_open(request) is False

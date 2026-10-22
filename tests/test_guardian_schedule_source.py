@@ -38,3 +38,35 @@ def test_registry_trigger_event_resolves_to_the_single_schedule_start():
             assert policy["trigger_event"] in events
             assert policy.get("trigger_at") is None
 
+
+
+def test_runtime_reconciliation_checkpoints_are_configured_and_use_fetch_plan():
+    import json
+    from pathlib import Path
+
+    payload = json.loads((Path(__file__).resolve().parents[1] /
+                          "src/engine_core/guardian/schedule.json").read_text())
+    events = {event["event_id"]: event for event in payload["events"]}
+    checkpoints = {
+        "0900": ("09:00:00", "PRE_MARKET"),
+        "0935": ("09:35:00", "OPEN"),
+        "1000": ("10:00:00", "INTRADAY_AM"),
+        "1145": ("11:45:00", "MIDDAY_BREAK"),
+        "1330": ("13:30:00", "INTRADAY_PM"),
+        "1520": ("15:20:00", "CLOSE"),
+        "1540": ("15:40:00", "POST_MARKET"),
+        "1745": ("17:45:00", "POST_MARKET"),
+        "1930": ("19:30:00", "POST_MARKET"),
+        "2100": ("21:00:00", "POST_MARKET"),
+    }
+    for suffix, (start, phase) in checkpoints.items():
+        event = events[f"runtime_reconcile_{suffix}"]
+        assert event["trigger_type"] == "window"
+        assert event["start"] == start
+        assert event["handler"] == "boot_apply_plan"
+        assert event["cost"] == "light"
+        assert event["phases"] is None
+        assert event["args"]["reconciliation_checkpoint"] == phase
+        assert event["args"]["checkpoint_reason"]
+        assert event["max_attempts"] == 1
+        assert event["catchup_mode"] == "run_in_window"

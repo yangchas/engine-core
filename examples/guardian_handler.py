@@ -29,11 +29,26 @@ def _event_from_request(request):
     return by_id.get(str(raw)), str(raw)
 
 
+def _premarket_owner_is_open(request):
+    active = request.get("active_events")
+    if not isinstance(active, dict):
+        return False
+    event_id = str(request.get("event") or "")
+    # These owner events run the same broad prep_trade_day command. Avoid a
+    # second command while another same-date premarket owner is still active.
+    return any(owner != event_id and owner in active
+               for owner in ("startup_0830", "premarket_slice_0850"))
+
+
 def _run(request):
     from examples.core_guardian import _command_handler
 
     base, event_id = _event_from_request(request)
     configured_handler = str(request.get("handler") or (base.handler if base else ""))
+    if configured_handler == "premarket_data" and _premarket_owner_is_open(request):
+        return 0, {"contract": 1, "status": "ok", "error_code": "",
+                   "retryable": False, "artifacts": [],
+                   "detail": "same_date_premarket_owner_still_running"}
     if configured_handler in {"boot_trade_day", "boot_data_health", "boot_reconcile", "boot_apply_plan", "fetch_item"}:
         from engine_core.guardian.startup import boot_apply_plan, boot_data_health, boot_reconcile, boot_trade_day, fetch_item
         trade_date = request.get("trade_date")
@@ -54,8 +69,11 @@ def _run(request):
         elif configured_handler == "boot_apply_plan":
             reconciled = boot_reconcile(str(trade_date), str(request.get("phase") or ""),
                                         request.get("health"), root, now=now)
+            runtime_reconcile = str(request.get("event") or "").startswith("runtime_reconcile_")
             result = boot_apply_plan(str(trade_date), reconciled["detail"].get("plan", []), root,
-                                     now=now, phase=str(request.get("phase") or ""), dry_run=dry)
+                                     now=now, phase=str(request.get("phase") or ""), dry_run=dry,
+                                     enqueue_only=runtime_reconcile,
+                                     active_events=request.get("active_events"))
         else:
             result = fetch_item(str(request.get("item_id") or ""), str(request.get("data_date") or trade_date),
                                 root, dry_run=dry)
