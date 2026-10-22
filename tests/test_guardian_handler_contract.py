@@ -271,3 +271,16 @@ def test_fakeclock_kaipan_job_persists_only_to_artifact_root():
                                     ROOT / "artifacts", "2026-10-21", sys.executable, ROOT)
     assert command[-1] == "--execute"
     assert "--write" not in command
+
+
+def test_auction_report_asof_is_clamped_to_0926_when_started_later(monkeypatch, tmp_path):
+    from examples import core_guardian, guardian_handler
+
+    seen = {}
+    monkeypatch.setattr(core_guardian, "_command_handler", lambda name, opts, root: lambda event, now, ctx, degrade:
+                        seen.update(start=event.start, now=now.isoformat()) or "ok")
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    code, payload = guardian_handler._run(_core_request("auction_report_0926", "2026-10-22"))
+    assert code == 0 and payload["status"] == "ok"
+    assert seen["start"] == "09:26:00" and seen["now"].startswith("2026-10-22T09:26:00")

@@ -78,8 +78,10 @@ def _run(request):
                            email_self=not dry and os.environ.get("GUARDIAN_EMAIL_SELF", "1") == "1",
                            run=not dry)
     asof = str(request.get("asof") or f"{trade_date}T{getattr(base, 'start', '00:00:00')}+08:00")
+    if name == "auction_report" and asof[11:19] > "09:26:00":
+        asof = asof[:11] + "09:26:00" + asof[19:]  # panorama rejects an as-of after 09:26:00; the 09:26:30 start only delays the run
     start = datetime.fromisoformat(asof).strftime("%H:%M:%S")
-    args = request.get("args") if isinstance(request.get("args"), dict) else {}
+    args =request.get("args") if isinstance(request.get("args"), dict) else {}
     event = SimpleNamespace(event_id=event_id, handler=name, gate=getattr(base, "gate", "always"), start=start,
                             args=args, timeout_seconds=int(request.get("timeout_seconds") or getattr(base, "timeout_seconds", 300)),
                             data_date_offset=getattr(base, "data_date_offset", 0))
