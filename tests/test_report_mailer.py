@@ -4,6 +4,22 @@ import pytest
 from engine_core import report_mailer
 
 
+@pytest.fixture(autouse=True)
+def _mail_enabled_root(tmp_path_factory, monkeypatch):
+    root = tmp_path_factory.mktemp("mail_root")
+    (root / ".mail_enabled").write_text("")
+    monkeypatch.setenv("CORE_DATA_ROOT", str(root))
+
+
+def test_real_send_is_forced_to_dry_run_without_marker(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))  # no .mail_enabled here
+    sent = []
+    monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", lambda *a, **k: sent.append(a))
+    msg = _message(tmp_path)
+    receipt = report_mailer.send_message(_config(), msg, dry_run=False, state_dir=tmp_path / "state")
+    assert sent == [] and receipt.status != "sent"
+
+
 def _config(port=465, starttls=False):
     return report_mailer.SmtpConfig(host="smtp.invalid", port=port, user="mailer",
                                     password="super-secret", from_addr="reports@example.test",

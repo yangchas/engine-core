@@ -307,6 +307,10 @@ def send_message(config: SmtpConfig | None, msg: EmailMessage, *, dry_run: bool 
                  allow_recipients: Sequence[str] | None = None,
                  state_dir: str | Path | None = None) -> SendReceipt:
     started = time.monotonic()
+    if not dry_run and not (os.environ.get("CORE_DATA_ROOT") and (Path(os.environ["CORE_DATA_ROOT"]).expanduser() / ".mail_enabled").is_file()):
+        # fail closed: real mail needs CORE_DATA_ROOT set explicitly to a root holding this marker (production only); unset/temp/test roots never send
+        logging.getLogger(__name__).warning("mail_enabled marker missing under CORE_DATA_ROOT; forcing dry-run")
+        dry_run = True
     wire = msg.as_bytes()
     recipients = [part.strip() for part in str(msg.get("To", "")).split(",") if part.strip()]
     digest = _report_digest(msg)
