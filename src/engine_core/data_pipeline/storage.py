@@ -1,11 +1,13 @@
 """Immutable local artifacts and an atomic, small JSON catalog."""
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import gzip
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -36,6 +38,18 @@ def _atomic_write(path: Path, content: bytes) -> None:
     finally:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
+
+
+@contextmanager
+def _catalog_lock(root: Path):
+    """Serialize catalog.json read-modify-write across processes (guardian jobs, reports, node writes)."""
+    root.mkdir(parents=True, exist_ok=True)
+    with open(root / ".catalog.lock", "a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 class ArtifactCatalog:
@@ -109,31 +123,32 @@ class ArtifactCatalog:
                 result = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 pass
-        catalog = self.read()
-        datasets = catalog.setdefault("datasets", {})
-        entry = datasets.setdefault(dataset, {"dates": {}, "latest": None})
-        versions = entry.setdefault("dates", {}).setdefault(trade_date, [])
-        if version not in [item.get("version") for item in versions]:
-            versions.append({"version": version, "manifest": str(manifest_path),
-                             "sha256": digest, "row_count": len(rows), "as_of": result.get("as_of"),
-                             **{key: result[key] for key in ("available_at", "committed_at", "authority")
-                                if key in result},
-                             **({"node_fingerprint": result["node_fingerprint"]}
-                                if "node_fingerprint" in result else {})})
-        else:
-            for item in versions:
-                if item.get("version") == version and "node_fingerprint" in result:
-                    item["node_fingerprint"] = result["node_fingerprint"]
-        current_latest = entry.get("latest")
-        if (result.get("business_status") != "PROVISIONAL"
-                and (current_latest is None or trade_date >= current_latest.get("trade_date", ""))):
-            entry["latest"] = {"trade_date": trade_date, "version": version}
-        _atomic_write(self.path, canonical_json(catalog) + b"\n")
-        latest = entry.get("latest")
-        if latest and latest.get("version") == version and latest.get("trade_date") == trade_date:
-            pointer_path = self.root / dataset / "latest.json"
-            _atomic_write(pointer_path, canonical_json({"trade_date": trade_date,
-                "version": version, "manifest": str(manifest_path)}) + b"\n")
+        with _catalog_lock(self.root):
+            catalog = self.read()
+            datasets = catalog.setdefault("datasets", {})
+            entry = datasets.setdefault(dataset, {"dates": {}, "latest": None})
+            versions = entry.setdefault("dates", {}).setdefault(trade_date, [])
+            if version not in [item.get("version") for item in versions]:
+                versions.append({"version": version, "manifest": str(manifest_path),
+                                 "sha256": digest, "row_count": len(rows), "as_of": result.get("as_of"),
+                                 **{key: result[key] for key in ("available_at", "committed_at", "authority")
+                                    if key in result},
+                                 **({"node_fingerprint": result["node_fingerprint"]}
+                                    if "node_fingerprint" in result else {})})
+            else:
+                for item in versions:
+                    if item.get("version") == version and "node_fingerprint" in result:
+                        item["node_fingerprint"] = result["node_fingerprint"]
+            current_latest = entry.get("latest")
+            if (result.get("business_status") != "PROVISIONAL"
+                    and (current_latest is None or trade_date >= current_latest.get("trade_date", ""))):
+                entry["latest"] = {"trade_date": trade_date, "version": version}
+            _atomic_write(self.path, canonical_json(catalog) + b"\n")
+            latest = entry.get("latest")
+            if latest and latest.get("version") == version and latest.get("trade_date") == trade_date:
+                pointer_path = self.root / dataset / "latest.json"
+                _atomic_write(pointer_path, canonical_json({"trade_date": trade_date,
+                    "version": version, "manifest": str(manifest_path)}) + b"\n")
         return result
 
     def locate(self, dataset: str, trade_date: str | None = None) -> Path | None:
