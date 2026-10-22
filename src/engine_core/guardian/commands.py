@@ -126,6 +126,14 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
             cmd.extend(["--write", "--td-write"])
         return cmd
     if name == "night_report":
-        return [py, str(repo / "examples/run_daily_reports.py"), "--stage", "close",
-                "--trade-date", day, "--out-root", str(root / "reports"), "--dry-run"]
+        cmd = [py, str(repo / "examples/run_daily_reports.py"), "--stage", "close",
+               "--trade-date", day, "--out-root", str(root / "reports")]
+        if opts.simulate_clock or (not opts.write and not opts.email_self):
+            cmd.append("--dry-run")
+        if getattr(opts, "email_self", False):
+            if opts.simulate_clock:
+                cmd.extend(["--email-to", "412826313@qq.com"])
+            else:
+                cmd.extend(["--email-send", "--email-to", "412826313@qq.com"])
+        return cmd
     raise ValueError("handler_command_not_supported:" + name)

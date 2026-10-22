@@ -177,13 +177,18 @@ def _command_handler(name: str, opts, root: Path):
                 day = context_previous(root, day)
             except ValueError:
                 raise RuntimeError("previous_trade_date_unavailable")
+        handler_opts = opts
+        withheld_note = None
         if (name in {"auction_report", "open_report", "close_report", "night_report"}
                 and event_id != "auction_facts_0925" and getattr(opts, "email_self", False)):
             stage = {"auction_report": "auction", "open_report": "open",
                      "close_report": "close", "night_report": "night"}[name]
             marker = root / "guardian" / day / "audit_ok" / stage
             if not marker.is_file():
-                return "NOT_APPLICABLE:waiting_audit_ok:" + stage
+                option_values = vars(opts).copy()
+                option_values["email_self"] = False
+                handler_opts = SimpleNamespace(**option_values)
+                withheld_note = "email_withheld:waiting_audit_ok:" + stage
         if name == "kaipan_fetch":
             from engine_core.data_pipeline.storage import ArtifactCatalog
             catalog = ArtifactCatalog(root)
@@ -213,13 +218,15 @@ def _command_handler(name: str, opts, root: Path):
             return "Core Kaipan jobs checked; existing date versions reused"
         elif name in {"premarket_data", "intraday_data", "postmarket_data", "auction_report",
                       "open_report", "close_report", "kaipan_hot_capture", "baostock_probe", "night_report"}:
-            cmd = build_handler_command(name, event, opts, root, day, py, repo)
+            cmd = build_handler_command(name, event, handler_opts, root, day, py, repo)
         else:
             raise RuntimeError("handler_not_implemented:" + name)
         result = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True,
                                 timeout=event.timeout_seconds, check=False)
         if result.returncode:
             raise RuntimeError(f"command_exit={result.returncode}: {result.stderr[-500:]}")
+        if withheld_note:
+            return withheld_note + (":" + result.stdout.strip() if result.stdout.strip() else "")
         if name == "premarket_data":
             try:
                 report = json.loads(result.stdout)
