@@ -1,6 +1,7 @@
 from engine_core.daily_history import calculate_daily_indicators
 from engine_core.data_pipeline.storage import ArtifactCatalog
 from engine_core.slices import SliceReader,SliceProviders
+from conftest import use_declared_time_as_test_commit_clock
 
 def test_rsi_uses_first_period_seed_then_each_remaining_delta_once():
  closes=[10,11,10,11,10,11,10,12]
@@ -9,7 +10,7 @@ def test_rsi_uses_first_period_seed_then_each_remaining_delta_once():
  assert result['rsi_6']==64.29
 
 def test_missing_latest_indicator_is_not_replaced_by_prior_date(tmp_path):
- c=ArtifactCatalog(tmp_path)
+ c=use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path))
  for day,close in [('2026-10-14',10),('2026-10-15',20)]:
   c.commit('daily_kline',day,[{'symbol':'000001','date':day,'close':close}],{'available_at':day+'T17:30:00+08:00'},source='baostock')
  c.commit('daily_indicators','2026-10-14',[{'symbol':'000001','date':'2026-10-14','ma5':99}],{'available_at':'2026-10-14T17:30:00+08:00'},source='core_derived')
@@ -20,7 +21,7 @@ def test_missing_latest_indicator_is_not_replaced_by_prior_date(tmp_path):
 
 def test_reindex_appends_corrected_indicators_without_network(tmp_path):
  from engine_core.daily_history import reindex_daily_indicators
- c=ArtifactCatalog(tmp_path)
+ c=use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path))
  for i,v in enumerate([10,11,10,11,10,11,10,12]):
   d=f'2026-10-{i+1:02d}'
   c.commit('daily_kline',d,[{'symbol':'000001','date':d,'close':v,'open':v,'high':v,'low':v,'volume':1,'amount':1}],{'available_at':d+'T17:30:00+08:00'},source='baostock')
@@ -29,7 +30,7 @@ def test_reindex_appends_corrected_indicators_without_network(tmp_path):
 
 def test_reindex_counts_kline_that_landed_after_1730(tmp_path):
  from engine_core.daily_history import reindex_daily_indicators
- c=ArtifactCatalog(tmp_path)
+ c=use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path))
  for i,v in enumerate([10,11,10,11,10,11,10,12]):
   d=f'2026-10-{i+1:02d}'
   at=d+('T18:15:04+08:00' if i==7 else 'T17:30:00+08:00')
@@ -38,7 +39,8 @@ def test_reindex_counts_kline_that_landed_after_1730(tmp_path):
  rows=c.read_rows(c.locate('daily_indicators','2026-10-08'))
  assert len(rows)==1 and rows[0]['rsi_6'] is not None
  meta=__import__('json').loads(c.locate('daily_indicators','2026-10-08').read_text())
- assert meta['available_at'].startswith('2026-10-08T18:15:04')
+ assert meta['available_at'] == meta['committed_at']
+ assert meta['declared_available_at'].startswith('2026-10-08T18:15:04')
 
 def test_reindex_missing_kline_manifest_raises_without_committing_empty_version(tmp_path):
  import json
@@ -72,4 +74,5 @@ def test_reindex_real_core_history_and_preserves_late_kline_availability(tmp_pat
  rows=c.read_rows(c.locate('daily_indicators',day))
  manifest=json.loads(c.locate('daily_indicators',day).read_text())
  assert result['days_reindexed']==1 and len(rows)==5224
- assert manifest['available_at']=='2026-10-20T18:15:04.129576+08:00'
+ assert manifest['available_at'] == manifest['committed_at']
+ assert manifest['declared_available_at']=='2026-10-20T18:15:04.129576+08:00'

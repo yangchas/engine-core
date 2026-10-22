@@ -57,7 +57,8 @@ def test_oversize_report_is_written_with_warning(monkeypatch,tmp_path):
 def test_auction_points_slice_respects_availability(monkeypatch,tmp_path):
  from engine_core.data_pipeline.storage import ArtifactCatalog
  from engine_core.slices import SliceReader,SliceProviders
- cat=ArtifactCatalog(tmp_path)
+ from conftest import use_declared_time_as_test_commit_clock
+ cat=use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path))
  cat.commit('auction_points','2026-10-16',[{'symbol':'000001','point_ts':1792113906000,'price_milli':None}],{'trade_date':'2026-10-16','available_at':'2026-10-16T09:25:06+08:00'},source='t1_v2_redis_archive')
  reader=SliceReader(SliceProviders(catalog=cat,redis=None,file_fallback=False).providers())
  early=reader.get('auction_points',trade_date='2026-10-16',asof='2026-10-16T09:24:00+08:00')

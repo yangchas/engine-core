@@ -198,14 +198,16 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                     path = runner.catalog.locate("auction_baseline", prior_dates[-1])
                     if path is not None:
                         previous_rows = runner.catalog.read_rows(path)
-                available_at = observed.get("available_at") or now or datetime.now().astimezone().isoformat()
+                declared_available_at = observed.get("available_at")
+                captured_at = observed.get("captured_at") or now
                 updated = append_auction_amount_baseline(
                     previous_rows, trade_date=trade_date,
-                    amount_yuan=observed.get("amount_yuan"), available_at=available_at)
+                    amount_yuan=observed.get("amount_yuan"), available_at=declared_available_at or "UNKNOWN")
                 committed = None
                 if write and observed.get("amount_yuan") is not None:
-                    manifest = {"trade_date": trade_date, "as_of": available_at,
-                        "available_at": available_at, "point_in_time_date": trade_date,
+                    manifest = {"trade_date": trade_date, "as_of": observed.get("as_of", "UNKNOWN"),
+                        "available_at": declared_available_at, "captured_at": captured_at,
+                        "source_asof": observed.get("as_of", "UNKNOWN"), "point_in_time_date": trade_date,
                         "provenance": "postmarket_auction_summary",
                         "source": observed.get("source", "injected_auction_provider"),
                         "row_count": len(updated), "status": "READY"}
@@ -213,7 +215,7 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                         manifest, source="core_derived")
                 baseline_append = {"status": "READY" if observed.get("amount_yuan") is not None else "PARTIAL",
                     "row_count": len(updated), "version": committed.get("version") if committed else None,
-                    "available_at": available_at,
+                    "available_at": committed.get("available_at") if committed else declared_available_at,
                     "missing": None if observed.get("amount_yuan") is not None else "AUCTION_AMOUNT_MISSING"}
             except Exception as exc:
                 errors.append({"job": "auction_baseline_append", "status": "FAILED",

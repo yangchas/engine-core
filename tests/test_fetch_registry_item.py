@@ -74,4 +74,5 @@ def test_shared_derivers_preserve_quality_and_caller_authority(tmp_path):
     assert committed["row_count"] == 0
     assert committed["source_versions"] == {"pool": "pool-v1"}
     assert committed["late_audit_rebuild"] is True
-    assert committed["authority"] == "NON_AUTHORITATIVE_AUDIT_ONLY"
+    assert committed["authority"] == "LIVE"
+    assert committed["declared_authority"] == "NON_AUTHORITATIVE_AUDIT_ONLY"

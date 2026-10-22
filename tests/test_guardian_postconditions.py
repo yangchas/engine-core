@@ -53,7 +53,8 @@ def test_partial_daily_kline_is_neither_present_nor_a_passed_postcondition(tmp_p
     from engine_core.data_pipeline.storage import ArtifactCatalog
 
     rows = [{"symbol": f"{i:06d}"} for i in range(5)]
-    ArtifactCatalog(tmp_path).commit("daily_kline", "2026-10-21", rows,
+    from conftest import use_declared_time_as_test_commit_clock
+    use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path)).commit("daily_kline", "2026-10-21", rows,
         {"available_at": "2026-10-21T17:41:00+08:00",
          "quality": {"coverage": 0.3396, "missing": 3450, "partial": True, "row_count": 5, "status": "PARTIAL"}},
         source="test")
@@ -62,7 +63,7 @@ def test_partial_daily_kline_is_neither_present_nor_a_passed_postcondition(tmp_p
     assert not catalog_partition_present(catalog, "daily_kline", "2026-10-21", now)
     ok, reason = validate_handler_postcondition("baostock_probe", "2026-10-21", tmp_path)
     assert not ok and reason.startswith("daily_kline_partial:0.340")
-    ArtifactCatalog(tmp_path).commit("daily_kline", "2026-10-21", rows + [{"symbol": "000099"}],
+    use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path)).commit("daily_kline", "2026-10-21", rows + [{"symbol": "000099"}],
         {"available_at": "2026-10-21T18:10:00+08:00",
          "quality": {"coverage": 1.0, "missing": 0, "partial": False, "row_count": 6, "status": "READY"}},
         source="test")

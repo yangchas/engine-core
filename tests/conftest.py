@@ -22,3 +22,38 @@ def _isolated_slice_root(tmp_path, monkeypatch):
     monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path / "core-data"))
     monkeypatch.setenv("CORE_STATE_CACHE", "off")  # cache tests opt in explicitly
     monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:1/0")  # tests must never read the real local Redis
+from datetime import datetime, timezone
+
+
+def use_declared_time_as_test_commit_clock(catalog):
+    """Model fixture visibility at its declared instant via the injectable test clock."""
+    commit = catalog.commit
+
+    def commit_with_test_clock(dataset, trade_date, rows, manifest, *, source, **kwargs):
+        if "clock" not in kwargs:
+            value = manifest.get("available_at") or manifest.get("declared_available_at")
+            if value:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                kwargs["clock"] = lambda: parsed
+        return commit(dataset, trade_date, rows, manifest, source=source, **kwargs)
+
+    catalog.commit = commit_with_test_clock
+    return catalog
+
+
+def patch_catalog_with_declared_test_clock(monkeypatch, catalog_class):
+    commit = catalog_class.commit
+
+    def commit_with_test_clock(self, dataset, trade_date, rows, manifest, *, source, **kwargs):
+        if "clock" not in kwargs:
+            value = manifest.get("available_at") or manifest.get("declared_available_at")
+            if value:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                kwargs["clock"] = lambda: parsed
+        return commit(self, dataset, trade_date, rows, manifest, source=source, **kwargs)
+
+    monkeypatch.setattr(catalog_class, "commit", commit_with_test_clock)

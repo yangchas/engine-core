@@ -232,7 +232,7 @@ class JobRunner:
         if len(digest_payload) > self.max_payload_bytes:
             raise ValueError("quality_invalid:artifact_payload_budget")
         fetched = clock.isoformat().replace("+00:00", "Z")
-        available_at = available_at or fetch_meta.get("available_at") or fetched
+        declared_available_at = available_at or fetch_meta.get("available_at")
         safe_source = source if isinstance(source, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", source) else spec.source
         raw_digest = fetch_meta.get("raw_sha256")
         if not isinstance(raw_digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", raw_digest):
@@ -240,7 +240,9 @@ class JobRunner:
         manifest = {
             "schema_version": 1, "dataset": name, "trade_date": trade_date,
             "source": safe_source, "source_dependency": spec.source_dependency,
-            "fetched_at": fetched, "available_at": available_at or fetched,
+            "fetched_at": fetched, "declared_available_at": declared_available_at,
+            "captured_at": fetched,
+            "source_asof": as_of or fetch_meta.get("as_of") or "UNKNOWN",
             "as_of": as_of or fetch_meta.get("as_of") or trade_date, "source_event_at": source_event_at,
             "point_in_time": spec.point_in_time, "algorithm_version": algorithm_version,
             "quality": quality, "quality_checks": ["schema", "finite_numbers", "coverage"],

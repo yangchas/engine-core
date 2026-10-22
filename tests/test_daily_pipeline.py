@@ -532,7 +532,8 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
 
     trade_date = "2026-10-16"
     prior_date = "2026-10-15"
-    catalog = ArtifactCatalog(tmp_path / "core-data")
+    from conftest import use_declared_time_as_test_commit_clock
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core-data"))
     available = f"{trade_date}T09:00:00+08:00"
     common = {"available_at": available, "point_in_time_date": prior_date}
     catalog.commit("stock_static", prior_date, [

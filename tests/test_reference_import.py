@@ -14,10 +14,12 @@ def _module():
     return module
 
 
-def test_standard_import_builds_stock_and_plate_rows_with_lineage_and_idempotence(tmp_path):
+def test_standard_import_builds_stock_and_plate_rows_with_lineage_and_idempotence(tmp_path, monkeypatch):
     module = _module()
     fixture = Path(__file__).parent / "fixtures/reference_import"
     catalog = ArtifactCatalog(tmp_path / "core")
+    from conftest import patch_catalog_with_declared_test_clock
+    patch_catalog_with_declared_test_clock(monkeypatch, ArtifactCatalog)
     sources = {
         "stock_static": [fixture / "names.json", fixture / "caps.json"],
         "plate_registry": [fixture / "registry.json"],
@@ -56,7 +58,8 @@ def test_standard_import_builds_stock_and_plate_rows_with_lineage_and_idempotenc
     reader = SliceReader(SliceProviders(catalog=catalog).providers())
     old_asof = reader.get("plate_members", trade_date="2026-10-14",
                           asof="2026-10-14T08:50:00+08:00")
-    assert old_asof.meta["status"] == "READY"
+    assert old_asof.meta["status"] == "PARTIAL"
+    assert old_asof.meta["reason"] == "DATE_FALLBACK"
     assert old_asof.rows[0]["symbol"] == "000001"
 
 
@@ -72,10 +75,12 @@ def test_importer_can_flatten_5000_rows_without_per_row_file_reads(tmp_path):
     assert len(catalog.read_rows(catalog.locate("path_stats", "2026-10-15"))) == 5000
 
 
-def test_reference_imports_feed_all_six_core_slices_with_pit(tmp_path):
+def test_reference_imports_feed_all_six_core_slices_with_pit(tmp_path, monkeypatch):
     module = _module()
     fixture = Path(__file__).parent / "fixtures/reference_import"
     catalog = ArtifactCatalog(tmp_path / "core")
+    from conftest import patch_catalog_with_declared_test_clock
+    patch_catalog_with_declared_test_clock(monkeypatch, ArtifactCatalog)
     sources = {
         "stock_static": [fixture / "names.json", fixture / "caps.json"],
         "plate_registry": [fixture / "registry.json"],
@@ -101,7 +106,10 @@ def test_reference_imports_feed_all_six_core_slices_with_pit(tmp_path):
     }
     results = {name: reader.get(name, trade_date=request_date, asof=asof, **params)
                for name, params in requests.items()}
-    assert all(result.meta["status"] == "READY" for result in results.values())
+    assert all(result.meta["status"] in {"READY", "PARTIAL"} for result in results.values())
+    fallbacks = [result for result in results.values()
+                 if result.meta.get("reason") == "DATE_FALLBACK"]
+    assert fallbacks and all(result.meta["status"] == "PARTIAL" for result in fallbacks)
     assert results["auction_baseline"].rows[0]["threshold_wan"] == 500.0
     assert results["path_stats"].meta["quality"]["partial"] is False
     assert results["limit_reason_history"].rows[0]["symbol"] == "000001"

@@ -243,8 +243,11 @@ def test_boot_apply_plan_runs_stub_job_into_temporary_catalog(tmp_path, monkeypa
         "from engine_core.data_pipeline.storage import ArtifactCatalog\n"
         "day, item = sys.argv[1:]\n"
         "catalog = ArtifactCatalog(os.environ['CORE_DATA_ROOT'])\n"
+        "from datetime import datetime\n"
+        "declared = '2026-10-20T09:36:01+08:00'\n"
         "manifest = catalog.commit(item, day, [{'trade_date': day, 'symbol': '000001'}],\n"
-        "    {'trade_date': day, 'available_at': '2026-10-20T09:36:01+08:00'}, source='stub')\n"
+        "    {'trade_date': day, 'available_at': declared}, source='stub',\n"
+        "    clock=lambda: datetime.fromisoformat(declared))\n"
         "print(json.dumps({'version':manifest['version'],'row_count':manifest['row_count']}))\n",
         encoding="utf-8")
     monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path / "catalog"))
@@ -261,7 +264,8 @@ def test_boot_apply_plan_runs_stub_job_into_temporary_catalog(tmp_path, monkeypa
     manifest_path = ArtifactCatalog(tmp_path / "catalog").locate("stub_dataset", "2026-10-20")
     assert manifest_path is not None
     manifest = __import__("json").loads(manifest_path.read_text())
-    assert manifest["available_at"] == "2026-10-20T09:36:01+08:00"
+    assert manifest["available_at"] == manifest["committed_at"]
+    assert manifest["declared_available_at"] == "2026-10-20T09:36:01+08:00"
 
 
 def test_boot_apply_plan_runs_dependency_layers_and_propagates_failure(tmp_path, monkeypatch):

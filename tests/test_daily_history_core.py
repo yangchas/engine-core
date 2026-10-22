@@ -1,9 +1,10 @@
 from engine_core.data_pipeline.storage import ArtifactCatalog
 from engine_core.slices import SliceProviders, SliceReader
+from conftest import use_declared_time_as_test_commit_clock
 
 
 def test_daily_history_reads_pit_eligible_core_days_before_legacy(tmp_path):
-    catalog = ArtifactCatalog(tmp_path)
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path))
     for day, close, available_at in (
         ("2026-10-14", 10.0, "2026-10-14T17:30:00+08:00"),
         ("2026-10-15", 11.0, "2026-10-15T17:30:00+08:00"),
@@ -25,7 +26,7 @@ def test_daily_history_reads_pit_eligible_core_days_before_legacy(tmp_path):
     assert result.meta["source"] == "core_data"
     assert [row["date"] for row in result.rows] == ["2026-10-14", "2026-10-15"]
     assert all(row["source"] == "baostock" for row in result.rows)
-    assert result.meta["available_at"] == "2026-10-15T17:30:00+08:00"
+    assert result.meta["available_at"] == "2026-10-15T09:30:00+00:00"
     assert result.rows[-1]["ma5"] == 10.0
     assert result.rows[-1]["indicator_source"] == "core_derived"
 
@@ -107,7 +108,7 @@ def test_legacy_daily_history_fallback_is_marked_degraded():
 def test_history_import_checkpoints_completed_symbol_batches(tmp_path):
     from engine_core.daily_history import backfill_daily_history
 
-    catalog = ArtifactCatalog(tmp_path / "core")
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
     catalog.commit("daily_kline", "2026-10-16", [
         {"date": "2026-10-16", "symbol": "000001", "close": 10.0},
         {"date": "2026-10-16", "symbol": "000002", "close": 20.0},

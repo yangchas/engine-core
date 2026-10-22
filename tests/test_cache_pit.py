@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 from engine_core.slices import SliceProviders,SliceReader
 from engine_core.limit_reason_theme import read_theme_snapshot_cache,theme_snapshot_version,theme_snapshot_visibility,merge_theme_snapshot_static_fallback,load_kaipan_theme_snapshot
+from conftest import use_declared_time_as_test_commit_clock
 
 class Redis:
  def __init__(self):self.values={}
@@ -11,7 +12,7 @@ class Redis:
  def get(self,key):return self.values.get(key)
 
 def scenario(tmp_path,*,future_name=False,late_pool=False):
- c=ArtifactCatalog(tmp_path);day='2026-10-15';report_day='2026-10-16';prep=report_day+'T08:50:00+08:00';asof=report_day+'T09:26:00+08:00'
+ c=use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path));day='2026-10-15';report_day='2026-10-16';prep=report_day+'T08:50:00+08:00';asof=report_day+'T09:26:00+08:00'
  fixture=Path(__file__).parent/'fixtures'/'trade_calendar';source=json.loads((fixture/'baostock-2026-01-01_2026-12-31.json').read_bytes())
  dates=[r['calendar_date'] for r in source['rows'] if r['is_trading_day']=='1'];raw={p.name:p.read_bytes() for p in fixture.glob('*.json')}
  from engine_core.data_pipeline.trade_calendar import TradeCalendarStore

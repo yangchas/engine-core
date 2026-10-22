@@ -23,6 +23,8 @@ def test_missing_today_facts_does_not_relabel_yesterday(tmp_path):
 
 def test_top50_hot_view_preserves_whole_market_total(tmp_path, monkeypatch):
     import engine_core.auction_stock_facts as stock_facts_module
+    from conftest import patch_catalog_with_declared_test_clock
+    patch_catalog_with_declared_test_clock(monkeypatch, ArtifactCatalog)
 
     class Clock(datetime):
         @classmethod

@@ -62,7 +62,8 @@ def test_slice_provider_priority_and_pit_filtering(tmp_path):
     from engine_core.data_pipeline.storage import ArtifactCatalog
     from engine_core.slices import SliceProviders
 
-    catalog = ArtifactCatalog(tmp_path / "core")
+    from conftest import use_declared_time_as_test_commit_clock
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
     catalog.commit("stock_static", "2026-10-15", [
         {"symbol": "600001", "event_time": "2026-10-14T00:00:00+08:00",
          "available_at": "2026-10-14T01:00:00+08:00", "name": "Core"},
@@ -89,7 +90,8 @@ def test_hot_rank_slice_selects_latest_core_capture_not_after_asof(tmp_path):
     from engine_core.data_pipeline.storage import ArtifactCatalog
     from engine_core.slices import SliceProviders
 
-    catalog = ArtifactCatalog(tmp_path / "core")
+    from conftest import use_declared_time_as_test_commit_clock
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
     for captured, symbol in (("2026-10-17T10:00:00+08:00", "000001"),
                              ("2026-10-17T11:00:00+08:00", "000002")):
         catalog.commit("hot_rank", "2026-10-17", [{"symbol": symbol, "rank": 1,
@@ -116,7 +118,8 @@ def test_hot_plates_and_plate_members_read_core_artifacts_before_legacy(tmp_path
     from engine_core.data_pipeline.storage import ArtifactCatalog
     from engine_core.slices import SliceProviders
 
-    catalog = ArtifactCatalog(tmp_path / "core")
+    from conftest import use_declared_time_as_test_commit_clock
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
     catalog.commit("hot_plates", "2026-10-16", [{
         "plate_code": "801001", "name": "芯片", "strength": 100,
         "captured_at": "2026-10-17T09:20:00+08:00",
@@ -150,7 +153,8 @@ def test_hot_plates_today_uses_latest_dated_capture_visible_at_asof(tmp_path):
     auction_event = next(event for event in default_events()
                          if event.event_id == "auction_report_0926")
     asof = f"2026-10-22T{auction_event.args['asof']}+08:00"
-    catalog = ArtifactCatalog(tmp_path / "core")
+    from conftest import use_declared_time_as_test_commit_clock
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
     for captured, strength in (("2026-10-22T09:21:00+08:00", 21),
                                ("2026-10-22T09:31:00+08:00", 31)):
         catalog.commit("hot_plates", "2026-10-22", [{
@@ -180,7 +184,8 @@ def test_hot_plate_minute_slice_filters_by_plate_and_available_at(tmp_path):
     from engine_core.data_pipeline.storage import ArtifactCatalog
     from engine_core.slices import SliceProviders
 
-    catalog = ArtifactCatalog(tmp_path / "core")
+    from conftest import use_declared_time_as_test_commit_clock
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
     catalog.commit("hot_plate_minutes", "2026-10-15", [
         {"plate_code": "801001", "trade_date": "2026-10-15", "time": "09:30",
          "event_time": "2026-10-15T09:30:00+08:00"},
@@ -341,7 +346,8 @@ def test_limit_reason_history_applies_pit_filter_once_for_multidate_rows(tmp_pat
     from engine_core.data_pipeline.storage import ArtifactCatalog
     from engine_core import slices
 
-    catalog = ArtifactCatalog(tmp_path / "core")
+    from conftest import use_declared_time_as_test_commit_clock
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
     for artifact_date in ("2026-10-15", "2026-10-16"):
         catalog.commit("limit_reasons", artifact_date, [{
             "symbol": "600001", "Date": artifact_date, "ZSCode": ["801001"],

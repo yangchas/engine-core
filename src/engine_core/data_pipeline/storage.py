@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
+def available_at_trust(manifest: Mapping[str, Any]) -> str:
+    return "MEASURED" if manifest.get("committed_at") else "DECLARED_LEGACY"
+
+
 def canonical_json(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
                       allow_nan=False).encode("utf-8")
@@ -47,7 +51,8 @@ class ArtifactCatalog:
             return {"schema_version": 1, "datasets": {}}
 
     def commit(self, dataset: str, trade_date: str, rows: Sequence[Mapping[str, Any]],
-               manifest: Mapping[str, Any], *, source: str) -> dict[str, Any]:
+               manifest: Mapping[str, Any], *, source: str, authority: str = "LIVE",
+               clock: Any = None) -> dict[str, Any]:
         payload = b"\n".join(canonical_json(dict(row)) for row in rows) + (b"\n" if rows else b"")
         digest = sha256(payload)
         identity = {"payload_sha256": digest}
@@ -60,7 +65,36 @@ class ArtifactCatalog:
         run_dir = day_root / version
         data_path = run_dir / "rows.jsonl.gz"
         manifest_path = run_dir / "manifest.json"
+        committed_at = (clock or (lambda: datetime.now(timezone.utc)))()
+        if committed_at.tzinfo is None:
+            committed_at = committed_at.replace(tzinfo=timezone.utc)
+        committed_at = committed_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
         result = dict(manifest)
+        declared = result.pop("available_at", None) or result.pop("declared_available_at", None)
+        declared_authority = result.pop("authority", None)
+        result["committed_at"] = committed_at
+        result["available_at"] = committed_at
+        if declared is not None and declared != committed_at:
+            result["declared_available_at"] = declared
+        result["authority"] = authority
+        if declared_authority is not None and declared_authority != authority:
+            result["declared_authority"] = declared_authority
+        captured_at = result.get("captured_at")
+        if captured_at:
+            try:
+                captured = datetime.fromisoformat(str(captured_at).replace("Z", "+00:00"))
+                commit_dt = datetime.fromisoformat(committed_at.replace("Z", "+00:00"))
+                if captured.tzinfo is None:
+                    captured = captured.replace(tzinfo=timezone.utc)
+                if captured > commit_dt:
+                    result["captured_at"] = committed_at
+            except ValueError:
+                pass
+        else:
+            result["captured_at"] = None
+        result["business_date"] = trade_date
+        result["trade_date"] = trade_date
+        result["source_asof"] = result.get("source_asof") or result.get("as_of") or "UNKNOWN"
         result.update({"version": version, "sha256": digest, "row_count": len(rows),
                        "storage_backend": "artifact", "storage_uri": str(run_dir),
                        "rows_uri": str(data_path), "manifest_uri": str(manifest_path)})
@@ -68,13 +102,20 @@ class ArtifactCatalog:
         if not manifest_path.is_file():
             _atomic_write(data_path, gzip.compress(payload, mtime=0))
             _atomic_write(manifest_path, canonical_json(result) + b"\n")
+        else:
+            try:
+                result = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pass
         catalog = self.read()
         datasets = catalog.setdefault("datasets", {})
         entry = datasets.setdefault(dataset, {"dates": {}, "latest": None})
         versions = entry.setdefault("dates", {}).setdefault(trade_date, [])
         if version not in [item.get("version") for item in versions]:
             versions.append({"version": version, "manifest": str(manifest_path),
-                             "sha256": digest, "row_count": len(rows), "as_of": result.get("as_of")})
+                             "sha256": digest, "row_count": len(rows), "as_of": result.get("as_of"),
+                             **{key: result[key] for key in ("available_at", "committed_at", "authority")
+                                if key in result}})
         current_latest = entry.get("latest")
         if (result.get("business_status") != "PROVISIONAL"
                 and (current_latest is None or trade_date >= current_latest.get("trade_date", ""))):

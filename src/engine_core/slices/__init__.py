@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
+from engine_core.data_pipeline.storage import available_at_trust
 
 STATUSES = {"READY", "PARTIAL", "MISSING", "STALE", "DEGRADED"}
 
@@ -270,7 +271,8 @@ class SliceProviders:
                            available_at=manifest.get("available_at"), pit_date=date,
                            quality={**manifest.get("quality", {}), "partial": True},
                            lineage=[{"dataset": dataset, "source": "core_data",
-                                     "requested_date": date, "used_date": manifest.get("trade_date")}])
+                                     "requested_date": date, "used_date": manifest.get("trade_date"),
+                                     "available_at_trust": available_at_trust(manifest)}])
         if request.slice_id == "auction_panorama":
             cutoff = _parse_pit_timestamp(request.asof)
             key = f"core:cache:data:auction_panorama:{date}"
@@ -305,7 +307,11 @@ class SliceProviders:
                            available_at=manifest.get("available_at"), pit_date=date,
                            quality={**manifest.get("quality", {}), "partial": True,
                                     "hot_view": "INDEX" if hot else "COLD_SLICE"},
-                           lineage=[{"dataset": dataset, "source": "core_data", "used_date": date,
+                           reason=("DATE_FALLBACK" if manifest.get("trade_date", date) != request.trade_date else None),
+                           lineage=[{"dataset": dataset, "source": "core_data",
+                                     "requested_date": request.trade_date,
+                                     "used_date": manifest.get("trade_date", date),
+                                     "available_at_trust": available_at_trust(manifest),
                                      "hot_index": bool(hot)}])
         if request.slice_id == "stock_theme_assignment":
             # Prefer the prepared hot view; a stale or malformed view falls
@@ -530,6 +536,7 @@ class SliceProviders:
                     rows.extend(kept)
                     lineage.append({"dataset": dataset, "trade_date": day,
                                     "available_at": manifest.get("available_at"),
+                                    "available_at_trust": available_at_trust(manifest),
                                     "version": str(manifest.get("version") or "unknown")})
                 unique = {}
                 for row in rows:
@@ -595,9 +602,12 @@ class SliceProviders:
         partial_source = (manifest.get("business_status") == "PARTIAL" or
                           (isinstance(manifest_quality, Mapping) and
                            bool(manifest_quality.get("partial"))))
-        status = "PARTIAL" if unknown or filtered or partial_source else "READY"
+        used_date = str(manifest.get("trade_date", date))
+        date_fallback = used_date != request.trade_date and not exact_date
+        status = "PARTIAL" if unknown or filtered or partial_source or date_fallback else "READY"
         return _result(request, rows, source=source, status=status,
-                       reason="NO_ASOF" if unknown else ("FUTURE_ROWS_FILTERED" if filtered else None),
+                       reason=("NO_ASOF" if unknown else "FUTURE_ROWS_FILTERED" if filtered
+                               else "DATE_FALLBACK" if date_fallback else None),
                        version=str(manifest.get("version") or "unknown"),
                        available_at=manifest.get("available_at"),
                        quality={"coverage": len(rows) or None,
@@ -605,8 +615,9 @@ class SliceProviders:
                                 "partial": unknown or filtered or partial_source},
                        pit_date=(manifest.get("point_in_time_date") or manifest.get("pit_date")),
                        lineage=[{"dataset": dataset, "requested_date": request.trade_date,
-                                "used_date": manifest.get("trade_date", date),
-                                "available_at": manifest.get("available_at")}])
+                                "used_date": used_date,
+                                "available_at": manifest.get("available_at"),
+                                "available_at_trust": available_at_trust(manifest)}])
 
     def _select_manifest(self, dataset: str, max_trade_date: str,
                          asof: str, *, reader: SliceReader,
@@ -621,11 +632,13 @@ class SliceProviders:
                     continue
                 for entry in versions:
                     path = Path(entry["manifest"])
-                    try:
-                        manifest = reader.read_manifest(path)
-                    except (OSError, ValueError, KeyError):
-                        continue
-                    available = _parse_pit_timestamp(manifest.get("available_at"))
+                    available = _parse_pit_timestamp(entry.get("available_at"))
+                    if available is None:
+                        try:
+                            manifest = reader.read_manifest(path)
+                        except (OSError, ValueError, KeyError):
+                            continue
+                        available = _parse_pit_timestamp(manifest.get("available_at"))
                     if available is None or cutoff is None or available > cutoff:
                         continue
                     candidates.append((day, available, path))
