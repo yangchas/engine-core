@@ -16,8 +16,7 @@ from typing import Any
 _SPLIT = re.compile(r"[、,，/；;]+")
 _CODE = re.compile(r"\d{6}")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-THEME_SNAPSHOT_CACHE_TTL_SECONDS = 7 * 86400
-THEME_SNAPSHOT_CACHE_SCHEMA = "ThemeSnapshotCacheV3"
+THEME_SNAPSHOT_NODE_SCHEMA = "ThemeSnapshotNodeV1"
 
 
 def _cache_json(value: Any) -> bytes:
@@ -30,67 +29,20 @@ def theme_snapshot_version(inputs: Mapping[str, Any]) -> str:
     return "sha256-" + hashlib.sha256(_cache_json(inputs)).hexdigest()[:16]
 
 
-def theme_snapshot_visibility(rows_by_input: Mapping[str, Sequence[Any]]) -> dict[str, list[dict[str, Any]]]:
-    """Fingerprint row visibility boundaries without duplicating full slice payloads."""
-    fields = ("available_at", "sampled_at", "captured_local", "capture_time",
-              "event_time", "event_at", "Date")
-    result: dict[str, list[dict[str, Any]]] = {}
-    sort_keys: dict[tuple[tuple[str, Any], ...], bytes] = {}
-    for name, rows in rows_by_input.items():
-        visible = []
-        for row in rows:
-            if isinstance(row, Mapping):
-                boundary = {key: row[key] for key in fields if row.get(key) not in (None, "")}
-                if boundary:
-                    try:
-                        cache_key = tuple(sorted(boundary.items()))
-                        sort_key = sort_keys.get(cache_key)
-                        if sort_key is None:
-                            sort_key = _cache_json(boundary)
-                            sort_keys[cache_key] = sort_key
-                    except TypeError:
-                        sort_key = _cache_json(boundary)
-                    visible.append((sort_key, boundary))
-        result[name] = [boundary for _key, boundary in sorted(visible, key=lambda item: item[0])]
-    return result
-
-
-def write_theme_snapshot_cache(redis: Any, trade_date: str, previous_trade_date: str,
-                               snapshot: Mapping[str, Any], *, as_of: str,
-                               version: str) -> bool:
-    if redis is None or not callable(getattr(redis, "set", None)) or not version:
-        return False
-    try:
-        payload = {"schema": THEME_SNAPSHOT_CACHE_SCHEMA, "trade_date": trade_date,
-                   "previous_trade_date": previous_trade_date, "pit_date": previous_trade_date,
-                   "as_of": as_of, "version": version, "snapshot": dict(snapshot)}
-        key = f"core:cache:data:theme_snapshot:{trade_date}"
-        redis.set(key, _cache_json(payload), ex=THEME_SNAPSHOT_CACHE_TTL_SECONDS)
-        return True
-    except Exception:
-        return False
-
-
-def read_theme_snapshot_cache(redis: Any, trade_date: str, previous_trade_date: str, *,
-                              asof: str, version: str | None = None) -> dict[str, Any] | None:
-    if redis is None or not callable(getattr(redis, "get", None)):
-        return None
-    try:
-        raw = redis.get(f"core:cache:data:theme_snapshot:{trade_date}")
-        payload = json.loads(raw) if raw else None
-        cutoff, built = _parse_time(asof), _parse_time((payload or {}).get("as_of"))
-        snapshot = (payload or {}).get("snapshot")
-        if (not isinstance(payload, Mapping) or payload.get("schema") != THEME_SNAPSHOT_CACHE_SCHEMA
-                or payload.get("trade_date") != trade_date
-                or payload.get("previous_trade_date") != previous_trade_date
-                or payload.get("pit_date") != previous_trade_date
-                or not isinstance(payload.get("version"), str) or not payload.get("version")
-                or (version is not None and payload.get("version") != version)
-                or cutoff is None or built is None or built > cutoff or not isinstance(snapshot, dict)):
-            return None
-        return snapshot
-    except Exception:
-        return None
+def theme_snapshot_node_inputs(*, trade_date: str, previous_trade_date: str,
+                               slices: Mapping[str, tuple[str, int]],
+                               calendar_dates: Sequence[str],
+                               plate_names: Mapping[str, str]) -> dict[str, str]:
+    """Build compact version/count identities for PIT-filtered snapshot inputs."""
+    # For one immutable version, PIT row sets only grow as asof advances; equal
+    # visible row counts therefore identify the same set without rescanning every
+    # row for visibility boundaries.
+    inputs = {name: f"{version}:{count}" for name, (version, count) in slices.items()}
+    inputs["trade_date"] = trade_date
+    inputs["previous_trade_date"] = previous_trade_date
+    inputs["calendar_dates_sha256"] = hashlib.sha256(_cache_json(list(calendar_dates))).hexdigest()
+    inputs["plate_names_sha256"] = hashlib.sha256(_cache_json(dict(plate_names))).hexdigest()
+    return inputs
 
 
 def _pool_rows(value: Any) -> list[Sequence[Any] | Mapping[str, Any]]:

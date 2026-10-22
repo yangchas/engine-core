@@ -141,12 +141,12 @@ def build_and_commit_stock_theme_assignment(
 
 
 def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
-                                  previous: str, asof: str, redis: Any) -> bool:
+                                  previous: str, asof: str) -> bool:
     """Build the target-day theme view from PIT-ready Core artifacts only."""
-    from .limit_reason_theme import (load_kaipan_theme_snapshot,
-                                     theme_snapshot_visibility,
-                                     theme_snapshot_version,
-                                     write_theme_snapshot_cache)
+    from .limit_reason_theme import (THEME_SNAPSHOT_NODE_SCHEMA,
+                                     load_kaipan_theme_snapshot, theme_snapshot_node_inputs,
+                                     theme_snapshot_version)
+    from .data_pipeline.node_store import NodeStore
     from .slices import _pit_rows
 
     def load(dataset: str, day: str) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
@@ -200,6 +200,13 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
             rows, manifest = loaded
             reasons.extend(_pit_rows(rows, cutoff)[0])
             reason_manifests[day] = str(manifest.get("version") or "")
+    unique_reasons = {}
+    for row in reasons:
+        key = (row.get("symbol", row.get("code")), row.get("Date", row.get("date")),
+               str(row.get("ZSCode", row.get("zs_code", ""))),
+               row.get("Reason", row.get("reason")))
+        unique_reasons[key] = row
+    reasons = list(unique_reasons.values())
     if not pool or not registry or not reasons:
         return False
     registry_rows, registry_manifest = registry
@@ -210,19 +217,13 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
         name = str(row.get("name", "") or "").strip()
         if code and name:
             plate_names[code] = name
+    plate_names.setdefault("801827", "AI视频")
     try:
         calendar = TradeCalendarStore(catalog.root)
         previous_session = calendar.previous_trade_date(trade_date)
-        calendar_dates = calendar.trading_dates(
-            (previous_session - timedelta(days=90)).isoformat(), previous_session.isoformat())
+        calendar_dates = [day for day in calendar.all_trading_dates()
+                          if day <= previous_session.isoformat()]
     except ValueError:
-        return False
-    snapshot = load_kaipan_theme_snapshot(
-        None, report_date=trade_date, previous_trade_date=previous, observed_at=asof,
-        plate_names=plate_names, static_themes_by_symbol={},
-        pool_rows=pool[0], reason_rows=reasons, hot_rows=hot[0] if hot else (),
-        trading_dates=calendar_dates)
-    if snapshot.get("status") not in {"READY", "PARTIAL"}:
         return False
     # Keep a cold, immutable D06 assignment artifact beside the report snapshot.
     # The existing theme snapshot remains for compatibility during migration.
@@ -250,6 +251,7 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
                                     for code in codes if str(code).strip()]
         assignment_reasons.append(normalized)
     member_codes: dict[str, set[str]] = {}
+    member_rows: list[dict[str, Any]] = []
     members_data = load("plate_members", previous)
     if members_data:
         member_rows, _ = _pit_rows(members_data[0], asof)
@@ -271,18 +273,29 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
             hot_by_code[code] = {"id": code, "name": name}
     hot_by_symbol = {symbol: [hot_by_code[code] for code in sorted(codes) if code in hot_by_code]
                      for symbol, codes in member_codes.items()}
-    inputs = {"trade_date": trade_date, "previous_trade_date": previous,
-              "pool_version": pool[1].get("version"), "hot_version": hot[1].get("version") if hot else None,
-              "registry_version": registry_manifest.get("version"),
-              "members_version": members_data[1].get("version") if members_data else None,
-              "reason_versions": reason_manifests, "calendar_dates": calendar_dates,
-              "visibility": theme_snapshot_visibility({
-                  "pool": pool[0], "registry": registry_rows,
-                  "members": members_data[0] if members_data else [],
-                  "hot": hot[0] if hot else [], "reasons": reasons})}
-    input_version = theme_snapshot_version(inputs)
-    visibility_sha256 = hashlib.sha256(json.dumps(
-        inputs["visibility"], ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    node_inputs = theme_snapshot_node_inputs(
+        trade_date=trade_date, previous_trade_date=previous,
+        slices={"yest_limit_pool": (str(pool[1].get("version") or "unknown"), len(pool[0])),
+                "plate_registry": (str(registry_manifest.get("version") or "unknown"), len(registry_rows)),
+                "plate_members": (str(members_data[1].get("version") or "unknown") if members_data else "unknown",
+                                  len(member_rows)),
+                "hot_plates_yesterday": (str(hot[1].get("version") or "unknown") if hot else "unknown",
+                                          len(hot[0]) if hot else 0),
+                "limit_reason_history": (json.dumps(sorted(reason_manifests.items()), separators=(",", ":")),
+                                          len(reasons))},
+        calendar_dates=calendar_dates, plate_names=plate_names)
+    node_store = NodeStore(catalog)
+    snapshot, _hit = node_store.compute(
+        "theme_snapshot", trade_date, f"{THEME_SNAPSHOT_NODE_SCHEMA}:algorithm-v1", node_inputs,
+        lambda: load_kaipan_theme_snapshot(
+            None, report_date=trade_date, previous_trade_date=previous, observed_at=asof,
+            plate_names=plate_names, static_themes_by_symbol={}, pool_rows=pool[0],
+            reason_rows=reasons, hot_rows=hot[0] if hot else (), trading_dates=calendar_dates),
+        asof=asof)
+    if snapshot.get("status") not in {"READY", "PARTIAL"}:
+        return False
+    input_version = theme_snapshot_version(node_inputs)
+    visibility_sha256 = input_version
     build_and_commit_stock_theme_assignment(
         catalog, trade_date=trade_date, previous_trade_date=previous,
         pool_labels=pool_labels, reason_rows=assignment_reasons,
@@ -303,9 +316,7 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
                            "authority": "NON_AUTHORITATIVE_AUDIT_ONLY",
                            "report_consumed": False},
         source="prep_trade_day")
-    return write_theme_snapshot_cache(
-        redis, trade_date, previous, snapshot, as_of=asof,
-        version=theme_snapshot_version(inputs))
+    return True
 
 
 def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
@@ -423,12 +434,8 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
         if rc:
             errors.append("plate_amount_baseline:COMMAND_FAILED:" + out[-240:])
         try:
-            redis = None
-            if os.getenv("REDIS_URL"):
-                import redis as redis_package
-                redis = redis_package.Redis.from_url(os.environ["REDIS_URL"], decode_responses=False)
             if not _prepare_theme_snapshot_cache(fresh_catalog := ArtifactCatalog(root),
-                                                 trade_date, previous, asof, redis):
+                                                 trade_date, previous, asof):
                 errors.append("theme_snapshot:PRECOMPUTE_UNAVAILABLE")
             else:
                 timings["theme_snapshot"] = 0.0

@@ -1770,10 +1770,13 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                                    "display_label": "对照观察", "summary": "；".join(ladder_parts) + "。"})
             payload["story"]["top_events"] = events[:3]
         from .ladder_cluster import build_front_page_data
-        from .limit_reason_theme import (load_kaipan_theme_snapshot,
-                                         read_theme_snapshot_cache,
-                                         theme_snapshot_visibility,
+        from .limit_reason_theme import (THEME_SNAPSHOT_NODE_SCHEMA,
+                                         load_kaipan_theme_snapshot,
+                                         merge_theme_snapshot_static_fallback,
+                                         theme_snapshot_node_inputs,
                                          theme_snapshot_version)
+        from .data_pipeline.node_store import NodeStore
+        from .data_pipeline.storage import ArtifactCatalog
         calendar_days = sorted({str(row.get("date") or "")[:10] for row in slice_results["trading_calendar"].rows
                                 if str(row.get("date") or "")[:10] < trade_date})
         history_days = sorted({str(row.get("date") or "")[:10] for row in slice_results["daily_history"].rows
@@ -1786,55 +1789,44 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             name = str(plate_names.get(code) or "").strip()
             if symbol and code and name:
                 static_by_symbol.setdefault(symbol, []).append({"id": code, "name": name})
-        reason_versions = {
-            str(item.get("trade_date")): str(item.get("version") or "unknown")
+        def node_slice_version(name: str) -> str:
+            return str(slice_results[name].meta.get("version") or "unknown")
+        reason_lineage = [
+            (str(item.get("trade_date") or ""), str(item.get("version") or "unknown"))
             for item in slice_results["limit_reason_history"].meta.get("lineage", [])
-            if item.get("trade_date")
-        }
-        cache_inputs = {
-            "trade_date": trade_date,
-            "previous_trade_date": previous_trade_date,
-            "pool_version": slice_results["yest_limit_pool"].meta.get("version"),
-            "hot_version": slice_results["hot_plates_yesterday"].meta.get("version"),
-            "registry_version": slice_results["plate_registry"].meta.get("version"),
-            "members_version": slice_results["plate_members"].meta.get("version"),
-            "reason_versions": reason_versions,
-            "calendar_dates": calendar_days,
-            # Versions identify artifacts; PIT visibility boundaries detect rows
-            # newly admitted when the report cutoff advances.
-            "visibility": theme_snapshot_visibility({
-                "pool": slice_results["yest_limit_pool"].rows,
-                "registry": slice_results["plate_registry"].rows,
-                "members": slice_results["plate_members"].rows,
-                "hot": slice_results["hot_plates_yesterday"].rows,
-                "reasons": slice_results["limit_reason_history"].rows,
-            }),
-        }
-        cache_version = (theme_snapshot_version(cache_inputs)
-                         if previous_trade_date and cache_inputs["pool_version"]
-                         and cache_inputs["registry_version"] and reason_versions else None)
-        cache_visibility_sha256 = hashlib.sha256(json.dumps(
-            cache_inputs["visibility"], ensure_ascii=False, sort_keys=True,
-            separators=(",", ":")).encode("utf-8")).hexdigest()
-        theme_snapshot = (read_theme_snapshot_cache(
-            src.redis, trade_date, previous_trade_date or "", asof=slice_asof,
-            version=cache_version) if cache_version else None)
-        if theme_snapshot is not None:
-            from .limit_reason_theme import merge_theme_snapshot_static_fallback
-            theme_snapshot = merge_theme_snapshot_static_fallback(
-                theme_snapshot, static_by_symbol,
-                expected_previous_date=previous_trade_date or "",
-                plate_names=plate_names, trading_dates=calendar_days)
-        else:
-            theme_snapshot = load_kaipan_theme_snapshot(
+            if item.get("trade_date")]
+        node_inputs = theme_snapshot_node_inputs(
+            trade_date=trade_date, previous_trade_date=previous_trade_date or "",
+            slices={"yest_limit_pool": (node_slice_version("yest_limit_pool"),
+                                        len(slice_results["yest_limit_pool"].rows)),
+                    "plate_registry": (node_slice_version("plate_registry"),
+                                       len(slice_results["plate_registry"].rows)),
+                    "plate_members": (node_slice_version("plate_members"),
+                                      len(slice_results["plate_members"].rows)),
+                    "hot_plates_yesterday": (node_slice_version("hot_plates_yesterday"),
+                                             len(slice_results["hot_plates_yesterday"].rows)),
+                    "limit_reason_history": (json.dumps(reason_lineage, separators=(",", ":")),
+                                             len(slice_results["limit_reason_history"].rows))},
+            calendar_dates=calendar_days, plate_names=plate_names)
+        node_input_version = theme_snapshot_version(node_inputs)
+        catalog = ArtifactCatalog(os.getenv("CORE_DATA_ROOT", "/home/exedev/core-data"))
+        theme_snapshot, snapshot_hit = NodeStore(catalog).compute(
+            "theme_snapshot", trade_date, f"{THEME_SNAPSHOT_NODE_SCHEMA}:algorithm-v1", node_inputs,
+            lambda: load_kaipan_theme_snapshot(
                 None, report_date=trade_date, previous_trade_date=previous_trade_date or "",
                 observed_at=point, plate_names=plate_names,
                 static_themes_by_symbol=static_by_symbol,
                 pool_rows=slice_results["yest_limit_pool"].rows,
                 reason_rows=slice_results["limit_reason_history"].rows,
                 hot_rows=slice_results["hot_plates_yesterday"].rows,
-                trading_dates=calendar_days)
-            degraded.append("THEME_SNAPSHOT_CACHE_MISS_FALLBACK_COMPUTE")
+                trading_dates=calendar_days), asof=slice_asof)
+        if snapshot_hit:
+            theme_snapshot = merge_theme_snapshot_static_fallback(
+                theme_snapshot, static_by_symbol,
+                expected_previous_date=previous_trade_date or "",
+                plate_names=plate_names, trading_dates=calendar_days)
+        else:
+            degraded.append("THEME_SNAPSHOT_NODE_MISS_COMPUTED")
         # D06 is the one primary-theme authority for ladder, A→B and tracking.
         from .stock_theme_assignment import build_stock_theme_assignments
         from .limit_reason_theme import _pool_rows, _pool_values
@@ -1875,8 +1867,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
         d06_slice = slice_results.get("stock_theme_assignment")
         persisted_assignments = (_d06_persisted_assignments(
             d06_slice, trade_date=trade_date, used_date=previous_trade_date or "",
-            asof=slice_asof, input_version=cache_version,
-            visibility_sha256=cache_visibility_sha256) if cache_version else {})
+            asof=slice_asof, input_version=node_input_version,
+            visibility_sha256=node_input_version) if previous_trade_date else {})
         stock_assignment = persisted_assignments or build_stock_theme_assignments(
             trade_date=trade_date, previous_trade_date=previous_trade_date or "",
             pool_labels=pool_labels, reason_rows=reason_rows, static_themes=static_by_symbol,

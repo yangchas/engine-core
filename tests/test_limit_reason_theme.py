@@ -4,35 +4,11 @@ from pathlib import Path
 from engine_core.limit_reason_theme import (
     build_limit_reason_themes,
     load_kaipan_theme_snapshot,
-    theme_snapshot_visibility,
 )
-
-
-def test_theme_snapshot_visibility_reuses_sort_key_for_repeated_boundaries(monkeypatch):
-    import engine_core.limit_reason_theme as theme_module
-
-    calls = 0
-    original = theme_module._cache_json
-
-    def counted(value):
-        nonlocal calls
-        calls += 1
-        return original(value)
-
-    monkeypatch.setattr(theme_module, "_cache_json", counted)
-    row = {"available_at": "2026-10-16T08:00:00+08:00", "sampled_at": "08:01:00"}
-    result = theme_module.theme_snapshot_visibility({"pool": [row, dict(row), dict(row)]})
-    assert result == {"pool": [{"available_at": row["available_at"], "sampled_at": row["sampled_at"]}] * 3}
-    assert calls == 1
 from engine_core.ladder_cluster import build_ladder_clusters
 
 
 SAMPLE = Path("/home/exedev/validation/kaipan-daily/2026-10-16-085002")
-
-
-def test_theme_snapshot_visibility_omits_rows_without_visibility_boundaries():
-    assert theme_snapshot_visibility({"members": [{"symbol": "000001"},
-                                                   {"symbol": "000002"}]}) == {"members": []}
 
 
 def test_1016_snapshot_uses_pool_theme_labels_before_stale_static_membership():
@@ -258,60 +234,6 @@ def test_reason_history_uses_last_twenty_trade_dates_and_reports_source_counts()
         trading_dates=dates)
     assert result["assignments"]["000001"]["theme_name"] == "近因"
     assert result["source_counts"]["REASON_LATEST"] == 1
-
-
-def test_theme_snapshot_cache_round_trips_exact_snapshot_with_pit_and_ttl():
-    from engine_core.limit_reason_theme import (
-        read_theme_snapshot_cache,
-        write_theme_snapshot_cache,
-    )
-
-    class Redis:
-        def __init__(self):
-            self.values = {}
-            self.ttls = {}
-
-        def set(self, key, value, ex):
-            self.values[key] = value
-            self.ttls[key] = ex
-
-        def get(self, key):
-            return self.values.get(key)
-
-    redis = Redis()
-    snapshot = load_kaipan_theme_snapshot(
-        None, report_date="2026-10-16", previous_trade_date="2026-10-15",
-        observed_at="2026-10-16T08:50:00+08:00", plate_names={"801001": "昨日题材"},
-        pool_rows=[{"symbol": "000001", "plate": "昨日题材"}],
-        reason_rows=[{"symbol": "000001", "Date": "2026-10-15", "Type": "0",
-                      "ZSCode": ["801001"], "Reason": "昨日题材"}],
-        trading_dates=["2026-10-14", "2026-10-15"],
-    )
-
-    assert write_theme_snapshot_cache(
-        redis, "2026-10-16", "2026-10-15", snapshot,
-        as_of="2026-10-16T08:50:00+08:00", version="sha256-test")
-    cached = read_theme_snapshot_cache(
-        redis, "2026-10-16", "2026-10-15", asof="2026-10-16T09:26:00+08:00")
-
-    assert cached == snapshot
-    key = "core:cache:data:theme_snapshot:2026-10-16"
-    assert redis.ttls[key] == 7 * 86400
-    assert read_theme_snapshot_cache(
-        redis, "2026-10-16", "2026-10-15", asof="2026-10-16T09:26:00+08:00",
-        version="sha256-different-inputs") is None
-    assert read_theme_snapshot_cache(
-        redis, "2026-10-16", "2026-10-14", asof="2026-10-16T09:26:00+08:00") is None
-    assert read_theme_snapshot_cache(
-        redis, "2026-10-16", "2026-10-15", asof="2026-10-16T08:00:00+08:00") is None
-
-    class UnavailableRedis:
-        def get(self, key):
-            raise ConnectionError("unavailable")
-
-    assert read_theme_snapshot_cache(
-        UnavailableRedis(), "2026-10-16", "2026-10-15",
-        asof="2026-10-16T09:26:00+08:00") is None
 
 
 def test_cached_cold_theme_snapshot_plus_runtime_static_matches_direct_snapshot():
