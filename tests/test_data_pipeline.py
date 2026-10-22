@@ -297,9 +297,12 @@ def test_kaipan_provider_uses_sdk_plate_methods_and_normalizes_rows():
                               sleep_fn=lambda _: None)
     plates = provider.hot_plates("2026-10-16")
     members = provider.plate_members("2026-10-16", page_size=30)
-    assert plates["rows"] == [{"plate_code": "801001", "name": "芯片", "strength": 12300,
-                               "change_pct": 1.25, "amount_yuan": 500,
-                               "trade_date": "2026-10-16"}]
+    assert [{key: value for key, value in row.items()
+             if key not in {"captured_at", "available_at"}} for row in plates["rows"]] == [
+        {"plate_code": "801001", "name": "芯片", "strength": 12300,
+         "change_pct": 1.25, "amount_yuan": 500, "trade_date": "2026-10-16"}]
+    assert plates["rows"][0]["captured_at"] == plates["rows"][0]["available_at"]
+    assert plates["rows"][0]["available_at"] == plates["available_at"]
     assert members["rows"] == [{"plate_code": "801001", "symbol": "600001",
                                 "plate_class": "UNKNOWN", "plate_member_label": "芯片",
                                 "trade_date": "2026-10-16"}]

@@ -43,6 +43,16 @@ def _auction_assembly_mode() -> str:
     return mode
 
 
+def _should_refresh_live_auction_facts(facts_result: Any, *, is_current_day: bool,
+                                       force: bool) -> bool:
+    if force:
+        return True
+    if not is_current_day:
+        return False
+    return (facts_result is None or not facts_result.rows or
+            facts_result.meta.get("source") != "live_td_read")
+
+
 def _fact_auction_amount(fact: Mapping[str, Any]) -> Any:
     matched = fact.get("auction_match_amount_yuan")
     return matched if matched is not None else fact.get("p0925_cumulative_amount_yuan")
@@ -226,12 +236,16 @@ def _shrink_live_report(report: dict[str, Any], *, plate_cap: int = 20, row_cap:
 def _connect_td() -> tuple[Any, str | None]:
     try:
         import taos
-        client = taos.connect(host=os.getenv("TD_HOST", "127.0.0.1"),
-                              port=int(os.getenv("TD_PORT", "6030")),
-                              user=os.getenv("TD_USER", "root"),
-                              password=os.getenv("TD_PASSWORD", "taosdata"),
-                              database=os.getenv("TD_DATABASE", "market_data1"),
-                              config=os.getenv("TD_CONFIG", "/etc/taos"))
+        config = os.getenv("TD_CONFIG")
+        if not config:
+            return _MissingTD(), "TD_CONFIG_REQUIRED"
+        options: dict[str, Any] = {"database": os.getenv("TD_DATABASE", "market_data1"),
+                                   "config": config}
+        for env_name, option in (("TD_HOST", "host"), ("TD_PORT", "port"),
+                                 ("TD_USER", "user"), ("TD_PASSWORD", "password")):
+            if os.getenv(env_name):
+                options[option] = int(os.environ[env_name]) if option == "port" else os.environ[env_name]
+        client = taos.connect(**options)
         return client, None
     except Exception as exc:  # degrade when TD driver/service is absent
         return _MissingTD(), f"TD_READ_UNAVAILABLE:{type(exc).__name__}"
@@ -1200,11 +1214,13 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     if stage == "auction" and _auction_assembly_mode() == "v6":
         facts_result = slice_results.get("auction_stock_facts")
         facts_rows = facts_result.rows if facts_result is not None else []
-        if src.force_live_auction_facts:
-            facts_rows = []
         now_dt = src.clock_now or datetime.now(TZ)
         is_current_day = trade_date == now_dt.date().isoformat()
-        if not facts_rows and (is_current_day or src.force_live_auction_facts):
+        refresh_live_facts = _should_refresh_live_auction_facts(
+            facts_result, is_current_day=is_current_day, force=src.force_live_auction_facts)
+        if refresh_live_facts:
+            facts_rows = []
+        if refresh_live_facts:
             requested_cutoff = datetime.fromisoformat(slice_asof)
             hard_cutoff = datetime.fromisoformat(f"{trade_date}T09:26:00+08:00")
             cutoff = min(requested_cutoff, hard_cutoff, now_dt)

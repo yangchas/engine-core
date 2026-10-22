@@ -142,6 +142,40 @@ def test_hot_plates_and_plate_members_read_core_artifacts_before_legacy(tmp_path
     assert [row["symbol"] for row in members.rows] == ["600001"]
 
 
+def test_hot_plates_today_uses_latest_dated_capture_visible_at_asof(tmp_path):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.guardian.scheduler import default_events
+    from engine_core.slices import SliceProviders
+
+    auction_event = next(event for event in default_events()
+                         if event.event_id == "auction_report_0926")
+    asof = f"2026-10-22T{auction_event.args['asof']}+08:00"
+    catalog = ArtifactCatalog(tmp_path / "core")
+    for captured, strength in (("2026-10-22T09:21:00+08:00", 21),
+                               ("2026-10-22T09:31:00+08:00", 31)):
+        catalog.commit("hot_plates", "2026-10-22", [{
+            "plate_code": "801001", "name": "芯片", "strength": strength,
+            "trade_date": "2026-10-22", "captured_at": captured,
+            "available_at": captured,
+        }], {"available_at": captured}, source="kaipan_hot_plates")
+    catalog.commit("hot_plates", "2026-10-21", [{
+        "plate_code": "801001", "name": "芯片", "strength": 100,
+        "trade_date": "2026-10-21", "captured_at": "2026-10-21T15:00:00+08:00",
+        "available_at": "2026-10-21T15:00:00+08:00",
+    }], {"available_at": "2026-10-21T15:00:00+08:00"}, source="kaipan_hot_plates")
+
+    reader = SliceReader(SliceProviders(catalog=catalog, redis=None,
+                                        file_fallback=False).providers())
+    today = reader.get("hot_plates_today", trade_date="2026-10-22",
+                       asof=asof, prior_trade_date="2026-10-21")
+    yesterday = reader.get("hot_plates_yesterday", trade_date="2026-10-22",
+                           asof=asof, prior_trade_date="2026-10-21",
+                           source_date="2026-10-21")
+    assert [row["strength"] for row in today.rows] == [21]
+    assert today.meta["status"] == "READY"
+    assert [row["strength"] for row in yesterday.rows] == [100]
+
+
 def test_hot_plate_minute_slice_filters_by_plate_and_available_at(tmp_path):
     from engine_core.data_pipeline.storage import ArtifactCatalog
     from engine_core.slices import SliceProviders

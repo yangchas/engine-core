@@ -67,6 +67,18 @@ def test_intraday_0933_uses_093300_window_not_090000(monkeypatch):
     assert all("09:00:00" not in sql for sql in calls)
 
 
+def test_intraday_deadlines_cover_their_three_minute_data_windows():
+    from engine_core.guardian.scheduler import default_events
+    events = {e.event_id: e for e in default_events()}
+    assert {event_id: events[event_id].deadline
+            for event_id in ("intraday_36", "intraday_39", "intraday_42", "intraday_45")} == {
+                "intraday_36": "09:38:59",
+                "intraday_39": "09:41:59",
+                "intraday_42": "09:44:59",
+                "intraday_45": "09:48:59",
+            }
+
+
 def test_same_tick_cache_does_not_confuse_two_event_cutoffs(monkeypatch):
     from engine_core.guardian.scheduler import default_events
     events = {e.event_id: e for e in default_events()}

@@ -232,6 +232,7 @@ class KaipanProvider:
             normalized_days = {str(day)[:10] for day in response_days if day is not None}
             if normalized_days and trade_date not in normalized_days:
                 raise ValueError("kaipan_hot_plates_response_date_mismatch")
+        captured_at = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
         rows = []
         for raw in _list_rows(response)[:page_size]:
             if isinstance(raw, Mapping):
@@ -246,13 +247,15 @@ class KaipanProvider:
             else:
                 continue
             row["trade_date"] = trade_date
+            row["captured_at"] = captured_at
+            row["available_at"] = captured_at
             rows.append(row)
         return {"rows": rows, "expected_count": len(rows), "request_count": self._requests,
                 "requested_date": trade_date, "response_time": response_metadata.get("Time"),
                 "response_min": response_metadata.get("Min"),
                 "response_max": response_metadata.get("Max"),
                 "response_day": response_metadata.get("Day"),
-                "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())}
+                "fetched_at": captured_at, "available_at": captured_at}
 
     def plate_minutes(self, plate_code: str, trade_date: str, *, context: Any = None) -> dict[str, Any]:
         code = _code(plate_code)

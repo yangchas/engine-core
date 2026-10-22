@@ -106,7 +106,8 @@ def main(argv=None) -> int:
                           f"rows={existing.get('row_count')} version={existing.get('version')}")
                     continue
                 date_mismatch = {"value": False}
-                available_at = _kaipan_available_at(trade_date)
+                available_at = (_kaipan_available_at(trade_date)
+                                if dataset == "hot_plate_minutes" else None)
                 if dataset == "hot_plates":
                     provider = KaipanProvider(client=sdk, max_requests=args.max_requests)
                     def fetch(day, _ctx=None, provider=provider):
@@ -118,7 +119,8 @@ def main(argv=None) -> int:
                                   "response_min": result["response_min"],
                                   "response_max": result["response_max"],
                                   "response_day": result["response_day"],
-                                  "fetched_at": result["fetched_at"], "available_at": available_at}
+                                  "fetched_at": result["fetched_at"],
+                                  "available_at": result["available_at"]}
                         return {**result, "rows": [dict(row, **fields) for row in result["rows"]]}
                     source = "kaipan_getHisPlates"
                 elif dataset == "hot_plate_minutes":
@@ -160,12 +162,12 @@ def main(argv=None) -> int:
 
                 try:
                     result = runner.run(dataset, trade_date, fetch=fetch, now=captured_at,
-                    available_at=available_at if dataset in {"hot_plates", "hot_plate_minutes"} else captured_at,
+                    available_at=available_at if dataset == "hot_plate_minutes" else None,
                     as_of=trade_date, source=source,
                         publish=args.execute, dry_run=not args.execute,
-                        compute=lambda rows: [dict(row, captured_at=captured_at,
+                        compute=lambda rows: [dict(row, captured_at=row.get("captured_at", captured_at),
                             fetched_at=row.get("fetched_at", captured_at),
-                            available_at=row.get("available_at", available_at)) for row in rows])
+                            available_at=row.get("available_at", available_at or captured_at)) for row in rows])
                 except RuntimeError:
                     if not date_mismatch["value"]:
                         raise

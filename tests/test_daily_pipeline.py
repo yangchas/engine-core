@@ -75,6 +75,17 @@ def test_live_auction_fact_td_reader_uses_asof_window_and_maps_real_columns():
     assert all("09:25:00" in sql for sql in td.c.calls if "stock_tick_v2" in sql)
 
 
+def test_current_day_auction_refreshes_preexisting_non_live_facts():
+    from types import SimpleNamespace
+    from engine_core.daily_pipeline import _should_refresh_live_auction_facts
+
+    old_partial = SimpleNamespace(rows=[{"symbol": "000001"}], meta={"source": "core_data"})
+    live_facts = SimpleNamespace(rows=[{"symbol": "000001"}], meta={"source": "live_td_read"})
+    assert _should_refresh_live_auction_facts(old_partial, is_current_day=True, force=False)
+    assert not _should_refresh_live_auction_facts(live_facts, is_current_day=True, force=False)
+    assert not _should_refresh_live_auction_facts(old_partial, is_current_day=False, force=False)
+
+
 def test_live_report_shrink_keeps_original_dictionary_omission_hash_idempotently():
     from engine_core.daily_pipeline import _shrink_live_report
     report = {"plate_dictionary": {"rows": [{"code": "A"}, {"code": "B"}]}}

@@ -340,12 +340,10 @@ class SliceProviders:
             except Exception:
                 pass
         if request.slice_id == "hot_plates_today":
-            # Kaipan D-day hot plates become available at D+1 00:00. A report
-            # for D must therefore resolve only the latest prior-day artifact.
-            prior = str(request.params.get("prior_trade_date") or "")
-            if not prior:
-                prior = previous_trade_date(self.catalog, request.trade_date) or ""
-            date = prior
+            # Today's hot plates are selected captures from today's session.
+            # Keep the D partition and let manifest/row availability enforce
+            # the report as-of cutoff; D-1 is a separate comparison slice.
+            date = request.trade_date
         if request.slice_id == "daily_report_features":
             feature_date = str(request.params.get("prior_trade_date") or "")
             if not feature_date:
