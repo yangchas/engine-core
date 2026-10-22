@@ -11,7 +11,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
@@ -2745,6 +2745,17 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             manifest["email"] = {"status": receipt.status}
         except Exception as exc:
             manifest["email"] = {"status": "failed", "error_class": type(exc).__name__}
+    try:
+        from .report_index import append_record, build_record
+        report_catalog_root = _dry_run_artifact_root(out_root, dry_run) or catalog_root
+        completed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        index_record = build_record(manifest, out_dir=out, completed_at=completed_at)
+        indexed = append_record(report_catalog_root, index_record)
+        manifest["report_index"] = {"version": indexed["version"],
+                                    "revision": indexed["revision"]}
+    except Exception as exc:
+        manifest["degraded"].append("REPORT_INDEX_WRITE_FAILED")
+        manifest["report_index_error_class"] = type(exc).__name__
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False,
                                                     separators=(",", ":"), allow_nan=False) + "\n",
                                         encoding="utf-8")

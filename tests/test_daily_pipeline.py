@@ -489,6 +489,8 @@ def test_three_stages_write_reports_and_explicit_missing_references(tmp_path, mo
             assert "a_to_b" in close_report and "ladder_section" in close_report
         manifest = json.loads((folder / "manifest.json").read_text())
         report = json.loads((folder / "report.json").read_text())
+        assert manifest["report_index"]["revision"] == 1
+        assert (output / ".dry_run_artifacts" / "catalog.json").is_file()
         assert manifest["degraded"]
         assert any(item.startswith("MISSING_SLICE:") for item in manifest["degraded"])
         assert manifest["report_json_bytes"] <= 300_000
