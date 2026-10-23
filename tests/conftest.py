@@ -15,6 +15,24 @@ if project_root_text not in sys.path:
 import pytest
 
 
+def pytest_addoption(parser):
+    parser.addoption("--live", action="store_true", default=False,
+                     help="run live contract tests that call the real upstream sources (network, read-only)")
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "live: calls a real upstream source; run with --live (see docs/TESTING.md)")
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--live"):
+        return
+    skip = pytest.mark.skip(reason="live contract test: run with --live")
+    for item in items:
+        if "live" in item.keywords:
+            item.add_marker(skip)
+
+
 @pytest.fixture(autouse=True)
 def _isolated_slice_root(tmp_path, monkeypatch):
     """Per-test slice/state cache root so past-dated fake TD states never leak between tests or into ~/core-data."""

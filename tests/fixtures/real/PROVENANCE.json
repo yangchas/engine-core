@@ -1,0 +1,77 @@
+{
+ "kaipan_hot_plates_2026-10-23_1441.json": {
+  "bytes": 13022,
+  "call": "getHisPlates",
+  "command": "examples/capture_real_fixture.py kaipan_hot_plates --date 2026-10-23",
+  "fetched_at": "2026-10-23T14:41:16+08:00",
+  "kind": "raw_upstream_response",
+  "params": {
+   "date": "2026-10-23",
+   "index": "0",
+   "size": "50"
+  },
+  "sha256": "ef2bd1fb590a777546c066b4b7960674209fb1461971ad087a59ad0c6253c04e",
+  "source": "kaipan_hot_plates",
+  "trade_date": "2026-10-23"
+ },
+ "kaipan_pool_2026-10-22_L1_1444.json": {
+  "bytes": 7753,
+  "call": "getHisBans",
+  "command": "examples/capture_real_fixture.py kaipan_pool --date 2026-10-22 --level 1",
+  "fetched_at": "2026-10-23T14:44:08+08:00",
+  "kind": "raw_upstream_response",
+  "params": {
+   "ban": "1",
+   "date": "2026-10-22",
+   "size": "2000"
+  },
+  "sha256": "072a9f9c93aa50acdf05bb9e6866bf4abad357616fd07e481d732f2bdf7d4d2d",
+  "source": "kaipan_pool",
+  "trade_date": "2026-10-22"
+ },
+ "kaipan_pool_2026-10-22_L2_1444.json": {
+  "bytes": 1656,
+  "call": "getHisBans",
+  "command": "examples/capture_real_fixture.py kaipan_pool --date 2026-10-22 --level 2",
+  "fetched_at": "2026-10-23T14:44:09+08:00",
+  "kind": "raw_upstream_response",
+  "params": {
+   "ban": "2",
+   "date": "2026-10-22",
+   "size": "2000"
+  },
+  "sha256": "dca06a9791b56f4213065957660c94de0dd4b5cc55a40d2e6fe46131148ea8f5",
+  "source": "kaipan_pool",
+  "trade_date": "2026-10-22"
+ },
+ "kaipan_pool_2026-10-23_L1_1444.json": {
+  "bytes": 50,
+  "call": "getHisBans",
+  "command": "examples/capture_real_fixture.py kaipan_pool --date 2026-10-23 --level 1",
+  "fetched_at": "2026-10-23T14:44:11+08:00",
+  "kind": "raw_upstream_response",
+  "params": {
+   "ban": "1",
+   "date": "2026-10-23",
+   "size": "2000"
+  },
+  "sha256": "91109fb8f88c77f8098647637a822dc870aaeaa1017f9968c546549af6ba97f6",
+  "source": "kaipan_pool",
+  "trade_date": "2026-10-23"
+ },
+ "ths_hot_rank_2026-10-23_1441.json": {
+  "bytes": 37451,
+  "command": "examples/capture_real_fixture.py ths_hot_rank",
+  "endpoint": "https://dq.10jqka.com.cn/fuyao/hot_list_data/out/hot_list/v1/stock",
+  "fetched_at": "2026-10-23T14:41:13+08:00",
+  "kind": "raw_upstream_response",
+  "params": {
+   "list_type": "tech",
+   "stock_type": "a",
+   "type": "day"
+  },
+  "sha256": "262b602c30d653d8b13d3d0c9fa6e435f5f2b937f71f558cab775c90b41f3640",
+  "source": "ths_hot_rank",
+  "trade_date": "2026-10-23"
+ }
+}
