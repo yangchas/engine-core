@@ -15,7 +15,10 @@ from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
 from engine_core.data_pipeline.providers.ths_hot_rank import ThsHotRankProvider
 
 REAL = Path(__file__).parent / "fixtures" / "real"
-INDEX = json.loads((REAL / "PROVENANCE.json").read_text(encoding="utf-8"))
+PROVENANCE = json.loads((REAL / "PROVENANCE.json").read_text(encoding="utf-8"))
+INDEX = {name: meta for name, meta in PROVENANCE.items()
+         if isinstance(meta, dict) and meta.get("kind") == "raw_upstream_response"}
+CORE_ARTIFACT_INDEX = PROVENANCE.get("_core_artifacts", {})
 SOURCES = {"ths_hot_rank", "kaipan_hot_plates", "kaipan_pool"}
 CREDENTIAL_WORDS = ("token", "password", "secret", "cookie", "authorization")
 
@@ -34,6 +37,16 @@ def test_every_real_fixture_has_matching_provenance():
         assert meta["source"] in SOURCES and meta["kind"] == "raw_upstream_response"
         assert meta["fetched_at"] and meta["command"].startswith("examples/capture_real_fixture.py")
         assert not any(word in body.decode("utf-8").lower() for word in CREDENTIAL_WORDS), name
+    core_root = REAL / "core_artifacts"
+    core_files = {p.relative_to(REAL).as_posix() for p in core_root.rglob("*") if p.is_file()}
+    assert core_files == set(CORE_ARTIFACT_INDEX)
+    for name, meta in CORE_ARTIFACT_INDEX.items():
+        body = (REAL / name).read_bytes()
+        assert hashlib.sha256(body).hexdigest() == meta["sha256"], name
+        assert meta["bytes"] == len(body) and meta["source_path"] and meta["command"].startswith("cp ")
+        assert meta["kind"] in {"core_artifact_manifest", "core_artifact_rows"}
+        if meta["kind"] == "core_artifact_manifest":
+            assert not any(word in body.decode("utf-8").lower() for word in CREDENTIAL_WORDS), name
 
 
 def test_ths_hot_rank_normalize_real_payload():

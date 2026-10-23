@@ -128,16 +128,17 @@ class ArtifactCatalog:
             datasets = catalog.setdefault("datasets", {})
             entry = datasets.setdefault(dataset, {"dates": {}, "latest": None})
             versions = entry.setdefault("dates", {}).setdefault(trade_date, [])
-            if version not in [item.get("version") for item in versions]:
+            if str(manifest_path) not in [item.get("manifest") for item in versions]:
                 versions.append({"version": version, "manifest": str(manifest_path),
                                  "sha256": digest, "row_count": len(rows), "as_of": result.get("as_of"),
+                                 "source": source, "business_status": result.get("business_status"),
                                  **{key: result[key] for key in ("available_at", "committed_at", "authority")
                                     if key in result},
                                  **({"node_fingerprint": result["node_fingerprint"]}
                                     if "node_fingerprint" in result else {})})
             else:
                 for item in versions:
-                    if item.get("version") == version and "node_fingerprint" in result:
+                    if item.get("manifest") == str(manifest_path) and "node_fingerprint" in result:
                         item["node_fingerprint"] = result["node_fingerprint"]
             current_latest = entry.get("latest")
             if (result.get("business_status") != "PROVISIONAL"
