@@ -37,6 +37,52 @@ type ledgerRecord struct {
 	CRC32 uint32 `json:"crc32"`
 	Data  any    `json:"data,omitempty"`
 }
+type gateOutput struct {
+	Status       string `json:"status"`
+	Reason       string `json:"reason"`
+	RowCount     *int   `json:"row_count"`
+	ElapsedMS    *int64 `json:"elapsed_ms"`
+	QueryWindow  any    `json:"query_window"`
+	CheckpointTS string `json:"checkpoint_ts"`
+	Stdout       string `json:"stdout,omitempty"`
+	Stderr       string `json:"stderr,omitempty"`
+	Invalid      bool   `json:"-"`
+}
+
+func parseGateOutput(b []byte) gateOutput {
+	var out gateOutput
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) == 0 || strings.TrimSpace(string(b)) == "" || json.Unmarshal([]byte(lines[len(lines)-1]), &out) != nil {
+		out.Invalid = true
+		out.Status = "unknown"
+	}
+	return out
+}
+func truncateText(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
+}
+func parseGateTimestamp(s string, loc *time.Location) (time.Time, error) {
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999", "2006-01-02 15:04:05"} {
+		if t, err := time.ParseInLocation(layout, s, loc); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid checkpoint timestamp")
+}
+
 type ledger struct {
 	mu   sync.Mutex
 	f    *os.File
@@ -1229,6 +1275,9 @@ func (r *liveRunner) execute(x Instance, date string) {
 		deadline, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
 		ready := false
 		lastGateReason := "gate not ready"
+		pollCount := 0
+		firstPollAt, lastPollAt := "", ""
+		lastSignature := ""
 		for r.clock.Now().Before(deadline) {
 			if len(h.GateArgv) == 0 {
 				break
@@ -1240,13 +1289,44 @@ func (r *liveRunner) execute(x Instance, date string) {
 			if gateEvent.Timeout == "" {
 				gateEvent.Timeout = "15s"
 			}
-			out, err := r.invoke(h.GateArgv, &gateEvent, x, date, 1, true)
+			out, stderr, err := r.invokeDetailed(h.GateArgv, &gateEvent, x, date, 1, true)
 			<-processSlots
+			polledAt := r.clock.Now().Format(time.RFC3339Nano)
+			pollCount++
+			if firstPollAt == "" {
+				firstPollAt = polledAt
+			}
+			lastPollAt = polledAt
+			info := parseGateOutput(out)
+			if err != nil && info.Reason == "" {
+				info.Reason = err.Error()
+			}
+			if info.Status == "" {
+				info.Status = "unknown"
+			}
+			if info.Reason == "" {
+				info.Reason = gateReason(out, err)
+			}
+			lastGateReason = info.Reason
+			if info.Invalid {
+				info.Stdout = truncateText(string(out), 300)
+				info.Stderr = truncateText(string(stderr), 300)
+			}
+			signature, _ := json.Marshal([]any{info.Status, info.Reason})
+			if string(signature) != lastSignature {
+				_, _ = r.appendLedger(date, "GATE_POLL", map[string]any{"event": x.EventID, "instance": x.ID, "polled_at": polledAt, "status": info.Status, "reason": info.Reason, "row_count": info.RowCount, "elapsed_ms": info.ElapsedMS, "query_window": info.QueryWindow, "exit_code": exitCode(err), "stdout": info.Stdout, "stderr": info.Stderr})
+				lastSignature = string(signature)
+			}
 			if err == nil && gateReady(out) && r.clock.Now().Before(deadline) {
 				ready = true
+				_, _ = r.appendLedger(date, "GATE_POLL_SUMMARY", map[string]any{"event": x.EventID, "instance": x.ID, "poll_count": pollCount, "first_polled_at": firstPollAt, "last_polled_at": lastPollAt, "outcome": "ready"})
+				if info.CheckpointTS != "" {
+					if checkpoint, parseErr := parseGateTimestamp(info.CheckpointTS, r.loc); parseErr == nil {
+						_, _ = r.appendLedger(date, "GATE_READY", map[string]any{"event": x.EventID, "instance": x.ID, "polled_at": polledAt, "window_end": info.CheckpointTS, "visible_lag_seconds": r.clock.Now().Sub(checkpoint).Seconds()})
+					}
+				}
 				break
 			}
-			lastGateReason = gateReason(out, err)
 			if err == nil && gateReady(out) && !r.clock.Now().Before(deadline) {
 				lastGateReason = "start deadline expired while waiting for gate"
 			}
@@ -1260,6 +1340,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 			r.waitClock(poll)
 		}
 		if !ready {
+			_, _ = r.appendLedger(date, "GATE_POLL_SUMMARY", map[string]any{"event": x.EventID, "instance": x.ID, "poll_count": pollCount, "first_polled_at": firstPollAt, "last_polled_at": lastPollAt, "outcome": "blocked", "reason": lastGateReason})
 			r.setState(x, date, instanceState{Status: "GATE_BLOCKED", LastError: lastGateReason, CompletedAt: r.clock.Now().Format(time.RFC3339)})
 			r.mu.Lock()
 			r.gateBlocked = append(r.gateBlocked, gateBlockRecord{Event: x.EventID, Reason: lastGateReason, At: r.clock.Now().Format(time.RFC3339Nano)})
@@ -1578,6 +1659,11 @@ func retryableFailure(code string) bool {
 	return code == "HANDLER_TIMEOUT" || code == "INTERNAL_ERROR" || strings.Contains(code, "DEPENDENCY")
 }
 func (r *liveRunner) invoke(argv []string, e *config.Event, x Instance, date string, attempt int, gate bool) ([]byte, error) {
+	out, _, err := r.invokeDetailed(argv, e, x, date, attempt, gate)
+	return out, err
+}
+
+func (r *liveRunner) invokeDetailed(argv []string, e *config.Event, x Instance, date string, attempt int, gate bool) ([]byte, []byte, error) {
 	r.configMu.RLock()
 	c := r.c
 	r.configMu.RUnlock()
@@ -1606,7 +1692,7 @@ func (r *liveRunner) invoke(argv []string, e *config.Event, x Instance, date str
 		if parseErr == nil {
 			remaining := deadline.Sub(r.clock.Now())
 			if remaining <= 0 {
-				return nil, fmt.Errorf("GATE_DEADLINE_EXPIRED")
+				return nil, nil, fmt.Errorf("GATE_DEADLINE_EXPIRED")
 			}
 			if int64(remaining) < timeout {
 				timeout = int64(remaining)
@@ -1651,7 +1737,7 @@ func (r *liveRunner) invoke(argv []string, e *config.Event, x Instance, date str
 	cmd.Stdin = strings.NewReader(string(b) + "\n")
 	err := cmd.Start()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !gate {
 		_, _ = r.appendLedger(date, "ATTEMPT_START", map[string]any{"instance": x.ID, "attempt": attempt, "pid": cmd.Process.Pid, "pgid": cmd.Process.Pid, "starttime": r.clock.Now().Format(time.RFC3339Nano)})
@@ -1663,7 +1749,7 @@ func (r *liveRunner) invoke(argv []string, e *config.Event, x Instance, date str
 		if !gate {
 			_, _ = r.appendLedger(date, "ATTEMPT_END", map[string]any{"instance": x.ID, "attempt": attempt, "exit_error": fmt.Sprint(err)})
 		}
-		return out.Bytes(), err
+		return out.Bytes(), stderr.Bytes(), err
 	case <-ctx.Done():
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 		select {
@@ -1677,7 +1763,7 @@ func (r *liveRunner) invoke(argv []string, e *config.Event, x Instance, date str
 		if !gate {
 			_, _ = r.appendLedger(date, "ATTEMPT_END", map[string]any{"instance": x.ID, "attempt": attempt, "status": "HANDLER_TIMEOUT"})
 		}
-		return out.Bytes(), fmt.Errorf("HANDLER_TIMEOUT")
+		return out.Bytes(), stderr.Bytes(), fmt.Errorf("HANDLER_TIMEOUT")
 	}
 }
 

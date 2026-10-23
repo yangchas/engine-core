@@ -142,6 +142,19 @@ def test_checkpoint_timeout_returns_diagnostic_reason(monkeypatch):
     assert result["elapsed_ms"] < 100
 
 
+def test_checkpoint_gate_reports_latest_visible_tick_timestamp(monkeypatch):
+    import engine_core.guardian.gates as gates
+    from engine_core.guardian.scheduler import default_events
+
+    event = next(e for e in default_events() if e.event_id == "intraday_33")
+    gates._CACHE.clear()
+    monkeypatch.setattr(gates, "_query_bounded", lambda _sql: (
+        [(f"600{i:03d}", "2026-10-19 09:33:02.750000") for i in range(gates.MIN_CHECKPOINT_SYMBOLS)], 1.0))
+    result = gates.checkpoint_ready(event, datetime.fromisoformat("2026-10-19T09:33:05+08:00"), {})
+    assert result["status"] == "ready"
+    assert result["checkpoint_ts"] == "2026-10-19 09:33:02.750000"
+
+
 def test_handler_gate_emits_diagnostic_reason_json(monkeypatch, capsys):
     import json
     from examples import guardian_handler

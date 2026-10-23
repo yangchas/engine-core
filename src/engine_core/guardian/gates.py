@@ -181,7 +181,7 @@ def checkpoint_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
                                   elapsed_ms=round((time.monotonic() - started) * 1000), **detail)
         detail["query_window"] = [stamp, end]
         try:
-            symbols, timeout = _query_bounded(f"SELECT symbol FROM market_data1.stock_tick_v2 WHERE ts >= '{stamp}' AND ts < '{end}' AND ts <= '{_timestamp(now.replace(tzinfo=None))}'")
+            symbols, timeout = _query_bounded(f"SELECT symbol, ts FROM market_data1.stock_tick_v2 WHERE ts >= '{stamp}' AND ts < '{end}' AND ts <= '{_timestamp(now.replace(tzinfo=None))}'")
         except Exception as exc:
             return GateResult(status="not_ready", reason="TD_QUERY_TIMEOUT" if isinstance(exc, TimeoutError) else "TD_QUERY_FAILED",
                               exception_type=type(exc).__name__, elapsed_ms=round((time.monotonic() - started) * 1000),
@@ -190,9 +190,10 @@ def checkpoint_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
         # Any row in the cutoff window proves the day's latest timestamp is at
         # least the cutoff; avoid a second full-day scan.
         count = len({str(row[0]) for row in symbols})
+        checkpoint_ts = max((str(row[1]) for row in symbols if len(row) > 1), default="")
         return GateResult(status="ready" if count >= MIN_CHECKPOINT_SYMBOLS else "not_ready",
                           reason="checkpoint_threshold_met" if count >= MIN_CHECKPOINT_SYMBOLS else "checkpoint_below_threshold",
-                          row_count=count, timeout_seconds=timeout,
+                          row_count=count, checkpoint_ts=checkpoint_ts, timeout_seconds=timeout,
                           elapsed_ms=round((time.monotonic() - started) * 1000), **detail)
     return _cached("checkpoint_ready", event, now, f"{getattr(event, 'start', '')}:{getattr(event, 'handler', '')}", check)
 

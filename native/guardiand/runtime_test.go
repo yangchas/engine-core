@@ -1398,6 +1398,46 @@ func TestAlertDailyLimitWritesSuppressionSummary(t *testing.T) {
 	}
 }
 
+func TestGateReadyLedgerIncludesMeasuredVisibilityLag(t *testing.T) {
+	root := t.TempDir()
+	date := "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation(time.RFC3339, date+"T09:33:05+08:00", loc)
+	script := filepath.Join(root, "ready.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '{\"status\":\"ready\",\"reason\":\"checkpoint_threshold_met\",\"row_count\":4000,\"elapsed_ms\":12,\"query_window\":[\"2026-10-20 09:33:00\",\"2026-10-20 09:33:03\"],\"checkpoint_ts\":\"2026-10-20 09:33:02\"}\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	e := config.Event{ID: "ready", Handler: "h", Timeout: "10s", Trigger: config.Trigger{Deadline: "09:34:00"}, Gate: config.Gate{Ref: "checkpoint_ready", Poll: "1s", Timeout: "1s"}}
+	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {GateArgv: []string{script}, Argv: []string{"/bin/sh", "-c", "printf '{\"contract\":1,\"status\":\"ok\",\"retryable\":false}\\n'"}}}}, root: root, loc: loc, start: now, clock: newFakeClock(now), ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
+	r.execute(Instance{ID: e.ID, EventID: e.ID, Start: "09:33:00", Deadline: "09:34:00"}, date)
+	b := mustRead(t, filepath.Join(root, "ledger", date+".jsonl"))
+	var poll, ready map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var rec ledgerRecord
+		if json.Unmarshal([]byte(line), &rec) != nil {
+			continue
+		}
+		data, _ := json.Marshal(rec.Data)
+		if rec.Type == "GATE_POLL" {
+			_ = json.Unmarshal(data, &poll)
+		}
+		if rec.Type == "GATE_READY" {
+			_ = json.Unmarshal(data, &ready)
+		}
+	}
+	if poll["reason"] != "checkpoint_threshold_met" || poll["row_count"] != float64(4000) {
+		t.Fatalf("GATE_POLL data=%v", poll)
+	}
+	if ready["window_end"] != "2026-10-20 09:33:02" || ready["visible_lag_seconds"] != float64(3) {
+		t.Fatalf("GATE_READY data=%v", ready)
+	}
+}
+
 func TestAlertFailedDeliveryCanRetryAndDistinctSummariesAreNotDeduped(t *testing.T) {
 	root, date := t.TempDir(), "2026-10-20"
 	loc, _ := time.LoadLocation("Asia/Shanghai")
@@ -1864,7 +1904,7 @@ func TestGateDeadlineAndDailySummary(t *testing.T) {
 	now, _ := time.ParseInLocation(time.RFC3339, date+"T10:34:00+08:00", loc)
 	gateScript := filepath.Join(root, "gate.sh")
 	calls := filepath.Join(root, "gate-calls")
-	if err := os.WriteFile(gateScript, []byte("#!/bin/sh\necho x >> \"$GATE_CALLS\"\n[ $(wc -l < \"$GATE_CALLS\") -eq 1 ] && sleep 1\nprintf '{\"status\":\"not_ready\",\"reason\":\"source_stale\"}\\n'\n"), 0700); err != nil {
+	if err := os.WriteFile(gateScript, []byte("#!/bin/sh\necho x >> \"$GATE_CALLS\"\nprintf '{\"status\":\"not_ready\",\"reason\":\"source_stale\",\"row_count\":17,\"elapsed_ms\":8,\"query_window\":[\"09:33:00\",\"09:33:03\"]}\\n'\nexit 75\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("GATE_CALLS", calls)
@@ -1908,10 +1948,35 @@ func TestGateDeadlineAndDailySummary(t *testing.T) {
 	_ = r.alert("GATE_BLOCKED", map[string]any{"events": []string{"gated"}, "summary": true})
 	_ = r.alert("GATE_BLOCKED", map[string]any{"events": []string{"gated"}, "summary": true})
 	counts := ledgerTypeCounts(t, root, date)
+	if counts["GATE_POLL"] != 1 || counts["GATE_POLL_SUMMARY"] != 1 {
+		t.Fatalf("gate poll ledger counts=%v, want one deduplicated poll and summary", counts)
+	}
+	ledgerBytes := mustRead(t, filepath.Join(root, "ledger", date+".jsonl"))
+	foundPoll := false
+	foundSummary := false
+	for _, line := range strings.Split(strings.TrimSpace(string(ledgerBytes)), "\n") {
+		var rec ledgerRecord
+		_ = json.Unmarshal([]byte(line), &rec)
+		b, _ := json.Marshal(rec.Data)
+		var data map[string]any
+		_ = json.Unmarshal(b, &data)
+		if rec.Type == "GATE_POLL" {
+			foundPoll = data["reason"] == "source_stale" && data["row_count"] == float64(17) && data["exit_code"] == float64(75)
+		}
+		if rec.Type == "GATE_POLL_SUMMARY" {
+			foundSummary = data["poll_count"] == float64(2) && data["outcome"] == "blocked"
+		}
+	}
+	if !foundPoll {
+		t.Fatal("deduplicated GATE_POLL omitted child reason, row_count, or failed exit")
+	}
+	if !foundSummary {
+		t.Fatal("gate poll summary omitted repeated poll count or blocked outcome")
+	}
 	if counts["ALERT_OUT"] != 2 {
 		t.Fatalf("gate first and daily summary alerts=%d, want two", counts["ALERT_OUT"])
 	}
-	ledgerBytes := mustRead(t, filepath.Join(root, "ledger", date+".jsonl"))
+	ledgerBytes = mustRead(t, filepath.Join(root, "ledger", date+".jsonl"))
 	foundFirst := false
 	for _, line := range strings.Split(strings.TrimSpace(string(ledgerBytes)), "\n") {
 		var rec ledgerRecord
@@ -1961,7 +2026,10 @@ func TestRealDataGatePollingAgainstCurrentConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const eventID = "intraday_33"
+	eventID := os.Getenv("GUARDIAN_REAL_EVENT")
+	if eventID == "" {
+		eventID = "intraday_33"
+	}
 	var event *config.Event
 	for i := range c.Events {
 		if c.Events[i].ID == eventID {
@@ -1999,11 +2067,19 @@ func TestRealDataGatePollingAgainstCurrentConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	date := "2026-10-21"
-	now, err := time.ParseInLocation(time.RFC3339, date+"T09:33:05+08:00", loc)
+	date := os.Getenv("GUARDIAN_REAL_DATE")
+	if date == "" {
+		date = "2026-10-21"
+	}
+	checkpoint := event.Trigger.Start
+	if checkpoint == "" {
+		checkpoint = "09:33:00"
+	}
+	now, err := time.ParseInLocation(time.RFC3339, date+"T"+checkpoint+"+08:00", loc)
 	if err != nil {
 		t.Fatal(err)
 	}
+	now = now.Add(5 * time.Second)
 	fc := newFakeClock(now)
 	l, err := openLedger(root, date)
 	if err != nil {
@@ -2040,6 +2116,12 @@ finished:
 	}
 	if state.Status == "GATE_BLOCKED" && state.LastError == "" {
 		t.Fatal("real-data gate block omitted its final reason")
+	}
+	ledgerOutput := mustRead(t, filepath.Join(root, "ledger", date+".jsonl"))
+	for _, line := range strings.Split(strings.TrimSpace(string(ledgerOutput)), "\n") {
+		if strings.Contains(line, `"type":"GATE_POLL"`) || strings.Contains(line, `"type":"GATE_POLL_SUMMARY"`) || strings.Contains(line, `"type":"GATE_READY"`) {
+			t.Logf("ledger_record=%s", line)
+		}
 	}
 	t.Logf("real_config=%s event=%s gate=%s status=%s reason=%q postmarket_max_attempts=%d until_late=%t temp_state_root=%s", configPath, event.ID, event.Gate.Ref, state.Status, state.LastError, postmarket.Retry.MaxAttempts, postmarket.Retry.UntilLate, root)
 }
