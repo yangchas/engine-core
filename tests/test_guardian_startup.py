@@ -233,8 +233,8 @@ def test_boot_apply_plan_runs_stub_job_into_temporary_catalog(tmp_path, monkeypa
     import os
     import subprocess
     import sys
-
     from engine_core.data_pipeline.storage import ArtifactCatalog
+
     from engine_core.guardian import startup
 
     stub = tmp_path / "stub_fetch.py"
@@ -307,7 +307,7 @@ def test_boot_apply_plan_runs_dependency_layers_and_propagates_failure(tmp_path,
     assert calls == ["plate_members", "stock_theme_assignment"]
 
 
-def test_fetch_job_without_status_key_succeeds_on_exit_zero_but_empty_or_explicit_failure_does_not(monkeypatch):
+def test_fetch_job_stdout_shape_and_exit_status_are_checked_before_catalog_postcondition(monkeypatch, tmp_path):
     """Shape of the real reindex job output on 2026-10-21: {"cache_rows": 5218, "days_reindexed": 1, ...} (no status)."""
     import sys
     import pytest
@@ -316,12 +316,28 @@ def test_fetch_job_without_status_key_succeeds_on_exit_zero_but_empty_or_explici
     def item(code):
         return {"id": "x", "fetch_job": {"argv": [sys.executable, "-c", code], "timeout_seconds": 20}}
 
-    ok = startup._run_fetch_job(item('import json;print(json.dumps(dict(cache_rows=5218,days_reindexed=1)))'), "2026-10-21", 20)
-    assert ok["days_reindexed"] == 1
-    for code in ("print('no json at all')", 'import json;print(json.dumps(dict(status="failed")))',
-                 'import json;print(json.dumps(dict(error="boom")))'):
-        with pytest.raises(startup.FetchJobError):
-            startup._run_fetch_job(item(code), "2026-10-21", 20)
+    # Use a real hot_rank manifest copied from Core storage as the catalog layout fixture.
+    import shutil
+    import json as json_module
+    source = __import__("pathlib").Path("/home/exedev/core-data/hot_rank/trade_date=2026-10-23/source=ths_hot_rank/sha256-d6510f9287781577/manifest.json")
+    manifest_dir = tmp_path / "hot_rank" / "trade_date=2026-10-23" / "source=ths_hot_rank" / "sha256-d6510f9287781577"
+    manifest_dir.mkdir(parents=True)
+    manifest = manifest_dir / "manifest.json"
+    shutil.copyfile(source, manifest)
+    loaded = json_module.loads(manifest.read_text())
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json_module.dumps({"datasets": {"hot_rank": {"dates": {"2026-10-23": [{**loaded, "manifest": str(manifest)}]}}}}))
+    item = {"id": "hot_rank", "artifact": {"catalog_dataset": "hot_rank"}}
+
+    result = startup._run_fetch_job(item | {"fetch_job": {"argv": [sys.executable, "-c", "print('CAPTURED_AT x\\nROW_COUNT 100\\nVERSION x')"], "timeout_seconds": 20}}, "2026-10-23", 20)
+    assert result == {}
+    startup._verify_partition(item, "2026-10-23", tmp_path)
+    with pytest.raises(startup.FetchJobError):
+        startup._verify_partition(item, "2026-10-23", tmp_path / "empty")
+    with pytest.raises(startup.FetchJobError):
+        startup._run_fetch_job(item | {"fetch_job": {"argv": [sys.executable, "-c", "raise SystemExit(7)"], "timeout_seconds": 20}}, "2026-10-23", 20)
+    with pytest.raises(startup.FetchJobError):
+        startup._run_fetch_job(item | {"fetch_job": {"argv": [sys.executable, "-c", 'import json;print(json.dumps(dict(status="failed")))'], "timeout_seconds": 20}}, "2026-10-23", 20)
 
 
 def test_fetch_item_success_requires_the_partition_to_exist_in_the_catalog_afterwards(tmp_path):

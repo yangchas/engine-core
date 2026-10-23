@@ -364,7 +364,7 @@ def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | P
     # Exit status and explicit failure markers decide failure; success is then PROVEN by the catalog postcondition
     # (_verify_partition), not by guessing each job's stdout dialect (reindex prints no status, ladder prints
     # PARTIAL_*, daily_kline prints degraded, ...).
-    if completed.returncode or explicit_failure or payload.get("error") or not payload:
+    if completed.returncode or explicit_failure or payload.get("error"):
         stderr = completed.stderr or ""
         error_code = "FETCH_EXIT_" + str(completed.returncode) if completed.returncode else str(
             payload.get("error_code") or "FETCH_JOB_FAILED")
