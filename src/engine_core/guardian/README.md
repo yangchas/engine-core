@@ -11,7 +11,7 @@ PYTHONPATH=src:. python examples/core_guardian.py --dry-run
 PYTHONPATH=src:. nohup python examples/core_guardian.py --run > ~/core-data/guardian.log 2>&1 &
 ```
 
-`--run` invokes configured existing entry points. Redis publication requires `--write`; TD writes require both `--write --td-write`. Email requires `--email-self`, targets only `412826313@qq.com`, and each report stage also requires `~/core-data/guardian/<date>/audit_ok/<stage>`. Readiness gates query TD/Core manifests read-only by default. `--gate-status JSON` overrides named gates for drills or emergency operation, and `--adapter module:function` may provide additional overrides. The close raw-capture schedule entry is skipped with a single `DISABLED_NOT_IMPLEMENTED` log line until a Core capture job exists.
+`--run` invokes configured existing entry points. Redis publication requires `--write`; TD writes require both `--write --td-write`. Email requires `--email-self` and targets only `412826313@qq.com`. Readiness gates query TD/Core manifests read-only by default. `--gate-status JSON` overrides named gates for drills or emergency operation, and `--adapter module:function` may provide additional overrides. The close raw-capture schedule entry is skipped with a single `DISABLED_NOT_IMPLEMENTED` log line until a Core capture job exists.
 
 Guardian readiness uses named engineering thresholds: 90% snapshot coverage, 85% auction report coverage, 4,000 checkpoint symbols, and a 4,500-symbol fallback when a trusted daily universe is unavailable. These values schedule startup work; they are not market laws and do not decide whether a report is valid.
 

@@ -36,54 +36,26 @@ def test_handler_run_contract_round_trip_close_capture_not_applicable():
     assert payload["error_code"] == ""
 
 
-def test_report_runs_without_audit_marker_and_withholds_email(tmp_path, monkeypatch):
+def test_report_requests_email_with_mail_enabled_without_audit_marker(tmp_path, monkeypatch):
     from datetime import datetime
     from examples import core_guardian
     from engine_core import daily_pipeline
 
     monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv("CORE_ALLOW_FILE_FALLBACK", "0")
+    (tmp_path / ".mail_enabled").touch()
     monkeypatch.setattr("engine_core.daily_pipeline._connect_redis", lambda: None)
     sends = []
+    commands = []
     monkeypatch.setattr("engine_core.report_mailer.send_message",
                         lambda *args, **kwargs: sends.append(kwargs) or
                         SimpleNamespace(status="test_suppressed"))
-    monkeypatch.setattr(core_guardian.subprocess, "run", lambda command, **kwargs:
-                        SimpleNamespace(returncode=daily_pipeline.main(command[2:]),
-                                        stdout="", stderr=""))
-    opts = SimpleNamespace(write=False, td_write=False, simulate_clock=True,
-                           email_self=True, run=False, job="")
-    event = SimpleNamespace(event_id="auction_report_0926", data_date_offset=0,
-                            timeout_seconds=60, start="09:26:00", args={"asof": "09:26:00"})
-    result = core_guardian._command_handler("auction_report", opts, tmp_path)(
-        event, datetime.fromisoformat("2026-10-21T09:26:30+08:00"), {}, False)
-    reports = list((tmp_path / "reports" / "2026-10-21").glob("auction_0926/*"))
-    assert reports and any(path.name == "manifest.json" for path in reports)
-    assert "email_withheld:waiting_audit_ok:auction" in result
-    assert json.loads((reports[0].parent / "manifest.json").read_text())["email"]["status"] == "not_requested"
-    assert sends == []
-
-
-def test_report_with_audit_marker_generates_and_invokes_dry_run_mailer(tmp_path, monkeypatch):
-    from datetime import datetime
-    from examples import core_guardian
-    from engine_core import daily_pipeline
-    from engine_core.report_mailer import SendReceipt
-
-    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
-    monkeypatch.setenv("CORE_ALLOW_FILE_FALLBACK", "0")
-    monkeypatch.setattr("engine_core.daily_pipeline._connect_redis", lambda: None)
-    marker = tmp_path / "guardian" / "2026-10-21" / "audit_ok" / "auction"
-    marker.parent.mkdir(parents=True)
-    marker.touch()
-    sends = []
-    monkeypatch.setattr("engine_core.report_mailer.send_message",
-                        lambda config, msg, **kwargs: sends.append(kwargs) or
-                        SendReceipt("dry_run", 1, 0, 0.0, None))
-    monkeypatch.setattr(core_guardian.subprocess, "run", lambda command, **kwargs:
-                        SimpleNamespace(returncode=daily_pipeline.main(command[2:]),
-                                        stdout="", stderr=""))
-    opts = SimpleNamespace(write=False, td_write=False, simulate_clock=True,
+    def run_report(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=daily_pipeline.main(command[2:]),
+                               stdout="", stderr="")
+    monkeypatch.setattr(core_guardian.subprocess, "run", run_report)
+    opts = SimpleNamespace(write=False, td_write=False, simulate_clock=False,
                            email_self=True, run=False, job="")
     event = SimpleNamespace(event_id="auction_report_0926", data_date_offset=0,
                             timeout_seconds=60, start="09:26:00", args={"asof": "09:26:00"})
@@ -92,10 +64,12 @@ def test_report_with_audit_marker_generates_and_invokes_dry_run_mailer(tmp_path,
     reports = list((tmp_path / "reports" / "2026-10-21").glob("auction_0926/*"))
     assert reports and any(path.name == "manifest.json" for path in reports)
     assert "email_withheld" not in result
-    assert sends == [{"dry_run": True, "allow_recipients": ["412826313@qq.com"]}]
+    assert any(["--email-send", "--email-to", "412826313@qq.com"] == command[i:i + 3]
+               for command in commands for i in range(len(command) - 2))
+    assert sends == [{"dry_run": False, "allow_recipients": ["412826313@qq.com"]}]
 
 
-def test_missing_close_audit_marker_is_successful_contract(tmp_path, monkeypatch):
+def test_close_report_handler_result_is_successful_contract(tmp_path, monkeypatch):
     from examples import core_guardian, guardian_handler
     from engine_core.guardian.scheduler import default_events
 
@@ -104,11 +78,11 @@ def test_missing_close_audit_marker_is_successful_contract(tmp_path, monkeypatch
     monkeypatch.setenv("GUARDIAN_DRY_RUN", "0")
     monkeypatch.setenv("GUARDIAN_EMAIL_SELF", "1")
     monkeypatch.setattr(core_guardian, "_command_handler", lambda *_:
-                        lambda *_args: "email_withheld:waiting_audit_ok:close")
+                        lambda *_args: "report_generated")
     code, payload = guardian_handler._run({"event": event.event_id, "trade_date": "2026-10-20"})
     assert code == 0
     assert payload["status"] == "ok"
-    assert payload["detail"] == "email_withheld:waiting_audit_ok:close"
+    assert payload["detail"] == "report_generated"
     assert payload["retryable"] is False
 
 

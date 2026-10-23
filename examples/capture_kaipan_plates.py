@@ -79,18 +79,7 @@ def main(argv=None) -> int:
         for dataset in datasets:
             dataset_dates = trade_dates if dataset in {"hot_plates", "hot_plate_minutes"} else [trade_dates[-1]]
             for trade_date in dataset_dates:
-                existing = _already_available(catalog, dataset, trade_date)
-                if existing and dataset == "hot_plates":
-                    existing_manifest = catalog.locate(dataset, trade_date)
-                    old_rows = catalog.read_rows(existing_manifest) if existing_manifest else []
-                    required = (len(old_rows) == 50 and old_rows and
-                                old_rows[0].get("requested_date") == trade_date and
-                                old_rows[0].get("response_time") is not None and
-                                old_rows[0].get("response_min") is not None and
-                                old_rows[0].get("response_max") is not None and
-                                old_rows[0].get("fetched_at") and old_rows[0].get("available_at"))
-                    if not required:
-                        existing = None
+                existing = None if dataset == "hot_plates" else _already_available(catalog, dataset, trade_date)
                 if existing and dataset == "hot_plate_minutes":
                     existing_manifest = catalog.locate(dataset, trade_date)
                     old_rows = catalog.read_rows(existing_manifest) if existing_manifest else []
