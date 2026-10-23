@@ -828,6 +828,24 @@ def load_close_catalog_inputs(catalog: Any, trade_date: str,
     provenance: dict[str, Any] = {}
     for dataset, source_date in specifications.items():
         manifest_path = catalog.locate(dataset, source_date) if source_date else None
+        if source_date and hasattr(catalog, "read"):
+            versions = (catalog.read().get("datasets", {}).get(dataset, {}).get("dates", {})
+                        .get(source_date, []))
+            visible_versions = []
+            normalized_cutoff = cutoff if cutoff.tzinfo else cutoff.replace(tzinfo=TZ)
+            for version in versions:
+                candidate = Path(version.get("manifest", ""))
+                try:
+                    candidate_manifest = json.loads(candidate.read_text(encoding="utf-8"))
+                    available_dt = datetime.fromisoformat(str(candidate_manifest.get("available_at", "")).replace("Z", "+00:00"))
+                    if available_dt.tzinfo is None:
+                        available_dt = available_dt.replace(tzinfo=TZ)
+                    if candidate_manifest.get("trade_date") == source_date and available_dt <= normalized_cutoff:
+                        visible_versions.append((available_dt, candidate))
+                except (OSError, ValueError, TypeError):
+                    continue
+            if visible_versions:
+                manifest_path = max(visible_versions, key=lambda item: item[0])[1]
         if not manifest_path or not manifest_path.is_file():
             provenance[dataset] = {"status": "MISSING", "trade_date": source_date}
             continue
@@ -842,7 +860,7 @@ def load_close_catalog_inputs(catalog: Any, trade_date: str,
                 visible = available_dt <= normalized_cutoff
             except (TypeError, ValueError):
                 visible = False
-            if basis == "LIVE_PIT" and not visible:
+            if not visible:
                 provenance[dataset] = {"status": "UNAVAILABLE", "trade_date": source_date,
                                        "reason": "LATE_OR_UNKNOWN_AVAILABLE_AT", "available_at": available,
                                        "manifest": str(manifest_path)}
@@ -1029,8 +1047,22 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     if stage not in STAGE_NAMES:
         raise ValueError("stage must be auction, open, or close")
     datetime.strptime(trade_date, "%Y-%m-%d")
+    close_report_asof = None
+    trigger_at = datetime.now(TZ)
     if asof is not None:
-        datetime.strptime(asof, "%H:%M:%S")
+        if stage == "close":
+            try:
+                close_report_asof = datetime.fromisoformat(asof.replace("Z", "+00:00"))
+            except ValueError:
+                close_report_asof = datetime.fromisoformat(f"{trade_date}T{asof}+08:00")
+            if close_report_asof.tzinfo is None:
+                close_report_asof = close_report_asof.replace(tzinfo=TZ)
+            close_report_asof = close_report_asof.astimezone(TZ)
+            asof = close_report_asof.strftime("%H:%M:%S")
+        else:
+            datetime.strptime(asof, "%H:%M:%S")
+    elif stage == "close":
+        close_report_asof = trigger_at
     if publish and dry_run:
         raise ValueError("--publish and --dry-run cannot be combined")
     if stage == "close" and close_basis == "POSTHOC_REVIEW" and trade_date >= date.today().isoformat():
@@ -1054,8 +1086,12 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     from .slices import SliceProviders, SliceReader
     slice_reader = src.slice_reader or SliceReader(
         SliceProviders(redis=None if stage == "close" else src.redis).providers(), snapshot_id=f"{trade_date}:{stage}")
-    point = asof or ("09:26:00" if stage == "auction" else "09:46:00" if stage == "open" else "17:40:00")
-    slice_asof = f"{trade_date}T{point}+08:00"
+    point = (asof or ("09:26:00" if stage == "auction" else
+                      "09:46:00" if stage == "open" else "17:40:00"))
+    if stage == "close":
+        point = "17:40:00"
+    slice_asof = (close_report_asof.isoformat() if stage == "close" and close_report_asof
+                  else f"{trade_date}T{point}+08:00")
     slice_names = ("stock_name_map", "plate_registry", "plate_members", "stock_theme_assignment",
                    "daily_report_features", "daily_history",
                    "auction_baseline", "plate_amount_baseline", "yest_limit_pool", "limit_reason_history", "hot_plates_today",
@@ -1200,7 +1236,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     elif stage == "auction" and asof is not None:
         output_stage = f"auction_{(asof or '09:26:00').replace(':', '')[:4]}"
     out = _next_output(root, trade_date, output_stage)
-    out.mkdir(parents=True, exist_ok=False)
+    if stage != "close":
+        out.mkdir(parents=True, exist_ok=False)
     inputs: dict[str, Any] = {}
     for key, path in refs.items():
         inputs[key] = ({"path": str(path), "sha256": _sha(path)} if path and path.is_file()
@@ -2276,14 +2313,16 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             core_root = Path(os.getenv("CORE_DATA_ROOT", "/home/exedev/core-data")).expanduser()
             close_catalog_rows, close_catalog_manifest = load_close_catalog_inputs(
                 ArtifactCatalog(core_root), trade_date, prior_candidates[-1] if prior_candidates else None,
-                asof=(f"{trade_date}T{asof}+08:00" if asof else f"{trade_date}T15:00:00+08:00"),
+                asof=close_report_asof.isoformat() if close_report_asof else f"{trade_date}T17:40:00+08:00",
                 basis=close_basis)
             close_catalog_ready = bool(close_catalog_rows)
+            out.mkdir(parents=True, exist_ok=False)
             for dataset, dataset_info in close_catalog_manifest.get("datasets", {}).items():
                 if dataset_info.get("status") == "READY":
                     inputs[f"close_catalog:{dataset}"] = {
                         "manifest": dataset_info.get("manifest"), "version": dataset_info.get("version"),
-                        "sha256": dataset_info.get("sha256")}
+                        "sha256": dataset_info.get("sha256"),
+                        "available_at": dataset_info.get("available_at")}
         capture_manifest = refs["daily_capture_manifest"]
         daily_capture_dir = capture_manifest.parent if capture_manifest else None
         td_daily_error = None
@@ -2415,7 +2454,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                 row["prior_streak"] = _prior_streak(code, previous_streaks)
                 row["path_type"] = path_labels.get(str(code).zfill(6), "UNKNOWN")
                 ladder_rows.append(row)
-        close_asof = f"{trade_date}T15:00:00"
+        close_asof = close_report_asof.isoformat() if close_report_asof else f"{trade_date}T17:40:00+08:00"
         symbol_plates = {}
         for plate_code, members in relations.items():
             plate_name = plate_names.get(plate_code)
@@ -2564,7 +2603,8 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     if stage != "close":
         close_manifest = {}
     manifest = {"contract": "DailyPipelineManifestV1", "trade_date": trade_date,
-                "stage": stage, "asof": asof, "checkpoint": chosen_checkpoint,
+                "stage": stage, "asof": (close_report_asof.isoformat() if stage == "close" and close_report_asof else asof), "checkpoint": chosen_checkpoint,
+                "triggered_at": trigger_at.isoformat(),
                 "outputs": str(out), "input_files": inputs,
                 "auction_assembly": (_auction_assembly_mode() if stage == "auction" else None),
                 "sources": {"td": td_source_manifest,

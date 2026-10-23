@@ -98,7 +98,11 @@ def test_three_real_stock_prices_and_null_auction():
  auc={r['symbol']:r for r in C.read_rows(C.locate('auction_stock_facts','2026-10-16'))}
  for symbol in ['000001','000002','600519']:
   assert by[symbol]['close']==daily[symbol]['close']
-  assert by[symbol]['auction_price']==auc[symbol]['price']
+  # The retained 2026-10-16 auction artifact was not available until 2026-10-19;
+  # historical close reads must keep it out of a 2026-10-16 17:40 as-of.
+  assert by[symbol]['auction_price'] is None
+ assert m['datasets']['auction_stock_facts']['status']=='UNAVAILABLE'
+ assert 'auction_stock_facts' in m['late_sources']
  rows,m=load_close_catalog_inputs(C,'2026-10-19','2026-10-16',asof='2026-10-19T17:40:00+08:00',basis='POSTHOC_REVIEW');by={r['symbol']:r for r in rows}
  assert by['000002']['auction_price'] is None
 

@@ -24,6 +24,17 @@ def build_record(manifest: Mapping[str, Any], *, out_dir: str | Path,
             "reason": item.get("reason") or "UNKNOWN",
             "used_date": item.get("used_date") or "UNKNOWN",
         }
+    close_datasets = manifest.get("close_review_manifest", {}).get("datasets", {})
+    if isinstance(close_datasets, Mapping):
+        for name, value in close_datasets.items():
+            item = value if isinstance(value, Mapping) else {}
+            input_versions[f"close_catalog:{name}"] = {
+                "version": item.get("version") or "UNKNOWN",
+                "available_at": item.get("available_at") or "UNKNOWN",
+                "status": item.get("status") or "UNKNOWN",
+                "reason": item.get("reason") or "UNKNOWN",
+                "used_date": item.get("trade_date") or "UNKNOWN",
+            }
     return {
         "date": manifest.get("trade_date") or "UNKNOWN",
         "stage": manifest.get("stage") or "UNKNOWN",

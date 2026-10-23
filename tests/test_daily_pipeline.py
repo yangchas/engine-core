@@ -907,7 +907,7 @@ def test_close_catalog_inputs_join_frozen_market_and_auction_facts(tmp_path):
                                {"trade_date": artifact_date, "available_at": "2026-10-20T00:00:00Z"},
                                source="fixture")
         rows, manifest = load_close_catalog_inputs(catalog, trade_date, source_date,
-                                                  asof="2026-10-20T00:00:00+00:00",
+                                                  asof="2030-10-20T00:00:00+00:00",
                                                   basis="POSTHOC_REVIEW")
         assert rows
         assert manifest["datasets"]["daily_kline"]["version"]
@@ -921,5 +921,31 @@ def test_close_catalog_inputs_join_frozen_market_and_auction_facts(tmp_path):
         assert sample["close"] is not None and sample["auction_pct"] is not None
         assert sample["amount_yuan"] is not None
         assert sample["checkpoint_status"] == "MISSING"
+
+
+def test_close_catalog_asof_selects_latest_visible_daily_version(tmp_path):
+    from engine_core.daily_pipeline import load_close_catalog_inputs
+    from pathlib import Path
+    import json
+    first = tmp_path / "first.json"
+    later = tmp_path / "later.json"
+    first.write_text(json.dumps({"trade_date": "2026-10-22", "available_at": "2026-10-22T17:30:01+08:00"}))
+    later.write_text(json.dumps({"trade_date": "2026-10-22", "available_at": "2026-10-22T18:10:00+08:00"}))
+    class Catalog:
+        versions = [
+            {"manifest": str(first), "available_at": "2026-10-22T17:30:01+08:00"},
+            {"manifest": str(later), "available_at": "2026-10-22T18:10:00+08:00"},
+        ]
+        def read(self):
+            return {"datasets": {"daily_kline": {"dates": {"2026-10-22": self.versions}}}}
+        def locate(self, dataset, day): return later
+        def read_rows(self, path): return [{"symbol": "600001", "date": "2026-10-22", "close": 10}] if path == first else [{"symbol": "600002", "date": "2026-10-22", "close": 11}]
+    _, manifest = load_close_catalog_inputs(Catalog(), "2026-10-22", None,
+        asof="2026-10-22T18:00:00+08:00", basis="POSTHOC_REVIEW")
+    assert manifest["datasets"]["daily_kline"]["available_at"] == "2026-10-22T17:30:01+08:00"
+    assert manifest["datasets"]["daily_kline"]["row_count"] == 1
+    _, early = load_close_catalog_inputs(Catalog(), "2026-10-22", None,
+        asof="2026-10-22T16:00:00+08:00", basis="POSTHOC_REVIEW")
+    assert early["datasets"]["daily_kline"]["status"] == "UNAVAILABLE"
 
 

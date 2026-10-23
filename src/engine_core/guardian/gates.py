@@ -198,12 +198,57 @@ def checkpoint_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
     return _cached("checkpoint_ready", event, now, f"{getattr(event, 'start', '')}:{getattr(event, 'handler', '')}", check)
 
 
-def daily_kline_ready(event: Any, now: datetime, ctx: Any) -> bool:
+def daily_kline_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
     def check():
+        started = time.monotonic()
         root = Path(os.environ.get("CORE_DATA_ROOT", "~/core-data")).expanduser()
         from engine_core.data_pipeline.storage import ArtifactCatalog
-        path = ArtifactCatalog(root).locate("daily_kline", now.date().isoformat())
-        return bool(path and path.is_file())
+        catalog = ArtifactCatalog(root)
+        day = now.date().isoformat()
+        path = catalog.locate("daily_kline", day)
+        if not path or not path.is_file():
+            return GateResult(status="not_ready", reason="DAILY_KLINE_MISSING",
+                              trade_date=day, elapsed_ms=round((time.monotonic() - started) * 1000))
+        import json
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            row_count = int(manifest.get("row_count", 0))
+            available_at = manifest.get("available_at")
+            available_dt = datetime.fromisoformat(str(available_at).replace("Z", "+00:00"))
+        except (OSError, ValueError, TypeError):
+            return GateResult(status="not_ready", reason="DAILY_KLINE_MANIFEST_INVALID",
+                              trade_date=day, elapsed_ms=round((time.monotonic() - started) * 1000))
+        if manifest.get("trade_date") != day:
+            reason = "DAILY_KLINE_DATE_MISMATCH"
+            universe_count = None
+        else:
+            universe_count = None
+            try:
+                entry = catalog.read().get("datasets", {}).get("symbol_universe", {})
+                versions = entry.get("dates", {}).get(day, [])
+                if versions:
+                    universe_path = Path(versions[-1]["manifest"])
+                    universe_manifest = json.loads(universe_path.read_text(encoding="utf-8"))
+                    universe_count = int(universe_manifest.get("row_count", 0))
+            except (OSError, ValueError, TypeError, KeyError):
+                universe_count = None
+            reason = ""
+        fallback = universe_count is None or universe_count <= 0
+        denominator = 4000 if fallback else universe_count
+        threshold = 0.95
+        coverage = row_count / denominator if denominator else 0.0
+        ready = (not reason and available_dt.tzinfo is not None and
+                 available_dt <= (now if now.tzinfo else now.replace(tzinfo=available_dt.tzinfo)) and
+                 coverage >= threshold)
+        if not reason:
+            reason = ("DAILY_KLINE_AVAILABLE_AT_INVALID" if available_dt.tzinfo is None else
+                      "DAILY_KLINE_NOT_YET_AVAILABLE" if available_dt > (now if now.tzinfo else now.replace(tzinfo=available_dt.tzinfo)) else
+                      "DAILY_KLINE_COVERAGE_BELOW_THRESHOLD" if coverage < threshold else "DAILY_KLINE_READY")
+        return GateResult(status="ready" if ready else "not_ready", reason=reason,
+                          trade_date=day, row_count=row_count, universe_count=denominator,
+                          universe_fallback=("missing_or_invalid_symbol_universe" if fallback else None),
+                          coverage=coverage, threshold=threshold, available_at=available_at,
+                          version=manifest.get("version"), elapsed_ms=round((time.monotonic() - started) * 1000))
     return _cached("daily_kline_ready", event, now, "daily_kline", check)
 
 

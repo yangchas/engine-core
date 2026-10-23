@@ -24,6 +24,17 @@ def test_build_record_preserves_all_fixture_slices_and_explicit_unknowns():
     assert record["report_json_bytes"] == manifest["report_json_bytes"]
     assert any(value["version"] == "UNKNOWN" or value["available_at"] == "UNKNOWN"
                for value in record["input_versions"].values())
+
+
+def test_build_record_includes_close_catalog_versions():
+    manifest = {"trade_date": "2026-10-22", "stage": "close", "asof": "2026-10-22T18:00:00+08:00",
+                "close_review_manifest": {"datasets": {"daily_kline": {
+                    "status": "READY", "version": "sha256-real", "available_at": "2026-10-22T17:30:00+08:00",
+                    "trade_date": "2026-10-22"}}}}
+    record = build_record(manifest, out_dir="close", completed_at="2026-10-22T10:00:00Z")
+    assert record["input_versions"]["close_catalog:daily_kline"] == {
+        "version": "sha256-real", "available_at": "2026-10-22T17:30:00+08:00",
+        "status": "READY", "reason": "UNKNOWN", "used_date": "2026-10-22"}
     assert all(set(value) == {"version", "available_at", "status", "reason", "used_date"}
                for value in record["input_versions"].values())
 

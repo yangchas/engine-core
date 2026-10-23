@@ -2,7 +2,7 @@ from datetime import date, datetime
 
 import pytest
 
-from engine_core.guardian.gates import auction_snapshot_ready, checkpoint_ready
+from engine_core.guardian.gates import auction_snapshot_ready, checkpoint_ready, daily_kline_ready
 
 
 def test_snapshot_gate_uses_universe_and_exact_threshold():
@@ -46,6 +46,35 @@ def test_snapshot_universe_query_failure_uses_logged_fallback(monkeypatch, caplo
     assert "trusted universe unavailable; using fallback=4500" in caplog.text
     assert len(calls) == 1
     assert "private backend detail" not in caplog.text
+
+
+def test_daily_kline_gate_requires_same_date_coverage_and_available_at(monkeypatch, tmp_path):
+    import json
+    import engine_core.guardian.gates as gates
+
+    manifest = tmp_path / "daily.json"
+    universe = tmp_path / "universe.json"
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text("{}\n" * 95)
+    universe.write_text('{"row_count":100}')
+    def install(trade_date="2026-10-19", row_count=95, available="2026-10-19T17:30:00+08:00"):
+        manifest.write_text(json.dumps({"trade_date": trade_date, "row_count": row_count,
+                                        "available_at": available, "rows_uri": str(rows)}))
+    class Catalog:
+        def __init__(self, *_): pass
+        def locate(self, dataset, day): return manifest if dataset == "daily_kline" else universe
+        def read(self): return {"datasets": {"symbol_universe": {"dates": {"2026-10-19": [{"row_count": 100, "manifest": str(universe)}]}}}}
+    import engine_core.data_pipeline.storage as storage
+    monkeypatch.setattr(storage, "ArtifactCatalog", Catalog)
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    event = type("Event", (), {"gate": "daily_kline_ready"})()
+    now = datetime.fromisoformat("2026-10-19T18:00:00+08:00")
+    install(row_count=94)
+    assert not daily_kline_ready(event, now, {})
+    install(trade_date="2026-10-18", row_count=100)
+    assert not daily_kline_ready(event, now.replace(second=2), {})
+    install(row_count=95)
+    assert daily_kline_ready(event, now.replace(second=3), {})
 
 
 class FakeTD:
