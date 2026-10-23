@@ -189,7 +189,8 @@ def test_guardian_cli_dry_run_does_not_touch_real_state_root(tmp_path, mode):
 
 @pytest.mark.parametrize("event_id,expected", [
     ("open_report_0932", "09:32:10"),
-    ("open_report_0938", "09:38:10"),
+    ("open_report_0935", "09:35:10"),
+    ("open_report_0940", "09:40:10"),
     ("open_report_0945", "09:45:30"),
     ("auction_report_0926", "09:26:00"),
 ])

@@ -110,7 +110,8 @@ def test_independent_scanner_rejects_future_in_actual_report_fields(payload):
 
 @pytest.mark.parametrize(("asof", "checkpoint"), [
     ("2026-10-16T09:32:10+08:00", "0932"),
-    ("2026-10-16T09:38:10+08:00", "0938"),
+    ("2026-10-16T09:35:10+08:00", "0935"),
+    ("2026-10-16T09:40:10+08:00", "0940"),
     ("2026-10-16T09:45:30+08:00", "0945"),
 ])
 def test_report_checkpoint_labels_and_columns_never_exceed_asof(asof, checkpoint):
@@ -118,7 +119,8 @@ def test_report_checkpoint_labels_and_columns_never_exceed_asof(asof, checkpoint
         "asof": asof,
         "checkpoint": checkpoint,
         "chapters": {"highboards": {"chapter_title": f"{checkpoint}高标聚类"}},
-        "stocks": [{"p0932_pct": 1.0, "p0938_pct": None if checkpoint == "0932" else 2.0,
+        "stocks": [{"p0932_pct": 1.0,
+                    "p0938_pct": 2.0 if checkpoint in {"0940", "0945"} else None,
                     "p0945_pct": None if checkpoint != "0945" else 3.0}],
     }
     _assert_report_not_future(report, asof)
@@ -143,6 +145,16 @@ def test_report_rejects_future_checkpoint_data(asof, report):
 def test_report_asof_clock_is_not_a_future_checkpoint_label():
     report = {"asof": "2026-10-16T09:45:29"}
     assert_report_checkpoint_invariant(report, open_checkpoint_for_asof(report["asof"]))
+
+
+@pytest.mark.parametrize(("asof", "checkpoint"), [
+    ("2026-10-16T09:32:10+08:00", "0932"),
+    ("2026-10-16T09:35:10+08:00", "0935"),
+    ("2026-10-16T09:40:10+08:00", "0940"),
+    ("2026-10-16T09:45:30+08:00", "0945"),
+])
+def test_scheduled_open_report_asof_selects_its_checkpoint(asof, checkpoint):
+    assert open_checkpoint_for_asof(asof) == checkpoint
 
 
 def test_report_observation_cannot_claim_storage_metadata_to_bypass_future_check():

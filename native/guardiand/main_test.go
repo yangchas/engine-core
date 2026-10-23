@@ -67,7 +67,7 @@ func TestMigrationV2PreservesConfiguredStartupAndWindowPolicies(t *testing.T) {
 	if err = json.Unmarshal(b, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.HeavyMaxLoad1 != 3 || got.HeavyCutoffs["PRE_MARKET"] != "09:10:00" || len(got.Events) != 65 {
+	if got.HeavyMaxLoad1 != 3 || got.HeavyCutoffs["PRE_MARKET"] != "09:10:00" || len(got.Events) != 62 {
 		t.Fatalf("global config/events lost: maxload=%v cutoffs=%v count=%d", got.HeavyMaxLoad1, got.HeavyCutoffs, len(got.Events))
 	}
 	byID := map[string]struct {
@@ -88,6 +88,15 @@ func TestMigrationV2PreservesConfiguredStartupAndWindowPolicies(t *testing.T) {
 	}{}
 	for _, event := range got.Events {
 		byID[event.ID] = event
+	}
+	for id, start := range map[string]string{"open_report_0932": "09:32:10", "open_report_0935": "09:35:10",
+		"open_report_0940": "09:40:10", "open_report_0945": "09:45:30"} {
+		if event, ok := byID[id]; !ok || event.Trigger.Start != start {
+			t.Fatalf("open report %s start=%q present=%v, want %q", id, event.Trigger.Start, ok, start)
+		}
+	}
+	if _, ok := byID["open_report_0938"]; ok {
+		t.Fatal("0938 must remain an internal data checkpoint, not a scheduled report")
 	}
 	if event := byID["boot_trade_day"]; event.Trigger.Type != "startup" || event.Trigger.Order != 10 || event.Handler != "legacy_boot_trade_day" {
 		t.Fatalf("startup event changed: %+v", event)

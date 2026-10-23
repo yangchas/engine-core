@@ -1,4 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
+
+import pytest
 
 from engine_core.guardian.gates import auction_snapshot_ready, checkpoint_ready
 
@@ -106,6 +108,21 @@ def test_checkpoint_never_queries_future_window(monkeypatch):
     now = datetime.fromisoformat("2026-10-19T09:45:10+08:00")
     assert not checkpoint_ready(event, now, {})
     assert calls == []
+
+
+@pytest.mark.parametrize(("event_id", "start", "cutoff"), [
+    ("open_report_0932", "09:32:10", "09:32:00"),
+    ("open_report_0935", "09:35:10", "09:35:00"),
+    ("open_report_0940", "09:40:10", "09:40:00"),
+    ("open_report_0945", "09:45:30", "09:45:18"),
+])
+def test_report_gate_cutoff_matches_report_checkpoint(event_id, start, cutoff):
+    from engine_core.guardian.gates import _checkpoint_cutoff
+    from engine_core.guardian.scheduler import default_events
+
+    event = next(e for e in default_events() if e.event_id == event_id)
+    assert event.start == start
+    assert _checkpoint_cutoff(event, date(2026, 10, 19)).strftime("%H:%M:%S") == cutoff
 
 
 def test_checkpoint_timeout_returns_diagnostic_reason(monkeypatch):

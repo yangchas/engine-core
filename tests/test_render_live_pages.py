@@ -69,18 +69,25 @@ def test_render_page_fetches_independent_cutoffs_concurrently_and_keeps_stage_or
     assert [snap["label"] for snap in payload["snapshots"]] == ["0920", "0924", "0925"]
 
 
-def test_open_asof_uses_latest_ready_0932_and_0938_checkpoint():
+def test_open_asof_uses_latest_ready_scheduled_checkpoint():
+    from engine_core.live_session import OPEN_CHECKPOINTS
+
     class TD:
+        def latest_tick_ts(self):
+            return "2026-10-15T09:45:30"
+
         def states_at(self, cutoff):
             return {"000001": _state("000001", cutoff.minute, 1_000_000,
                                       ts=cutoff.strftime("%H:%M:%S"))}
 
     for asof, checkpoint in (("2026-10-15T09:32:10", "0932"),
-                             ("2026-10-15T09:38:10", "0938")):
+                             ("2026-10-15T09:35:10", "0935"),
+                             ("2026-10-15T09:40:10", "0940"),
+                             ("2026-10-15T09:45:30", "0945")):
         _, payload = render_page(TD(), trade_date="2026-10-15", stage="open_0946", asof=asof)
         ready = [snap for snap in payload["snapshots"] if snap["status"] != "NOT_YET_AVAILABLE"]
         assert ready[-1]["label"] == checkpoint
-        assert ready[-1]["asof"].endswith({"0932": "09:32:00", "0938": "09:38:00"}[checkpoint])
+        assert ready[-1]["asof"].endswith(dict(OPEN_CHECKPOINTS)[checkpoint])
 
 
 @pytest.mark.parametrize(("asof", "checkpoint"), [("2026-10-15T09:32:10", "0932"),
