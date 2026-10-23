@@ -73,6 +73,7 @@ def _official_limit_up(snapshot: Mapping[str, Any], symbol: str,
 def build_auction_stock_facts(trade_date: str, asof: str,
                               snapshots: Sequence[Mapping[str, Any]],
                               ticks: Sequence[Mapping[str, Any]], *,
+                              anchor_snapshots: Sequence[Mapping[str, Any]] = (),
                               tick_volume_unit: str | None = None,
                               st_symbols: set[str] | None = None,
                               unlimited_symbols: set[str] | None = None,
@@ -90,6 +91,14 @@ def build_auction_stock_facts(trade_date: str, asof: str,
     if live and (read_time is None or read_time.date().isoformat() != trade_date or read_time > current):
         raise ValueError("invalid_live_read_at")
     eligible_ticks: dict[str, list[Mapping[str, Any]]] = {}
+    anchors: dict[str, dict[str, float | None]] = {}
+    for anchor in anchor_snapshots:
+        symbol = str(anchor.get("symbol") or "").zfill(6)
+        tag = str(anchor.get("auction_tag") or "")
+        if tag not in {"0924", "0925"}:
+            continue
+        amount = _number(anchor.get("auction_amount_yuan"))
+        anchors.setdefault(symbol, {})[tag] = amount if amount is not None and amount > 0 else None
     for tick in ticks:
         symbol = str(tick.get("symbol") or "").zfill(6)
         source_ts = _dt(tick.get("source_ts") or tick.get("ts"))
@@ -147,6 +156,8 @@ def build_auction_stock_facts(trade_date: str, asof: str,
                 px = px_tick
         facts.append({"symbol": symbol, "name": snap.get("name"),
                       "auction_amount_yuan": amount, "amount_rank": None,
+                      "p0924_amount_yuan": anchors.get(symbol, {}).get("0924"),
+                      "p0925_amount_yuan": anchors.get(symbol, {}).get("0925", amount),
                       "amount_top50": False,
                       "price": px / 1000 if px is not None else None,
                       "pre_close_price": preclose,
@@ -204,6 +215,8 @@ def store_auction_stock_facts(facts: Mapping[str, Any], *, artifact_root: str | 
     catalog = ArtifactCatalog(root)
     summary = dict(facts["summary"])
     rows = list(facts["rows"])
+    if not rows:
+        raise ValueError("AUCTION_STOCK_FACTS_EMPTY")
     available_at = datetime.now(TZ).isoformat()
     manifest = catalog.commit(dataset, day, rows,
                               {"schema": "auction_stock_facts_v1", "trade_date": day,

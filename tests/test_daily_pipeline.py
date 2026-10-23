@@ -40,52 +40,6 @@ def test_v6_auction_inputs_are_minimal_and_preserve_missing_values():
     assert payload["snapshots"][0]["market_match_amount_yuan"] is None
 
 
-def test_live_auction_fact_td_reader_uses_asof_window_and_maps_real_columns():
-    from engine_core.daily_pipeline import _read_live_auction_fact_rows
-
-    class Cursor:
-        def __init__(self): self.calls = []; self.description = []
-        def execute(self, sql):
-            self.calls.append(sql)
-            columns = (("ts", "symbol", "px_milli", "chg_bp", "match_amt_yuan",
-                "rest_bid_amt_yuan", "rest_ask_amt_yuan", "limit_state", "trade_date", "auction_tag")
-                if "auction_snapshot_v2" in sql else
-                ("ts", "px_milli", "amt_yuan", "pc_milli", "bp1_milli", "bv1", "symbol"))
-            self.description = [(name,) for name in columns]
-        def fetchall(self):
-            if "auction_snapshot_v2" in self.calls[-1]:
-                return [("2026-10-16 09:25:06.112", "002815", 25580, 1002, 1234,
-                         0, 0, 1, "20261016", "0925")]
-            return [("2026-10-16 09:26:00.000", 25580, 1234, 23250, 25580, 350287, "002815")]
-        def close(self): pass
-
-    class TD:
-        def __init__(self): self.c = Cursor()
-        def cursor(self): return self.c
-
-    td = TD()
-    snapshots, ticks = _read_live_auction_fact_rows(
-        td, "2026-10-16", "2026-10-16T09:26:00+08:00")
-    assert len(snapshots) == len(ticks) == 1
-    assert snapshots[0]["auction_amount_yuan"] == 1234
-    assert snapshots[0]["price_milli"] == 25580
-    assert ticks[0]["bv1"] == 350287
-    assert snapshots[0]["pre_close_milli"] == 23250
-    assert all("09:26:00" in sql for sql in td.c.calls)
-    assert all("09:25:00" in sql for sql in td.c.calls if "stock_tick_v2" in sql)
-
-
-def test_current_day_auction_refreshes_preexisting_non_live_facts():
-    from types import SimpleNamespace
-    from engine_core.daily_pipeline import _should_refresh_live_auction_facts
-
-    old_partial = SimpleNamespace(rows=[{"symbol": "000001"}], meta={"source": "core_data"})
-    live_facts = SimpleNamespace(rows=[{"symbol": "000001"}], meta={"source": "live_td_read"})
-    assert _should_refresh_live_auction_facts(old_partial, is_current_day=True, force=False)
-    assert not _should_refresh_live_auction_facts(live_facts, is_current_day=True, force=False)
-    assert not _should_refresh_live_auction_facts(old_partial, is_current_day=False, force=False)
-
-
 def test_live_report_shrink_keeps_original_dictionary_omission_hash_idempotently():
     from engine_core.daily_pipeline import _shrink_live_report
     report = {"plate_dictionary": {"rows": [{"code": "A"}, {"code": "B"}]}}
@@ -642,7 +596,8 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
                  for path in cluster["paths"]]
         labels = {path["symbol"]: path["status"] for path in paths}
         if stage == "auction":
-            assert labels["600001"] == "封停价代理"
+            assert report["status"] == "MISSING_AUCTION_FACTS"
+            assert "MISSING_AUCTION_FACTS" in manifest["degraded"]
         else:
             assert report["ladder_section"]["promotion_checkpoint"] == "0932"
             assert report["ladder_section"]["promotion_status"] in {"READY", "UNKNOWN"}

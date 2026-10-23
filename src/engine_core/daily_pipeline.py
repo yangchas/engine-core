@@ -43,16 +43,6 @@ def _auction_assembly_mode() -> str:
     return mode
 
 
-def _should_refresh_live_auction_facts(facts_result: Any, *, is_current_day: bool,
-                                       force: bool) -> bool:
-    if force:
-        return True
-    if not is_current_day:
-        return False
-    return (facts_result is None or not facts_result.rows or
-            facts_result.meta.get("source") != "live_td_read")
-
-
 def _fact_auction_amount(fact: Mapping[str, Any]) -> Any:
     matched = fact.get("auction_match_amount_yuan")
     return matched if matched is not None else fact.get("p0925_cumulative_amount_yuan")
@@ -249,59 +239,6 @@ def _connect_td() -> tuple[Any, str | None]:
         return client, None
     except Exception as exc:  # degrade when TD driver/service is absent
         return _MissingTD(), f"TD_READ_UNAVAILABLE:{type(exc).__name__}"
-
-
-def _read_live_auction_fact_rows(td: Any, trade_date: str, asof: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Read only the 0925 snapshot and latest required tick fields through asof."""
-    day = trade_date.replace("-", "")
-    cutoff = datetime.fromisoformat(asof).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    start = f"{trade_date} 09:25:00.000"
-    snapshot_sql = (
-        "SELECT ts,symbol,px_milli,chg_bp,match_amt_yuan,rest_bid_amt_yuan,"
-        "rest_ask_amt_yuan,limit_state,trade_date,auction_tag "
-        f'FROM market_data1.auction_snapshot_v2 WHERE trade_date="{day}" '
-        f'AND auction_tag="0925" AND ts<="{cutoff}"'
-    )
-    tick_sql = (
-        "SELECT last_row(ts) AS ts,last_row(px_milli) AS px_milli,"
-        "last_row(amt_yuan) AS amt_yuan,last_row(pc_milli) AS pc_milli,"
-        "last_row(bp1_milli) AS bp1_milli,"
-        "last_row(bv1) AS bv1,symbol "
-        f'FROM market_data1.stock_tick_v2 WHERE ts>="{start}" AND ts<="{cutoff}" '
-        "GROUP BY symbol"
-    )
-
-    def fetch(sql: str) -> list[dict[str, Any]]:
-        cursor = td.cursor()
-        try:
-            cursor.execute(sql)
-            columns = [str(item[0]).lower().split(".")[-1] for item in (cursor.description or ())]
-            rows = []
-            for raw in cursor.fetchall():
-                row = dict(raw) if isinstance(raw, Mapping) else dict(zip(columns, raw))
-                rows.append({str(key).lower().split(".")[-1]: value for key, value in row.items()})
-            return rows
-        finally:
-            close = getattr(cursor, "close", None)
-            if callable(close): close()
-
-    snapshots = fetch(snapshot_sql)
-    ticks = fetch(tick_sql)
-    normalized_snapshots = []
-    for row in snapshots:
-        normalized_snapshots.append({**row, "symbol": str(row.get("symbol") or "").zfill(6),
-            "auction_amount_yuan": row.get("match_amt_yuan"), "price_milli": row.get("px_milli"),
-            "change_bp": row.get("chg_bp"), "source_ts": row.get("ts")})
-    normalized_ticks = []
-    for row in ticks:
-        normalized_ticks.append({**row, "symbol": str(row.get("symbol") or "").zfill(6),
-            "source_ts": row.get("ts"), "tick_volume_unit": "lots"})
-    tick_by_symbol = {row["symbol"]: row for row in normalized_ticks}
-    for row in normalized_snapshots:
-        tick = tick_by_symbol.get(row["symbol"])
-        if tick is not None:
-            row["pre_close_milli"] = tick.get("pc_milli")
-    return normalized_snapshots, normalized_ticks
 
 
 def _connect_redis() -> Any:
@@ -1214,62 +1151,6 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     if stage == "auction" and _auction_assembly_mode() == "v6":
         facts_result = slice_results.get("auction_stock_facts")
         facts_rows = facts_result.rows if facts_result is not None else []
-        now_dt = src.clock_now or datetime.now(TZ)
-        is_current_day = trade_date == now_dt.date().isoformat()
-        refresh_live_facts = _should_refresh_live_auction_facts(
-            facts_result, is_current_day=is_current_day, force=src.force_live_auction_facts)
-        if refresh_live_facts:
-            facts_rows = []
-        if refresh_live_facts:
-            requested_cutoff = datetime.fromisoformat(slice_asof)
-            hard_cutoff = datetime.fromisoformat(f"{trade_date}T09:26:00+08:00")
-            cutoff = min(requested_cutoff, hard_cutoff, now_dt)
-            if cutoff.date().isoformat() != trade_date:
-                cutoff = datetime.fromisoformat(f"{trade_date}T09:25:00+08:00")
-            cutoff_text = cutoff.isoformat()
-            try:
-                if src.td_error or src.td is None:
-                    raise RuntimeError("TD_UNAVAILABLE")
-                snapshots, ticks = _read_live_auction_fact_rows(src.td, trade_date, cutoff_text)
-                if len(snapshots) < 5000:
-                    raise ValueError("SNAPSHOT_COVERAGE_LOW")
-                if len(ticks) < int(len(snapshots) * 0.90):
-                    raise ValueError("TICK_COVERAGE_LOW")
-                from .auction_stock_facts import build_auction_stock_facts, store_auction_stock_facts
-                name_result = slice_results.get("stock_name_map")
-                facts = build_auction_stock_facts(
-                    trade_date, cutoff_text, snapshots, ticks, tick_volume_unit="lots",
-                    st_symbols={str(row.get("symbol") or "").zfill(6) for row in
-                        (name_result.rows if name_result is not None else [])
-                        if row.get("is_st") or row.get("stock_type") == "ST"},
-                    unlimited_symbols={str(row.get("symbol") or "").zfill(6) for row in
-                        (name_result.rows if name_result is not None else [])
-                        if row.get("is_new_stock")},
-                    now=now_dt.isoformat(), read_at=now_dt.isoformat())
-                stored = store_auction_stock_facts(facts, redis=src.redis, artifact_root=_dry_run_artifact_root(out_root, dry_run))
-                from .slices import SliceResult
-                quality = {**facts["summary"], "coverage": len(facts["rows"]), "partial": True}
-                facts_meta = {"slice_id": "auction_stock_facts", "status": "PARTIAL",
-                    "source": "live_td_read", "version": stored["version"], "asof": cutoff_text,
-                    "as_of": cutoff_text, "available_at": stored.get("available_at"),
-                    "pit_date": trade_date, "quality": quality, "reason": None,
-                    "lineage": [{"source": "live_td_read", "used_date": trade_date,
-                                 "available_at": stored.get("available_at")}]}
-                slice_results["auction_stock_facts"] = SliceResult.create(facts["rows"], facts_meta)
-                slice_manifest["auction_stock_facts"] = {"source": "live_td_read",
-                    "version_source": "auction_stock_facts", "status": "PARTIAL", "asof": cutoff_text,
-                    "available_at": stored.get("available_at"), "rows": len(facts["rows"]),
-                    "reason": None, "version": stored["version"], "quality": quality,
-                    "used_date": [trade_date], "coverage": len(facts["rows"])}
-            except Exception as exc:
-                error_code = str(exc) if str(exc) in {"SNAPSHOT_COVERAGE_LOW", "TICK_COVERAGE_LOW", "TD_UNAVAILABLE"} else "TD_READ_FAILED"
-                slice_manifest["auction_stock_facts"] = {"source": "live_td_read", "status": "MISSING",
-                    "reason": f"AUCTION_STOCK_FACTS_{error_code}", "rows": 0, "version": None}
-                from .slices import SliceResult
-                slice_results["auction_stock_facts"] = SliceResult.create([], {
-                    "slice_id": "auction_stock_facts", "status": "MISSING",
-                    "source": "live_td_read", "reason": f"AUCTION_STOCK_FACTS_{error_code}",
-                    "quality": {"coverage": 0, "partial": True}})
     q2_coverage: int | None = None
     if stage != "close" and src.redis is not None:
         try:
@@ -1407,15 +1288,18 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
             facts_result = slice_results.get("auction_stock_facts")
             facts_rows = facts_result.rows if facts_result is not None else []
             facts_meta = facts_result.meta if facts_result is not None else {}
-            if not facts_rows and not src.force_live_auction_facts and trade_date < date.today().isoformat():
-                # Historical development previews may use event-time facts even
-                # when storage availability is later than the report cutoff.
+            if not facts_rows and not src.force_live_auction_facts:
+                # A stored event-time capture can serve a later replay cutoff
+                # only when its source as_of is no later than that cutoff.
                 from .data_pipeline.storage import ArtifactCatalog
                 catalog = ArtifactCatalog(os.getenv("CORE_DATA_ROOT", "/home/exedev/core-data"))
                 facts_path = catalog.locate("auction_stock_facts", trade_date)
                 if facts_path is not None and facts_path.is_file():
                     historical_manifest = json.loads(facts_path.read_text(encoding="utf-8"))
-                    if historical_manifest.get("as_of") == slice_asof:
+                    source_asof = datetime.fromisoformat(str(historical_manifest.get("as_of", "")).replace("Z", "+00:00"))
+                    requested_asof = datetime.fromisoformat(slice_asof.replace("Z", "+00:00"))
+                    if (source_asof.tzinfo is not None and requested_asof.tzinfo is not None
+                            and source_asof <= requested_asof):
                         facts_rows = catalog.read_rows(facts_path)
                         facts_meta = {**historical_manifest, "source": "core_data_event_time_replay"}
                         from .slices import SliceResult
@@ -1434,23 +1318,15 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                             "quality": facts_meta.get("quality", {}), "used_date": [trade_date],
                             "coverage": facts_meta.get("quality", {}).get("coverage")}
             from .auction_v6_inputs import prepare_auction_v6_inputs
-            fallback_stocks = []
-            if not facts_rows:
-                # Keep report.json/email observations available during slice
-                # migration without invoking the legacy page or its chapters.
-                fallback_stocks = _live_section_stocks(
-                    src.td or _MissingTD(), trade_date=trade_date, stage=stage,
-                    asof=asof or "09:26:00", relations=relations, plate_names=plate_names,
-                    stock_names=stock_names, history_path=slice_results["daily_history"].rows,
-                    report_features=slice_results["daily_report_features"].rows or None,
-                    td_connection_factory=src.td_connection_factory)
             page = ""
             payload = prepare_auction_v6_inputs(
                 trade_date=trade_date, asof=slice_asof, stock_facts=facts_rows,
-                stock_names=stock_names, fallback_stocks=fallback_stocks,
+                stock_names=stock_names,
                 limitations=("V6 竞价事实；章节仅由已装配产品提供。" if facts_rows
                              else "竞价事实缺失；不调用旧版章节计算。"))
-            payload["status"] = facts_meta.get("status", "MISSING")
+            payload["status"] = facts_meta.get("status", "MISSING") if facts_rows else "MISSING_AUCTION_FACTS"
+            if not facts_rows:
+                degraded.append("MISSING_AUCTION_FACTS")
         else:
             page, payload = live_pages.render_page(
                 src.td or _MissingTD(), trade_date=trade_date, stage=render_stage,

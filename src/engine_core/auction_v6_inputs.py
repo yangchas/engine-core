@@ -7,7 +7,6 @@ from typing import Any, Mapping, Sequence
 def prepare_auction_v6_inputs(*, trade_date: str, asof: str,
                               stock_facts: Sequence[Mapping[str, Any]],
                               stock_names: Mapping[str, str] | None = None,
-                              fallback_stocks: Sequence[Mapping[str, Any]] = (),
                               limitations: str = "") -> dict[str, Any]:
     """Build the auction payload without legacy snapshots, chapters, or HTML."""
     names = stock_names or {}
@@ -25,6 +24,8 @@ def prepare_auction_v6_inputs(*, trade_date: str, asof: str,
             "symbol": symbol,
             "name": fact.get("name") or names.get(symbol) or "名称未知",
             "auction_amount_yuan": amount,
+            "p0924_amount_yuan": fact.get("p0924_amount_yuan"),
+            "p0925_amount_yuan": fact.get("p0925_amount_yuan", amount),
             "amount_rank": fact.get("amount_rank"),
             "p0925_pct": change,
             "auction_pct": change,
@@ -42,8 +43,6 @@ def prepare_auction_v6_inputs(*, trade_date: str, asof: str,
             amounts.append(float(amount))
         if isinstance(change, (int, float)):
             changes.append(float(change))
-    if not stocks:
-        stocks = [dict(row) for row in fallback_stocks if isinstance(row, Mapping)]
     total = sum(amounts) if amounts else None
     snapshot = {
         "label": "0925", "asof": asof, "status": "READY" if stock_facts else "MISSING",

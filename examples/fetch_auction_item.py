@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from datetime import datetime, time as clock_time
 from pathlib import Path
@@ -14,6 +15,16 @@ import sys
 sys.path.insert(0, str(ROOT / "src"))
 
 TZ = ZoneInfo("Asia/Shanghai")
+
+
+def _require_snapshot_coverage(symbols, universe_count=None):
+    from engine_core.guardian.gates import FALLBACK_UNIVERSE_COUNT, SNAPSHOT_COVERAGE_THRESHOLD
+    universe = int(universe_count or FALLBACK_UNIVERSE_COUNT)
+    required = max(1, math.ceil(universe * SNAPSHOT_COVERAGE_THRESHOLD))
+    count = len(set(symbols))
+    if count < required:
+        raise RuntimeError(f"SNAPSHOT_COVERAGE_LOW:{count}/{universe}:required={required}")
+    return count
 
 
 def _query(cursor, sql):
@@ -82,7 +93,11 @@ def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catal
                          if str(row.get("ts") or "")[:19] <= cutoff_text]
     final_snapshots = [row for row in visible_snapshots
                        if str(row.get("auction_tag") or "") == "0925"]
+    if item == "auction_stock_facts":
+        final_symbols = {str(row.get("symbol") or "").zfill(6) for row in final_snapshots}
+        _require_snapshot_coverage(final_symbols)
     facts = build_auction_stock_facts(day, cutoff, final_snapshots, ticks,
+                                     anchor_snapshots=visible_snapshots,
                                      now=read_at if live else None,
                                      read_at=read_at if live else None)
     if item == "auction_stock_facts":
