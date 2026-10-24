@@ -66,7 +66,15 @@ class ArtifactCatalog:
 
     def commit(self, dataset: str, trade_date: str, rows: Sequence[Mapping[str, Any]],
                manifest: Mapping[str, Any], *, source: str, authority: str = "LIVE",
-               clock: Any = None) -> dict[str, Any]:
+               clock: Any = None, adapter: str | None = None,
+               context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        gate = None
+        from .registry import DATASETS
+        spec = DATASETS.get(dataset)
+        if spec is not None and spec.fields and spec.gate_mode != "off":
+            from .registry.gate import summarize_gate
+            gate = summarize_gate(spec, rows, trade_date=trade_date, manifest=manifest,
+                                  source=source, adapter=adapter, context=context)
         payload = b"\n".join(canonical_json(dict(row)) for row in rows) + (b"\n" if rows else b"")
         digest = sha256(payload)
         identity = {"payload_sha256": digest}
@@ -115,12 +123,18 @@ class ArtifactCatalog:
                        "storage_backend": "artifact", "storage_uri": str(run_dir),
                        "rows_uri": str(data_path), "manifest_uri": str(manifest_path)})
         result["storage_format"] = "jsonl.gz"
+        if gate is not None:
+            result["gate"] = gate
         if not manifest_path.is_file():
             _atomic_write(data_path, gzip.compress(payload, mtime=0))
             _atomic_write(manifest_path, canonical_json(result) + b"\n")
         else:
             try:
-                result = json.loads(manifest_path.read_text(encoding="utf-8"))
+                existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if gate is not None:
+                    existing["gate"] = gate
+                    _atomic_write(manifest_path, canonical_json(existing) + b"\n")
+                result = existing
             except (OSError, ValueError):
                 pass
         with _catalog_lock(self.root):
@@ -129,19 +143,27 @@ class ArtifactCatalog:
             entry = datasets.setdefault(dataset, {"dates": {}, "latest": None})
             versions = entry.setdefault("dates", {}).setdefault(trade_date, [])
             if str(manifest_path) not in [item.get("manifest") for item in versions]:
-                versions.append({"version": version, "manifest": str(manifest_path),
+                catalog_version = {"version": version, "manifest": str(manifest_path),
                                  "sha256": digest, "row_count": len(rows), "as_of": result.get("as_of"),
                                  "source": source, "business_status": result.get("business_status"),
                                  **{key: result[key] for key in ("available_at", "committed_at", "authority")
                                     if key in result},
                                  **({"node_fingerprint": result["node_fingerprint"]}
-                                    if "node_fingerprint" in result else {})})
+                                    if "node_fingerprint" in result else {})}
+                if gate is not None:
+                    catalog_version["gate_status"] = gate["gate_status"]
+                versions.append(catalog_version)
             else:
                 for item in versions:
-                    if item.get("manifest") == str(manifest_path) and "node_fingerprint" in result:
-                        item["node_fingerprint"] = result["node_fingerprint"]
+                    if item.get("manifest") == str(manifest_path):
+                        if "node_fingerprint" in result:
+                            item["node_fingerprint"] = result["node_fingerprint"]
+                        if gate is not None:
+                            item["gate_status"] = gate["gate_status"]
             current_latest = entry.get("latest")
             if (result.get("business_status") != "PROVISIONAL"
+                    and not (spec is not None and spec.gate_mode == "enforce"
+                             and gate is not None and gate["gate_status"] == "FAIL")
                     and (current_latest is None or trade_date >= current_latest.get("trade_date", ""))):
                 entry["latest"] = {"trade_date": trade_date, "version": version}
             _atomic_write(self.path, canonical_json(catalog) + b"\n")

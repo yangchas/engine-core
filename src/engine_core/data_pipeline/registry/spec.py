@@ -90,8 +90,16 @@ class DatasetSpec:
     schema_version: int = 1
     fields: tuple[FieldSpec, ...] = ()
     checks: tuple[CheckSpec, ...] = ()
+    gate_mode: str = "observe"
+    max_bad_ratio: float = 0.02
 
     def __post_init__(self) -> None:
+        if self.gate_mode not in {"off", "observe", "enforce"}:
+            raise ValueError(f"invalid gate mode: {self.gate_mode!r}")
+        if isinstance(self.max_bad_ratio, bool) or not isinstance(self.max_bad_ratio, (int, float)) or not (
+            0 <= self.max_bad_ratio <= 1
+        ):
+            raise ValueError("max_bad_ratio must be between 0 and 1")
         field_names = {item.name for item in self.fields}
         adapters = {adapter for item in self.fields for adapter in item.source_units}
         raw_only_names = {item.name for item in self.fields if item.raw_only}
