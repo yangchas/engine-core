@@ -97,7 +97,24 @@ def test_real_partial_manifest_coverage_fails_commit_gate(tmp_path):
         manifest={"quality": {"status": "PARTIAL"}}, source="baostock",
     )
     assert missing_coverage["gate_status"] == "FAIL"
-    assert {"coverage_missing", "coverage_low"} <= set(missing_coverage["reasons"])
+    assert {"coverage_missing", "quality_partial"} <= set(missing_coverage["reasons"])
+
+
+def test_partial_quality_with_sufficient_real_coverage_warns(tmp_path):
+    _, rows = _daily_kline_fixture()
+    manifest_path = FIXTURES / "core_artifacts/c522/daily_kline/2026-10-23/provisional/manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    result = ArtifactCatalog(tmp_path / "core").commit(
+        "daily_kline", "2026-10-23", rows, manifest,
+        source=manifest["source"],
+        clock=lambda: datetime(2026, 10, 25, tzinfo=timezone.utc),
+    )
+
+    assert manifest["quality"]["status"] == "PARTIAL"
+    assert manifest["quality"]["coverage"] == 0.9998086124401914
+    assert result["gate"]["gate_status"] == "WARN"
+    assert "quality_partial" in result["gate"]["reasons"]
+    assert "coverage_low" not in result["gate"]["reasons"]
 
 
 def test_enforce_blocks_failed_latest_but_observe_does_not(tmp_path, monkeypatch):

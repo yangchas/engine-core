@@ -110,6 +110,7 @@ def summarize_gate(spec: DatasetSpec, rows: Sequence[Mapping[str, Any]], *,
     flagged_rows = sum(bool(item.flags) for item in canonical_rows)
     checks = _check_summary(evaluate_checks(spec, canonical_rows, resolution.adapter))
     coverage_reasons: list[str] = []
+    quality_partial = False
     if spec.min_coverage is not None:
         quality = metadata.get("quality")
         quality = quality if isinstance(quality, Mapping) else {}
@@ -120,9 +121,12 @@ def summarize_gate(spec: DatasetSpec, rows: Sequence[Mapping[str, Any]], *,
         )
         if not valid_coverage:
             coverage_reasons.append("coverage_missing")
-        if quality.get("status") == "PARTIAL" or (valid_coverage and coverage < spec.min_coverage):
+        elif coverage < spec.min_coverage:
             coverage_reasons.append("coverage_low")
+        quality_partial = quality.get("status") == "PARTIAL"
     reasons = list(coverage_reasons)
+    if quality_partial:
+        reasons.append("quality_partial")
     if key_invalid:
         reasons.append("key_invalid")
     if rows and flagged_rows / len(rows) > spec.max_bad_ratio:
@@ -135,6 +139,8 @@ def summarize_gate(spec: DatasetSpec, rows: Sequence[Mapping[str, Any]], *,
         flags_by_field=flags_by_field, unmapped_keys=unmapped_keys, checks=checks,
         coverage_reasons=coverage_reasons,
     )
+    if gate_status == "OK" and quality_partial:
+        gate_status = "WARN"
     if gate_status == "WARN":
         if flags_by_field:
             reasons.append("field_flags")

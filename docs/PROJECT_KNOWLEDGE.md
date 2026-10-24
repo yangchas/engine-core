@@ -1,5 +1,13 @@
 # Project Knowledge
 
+- `[VERIFIED 2026-10-25 — C534 data access]` `data_pipeline.get()` selects immutable
+  catalog versions by gate status, business status, coverage, availability time,
+  then manifest path; canonical reads use registered adapters without network
+  access. A PARTIAL quality label now warns when coverage meets the threshold;
+  low or missing coverage still fails. Real catalog comparison covered 80
+  `daily_kline` dates, found two metadata-driven selection changes, and matched
+  legacy rows exactly for 2026-10-22 and 2026-10-23.
+
 - `[VERIFIED BY REAL FROZEN Q2FRAME REPEAT REPLAY 2026-10-12]` The hash-pinned
   2026-10-09 t1-v2 Q2Frame (`7474de28…483467`) replayed through Core in ordered
   and repeat passes: 1,190 frames / 1,146,352 updates, ending at 09:39:26.
