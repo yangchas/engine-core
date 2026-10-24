@@ -140,7 +140,14 @@ def _gate(name, request=None):
     if fn is None or event is None:
         _json({"status": "not_ready", "reason": "unknown_gate"})
         return 64
-    now = datetime.now().astimezone()
+    try:
+        now = datetime.fromisoformat(request.get("now")) if request.get("now") else None
+        if now is not None and now.tzinfo is None:
+            from zoneinfo import ZoneInfo
+            now = now.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+    except (TypeError, ValueError):
+        now = None
+    now = now or datetime.now().astimezone()
     try:
         result = fn(event, now, {})
         payload = dict(result) if isinstance(result, dict) else {
@@ -159,7 +166,11 @@ def _alert(request, dry_run):
 
     inner = request.get("request") if isinstance(request.get("request"), dict) else request
     reason = str(request.get("reason") or inner.get("reason") or "unspecified")
-    day = inner.get("date") or request.get("trade_date") or datetime.now().date().isoformat()
+    try:
+        now_day = datetime.fromisoformat(request.get("now")).date().isoformat() if request.get("now") else None
+    except (TypeError, ValueError):
+        now_day = None
+    day = inner.get("date") or request.get("trade_date") or now_day or datetime.now().date().isoformat()
     listed = inner.get("instances") or inner.get("events")
     if listed:
         events = [{"event": str(x), "reason": reason} for x in listed]
