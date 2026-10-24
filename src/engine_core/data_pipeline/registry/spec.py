@@ -11,7 +11,7 @@ _CHECK_NODES = {
     ast.Expression, ast.Name, ast.Load, ast.Constant, ast.Call, ast.Tuple,
     ast.UnaryOp, ast.UAdd, ast.USub, ast.Not, ast.BinOp, ast.Add, ast.Sub,
     ast.Mult, ast.Div, ast.BoolOp, ast.And, ast.Or, ast.Compare, ast.Eq,
-    ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn,
+    ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn, ast.Is,
 }
 
 
@@ -23,10 +23,10 @@ def _validate_check_expression(expression: str, field_names: set[str] | None = N
     for node in ast.walk(tree):
         if type(node) not in _CHECK_NODES:
             raise ValueError(f"unsupported check expression node: {type(node).__name__}")
-        if isinstance(node, ast.Constant) and (
+        if isinstance(node, ast.Constant) and node.value is not None and (
             isinstance(node.value, bool) or not isinstance(node.value, (int, float))
         ):
-            raise ValueError("check constants must be numbers")
+            raise ValueError("check constants must be numbers or None")
         if isinstance(node, ast.Name) and node.id not in _CHECK_FUNCTIONS:
             if field_names is not None and node.id not in field_names:
                 raise ValueError(f"unknown check field: {node.id}")
@@ -55,6 +55,7 @@ class FieldSpec:
     semantics: str = "UNVERIFIED"
     description: str = ""
     source_keys: Mapping[str, str] = field(default_factory=dict)
+    raw_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,8 @@ class CheckSpec:
     name: str
     expr: str
     min_pass_ratio: float
+    requires: tuple[str, ...] = ()
+    adapters: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_check_expression(self.expr)
@@ -90,5 +93,16 @@ class DatasetSpec:
 
     def __post_init__(self) -> None:
         field_names = {item.name for item in self.fields}
+        adapters = {adapter for item in self.fields for adapter in item.source_units}
+        raw_only_names = {item.name for item in self.fields if item.raw_only}
         for check in self.checks:
             _validate_check_expression(check.expr, field_names)
+            checked_raw_only = _check_field_names(check.expr) & raw_only_names
+            if checked_raw_only:
+                raise ValueError(f"raw-only fields cannot be checked: {sorted(checked_raw_only)}")
+            unknown_required = set(check.requires) - field_names
+            if unknown_required:
+                raise ValueError(f"unknown required check fields: {sorted(unknown_required)}")
+            unknown_adapters = set(check.adapters) - adapters
+            if unknown_adapters:
+                raise ValueError(f"unknown check adapters: {sorted(unknown_adapters)}")

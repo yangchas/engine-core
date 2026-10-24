@@ -58,3 +58,8 @@
 换算使用 Decimal 与 `ROUND_HALF_UP`（远离零）；元价转毫元乘 1000，百分数转 bp 乘 100，元金额及股数取整，手转股乘 100。
 `None`、空字符串和 `--` 规范为 null，不当作零；日期时间分别规范为 ISO 日期与带 `+08:00` 的 ISO 时间。
 来源适配器按 manifest.adapter、最后一条 ACCEPTED provider_attempt、精确 source 标签的顺序选择；目录中的组合来源标签不是适配器。
+
+登记表的 `source_keys` 可用 `@ctx:<name>` 从调用上下文取值；上下文缺键按必填/可空规则标记。
+`raw_only=True` 保留原值，不换单位或检查类型，只应用 nullable 约束。
+检查状态分为 `OK`、`BELOW_MIN`、`INERT`（零次求值）与 `INAPPLICABLE`（来源声明缺少所需字段或检查不适用于该来源）。
+相对价格关系校验需要盘面阶段提供前一交易日收盘价作为上下文。

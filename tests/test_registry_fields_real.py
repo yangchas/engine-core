@@ -12,6 +12,9 @@ from engine_core.data_pipeline.registry import DATASETS
 REAL = Path(__file__).parent / "fixtures" / "real" / "c526"
 REAL_C527 = Path(__file__).parent / "fixtures" / "real" / "c527"
 UNKNOWN = "UNKNOWN"
+ARTIFACT_ONLY_SOURCE_FIELDS = {
+    ("daily_kline", "baostock"): {"code", "mismatch", "turnover", "universe_version"},
+}
 ALIASES = {
     "quote_slice": {
         "redis_q2": {"px": "price_milli", "pc": "pre_close_milli", "amt": "amount_yuan",
@@ -119,9 +122,11 @@ def _project_row(dataset, source, row, field_by_name):
         if field is None:
             undeclared.append(raw_name)
             continue
-        value = _canonical_value(field, raw_value, source)
+        value = raw_value if field.raw_only else _canonical_value(field, raw_value, source)
         if value is None:
             assert field.nullable, f"{dataset}/{source}.{raw_name} is null but non-nullable"
+        elif field.raw_only:
+            pass
         else:
             source_unit = field.source_units.get(source, UNKNOWN)
             numeric_string_allowed = "string" in source_unit.lower() or "字符串" in field.description
@@ -248,6 +253,14 @@ def test_real_fixture_keys_types_nullability_and_check_ratios_are_registered():
             declared = []
             for field in spec.fields:
                 source_key = field.source_keys[source]
+                if source_key.startswith("@ctx:"):
+                    assert source_key[5:] in {"symbol", "trade_date", "tag"}
+                    continue
+                if field.name in ARTIFACT_ONLY_SOURCE_FIELDS.get((dataset, source), set()):
+                    assert source_key == field.name, (dataset, source, field.name, source_key)
+                    assert field.semantics == "UNVERIFIED" and not field.serves
+                    declared.append(source_key)
+                    continue
                 if source_key == UNKNOWN:
                     unverified_source_keys.append((dataset, source, field.name))
                     continue
@@ -270,6 +283,12 @@ def test_real_fixture_keys_types_nullability_and_check_ratios_are_registered():
         assert _check_ratios(dataset)
     assert empty_sources == [("daily_kline", "wencai")], f"empty source fixtures must be explicit: {empty_sources}"
     assert not unverified_source_keys, f"unverified source keys: {unverified_source_keys}"
+    baostock_fields = {field.name: field for field in DATASETS["daily_kline"].fields}
+    assert {name: baostock_fields[name].type for name in ARTIFACT_ONLY_SOURCE_FIELDS[("daily_kline", "baostock")]} == {
+        "code": str, "mismatch": bool, "turnover": float, "universe_version": str,
+    }
+    assert all(baostock_fields[name].canonical_unit in {"none", "UNKNOWN"}
+               for name in ARTIFACT_ONLY_SOURCE_FIELDS[("daily_kline", "baostock")])
     assert _td_check_ratios()
 
 

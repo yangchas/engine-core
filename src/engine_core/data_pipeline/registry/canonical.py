@@ -50,9 +50,11 @@ def _null_error(field: FieldSpec, required: set[str]) -> str | None:
 
 
 def canonicalize_row(spec: DatasetSpec, adapter: str | None,
-                     row: Mapping[str, Any]) -> CanonicalRow:
+                     row: Mapping[str, Any],
+                     context: Mapping[str, Any] | None = None) -> CanonicalRow:
     """Normalize a row without discarding it or raising on row-level errors."""
     raw = row if isinstance(row, Mapping) else {}
+    context_values = context if isinstance(context, Mapping) else {}
     values: dict[str, Any] = {}
     flags: dict[str, str] = {}
     mapped: set[str] = set()
@@ -74,10 +76,18 @@ def canonicalize_row(spec: DatasetSpec, adapter: str | None,
                 flags[field.name] = error
             continue
 
-        native_key = _source_key(field, adapter, raw)
-        if native_key is None:
+        source_decl = field.source_keys.get(adapter)
+        context_key = source_decl[5:] if isinstance(source_decl, str) and source_decl.startswith("@ctx:") else None
+        native_key = None if context_key is not None else _source_key(field, adapter, raw)
+        if context_key is not None:
+            has_source = context_key in context_values
+            source_value = context_values.get(context_key)
+        else:
+            has_source = native_key is not None
+            source_value = raw[native_key] if native_key is not None else None
+        if not has_source:
             values[field.name] = None
-            if source_code == "UNKNOWN":
+            if source_code == "UNKNOWN" and not field.raw_only and context_key is None:
                 flags[field.name] = "UNPARSEABLE"
             else:
                 error = _null_error(field, required)
@@ -85,8 +95,17 @@ def canonicalize_row(spec: DatasetSpec, adapter: str | None,
                     flags[field.name] = error
             continue
 
-        mapped.add(native_key)
-        converted = to_canonical(raw[native_key], source_code, field.canonical_unit)
+        if native_key is not None:
+            mapped.add(native_key)
+        if field.raw_only:
+            values[field.name] = source_value
+            if source_value is None:
+                error = _null_error(field, required)
+                if error:
+                    flags[field.name] = error
+            continue
+
+        converted = to_canonical(source_value, source_code, field.canonical_unit)
         if isinstance(converted, ConversionError):
             values[field.name] = None
             flags[field.name] = "UNPARSEABLE"
