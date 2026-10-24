@@ -6,6 +6,7 @@ shape drifts from the committed capture. Hand-written rows are not accepted here
 from __future__ import annotations
 
 import hashlib
+import gzip
 import json
 from pathlib import Path
 
@@ -19,6 +20,7 @@ PROVENANCE = json.loads((REAL / "PROVENANCE.json").read_text(encoding="utf-8"))
 INDEX = {name: meta for name, meta in PROVENANCE.items()
          if isinstance(meta, dict) and meta.get("kind") == "raw_upstream_response"}
 CORE_ARTIFACT_INDEX = PROVENANCE.get("_core_artifacts", {})
+C526_EXCERPT_INDEX = PROVENANCE.get("_c526_excerpts", {})
 SOURCES = {"ths_hot_rank", "kaipan_hot_plates", "kaipan_pool"}
 CREDENTIAL_WORDS = ("token", "password", "secret", "cookie", "authorization")
 
@@ -37,6 +39,20 @@ def test_every_real_fixture_has_matching_provenance():
         assert meta["source"] in SOURCES and meta["kind"] == "raw_upstream_response"
         assert meta["fetched_at"] and meta["command"].startswith("examples/capture_real_fixture.py")
         assert not any(word in body.decode("utf-8").lower() for word in CREDENTIAL_WORDS), name
+
+
+def test_c526_real_excerpts_have_matching_provenance():
+    excerpt_root = REAL / "c526"
+    files = {p.relative_to(REAL).as_posix() for p in excerpt_root.rglob("*") if p.is_file()}
+    assert files == set(C526_EXCERPT_INDEX)
+    for name, meta in C526_EXCERPT_INDEX.items():
+        body = (REAL / name).read_bytes()
+        assert hashlib.sha256(body).hexdigest() == meta["sha256"], name
+        assert meta["bytes"] == len(body) and meta["kind"] == "raw_upstream_excerpt"
+        assert meta["source_path"] and meta["source_sha256"] and meta["selection"] and meta["command"]
+        assert meta["fetched_at"] and meta["trade_date"] == "2026-10-23"
+        checked_body = gzip.decompress(body) if name.endswith(".gz") else body
+        assert not any(word in checked_body.decode("utf-8").lower() for word in CREDENTIAL_WORDS), name
     core_root = REAL / "core_artifacts"
     core_files = {p.relative_to(REAL).as_posix() for p in core_root.rglob("*") if p.is_file()}
     assert core_files == set(CORE_ARTIFACT_INDEX)

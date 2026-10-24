@@ -35,3 +35,8 @@
 ## 已观测的真实事实(来自本次抓取)
 - THS 热榜接口不稳:2026-10-23 14:40 三次请求两次 SSL 握手超时 25s(provider 超时上限 10s,易失败)。
 - 开盘啦 `getHisBans` 对"当日"返回 errcode 1020(历史接口当日不可用,次日起可用)。
+
+## 新增登记数据集
+- 新建 `src/engine_core/data_pipeline/registry/<name>.py` 并导出 `SPEC = DatasetSpec(...)`。
+- 在 `fields` 中声明字段类型、空值、canonical/source 单位、依据与语义状态；跨字段约束写入 `checks`。
+- 聚合器自动发现登记文件；解析变化仍需真实上游夹具和 `PROVENANCE.json`。

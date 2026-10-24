@@ -1,0 +1,19 @@
+{
+  "process_isolated": true,
+  "rows": [
+    {
+      "amount_yuan": 726344395.85,
+      "close": 9.53,
+      "date": "2026-10-23",
+      "high": 9.73,
+      "low": 9.52,
+      "open": 9.69,
+      "pct_chg": -0.9356,
+      "pre_close": 9.62,
+      "suspended": false,
+      "symbol": "600000",
+      "turnover_pct": 0.227,
+      "volume": 75592632.0
+    }
+  ]
+}
