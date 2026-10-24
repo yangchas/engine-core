@@ -51,7 +51,8 @@ def _source_rows(dataset, source):
         return capture["rows"]
     if source == "redis_q2":
         hashes = _gzip_json("redis_q2_hashes_20261023_first60.json.gz")
-        return [{**item["value"], "symbol": symbol} for symbol, item in hashes.items()]
+        return [{"symbol": symbol, "trade_date": "2026-10-23", "tag": "0925",
+                 **item["value"]} for symbol, item in hashes.items()]
     if source == "td_auction_snapshot_v2":
         with gzip.open(REAL_C527 / "td_auction_snapshot_v2_20261023_first70.json.gz",
                        "rt", encoding="utf-8") as stream:

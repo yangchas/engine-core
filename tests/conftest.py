@@ -34,12 +34,13 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
-def _isolated_slice_root(tmp_path, monkeypatch):
+def _isolated_slice_root(tmp_path, monkeypatch, request):
     """Per-test slice/state cache root so past-dated fake TD states never leak between tests or into ~/core-data."""
     monkeypatch.setenv("CORE_SLICE_ROOT", str(tmp_path / "slices"))
     monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path / "core-data"))
     monkeypatch.setenv("CORE_STATE_CACHE", "off")  # cache tests opt in explicitly
-    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:1/0")  # tests must never read the real local Redis
+    if not (request.config.getoption("--live") and request.node.get_closest_marker("live")):
+        monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:1/0")  # offline tests never read real Redis
 from datetime import datetime, timezone
 
 

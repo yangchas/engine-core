@@ -56,7 +56,8 @@ def _prepare_candidate(entry: Mapping[str, Any], manifest: Mapping[str, Any],
 
 
 def select_version(candidates: Sequence[Mapping[str, Any]],
-                   as_of: str | datetime | None = None) -> Mapping[str, Any] | None:
+                   as_of: str | datetime | None = None,
+                   source_preference: Sequence[str] = ()) -> Mapping[str, Any] | None:
     """Choose the highest-quality candidate, independent of catalog append order."""
     cutoff = _datetime(as_of)
     eligible = []
@@ -84,7 +85,11 @@ def select_version(candidates: Sequence[Mapping[str, Any]],
         coverage = candidate.get("coverage")
         coverage = (coverage if isinstance(coverage, (int, float)) and
                     not isinstance(coverage, bool) and math.isfinite(coverage) else -1)
-        return (gate_rank, business_rank, -coverage, -available_rank,
+        try:
+            source_rank = source_preference.index(candidate.get("source"))
+        except ValueError:
+            source_rank = len(source_preference)
+        return (gate_rank, business_rank, -coverage, source_rank, -available_rank,
                 str(candidate.get("manifest_path", "")))
 
     return min(eligible, key=key)
@@ -136,6 +141,7 @@ def _empty_meta(candidates: list[dict[str, Any]]) -> dict[str, Any]:
 
 def get(dataset: str, *, trade_date: str, tag: str | None = None,
         as_of: str | datetime | None = None, view: str = "canonical",
+        source: str | None = None,
         root: str | Path | None = None,
         catalog: ArtifactCatalog | None = None) -> DataSet:
     """Read one catalog version from disk and optionally normalize registered fields."""
@@ -168,6 +174,8 @@ def get(dataset: str, *, trade_date: str, tag: str | None = None,
             item = _prepare_candidate(entry, {}, path)
             item["_eliminated_reason"] = "manifest_unreadable"
         manifest = item["manifest_data"]
+        if item["_eliminated_reason"] is None and source is not None and item["source"] != source:
+            item["_eliminated_reason"] = "source_mismatch"
         if item["_eliminated_reason"] is None and tag is not None and manifest.get("tag") != tag:
             item["_eliminated_reason"] = "tag_mismatch"
         if item["_eliminated_reason"] is None and cutoff is not None:
@@ -186,7 +194,7 @@ def get(dataset: str, *, trade_date: str, tag: str | None = None,
     raw_rows: list[dict[str, Any]] = []
     rejected = 0
     while eligible:
-        selected = select_version(eligible, cutoff)
+        selected = select_version(eligible, cutoff, spec.source_preference)
         if selected is None:
             break
         try:

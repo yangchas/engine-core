@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import gzip
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -126,7 +127,27 @@ def test_kaipan_pool_unavailable_day_is_real_error_shape():
 
 
 @pytest.mark.live
-def test_live_ths_hot_rank_matches_captured_schema():
+def test_live_source_contracts_match_captured_schemas(tmp_path):
+    redis_url, td_config = os.environ.get("REDIS_URL"), os.environ.get("TD_CONFIG")
+    if not redis_url or not td_config:
+        pytest.skip("UPSTREAM_UNREACHABLE: REDIS_URL or TD_CONFIG unavailable")
+    import redis
+    import taos
+    from engine_core.data_pipeline.capture.quote_slice import capture_quote_slice
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    redis_client = redis.Redis.from_url(redis_url, socket_timeout=3, socket_connect_timeout=3)
+    td_client = taos.connect(database="market_data1", config=td_config)
+    try:
+        captured = capture_quote_slice(
+            "2026-10-23", "0925", redis_client=redis_client, td_client=td_client,
+            catalog=ArtifactCatalog(tmp_path / "quote_slice"))
+    finally:
+        redis_client.close()
+        td_client.close()
+    assert captured["failed"] == {}
+    assert captured["committed"]["redis_q2"]["row_count"] == 5226
+    assert captured["committed"]["td_auction_snapshot_v2"]["row_count"] == 5224
+
     from engine_core.data_pipeline.providers import ths_hot_rank as ths
     import urllib.parse
     import urllib.request
@@ -139,7 +160,8 @@ def test_live_ths_hot_rank_matches_captured_schema():
             break
         except OSError:
             continue
-    if fresh is None:
+    if fresh is not None:
+        assert ThsHotRankProvider.normalize(fresh)
+        assert set(fresh["data"]["stock_list"][0]) == set(load("ths_hot_rank_")["data"]["stock_list"][0])
+    else:
         pytest.skip("UPSTREAM_UNREACHABLE: ths hot_list endpoint did not answer in 4 tries")
-    assert ThsHotRankProvider.normalize(fresh)
-    assert set(fresh["data"]["stock_list"][0]) == set(load("ths_hot_rank_")["data"]["stock_list"][0])

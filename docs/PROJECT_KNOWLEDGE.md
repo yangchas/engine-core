@@ -1,12 +1,23 @@
 # Project Knowledge
 
-- `[VERIFIED 2026-10-25 — C534 data access]` `data_pipeline.get()` selects immutable
-  catalog versions by gate status, business status, coverage, availability time,
-  then manifest path; canonical reads use registered adapters without network
-  access. A PARTIAL quality label now warns when coverage meets the threshold;
+- `[VERIFIED 2026-10-25 — C534/C535 data access]` `data_pipeline.get()` selects immutable
+  catalog versions by gate status, business status, and coverage, followed by the
+  dataset's source preference when configured, availability time, then manifest
+  path. `quote_slice` prefers `redis_q2`, then TD, then Wencai; `get(...,
+  source=...)` can filter to one source. Canonical reads use registered adapters
+  without network access. A PARTIAL quality label now warns when coverage meets the threshold;
   low or missing coverage still fails. Real catalog comparison covered 80
   `daily_kline` dates, found two metadata-driven selection changes, and matched
   legacy rows exactly for 2026-10-22 and 2026-10-23.
+
+- `[VERIFIED 2026-10-25 — C535 quote slices]` Redis Q2 and TD auction captures
+  commit independently as immutable `quote_slice` versions. Real read-only
+  capture for 2026-10-23 09:25 returned 5,226 Redis rows in 2.582s and 5,224 TD
+  rows in 1.135s, both `gate_status=OK`, coverage 1.0; the existing
+  `~/core-data/catalog.json` SHA-256 did not change. V0 replay reproduced those
+  counts for 09:20/09:24/09:25, but its Redis hashes are after-close terminal
+  state, not checkpoint-time values. TD coverage is relative to rows returned
+  by the same-date/tag query, not an independently verified universe.
 
 - `[VERIFIED BY REAL FROZEN Q2FRAME REPEAT REPLAY 2026-10-12]` The hash-pinned
   2026-10-09 t1-v2 Q2Frame (`7474de28…483467`) replayed through Core in ordered

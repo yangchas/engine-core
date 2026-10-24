@@ -94,6 +94,7 @@ class DatasetSpec:
     max_bad_ratio: float = 0.02
     source_aliases: Mapping[str, str] = field(default_factory=dict)
     min_coverage: float | None = None
+    source_preference: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.gate_mode not in {"off", "observe", "enforce"}:

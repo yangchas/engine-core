@@ -15,13 +15,13 @@ SPEC = DatasetSpec(
     required_fields=("trade_date", "tag", "symbol"), fields=(
         FieldSpec("symbol", str, False, "none", _units("none:str", "none:str", "none:str"),
                   ("D-T1-22", "D-T1-23"), "VERIFIED", "Six digit stock identifier.",
-                  source_keys=_keys("@ctx:symbol", "symbol", "code")),
+                  source_keys=_keys("symbol", "symbol", "code")),
         FieldSpec("trade_date", str, False, "iso_date", _units("iso_date:str", "yyyymmdd:str", "iso_date:str"),
                   ("D-T2-19", "D-T5-08"), "UNVERIFIED", "Trade date; TD currently supplies compact YYYYMMDD text.",
-                  source_keys=_keys("@ctx:trade_date", "trade_date", "@ctx:trade_date")),
+                  source_keys=_keys("trade_date", "trade_date", "@ctx:trade_date")),
         FieldSpec("tag", str, False, "none", _units("category:str", "category:str", "category:str"),
                   ("D-T2-19", "D-T5-08"), "UNVERIFIED", "Auction checkpoint tag such as 0920, 0924, or 0925.",
-                  source_keys=_keys("@ctx:tag", "auction_tag", "@ctx:tag")),
+                  source_keys=_keys("tag", "auction_tag", "@ctx:tag")),
         FieldSpec("price_milli", int, True, "price_milli",
                   _units("milli_yuan:numeric_string", "milli_yuan:int", "yuan:float"),
                   ("D-T1-22", "D-T1-23", "D-T2-19"), "VERIFIED",
@@ -169,5 +169,5 @@ SPEC = DatasetSpec(
                   requires=("price_milli",), adapters=("td_auction_snapshot_v2",)),
         CheckSpec("seal_sell_nonnegative", "seal_sell_yuan >= 0", 1.0,
                   requires=("seal_sell_yuan",), adapters=("td_auction_snapshot_v2",)),
-    ),
+    ), source_preference=("redis_q2", "td_auction_snapshot_v2", "wencai_auction"),
 )

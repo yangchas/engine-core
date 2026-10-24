@@ -158,8 +158,10 @@ def test_real_rows_normalize_and_check_evaluation_preserves_row_count():
     redis_hashes = _gzip_json(FIXTURES / "c526" / "redis_q2_hashes_20261023_first60.json.gz")
     symbol, item = next(iter(redis_hashes.items()))
     redis_raw = item["value"]
-    redis_context = {"symbol": symbol, "trade_date": "2026-10-23", "tag": "0925"}
-    redis_row = canonicalize_row(quote_spec, "redis_q2", redis_raw, context=redis_context)
+    redis_capture_row = {
+        "symbol": symbol, "trade_date": "2026-10-23", "tag": "0925", **redis_raw,
+    }
+    redis_row = canonicalize_row(quote_spec, "redis_q2", redis_capture_row)
     assert redis_row.values["a25"] == int(redis_raw["a25"])
     assert redis_row.values["volume_shares"] == int(float(redis_raw["vol"]) * 100)
     assert redis_row.values["symbol"] == symbol
