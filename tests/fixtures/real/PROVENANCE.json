@@ -47,6 +47,32 @@
    "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-23/source=baostock>wencai>q2_final/sha256-28ccf68f99ff600c/rows.jsonl.gz",
    "trade_date": "2026-10-23",
    "version": "sha256-28ccf68f99ff600c"
+  },
+  "core_artifacts/c533/daily_kline/2026-10-21/chain/manifest.json": {
+   "bytes": 1514,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-21/source=baostock>wencai>q2_final/sha256-8259d72528dd6dad/manifest.json tests/fixtures/real/core_artifacts/c533/daily_kline/2026-10-21/chain/manifest.json",
+   "copied_at": "2026-10-25T03:45:02+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_manifest",
+   "sha256": "d4fa208e165eafa8e14ca66cb88c02bf6209bebd0becc90cfc029412dbf7b885",
+   "source": "baostock>wencai>q2_final",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-21/source=baostock>wencai>q2_final/sha256-8259d72528dd6dad/manifest.json",
+   "trade_date": "2026-10-21",
+   "version": "sha256-8259d72528dd6dad"
+  },
+  "core_artifacts/c533/daily_kline/2026-06-26/legacy_baostock_rows_first1.jsonl.gz": {
+   "bytes": 217,
+   "command": "extract first original JSONL row from source_path and gzip with mtime=0",
+   "copied_at": "2026-10-25T03:53:58+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_rows_excerpt",
+   "row_count": 1,
+   "selection": "first original JSONL row",
+   "sha256": "1539e34dc07e75389964e0212e48065b92ec213c462766f36ff006a062d0b79f",
+   "source": "baostock",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-06-26/source=baostock/sha256-9be9781525e1046b/rows.jsonl.gz",
+   "trade_date": "2026-06-26",
+   "version": "sha256-9be9781525e1046b"
   }
  },
  "kaipan_hot_plates_2026-10-23_1441.json": {

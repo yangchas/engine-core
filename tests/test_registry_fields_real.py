@@ -11,6 +11,7 @@ from engine_core.data_pipeline.registry import DATASETS
 
 REAL = Path(__file__).parent / "fixtures" / "real" / "c526"
 REAL_C527 = Path(__file__).parent / "fixtures" / "real" / "c527"
+REAL_C533 = Path(__file__).parent / "fixtures" / "real" / "core_artifacts" / "c533"
 UNKNOWN = "UNKNOWN"
 ARTIFACT_ONLY_SOURCE_FIELDS = {
     ("daily_kline", "baostock"): {"code", "mismatch", "turnover", "universe_version"},
@@ -71,7 +72,12 @@ def _source_key_rows(dataset, source):
                        "rt", encoding="utf-8") as stream:
             capture = json.load(stream)
         return capture["rows"]
-    return _source_rows(dataset, source)
+    rows = _source_rows(dataset, source)
+    if dataset == "daily_kline" and source == "baostock":
+        legacy = REAL_C533 / "daily_kline/2026-06-26/legacy_baostock_rows_first1.jsonl.gz"
+        with gzip.open(legacy, "rt", encoding="utf-8") as stream:
+            rows.extend(json.loads(line) for line in stream if line.strip())
+    return rows
 
 
 def _numeric(value):

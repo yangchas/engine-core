@@ -11,6 +11,7 @@ from engine_core.data_pipeline.registry import DATASETS
 from engine_core.data_pipeline.registry.canonical import canonicalize_row
 from engine_core.data_pipeline.registry.checks import evaluate_checks
 from engine_core.data_pipeline.registry.convert import ConversionError, to_canonical
+from engine_core.data_pipeline.registry.gate import summarize_gate
 from engine_core.data_pipeline.registry.resolve import resolve_adapter
 from engine_core.data_pipeline.registry.spec import CheckSpec, _validate_check_expression
 from engine_core.data_pipeline.registry.units import parse_source_code
@@ -22,6 +23,12 @@ FIXTURES = Path(__file__).parent / "fixtures" / "real"
 def _gzip_json(path: Path):
     with gzip.open(path, "rt", encoding="utf-8") as stream:
         return json.load(stream)
+
+
+def _core_daily_rows():
+    path = FIXTURES / "core_artifacts/c522/daily_kline/2026-10-23/formal/rows.jsonl.gz"
+    with gzip.open(path, "rt", encoding="utf-8") as stream:
+        return [json.loads(line) for line in stream if line.strip()]
 
 
 def test_decimal_conversion_uses_half_up_and_preserves_missing_values():
@@ -55,9 +62,67 @@ def test_resolver_uses_real_manifest_provider_attempt_and_rejects_composite_labe
     manifest_path = FIXTURES / "c528" / "daily_kline_baostock_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     spec = DATASETS["daily_kline"]
-    assert resolve_adapter(spec, manifest, "baostock>wencai>q2_final") == "baostock"
-    assert resolve_adapter(spec, {}, "baostock>wencai>q2_final") is None
-    assert resolve_adapter(spec, {}, "baostock") == "baostock"
+    assert resolve_adapter(spec, manifest, "baostock>wencai>q2_final").adapter == "baostock"
+    assert resolve_adapter(spec, {}, "baostock>wencai>q2_final").adapter is None
+    assert resolve_adapter(spec, {}, "baostock").adapter == "baostock"
+
+
+def test_adapter_resolution_uses_real_row_shapes_alias_and_fails_ambiguous_shapes():
+    spec = DATASETS["daily_kline"]
+    baostock_rows = _core_daily_rows()
+    q2_rows = _gzip_json(FIXTURES / "c526" / "daily_kline_q2_final_first200.json.gz")["rows"]
+
+    inferred = resolve_adapter(
+        spec, {}, "baostock>wencai>q2_final", sample_rows=baostock_rows,
+    )
+    assert (inferred.adapter, inferred.resolved_by) == ("baostock", "row_shape")
+
+    aliased = resolve_adapter(
+        spec, {}, "legacy_q2_final", sample_rows=q2_rows,
+    )
+    assert (aliased.adapter, aliased.resolved_by) == ("q2_final", "alias")
+
+    # Both samples are captured real rows; their shared required keys and distinct
+    # native markers intentionally make the shape evidence ambiguous.
+    ambiguous = resolve_adapter(
+        spec, {}, "baostock>wencai>q2_final",
+        sample_rows=baostock_rows[:1] + q2_rows[:199],
+    )
+    assert (ambiguous.adapter, ambiguous.resolved_by) == (None, "unresolved")
+
+    wencai_rows = json.loads(
+        (FIXTURES / "c526" / "daily_kline_wencai_first200.json").read_text(encoding="utf-8")
+    )["rows"]
+    assert resolve_adapter(spec, {}, "unknown", sample_rows=wencai_rows).adapter is None
+
+
+def test_forcing_baostock_on_real_q2_rows_fails_volume_price_check():
+    spec = DATASETS["daily_kline"]
+    q2_rows = _gzip_json(FIXTURES / "c526" / "daily_kline_q2_final_first200.json.gz")["rows"]
+    summary = summarize_gate(
+        spec, q2_rows[:1], trade_date="2026-10-23", manifest={},
+        source="baostock>wencai>q2_final", adapter="baostock",
+    )
+    assert summary["adapter_resolved_by"] == "adapter"
+    assert summary["checks"]["turnover_average_price_in_range"]["status"] in {
+        "BELOW_MIN", "FAIL",
+    }
+
+
+def test_unresolved_adapter_leaves_key_validity_unknown_for_real_ambiguous_rows():
+    spec = DATASETS["daily_kline"]
+    rows = _core_daily_rows()[:1] + _gzip_json(
+        FIXTURES / "c526" / "daily_kline_q2_final_first200.json.gz"
+    )["rows"][:199]
+    summary = summarize_gate(
+        spec, rows, trade_date="2026-10-23", manifest={},
+        source="baostock>wencai>q2_final",
+    )
+    assert summary["adapter"] is None
+    assert summary["key_invalid"] is None
+    assert summary["flagged_rows"] is None
+    assert summary["reasons"] == ["adapter_unresolved"]
+    assert summary["gate_status"] == "FAIL"
 
 
 def test_real_rows_normalize_and_check_evaluation_preserves_row_count():

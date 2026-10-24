@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from engine_core.data_pipeline.registry import DATASETS, get_dataset
+from engine_core.data_pipeline.registry.gate import summarize_gate
 from engine_core.data_pipeline.storage import ArtifactCatalog, canonical_json
 
 
@@ -56,15 +57,47 @@ def test_bad_value_in_real_daily_row_is_flagged_and_counted(tmp_path):
 
 
 def test_unresolved_adapter_fails_gate(tmp_path):
-    _, fixture_rows = _daily_kline_fixture()
+    _, baostock_rows = _daily_kline_fixture()
+    q2_path = FIXTURES / "c526" / "daily_kline_q2_final_first200.json.gz"
+    with gzip.open(q2_path, "rt", encoding="utf-8") as handle:
+        q2_rows = json.load(handle)["rows"]
+    fixture_rows = baostock_rows[:1] + q2_rows[:199]
     result = ArtifactCatalog(tmp_path / "core").commit(
-        "daily_kline", "2026-10-23", fixture_rows[:2], {}, source="x",
+        "daily_kline", "2026-10-23", fixture_rows, {}, source="baostock>wencai>q2_final",
         clock=lambda: datetime(2026, 10, 25, tzinfo=timezone.utc),
     )
 
     assert result["gate"]["adapter"] is None
     assert result["gate"]["adapter_resolved_by"] == "unresolved"
+    assert result["gate"]["key_invalid"] is None
+    assert result["gate"]["flagged_rows"] is None
+    assert result["gate"]["reasons"] == ["adapter_unresolved"]
     assert result["gate"]["gate_status"] == "FAIL"
+
+
+def test_real_partial_manifest_coverage_fails_commit_gate(tmp_path):
+    _, rows = _daily_kline_fixture()
+    manifest_path = FIXTURES / "core_artifacts/c533/daily_kline/2026-10-21/chain/manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    result = ArtifactCatalog(tmp_path / "core").commit(
+        "daily_kline", "2026-10-21", rows, manifest,
+        source="baostock>wencai>q2_final",
+        clock=lambda: datetime(2026, 10, 25, tzinfo=timezone.utc),
+    )
+
+    assert manifest["quality"]["status"] == "PARTIAL"
+    assert manifest["quality"]["coverage"] == 0.3395865237366003
+    assert result["gate"]["adapter"] == "baostock"
+    assert result["gate"]["adapter_resolved_by"] == "row_shape"
+    assert result["gate"]["gate_status"] == "FAIL"
+    assert "coverage_low" in result["gate"]["reasons"]
+
+    missing_coverage = summarize_gate(
+        get_dataset("daily_kline"), rows[:1], trade_date="2026-10-21",
+        manifest={"quality": {"status": "PARTIAL"}}, source="baostock",
+    )
+    assert missing_coverage["gate_status"] == "FAIL"
+    assert {"coverage_missing", "coverage_low"} <= set(missing_coverage["reasons"])
 
 
 def test_enforce_blocks_failed_latest_but_observe_does_not(tmp_path, monkeypatch):

@@ -74,7 +74,8 @@ class ArtifactCatalog:
         if spec is not None and spec.fields and spec.gate_mode != "off":
             from .registry.gate import summarize_gate
             gate = summarize_gate(spec, rows, trade_date=trade_date, manifest=manifest,
-                                  source=source, adapter=adapter, context=context)
+                                  source=source, adapter=adapter, context=context,
+                                  sample_rows=rows[:200])
         payload = b"\n".join(canonical_json(dict(row)) for row in rows) + (b"\n" if rows else b"")
         digest = sha256(payload)
         identity = {"payload_sha256": digest}

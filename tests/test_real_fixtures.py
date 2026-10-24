@@ -59,8 +59,17 @@ def test_c526_real_excerpts_have_matching_provenance():
     for name, meta in CORE_ARTIFACT_INDEX.items():
         body = (REAL / name).read_bytes()
         assert hashlib.sha256(body).hexdigest() == meta["sha256"], name
-        assert meta["bytes"] == len(body) and meta["source_path"] and meta["command"].startswith("cp ")
-        assert meta["kind"] in {"core_artifact_manifest", "core_artifact_rows"}
+        assert meta["bytes"] == len(body) and meta["source_path"]
+        if meta["kind"] == "core_artifact_rows_excerpt":
+            assert meta["command"].startswith("extract first original JSONL row")
+            assert meta["selection"] == "first original JSONL row" and meta["row_count"] == 1
+            rows = [json.loads(line) for line in gzip.decompress(body).splitlines() if line]
+            assert len(rows) == meta["row_count"]
+            assert {"source", "available_at"} <= set(rows[0])
+            assert not any(word in json.dumps(rows[0]).lower() for word in CREDENTIAL_WORDS), name
+        else:
+            assert meta["command"].startswith("cp ")
+            assert meta["kind"] in {"core_artifact_manifest", "core_artifact_rows"}
         if meta["kind"] == "core_artifact_manifest":
             assert not any(word in body.decode("utf-8").lower() for word in CREDENTIAL_WORDS), name
 

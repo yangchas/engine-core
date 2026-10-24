@@ -92,6 +92,8 @@ class DatasetSpec:
     checks: tuple[CheckSpec, ...] = ()
     gate_mode: str = "observe"
     max_bad_ratio: float = 0.02
+    source_aliases: Mapping[str, str] = field(default_factory=dict)
+    min_coverage: float | None = None
 
     def __post_init__(self) -> None:
         if self.gate_mode not in {"off", "observe", "enforce"}:
@@ -100,8 +102,15 @@ class DatasetSpec:
             0 <= self.max_bad_ratio <= 1
         ):
             raise ValueError("max_bad_ratio must be between 0 and 1")
+        if self.min_coverage is not None and (
+            isinstance(self.min_coverage, bool) or not isinstance(self.min_coverage, (int, float))
+            or not 0 <= self.min_coverage <= 1
+        ):
+            raise ValueError("min_coverage must be between 0 and 1")
         field_names = {item.name for item in self.fields}
         adapters = {adapter for item in self.fields for adapter in item.source_units}
+        if set(self.source_aliases.values()) - adapters:
+            raise ValueError("source aliases must target registered adapters")
         raw_only_names = {item.name for item in self.fields if item.raw_only}
         for check in self.checks:
             _validate_check_expression(check.expr, field_names)

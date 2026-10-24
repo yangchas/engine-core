@@ -3,21 +3,23 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from math import isfinite
 from typing import Any
 
 from .canonical import canonicalize_row
 from .checks import evaluate_checks
-from .resolve import resolve_adapter
+from .resolve import AdapterResolution, resolve_adapter
 from .spec import DatasetSpec
 
 
-def calculate_gate_status(*, adapter: str | None, key_invalid: int,
+def calculate_gate_status(*, adapter: str | None, key_invalid: int | None,
                           flagged_rows: int, rows: int, max_bad_ratio: float,
                           flags_by_field: Mapping[str, int],
                           unmapped_keys: Mapping[str, int],
-                          checks: Mapping[str, Mapping[str, Any]]) -> str:
+                          checks: Mapping[str, Mapping[str, Any]],
+                          coverage_reasons: Sequence[str] = ()) -> str:
     """Classify a gate summary without side effects."""
-    if adapter is None or key_invalid > 0:
+    if adapter is None or key_invalid is None or key_invalid > 0 or coverage_reasons:
         return "FAIL"
     if rows and flagged_rows / rows > max_bad_ratio:
         return "FAIL"
@@ -31,37 +33,48 @@ def calculate_gate_status(*, adapter: str | None, key_invalid: int,
 
 
 def _adapter_resolution(spec: DatasetSpec, manifest: Mapping[str, Any] | None,
-                        source: str, explicit: str | None) -> tuple[str | None, str]:
-    metadata = manifest if isinstance(manifest, Mapping) else {}
+                        source: str, explicit: str | None,
+                        sample_rows: Sequence[Mapping[str, Any]] | None) -> AdapterResolution:
     if explicit is not None:
-        resolved = resolve_adapter(spec, {"adapter": explicit}, None)
-        return resolved, "explicit" if resolved is not None else "unresolved"
+        return resolve_adapter(spec, {"adapter": explicit}, None)
+    return resolve_adapter(spec, manifest, source, sample_rows=sample_rows)
 
-    resolved = resolve_adapter(spec, metadata, source)
-    registered = {adapter for item in spec.fields for adapter in item.source_units}
-    if metadata.get("adapter") in registered and metadata.get("adapter") == resolved:
-        return resolved, "manifest"
-    attempts = metadata.get("provider_attempts")
-    if isinstance(attempts, (list, tuple)):
-        accepted = [item for item in attempts
-                    if isinstance(item, Mapping) and item.get("result") == "ACCEPTED"]
-        if accepted and accepted[-1].get("provider") == resolved and resolved is not None:
-            return resolved, "provider_attempts"
-    if source in registered and source == resolved:
-        return resolved, "source"
-    return resolved, "unresolved"
+
+def _check_summary(results: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {name: {key: result[key] for key in ("status", "passed", "evaluated", "skipped")}
+            for name, result in results.items()}
 
 
 def summarize_gate(spec: DatasetSpec, rows: Sequence[Mapping[str, Any]], *,
                    trade_date: str, manifest: Mapping[str, Any] | None,
                    source: str, adapter: str | None = None,
-                   context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                   context: Mapping[str, Any] | None = None,
+                   sample_rows: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """Canonicalize every row for analysis while leaving stored rows untouched."""
-    resolved_adapter, resolved_by = _adapter_resolution(spec, manifest, source, adapter)
+    sample = rows[:200] if sample_rows is None else sample_rows[:200]
+    resolution = _adapter_resolution(spec, manifest, source, adapter, sample)
+    metadata = manifest if isinstance(manifest, Mapping) else {}
+    if resolution.adapter is None:
+        checks = {item.name: {"status": "INERT", "passed": 0, "evaluated": 0,
+                              "skipped": len(rows)} for item in spec.checks}
+        return {
+            "schema_version": spec.schema_version,
+            "adapter": None,
+            "adapter_resolved_by": "unresolved",
+            "mode": spec.gate_mode,
+            "rows": len(rows),
+            "flagged_rows": None,
+            "flags_by_field": {},
+            "unmapped_keys": {},
+            "key_invalid": None,
+            "checks": checks,
+            "gate_status": "FAIL",
+            "reasons": ["adapter_unresolved"],
+        }
+
     row_context = dict(context) if isinstance(context, Mapping) else {}
     row_context["trade_date"] = trade_date
-    canonical_rows = [canonicalize_row(spec, resolved_adapter, row, row_context) for row in rows]
-
+    canonical_rows = [canonicalize_row(spec, resolution.adapter, row, row_context) for row in rows]
     flags_by_field: Counter[str] = Counter()
     unmapped_keys: Counter[str] = Counter()
     key_values: list[tuple[Any, ...] | None] = []
@@ -95,20 +108,44 @@ def summarize_gate(spec: DatasetSpec, rows: Sequence[Mapping[str, Any]], *,
     key_invalid = (sum(key is None or key_counts[key] > 1 for key in key_values)
                    if spec.key_fields else 0)
     flagged_rows = sum(bool(item.flags) for item in canonical_rows)
-    check_results = evaluate_checks(spec, canonical_rows, resolved_adapter)
-    checks = {
-        name: {key: result[key] for key in ("status", "passed", "evaluated", "skipped")}
-        for name, result in check_results.items()
-    }
+    checks = _check_summary(evaluate_checks(spec, canonical_rows, resolution.adapter))
+    coverage_reasons: list[str] = []
+    if spec.min_coverage is not None:
+        quality = metadata.get("quality")
+        quality = quality if isinstance(quality, Mapping) else {}
+        coverage = quality.get("coverage")
+        valid_coverage = (
+            not isinstance(coverage, bool) and isinstance(coverage, (int, float))
+            and 0 <= coverage <= 1 and isfinite(coverage)
+        )
+        if not valid_coverage:
+            coverage_reasons.append("coverage_missing")
+        if quality.get("status") == "PARTIAL" or (valid_coverage and coverage < spec.min_coverage):
+            coverage_reasons.append("coverage_low")
+    reasons = list(coverage_reasons)
+    if key_invalid:
+        reasons.append("key_invalid")
+    if rows and flagged_rows / len(rows) > spec.max_bad_ratio:
+        reasons.append("bad_ratio")
+    reasons.extend(f"below_min:{name}" for name, item in checks.items()
+                   if item.get("status") == "BELOW_MIN")
     gate_status = calculate_gate_status(
-        adapter=resolved_adapter, key_invalid=key_invalid, flagged_rows=flagged_rows,
+        adapter=resolution.adapter, key_invalid=key_invalid, flagged_rows=flagged_rows,
         rows=len(rows), max_bad_ratio=spec.max_bad_ratio,
         flags_by_field=flags_by_field, unmapped_keys=unmapped_keys, checks=checks,
+        coverage_reasons=coverage_reasons,
     )
+    if gate_status == "WARN":
+        if flags_by_field:
+            reasons.append("field_flags")
+        if unmapped_keys:
+            reasons.append("unmapped_keys")
+        if any(item.get("status") == "INERT" for item in checks.values()):
+            reasons.append("check_inert")
     return {
         "schema_version": spec.schema_version,
-        "adapter": resolved_adapter,
-        "adapter_resolved_by": resolved_by,
+        "adapter": resolution.adapter,
+        "adapter_resolved_by": resolution.resolved_by,
         "mode": spec.gate_mode,
         "rows": len(rows),
         "flagged_rows": flagged_rows,
@@ -117,4 +154,5 @@ def summarize_gate(spec: DatasetSpec, rows: Sequence[Mapping[str, Any]], *,
         "key_invalid": key_invalid,
         "checks": checks,
         "gate_status": gate_status,
+        "reasons": reasons,
     }
