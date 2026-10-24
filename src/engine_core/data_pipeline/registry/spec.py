@@ -1,7 +1,7 @@
 """Declarative dataset, field, and cross-field check specifications."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping
 
 
@@ -15,6 +15,7 @@ class FieldSpec:
     serves: tuple[str, ...] = ()
     semantics: str = "UNVERIFIED"
     description: str = ""
+    source_keys: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

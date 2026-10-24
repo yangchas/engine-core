@@ -216,19 +216,6 @@
     "market:auction:20261023:0925"
    ]
   },
-  "c526/td_auction_snapshot_read_first60.json": {
-   "bytes": 10827,
-   "command": "bounded JSON excerpt: first 60 rows (source returned 99235 rows); values preserved from source capture",
-   "fetched_at": "2026-10-24T02:21:24+00:00",
-   "kind": "raw_upstream_excerpt",
-   "sha256": "5da9242a982ea6427a1f4d6cd3a1cb998abdb7e97d65bbab48e6d8bf45f6555d",
-   "source": "td_auction_snapshot_v2",
-   "source_path": "/home/exedev/validation/s1/C525/raw/td_auction_snapshot_read_a1_20261024T022124.480427Z.json",
-   "source_sha256": "39e21a8756715d4896b4d9a799351b9feac1f03a089bc8cfd90754ad9ee0debc",
-   "trade_date": "2026-10-23",
-   "selection": "first 60 rows (source returned 99235 rows)",
-   "row_count": 60
-  },
   "c526/wencai_auction_fallback_first60.json": {
    "bytes": 20587,
    "command": "bounded JSON excerpt: first 60 rows (source returned 606 rows); values preserved from source capture",
@@ -280,6 +267,36 @@
    "trade_date": "2026-10-23",
    "selection": "first 200 rows (source returned 5221 rows)",
    "row_count": 200
+  }
+ },
+ "_c527_excerpts": {
+  "c527/td_auction_snapshot_v2_20261023_first70.json": {
+   "bytes": 9586,
+   "command": "bounded JSON excerpt: first 60 auction_tag=0925 rows plus first 5 limit_state=1 and first 5 limit_state=-1 rows; cols and selected row values preserved",
+   "fetched_at": "2026-10-25T01:18:58+08:00",
+   "kind": "raw_upstream_excerpt",
+   "sha256": "c4938819e184c18dfc6eb685ae36a5a06761125317387dee5e44f20c6d8129ce",
+   "source": "td_auction_snapshot_v2",
+   "source_path": "/home/exedev/validation/s1/V0/td_auction_snapshot_v2_20261023.json.gz",
+   "source_sha256": "43bd0161350f2fbc93e08c6a5cd12456bf5b6759204fa86ed95fc017741ab4be",
+   "trade_date": "2026-10-23",
+   "selection": "60 first rows with auction_tag=0925, plus first 5 rows each with limit_state=1 and -1; unique source row order retained",
+   "selected_rows": 70,
+   "source_row_count": 15672
+  },
+  "c527/wencai_auction_upstream_first60.json": {
+   "bytes": 37497,
+   "command": "bounded JSON excerpt: first 60 raw upstream rows; row values and native column names preserved",
+   "fetched_at": "2026-10-25T01:18:58+08:00",
+   "kind": "raw_upstream_excerpt",
+   "sha256": "4e1f0d8dbf632eb7c2ed2b95dd170ec087a6d2816f43bb3660677250e8dcbd57",
+   "source": "wencai_auction",
+   "source_path": "/home/exedev/validation/s1/C525/raw/wencai_upstream_a1_20261024T021209.997815Z.json",
+   "source_sha256": "1d69d2b02752fa5055bf787f0213396fe93265d4c740693d487d6eb7550cd26e",
+   "trade_date": "2026-10-23",
+   "selection": "first 60 rows from the captured raw Wencai auction query response",
+   "selected_rows": 60,
+   "source_row_count": 603
   }
  }
 }

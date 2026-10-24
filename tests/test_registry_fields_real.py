@@ -3,12 +3,14 @@ from __future__ import annotations
 import ast
 import gzip
 import json
+import re
 from pathlib import Path
 
 from engine_core.data_pipeline.registry import DATASETS
 
 
 REAL = Path(__file__).parent / "fixtures" / "real" / "c526"
+REAL_C527 = Path(__file__).parent / "fixtures" / "real" / "c527"
 UNKNOWN = "UNKNOWN"
 ALIASES = {
     "quote_slice": {
@@ -45,11 +47,20 @@ def _source_rows(dataset, source):
     if source == "redis_q2":
         hashes = _gzip_json("redis_q2_hashes_20261023_first60.json.gz")
         return [{**item["value"], "symbol": symbol} for symbol, item in hashes.items()]
+    if source == "td_auction_snapshot_v2":
+        capture = json.loads((REAL_C527 / "td_auction_snapshot_v2_20261023_first70.json").read_text())
+        return [dict(zip(capture["cols"], row)) for row in capture["rows"]]
     filename = {
-        "td_auction_snapshot_v2": "td_auction_snapshot_read_first60.json",
         "wencai_auction": "wencai_auction_fallback_first60.json",
     }[source]
     return _json(filename)["rows"]
+
+
+def _source_key_rows(dataset, source):
+    if dataset == "quote_slice" and source == "wencai_auction":
+        capture = json.loads((REAL_C527 / "wencai_auction_upstream_first60.json").read_text())
+        return capture["rows"]
+    return _source_rows(dataset, source)
 
 
 def _numeric(value):
@@ -133,6 +144,47 @@ def _daily_preclose_by_symbol():
     return result
 
 
+def _td_check_ratios():
+    capture_rows = _source_rows("quote_slice", "td_auction_snapshot_v2")
+    daily_path = (REAL.parent / "core_artifacts" / "c522" / "daily_kline" / "2026-10-23"
+                  / "provisional" / "rows.jsonl.gz")
+    with gzip.open(daily_path, "rt", encoding="utf-8") as stream:
+        daily_rows = [json.loads(line) for line in stream]
+    preclose = {row["symbol"]: round(row["pre_close"] * 1000)
+                for row in daily_rows if row.get("pre_close") is not None}
+
+    price_tested = price_passed = 0
+    for row in capture_rows:
+        price = row.get("px_milli")
+        pct = row.get("chg_bp")
+        prior = preclose.get(row.get("symbol"))
+        if price is None or pct is None or prior is None:
+            continue
+        price_tested += 1
+        price_passed += int(abs(pct - round((price / prior - 1) * 10000)) <= 1)
+
+    limit_up_rows = [row for row in capture_rows if row.get("limit_state") == 1]
+    seal_tested = [row for row in limit_up_rows if row.get("rest_bid_amt_yuan") is not None]
+    seal_passed = sum(row["rest_bid_amt_yuan"] >= 0 for row in seal_tested)
+    assert price_tested > 0, "TD price relation was not exercised by real rows"
+    assert len(seal_tested) > 0, "TD limit-up seal amount was not exercised by real rows"
+    assert price_passed == price_tested, ("td_auction_snapshot_v2", "pct_price_relation",
+                                          price_passed, price_tested)
+    assert seal_passed == len(seal_tested), ("td_auction_snapshot_v2", "seal_buy_nonnegative",
+                                             seal_passed, len(seal_tested))
+    return {
+        "pct_price_relation": (price_passed, price_tested, price_passed / price_tested),
+        "seal_buy_nonnegative_limit_up": (seal_passed, len(seal_tested), seal_passed / len(seal_tested)),
+    }
+
+
+def _source_key_matches(source_key, raw_keys):
+    if "[YYYYMMDD]" not in source_key:
+        return source_key in raw_keys
+    pattern = re.escape(source_key).replace(r"\[YYYYMMDD\]", r"\[\d{8}\]")
+    return any(re.fullmatch(pattern, raw_key) for raw_key in raw_keys)
+
+
 def _check_ratios(dataset):
     spec = DATASETS[dataset]
     field_by_name = {field.name: field for field in spec.fields}
@@ -166,6 +218,8 @@ def _check_ratios(dataset):
 
 
 def test_real_fixture_keys_types_nullability_and_check_ratios_are_registered():
+    empty_sources = []
+    unverified_source_keys = []
     for dataset in ("daily_kline", "quote_slice"):
         spec = DATASETS[dataset]
         field_by_name = {field.name: field for field in spec.fields}
@@ -173,15 +227,66 @@ def test_real_fixture_keys_types_nullability_and_check_ratios_are_registered():
             "redis_q2", "td_auction_snapshot_v2", "wencai_auction")
         for field in spec.fields:
             assert set(field.source_units) == set(sources), (dataset, field.name, field.source_units)
+            assert set(field.source_keys) == set(sources), (dataset, field.name, field.source_keys)
             assert field.semantics in {"VERIFIED", "UNVERIFIED"}
             if UNKNOWN in field.source_units.values():
                 assert field.semantics == "UNVERIFIED", (dataset, field.name)
+        for source in sources:
+            rows = _source_key_rows(dataset, source)
+            if not rows:
+                empty_sources.append((dataset, source))
+                continue
+            raw_keys = set().union(*(row.keys() for row in rows))
+            declared = []
+            for field in spec.fields:
+                source_key = field.source_keys[source]
+                if source_key == UNKNOWN:
+                    unverified_source_keys.append((dataset, source, field.name))
+                    continue
+                if not source_key:
+                    assert field.source_units[source] == "ABSENT", (
+                        dataset, source, field.name, field.source_units[source])
+                if source_key:
+                    assert _source_key_matches(source_key, raw_keys), (
+                        dataset, source, field.name, source_key, sorted(raw_keys))
+                    declared.append(source_key)
+            uncovered = [raw_key for raw_key in sorted(raw_keys)
+                         if raw_key not in field_by_name
+                         and not any(_source_key_matches(source_key, {raw_key}) for source_key in declared)]
+            assert not uncovered, f"unregistered raw keys in {dataset}/{source}: {uncovered}"
         for source in sources:
             for row in _source_rows(dataset, source):
                 _project_row(dataset, source, row, field_by_name)
         assert len(spec.checks) >= 3
         assert all(0.0 <= check.min_pass_ratio <= 1.0 for check in spec.checks)
         assert _check_ratios(dataset)
+    assert empty_sources == [("daily_kline", "wencai")], f"empty source fixtures must be explicit: {empty_sources}"
+    assert not unverified_source_keys, f"unverified source keys: {unverified_source_keys}"
+    assert _td_check_ratios()
+
+
+def test_td_native_source_keys_and_measured_constraints_are_explicit():
+    fields = {field.name: field for field in DATASETS["quote_slice"].fields}
+    expected = {
+        "price_milli": "px_milli",
+        "pct_bp": "chg_bp",
+        "match_amount_yuan": "match_amt_yuan",
+        "seal_buy_yuan": "rest_bid_amt_yuan",
+        "seal_sell_yuan": "rest_ask_amt_yuan",
+        "limit_state": "limit_state",
+        "source_ts": "ts",
+        "trade_date": "trade_date",
+        "tag": "auction_tag",
+        "symbol": "symbol",
+    }
+    assert {name: fields[name].source_keys["td_auction_snapshot_v2"] for name in expected} == expected
+    for name in ("pre_close_milli", "amount_yuan", "volume_shares"):
+        assert fields[name].source_keys["td_auction_snapshot_v2"] == ""
+        assert fields[name].source_units["td_auction_snapshot_v2"] == "ABSENT"
+
+    checks = _td_check_ratios()
+    assert checks["pct_price_relation"][0] == checks["pct_price_relation"][1] > 0
+    assert checks["seal_buy_nonnegative_limit_up"][0] == checks["seal_buy_nonnegative_limit_up"][1] > 0
 
 
 def test_c526_redis_auction_keys_are_complete_raw_captures():

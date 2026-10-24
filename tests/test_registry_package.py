@@ -12,9 +12,18 @@ import pytest
 from engine_core.data_pipeline.registry import DATASETS, get_dataset
 
 
+LEGACY_BASELINE = "078213f"
+
+
 def _legacy_registry():
+    available = subprocess.run(
+        ["git", "cat-file", "-e", f"{LEGACY_BASELINE}^{{commit}}"],
+        capture_output=True, text=True,
+    )
+    if available.returncode:
+        pytest.skip(f"fixed registry baseline {LEGACY_BASELINE} is unavailable in this checkout")
     source = subprocess.run(
-        ["git", "show", "HEAD:src/engine_core/data_pipeline/registry.py"],
+        ["git", "show", f"{LEGACY_BASELINE}:src/engine_core/data_pipeline/registry.py"],
         check=True, capture_output=True, text=True,
     ).stdout
     with tempfile.TemporaryDirectory() as directory:
