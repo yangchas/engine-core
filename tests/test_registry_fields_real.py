@@ -41,24 +41,32 @@ def _source_rows(dataset, source):
         filename = {
             "baostock": "daily_kline_baostock_first200.json",
             "wencai": "daily_kline_wencai_first200.json",
-            "q2_final": "daily_kline_q2_final_first200.json",
+            "q2_final": "daily_kline_q2_final_first200.json.gz",
         }[source]
-        return _json(filename)["rows"]
+        capture = _gzip_json(filename) if filename.endswith(".gz") else _json(filename)
+        return capture["rows"]
     if source == "redis_q2":
         hashes = _gzip_json("redis_q2_hashes_20261023_first60.json.gz")
         return [{**item["value"], "symbol": symbol} for symbol, item in hashes.items()]
     if source == "td_auction_snapshot_v2":
-        capture = json.loads((REAL_C527 / "td_auction_snapshot_v2_20261023_first70.json").read_text())
+        with gzip.open(REAL_C527 / "td_auction_snapshot_v2_20261023_first70.json.gz",
+                       "rt", encoding="utf-8") as stream:
+            capture = json.load(stream)
         return [dict(zip(capture["cols"], row)) for row in capture["rows"]]
     filename = {
-        "wencai_auction": "wencai_auction_fallback_first60.json",
+        "wencai_auction": "wencai_auction_fallback_first60.json.gz",
     }[source]
+    if filename.endswith(".gz"):
+        with gzip.open(REAL / filename, "rt", encoding="utf-8") as stream:
+            return json.load(stream)["rows"]
     return _json(filename)["rows"]
 
 
 def _source_key_rows(dataset, source):
     if dataset == "quote_slice" and source == "wencai_auction":
-        capture = json.loads((REAL_C527 / "wencai_auction_upstream_first60.json").read_text())
+        with gzip.open(REAL_C527 / "wencai_auction_upstream_first60.json.gz",
+                       "rt", encoding="utf-8") as stream:
+            capture = json.load(stream)
         return capture["rows"]
     return _source_rows(dataset, source)
 

@@ -51,3 +51,10 @@
 正例：close 与夜间重跑均登记为 `stage=close` 的不同修订，并各自记录 `asof`、真实 `completed_at` 和输入版本集（C416 close_report/night_report）。
 
 反例：C416 发现报告只落在 `reports/<date>/<checkpoint>`，无可查询 `available_at` 或输入版本；目录名不能回答“截至 T 看到了什么”。
+
+## 6 登记表源单位码
+
+源单位码格式为 `<unit>:<encoding>`；单位为 `yuan/milli_yuan/percent/bp/shares/hands/epoch_ms/yyyymmdd/iso_date/local_datetime_cst/none/category/count`，编码为 `float/int/numeric_string/str/bool`。`UNKNOWN` 表示单位未核实，`ABSENT` 表示来源没有该字段。
+换算使用 Decimal 与 `ROUND_HALF_UP`（远离零）；元价转毫元乘 1000，百分数转 bp 乘 100，元金额及股数取整，手转股乘 100。
+`None`、空字符串和 `--` 规范为 null，不当作零；日期时间分别规范为 ISO 日期与带 `+08:00` 的 ISO 时间。
+来源适配器按 manifest.adapter、最后一条 ACCEPTED provider_attempt、精确 source 标签的顺序选择；目录中的组合来源标签不是适配器。

@@ -216,19 +216,6 @@
     "market:auction:20261023:0925"
    ]
   },
-  "c526/wencai_auction_fallback_first60.json": {
-   "bytes": 20587,
-   "command": "bounded JSON excerpt: first 60 rows (source returned 606 rows); values preserved from source capture",
-   "fetched_at": "2026-10-24T02:12:12+00:00",
-   "kind": "raw_upstream_excerpt",
-   "sha256": "3295be6b94e412a896c319fd4cf0edad52ff8de56852096c83800d17570a1d09",
-   "source": "wencai_auction",
-   "source_path": "/home/exedev/validation/s1/C525/raw/wencai_auction_fallback_a1_20261024T021212.976721Z.json",
-   "source_sha256": "77048995b197e7948d843a7f229c60ea8547b794cb499b1240b66307b66bd50e",
-   "trade_date": "2026-10-23",
-   "selection": "first 60 rows (source returned 606 rows)",
-   "row_count": 60
-  },
   "c526/daily_kline_baostock_first200.json": {
    "bytes": 362,
    "command": "bounded JSON excerpt: first 200 rows (source returned 1 rows); values preserved from source capture",
@@ -255,48 +242,84 @@
    "selection": "first 200 rows (source returned 0 rows)",
    "row_count": 0
   },
-  "c526/daily_kline_q2_final_first200.json": {
-   "bytes": 306726,
+  "c526/daily_kline_q2_final_first200.json.gz": {
+   "bytes": 36793,
    "command": "bounded JSON excerpt: first 200 rows (source returned 5221 rows); values preserved from source capture",
    "fetched_at": "2026-10-24T02:11:37+00:00",
    "kind": "raw_upstream_excerpt",
-   "sha256": "735b355952a491b331f3b7c994d6adf09f4fa871f3f56fe9d9d739130a24a24d",
+   "sha256": "f2293a6d05740756f18d5f67b284a48cb22b7358790f2bb4c5a74667ce316be9",
    "source": "q2_final",
    "source_path": "/home/exedev/validation/s1/C525/raw/daily_kline_q2_final_a1_20261024T021137.847854Z.json",
    "source_sha256": "88a7b1eb846cee348fbec86e2048a8a4074ba09612234a8c16834132de9a63db",
    "trade_date": "2026-10-23",
    "selection": "first 200 rows (source returned 5221 rows)",
-   "row_count": 200
+   "row_count": 200,
+   "original_file": "c526/daily_kline_q2_final_first200.json",
+   "original_content_sha256": "735b355952a491b331f3b7c994d6adf09f4fa871f3f56fe9d9d739130a24a24d",
+   "uncompressed_content_sha256": "735b355952a491b331f3b7c994d6adf09f4fa871f3f56fe9d9d739130a24a24d"
+  },
+  "c526/wencai_auction_fallback_first60.json.gz": {
+   "bytes": 3014,
+   "command": "bounded JSON excerpt: first 60 rows (source returned 606 rows); values preserved from source capture",
+   "fetched_at": "2026-10-24T02:12:12+00:00",
+   "kind": "raw_upstream_excerpt",
+   "sha256": "d7046238fdf861db641f5141a0af3c40f05502bab58773e443dbc4f489ddc126",
+   "source": "wencai_auction",
+   "source_path": "/home/exedev/validation/s1/C525/raw/wencai_auction_fallback_a1_20261024T021212.976721Z.json",
+   "source_sha256": "77048995b197e7948d843a7f229c60ea8547b794cb499b1240b66307b66bd50e",
+   "trade_date": "2026-10-23",
+   "selection": "first 60 rows (source returned 606 rows)",
+   "row_count": 60,
+   "original_file": "c526/wencai_auction_fallback_first60.json",
+   "original_content_sha256": "3295be6b94e412a896c319fd4cf0edad52ff8de56852096c83800d17570a1d09",
+   "uncompressed_content_sha256": "3295be6b94e412a896c319fd4cf0edad52ff8de56852096c83800d17570a1d09"
   }
  },
  "_c527_excerpts": {
-  "c527/td_auction_snapshot_v2_20261023_first70.json": {
-   "bytes": 9586,
+  "c527/td_auction_snapshot_v2_20261023_first70.json.gz": {
+   "bytes": 1555,
    "command": "bounded JSON excerpt: first 60 auction_tag=0925 rows plus first 5 limit_state=1 and first 5 limit_state=-1 rows; cols and selected row values preserved",
    "fetched_at": "2026-10-25T01:18:58+08:00",
    "kind": "raw_upstream_excerpt",
-   "sha256": "c4938819e184c18dfc6eb685ae36a5a06761125317387dee5e44f20c6d8129ce",
+   "sha256": "aca55549d80f0f28200c55986a59a0d6d6cd9e829593324e3500f17f79a588f5",
    "source": "td_auction_snapshot_v2",
    "source_path": "/home/exedev/validation/s1/V0/td_auction_snapshot_v2_20261023.json.gz",
    "source_sha256": "43bd0161350f2fbc93e08c6a5cd12456bf5b6759204fa86ed95fc017741ab4be",
    "trade_date": "2026-10-23",
    "selection": "60 first rows with auction_tag=0925, plus first 5 rows each with limit_state=1 and -1; unique source row order retained",
    "selected_rows": 70,
-   "source_row_count": 15672
+   "source_row_count": 15672,
+   "original_file": "c527/td_auction_snapshot_v2_20261023_first70.json",
+   "original_content_sha256": "c4938819e184c18dfc6eb685ae36a5a06761125317387dee5e44f20c6d8129ce",
+   "uncompressed_content_sha256": "c4938819e184c18dfc6eb685ae36a5a06761125317387dee5e44f20c6d8129ce"
   },
-  "c527/wencai_auction_upstream_first60.json": {
-   "bytes": 37497,
+  "c527/wencai_auction_upstream_first60.json.gz": {
+   "bytes": 5177,
    "command": "bounded JSON excerpt: first 60 raw upstream rows; row values and native column names preserved",
    "fetched_at": "2026-10-25T01:18:58+08:00",
    "kind": "raw_upstream_excerpt",
-   "sha256": "4e1f0d8dbf632eb7c2ed2b95dd170ec087a6d2816f43bb3660677250e8dcbd57",
+   "sha256": "a462a8eae43acdfd7dce6bd2767d70d9a08e3a2300ac2bd7d3973cd56e8db50f",
    "source": "wencai_auction",
    "source_path": "/home/exedev/validation/s1/C525/raw/wencai_upstream_a1_20261024T021209.997815Z.json",
    "source_sha256": "1d69d2b02752fa5055bf787f0213396fe93265d4c740693d487d6eb7550cd26e",
    "trade_date": "2026-10-23",
    "selection": "first 60 rows from the captured raw Wencai auction query response",
    "selected_rows": 60,
-   "source_row_count": 603
+   "source_row_count": 603,
+   "original_file": "c527/wencai_auction_upstream_first60.json",
+   "original_content_sha256": "4e1f0d8dbf632eb7c2ed2b95dd170ec087a6d2816f43bb3660677250e8dcbd57",
+   "uncompressed_content_sha256": "4e1f0d8dbf632eb7c2ed2b95dd170ec087a6d2816f43bb3660677250e8dcbd57"
+  }
+ },
+ "_c528_manifests": {
+  "c528/daily_kline_baostock_manifest.json": {
+   "bytes": 1785,
+   "command": "verbatim copy of the production daily_kline baostock manifest for adapter resolution",
+   "kind": "raw_production_manifest",
+   "sha256": "6952848d015a9dbee1c4397b19a5870572652cff5d03f706f77378d7c6a9b134",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-23/source=baostock/sha256-28ccf68f99ff600c/manifest.json",
+   "source_sha256": "6952848d015a9dbee1c4397b19a5870572652cff5d03f706f77378d7c6a9b134",
+   "trade_date": "2026-10-23"
   }
  }
 }
