@@ -110,7 +110,9 @@ def _command_handler(name: str, opts, root: Path):
         day = now.date().isoformat()
         if name == "calendar_refresh":
             store = TradeCalendarStore(root)
-            result = store.refresh_if_needed(now=now)
+            refresh_mode = (getattr(event, "args", None) or {}).get("refresh")
+            result = (store.force_refresh(now=now) if refresh_mode == "force" else
+                      store.refresh_if_needed(now=now))
             if result.get("status") != "CONFIRMED":
                 status = "STALE" if result.get("version") else result.get("status", "UNKNOWN")
                 reason = str(result.get("reason_code", "REFRESH_FAILED"))

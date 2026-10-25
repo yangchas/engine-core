@@ -178,6 +178,9 @@
     },
     {
       "available_after": null,
+      "args": {
+        "refresh": "force"
+      },
       "catchup": true,
       "data_date_offset": 0,
       "deadline": "00:30:00",

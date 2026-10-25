@@ -196,9 +196,11 @@ class TradeCalendarStore:
                            fetched_at, "BS+SZ" if "SZ" in source.upper() or any("szse" in n.lower() for n in raw_responses) else "BS")
 
     def _merge(self, bs_days: set[str], sz_days: set[str], scope: set[str] | None, start: date, end: date,
-               fetched_at: str, source: str) -> dict[str, Any]:
+               fetched_at: str, source: str, *, confirmed: bool = True,
+               last_error: str | None = None) -> dict[str, Any]:
         today = _market_today().isoformat()
         matrix = self.load()
+        previous_last_ok = (matrix or {}).get("last_ok_at")
         old = {item["d"]: item for item in (matrix or {}).get("days", [])}
         conflicts = list((matrix or {}).get("conflicts", []))
         merged = dict(old)
@@ -231,11 +233,15 @@ class TradeCalendarStore:
         if not all_days:
             raise CalendarSourceError("EMPTY_CALENDAR")
         matrix = {"schema": "CoreTradeCalendarMatrixV1", "lit_from": all_days[0]["d"],
-                  "lit_to": all_days[-1]["d"], "last_refresh_at": fetched_at, "last_ok_at": fetched_at,
-                  "last_error": None, "conflicts": conflicts[-500:], "days": all_days}
+                  "lit_to": all_days[-1]["d"], "last_refresh_at": fetched_at,
+                  "last_ok_at": fetched_at if confirmed else previous_last_ok,
+                  "last_error": None if confirmed else last_error,
+                  "conflicts": conflicts[-500:], "days": all_days}
         self._write(matrix)
-        return {"status": "CONFIRMED", "reason_code": None, "lit_from": matrix["lit_from"],
-                "lit_to": matrix["lit_to"], "last_ok_at": matrix["last_ok_at"]}
+        return {"status": "CONFIRMED" if confirmed else "PARTIAL",
+                "reason_code": None if confirmed else last_error, "lit_from": matrix["lit_from"],
+                "lit_to": matrix["lit_to"], "last_ok_at": matrix["last_ok_at"],
+                "last_error": matrix["last_error"]}
 
     def refresh(self, *, now: date | None = None, window_days: int = 30,
                 baostock_fetch: Callable[[date, date], tuple[list[str], bytes, str]] = fetch_baostock,
@@ -270,26 +276,35 @@ class TradeCalendarStore:
             errors.append(exc.args[0] if isinstance(exc, CalendarSourceError) else "SZSE_UNAVAILABLE")
         matrix = self.load()
         if bao is None and szse is None:
-            return {"status": "STALE" if matrix else "UNKNOWN", "reason_code": errors[0] if errors else "REFRESH_FAILED"}
+            reason = errors[0] if errors else "REFRESH_FAILED"
+            return {"status": "STALE" if matrix else "UNKNOWN", "reason_code": reason,
+                    "last_ok_at": (matrix or {}).get("last_ok_at"), "last_error": reason}
         scope = {(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)}
         if bao is not None and szse is not None:
             conflicts = {key for key in scope if (key in bao) != (key in szse)}
             if conflicts == scope and not matrix:
                 # No agreed dates exist to illuminate on a cold start.
                 return {"status": "PARTIAL", "reason_code": "SOURCE_CONFLICT", "lit_from": None,
-                        "lit_to": None, "last_ok_at": None}
-            result = self._merge(bao, szse, scope - conflicts, start, end, refreshed, "BS+SZ")
+                        "lit_to": None, "last_ok_at": None, "last_error": "SOURCE_CONFLICT"}
+            result = self._merge(bao, szse, scope - conflicts, start, end, refreshed, "BS+SZ",
+                                 confirmed=not bool(conflicts),
+                                 last_error="SOURCE_CONFLICT" if conflicts else None)
             if conflicts:
                 loaded = self.load()
                 loaded["conflicts"].extend({"d": key, "bs": int(key in bao), "sz": int(key in szse), "at": refreshed}
                                            for key in sorted(conflicts))
                 loaded["conflicts"] = loaded["conflicts"][-500:]
                 self._write(loaded)
-                result.update(status="PARTIAL", reason_code="SOURCE_CONFLICT")
+                result.update(status="PARTIAL", reason_code="SOURCE_CONFLICT", last_error="SOURCE_CONFLICT",
+                              last_ok_at=loaded["last_ok_at"])
             return result
-        values = bao if bao is not None else szse
-        result = self._merge(values or set(), set(), scope, start, end, refreshed, "BS" if bao is not None else "SZ")
-        result.update(status="PARTIAL", reason_code=errors[0] if errors else "SINGLE_SOURCE")
+        source = "BS" if bao is not None else "SZ"
+        reason = errors[0] if errors else "SINGLE_SOURCE"
+        existing_days = {item["d"] for item in (matrix or {}).get("days", [])}
+        new_scope = scope - existing_days
+        result = self._merge(bao or set(), szse or set(), new_scope, start, end, refreshed, source,
+                             confirmed=False, last_error=reason)
+        result.update(status="PARTIAL", reason_code=reason, last_error=reason)
         return result
 
     def initialize(self, *, now: date | None = None, **fetchers: Any) -> dict[str, Any]:
@@ -303,8 +318,10 @@ class TradeCalendarStore:
             self._migrate = True
         return result
 
-    def force_refresh(self, *, now: date | None = None, **fetchers: Any) -> dict[str, Any]:
-        """Forced update: fetch the window now regardless of age or lit-ahead; failures leave the file unchanged."""
+    def force_refresh(self, *, now: date | datetime | None = None, **fetchers: Any) -> dict[str, Any]:
+        """Fetch regardless of age; partial updates preserve known dates and the last confirmed timestamp."""
+        if isinstance(now, datetime):
+            now = now.astimezone(ZoneInfo("Asia/Shanghai")).date() if now.tzinfo else now.date()
         return self.refresh(now=now, **fetchers)
 
     def refresh_if_needed(self, *, now: datetime | None = None) -> dict[str, Any]:
@@ -316,7 +333,8 @@ class TradeCalendarStore:
                 return first
         status = self.calendar_status(local)
         matrix = self.load()
-        age = 999 if not matrix else max(0, (datetime.now(timezone.utc) -
+        last_ok = (matrix or {}).get("last_ok_at")
+        age = 999 if not matrix or not last_ok else max(0, (datetime.now(timezone.utc) -
             datetime.fromisoformat(matrix["last_ok_at"].replace("Z", "+00:00")).astimezone(timezone.utc)).days)
         if not matrix or age > 7 or status["lit_days_ahead"] is None or status["lit_days_ahead"] < 20:
             return self.refresh(now=local)
@@ -331,7 +349,10 @@ class TradeCalendarStore:
                     "lit_from": None, "lit_to": None, "lit_days_ahead": None, "last_ok_at": None, "conflicts": 0}
         covered = matrix["lit_from"] <= today.isoformat() <= matrix["lit_to"]
         ahead = (date.fromisoformat(matrix["lit_to"]) - today).days
-        age = max(0, (datetime.now(timezone.utc) - datetime.fromisoformat(matrix["last_ok_at"].replace("Z", "+00:00")).astimezone(timezone.utc)).days)
+        last_ok = matrix.get("last_ok_at")
+        age = (max(0, (datetime.now(timezone.utc) -
+                       datetime.fromisoformat(last_ok.replace("Z", "+00:00")).astimezone(timezone.utc)).days)
+               if last_ok else 999)
         status = "UNKNOWN" if not covered else "STALE" if age > 7 or ahead < 7 or matrix.get("last_error") else "CONFIRMED"
         day_map = {item["d"]: item["t"] for item in matrix["days"]}
         return {"status": status, "as_of": today.isoformat(), "is_trading_day": bool(day_map[today.isoformat()])

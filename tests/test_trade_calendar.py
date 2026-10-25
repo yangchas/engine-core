@@ -172,6 +172,7 @@ def test_all_conflicting_window_preserves_days_and_cold_start_stays_unlit(tmp_pa
     bao, sz = _source_fetchers()
     store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)
     original = {row["d"]: row.copy() for row in store.load()["days"]}
+    last_ok_at = store.load()["last_ok_at"]
 
     def contradictory(start, end):
         days = {(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)}
@@ -181,7 +182,10 @@ def test_all_conflicting_window_preserves_days_and_cold_start_stays_unlit(tmp_pa
 
     result = store.refresh(now=date(2026, 10, 20), baostock_fetch=contradictory, szse_fetch=sz)
     assert result["reason_code"] == "SOURCE_CONFLICT"
-    assert {row["d"]: row for row in store.load()["days"]} == original
+    after = store.load()
+    assert {row["d"]: row for row in after["days"]} == original
+    assert after["last_ok_at"] == last_ok_at
+    assert after["last_error"] == "SOURCE_CONFLICT"
 
     cold = TradeCalendarStore(tmp_path / "cold")
     result = cold.refresh(now=date(2026, 10, 20), baostock_fetch=contradictory, szse_fetch=sz)
@@ -200,6 +204,7 @@ def test_total_failure_preserves_all_file_bytes(tmp_path, monkeypatch):
         raise CalendarSourceError("FIXTURE_TIMEOUT")
     result = store.refresh(now=date(2026, 10, 20), baostock_fetch=fail, szse_fetch=fail)
     assert result["status"] == "STALE"
+    assert result["last_error"] == "FIXTURE_TIMEOUT"
     assert _file_bytes(tmp_path) == before
 
 
@@ -246,13 +251,121 @@ def test_alert_entrypoint_still_deduplicates_calendar_failure(tmp_path, monkeypa
     monkeypatch.setattr(mail, "send_message", lambda *a, **kw:
                         sent.append((a, kw)) or SimpleNamespace(status="FAKE_SMTP_CAPTURED"))
     cli._ALERTED.clear()
-    event = next(item for item in cli.default_events() if item.handler == "calendar_refresh")
+    event = next(item for item in cli.default_events() if item.event_id == "calendar_refresh_0800")
     opts = SimpleNamespace(email_self=True, run=True, simulate_clock=None)
     now = datetime.fromisoformat("2026-10-20T08:00:00+08:00")
     for _ in range(4):
         assert cli._command_handler("calendar_refresh", opts, tmp_path)(event, now, {}, False).startswith("DEGRADED:")
         cli._ALERTED.clear()
     assert len(sent) == 2
+
+
+def test_calendar_refresh_0005_event_forces_fresh_matrix(tmp_path, monkeypatch):
+    from datetime import datetime
+    from engine_core.data_pipeline import trade_calendar
+    import examples.core_guardian as cli
+
+    monkeypatch.setattr(trade_calendar, "_market_today", lambda: date(2026, 10, 20))
+    store = TradeCalendarStore(tmp_path)
+    bao, sz = _source_fetchers()
+    store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)
+    calls = {"baostock": 0, "szse": 0}
+
+    def counted_bao(start, end):
+        calls["baostock"] += 1
+        return bao(start, end)
+
+    def counted_sz(year, month):
+        calls["szse"] += 1
+        return sz(year, month)
+
+    force_refresh = TradeCalendarStore.force_refresh
+
+    def injected_force_refresh(self, *, now=None, **_fetchers):
+        return force_refresh(self, now=now, baostock_fetch=counted_bao, szse_fetch=counted_sz)
+
+    monkeypatch.setattr(TradeCalendarStore, "force_refresh", injected_force_refresh)
+    event = next(item for item in cli.default_events() if item.event_id == "calendar_refresh_0005")
+    assert event.args == {"refresh": "force"}
+    opts = SimpleNamespace(email_self=False, run=False, simulate_clock=None)
+    result = cli._command_handler("calendar_refresh", opts, tmp_path)(
+        event, datetime.fromisoformat("2026-10-20T00:05:00+08:00"), {}, False)
+    assert json.loads(result)["calendar"]["status"] == "CONFIRMED"
+    assert calls["baostock"] == 1
+    assert calls["szse"] > 0
+
+
+def test_calendar_refresh_0800_event_keeps_fresh_matrix_read_only(tmp_path, monkeypatch):
+    from datetime import datetime
+    from engine_core.data_pipeline import trade_calendar
+    import examples.core_guardian as cli
+
+    monkeypatch.setattr(trade_calendar, "_market_today", lambda: date(2026, 10, 20))
+    store = TradeCalendarStore(tmp_path)
+    bao, sz = _source_fetchers()
+    store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)
+    before = store.path.read_bytes()
+    calls = []
+    refresh = TradeCalendarStore.refresh
+
+    def counted_refresh(self, **kwargs):
+        calls.append(kwargs)
+        return refresh(self, **kwargs)
+
+    monkeypatch.setattr(TradeCalendarStore, "refresh", counted_refresh)
+    event = next(item for item in cli.default_events() if item.event_id == "calendar_refresh_0800")
+    assert event.args is None
+    opts = SimpleNamespace(email_self=False, run=False, simulate_clock=None)
+    result = cli._command_handler("calendar_refresh", opts, tmp_path)(
+        event, datetime.fromisoformat("2026-10-20T08:00:00+08:00"), {}, False)
+    assert json.loads(result)["calendar"]["status"] == "CONFIRMED"
+    assert calls == []
+    assert store.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("failed_source", ["baostock", "szse"])
+def test_single_source_failure_keeps_old_marks_and_degrades_0005(tmp_path, monkeypatch, failed_source):
+    from datetime import datetime
+    from engine_core.data_pipeline import trade_calendar
+    import examples.core_guardian as cli
+
+    monkeypatch.setattr(trade_calendar, "_market_today", lambda: date(2026, 10, 20))
+    store = TradeCalendarStore(tmp_path)
+    bao, sz = _source_fetchers()
+    store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)
+    matrix = store.load()
+    target = next(item for item in matrix["days"] if item["d"] == "2026-10-21")
+    target["t"] = 1 - int(target["t"])
+    store._write(matrix)
+    old_mark = target["t"]
+    old_last_ok = matrix["last_ok_at"]
+
+    def fail(*_args):
+        raise OSError(f"{failed_source.upper()}_UNAVAILABLE")
+
+    partial_result = {}
+    force_refresh = TradeCalendarStore.force_refresh
+
+    def injected_force_refresh(self, *, now=None, **_fetchers):
+        result = force_refresh(self, now=now,
+                               baostock_fetch=fail if failed_source == "baostock" else bao,
+                               szse_fetch=fail if failed_source == "szse" else sz)
+        partial_result["result"] = result
+        return result
+
+    monkeypatch.setattr(TradeCalendarStore, "force_refresh", injected_force_refresh)
+    event = next(item for item in cli.default_events() if item.event_id == "calendar_refresh_0005")
+    opts = SimpleNamespace(email_self=False, run=False, simulate_clock=None)
+    output = cli._command_handler("calendar_refresh", opts, tmp_path)(
+        event, datetime.fromisoformat("2026-10-26T00:05:00+08:00"), {}, False)
+
+    assert output.startswith("DEGRADED:")
+    assert partial_result["result"]["status"] == "PARTIAL"
+    assert partial_result["result"]["last_error"] == f"{failed_source.upper()}_UNAVAILABLE"
+    after = store.load()
+    assert next(item for item in after["days"] if item["d"] == "2026-10-21")["t"] == old_mark
+    assert after["last_ok_at"] == old_last_ok
+    assert after["last_error"] == f"{failed_source.upper()}_UNAVAILABLE"
 
 
 def test_slice_and_baseline_consumers_read_matrix_calendar(tmp_path, monkeypatch):

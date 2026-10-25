@@ -1,5 +1,15 @@
 # Project Knowledge
 
+- `[VERIFIED 2026-10-25 — C536 calendar refresh]` Guardian's `calendar_refresh_0005`
+  forces a Baostock + SZSE refresh; `calendar_refresh_0800` still refreshes only
+  when needed. A live forced refresh on a temporary copy grew coverage from 323
+  dates / 212 trading days to 328 / 215, added five future dates through
+  2026-11-24, changed no prior `t` marks, and found zero source conflicts.
+  Single-source failure and source conflict preserve existing marks and
+  `last_ok_at` while storing `last_error`; total source failure returns
+  `last_error` and leaves `calendar.json` byte-identical. A–D evidence:
+  `/home/exedev/validation/s1/C536/`.
+
 - `[VERIFIED 2026-10-25 — C534/C535 data access]` `data_pipeline.get()` selects immutable
   catalog versions by gate status, business status, and coverage, followed by the
   dataset's source preference when configured, availability time, then manifest
