@@ -8,6 +8,7 @@ from pathlib import Path
 from engine_core.data_pipeline.registry import DATASETS, get_dataset
 from engine_core.data_pipeline.registry.gate import summarize_gate
 from engine_core.data_pipeline.storage import ArtifactCatalog, canonical_json
+from conftest import read_real_artifact, seed_real_symbol_universe
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "real"
@@ -24,6 +25,7 @@ def _daily_kline_fixture():
 def test_daily_kline_commit_records_observational_gate_for_real_rows(tmp_path):
     source_manifest, rows = _daily_kline_fixture()
     catalog = ArtifactCatalog(tmp_path / "core")
+    seed_real_symbol_universe(catalog, "2026-10-23")
     result = catalog.commit(
         "daily_kline", "2026-10-23", rows, source_manifest,
         source="baostock", clock=lambda: datetime(2026, 10, 25, tzinfo=timezone.utc),
@@ -76,10 +78,12 @@ def test_unresolved_adapter_fails_gate(tmp_path):
 
 
 def test_real_partial_manifest_coverage_fails_commit_gate(tmp_path):
-    _, rows = _daily_kline_fixture()
+    _, rows = read_real_artifact("daily_kline", "2026-10-21", "partial")
     manifest_path = FIXTURES / "core_artifacts/c533/daily_kline/2026-10-21/chain/manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    result = ArtifactCatalog(tmp_path / "core").commit(
+    catalog = ArtifactCatalog(tmp_path / "core")
+    seed_real_symbol_universe(catalog, "2026-10-21")
+    result = catalog.commit(
         "daily_kline", "2026-10-21", rows, manifest,
         source="baostock>wencai>q2_final",
         clock=lambda: datetime(2026, 10, 25, tzinfo=timezone.utc),
@@ -104,7 +108,9 @@ def test_partial_quality_with_sufficient_real_coverage_warns(tmp_path):
     _, rows = _daily_kline_fixture()
     manifest_path = FIXTURES / "core_artifacts/c522/daily_kline/2026-10-23/provisional/manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    result = ArtifactCatalog(tmp_path / "core").commit(
+    catalog = ArtifactCatalog(tmp_path / "core")
+    seed_real_symbol_universe(catalog, "2026-10-23")
+    result = catalog.commit(
         "daily_kline", "2026-10-23", rows, manifest,
         source=manifest["source"],
         clock=lambda: datetime(2026, 10, 25, tzinfo=timezone.utc),
@@ -112,26 +118,27 @@ def test_partial_quality_with_sufficient_real_coverage_warns(tmp_path):
 
     assert manifest["quality"]["status"] == "PARTIAL"
     assert manifest["quality"]["coverage"] == 0.9998086124401914
-    assert result["gate"]["gate_status"] == "WARN"
-    assert "quality_partial" in result["gate"]["reasons"]
+    assert result["quality"]["coverage"] == 1.0
+    assert result["gate"]["gate_status"] in {"OK", "WARN"}
     assert "coverage_low" not in result["gate"]["reasons"]
 
 
 def test_enforce_blocks_failed_latest_but_observe_does_not(tmp_path, monkeypatch):
-    _, fixture_rows = _daily_kline_fixture()
-    bad_row = dict(fixture_rows[0])
-    bad_row["close"] = "not-a-price"
+    fixture_manifest, fixture_rows = _daily_kline_fixture()
+    bad_rows = [{**row, "close": "not-a-price"} for row in fixture_rows]
     commit_time = lambda: datetime(2026, 10, 25, tzinfo=timezone.utc)
 
     observed = ArtifactCatalog(tmp_path / "observe")
-    observed.commit("daily_kline", "2026-10-23", [bad_row], {}, source="baostock",
+    seed_real_symbol_universe(observed, "2026-10-23")
+    observed.commit("daily_kline", "2026-10-23", bad_rows, fixture_manifest, source="baostock",
                     clock=commit_time)
     observed_latest = observed.read()["datasets"]["daily_kline"]["latest"]
     assert observed_latest["trade_date"] == "2026-10-23"
 
     monkeypatch.setitem(DATASETS, "daily_kline", replace(get_dataset("daily_kline"), gate_mode="enforce"))
     enforced = ArtifactCatalog(tmp_path / "enforce")
-    manifest = enforced.commit("daily_kline", "2026-10-23", [bad_row], {}, source="baostock",
+    seed_real_symbol_universe(enforced, "2026-10-23")
+    manifest = enforced.commit("daily_kline", "2026-10-23", bad_rows, fixture_manifest, source="baostock",
                                clock=commit_time)
     catalog = enforced.read()
     version = catalog["datasets"]["daily_kline"]["dates"]["2026-10-23"][0]

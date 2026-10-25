@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import ssl
+import time
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Any, Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from .data_pipeline.providers.daily_kline_chain import Q2FinalProvider, WencaiDailyProvider
+from .data_pipeline.registry.daily_kline import classify_daily_kline
 from .data_pipeline.storage import ArtifactCatalog
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -197,21 +199,29 @@ def capture(
     expected_symbols = _expected_symbols(root, trade_date)
     expected_count = len(expected_symbols) if expected_symbols is not None else None
     q2_provider = Q2FinalProvider(redis_client)
+    q2_started = time.monotonic()
     q2_payload = q2_provider.fetch(trade_date, now=current)
+    q2_elapsed_ms = round((time.monotonic() - q2_started) * 1000, 3)
     q2_rows = q2_payload.get("rows", [])
 
     wencai_payload: dict[str, Any] = {"status": "PROVIDER_UNAVAILABLE", "rows": [],
                                       "reason": "wencai_adapter_not_configured"}
+    wencai_elapsed_ms = 0.0
     if wencai_fetch is not None:
         provider = WencaiDailyProvider(wencai_fetch, state_path=None,
                                        expected_count=expected_count)
+        wencai_started = time.monotonic()
         wencai_payload = provider.fetch(trade_date, now=current)
+        wencai_elapsed_ms = round((time.monotonic() - wencai_started) * 1000, 3)
     wencai_rows = wencai_payload.get("rows", [])
     rows, quality = compose_degraded_rows(q2_rows, wencai_rows,
                                           expected_symbols=expected_symbols,
                                           expected_count=expected_count or q2_payload.get("expected_count"))
     sources = sorted({source for row in rows for source in row["field_sources"].values()})
-    available_at = datetime.now(SHANGHAI).isoformat()
+    provider_sources = {"q2_final" if source == "legacy_q2_final" else source for source in sources}
+    provider_name = next(iter(provider_sources)) if len(provider_sources) == 1 and next(iter(provider_sources)) in {
+        "baostock", "wencai", "q2_final"} else "UNKNOWN"
+    available_at = current.isoformat()
     field_completeness = {
         field: ("COMPLETE" if rows and all(row.get(field) is not None for row in rows) else
                 "MISSING" if not any(row.get(field) is not None for row in rows) else "PARTIAL")
@@ -221,6 +231,7 @@ def capture(
         "schema_version": 1,
         "dataset": "daily_kline",
         "trade_date": trade_date,
+        "provider": provider_name,
         "source": ">".join(sources) if sources else "none",
         "source_dependency": "legacy_redis_q2+independent_wencai",
         "available_at": available_at,
@@ -233,12 +244,19 @@ def capture(
         "degraded": True,
         "degraded_label": "DEGRADED:q2_final>wencai",
         "status": "DEGRADED:q2_final>wencai",
-        "business_status": "PROVISIONAL",
+        "business_status": classify_daily_kline(provider_name, quality.get("coverage"), field_completeness),
         "provider_attempts": [
-            {"provider": "q2_final", "status": q2_payload.get("status", "READY"),
-             "row_count": len(q2_rows), "stale_count": q2_payload.get("stale_count", 0)},
-            {"provider": "wencai", "status": wencai_payload.get("status", "READY"),
-             "reason": wencai_payload.get("reason"), "row_count": len(wencai_rows)},
+            {"provider": "q2_final",
+             "result": "ACCEPTED" if q2_payload.get("status") != "PROVIDER_UNAVAILABLE" and q2_rows else "ERROR",
+             "attempted_at": current.isoformat(), "elapsed_ms": q2_elapsed_ms,
+             "reason": q2_payload.get("reason") or ("rows_received" if q2_rows else "no_rows"),
+             "status": q2_payload.get("status", "READY"), "row_count": len(q2_rows),
+             "stale_count": q2_payload.get("stale_count", 0)},
+            {"provider": "wencai",
+             "result": "ACCEPTED" if wencai_payload.get("status") != "PROVIDER_UNAVAILABLE" and wencai_rows else "ERROR",
+             "attempted_at": current.isoformat(), "elapsed_ms": wencai_elapsed_ms,
+             "reason": wencai_payload.get("reason") or ("rows_received" if wencai_rows else "no_rows"),
+             "status": wencai_payload.get("status", "READY"), "row_count": len(wencai_rows)},
         ],
         "field_completeness": field_completeness,
         "field_units": {"open/high/low/close/pre_close": "yuan", "pct_chg": "percent",

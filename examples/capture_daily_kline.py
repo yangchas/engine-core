@@ -79,6 +79,8 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None) -> int:
             "error_count": len(fetch_report["errors"]),
             "mismatch_count": len(quality["mismatches"]) + len(quality["pct_chg_mismatches"]),
             "partial": fetch_report["partial"],
+            "baostock_timing": fetch_report["baostock_timing"],
+            "provider_attempts": fetch_report["provider_attempts"],
         }
         manifest = write_capture(args.out_dir, rows, manifest_meta)
         print(json.dumps({"manifest": manifest, "missing_symbols": fetch_report["missing"],

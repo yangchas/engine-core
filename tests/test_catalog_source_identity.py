@@ -4,6 +4,7 @@ from pathlib import Path
 
 from engine_core.data_pipeline.storage import ArtifactCatalog
 from engine_core.guardian.registry import catalog_manifest, daily_kline_needs_upgrade
+from conftest import seed_real_symbol_universe
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "real" / "core_artifacts" / "c522" / "daily_kline" / "2026-10-23"
@@ -22,6 +23,7 @@ def test_identical_real_rows_from_different_sources_keep_both_catalog_entries(tm
     formal, formal_rows = _real_version("formal")
     assert provisional_rows == formal_rows
     catalog = ArtifactCatalog(tmp_path / "core")
+    seed_real_symbol_universe(catalog, "2026-10-23")
 
     catalog.commit("daily_kline", "2026-10-23", provisional_rows, provisional,
                    source=provisional["source"])
@@ -44,6 +46,7 @@ def test_identical_real_rows_from_different_sources_keep_both_catalog_entries(tm
 def test_same_source_same_real_version_commit_is_idempotent(tmp_path):
     formal, rows = _real_version("formal")
     catalog = ArtifactCatalog(tmp_path / "core")
+    seed_real_symbol_universe(catalog, "2026-10-23")
     catalog.commit("daily_kline", "2026-10-23", rows, formal, source="baostock")
     catalog.commit("daily_kline", "2026-10-23", rows, formal, source="baostock")
     versions = catalog.read()["datasets"]["daily_kline"]["dates"]["2026-10-23"]

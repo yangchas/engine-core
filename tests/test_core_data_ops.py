@@ -155,6 +155,8 @@ def test_reconciliation_finds_close_and_amount_mismatches():
 
 def test_health_reports_artifact_redis_consistency_and_red_status(tmp_path):
     from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from conftest import read_real_artifact, seed_real_symbol_universe
 
     class Redis:
         def __init__(self): self.values = {}
@@ -163,15 +165,22 @@ def test_health_reports_artifact_redis_consistency_and_red_status(tmp_path):
         def ttl(self, key): return 100
 
     redis = Redis()
+    day = "2026-10-23"
+    seed_real_symbol_universe(ArtifactCatalog(tmp_path), day)
+    _, rows = read_real_artifact("daily_kline", day, "formal")
     runner = JobRunner(artifact_root=tmp_path, redis=redis, budget=RequestBudget(min_interval_seconds=0))
-    runner.run("daily_kline", "2026-10-15", fetch=lambda _: [{"symbol": "600001"}],
-               now="2026-10-16T10:00:00Z", publish=True)
-    report = dataset_health(tmp_path, redis=redis, trade_dates=["2026-10-15"])
+    runner.run("daily_kline", day,
+               fetch=lambda _: {"rows": rows, "source": "baostock", "provider": "baostock",
+                                "provider_attempts": [{"provider": "baostock", "result": "ACCEPTED",
+                                    "attempted_at": "2026-10-25T17:30:00+08:00", "elapsed_ms": 1,
+                                    "reason": "real fixture replay"}]},
+               now="2026-10-26T10:00:00+08:00", publish=True, source="baostock")
+    report = dataset_health(tmp_path, redis=redis, trade_dates=[day])
     assert report["datasets"]["daily_kline"]["artifact_redis_consistent"] is True
     assert report["datasets"]["daily_kline"]["status"] == "GREEN"
     assert report["summary"] == "RED"  # other registered datasets have no artifact yet
     redis.values["core:cache:data:daily_kline:latest"] = "{}"
-    broken = dataset_health(tmp_path, redis=redis, trade_dates=["2026-10-15"])
+    broken = dataset_health(tmp_path, redis=redis, trade_dates=[day])
     assert broken["datasets"]["daily_kline"]["status"] == "RED"
     assert broken["summary"] == "RED"
 

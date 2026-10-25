@@ -89,7 +89,7 @@ def test_validation_failure_does_not_publish_and_partial_fetch_circuits(tmp_path
     assert "secret" not in (tmp_path / "job_state.json").read_text()
 
 
-def test_backfill_does_not_move_latest_and_redis_keeps_only_manifest_when_large(tmp_path):
+def test_daily_kline_without_universe_does_not_publish_latest(tmp_path):
     class Redis:
         def __init__(self): self.values, self.ttls = {}, {}
         def set(self, key, value, ex=None):
@@ -100,13 +100,14 @@ def test_backfill_does_not_move_latest_and_redis_keeps_only_manifest_when_large(
     redis = Redis()
     runner = JobRunner(artifact_root=tmp_path, redis=redis,
                        budget=RequestBudget(max_requests=30, min_interval_seconds=0))
-    runner.run("daily_kline", "2026-10-15", fetch=lambda _: [{"symbol": "600001"}],
-               now="2026-10-16T10:00:00Z", publish=True)
-    latest = redis.values["core:cache:data:daily_kline:latest"]
+    result = runner.run("daily_kline", "2026-10-15", fetch=lambda _: [{"symbol": "600001"}],
+                        now="2026-10-16T10:00:00Z", publish=True)
+    assert result.manifest["quality"]["expected_basis"] == "universe_unavailable"
+    assert result.manifest["quality"]["coverage"] is None
+    assert result.manifest["business_status"] != "FORMAL"
     runner.run("daily_kline", "2026-10-14", fetch=lambda _: [{"symbol": "600002"}],
                now="2026-10-16T11:00:00Z", publish=True)
-    assert json.loads(redis.values["core:cache:data:daily_kline:latest"]) == json.loads(latest)
-    assert redis.ttls["core:cache:data:daily_kline:latest"] == 7 * 86400
+    assert "core:cache:data:daily_kline:latest" not in redis.values
 
 
 def test_provider_budget_and_td_adapter_are_offline_only():
@@ -170,6 +171,8 @@ def test_job_runner_dry_run_fetches_validates_and_does_not_write(tmp_path):
 
 
 def test_redis_publish_reports_plan_and_verifies_readback(tmp_path, capsys):
+    from conftest import read_real_artifact, seed_real_symbol_universe
+
     class Redis:
         def __init__(self): self.values = {}; self.ttls = {}
         def set(self, key, value, ex=None): self.values[key] = value; self.ttls[key] = ex
@@ -177,10 +180,17 @@ def test_redis_publish_reports_plan_and_verifies_readback(tmp_path, capsys):
         def delete(self, key): self.values.pop(key, None)
 
     redis = Redis()
+    day = "2026-10-23"
+    seed_real_symbol_universe(ArtifactCatalog(tmp_path), day)
+    _, rows = read_real_artifact("daily_kline", day, "formal")
     runner = JobRunner(artifact_root=tmp_path, redis=redis,
                        budget=RequestBudget(min_interval_seconds=0))
-    runner.run("daily_kline", "2026-10-15", fetch=lambda _: [{"symbol": "600001"}],
-               now="2026-10-16T10:00:00Z", publish=True)
+    runner.run("daily_kline", day,
+               fetch=lambda _: {"rows": rows, "source": "baostock", "provider": "baostock",
+                                "provider_attempts": [{"provider": "baostock", "result": "ACCEPTED",
+                                    "attempted_at": "2026-10-25T17:30:00+08:00", "elapsed_ms": 1,
+                                    "reason": "real fixture replay"}]},
+               now="2026-10-26T10:00:00+08:00", publish=True, source="baostock")
     assert "WRITE_PLAN" in capsys.readouterr().out
     assert redis.values["core:cache:data:daily_kline:latest"]
     assert all(key.startswith("core:cache:data:") for key in redis.values)

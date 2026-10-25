@@ -8,8 +8,10 @@ import queue
 import threading
 import time
 from concurrent.futures import TimeoutError
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from ...daily_kline_capture import parse_row, to_baostock_code
 
@@ -38,6 +40,7 @@ class BaostockDailyProvider:
         self.sleep_fn = sleep_fn
         self.timeout_call = timeout_call or self._timeout_call
         self.checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else None
+        self._timing: dict[str, Any] = {"login_ms": 0.0, "query_ms": 0.0, "error_code": None}
 
     CHECKPOINT_EVERY = 25
 
@@ -93,6 +96,38 @@ class BaostockDailyProvider:
 
     LOGIN_TIMEOUT_FACTOR = 5.0  # login gets 5x the per-query bound (30s -> 150s)
 
+    def _error_code(self, client: Any, exc: BaseException) -> str:
+        code = getattr(client, "last_error_code", None) or getattr(exc, "error_code", None)
+        if code:
+            return str(code)
+        if isinstance(exc, TimeoutError) or "BAOSTOCK_TIMEOUT" in str(exc):
+            return "BAOSTOCK_TIMEOUT"
+        if "BAOSTOCK_CONNECTION_ERROR" in str(exc):
+            return "BAOSTOCK_CONNECTION_ERROR"
+        return type(exc).__name__
+
+    def _annotate_exception(self, exc: BaseException, client: Any) -> None:
+        self._timing["result"] = ("timeout" if "TIMEOUT" in str(exc).upper()
+                                   or isinstance(exc, TimeoutError) else "error")
+        self._timing.setdefault("started_at", datetime.now(ZoneInfo("Asia/Shanghai")).isoformat())
+        if self._timing.get("error_code") in (None, "0"):
+            self._timing["error_code"] = self._error_code(client, exc)
+        try:
+            exc.baostock_timing = dict(self._timing)  # type: ignore[attr-defined]
+        except (AttributeError, TypeError):
+            pass
+
+    def _timed_login_call(self, client: Any) -> None:
+        started = time.monotonic()
+        try:
+            self.timeout_call(client.login)
+            self._timing["error_code"] = "0"
+        except Exception as exc:
+            self._timing["error_code"] = self._error_code(client, exc)
+            raise
+        finally:
+            self._timing["login_ms"] += round((time.monotonic() - started) * 1000, 3)
+
     def _login(self, client: Any) -> None:
         """Baostock login latency spikes to ~50s under load (seen 2026-10-21 evening vs 0.4s normally): give it its own,
         longer bound and retry it, instead of abandoning the whole pull on the per-query 30s limit."""
@@ -101,7 +136,7 @@ class BaostockDailyProvider:
             saved = self.timeout_seconds
             try:
                 self.timeout_seconds = saved * self.LOGIN_TIMEOUT_FACTOR if self.timeout_call == self._timeout_call else saved
-                self.timeout_call(client.login)
+                self._timed_login_call(client)
                 return
             except (TimeoutError, RuntimeError) as exc:
                 last = exc
@@ -109,7 +144,9 @@ class BaostockDailyProvider:
                     self.sleep_fn(min(2 ** (attempt + 2), 30))
             finally:
                 self.timeout_seconds = saved
-        raise last if last is not None else RuntimeError("BAOSTOCK_LOGIN_FAILED")
+        error = last if last is not None else RuntimeError("BAOSTOCK_LOGIN_FAILED")
+        self._annotate_exception(error, client)
+        raise error
 
     def _deadline_left(self) -> bool:
         return self.deadline is None or self.deadline - time.monotonic() > 0
@@ -121,9 +158,20 @@ class BaostockDailyProvider:
         except (TypeError, ValueError):
             supports_timeout = False
         args = (code, day, self.timeout_seconds) if supports_timeout else (code, day)
-        return self.timeout_call(query, *args)
+        started = time.monotonic()
+        try:
+            result = self.timeout_call(query, *args)
+            self._timing["error_code"] = "0"
+            return result
+        except Exception as exc:
+            self._timing["error_code"] = self._error_code(client, exc)
+            raise
+        finally:
+            self._timing["query_ms"] += round((time.monotonic() - started) * 1000, 3)
 
     def fetch(self, trade_date: str, context: Any = None) -> dict[str, Any]:
+        self._timing = {"login_ms": 0.0, "query_ms": 0.0, "error_code": None,
+                        "started_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()}
         self.deadline = (time.monotonic() + self.total_timeout_seconds
                          if self.total_timeout_seconds is not None else None)
         if context is not None:
@@ -168,13 +216,16 @@ class BaostockDailyProvider:
                                 except Exception:
                                     pass
                                 try:
-                                    self.timeout_call(client.login)
-                                except Exception:
-                                    pass
+                                    self._timed_login_call(client)
+                                except Exception as relogin_error:
+                                    self._annotate_exception(relogin_error, client)
                                 continue
                             transport_failed = True
+                            self._annotate_exception(exc, client)
                             if isinstance(exc, TimeoutError) or "BAOSTOCK_TIMEOUT" in str(exc):
-                                raise TimeoutError("BAOSTOCK_TIMEOUT") from None
+                                error = TimeoutError("BAOSTOCK_TIMEOUT")
+                                self._annotate_exception(error, client)
+                                raise error from None
                             raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from exc
                         if attempt < self.retries:
                             self.sleep_fn(min(2 ** attempt, 8))
@@ -220,5 +271,7 @@ class BaostockDailyProvider:
                 "missing_symbols": missing, "suspended_count": suspended,
                 "mismatch_count": mismatch, "errors": errors,
                 "partial": bool(missing or errors or len(rows) < len(expected)),
-                "resumed_count": resumed_count}
+                "resumed_count": resumed_count,
+                "baostock_timing": {**self._timing, "result": "error" if errors else "ok",
+                                    "error_code": (self._timing.get("error_code") or "0")}}
 

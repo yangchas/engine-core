@@ -77,7 +77,7 @@ def test_get_reads_committed_real_rows_and_filters_as_of_and_tag(tmp_path):
 
     by_time = get("daily_kline", trade_date="2026-10-23", as_of="2026-10-25T10:30:00Z",
                   view="raw", catalog=catalog)
-    assert by_time.meta["available_at"] == "2026-10-25T10:00:00Z"
+    assert by_time.meta["available_at"] == "2026-10-25T18:00:00+08:00"
     assert by_time.meta["rows_total"] == len(rows)
     assert by_time.rows == rows
     assert all(key in by_time.meta for key in (

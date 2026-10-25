@@ -51,21 +51,23 @@ def test_partial_daily_kline_is_neither_present_nor_a_passed_postcondition(tmp_p
     from datetime import datetime
     from engine_core.guardian.registry import catalog_partition_present
     from engine_core.data_pipeline.storage import ArtifactCatalog
+    from conftest import read_real_artifact, seed_real_symbol_universe
 
-    rows = [{"symbol": f"{i:06d}"} for i in range(5)]
+    day = "2026-10-23"
+    _, rows = read_real_artifact("daily_kline", day, "formal")
     from conftest import use_declared_time_as_test_commit_clock
-    use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path)).commit("daily_kline", "2026-10-21", rows,
-        {"available_at": "2026-10-21T17:41:00+08:00",
-         "quality": {"coverage": 0.3396, "missing": 3450, "partial": True, "row_count": 5, "status": "PARTIAL"}},
-        source="test")
+    catalog_writer = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path))
+    seed_real_symbol_universe(catalog_writer, day)
+    catalog_writer.commit("daily_kline", day, rows[:1774],
+        {"trade_date": day, "provider": "baostock", "available_at": f"{day}T17:41:00+08:00"},
+        source="baostock")
     catalog = ArtifactCatalog(tmp_path).read()
-    now = datetime.fromisoformat("2026-10-21T18:30:00+08:00")
-    assert not catalog_partition_present(catalog, "daily_kline", "2026-10-21", now)
-    ok, reason = validate_handler_postcondition("baostock_probe", "2026-10-21", tmp_path)
+    now = datetime.fromisoformat(f"{day}T18:30:00+08:00")
+    assert not catalog_partition_present(catalog, "daily_kline", day, now)
+    ok, reason = validate_handler_postcondition("baostock_probe", day, tmp_path)
     assert not ok and reason.startswith("daily_kline_partial:0.340")
-    use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path)).commit("daily_kline", "2026-10-21", rows + [{"symbol": "000099"}],
-        {"available_at": "2026-10-21T18:10:00+08:00",
-         "quality": {"coverage": 1.0, "missing": 0, "partial": False, "row_count": 6, "status": "READY"}},
-        source="test")
-    assert catalog_partition_present(ArtifactCatalog(tmp_path).read(), "daily_kline", "2026-10-21", now)
-    assert validate_handler_postcondition("baostock_probe", "2026-10-21", tmp_path) == (True, "")
+    catalog_writer.commit("daily_kline", day, rows,
+        {"trade_date": day, "provider": "baostock", "available_at": f"{day}T18:10:00+08:00"},
+        source="baostock")
+    assert catalog_partition_present(ArtifactCatalog(tmp_path).read(), "daily_kline", day, now)
+    assert validate_handler_postcondition("baostock_probe", day, tmp_path) == (True, "")

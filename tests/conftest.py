@@ -3,16 +3,40 @@
 from __future__ import annotations
 
 import sys
+import gzip
+import json
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+REAL_ARTIFACTS = PROJECT_ROOT / "tests" / "fixtures" / "real" / "core_artifacts"
 project_root_text = str(PROJECT_ROOT)
 if project_root_text not in sys.path:
     sys.path.insert(0, project_root_text)
 
 
 import pytest
+
+
+def read_real_artifact(dataset: str, day: str, variant: str) -> tuple[dict, list[dict]]:
+    """Load a captured upstream artifact used by offline daily_kline tests."""
+    base = REAL_ARTIFACTS / "c540" / dataset / day / variant
+    if not base.is_dir() and dataset == "daily_kline":
+        base = REAL_ARTIFACTS / "c522" / dataset / day / variant
+    manifest = json.loads((base / "manifest.json").read_text(encoding="utf-8"))
+    with gzip.open(base / "rows.jsonl.gz", "rt", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    return manifest, rows
+
+
+def seed_real_symbol_universe(catalog, day: str, symbols=None) -> list[dict]:
+    manifest, rows = read_real_artifact("symbol_universe", day, "actual")
+    if symbols is not None:
+        selected = set(symbols)
+        rows = [row for row in rows if str(row.get("symbol", "")).zfill(6) in selected]
+    catalog.commit("symbol_universe", day, rows, manifest,
+                   source=manifest.get("source", "baostock_query_all_stock"))
+    return rows
 
 
 def pytest_addoption(parser):

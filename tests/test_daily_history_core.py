@@ -26,7 +26,7 @@ def test_daily_history_reads_pit_eligible_core_days_before_legacy(tmp_path):
     assert result.meta["source"] == "core_data"
     assert [row["date"] for row in result.rows] == ["2026-10-14", "2026-10-15"]
     assert all(row["source"] == "baostock" for row in result.rows)
-    assert result.meta["available_at"] == "2026-10-15T09:30:00+00:00"
+    assert result.meta["available_at"] == "2026-10-15T17:30:00+08:00"
     assert result.rows[-1]["ma5"] == 10.0
     assert result.rows[-1]["indicator_source"] == "core_derived"
 
@@ -107,12 +107,16 @@ def test_legacy_daily_history_fallback_is_marked_degraded():
 
 def test_history_import_checkpoints_completed_symbol_batches(tmp_path):
     from engine_core.daily_history import backfill_daily_history
+    from conftest import read_real_artifact, seed_real_symbol_universe
 
     catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
-    catalog.commit("daily_kline", "2026-10-16", [
-        {"date": "2026-10-16", "symbol": "000001", "close": 10.0},
-        {"date": "2026-10-16", "symbol": "000002", "close": 20.0},
-    ], {"available_at": "2026-10-16T17:30:00+08:00"}, source="baostock")
+    day = "2026-10-23"
+    universe = seed_real_symbol_universe(catalog, day, {"000001", "000002"})
+    real_manifest, real_rows = read_real_artifact("daily_kline", day, "formal")
+    by_symbol = {row["symbol"]: row for row in real_rows if row["symbol"] in {"000001", "000002"}}
+    real_rows = [by_symbol[symbol] for symbol in sorted(by_symbol)]
+    assert len(universe) == len(real_rows) == 2
+    catalog.commit("daily_kline", day, real_rows, real_manifest, source="baostock")
 
     class Client:
         def __init__(self):
@@ -127,9 +131,7 @@ def test_history_import_checkpoints_completed_symbol_batches(tmp_path):
 
         def query(self, symbol, start, end):
             self.queries.append(symbol)
-            return [{"date": "2026-10-15", "symbol": symbol, "close": 10.0,
-                     "pre_close": 9.0, "volume": 1.0, "amount_yuan": 100.0,
-                     "turnover_pct": 1.0, "pct_chg": 1.0}]
+            return [dict(by_symbol[symbol])]
 
     class Redis:
         def __init__(self):
@@ -145,40 +147,40 @@ def test_history_import_checkpoints_completed_symbol_batches(tmp_path):
     client = Client()
     redis = Redis()
     checkpoint = tmp_path / "checkpoints"
-    report = backfill_daily_history(catalog, start="2026-10-15", end="2026-10-15",
+    report = backfill_daily_history(catalog, start=day, end=day,
                                     checkpoint_root=checkpoint, client=client, batch_size=1,
                                     redis=redis)
     assert report["completed_symbols"] == report["symbol_count"] == 2
     assert report["days_committed"] == 1
     assert len(client.queries) == 2
-    assert "core:cache:data:daily_history:2026-10-15" in redis.values
+    assert "core:cache:data:daily_history:2026-10-23" in redis.values
     import gzip, json
-    batch_checkpoint = next((checkpoint / "range-2026-10-15-2026-10-15").glob("symbols-*.json.gz"))
+    batch_checkpoint = next((checkpoint / f"range-{day}-{day}").glob("symbols-*.json.gz"))
     saved_batch = json.loads(gzip.decompress(batch_checkpoint.read_bytes()))
     assert saved_batch["source"] == "baostock"
-    assert saved_batch["parameters"]["start"] == "2026-10-15"
-    assert saved_batch["parameters"]["end"] == "2026-10-15"
+    assert saved_batch["parameters"]["start"] == day
+    assert saved_batch["parameters"]["end"] == day
     assert saved_batch["fetched_at"]
-    assert catalog.locate("daily_indicators", "2026-10-15") is not None
+    assert catalog.locate("daily_indicators", day) is not None
     cached = SliceReader(SliceProviders(catalog=catalog, redis=redis).providers()).get(
-        "daily_history", trade_date="2026-10-16", asof="2026-10-16T20:00:00+08:00",
-        prior_trade_date="2026-10-15")
+        "daily_history", trade_date="2026-10-26", asof="2026-10-26T20:00:00+08:00",
+        prior_trade_date=day)
     assert cached.meta["version"] == "redis_hot_view"
     assert cached.meta["source"] == "core_data"
     assert cached.rows[0]["indicator_source"] == "core_derived"
     long_window = SliceReader(SliceProviders(catalog=catalog, redis=redis).providers()).get(
-        "daily_history", trade_date="2026-10-16", asof="2026-10-16T20:00:00+08:00",
-        prior_trade_date="2026-10-15", history_days=6)
+        "daily_history", trade_date="2026-10-26", asof="2026-10-26T20:00:00+08:00",
+        prior_trade_date=day, history_days=6)
     assert long_window.meta["version"] == "multi_date"
     assert long_window.rows[0]["indicator_source"] == "core_derived"
 
     resumed = Client()
-    backfill_daily_history(catalog, start="2026-10-15", end="2026-10-15",
+    backfill_daily_history(catalog, start=day, end=day,
                            checkpoint_root=checkpoint, client=resumed, batch_size=1)
     assert resumed.queries == []
 
     wider_range = Client()
-    backfill_daily_history(catalog, start="2026-10-14", end="2026-10-15",
+    backfill_daily_history(catalog, start="2026-10-22", end=day,
                            checkpoint_root=checkpoint, client=wider_range, batch_size=1)
     assert wider_range.queries == ["000001", "000002"]
 

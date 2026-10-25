@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .registry import DatasetSpec, get_dataset
+from .registry.daily_kline import classify_daily_kline
 from .storage import ArtifactCatalog, canonical_json
 
 
@@ -235,7 +236,8 @@ class JobRunner:
         digest_payload = b"\n".join(canonical_json(row) for row in rows)
         if len(digest_payload) > self.max_payload_bytes:
             raise ValueError("quality_invalid:artifact_payload_budget")
-        fetched = clock.isoformat().replace("+00:00", "Z")
+        fetched = (clock.astimezone(ZoneInfo("Asia/Shanghai")).isoformat() if name == "daily_kline"
+                   else clock.isoformat().replace("+00:00", "Z"))
         declared_available_at = available_at or fetch_meta.get("available_at")
         safe_source = source if isinstance(source, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", source) else spec.source
         raw_digest = fetch_meta.get("raw_sha256")
@@ -266,9 +268,33 @@ class JobRunner:
             if key in fetch_meta:
                 manifest[key] = fetch_meta[key]
         if name == "daily_kline":
-            shanghai_now = clock.astimezone(ZoneInfo("Asia/Shanghai"))
-            manifest["business_status"] = ("FORMAL" if shanghai_now.strftime("%H:%M") >= "17:40"
-                                           else "PROVISIONAL")
+            provider = fetch_meta.get("provider")
+            if provider not in {"baostock", "wencai", "q2_final"}:
+                provider = "baostock" if isinstance(fetch_meta.get("baostock_timing"), Mapping) else (
+                    source if source in {"baostock", "wencai", "q2_final"} else
+                    "q2_final" if source == "legacy_q2_final" else "UNKNOWN")
+            manifest["provider"] = provider
+            attempts = fetch_meta.get("provider_attempts")
+            timing = fetch_meta.get("baostock_timing")
+            if isinstance(attempts, (list, tuple)):
+                manifest["provider_attempts"] = list(attempts)
+            elif isinstance(timing, Mapping):
+                manifest["provider_attempts"] = [{
+                    "provider": provider, "result": timing.get("result", "UNKNOWN"),
+                    "attempted_at": timing.get("started_at"),
+                    "elapsed_ms": fetch_meta.get("elapsed_ms"),
+                    "reason": "baostock_fetch_timing",
+                    "login_ms": timing.get("login_ms"), "query_ms": timing.get("query_ms"),
+                    "error_code": timing.get("error_code"),
+                }]
+            else:
+                manifest["provider_attempts"] = [{
+                    "provider": provider, "result": "UNKNOWN", "attempted_at": None,
+                    "elapsed_ms": None, "reason": "provider_attempts_not_returned_by_fetch",
+                }]
+            manifest["field_completeness"] = fetch_meta.get("field_completeness", {})
+            manifest["business_status"] = classify_daily_kline(provider, quality.get("coverage"),
+                                                               manifest["field_completeness"])
         elif fetch_meta.get("partial"):
             manifest["business_status"] = "PARTIAL"
         if dry_run:

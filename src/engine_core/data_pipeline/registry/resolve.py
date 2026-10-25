@@ -66,7 +66,8 @@ def resolve_adapter(spec: DatasetSpec, manifest: Mapping[str, Any] | None,
     attempts = metadata.get("provider_attempts")
     if isinstance(attempts, (list, tuple)):
         accepted = [item for item in attempts
-                    if isinstance(item, Mapping) and item.get("result") == "ACCEPTED"]
+                    if isinstance(item, Mapping) and
+                    (item.get("result") == "ACCEPTED" or item.get("chain_result") == "ACCEPTED")]
         if accepted:
             provider = accepted[-1].get("provider")
             if isinstance(provider, str) and provider in registered:

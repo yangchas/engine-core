@@ -1,4 +1,28 @@
+from collections.abc import Mapping
+import math
+
 from .spec import CheckSpec, DatasetSpec, FieldSpec
+
+
+DAILY_KLINE_QUALITY_FIELDS = (
+    "open", "high", "low", "close", "pre_close", "pct_chg", "amount_yuan", "volume",
+)
+
+
+def classify_daily_kline(provider: str, coverage: float | None,
+                         field_completeness: Mapping[str, str] | object) -> str:
+    """Classify business readiness from the actual provider and measured quality."""
+    if (isinstance(coverage, bool) or not isinstance(coverage, (int, float))
+            or not math.isfinite(coverage)):
+        return "PROVISIONAL"
+    if coverage < 0.98:
+        return "PARTIAL"
+    if provider != "baostock" or not isinstance(field_completeness, Mapping):
+        return "PROVISIONAL"
+    if all(str(field_completeness.get(field, "")).upper() in {"COMPLETE", "SUSPENDED_ONLY"}
+           for field in DAILY_KLINE_QUALITY_FIELDS):
+        return "FORMAL"
+    return "PROVISIONAL"
 
 
 def _source_keys(baostock: str, wencai: str, q2_final: str) -> dict[str, str]:

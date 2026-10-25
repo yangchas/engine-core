@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
 from ..storage import ArtifactCatalog, _atomic_write, canonical_json
+from ..registry.daily_kline import classify_daily_kline
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 PRIORITY = ("baostock", "wencai", "q2_final")
@@ -119,6 +120,7 @@ class Q2FinalProvider:
         from ..jobs import JobResult
 
         current = _clock(now)
+        started = time.monotonic()
         payload = self.fetch(trade_date, now=current)
         if payload.get("status") == "PROVIDER_UNAVAILABLE":
             return None
@@ -126,13 +128,20 @@ class Q2FinalProvider:
         if quality["coverage"] is None or quality["coverage"] < 0.98:
             return None
         available = _available_at(trade_date, "q2_final")
+        elapsed_ms = round((time.monotonic() - started) * 1000, 3)
+        attempts = [{"provider": "q2_final", "result": "ACCEPTED", "attempted_at": current.isoformat(),
+                     "elapsed_ms": elapsed_ms, "reason": "coverage_accepted", "chain_result": "ACCEPTED"}]
         manifest = {
             "schema_version": 1, "dataset": "daily_kline", "trade_date": trade_date,
+            "provider": "q2_final",
             "source": self.source, "source_dependency": self.source_dependency,
             "available_at": available.isoformat(), "fetched_at": current.isoformat(),
             "as_of": current.isoformat(), "quality": {**quality, "status": "DEGRADED"},
             "degraded": True, "degraded_label": "DEGRADED:q2_final",
-            "status": "DEGRADED:q2_final", "business_status": "PROVISIONAL",
+            "status": "DEGRADED:q2_final",
+            "business_status": classify_daily_kline("q2_final", quality.get("coverage"),
+                                                      quality.get("field_completeness", {})),
+            "provider_attempts": attempts,
             "field_completeness": payload["field_completeness"], "field_units": payload["field_units"],
         }
         committed = ArtifactCatalog(artifact_root).commit("daily_kline", trade_date, rows,
@@ -409,6 +418,18 @@ class DailyKlineProviderChain:
                    "manifest": manifest["manifest_uri"]}
         _atomic_write(self.catalog.root / "daily_kline" / "latest.json", canonical_json(pointer) + b"\n")
 
+    def _append_job_log(self, trade_date: str, *, started_at: str, elapsed_ms: float,
+                        result: str, timing: Mapping[str, Any] | None = None) -> None:
+        timing = timing if isinstance(timing, Mapping) else {}
+        path = self.catalog.root / "job_log" / f"{trade_date}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {"job": "daily_kline", "trade_date": trade_date, "provider": "baostock",
+                  "started_at": started_at, "elapsed_ms": elapsed_ms,
+                  "login_ms": timing.get("login_ms"), "query_ms": timing.get("query_ms"),
+                  "result": result, "error_code": timing.get("error_code")}
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
+
     def fetch_chain(self, trade_date: str, *, now: str | datetime | None = None,
                     persist: bool = False) -> Any:
         from ..jobs import JobResult
@@ -425,22 +446,42 @@ class DailyKlineProviderChain:
                                  "result": "SKIPPED", "reason": "not_yet_available", "available_at": available.isoformat(), "elapsed_ms": 0})
                 continue
             started = time.monotonic()
+            started_at = datetime.now(SHANGHAI).isoformat()
             try:
                 payload = self._call(provider, trade_date, current)
                 payload = dict(payload) if isinstance(payload, Mapping) else {"rows": payload}
+                timing = payload.get("baostock_timing") if isinstance(payload.get("baostock_timing"), Mapping) else {}
                 rows, quality = self._quality(payload)
                 status = payload.get("status")
+                elapsed_ms = round((time.monotonic() - started) * 1000, 3)
+                call_result = str(timing.get("result") or ("error" if status == "PROVIDER_UNAVAILABLE" else "ok"))
+                if source == "baostock":
+                    self._append_job_log(trade_date, started_at=str(timing.get("started_at") or started_at), elapsed_ms=elapsed_ms,
+                                         result=call_result, timing=timing)
                 if status == "PROVIDER_UNAVAILABLE" or quality["coverage"] is None or quality["coverage"] < self.coverage_threshold:
-                    attempts.append({"provider": source, "attempted_at": current.isoformat(),
-                                     "result": "REJECTED", "reason": payload.get("reason", "coverage_unknown_or_below_threshold"),
-                                     "coverage": quality["coverage"], "elapsed_ms": round((time.monotonic() - started) * 1000, 3)})
+                    attempt = {"provider": source, "attempted_at": timing.get("started_at") or current.isoformat(),
+                               "result": call_result if source == "baostock" else "REJECTED",
+                               "chain_result": "REJECTED",
+                               "reason": payload.get("reason", "coverage_unknown_or_below_threshold"),
+                               "coverage": quality["coverage"], "elapsed_ms": elapsed_ms}
+                    if source == "baostock":
+                        attempt.update({key: timing.get(key) for key in ("login_ms", "query_ms", "error_code")})
+                    attempts.append(attempt)
                     continue
-                attempts.append({"provider": source, "attempted_at": current.isoformat(), "result": "ACCEPTED",
-                                 "coverage": quality["coverage"], "elapsed_ms": round((time.monotonic() - started) * 1000, 3)})
+                attempt = {"provider": source, "attempted_at": timing.get("started_at") or current.isoformat(),
+                           "result": call_result if source == "baostock" else "ACCEPTED",
+                           "chain_result": "ACCEPTED", "reason": "coverage_accepted",
+                           "coverage": quality["coverage"], "elapsed_ms": elapsed_ms}
+                if source == "baostock":
+                    attempt.update({key: timing.get(key) for key in ("login_ms", "query_ms", "error_code")})
+                attempts.append(attempt)
                 degraded = source != "baostock"
                 quality["status"] = "DEGRADED" if degraded else quality["status"]
+                business_status = classify_daily_kline(source, quality.get("coverage"),
+                                                       quality.get("field_completeness", {}))
                 manifest: dict[str, Any] = {
                     "schema_version": 1, "dataset": "daily_kline", "trade_date": trade_date,
+                    "provider": source,
                     "source": payload.get("source", "legacy_q2_final" if source == "q2_final" else source),
                     "source_dependency": payload.get("source_dependency", "legacy_redis_q2" if source == "q2_final" else
                                                        "independent_wencai" if source == "wencai" else "independent_provider"),
@@ -448,7 +489,7 @@ class DailyKlineProviderChain:
                     "as_of": current.isoformat(), "quality": quality, "degraded": degraded,
                     "degraded_label": f"DEGRADED:{source}" if degraded else None,
                     "status": f"DEGRADED:{source}" if degraded else "FORMAL",
-                    "business_status": "PROVISIONAL" if degraded else "FORMAL",
+                    "business_status": business_status,
                     "provider_attempts": attempts, "field_completeness": quality["field_completeness"],
                     "field_units": quality["field_units"],
                 }
@@ -463,6 +504,18 @@ class DailyKlineProviderChain:
                     prior_rows.append(manifest)
                 return JobResult(manifest, rows)
             except Exception as exc:
-                attempts.append({"provider": source, "attempted_at": current.isoformat(), "result": "ERROR",
-                                 "reason": f"provider_error:{type(exc).__name__}", "elapsed_ms": round((time.monotonic() - started) * 1000, 3)})
+                elapsed_ms = round((time.monotonic() - started) * 1000, 3)
+                timing = getattr(exc, "baostock_timing", {})
+                is_timeout = "TIMEOUT" in str(exc).upper() or isinstance(exc, TimeoutError)
+                call_result = "timeout" if is_timeout else "error"
+                if source == "baostock":
+                    self._append_job_log(trade_date, started_at=str(timing.get("started_at") or started_at), elapsed_ms=elapsed_ms,
+                                         result=call_result, timing=timing)
+                attempt = {"provider": source, "attempted_at": timing.get("started_at") or current.isoformat(),
+                           "result": call_result if source == "baostock" else "ERROR",
+                           "chain_result": "ERROR", "reason": f"provider_error:{type(exc).__name__}",
+                           "elapsed_ms": elapsed_ms}
+                if source == "baostock":
+                    attempt.update({key: timing.get(key) for key in ("login_ms", "query_ms", "error_code")})
+                attempts.append(attempt)
         return None
