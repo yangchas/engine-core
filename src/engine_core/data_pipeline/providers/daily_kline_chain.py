@@ -4,7 +4,10 @@ from __future__ import annotations
 import inspect
 import json
 import math
+import os
+import queue
 import re
+import threading
 import time
 from datetime import date, datetime, time as day_time, timedelta
 from pathlib import Path
@@ -331,6 +334,28 @@ class DailyKlineProviderChain:
         return method(trade_date)
 
     @staticmethod
+    def _call_bounded(provider: Any, trade_date: str, now: datetime, timeout: float) -> Any:
+        """Bound a source without an internal deadline to the chain's remaining wall time."""
+        if timeout <= 0:
+            raise TimeoutError("DAILY_KLINE_BUDGET_EXHAUSTED")
+        result: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+        def invoke() -> None:
+            try:
+                result.put((True, DailyKlineProviderChain._call(provider, trade_date, now)))
+            except BaseException as exc:
+                result.put((False, exc))
+
+        threading.Thread(target=invoke, name="daily-kline-provider", daemon=True).start()
+        try:
+            succeeded, value = result.get(timeout=timeout)
+        except queue.Empty:
+            raise TimeoutError("DAILY_KLINE_BUDGET_EXHAUSTED") from None
+        if succeeded:
+            return value
+        raise value
+
+    @staticmethod
     def _quality(payload: Mapping[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         raw_rows = payload.get("rows", [])
         rows = [dict(row) for row in raw_rows if isinstance(row, Mapping)]
@@ -360,6 +385,37 @@ class DailyKlineProviderChain:
                    "field_completeness": complete_fields,
                    "field_units": payload.get("field_units", {})}
         return rows, quality
+
+    def _apply_active_universe_coverage(self, trade_date: str, rows: list[dict[str, Any]],
+                                        quality: dict[str, Any]) -> dict[str, Any]:
+        universe_path = self.catalog.locate("symbol_universe", trade_date)
+        if universe_path is None:
+            return quality
+        universe_rows = self.catalog.read_rows(universe_path)
+
+        def symbol_of(row: Mapping[str, Any]) -> str:
+            symbol = str(row.get("symbol", row.get("code", ""))).strip()
+            if "." in symbol:
+                symbol = symbol.rsplit(".", 1)[-1]
+            return symbol.zfill(6) if symbol.isdigit() else symbol
+
+        universe = {symbol_of(row): row for row in universe_rows}
+        universe.pop("", None)
+        suspended = {symbol for symbol, row in universe.items()
+                     if str(row.get("trade_status", "")).strip() == "0"}
+        active = set(universe) - suspended
+        row_symbols = {symbol_of(row) for row in rows}
+        row_symbols.discard("")
+        present_active = active & row_symbols
+        coverage = len(present_active) / len(active) if active else None
+        quality.update({"expected_count": len(active), "expected_basis": "universe_active",
+                        "suspended_in_universe": len(suspended),
+                        "suspended_without_bar": len(suspended - row_symbols),
+                        "coverage": coverage,
+                        "missing": len(active - row_symbols) if active else None,
+                        "partial": coverage is None or coverage < 1.0,
+                        "status": "READY" if coverage is not None and coverage >= 0.98 else "PARTIAL"})
+        return quality
 
     @staticmethod
     def _reconcile(old_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -431,10 +487,25 @@ class DailyKlineProviderChain:
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
 
     def fetch_chain(self, trade_date: str, *, now: str | datetime | None = None,
-                    persist: bool = False) -> Any:
+                    persist: bool = False, budget_seconds: float | None = None,
+                    baostock_budget_fraction: float = 0.6) -> Any:
         from ..jobs import JobResult
 
+        if budget_seconds is None:
+            configured_budget = os.getenv("CORE_DAILY_KLINE_BUDGET_SECONDS")
+            budget_seconds = float(configured_budget) if configured_budget else 240.0
+        budget_seconds = float(budget_seconds)
+        baostock_budget_fraction = float(baostock_budget_fraction)
+        if not math.isfinite(budget_seconds) or budget_seconds <= 0:
+            raise ValueError("daily_kline_budget_seconds_must_be_positive")
+        if (not math.isfinite(baostock_budget_fraction) or
+                not 0 < baostock_budget_fraction <= 1):
+            raise ValueError("baostock_budget_fraction_must_be_between_zero_and_one")
+
         current = _clock(now)
+        chain_started = time.monotonic()
+        chain_deadline = chain_started + budget_seconds
+        baostock_deadline = chain_started + budget_seconds * baostock_budget_fraction
         attempts: list[dict[str, Any]] = []
         for source in PRIORITY:
             provider = self.providers.get(source)
@@ -445,20 +516,58 @@ class DailyKlineProviderChain:
                 attempts.append({"provider": source, "attempted_at": current.isoformat(),
                                  "result": "SKIPPED", "reason": "not_yet_available", "available_at": available.isoformat(), "elapsed_ms": 0})
                 continue
+            remaining = max(0.0, chain_deadline - time.monotonic())
+            if remaining <= 0:
+                attempts.append({"provider": source, "attempted_at": current.isoformat(),
+                                 "result": "SKIPPED", "reason": "chain_budget_exhausted", "elapsed_ms": 0})
+                break
+            call_budget = remaining
+            original_total_timeout: Any = None
+            bounded_baostock = False
+            if source == "baostock":
+                call_budget = min(remaining, max(0.0, baostock_deadline - time.monotonic()))
+                if call_budget <= 0:
+                    attempts.append({"provider": source, "attempted_at": current.isoformat(),
+                                     "result": "budget_exhausted", "chain_result": "REJECTED",
+                                     "reason": "baostock_budget_exhausted_before_call", "elapsed_ms": 0,
+                                     "completed_symbols": 0, "expected_symbols": None,
+                                     "checkpoint_saved": False})
+                    continue
+                if hasattr(provider, "total_timeout_seconds"):
+                    original_total_timeout = provider.total_timeout_seconds
+                    provider.total_timeout_seconds = (call_budget if original_total_timeout is None else
+                                                      min(float(original_total_timeout), call_budget))
+                    bounded_baostock = True
             started = time.monotonic()
             started_at = datetime.now(SHANGHAI).isoformat()
             try:
-                payload = self._call(provider, trade_date, current)
+                if source == "baostock" and bounded_baostock:
+                    payload = self._call(provider, trade_date, current)
+                else:
+                    payload = self._call_bounded(provider, trade_date, current, call_budget)
                 payload = dict(payload) if isinstance(payload, Mapping) else {"rows": payload}
                 timing = payload.get("baostock_timing") if isinstance(payload.get("baostock_timing"), Mapping) else {}
+                if bounded_baostock:
+                    provider.total_timeout_seconds = original_total_timeout
                 rows, quality = self._quality(payload)
+                quality = self._apply_active_universe_coverage(trade_date, rows, quality)
                 status = payload.get("status")
                 elapsed_ms = round((time.monotonic() - started) * 1000, 3)
                 call_result = str(timing.get("result") or ("error" if status == "PROVIDER_UNAVAILABLE" else "ok"))
                 if source == "baostock":
+                    if (call_result == "ok" and
+                            (quality["coverage"] is None or quality["coverage"] < self.coverage_threshold)):
+                        call_result = "error"
                     self._append_job_log(trade_date, started_at=str(timing.get("started_at") or started_at), elapsed_ms=elapsed_ms,
                                          result=call_result, timing=timing)
-                if status == "PROVIDER_UNAVAILABLE" or quality["coverage"] is None or quality["coverage"] < self.coverage_threshold:
+                baostock_progress = {key: timing.get(key, payload.get(key)) for key in
+                                     ("completed_symbols", "expected_symbols", "resumed_count",
+                                      "checkpoint_saved", "checkpoint_path")}
+                if source == "baostock":
+                    baostock_progress["baostock_budget_seconds"] = call_budget
+                if (status == "PROVIDER_UNAVAILABLE" or quality["coverage"] is None or
+                        quality["coverage"] < self.coverage_threshold or
+                        (source == "baostock" and call_result in {"budget_exhausted", "timeout", "error"})):
                     attempt = {"provider": source, "attempted_at": timing.get("started_at") or current.isoformat(),
                                "result": call_result if source == "baostock" else "REJECTED",
                                "chain_result": "REJECTED",
@@ -466,6 +575,9 @@ class DailyKlineProviderChain:
                                "coverage": quality["coverage"], "elapsed_ms": elapsed_ms}
                     if source == "baostock":
                         attempt.update({key: timing.get(key) for key in ("login_ms", "query_ms", "error_code")})
+                        attempt.update(baostock_progress)
+                        if call_result == "budget_exhausted":
+                            attempt["reason"] = "baostock_budget_exhausted"
                     attempts.append(attempt)
                     continue
                 attempt = {"provider": source, "attempted_at": timing.get("started_at") or current.isoformat(),
@@ -474,11 +586,13 @@ class DailyKlineProviderChain:
                            "coverage": quality["coverage"], "elapsed_ms": elapsed_ms}
                 if source == "baostock":
                     attempt.update({key: timing.get(key) for key in ("login_ms", "query_ms", "error_code")})
+                    attempt.update(baostock_progress)
                 attempts.append(attempt)
                 degraded = source != "baostock"
                 quality["status"] = "DEGRADED" if degraded else quality["status"]
-                business_status = classify_daily_kline(source, quality.get("coverage"),
-                                                       quality.get("field_completeness", {}))
+                business_status = ("PROVISIONAL" if degraded else
+                                   classify_daily_kline(source, quality.get("coverage"),
+                                                        quality.get("field_completeness", {})))
                 manifest: dict[str, Any] = {
                     "schema_version": 1, "dataset": "daily_kline", "trade_date": trade_date,
                     "provider": source,
@@ -504,18 +618,31 @@ class DailyKlineProviderChain:
                     prior_rows.append(manifest)
                 return JobResult(manifest, rows)
             except Exception as exc:
+                if bounded_baostock:
+                    provider.total_timeout_seconds = original_total_timeout
                 elapsed_ms = round((time.monotonic() - started) * 1000, 3)
                 timing = getattr(exc, "baostock_timing", {})
+                progress = getattr(exc, "baostock_progress", {})
+                is_budget_exhausted = ("DAILY_KLINE_BUDGET_EXHAUSTED" in str(exc).upper() or
+                                       (source == "baostock" and time.monotonic() >= baostock_deadline))
                 is_timeout = "TIMEOUT" in str(exc).upper() or isinstance(exc, TimeoutError)
-                call_result = "timeout" if is_timeout else "error"
+                call_result = ("budget_exhausted" if is_budget_exhausted else
+                               "timeout" if is_timeout else "error")
                 if source == "baostock":
                     self._append_job_log(trade_date, started_at=str(timing.get("started_at") or started_at), elapsed_ms=elapsed_ms,
                                          result=call_result, timing=timing)
                 attempt = {"provider": source, "attempted_at": timing.get("started_at") or current.isoformat(),
                            "result": call_result if source == "baostock" else "ERROR",
-                           "chain_result": "ERROR", "reason": f"provider_error:{type(exc).__name__}",
+                           "chain_result": "REJECTED" if source == "baostock" else "ERROR",
+                           "reason": ("baostock_budget_exhausted" if source == "baostock" and
+                                      call_result == "budget_exhausted" else
+                                      f"provider_error:{type(exc).__name__}"),
                            "elapsed_ms": elapsed_ms}
                 if source == "baostock":
                     attempt.update({key: timing.get(key) for key in ("login_ms", "query_ms", "error_code")})
+                    attempt.update({key: progress.get(key) for key in
+                                    ("completed_symbols", "expected_symbols", "resumed_count",
+                                     "checkpoint_saved", "checkpoint_path")})
+                    attempt["baostock_budget_seconds"] = call_budget
                 attempts.append(attempt)
         return None

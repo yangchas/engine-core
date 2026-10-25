@@ -176,30 +176,40 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
                 "universe_delta_count": delta_count,
                 "available_at": datetime.now().astimezone().isoformat()}
 
-    def daily_fetch(day: str, context: Any = None) -> Any:
-        from engine_core.daily_kline_capture import BaostockClient
-        from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider
-        checkpoint = Path(artifact_root) / ".checkpoints" / f"daily_kline-{day}.json" if write_enabled else None
-        def client_factory() -> Any:
-            import baostock as bs
-            return BaostockClient(bs)
-        provider = BaostockDailyProvider(client_factory=client_factory, symbols=symbols_for,
-                                         checkpoint_path=checkpoint,
-                                         timeout_seconds=baostock_timeout_seconds,
-                                         total_timeout_seconds=baostock_total_timeout_seconds)
-        result = provider.fetch(day, context)
-        universe = load_dataset("symbol_universe", day, prefer="file",
-                                catalog=ArtifactCatalog(artifact_root))
-        if universe is None:
-            raise RuntimeError("symbol_universe_artifact_required:" + day)
-        identity = {str(row.get("symbol", "")).zfill(6): row
-                    for row in universe.rows if row.get("symbol")}
-        for row in result.get("rows", []):
-            source = identity.get(str(row.get("symbol", "")).zfill(6))
-            if source is not None:
-                row["code"] = source.get("code")
-                row["universe_version"] = universe.manifest.get("version")
-        return result
+    class DailyKlineBaostockAdapter:
+        def __init__(self):
+            self.total_timeout_seconds = baostock_total_timeout_seconds
+
+        def fetch(self, day: str, context: Any = None) -> Any:
+            from engine_core.daily_kline_capture import BaostockClient
+            from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider
+            checkpoint = (Path(artifact_root) / ".checkpoints" / f"daily_kline-{day}.json"
+                          if write_enabled else None)
+
+            def client_factory() -> Any:
+                import baostock as bs
+                return BaostockClient(bs)
+
+            provider = BaostockDailyProvider(
+                client_factory=client_factory, symbols=symbols_for,
+                checkpoint_path=checkpoint, timeout_seconds=baostock_timeout_seconds,
+                total_timeout_seconds=self.total_timeout_seconds,
+            )
+            result = provider.fetch(day, context)
+            universe = load_dataset("symbol_universe", day, prefer="file",
+                                    catalog=ArtifactCatalog(artifact_root))
+            if universe is None:
+                raise RuntimeError("symbol_universe_artifact_required:" + day)
+            identity = {str(row.get("symbol", "")).zfill(6): row
+                        for row in universe.rows if row.get("symbol")}
+            for row in result.get("rows", []):
+                source = identity.get(str(row.get("symbol", "")).zfill(6))
+                if source is not None:
+                    row["code"] = source.get("code")
+                    row["universe_version"] = universe.manifest.get("version")
+            return result
+
+    daily_fetch = DailyKlineBaostockAdapter()
 
     class LazyKaipanClient:
         def _sdk(self):
@@ -347,6 +357,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="hard caller wait for each Baostock operation")
     parser.add_argument("--baostock-total-timeout-seconds", type=float,
                         help="optional wall-clock budget for the complete daily_kline fetch")
+    parser.add_argument("--budget-seconds", type=float,
+                        default=os.getenv("CORE_DAILY_KLINE_BUDGET_SECONDS") or 240.0,
+                        help="wall-clock budget for the complete daily_kline provider chain")
+    parser.add_argument("--baostock-budget-fraction", type=float, default=0.6,
+                        help="fraction of the chain budget reserved for Baostock")
     parser.add_argument("--backfill-days", type=int, default=10,
                         help="plate_members trading dates, newest first")
     parser.add_argument("--providers", default="baostock,wencai,q2_final",
@@ -358,6 +373,10 @@ def main(argv: list[str] | None = None) -> int:
     args.artifact_root = str(Path(args.artifact_root).expanduser())
     if args.td_write and (not args.write or not args.td_database):
         parser.error("--td-write requires --write and --td-database")
+    if args.budget_seconds <= 0:
+        parser.error("--budget-seconds must be positive")
+    if not 0 < args.baostock_budget_fraction <= 1:
+        parser.error("--baostock-budget-fraction must be greater than 0 and at most 1")
     names = list(DATASETS) if args.job == "all" else [args.job]
     adapters = _default_adapters(args.artifact_root,
         "",
@@ -487,8 +506,10 @@ def main(argv: list[str] | None = None) -> int:
                           "failed_plate_count": sum(len(item.get("failed_plates", [])) for item in results)},
                          sort_keys=True))
         return 0
+    daily_kline_exit_code = 0
     for name in names:
         if name == "daily_kline":
+            daily_started = time.monotonic()
             from engine_core.data_pipeline.providers.daily_kline_chain import (
                 DailyKlineProviderChain, Q2FinalProvider, WencaiDailyProvider,
             )
@@ -519,16 +540,44 @@ def main(argv: list[str] | None = None) -> int:
                 configured["q2_final"] = (Q2FinalProvider(q2_redis) if q2_redis is not None else
                     lambda _day: {"status": "PROVIDER_UNAVAILABLE", "reason": "q2_redis_not_configured", "rows": []})
             chain = DailyKlineProviderChain(providers=configured, artifact_root=args.artifact_root)
-            result = chain.fetch_chain(args.date, persist=bool(args.execute or args.write))
+            result = chain.fetch_chain(
+                args.date, persist=bool(args.execute or args.write),
+                budget_seconds=args.budget_seconds,
+                baostock_budget_fraction=args.baostock_budget_fraction)
             if result is None:
                 print(json.dumps({"job": name, "status": "PROVIDER_UNAVAILABLE_OR_COVERAGE_LOW",
                                   "providers": daily_providers, "mode": "DRY_RUN" if not (args.execute or args.write) else "WRITE"}, sort_keys=True))
+                daily_contract = ContractJobResult(
+                    contract=1, job=name, trade_date=args.date, status="failed", tier=0,
+                    source=None, dataset=name, version=None, row_count=None, coverage=None,
+                    error_code="DAILY_KLINE_ALL_PROVIDERS_FAILED", retryable=True,
+                    attempts=len(daily_providers),
+                    elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
+                    detail={"providers": daily_providers})
+                daily_kline_exit_code = emit_job_result(daily_contract)
+                if args.job != "all":
+                    return daily_kline_exit_code
                 continue
             print(json.dumps({"job": name, "version": result.manifest.get("version"),
                               "source": result.manifest.get("source"), "degraded": result.manifest.get("degraded"),
                               "quality": result.manifest["quality"], "provider_attempts": result.manifest["provider_attempts"],
                               "storage_uri": result.manifest.get("storage_uri"),
                               "mode": "DRY_RUN" if not (args.execute or args.write) else "WRITE"}, sort_keys=True))
+            degraded = result.manifest.get("provider") != "baostock"
+            daily_contract = ContractJobResult(
+                contract=1, job=name, trade_date=args.date,
+                status="degraded" if degraded else "ok", tier=1 if degraded else 0,
+                source=str(result.manifest.get("provider") or result.manifest.get("source") or "UNKNOWN"),
+                dataset=name, version=result.manifest.get("version"),
+                row_count=len(result.rows), coverage=result.manifest.get("quality", {}).get("coverage"),
+                error_code=None, retryable=False,
+                attempts=len(result.manifest.get("provider_attempts", [])),
+                elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
+                detail={"business_status": result.manifest.get("business_status"),
+                        "provider_attempts": result.manifest.get("provider_attempts", [])})
+            daily_kline_exit_code = emit_job_result(daily_contract)
+            if args.job != "all":
+                return daily_kline_exit_code
             continue
         result = runner.run(name, args.date, fetch=adapters[name], publish=args.write,
                             td_write=args.td_write, source=get_dataset(name).source,
@@ -540,7 +589,7 @@ def main(argv: list[str] | None = None) -> int:
                           "storage_uri": result.manifest["storage_uri"],
                           "cache_publish": result.manifest["cache_publish"],
                           "mode": result.manifest.get("mode", "WRITE")}, sort_keys=True))
-    return 0
+    return daily_kline_exit_code
 
 
 if __name__ == "__main__":

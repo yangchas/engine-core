@@ -16,6 +16,8 @@
 
 `examples/capture_daily_kline.py` 写独立 capture manifest，不调用 catalog commit；BaostockClient 在该路径也保存 login/query 计时、结果、错误码和尝试记录。
 
+C541: `DailyKlineProviderChain.fetch_chain` 和 `run_data_jobs.py --job daily_kline` 使用整链墙钟预算，默认读取 `CORE_DAILY_KLINE_BUDGET_SECONDS`，未设置时为 240 秒；`--baostock-budget-fraction` 默认 0.6，显式 `--baostock-total-timeout-seconds` 继续与这部分预算取较小值。Baostock 到预算上限时保存 checkpoint 并返回已完成股票数，随后链路在整链剩余时间内尝试 Wencai、q2_final；下一次同日运行从 checkpoint 续取。非 Baostock 版本的 `provider` 记录实际来源，业务状态为 `PROVISIONAL`。Baostock 尝试记录 `result`、完成/预期股票数和 `checkpoint_saved`；catalog writer 保留这些字段。CLI 降级成功返回 job_contract 退出码 10，全部来源失败返回 30。链路验收和最终 manifest 的覆盖率都以同日活跃 universe 为分母。
+
 `_supersede_prior`（`data_pipeline/providers/daily_kline_chain.py:394-399`）读取既有 `status == "SUPERSEDED"` 以跳过已替代版本；对其他旧版本写入 `status`、`superseded_by` 和 reconciliation 并原子替换旧 manifest。本卡不改其行为。
 
 ### 读取方

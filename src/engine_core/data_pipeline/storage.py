@@ -118,7 +118,9 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
                           "attempted_at": _daily_kline_time(item.get("attempted_at")),
                           "elapsed_ms": elapsed,
                           "reason": str(item.get("reason") or "")}
-            for key in ("login_ms", "query_ms", "error_code", "chain_result", "call_result", "coverage"):
+            for key in ("login_ms", "query_ms", "error_code", "chain_result", "call_result", "coverage",
+                        "completed_symbols", "expected_symbols", "resumed_count", "checkpoint_saved",
+                        "checkpoint_path", "baostock_budget_seconds"):
                 if key in item:
                     normalized[key] = item[key]
             normalized_attempts.append(normalized)
