@@ -121,8 +121,12 @@ def _quality(rows: list[dict[str, Any]], fetch_meta: Mapping[str, Any]) -> dict[
     coverage = actual / expected if isinstance(expected, (int, float)) and expected > 0 else None
     missing = int(max(0, expected - actual)) if isinstance(expected, (int, float)) else None
     partial = bool(fetch_meta.get("partial"))
+    declared_status = fetch_meta.get("quality_status")
+    if declared_status not in {"READY", "PARTIAL", "DEGRADED"}:
+        declared_status = None
     return {"coverage": coverage, "missing": missing, "row_count": len(rows),
-            "status": "PARTIAL" if partial or (coverage is not None and coverage < 1) else "READY",
+            "status": declared_status or
+                     ("PARTIAL" if partial or (coverage is not None and coverage < 1) else "READY"),
             "partial": partial}
 
 
@@ -258,6 +262,9 @@ class JobRunner:
                              "universe_delta_count") if key in fetch_meta}
         if provider_details:
             manifest["provider_details"] = provider_details
+        for key in ("carried_forward_from", "universe_asof", "tier", "degraded"):
+            if key in fetch_meta:
+                manifest[key] = fetch_meta[key]
         if name == "daily_kline":
             shanghai_now = clock.astimezone(ZoneInfo("Asia/Shanghai"))
             manifest["business_status"] = ("FORMAL" if shanghai_now.strftime("%H:%M") >= "17:40"

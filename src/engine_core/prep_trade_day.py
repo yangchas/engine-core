@@ -13,6 +13,7 @@ from typing import Any, Iterable
 
 from .data_pipeline.storage import ArtifactCatalog
 from .data_pipeline.trade_calendar import TradeCalendarStore
+from .data_pipeline.job_contract import parse as parse_job_result
 
 
 def previous_trade_date(root: str | Path, trade_date: str, *,
@@ -357,17 +358,28 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
     ]
     errors: list[str] = []
     timings: dict[str, float] = {}
+    symbol_contract_status: str | None = None
     if write and previous:
-        if not _manifest(catalog, "symbol_universe", trade_date, asof=asof):
+        existing_universe = _manifest(catalog, "symbol_universe", trade_date, asof=asof)
+        if existing_universe and existing_universe.get("tier") == 1 and existing_universe.get("degraded") is True:
+            symbol_contract_status = "degraded"
+        if existing_universe is None:
             started = time.monotonic()
             rc, out = _run(repo, "run_data_jobs.py", ["--job", "symbol_universe", "--date", trade_date,
                 "--execute", "--artifact-root", str(root)])
             timings["symbol_universe"] = round((time.monotonic() - started) * 1000, 3)
-            if rc:
+            symbol_result = parse_job_result(out, rc)
+            if rc == 10 and symbol_result.status == "degraded":
+                symbol_contract_status = "degraded"
+            elif rc == 20 and symbol_result.status == "not_applicable":
+                symbol_contract_status = "not_applicable"
+            elif rc == 0 and symbol_result.status == "ok":
+                symbol_contract_status = "ok"
+            else:
                 import logging
                 logging.getLogger(__name__).error("symbol_universe preparation failed: %s", out[-2000:])
                 errors.append("symbol_universe:COMMAND_FAILED")
-            elif live_default_asof:
+            if symbol_contract_status in {"ok", "degraded"} and live_default_asof:
                 # A successful real-time fetch becomes visible at completion, never retroactively.
                 asof = datetime.now().astimezone().isoformat()
         # Reuse committed input when present; each existing provider/job owns cache and quality rules.
@@ -454,6 +466,13 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                 revised = _step(item["step"], dataset, day, fresh, asof=asof,
                                 reason=item.get("reason") if not day else None)
             item.update(revised)
+            if item["step"] == "symbol_universe":
+                if symbol_contract_status == "degraded":
+                    item["status"] = "PARTIAL"
+                    item["reason"] = "tier=1 carried_forward"
+                elif symbol_contract_status == "not_applicable":
+                    item["status"] = "SKIPPED_REASON"
+                    item["reason"] = "not_applicable"
             if item["step"] in timings:
                 item["elapsed_ms"] = timings[item["step"]]
     return {"trade_date": trade_date, "previous_trade_date": previous,

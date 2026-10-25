@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import inspect
 import json
 import os
+import time
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -14,6 +17,11 @@ from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
 from engine_core.data_pipeline.registry import DATASETS, get_dataset
 from engine_core.data_pipeline.storage import ArtifactCatalog
 from engine_core.data_pipeline.reader import load_dataset
+from engine_core.data_pipeline.job_contract import (
+    JobResult as ContractJobResult,
+    emit as emit_job_result,
+    run_with_degrade,
+)
 
 
 def _load_adapter(spec: str | None) -> dict[str, Any]:
@@ -113,7 +121,7 @@ def _normalize_universe_rows(source_rows: list[list[str]]) -> list[dict[str, str
 
 
 def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
-                      write_enabled: bool, *, baostock_timeout_seconds: float = 30.0,
+                      write_enabled: bool, *, baostock_timeout_seconds: float = 60.0,
                       baostock_total_timeout_seconds: float | None = None) -> dict[str, Any]:
     """Construct lazy read-only adapters; optional SDK imports happen on fetch."""
     def symbols_for(day: str) -> list[str]:
@@ -128,7 +136,6 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         from datetime import datetime
         if context is not None:
             context.request()
-        from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
         try:
             from engine_core.trade_day_context import previous_trade_date as context_previous
             asof = context_previous(artifact_root, day)
@@ -136,7 +143,7 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
             raise RuntimeError("symbol_universe_prior_trade_date_required:" + day)
         import baostock as bs
         from engine_core.daily_kline_capture import BaostockClient, call_with_timeout
-        client = BaostockClient(bs)
+        client = BaostockClient(bs, timeout_seconds=baostock_timeout_seconds)
         call_with_timeout(client.login, timeout_seconds=client.timeout_seconds)
         try:
             def read_all_stock():
@@ -262,6 +269,70 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
             "limit_reasons": reasons_fetch}
 
 
+def _call_universe_fetch(fetch: Any, trade_date: str) -> Any:
+    """Call adapter factories that may optionally accept a fetch context."""
+    try:
+        accepts_context = len(inspect.signature(fetch).parameters) >= 2
+    except (TypeError, ValueError):
+        accepts_context = False
+    return fetch(trade_date, None) if accepts_context else fetch(trade_date)
+
+
+def _universe_payload_quality(payload: Any) -> bool:
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return False
+    symbols: set[str] = set()
+    required = ("symbol", "name", "trade_status", "universe_asof")
+    for row in rows:
+        if not isinstance(row, dict) or any(row.get(key) in (None, "") for key in required):
+            return False
+        symbol = str(row["symbol"])
+        if symbol in symbols:
+            return False
+        symbols.add(symbol)
+    return True
+
+
+def _carried_forward_universe(artifact_root: str, trade_date: str) -> dict[str, Any]:
+    """Load the nearest valid published universe from the preceding five sessions."""
+    from engine_core.trade_day_context import previous_trade_date
+
+    cursor = trade_date
+    lower_bound = None
+    for _ in range(5):
+        cursor = previous_trade_date(artifact_root, cursor)
+        lower_bound = cursor
+    catalog = ArtifactCatalog(artifact_root)
+    indexed_days = catalog.read().get("datasets", {}).get("symbol_universe", {}).get("dates", {})
+    candidates = sorted((day for day in indexed_days
+                         if lower_bound is not None and lower_bound <= day < trade_date), reverse=True)
+    for source_day in candidates:
+        path = catalog.locate("symbol_universe", source_day)
+        if path is None:
+            continue
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            rows = catalog.read_rows(path)
+        except (OSError, ValueError, TypeError):
+            continue
+        quality = manifest.get("quality") if isinstance(manifest.get("quality"), dict) else {}
+        if (quality.get("status") == "FAILED" or
+                not isinstance(manifest.get("version"), str) or not rows):
+            continue
+        universe_asof = manifest.get("universe_asof") or manifest.get("as_of")
+        if not universe_asof:
+            universe_asof = next((row.get("universe_asof") for row in rows
+                                  if isinstance(row, dict) and row.get("universe_asof")), None)
+        payload = {"rows": rows, "expected_count": len(rows), "coverage_count": len(rows),
+                   "as_of": universe_asof, "universe_asof": universe_asof,
+                   "carried_forward_from": source_day, "tier": 1, "degraded": True,
+                   "quality_status": "DEGRADED", "partial": True}
+        if universe_asof and _universe_payload_quality(payload):
+            return payload
+    raise RuntimeError("quality_invalid:no_recent_symbol_universe")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--job", required=True, choices=["all", *DATASETS.keys()])
@@ -272,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="fetch and validate without persisting (default)")
     parser.add_argument("--execute", action="store_true", help="run fetch and commit the artifact version")
     parser.add_argument("--max-requests", type=int, default=30)
-    parser.add_argument("--baostock-timeout-seconds", type=float, default=30.0,
+    parser.add_argument("--baostock-timeout-seconds", type=float, default=60.0,
                         help="hard caller wait for each Baostock operation")
     parser.add_argument("--baostock-total-timeout-seconds", type=float,
                         help="optional wall-clock budget for the complete daily_kline fetch")
@@ -302,13 +373,79 @@ def main(argv: list[str] | None = None) -> int:
         args.max_requests = 15
     missing = [name for name in names if name not in adapters and name != "daily_kline"]
     if missing: raise RuntimeError("fetcher_not_configured:" + ",".join(missing))
-    redis = None
-    if args.write:
-        import redis as redis_package
-        redis = redis_package.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
-    td_adapter = adapters.get("td_writer") if args.td_write else None
-    runner = JobRunner(artifact_root=args.artifact_root, redis=redis, td_adapter=td_adapter,
-                       budget=RequestBudget(max_requests=args.max_requests))
+    setup_started = time.monotonic()
+    try:
+        redis = None
+        if args.write:
+            import redis as redis_package
+            redis = redis_package.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        td_adapter = adapters.get("td_writer") if args.td_write else None
+        runner = JobRunner(artifact_root=args.artifact_root, redis=redis, td_adapter=td_adapter,
+                           budget=RequestBudget(max_requests=args.max_requests))
+    except Exception as exc:
+        if args.job != "symbol_universe":
+            raise
+        primary_source = get_dataset("symbol_universe").source
+        result = ContractJobResult(
+            contract=1, job="symbol_universe", trade_date=args.date, status="failed",
+            tier=0, source=primary_source, dataset="symbol_universe", version=None,
+            row_count=None, coverage=None, error_code="EXECUTION_SETUP_FAILED", retryable=True,
+            attempts=0, elapsed_ms=round((time.monotonic() - setup_started) * 1000, 3),
+            detail={"exception_type": type(exc).__name__})
+        return emit_job_result(result)
+    if args.job == "symbol_universe":
+        started = time.monotonic()
+        primary_source = get_dataset("symbol_universe").source
+        result: ContractJobResult | None = None
+        try:
+            primary_fetch = adapters["symbol_universe"]
+            result, payload = run_with_degrade(
+                "symbol_universe", args.date,
+                [(0, primary_source, lambda day: _call_universe_fetch(primary_fetch, day)),
+                 (1, "carried_forward", lambda day: _carried_forward_universe(
+                     args.artifact_root, day))],
+                dataset="symbol_universe", quality_check=_universe_payload_quality)
+            if payload is None:
+                return emit_job_result(replace(
+                    result, elapsed_ms=round((time.monotonic() - started) * 1000, 3)))
+            stored = runner.run(
+                "symbol_universe", args.date, fetch=lambda _day: payload,
+                publish=args.write, td_write=args.td_write, source=result.source,
+                as_of=payload.get("as_of"),
+                dry_run=not (args.write or args.execute))
+            result = replace(
+                result,
+                version=stored.manifest.get("version"),
+                row_count=stored.manifest.get("row_count"),
+                coverage=stored.manifest.get("quality", {}).get("coverage"),
+                elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+                detail={**(result.detail or {}),
+                        **({"carried_forward_from": payload["carried_forward_from"]}
+                           if payload.get("carried_forward_from") else {})})
+            return emit_job_result(result)
+        except Exception as exc:
+            message = str(exc)
+            normalized = message.lower()
+            if isinstance(exc, TimeoutError) or "timeout" in normalized:
+                error_code, retryable = "BAOSTOCK_TIMEOUT", True
+            elif normalized.startswith("quality_invalid:"):
+                suffix = message.split(":", 1)[1]
+                error_code, retryable = suffix.upper() or "QUALITY_INVALID", False
+            elif normalized.startswith("schema_invalid:"):
+                suffix = message.split(":", 1)[1]
+                error_code, retryable = suffix.upper() or "SCHEMA_INVALID", False
+            else:
+                error_code, retryable = "EXECUTION_FAILED", True
+            failed_tier = result.tier if result is not None else 0
+            failed_source = result.source if result is not None else primary_source
+            failed_attempts = result.attempts if result is not None else 1
+            failed = ContractJobResult(
+                contract=1, job="symbol_universe", trade_date=args.date, status="failed",
+                tier=failed_tier, source=failed_source, dataset="symbol_universe", version=None,
+                row_count=None, coverage=None, error_code=error_code, retryable=retryable,
+                attempts=failed_attempts, elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+                detail={"exception_type": type(exc).__name__})
+            return emit_job_result(failed)
     if args.job == "plate_members":
         if args.backfill_days < 1:
             parser.error("--backfill-days must be at least 1")
