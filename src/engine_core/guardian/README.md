@@ -27,7 +27,42 @@ PYTHONPATH=src:. python examples/core_guardian.py --simulate-date 2026-10-16 --s
 
 ## Event table
 
-Windows are inclusive start/deadline points. Late starts within the window catch up. Past the deadline the event becomes `MISSED`; auction report may run degraded at its deadline if its coverage gate is still false. Every event is once per trade date. Retry attempts use exponential backoff, are capped by the event policy, and open a circuit after the configured maximum.
+Windows include the `start` and `deadline` points. `catchup_mode` controls late starts inside that window; `on_deadline` controls work that is still blocked at the deadline. The source schedule is revision 2 and stores only fields consumed by Go's `migrateScheduleV2`. `phases` is the phase restriction; the Python `EventSpec.phase` compatibility view uses its first value, or derives the phase from `start` when unrestricted.
+
+### Event fields
+
+Every event key must be read by the Go schedule migrator. Python loads the same canonical fields; its Guardian runtime uses the scheduling subset and keeps compatibility properties derived from these values until T4.
+
+| Field | Meaning | Accepted values | Reader |
+| --- | --- | --- | --- |
+| `event_id` | Stable event identity | Non-empty string | Go; Python |
+| `enabled` | Whether the event is scheduled | Boolean | Go; Python |
+| `calendar` | Calendar reference | Configured calendar name | Go; Python model |
+| `trigger_type` | Scheduling mode | `window`, `startup` | Go; Python |
+| `start` | Earliest window time | `HH:MM:SS`; empty for startup | Go; Python |
+| `deadline` | Latest window start time | `HH:MM:SS`; empty for startup | Go; Python |
+| `order` | Startup ordering value | Integer | Go; Python model |
+| `after` | Startup ordering dependencies | Event ID list | Go; Python model |
+| `gate` | Readiness check name | Configured gate name | Go; Python |
+| `handler` | Handler name | Registered handler | Go; Python |
+| `timeout_seconds` | Handler time budget | Positive seconds | Go; Python |
+| `max_attempts` | Maximum attempts for an instance | Positive integer | Go; Python |
+| `retry_backoff` | Retry delay base | Positive Go duration such as `60s`, or `null` | Go; Python derived retry view |
+| `retry_until_late` | Continue retry rounds through the late window | Boolean | Go; Python model |
+| `silent_until_last` | Suppress alerts before the final attempt | Boolean | Go; Python model |
+| `catchup_mode` | Allow a late start inside the window | `skip`, `run_in_window` | Go; Python (`catchup` property) |
+| `on_deadline` | Action when blocked at deadline | `missed`, `degrade`, `kill_missed` | Go; Python (`degraded_at_deadline` property) |
+| `late_until` | Last permitted retry/start time | `HH:MM:SS` or `null` | Go; Python model |
+| `cost` | Resource class | `light`, `medium`, `heavy` | Go; Python model |
+| `phases` | Allowed market phases | Global phase names, `any`, or `null` | Go; Python (`phase` property) |
+| `on_phase_mismatch` | Action outside allowed phases | `skip`, `defer`, or `null` | Go; Python model |
+| `on_start` | Startup reconciliation behavior | `reconcile` or `null` | Go; Python model |
+| `data_date_offset` | Data partition date relative to trade date | `-1`, `0` | Go; Python |
+| `available_after` | Earliest data availability time | `HH:MM:SS` or `null` | Go; Python |
+| `depends_on` | Completion dependencies | Event ID list | Go; Python |
+| `args` | Handler arguments | JSON object or `null` | Go; Python model |
+
+`max_attempts` is the attempt limit for an event instance. For in-event retries, `retry_backoff` is the base and delay is `base × 2^(n-1)`, capped at 5 minutes; when absent, Go uses a 1-second base. For `retry_until_late` cross-cycle waits, Go uses `retry_backoff` with a 1-minute default and a 10-minute cap. Retries stop at `late_until`.
 
 | Event family | Window / cadence | Gate and handler |
 | --- | --- | --- |
@@ -38,7 +73,7 @@ Windows are inclusive start/deadline points. Late starts within the window catch
 | Kaipan hot capture | 09:16, 09:21, 09:26:30, 09:28:30, 09:31, 09:33, 09:40, 10:10, 10:20, 10:30, 10:45, 11:00, 11:25, 13:30, 14:00, 14:30, 14:50, 15:05 | Calendar; explicit external command adapter |
 | Intraday data phase | Every 3 minutes, near `:05`, 09:33–14:57 | Checkpoint-ready gate; Core intraday phase |
 | Close | 15:05 | Calendar; EOD capture adapter |
-| Daily bars | Probe at 15:30; retry checkpoints 17:40, 18:30, 20:00 | Calendar triggers probe; postmarket publication waits for `daily_kline_ready` |
+| Daily bars | Probe at 17:30; retry checkpoints 17:40, 18:30, 20:00 | Calendar triggers probe; postmarket publication waits for `daily_kline_ready` |
 | Postmarket and night recap | 17:40–20:30; 01:00–08:29 | Daily bars ready / calendar; report entry point |
 
 ## State and health
@@ -56,12 +91,12 @@ Windows are inclusive start/deadline points. Late starts within the window catch
 | 09:30–15:00 three-minute analyses | `intraday_HHMM` events and `open_report_*` | Checkpoint gate; event identities are trade-date scoped |
 | Kaipan periodic hot-plate refresh | `kaipan_hot_HHMMSS` | Exact configured sampling times |
 | 15:05 close mark | `close_mark_1505` and `kaipan_hot_150500` | Close capture adapter; no automatic Redis/TD write |
-| 17:40 EOD lifecycle waits for Baostock | `baostock_probe_1530`, `baostock_retry_*`, `postmarket_publish` | Readiness is explicit; publication waits for daily bars |
+| 17:30 EOD lifecycle waits for Baostock | `baostock_probe_1730`, `baostock_retry_*`, `postmarket_publish` | Readiness is explicit; publication waits for daily bars |
 | 17:40+ recap and night audit | `close_recap`, `night_recap` | Calendar/data gates; no automatic email |
 
 ## Extending
 
-Add an `EventSpec` to `default_events()` with a unique ID, phase, start/deadline, named gate, handler, retry/timeout policy and optional dependencies. Provide gate/handler callables through `--adapter`; do not import the legacy runtime or write legacy keys. Keep handler inputs idempotent by trade date and stage.
+Add an `EventSpec` to `default_events()` with a unique ID, `phases`, start/deadline, named gate, handler, `retry_backoff`, `catchup_mode`, `on_deadline`, and optional dependencies. Provide gate/handler callables through `--adapter`; do not import the legacy runtime or write legacy keys. Keep handler inputs idempotent by trade date and stage.
 
 ## User-service draft (not installed)
 

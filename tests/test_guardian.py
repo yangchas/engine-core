@@ -27,7 +27,8 @@ def test_event_order_and_phase_windows():
 def test_gate_waits_then_triggers_once(tmp_path):
     ready = {"value": False}
     marker = tmp_path / "calls"
-    event = EventSpec("x", "AUCTION", "09:20:00", "09:21:00", "g", "h")
+    event = EventSpec("x", "09:20:00", "09:21:00", "g", "h",
+                      catchup_mode="run_in_window")
     guardian = Guardian([event], calendar_dates={"2026-10-16"}, state_root=tmp_path,
                         gates={"g": lambda *_: ready["value"]},
                         handlers={"h": lambda *_: marker.write_text("ran")})
@@ -42,9 +43,10 @@ def test_gate_waits_then_triggers_once(tmp_path):
 
 def test_deadline_degraded_and_missed(tmp_path):
     marker = tmp_path / "calls"
-    degraded = EventSpec("degraded", "AUCTION", "09:20:00", "09:21:00", "no", "h",
-                         degraded_at_deadline=True)
-    missed = EventSpec("missed", "AUCTION", "09:20:00", "09:21:00", "no", "h")
+    degraded = EventSpec("degraded", "09:20:00", "09:21:00", "no", "h",
+                         catchup_mode="run_in_window", on_deadline="degrade")
+    missed = EventSpec("missed", "09:20:00", "09:21:00", "no", "h",
+                       catchup_mode="run_in_window")
     guardian = Guardian([degraded, missed], calendar_dates={"2026-10-16"}, state_root=tmp_path,
                         gates={"no": lambda *_: False}, handlers={"h": lambda event, *_: marker.write_text(event.event_id)})
     guardian.tick(datetime.fromisoformat("2026-10-16T09:21:00+08:00"))
@@ -55,7 +57,8 @@ def test_deadline_degraded_and_missed(tmp_path):
 
 def test_late_start_catchup_and_restart_idempotency(tmp_path):
     marker = tmp_path / "calls"
-    event = EventSpec("x", "AUCTION", "09:20:00", "09:25:00", "always", "h")
+    event = EventSpec("x", "09:20:00", "09:25:00", "always", "h",
+                      catchup_mode="run_in_window")
     kwargs = dict(calendar_dates={"2026-10-16"}, state_root=tmp_path,
                   gates={"always": lambda *_: True}, handlers={"h": lambda *_: marker.write_text("ran")})
     first = Guardian([event], **kwargs)
@@ -68,8 +71,9 @@ def test_late_start_catchup_and_restart_idempotency(tmp_path):
 
 def test_retry_backoff_and_circuit_breaker(tmp_path):
     marker = tmp_path / "calls"
-    event = EventSpec("x", "AUCTION", "09:20:00", "09:30:00", "yes", "h",
-                      max_attempts=2, retry_base_seconds=2)
+    event = EventSpec("x", "09:20:00", "09:30:00", "yes", "h",
+                      max_attempts=2, retry_backoff="2s",
+                      catchup_mode="run_in_window")
     def fail(*_):
         marker.write_text(marker.read_text() + "x" if marker.exists() else "x")
         raise RuntimeError("boom")
@@ -86,7 +90,7 @@ def test_retry_backoff_and_circuit_breaker(tmp_path):
 
 def test_timeout_opens_circuit_without_retrying_a_still_running_handler(tmp_path):
     import time
-    event = EventSpec("x", "AUCTION", "09:20:00", "09:30:00", "yes", "slow",
+    event = EventSpec("x", "09:20:00", "09:30:00", "yes", "slow",
                       max_attempts=3, timeout_seconds=1)
     guardian = Guardian([event], calendar_dates={"2026-10-16"}, state_root=tmp_path,
                         gates={"yes": lambda *_: True},
@@ -99,7 +103,7 @@ def test_timeout_opens_circuit_without_retrying_a_still_running_handler(tmp_path
 
 def test_running_is_durable_before_handler_starts(tmp_path):
     import json
-    event = EventSpec("x", "AUCTION", "09:20:00", "09:30:00", "yes", "h")
+    event = EventSpec("x", "09:20:00", "09:30:00", "yes", "h")
     def handler(event, now, context, degraded):
         payload = json.loads((tmp_path / "2026-10-16" / "state.json").read_text())
         assert payload["events"][event.event_id]["status"] == "RUNNING"
@@ -112,7 +116,7 @@ def test_corrupt_state_is_not_reset_to_pending(tmp_path):
     path = tmp_path / "2026-10-16" / "state.json"
     path.parent.mkdir(parents=True)
     path.write_text("{broken", encoding="utf-8")
-    event = EventSpec("x", "AUCTION", "09:20:00", "09:30:00", "yes", "h")
+    event = EventSpec("x", "09:20:00", "09:30:00", "yes", "h")
     calls = []
     guardian = Guardian([event], calendar_dates={"2026-10-16"}, state_root=tmp_path,
                         gates={"yes": lambda *_: True}, handlers={"h": lambda *_: calls.append(1)})
@@ -210,7 +214,7 @@ def test_report_handler_passes_event_asof(monkeypatch, tmp_path, event_id, expec
 
 
 def test_calendar_missing_fails_closed_and_holiday_does_not_trigger(tmp_path):
-    event = EventSpec("x", "INTRADAY", "09:30:00", "09:31:00", "yes", "h")
+    event = EventSpec("x", "09:30:00", "09:31:00", "yes", "h")
     calls = []
     unknown = Guardian([event], calendar_dates=None, state_root=tmp_path / "unknown",
                        handlers={"h": lambda *_: calls.append(1)})
@@ -224,7 +228,7 @@ def test_calendar_missing_fails_closed_and_holiday_does_not_trigger(tmp_path):
 
 
 def test_dry_run_does_not_call_handlers_or_persist(tmp_path):
-    event = EventSpec("x", "AUCTION", "09:20:00", "09:21:00", "yes", "h")
+    event = EventSpec("x", "09:20:00", "09:21:00", "yes", "h")
     calls = []
     guardian = Guardian([event], calendar_dates={"2026-10-16"}, state_root=tmp_path,
                         gates={"yes": lambda *_: True}, handlers={"h": lambda *_: calls.append(1)},
@@ -283,7 +287,7 @@ def test_guardian_prep_failure_is_not_plain_success(tmp_path, monkeypatch):
         returncode=0, stdout=json.dumps({"status": "PARTIAL", "errors": [],
                                         "steps": [{"step": "auction_baseline", "status": "PARTIAL"}]}),
         stderr=""))
-    scheduled = EventSpec("prep", "PREMARKET", "08:50:00", "09:00:00", "calendar_ready",
+    scheduled = EventSpec("prep", "08:50:00", "09:00:00", "calendar_ready",
                          "premarket_data")
     guardian = Guardian([scheduled], calendar_dates={"2026-10-19"},
                         state_root=tmp_path / "guardian", gates={"calendar_ready": lambda *_: True},

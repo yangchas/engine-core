@@ -10,6 +10,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -18,6 +19,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, time as day_time, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 from zoneinfo import ZoneInfo
@@ -28,17 +30,25 @@ _LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class EventSpec:
+    """One schedule event using the field names consumed by Go.
+
+    The compatibility properties below derive the old Python views from the
+    canonical fields: ``catchup`` maps to ``catchup_mode != 'skip'``;
+    ``degraded_at_deadline`` maps to ``on_deadline == 'degrade'``; and
+    ``phase`` uses the first restricted phase, otherwise the phase at ``start``
+    (startup events use ``NIGHT``). ``retry_base_seconds`` parses
+    ``retry_backoff`` and defaults to Go's ``eventRetryDelay`` base of 1 second;
+    ``retry_max_seconds`` is that function's 5 minute cap. Go's separate
+    ``retryBackoff`` path for ``retry_until_late`` uses the same configured
+    duration with a 1 minute default and 10 minute cap.
+    """
+
     event_id: str
-    phase: str
     start: str
     deadline: str
     gate: str
     handler: str
     max_attempts: int = 3
-    retry_base_seconds: int = 5
-    retry_max_seconds: int = 300
-    catchup: bool = True
-    degraded_at_deadline: bool = False
     timeout_seconds: int = 300
     depends_on: tuple[str, ...] = ()
     available_after: str | None = None
@@ -61,12 +71,80 @@ class EventSpec:
     args: Mapping[str, Any] | None = None
 
     def __post_init__(self):
-        if self.max_attempts < 1 or self.retry_base_seconds < 0 or self.timeout_seconds < 1:
+        if self.max_attempts < 1 or self.timeout_seconds < 1:
             raise ValueError("invalid_retry_or_timeout")
+        if self.retry_backoff is not None:
+            try:
+                _go_duration_seconds(self.retry_backoff)
+            except ValueError as exc:
+                raise ValueError("invalid_retry_or_timeout") from exc
         if self.trigger_type not in {"window", "startup"}:
             raise ValueError("invalid_trigger_type")
         if self.trigger_type == "window" and _clock(self.start) > _clock(self.deadline):
             raise ValueError("event_deadline_before_start")
+
+    @property
+    def catchup(self) -> bool:
+        return self.catchup_mode != "skip"
+
+    @property
+    def degraded_at_deadline(self) -> bool:
+        return self.on_deadline == "degrade"
+
+    @property
+    def phase(self) -> str:
+        if self.trigger_type == "startup":
+            return "NIGHT"
+        if self.phases and "any" not in self.phases:
+            return self.phases[0]
+        return phase_at(self.start)
+
+    @property
+    def retry_base_seconds(self) -> float:
+        return _go_duration_seconds(self.retry_backoff) if self.retry_backoff is not None else 1.0
+
+    @property
+    def retry_max_seconds(self) -> int:
+        return 300
+
+
+_GO_DURATION_TOKEN = re.compile(r"(?P<number>(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))(?P<unit>ns|us|µs|ms|s|m|h)")
+_GO_DURATION_SCALE = {
+    "ns": Decimal("0.000000001"),
+    "us": Decimal("0.000001"),
+    "µs": Decimal("0.000001"),
+    "ms": Decimal("0.001"),
+    "s": Decimal("1"),
+    "m": Decimal("60"),
+    "h": Decimal("3600"),
+}
+
+
+def _go_duration_seconds(value: str) -> float:
+    """Parse positive Go time.Duration syntax into seconds."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("invalid_retry_backoff")
+    remaining = value[1:] if value.startswith("+") else value
+    if not remaining:
+        raise ValueError("invalid_retry_backoff")
+    cursor = 0
+    total = Decimal(0)
+    while cursor < len(remaining):
+        match = _GO_DURATION_TOKEN.match(remaining, cursor)
+        if match is None:
+            raise ValueError("invalid_retry_backoff")
+        try:
+            total += Decimal(match.group("number")) * _GO_DURATION_SCALE[match.group("unit")]
+        except InvalidOperation as exc:
+            raise ValueError("invalid_retry_backoff") from exc
+        cursor = match.end()
+    nanoseconds = total * Decimal(1_000_000_000)
+    # Go stores time.Duration as signed int64 nanoseconds and truncates any
+    # fractional nanosecond during parsing.
+    max_duration = Decimal(9_223_372_036_854_775_807)
+    if nanoseconds <= 0 or nanoseconds > max_duration or int(nanoseconds) <= 0:
+        raise ValueError("invalid_retry_backoff")
+    return float(int(nanoseconds) / 1_000_000_000)
 
 
 def _clock(value: str) -> day_time:

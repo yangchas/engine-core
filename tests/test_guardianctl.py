@@ -56,23 +56,38 @@ def test_unknown_event_and_missing_reason_are_contract_errors(tmp_path, monkeypa
 
 
 def test_schedule_rejects_bad_values_cycles_and_alias_ids():
+    def assert_rejected(payload, expected):
+        try:
+            validate_schedule(payload)
+        except ValueError as exc:
+            assert str(exc) == expected
+        else:
+            raise AssertionError(f"schedule accepted: {expected}")
+
     payload = schedule_payload()
     payload["events"][0]["timeout_seconds"] = 0
-    try:
-        validate_schedule(payload)
-    except ValueError as exc:
-        assert str(exc) == "schedule_event_invalid"
-    else:
-        raise AssertionError("bad timeout accepted")
+    assert_rejected(payload, "schedule_event_invalid")
+
+    for old_field in ("catchup", "degraded_at_deadline", "retry_base_seconds",
+                      "retry_max_seconds", "phase"):
+        payload = schedule_payload()
+        payload["events"][0][old_field] = None
+        assert_rejected(payload, f"schedule_event_field_unknown:{old_field}")
+
+    for field, value, error in (
+        ("catchup_mode", "always", "schedule_catchup_mode_invalid"),
+        ("on_deadline", "retry", "schedule_on_deadline_invalid"),
+        ("retry_backoff", "0s", "schedule_event_invalid"),
+        ("phases", ["PREMARKET"], "schedule_phases_invalid"),
+    ):
+        payload = schedule_payload()
+        payload["events"][0][field] = value
+        assert_rejected(payload, error)
+
     payload = schedule_payload()
     payload["events"][0]["depends_on"] = [payload["events"][1]["event_id"]]
     payload["events"][1]["depends_on"] = [payload["events"][0]["event_id"]]
-    try:
-        validate_schedule(payload)
-    except ValueError as exc:
-        assert str(exc) == "schedule_dependency_cycle"
-    else:
-        raise AssertionError("DAG cycle accepted")
+    assert_rejected(payload, "schedule_dependency_cycle")
     old = schedule_payload()
     payload = schedule_payload(revision=2)
     alias = dict(payload["events"][0])

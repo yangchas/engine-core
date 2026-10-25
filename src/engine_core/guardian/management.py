@@ -13,6 +13,13 @@ from typing import Any
 from .scheduler import EventSpec, TZ, _atomic_json, default_events
 
 SCHEMA_VERSION = 2
+GO_EVENT_FIELDS = frozenset({
+    "event_id", "enabled", "calendar", "trigger_type", "start", "deadline",
+    "order", "after", "gate", "handler", "timeout_seconds", "max_attempts",
+    "retry_backoff", "retry_until_late", "silent_until_last", "catchup_mode",
+    "on_deadline", "late_until", "cost", "phases", "on_phase_mismatch",
+    "on_start", "data_date_offset", "available_after", "depends_on", "args",
+})
 HANDLERS = {"auction_report", "auction_watch", "baostock_probe", "boot_apply_plan",
             "boot_data_health", "boot_reconcile", "boot_trade_day", "calendar_refresh",
             "close_capture", "close_report", "fetch_item", "intraday_data", "kaipan_fetch",
@@ -35,6 +42,10 @@ def validate_schedule(payload: dict[str, Any], previous: dict[str, Any] | None =
     global_config = payload.get("global")
     if not isinstance(global_config, dict) or not isinstance(global_config.get("phases"), list):
         raise ValueError("schedule_global_invalid")
+    try:
+        phase_names = {phase["name"] for phase in global_config["phases"]}
+    except (KeyError, TypeError):
+        raise ValueError("schedule_global_invalid") from None
     raw_events = payload.get("events")
     if not isinstance(raw_events, list) or not raw_events:
         raise ValueError("schedule_events_invalid")
@@ -43,6 +54,19 @@ def validate_schedule(payload: dict[str, Any], previous: dict[str, Any] | None =
     for raw in raw_events:
         if not isinstance(raw, dict):
             raise ValueError("schedule_event_invalid")
+        unknown = set(raw) - GO_EVENT_FIELDS
+        if unknown:
+            raise ValueError("schedule_event_field_unknown:" + ",".join(sorted(unknown)))
+        if raw.get("catchup_mode", "skip") not in ("skip", "run_in_window"):
+            raise ValueError("schedule_catchup_mode_invalid")
+        if raw.get("on_deadline", "missed") not in ("missed", "degrade", "kill_missed"):
+            raise ValueError("schedule_on_deadline_invalid")
+        raw_phases = raw.get("phases")
+        if raw_phases is not None and (not isinstance(raw_phases, list) or
+                                       any(not isinstance(value, str) or
+                                           (value != "any" and value not in phase_names)
+                                           for value in raw_phases)):
+            raise ValueError("schedule_phases_invalid")
         if raw.get("handler") not in HANDLERS:
             raise ValueError("schedule_handler_unknown:" + str(raw.get("handler")) + ";available=" + ",".join(sorted(HANDLERS)))
         if raw.get("gate") not in GATES:
