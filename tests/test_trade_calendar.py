@@ -115,12 +115,16 @@ def test_total_source_failure_keeps_day_matrix_and_coverage_unknown(tmp_path, mo
     store = TradeCalendarStore(tmp_path)
     bao, sz = _source_fetchers()
     store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)
-    before = [dict(day) for day in store.load()["days"]]
+    before = store.load()
     def fail(*_):
         raise CalendarSourceError("FIXTURE_TIMEOUT")
     result = store.refresh(now=date(2026, 10, 20), baostock_fetch=fail, szse_fetch=fail)
     assert result["status"] == "STALE"
-    assert [dict(day) for day in store.load()["days"]] == before
+    after = store.load()
+    for key in ("days", "conflicts", "lit_from", "lit_to", "last_ok_at"):
+        assert after[key] == before[key]
+    assert after["last_error"] == "FIXTURE_TIMEOUT"
+    assert after["last_refresh_at"] != before["last_refresh_at"]
     with pytest.raises(CalendarCoverageError):
         store.is_trading_day("2025-12-31")
     with pytest.raises(CalendarCoverageError):
@@ -193,19 +197,96 @@ def test_all_conflicting_window_preserves_days_and_cold_start_stays_unlit(tmp_pa
     assert cold.load() is None
 
 
-def test_total_failure_preserves_all_file_bytes(tmp_path, monkeypatch):
+def test_total_failure_persists_error_without_changing_calendar_data(tmp_path, monkeypatch):
     from engine_core.data_pipeline import trade_calendar
     monkeypatch.setattr(trade_calendar, "_market_today", lambda: date(2026, 10, 20))
     store = TradeCalendarStore(tmp_path)
     bao, sz = _source_fetchers()
     store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)
-    before = _file_bytes(tmp_path)
+    before = store.load()
+    before_files = _file_bytes(tmp_path)
     def fail(*_):
         raise CalendarSourceError("FIXTURE_TIMEOUT")
     result = store.refresh(now=date(2026, 10, 20), baostock_fetch=fail, szse_fetch=fail)
     assert result["status"] == "STALE"
     assert result["last_error"] == "FIXTURE_TIMEOUT"
-    assert _file_bytes(tmp_path) == before
+    after = store.load()
+    for key in ("days", "conflicts", "lit_from", "lit_to", "last_ok_at"):
+        assert after[key] == before[key]
+    assert after["last_error"] == "FIXTURE_TIMEOUT"
+    assert after["last_refresh_at"] != before["last_refresh_at"]
+    after_files = _file_bytes(tmp_path)
+    assert after_files["trade_calendar/calendar.json"] != before_files["trade_calendar/calendar.json"]
+    assert after_files["trade_dates.json"] == before_files["trade_dates.json"]
+
+
+def test_successful_refresh_clears_persisted_total_failure(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import trade_calendar
+    monkeypatch.setattr(trade_calendar, "_market_today", lambda: date(2026, 10, 20))
+    store = TradeCalendarStore(tmp_path)
+    bao, sz = _source_fetchers()
+
+    def fail(*_):
+        raise ConnectionError("offline")
+
+    store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)
+    failed = store.refresh(now=date(2026, 10, 20), baostock_fetch=fail, szse_fetch=fail)
+    assert failed["status"] == "STALE"
+    assert store.load()["last_error"] == "BAOSTOCK_UNAVAILABLE"
+    assert store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)["status"] == "CONFIRMED"
+    matrix = store.load()
+    assert matrix["last_error"] is None
+
+
+def test_recent_total_failure_keeps_calendar_status_confirmed_with_error(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import trade_calendar
+    monkeypatch.setattr(trade_calendar, "_market_today", lambda: date(2026, 10, 20))
+    store = TradeCalendarStore(tmp_path)
+    bao, sz = _source_fetchers()
+    store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)
+
+    def fail(*_):
+        raise ConnectionError("offline")
+
+    store.refresh(now=date(2026, 10, 20), baostock_fetch=fail, szse_fetch=fail)
+    status = store.calendar_status(date(2026, 10, 20))
+    assert status["status"] == "CONFIRMED"
+    assert status["last_error"] == "BAOSTOCK_UNAVAILABLE"
+    assert status["is_trading_day"] is True
+
+
+def test_old_last_ok_total_failure_reports_stale(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from engine_core.data_pipeline import trade_calendar
+    monkeypatch.setattr(trade_calendar, "_market_today", lambda: date(2026, 10, 20))
+    store = TradeCalendarStore(tmp_path)
+    bao, sz = _source_fetchers()
+    store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)
+    matrix = store.load()
+    matrix["last_ok_at"] = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+    store._write(matrix)
+
+    def fail(*_):
+        raise ConnectionError("offline")
+
+    store.refresh(now=date(2026, 10, 20), baostock_fetch=fail, szse_fetch=fail)
+    status = store.calendar_status(date(2026, 10, 20))
+    assert status["status"] == "STALE"
+    assert status["last_error"] == "BAOSTOCK_UNAVAILABLE"
+
+
+def test_total_failure_without_matrix_does_not_create_calendar(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import trade_calendar
+    monkeypatch.setattr(trade_calendar, "_market_today", lambda: date(2026, 10, 20))
+    store = TradeCalendarStore(tmp_path)
+
+    def fail(*_):
+        raise ConnectionError("offline")
+
+    result = store.refresh(now=date(2026, 10, 20), baostock_fetch=fail, szse_fetch=fail)
+    assert result["status"] == "UNKNOWN"
+    assert store.load() is None
+    assert not store.path.exists()
 
 
 def test_read_migration_only_writes_calendar_matrix(tmp_path, monkeypatch):

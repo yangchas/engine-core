@@ -277,6 +277,10 @@ class TradeCalendarStore:
         matrix = self.load()
         if bao is None and szse is None:
             reason = errors[0] if errors else "REFRESH_FAILED"
+            if matrix:
+                failed = dict(matrix)
+                failed.update(last_refresh_at=refreshed, last_error=reason)
+                self._write(failed)
             return {"status": "STALE" if matrix else "UNKNOWN", "reason_code": reason,
                     "last_ok_at": (matrix or {}).get("last_ok_at"), "last_error": reason}
         scope = {(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)}
@@ -346,19 +350,21 @@ class TradeCalendarStore:
         matrix = self.load()
         if not matrix:
             return {"status": "UNKNOWN", "as_of": today.isoformat(), "is_trading_day": None,
-                    "lit_from": None, "lit_to": None, "lit_days_ahead": None, "last_ok_at": None, "conflicts": 0}
+                    "lit_from": None, "lit_to": None, "lit_days_ahead": None, "last_ok_at": None,
+                    "last_error": None, "conflicts": 0}
         covered = matrix["lit_from"] <= today.isoformat() <= matrix["lit_to"]
         ahead = (date.fromisoformat(matrix["lit_to"]) - today).days
         last_ok = matrix.get("last_ok_at")
         age = (max(0, (datetime.now(timezone.utc) -
                        datetime.fromisoformat(last_ok.replace("Z", "+00:00")).astimezone(timezone.utc)).days)
                if last_ok else 999)
-        status = "UNKNOWN" if not covered else "STALE" if age > 7 or ahead < 7 or matrix.get("last_error") else "CONFIRMED"
+        status = "UNKNOWN" if not covered else "STALE" if age > 7 or ahead < 7 else "CONFIRMED"
         day_map = {item["d"]: item["t"] for item in matrix["days"]}
         return {"status": status, "as_of": today.isoformat(), "is_trading_day": bool(day_map[today.isoformat()])
                 if covered and today.isoformat() in day_map else None,
                 "lit_from": matrix["lit_from"], "lit_to": matrix["lit_to"], "lit_days_ahead": ahead if covered else None,
-                "last_ok_at": matrix["last_ok_at"], "conflicts": len(matrix.get("conflicts", []))}
+                "last_ok_at": matrix["last_ok_at"], "last_error": matrix.get("last_error"),
+                "conflicts": len(matrix.get("conflicts", []))}
 
     def _covered(self, value: date | str) -> tuple[dict[str, Any], str]:
         parsed = parse_trade_date(value).isoformat()
