@@ -99,7 +99,7 @@ def test_symbol_universe_primary_emits_contract_json(capsys, monkeypatch, tmp_pa
     fake_bs = _fake_baostock()
 
     code, payload, captured = _run_universe_cli(
-        tmp_path, fake_bs, monkeypatch, capsys, "--baostock-timeout-seconds", "3")
+        tmp_path, fake_bs, monkeypatch, capsys, "--execute", "--baostock-timeout-seconds", "3")
 
     assert code == 0
     assert payload["status"] == "ok"
@@ -108,6 +108,10 @@ def test_symbol_universe_primary_emits_contract_json(capsys, monkeypatch, tmp_pa
     assert payload["row_count"] == len(_normalized_universe())
     assert captured.out.splitlines()[-1].startswith("{")
     assert fake_bs.calls == ["2026-10-16"]
+    manifest_path = ArtifactCatalog(tmp_path).locate("symbol_universe", "2026-10-19")
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["tier"] == 0
+    assert manifest["degraded"] is False
 
 
 def test_symbol_universe_timeout_carries_forward_unchanged_rows(tmp_path, monkeypatch, capsys):
@@ -279,3 +283,148 @@ def test_repeated_carried_forward_run_is_idempotent_and_uses_distinct_source(tmp
     assert target_manifest["storage_uri"] != source_data["storage_uri"]
     assert "source=carried_forward" in target_manifest["storage_uri"]
     assert "source=baostock_query_all_stock" in source_data["storage_uri"]
+
+
+def test_prep_retries_degraded_universe_and_upgrades_to_primary(tmp_path, monkeypatch):
+    from dataclasses import asdict
+    from engine_core.data_pipeline.access import get
+    from engine_core.data_pipeline.job_contract import JobResult
+    import engine_core.prep_trade_day as prep
+
+    _seed_calendar(tmp_path)
+    rows = _normalized_universe("2026-10-22")
+    universe_calls = []
+
+    def fake_run(_repo, script, args):
+        if script == "run_data_jobs.py" and args[:2] == ["--job", "symbol_universe"]:
+            universe_calls.append(list(args))
+            degraded = len(universe_calls) == 1
+            source = "carried_forward" if degraded else "baostock_query_all_stock"
+            tier = 1 if degraded else 0
+            manifest = ArtifactCatalog(tmp_path).commit(
+                "symbol_universe", "2026-10-26", rows,
+                {"trade_date": "2026-10-26", "universe_asof": "2026-10-22",
+                 "carried_forward_from": "2026-10-23" if degraded else None,
+                 "tier": tier, "degraded": degraded,
+                 "business_status": "PARTIAL" if degraded else "FORMAL",
+                 "quality": {"status": "DEGRADED" if degraded else "READY", "coverage": 1.0}},
+                source=source)
+            result = JobResult(
+                contract=1, job="symbol_universe", trade_date="2026-10-26",
+                status="degraded" if degraded else "ok", tier=tier, source=source,
+                dataset="symbol_universe", version=manifest["version"], row_count=len(rows),
+                coverage=1.0, error_code="BAOSTOCK_TIMEOUT" if degraded else None,
+                retryable=False, attempts=2 if degraded else 1, elapsed_ms=1.0,
+                detail={"carried_forward_from": "2026-10-23"} if degraded else None)
+            return result.exit_code, json.dumps(asdict(result))
+        return 0, ""
+
+    monkeypatch.setattr(prep, "_run", fake_run)
+    monkeypatch.setattr(prep, "_prepare_theme_snapshot_cache", lambda *_args, **_kwargs: True)
+    first = prep.build_prep_report(
+        tmp_path, "2026-10-26", write=True, asof="2026-10-26T12:00:00+08:00")
+    second = prep.build_prep_report(
+        tmp_path, "2026-10-26", write=True, asof="2026-10-26T12:00:00+08:00")
+
+    first_step = next(item for item in first["steps"] if item["step"] == "symbol_universe")
+    second_step = next(item for item in second["steps"] if item["step"] == "symbol_universe")
+    catalog = ArtifactCatalog(tmp_path)
+    located = json.loads(catalog.locate("symbol_universe", "2026-10-26").read_text())
+    selected = get("symbol_universe", trade_date="2026-10-26", view="raw", root=tmp_path)
+    versions = catalog.read()["datasets"]["symbol_universe"]["dates"]["2026-10-26"]
+
+    assert len(universe_calls) == 2
+    assert first_step["status"] == "PARTIAL"
+    assert first_step["reason"] == "tier=1 carried_forward"
+    assert second["errors"] == []
+    assert second_step["status"] == "READY"
+    assert second_step["reason"] is None
+    assert len(versions) == 2
+    assert located["tier"] == 0
+    assert selected.meta["source"] == "baostock_query_all_stock"
+    assert selected.meta["version"] == located["version"]
+
+
+def test_prep_repeated_degradation_keeps_existing_degraded_version_without_error(tmp_path, monkeypatch):
+    from dataclasses import asdict
+    from engine_core.data_pipeline.job_contract import JobResult
+    import engine_core.prep_trade_day as prep
+
+    _seed_calendar(tmp_path)
+    rows = _normalized_universe("2026-10-22")
+    catalog = ArtifactCatalog(tmp_path)
+    fallback = catalog.commit(
+        "symbol_universe", "2026-10-26", rows,
+        {"trade_date": "2026-10-26", "universe_asof": "2026-10-22",
+         "carried_forward_from": "2026-10-23", "tier": 1, "degraded": True,
+         "business_status": "PARTIAL", "quality": {"status": "DEGRADED", "coverage": 1.0}},
+        source="carried_forward")
+    calls = []
+
+    def fake_run(_repo, script, args):
+        if script == "run_data_jobs.py" and args[:2] == ["--job", "symbol_universe"]:
+            calls.append(list(args))
+            if len(calls) == 1:
+                repeated = catalog.commit(
+                    "symbol_universe", "2026-10-26", rows,
+                    {"trade_date": "2026-10-26", "universe_asof": "2026-10-22",
+                     "carried_forward_from": "2026-10-23", "tier": 1, "degraded": True,
+                     "business_status": "PARTIAL",
+                     "quality": {"status": "DEGRADED", "coverage": 1.0}},
+                    source="carried_forward")
+                result = JobResult(
+                    contract=1, job="symbol_universe", trade_date="2026-10-26",
+                    status="degraded", tier=1, source="carried_forward",
+                    dataset="symbol_universe", version=repeated["version"], row_count=len(rows),
+                    coverage=1.0, error_code="BAOSTOCK_TIMEOUT", retryable=False, attempts=2,
+                    elapsed_ms=1.0, detail=None)
+                return 10, json.dumps(asdict(result))
+            result = JobResult(
+                contract=1, job="symbol_universe", trade_date="2026-10-26",
+                status="failed", tier=0, source="baostock_query_all_stock",
+                dataset="symbol_universe", version=None, row_count=None, coverage=None,
+                error_code="BAOSTOCK_TIMEOUT", retryable=True, attempts=1,
+                elapsed_ms=1.0, detail=None)
+            return 30, json.dumps(asdict(result))
+        return 0, ""
+
+    monkeypatch.setattr(prep, "_run", fake_run)
+    monkeypatch.setattr(prep, "_prepare_theme_snapshot_cache", lambda *_args, **_kwargs: True)
+    first_report = prep.build_prep_report(
+        tmp_path, "2026-10-26", write=True, asof="2026-10-26T12:00:00+08:00")
+    second_report = prep.build_prep_report(
+        tmp_path, "2026-10-26", write=True, asof="2026-10-26T12:00:00+08:00")
+
+    first_step = next(item for item in first_report["steps"] if item["step"] == "symbol_universe")
+    second_step = next(item for item in second_report["steps"] if item["step"] == "symbol_universe")
+    current = json.loads(catalog.locate("symbol_universe", "2026-10-26").read_text())
+    versions = catalog.read()["datasets"]["symbol_universe"]["dates"]["2026-10-26"]
+    assert len(calls) == 2
+    assert first_report["errors"] == second_report["errors"] == []
+    assert first_step["status"] == second_step["status"] == "PARTIAL"
+    assert first_step["reason"] == second_step["reason"] == "tier=1 carried_forward"
+    assert current["version"] == fallback["version"]
+    assert current["tier"] == 1 and current["degraded"] is True
+    assert len(versions) == 1
+
+
+def test_prep_does_not_retry_existing_primary_universe(tmp_path, monkeypatch):
+    import engine_core.prep_trade_day as prep
+
+    _seed_calendar(tmp_path)
+    _seed_universe(tmp_path, "2026-10-26", asof="2026-10-26")
+    calls = []
+
+    def fake_run(_repo, script, args):
+        if script == "run_data_jobs.py" and args[:2] == ["--job", "symbol_universe"]:
+            calls.append(list(args))
+        return 0, ""
+
+    monkeypatch.setattr(prep, "_run", fake_run)
+    monkeypatch.setattr(prep, "_prepare_theme_snapshot_cache", lambda *_args, **_kwargs: True)
+    report = prep.build_prep_report(
+        tmp_path, "2026-10-26", write=True, asof="2026-10-26T12:00:00+08:00")
+
+    step = next(item for item in report["steps"] if item["step"] == "symbol_universe")
+    assert calls == []
+    assert step["status"] == "READY"

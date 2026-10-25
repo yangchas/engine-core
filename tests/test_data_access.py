@@ -124,3 +124,32 @@ def test_get_canonicalizes_real_daily_kline_and_keeps_unregistered_rows(tmp_path
                        catalog=unregistered_catalog)
     assert unregistered.rows == rows
     assert unregistered.meta["canonical"] == "UNREGISTERED"
+
+
+def test_symbol_universe_locate_and_get_prefer_tier_zero_when_both_tiers_exist(tmp_path):
+    from examples.run_data_jobs import _normalize_universe_rows
+
+    raw_path = Path(__file__).parent / "fixtures" / "symbol_universe" / \
+        "baostock_query_all_stock_20261016.json"
+    raw = json.loads(raw_path.read_text(encoding="utf-8"))
+    rows = [dict(row, universe_asof="2026-10-22") for row in _normalize_universe_rows(raw)]
+    catalog = ArtifactCatalog(tmp_path)
+    primary = catalog.commit(
+        "symbol_universe", "2026-10-26", rows,
+        {"trade_date": "2026-10-26", "tier": 0, "degraded": False,
+         "business_status": "PARTIAL", "quality": {"status": "READY", "coverage": 0.9}},
+        source="baostock_query_all_stock",
+        clock=lambda: datetime(2026, 10, 26, 1, tzinfo=timezone.utc))
+    catalog.commit(
+        "symbol_universe", "2026-10-26", rows,
+        {"trade_date": "2026-10-26", "tier": 1, "degraded": True,
+         "business_status": "PARTIAL", "quality": {"status": "DEGRADED", "coverage": 1.0}},
+        source="carried_forward",
+        clock=lambda: datetime(2026, 10, 26, 2, tzinfo=timezone.utc))
+
+    located = json.loads(catalog.locate("symbol_universe", "2026-10-26").read_text())
+    selected = get("symbol_universe", trade_date="2026-10-26", view="raw", root=tmp_path)
+
+    assert located["tier"] == 0
+    assert selected.meta["source"] == "baostock_query_all_stock"
+    assert selected.meta["version"] == primary["version"]

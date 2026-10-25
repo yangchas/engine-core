@@ -361,20 +361,43 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
     symbol_contract_status: str | None = None
     if write and previous:
         existing_universe = _manifest(catalog, "symbol_universe", trade_date, asof=asof)
-        if existing_universe and existing_universe.get("tier") == 1 and existing_universe.get("degraded") is True:
+        existing_degraded = bool(
+            existing_universe and type(existing_universe.get("tier")) is int and
+            existing_universe["tier"] >= 1 and existing_universe.get("degraded") is True)
+        if existing_degraded:
             symbol_contract_status = "degraded"
-        if existing_universe is None:
+        if existing_universe is None or existing_degraded:
             started = time.monotonic()
             rc, out = _run(repo, "run_data_jobs.py", ["--job", "symbol_universe", "--date", trade_date,
                 "--execute", "--artifact-root", str(root)])
             timings["symbol_universe"] = round((time.monotonic() - started) * 1000, 3)
             symbol_result = parse_job_result(out, rc)
-            if rc == 10 and symbol_result.status == "degraded":
+            current_universe = None
+            current_path = catalog.locate("symbol_universe", trade_date)
+            if current_path is not None:
+                try:
+                    current_universe = json.loads(current_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError, TypeError):
+                    current_universe = None
+            current_tier = current_universe.get("tier") if current_universe else None
+            current_is_degraded = bool(
+                current_universe and type(current_tier) is int and current_tier >= 1 and
+                current_universe.get("degraded") is True)
+            current_is_primary = bool(
+                current_universe and type(current_tier) is int and current_tier == 0 and
+                current_universe.get("degraded") is not True)
+            if rc == 0 and symbol_result.status == "ok" and current_is_primary:
+                symbol_contract_status = "ok"
+            elif rc == 10 and symbol_result.status == "degraded" and current_is_degraded:
                 symbol_contract_status = "degraded"
             elif rc == 20 and symbol_result.status == "not_applicable":
-                symbol_contract_status = "not_applicable"
-            elif rc == 0 and symbol_result.status == "ok":
-                symbol_contract_status = "ok"
+                if existing_degraded and current_is_degraded:
+                    symbol_contract_status = "degraded"
+                else:
+                    symbol_contract_status = "not_applicable"
+            elif existing_degraded:
+                # A failed upgrade does not invalidate a still-readable committed version.
+                symbol_contract_status = "degraded"
             else:
                 import logging
                 logging.getLogger(__name__).error("symbol_universe preparation failed: %s", out[-2000:])
@@ -470,6 +493,9 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                 if symbol_contract_status == "degraded":
                     item["status"] = "PARTIAL"
                     item["reason"] = "tier=1 carried_forward"
+                elif symbol_contract_status == "ok":
+                    item["status"] = "READY"
+                    item["reason"] = None
                 elif symbol_contract_status == "not_applicable":
                     item["status"] = "SKIPPED_REASON"
                     item["reason"] = "not_applicable"

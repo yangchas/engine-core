@@ -408,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
             if payload is None:
                 return emit_job_result(replace(
                     result, elapsed_ms=round((time.monotonic() - started) * 1000, 3)))
+            payload = {**payload, "tier": result.tier, "degraded": result.tier >= 1}
             stored = runner.run(
                 "symbol_universe", args.date, fetch=lambda _day: payload,
                 publish=args.write, td_write=args.td_write, source=result.source,

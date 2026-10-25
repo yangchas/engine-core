@@ -35,7 +35,7 @@ def _datetime(value: str | datetime | None) -> datetime | None:
 
 
 def _prepare_candidate(entry: Mapping[str, Any], manifest: Mapping[str, Any],
-                       path: Path) -> dict[str, Any]:
+                       path: Path, dataset: str) -> dict[str, Any]:
     gate = manifest.get("gate")
     quality = manifest.get("quality")
     coverage = quality.get("coverage") if isinstance(quality, Mapping) else None
@@ -46,6 +46,7 @@ def _prepare_candidate(entry: Mapping[str, Any], manifest: Mapping[str, Any],
     business = manifest.get("business_status") or entry.get("business_status")
     return {
         "entry": entry, "manifest_data": manifest, "manifest_path": str(path),
+        "dataset": dataset,
         "version": entry.get("version") or manifest.get("version"),
         "source": manifest.get("source") or entry.get("source"),
         "gate_status": str(gate_status).upper(),
@@ -73,6 +74,13 @@ def select_version(candidates: Sequence[Mapping[str, Any]],
         return None
 
     def key(candidate: Mapping[str, Any]) -> tuple[Any, ...]:
+        manifest = candidate.get("manifest_data")
+        tier = manifest.get("tier") if isinstance(manifest, Mapping) else None
+        degraded_universe = (candidate.get("dataset") == "symbol_universe" and
+                             type(tier) is int and tier >= 1 and
+                             manifest.get("degraded") is True)
+        degraded_rank = 1 if candidate.get("dataset") == "symbol_universe" and (
+            degraded_universe or candidate.get("source") == "carried_forward") else 0
         gate = candidate.get("gate_status", "UNKNOWN")
         gate_rank = 0 if gate in {"OK", "WARN"} else 2 if gate == "FAIL" else 1
         business = candidate.get("business_status")
@@ -89,7 +97,7 @@ def select_version(candidates: Sequence[Mapping[str, Any]],
             source_rank = source_preference.index(candidate.get("source"))
         except ValueError:
             source_rank = len(source_preference)
-        return (gate_rank, business_rank, -coverage, source_rank, -available_rank,
+        return (degraded_rank, gate_rank, business_rank, -coverage, source_rank, -available_rank,
                 str(candidate.get("manifest_path", "")))
 
     return min(eligible, key=key)
@@ -169,9 +177,9 @@ def get(dataset: str, *, trade_date: str, tag: str | None = None,
         try:
             manifest = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(manifest, dict): raise ValueError("manifest_not_object")
-            item = _prepare_candidate(entry, manifest, path)
+            item = _prepare_candidate(entry, manifest, path, dataset)
         except (OSError, ValueError, TypeError):
-            item = _prepare_candidate(entry, {}, path)
+            item = _prepare_candidate(entry, {}, path, dataset)
             item["_eliminated_reason"] = "manifest_unreadable"
         manifest = item["manifest_data"]
         if item["_eliminated_reason"] is None and source is not None and item["source"] != source:

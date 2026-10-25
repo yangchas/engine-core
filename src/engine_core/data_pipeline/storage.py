@@ -26,6 +26,23 @@ def sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _is_degraded_symbol_universe(entry: Mapping[str, Any], root: Path) -> bool:
+    if entry.get("source") == "carried_forward":
+        return True
+    manifest_ref = entry.get("manifest")
+    if not isinstance(manifest_ref, str):
+        return False
+    path = Path(manifest_ref)
+    if not path.is_absolute():
+        path = root / path
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    tier = manifest.get("tier") if isinstance(manifest, dict) else None
+    return type(tier) is int and tier >= 1 and manifest.get("degraded") is True
+
+
 def _atomic_write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=".pending-", dir=str(path.parent))
@@ -184,6 +201,10 @@ class ArtifactCatalog:
         versions = entry.get("dates", {}).get(target_day, []) if target_day else []
         if not versions:
             return None
+        if dataset == "symbol_universe" and len(versions) > 1:
+            for version in reversed(versions):
+                if not _is_degraded_symbol_universe(version, self.root):
+                    return Path(version["manifest"])
         return Path(versions[-1]["manifest"])
 
     def read_rows(self, manifest_path: Path) -> list[dict[str, Any]]:

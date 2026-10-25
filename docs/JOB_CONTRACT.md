@@ -42,3 +42,5 @@
 `run_with_degrade` 按 `(tier, source, fetch_callable)` 顺序尝试各层。每层共用同一组结果字段；`tier` 和单一真实 `source` 标识实际命中层，失败记录在 `detail.failures`。异常或质量校验失败会继续尝试下一层；全部失败时返回统一的 `failed` 结果。
 
 `symbol_universe` 的 tier 0 使用 Baostock `query_all_stock`；tier 1 从目标日前五个交易日范围内选最近已发布且可读的 universe，原样顺延到目标日，写入独立 `source=carried_forward` 目录。顺延 manifest 带 `carried_forward_from`、`universe_asof`、`tier=1`、`degraded=true`、`quality.status=DEGRADED` 和非 `FORMAL` 的 `business_status`。`prep_trade_day` 将退出码 10 报为 `PARTIAL`（`tier=1 carried_forward`），不增加错误；退出码 20 报为跳过。
+
+后续 `prep_trade_day --write` 遇到仍有效的 `tier>=1` 降级版本时，会再尝试一次 symbol 子作业。发布 tier 0 后，该步骤报告 `READY`；再次返回降级结果时，保持 `PARTIAL`，相同内容按同一版本幂等；主来源尝试失败但原降级版本仍有效时，不报 `COMMAND_FAILED`。同日同时有 tier 0 与降级版本时，`ArtifactCatalog.locate` 和 `data_pipeline.access.get` 都优先读 tier 0；其他数据集的选版规则不变。
