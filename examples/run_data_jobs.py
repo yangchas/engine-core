@@ -180,6 +180,9 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         def __init__(self):
             self.total_timeout_seconds = baostock_total_timeout_seconds
 
+        def __call__(self, day: str, context: Any = None) -> Any:
+            return self.fetch(day, context)
+
         def fetch(self, day: str, context: Any = None) -> Any:
             from engine_core.daily_kline_capture import BaostockClient
             from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider

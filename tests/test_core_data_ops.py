@@ -224,3 +224,137 @@ def test_premarket_jobs_use_previous_trading_date_for_kaipan_products(tmp_path):
         trading_dates=None, write=False,
         now="2026-10-16T08:50:00+08:00", lock=False)
     assert called == ["2026-10-15"] * 4
+
+
+def _c549_seed_daily_inputs(root):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from conftest import read_real_artifact, seed_real_symbol_universe
+
+    day = "2026-10-23"
+    _seed_c325_calendar(root)
+    _, rows = read_real_artifact("daily_kline", day, "formal")
+    row = rows[0]
+    catalog = ArtifactCatalog(root)
+    seed_real_symbol_universe(catalog, day, symbols=[row["symbol"]])
+    return day, row
+
+
+def _c549_default_daily_adapter(monkeypatch, root, row):
+    import engine_core.data_pipeline.providers.baostock_daily_provider as provider_module
+    from examples.run_data_jobs import _default_adapters
+
+    class FakeBaostockProvider:
+        def __init__(self, **_kwargs):
+            pass
+
+        def fetch(self, day, context=None):
+            return {"rows": [dict(row)], "expected_count": 1,
+                    "provider": "baostock", "source": "baostock",
+                    "available_at": f"{day}T17:30:00+08:00"}
+
+    monkeypatch.setattr(provider_module, "BaostockDailyProvider", FakeBaostockProvider)
+    return _default_adapters(str(root), "/unused", 30, False)["daily_kline"]
+
+
+def test_postmarket_default_baostock_adapter_runs_and_persists_daily_kline(monkeypatch, tmp_path):
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+
+    day, row = _c549_seed_daily_inputs(tmp_path)
+    adapter = _c549_default_daily_adapter(monkeypatch, tmp_path, row)
+
+    result = run_daily_phase("postmarket", day, root=tmp_path,
+        adapters={"daily_kline": adapter}, trading_dates=None, write=True,
+        now=f"{day}T18:00:00+08:00", lock=False)
+
+    assert result["errors"] == [], result
+    daily_job = next(job for job in result["jobs"] if job["job"] == "daily_kline")
+    assert daily_job["row_count"] == 1
+    manifest_path = ArtifactCatalog(tmp_path).locate("daily_kline", day)
+    assert manifest_path is not None
+    assert ArtifactCatalog(tmp_path).read_rows(manifest_path)[0]["symbol"] == row["symbol"]
+
+
+def test_default_baostock_adapter_supports_callable_and_fetch_protocols(monkeypatch, tmp_path):
+    day, row = _c549_seed_daily_inputs(tmp_path)
+    adapter = _c549_default_daily_adapter(monkeypatch, tmp_path, row)
+
+    called = adapter(day)
+    fetched = adapter.fetch(day)
+
+    assert called["rows"][0]["symbol"] == row["symbol"]
+    assert fetched["rows"][0]["symbol"] == row["symbol"]
+
+
+def test_run_daily_phase_passes_callable_adapters_for_every_phase_job(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from engine_core.data_pipeline import ops
+    from examples.run_data_jobs import _default_adapters
+
+    _seed_c325_calendar(tmp_path)
+    adapters = _default_adapters(str(tmp_path), "/unused", 30, False)
+    adapters.update({
+        "ladder_daily": lambda day: [],
+        "stock_day_facts": lambda day: [],
+    })
+    called = []
+
+    def capture_run(_runner, name, _day, *, fetch, **_kwargs):
+        assert callable(fetch), f"{name} adapter {type(fetch).__name__} is not callable"
+        called.append(name)
+        return SimpleNamespace(manifest={"quality": {"status": "READY"},
+                                           "row_count": 1, "version": "test",
+                                           "sha256": "0" * 64})
+
+    monkeypatch.setattr(ops.JobRunner, "run", capture_run)
+    for phase in ops._PHASE_JOBS:
+        result = run_daily_phase(phase, "2026-10-23", root=tmp_path,
+            adapters=adapters, trading_dates=None, write=False,
+            now="2026-10-23T18:00:00+08:00", lock=False)
+        assert result["status"] == "READY", result
+
+    expected = {name for names in ops._PHASE_JOBS.values() for name in names}
+    assert set(called) == expected
+
+
+def test_core_data_daily_main_runs_postmarket_with_injected_adapter(monkeypatch, tmp_path, capsys):
+    import sys
+    from types import ModuleType, SimpleNamespace
+    import redis
+    from conftest import read_real_artifact
+    from examples import core_data_daily
+
+    day = "2026-10-23"
+    _seed_c325_calendar(tmp_path)
+    _, rows = read_real_artifact("daily_kline", day, "formal")
+    module = ModuleType("_c549_fake_adapter")
+    module.make = lambda: {"daily_kline": lambda target: {
+        "rows": [dict(rows[0])], "expected_count": 1, "provider": "baostock",
+        "source": "baostock", "available_at": f"{target}T17:30:00+08:00"}}
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    class FakeRedis:
+        def __init__(self):
+            self.values = {}
+
+        def get(self, key):
+            return self.values.get(key)
+
+        def set(self, key, value, ex=None):
+            self.values[key] = value
+            return True
+
+        def ttl(self, _key):
+            return 60
+
+    fake_redis = FakeRedis()
+    monkeypatch.setattr(redis, "Redis", SimpleNamespace(
+        from_url=lambda *_args, **_kwargs: fake_redis))
+    monkeypatch.setenv("CORE_REDIS_URL", "redis://offline-test")
+    code = core_data_daily.main([
+        "--phase", "postmarket", "--date", day, "--artifact-root", str(tmp_path),
+        "--write", "--no-lock", "--adapter", "_c549_fake_adapter:make",
+    ])
+
+    output = capsys.readouterr().out
+    assert code == 0, output
+    assert json.loads(output.splitlines()[-1])["status"] == "READY"

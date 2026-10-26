@@ -8,6 +8,15 @@
   day. The 2026 BaoStock fixture resolves 2026-10-08→2026-09-30 and
   2026-09-28→2026-09-24.
 
+- `[VERIFIED 2026-10-26 — C549 Baostock postmarket adapter]` The default
+  `DailyKlineBaostockAdapter` implements both the callable `JobRunner` contract
+  and the `.fetch(day, context)` provider-chain contract. Offline regressions
+  verify postmarket `daily_kline` persistence, all phase-job adapters, and the
+  `core_data_daily.py` injected-adapter path. The single live 2026-10-26 run
+  reached the Baostock query but timed out after 30 minutes with a receive-data
+  error; no live daily-kline result was produced, so live acquisition remains
+  unverified.
+
 - `[VERIFIED 2026-10-25 — C536/C537 calendar refresh]` Guardian's `calendar_refresh_0005`
   forces a Baostock + SZSE refresh; `calendar_refresh_0800` still refreshes only
   when needed. A live forced refresh on a temporary copy grew coverage from 323
