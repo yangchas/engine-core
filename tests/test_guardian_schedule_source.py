@@ -16,13 +16,12 @@ def test_schedule_fields_match_go_migrator_and_native_fixture_provenance():
     native_path = ROOT / "native/guardiand/testdata/schedule.json"
     provenance_path = ROOT / "native/guardiand/testdata/provenance.json"
     go_source = (ROOT / "native/guardiand/main.go").read_text(encoding="utf-8")
-    migrator_start = go_source.index("func migrateScheduleV2(")
     event_struct = re.search(
-        r'Events\s+\[\]struct\s*\{(?P<body>.*?)\}\s*`json:"events"`',
-        go_source[migrator_start:],
+        r'type scheduleV2Event struct\s*\{(?P<body>.*?)\n\}',
+        go_source,
         re.DOTALL,
     )
-    assert event_struct, "migrateScheduleV2 event struct not found"
+    assert event_struct, "scheduleV2Event struct not found"
     go_fields = set(re.findall(r'`json:"([^",]+)"`', event_struct.group("body")))
     source_bytes = source_path.read_bytes()
     schedule = json.loads(source_bytes)

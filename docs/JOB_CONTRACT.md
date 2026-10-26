@@ -39,6 +39,8 @@
 
 64 和 75 保留给 guardian handler，不由子作业约定占用。返回行字段为 `contract`（固定 1）、`job`、`trade_date`、`status`、`tier`、`source`、`dataset`、`version`、`row_count`、`coverage`、`error_code`、`retryable`、`attempts`、`elapsed_ms`、`detail`。`parse(stdout_text, returncode)` 校验最后一行 JSON 与退出码；缺行、结构无效或二者不一致会返回 `failed`、`CONTRACT_VIOLATION`、不可重试。非约定旧退出码会映射为可重试 `failed`，错误码为 `LEGACY_EXIT_<码>`。
 
+对于同一事件配置的多个触发点，处理函数可以在目标已由较早触发点满足时返回退出码 `20` 且 `error_code=ALREADY_SATISFIED`。Go guardian 将该实例记为 `SKIPPED_SATISFIED` 并写入账本；这沿用现有退出码，不增加新的退出码。
+
 `run_with_degrade` 按 `(tier, source, fetch_callable)` 顺序尝试各层。每层共用同一组结果字段；`tier` 和单一真实 `source` 标识实际命中层，失败记录在 `detail.failures`。异常或质量校验失败会继续尝试下一层；全部失败时返回统一的 `failed` 结果。
 
 `symbol_universe` 的 tier 0 使用 Baostock `query_all_stock`；tier 1 从目标日前五个交易日范围内选最近已发布且可读的 universe，原样顺延到目标日，写入独立 `source=carried_forward` 目录。顺延 manifest 带 `carried_forward_from`、`universe_asof`、`tier=1`、`degraded=true`、`quality.status=DEGRADED` 和非 `FORMAL` 的 `business_status`。`prep_trade_day` 将退出码 10 报为 `PARTIAL`（`tier=1 carried_forward`），不增加错误；退出码 20 报为跳过。

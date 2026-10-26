@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -53,6 +54,7 @@ type Trigger struct {
 	Offset   string   `json:"offset,omitempty"`
 	Window   string   `json:"window,omitempty"`
 	At       string   `json:"time,omitempty"`
+	AtTimes  []string `json:"at_times,omitempty"`
 	Order    int      `json:"order,omitempty"`
 	After    []string `json:"after,omitempty"`
 }
@@ -78,6 +80,19 @@ type Dependency struct {
 	ID             string `json:"id"`
 	AcceptDegraded bool   `json:"accept_degraded,omitempty"`
 }
+type LadderTier struct {
+	Name             string         `json:"name"`
+	Args             map[string]any `json:"args,omitempty"`
+	Attempts         int            `json:"attempts"`
+	Backoff          string         `json:"backoff,omitempty"`
+	BackoffCap       string         `json:"backoff_cap,omitempty"`
+	Timeout          string         `json:"timeout"`
+	Until            string         `json:"until,omitempty"`
+	DegradeRequested bool           `json:"degrade_requested,omitempty"`
+	SilentUntilLast  bool           `json:"silent_until_last,omitempty"`
+	Source           string         `json:"source,omitempty"`
+	BudgetEnabled    *bool          `json:"budget_enabled,omitempty"`
+}
 type Event struct {
 	ID              string          `json:"id"`
 	Enabled         bool            `json:"enabled,omitempty"`
@@ -92,6 +107,11 @@ type Event struct {
 	Timeout         string          `json:"timeout,omitempty"`
 	LateUntil       string          `json:"late_until,omitempty"`
 	Retry           Retry           `json:"retry,omitempty"`
+	Profile         string          `json:"profile,omitempty"`
+	Ladder          []LadderTier    `json:"ladder,omitempty"`
+	LadderSource    string          `json:"ladder_source,omitempty"`
+	CatchupSource   string          `json:"catchup_source,omitempty"`
+	WindowSource    string          `json:"window_source,omitempty"`
 	OnDeadline      string          `json:"on_deadline,omitempty"`
 	Catchup         string          `json:"catchup,omitempty"`
 	Class           string          `json:"class,omitempty"`
@@ -123,6 +143,7 @@ type Issue struct {
 var idRE = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
 var vars = map[string]bool{"trade_date": true, "data_date": true, "asof": true, "event_id": true, "instance": true, "attempt": true, "run_id": true, "sandbox_root": true, "python": true}
 var templateRE = regexp.MustCompile(`\{([^{}]+)\}`)
+var backoffMultiplierRE = regexp.MustCompile(`^(.+)\*([0-9]+(?:\.[0-9]+)?)$`)
 
 func Decode(b []byte) (Config, []Issue) {
 	var c Config
@@ -270,6 +291,17 @@ func Validate(c Config) []Issue {
 		if start >= 0 && end >= 0 && start > end {
 			add(p+".trigger.deadline", "WINDOW_ORDER", "start must not exceed deadline")
 		}
+		seenAt := map[string]bool{}
+		for j, at := range e.Trigger.AtTimes {
+			if checkTime(fmt.Sprintf("%s.trigger.at_times[%d]", p, j), at) < 0 {
+				continue
+			}
+			instanceMinute := at[:5]
+			if seenAt[instanceMinute] {
+				add(p+".trigger.at_times", "TRIGGER_DUPLICATE", "trigger times must map to unique HH:MM instances")
+			}
+			seenAt[instanceMinute] = true
+		}
 		if e.Timeout != "" {
 			to := durationSeconds(e.Timeout)
 			if to <= 0 {
@@ -286,6 +318,52 @@ func Validate(c Config) []Issue {
 		}
 		if e.Retry.MaxAttempts < 0 {
 			add(p+".retry.max_attempts", "RETRY_ATTEMPTS", "must be zero (default) or positive")
+		}
+		if e.Ladder != nil && len(e.Ladder) == 0 {
+			add(p+".ladder", "LADDER_EMPTY", "ladder must contain at least one rung")
+		}
+		if len(e.Ladder) > 0 {
+			names := map[string]bool{}
+			for j, rung := range e.Ladder {
+				rk := fmt.Sprintf("%s.ladder[%d]", p, j)
+				if !idRE.MatchString(rung.Name) {
+					add(rk+".name", "LADDER_NAME", "name must be a valid identifier")
+				} else if names[rung.Name] {
+					add(rk+".name", "LADDER_NAME", "rung names must be unique")
+				}
+				names[rung.Name] = true
+				if rung.Attempts < 1 {
+					add(rk+".attempts", "LADDER_ATTEMPTS", "must be positive")
+				}
+				if rung.Timeout == "" {
+					add(rk+".timeout", "LADDER_TIMEOUT", "required")
+				} else if timeout, err := time.ParseDuration(rung.Timeout); err != nil || timeout <= 0 || timeout > 24*time.Hour {
+					add(rk+".timeout", "DURATION", "timeout must be positive and at most 24h")
+				}
+				if rung.Attempts > 1 && rung.Backoff == "" {
+					add(rk+".backoff", "LADDER_BACKOFF", "required when attempts exceeds one")
+				} else if rung.Backoff != "" {
+					if _, _, err := parseBackoff(rung.Backoff); err != nil {
+						add(rk+".backoff", "LADDER_BACKOFF", err.Error())
+					}
+				}
+				if rung.BackoffCap != "" {
+					if cap, err := time.ParseDuration(rung.BackoffCap); err != nil || cap <= 0 || cap > 24*time.Hour {
+						add(rk+".backoff_cap", "LADDER_BACKOFF", "cap must be positive and at most 24h")
+					}
+				}
+				if rung.Until != "" && rung.Until != "late_until" {
+					if _, err := time.Parse("15:04:05", rung.Until); err != nil {
+						add(rk+".until", "LADDER_UNTIL", "expected late_until or HH:MM:SS")
+					}
+				}
+				if rung.Until == "late_until" && e.LateUntil == "" {
+					add(rk+".until", "LATE_UNTIL_REQUIRED", "late_until requires event late_until")
+				}
+				if rung.DegradeRequested && !c.Handlers[e.Handler].SupportsDegrade {
+					add(rk+".degrade_requested", "DEGRADE_UNSUPPORTED", "handler must support degrade")
+				}
+			}
 		}
 		if e.Retry.Base != "" {
 			base, err := time.ParseDuration(e.Retry.Base)
@@ -401,6 +479,44 @@ func durationSeconds(s string) int64 {
 		return -1
 	}
 	return int64(d / time.Second)
+}
+
+func parseBackoff(value string) (time.Duration, float64, error) {
+	m := backoffMultiplierRE.FindStringSubmatch(value)
+	if len(m) != 3 {
+		return 0, 0, fmt.Errorf("expected base*multiplier, for example 2s*2")
+	}
+	base, err := time.ParseDuration(m[1])
+	if err != nil || base <= 0 || base > 24*time.Hour {
+		return 0, 0, fmt.Errorf("base must be positive and at most 24h")
+	}
+	factor, err := strconv.ParseFloat(m[2], 64)
+	if err != nil || factor < 1 || factor > 1000 {
+		return 0, 0, fmt.Errorf("multiplier must be between 1 and 1000")
+	}
+	return base, factor, nil
+}
+
+func BackoffDelay(value string, attempt int, capValue string) time.Duration {
+	base, factor, err := parseBackoff(value)
+	if err != nil {
+		return 0
+	}
+	cap := 24 * time.Hour
+	if parsed, parseErr := time.ParseDuration(capValue); parseErr == nil && parsed > 0 {
+		cap = parsed
+	}
+	delay := float64(base)
+	for i := 1; i < attempt; i++ {
+		delay *= factor
+		if delay >= float64(cap) {
+			return cap
+		}
+	}
+	if delay > float64(cap) {
+		return cap
+	}
+	return time.Duration(delay)
 }
 func flatten(v any) []string {
 	var r []string

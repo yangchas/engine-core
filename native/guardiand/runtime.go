@@ -210,6 +210,10 @@ func (l *ledger) close() error {
 type instanceState struct {
 	Status        string   `json:"status"`
 	Attempts      int      `json:"attempts"`
+	Rung          int      `json:"rung,omitempty"`
+	Tier          string   `json:"tier,omitempty"`
+	RungAttempts  int      `json:"rung_attempts,omitempty"`
+	SkippedTiers  []string `json:"skipped_tiers,omitempty"`
 	StartedAt     string   `json:"started_at"`
 	CompletedAt   string   `json:"completed_at"`
 	LastError     string   `json:"last_error"`
@@ -907,7 +911,7 @@ func (r *liveRunner) applyStartup(now time.Time, missed, active []Instance) erro
 }
 func isTerminal(status string) bool {
 	switch status {
-	case "SUCCEEDED", "SUCCEEDED_DEGRADED", "FAILED_FINAL", "CIRCUIT_OPEN", "MISSED", "GATE_BLOCKED", "SKIPPED", "SKIPPED_NA", "SKIPPED_PHASE", "SKIPPED_DEP":
+	case "SUCCEEDED", "SUCCEEDED_DEGRADED", "FAILED_FINAL", "CIRCUIT_OPEN", "MISSED", "GATE_BLOCKED", "SKIPPED", "SKIPPED_NA", "SKIPPED_SATISFIED", "SKIPPED_PHASE", "SKIPPED_DEP":
 		return true
 	}
 	return false
@@ -1276,6 +1280,10 @@ func (r *liveRunner) execute(x Instance, date string) {
 			st.DataDate = x.DataDate
 		}
 		st.NextAttemptAt = prior.NextAttemptAt
+		st.Rung = prior.Rung
+		st.Tier = prior.Tier
+		st.RungAttempts = prior.RungAttempts
+		st.SkippedTiers = append([]string(nil), prior.SkippedTiers...)
 		if prior.StartedAt != "" {
 			st.StartedAt = prior.StartedAt
 		}
@@ -1438,11 +1446,12 @@ func (r *liveRunner) execute(x Instance, date string) {
 		cutoff = x.LateUntil
 	}
 	startCutoff, parseErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
-	if x.TriggerType != "startup" && parseErr == nil && !r.clock.Now().Before(startCutoff) && prior.Status == "RETRY_WAIT" {
+	isLadder := len(event.Ladder) > 0
+	if !isLadder && x.TriggerType != "startup" && parseErr == nil && !r.clock.Now().Before(startCutoff) && prior.Status == "RETRY_WAIT" {
 		r.finishLateRetries(x, date, event, st)
 		return
 	}
-	if x.TriggerType != "startup" && parseErr == nil && windowExpired(r.clock.Now(), startCutoff) {
+	if !isLadder && x.TriggerType != "startup" && parseErr == nil && windowExpired(r.clock.Now(), startCutoff) {
 		r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: "START_DEADLINE_EXPIRED"})
 		_ = r.alert("MISSED", map[string]any{"event": x.EventID, "date": date, "error": "START_DEADLINE_EXPIRED"})
 		return
@@ -1454,6 +1463,10 @@ func (r *liveRunner) execute(x Instance, date string) {
 	h := c.Handlers[event.Handler]
 	if len(h.Argv) == 0 {
 		r.setState(x, date, instanceState{Status: "FAILED_FINAL", Attempts: 1, LastError: "handler argv empty", CompletedAt: r.clock.Now().Format(time.RFC3339)})
+		return
+	}
+	if isLadder {
+		r.executeLadder(x, date, event, st, h, degradeRequested)
 		return
 	}
 	max := event.Retry.MaxAttempts
@@ -1637,6 +1650,201 @@ func (r *liveRunner) execute(x Instance, date string) {
 	}
 }
 
+func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event, state instanceState, handler config.Handler, deadlineDegrade bool) {
+	if len(event.Ladder) == 0 {
+		return
+	}
+	if state.Status == "SUCCEEDED" || state.Status == "SUCCEEDED_DEGRADED" || state.Status == "SKIPPED_NA" || state.Status == "SKIPPED_SATISFIED" {
+		return
+	}
+	state.Status = "RUNNING"
+	if state.StartedAt == "" {
+		state.StartedAt = r.clock.Now().Format(time.RFC3339)
+	}
+	if state.DataDate == "" {
+		state.DataDate = x.DataDate
+	}
+	skipped := append([]string(nil), state.SkippedTiers...)
+	first := state.Rung - 1
+	if first < 0 || first >= len(event.Ladder) {
+		first = 0
+		state.Rung = 0
+		state.RungAttempts = 0
+		state.Tier = ""
+	}
+	deadlineAt, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
+
+	finishFailure := func(code, detail string, rung int, tier config.LadderTier) {
+		state.Status = "FAILED_FINAL"
+		state.LastError = code
+		if detail != "" {
+			state.LastError += ": " + detail
+		}
+		state.Rung = rung + 1
+		state.Tier = tier.Name
+		state.RungAttempts = 0
+		state.SkippedTiers = append([]string(nil), skipped...)
+		state.CompletedAt = r.clock.Now().Format(time.RFC3339)
+		r.setState(x, date, state)
+		_ = r.alert("FAILED_FINAL", map[string]any{"event": x.ID, "event_id": x.EventID, "date": date, "error": state.LastError, "tier": tier.Name})
+	}
+
+	for index := first; index < len(event.Ladder); index++ {
+		tier := event.Ladder[index]
+		rungNumber := index + 1
+		if state.Rung != rungNumber {
+			state.Rung, state.Tier, state.RungAttempts = rungNumber, tier.Name, 0
+		}
+		budgetEnabled := tier.BudgetEnabled == nil || *tier.BudgetEnabled
+		if budgetEnabled && !deadlineAt.IsZero() {
+			remaining := deadlineAt.Sub(r.clock.Now())
+			timeout, err := time.ParseDuration(tier.Timeout)
+			if err != nil || remaining <= timeout {
+				skipped = append(skipped, tier.Name)
+				state.Rung, state.Tier, state.RungAttempts = rungNumber, tier.Name, 0
+				state.SkippedTiers = append([]string(nil), skipped...)
+				state.LastError = "TIER_SKIPPED_TIME_BUDGET"
+				_, _ = r.appendLedger(date, "TIER_SKIPPED", map[string]any{"instance": x.ID, "rung": rungNumber, "tier": tier.Name, "reason": state.LastError, "remaining_ms": remaining.Milliseconds(), "timeout": tier.Timeout})
+				r.setState(x, date, state)
+				continue
+			}
+		}
+		if tier.Until != "" {
+			cutoffText := tier.Until
+			if cutoffText == "late_until" {
+				cutoffText = event.LateUntil
+			}
+			if cutoff, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoffText, r.loc); err == nil && !r.clock.Now().Before(cutoff) {
+				if state.RungAttempts == 0 {
+					skipped = append(skipped, tier.Name)
+				}
+				state.Rung, state.Tier = rungNumber, tier.Name
+				state.SkippedTiers = append([]string(nil), skipped...)
+				state.LastError = "TIER_UNTIL_EXPIRED"
+				_, _ = r.appendLedger(date, "TIER_SKIPPED", map[string]any{"instance": x.ID, "rung": rungNumber, "tier": tier.Name, "reason": state.LastError})
+				r.setState(x, date, state)
+				continue
+			}
+		}
+		for state.RungAttempts < tier.Attempts {
+			if tier.Until != "" {
+				cutoffText := tier.Until
+				if cutoffText == "late_until" {
+					cutoffText = event.LateUntil
+				}
+				if cutoff, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoffText, r.loc); err == nil && !r.clock.Now().Before(cutoff) {
+					break
+				}
+			}
+			if budgetEnabled && !deadlineAt.IsZero() {
+				remaining := deadlineAt.Sub(r.clock.Now())
+				timeout, err := time.ParseDuration(tier.Timeout)
+				if err != nil || remaining <= timeout {
+					break
+				}
+			}
+			state.RungAttempts++
+			state.Attempts++
+			state.Rung, state.Tier = rungNumber, tier.Name
+			state.Status = "RUNNING"
+			state.LastError = ""
+			state.CompletedAt = ""
+			state.SkippedTiers = append([]string(nil), skipped...)
+			r.setState(x, date, state)
+
+			effectiveEvent := *event
+			effectiveEvent.Timeout = tier.Timeout
+			effectiveEvent.Args = tier.Args
+			if effectiveEvent.Args == nil {
+				effectiveEvent.Args = event.Args
+			}
+			isDegraded := rungNumber > 1
+			degrade := tier.DegradeRequested || deadlineDegrade || x.DegradeRequested
+			_, _ = r.appendLedger(date, "TIER_ATTEMPT", map[string]any{"instance": x.ID, "rung": rungNumber, "tier": tier.Name, "rung_attempt": state.RungAttempts, "attempt": state.Attempts, "degraded": isDegraded, "degrade_requested": degrade})
+			out, _, invokeErr := r.invokeDetailedTier(handler.Argv, &effectiveEvent, x, date, state.Attempts, false, degrade, rungNumber, tier.Name, isDegraded, skipped)
+			status, code, retryable, detail := decodeResult(out, invokeErr)
+			if status == "already_satisfied" || code == "ALREADY_SATISFIED" {
+				state.Status = "SKIPPED_SATISFIED"
+				state.LastError = "ALREADY_SATISFIED"
+				state.CompletedAt = r.clock.Now().Format(time.RFC3339)
+				state.SkippedTiers = append([]string(nil), skipped...)
+				_, _ = r.appendLedger(date, "ALREADY_SATISFIED", map[string]any{"instance": x.ID, "event": x.EventID, "rung": rungNumber, "tier": tier.Name})
+				r.setState(x, date, state)
+				return
+			}
+			if status == "not_applicable" {
+				state.Status = "SKIPPED_NA"
+				state.LastError = code
+				state.CompletedAt = r.clock.Now().Format(time.RFC3339)
+				state.SkippedTiers = append([]string(nil), skipped...)
+				r.setState(x, date, state)
+				return
+			}
+			if status == "ok" || status == "degraded" {
+				state.Status = "SUCCEEDED"
+				if status == "degraded" || isDegraded || degrade {
+					state.Status = "SUCCEEDED_DEGRADED"
+				}
+				state.LastError = ""
+				state.CompletedAt = r.clock.Now().Format(time.RFC3339)
+				state.SkippedTiers = append([]string(nil), skipped...)
+				r.setState(x, date, state)
+				return
+			}
+			if code == "TIER_NO_DATA" {
+				_, _ = r.appendLedger(date, "TIER_FAILED", map[string]any{"instance": x.ID, "rung": rungNumber, "tier": tier.Name, "rung_attempt": state.RungAttempts, "attempt": state.Attempts, "error_code": code, "detail": detail, "advance": true})
+				if index == len(event.Ladder)-1 {
+					finishFailure(code, detail, index, tier)
+					return
+				}
+				state.RungAttempts = 0
+				break
+			}
+			_, _ = r.appendLedger(date, "TIER_FAILED", map[string]any{"instance": x.ID, "rung": rungNumber, "tier": tier.Name, "rung_attempt": state.RungAttempts, "attempt": state.Attempts, "error_code": code, "detail": detail, "retryable": retryable})
+			if !retryable {
+				finishFailure(code, detail, index, tier)
+				return
+			}
+			if state.RungAttempts >= tier.Attempts {
+				break
+			}
+			delay := config.BackoffDelay(tier.Backoff, state.RungAttempts, tier.BackoffCap)
+			if tier.Until == "late_until" {
+				if cutoff, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+event.LateUntil, r.loc); err == nil && r.clock.Now().Before(cutoff) {
+					next := r.clock.Now().Add(delay)
+					if next.After(cutoff) {
+						next = cutoff
+					}
+					state.Status = "RETRY_WAIT"
+					state.LastError = code
+					state.CompletedAt = ""
+					state.NextAttemptAt = next.Format(time.RFC3339)
+					state.SkippedTiers = append([]string(nil), skipped...)
+					_, _ = r.appendLedger(date, "TIER_RETRY_SCHEDULED", map[string]any{"instance": x.ID, "rung": rungNumber, "tier": tier.Name, "rung_attempt": state.RungAttempts, "next_attempt_at": state.NextAttemptAt, "until": cutoff.Format(time.RFC3339)})
+					r.setState(x, date, state)
+					return
+				}
+			}
+			if delay > 0 {
+				r.waitClock(delay)
+			}
+		}
+		if state.RungAttempts >= tier.Attempts {
+			_, _ = r.appendLedger(date, "TIER_EXHAUSTED", map[string]any{"instance": x.ID, "rung": rungNumber, "tier": tier.Name, "attempts": state.RungAttempts, "advance": index < len(event.Ladder)-1})
+			if index == len(event.Ladder)-1 {
+				finishFailure("TIER_ATTEMPTS_EXHAUSTED", "", index, tier)
+				return
+			}
+			state.RungAttempts = 0
+		}
+	}
+	lastIndex := len(event.Ladder) - 1
+	if lastIndex >= 0 {
+		tier := event.Ladder[lastIndex]
+		finishFailure("NO_RUNGS_FIT_BUDGET", "all ladder tiers were skipped", lastIndex, tier)
+	}
+}
+
 func retryBackoff(value string, attempts, maxAttempts int) time.Duration {
 	base := time.Minute
 	if d, err := time.ParseDuration(value); err == nil && d > 0 {
@@ -1702,6 +1910,10 @@ func (r *liveRunner) invokeWithDegrade(argv []string, e *config.Event, x Instanc
 }
 
 func (r *liveRunner) invokeDetailedWithDegrade(argv []string, e *config.Event, x Instance, date string, attempt int, gate, degradeRequested bool) ([]byte, []byte, error) {
+	return r.invokeDetailedTier(argv, e, x, date, attempt, gate, degradeRequested, 0, "", false, nil)
+}
+
+func (r *liveRunner) invokeDetailedTier(argv []string, e *config.Event, x Instance, date string, attempt int, gate, degradeRequested bool, rung int, tier string, degraded bool, skippedTiers []string) ([]byte, []byte, error) {
 	r.configMu.RLock()
 	c := r.c
 	r.configMu.RUnlock()
@@ -1763,7 +1975,7 @@ func (r *liveRunner) invokeDetailedWithDegrade(argv []string, e *config.Event, x
 	if dataDate == "" {
 		dataDate = date
 	}
-	in := map[string]any{"contract": 1, "event": e.ID, "instance": x.ID, "attempt": attempt, "run_id": r.boot + "-" + x.ID, "idem_key": date + "/" + x.ID, "trade_date": date, "data_date": dataDate, "asof": date + "T" + x.Start + "+08:00", "deadline_at": date + "T" + x.Deadline + "+08:00", "degrade_requested": degradeRequested && !gate, "sandbox": map[string]any{"on": false, "root": ""}, "args": e.Args, "gate": map[string]any{"ref": e.Gate.Ref, "params": e.Gate.Params, "probe": gate}}
+	in := map[string]any{"contract": 1, "event": e.ID, "instance": x.ID, "attempt": attempt, "run_id": r.boot + "-" + x.ID, "idem_key": date + "/" + x.ID, "trade_date": date, "data_date": dataDate, "asof": date + "T" + x.Start + "+08:00", "deadline_at": date + "T" + x.Deadline + "+08:00", "degrade_requested": degradeRequested && !gate, "tier": tier, "degraded": degraded, "skipped_tiers": skippedTiers, "sandbox": map[string]any{"on": false, "root": ""}, "args": e.Args, "gate": map[string]any{"ref": e.Gate.Ref, "params": e.Gate.Params, "probe": gate}}
 	if e.ID == "fetch_item" {
 		in["item_id"] = strings.TrimPrefix(x.ID, "fetch_item:")
 	}
@@ -1778,14 +1990,14 @@ func (r *liveRunner) invokeDetailedWithDegrade(argv []string, e *config.Event, x
 		return nil, nil, err
 	}
 	if !gate {
-		_, _ = r.appendLedger(date, "ATTEMPT_START", map[string]any{"instance": x.ID, "attempt": attempt, "pid": cmd.Process.Pid, "pgid": cmd.Process.Pid, "starttime": r.clock.Now().Format(time.RFC3339Nano)})
+		_, _ = r.appendLedger(date, "ATTEMPT_START", map[string]any{"instance": x.ID, "attempt": attempt, "rung": rung, "tier": tier, "pid": cmd.Process.Pid, "pgid": cmd.Process.Pid, "starttime": r.clock.Now().Format(time.RFC3339Nano)})
 	}
 	wait := make(chan error, 1)
 	go func() { wait <- cmd.Wait() }()
 	select {
 	case err = <-wait:
 		if !gate {
-			_, _ = r.appendLedger(date, "ATTEMPT_END", map[string]any{"instance": x.ID, "attempt": attempt, "exit_error": fmt.Sprint(err)})
+			_, _ = r.appendLedger(date, "ATTEMPT_END", map[string]any{"instance": x.ID, "attempt": attempt, "rung": rung, "tier": tier, "exit_code": exitCode(err), "exit_error": fmt.Sprint(err)})
 		}
 		return out.Bytes(), stderr.Bytes(), err
 	case <-ctx.Done():
@@ -1799,7 +2011,7 @@ func (r *liveRunner) invokeDetailedWithDegrade(argv []string, e *config.Event, x
 		// A child can exit on TERM while grandchildren keep the process group alive.
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		if !gate {
-			_, _ = r.appendLedger(date, "ATTEMPT_END", map[string]any{"instance": x.ID, "attempt": attempt, "status": "HANDLER_TIMEOUT"})
+			_, _ = r.appendLedger(date, "ATTEMPT_END", map[string]any{"instance": x.ID, "attempt": attempt, "rung": rung, "tier": tier, "status": "HANDLER_TIMEOUT"})
 		}
 		return out.Bytes(), stderr.Bytes(), fmt.Errorf("HANDLER_TIMEOUT")
 	}
@@ -1840,6 +2052,12 @@ func decodeResult(out []byte, err error) (status, code string, retry bool, detai
 	if err != nil {
 		if strings.Contains(err.Error(), "HANDLER_TIMEOUT") {
 			return "failed", "HANDLER_TIMEOUT", true, ""
+		}
+		if parsed && v.ErrorCode == "TIER_NO_DATA" && exitCode(err) == 40 {
+			return "failed", "TIER_NO_DATA", false, detailText
+		}
+		if parsed && v.ErrorCode == "ALREADY_SATISFIED" && exitCode(err) == 20 {
+			return "already_satisfied", "ALREADY_SATISFIED", false, detailText
 		}
 		// A non-zero exit that still printed a contract-1 failure keeps the INTERNAL_ERROR class (retry rules key on it)
 		// but the handler's own code and detail are recorded instead of being dropped.

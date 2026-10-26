@@ -2,10 +2,94 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestCompileScheduleV3ProfilesAtListAndLegacyFields(t *testing.T) {
+	source := []byte(`{"schema_version":3,"timezone":"Asia/Shanghai","profiles":{"auction":{"catchup":"run_in_window","window":{"deadline":"09:30"},"ladder":[{"name":"redis","args":{"source":"redis"},"attempts":2,"backoff":"2s*2","timeout":"3s"},{"name":"td","args":{"source":"td"},"attempts":1,"timeout":"5s"}]}},"events":[{"id":"auction_report","at":["09:25","09:26:30"],"deadline":"09:29","handler":"auction_report","profile":"auction"},{"id":"legacy_report","at":"09:27","deadline":"09:29","handler":"auction_report","timeout_seconds":8,"max_attempts":3,"retry_backoff":"2s","retry_until_late":true,"late_until":"10:00","catchup_mode":"run_in_window"}]}`)
+	c, err := compileScheduleV3(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Events) != 2 || c.Events[0].Trigger.AtTimes[1] != "09:26:30" || len(c.Events[0].Ladder) != 2 {
+		t.Fatalf("profile/list not compiled: %+v", c.Events)
+	}
+	if c.Events[0].WindowSource != "event" || c.Events[0].LadderSource != "profile:auction" || c.Events[0].CatchupSource != "profile:auction" {
+		t.Fatalf("effective sources not recorded: %+v", c.Events[0])
+	}
+	legacy := c.Events[1]
+	if len(legacy.Ladder) != 1 || legacy.Ladder[0].Attempts != 3 || legacy.Ladder[0].Until != "late_until" || legacy.Ladder[0].BudgetEnabled == nil || *legacy.Ladder[0].BudgetEnabled {
+		t.Fatalf("legacy fields not downgraded: %+v", legacy.Ladder)
+	}
+}
+
+func TestCompileScheduleV3RejectsInvalidProfilesAndTiers(t *testing.T) {
+	base := `{"schema_version":3,"timezone":"Asia/Shanghai","events":[{"id":"e","at":"09:00","deadline":"09:05","handler":"auction_report","profile":"p"}],"profiles":{"p":{"ladder":[{"name":"redis","attempts":1,"timeout":"2s"}]}}}`
+	cases := []struct{ name, input, want string }{
+		{"unknown_profile", strings.Replace(base, `"profile":"p"`, `"profile":"missing"`, 1), "unknown profile"},
+		{"unknown_field", strings.Replace(base, `"attempts":1`, `"attempts":1,"extra":true`, 1), "unknown field"},
+		{"empty_ladder", strings.Replace(base, `[{"name":"redis","attempts":1,"timeout":"2s"}]`, `[]`, 1), "empty ladder"},
+		{"invalid_backoff", strings.Replace(base, `"attempts":1`, `"attempts":2,"backoff":"nonsense"`, 1), "backoff"},
+		{"missing_event_tier_timeout", `{"schema_version":3,"timezone":"Asia/Shanghai","events":[{"id":"e","at":"09:00","deadline":"09:05","handler":"auction_report","timeout_seconds":2,"ladder":[{"name":"redis","attempts":1}]}]}`, "timeout"},
+		{"duplicate_rung", strings.Replace(base, `[{"name":"redis","attempts":1,"timeout":"2s"}]`, `[{"name":"redis","attempts":1,"timeout":"2s"},{"name":"redis","attempts":1,"timeout":"2s"}]`, 1), "unique"},
+		{"invalid_at", strings.Replace(base, `"at":"09:00"`, `"at":"25:00"`, 1), "invalid time"},
+		{"duplicate_at", strings.Replace(base, `"at":"09:00"`, `"at":["09:00","09:00:00"]`, 1), "duplicate at time"},
+		{"unused_empty_profile", strings.Replace(base, `"p":{"ladder":[{"name":"redis","attempts":1,"timeout":"2s"}]}`, `"p":{"ladder":[{"name":"redis","attempts":1,"timeout":"2s"}]},"unused":{"ladder":[]}`, 1), "empty ladder"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := compileScheduleV3([]byte(tc.input))
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tc.want)) {
+				t.Fatalf("error=%v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestExplainShowsEffectiveHandlerAndEventArgs(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.json")
+	source := `{"schema_version":1,"config_version":1,"name":"x","timezone":"Asia/Shanghai","handlers":{"auction_report":{"argv":["/bin/true"]}},"events":[{"id":"report","handler":"auction_report","args":{"source":"event"},"timeout":"2s","on_deadline":"missed","trigger":{"type":"window","start":"09:00:00","deadline":"09:05:00","at_times":["09:00:00"]},"ladder":[{"name":"redis","attempts":1,"timeout":"2s","args":{"source":"redis"}}]}]}`
+	if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+	if err := explainCmd([]string{path, "--date", "2026-10-20", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = old
+	b, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(b, &rows); err != nil {
+		t.Fatalf("explain JSON=%s: %v", b, err)
+	}
+	if len(rows) != 1 || rows[0]["handler"] != "auction_report" || rows[0]["on_deadline"] != "missed" {
+		t.Fatalf("effective handler/deadline missing from explain: %s", b)
+	}
+	args, ok := rows[0]["event_args"].(map[string]any)
+	if !ok || args["source"] != "event" {
+		t.Fatalf("effective event args missing from explain: %s", b)
+	}
+}
 
 func TestMigrationPreservesTimeoutBeyondWindow(t *testing.T) {
 	dir := t.TempDir()

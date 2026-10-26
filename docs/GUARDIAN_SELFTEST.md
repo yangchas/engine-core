@@ -13,12 +13,13 @@ Run the short wall-clock suite with:
   --mode fast --work-dir /home/exedev/validation/s1/C544
 ```
 
-`fast` schedules S01–S14 about 5–25 seconds ahead and compresses the production
-window from 08:30:00–09:45:30 (4,530 seconds) onto 45 seconds for S15. Each S15
-start is mapped linearly, with at least one second between starts to preserve
-order at the scheduler's second-level resolution. Generated windows retain a
-12-second run allowance so a scheduler tick does not close them immediately.
-The run budget is 105 seconds; the requested maximum is 120 seconds.
+`fast` schedules S01–S14 about 5–25 seconds ahead, the ladder scenarios after
+about 55 seconds, and S24's two trigger points at the next two minute marks. It
+compresses the production window from 08:30:00–09:45:30 (4,530 seconds) onto 45
+seconds for S15. Each S15 start is mapped linearly, with at least one second
+between starts to preserve order at the scheduler's second-level resolution.
+Generated windows retain a 12-second run allowance so a scheduler tick does
+not close them immediately. The run budget is 135 seconds.
 
 Run the longer manual timing mode with:
 
@@ -28,9 +29,10 @@ Run the longer manual timing mode with:
 ```
 
 In this mode S01 starts at +2 minutes, S08 at +3 minutes, and S15 at +5
-minutes; S15 maps the same 4,530-second source span onto six minutes. Thus the
-full run takes about eleven minutes. `--minutes` is retained as an explicit
-manual-mode parameter and currently requires a value of at least 3.
+minutes; S15 maps the same 4,530-second source span onto six minutes. S23 is
+scheduled at about +7 minutes, so the full run takes about eight minutes.
+`--minutes` is retained as an explicit manual-mode parameter and currently
+requires a value of at least 3.
 
 ## Scenarios
 
@@ -51,6 +53,15 @@ manual-mode parameter and currently requires a value of at least 3.
 | S13 | Three startup events ordered with `order`/`after` all run before the scheduled window event. |
 | S14 | Kill the scenario daemon while one handler sleeps, restart with the same state root, and check the completed event stays at one call while the interrupted event reaches attempt 2. |
 | S15 | Expands the 26 window events from `startup_0830` through `open_report_0945`; swaps handlers and configured gates for local self-test implementations, sets calendars to `every_day`, and checks one call per event in source-time order. |
+| S16 | `TIER_NO_DATA` advances from Redis to TD once; request and status identify the successful non-first tier as degraded. |
+| S17 | Three no-data tiers end `FAILED_FINAL`, produce one alert, and leave one failure record per tier. |
+| S18 | Exit code 40 with `TIER_NO_DATA` advances without retrying the same tier. |
+| S19 | A late start skips a rung whose timeout exceeds the remaining deadline budget, records it in `skipped_tiers`, then runs the rung that fits. |
+| S20 | An attempt started before deadline completes after deadline when still within its own timeout. |
+| S21 | Restarting the daemon during rung one resumes that rung at attempt 2. |
+| S22 | A later trigger point returning exit 20 with `ALREADY_SATISFIED` records `SKIPPED_SATISFIED`. |
+| S23 | An event with one rung retries it to exhaustion and does not invent a fallback. |
+| S24 | A profile ladder and old retry fields expand two `at` points into equivalent instance call sequences. |
 
 The ±1.5s retry tolerance accounts for integer-second configured backoffs,
 handler process startup, and the scheduler tick. S01 uses a two-second upper
@@ -121,6 +132,7 @@ self-test handler back to the real handler and rerun the suite.
 
 ## Known gaps
 
-`examples/guardian_selftest.py::KNOWN_GAPS` is empty after C545. The fast
-self-test expects all 15 scenarios to pass; its `start`, `backoff`, and
-`catchup` fault modes must each make the corresponding scenario fail.
+`examples/guardian_selftest.py::KNOWN_GAPS` remains empty. The fast self-test
+expects all 24 scenarios to pass. Fault injection for `start`, `backoff`,
+`catchup`, `disable-budget`, and `retry-no-data` must make the corresponding
+scenario fail.

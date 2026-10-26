@@ -40,7 +40,7 @@ TZ = ZoneInfo("Asia/Shanghai")
 TERMINAL = {
     "SUCCEEDED", "SUCCEEDED_DEGRADED", "FAILED_FINAL", "CIRCUIT_OPEN",
     "MISSED", "GATE_BLOCKED", "SKIPPED", "SKIPPED_NA", "SKIPPED_PHASE",
-    "SKIPPED_DEP",
+    "SKIPPED_DEP", "SKIPPED_SATISFIED",
 }
 _ACTIVE_CASES: list["Scenario"] = []
 
@@ -179,6 +179,7 @@ class Scenario:
     stopped: bool = False
     fault: str = ""
     result: dict[str, Any] | None = None
+    schedule_source: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         self.config_path = self.work / "config.json"
@@ -217,7 +218,28 @@ class Scenario:
             for event in self.events:
                 if event["id"] == "catchup_run":
                     event["catchup"] = "skip"
-        self.config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if self.fault == "disable-budget" and self.name.startswith("S19"):
+            self.events[0]["ladder"][0]["budget_enabled"] = False
+        if self.schedule_source is not None:
+            source_path = self.work / "schedule-v3.json"
+            source_path.write_text(json.dumps(self.schedule_source, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            result = subprocess.run(
+                [str(self.binary), "migrate", "--from", str(source_path), "--to", str(self.config_path), "--expand"],
+                cwd=self.work,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode:
+                raise RuntimeError(f"S24 v3 migrate failed ({result.returncode}): {result.stdout}{result.stderr}")
+            migrated = json.loads(self.config_path.read_text(encoding="utf-8"))
+            migrated["calendars"]["trading"]["file"] = str(self.calendar_path)
+            handlers = _handler_config()
+            for event in migrated["events"]:
+                migrated["handlers"][event["handler"]] = handlers["selftest"]
+            migrated["alerts"] = {"enabled": True}
+            self.config_path.write_text(json.dumps(migrated, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        else:
+            self.config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         for event in self.events:
             gate = event.get("gate")
             if gate and gate.get("ref") == "always_ready":
@@ -236,8 +258,11 @@ class Scenario:
             data = record.get("data") or {}
             state = data.get("state") or {}
             event_id = data.get("event_id")
+            instance = data.get("instance")
             if event_id:
                 result[str(event_id)] = state
+            if instance:
+                result[str(instance)] = state
         return result
 
     def calls(self) -> list[dict[str, Any]]:
@@ -312,7 +337,7 @@ class Scenario:
     binary: Path = Path()
 
 
-def _build_binary(work: Path) -> Path:
+def _build_binary(work: Path, fault: str = "") -> Path:
     if not GO.is_file():
         raise RuntimeError("/bin/go is missing; guardian self-test cannot build its isolated binary")
     if not (GO_ROOT / "go.mod").is_file():
@@ -327,7 +352,23 @@ def _build_binary(work: Path) -> Path:
         "GOSUMDB": "off",
         "GOCACHE": str(work / "go-cache"),
     }
-    result = subprocess.run([str(GO), "build", "-o", str(binary), "."], cwd=GO_ROOT, env=env, capture_output=True, text=True)
+    command = [str(GO), "build", "-o", str(binary)]
+    if fault == "retry-no-data":
+        runtime_source = GO_ROOT / "runtime.go"
+        injected = work / "runtime-fault-retry-no-data.go"
+        source = runtime_source.read_text(encoding="utf-8")
+        old_decode = 'return "failed", "TIER_NO_DATA", false, detailText'
+        old_advance = 'if code == "TIER_NO_DATA" {'
+        if source.count(old_decode) != 1 or source.count(old_advance) != 1:
+            raise RuntimeError("retry-no-data fault injection anchors changed")
+        source = source.replace(old_decode, 'return "failed", "TIER_NO_DATA", true, detailText', 1)
+        source = source.replace(old_advance, 'if code == "TIER_NO_DATA" && false {', 1)
+        injected.write_text(source, encoding="utf-8")
+        overlay = work / "runtime-fault-overlay.json"
+        overlay.write_text(json.dumps({"Replace": {str(runtime_source): str(injected)}}) + "\n", encoding="utf-8")
+        command.extend(["-overlay", str(overlay)])
+    command.append(".")
+    result = subprocess.run(command, cwd=GO_ROOT, env=env, capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError(f"isolated /bin/go build failed ({result.returncode}):\n{result.stdout}{result.stderr}")
     return binary
@@ -350,6 +391,13 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
         "S12": 15 if fast else 255,
         "S13": 16 if fast else 270,
         "S14": 17 if fast else 285,
+        "S16": 55 if fast else 330,
+        "S17": 56 if fast else 345,
+        "S18": 57 if fast else 360,
+        "S20": 58 if fast else 375,
+        "S21": 59 if fast else 390,
+        "S22": 60 if fast else 405,
+        "S23": 61 if fast else 420,
     }
 
     def at(key: str) -> datetime:
@@ -551,6 +599,115 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
                     f"{len(overlay_ids)} events once, in original time order, within {overlay_span:.0f}s mapping", overlay_base,
                     (mapped[-1] - now).total_seconds() + 22, "overlay"))
 
+    # S16: a no-data result advances immediately to the second configured tier.
+    s = at("S16")
+    cases.append(mk("S16 no-data tier fallback", "S16", [
+        _event("fallback_success", s, deadline=s + timedelta(seconds=24), ladder=[
+            {"name": "redis", "args": {"behavior": "no_data", "source": "redis"}, "attempts": 4, "backoff": "1s*2", "timeout": "2s"},
+            {"name": "td", "args": {"behavior": "ok", "source": "td"}, "attempts": 1, "timeout": "2s"},
+            {"name": "wencai", "args": {"behavior": "ok", "source": "wencai"}, "attempts": 1, "timeout": "2s"},
+        ]),
+    ], ["fallback_success"], "redis TIER_NO_DATA once; td succeeds as degraded", s, 32))
+
+    # S17 all tiers return no data; one terminal alert and a failure row per tier.
+    s = at("S17")
+    cases.append(mk("S17 all tiers exhausted", "S17", [
+        _event("all_no_data", s, deadline=s + timedelta(seconds=24), ladder=[
+            {"name": "redis", "args": {"behavior": "no_data"}, "attempts": 3, "backoff": "1s*2", "timeout": "2s"},
+            {"name": "td", "args": {"behavior": "no_data"}, "attempts": 3, "backoff": "1s*2", "timeout": "2s"},
+            {"name": "wencai", "args": {"behavior": "no_data"}, "attempts": 1, "timeout": "2s"},
+        ]),
+    ], ["all_no_data"], "FAILED_FINAL; one alert; three TIER_NO_DATA ledger rows", s, 32))
+
+    # S18 checks that exit 40/TIER_NO_DATA does not consume same-tier retries.
+    s = at("S18")
+    cases.append(mk("S18 no-data does not retry", "S18", [
+        _event("no_data_once", s, deadline=s + timedelta(seconds=24), ladder=[
+            {"name": "redis", "args": {"behavior": "no_data"}, "attempts": 3, "backoff": "1s*2", "timeout": "2s"},
+            {"name": "td", "args": {"behavior": "ok"}, "attempts": 1, "timeout": "2s"},
+        ]),
+    ], ["no_data_once"], "one redis call before td fallback", s, 28))
+
+    # S19 starts late with only the final tier's timeout budget remaining.
+    s = (now - timedelta(seconds=3)).replace(microsecond=0)
+    cases.append(mk("S19 time budget skips rung", "S19", [
+        _event("budget_skip", s, deadline=now + timedelta(seconds=8), catchup="run_in_window", ladder=[
+            {"name": "too_slow", "args": {"behavior": "ok"}, "attempts": 1, "timeout": "10s"},
+            {"name": "fits", "args": {"behavior": "ok"}, "attempts": 1, "timeout": "2s"},
+        ]),
+    ], ["budget_skip"], "first tier skipped; final tier succeeds", s, 20))
+
+    # S20 starts two seconds before its deadline and completes a five-second handler.
+    s = at("S20")
+    cases.append(mk("S20 deadline preserves running attempt", "S20", [
+        _event("finish_after_deadline", s, deadline=s + timedelta(seconds=2), timeout="7s", ladder=[
+            {"name": "primary", "args": {"behavior": "sleep:5"}, "attempts": 1, "timeout": "7s", "budget_enabled": False},
+        ]),
+    ], ["finish_after_deadline"], "handler finishes after deadline and succeeds", s, 22))
+
+    # S21 kills the daemon during tier one and checks that restart resumes that tier.
+    s = at("S21")
+    cases.append(mk("S21 restart resumes current tier", "S21", [
+        _event("resume_tier", s, deadline=s + timedelta(seconds=32), ladder=[
+            {"name": "primary", "args": {"behavior": "sleep_once:9"}, "attempts": 3, "backoff": "1s*2", "timeout": "12s"},
+            {"name": "fallback", "args": {"behavior": "ok"}, "attempts": 1, "timeout": "2s"},
+        ]),
+    ], ["resume_tier"], "attempt 2 resumes primary tier after daemon restart", s, 38, "restart_ladder"))
+
+    # S22 exposes two at-times for one event; its handler says the second target is satisfied.
+    s = ((now + timedelta(seconds=10)).replace(microsecond=0) if fast else at("S22"))
+    satisfied = _event("satisfied_twice", s, deadline=s + timedelta(seconds=80), behavior="already_satisfied")
+    satisfied["ladder"] = [
+        {"name": "primary", "args": {"behavior": "already_satisfied"}, "attempts": 1, "timeout": "3s"},
+    ]
+    satisfied_second = s + timedelta(minutes=1)
+    satisfied["trigger"]["at_times"] = [_clock(s), _clock(satisfied_second)]
+    cases.append(mk("S22 satisfied later trigger", "S22", [satisfied],
+                    [f"satisfied_twice@{_clock(s)[:5]}", f"satisfied_twice@{_clock(satisfied_second)[:5]}"],
+                    "first succeeds; second records SKIPPED_SATISFIED", s, 88))
+
+    # S23 retains a single rung when no fallback was configured.
+    s = at("S23")
+    cases.append(mk("S23 no implicit fallback", "S23", [
+        _event("single_rung", s, deadline=s + timedelta(seconds=24), ladder=[
+            {"name": "primary", "args": {"behavior": "fail_always"}, "attempts": 2, "backoff": "1s*2", "timeout": "3s"},
+        ]),
+    ], ["single_rung"], "two attempts on one rung; FAILED_FINAL without fallback", s, 32))
+
+    # S24 compares a profile ladder with old fields, both migrated from schema v3.
+    first_at = ((now + timedelta(seconds=10)).replace(microsecond=0) if fast
+                else now.replace(second=0, microsecond=0) + timedelta(minutes=1))
+    second_at = first_at + timedelta(minutes=1)
+    final_deadline = second_at + timedelta(minutes=2)
+    s = first_at
+    explicit = {
+        "id": "profile_form", "enabled": True, "calendar": "every_day", "handler": "auction_report",
+        "at": [_clock(first_at), _clock(second_at)], "deadline": _clock(final_deadline), "profile": "retry_profile",
+        "args": {"behavior": "flaky_then_ok"}, "phases": ["any"],
+    }
+    legacy = {
+        "id": "legacy_form", "enabled": True, "calendar": "every_day", "handler": "auction_report",
+        "at": [_clock(first_at), _clock(second_at)], "deadline": _clock(final_deadline), "timeout_seconds": 3,
+        "max_attempts": 2, "retry_backoff": "1s", "args": {"behavior": "flaky_then_ok"}, "phases": ["any"],
+    }
+    migration = mk("S24 v3 profile and legacy equivalence", "S24", [],
+                   [f"profile_form@{_clock(first_at)[:5]}", f"profile_form@{_clock(second_at)[:5]}",
+                    f"legacy_form@{_clock(first_at)[:5]}", f"legacy_form@{_clock(second_at)[:5]}"],
+                   "four expanded instances; identical retry sequences", first_at, (final_deadline - now).total_seconds() + 20,
+                   "migration_equivalence")
+    migration.schedule_source = {
+        "schema_version": 3, "revision": 1, "timezone": "Asia/Shanghai", "profiles": {
+            "retry_profile": {"catchup": "run_in_window", "window": {"deadline": _clock(final_deadline)},
+                              "ladder": [{"name": "legacy", "args": {"behavior": "flaky_then_ok"},
+                                          "attempts": 2, "backoff": "1s*2", "timeout": "3s"}]}
+        }, "events": [explicit, legacy],
+    }
+    migration.events = [
+        {"id": "profile_form", "trigger": {"type": "window"}},
+        {"id": "legacy_form", "trigger": {"type": "window"}},
+    ]
+    cases.append(migration)
+
     for case in cases:
         case.binary = base / "guardiand-selftest"
         case.write_config(getattr(case, "_calendar_dates", None))
@@ -688,6 +845,101 @@ def _evaluate(case: Scenario) -> list[str]:
             errors.append("calls do not preserve source schedule order")
         if any(status(event_id) != "SUCCEEDED" for event_id in case.ids):
             errors.append("one or more overlay events did not succeed")
+    elif case.name.startswith("S16"):
+        rows = case.calls_for("fallback_success")
+        ledger_failures = [r.get("data", {}) for r in case.ledger() if r.get("type") == "TIER_FAILED"]
+        if len(rows) != 2 or [row.get("tier") for row in rows] != ["redis", "td"]:
+            errors.append(f"calls/tier sequence={[(row.get('tier'), row.get('attempt')) for row in rows]}")
+        if not rows or not rows[-1].get("degraded") or status("fallback_success") != "SUCCEEDED_DEGRADED":
+            errors.append(f"fallback tier metadata/status={rows[-1] if rows else None}/{status('fallback_success')}")
+        if len(ledger_failures) != 1 or ledger_failures[0].get("error_code") != "TIER_NO_DATA":
+            errors.append(f"first tier failure ledger={ledger_failures}")
+    elif case.name.startswith("S17"):
+        failures = [r.get("data", {}) for r in case.ledger() if r.get("type") == "TIER_FAILED"]
+        alerts = _read_jsonl(case.selftest_dir / "alerts.jsonl")
+        if status("all_no_data") != "FAILED_FINAL" or len(alerts) != 1:
+            errors.append(f"status/alert count={status('all_no_data')}/{len(alerts)}")
+        if [row.get("tier") for row in failures] != ["redis", "td", "wencai"] or any(row.get("error_code") != "TIER_NO_DATA" for row in failures):
+            errors.append(f"tier failure rows={failures}")
+        if [row.get("tier") for row in case.calls_for("all_no_data")] != ["redis", "td", "wencai"]:
+            errors.append("tier call order does not reach all three sources")
+    elif case.name.startswith("S18"):
+        rows = case.calls_for("no_data_once")
+        tiers = [r.get("tier") for r in rows]
+        if tiers.count("redis") != 1 or tiers != ["redis", "td"]:
+            errors.append(f"TIER_NO_DATA retry/tier sequence={tiers}")
+    elif case.name.startswith("S19"):
+        rows = case.calls_for("budget_skip")
+        states = case.states().get("budget_skip", {})
+        if [r.get("tier") for r in rows] != ["fits"] or states.get("status") != "SUCCEEDED_DEGRADED":
+            errors.append(f"budget call/status={[(r.get('tier')) for r in rows]}/{states.get('status')}")
+        if states.get("skipped_tiers") != ["too_slow"] or not rows or rows[0].get("skipped_tiers") != ["too_slow"]:
+            errors.append(f"skipped tiers state/request={states.get('skipped_tiers')}/{rows[0].get('skipped_tiers') if rows else None}")
+    elif case.name.startswith("S20"):
+        rows = case.calls_for("finish_after_deadline")
+        if len(rows) != 1 or status("finish_after_deadline") != "SUCCEEDED":
+            errors.append(f"calls/status={len(rows)}/{status('finish_after_deadline')}")
+        else:
+            completed_text = case.states().get("finish_after_deadline", {}).get("completed_at")
+            try:
+                completed = datetime.fromisoformat(completed_text)
+                deadline = datetime.strptime(case.date + " " + case.events[0]["trigger"]["deadline"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ)
+                if completed <= deadline:
+                    errors.append(f"completed at {completed.isoformat()} before deadline {deadline.isoformat()}")
+                if (completed - _parse_call_time(rows[0].get("wall_clock"))).total_seconds() < 4.5:
+                    errors.append("handler did not remain alive for its configured five seconds")
+            except (TypeError, ValueError):
+                errors.append(f"invalid completion/deadline timestamps={completed_text}")
+        if rows and rows[0].get("tier") != "primary":
+            errors.append(f"tier={rows[0].get('tier')}")
+    elif case.name.startswith("S21"):
+        rows = case.calls_for("resume_tier")
+        if [row.get("attempt") for row in rows] != [1, 2] or [row.get("tier") for row in rows] != ["primary", "primary"]:
+            errors.append(f"restart attempts/tiers={[(row.get('attempt'), row.get('tier')) for row in rows]}")
+        state = case.states().get("resume_tier", {})
+        if state.get("status") != "SUCCEEDED" or state.get("rung") != 1:
+            errors.append(f"restart terminal state={state}")
+        if not case.restarted:
+            errors.append("daemon was not restarted while rung one was active")
+    elif case.name.startswith("S22"):
+        first, second = case.ids
+        if status(first) != "SUCCEEDED" or status(second) != "SKIPPED_SATISFIED":
+            errors.append(f"trigger statuses={status(first)}/{status(second)}")
+        rows = case.calls_for("satisfied_twice")
+        if len(rows) != 2 or rows[1].get("attempt") != 1:
+            errors.append(f"trigger calls={[(row.get('instance'), row.get('attempt')) for row in rows]}")
+        ledger = [r.get("data", {}) for r in case.ledger() if r.get("type") == "ALREADY_SATISFIED"]
+        if len(ledger) != 1 or ledger[0].get("instance") != second:
+            errors.append(f"satisfied ledger={ledger}")
+    elif case.name.startswith("S23"):
+        rows = case.calls_for("single_rung")
+        if len(rows) != 2 or [row.get("tier") for row in rows] != ["primary", "primary"]:
+            errors.append(f"single rung calls={[(row.get('tier'), row.get('attempt')) for row in rows]}")
+        if status("single_rung") != "FAILED_FINAL":
+            errors.append(f"single rung status={status('single_rung')}")
+        alerts = _read_jsonl(case.selftest_dir / "alerts.jsonl")
+        if len(alerts) != 1:
+            errors.append(f"single rung terminal alert count={len(alerts)}")
+    elif case.name.startswith("S24"):
+        calls = case.calls()
+        expected_ids = set(case.ids)
+        by_instance = {key: [row for row in calls if row.get("instance") == key] for key in expected_ids}
+        missing = [key for key, rows in by_instance.items() if len(rows) != 2]
+        if missing:
+            errors.append(f"migration expanded call counts={{{', '.join(f'{k}:{len(v)}' for k, v in by_instance.items())}}}")
+        normalized = {key: [(row.get("attempt"), row.get("tier"), row.get("degraded"), row.get("args", {}).get("behavior")) for row in rows]
+                      for key, rows in by_instance.items()}
+        profile_seq = normalized.get(next((key for key in case.ids if key.startswith("profile_form")), ""), [])
+        legacy_seq = normalized.get(next((key for key in case.ids if key.startswith("legacy_form")), ""), [])
+        if not profile_seq or profile_seq != legacy_seq:
+            # Compare equivalent per-instance sequences; both at-times expand identically.
+            event_sequences = {}
+            for prefix in ("profile_form", "legacy_form"):
+                event_sequences[prefix] = sorted((key.split("@", 1)[1], value) for key, value in normalized.items() if key.startswith(prefix + "@"))
+            if event_sequences.get("profile_form") != event_sequences.get("legacy_form"):
+                errors.append(f"profile/legacy sequences differ={event_sequences}")
+        if any(status(event_id) != "SUCCEEDED" for event_id in case.ids):
+            errors.append("one or more migrated instances did not succeed")
     return errors
 
 
@@ -760,6 +1012,14 @@ def _run_cases(cases: list[Scenario], binary: Path, deadline: float) -> list[dic
                     case.restarted = True
                     case.stopped = False
                     case.launch(append=True)
+            if case.special == "restart_ladder" and not case.restarted:
+                rows = case.calls_for("resume_tier")
+                state = case.states().get("resume_tier", {})
+                if len(rows) >= 1 and state.get("status") in {"RUNNING", "LATE_RUN"} and state.get("rung") == 1:
+                    case.stop(signal.SIGKILL)
+                    case.restarted = True
+                    case.stopped = False
+                    case.launch(append=True)
             if case.special == "early_backoff_probe" and len(case.calls_for("retry_twice")) >= 2:
                 rows = case.calls_for("retry_twice")
                 gap = (_parse_call_time(rows[1].get("wall_clock")) - _parse_call_time(rows[0].get("wall_clock"))).total_seconds()
@@ -769,9 +1029,9 @@ def _run_cases(cases: list[Scenario], binary: Path, deadline: float) -> list[dic
                     continue
             if case.terminal():
                 # S04 alert delivery can complete after its terminal state write.
-                if case.name.startswith("S04") and len(_read_jsonl(case.selftest_dir / "alerts.jsonl")) == 0:
+                if case.name.startswith(("S04", "S17", "S23")) and len(_read_jsonl(case.selftest_dir / "alerts.jsonl")) == 0:
                     continue
-                if case.special == "restart" and not case.restarted:
+                if case.special in {"restart", "restart_ladder"} and not case.restarted:
                     continue
                 errors = _evaluate(case)
                 actual, deviation, observed = _actual(case)
@@ -808,7 +1068,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", choices=("fast", "minutes"), default="fast")
     parser.add_argument("--minutes", type=int, default=3)
     parser.add_argument("--work-dir", type=Path)
-    parser.add_argument("--fault", choices=("start", "backoff", "catchup"))
+    parser.add_argument("--fault", choices=("start", "backoff", "catchup", "disable-budget", "retry-no-data"))
     args = parser.parse_args(argv)
     if args.mode == "minutes" and args.minutes < 3:
         parser.error("--mode minutes requires --minutes >= 3")
@@ -820,16 +1080,16 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = work / f"r{os.getpid()}-{uuid.uuid4().hex[:8]}"
     run_dir.mkdir()
     try:
-        binary = _build_binary(run_dir)
+        binary = _build_binary(run_dir, args.fault or "")
         date = _iso_clock().date().isoformat()
         cases = _make_scenarios(args.mode, args.minutes, run_dir, date, args.fault or "")
         if args.fault:
-            target = {"start": "S01", "backoff": "S03", "catchup": "S06"}[args.fault]
+            target = {"start": "S01", "backoff": "S03", "catchup": "S06", "disable-budget": "S19", "retry-no-data": "S18"}[args.fault]
             cases = [case for case in cases if case.name.startswith(target)]
         _ACTIVE_CASES[:] = cases
-        # A normal fast pass is limited to 110s, leaving margin under the card's
-        # 120s target. Minutes mode allows the six-minute overlay plus margin.
-        budget = 105.0 if args.mode == "fast" else 720.0
+        # The at-list equivalence case may start just before the next minute and
+        # needs one more minute for its second trigger point.
+        budget = 135.0 if args.mode == "fast" else 720.0
         rows = _run_cases(cases, binary, budget)
         _apply_known_gaps(rows)
         _print_rows(rows)

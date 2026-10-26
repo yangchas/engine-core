@@ -11,6 +11,25 @@ func TestStrictDecodeAndVersion(t *testing.T) {
 	}
 }
 
+func TestLadderConfigSchemaAccepted(t *testing.T) {
+	input := []byte(`{"schema_version":1,"config_version":1,"name":"x","timezone":"Asia/Shanghai","events":[{"id":"tiered","trigger":{"type":"window","start":"09:00:00","deadline":"09:10:00"},"ladder":[{"name":"redis","args":{"source":"redis"},"attempts":2,"backoff":"2s*2","timeout":"3s"},{"name":"td","args":{"source":"td"},"attempts":1,"timeout":"5s"}]}]}`)
+	if _, issues := Decode(input); len(issues) != 0 {
+		t.Fatalf("valid ladder config rejected: %+v", issues)
+	}
+}
+
+func TestAtTimesMustRemainDistinctAfterInstanceExpansion(t *testing.T) {
+	c := Config{SchemaVersion: 1, ConfigVersion: 1, Name: "x", Timezone: "Asia/Shanghai", Events: []Event{{
+		ID: "two_triggers", Trigger: Trigger{Type: "window", Start: "09:00:00", Deadline: "09:10:00", AtTimes: []string{"09:00:00", "09:00:01"}},
+	}}}
+	for _, issue := range Validate(c) {
+		if issue.Path == "events[0].trigger.at_times" && issue.Code == "TRIGGER_DUPLICATE" {
+			return
+		}
+	}
+	t.Fatal("trigger points that expand to the same HH:MM instance were accepted")
+}
+
 func TestTimeoutIsIndependentOfWindow(t *testing.T) {
 	c := Config{SchemaVersion: 1, ConfigVersion: 1, Name: "x", Events: []Event{{
 		ID: "long", Trigger: Trigger{Type: "window", Start: "09:00:00", Deadline: "09:01:00"}, Timeout: "300s",

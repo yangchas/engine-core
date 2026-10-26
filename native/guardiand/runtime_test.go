@@ -2654,3 +2654,197 @@ func writeC545Script(t *testing.T, path, body string) string {
 	}
 	return path
 }
+
+func TestC547LadderRetryExhaustionAdvancesAndUntilLateIsTierLocal(t *testing.T) {
+	t.Run("retry exhaustion advances", func(t *testing.T) {
+		root, date := t.TempDir(), "2026-10-20"
+		loc, _ := time.LoadLocation("Asia/Shanghai")
+		now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:00", loc)
+		calls := filepath.Join(root, "calls.jsonl")
+		script := writeC545Script(t, filepath.Join(root, "handler.sh"), `cat >> "$CALL_LOG"
+n=$(wc -l < "$CALL_LOG")
+if [ "$n" -le 2 ]; then printf '%s\n' '{"contract":1,"status":"failed","error_code":"TEMP","retryable":true}'; exit 75; fi
+printf '%s\n' '{"contract":1,"status":"ok"}'
+`)
+		t.Setenv("CALL_LOG", calls)
+		event := config.Event{ID: "ladder_retry", Handler: "h", Ladder: []config.LadderTier{
+			{Name: "primary", Attempts: 2, Backoff: "1s*1", Timeout: "2s"},
+			{Name: "fallback", Attempts: 1, Timeout: "2s"},
+		}}
+		fc := newFakeClock(now)
+		r, closeRunner := newC545Runner(t, root, date, fc, config.Config{Events: []config.Event{event}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}, EnvAllow: []string{"CALL_LOG"}}}})
+		defer closeRunner()
+		advanced := make(chan struct{})
+		go func() {
+			for fc.waitCount() == 0 {
+				runtime.Gosched()
+			}
+			fc.Advance(2 * time.Second)
+			close(advanced)
+		}()
+		r.execute(Instance{ID: event.ID, EventID: event.ID, TriggerType: "startup"}, date)
+		<-advanced
+		state := r.states[date+"/"+event.ID]
+		if state.Status != "SUCCEEDED_DEGRADED" || state.Attempts != 3 || state.Rung != 2 || state.Tier != "fallback" {
+			t.Fatalf("ladder result=%+v, want fallback success after two primary failures", state)
+		}
+		if counts := ledgerTypeCounts(t, root, date); counts["TIER_EXHAUSTED"] != 1 {
+			t.Fatalf("tier exhaustion ledger counts=%v", counts)
+		}
+		b, err := os.ReadFile(calls)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var tiers []string
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			var request struct {
+				Tier     string `json:"tier"`
+				Degraded bool   `json:"degraded"`
+			}
+			if err := json.Unmarshal([]byte(line), &request); err != nil {
+				t.Fatal(err)
+			}
+			tiers = append(tiers, request.Tier)
+			if request.Tier == "fallback" && !request.Degraded {
+				t.Fatal("fallback request did not set degraded=true")
+			}
+		}
+		if strings.Join(tiers, ",") != "primary,primary,fallback" {
+			t.Fatalf("tier call order=%v", tiers)
+		}
+	})
+
+	t.Run("late_until only stops this tier retries", func(t *testing.T) {
+		root, date := t.TempDir(), "2026-10-20"
+		loc, _ := time.LoadLocation("Asia/Shanghai")
+		now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:59:58", loc)
+		calls := filepath.Join(root, "calls.jsonl")
+		script := writeC545Script(t, filepath.Join(root, "handler.sh"), `cat >> "$CALL_LOG"
+n=$(wc -l < "$CALL_LOG")
+if [ "$n" -eq 1 ]; then printf '%s\n' '{"contract":1,"status":"failed","error_code":"TEMP","retryable":true}'; exit 75; fi
+printf '%s\n' '{"contract":1,"status":"ok"}'
+`)
+		t.Setenv("CALL_LOG", calls)
+		event := config.Event{ID: "tier_until", Handler: "h", LateUntil: "10:00:00", Catchup: "run_in_window",
+			Trigger: config.Trigger{Type: "window", Start: "09:59:00", Deadline: "10:00:30"}, Ladder: []config.LadderTier{
+				{Name: "primary", Attempts: 3, Backoff: "3s*1", Timeout: "2s", Until: "late_until"},
+				{Name: "fallback", Attempts: 1, Timeout: "2s"},
+			}}
+		fc := newFakeClock(now)
+		r, closeRunner := newC545Runner(t, root, date, fc, config.Config{Events: []config.Event{event}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}, EnvAllow: []string{"CALL_LOG"}}}})
+		defer closeRunner()
+		x := Instance{ID: event.ID, EventID: event.ID, TriggerType: "window", Start: event.Trigger.Start,
+			Deadline: event.Trigger.Deadline, LateUntil: event.LateUntil}
+		r.execute(x, date)
+		waiting := r.states[date+"/"+event.ID]
+		if waiting.Status != "RETRY_WAIT" || waiting.RungAttempts != 1 {
+			t.Fatalf("first late_until result=%+v, want one scheduled primary retry", waiting)
+		}
+		fc.Advance(4 * time.Second)
+		r.execute(x, date)
+		state := r.states[date+"/"+event.ID]
+		if state.Status != "SUCCEEDED_DEGRADED" || state.Tier != "fallback" || state.Attempts != 2 {
+			t.Fatalf("late_until ladder result=%+v, want fallback success after one primary attempt", state)
+		}
+		b, err := os.ReadFile(calls)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var tiers []string
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			var request struct {
+				Tier string `json:"tier"`
+			}
+			if err := json.Unmarshal([]byte(line), &request); err != nil {
+				t.Fatal(err)
+			}
+			tiers = append(tiers, request.Tier)
+		}
+		if strings.Join(tiers, ",") != "primary,fallback" {
+			t.Fatalf("late_until tier calls=%v", tiers)
+		}
+	})
+}
+
+func TestC547StartupLadderAppliesDeadlineTimeBudget(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:00", loc)
+	calls := filepath.Join(root, "calls.jsonl")
+	script := writeC545Script(t, filepath.Join(root, "handler.sh"), `cat >> "$CALL_LOG"
+printf '%s\n' '{"contract":1,"status":"ok"}'
+`)
+	t.Setenv("CALL_LOG", calls)
+	event := config.Event{ID: "startup_budget", Handler: "h", Ladder: []config.LadderTier{
+		{Name: "primary", Attempts: 1, Timeout: "6s"},
+		{Name: "fallback", Attempts: 1, Timeout: "2s"},
+	}}
+	fc := newFakeClock(now)
+	r, closeRunner := newC545Runner(t, root, date, fc, config.Config{Events: []config.Event{event}, Handlers: map[string]config.Handler{
+		"h": {Argv: []string{script}, EnvAllow: []string{"CALL_LOG"}, SupportsDegrade: true},
+	}})
+	defer closeRunner()
+	r.execute(Instance{ID: event.ID, EventID: event.ID, TriggerType: "startup", Deadline: "09:00:05"}, date)
+	state := r.states[date+"/"+event.ID]
+	if state.Status != "SUCCEEDED_DEGRADED" || state.Rung != 2 || len(state.SkippedTiers) != 1 || state.SkippedTiers[0] != "primary" {
+		t.Fatalf("startup time-budget result=%+v, want primary skipped and fallback success", state)
+	}
+	b, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Tier string `json:"tier"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(b), &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Tier != "fallback" {
+		t.Fatalf("startup handler ran tier %q, want fallback only", request.Tier)
+	}
+}
+
+func TestC547LateUntilRetryYieldsBetweenAttempts(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:59:58", loc)
+	calls := filepath.Join(root, "calls.jsonl")
+	script := writeC545Script(t, filepath.Join(root, "handler.sh"), `cat >> "$CALL_LOG"
+printf '%s\n' '{"contract":1,"status":"failed","error_code":"TEMP","retryable":true}'
+exit 75
+`)
+	t.Setenv("CALL_LOG", calls)
+	event := config.Event{ID: "late_retry", Handler: "h", LateUntil: "10:00:00", Ladder: []config.LadderTier{{
+		Name: "primary", Attempts: 3, Backoff: "1s*2", Timeout: "2s", Until: "late_until",
+	}}}
+	fc := newFakeClock(now)
+	r, closeRunner := newC545Runner(t, root, date, fc, config.Config{Events: []config.Event{event}, Handlers: map[string]config.Handler{
+		"h": {Argv: []string{script}, EnvAllow: []string{"CALL_LOG"}},
+	}})
+	defer closeRunner()
+	x := Instance{ID: event.ID, EventID: event.ID, TriggerType: "window", Start: "09:59:00", Deadline: "10:00:30", LateUntil: event.LateUntil}
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			if fc.waitCount() > 0 {
+				fc.Advance(10 * time.Second)
+				return
+			}
+			runtime.Gosched()
+		}
+	}()
+	r.execute(x, date)
+	close(done)
+	state := r.states[date+"/"+event.ID]
+	if state.Status != "RETRY_WAIT" || state.Attempts != 1 || state.Rung != 1 || state.RungAttempts != 1 || state.NextAttemptAt == "" {
+		t.Fatalf("first late_until attempt state=%+v, want one attempt scheduled for retry", state)
+	}
+	if fc.waitCount() != 0 {
+		t.Fatalf("late_until retry blocked the worker on fake clock %d times", fc.waitCount())
+	}
+}

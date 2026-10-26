@@ -39,6 +39,15 @@ def _reply(value: dict) -> None:
 def _run(request: dict) -> int:
     args = request.get("args") if isinstance(request.get("args"), dict) else {}
     behavior = str(args.get("behavior", "ok"))
+    calls_path = Path(os.environ["SELFTEST_DIR"]) / "calls.jsonl"
+    prior_rows = []
+    if calls_path.is_file():
+        for line in calls_path.read_text(encoding="utf-8").splitlines():
+            try:
+                prior_rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    already_satisfied = behavior == "already_satisfied" and any(row.get("event") == request.get("event") for row in prior_rows)
     record = {
         "event": request.get("event"),
         "instance": request.get("instance"),
@@ -48,9 +57,12 @@ def _run(request: dict) -> int:
         "data_date": request.get("data_date"),
         "asof": request.get("asof"),
         "degrade_requested": bool(request.get("degrade_requested", False)),
+        "tier": request.get("tier", ""),
+        "degraded": bool(request.get("degraded", False)),
+        "skipped_tiers": request.get("skipped_tiers", []),
         "args": args,
     }
-    _append_jsonl(Path(os.environ["SELFTEST_DIR"]) / "calls.jsonl", record)
+    _append_jsonl(calls_path, record)
 
     attempt = request.get("attempt", 1)
     try:
@@ -65,6 +77,35 @@ def _run(request: dict) -> int:
             delay = 0.0
         time.sleep(delay)
         behavior = "ok"
+
+    if behavior.startswith("sleep_once:"):
+        try:
+            delay = max(0.0, float(behavior.partition(":")[2]))
+        except ValueError:
+            delay = 0.0
+        if attempt <= 1:
+            time.sleep(delay)
+        behavior = "ok"
+
+    if behavior == "flaky_then_ok":
+        if attempt <= 1:
+            _reply({"contract": 1, "status": "failed", "error_code": "SELFTEST_RETRY", "retryable": True,
+                    "artifacts": [], "detail": "selftest retryable first attempt"})
+            return 30
+        behavior = "ok"
+
+    if behavior == "no_data":
+        _reply({"contract": 1, "status": "failed", "error_code": "TIER_NO_DATA", "retryable": False,
+                "artifacts": [], "detail": "no data at configured tier"})
+        return 40
+
+    if behavior == "already_satisfied" and not already_satisfied:
+        behavior = "ok"
+
+    if already_satisfied:
+        _reply({"contract": 1, "status": "not_applicable", "error_code": "ALREADY_SATISFIED", "retryable": False,
+                "artifacts": [], "detail": "target was satisfied by an earlier trigger"})
+        return 20
 
     if behavior.startswith("fail:"):
         try:
