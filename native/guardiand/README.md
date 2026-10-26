@@ -72,6 +72,11 @@ and delays heavy starts by 60 seconds while `/proc/loadavg` is above the
 threshold. Load deferrals are recorded as `DEFER_LOAD` without consuming
 attempts or emitting alerts.
 
+The heavy slot is held only during a handler attempt. Gate polling, load
+deferral, and retry backoff do not reserve it; each attempt takes a FIFO place
+and deadline expiry is evaluated while it waits. The process cap is also
+released during a heavy retry delay. Light and medium admission are unchanged.
+
 Startup events use `trigger: {"type":"startup","order":N,"after":[...]}`.
 They run once per process boot in order after their listed startup dependencies;
 failed dependencies produce `SKIPPED_DEP`. Handler requests include `phase`

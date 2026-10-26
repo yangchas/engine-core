@@ -14,8 +14,8 @@ Run the short wall-clock suite with:
 ```
 
 `fast` schedules S01–S14 about 5–25 seconds ahead, the ladder scenarios after
-about 55 seconds, S28 at about 62 seconds, and S24's two trigger points at the
-next two minute marks. It compresses the production window from
+about 55 seconds, S28 at about 62 seconds, S29–S32 between 70 and 76 seconds,
+and S24's two trigger points at the next two minute marks. It compresses the production window from
 08:30:00–09:45:30 (4,530 seconds) onto 45
 seconds for S15. Each S15 start is mapped linearly, with at least one second
 between starts to preserve order at the scheduler's second-level resolution.
@@ -67,6 +67,13 @@ requires a value of at least 3.
 | S26 | The captured trading calendar resolves Monday, weekend, and holiday return dates; an uncovered date reports `TARGET_DATE_UNRESOLVED`. |
 | S27 | An unavailable calendar makes both target-resolution attempts exit 30, records both attempts, and never calls the handler. |
 | S28 | Legacy v2 fields and a named v3 profile compile to equal execution fields and produce identical retry call sequences. |
+| S29 | A heavy event polls a closed gate while a second heavy event makes that gate ready; the producer runs during polling and the gated event then succeeds. |
+| S30 | Two concurrent heavy attempts succeed with recorded handler intervals that never overlap. |
+| S31 | A heavy waiter admitted before its deadline runs after the holder releases the slot; a waiter whose `on_deadline=missed` deadline expires remains `MISSED`. |
+| S32 | A heavy gate poll overlaps another heavy attempt without owning the slot; that attempt ends before the gate opens, and the gated handler starts after readiness. |
+
+S15 is the full-load check: it runs the 26 production window events in one
+runtime process and verifies one handler call per event in source-time order.
 
 The ±1.5s retry tolerance accounts for integer-second configured backoffs,
 handler process startup, and the scheduler tick. S01 uses a two-second upper

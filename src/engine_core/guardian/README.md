@@ -31,6 +31,23 @@ Windows include the `start` and `deadline` points. `catchup_mode` controls late 
 
 In the Go runtime, `catchup_mode=skip` runs only when scheduled on time; a later start is recorded as `MISSED`. `run_in_window` allows a late start through `deadline`, or through `late_until` when set. At `deadline`, `on_deadline=missed` records `MISSED`; `degrade` lets a handler run once with `degrade_requested=true` after its gate stays blocked through the deadline, and a successful response is recorded as `SUCCEEDED_DEGRADED`. `calendar=trading_day` excludes an absent date as `SKIPPED_NA` only when it lies within the calendar file's first-to-last-date range; an unconfigured or empty calendar, or a date outside its coverage, remains `UNKNOWN` and is not excluded. An unreadable or malformed configured calendar follows the runtime's existing path-specific error handling. A window event with `depends_on` waits while each dependency is nonterminal, then records `SKIPPED_DEP` if a dependency ends unsuccessfully; only `SUCCEEDED` is accepted by default, while `SUCCEEDED_DEGRADED` requires `accept_degraded=true`.
 
+### Heavy attempt admission
+
+Heavy admission applies to one handler attempt at a time. Gate polling and load deferral happen before admission; retry backoff releases the slot and each retry requests it again. Dependencies are resolved before execution starts. Heavy waiters keep FIFO order, and the deadline is checked while queued using the event's existing `on_deadline` and `late_until` rules. The heavy slot is released when the handler attempt ends. Light and medium concurrency behavior is unchanged.
+
+For the 62-event source schedule, these are the eight `cost=heavy` events with a gate. Before C551, entering any of them reserved the global heavy slot before gate polling and kept it through the rest of `execute`; C551 reserves it only around handler attempts. The 2026-10-26 ledger directly shows `close_recap` holding the slot while `daily_kline_ready` was missing and blocking `baostock_retry_1740` through its deadline. The other rows describe the same old admission boundary; only the listed live ledger is evidence of a prolonged production wait.
+
+| Event | Gate | Before C551 | After C551 |
+|---|---|---|---|
+| `fetch_item` | `always` | Gate probe could hold the heavy slot | Gate probe uses no heavy slot |
+| `night_recap` | `calendar_ready` | Calendar wait held the heavy slot | Calendar wait uses no heavy slot |
+| `baostock_probe_1730` | `calendar_ready` | Calendar wait held the heavy slot | Calendar wait uses no heavy slot |
+| `baostock_retry_1740` | `calendar_ready` | Calendar wait held the heavy slot; live ledger shows it queued behind `close_recap` | Calendar wait uses no heavy slot; handler attempt still queues FIFO |
+| `close_recap` | `daily_kline_ready` | Live ledger shows prolonged slot ownership while polling | Daily-kline wait uses no heavy slot |
+| `postmarket_publish` | `daily_kline_ready` | Daily-kline wait could hold the heavy slot | Daily-kline wait uses no heavy slot |
+| `baostock_retry_1830` | `calendar_ready` | Calendar wait could hold the heavy slot | Calendar wait uses no heavy slot |
+| `baostock_retry_2000` | `calendar_ready` | Calendar wait could hold the heavy slot | Calendar wait uses no heavy slot |
+
 ### Native schedule v3 and ladder execution
 
 Schedule v3 adds named `profiles` with only `catchup`, `window`, and `ladder`; profiles do not inherit from one another. An event may name one profile and override its catchup, window, or ladder. Event `at` accepts one clock time or a list; each list entry expands to a separate `event@HH:MM` instance. A ladder rung has a unique `name`, handler `args`, `attempts`, exponential `backoff` such as `2s*2`, `timeout`, and optional `until` (`late_until` or a clock time). Migration and validation reject unknown fields, missing profiles, invalid times/backoffs, empty ladders, and repeated rung names.

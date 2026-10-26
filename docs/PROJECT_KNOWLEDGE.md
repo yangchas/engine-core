@@ -1,5 +1,13 @@
 # Project Knowledge
 
+- `[VERIFIED 2026-10-26 — C551 heavy attempt admission]` Native Guardian now
+  owns the global heavy slot only during a handler attempt. Gate polling, load
+  deferral, retry backoff, and dependency waits do not reserve it; heavy waiters
+  are FIFO and deadline handling continues while queued. Go vet/test passed,
+  guardian self-tests passed 3× fast and 1× minutes (including S15 full load and
+  S29–S32), and the full pytest result matches its two known prep failures.
+  Evidence: `/home/exedev/validation/s1/C551/`.
+
 - `[VERIFIED 2026-10-26 — C548 target-date resolution]` Native Guardian keeps
   `trade_date` as the event day and resolves `target=prev_trade_day` (including
   legacy `data_date_offset=-1`) from the configured trading calendar. Missing,

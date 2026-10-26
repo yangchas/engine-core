@@ -244,6 +244,8 @@ type gateBlockRecord struct {
 	At     string `json:"at"`
 }
 
+type heavyWaiter struct{ instanceID string }
+
 type Clock interface{ Now() time.Time }
 type realClock struct{}
 
@@ -377,6 +379,8 @@ type liveRunner struct {
 	classSlots       map[string]chan struct{}
 	listening        bool
 	heavyRunning     bool
+	heavyWaiters     []*heavyWaiter
+	heavyChanged     chan struct{}
 	processSlots     chan struct{}
 	loadavg          func() (float64, error)
 	alertSeen        map[string]bool
@@ -555,6 +559,184 @@ func (r *liveRunner) processSemaphore() chan struct{} {
 	}
 	return r.processSlots
 }
+
+func (r *liveRunner) heavyChangedLocked() <-chan struct{} {
+	if r.heavyChanged == nil {
+		r.heavyChanged = make(chan struct{})
+	}
+	return r.heavyChanged
+}
+
+func (r *liveRunner) signalHeavyChangedLocked() {
+	if r.heavyChanged == nil {
+		r.heavyChanged = make(chan struct{})
+		return
+	}
+	close(r.heavyChanged)
+	r.heavyChanged = make(chan struct{})
+}
+
+func (r *liveRunner) signalHeavyChanged() {
+	r.mu.Lock()
+	r.signalHeavyChangedLocked()
+	r.mu.Unlock()
+}
+
+func (r *liveRunner) releaseProcessSlot(slots chan struct{}) {
+	if slots != nil {
+		<-slots
+		r.signalHeavyChanged()
+	}
+}
+
+func (r *liveRunner) releaseHeavyAttempt() {
+	r.mu.Lock()
+	r.heavyRunning = false
+	r.signalHeavyChangedLocked()
+	slots := r.processSlots
+	r.mu.Unlock()
+	r.releaseProcessSlot(slots)
+}
+
+func (r *liveRunner) heavyQueueExpiry(x Instance, date string, event *config.Event, state instanceState, ladder bool) (time.Time, string) {
+	if event == nil || x.TriggerType == "startup" {
+		return time.Time{}, ""
+	}
+	deadlineAt, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
+	if err != nil {
+		return time.Time{}, ""
+	}
+	if event.OnDeadline == "missed" {
+		return deadlineAt, "ON_DEADLINE_MISSED"
+	}
+	if ladder {
+		return time.Time{}, ""
+	}
+	cutoff := x.Deadline
+	if x.LateUntil != "" {
+		cutoff = x.LateUntil
+	}
+	end, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
+	if err != nil {
+		return time.Time{}, ""
+	}
+	if state.Status == "RETRY_WAIT" {
+		return end, "RETRIES_EXHAUSTED_BY_LATE_UNTIL"
+	}
+	// A normal window remains open through its deadline second. The runtime's
+	// windowExpired check becomes true in the following second.
+	return end.Add(time.Second), "START_DEADLINE_EXPIRED"
+}
+
+func (r *liveRunner) heavyQueueExpired(now, expires time.Time, reason string) bool {
+	if expires.IsZero() {
+		return false
+	}
+	if reason == "ON_DEADLINE_MISSED" {
+		return !now.Truncate(time.Second).Before(expires.Truncate(time.Second))
+	}
+	return !now.Before(expires)
+}
+
+func (r *liveRunner) waitForHeavyChange(ch <-chan struct{}, expires time.Time, reason string) {
+	if r.fake != nil {
+		clockChanged := r.fake.changedChan()
+		select {
+		case <-ch:
+		case <-clockChanged:
+		}
+		return
+	}
+	if expires.IsZero() {
+		<-ch
+		return
+	}
+	delay := time.Until(expires)
+	if reason == "ON_DEADLINE_MISSED" {
+		if delay < 0 {
+			delay = 0
+		}
+	} else if delay < time.Millisecond {
+		delay = time.Millisecond
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ch:
+	case <-timer.C:
+	}
+}
+
+func (r *liveRunner) acquireHeavyAttempt(x Instance, date string, event *config.Event, prior instanceState, ladder bool) bool {
+	ticket := &heavyWaiter{instanceID: x.ID}
+	slots := r.processSemaphore()
+	expires, expiryReason := r.heavyQueueExpiry(x, date, event, prior, ladder)
+	queuedStateSet := false
+	queued := false
+	for {
+		if r.heavyQueueExpired(r.clock.Now(), expires, expiryReason) {
+			r.mu.Lock()
+			for i, waiter := range r.heavyWaiters {
+				if waiter == ticket {
+					r.heavyWaiters = append(r.heavyWaiters[:i], r.heavyWaiters[i+1:]...)
+					r.signalHeavyChangedLocked()
+					break
+				}
+			}
+			r.mu.Unlock()
+			if expiryReason == "RETRIES_EXHAUSTED_BY_LATE_UNTIL" {
+				r.finishLateRetries(x, date, event, prior)
+			} else {
+				lastError := expiryReason
+				if lastError == "" {
+					lastError = "START_DEADLINE_EXPIRED"
+				}
+				r.setState(x, date, instanceState{Status: "MISSED", Attempts: prior.Attempts, StartedAt: prior.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: lastError, DataDate: prior.DataDate})
+				_ = r.alert("MISSED", map[string]any{"event": x.EventID, "date": date, "error": lastError})
+			}
+			return false
+		}
+
+		r.mu.Lock()
+		if !queued {
+			r.heavyWaiters = append(r.heavyWaiters, ticket)
+			queued = true
+		}
+		isHead := len(r.heavyWaiters) > 0 && r.heavyWaiters[0] == ticket
+		canTry := isHead && !r.heavyRunning
+		changed := r.heavyChangedLocked()
+		r.mu.Unlock()
+
+		if canTry {
+			select {
+			case slots <- struct{}{}:
+				r.mu.Lock()
+				if len(r.heavyWaiters) > 0 && r.heavyWaiters[0] == ticket && !r.heavyRunning {
+					r.heavyWaiters = r.heavyWaiters[1:]
+					r.heavyRunning = true
+					r.mu.Unlock()
+					return true
+				}
+				r.mu.Unlock()
+				r.releaseProcessSlot(slots)
+			default:
+			}
+		}
+
+		if !queuedStateSet {
+			prior.Status = "QUEUED_HEAVY"
+			prior.LastError = "heavy slot occupied"
+			prior.CompletedAt = ""
+			if prior.DataDate == "" {
+				prior.DataDate = x.DataDate
+			}
+			r.setState(x, date, prior)
+			queuedStateSet = true
+		}
+		r.waitForHeavyChange(changed, expires, expiryReason)
+	}
+}
+
 func (r *liveRunner) phaseAt(now time.Time) (string, string) { return r.currentPhase(now) }
 
 func runCmd(args []string) error {
@@ -1206,32 +1388,12 @@ func (r *liveRunner) execute(x Instance, date string) {
 		r.mu.Unlock()
 		return
 	}
-	if cost == "heavy" && r.heavyRunning {
-		prior := r.states[date+"/"+x.ID]
-		r.mu.Unlock()
-		if prior.Status != "QUEUED_HEAVY" {
-			prior.Status = "QUEUED_HEAVY"
-			prior.LastError = "heavy slot occupied"
-			prior.CompletedAt = ""
-			if prior.DataDate == "" {
-				prior.DataDate = x.DataDate
-			}
-			r.setState(x, date, prior)
-		}
-		return
-	}
-	if cost == "heavy" {
-		r.heavyRunning = true
-	}
 	r.running[x.ID] = true
 	prior = r.states[date+"/"+x.ID]
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
 		delete(r.running, x.ID)
-		if cost == "heavy" {
-			r.heavyRunning = false
-		}
 		r.mu.Unlock()
 	}()
 	if prior.NextAttemptAt != "" && (!degradeRequested || prior.Late) {
@@ -1333,7 +1495,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 				gateEvent.Timeout = "15s"
 			}
 			out, stderr, err := r.invokeDetailed(h.GateArgv, &gateEvent, x, date, 1, true)
-			<-processSlots
+			r.releaseProcessSlot(processSlots)
 			polledAt := r.clock.Now().Format(time.RFC3339Nano)
 			pollCount++
 			if firstPollAt == "" {
@@ -1445,9 +1607,12 @@ func (r *liveRunner) execute(x Instance, date string) {
 			}
 		}
 	}
-	processSlots := r.processSemaphore()
-	processSlots <- struct{}{}
-	defer func() { <-processSlots }()
+	var processSlots chan struct{}
+	if cost != "heavy" {
+		processSlots = r.processSemaphore()
+		processSlots <- struct{}{}
+		defer r.releaseProcessSlot(processSlots)
+	}
 	if slots != nil {
 		slots <- struct{}{}
 	}
@@ -1500,6 +1665,9 @@ func (r *liveRunner) execute(x Instance, date string) {
 	}
 	var lastRetryable bool
 	for n := st.Attempts + 1; n <= cycleEnd; n++ {
+		if cost == "heavy" && !r.acquireHeavyAttempt(x, date, event, prior, false) {
+			return
+		}
 		if !slotHeld && slots != nil {
 			slots <- struct{}{}
 			slotHeld = true
@@ -1512,6 +1680,9 @@ func (r *liveRunner) execute(x Instance, date string) {
 		r.setState(x, date, st)
 		attemptDegrade := degradeRequested || x.TriggerType != "startup" && event.OnDeadline == "degrade" && !r.clock.Now().Truncate(time.Second).Before(deadlineAt.Truncate(time.Second))
 		out, err := r.invokeWithDegrade(h.Argv, event, x, date, n, false, attemptDegrade)
+		if cost == "heavy" {
+			r.releaseHeavyAttempt()
+		}
 		status, code, retryable, detail := decodeResult(out, err)
 		if status == "not_applicable" {
 			r.setState(x, date, instanceState{Status: "SKIPPED_NA", Attempts: n, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), DataDate: x.DataDate})
@@ -1759,6 +1930,9 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 					break
 				}
 			}
+			if eventCost(event) == "heavy" && !r.acquireHeavyAttempt(x, date, event, state, true) {
+				return
+			}
 			state.RungAttempts++
 			state.Attempts++
 			state.Rung, state.Tier = rungNumber, tier.Name
@@ -1778,6 +1952,9 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 			degrade := tier.DegradeRequested || deadlineDegrade || x.DegradeRequested
 			_, _ = r.appendLedger(date, "TIER_ATTEMPT", map[string]any{"instance": x.ID, "rung": rungNumber, "tier": tier.Name, "rung_attempt": state.RungAttempts, "attempt": state.Attempts, "degraded": isDegraded, "degrade_requested": degrade})
 			out, _, invokeErr := r.invokeDetailedTier(handler.Argv, &effectiveEvent, x, date, state.Attempts, false, degrade, rungNumber, tier.Name, isDegraded, skipped)
+			if eventCost(event) == "heavy" {
+				r.releaseHeavyAttempt()
+			}
 			status, code, retryable, detail := decodeResult(out, invokeErr)
 			if status == "already_satisfied" || code == "ALREADY_SATISFIED" {
 				state.Status = "SKIPPED_SATISFIED"

@@ -94,15 +94,21 @@ func TestDeferredAndQueuedFetchRetainsRetryPartitionAndAttempts(t *testing.T) {
 	r.mu.Lock()
 	r.heavyRunning = true
 	r.mu.Unlock()
-	r.execute(Instance{ID: id, EventID: e.ID, TriggerType: "startup", DataDate: "2026-10-20"}, date)
+	done := make(chan struct{})
+	go func() {
+		r.execute(Instance{ID: id, EventID: e.ID, TriggerType: "startup", DataDate: "2026-10-20"}, date)
+		close(done)
+	}()
+	waitFor(t, func() bool { return r.states[date+"/"+id].Status == "QUEUED_HEAVY" })
 	queued := r.states[date+"/"+id]
 	if queued.Status != "QUEUED_HEAVY" || queued.Attempts != 1 || queued.DataDate != "2026-10-20" || queued.NextAttemptAt == "" {
 		t.Fatalf("queued state lost retry metadata: %+v", queued)
 	}
 	r.mu.Lock()
 	r.heavyRunning = false
+	r.signalHeavyChangedLocked()
 	r.mu.Unlock()
-	r.execute(Instance{ID: id, EventID: e.ID, TriggerType: "startup", DataDate: queued.DataDate}, date)
+	<-done
 	got := r.states[date+"/"+id]
 	if got.Status != "SUCCEEDED" || got.Attempts != 2 || got.DataDate != "2026-10-20" {
 		t.Fatalf("released state=%+v", got)
@@ -670,6 +676,105 @@ func TestHeavyLoadDeferralUsesFakeClockWithoutAttempts(t *testing.T) {
 	}
 }
 
+func TestHeavySlotCoversHandlerAttemptButNotGatePolling(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
+	fc := newFakeClock(now)
+	ready := filepath.Join(root, "gate-ready")
+	gate := filepath.Join(root, "gate.sh")
+	gateSource := "#!/bin/sh\nif [ -f '" + ready + "' ]; then printf '%s\\n' '{\"status\":\"ready\"}'; else printf '%s\\n' '{\"status\":\"not_ready\",\"reason\":\"waiting\"}'; fi\n"
+	if err := os.WriteFile(gate, []byte(gateSource), 0700); err != nil {
+		t.Fatal(err)
+	}
+	handler := filepath.Join(root, "handler.sh")
+	if err := os.WriteFile(handler, []byte("#!/bin/sh\nsleep 0.3\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	e := config.Event{ID: "gated", Handler: "h", Cost: "heavy", Gate: config.Gate{Ref: "input_ready", Poll: "1s"}, Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "10:00:10"}, Retry: config.Retry{MaxAttempts: 1}}
+	c := config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{handler}, GateArgv: []string{gate}}}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	x := Instance{ID: "gated", EventID: "gated", Start: "09:00:00", Deadline: "10:00:10"}
+	go r.execute(x, date)
+	waitFor(t, func() bool { return ledgerTypeCounts(t, root, date)["GATE_POLL"] > 0 })
+	waitFor(t, func() bool { return fc.waitCount() > 0 })
+	r.mu.Lock()
+	gateHeldHeavy := r.heavyRunning
+	r.mu.Unlock()
+	if gateHeldHeavy {
+		t.Fatal("heavy slot held while gate polling was waiting")
+	}
+	if err := os.WriteFile(ready, []byte("ready\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fc.Advance(time.Second)
+	waitFor(t, func() bool { return ledgerTypeCounts(t, root, date)["ATTEMPT_START"] == 1 })
+	r.mu.Lock()
+	attemptHeldHeavy := r.heavyRunning
+	r.mu.Unlock()
+	if !attemptHeldHeavy {
+		t.Fatal("heavy slot was not held during handler attempt")
+	}
+	waitFor(t, func() bool { return isTerminal(r.states[date+"/gated"].Status) })
+	r.mu.Lock()
+	deferredHeavy := r.heavyRunning
+	r.mu.Unlock()
+	if deferredHeavy {
+		t.Fatal("heavy slot remained held after handler attempt ended")
+	}
+}
+
+func TestHeavySlotReleasedDuringRetryBackoff(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
+	fc := newFakeClock(now)
+	marker := filepath.Join(root, "first-attempt")
+	script := filepath.Join(root, "retry.sh")
+	source := "#!/bin/sh\nif [ ! -f '" + marker + "' ]; then touch '" + marker + "'; printf '%s\\n' '{\"contract\":1,\"status\":\"failed\",\"error_code\":\"TEMP\",\"retryable\":true}'; exit 30; else printf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'; fi\n"
+	if err := os.WriteFile(script, []byte(source), 0700); err != nil {
+		t.Fatal(err)
+	}
+	e := config.Event{ID: "retry", Handler: "h", Cost: "heavy", Retry: config.Retry{MaxAttempts: 2, Backoff: "2s"}, Trigger: config.Trigger{Type: "startup"}}
+	c := config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	go r.execute(Instance{ID: "retry", EventID: "retry", TriggerType: "startup"}, date)
+	waitFor(t, func() bool { return ledgerTypeCounts(t, root, date)["ATTEMPT_END"] == 1 && fc.waitCount() > 0 })
+	r.mu.Lock()
+	backoffHeldHeavy := r.heavyRunning
+	r.mu.Unlock()
+	if backoffHeldHeavy {
+		t.Fatal("heavy slot held during retry backoff")
+	}
+	fc.Advance(2 * time.Second)
+	waitFor(t, func() bool { return ledgerTypeCounts(t, root, date)["ATTEMPT_START"] == 2 })
+	r.mu.Lock()
+	secondAttemptHeldHeavy := r.heavyRunning
+	r.mu.Unlock()
+	if !secondAttemptHeldHeavy {
+		t.Fatal("heavy slot was not held during retry attempt")
+	}
+	waitFor(t, func() bool { return isTerminal(r.states[date+"/retry"].Status) })
+	r.mu.Lock()
+	finalHeldHeavy := r.heavyRunning
+	r.mu.Unlock()
+	if finalHeldHeavy {
+		t.Fatal("heavy slot remained held after final attempt")
+	}
+}
+
 func TestHeavyInstancesQueueOutsideClassSlots(t *testing.T) {
 	root, date := t.TempDir(), "2026-10-20"
 	loc, _ := time.LoadLocation("Asia/Shanghai")
@@ -696,13 +801,12 @@ func TestHeavyInstancesQueueOutsideClassSlots(t *testing.T) {
 	x2 := Instance{ID: "heavy_b", EventID: "heavy_b", Start: "09:00:00", Deadline: "11:00:00"}
 	go r.execute(x1, date)
 	waitFor(t, func() bool { return getState("heavy_a").Status == "RUNNING" })
-	r.execute(x2, date)
+	go r.execute(x2, date)
+	waitFor(t, func() bool { return getState("heavy_b").Status == "QUEUED_HEAVY" })
 	if got := getState("heavy_b").Status; got != "QUEUED_HEAVY" {
 		t.Fatalf("second heavy status=%s", got)
 	}
 	waitFor(t, func() bool { return isTerminal(getState("heavy_a").Status) })
-	waitFor(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return !r.heavyRunning })
-	r.execute(x2, date)
 	waitFor(t, func() bool { return isTerminal(getState("heavy_b").Status) })
 	if got := getState("heavy_b").Status; got != "SUCCEEDED" {
 		t.Fatalf("queued heavy final status=%s", got)

@@ -428,6 +428,32 @@ def _build_binary(work: Path, fault: str = "") -> Path:
         overlay = work / "runtime-fault-overlay.json"
         overlay.write_text(json.dumps({"Replace": {str(runtime_source): str(injected)}}) + "\n", encoding="utf-8")
         command.extend(["-overlay", str(overlay)])
+    elif fault == "heavy-gate-lock":
+        runtime_source = GO_ROOT / "runtime.go"
+        injected = work / "runtime-fault-heavy-gate-lock.go"
+        source = runtime_source.read_text(encoding="utf-8")
+        entry = "\tr.running[x.ID] = true\n"
+        release = "\t\tdelete(r.running, x.ID)\n\t\tr.mu.Unlock()\n"
+        if source.count(entry) != 1 or source.count(release) != 1:
+            raise RuntimeError("heavy-gate-lock fault injection anchors changed")
+        source = source.replace(
+            entry,
+            entry + "\tif cost == \"heavy\" && event.Gate.Ref != \"\" {\n\t\tr.heavyRunning = true\n\t}\n",
+            1,
+        )
+        source = source.replace(
+            release,
+            "\t\tdelete(r.running, x.ID)\n"
+            "\t\tif cost == \"heavy\" && event.Gate.Ref != \"\" {\n"
+            "\t\t\tr.heavyRunning = false\n"
+            "\t\t\tr.signalHeavyChangedLocked()\n"
+            "\t\t}\n\t\tr.mu.Unlock()\n",
+            1,
+        )
+        injected.write_text(source, encoding="utf-8")
+        overlay = work / "runtime-fault-overlay.json"
+        overlay.write_text(json.dumps({"Replace": {str(runtime_source): str(injected)}}) + "\n", encoding="utf-8")
+        command.extend(["-overlay", str(overlay)])
     command.append(".")
     result = subprocess.run(command, cwd=GO_ROOT, env=env, capture_output=True, text=True)
     if result.returncode:
@@ -460,6 +486,10 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
         "S22": 60 if fast else 405,
         "S23": 61 if fast else 420,
         "S28": 62 if fast else 435,
+        "S29": 70 if fast else 450,
+        "S30": 72 if fast else 465,
+        "S31": 74 if fast else 480,
+        "S32": 76 if fast else 495,
     }
 
     def at(key: str) -> datetime:
@@ -859,6 +889,51 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
     }
     cases.append(s28)
 
+    # S29 reproduces the gate/producer deadlock: B makes A's gate ready, so B
+    # must run while A is polling rather than wait behind A's heavy reservation.
+    s = at("S29")
+    gate_name = "s29_input_ready"
+    cases.append(mk("S29 heavy gate does not block its producer", "S29", [
+        _event("gate_wait", s, deadline=s + timedelta(seconds=14), cost="heavy", on_deadline="missed",
+               gate={"ref": gate_name, "poll": "1s", "timeout": "1s"}),
+        _event("gate_producer", s + timedelta(seconds=2), deadline=s + timedelta(seconds=8), cost="heavy",
+               behavior="ready_gate", args={"gate_ref": gate_name}, on_deadline="missed"),
+    ], ["gate_wait", "gate_producer"], "producer succeeds during gate polling; gated event then succeeds", s, 23))
+
+    # S30 verifies the global heavy mutex covers the complete handler process.
+    s = at("S30")
+    cases.append(mk("S30 heavy attempts remain mutually exclusive", "S30", [
+        _event("heavy_a", s, deadline=s + timedelta(seconds=24), cost="heavy", behavior="sleep:2",
+               args={"record_interval": True}),
+        _event("heavy_b", s, deadline=s + timedelta(seconds=24), cost="heavy", behavior="sleep:2",
+               args={"record_interval": True}),
+    ], ["heavy_a", "heavy_b"], "both succeed; handler process intervals do not overlap", s, 32))
+
+    # S31 distinguishes a queued heavy event admitted before its deadline from
+    # one whose on_deadline=missed deadline expires while waiting.
+    s = at("S31")
+    cases.append(mk("S31 heavy queue honors each deadline", "S31", [
+        _event("heavy_holder", s, deadline=s + timedelta(seconds=20), cost="heavy", behavior="sleep:5"),
+        _event("queued_before_deadline", s + timedelta(seconds=1), deadline=s + timedelta(seconds=18),
+               cost="heavy"),
+        _event("queued_after_deadline", s + timedelta(seconds=2), deadline=s + timedelta(seconds=4),
+               cost="heavy", on_deadline="missed"),
+    ], ["heavy_holder", "queued_before_deadline", "queued_after_deadline"],
+       "holder and pre-deadline waiter succeed; expired waiter is MISSED", s, 29))
+
+    # S32 keeps a heavy gate poll outside the slot while another heavy handler
+    # runs, then reserves the slot only after the gate has opened.
+    s = at("S32")
+    ready_gate = "s32_delayed_ready"
+    gate_path = base / "S32" / "selftest" / "gates" / ready_gate
+    cases.append(mk("S32 gate readiness precedes heavy admission", "S32", [
+        _event("delayed_gate", s, deadline=s + timedelta(seconds=20), cost="heavy",
+               args={"record_interval": True}, gate={"ref": ready_gate, "poll": "1s", "timeout": "1s"}),
+        _event("gate_poll_probe", s + timedelta(seconds=1), deadline=s + timedelta(seconds=20),
+               cost="heavy", behavior="sleep:2", args={"record_interval": True}),
+    ], ["delayed_gate", "gate_poll_probe"], "probe ends before gate opens; gated attempt starts after readiness", s, 28,
+       actions=[((s - now).total_seconds() + 5, gate_path, "ready\n")]))
+
     for case in cases:
         case.binary = base / "guardiand-selftest"
         case.write_config(getattr(case, "_calendar_dates", None))
@@ -1144,6 +1219,53 @@ def _evaluate(case: Scenario) -> list[str]:
             errors.append(f"profile/legacy call sequences differ={sequences}")
         elif sequences["profile_form"] != [(1, "legacy", "flaky_then_ok"), (2, "legacy", "flaky_then_ok")]:
             errors.append(f"unexpected migrated call sequence={sequences['profile_form']}")
+    elif case.name.startswith("S29"):
+        if status("gate_wait") != "SUCCEEDED" or status("gate_producer") != "SUCCEEDED":
+            errors.append(f"producer/gated statuses={status('gate_producer')}/{status('gate_wait')}")
+        producer = case.calls_for("gate_producer")
+        gated = case.calls_for("gate_wait")
+        ready_polls = [row.get("data", {}) for row in case.ledger()
+                       if row.get("type") == "GATE_POLL" and (row.get("data") or {}).get("event") == "gate_wait"
+                       and (row.get("data") or {}).get("status") == "ready"]
+        if len(producer) != 1 or len(gated) != 1 or not ready_polls:
+            errors.append(f"calls/ready polls={len(producer)}/{len(gated)}/{len(ready_polls)}")
+        elif not (_parse_call_time(producer[0].get("wall_clock"))
+                  <= datetime.fromisoformat(str(ready_polls[0].get("polled_at")))
+                  <= _parse_call_time(gated[0].get("wall_clock"))):
+            errors.append("producer did not make the gate ready before the gated handler started")
+    elif case.name.startswith("S30"):
+        if any(status(event_id) != "SUCCEEDED" or len(case.calls_for(event_id)) != 1 for event_id in case.ids):
+            errors.append(f"heavy statuses/calls={[(event_id, status(event_id), len(case.calls_for(event_id))) for event_id in case.ids]}")
+        intervals = _read_jsonl(case.selftest_dir / "attempt_intervals.jsonl")
+        edges = sorted((datetime.fromisoformat(str(row["wall_clock"])), row.get("edge")) for row in intervals)
+        active = maximum = 0
+        for _, edge in edges:
+            active += 1 if edge == "start" else -1
+            maximum = max(maximum, active)
+        if len(edges) != 4 or active != 0 or maximum != 1:
+            errors.append(f"handler intervals edges={len(edges)} max_concurrent={maximum} final_active={active}")
+    elif case.name.startswith("S31"):
+        expected = {"heavy_holder": "SUCCEEDED", "queued_before_deadline": "SUCCEEDED", "queued_after_deadline": "MISSED"}
+        observed = {event_id: status(event_id) for event_id in expected}
+        if observed != expected:
+            errors.append(f"queue deadline statuses={observed}")
+        if len(case.calls_for("queued_before_deadline")) != 1 or case.calls_for("queued_after_deadline"):
+            errors.append("pre-deadline queue call / post-deadline call count is incorrect")
+    elif case.name.startswith("S32"):
+        if status("delayed_gate") != "SUCCEEDED" or status("gate_poll_probe") != "SUCCEEDED":
+            errors.append(f"gate/probe statuses={status('delayed_gate')}/{status('gate_poll_probe')}")
+        ready_polls = [row.get("data", {}) for row in case.ledger()
+                       if row.get("type") == "GATE_POLL" and (row.get("data") or {}).get("event") == "delayed_gate"
+                       and (row.get("data") or {}).get("status") == "ready"]
+        intervals = _read_jsonl(case.selftest_dir / "attempt_intervals.jsonl")
+        probe_end = next((datetime.fromisoformat(str(row["wall_clock"])) for row in intervals
+                          if row.get("event") == "gate_poll_probe" and row.get("edge") == "end"), None)
+        gated_start = next((datetime.fromisoformat(str(row["wall_clock"])) for row in intervals
+                            if row.get("event") == "delayed_gate" and row.get("edge") == "start"), None)
+        if len(ready_polls) != 1 or probe_end is None or gated_start is None:
+            errors.append(f"probe/gate timing evidence={len(ready_polls)}/{probe_end}/{gated_start}")
+        elif not (probe_end <= datetime.fromisoformat(str(ready_polls[0].get("polled_at"))) <= gated_start):
+            errors.append("probe did not finish before gated attempt admission")
     return errors
 
 
@@ -1330,7 +1452,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", choices=("fast", "minutes"), default="fast")
     parser.add_argument("--minutes", type=int, default=3)
     parser.add_argument("--work-dir", type=Path)
-    parser.add_argument("--fault", choices=("start", "backoff", "catchup", "disable-budget", "retry-no-data"))
+    parser.add_argument("--fault", choices=("start", "backoff", "catchup", "disable-budget", "retry-no-data", "heavy-gate-lock"))
     args = parser.parse_args(argv)
     if args.mode == "minutes" and args.minutes < 3:
         parser.error("--mode minutes requires --minutes >= 3")
@@ -1346,7 +1468,7 @@ def main(argv: list[str] | None = None) -> int:
         date = _iso_clock().date().isoformat()
         cases = _make_scenarios(args.mode, args.minutes, run_dir, date, args.fault or "")
         if args.fault:
-            target = {"start": "S01", "backoff": "S03", "catchup": "S06", "disable-budget": "S19", "retry-no-data": "S18"}[args.fault]
+            target = {"start": "S01", "backoff": "S03", "catchup": "S06", "disable-budget": "S19", "retry-no-data": "S18", "heavy-gate-lock": "S29"}[args.fault]
             cases = [case for case in cases if case.name.startswith(target)]
         _ACTIVE_CASES[:] = cases
         # The at-list equivalence case may start just before the next minute and

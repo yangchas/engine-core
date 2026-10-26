@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import sys
@@ -67,6 +68,22 @@ def _run(request: dict) -> int:
         "args": args,
     }
     _append_jsonl(calls_path, record)
+
+    if args.get("record_interval") is True:
+        intervals = Path(os.environ["SELFTEST_DIR"]) / "attempt_intervals.jsonl"
+        base = {"event": request.get("event"), "pid": os.getpid()}
+        _append_jsonl(intervals, {**base, "edge": "start", "wall_clock": datetime.now(TZ).isoformat(timespec="milliseconds")})
+        atexit.register(lambda: _append_jsonl(
+            intervals,
+            {**base, "edge": "end", "wall_clock": datetime.now(TZ).isoformat(timespec="milliseconds")},
+        ))
+
+    if behavior == "ready_gate":
+        gate_ref = str(args.get("gate_ref") or "")
+        if gate_ref:
+            gate_path = Path(os.environ["SELFTEST_DIR"]) / "gates" / gate_ref
+            gate_path.parent.mkdir(parents=True, exist_ok=True)
+            gate_path.write_text("ready\n", encoding="utf-8")
 
     attempt = request.get("attempt", 1)
     try:
@@ -161,7 +178,7 @@ def _run(request: dict) -> int:
         status = "degraded"
     elif behavior == "not_applicable":
         status = "not_applicable"
-    elif behavior in {"ok", "need_degrade"}:
+    elif behavior in {"ok", "need_degrade", "ready_gate"}:
         status = "ok"
     else:
         _reply({
