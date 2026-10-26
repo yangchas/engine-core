@@ -86,7 +86,7 @@ func TestDeferredAndQueuedFetchRetainsRetryPartitionAndAttempts(t *testing.T) {
 	id := "fetch_item:daily_kline"
 	r.setState(Instance{ID: id, EventID: e.ID, TriggerType: "startup"}, date, instanceState{Status: "RETRY_WAIT", Attempts: 1, NextAttemptAt: now.Format(time.RFC3339), DataDate: "2026-10-20"})
 	r.execute(Instance{ID: id, EventID: e.ID, TriggerType: "startup", DataDate: "2026-10-20"}, date)
-	deferred := r.states[date+"/"+id]
+	deferred := runtimeTestState(r, date+"/"+id)
 	if deferred.Status != "DEFERRED" || deferred.Attempts != 1 || deferred.DataDate != "2026-10-20" || deferred.NextAttemptAt == "" {
 		t.Fatalf("deferred state lost retry metadata: %+v", deferred)
 	}
@@ -99,8 +99,8 @@ func TestDeferredAndQueuedFetchRetainsRetryPartitionAndAttempts(t *testing.T) {
 		r.execute(Instance{ID: id, EventID: e.ID, TriggerType: "startup", DataDate: "2026-10-20"}, date)
 		close(done)
 	}()
-	waitFor(t, func() bool { return r.states[date+"/"+id].Status == "QUEUED_HEAVY" })
-	queued := r.states[date+"/"+id]
+	waitFor(t, func() bool { return runtimeTestState(r, date+"/"+id).Status == "QUEUED_HEAVY" })
+	queued := runtimeTestState(r, date+"/"+id)
 	if queued.Status != "QUEUED_HEAVY" || queued.Attempts != 1 || queued.DataDate != "2026-10-20" || queued.NextAttemptAt == "" {
 		t.Fatalf("queued state lost retry metadata: %+v", queued)
 	}
@@ -109,7 +109,7 @@ func TestDeferredAndQueuedFetchRetainsRetryPartitionAndAttempts(t *testing.T) {
 	r.signalHeavyChangedLocked()
 	r.mu.Unlock()
 	<-done
-	got := r.states[date+"/"+id]
+	got := runtimeTestState(r, date+"/"+id)
 	if got.Status != "SUCCEEDED" || got.Attempts != 2 || got.DataDate != "2026-10-20" {
 		t.Fatalf("released state=%+v", got)
 	}
@@ -721,7 +721,7 @@ func TestHeavySlotCoversHandlerAttemptButNotGatePolling(t *testing.T) {
 	if !attemptHeldHeavy {
 		t.Fatal("heavy slot was not held during handler attempt")
 	}
-	waitFor(t, func() bool { return isTerminal(r.states[date+"/gated"].Status) })
+	waitFor(t, func() bool { return isTerminal(runtimeTestState(r, date+"/gated").Status) })
 	r.mu.Lock()
 	deferredHeavy := r.heavyRunning
 	r.mu.Unlock()
@@ -766,7 +766,7 @@ func TestHeavySlotReleasedDuringRetryBackoff(t *testing.T) {
 	if !secondAttemptHeldHeavy {
 		t.Fatal("heavy slot was not held during retry attempt")
 	}
-	waitFor(t, func() bool { return isTerminal(r.states[date+"/retry"].Status) })
+	waitFor(t, func() bool { return isTerminal(runtimeTestState(r, date+"/retry").Status) })
 	r.mu.Lock()
 	finalHeldHeavy := r.heavyRunning
 	r.mu.Unlock()
@@ -780,8 +780,9 @@ func TestHeavyInstancesQueueOutsideClassSlots(t *testing.T) {
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
 	fc := newFakeClock(now)
+	releaseHandler := filepath.Join(root, "release-handler")
 	script := filepath.Join(root, "slow.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 0.3\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ni=0\nwhile [ ! -e '"+releaseHandler+"' ] && [ \"$i\" -lt 1000 ]; do i=$((i + 1)); sleep 0.01; done\n[ -e '"+releaseHandler+"' ] || exit 75\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	events := []config.Event{
@@ -794,6 +795,7 @@ func TestHeavyInstancesQueueOutsideClassSlots(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.close()
+	defer func() { _ = os.WriteFile(releaseHandler, []byte("release"), 0600) }()
 	l.now = fc.Now
 	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
 	getState := func(id string) instanceState { r.mu.Lock(); defer r.mu.Unlock(); return r.states[date+"/"+id] }
@@ -801,10 +803,14 @@ func TestHeavyInstancesQueueOutsideClassSlots(t *testing.T) {
 	x2 := Instance{ID: "heavy_b", EventID: "heavy_b", Start: "09:00:00", Deadline: "11:00:00"}
 	go r.execute(x1, date)
 	waitFor(t, func() bool { return getState("heavy_a").Status == "RUNNING" })
+	waitFor(t, func() bool { return runtimeTestHeavyRunning(r) })
 	go r.execute(x2, date)
 	waitFor(t, func() bool { return getState("heavy_b").Status == "QUEUED_HEAVY" })
 	if got := getState("heavy_b").Status; got != "QUEUED_HEAVY" {
 		t.Fatalf("second heavy status=%s", got)
+	}
+	if err := os.WriteFile(releaseHandler, []byte("release"), 0600); err != nil {
+		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return isTerminal(getState("heavy_a").Status) })
 	waitFor(t, func() bool { return isTerminal(getState("heavy_b").Status) })
@@ -1020,7 +1026,7 @@ func TestNotApplicableIsSkippedWithoutAlertUsingFakeClock(t *testing.T) {
 	e := config.Event{ID: "na", Handler: "h"}
 	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}}, root: root, loc: loc, clock: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
 	r.execute(Instance{ID: "na", EventID: "na", Start: "09:00:00", Deadline: "09:01:00"}, date)
-	if got := r.states[date+"/na"].Status; got != "SKIPPED_NA" {
+	if got := runtimeTestState(r, date+"/na").Status; got != "SKIPPED_NA" {
 		t.Fatalf("status=%s", got)
 	}
 	if ledgerTypeCounts(t, root, date)["ALERT_OUT"] != 0 {
@@ -1096,7 +1102,7 @@ func TestFakeStartup40MissedUsesOneAlertRequest(t *testing.T) {
 		t.Fatalf("alert requests=%d want 1", alerts)
 	}
 	for _, x := range missed {
-		if r.states["2026-10-20/"+x.ID].Status != "MISSED" {
+		if runtimeTestState(r, "2026-10-20/"+x.ID).Status != "MISSED" {
 			t.Fatalf("%s not MISSED", x.ID)
 		}
 	}
@@ -1197,13 +1203,13 @@ func TestRecoveryRestoresCompletedStateWithoutRerun(t *testing.T) {
 	if err = restarted.recover(); err != nil {
 		t.Fatal(err)
 	}
-	if st := restarted.states[date+"/already_done"]; st.Status != "SUCCEEDED" || st.Attempts != 1 {
+	if st := runtimeTestState(restarted, date+"/already_done"); st.Status != "SUCCEEDED" || st.Attempts != 1 {
 		t.Fatalf("recovered state=%+v", st)
 	}
 	if err = restarted.applyStartup(now, nil, []Instance{x}); err != nil {
 		t.Fatal(err)
 	}
-	if restarted.running[x.ID] {
+	if runtimeTestRunning(restarted, x.ID) {
 		t.Fatal("completed instance was scheduled after restart")
 	}
 }
@@ -1292,8 +1298,8 @@ func TestThirtyFakeDaysRollStateAndKeepResourcesBounded(t *testing.T) {
 	runtime.ReadMemStats(&before)
 	for day := 0; day < 30; day++ {
 		r.schedule(fc.Now())
-		if len(r.states) != 1 {
-			t.Fatalf("day %d retained %d in-memory dates", day, len(r.states))
+		if runtimeTestStateCount(r) != 1 {
+			t.Fatalf("day %d retained %d in-memory dates", day, runtimeTestStateCount(r))
 		}
 		if day < 29 {
 			fc.Advance(24 * time.Hour)
@@ -1336,6 +1342,30 @@ func TestGateReadyAcceptsBridgeStatusReady(t *testing.T) {
 	if gateReady([]byte("{\"status\":\"not_ready\",\"reason\":\"gate_condition_false\"}\n")) {
 		t.Fatal("not_ready must keep the gate closed")
 	}
+}
+
+func runtimeTestState(r *liveRunner, key string) instanceState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.states[key]
+}
+
+func runtimeTestStateCount(r *liveRunner) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.states)
+}
+
+func runtimeTestRunning(r *liveRunner, id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.running[id]
+}
+
+func runtimeTestHeavyRunning(r *liveRunner) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.heavyRunning
 }
 
 func waitFor(t *testing.T, ready func() bool) {
@@ -1506,7 +1536,7 @@ func TestRecoveredRunningInstanceConsumesNextAttempt(t *testing.T) {
 	if err = r.recover(); err != nil {
 		t.Fatal(err)
 	}
-	if got := r.states[date+"/"+x.ID]; got.Status != "RUNNING" || got.Attempts != 1 {
+	if got := runtimeTestState(r, date+"/"+x.ID); got.Status != "RUNNING" || got.Attempts != 1 {
 		t.Fatalf("recovered state=%+v", got)
 	}
 	r.execute(x, date)
@@ -1655,7 +1685,7 @@ func TestBootApplyPlanPreservesRecoveredPendingFetchState(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.execute(Instance{ID: "boot_apply_plan", EventID: "boot_apply_plan", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}, date)
-	got := r.states[date+"/"+x.ID]
+	got := runtimeTestState(r, date+"/"+x.ID)
 	if got.Status != "RETRY_WAIT" || got.Attempts != 1 || got.NextAttemptAt != now.Add(2*time.Minute).Format(time.RFC3339) || got.DataDate != "2026-10-20" {
 		t.Fatalf("boot plan overwrote recovered state: %+v", got)
 	}
@@ -1700,7 +1730,7 @@ func TestSlowHandlerDoesNotBlockOtherClassAndClassLimitIsEnforced(t *testing.T) 
 	setName("fast")
 	t.Setenv("LOCK_DIR", fastLock)
 	r.execute(Instance{ID: "fast", EventID: "fast"}, date)
-	if got := r.states[date+"/fast"].Status; got != "SUCCEEDED" {
+	if got := runtimeTestState(r, date+"/fast").Status; got != "SUCCEEDED" {
 		t.Fatalf("fast event status=%s while slow handler is running", got)
 	}
 	setName("slow_b")
@@ -1751,11 +1781,11 @@ func TestRetryCountAndNoRetryOnTimeout(t *testing.T) {
 	events := []config.Event{{ID: "retry", Handler: "retry", Retry: config.Retry{MaxAttempts: 3, Base: "0s"}}, {ID: "timeout", Handler: "timeout", Timeout: "20ms", Retry: config.Retry{MaxAttempts: 4, NoRetryOnTimeout: true}}}
 	r := &liveRunner{c: config.Config{Events: events, Handlers: map[string]config.Handler{"retry": {Argv: []string{retryScript}, EnvAllow: []string{"CALLS"}}, "timeout": {Argv: []string{timeoutScript}}}}, root: root, loc: loc, start: now, clock: newFakeClock(now), ledger: l, boot: "test", states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
 	r.execute(Instance{ID: "retry", EventID: "retry"}, date)
-	if got := r.states[date+"/retry"]; got.Status != "SUCCEEDED" || got.Attempts != 3 {
+	if got := runtimeTestState(r, date+"/retry"); got.Status != "SUCCEEDED" || got.Attempts != 3 {
 		t.Fatalf("retry result=%+v, want success on 3 attempts", got)
 	}
 	r.execute(Instance{ID: "timeout", EventID: "timeout"}, date)
-	if got := r.states[date+"/timeout"]; got.Attempts != 1 || got.LastError != "HANDLER_TIMEOUT" {
+	if got := runtimeTestState(r, date+"/timeout"); got.Attempts != 1 || got.LastError != "HANDLER_TIMEOUT" {
 		t.Fatalf("no_retry_on_timeout result=%+v, want one timed out attempt", got)
 	}
 }
@@ -1790,7 +1820,7 @@ func TestUntilLateTotalAttemptsAreCappedAcrossRestarts(t *testing.T) {
 	fc := newFakeClock(now)
 	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}}, root: root, loc: loc, start: now, clock: fc, fake: fc, ledger: l, boot: "test", states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
 	r.execute(x, date)
-	waiting := r.states[date+"/"+e.ID]
+	waiting := runtimeTestState(r, date+"/"+e.ID)
 	if waiting.Status != "RETRY_WAIT" || waiting.Attempts != 1 || waiting.NextAttemptAt != now.Add(time.Minute).Format(time.RFC3339) {
 		t.Fatalf("first retry state=%+v", waiting)
 	}
@@ -1799,18 +1829,18 @@ func TestUntilLateTotalAttemptsAreCappedAcrossRestarts(t *testing.T) {
 	if err := r.recover(); err != nil {
 		t.Fatal(err)
 	}
-	if recovered := r.states[date+"/"+e.ID]; recovered.Attempts != 1 || recovered.NextAttemptAt != waiting.NextAttemptAt {
+	if recovered := runtimeTestState(r, date+"/"+e.ID); recovered.Attempts != 1 || recovered.NextAttemptAt != waiting.NextAttemptAt {
 		t.Fatalf("recovered retry state=%+v", recovered)
 	}
 	fc.Advance(time.Minute)
 	r.execute(x, date)
-	second := r.states[date+"/"+e.ID]
+	second := runtimeTestState(r, date+"/"+e.ID)
 	if second.Status != "RETRY_WAIT" || second.Attempts != 2 || second.NextAttemptAt != now.Add(3*time.Minute).Format(time.RFC3339) {
 		t.Fatalf("second retry state=%+v, want due at +3m", second)
 	}
 	fc.Advance(2 * time.Minute)
 	r.execute(x, date)
-	final := r.states[date+"/"+e.ID]
+	final := runtimeTestState(r, date+"/"+e.ID)
 	if final.Status != "FAILED_FINAL" || final.Attempts != 3 || final.LastError != "RETRIES_EXHAUSTED" || r.alertDaily != 1 {
 		t.Fatalf("exhausted state=%+v alerts=%d", final, r.alertDaily)
 	}
@@ -1852,7 +1882,7 @@ if [ $n -eq 1 ]; then printf '%s\n' '{"contract":1,"status":"failed","error_code
 		r.execute(x, date)
 		fc.Advance(time.Minute)
 		r.execute(x, date)
-		if got := r.states[date+"/"+e.ID]; got.Status != "SUCCEEDED" || got.Attempts != 2 {
+		if got := runtimeTestState(r, date+"/"+e.ID); got.Status != "SUCCEEDED" || got.Attempts != 2 {
 			t.Fatalf("second attempt result=%+v", got)
 		}
 	})
@@ -1879,11 +1909,11 @@ if [ $n -eq 1 ]; then printf '%s\n' '{"contract":1,"status":"failed","error_code
 				fc.Advance(advance)
 			}
 			r.execute(x, date)
-			if i < 2 && r.states[date+"/"+e.ID].Status != "RETRY_WAIT" {
-				t.Fatalf("checkpoint %d state=%+v", i+1, r.states[date+"/"+e.ID])
+			if i < 2 && runtimeTestState(r, date+"/"+e.ID).Status != "RETRY_WAIT" {
+				t.Fatalf("checkpoint %d state=%+v", i+1, runtimeTestState(r, date+"/"+e.ID))
 			}
 		}
-		if got := r.states[date+"/"+e.ID]; got.Status != "FAILED_FINAL" || got.Attempts != 3 || got.LastError != "RETRIES_EXHAUSTED" || r.alertDaily != 0 {
+		if got := runtimeTestState(r, date+"/"+e.ID); got.Status != "FAILED_FINAL" || got.Attempts != 3 || got.LastError != "RETRIES_EXHAUSTED" || r.alertDaily != 0 {
 			t.Fatalf("silent exhausted state=%+v alerts=%d", got, r.alertDaily)
 		}
 	})
@@ -1905,7 +1935,7 @@ func TestEventRetryRealClockUsesTwoAndFourSecondBackoff(t *testing.T) {
 	e := config.Event{ID: "real_retry", Handler: "h", Retry: config.Retry{MaxAttempts: 3, Base: "2s"}}
 	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}, EnvAllow: []string{"TIMES"}}}}, root: root, loc: time.Local, start: start, clock: realClock{}, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
 	r.execute(Instance{ID: e.ID, EventID: e.ID, TriggerType: "startup"}, date)
-	if got := r.states[date+"/"+e.ID]; got.Status != "FAILED_FINAL" || got.Attempts != 3 {
+	if got := runtimeTestState(r, date+"/"+e.ID); got.Status != "FAILED_FINAL" || got.Attempts != 3 {
 		t.Fatalf("real retry result=%+v", got)
 	}
 	b, err := os.ReadFile(filepath.Join(root, "times"))
@@ -1952,7 +1982,7 @@ func TestRetryUntilLatePersistsWaitAndSucceedsWithoutAlert(t *testing.T) {
 	fc := newFakeClock(now)
 	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}, EnvAllow: []string{"CALLS"}}}}, root: root, loc: loc, start: now, clock: fc, fake: fc, ledger: l, boot: "test", states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
 	r.execute(x, date)
-	waiting := r.states[date+"/"+e.ID]
+	waiting := runtimeTestState(r, date+"/"+e.ID)
 	if waiting.Status != "RETRY_WAIT" || waiting.Attempts != 1 || waiting.LastError != "TEMP" {
 		t.Fatalf("first attempt state=%+v, want persisted retry wait", waiting)
 	}
@@ -1972,20 +2002,20 @@ func TestRetryUntilLatePersistsWaitAndSucceedsWithoutAlert(t *testing.T) {
 	if err := r.recover(); err != nil {
 		t.Fatal(err)
 	}
-	if recovered := r.states[date+"/"+e.ID]; recovered.Status != "RETRY_WAIT" || recovered.NextAttemptAt != waiting.NextAttemptAt {
+	if recovered := runtimeTestState(r, date+"/"+e.ID); recovered.Status != "RETRY_WAIT" || recovered.NextAttemptAt != waiting.NextAttemptAt {
 		t.Fatalf("recovered retry state=%+v, want persisted wait at %s", recovered, waiting.NextAttemptAt)
 	}
 	fc.Advance(time.Second)
 	r.execute(x, date)
-	if got := r.states[date+"/"+e.ID]; got.Status != "RETRY_WAIT" || got.Attempts != 2 {
+	if got := runtimeTestState(r, date+"/"+e.ID); got.Status != "RETRY_WAIT" || got.Attempts != 2 {
 		t.Fatalf("second attempt state=%+v, want another retry wait", got)
 	}
-	if got := r.states[date+"/"+e.ID].NextAttemptAt; got != now.Add(3*time.Second).Format(time.RFC3339) {
+	if got := runtimeTestState(r, date+"/"+e.ID).NextAttemptAt; got != now.Add(3*time.Second).Format(time.RFC3339) {
 		t.Fatalf("second retry due=%s, want exponential due=%s", got, now.Add(3*time.Second).Format(time.RFC3339))
 	}
 	fc.Advance(2 * time.Second)
 	r.execute(x, date)
-	if got := r.states[date+"/"+e.ID]; got.Status != "SUCCEEDED" || got.Attempts != 3 {
+	if got := runtimeTestState(r, date+"/"+e.ID); got.Status != "SUCCEEDED" || got.Attempts != 3 {
 		t.Fatalf("third attempt state=%+v, want success", got)
 	}
 	if r.alertDaily != 0 {
@@ -2015,12 +2045,12 @@ func TestRetryUntilLateExpiryFinalizesAndAlerts(t *testing.T) {
 		t.Fatalf("instances=%v err=%v", xs, err)
 	}
 	r.execute(xs[0], date)
-	if got := r.states[date+"/expiry"].Status; got != "RETRY_WAIT" {
+	if got := runtimeTestState(r, date+"/expiry").Status; got != "RETRY_WAIT" {
 		t.Fatalf("before late_until status=%s, want RETRY_WAIT", got)
 	}
 	fc.Advance(time.Second)
 	r.schedule(fc.Now())
-	got := r.states[date+"/expiry"]
+	got := runtimeTestState(r, date+"/expiry")
 	if got.Status != "FAILED_FINAL" || got.LastError != "RETRIES_EXHAUSTED_BY_LATE_UNTIL" || r.alertDaily != 1 {
 		t.Fatalf("expiry state=%+v alerts=%d, want final reason and one alert", got, r.alertDaily)
 	}
@@ -2043,7 +2073,7 @@ func TestNonRetryableFailureIsImmediatelyFinal(t *testing.T) {
 	e := config.Event{ID: "permanent", Handler: "h", LateUntil: "10:35:00", Retry: config.Retry{MaxAttempts: 1, UntilLate: true, Backoff: "1s"}}
 	r := &liveRunner{c: config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}}, root: root, loc: loc, start: now, clock: newFakeClock(now), ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
 	r.execute(Instance{ID: e.ID, EventID: e.ID, Start: "10:30:00", Deadline: "10:34:30", LateUntil: e.LateUntil}, date)
-	got := r.states[date+"/"+e.ID]
+	got := runtimeTestState(r, date+"/"+e.ID)
 	if got.Status != "FAILED_FINAL" || got.Attempts != 1 || got.LastError != "BAD_INPUT" || r.alertDaily != 1 {
 		t.Fatalf("non-retryable state=%+v alerts=%d, want immediate final and one alert", got, r.alertDaily)
 	}
@@ -2091,10 +2121,10 @@ func TestGateDeadlineAndDailySummary(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("gate handler did not finish after deadline advance")
 	}
-	if got := r.states[date+"/gated"].Status; got != "GATE_BLOCKED" {
+	if got := runtimeTestState(r, date+"/gated").Status; got != "GATE_BLOCKED" {
 		t.Fatalf("gate status=%s, want GATE_BLOCKED", got)
 	}
-	if got := r.states[date+"/gated"].LastError; got != "source_stale" {
+	if got := runtimeTestState(r, date+"/gated").LastError; got != "source_stale" {
 		t.Fatalf("gate reason=%q, want source_stale", got)
 	}
 	_ = r.alert("GATE_BLOCKED", map[string]any{"events": []string{"gated"}, "summary": true})
@@ -2262,7 +2292,7 @@ func TestRealDataGatePollingAgainstCurrentConfig(t *testing.T) {
 	}
 
 finished:
-	state := r.states[date+"/"+event.ID]
+	state := runtimeTestState(r, date+"/"+event.ID)
 	if state.Status != "GATE_BLOCKED" && state.Status != "SUCCEEDED" {
 		t.Fatalf("real-data gate returned unexpected state: %+v", state)
 	}
@@ -2326,8 +2356,9 @@ func TestSocketErrorsIdempotencyAndInvalidReloadPreservesRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp = socketServeRequest(t, r, `{"t":"req","id":"4","op":"reload"}`)
-	if errBody(resp)["code"] != "CONFIG_INVALID" || r.c.ConfigVersion != 1 || !r.running["evt"] {
-		t.Fatalf("invalid reload changed live state: response=%v version=%d running=%v", resp, r.c.ConfigVersion, r.running)
+	running := runtimeTestRunning(r, "evt")
+	if errBody(resp)["code"] != "CONFIG_INVALID" || r.c.ConfigVersion != 1 || !running {
+		t.Fatalf("invalid reload changed live state: response=%v version=%d running=%v", resp, r.c.ConfigVersion, running)
 	}
 	_ = l.close()
 	l2, err := openLedger(root, date)
@@ -2514,11 +2545,11 @@ func TestRecoveredRunningFetchItemIsRearmedWithoutCountingTheInterruptedAttempt(
 		"2026-10-21/baostock_probe_1730":    {Status: "RUNNING", Attempts: 1},
 	}}
 	r.rearmInterruptedFetchItems()
-	got := r.states["2026-10-21/fetch_item:daily_kline"]
+	got := runtimeTestState(r, "2026-10-21/fetch_item:daily_kline")
 	if got.Status != "DEFERRED" || got.Attempts != 2 || got.DataDate != "2026-10-21" || got.NextPhase != "" {
 		t.Fatalf("fetch_item not rearmed: %+v", got)
 	}
-	if r.states["2026-10-21/baostock_probe_1730"].Status != "RUNNING" {
+	if runtimeTestState(r, "2026-10-21/baostock_probe_1730").Status != "RUNNING" {
 		t.Fatal("non fetch_item state must be left to the normal startup recovery")
 	}
 }
@@ -2553,7 +2584,7 @@ func TestFetchItemRetriesBackOffFromTheConfiguredBaseAndAlertsOnceWhenSpent(t *t
 			fc.Advance(30 * time.Second)
 		}
 	}
-	got := r.states[date+"/fetch_item:daily_kline"]
+	got := runtimeTestState(r, date+"/fetch_item:daily_kline")
 	if got.Attempts != 3 || (got.Status != "CIRCUIT_OPEN" && got.Status != "FAILED_FINAL") {
 		t.Fatalf("state=%+v, want three attempts then a terminal state", got)
 	}
@@ -2639,7 +2670,7 @@ func TestC545DeadlineDegradeRequestAndMissedAction(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("deadline execution did not finish")
 			}
-			got := r.states[date+"/"+event.ID]
+			got := runtimeTestState(r, date+"/"+event.ID)
 			if got.Status != tc.wantStatus {
 				t.Fatalf("status=%s want=%s state=%+v", got.Status, tc.wantStatus, got)
 			}
@@ -2839,7 +2870,7 @@ printf '%s\n' '{"contract":1,"status":"ok"}'
 		}()
 		r.execute(Instance{ID: event.ID, EventID: event.ID, TriggerType: "startup"}, date)
 		<-advanced
-		state := r.states[date+"/"+event.ID]
+		state := runtimeTestState(r, date+"/"+event.ID)
 		if state.Status != "SUCCEEDED_DEGRADED" || state.Attempts != 3 || state.Rung != 2 || state.Tier != "fallback" {
 			t.Fatalf("ladder result=%+v, want fallback success after two primary failures", state)
 		}
@@ -2891,13 +2922,13 @@ printf '%s\n' '{"contract":1,"status":"ok"}'
 		x := Instance{ID: event.ID, EventID: event.ID, TriggerType: "window", Start: event.Trigger.Start,
 			Deadline: event.Trigger.Deadline, LateUntil: event.LateUntil}
 		r.execute(x, date)
-		waiting := r.states[date+"/"+event.ID]
+		waiting := runtimeTestState(r, date+"/"+event.ID)
 		if waiting.Status != "RETRY_WAIT" || waiting.RungAttempts != 1 {
 			t.Fatalf("first late_until result=%+v, want one scheduled primary retry", waiting)
 		}
 		fc.Advance(4 * time.Second)
 		r.execute(x, date)
-		state := r.states[date+"/"+event.ID]
+		state := runtimeTestState(r, date+"/"+event.ID)
 		if state.Status != "SUCCEEDED_DEGRADED" || state.Tier != "fallback" || state.Attempts != 2 {
 			t.Fatalf("late_until ladder result=%+v, want fallback success after one primary attempt", state)
 		}
@@ -2940,7 +2971,7 @@ printf '%s\n' '{"contract":1,"status":"ok"}'
 	}})
 	defer closeRunner()
 	r.execute(Instance{ID: event.ID, EventID: event.ID, TriggerType: "startup", Deadline: "09:00:05"}, date)
-	state := r.states[date+"/"+event.ID]
+	state := runtimeTestState(r, date+"/"+event.ID)
 	if state.Status != "SUCCEEDED_DEGRADED" || state.Rung != 2 || len(state.SkippedTiers) != 1 || state.SkippedTiers[0] != "primary" {
 		t.Fatalf("startup time-budget result=%+v, want primary skipped and fallback success", state)
 	}
@@ -2995,7 +3026,7 @@ exit 75
 	}()
 	r.execute(x, date)
 	close(done)
-	state := r.states[date+"/"+event.ID]
+	state := runtimeTestState(r, date+"/"+event.ID)
 	if state.Status != "RETRY_WAIT" || state.Attempts != 1 || state.Rung != 1 || state.RungAttempts != 1 || state.NextAttemptAt == "" {
 		t.Fatalf("first late_until attempt state=%+v, want one attempt scheduled for retry", state)
 	}
@@ -3090,9 +3121,9 @@ printf '%s\n' '{"contract":1,"status":"ok"}'
 						timeouts := []string{"5s", "4s", "2s"}
 						if outcome == "timeout_killed" {
 							if margin == "enough" {
-								timeouts = []string{"10ms", "10ms", "10ms"}
+								timeouts = []string{"250ms", "250ms", "250ms"}
 							} else if margin == "only_final_tier" {
-								timeouts = []string{"5s", "4s", "10ms"}
+								timeouts = []string{"5s", "4s", "250ms"}
 							} else {
 								timeouts = []string{"2s", "2s", "2s"}
 							}
@@ -3149,7 +3180,7 @@ printf '%s\n' '{"contract":1,"status":"ok"}'
 						if err := waitC548MatrixDone(r, date, "matrix", 4*time.Second); err != nil {
 							t.Fatal(err)
 						}
-						got := r.states[date+"/matrix"]
+						got := runtimeTestState(r, date+"/matrix")
 						gotCalls := readC548MatrixCalls(t, callsPath)
 						expectedCalls, expectedStatus := c548ExpectedMatrix(trigger, outcome, margin, restart)
 						if got.Status != expectedStatus {
@@ -3181,7 +3212,7 @@ func waitC548MatrixDone(r *liveRunner, date, id string, timeout time.Duration) e
 	for time.Now().Before(until) {
 		r.mu.Lock()
 		state, ok := r.states[date+"/"+id]
-		_, running := r.running[id]
+		running := r.running[id]
 		r.mu.Unlock()
 		if ok && isTerminal(state.Status) && !running {
 			return nil

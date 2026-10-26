@@ -71,6 +71,84 @@ def _seconds_clock(value: datetime) -> int:
     return value.hour * 3600 + value.minute * 60 + value.second
 
 
+def _effective_schedule_instances(schedule: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expand each v3 event's configured trigger time into runtime instances."""
+    instances: list[dict[str, Any]] = []
+    for order, event in enumerate(schedule.get("events", [])):
+        event_id = event.get("event_id") or event.get("id")
+        if not event_id:
+            continue
+        configured_times = event.get("at")
+        is_multiple = isinstance(configured_times, list)
+        if isinstance(configured_times, str):
+            times = [configured_times]
+        elif is_multiple:
+            times = configured_times
+        elif event.get("start"):
+            # The migrated config form uses start after Go expands a schedule.
+            times = [event["start"]]
+        else:
+            continue
+        for configured_time in times:
+            if not isinstance(configured_time, str):
+                continue
+            parsed = None
+            for time_format in ("%H:%M:%S", "%H:%M"):
+                try:
+                    parsed = datetime.strptime(configured_time, time_format)
+                    break
+                except ValueError:
+                    pass
+            if parsed is None:
+                continue
+            start = parsed.strftime("%H:%M:%S")
+            instance = dict(event)
+            instance["source_event_id"] = event_id
+            instance["instance_id"] = f"{event_id}@{start[:5]}" if is_multiple else event_id
+            instance["start"] = start
+            instance["_source_order"] = order
+            instances.append(instance)
+    return instances
+
+
+def _compare_legacy_schedule(schedule: dict[str, Any]) -> tuple[int, int]:
+    legacy = json.loads((ROOT / "native/guardiand/testdata/schedule_v2.json").read_text(encoding="utf-8"))
+    legacy_events = legacy.get("events", legacy)
+    current_events = schedule.get("events", schedule)
+    current_ids = {event.get("event_id") or event.get("id") for event in current_events}
+    missing = sorted(event.get("event_id") for event in legacy_events if event.get("event_id") not in current_ids)
+    effective = _effective_schedule_instances(schedule)
+    times_by_id: dict[str, set[str]] = {}
+    for instance in effective:
+        times_by_id.setdefault(instance["source_event_id"], set()).add(instance["start"])
+    timed_legacy = [event for event in legacy_events if event.get("start")]
+    mismatched = []
+    for event in timed_legacy:
+        expected = event["start"]
+        try:
+            parsed = next(datetime.strptime(expected, fmt) for fmt in ("%H:%M:%S", "%H:%M")
+                          if _matches_time_format(expected, fmt))
+        except StopIteration:
+            mismatched.append(event["event_id"])
+            continue
+        if parsed.strftime("%H:%M:%S") not in times_by_id.get(event["event_id"], set()):
+            mismatched.append(event["event_id"])
+    if len(legacy_events) != 62 or missing or mismatched:
+        raise RuntimeError(
+            f"legacy schedule comparison failed: events={len(legacy_events)}/62 "
+            f"missing={missing[:5]} start_mismatches={mismatched[:5]}"
+        )
+    return len(legacy_events), len(timed_legacy)
+
+
+def _matches_time_format(value: str, time_format: str) -> bool:
+    try:
+        datetime.strptime(value, time_format)
+    except ValueError:
+        return False
+    return True
+
+
 def _append(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as stream:
@@ -617,20 +695,21 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
 
     # S15 overlay. Source window is exactly 08:30:00..09:45:30 (4530s).
     schedule = json.loads((ROOT / "src/engine_core/guardian/schedule.json").read_text(encoding="utf-8"))
-    production = schedule.get("events", schedule)
-    chosen: list[dict[str, Any]] = []
-    active = False
-    for item in production:
-        if item.get("event_id") == "startup_0830":
-            active = True
-        if active:
-            chosen.append(item)
-        if item.get("event_id") == "open_report_0945":
-            break
-    windows = [item for item in chosen if item.get("trigger_type") == "window"]
+    production = _effective_schedule_instances(schedule)
+    legacy_event_count, legacy_start_count = _compare_legacy_schedule(schedule)
+    source_start = next((item["start"] for item in production if item["source_event_id"] == "startup_0830"), None)
+    source_end = next((item["start"] for item in production if item["source_event_id"] == "open_report_0945"), None)
+    if source_start is None or source_end is None:
+        raise RuntimeError("schedule overlay is missing startup_0830 or open_report_0945 trigger time")
+    start_bound = datetime.strptime(source_start, "%H:%M:%S")
+    end_bound = datetime.strptime(source_end, "%H:%M:%S")
+    windows = [
+        item for item in production
+        if start_bound <= datetime.strptime(item["start"], "%H:%M:%S") <= end_bound
+    ]
+    windows.sort(key=lambda item: (item["start"], item["_source_order"]))
     if not windows:
         raise RuntimeError("schedule overlay found no window events between startup_0830 and open_report_0945")
-    windows.sort(key=lambda item: item.get("start", ""))
     src_starts = [datetime.strptime(item["start"], "%H:%M:%S") for item in windows]
     src_min = min(src_starts)
     src_max = max(src_starts)
@@ -647,7 +726,7 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
     overlay_events: list[dict[str, Any]] = []
     overlay_ids: list[str] = []
     for item, start in zip(windows, mapped):
-        eid = item["event_id"]
+        eid = item["instance_id"]
         overlay_ids.append(eid)
         # The source ordering is time-compressed; each generated window keeps a
         # 12s execution allowance so scheduler tick jitter does not collapse a
@@ -688,7 +767,8 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
             event["gate"] = {"ref": "always_ready", "poll": "1s", "timeout": "1s"}
         overlay_events.append(event)
     cases.append(mk("S15 production schedule overlay", "S15", overlay_events, overlay_ids,
-                    f"{len(overlay_ids)} events once, in original time order, within {overlay_span:.0f}s mapping", overlay_base,
+                    f"{legacy_event_count}/62 legacy events and {legacy_start_count} start times preserved; "
+                    f"{len(overlay_ids)} timed instances once, in original time order, within {overlay_span:.0f}s mapping", overlay_base,
                     (mapped[-1] - now).total_seconds() + 22, "overlay"))
 
     # S16: a no-data result advances immediately to the second configured tier.

@@ -226,73 +226,86 @@ func TestMigrationPreservesTimeoutBeyondWindow(t *testing.T) {
 }
 
 func TestMigrationV2PreservesConfiguredStartupAndWindowPolicies(t *testing.T) {
-	source := filepath.Join("../../../engine_core/src/engine_core/guardian/schedule.json")
-	dst := filepath.Join(t.TempDir(), "config.json")
-	if err := migrateCmd([]string{"--from", source, "--to", dst, "--expand"}); err != nil {
-		t.Fatal(err)
+	// schedule_v2.json is the pre-C550 source schedule at c9b69f8^:
+	// src/engine_core/guardian/schedule.json (blob 8a2462b9fd406eefd089f329f8afce3d15d5b740).
+	sources := []struct {
+		name      string
+		path      string
+		wantCount int
+	}{
+		{name: "v2 fixture", path: filepath.Join("testdata", "schedule_v2.json"), wantCount: 62},
+		{name: "current v3", path: filepath.Join("../../../engine_core/src/engine_core/guardian/schedule.json"), wantCount: 63},
 	}
-	b, err := os.ReadFile(dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got struct {
-		HeavyMaxLoad1 float64           `json:"heavy_max_load1"`
-		HeavyCutoffs  map[string]string `json:"heavy_cutoffs"`
-		Events        []struct {
-			ID      string `json:"id"`
-			Handler string `json:"handler"`
-			Trigger struct {
-				Type  string `json:"type"`
-				Order int    `json:"order"`
-				Start string `json:"start"`
-			} `json:"trigger"`
-			LateUntil string `json:"late_until"`
-			Cost      string `json:"cost"`
-			Retry     struct {
-				MaxAttempts int    `json:"max_attempts"`
-				Backoff     string `json:"backoff"`
-				UntilLate   bool   `json:"until_late"`
-			} `json:"retry"`
-		} `json:"events"`
-	}
-	if err = json.Unmarshal(b, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.HeavyMaxLoad1 != 3 || got.HeavyCutoffs["PRE_MARKET"] != "09:10:00" || len(got.Events) != 62 {
-		t.Fatalf("global config/events lost: maxload=%v cutoffs=%v count=%d", got.HeavyMaxLoad1, got.HeavyCutoffs, len(got.Events))
-	}
-	byID := map[string]struct {
-		ID      string `json:"id"`
-		Handler string `json:"handler"`
-		Trigger struct {
-			Type  string `json:"type"`
-			Order int    `json:"order"`
-			Start string `json:"start"`
-		} `json:"trigger"`
-		LateUntil string `json:"late_until"`
-		Cost      string `json:"cost"`
-		Retry     struct {
-			MaxAttempts int    `json:"max_attempts"`
-			Backoff     string `json:"backoff"`
-			UntilLate   bool   `json:"until_late"`
-		} `json:"retry"`
-	}{}
-	for _, event := range got.Events {
-		byID[event.ID] = event
-	}
-	for id, start := range map[string]string{"open_report_0932": "09:32:10", "open_report_0935": "09:35:10",
-		"open_report_0940": "09:40:10", "open_report_0945": "09:45:30"} {
-		if event, ok := byID[id]; !ok || event.Trigger.Start != start {
-			t.Fatalf("open report %s start=%q present=%v, want %q", id, event.Trigger.Start, ok, start)
-		}
-	}
-	if _, ok := byID["open_report_0938"]; ok {
-		t.Fatal("0938 must remain an internal data checkpoint, not a scheduled report")
-	}
-	if event := byID["boot_trade_day"]; event.Trigger.Type != "startup" || event.Trigger.Order != 10 || event.Handler != "legacy_boot_trade_day" {
-		t.Fatalf("startup event changed: %+v", event)
-	}
-	if event := byID["startup_0830"]; event.Trigger.Start != "08:30:00" || event.LateUntil != "09:10:00" || event.Cost != "medium" || !event.Retry.UntilLate {
-		t.Fatalf("window strategy changed: %+v", event)
+	for _, source := range sources {
+		t.Run(source.name, func(t *testing.T) {
+			dst := filepath.Join(t.TempDir(), "config.json")
+			if err := migrateCmd([]string{"--from", source.path, "--to", dst, "--expand"}); err != nil {
+				t.Fatal(err)
+			}
+			b, err := os.ReadFile(dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				HeavyMaxLoad1 float64           `json:"heavy_max_load1"`
+				HeavyCutoffs  map[string]string `json:"heavy_cutoffs"`
+				Events        []struct {
+					ID      string `json:"id"`
+					Handler string `json:"handler"`
+					Trigger struct {
+						Type  string `json:"type"`
+						Order int    `json:"order"`
+						Start string `json:"start"`
+					} `json:"trigger"`
+					LateUntil string `json:"late_until"`
+					Cost      string `json:"cost"`
+					Retry     struct {
+						MaxAttempts int    `json:"max_attempts"`
+						Backoff     string `json:"backoff"`
+						UntilLate   bool   `json:"until_late"`
+					} `json:"retry"`
+				} `json:"events"`
+			}
+			if err = json.Unmarshal(b, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.HeavyMaxLoad1 != 3 || got.HeavyCutoffs["PRE_MARKET"] != "09:10:00" || len(got.Events) != source.wantCount {
+				t.Fatalf("global config/events lost: maxload=%v cutoffs=%v count=%d want=%d", got.HeavyMaxLoad1, got.HeavyCutoffs, len(got.Events), source.wantCount)
+			}
+			byID := map[string]struct {
+				ID      string `json:"id"`
+				Handler string `json:"handler"`
+				Trigger struct {
+					Type  string `json:"type"`
+					Order int    `json:"order"`
+					Start string `json:"start"`
+				} `json:"trigger"`
+				LateUntil string `json:"late_until"`
+				Cost      string `json:"cost"`
+				Retry     struct {
+					MaxAttempts int    `json:"max_attempts"`
+					Backoff     string `json:"backoff"`
+					UntilLate   bool   `json:"until_late"`
+				} `json:"retry"`
+			}{}
+			for _, event := range got.Events {
+				byID[event.ID] = event
+			}
+			for id, start := range map[string]string{"open_report_0932": "09:32:10", "open_report_0935": "09:35:10",
+				"open_report_0940": "09:40:10", "open_report_0945": "09:45:30"} {
+				if event, ok := byID[id]; !ok || event.Trigger.Start != start {
+					t.Fatalf("open report %s start=%q present=%v, want %q", id, event.Trigger.Start, ok, start)
+				}
+			}
+			if _, ok := byID["open_report_0938"]; ok {
+				t.Fatal("0938 must remain an internal data checkpoint, not a scheduled report")
+			}
+			if event := byID["boot_trade_day"]; event.Trigger.Type != "startup" || event.Trigger.Order != 10 || event.Handler != "legacy_boot_trade_day" {
+				t.Fatalf("startup event changed: %+v", event)
+			}
+			if event := byID["startup_0830"]; event.Trigger.Start != "08:30:00" || event.LateUntil != "09:10:00" || event.Cost != "medium" || !event.Retry.UntilLate {
+				t.Fatalf("window strategy changed: %+v", event)
+			}
+		})
 	}
 }

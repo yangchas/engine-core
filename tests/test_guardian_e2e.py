@@ -42,3 +42,28 @@ def test_guardian_wall_clock_selftest_fast_suite():
     if stderr:
         print(stderr, file=sys.stderr)
     assert process.returncode == 0, f"guardian self-test failed ({process.returncode})\n{stdout}\n{stderr}"
+
+
+def test_guardian_schedule_at_list_expands_trigger_instance_names():
+    probe = """
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root / "examples"))
+import guardian_selftest as module
+
+schedule = json.loads((root / "src" / "engine_core" / "guardian" / "schedule.json").read_text())
+events = module._effective_schedule_instances(schedule)
+print(json.dumps({
+    "instances": [(event["instance_id"], event["start"]) for event in events if event["source_event_id"] == "daily_kline_backfill"],
+    "legacy": module._compare_legacy_schedule(schedule),
+}, separators=(",", ":")))
+"""
+    process = subprocess.run(
+        [sys.executable, "-c", probe, str(ROOT)], cwd=ROOT,
+        capture_output=True, text=True, check=False,
+    )
+    assert process.returncode == 0, process.stderr
+    assert process.stdout.strip() == '{"instances":[["daily_kline_backfill@01:00","01:00:00"],["daily_kline_backfill@08:00","08:00:00"]],"legacy":[62,57]}'
