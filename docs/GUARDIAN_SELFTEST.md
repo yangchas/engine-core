@@ -42,7 +42,7 @@ manual-mode parameter and currently requires a value of at least 3.
 | S04 | `fail_always`, three attempts, terminal failure, exactly one local alert record. |
 | S05 | `retry.until_late`, 3s base exponential backoff, and `RETRIES_EXHAUSTED_BY_LATE_UNTIL`. |
 | S06 | Past start with `run_in_window`, past start with `skip`, and expired window (`MISSED`), each isolated in this config. |
-| S07 | Gate remains blocked through deadline; `on_deadline=degrade` must set `degrade_requested` and succeed degraded; `missed` may finish as `MISSED` or `GATE_BLOCKED`. |
+| S07 | Gate remains blocked through deadline; `on_deadline=degrade` must set `degrade_requested` and succeed degraded; `missed` ends as `MISSED` without a handler call. |
 | S08 | Gate becomes ready 2.5s after the event starts; handler must start within the 1s gate poll plus 1s tolerance. |
 | S09 | `sleep:6` with `timeout=2s`; both attempts end as `HANDLER_TIMEOUT` and the handler is retried. |
 | S10 | Response mapping for `ok`, `degraded`, `not_applicable`, and one-attempt permanent failure. |
@@ -58,21 +58,19 @@ bound because the live scheduler polls rather than firing a real-time timer.
 S08 uses `gate.poll + 1s` for the same polling and process-start costs. These
 limits are kept narrow enough to detect a changed backoff or a missed trigger.
 
-## Current source behavior found by the suite
+## Runtime expectations
 
-The suite intentionally asserts the requested behavior even where the current
-Go runtime does not implement it. It does not change Go code to make those
-checks pass.
-
-- Normal window `depends_on` is decoded but not consulted by the runtime; the
-  dependent window runs after its dependency fails.
-- `catchup` is copied into the instance but is not consulted by scheduling;
-  both `run_in_window` and `skip` execute an overdue window that remains open.
-- `on_deadline=degrade` is not applied while waiting on a gate. The gate ends
-  as `GATE_BLOCKED` and no handler request has `degrade_requested=true`.
-- A missing `trading_day` date produces calendar status `UNKNOWN`, which is
-  included by `instances()`; with `phases=["any"]`, the event runs. The
-  `every_day` event runs as configured.
+- A failed startup dependency and its dependent window are both `SKIPPED_DEP`;
+  a pending window dependency defers, then releases on success or skips on
+  terminal failure.
+- `run_in_window` catches up after start while the window remains open;
+  `skip` records a late start as `MISSED`.
+- A gate still blocked at deadline invokes a `degrade` handler once with
+  `degrade_requested=true`; `missed` records `MISSED` without invoking it.
+- A date absent from a covered `trading_day` calendar is `EXCLUDED` and the
+  event is `SKIPPED_NA`; an unavailable or out-of-range calendar remains
+  `UNKNOWN` and is not excluded. Unreadable or malformed configured calendar
+  files follow the existing error handling.
 - `data_date_offset` is not applied in request construction. Both tested
   offsets send `data_date == trade_date`.
 - Retry intervals use `eventRetryDelay`: configured base multiplied by
@@ -121,6 +119,8 @@ self-test handler back to the real handler and rerun the suite.
 | `intraday_45` | `guardian_selftest_handler.py run` | `intraday_data` | 未验收 |
 | `open_report_0945` | `guardian_selftest_handler.py run` | `open_report` | 未验收 |
 
-## 已知缺口(KNOWN_GAPS)
+## Known gaps
 
-S02(窗口事件 `depends_on`)、S06(`catchup_mode`)、S07(`on_deadline=degrade` 与 `degrade_requested`)、S11(`calendar=trading_day` 对缺席日期不 EXCLUDE)的期望目前线上 Go 运行时不满足。驱动器把它们标为 `KNOWN_GAP`(不使套件失败);一旦某项开始通过,套件会失败并提示从 `examples/guardian_selftest.py::KNOWN_GAPS` 删除对应条目。补齐见 C545。
+`examples/guardian_selftest.py::KNOWN_GAPS` is empty after C545. The fast
+self-test expects all 15 scenarios to pass; its `start`, `backoff`, and
+`catchup` fault modes must each make the corresponding scenario fail.

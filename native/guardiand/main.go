@@ -14,18 +14,19 @@ import (
 )
 
 type Instance struct {
-	ID          string `json:"id"`
-	EventID     string `json:"event_id"`
-	Start       string `json:"start"`
-	Deadline    string `json:"deadline"`
-	LateUntil   string `json:"late_until,omitempty"`
-	Timeout     string `json:"timeout"`
-	MaxAttempts int    `json:"max_attempts"`
-	Catchup     string `json:"catchup"`
-	OnDeadline  string `json:"on_deadline"`
-	Calendar    string `json:"calendar"`
-	TriggerType string `json:"trigger_type,omitempty"`
-	DataDate    string `json:"data_date,omitempty"`
+	ID               string `json:"id"`
+	EventID          string `json:"event_id"`
+	Start            string `json:"start"`
+	Deadline         string `json:"deadline"`
+	LateUntil        string `json:"late_until,omitempty"`
+	Timeout          string `json:"timeout"`
+	MaxAttempts      int    `json:"max_attempts"`
+	Catchup          string `json:"catchup"`
+	OnDeadline       string `json:"on_deadline"`
+	Calendar         string `json:"calendar"`
+	TriggerType      string `json:"trigger_type,omitempty"`
+	DataDate         string `json:"data_date,omitempty"`
+	DegradeRequested bool   `json:"-"`
 }
 
 func main() {
@@ -77,24 +78,68 @@ func validateCmd(a []string) error {
 	return e
 }
 func dateSet(file string) (map[string]bool, string, error) {
-	b, e := os.ReadFile(file)
+	calendar, e := readTradingDates(file)
 	if e != nil {
 		return nil, "", e
 	}
+	return calendar.days, calendar.source, nil
+}
+
+type tradingDates struct {
+	days   map[string]bool
+	min    string
+	max    string
+	source string
+}
+
+func readTradingDates(file string) (tradingDates, error) {
+	b, e := os.ReadFile(file)
+	if e != nil {
+		return tradingDates{}, e
+	}
 	var ds []string
 	if e = json.Unmarshal(b, &ds); e != nil {
-		return nil, "", fmt.Errorf("calendar format: expected date string array: %w", e)
+		return tradingDates{}, fmt.Errorf("calendar format: expected date string array: %w", e)
 	}
-	m := map[string]bool{}
+	calendar := tradingDates{days: map[string]bool{}}
 	for _, d := range ds {
 		if _, e = time.Parse("2006-01-02", d); e != nil {
-			return nil, "", fmt.Errorf("calendar invalid date %q", d)
+			return tradingDates{}, fmt.Errorf("calendar invalid date %q", d)
 		}
-		m[d] = true
+		calendar.days[d] = true
+		if calendar.min == "" || d < calendar.min {
+			calendar.min = d
+		}
+		if calendar.max == "" || d > calendar.max {
+			calendar.max = d
+		}
 	}
-	return m, fmt.Sprintf("%s (%s..%s)", file, ds[0], ds[len(ds)-1]), nil
+	if calendar.min == "" {
+		calendar.source = file + " (empty calendar)"
+	} else {
+		calendar.source = fmt.Sprintf("%s (%s..%s)", file, calendar.min, calendar.max)
+	}
+	return calendar, nil
 }
 func calendarStatus(raw json.RawMessage, date string, cal map[string]bool, source string) string {
+	min, max := calendarBounds(cal)
+	return calendarStatusInRange(raw, date, cal, source, min, max)
+}
+
+func calendarBounds(cal map[string]bool) (string, string) {
+	min, max := "", ""
+	for date := range cal {
+		if min == "" || date < min {
+			min = date
+		}
+		if max == "" || date > max {
+			max = date
+		}
+	}
+	return min, max
+}
+
+func calendarStatusInRange(raw json.RawMessage, date string, cal map[string]bool, source, min, max string) string {
 	if len(raw) == 0 {
 		return "INCLUDED (calendar=unspecified)"
 	}
@@ -111,7 +156,10 @@ func calendarStatus(raw json.RawMessage, date string, cal map[string]bool, sourc
 				return "UNKNOWN (invalid date)"
 			}
 			if !cal[date] {
-				return "UNKNOWN (outside/absent date in calendar; source=" + source + ")"
+				if min == "" || date < min || date > max {
+					return "UNKNOWN (outside calendar coverage; source=" + source + ")"
+				}
+				return "EXCLUDED (trading_day absent within calendar coverage; source=" + source + ")"
 			}
 			return "INCLUDED (trading_day; source=" + source + ")"
 		}
@@ -144,23 +192,34 @@ func calendarStatus(raw json.RawMessage, date string, cal map[string]bool, sourc
 	return "UNKNOWN (unsupported calendar rule)"
 }
 func instances(c config.Config, date string) ([]Instance, string, error) {
-	var ds map[string]bool
+	return instancesWithExcluded(c, date, false)
+}
+
+func runtimeInstances(c config.Config, date string) ([]Instance, string, error) {
+	return instancesWithExcluded(c, date, true)
+}
+
+func instancesWithExcluded(c config.Config, date string, includeExcluded bool) ([]Instance, string, error) {
+	var calendar tradingDates
 	source := "unconfigured"
 	if x, ok := c.Calendars["trading"]; ok {
 		var e error
-		ds, source, e = dateSet(x.File)
+		calendar, e = readTradingDates(x.File)
 		if e != nil {
 			return nil, "", e
 		}
+		source = calendar.source
 	}
 	var out []Instance
 	for _, e := range c.Events {
 		if e.Trigger.Type == "startup" {
 			continue
 		}
-		status := calendarStatus(e.Calendar, date, ds, source)
+		status := calendarStatusInRange(e.Calendar, date, calendar.days, source, calendar.min, calendar.max)
 		if strings.HasPrefix(status, "EXCLUDED") {
-			continue
+			if !includeExcluded {
+				continue
+			}
 		}
 		if e.Trigger.Type == "window" {
 			catch := e.Catchup
@@ -248,7 +307,7 @@ func explainCmd(a []string) error {
 	if e != nil {
 		return e
 	}
-	xs, src, e := instances(c, *date)
+	xs, src, e := runtimeInstances(c, *date)
 	if e != nil {
 		return e
 	}
@@ -257,14 +316,20 @@ func explainCmd(a []string) error {
 		if *event != "" && x.EventID != *event {
 			continue
 		}
-		rows = append(rows, map[string]any{"instance": x, "decision": "included", "window": x.Start + ".." + x.Deadline, "calendar_source": src})
+		decision := "included"
+		if strings.HasPrefix(x.Calendar, "EXCLUDED") {
+			decision = "excluded"
+		} else if strings.HasPrefix(x.Calendar, "UNKNOWN") {
+			decision = "unknown_included"
+		}
+		rows = append(rows, map[string]any{"instance": x, "decision": decision, "window": x.Start + ".." + x.Deadline, "calendar_source": src})
 	}
 	if *js {
 		return output(rows, true)
 	}
 	fmt.Printf("date=%s calendar_source=%s\n", *date, src)
 	if len(rows) == 0 {
-		fmt.Println("no included instances (excluded instances omitted; unknown calendar dates remain UNKNOWN)")
+		fmt.Println("no instances")
 	}
 	for _, r := range rows {
 		b, _ := json.Marshal(r)

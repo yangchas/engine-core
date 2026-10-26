@@ -202,7 +202,7 @@ func TestScheduleDefersPhaseMismatchUntilWhitelistedPhase(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	decoded, issues := config.Decode([]byte(`{"schema_version":1,"config_version":1,"name":"test","timezone":"Asia/Shanghai","events":[{"id":"heavy","trigger":{"type":"window","start":"09:00:00","deadline":"09:10:00"},"late_until":"13:00:00","phases":["MIDDAY_BREAK"],"on_phase_mismatch":"defer","on_start":"reconcile","handler":"h"}],"handlers":{"h":{"argv":["` + script + `"]}}}`))
+	decoded, issues := config.Decode([]byte(`{"schema_version":1,"config_version":1,"name":"test","timezone":"Asia/Shanghai","events":[{"id":"heavy","trigger":{"type":"window","start":"09:00:00","deadline":"09:10:00"},"late_until":"13:00:00","catchup":"run_in_window","phases":["MIDDAY_BREAK"],"on_phase_mismatch":"defer","on_start":"reconcile","handler":"h"}],"handlers":{"h":{"argv":["` + script + `"]}}}`))
 	if len(issues) != 0 {
 		t.Fatalf("defer config rejected: %+v", issues)
 	}
@@ -820,7 +820,7 @@ func TestLateWindowRunsAndMarksLedgerWithFakeClock(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	e := config.Event{ID: "late", Handler: "h", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:01:00"}, LateUntil: "09:03:00"}
+	e := config.Event{ID: "late", Handler: "h", Catchup: "run_in_window", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:01:00"}, LateUntil: "09:03:00"}
 	c := config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}}
 	l, err := openLedger(root, date)
 	if err != nil {
@@ -840,6 +840,11 @@ func TestLateWindowRunsAndMarksLedgerWithFakeClock(t *testing.T) {
 		t.Fatalf("late recovery classify missed=%d active=%d", len(missed), len(active))
 	}
 	fc.Advance(time.Minute)
+	missed, active = startupClassify(c, fc.Now())
+	if len(missed) != 0 || len(active) != 1 {
+		t.Fatalf("late_until boundary missed=%d active=%d", len(missed), len(active))
+	}
+	fc.Advance(time.Second)
 	missed, active = startupClassify(c, fc.Now())
 	if len(missed) != 1 || len(active) != 0 {
 		t.Fatalf("expired late recovery classify missed=%d active=%d", len(missed), len(active))
@@ -1168,7 +1173,7 @@ func testFDCount(t *testing.T) int {
 }
 
 func TestStartupWindowRemainsRunnable(t *testing.T) {
-	c := config.Config{Events: []config.Event{{ID: "a", Trigger: config.Trigger{Type: "window", Start: "10:30:00", Deadline: "10:40:00"}}}}
+	c := config.Config{Events: []config.Event{{ID: "a", Catchup: "run_in_window", Trigger: config.Trigger{Type: "window", Start: "10:30:00", Deadline: "10:40:00"}}}}
 	date, _ := time.Parse("2006-01-02 15:04:05", "2026-10-20 10:34:00")
 	missed, active := startupClassify(c, date)
 	if len(missed) != 0 || len(active) != 1 {
@@ -2220,7 +2225,7 @@ func TestKill9RestartRestoresAttemptsMissedSummaryAndSocketIdem(t *testing.T) {
 	cfgPath := filepath.Join(root, "config.json")
 	c := config.Config{SchemaVersion: 1, ConfigVersion: 1, Name: "kill9", Timezone: "Asia/Shanghai", Handlers: map[string]config.Handler{"h": {Argv: []string{handler}, EnvAllow: []string{"COUNT_FILE", "PID_FILE", "MARKER", "RELEASE_FILE", "REQUESTS"}}, "alert": {Argv: []string{"/bin/true"}}}, Events: []config.Event{
 		{ID: "missed", Enabled: true, Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:01:00"}},
-		{ID: "active", Enabled: true, Handler: "h", Timeout: "5m", Trigger: config.Trigger{Type: "window", Start: "10:30:00", Deadline: "10:40:00"}, Retry: config.Retry{MaxAttempts: 3}},
+		{ID: "active", Enabled: true, Handler: "h", Timeout: "5m", Catchup: "run_in_window", Trigger: config.Trigger{Type: "window", Start: "10:30:00", Deadline: "10:40:00"}, Retry: config.Retry{MaxAttempts: 3}},
 	}}
 	configBytes, err := json.Marshal(c)
 	if err != nil {
@@ -2403,4 +2408,249 @@ func TestFetchItemRetriesBackOffFromTheConfiguredBaseAndAlertsOnceWhenSpent(t *t
 	if counts := ledgerTypeCounts(t, root, date); counts["ALERT_OUT"] != 1 {
 		t.Fatalf("spent fetch_item alerts=%d, want exactly one", counts["ALERT_OUT"])
 	}
+}
+
+func TestC545CatchupModeAndDeadlineBoundary(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	date := "2026-10-20"
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:05:00", loc)
+	c := config.Config{Events: []config.Event{
+		{ID: "run", Catchup: "run_in_window", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:10:00"}},
+		{ID: "skip", Catchup: "skip", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:10:00"}},
+	}}
+	missed, active := startupClassify(c, now)
+	if len(missed) != 1 || missed[0].ID != "skip" || len(active) != 1 || active[0].ID != "run" {
+		t.Fatalf("catchup classification missed=%v active=%v", instanceIDs(missed), instanceIDs(active))
+	}
+	deadline, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:10:00", loc)
+	missed, active = startupClassify(c, deadline)
+	if len(missed) != 1 || missed[0].ID != "skip" || len(active) != 1 || active[0].ID != "run" {
+		t.Fatalf("deadline boundary missed=%v active=%v", instanceIDs(missed), instanceIDs(active))
+	}
+	missed, active = startupClassify(c, deadline.Add(time.Second))
+	if len(missed) != 2 || len(active) != 0 {
+		t.Fatalf("past-deadline missed=%v active=%v", instanceIDs(missed), instanceIDs(active))
+	}
+}
+
+func TestC545TradingCalendarExcludesOnlyCoveredDates(t *testing.T) {
+	raw := json.RawMessage(`"trading_day"`)
+	cal := map[string]bool{"2026-10-20": true, "2026-10-22": true}
+	trading := calendarStatus(raw, "2026-10-20", cal, "test calendar (2026-10-20..2026-10-22)")
+	covered := calendarStatus(raw, "2026-10-21", cal, "test calendar (2026-10-20..2026-10-22)")
+	uncovered := calendarStatus(raw, "2026-10-19", cal, "test calendar (2026-10-20..2026-10-22)")
+	unavailable := calendarStatus(raw, "2026-10-21", nil, "unavailable")
+	if !strings.HasPrefix(trading, "INCLUDED") {
+		t.Fatalf("covered trading date status=%q", trading)
+	}
+	if !strings.HasPrefix(covered, "EXCLUDED") {
+		t.Fatalf("covered non-trading date status=%q", covered)
+	}
+	if !strings.HasPrefix(uncovered, "UNKNOWN") || !strings.HasPrefix(unavailable, "UNKNOWN") {
+		t.Fatalf("uncovered/unavailable statuses=%q/%q", uncovered, unavailable)
+	}
+}
+
+func TestC545DeadlineDegradeRequestAndMissedAction(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	date := "2026-10-20"
+	start, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:00", loc)
+	for _, tc := range []struct {
+		name       string
+		onDeadline string
+		wantStatus string
+		wantCall   bool
+	}{
+		{name: "degrade", onDeadline: "degrade", wantStatus: "SUCCEEDED_DEGRADED", wantCall: true},
+		{name: "missed", onDeadline: "missed", wantStatus: "MISSED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			fc := newFakeClock(start)
+			input := filepath.Join(root, "handler-input.jsonl")
+			handler := writeC545Script(t, filepath.Join(root, "handler.sh"), "cat >> '"+input+"'\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n")
+			gate := writeC545Script(t, filepath.Join(root, "gate.sh"), "printf '%s\\n' '{\"status\":\"not_ready\",\"reason\":\"test_not_ready\"}'\n")
+			event := config.Event{ID: "deadline", Handler: "h", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:00:01"}, Gate: config.Gate{Ref: "gate", Poll: "1s"}, OnDeadline: tc.onDeadline, Catchup: "run_in_window", Phases: []string{"any"}, Retry: config.Retry{MaxAttempts: 1}}
+			c := config.Config{Events: []config.Event{event}, Handlers: map[string]config.Handler{"h": {Argv: []string{handler}, GateArgv: []string{gate}, SupportsDegrade: true}}}
+			r, closeRunner := newC545Runner(t, root, date, fc, c)
+			defer closeRunner()
+			x := Instance{ID: event.ID, EventID: event.ID, Start: event.Trigger.Start, Deadline: event.Trigger.Deadline, Timeout: "2s", MaxAttempts: 1, Catchup: event.Catchup, OnDeadline: event.OnDeadline}
+			done := make(chan struct{})
+			go func() { r.execute(x, date); close(done) }()
+			waitFor(t, func() bool { return fc.waitCount() > 0 })
+			fc.Advance(time.Second)
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("deadline execution did not finish")
+			}
+			got := r.states[date+"/"+event.ID]
+			if got.Status != tc.wantStatus {
+				t.Fatalf("status=%s want=%s state=%+v", got.Status, tc.wantStatus, got)
+			}
+			b, err := os.ReadFile(input)
+			called := err == nil && len(bytes.TrimSpace(b)) > 0
+			if called != tc.wantCall {
+				t.Fatalf("handler called=%v want=%v err=%v", called, tc.wantCall, err)
+			}
+			if tc.wantCall {
+				var request map[string]any
+				if err := json.Unmarshal(bytes.TrimSpace(b), &request); err != nil {
+					t.Fatal(err)
+				}
+				if request["degrade_requested"] != true || got.Attempts != 1 {
+					t.Fatalf("degrade request/attempts=%v/%d", request["degrade_requested"], got.Attempts)
+				}
+			}
+		})
+	}
+}
+
+func TestC545DeadlineDegradeHonorsLateRetryBackoff(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	date := "2026-10-20"
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:02", loc)
+	root := t.TempDir()
+	input := filepath.Join(root, "handler-input.jsonl")
+	handler := writeC545Script(t, filepath.Join(root, "handler.sh"), "cat >> '"+input+"'\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n")
+	event := config.Event{
+		ID: "deadline_retry", Handler: "h", OnDeadline: "degrade", Catchup: "run_in_window",
+		Trigger:   config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:00:01"},
+		LateUntil: "09:01:00", Calendar: json.RawMessage(`"every_day"`), Phases: []string{"any"},
+		Retry: config.Retry{MaxAttempts: 3, UntilLate: true, Backoff: "10s"},
+	}
+	fc := newFakeClock(now)
+	r, closeRunner := newC545Runner(t, root, date, fc, config.Config{Events: []config.Event{event}, Handlers: map[string]config.Handler{"h": {Argv: []string{handler}, SupportsDegrade: true}}})
+	defer closeRunner()
+	x := Instance{ID: event.ID, EventID: event.ID, Start: event.Trigger.Start, Deadline: event.Trigger.Deadline, LateUntil: event.LateUntil, TriggerType: "window", Catchup: event.Catchup, OnDeadline: event.OnDeadline}
+	next := now.Add(5 * time.Second)
+	r.setState(x, date, instanceState{Status: "RETRY_WAIT", Attempts: 1, NextAttemptAt: next.Format(time.RFC3339), Late: true})
+	r.schedule(now)
+	time.Sleep(50 * time.Millisecond)
+	if _, err := os.Stat(input); !os.IsNotExist(err) {
+		t.Fatalf("late retry ran before NextAttemptAt, stat err=%v", err)
+	}
+	fc.Advance(5 * time.Second)
+	r.schedule(fc.Now())
+	waitFor(t, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.states[date+"/"+event.ID].Status == "SUCCEEDED_DEGRADED"
+	})
+	b, err := os.ReadFile(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(b), &request); err != nil {
+		t.Fatal(err)
+	}
+	if request["degrade_requested"] != true || request["attempt"] != float64(2) {
+		t.Fatalf("late retry request=%v, want attempt 2 with degrade requested", request)
+	}
+}
+
+func TestC545WindowDependenciesDeferAndPropagateFailure(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	date := "2026-10-20"
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:05:00", loc)
+	root := t.TempDir()
+	input := filepath.Join(root, "handler-input.jsonl")
+	handler := writeC545Script(t, filepath.Join(root, "handler.sh"), "cat >> '"+input+"'\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n")
+	c := config.Config{Events: []config.Event{
+		{ID: "a", Handler: "h", Catchup: "run_in_window", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:10:00"}, Phases: []string{"any"}},
+		{ID: "b", Handler: "h", Catchup: "run_in_window", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:10:00"}, DependsOn: []config.Dependency{{ID: "a"}}, Phases: []string{"any"}},
+		{ID: "c", Handler: "h", Catchup: "run_in_window", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:10:00"}, DependsOn: []config.Dependency{{ID: "b"}}, Phases: []string{"any"}},
+	}, Handlers: map[string]config.Handler{"h": {Argv: []string{handler}}}}
+	fc := newFakeClock(now)
+	r, closeRunner := newC545Runner(t, root, date, fc, c)
+	defer closeRunner()
+	r.setState(Instance{ID: "a", EventID: "a"}, date, instanceState{Status: "RUNNING", StartedAt: now.Format(time.RFC3339)})
+	r.mu.Lock()
+	r.running["a"] = true
+	r.mu.Unlock()
+	r.schedule(now)
+	waitFor(t, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.states[date+"/b"].Status == "DEFERRED" && r.states[date+"/c"].Status == "DEFERRED"
+	})
+	r.setState(Instance{ID: "a", EventID: "a"}, date, instanceState{Status: "FAILED_FINAL", CompletedAt: now.Format(time.RFC3339)})
+	r.mu.Lock()
+	delete(r.running, "a")
+	r.mu.Unlock()
+	r.schedule(now)
+	waitFor(t, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.states[date+"/b"].Status == "SKIPPED_DEP" && r.states[date+"/c"].Status == "SKIPPED_DEP"
+	})
+	if _, err := os.Stat(input); !os.IsNotExist(err) {
+		t.Fatalf("dependent handler was called, stat err=%v", err)
+	}
+	if !isTerminal("SKIPPED_DEP") {
+		t.Fatal("SKIPPED_DEP must be terminal for transitive dependencies")
+	}
+	ledger := mustRead(t, filepath.Join(root, "ledger", date+".jsonl"))
+	if !strings.Contains(string(ledger), `"status":"SKIPPED_DEP"`) {
+		t.Fatal("SKIPPED_DEP states were not written to the ledger")
+	}
+
+	t.Run("successful chain releases dependents", func(t *testing.T) {
+		successRoot := t.TempDir()
+		successInput := filepath.Join(successRoot, "handler-input.jsonl")
+		successHandler := writeC545Script(t, filepath.Join(successRoot, "handler.sh"), "cat >> '"+successInput+"'\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n")
+		successEvents := []config.Event{
+			{ID: "a", Handler: "h", Catchup: "run_in_window", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:10:00"}, Phases: []string{"any"}},
+			{ID: "b", Handler: "h", Catchup: "run_in_window", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:10:00"}, DependsOn: []config.Dependency{{ID: "a"}}, Phases: []string{"any"}},
+			{ID: "c", Handler: "h", Catchup: "run_in_window", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:10:00"}, DependsOn: []config.Dependency{{ID: "b"}}, Phases: []string{"any"}},
+		}
+		successRunner, closeSuccessRunner := newC545Runner(t, successRoot, date, fc, config.Config{Events: successEvents, Handlers: map[string]config.Handler{"h": {Argv: []string{successHandler}}}})
+		defer closeSuccessRunner()
+		successRunner.setState(Instance{ID: "a", EventID: "a"}, date, instanceState{Status: "SUCCEEDED", CompletedAt: now.Format(time.RFC3339)})
+		successRunner.schedule(now)
+		waitFor(t, func() bool {
+			successRunner.mu.Lock()
+			defer successRunner.mu.Unlock()
+			return successRunner.states[date+"/b"].Status == "SUCCEEDED"
+		})
+		successRunner.schedule(now)
+		waitFor(t, func() bool {
+			successRunner.mu.Lock()
+			defer successRunner.mu.Unlock()
+			return successRunner.states[date+"/c"].Status == "SUCCEEDED"
+		})
+		calls := mustRead(t, successInput)
+		if strings.Count(string(calls), `"contract":1`) != 2 {
+			t.Fatalf("successful dependency chain handler calls=%q", calls)
+		}
+	})
+}
+
+func instanceIDs(xs []Instance) []string {
+	ids := make([]string, len(xs))
+	for i, x := range xs {
+		ids[i] = x.ID
+	}
+	return ids
+}
+
+func newC545Runner(t *testing.T, root, date string, fc *fakeClock, c config.Config) (*liveRunner, func()) {
+	t.Helper()
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, paused: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}}
+	return r, func() { _ = l.close() }
+}
+
+func writeC545Script(t *testing.T, path, body string) string {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nset -eu\n"+body), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

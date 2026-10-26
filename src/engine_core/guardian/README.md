@@ -29,6 +29,8 @@ PYTHONPATH=src:. python examples/core_guardian.py --simulate-date 2026-10-16 --s
 
 Windows include the `start` and `deadline` points. `catchup_mode` controls late starts inside that window; `on_deadline` controls work that is still blocked at the deadline. The source schedule is revision 2 and stores only fields consumed by Go's `migrateScheduleV2`. `phases` is the phase restriction; the Python `EventSpec.phase` compatibility view uses its first value, or derives the phase from `start` when unrestricted.
 
+In the Go runtime, `catchup_mode=skip` runs only when scheduled on time; a later start is recorded as `MISSED`. `run_in_window` allows a late start through `deadline`, or through `late_until` when set. At `deadline`, `on_deadline=missed` records `MISSED`; `degrade` lets a handler run once with `degrade_requested=true` after its gate stays blocked through the deadline, and a successful response is recorded as `SUCCEEDED_DEGRADED`. `calendar=trading_day` excludes an absent date as `SKIPPED_NA` only when it lies within the calendar file's first-to-last-date range; an unconfigured or empty calendar, or a date outside its coverage, remains `UNKNOWN` and is not excluded. An unreadable or malformed configured calendar follows the runtime's existing path-specific error handling. A window event with `depends_on` waits while each dependency is nonterminal, then records `SKIPPED_DEP` if a dependency ends unsuccessfully; only `SUCCEEDED` is accepted by default, while `SUCCEEDED_DEGRADED` requires `accept_degraded=true`.
+
 ### Event fields
 
 Every event key must be read by the Go schedule migrator. Python loads the same canonical fields; its Guardian runtime uses the scheduling subset and keeps compatibility properties derived from these values until T4.

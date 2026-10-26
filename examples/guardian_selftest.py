@@ -367,8 +367,7 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
     e = _event("punctual", s, deadline=s + timedelta(seconds=20), args={"marker": "S01"})
     cases = [mk("S01 punctual trigger", "S01", [e], ["punctual"], "SUCCEEDED, call in [start,start+2s]", s, 32)]
 
-    # S02: startup `order`/`after` is implemented; normal-window depends_on is
-    # currently ignored by the runtime and remains a real assertion here.
+    # S02: startup `order`/`after` and normal-window depends_on are asserted.
     s = at("S02")
     cases.append(mk("S02 order and dependencies", "S02", [
         _event("boot_fail", now, trigger_type="startup", order=10, behavior="permanent_fail"),
@@ -397,7 +396,7 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
                late_until=_clock(late), retry={"max_attempts": 20, "backoff": "3s", "until_late": True}),
     ], ["late_retry"], "FAILED_FINAL / RETRIES_EXHAUSTED_BY_LATE_UNTIL", s, (late - now).total_seconds() + 8))
 
-    # S06 exercises startup catchup values and an already-expired window.
+    # S06 exercises late startup catchup values and an already-expired window.
     start_run = (now - timedelta(seconds=10)).replace(microsecond=0)
     start_skip = start_run
     missed_start = (now - timedelta(seconds=120)).replace(microsecond=0)
@@ -407,8 +406,7 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
         _event("already_missed", missed_start, deadline=now - timedelta(seconds=60)),
     ], ["catchup_run", "catchup_skip", "already_missed"], "run_in_window=1 call; skip=0; expired=MISSED", None, 16, "catchup_probe" if fault == "catchup" else ""))
 
-    # S07 deadline degradation is asserted; current runtime blocks on gate
-    # timeout without setting degrade_requested, so this can expose the gap.
+    # S07 checks deadline degradation and the terminal missed action.
     s = at("S07")
     gate_event = _event("deadline_degrade", s, deadline=s + timedelta(seconds=8 if fast else 12), behavior="need_degrade",
                         on_deadline="degrade", timeout="2s", gate={"ref": "never_ready", "poll": "1s", "timeout": "1s"})
@@ -416,7 +414,7 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
         gate_event,
         _event("deadline_missed", s, deadline=s + timedelta(seconds=8 if fast else 12), on_deadline="missed",
                gate={"ref": "never_ready_2", "poll": "1s", "timeout": "1s"}),
-    ], ["deadline_degrade", "deadline_missed"], "degrade call has degrade_requested=true; missed is MISSED or GATE_BLOCKED", s, 32))
+    ], ["deadline_degrade", "deadline_missed"], "degrade call has degrade_requested=true; missed is MISSED", s, 32))
 
     # S08 gate becomes ready half way to its start.
     s = at("S08")
@@ -610,21 +608,17 @@ def _evaluate(case: Scenario) -> list[str]:
             if any(abs(got - want) > 1.5 for got, want in zip(gaps, (3, 6, 12))):
                 errors.append(f"retry intervals={gaps}; expected exponential 3s base")
     elif case.name.startswith("S06"):
-        if case.fault == "catchup":
-            if case.calls_for("catchup_run"):
-                errors.append(f"injected catchup=skip still ran {len(case.calls_for('catchup_run'))} time(s)")
-        else:
-            if len(case.calls_for("catchup_run")) != 1:
-                errors.append(f"run_in_window calls={len(case.calls_for('catchup_run'))}")
-            if len(case.calls_for("catchup_skip")) != 0:
-                errors.append(f"catchup skip calls={len(case.calls_for('catchup_skip'))}")
+        if len(case.calls_for("catchup_run")) != 1:
+            errors.append(f"run_in_window calls={len(case.calls_for('catchup_run'))}")
+        if len(case.calls_for("catchup_skip")) != 0:
+            errors.append(f"catchup skip calls={len(case.calls_for('catchup_skip'))}")
         if status("already_missed") != "MISSED" or case.calls_for("already_missed"):
             errors.append(f"expired status/calls={status('already_missed')}/{len(case.calls_for('already_missed'))}")
     elif case.name.startswith("S07"):
         rows = case.calls_for("deadline_degrade")
         if not rows or not rows[-1].get("degrade_requested") or status("deadline_degrade") != "SUCCEEDED_DEGRADED":
             errors.append(f"degrade calls/status={len(rows)}/{status('deadline_degrade')}; runtime may not set degrade_requested")
-        if case.calls_for("deadline_missed") or status("deadline_missed") not in {"MISSED", "GATE_BLOCKED"}:
+        if case.calls_for("deadline_missed") or status("deadline_missed") != "MISSED":
             errors.append(f"missed calls/status={len(case.calls_for('deadline_missed'))}/{status('deadline_missed')}")
     elif case.name.startswith("S08"):
         rows = case.calls_for("gate_mid_ready")
@@ -654,7 +648,7 @@ def _evaluate(case: Scenario) -> list[str]:
         if len(case.calls_for("map_permanent")) != 1:
             errors.append(f"permanent failure attempts={len(case.calls_for('map_permanent'))}")
     elif case.name.startswith("S11"):
-        if case.calls_for("trading_only") or status("trading_only") not in {"SKIPPED_NA", "MISSED"}:
+        if case.calls_for("trading_only") or status("trading_only") != "SKIPPED_NA":
             errors.append(f"trading_only calls/status={len(case.calls_for('trading_only'))}/{status('trading_only')}")
         if len(case.calls_for("every_day")) != 1 or status("every_day") != "SUCCEEDED":
             errors.append(f"every_day calls/status={len(case.calls_for('every_day'))}/{status('every_day')}")
@@ -718,14 +712,9 @@ def _actual(case: Scenario) -> tuple[str, str, str]:
     return _fmt(actual_dt), "-", status
 
 
-# Scenarios whose expectation the live Go runtime does not yet meet (C545 closes
-# them). A gap that starts passing fails the suite so the entry gets removed.
-KNOWN_GAPS = {
-    "S02": "window depends_on is not enforced",
-    "S06": "catchup_mode is ignored at runtime",
-    "S07": "on_deadline=degrade / degrade_requested not implemented",
-    "S11": "calendar=trading_day never EXCLUDEs an absent date",
-}
+# Scenarios whose expectations the live Go runtime does not meet. Keep empty
+# unless a verified runtime gap is intentionally accepted for this suite.
+KNOWN_GAPS: dict[str, str] = {}
 
 
 def _apply_known_gaps(rows: list[dict[str, Any]]) -> None:
@@ -848,7 +837,7 @@ def main(argv: list[str] | None = None) -> int:
         max_deviation = max((abs(float(row["deviation"])) for row in rows if row["deviation"] != "-"), default=0.0)
         print(f"SELFTEST_SUMMARY passed={passed}/{len(rows)} max_abs_deviation_s={max_deviation:.3f} mode={args.mode} work_dir={run_dir}", flush=True)
         if args.fault == "catchup":
-            print("FAULT_NOTE catchup=skip produced no behavior change: current runtime ignores Catchup while scheduling active windows", flush=True)
+            print("FAULT_NOTE catchup=skip overrides catchup_run; S06 expects its configured run_in_window call", flush=True)
         return 0 if passed == len(rows) else 1
     except Exception as exc:
         print(f"SELFTEST_ERROR {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)

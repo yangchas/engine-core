@@ -283,21 +283,45 @@ func startupClassify(c config.Config, now time.Time) (missed, active []Instance)
 		return nil, nil
 	}
 	for _, x := range xs {
+		event := findEvent(c, x.EventID)
 		start, e1 := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Start, now.Location())
-		end, e2 := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, now.Location())
+		deadline, deadlineErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, now.Location())
+		end := deadline
+		endErr := deadlineErr
 		if x.LateUntil != "" {
-			end, e2 = time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.LateUntil, now.Location())
+			end, endErr = time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.LateUntil, now.Location())
 		}
-		if e1 != nil || e2 != nil {
+		if e1 != nil || deadlineErr != nil || endErr != nil {
 			continue
 		}
-		if !now.Before(end) {
+		if event != nil && event.OnDeadline == "missed" && !now.Truncate(time.Second).Before(deadline.Truncate(time.Second)) {
 			missed = append(missed, x)
-		} else if !now.Before(start) {
+			continue
+		}
+		if windowExpired(now, end) {
+			missed = append(missed, x)
+			continue
+		}
+		if !now.Before(start) {
+			if x.Catchup != "run_in_window" && pastScheduleSecond(now, start) {
+				missed = append(missed, x)
+				continue
+			}
+			if event != nil && event.OnDeadline == "degrade" && !now.Truncate(time.Second).Before(deadline.Truncate(time.Second)) {
+				x.DegradeRequested = true
+			}
 			active = append(active, x)
 		}
 	}
 	return
+}
+
+func pastScheduleSecond(now, scheduled time.Time) bool {
+	return now.Truncate(time.Second).After(scheduled.Truncate(time.Second))
+}
+
+func windowExpired(now, end time.Time) bool {
+	return pastScheduleSecond(now, end)
 }
 
 func triggerWindowAllowed(x Instance, date string, now time.Time, loc *time.Location) error {
@@ -313,7 +337,7 @@ func triggerWindowAllowed(x Instance, date string, now time.Time, loc *time.Loca
 	if e != nil {
 		return e
 	}
-	if now.Before(start) || !now.Before(end) {
+	if now.Before(start) || windowExpired(now, end) {
 		return errors.New("outside event window")
 	}
 	return nil
@@ -390,20 +414,11 @@ func (r *liveRunner) currentPhase(now time.Time) (string, string) {
 	r.configMu.RUnlock()
 	trading := true
 	if cal, ok := c.Calendars["trading"]; ok {
-		if ds, _, err := dateSet(cal.File); err == nil {
+		if dates, err := readTradingDates(cal.File); err == nil {
 			date := now.In(r.loc).Format("2006-01-02")
-			trading = ds[date]
-			if !trading && len(ds) > 0 {
-				min, max := "9999-12-31", "0000-01-01"
-				for d := range ds {
-					if d < min {
-						min = d
-					}
-					if d > max {
-						max = d
-					}
-				}
-				if date < min || date > max {
+			trading = dates.days[date]
+			if !trading {
+				if dates.min == "" || date < dates.min || date > dates.max {
 					return "CALENDAR_UNKNOWN", ""
 				}
 			}
@@ -773,12 +788,11 @@ func (r *liveRunner) runBootEvents(now time.Time) error {
 			}
 		}
 		x := Instance{ID: e.ID + "@boot" + boot, EventID: e.ID, Start: "00:00:00", Deadline: "23:59:59", LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Calendar: "BOOT", TriggerType: "startup"}
-		var calendarDays map[string]bool
-		calendarSource := "unconfigured"
+		var calendarDates tradingDates
 		if tc, ok := c.Calendars["trading"]; ok {
-			calendarDays, calendarSource, _ = dateSet(tc.File)
+			calendarDates, _ = readTradingDates(tc.File)
 		}
-		if strings.HasPrefix(calendarStatus(e.Calendar, date, calendarDays, calendarSource), "EXCLUDED") {
+		if strings.HasPrefix(calendarStatusInRange(e.Calendar, date, calendarDates.days, calendarDates.source, calendarDates.min, calendarDates.max), "EXCLUDED") {
 			st := instanceState{Status: "SKIPPED_NA", LastError: "calendar excluded", CompletedAt: r.clock.Now().Format(time.RFC3339)}
 			r.setState(x, date, st)
 			results[e.ID] = st.Status
@@ -893,7 +907,7 @@ func (r *liveRunner) applyStartup(now time.Time, missed, active []Instance) erro
 }
 func isTerminal(status string) bool {
 	switch status {
-	case "SUCCEEDED", "SUCCEEDED_DEGRADED", "FAILED_FINAL", "CIRCUIT_OPEN", "MISSED", "GATE_BLOCKED", "SKIPPED", "SKIPPED_NA", "SKIPPED_PHASE":
+	case "SUCCEEDED", "SUCCEEDED_DEGRADED", "FAILED_FINAL", "CIRCUIT_OPEN", "MISSED", "GATE_BLOCKED", "SKIPPED", "SKIPPED_NA", "SKIPPED_PHASE", "SKIPPED_DEP":
 		return true
 	}
 	return false
@@ -1158,6 +1172,8 @@ func (r *liveRunner) execute(x Instance, date string) {
 	if event == nil {
 		return
 	}
+	deadlineAt, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
+	degradeRequested := x.DegradeRequested || x.TriggerType != "startup" && event.OnDeadline == "degrade" && !r.clock.Now().Truncate(time.Second).Before(deadlineAt.Truncate(time.Second))
 	r.mu.Lock()
 	prior := r.states[date+"/"+x.ID]
 	r.mu.Unlock()
@@ -1198,11 +1214,15 @@ func (r *liveRunner) execute(x Instance, date string) {
 		}
 		r.mu.Unlock()
 	}()
-	if prior.NextAttemptAt != "" {
+	if prior.NextAttemptAt != "" && (!degradeRequested || prior.Late) {
 		next, err := time.Parse(time.RFC3339, prior.NextAttemptAt)
 		if err == nil && r.clock.Now().Before(next) {
 			return
 		}
+	}
+	if x.TriggerType != "startup" && event.OnDeadline == "missed" && !r.clock.Now().Truncate(time.Second).Before(deadlineAt.Truncate(time.Second)) {
+		r.setState(x, date, instanceState{Status: "MISSED", Attempts: prior.Attempts, CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: "ON_DEADLINE_MISSED"})
+		return
 	}
 	if (x.TriggerType != "startup" || x.EventID == "fetch_item") && !phaseAllowedAt(event, func() string { p, _ := r.currentPhase(r.clock.Now()); return p }(), r.clock.Now(), c, r.loc) {
 		phase, _ := r.currentPhase(r.clock.Now())
@@ -1244,7 +1264,6 @@ func (r *liveRunner) execute(x Instance, date string) {
 		}
 		r.mu.Unlock()
 	}
-	deadlineAt, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
 	isLate := x.TriggerType != "startup" && !r.clock.Now().Before(deadlineAt)
 	st := instanceState{Status: "RUNNING", StartedAt: r.clock.Now().Format(time.RFC3339), Late: isLate}
 	if isLate {
@@ -1269,7 +1288,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 			poll = d
 		}
 		cutoff := x.Deadline
-		if x.LateUntil != "" {
+		if x.LateUntil != "" && event.OnDeadline != "degrade" && event.OnDeadline != "missed" {
 			cutoff = x.LateUntil
 		}
 		deadline, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
@@ -1340,21 +1359,30 @@ func (r *liveRunner) execute(x Instance, date string) {
 			r.waitClock(poll)
 		}
 		if !ready {
-			_, _ = r.appendLedger(date, "GATE_POLL_SUMMARY", map[string]any{"event": x.EventID, "instance": x.ID, "poll_count": pollCount, "first_polled_at": firstPollAt, "last_polled_at": lastPollAt, "outcome": "blocked", "reason": lastGateReason})
-			r.setState(x, date, instanceState{Status: "GATE_BLOCKED", LastError: lastGateReason, CompletedAt: r.clock.Now().Format(time.RFC3339)})
-			r.mu.Lock()
-			r.gateBlocked = append(r.gateBlocked, gateBlockRecord{Event: x.EventID, Reason: lastGateReason, At: r.clock.Now().Format(time.RFC3339Nano)})
-			if r.gateAlerted == nil {
-				r.gateAlerted = map[string]bool{}
+			if event.OnDeadline == "degrade" {
+				degradeRequested = true
+				_, _ = r.appendLedger(date, "GATE_POLL_SUMMARY", map[string]any{"event": x.EventID, "instance": x.ID, "poll_count": pollCount, "first_polled_at": firstPollAt, "last_polled_at": lastPollAt, "outcome": "degrade_requested", "reason": lastGateReason})
+			} else if event.OnDeadline == "missed" {
+				_, _ = r.appendLedger(date, "GATE_POLL_SUMMARY", map[string]any{"event": x.EventID, "instance": x.ID, "poll_count": pollCount, "first_polled_at": firstPollAt, "last_polled_at": lastPollAt, "outcome": "missed", "reason": lastGateReason})
+				r.setState(x, date, instanceState{Status: "MISSED", Attempts: prior.Attempts, LastError: lastGateReason, CompletedAt: r.clock.Now().Format(time.RFC3339)})
+				return
+			} else {
+				_, _ = r.appendLedger(date, "GATE_POLL_SUMMARY", map[string]any{"event": x.EventID, "instance": x.ID, "poll_count": pollCount, "first_polled_at": firstPollAt, "last_polled_at": lastPollAt, "outcome": "blocked", "reason": lastGateReason})
+				r.setState(x, date, instanceState{Status: "GATE_BLOCKED", LastError: lastGateReason, CompletedAt: r.clock.Now().Format(time.RFC3339)})
+				r.mu.Lock()
+				r.gateBlocked = append(r.gateBlocked, gateBlockRecord{Event: x.EventID, Reason: lastGateReason, At: r.clock.Now().Format(time.RFC3339Nano)})
+				if r.gateAlerted == nil {
+					r.gateAlerted = map[string]bool{}
+				}
+				first := !r.gateAlerted[event.Handler]
+				r.gateAlerted[event.Handler] = true
+				r.mu.Unlock()
+				if first {
+					_, _ = r.appendLedger(date, "GATE_HANDLER_BLOCKED", map[string]any{"handler": event.Handler, "event": x.EventID})
+					_ = r.alert("GATE_BLOCKED_FIRST", map[string]any{"event": x.EventID, "handler": event.Handler, "gate_reason": lastGateReason})
+				}
+				return
 			}
-			first := !r.gateAlerted[event.Handler]
-			r.gateAlerted[event.Handler] = true
-			r.mu.Unlock()
-			if first {
-				_, _ = r.appendLedger(date, "GATE_HANDLER_BLOCKED", map[string]any{"handler": event.Handler, "event": x.EventID})
-				_ = r.alert("GATE_BLOCKED_FIRST", map[string]any{"event": x.EventID, "handler": event.Handler, "gate_reason": lastGateReason})
-			}
-			return
 		}
 	}
 	// Gate polling must not hold a worker or concurrency slot.
@@ -1406,7 +1434,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 		}
 	}()
 	cutoff := x.Deadline
-	if x.LateUntil != "" {
+	if x.LateUntil != "" && event.OnDeadline != "missed" {
 		cutoff = x.LateUntil
 	}
 	startCutoff, parseErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
@@ -1414,7 +1442,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 		r.finishLateRetries(x, date, event, st)
 		return
 	}
-	if x.TriggerType != "startup" && parseErr == nil && !r.clock.Now().Before(startCutoff) {
+	if x.TriggerType != "startup" && parseErr == nil && windowExpired(r.clock.Now(), startCutoff) {
 		r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: "START_DEADLINE_EXPIRED"})
 		_ = r.alert("MISSED", map[string]any{"event": x.EventID, "date": date, "error": "START_DEADLINE_EXPIRED"})
 		return
@@ -1453,7 +1481,8 @@ func (r *liveRunner) execute(x Instance, date string) {
 			st.Status = "LATE_RUN"
 		}
 		r.setState(x, date, st)
-		out, err := r.invoke(h.Argv, event, x, date, n, false)
+		attemptDegrade := degradeRequested || x.TriggerType != "startup" && event.OnDeadline == "degrade" && !r.clock.Now().Truncate(time.Second).Before(deadlineAt.Truncate(time.Second))
+		out, err := r.invokeWithDegrade(h.Argv, event, x, date, n, false, attemptDegrade)
 		status, code, retryable, detail := decodeResult(out, err)
 		if status == "not_applicable" {
 			r.setState(x, date, instanceState{Status: "SKIPPED_NA", Attempts: n, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), DataDate: x.DataDate})
@@ -1461,7 +1490,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 		}
 		if status == "ok" || status == "degraded" {
 			stateStatus := "SUCCEEDED"
-			if status == "degraded" {
+			if status == "degraded" || attemptDegrade {
 				stateStatus = "SUCCEEDED_DEGRADED"
 			}
 			r.setState(x, date, instanceState{Status: stateStatus, Attempts: n, StartedAt: st.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), Late: st.Late, DataDate: x.DataDate})
@@ -1664,6 +1693,15 @@ func (r *liveRunner) invoke(argv []string, e *config.Event, x Instance, date str
 }
 
 func (r *liveRunner) invokeDetailed(argv []string, e *config.Event, x Instance, date string, attempt int, gate bool) ([]byte, []byte, error) {
+	return r.invokeDetailedWithDegrade(argv, e, x, date, attempt, gate, false)
+}
+
+func (r *liveRunner) invokeWithDegrade(argv []string, e *config.Event, x Instance, date string, attempt int, gate, degradeRequested bool) ([]byte, error) {
+	out, _, err := r.invokeDetailedWithDegrade(argv, e, x, date, attempt, gate, degradeRequested)
+	return out, err
+}
+
+func (r *liveRunner) invokeDetailedWithDegrade(argv []string, e *config.Event, x Instance, date string, attempt int, gate, degradeRequested bool) ([]byte, []byte, error) {
 	r.configMu.RLock()
 	c := r.c
 	r.configMu.RUnlock()
@@ -1685,7 +1723,7 @@ func (r *liveRunner) invokeDetailed(argv []string, e *config.Event, x Instance, 
 	}
 	if gate {
 		cutoff := e.Trigger.Deadline
-		if e.LateUntil != "" {
+		if e.LateUntil != "" && e.OnDeadline != "degrade" && e.OnDeadline != "missed" {
 			cutoff = e.LateUntil
 		}
 		deadline, parseErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
@@ -1725,7 +1763,7 @@ func (r *liveRunner) invokeDetailed(argv []string, e *config.Event, x Instance, 
 	if dataDate == "" {
 		dataDate = date
 	}
-	in := map[string]any{"contract": 1, "event": e.ID, "instance": x.ID, "attempt": attempt, "run_id": r.boot + "-" + x.ID, "idem_key": date + "/" + x.ID, "trade_date": date, "data_date": dataDate, "asof": date + "T" + x.Start + "+08:00", "deadline_at": date + "T" + x.Deadline + "+08:00", "degrade_requested": false, "sandbox": map[string]any{"on": false, "root": ""}, "args": e.Args, "gate": map[string]any{"ref": e.Gate.Ref, "params": e.Gate.Params, "probe": gate}}
+	in := map[string]any{"contract": 1, "event": e.ID, "instance": x.ID, "attempt": attempt, "run_id": r.boot + "-" + x.ID, "idem_key": date + "/" + x.ID, "trade_date": date, "data_date": dataDate, "asof": date + "T" + x.Start + "+08:00", "deadline_at": date + "T" + x.Deadline + "+08:00", "degrade_requested": degradeRequested && !gate, "sandbox": map[string]any{"on": false, "root": ""}, "args": e.Args, "gate": map[string]any{"ref": e.Gate.Ref, "params": e.Gate.Params, "probe": gate}}
 	if e.ID == "fetch_item" {
 		in["item_id"] = strings.TrimPrefix(x.ID, "fetch_item:")
 	}
@@ -2117,28 +2155,133 @@ func (r *liveRunner) rollDate(wall time.Time) error {
 	r.mu.Unlock()
 	return r.recover()
 }
+func (r *liveRunner) dependencyStatus(date, id string, c config.Config) (string, bool) {
+	event := findEvent(c, id)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if event == nil {
+		return "", false
+	}
+	if event.Trigger.Type != "startup" {
+		state, ok := r.states[date+"/"+id]
+		return state.Status, ok
+	}
+	if status := r.bootSummary[id]; status != "" {
+		return status, true
+	}
+	prefix := date + "/" + id + "@boot"
+	var selected instanceState
+	found := false
+	for key, state := range r.states {
+		if strings.HasPrefix(key, prefix) && (!found || state.CompletedAt > selected.CompletedAt) {
+			selected = state
+			found = true
+		}
+	}
+	return selected.Status, found
+}
+
+func (r *liveRunner) windowDependencyDecision(date string, event *config.Event, c config.Config) (pending []string, blocked string) {
+	if event == nil {
+		return nil, ""
+	}
+	for _, dep := range event.DependsOn {
+		status, exists := r.dependencyStatus(date, dep.ID, c)
+		if !exists || !isTerminal(status) {
+			pending = append(pending, dep.ID)
+			continue
+		}
+		if status == "SUCCEEDED" || status == "SUCCEEDED_DEGRADED" && dep.AcceptDegraded {
+			continue
+		}
+		return nil, dep.ID
+	}
+	return pending, ""
+}
+
+func (r *liveRunner) reconcileWindowDependencies(xs []Instance, date string, c config.Config, now time.Time) {
+	for pass := 0; pass < len(xs); pass++ {
+		changed := false
+		for _, x := range xs {
+			event := findEvent(c, x.EventID)
+			if event == nil || event.Trigger.Type != "window" || len(event.DependsOn) == 0 {
+				continue
+			}
+			key := date + "/" + x.ID
+			r.mu.Lock()
+			state, exists := r.states[key]
+			running := r.running[x.ID]
+			r.mu.Unlock()
+			if running || exists && isTerminal(state.Status) {
+				continue
+			}
+			pending, blocked := r.windowDependencyDecision(date, event, c)
+			if blocked != "" {
+				if !exists || state.Status != "SKIPPED_DEP" {
+					r.setState(x, date, instanceState{Status: "SKIPPED_DEP", LastError: "dependency failed: " + blocked, Attempts: state.Attempts, CompletedAt: now.Format(time.RFC3339)})
+					changed = true
+				}
+				continue
+			}
+			if len(pending) > 0 {
+				if !exists || state.Status != "DEFERRED" || strings.Join(state.WaitFor, "\x00") != strings.Join(pending, "\x00") {
+					state.Status = "DEFERRED"
+					state.LastError = "waiting for dependencies: " + strings.Join(pending, ",")
+					state.CompletedAt = ""
+					state.WaitFor = pending
+					r.setState(x, date, state)
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			return
+		}
+	}
+}
+
 func (r *liveRunner) schedule(now time.Time) {
 	date := now.Format("2006-01-02")
 	r.configMu.RLock()
 	c := r.c
 	r.configMu.RUnlock()
-	xs, _, err := instances(c, date)
+	xs, _, err := runtimeInstances(c, date)
 	if err != nil {
 		return
 	}
+	for _, x := range xs {
+		if !strings.HasPrefix(x.Calendar, "EXCLUDED") {
+			continue
+		}
+		key := date + "/" + x.ID
+		r.mu.Lock()
+		state, exists := r.states[key]
+		r.mu.Unlock()
+		if !exists || !isTerminal(state.Status) {
+			r.setState(x, date, instanceState{Status: "SKIPPED_NA", LastError: "calendar excluded", CompletedAt: now.Format(time.RFC3339)})
+		}
+	}
+	r.reconcileWindowDependencies(xs, date, c, now)
 	r.mu.Lock()
 	r.nextDue = ""
 	r.mu.Unlock()
 	var missedNow []string
 	for _, x := range xs {
 		event := findEvent(c, x.EventID)
+		if event == nil || strings.HasPrefix(x.Calendar, "EXCLUDED") {
+			continue
+		}
 		start, e1 := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Start, r.loc)
+		deadlineAt, e3 := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
 		cutoff := x.Deadline
 		if x.LateUntil != "" {
 			cutoff = x.LateUntil
 		}
+		if event.OnDeadline == "missed" {
+			cutoff = x.Deadline
+		}
 		end, e2 := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
-		if e1 != nil || e2 != nil {
+		if e1 != nil || e2 != nil || e3 != nil {
 			continue
 		}
 		key := date + "/" + x.ID
@@ -2150,8 +2293,23 @@ func (r *liveRunner) schedule(now time.Time) {
 		if exists && isTerminal(st.Status) {
 			continue
 		}
+		if x.Catchup != "run_in_window" && pastScheduleSecond(now, start) && !running && st.Attempts == 0 && st.Status != "RUNNING" && st.Status != "LATE_RUN" {
+			r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: now.Format(time.RFC3339), LastError: "CATCHUP_SKIPPED"})
+			missedNow = append(missedNow, x.ID)
+			continue
+		}
+		pendingDeps, blockedDep := r.windowDependencyDecision(date, event, c)
+		if blockedDep != "" {
+			if !running {
+				r.setState(x, date, instanceState{Status: "SKIPPED_DEP", LastError: "dependency failed: " + blockedDep, Attempts: st.Attempts, CompletedAt: now.Format(time.RFC3339)})
+			}
+			continue
+		}
+		if len(pendingDeps) > 0 {
+			continue
+		}
 		phase, _ := r.currentPhase(now)
-		if exists && st.Status == "DEFERRED" && !now.Before(end) {
+		if exists && st.Status == "DEFERRED" && windowExpired(now, end) {
 			r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: now.Format(time.RFC3339), LastError: "PHASE_DEFER_EXPIRED"})
 			missedNow = append(missedNow, x.ID)
 			continue
@@ -2172,28 +2330,35 @@ func (r *liveRunner) schedule(now time.Time) {
 			}
 			continue
 		}
+		if event.OnDeadline == "missed" && !running && !now.Truncate(time.Second).Before(deadlineAt.Truncate(time.Second)) {
+			r.setState(x, date, instanceState{Status: "MISSED", Attempts: st.Attempts, CompletedAt: now.Format(time.RFC3339), LastError: "ON_DEADLINE_MISSED"})
+			missedNow = append(missedNow, x.ID)
+			continue
+		}
+		degradeDue := event.OnDeadline == "degrade" && !now.Truncate(time.Second).Before(deadlineAt.Truncate(time.Second))
 		if exists && st.Status == "RETRY_WAIT" && !now.Before(end) {
 			if event := findEvent(c, x.EventID); event != nil {
 				r.finishLateRetries(x, date, event, st)
 			}
 			continue
 		}
-		if exists && !running && !now.Before(end) && !isTerminal(st.Status) {
+		if exists && !running && windowExpired(now, end) && !isTerminal(st.Status) {
 			r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: now.Format(time.RFC3339), LastError: "SCHEDULING_WINDOW_EXPIRED"})
 			missedNow = append(missedNow, x.ID)
 			continue
 		}
-		if !now.Before(end) && !exists {
+		if windowExpired(now, end) && !exists {
 			r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: now.Format(time.RFC3339)})
 			missedNow = append(missedNow, x.ID)
 			continue
 		}
 		retryDue := true
-		if exists && st.Status == "RETRY_WAIT" {
+		if exists && st.Status == "RETRY_WAIT" && (!degradeDue || st.Late) {
 			next, err := time.Parse(time.RFC3339, st.NextAttemptAt)
 			retryDue = err != nil || !now.Before(next)
 		}
-		if !now.Before(start) && now.Before(end) && !running && !paused && retryDue {
+		if !now.Before(start) && !windowExpired(now, end) && !running && !paused && retryDue {
+			x.DegradeRequested = degradeDue
 			go r.execute(x, date)
 		}
 		if start.After(now) {
