@@ -147,11 +147,16 @@ def load_registry(path: str | Path | None = None) -> list[dict[str, Any]]:
         if not isinstance(policy, dict) or not policy.get("trigger_event"):
             continue
         event = events.get(policy["trigger_event"])
-        if not event or event.get("trigger_type") != "window" or not event.get("start"):
+        start = event.get("start") if event else None
+        if event and start is None:
+            start = event.get("at")
+            if isinstance(start, list):
+                start = start[0] if start else None
+        if not event or event.get("trigger_type") != "window" or not start:
             raise ValueError(f"registry trigger_event invalid: {item['id']}:{policy['trigger_event']}")
         # Keep the physical registry as an event reference; consumers receive a
         # resolved compatibility value so existing reconcile logic stays stable.
-        policy["trigger_at"] = event["start"]
+        policy["trigger_at"] = start
     return items
 
 

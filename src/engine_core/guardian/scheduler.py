@@ -171,14 +171,18 @@ def phase_at(value: datetime | str, phases: Iterable[Mapping[str, str]] | None =
 def _schedule_source(path: str | Path | None = None) -> dict[str, Any]:
     source = Path(path) if path else Path(__file__).with_name("schedule.json")
     payload = json.loads(source.read_text(encoding="utf-8"))
-    if payload.get("schema_version") != 2:
+    if payload.get("schema_version") not in {2, 3}:
         raise ValueError("schedule_schema_invalid")
     return payload
 
 
 def default_events(path: str | Path | None = None) -> list[EventSpec]:
+    payload = _schedule_source(path)
+    if payload["schema_version"] == 3:
+        from .management import validate_schedule
+        return list(validate_schedule(payload))
     events = []
-    for raw in _schedule_source(path)["events"]:
+    for raw in payload["events"]:
         values = dict(raw)
         values["depends_on"] = tuple(values.get("depends_on") or ())
         values["after"] = tuple(values.get("after") or ())
@@ -564,6 +568,7 @@ class Guardian:
     def _reload_schedule(self, actions: list[dict[str, Any]]) -> None:
         if self.schedule_path is None or not self.schedule_path.exists():
             return
+        payload = None
         try:
             payload = json.loads(self.schedule_path.read_text(encoding="utf-8"))
             if payload == self._config_payload:
@@ -576,16 +581,29 @@ class Guardian:
                    for event in updated):
                 raise ValueError("schedule_completed_event_reintroduced")
             old_hash = schedule_hash(self._config_payload) if self._config_payload else None
-            self.events = updated
-            self.config_revision = payload["revision"]
-            self._config_payload = payload
+            revision = payload.get("revision", 0)
             append_record(self.state_root, {"type": "CONFIG_APPLIED", "business_date": self._loaded_date,
                                             "old_hash": old_hash, "new_hash": schedule_hash(payload),
-                                            "revision": self.config_revision, "result": "APPLIED"})
-            actions.append({"status": "CONFIG_APPLIED", "revision": self.config_revision})
+                                            "revision": revision, "result": "APPLIED"})
+            self.events = updated
+            self.config_revision = revision
+            self._config_payload = payload
+            actions.append({"status": "CONFIG_APPLIED", "revision": revision})
         except (OSError, ValueError, TypeError) as exc:
             self.degraded = True
-            actions.append({"status": "CONFIG_REJECTED", "reason": str(exc)})
+            reason = str(exc)
+            actions.append({"status": "CONFIG_REJECTED", "reason": reason})
+            try:
+                from .management import schedule_hash, append_record
+                append_record(self.state_root, {
+                    "type": "CONFIG_REJECTED", "business_date": self._loaded_date,
+                    "old_hash": schedule_hash(self._config_payload) if self._config_payload else None,
+                    "new_hash": schedule_hash(payload) if isinstance(payload, dict) else None,
+                    "revision": payload.get("revision") if isinstance(payload, dict) else None,
+                    "result": "REJECTED", "reason": reason,
+                })
+            except (OSError, ValueError, TypeError) as record_error:
+                actions[-1]["record_error"] = str(record_error)
 
     def _next_event(self, now: datetime) -> str | None:
         for event in self.events:

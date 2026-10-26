@@ -4,7 +4,7 @@ import re
 from dataclasses import fields
 from pathlib import Path
 
-from engine_core.guardian.management import GO_EVENT_FIELDS, load_schedule
+from engine_core.guardian.management import GO_EVENT_FIELDS, GO_V3_EVENT_FIELDS, load_schedule
 from engine_core.guardian.scheduler import EventSpec, default_events
 
 
@@ -16,16 +16,27 @@ def test_schedule_fields_match_go_migrator_and_native_fixture_provenance():
     native_path = ROOT / "native/guardiand/testdata/schedule.json"
     provenance_path = ROOT / "native/guardiand/testdata/provenance.json"
     go_source = (ROOT / "native/guardiand/main.go").read_text(encoding="utf-8")
-    event_struct = re.search(
+    v2_event_struct = re.search(
         r'type scheduleV2Event struct\s*\{(?P<body>.*?)\n\}',
         go_source,
         re.DOTALL,
     )
-    assert event_struct, "scheduleV2Event struct not found"
-    go_fields = set(re.findall(r'`json:"([^",]+)"`', event_struct.group("body")))
+    assert v2_event_struct, "scheduleV2Event struct not found"
+    v2_fields = set(re.findall(r'`json:"([^",]+)"`', v2_event_struct.group("body")))
+    assert v2_fields == GO_EVENT_FIELDS
     source_bytes = source_path.read_bytes()
     schedule = json.loads(source_bytes)
-    assert go_fields == GO_EVENT_FIELDS
+    if schedule["schema_version"] == 3:
+        event_struct = re.search(
+            r'type scheduleV3Event struct\s*\{(?P<body>.*?)\n\}',
+            go_source,
+            re.DOTALL,
+        )
+        assert event_struct, "scheduleV3Event struct not found"
+        go_fields = set(re.findall(r'`json:"([^",]+)"`', event_struct.group("body")))
+        assert go_fields == GO_V3_EVENT_FIELDS
+    else:
+        go_fields = v2_fields
     assert all(set(event) <= go_fields for event in schedule["events"])
     assert native_path.read_bytes() == source_bytes
     provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
@@ -34,13 +45,11 @@ def test_schedule_fields_match_go_migrator_and_native_fixture_provenance():
 
 def test_default_events_load_all_window_and_startup_definitions_from_config(tmp_path):
     source = json.loads((ROOT / "src/engine_core/guardian/schedule.json").read_text())
-    source["events"][0]["start"] = "00:07:00"
+    source["events"][0]["at"] = "00:07:00"
     source["events"].append({
-        "event_id": "boot_test_extension", "trigger_type": "startup", "order": 60,
-        "after": ["fetch_item"], "start": "", "deadline": "",
-        "gate": "always", "handler": "calendar_refresh", "max_attempts": 1,
-        "retry_backoff": None, "catchup_mode": "skip", "on_deadline": "missed",
-        "timeout_seconds": 300,
+        "event_id": "boot_test_extension", "enabled": True, "calendar": "every_day",
+        "trigger_type": "startup", "order": 60, "after": ["fetch_item"],
+        "gate": "always", "handler": "calendar_refresh", "timeout_seconds": 300,
     })
     path = tmp_path / "schedule.json"
     path.write_text(json.dumps(source))
@@ -108,11 +117,12 @@ def test_runtime_reconciliation_checkpoints_are_configured_and_use_fetch_plan():
     for suffix, (start, phase) in checkpoints.items():
         event = events[f"runtime_reconcile_{suffix}"]
         assert event["trigger_type"] == "window"
-        assert event["start"] == start
+        assert event["at"] == start
         assert event["handler"] == "boot_apply_plan"
         assert event["cost"] == "light"
         assert event["phases"] is None
         assert event["args"]["reconciliation_checkpoint"] == phase
         assert event["args"]["checkpoint_reason"]
-        assert event["max_attempts"] == 1
-        assert event["catchup_mode"] == "run_in_window"
+        profile = payload["profiles"][event["profile"]]
+        assert profile["ladder"][0]["attempts"] == 1
+        assert profile["catchup"] == "run_in_window"
