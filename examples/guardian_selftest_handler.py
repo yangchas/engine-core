@@ -48,6 +48,10 @@ def _run(request: dict) -> int:
             except json.JSONDecodeError:
                 continue
     already_satisfied = behavior == "already_satisfied" and any(row.get("event") == request.get("event") for row in prior_rows)
+    fail_first_instance = (
+        behavior == "fail_first_instance_then_ok"
+        and request.get("instance") == args.get("fail_instance")
+    )
     record = {
         "event": request.get("event"),
         "instance": request.get("instance"),
@@ -92,6 +96,21 @@ def _run(request: dict) -> int:
             _reply({"contract": 1, "status": "failed", "error_code": "SELFTEST_RETRY", "retryable": True,
                     "artifacts": [], "detail": "selftest retryable first attempt"})
             return 30
+        behavior = "ok"
+
+    if fail_first_instance:
+        _reply({"contract": 1, "status": "failed", "error_code": "SELFTEST_RETRY", "retryable": True,
+                "artifacts": [], "detail": "selftest first backfill trigger fails"})
+        return 30
+    if behavior == "fail_first_instance_then_ok":
+        behavior = "ok"
+
+    if behavior == "available_after":
+        available_after = datetime.fromisoformat(str(args.get("available_after", "")))
+        if datetime.now(TZ) < available_after:
+            _reply({"contract": 1, "status": "failed", "error_code": "TIER_NO_DATA", "retryable": False,
+                    "artifacts": [], "detail": "selftest data is not available yet"})
+            return 40
         behavior = "ok"
 
     if behavior == "no_data":

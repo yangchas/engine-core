@@ -1,5 +1,13 @@
 # Project Knowledge
 
+- `[VERIFIED 2026-10-26 — C548 target-date resolution]` Native Guardian keeps
+  `trade_date` as the event day and resolves `target=prev_trade_day` (including
+  legacy `data_date_offset=-1`) from the configured trading calendar. Missing,
+  malformed, or out-of-coverage calendar data is `TARGET_DATE_UNRESOLVED` with
+  exit code 30 and retry semantics; it never substitutes the prior calendar
+  day. The 2026 BaoStock fixture resolves 2026-10-08→2026-09-30 and
+  2026-09-28→2026-09-24.
+
 - `[VERIFIED 2026-10-25 — C536/C537 calendar refresh]` Guardian's `calendar_refresh_0005`
   forces a Baostock + SZSE refresh; `calendar_refresh_0800` still refreshes only
   when needed. A live forced refresh on a temporary copy grew coverage from 323

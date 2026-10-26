@@ -14,8 +14,9 @@ Run the short wall-clock suite with:
 ```
 
 `fast` schedules S01–S14 about 5–25 seconds ahead, the ladder scenarios after
-about 55 seconds, and S24's two trigger points at the next two minute marks. It
-compresses the production window from 08:30:00–09:45:30 (4,530 seconds) onto 45
+about 55 seconds, S28 at about 62 seconds, and S24's two trigger points at the
+next two minute marks. It compresses the production window from
+08:30:00–09:45:30 (4,530 seconds) onto 45
 seconds for S15. Each S15 start is mapped linearly, with at least one second
 between starts to preserve order at the scheduler's second-level resolution.
 Generated windows retain a 12-second run allowance so a scheduler tick does
@@ -49,7 +50,7 @@ requires a value of at least 3.
 | S09 | `sleep:6` with `timeout=2s`; both attempts end as `HANDLER_TIMEOUT` and the handler is retried. |
 | S10 | Response mapping for `ok`, `degraded`, `not_applicable`, and one-attempt permanent failure. |
 | S11 | Calendar file omits today; `trading_day` must not run while `every_day` does. Both use `phases=["any"]` so phase filtering cannot hide calendar behavior. |
-| S12 | Args round-trip unchanged; records `data_date` for offsets -1 and 0. Current behavior is that both equal `trade_date`; no calendar-day or trading-day offset is applied. |
+| S12 | Args round-trip unchanged; offset -1 resolves `data_date` to the prior trading day from the configured calendar, while `trade_date` remains the event day. |
 | S13 | Three startup events ordered with `order`/`after` all run before the scheduled window event. |
 | S14 | Kill the scenario daemon while one handler sleeps, restart with the same state root, and check the completed event stays at one call while the interrupted event reaches attempt 2. |
 | S15 | Expands the 26 window events from `startup_0830` through `open_report_0945`; swaps handlers and configured gates for local self-test implementations, sets calendars to `every_day`, and checks one call per event in source-time order. |
@@ -62,6 +63,10 @@ requires a value of at least 3.
 | S22 | A later trigger point returning exit 20 with `ALREADY_SATISFIED` records `SKIPPED_SATISFIED`. |
 | S23 | An event with one rung retries it to exhaustion and does not invent a fallback. |
 | S24 | A profile ladder and old retry fields expand two `at` points into equivalent instance call sequences. |
+| S25 | Daily backfill's first successful trigger makes the second `SKIPPED_SATISFIED`; data arriving after the first trigger's failure is picked up at the second point. |
+| S26 | The captured trading calendar resolves Monday, weekend, and holiday return dates; an uncovered date reports `TARGET_DATE_UNRESOLVED`. |
+| S27 | An unavailable calendar makes both target-resolution attempts exit 30, records both attempts, and never calls the handler. |
+| S28 | Legacy v2 fields and a named v3 profile compile to equal execution fields and produce identical retry call sequences. |
 
 The ±1.5s retry tolerance accounts for integer-second configured backoffs,
 handler process startup, and the scheduler tick. S01 uses a two-second upper
@@ -82,16 +87,22 @@ limits are kept narrow enough to detect a changed backoff or a missed trigger.
   event is `SKIPPED_NA`; an unavailable or out-of-range calendar remains
   `UNKNOWN` and is not excluded. Unreadable or malformed configured calendar
   files follow the existing error handling.
-- `data_date_offset` is not applied in request construction. Both tested
-  offsets send `data_date == trade_date`.
+- `target=prev_trade_day` and legacy `data_date_offset=-1` use the configured
+  trading calendar; they fail closed with `TARGET_DATE_UNRESOLVED` outside
+  calendar coverage or when the calendar is unavailable. The request keeps
+  `trade_date` as the event day and sends the resolved date as `data_date`.
 - Retry intervals use `eventRetryDelay`: configured base multiplied by
   `2**(attempt-1)`, capped at five minutes. The tested 2s and 3s bases produce
   2/4s and 3/6/12s intervals.
 
-The first four bullets leave S02, S06, S07, and S11 expected to report FAIL
-against the current source. This is visible evidence of missing runtime
-behavior, not a passing result. S12 passes by recording the current offset
-semantics.
+`TestC548ScenarioMatrix` adds 189 table-driven cells across punctual, late-start,
+and expired triggers; seven result classes; three remaining-time budgets; and
+three restart positions. Each cell checks terminal state, tier call sequence,
+and ledger counts, then prints those expected values in its `MATRIX` row.
+Its three-tier ladder represents Redis → TD → Wencai; S25 also checks a source
+that becomes available between the 01:00 and 08:00 backfill points. Exit 10 is
+accepted only with a valid `status=degraded` contract and is recorded as
+`SUCCEEDED_DEGRADED`.
 
 ## Handler replacement table
 
@@ -129,10 +140,11 @@ self-test handler back to the real handler and rerun the suite.
 | `intraday_42` | `guardian_selftest_handler.py run` | `intraday_data` | 未验收 |
 | `intraday_45` | `guardian_selftest_handler.py run` | `intraday_data` | 未验收 |
 | `open_report_0945` | `guardian_selftest_handler.py run` | `open_report` | 未验收 |
+| `daily_kline_backfill` | `guardian_selftest_handler.py run` | 真实函数待接 | 未验收 |
 
 ## Known gaps
 
 `examples/guardian_selftest.py::KNOWN_GAPS` remains empty. The fast self-test
-expects all 24 scenarios to pass. Fault injection for `start`, `backoff`,
+expects all 28 scenarios to pass. Fault injection for `start`, `backoff`,
 `catchup`, `disable-budget`, and `retry-no-data` must make the corresponding
 scenario fail.

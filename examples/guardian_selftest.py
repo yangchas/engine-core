@@ -5,9 +5,8 @@ Fast windows start 5--25 seconds ahead.  Retry delays retain the runtime's
 eventRetryDelay formula (backoff * 2**(attempt-1), capped at five minutes),
 except that the suite runs independent scenarios concurrently.  The minutes
 mode moves the S01/S08/S15 start points to +2m/+3m/+5m and maps the production
-schedule's 75m30s span onto six minutes.  DataDateOffset is observed as
-ignored by the current runtime: both -1 and 0 use trade_date (neither
-calendar-day nor trading-day offset is applied).
+schedule's 75m30s span onto six minutes. Target-date cases use the captured
+BaoStock trading-calendar fixture and fail closed outside its coverage.
 
 This tool only builds a private binary and writes below --work-dir.  It never
 contacts services or reads the user's core-data tree.
@@ -97,6 +96,13 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _write_captured_trade_dates(path: Path) -> None:
+    fixture = ROOT / "tests" / "fixtures" / "trade_calendar" / "baostock-2026-01-01_2026-12-31.json"
+    source = json.loads(fixture.read_text(encoding="utf-8"))
+    dates = [row["calendar_date"] for row in source["rows"] if row["is_trading_day"] == "1"]
+    path.write_text(json.dumps(dates, separators=(",", ":")) + "\n", encoding="utf-8")
+
+
 def _fmt(value: datetime | None) -> str:
     return value.isoformat(timespec="seconds") if value else "-"
 
@@ -155,6 +161,28 @@ def _handler_config() -> dict[str, Any]:
     }
 
 
+def _migration_event_differences(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    def execution_fields(event: dict[str, Any]) -> dict[str, Any]:
+        value = json.loads(json.dumps(event))
+        for key in ("id", "profile", "catchup_source", "ladder_source", "window_source"):
+            value.pop(key, None)
+        # V2 migration materializes the start as at_times=[start]. This is the
+        # same single window trigger already represented by start/deadline.
+        trigger = value.get("trigger")
+        if (isinstance(trigger, dict) and trigger.get("type") == "window"
+                and trigger.get("at_times") == [trigger.get("start")]):
+            trigger.pop("at_times")
+        for rung in value.get("ladder", []):
+            rung.pop("source", None)
+        return value
+
+    left, right = execution_fields(before), execution_fields(after)
+    if left == right:
+        return []
+    return [f"{key}: before={left.get(key)!r}, after={right.get(key)!r}"
+            for key in sorted(set(left) | set(right)) if left.get(key) != right.get(key)]
+
+
 @dataclass
 class Scenario:
     name: str
@@ -180,6 +208,8 @@ class Scenario:
     fault: str = ""
     result: dict[str, Any] | None = None
     schedule_source: dict[str, Any] | None = None
+    schedule_source_before: dict[str, Any] | None = None
+    migration_differences: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.config_path = self.work / "config.json"
@@ -199,7 +229,17 @@ class Scenario:
     def write_config(self, dates: list[str] | None = None) -> None:
         self.selftest_dir.mkdir(parents=True, exist_ok=True)
         self.state_root.mkdir(parents=True, exist_ok=True)
-        self.calendar_path.write_text(json.dumps(dates if dates is not None else [self.date]) + "\n", encoding="utf-8")
+        needs_captured_calendar = any(
+            event.get("data_date_offset") == -1
+            or (isinstance(event.get("args"), dict) and event["args"].get("target") == "prev_trade_day")
+            for event in self.events
+        )
+        if dates is not None:
+            self.calendar_path.write_text(json.dumps(dates) + "\n", encoding="utf-8")
+        elif needs_captured_calendar:
+            _write_captured_trade_dates(self.calendar_path)
+        else:
+            self.calendar_path.write_text(json.dumps([self.date]) + "\n", encoding="utf-8")
         config = {
             "schema_version": 1,
             "config_version": 1,
@@ -232,6 +272,25 @@ class Scenario:
             if result.returncode:
                 raise RuntimeError(f"S24 v3 migrate failed ({result.returncode}): {result.stdout}{result.stderr}")
             migrated = json.loads(self.config_path.read_text(encoding="utf-8"))
+            if self.schedule_source_before is not None:
+                before_source_path = self.work / "schedule-before.json"
+                before_config_path = self.work / "before-expanded.json"
+                before_source_path.write_text(json.dumps(self.schedule_source_before, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                before_result = subprocess.run(
+                    [str(self.binary), "migrate", "--from", str(before_source_path), "--to", str(before_config_path), "--expand"],
+                    cwd=self.work,
+                    capture_output=True,
+                    text=True,
+                )
+                if before_result.returncode:
+                    raise RuntimeError(f"S28 before migrate failed ({before_result.returncode}): {before_result.stdout}{before_result.stderr}")
+                before = json.loads(before_config_path.read_text(encoding="utf-8"))
+                before_event = next((event for event in before.get("events", []) if event.get("id") == "profile_form"), None)
+                after_event = next((event for event in migrated.get("events", []) if event.get("id") == "profile_form"), None)
+                if before_event is None or after_event is None:
+                    self.migration_differences.append("profile_form missing from before/after migrated config")
+                else:
+                    self.migration_differences = _migration_event_differences(before_event, after_event)
             migrated["calendars"]["trading"]["file"] = str(self.calendar_path)
             handlers = _handler_config()
             for event in migrated["events"]:
@@ -240,6 +299,8 @@ class Scenario:
             self.config_path.write_text(json.dumps(migrated, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         else:
             self.config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if self.special == "target_unresolved":
+            self.calendar_path.unlink(missing_ok=True)
         for event in self.events:
             gate = event.get("gate")
             if gate and gate.get("ref") == "always_ready":
@@ -398,6 +459,7 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
         "S21": 59 if fast else 390,
         "S22": 60 if fast else 405,
         "S23": 61 if fast else 420,
+        "S28": 62 if fast else 435,
     }
 
     def at(key: str) -> datetime:
@@ -499,12 +561,12 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
     s11._calendar_dates = dates  # type: ignore[attr-defined]
     cases.append(s11)
 
-    # S12 preserves args and observes data_date_offset directly from request.
+    # S12 preserves args and resolves data_date_offset through the captured calendar.
     s = at("S12")
     cases.append(mk("S12 args and target date", "S12", [
         _event("offset_minus_one", s, deadline=s + timedelta(seconds=18), data_date_offset=-1, args={"marker": "passthrough", "nested": {"x": 1}}),
         _event("offset_zero", s, deadline=s + timedelta(seconds=18), data_date_offset=0),
-    ], ["offset_minus_one", "offset_zero"], "args preserved; current runtime sends trade_date for both offsets", s, 32))
+    ], ["offset_minus_one", "offset_zero"], "args preserved; -1 resolves the previous trade date", s, 32))
 
     # S13 boot sequence ordered before the timed window event.
     s = at("S13")
@@ -708,6 +770,95 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
     ]
     cases.append(migration)
 
+    # S25 exercises both daily-backfill trigger outcomes: satisfied after an
+    # earlier success, and a failed first window repaired by the later window.
+    first_backfill = (now + timedelta(seconds=12)).replace(microsecond=0)
+    second_backfill = first_backfill + timedelta(minutes=1)
+    common_at = [_clock(first_backfill), _clock(second_backfill)]
+    backfill_deadline = second_backfill + timedelta(seconds=10)
+    data_available_at = first_backfill + timedelta(seconds=30)
+    satisfied = _event("backfill_satisfied", first_backfill, deadline=backfill_deadline,
+                       behavior="already_satisfied", args={"target": "prev_trade_day"})
+    satisfied["trigger"]["at_times"] = list(common_at)
+    retry_backfill = _event("backfill_retry", first_backfill, deadline=backfill_deadline,
+                            behavior="available_after",
+                            args={"target": "prev_trade_day", "available_after": data_available_at.isoformat(timespec="seconds")})
+    retry_backfill["trigger"]["at_times"] = list(common_at)
+    s25 = mk("S25 daily backfill trigger recovery", "S25", [satisfied, retry_backfill],
+                    [f"backfill_satisfied@{_clock(first_backfill)[:5]}",
+                     f"backfill_satisfied@{_clock(second_backfill)[:5]}",
+                     f"backfill_retry@{_clock(first_backfill)[:5]}",
+                     f"backfill_retry@{_clock(second_backfill)[:5]}"],
+                    "success→already satisfied; data arrives after first trigger, second backfill succeeds",
+                    first_backfill, (backfill_deadline - now).total_seconds() + 20, "daily_backfill")
+    s25.schedule_source = {
+        "schema_version": 3,
+        "revision": 1,
+        "timezone": "Asia/Shanghai",
+        "profiles": {"kline": {"catchup": "run_in_window", "ladder": [
+            {"name": "primary", "attempts": 3, "backoff": "1s*2", "timeout": "3s"},
+        ]}},
+        "events": [
+            {"id": event["id"], "enabled": True, "calendar": "every_day", "at": common_at,
+             "deadline": _clock(backfill_deadline), "handler": "selftest", "profile": "kline",
+             "args": event["args"]}
+            for event in (satisfied, retry_backfill)
+        ],
+    }
+    cases.append(s25)
+
+    # S27 loses its only calendar after startup and must retry target resolution
+    # using exit code 30 without ever calling the handler.
+    unresolved_start = (now + timedelta(seconds=30 if fast else 90)).replace(microsecond=0)
+    unresolved = _event("target_unresolved", unresolved_start,
+                        deadline=unresolved_start + timedelta(seconds=18),
+                        args={"target": "prev_trade_day"},
+                        retry={"max_attempts": 2, "backoff": "1s"})
+    cases.append(mk("S27 unavailable calendar retries target resolution", "S27", [unresolved],
+                    ["target_unresolved"],
+                    "CIRCUIT_OPEN; two exit-30 attempts; no handler call", unresolved_start, 28,
+                    "target_unresolved"))
+
+    # S28 compiles the same retry contract from legacy v2 fields and a v3
+    # profile, compares all execution fields, then executes both expanded
+    # events and checks their recorded call sequences.
+    s = at("S28")
+    migration_deadline = s + timedelta(seconds=24)
+    flaky_args = {"behavior": "flaky_then_ok"}
+    profile_form = {
+        "id": "profile_form", "enabled": True, "calendar": "every_day", "handler": "selftest",
+        "at": [_clock(s)], "deadline": _clock(migration_deadline), "profile": "retry_profile",
+        "args": flaky_args, "phases": ["any"], "on_deadline": "missed",
+    }
+    legacy_form = {
+        "id": "legacy_form", "enabled": True, "calendar": "every_day", "handler": "selftest",
+        "at": [_clock(s)], "deadline": _clock(migration_deadline), "timeout_seconds": 3,
+        "max_attempts": 2, "retry_backoff": "1s", "catchup": "run_in_window",
+        "args": flaky_args, "phases": ["any"],
+    }
+    s28 = mk("S28 profile migration and call sequence equivalence", "S28", [
+        {"id": "profile_form", "trigger": {"type": "window"}},
+        {"id": "legacy_form", "trigger": {"type": "window"}},
+    ], ["profile_form", "legacy_form"],
+       "migrated event fields match; both call attempt 1 then attempt 2", s, 35)
+    s28.schedule_source_before = {
+        "schema_version": 2, "revision": 1, "timezone": "Asia/Shanghai", "events": [{
+            "event_id": "profile_form", "enabled": True, "calendar": "every_day", "trigger_type": "window",
+            "start": _clock(s), "deadline": _clock(migration_deadline), "handler": "selftest",
+            "timeout_seconds": 3, "max_attempts": 2, "retry_backoff": "1s",
+            "catchup_mode": "run_in_window", "on_deadline": "missed", "phases": ["any"], "args": flaky_args,
+        }],
+    }
+    s28.schedule_source = {
+        "schema_version": 3, "revision": 1, "timezone": "Asia/Shanghai", "profiles": {
+            "retry_profile": {"catchup": "run_in_window", "retry_backoff": "1s", "ladder": [
+                {"name": "legacy", "attempts": 2, "backoff": "1s*2", "backoff_cap": "5m",
+                 "timeout": "3s", "budget_enabled": False}
+            ]}
+        }, "events": [profile_form, legacy_form],
+    }
+    cases.append(s28)
+
     for case in cases:
         case.binary = base / "guardiand-selftest"
         case.write_config(getattr(case, "_calendar_dates", None))
@@ -814,8 +965,10 @@ def _evaluate(case: Scenario) -> list[str]:
             rows = case.calls_for(event_id)
             if len(rows) != 1:
                 errors.append(f"{event_id} calls={len(rows)}")
-            elif rows[0].get("data_date") != rows[0].get("trade_date"):
-                errors.append(f"{event_id} data_date={rows[0].get('data_date')} != trade_date={rows[0].get('trade_date')}")
+            else:
+                expected_date = "2026-10-23" if event_id == "offset_minus_one" else rows[0].get("trade_date")
+                if rows[0].get("data_date") != expected_date:
+                    errors.append(f"{event_id} data_date={rows[0].get('data_date')} expected={expected_date}")
         row = case.calls_for("offset_minus_one")
         if row and row[0].get("args", {}).get("nested", {}).get("x") != 1:
             errors.append("args were not preserved")
@@ -940,7 +1093,116 @@ def _evaluate(case: Scenario) -> list[str]:
                 errors.append(f"profile/legacy sequences differ={event_sequences}")
         if any(status(event_id) != "SUCCEEDED" for event_id in case.ids):
             errors.append("one or more migrated instances did not succeed")
+    elif case.name.startswith("S25"):
+        satisfied_first, satisfied_second, failed_first, recovered_second = case.ids
+        observed = [status(key) for key in case.ids]
+        if observed != ["SUCCEEDED", "SKIPPED_SATISFIED", "FAILED_FINAL", "SUCCEEDED"]:
+            errors.append(f"backfill trigger statuses={observed}")
+        satisfied_calls = case.calls_for("backfill_satisfied")
+        retry_calls = case.calls_for("backfill_retry")
+        if len(satisfied_calls) != 2 or len(retry_calls) != 2:
+            errors.append(f"backfill call counts={len(satisfied_calls)}/{len(retry_calls)}")
+        elif ([row.get("instance") for row in satisfied_calls] != [satisfied_first, satisfied_second]
+              or [row.get("instance") for row in retry_calls] != [failed_first, recovered_second]):
+            errors.append("backfill trigger call order differs from configured trigger points")
+        satisfied_rows = [r.get("data", {}) for r in case.ledger() if r.get("type") == "ALREADY_SATISFIED"]
+        if len(satisfied_rows) != 1 or satisfied_rows[0].get("instance") != satisfied_second:
+            errors.append(f"backfill satisfied ledger={satisfied_rows}")
+        failed_attempts = [r.get("data", {}) for r in case.ledger()
+                           if r.get("type") == "ATTEMPT_END" and (r.get("data") or {}).get("instance") == failed_first]
+        available_after = datetime.fromisoformat(str(retry_calls[0].get("args", {}).get("available_after"))) if retry_calls else None
+        observed_calls = [_parse_call_time(row.get("wall_clock")) for row in retry_calls]
+        if len(failed_attempts) != 1 or [row.get("exit_code") for row in failed_attempts] != [40]:
+            errors.append(f"first backfill failure ledger={failed_attempts}")
+        if available_after is None or len(observed_calls) != 2 or not (
+                observed_calls[0] < available_after <= observed_calls[1]):
+            errors.append(f"data availability did not fall between trigger calls: {observed_calls}/{available_after}")
+    elif case.name.startswith("S27"):
+        calls = case.calls_for("target_unresolved")
+        ledger = case.ledger()
+        attempts = [r.get("data", {}) for r in ledger
+                    if r.get("type") == "ATTEMPT_END" and (r.get("data") or {}).get("instance") == "target_unresolved"]
+        failures = [r.get("data", {}) for r in ledger
+                    if r.get("type") == "FAILURE_OBSERVED" and (r.get("data") or {}).get("event") == "target_unresolved"]
+        if status("target_unresolved") != "CIRCUIT_OPEN" or calls:
+            errors.append(f"unresolved target status/calls={status('target_unresolved')}/{len(calls)}")
+        if [row.get("exit_code") for row in attempts] != [30, 30]:
+            errors.append(f"unresolved target retry ledger={[row.get('exit_code') for row in attempts]}")
+        if [row.get("error_code") for row in failures] != ["TARGET_DATE_UNRESOLVED", "TARGET_DATE_UNRESOLVED"]:
+            errors.append(f"unresolved target error codes={[row.get('error_code') for row in failures]}")
+    elif case.name.startswith("S28"):
+        if case.migration_differences:
+            errors.append(f"migrate before/after fields differ={case.migration_differences}")
+        sequences = {}
+        for event_id in case.ids:
+            rows = case.calls_for(event_id)
+            sequences[event_id] = [(row.get("attempt"), row.get("tier"), row.get("args", {}).get("behavior"))
+                                   for row in rows]
+            if status(event_id) != "SUCCEEDED" or len(rows) != 2:
+                errors.append(f"{event_id} status/calls={status(event_id)}/{len(rows)}")
+        if sequences["profile_form"] != sequences["legacy_form"]:
+            errors.append(f"profile/legacy call sequences differ={sequences}")
+        elif sequences["profile_form"] != [(1, "legacy", "flaky_then_ok"), (2, "legacy", "flaky_then_ok")]:
+            errors.append(f"unexpected migrated call sequence={sequences['profile_form']}")
     return errors
+
+
+def _target_date_selftest(binary: Path, work: Path) -> dict[str, Any]:
+    case_dir = work / "S26"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    calendar = case_dir / "trade_dates.json"
+    _write_captured_trade_dates(calendar)
+    config_path = case_dir / "config.json"
+    config = {
+        "schema_version": 1,
+        "config_version": 1,
+        "name": "guardian-selftest-S26-target-date",
+        "timezone": "Asia/Shanghai",
+        "calendars": {"trading": {"file": str(calendar)}},
+        "handlers": _handler_config(),
+        "events": [{
+            "id": "daily_kline_backfill", "enabled": True, "calendar": "every_day",
+            "handler": "selftest", "args": {"target": "prev_trade_day"},
+            "trigger": {"type": "window", "start": "01:00:00", "deadline": "01:05:00"},
+            "timeout": "3s", "retry": {"max_attempts": 1}, "on_deadline": "missed",
+        }],
+    }
+    config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    expected = {
+        "2026-10-26": "2026-10-23",
+        "2026-10-24": "2026-10-23",
+        "2026-10-25": "2026-10-23",
+        "2026-10-08": "2026-09-30",
+        "2026-09-28": "2026-09-24",
+        "2027-01-04": "TARGET_DATE_UNRESOLVED",
+    }
+    observed: dict[str, str] = {}
+    errors: list[str] = []
+    for event_date, want in expected.items():
+        result = subprocess.run([str(binary), "explain", str(config_path), "--date", event_date, "--json"],
+                                cwd=case_dir, capture_output=True, text=True)
+        if result.returncode:
+            errors.append(f"{event_date}: explain exited {result.returncode}: {result.stderr.strip()}")
+            continue
+        try:
+            rows = json.loads(result.stdout)
+            row = rows[0]
+            got = row.get("data_date") or "TARGET_DATE_UNRESOLVED"
+            if row.get("target_date_error"):
+                got = "TARGET_DATE_UNRESOLVED"
+        except (json.JSONDecodeError, IndexError, TypeError, KeyError) as exc:
+            errors.append(f"{event_date}: invalid explain output: {exc}")
+            continue
+        observed[event_date] = str(got)
+        if got != want:
+            errors.append(f"{event_date}: got {got}, want {want}")
+    return {
+        "name": "S26 previous trade date resolution",
+        "scheduled": "-", "actual": "-", "deviation": "-",
+        "expected": "Monday/weekend/holiday returns previous session; uncovered date unresolved",
+        "observed": "; ".join(f"{day}={value}" for day, value in observed.items()),
+        "passed": not errors, "reasons": errors,
+    }
 
 
 def _parse_call_time(value: Any) -> datetime:
@@ -1091,6 +1353,8 @@ def main(argv: list[str] | None = None) -> int:
         # needs one more minute for its second trigger point.
         budget = 135.0 if args.mode == "fast" else 720.0
         rows = _run_cases(cases, binary, budget)
+        if not args.fault:
+            rows.append(_target_date_selftest(binary, run_dir))
         _apply_known_gaps(rows)
         _print_rows(rows)
         passed = sum(bool(row["passed"]) for row in rows)

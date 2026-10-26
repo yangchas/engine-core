@@ -96,6 +96,7 @@ type LadderTier struct {
 type Event struct {
 	ID              string          `json:"id"`
 	Enabled         bool            `json:"enabled,omitempty"`
+	Disabled        bool            `json:"disabled,omitempty"`
 	Description     string          `json:"description,omitempty"`
 	Calendar        json.RawMessage `json:"calendar,omitempty"`
 	Trigger         Trigger         `json:"trigger"`

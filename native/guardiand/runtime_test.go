@@ -120,6 +120,49 @@ func TestDeferredAndQueuedFetchRetainsRetryPartitionAndAttempts(t *testing.T) {
 	}
 }
 
+func TestInvokeUsesTradingCalendarForPreviousTradeDate(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-26"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 08:00:00", loc)
+	fc := newFakeClock(now)
+	calendar := filepath.Join(root, "calendar.json")
+	if err := os.WriteFile(calendar, []byte(`["2026-10-23","2026-10-26","2026-10-27"]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	input := filepath.Join(root, "input.json")
+	handler := filepath.Join(root, "handler.sh")
+	script := "#!/bin/sh\ncat > '" + input + "'\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"
+	if err := os.WriteFile(handler, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	e := config.Event{ID: "daily_kline_backfill", Handler: "h", Timeout: "3s", Args: map[string]any{"target": "prev_trade_day"}, Trigger: config.Trigger{Type: "window", Start: "01:00:00", Deadline: "01:05:00"}}
+	c := config.Config{Events: []config.Event{e}, Handlers: map[string]config.Handler{"h": {Argv: []string{handler}}}, Calendars: map[string]struct {
+		File string `json:"file"`
+	}{"trading": {File: calendar}}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l,
+		states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	if _, _, err := r.invokeDetailedWithDegrade([]string{handler}, &e, Instance{ID: e.ID, EventID: e.ID, Start: "01:00:00", Deadline: "01:05:00"}, date, 1, false, false); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	b, err := os.ReadFile(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(b), &request); err != nil {
+		t.Fatal(err)
+	}
+	if request["trade_date"] != date || request["data_date"] != "2026-10-23" {
+		t.Fatalf("request dates trade_date=%v data_date=%v; want %s and 2026-10-23", request["trade_date"], request["data_date"], date)
+	}
+}
+
 func TestCalendarRecoveryRerunsFailedBootChainWithFakeClock(t *testing.T) {
 	root, date := t.TempDir(), "2026-10-21"
 	loc, _ := time.LoadLocation("Asia/Shanghai")
@@ -732,7 +775,7 @@ func TestStartupEventsFollowAfterOrderWithFakeClock(t *testing.T) {
 	}
 	c := config.Config{ConfigVersion: 1, Timezone: "Asia/Shanghai", Calendars: map[string]struct {
 		File string `json:"file"`
-	}{"trading": {File: calendar}}, Handlers: map[string]config.Handler{"ha": {Argv: []string{a}}, "hb": {Argv: []string{b}}}, Events: []config.Event{{ID: "boot_a", Trigger: config.Trigger{Type: "startup", Order: 20}, Handler: "ha"}, {ID: "boot_b", Trigger: config.Trigger{Type: "startup", Order: 10, After: []string{"boot_a"}}, Handler: "hb"}}}
+	}{"trading": {File: calendar}}, Handlers: map[string]config.Handler{"ha": {Argv: []string{a}}, "hb": {Argv: []string{b}}}, Events: []config.Event{{ID: "boot_a", Enabled: true, Trigger: config.Trigger{Type: "startup", Order: 20}, Handler: "ha"}, {ID: "boot_b", Enabled: true, Trigger: config.Trigger{Type: "startup", Order: 10, After: []string{"boot_a"}}, Handler: "hb"}}}
 	l, err := openLedger(root, now.Format("2006-01-02"))
 	if err != nil {
 		t.Fatal(err)
@@ -2353,6 +2396,14 @@ func TestDecodeResultKeepsHandlerDetailOnNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestDecodeResultAcceptsDegradedExitCode10(t *testing.T) {
+	out := []byte("{\"contract\":1,\"status\":\"degraded\",\"error_code\":\"\",\"retryable\":false,\"detail\":\"fallback result\"}\n")
+	status, code, retryable, detail := decodeResult(out, localExitError{code: 10, text: "exit status 10"})
+	if status != "degraded" || code != "" || retryable || detail != "fallback result" {
+		t.Fatalf("decodeResult=%q,%q,%t,%q", status, code, retryable, detail)
+	}
+}
+
 func TestRecoveredRunningFetchItemIsRearmedWithoutCountingTheInterruptedAttempt(t *testing.T) {
 	r := &liveRunner{states: map[string]instanceState{
 		"2026-10-21/fetch_item:daily_kline": {Status: "RUNNING", Attempts: 3, DataDate: "2026-10-21", NextPhase: "POST_MARKET"},
@@ -2847,4 +2898,367 @@ exit 75
 	if fc.waitCount() != 0 {
 		t.Fatalf("late_until retry blocked the worker on fake clock %d times", fc.waitCount())
 	}
+}
+
+func TestC548ScenarioMatrix(t *testing.T) {
+	date := "2026-10-20"
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:00", loc)
+	triggers := []string{"punctual", "startup_late", "window_expired"}
+	outcomes := []string{"success", "retry30_then_success", "retry30_exhausted", "tier_no_data40", "timeout_killed", "degraded_success10", "already_satisfied20"}
+	margins := []string{"enough", "only_final_tier", "insufficient_for_first"}
+	restarts := []string{"none", "within_tier", "between_tiers"}
+	t.Log("C548_MATRIX|trigger|outcome|margin|restart|expected_state|expected_calls|expected_ledger")
+	rowCount := 0
+	for _, trigger := range triggers {
+		for _, outcome := range outcomes {
+			for _, margin := range margins {
+				for _, restart := range restarts {
+					cell := fmt.Sprintf("%s/%s/%s/%s", trigger, outcome, margin, restart)
+					rowCount++
+					t.Run(cell, func(t *testing.T) {
+						root := t.TempDir()
+						callsPath := filepath.Join(root, "calls.jsonl")
+						datePath := filepath.Join(root, "trade-dates.json")
+						if err := os.WriteFile(datePath, []byte("[\""+date+"\"]\n"), 0600); err != nil {
+							t.Fatal(err)
+						}
+						handler := writeC545Script(t, filepath.Join(root, "handler.sh"), `request=$(cat)
+printf '%s\n' "$request" >> "$CALL_LOG"
+tier=$(printf '%s\n' "$request" | sed -n 's/.*"tier":"\([^"]*\)".*/\1/p')
+attempt=$(printf '%s\n' "$request" | sed -n 's/.*"attempt":\([0-9][0-9]*\).*/\1/p')
+case "$MATRIX_OUTCOME" in
+  success) printf '%s\n' '{"contract":1,"status":"ok"}' ;;
+  retry30_then_success)
+    if [ "$attempt" -eq "$MATRIX_FAIL_AT" ]; then printf '%s\n' '{"contract":1,"status":"failed","error_code":"TEMP","retryable":true}'; exit 75; fi
+    printf '%s\n' '{"contract":1,"status":"ok"}' ;;
+  retry30_exhausted) printf '%s\n' '{"contract":1,"status":"failed","error_code":"TEMP","retryable":true}'; exit 75 ;;
+  tier_no_data40) printf '%s\n' '{"contract":1,"status":"failed","error_code":"TIER_NO_DATA","retryable":false}'; exit 40 ;;
+  timeout_killed) sleep 5 ;;
+  degraded_success10)
+    if [ "$tier" = "redis" ]; then printf '%s\n' '{"contract":1,"status":"failed","error_code":"TIER_NO_DATA","retryable":false}'; exit 40; fi
+    printf '%s\n' '{"contract":1,"status":"degraded","error_code":"","retryable":false}'; exit 10 ;;
+  already_satisfied20) printf '%s\n' '{"contract":1,"status":"already_satisfied","error_code":"ALREADY_SATISFIED"}' ;;
+esac
+`)
+						alertHandler := writeC545Script(t, filepath.Join(root, "alert.sh"), `cat >/dev/null
+printf '%s\n' '{"contract":1,"status":"ok"}'
+`)
+						t.Setenv("CALL_LOG", callsPath)
+						t.Setenv("MATRIX_OUTCOME", outcome)
+						priorAttempts := 0
+						if restart != "none" {
+							priorAttempts = 1
+						}
+						failAt := priorAttempts + 1
+						t.Setenv("MATRIX_FAIL_AT", strconv.Itoa(failAt))
+
+						triggerAt := start
+						deadline := start.Add(time.Second)
+						now := start
+						switch trigger {
+						case "punctual":
+							switch margin {
+							case "enough":
+								deadline = start.Add(30 * time.Second)
+							case "only_final_tier":
+								deadline = start.Add(4 * time.Second)
+							case "insufficient_for_first":
+								deadline = start.Add(time.Second)
+							}
+						case "startup_late":
+							now = start.Add(time.Second)
+							switch margin {
+							case "enough":
+								deadline = start.Add(31 * time.Second)
+							case "only_final_tier":
+								deadline = start.Add(4 * time.Second)
+							case "insufficient_for_first":
+								deadline = start.Add(2 * time.Second)
+							}
+						case "window_expired":
+							now = start.Add(6 * time.Second)
+							deadline = start.Add(5 * time.Second)
+						}
+						timeouts := []string{"5s", "4s", "2s"}
+						if outcome == "timeout_killed" {
+							if margin == "enough" {
+								timeouts = []string{"10ms", "10ms", "10ms"}
+							} else if margin == "only_final_tier" {
+								timeouts = []string{"5s", "4s", "10ms"}
+							} else {
+								timeouts = []string{"2s", "2s", "2s"}
+							}
+						}
+						attempts := 2
+						if outcome == "retry30_then_success" {
+							attempts = 3
+						}
+						if outcome == "retry30_exhausted" || outcome == "timeout_killed" {
+							attempts = 2
+						}
+						ladder := []config.LadderTier{
+							{Name: "redis", Attempts: attempts, Timeout: timeouts[0]},
+							{Name: "td", Attempts: attempts, Timeout: timeouts[1]},
+							{Name: "wencai", Attempts: attempts, Timeout: timeouts[2]},
+						}
+						if restart == "between_tiers" {
+							ladder[0].Attempts = 1
+						}
+						event := config.Event{ID: "matrix", Enabled: true, Handler: "h", Catchup: "run_in_window",
+							Calendar: json.RawMessage(`"every_day"`), Phases: []string{"any"},
+							Trigger:    config.Trigger{Type: "window", Start: triggerAt.Format("15:04:05"), Deadline: deadline.Format("15:04:05")},
+							OnDeadline: "missed", Ladder: ladder}
+						c := config.Config{Events: []config.Event{event}, Calendars: map[string]struct {
+							File string `json:"file"`
+						}{"trading": {File: datePath}}, Handlers: map[string]config.Handler{
+							"h":     {Argv: []string{handler}, EnvAllow: []string{"CALL_LOG", "MATRIX_OUTCOME", "MATRIX_FAIL_AT"}},
+							"alert": {Argv: []string{alertHandler}},
+						}}
+						fc := newFakeClock(now)
+						r, closeRunner := newC545Runner(t, root, date, fc, c)
+						if restart != "none" {
+							priorError := "TEMP"
+							if restart == "between_tiers" {
+								priorError = "TIER_NO_DATA"
+							}
+							prior := instanceState{Status: "RUNNING", Attempts: 1, Rung: 1, Tier: "redis", RungAttempts: 1, StartedAt: now.Add(-time.Second).Format(time.RFC3339)}
+							x := Instance{ID: "matrix", EventID: "matrix", TriggerType: "window", Start: event.Trigger.Start, Deadline: event.Trigger.Deadline}
+							r.setState(x, date, prior)
+							_, _ = r.appendLedger(date, "TIER_ATTEMPT", map[string]any{"instance": "matrix", "rung": 1, "tier": "redis", "rung_attempt": 1, "attempt": 1})
+							_, _ = r.appendLedger(date, "TIER_FAILED", map[string]any{"instance": "matrix", "rung": 1, "tier": "redis", "rung_attempt": 1, "attempt": 1, "error_code": priorError})
+							if err := os.WriteFile(callsPath, []byte(`{"tier":"redis","prior":"restart"}`+"\n"), 0600); err != nil {
+								t.Fatal(err)
+							}
+							closeRunner()
+							r, closeRunner = newC545Runner(t, root, date, fc, c)
+							r.start = now
+							if err := r.recover(); err != nil {
+								t.Fatal(err)
+							}
+						}
+						defer closeRunner()
+						r.schedule(now)
+						if err := waitC548MatrixDone(r, date, "matrix", 4*time.Second); err != nil {
+							t.Fatal(err)
+						}
+						got := r.states[date+"/matrix"]
+						gotCalls := readC548MatrixCalls(t, callsPath)
+						expectedCalls, expectedStatus := c548ExpectedMatrix(trigger, outcome, margin, restart)
+						if got.Status != expectedStatus {
+							t.Fatalf("state=%+v calls=%v expected_status=%s", got, gotCalls, expectedStatus)
+						}
+						if strings.Join(gotCalls, ",") != strings.Join(expectedCalls, ",") {
+							t.Fatalf("calls=%v expected=%v", gotCalls, expectedCalls)
+						}
+						gotLedger := ledgerTypeCounts(t, root, date)
+						expectedLedger := c548ExpectedMatrixLedger(trigger, outcome, margin, restart, expectedCalls)
+						for typ, want := range expectedLedger {
+							if gotLedger[typ] != want {
+								t.Fatalf("ledger %s=%d expected=%d; all=%v", typ, gotLedger[typ], want, gotLedger)
+							}
+						}
+						t.Logf("MATRIX|trigger=%s|outcome=%s|margin=%s|restart=%s|status=%s|calls=%s|ledger=%s", trigger, outcome, margin, restart, expectedStatus, strings.Join(expectedCalls, ">"), c548FormatMatrixLedger(expectedLedger))
+					})
+				}
+			}
+		}
+	}
+	if rowCount != 189 {
+		t.Fatalf("matrix rows=%d, want 189", rowCount)
+	}
+}
+
+func waitC548MatrixDone(r *liveRunner, date, id string, timeout time.Duration) error {
+	until := time.Now().Add(timeout)
+	for time.Now().Before(until) {
+		r.mu.Lock()
+		state, ok := r.states[date+"/"+id]
+		_, running := r.running[id]
+		r.mu.Unlock()
+		if ok && isTerminal(state.Status) && !running {
+			return nil
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return fmt.Errorf("matrix instance %s did not finish", id)
+}
+
+func readC548MatrixCalls(t *testing.T, path string) []string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatal(err)
+	}
+	var calls []string
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if line == "" {
+			continue
+		}
+		var request struct {
+			Tier string `json:"tier"`
+		}
+		if err := json.Unmarshal([]byte(line), &request); err != nil {
+			t.Fatal(err)
+		}
+		calls = append(calls, request.Tier)
+	}
+	return calls
+}
+
+func c548ExpectedMatrix(trigger, outcome, margin, restart string) ([]string, string) {
+	calls := []string{}
+	if restart != "none" {
+		calls = append(calls, "redis")
+	}
+	if trigger == "window_expired" {
+		return calls, "MISSED"
+	}
+	if margin == "insufficient_for_first" {
+		return calls, "FAILED_FINAL"
+	}
+	tiers := []string{"redis", "td", "wencai"}
+	start := 0
+	if restart == "between_tiers" {
+		start = 1
+	}
+	if margin == "only_final_tier" {
+		start = 2
+	}
+	if start > 2 {
+		return calls, "FAILED_FINAL"
+	}
+	appendAttempts := func(index, count int) {
+		remaining := count
+		if restart == "within_tier" && index == 0 {
+			remaining--
+		}
+		for i := 0; i < remaining; i++ {
+			calls = append(calls, tiers[index])
+		}
+	}
+	switch outcome {
+	case "success":
+		calls = append(calls, tiers[start])
+		if start > 0 {
+			return calls, "SUCCEEDED_DEGRADED"
+		}
+		return calls, "SUCCEEDED"
+	case "retry30_then_success":
+		calls = append(calls, tiers[start], tiers[start])
+		if start > 0 {
+			return calls, "SUCCEEDED_DEGRADED"
+		}
+		return calls, "SUCCEEDED"
+	case "retry30_exhausted", "timeout_killed":
+		attempts := 2
+		if outcome == "retry30_then_success" {
+			attempts = 3
+		}
+		for i := start; i < len(tiers); i++ {
+			appendAttempts(i, attempts)
+		}
+		return calls, "FAILED_FINAL"
+	case "tier_no_data40":
+		for i := start; i < len(tiers); i++ {
+			calls = append(calls, tiers[i])
+		}
+		return calls, "FAILED_FINAL"
+	case "degraded_success10":
+		if restart != "between_tiers" && start == 0 {
+			calls = append(calls, "redis", "td")
+		} else {
+			calls = append(calls, tiers[start])
+		}
+		return calls, "SUCCEEDED_DEGRADED"
+	case "already_satisfied20":
+		calls = append(calls, tiers[start])
+		return calls, "SKIPPED_SATISFIED"
+	}
+	return calls, "FAILED_FINAL"
+}
+
+func c548ExpectedMatrixLedger(trigger, outcome, margin, restart string, expectedCalls []string) map[string]int {
+	seeded := 0
+	if restart != "none" {
+		seeded = 1
+	}
+	actual := len(expectedCalls) - seeded
+	if trigger == "window_expired" {
+		actual = 0
+	}
+	if margin == "insufficient_for_first" && trigger != "window_expired" {
+		actual = 0
+	}
+	failed := seeded
+	switch outcome {
+	case "retry30_then_success":
+		if actual > seeded {
+			failed++
+		}
+	case "retry30_exhausted", "tier_no_data40", "timeout_killed":
+		failed += actual
+	case "degraded_success10":
+		if restart != "between_tiers" && margin != "insufficient_for_first" && trigger != "window_expired" && margin != "only_final_tier" {
+			failed++
+		}
+	}
+	skipped := 0
+	if trigger != "window_expired" {
+		if margin == "only_final_tier" {
+			skipped = 2
+		} else if margin == "insufficient_for_first" {
+			skipped = 3
+		}
+	}
+	exhausted := 0
+	eligibleTiers := 3
+	if margin == "only_final_tier" {
+		eligibleTiers = 1
+	} else if margin == "insufficient_for_first" || trigger == "window_expired" {
+		eligibleTiers = 0
+	}
+	if restart == "between_tiers" && eligibleTiers > 0 && margin != "only_final_tier" && trigger != "window_expired" {
+		exhausted++
+	}
+	if (outcome == "retry30_exhausted" || outcome == "timeout_killed") && actual > 0 {
+		currentTiers := eligibleTiers
+		if restart == "between_tiers" && margin != "only_final_tier" && currentTiers > 0 {
+			currentTiers--
+		}
+		exhausted += currentTiers
+	}
+	alerts := 0
+	if trigger == "window_expired" || margin == "insufficient_for_first" || outcome == "retry30_exhausted" || outcome == "tier_no_data40" || outcome == "timeout_killed" {
+		alerts = 1
+	}
+	satisfied := 0
+	if outcome == "already_satisfied20" && actual > 0 {
+		satisfied = 1
+	}
+	return map[string]int{
+		"TIER_ATTEMPT":      len(expectedCalls),
+		"TIER_FAILED":       failed,
+		"TIER_EXHAUSTED":    exhausted,
+		"TIER_SKIPPED":      skipped,
+		"ALREADY_SATISFIED": satisfied,
+		"ATTEMPT_START":     actual,
+		"ATTEMPT_END":       actual,
+		"ALERT_OUT":         alerts,
+	}
+}
+
+func c548FormatMatrixLedger(counts map[string]int) string {
+	order := []string{"TIER_ATTEMPT", "TIER_FAILED", "TIER_EXHAUSTED", "TIER_SKIPPED", "ALREADY_SATISFIED", "ATTEMPT_START", "ATTEMPT_END", "ALERT_OUT"}
+	parts := make([]string, 0, len(order))
+	for _, key := range order {
+		parts = append(parts, fmt.Sprintf("%s:%d", key, counts[key]))
+	}
+	return strings.Join(parts, ",")
 }

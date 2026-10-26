@@ -7,7 +7,74 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"guardiand/config"
 )
+
+func TestResolvePreviousTradeDayUsesCapturedTradingCalendar(t *testing.T) {
+	fixture := filepath.Join("..", "..", "tests", "fixtures", "trade_calendar", "baostock-2026-01-01_2026-12-31.json")
+	fixtureBytes, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var captured struct {
+		Rows []struct {
+			Date        string `json:"calendar_date"`
+			TradingFlag string `json:"is_trading_day"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(fixtureBytes, &captured); err != nil {
+		t.Fatal(err)
+	}
+	var tradingDays []string
+	for _, row := range captured.Rows {
+		if row.TradingFlag == "1" {
+			tradingDays = append(tradingDays, row.Date)
+		}
+	}
+	calendar := filepath.Join(t.TempDir(), "trade_dates.json")
+	calendarBytes, err := json.Marshal(tradingDays)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(calendar, calendarBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := config.Config{Calendars: map[string]struct {
+		File string `json:"file"`
+	}{"trading": {File: calendar}}}
+	e := &config.Event{Args: map[string]any{"target": "prev_trade_day"}}
+	cases := []struct {
+		name, eventDate, want string
+		wantError             bool
+	}{
+		{name: "monday", eventDate: "2026-10-26", want: "2026-10-23"},
+		{name: "saturday", eventDate: "2026-10-24", want: "2026-10-23"},
+		{name: "sunday", eventDate: "2026-10-25", want: "2026-10-23"},
+		{name: "first day after national holiday", eventDate: "2026-10-08", want: "2026-09-30"},
+		{name: "first day after mid autumn holiday", eventDate: "2026-09-28", want: "2026-09-24"},
+		{name: "outside calendar coverage", eventDate: "2027-01-04", wantError: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveDataDate(c, e, Instance{}, tc.eventDate)
+			if tc.wantError {
+				if err == nil || !strings.Contains(err.Error(), "TARGET_DATE_UNRESOLVED") {
+					t.Fatalf("resolveDataDate error=%v, want TARGET_DATE_UNRESOLVED", err)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("resolveDataDate=%q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+	legacyEvent := &config.Event{DataDateOffset: -1}
+	legacyDate, err := resolveDataDate(c, legacyEvent, Instance{DataDateOffset: -1}, "2026-10-26")
+	if err != nil || legacyDate != "2026-10-23" {
+		t.Fatalf("legacy data_date_offset=-1 resolved %q, %v; want 2026-10-23", legacyDate, err)
+	}
+}
 
 func TestCompileScheduleV3ProfilesAtListAndLegacyFields(t *testing.T) {
 	source := []byte(`{"schema_version":3,"timezone":"Asia/Shanghai","profiles":{"auction":{"catchup":"run_in_window","window":{"deadline":"09:30"},"ladder":[{"name":"redis","args":{"source":"redis"},"attempts":2,"backoff":"2s*2","timeout":"3s"},{"name":"td","args":{"source":"td"},"attempts":1,"timeout":"5s"}]}},"events":[{"id":"auction_report","at":["09:25","09:26:30"],"deadline":"09:29","handler":"auction_report","profile":"auction"},{"id":"legacy_report","at":"09:27","deadline":"09:29","handler":"auction_report","timeout_seconds":8,"max_attempts":3,"retry_backoff":"2s","retry_until_late":true,"late_until":"10:00","catchup_mode":"run_in_window"}]}`)
@@ -24,6 +91,46 @@ func TestCompileScheduleV3ProfilesAtListAndLegacyFields(t *testing.T) {
 	legacy := c.Events[1]
 	if len(legacy.Ladder) != 1 || legacy.Ladder[0].Attempts != 3 || legacy.Ladder[0].Until != "late_until" || legacy.Ladder[0].BudgetEnabled == nil || *legacy.Ladder[0].BudgetEnabled {
 		t.Fatalf("legacy fields not downgraded: %+v", legacy.Ladder)
+	}
+}
+
+func TestScheduleV3ProfileRetainsLegacyRetryAndLadderFields(t *testing.T) {
+	source := []byte(`{"schema_version":3,"timezone":"Asia/Shanghai","profiles":{"morning":{"catchup":"run_in_window","retry_backoff":"60s","retry_until_late":true,"silent_until_last":false,"window":{"late_until":"14:00"},"ladder":[{"name":"legacy","attempts":3,"backoff":"60s*2","backoff_cap":"10m","timeout":"300s","until":"late_until","budget_enabled":false}]}},"events":[{"id":"profiled","at":"09:00","deadline":"09:05","handler":"auction_report","profile":"morning","args":{"source":"td"}}]}`)
+	c, err := compileScheduleV3(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Events) != 1 {
+		t.Fatalf("compiled events=%d", len(c.Events))
+	}
+	e := c.Events[0]
+	if e.Retry.MaxAttempts != 3 || e.Retry.Backoff != "60s" || !e.Retry.UntilLate || e.Retry.SilentUntilLast {
+		t.Fatalf("profile retry metadata=%+v", e.Retry)
+	}
+	if e.LateUntil != "14:00:00" || e.Catchup != "run_in_window" {
+		t.Fatalf("profile event policy late_until=%q catchup=%q", e.LateUntil, e.Catchup)
+	}
+	if len(e.Ladder) != 1 {
+		t.Fatalf("profile ladder length=%d", len(e.Ladder))
+	}
+	rung := e.Ladder[0]
+	if rung.Args["source"] != "td" || rung.Backoff != "60s*2" || rung.BackoffCap != "10m" || rung.Timeout != "300s" || rung.Until != "late_until" || rung.BudgetEnabled == nil || *rung.BudgetEnabled {
+		t.Fatalf("compiled profile rung=%+v", rung)
+	}
+}
+
+func TestDisabledScheduleEventDoesNotCreateInstances(t *testing.T) {
+	source := []byte(`{"schema_version":3,"timezone":"Asia/Shanghai","events":[{"id":"daily_kline_backfill","enabled":false,"calendar":"every_day","at":["01:00","08:00"],"deadline":"08:15","handler":"selftest","args":{"target":"prev_trade_day"},"profile":"kline"}],"profiles":{"kline":{"ladder":[{"name":"primary","attempts":3,"backoff":"1m*2","timeout":"5m"}]}}}`)
+	c, err := compileScheduleV3(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xs, _, err := instances(c, "2026-10-26")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(xs) != 0 {
+		t.Fatalf("disabled event created instances: %+v", xs)
 	}
 }
 

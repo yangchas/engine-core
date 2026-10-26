@@ -68,12 +68,20 @@ func exitCode(err error) int {
 	if err == nil {
 		return 0
 	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return ee.ExitCode()
+	var coded interface{ ExitCode() int }
+	if errors.As(err, &coded) {
+		return coded.ExitCode()
 	}
 	return -1
 }
+
+type localExitError struct {
+	code int
+	text string
+}
+
+func (e localExitError) Error() string { return e.text }
+func (e localExitError) ExitCode() int { return e.code }
 func parseGateTimestamp(s string, loc *time.Location) (time.Time, error) {
 	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999", "2006-01-02 15:04:05"} {
 		if t, err := time.ParseInLocation(layout, s, loc); err == nil {
@@ -726,7 +734,7 @@ func (r *liveRunner) runBootEvents(now time.Time) error {
 	r.configMu.RUnlock()
 	var events []config.Event
 	for _, e := range c.Events {
-		if e.Trigger.Type == "startup" {
+		if !e.Disabled && e.Trigger.Type == "startup" {
 			events = append(events, e)
 		}
 	}
@@ -1183,6 +1191,14 @@ func (r *liveRunner) execute(x Instance, date string) {
 	r.mu.Unlock()
 	if x.EventID == "fetch_item" {
 		event = fetchItemEvent(event, prior)
+	}
+	if x.DataDate == "" {
+		x.DataDate = prior.DataDate
+	}
+	if x.DataDate == "" {
+		if dataDate, err := resolveDataDate(c, event, x, date); err == nil {
+			x.DataDate = dataDate
+		}
 	}
 	cost := eventCost(event)
 	r.mu.Lock()
@@ -1893,7 +1909,7 @@ func (r *liveRunner) finishLateRetries(x Instance, date string, event *config.Ev
 	}
 }
 func retryableFailure(code string) bool {
-	return code == "HANDLER_TIMEOUT" || code == "INTERNAL_ERROR" || strings.Contains(code, "DEPENDENCY")
+	return code == "HANDLER_TIMEOUT" || code == "INTERNAL_ERROR" || code == "TARGET_DATE_UNRESOLVED" || strings.Contains(code, "DEPENDENCY")
 }
 func (r *liveRunner) invoke(argv []string, e *config.Event, x Instance, date string, attempt int, gate bool) ([]byte, error) {
 	out, _, err := r.invokeDetailed(argv, e, x, date, attempt, gate)
@@ -1913,12 +1929,89 @@ func (r *liveRunner) invokeDetailedWithDegrade(argv []string, e *config.Event, x
 	return r.invokeDetailedTier(argv, e, x, date, attempt, gate, degradeRequested, 0, "", false, nil)
 }
 
+func resolveDataDate(c config.Config, e *config.Event, x Instance, eventDate string) (string, error) {
+	target := ""
+	if value, exists := e.Args["target"]; exists {
+		var ok bool
+		target, ok = value.(string)
+		if !ok {
+			return "", fmt.Errorf("TARGET_DATE_UNRESOLVED: target must be a string")
+		}
+	} else if x.TargetDate != "" {
+		target = x.TargetDate
+	}
+	offset := x.DataDateOffset
+	if offset == 0 {
+		offset = e.DataDateOffset
+	}
+	if target == "" {
+		switch offset {
+		case 0:
+			target = "event_day"
+		case -1:
+			target = "prev_trade_day"
+		default:
+			return "", fmt.Errorf("TARGET_DATE_UNRESOLVED: unsupported data_date_offset")
+		}
+	}
+	if _, err := time.Parse("2006-01-02", eventDate); err != nil {
+		return "", fmt.Errorf("TARGET_DATE_UNRESOLVED: invalid event day")
+	}
+	switch target {
+	case "event_day":
+		return eventDate, nil
+	case "prev_trade_day":
+		calendarConfig, ok := c.Calendars["trading"]
+		if !ok || calendarConfig.File == "" {
+			return "", fmt.Errorf("TARGET_DATE_UNRESOLVED: trading calendar unavailable")
+		}
+		calendar, err := readTradingDates(calendarConfig.File)
+		if err != nil || calendar.min == "" {
+			return "", fmt.Errorf("TARGET_DATE_UNRESOLVED: trading calendar unavailable")
+		}
+		if eventDate < calendar.min || eventDate > calendar.max {
+			return "", fmt.Errorf("TARGET_DATE_UNRESOLVED: event day outside trading calendar coverage")
+		}
+		previous := ""
+		for candidate := range calendar.days {
+			if candidate < eventDate && candidate > previous {
+				previous = candidate
+			}
+		}
+		if previous == "" {
+			return "", fmt.Errorf("TARGET_DATE_UNRESOLVED: no previous trade day in calendar coverage")
+		}
+		return previous, nil
+	default:
+		return "", fmt.Errorf("TARGET_DATE_UNRESOLVED: unsupported target")
+	}
+}
+
+func (r *liveRunner) unresolvedTargetDate(x Instance, date string, attempt, rung int, tier string, gate bool, err error) ([]byte, []byte, error) {
+	detail := err.Error()
+	out, _ := json.Marshal(map[string]any{"contract": 1, "status": "failed", "error_code": "TARGET_DATE_UNRESOLVED", "retryable": true, "detail": detail})
+	if !gate {
+		at := r.clock.Now().Format(time.RFC3339Nano)
+		_, _ = r.appendLedger(date, "ATTEMPT_START", map[string]any{"instance": x.ID, "attempt": attempt, "rung": rung, "tier": tier, "starttime": at, "internal": true})
+		_, _ = r.appendLedger(date, "ATTEMPT_END", map[string]any{"instance": x.ID, "attempt": attempt, "rung": rung, "tier": tier, "exit_code": 30, "exit_error": "TARGET_DATE_UNRESOLVED", "internal": true})
+	}
+	return out, nil, localExitError{code: 30, text: "TARGET_DATE_UNRESOLVED"}
+}
+
 func (r *liveRunner) invokeDetailedTier(argv []string, e *config.Event, x Instance, date string, attempt int, gate, degradeRequested bool, rung int, tier string, degraded bool, skippedTiers []string) ([]byte, []byte, error) {
 	r.configMu.RLock()
 	c := r.c
 	r.configMu.RUnlock()
+	dataDate := x.DataDate
+	if dataDate == "" {
+		var err error
+		dataDate, err = resolveDataDate(c, e, x, date)
+		if err != nil {
+			return r.unresolvedTargetDate(x, date, attempt, rung, tier, gate, err)
+		}
+	}
 	args := make([]string, len(argv))
-	values := map[string]string{"trade_date": date, "data_date": date, "asof": date + "T" + x.Start + "+08:00", "event_id": x.EventID, "instance": x.ID, "attempt": fmt.Sprint(attempt), "run_id": r.boot + "-" + x.ID, "sandbox_root": "", "python": "python3"}
+	values := map[string]string{"trade_date": date, "data_date": dataDate, "asof": date + "T" + x.Start + "+08:00", "event_id": x.EventID, "instance": x.ID, "attempt": fmt.Sprint(attempt), "run_id": r.boot + "-" + x.ID, "sandbox_root": "", "python": "python3"}
 	for i, a := range argv {
 		args[i] = runtimeTemplateRE.ReplaceAllStringFunc(a, func(m string) string {
 			parts := runtimeTemplateRE.FindStringSubmatch(m)
@@ -1970,10 +2063,6 @@ func (r *liveRunner) invokeDetailedTier(argv []string, e *config.Event, x Instan
 		if value, ok := os.LookupEnv(name); ok {
 			cmd.Env = append(cmd.Env, name+"="+value)
 		}
-	}
-	dataDate := x.DataDate
-	if dataDate == "" {
-		dataDate = date
 	}
 	in := map[string]any{"contract": 1, "event": e.ID, "instance": x.ID, "attempt": attempt, "run_id": r.boot + "-" + x.ID, "idem_key": date + "/" + x.ID, "trade_date": date, "data_date": dataDate, "asof": date + "T" + x.Start + "+08:00", "deadline_at": date + "T" + x.Deadline + "+08:00", "degrade_requested": degradeRequested && !gate, "tier": tier, "degraded": degraded, "skipped_tiers": skippedTiers, "sandbox": map[string]any{"on": false, "root": ""}, "args": e.Args, "gate": map[string]any{"ref": e.Gate.Ref, "params": e.Gate.Params, "probe": gate}}
 	if e.ID == "fetch_item" {
@@ -2052,6 +2141,12 @@ func decodeResult(out []byte, err error) (status, code string, retry bool, detai
 	if err != nil {
 		if strings.Contains(err.Error(), "HANDLER_TIMEOUT") {
 			return "failed", "HANDLER_TIMEOUT", true, ""
+		}
+		if parsed && v.Status == "degraded" && !v.Retryable && exitCode(err) == 10 {
+			return "degraded", v.ErrorCode, false, detailText
+		}
+		if parsed && v.ErrorCode == "TARGET_DATE_UNRESOLVED" && exitCode(err) == 30 {
+			return "failed", "TARGET_DATE_UNRESOLVED", true, detailText
 		}
 		if parsed && v.ErrorCode == "TIER_NO_DATA" && exitCode(err) == 40 {
 			return "failed", "TIER_NO_DATA", false, detailText

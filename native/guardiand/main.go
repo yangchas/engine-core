@@ -28,6 +28,8 @@ type Instance struct {
 	Calendar         string `json:"calendar"`
 	TriggerType      string `json:"trigger_type,omitempty"`
 	DataDate         string `json:"data_date,omitempty"`
+	TargetDate       string `json:"target_date,omitempty"`
+	DataDateOffset   int    `json:"data_date_offset,omitempty"`
 	DegradeRequested bool   `json:"-"`
 }
 
@@ -223,15 +225,22 @@ func instancesWithExcluded(c config.Config, date string, includeExcluded bool) (
 		var e error
 		calendar, e = readTradingDates(x.File)
 		if e != nil {
-			return nil, "", e
+			if !includeExcluded {
+				return nil, "", e
+			}
+			calendar = tradingDates{source: "unavailable"}
 		}
 		source = calendar.source
 	}
 	var out []Instance
 	for _, e := range c.Events {
+		if e.Disabled {
+			continue
+		}
 		if e.Trigger.Type == "startup" {
 			continue
 		}
+		targetDate, _ := e.Args["target"].(string)
 		status := calendarStatusInRange(e.Calendar, date, calendar.days, source, calendar.min, calendar.max)
 		if strings.HasPrefix(status, "EXCLUDED") {
 			if !includeExcluded {
@@ -246,20 +255,20 @@ func instancesWithExcluded(c config.Config, date string, includeExcluded bool) (
 			if len(e.Trigger.AtTimes) > 0 {
 				for _, at := range e.Trigger.AtTimes {
 					id := e.ID + "@" + at[:5]
-					out = append(out, Instance{ID: id, EventID: e.ID, Start: at, Deadline: e.Trigger.Deadline, LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: catch, OnDeadline: e.OnDeadline, Calendar: status})
+					out = append(out, Instance{ID: id, EventID: e.ID, Start: at, Deadline: e.Trigger.Deadline, LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: catch, OnDeadline: e.OnDeadline, Calendar: status, TargetDate: targetDate, DataDateOffset: e.DataDateOffset})
 					if len(out) > 10000 {
 						return nil, "", fmt.Errorf("at instance limit exceeded")
 					}
 				}
 				continue
 			}
-			out = append(out, Instance{ID: e.ID, EventID: e.ID, Start: e.Trigger.Start, Deadline: e.Trigger.Deadline, LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: catch, OnDeadline: e.OnDeadline, Calendar: status})
+			out = append(out, Instance{ID: e.ID, EventID: e.ID, Start: e.Trigger.Start, Deadline: e.Trigger.Deadline, LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: catch, OnDeadline: e.OnDeadline, Calendar: status, TargetDate: targetDate, DataDateOffset: e.DataDateOffset})
 			continue
 		}
 		if e.Trigger.Type == "at" {
 			d := time.Duration(configDuration(e.Trigger.Window))
 			end := clock(e.Trigger.At).Add(d)
-			out = append(out, Instance{ID: e.ID, EventID: e.ID, Start: e.Trigger.At, Deadline: end.Format("15:04:05"), LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: e.Catchup, OnDeadline: e.OnDeadline, Calendar: status})
+			out = append(out, Instance{ID: e.ID, EventID: e.ID, Start: e.Trigger.At, Deadline: end.Format("15:04:05"), LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: e.Catchup, OnDeadline: e.OnDeadline, Calendar: status, TargetDate: targetDate, DataDateOffset: e.DataDateOffset})
 			continue
 		}
 		start, end := clock(e.Trigger.Start), clock(e.Trigger.Until)
@@ -275,7 +284,7 @@ func instancesWithExcluded(c config.Config, date string, includeExcluded bool) (
 			if catch == "" {
 				catch = "skip"
 			}
-			out = append(out, Instance{ID: e.ID + "@" + s, EventID: e.ID, Start: s, Deadline: t.Add(win).Format("15:04:05"), LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: catch, OnDeadline: e.OnDeadline, Calendar: status})
+			out = append(out, Instance{ID: e.ID + "@" + s, EventID: e.ID, Start: s, Deadline: t.Add(win).Format("15:04:05"), LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: catch, OnDeadline: e.OnDeadline, Calendar: status, TargetDate: targetDate, DataDateOffset: e.DataDateOffset})
 			if len(out) > 10000 {
 				return nil, "", fmt.Errorf("interval instance limit exceeded")
 			}
@@ -347,6 +356,11 @@ func explainCmd(a []string) error {
 		if ev == nil {
 			continue
 		}
+		dataDate, targetDateErr := resolveDataDate(c, ev, x, *date)
+		targetDateError := ""
+		if targetDateErr != nil {
+			targetDateError = targetDateErr.Error()
+		}
 		decision := "included"
 		if strings.HasPrefix(x.Calendar, "EXCLUDED") {
 			decision = "excluded"
@@ -376,6 +390,7 @@ func explainCmd(a []string) error {
 		}
 		rows = append(rows, map[string]any{
 			"instance": x, "decision": decision, "window": x.Start + ".." + x.Deadline, "calendar_source": src,
+			"data_date": dataDate, "target_date_error": targetDateError,
 			"handler": ev.Handler, "handler_source": "event", "event_args": ev.Args, "event_args_source": "event",
 			"on_deadline":    ev.OnDeadline,
 			"trigger_points": triggerPoints, "catchup": ev.Catchup, "catchup_source": ev.CatchupSource,
@@ -578,18 +593,23 @@ type scheduleWindow struct {
 }
 
 type scheduleTier struct {
-	Name     string         `json:"name"`
-	Args     map[string]any `json:"args"`
-	Attempts int            `json:"attempts"`
-	Backoff  string         `json:"backoff"`
-	Timeout  string         `json:"timeout"`
-	Until    string         `json:"until"`
+	Name          string         `json:"name"`
+	Args          map[string]any `json:"args"`
+	Attempts      int            `json:"attempts"`
+	Backoff       string         `json:"backoff"`
+	BackoffCap    string         `json:"backoff_cap"`
+	Timeout       string         `json:"timeout"`
+	Until         string         `json:"until"`
+	BudgetEnabled *bool          `json:"budget_enabled"`
 }
 
 type scheduleProfile struct {
-	Catchup string          `json:"catchup"`
-	Ladder  []scheduleTier  `json:"ladder"`
-	Window  *scheduleWindow `json:"window"`
+	Catchup         string          `json:"catchup"`
+	RetryBackoff    string          `json:"retry_backoff"`
+	RetryUntilLate  bool            `json:"retry_until_late"`
+	SilentUntilLast bool            `json:"silent_until_last"`
+	Ladder          []scheduleTier  `json:"ladder"`
+	Window          *scheduleWindow `json:"window"`
 }
 
 type scheduleV3 struct {
@@ -637,7 +657,7 @@ type scheduleV3Event struct {
 
 var scheduleHandlers = []string{"auction_report", "auction_watch", "baostock_probe", "boot_apply_plan",
 	"boot_data_health", "boot_reconcile", "boot_trade_day", "calendar_refresh", "close_capture",
-	"close_report", "fetch_item", "intraday_data", "kaipan_fetch", "kaipan_hot_capture",
+	"close_report", "fetch_item", "intraday_data", "kaipan_fetch", "kaipan_hot_capture", "selftest",
 	"night_report", "open_report", "postmarket_data", "premarket_data", "snapshot_check"}
 
 func decodeStrict(b []byte, target any) error {
@@ -747,7 +767,7 @@ func compileScheduleV2(b []byte) (config.Config, error) {
 			deps = append(deps, config.Dependency{ID: id})
 		}
 		timeout := fmt.Sprintf("%ds", event.Timeout)
-		ev := config.Event{ID: event.ID, Enabled: event.Enabled, Calendar: raw(event.Calendar),
+		ev := config.Event{ID: event.ID, Enabled: event.Enabled, Disabled: !event.Enabled, Calendar: raw(event.Calendar),
 			Trigger:        config.Trigger{Type: event.TriggerType, Start: event.Start, Deadline: event.Deadline, Order: event.Order, After: event.After},
 			DataDateOffset: event.DataDateOffset, AvailableAfter: event.AvailableAfter, Handler: handler,
 			Gate: config.Gate{Ref: event.Gate}, Timeout: timeout, LateUntil: event.LateUntil,
@@ -883,7 +903,7 @@ func compileScheduleTier(t scheduleTier, source string, fallbackTimeout string) 
 		timeout = fallbackTimeout
 	}
 	return config.LadderTier{Name: t.Name, Args: t.Args, Attempts: t.Attempts, Backoff: t.Backoff,
-		Timeout: timeout, Until: t.Until, Source: source}
+		BackoffCap: t.BackoffCap, Timeout: timeout, Until: t.Until, BudgetEnabled: t.BudgetEnabled, Source: source}
 }
 
 func compileScheduleV3(b []byte) (config.Config, error) {
@@ -999,7 +1019,11 @@ func compileScheduleV3(b []byte) (config.Config, error) {
 				return config.Config{}, fmt.Errorf("event %s has empty ladder", eventID)
 			}
 			for _, rung := range sourceLadder {
-				ladder = append(ladder, compileScheduleTier(rung, ladderSource, ""))
+				compiled := compileScheduleTier(rung, ladderSource, "")
+				if compiled.Args == nil {
+					compiled.Args = event.Args
+				}
+				ladder = append(ladder, compiled)
 			}
 		} else {
 			if event.Timeout < 1 {
@@ -1027,11 +1051,17 @@ func compileScheduleV3(b []byte) (config.Config, error) {
 		for _, id := range event.DependsOn {
 			deps = append(deps, config.Dependency{ID: id})
 		}
-		ev := config.Event{ID: eventID, Enabled: event.Enabled, Calendar: raw(event.Calendar), Trigger: trigger,
+		retryBackoff := event.RetryBackoff
+		if retryBackoff == "" {
+			retryBackoff = profile.RetryBackoff
+		}
+		retryUntilLate := event.RetryUntilLate || profile.RetryUntilLate
+		silentUntilLast := event.SilentUntilLast || profile.SilentUntilLast
+		ev := config.Event{ID: eventID, Enabled: event.Enabled, Disabled: !event.Enabled, Calendar: raw(event.Calendar), Trigger: trigger,
 			DataDateOffset: event.DataDateOffset, AvailableAfter: event.AvailableAfter, Handler: handler,
 			Gate: config.Gate{Ref: event.Gate}, Timeout: ladder[0].Timeout, LateUntil: window.LateUntil,
-			Retry: config.Retry{MaxAttempts: ladder[0].Attempts, Backoff: event.RetryBackoff,
-				UntilLate: event.RetryUntilLate, SilentUntilLast: event.SilentUntilLast},
+			Retry: config.Retry{MaxAttempts: ladder[0].Attempts, Backoff: retryBackoff,
+				UntilLate: retryUntilLate, SilentUntilLast: silentUntilLast},
 			Profile: event.Profile, Ladder: ladder, LadderSource: ladderSource, CatchupSource: catchupSource,
 			WindowSource: windowSource, OnDeadline: event.OnDeadline, Catchup: catchup, Cost: event.Cost, Phases: event.Phases,
 			OnPhaseMismatch: event.OnPhaseMismatch, OnStart: event.OnStart, DependsOn: deps, Args: event.Args}
