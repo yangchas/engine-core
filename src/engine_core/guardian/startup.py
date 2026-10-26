@@ -17,37 +17,96 @@ from .registry import REGISTRY_PATH, items_for_phase, load_registry, stale_items
 PHASES = ("NIGHT", "PRE_MARKET", "AUCTION", "AUCTION_END", "OPEN",
           "INTRADAY_AM", "MIDDAY_BREAK", "PM_OPEN", "INTRADAY_PM",
           "CLOSE_AUCTION", "CLOSE", "POST_MARKET")
-DAILY_KLINE_UPGRADE_MAX_ATTEMPTS = 3
 
 
-def _record_daily_kline_upgrade(root: Path, partition: str, *, succeeded: bool) -> dict[str, Any] | None:
-    """Bound retries for upgrading one degraded daily_kline version."""
-    from .registry import catalog_manifest, daily_kline_needs_upgrade
-    from ..data_pipeline.storage import _atomic_write, canonical_json
-
-    state_path = root / "guardian-upgrade-attempts.json"
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
     try:
-        states = json.loads(state_path.read_text(encoding="utf-8"))
-        if not isinstance(states, dict):
-            states = {}
+        return max(minimum, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+DAILY_KLINE_UPGRADE_MAX_ATTEMPTS = _env_int("CORE_DAILY_KLINE_UPGRADE_MAX_ATTEMPTS", 3)
+DAILY_KLINE_UPGRADE_ESCALATE_TRADING_DAYS = _env_int(
+    "CORE_DAILY_KLINE_UPGRADE_ESCALATE_TRADING_DAYS", 3)
+DAILY_KLINE_BACKFILL_DAYS = _env_int("CORE_DAILY_KLINE_BACKFILL_DAYS", 5)
+
+
+def _load_daily_kline_upgrade_states(root: Path) -> dict[str, Any]:
+    try:
+        states = json.loads((root / "guardian-upgrade-attempts.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         states = {}
-    budget_key = partition
-    state = states.get(budget_key)
+    return states if isinstance(states, dict) else {}
+
+
+def _is_consecutive_failed_trading_days(root: Path, failed_days: list[str], today: str) -> bool:
+    try:
+        matrix = json.loads((root / "trade_calendar" / "calendar.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    trading_days = sorted(str(row["d"]) for row in matrix.get("days", [])
+                          if isinstance(row, dict) and row.get("t") == 1 and str(row.get("d", "")) <= today)
+    count = DAILY_KLINE_UPGRADE_ESCALATE_TRADING_DAYS
+    recent = trading_days[-count:]
+    return len(recent) == count and today in recent and set(recent).issubset(set(failed_days))
+
+
+def _daily_kline_candidates(root: Path, trade_date: str, now: datetime) -> list[str]:
+    """Return the last M eligible trading-day partitions, oldest first."""
+    try:
+        matrix = json.loads((root / "trade_calendar" / "calendar.json").read_text(encoding="utf-8"))
+        days = matrix.get("days", [])
+    except (OSError, ValueError):
+        return []
+    try:
+        item = next(item for item in load_registry() if item["id"] == "daily_kline")
+        trigger = str((item.get("late_policy") or {}).get("trigger_at", "17:30:00"))
+    except (StopIteration, TypeError):
+        trigger = "17:30:00"
+    latest = trade_date if now.strftime("%H:%M:%S") >= trigger else (
+        datetime.fromisoformat(trade_date).date() - timedelta(days=1)).isoformat()
+    candidates = sorted(str(row["d"]) for row in days
+                        if isinstance(row, dict) and row.get("t") == 1
+                        and str(row.get("d", "")) <= latest)
+    return candidates[-DAILY_KLINE_BACKFILL_DAYS:]
+
+
+def _record_daily_kline_upgrade(root: Path, partition: str, *, succeeded: bool,
+                                now: datetime | str | None = None,
+                                phase: str | None = None) -> dict[str, Any] | None:
+    """Record one source attempt against its partition and current quiet window."""
+    from .registry import catalog_manifest, daily_kline_needs_upgrade
+    from .reconcile_plan import daily_kline_next_retry_window, daily_kline_window_id
+    from ..data_pipeline.storage import _atomic_write, canonical_json
+
+    clock = datetime.fromisoformat(now.replace("Z", "+00:00")) if isinstance(now, str) else now
+    clock = clock or datetime.now().astimezone()
+    states = _load_daily_kline_upgrade_states(root)
+    state = states.get(partition)
     if not isinstance(state, dict):
         legacy_key = next((key for key, value in states.items()
-                           if key.startswith(f"{partition}:") and isinstance(value, dict)
-                           and value.get("status") == "queued"), None)
-        if legacy_key:
-            state = states.pop(legacy_key)
-    if not isinstance(state, dict):
-        try:
-            catalog = json.loads((root / "catalog.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            catalog = {"datasets": {}}
-        state = {"status": "queued", "attempts": 0}
+                           if key.startswith(f"{partition}:") and isinstance(value, dict)), None)
+        state = states.pop(legacy_key) if legacy_key else {"status": "queued", "attempts": 0}
     else:
         state = dict(state)
+
+    window_id = daily_kline_window_id(clock, phase)
+    if state.get("window_id") != window_id:
+        legacy_exhausted_today = (not state.get("window_id") and
+                                  state.get("status") in {"exhausted", "GAP_WINDOW_EXHAUSTED"} and
+                                  clock.date().isoformat() <= partition)
+        if legacy_exhausted_today:
+            state["window_id"] = window_id
+            state["attempts"] = DAILY_KLINE_UPGRADE_MAX_ATTEMPTS
+        else:
+            state["attempts"] = 0
+            state["window_id"] = window_id
+            if not state.get("escalation_alerted"):
+                state.update(status="queued", reason="retry_window_open")
+            state.pop("next_retry_window", None)
+
+    escalated_now = False
     if succeeded:
         try:
             catalog = json.loads((root / "catalog.json").read_text(encoding="utf-8"))
@@ -58,27 +117,59 @@ def _record_daily_kline_upgrade(root: Path, partition: str, *, succeeded: bool) 
             state.update(status="resolved", reason="formal_version_available")
         else:
             state["attempts"] = int(state.get("attempts", 0)) + 1
-            state.update(status=("exhausted" if state["attempts"] >= DAILY_KLINE_UPGRADE_MAX_ATTEMPTS else "queued"),
-                         reason=("upgrade_attempt_budget_exhausted" if state["attempts"] >= DAILY_KLINE_UPGRADE_MAX_ATTEMPTS
-                                 else "degraded_version_remains"))
+            state["total_attempts"] = int(state.get("total_attempts", 0)) + 1
+            state.update(reason="degraded_version_remains")
     else:
         state["attempts"] = int(state.get("attempts", 0)) + 1
-        state.update(status=("exhausted" if state["attempts"] >= DAILY_KLINE_UPGRADE_MAX_ATTEMPTS else "queued"),
-                     reason=("upgrade_attempt_budget_exhausted" if state["attempts"] >= DAILY_KLINE_UPGRADE_MAX_ATTEMPTS
-                             else "fetch_failed"))
-    states[budget_key] = state
-    _atomic_write(state_path, canonical_json(states) + b"\n")
-    return state
+        state["total_attempts"] = int(state.get("total_attempts", 0)) + 1
+        state.update(reason="fetch_failed")
+
+    if state.get("status") != "resolved":
+        state["last_attempt_at"] = clock.isoformat()
+        if int(state.get("attempts", 0)) >= DAILY_KLINE_UPGRADE_MAX_ATTEMPTS:
+            failed_days = list(state.get("failed_trade_dates", []))
+            today = clock.date().isoformat()
+            if today not in failed_days:
+                failed_days.append(today)
+            state["failed_trade_dates"] = sorted(failed_days)
+            if (not state.get("escalation_alerted") and
+                    _is_consecutive_failed_trading_days(root, failed_days, today)):
+                state["escalation_alerted"] = True
+                state["reason"] = "daily_kline_upgrade_failed_consecutive_trading_days"
+                escalated_now = True
+            if state.get("escalation_alerted"):
+                state["status"] = "GAP_ESCALATED"
+            else:
+                state["status"] = "GAP_WINDOW_EXHAUSTED"
+                state["reason"] = "upgrade_attempt_budget_exhausted"
+            state["next_retry_window"] = daily_kline_next_retry_window(clock, phase)
+        elif state.get("escalation_alerted"):
+            state["status"] = "GAP_ESCALATED"
+            state["next_retry_window"] = window_id
+        else:
+            state["status"] = "queued"
+
+    states[partition] = {key: value for key, value in state.items() if key != "escalated_now"}
+    _atomic_write(root / "guardian-upgrade-attempts.json", canonical_json(states) + b"\n")
+    return {**state, "escalated_now": escalated_now}
 
 
-def _record_daily_kline_upgrade_gap(root: Path, partition: str, state: dict[str, Any]) -> None:
-    if state.get("status") != "exhausted":
+def _record_daily_kline_upgrade_gap(root: Path, partition: str, state: dict[str, Any],
+                                    now: datetime | str | None = None) -> None:
+    status = state.get("status")
+    if status == "resolved":
+        gap = {"id": "daily_kline", "partition": partition, "status": "RESOLVED",
+               "reason": "formal_version_available", "recommendation": "resolved"}
+    elif status in {"GAP_WINDOW_EXHAUSTED", "GAP_ESCALATED"} and state.get("next_retry_window"):
+        gap = {"id": "daily_kline", "partition": partition, "status": status,
+               "reason": state.get("reason", "upgrade_attempt_budget_exhausted"),
+               "attempts": state.get("attempts", DAILY_KLINE_UPGRADE_MAX_ATTEMPTS),
+               "next_retry_window": state["next_retry_window"],
+               "recommendation": "automatic_retry_next_quiet_window"}
+    else:
         return
-    _append_gap(root, partition, {"id": "daily_kline", "status": "GAP",
-                                 "reason": state.get("reason", "upgrade_attempt_budget_exhausted"),
-                                 "attempts": state.get("attempts", DAILY_KLINE_UPGRADE_MAX_ATTEMPTS),
-                                 "recommendation": "inspect_daily_kline_source"},
-                datetime.now().astimezone().isoformat())
+    observed = now.isoformat() if isinstance(now, datetime) else now
+    _append_gap(root, partition, gap, observed or datetime.now().astimezone().isoformat())
 
 
 def _now(value: datetime | str | None, trade_date: str) -> datetime:
@@ -309,9 +400,11 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
             upgrade_attempts = json.loads((root / "guardian-upgrade-attempts.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             upgrade_attempts = {}
+        daily_kline_candidates = _daily_kline_candidates(root, trade_date, clock)
         plan = reconcile_plan(clock, catalog, trade_date=trade_date, prev_trade_date=previous,
                               phase=phase, load1=os.getloadavg()[0], cpus=os.cpu_count(),
-                              upgrade_attempts=upgrade_attempts)
+                              upgrade_attempts=upgrade_attempts,
+                              daily_kline_candidates=daily_kline_candidates)
     except Exception as exc:  # the plan is advisory; never fail the boot check for it
         plan = [{"id": "*", "action": "PLAN_ERROR", "error": type(exc).__name__}]
     detail = {"phase": phase, "trade_date": trade_date, "gaps": gaps, "plan": plan,
@@ -382,8 +475,8 @@ def _quiet_targets(item: dict[str, Any], phase: str, now: datetime) -> list[str]
     quiet = list(rules.get("quiet_phases_for_heavy", []))
     from .scheduler import _schedule_source
     cutoff = _schedule_source()["global"]["heavy_cutoffs"]["PRE_MARKET"]
-    if phase == "PRE_MARKET" and now.strftime("%H:%M:%S") < cutoff:
-        return ["PRE_MARKET"]
+    if phase == "PRE_MARKET":
+        return ["PRE_MARKET"] if now.strftime("%H:%M:%S") < cutoff else ["MIDDAY_BREAK"]
     if phase in quiet:
         return [phase]
     order = list(PHASES)
@@ -401,13 +494,20 @@ def _append_gap(root: Path, trade_date: str, gap: dict[str, Any], observed_at: s
     path = root / "guardian-native" / "gaps" / f"{trade_date}.json"
     try:
         rows = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(rows, dict):
+            rows = [rows]
         if not isinstance(rows, list):
             rows = []
     except (OSError, ValueError):
         rows = []
     key = (gap.get("id"), gap.get("partition"))
     for index, row in enumerate(rows):
-        if (row.get("id"), row.get("partition")) == key:
+        if not isinstance(row, dict):
+            continue
+        matches_key = (row.get("id"), row.get("partition")) == key
+        matches_legacy_daily_kline = (gap.get("id") == "daily_kline" and
+                                      row.get("id") == "daily_kline" and not row.get("partition"))
+        if matches_key or matches_legacy_daily_kline:
             rows[index] = {**row, **gap, "observed_at": observed_at}
             break
     else:
@@ -415,7 +515,8 @@ def _append_gap(root: Path, trade_date: str, gap: dict[str, Any], observed_at: s
     _atomic_write(path, (json.dumps(rows, ensure_ascii=False, sort_keys=True) + "\n").encode())
 
 
-def _verify_partition(item: dict[str, Any], day: str, root: str | Path | None) -> None:
+def _verify_partition(item: dict[str, Any], day: str, root: str | Path | None,
+                      now: datetime | None = None) -> None:
     """After a fetch job exited cleanly, the catalog must now hold the partition (non-empty, complete enough)."""
     dataset = (item.get("artifact") or {}).get("catalog_dataset")
     if not dataset:
@@ -426,7 +527,7 @@ def _verify_partition(item: dict[str, Any], day: str, root: str | Path | None) -
     except (OSError, ValueError):
         raise FetchJobError("catalog_unreadable_after_fetch", "POSTCONDITION_FAILED") from None
     from .registry import catalog_partition_present
-    if not catalog_partition_present(catalog, dataset, day, datetime.now().astimezone()):
+    if not catalog_partition_present(catalog, dataset, day, now or datetime.now().astimezone()):
         raise FetchJobError(f"partition_missing_after_fetch:{dataset}:{day}", "POSTCONDITION_FAILED")
 
 
@@ -625,9 +726,12 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
             deps = action.get("depends_on")
             if not isinstance(deps, list):
                 deps = (item.get("late_policy") or {}).get("depends_on", [])
+            item_cost = (item.get("cost") or {}).get("class", "medium")
+            run_phases = (_quiet_targets(item, phase, clock) if item_cost == "heavy"
+                          else ([phase] if phase else ["NIGHT"]))
             deferred.append({"id": item["id"], "partition": action.get("partition"),
-                             "fetch_job": item.get("fetch_job"), "run_in_phases": [phase] if phase else ["NIGHT"],
-                             "cost": (item.get("cost") or {}).get("class", "medium"),
+                             "fetch_job": item.get("fetch_job"), "run_in_phases": run_phases,
+                             "cost": item_cost,
                              "depends_on": [str(dep) for dep in deps if str(dep) in indexed]})
             if action.get("upgrade_daily_kline") and not dry_run:
                 state_path = root / "guardian-upgrade-attempts.json"
@@ -640,8 +744,8 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
                 from ..data_pipeline.storage import _atomic_write, canonical_json
                 _atomic_write(state_path, canonical_json(upgrade_attempts) + b"\n")
             layer_results.append({"id": item["id"], "action": "FETCH_NOW", "partition": str(action.get("partition", "")),
-                                  "status": "queued", "run_in_phases": [phase] if phase else ["NIGHT"],
-                                  "cost": (item.get("cost") or {}).get("class", "medium"), "elapsed_ms": 0})
+                                  "status": "queued", "run_in_phases": run_phases,
+                                  "cost": item_cost, "elapsed_ms": 0})
         results.extend(layer_results)
         action_status.update({row["id"]: row["status"] for row in layer_results})
     detail = {"trade_date": trade_date, "results": results, "deferred": deferred,
@@ -653,7 +757,8 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
 
 
 def fetch_item(item_id: str, partition: str, root: str | Path, *,
-               dry_run: bool | None = None) -> dict[str, Any]:
+               dry_run: bool | None = None, now: datetime | str | None = None,
+               phase: str | None = None) -> dict[str, Any]:
     started = time.monotonic()
     root = Path(root).expanduser()
     if dry_run is None:
@@ -664,23 +769,34 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
     if dry_run:
         return _result("ok", {"id": item_id, "partition": partition, "dry_run": True})
     upgrade = item_id == "daily_kline"
+    clock = _now(now, partition) if now is not None else datetime.now().astimezone()
+    if upgrade:
+        from .reconcile_plan import daily_kline_retry_availability
+        state = _load_daily_kline_upgrade_states(root).get(partition)
+        available, reason = daily_kline_retry_availability(state, clock, phase, partition)
+        if not available:
+            detail = {"id": item_id, "partition": partition,
+                      "upgrade": {**(state if isinstance(state, dict) else {}),
+                                  "throttled": reason == "minimum_interval",
+                                  "deferred": reason}}
+            return _result("degraded", detail)
     try:
         _argv, timeout = _fetch_spec(item)
         result = _run_fetch_job(item, partition, timeout, root)
-        _verify_partition(item, partition, root)
+        _verify_partition(item, partition, root, clock)
         if upgrade:
-            state = _record_daily_kline_upgrade(root, partition, succeeded=True)
+            state = _record_daily_kline_upgrade(root, partition, succeeded=True, now=clock, phase=phase)
             if state:
-                _record_daily_kline_upgrade_gap(root, partition, state)
-            if state and state.get("status") in {"queued", "exhausted"}:
-                return _result("failed", {"id": item_id, "partition": partition, "result": result,
-                                           "upgrade": state}, error_code="DAILY_KLINE_UPGRADE_INCOMPLETE",
-                               retryable=state.get("status") == "queued")
+                _record_daily_kline_upgrade_gap(root, partition, state, clock)
+            if state and state.get("status") != "resolved":
+                return _result("degraded", {"id": item_id, "partition": partition, "result": result,
+                                              "upgrade": state})
         return _result("ok", {"id": item_id, "partition": partition, "result": result})
     except Exception as exc:
-        upgrade_state = _record_daily_kline_upgrade(root, partition, succeeded=False) if upgrade else None
+        upgrade_state = (_record_daily_kline_upgrade(root, partition, succeeded=False,
+                                                     now=clock, phase=phase) if upgrade else None)
         if upgrade_state:
-            _record_daily_kline_upgrade_gap(root, partition, upgrade_state)
+            _record_daily_kline_upgrade_gap(root, partition, upgrade_state, clock)
         code = getattr(exc, "error_code", "FETCH_FAILED")
         detail = {"item_id": item_id, "partition": partition,
                                    "error": type(exc).__name__ + ":" + str(exc),
@@ -689,5 +805,7 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
                                    "elapsed_ms": round((time.monotonic() - started) * 1000)}
         if upgrade_state:
             detail["upgrade"] = upgrade_state
+        if upgrade_state and upgrade_state.get("status") in {"GAP_WINDOW_EXHAUSTED", "GAP_ESCALATED"}:
+            return _result("degraded", detail)
         return _result("failed", detail, error_code=code,
                        retryable=not upgrade_state or upgrade_state.get("status") == "queued")

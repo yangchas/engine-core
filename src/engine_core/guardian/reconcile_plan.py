@@ -8,12 +8,88 @@ Before the trigger nothing is fetched. Light items run at once (parallel lane); 
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import os
+from datetime import datetime, timedelta
 from typing import Any, Mapping
 
 from .registry import (REGISTRY_PATH, catalog_manifest, catalog_partition_present,
                        daily_kline_needs_upgrade, derived_daily_kline_input_stale,
                        load_registry)
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+DAILY_KLINE_UPGRADE_MAX_ATTEMPTS = _env_int("CORE_DAILY_KLINE_UPGRADE_MAX_ATTEMPTS", 3)
+DAILY_KLINE_UPGRADE_MIN_INTERVAL_SECONDS = _env_int(
+    "CORE_DAILY_KLINE_UPGRADE_MIN_INTERVAL_SECONDS", 600, minimum=0)
+
+
+def daily_kline_window_id(now: datetime, phase: str | None) -> str:
+    """Return the actual heavy quiet window for this reconcile or fetch attempt."""
+    rules = _rules()
+    quiet = list(rules.get("quiet_phases_for_heavy", []))
+    from .scheduler import _schedule_source, phase_at
+    cutoff = _schedule_source()["global"]["heavy_cutoffs"]["PRE_MARKET"]
+    clock = _clock(now)
+    current = phase if phase in rules.get("phase_names", []) else phase_at(now)
+    if current == "PRE_MARKET" and clock >= _hms(cutoff):
+        current = "MIDDAY_BREAK"
+    elif current not in quiet:
+        order = list(rules.get("phase_names", []))
+        try:
+            index = order.index(current)
+        except ValueError:
+            index = -1
+        future = [value for value in quiet if value in order and order.index(value) > index]
+        if future:
+            current = future[0]
+        else:
+            return (now.date() + timedelta(days=1)).isoformat() + ":PRE_MARKET"
+    return f"{now.date().isoformat()}:{current}"
+
+
+def daily_kline_next_retry_window(now: datetime, phase: str | None) -> str:
+    current = daily_kline_window_id(now, phase)
+    day, current_phase = current.split(":", 1)
+    next_phase = {"NIGHT": "PRE_MARKET", "PRE_MARKET": "MIDDAY_BREAK",
+                  "MIDDAY_BREAK": "CLOSE", "CLOSE": "POST_MARKET"}.get(current_phase)
+    if next_phase:
+        return f"{day}:{next_phase}"
+    next_day = (datetime.fromisoformat(day) + timedelta(days=1)).date().isoformat()
+    return f"{next_day}:PRE_MARKET"
+
+
+def daily_kline_retry_availability(attempt: Any, now: datetime,
+                                   phase: str | None,
+                                   partition: str | None = None) -> tuple[bool, str]:
+    """Check a per-partition quiet-window budget and the minimum interval."""
+    if not isinstance(attempt, Mapping):
+        return True, ""
+    if (not attempt.get("window_id") and partition and
+            attempt.get("status") in {"exhausted", "GAP_WINDOW_EXHAUSTED"} and
+            now.date().isoformat() <= partition):
+        return False, "window_budget_exhausted"
+    if attempt.get("window_id") != daily_kline_window_id(now, phase):
+        return True, ""
+    if int(attempt.get("attempts", 0) or 0) >= DAILY_KLINE_UPGRADE_MAX_ATTEMPTS:
+        return False, "window_budget_exhausted"
+    last = attempt.get("last_attempt_at")
+    if last:
+        try:
+            previous = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            current = now if now.tzinfo else now.astimezone()
+            if previous.tzinfo is None:
+                previous = previous.replace(tzinfo=current.tzinfo)
+            if (current - previous).total_seconds() < DAILY_KLINE_UPGRADE_MIN_INTERVAL_SECONDS:
+                return False, "minimum_interval"
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return True, ""
 
 
 def _hms(value: str) -> tuple[int, int, int]:
@@ -33,7 +109,8 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                    prev_trade_date: str | None, registry: list[dict[str, Any]] | None = None,
                    phase: str | None = None, load1: float | None = None,
                    cpus: int | None = None,
-                   upgrade_attempts: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+                   upgrade_attempts: Mapping[str, Any] | None = None,
+                   daily_kline_candidates: list[str] | None = None) -> list[dict[str, Any]]:
     """Ordered actions for late items on a trading day (dependencies first).
 
     FETCH_NOW  late and cheap enough to run now; ``lane`` is ``parallel`` (light) or ``serial``;
@@ -63,6 +140,24 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
             if item["id"] == "auction_points_raw" or (item.get("freshness") and isinstance(item["freshness"], Mapping)):
                 due.setdefault(item["id"], (None, {}))
             continue
+        if item["id"] == "daily_kline" and daily_kline_candidates is not None:
+            for candidate in sorted(set(daily_kline_candidates)):
+                current_manifest = catalog_manifest(catalog, dataset, candidate)
+                version = str((current_manifest or {}).get("version", ""))
+                degraded = daily_kline_needs_upgrade(current_manifest)
+                if catalog_partition_present(catalog, dataset, candidate, now) and not degraded:
+                    continue
+                attempt = (upgrade_attempts or {}).get(candidate)
+                if attempt is None:
+                    attempt = (upgrade_attempts or {}).get(f"{candidate}:{version}")
+                available, _reason = daily_kline_retry_availability(attempt, now, phase, candidate)
+                if not available:
+                    break
+                due[item["id"]] = (candidate, policy)
+                if degraded and version:
+                    upgrade_versions[item["id"]] = version
+                break
+            continue
         triggered = _clock(now) >= _hms(policy["trigger_at"])
         target = trade_date if triggered else (prev_trade_date if policy.get("partition_before_trigger") == "D-1" else None)
         if target is None:
@@ -84,8 +179,8 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                 attempt = (upgrade_attempts or {}).get(budget_key)
                 if attempt is None:
                     attempt = (upgrade_attempts or {}).get(f"{target}:{version}")
-                attempt_status = attempt.get("status") if isinstance(attempt, Mapping) else attempt
-                if attempt_status not in {"queued", "exhausted"}:
+                available, _reason = daily_kline_retry_availability(attempt, now, phase, target)
+                if available:
                     due[item["id"]] = (target, policy)
                     upgrade_versions[item["id"]] = version
                 continue

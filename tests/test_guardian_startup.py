@@ -197,7 +197,7 @@ def test_fetch_item_dry_run_does_not_call_job(tmp_path, monkeypatch):
     assert result["status"] == "ok" and result["detail"]["dry_run"] is True
 
 
-def test_real_degraded_daily_kline_upgrade_budget_exhausts_without_repeat_queue(tmp_path):
+def test_real_degraded_daily_kline_upgrade_budget_exhausts_for_current_window(tmp_path):
     import json
     from pathlib import Path
     from engine_core.guardian.startup import (_record_daily_kline_upgrade,
@@ -215,15 +215,19 @@ def test_real_degraded_daily_kline_upgrade_budget_exhausts_without_repeat_queue(
     (tmp_path / "guardian-upgrade-attempts.json").write_text(
         json.dumps({key: {"status": "queued", "attempts": 0}}), encoding="utf-8")
 
-    for expected in (1, 2, 3):
-        state = _record_daily_kline_upgrade(tmp_path, day, succeeded=True)
+    for expected, minute in zip((1, 2, 3), (0, 11, 22)):
+        state = _record_daily_kline_upgrade(
+            tmp_path, day, succeeded=True,
+            now=datetime.fromisoformat(f"{day}T18:{minute:02d}:00+08:00"),
+            phase="POST_MARKET")
         assert state["attempts"] == expected
-    assert state["status"] == "exhausted"
+    assert state["status"] == "GAP_WINDOW_EXHAUSTED"
     assert state["reason"] == "upgrade_attempt_budget_exhausted"
     _record_daily_kline_upgrade_gap(tmp_path, day, state)
     gap = json.loads((tmp_path / "guardian-native" / "gaps" / f"{day}.json").read_text())
-    assert gap[0]["id"] == "daily_kline" and gap[0]["reason"] == "upgrade_attempt_budget_exhausted"
-    plan = reconcile_plan(datetime.fromisoformat("2026-10-21T19:00:00+08:00"), catalog,
+    assert gap[0]["id"] == "daily_kline" and gap[0]["status"] == "GAP_WINDOW_EXHAUSTED"
+    assert gap[0]["next_retry_window"] == "2026-10-22:PRE_MARKET"
+    plan = reconcile_plan(datetime.fromisoformat("2026-10-21T18:30:00+08:00"), catalog,
                           trade_date=day, prev_trade_date="2026-10-20", phase="POST_MARKET",
                           upgrade_attempts=json.loads((tmp_path / "guardian-upgrade-attempts.json").read_text()))
     assert "daily_kline" not in {row["id"] for row in plan}

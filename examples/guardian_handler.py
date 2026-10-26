@@ -76,7 +76,13 @@ def _run(request):
                                      active_events=request.get("active_events"))
         else:
             result = fetch_item(str(request.get("item_id") or ""), str(request.get("data_date") or trade_date),
-                                root, dry_run=dry)
+                                root, dry_run=dry, now=now,
+                                phase=str(request.get("phase") or "") or None)
+            upgrade = result.get("detail", {}).get("upgrade")
+            if upgrade and upgrade.get("escalated_now"):
+                result["detail"]["alert"] = _send_alert({
+                    "event": "daily_kline_upgrade", "trade_date": str(trade_date),
+                    "now": now, "reason": "GAP_ESCALATED"}, dry)
         return (75 if result["status"] == "failed" and result.get("retryable") else 0), result
     if not configured_handler:
         return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
@@ -161,7 +167,7 @@ def _gate(name, request=None):
         return 75
 
 
-def _alert(request, dry_run):
+def _send_alert(request, dry_run):
     from engine_core.report_mailer import build_alert_message, load_smtp_config, send_message
 
     inner = request.get("request") if isinstance(request.get("request"), dict) else request
@@ -192,8 +198,12 @@ def _alert(request, dry_run):
     message.set_content("Guardian 告警汇总\n" + "\n".join(lines))
     receipt = send_message(config, message, dry_run=dry_run,
                            allow_recipients=["412826313@qq.com"])
-    _json({"status": receipt.status, "to": "412826313@qq.com", "events": len(events),
-           "subject": message["Subject"], "body": "Guardian 告警汇总\n" + "\n".join(lines)})
+    return {"status": receipt.status, "to": "412826313@qq.com", "events": len(events),
+            "subject": message["Subject"], "body": "Guardian 告警汇总\n" + "\n".join(lines)}
+
+
+def _alert(request, dry_run):
+    _json(_send_alert(request, dry_run))
     return 0
 
 

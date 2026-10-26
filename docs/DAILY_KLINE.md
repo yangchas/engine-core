@@ -20,6 +20,8 @@ C541: `DailyKlineProviderChain.fetch_chain` 和 `run_data_jobs.py --job daily_kl
 
 `_supersede_prior`（`data_pipeline/providers/daily_kline_chain.py:394-399`）读取既有 `status == "SUPERSEDED"` 以跳过已替代版本；对其他旧版本写入 `status`、`superseded_by` 和 reconciliation 并原子替换旧 manifest。本卡不改其行为。
 
+C554: guardian 按“分区 + 自然日 + heavy 静默 phase”累计日K补取预算，默认每窗口 3 次、两次真实取数至少间隔 10 分钟；窗口耗尽记录 `GAP_WINDOW_EXHAUSTED` 和 `next_retry_window`，之后由 `boot_reconcile` / `runtime_reconcile_*` 在下一静默窗口重新扫描。启动与运行时都检查最近 5 个交易日（旧到新，每轮只选一个缺失或降级分区）；盘中只排队到下一个静默 phase。连续 3 个交易日的窗口都耗尽时将 GAP 提升为 `GAP_ESCALATED` 并复用现有 alert handler 告警一次，后续窗口仍继续重试；正式版本写入后 GAP 标为 `RESOLVED`。参数可用 `CORE_DAILY_KLINE_UPGRADE_MAX_ATTEMPTS`、`CORE_DAILY_KLINE_UPGRADE_MIN_INTERVAL_SECONDS`、`CORE_DAILY_KLINE_UPGRADE_ESCALATE_TRADING_DAYS`、`CORE_DAILY_KLINE_BACKFILL_DAYS` 覆盖。
+
 ### 读取方
 
 - `data_pipeline/access.py:41-53,86-100,248-263`：读 manifest/catalog 的 `business_status` 与 `quality.coverage`，选择版本并标注非 FORMAL 结果。
