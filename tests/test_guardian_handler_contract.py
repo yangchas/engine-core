@@ -295,3 +295,18 @@ def test_premarket_handler_defers_when_another_same_date_owner_is_running():
     assert payload["detail"] == "same_date_premarket_owner_still_running"
     request["event"] = "startup_0830"
     assert guardian_handler._premarket_owner_is_open(request) is False
+
+
+def test_daily_kline_job_budget_follows_event_timeout():
+    from engine_core.guardian.commands import build_handler_command
+    from types import SimpleNamespace
+
+    opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False, email_self=False)
+    for job, expect in (("daily_kline", "900"), ("limit_up_pool", None)):
+        opts.job = job
+        cmd = build_handler_command("kaipan_job", SimpleNamespace(timeout_seconds=1000), opts,
+                                    ROOT / "artifacts", "2026-10-26", sys.executable, ROOT)
+        if expect:
+            assert cmd[cmd.index("--budget-seconds") + 1] == expect
+        else:
+            assert "--budget-seconds" not in cmd

@@ -101,6 +101,11 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
     if name == "kaipan_job":
         cmd = [py, str(repo / "examples/run_data_jobs.py"), "--job", opts.job,
                "--date", day, "--artifact-root", str(root)]
+        timeout = getattr(event, "timeout_seconds", None)
+        if opts.job == "daily_kline" and timeout:
+            # Keep the chain budget inside the event timeout so a long Baostock
+            # fetch checkpoints and falls back instead of being killed.
+            cmd.extend(["--budget-seconds", str(max(60, int(float(timeout) * 0.9)))])
         if opts.write:
             cmd.append("--write")
         elif getattr(opts, "simulate_clock", False):
