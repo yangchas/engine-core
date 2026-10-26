@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from types import ModuleType, SimpleNamespace
 
 from engine_core.data_pipeline.storage import ArtifactCatalog
@@ -35,6 +36,12 @@ def _seed_calendar(root: Path):
         dates, source="fixture_real_baostock_szse", fetched_at="2026-10-20T00:00:00Z",
         coverage_start="2026-01-01", coverage_end="2026-12-31",
         raw_responses={path.name: path.read_bytes() for path in fixture_dir.glob("*.json")})
+
+
+def _after_seed() -> str:
+    # Seeded manifests carry the real commit time as available_at, so the point-in-time
+    # cutoff must be later than "now" or the seed is treated as future data.
+    return (datetime.now(timezone(timedelta(hours=8))) + timedelta(hours=1)).isoformat(timespec="seconds")
 
 
 def _seed_universe(root: Path, day: str, *, asof: str = "2026-10-16"):
@@ -322,9 +329,9 @@ def test_prep_retries_degraded_universe_and_upgrades_to_primary(tmp_path, monkey
     monkeypatch.setattr(prep, "_run", fake_run)
     monkeypatch.setattr(prep, "_prepare_theme_snapshot_cache", lambda *_args, **_kwargs: True)
     first = prep.build_prep_report(
-        tmp_path, "2026-10-26", write=True, asof="2026-10-26T12:00:00+08:00")
+        tmp_path, "2026-10-26", write=True, asof=_after_seed())
     second = prep.build_prep_report(
-        tmp_path, "2026-10-26", write=True, asof="2026-10-26T12:00:00+08:00")
+        tmp_path, "2026-10-26", write=True, asof=_after_seed())
 
     first_step = next(item for item in first["steps"] if item["step"] == "symbol_universe")
     second_step = next(item for item in second["steps"] if item["step"] == "symbol_universe")
@@ -391,9 +398,9 @@ def test_prep_repeated_degradation_keeps_existing_degraded_version_without_error
     monkeypatch.setattr(prep, "_run", fake_run)
     monkeypatch.setattr(prep, "_prepare_theme_snapshot_cache", lambda *_args, **_kwargs: True)
     first_report = prep.build_prep_report(
-        tmp_path, "2026-10-26", write=True, asof="2026-10-26T12:00:00+08:00")
+        tmp_path, "2026-10-26", write=True, asof=_after_seed())
     second_report = prep.build_prep_report(
-        tmp_path, "2026-10-26", write=True, asof="2026-10-26T12:00:00+08:00")
+        tmp_path, "2026-10-26", write=True, asof=_after_seed())
 
     first_step = next(item for item in first_report["steps"] if item["step"] == "symbol_universe")
     second_step = next(item for item in second_report["steps"] if item["step"] == "symbol_universe")
@@ -423,7 +430,7 @@ def test_prep_does_not_retry_existing_primary_universe(tmp_path, monkeypatch):
     monkeypatch.setattr(prep, "_run", fake_run)
     monkeypatch.setattr(prep, "_prepare_theme_snapshot_cache", lambda *_args, **_kwargs: True)
     report = prep.build_prep_report(
-        tmp_path, "2026-10-26", write=True, asof="2026-10-26T12:00:00+08:00")
+        tmp_path, "2026-10-26", write=True, asof=_after_seed())
 
     step = next(item for item in report["steps"] if item["step"] == "symbol_universe")
     assert calls == []
