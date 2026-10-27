@@ -26,6 +26,14 @@ gate. `timeout` is the independent runtime budget (up to 24 hours). Optional
 start or resume after its deadline; if omitted, the event is missed at its
 deadline as before.
 
+For ladder-backed window events with `on_deadline: missed`, the event deadline
+only gates the first handler attempt. If that attempt started before the
+deadline, retries of its active rung may continue until that rung's `until`
+(`late_until` resolves to the event's `late_until`), even after the event
+deadline. If the rung expires before success, the instance ends as
+`FAILED_FINAL` / `TIER_UNTIL_EXPIRED` with one alert. An event with no started
+attempt by its deadline remains `MISSED`.
+
 `retry.max_attempts` is the total failed-attempt limit for one instance, including
 all `RETRY_WAIT` rounds; zero or omission uses one attempt. An event with
 `retry.until_late: true` must set `late_until` and runs one attempt per round.

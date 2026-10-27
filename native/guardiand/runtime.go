@@ -598,6 +598,65 @@ func (r *liveRunner) releaseHeavyAttempt() {
 	r.releaseProcessSlot(slots)
 }
 
+func (r *liveRunner) ladderRetryCutoff(date string, event *config.Event, state instanceState) (time.Time, bool) {
+	if event == nil || event.OnDeadline != "missed" || len(event.Ladder) == 0 || state.Attempts == 0 || state.StartedAt == "" {
+		return time.Time{}, false
+	}
+	deadline, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+event.Trigger.Deadline, r.loc)
+	if err != nil {
+		return time.Time{}, false
+	}
+	started, err := time.Parse(time.RFC3339, state.StartedAt)
+	if err != nil || !started.Before(deadline) {
+		return time.Time{}, false
+	}
+	rung := state.Rung
+	if rung < 1 || rung > len(event.Ladder) {
+		rung = 0
+		for i, tier := range event.Ladder {
+			if state.Tier != "" && tier.Name == state.Tier {
+				rung = i + 1
+				break
+			}
+		}
+		if rung == 0 {
+			rung = 1
+		}
+	}
+	cutoff := event.Ladder[rung-1].Until
+	if cutoff == "" {
+		return time.Time{}, false
+	}
+	if cutoff == "late_until" {
+		cutoff = event.LateUntil
+	}
+	end, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
+	return end, err == nil
+}
+
+func (r *liveRunner) finishLadderRetryFailure(x Instance, date string, prior instanceState, reason string) {
+	state := instanceState{
+		Status: "FAILED_FINAL", Attempts: prior.Attempts, Rung: prior.Rung, Tier: prior.Tier,
+		RungAttempts: prior.RungAttempts, SkippedTiers: append([]string(nil), prior.SkippedTiers...),
+		StartedAt: prior.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: reason,
+		DataDate: prior.DataDate,
+	}
+	r.setState(x, date, state)
+	_ = r.alert("FAILED_FINAL", map[string]any{"event": x.ID, "event_id": x.EventID, "date": date, "error": state.LastError, "tier": state.Tier})
+}
+
+func (r *liveRunner) finishLadderUntilExpired(x Instance, date string, prior instanceState) {
+	r.finishLadderRetryFailure(x, date, prior, "TIER_UNTIL_EXPIRED")
+}
+
+func (r *liveRunner) finishLadderRetryWindowExpired(x Instance, date string, event *config.Event, prior instanceState) {
+	if _, ok := r.ladderRetryCutoff(date, event, prior); ok {
+		r.finishLadderUntilExpired(x, date, prior)
+		return
+	}
+	r.finishLadderRetryFailure(x, date, prior, "LADDER_RETRY_WINDOW_ENDED")
+}
+
 func (r *liveRunner) heavyQueueExpiry(x Instance, date string, event *config.Event, state instanceState, ladder bool) (time.Time, string) {
 	if event == nil || x.TriggerType == "startup" {
 		return time.Time{}, ""
@@ -607,6 +666,11 @@ func (r *liveRunner) heavyQueueExpiry(x Instance, date string, event *config.Eve
 		return time.Time{}, ""
 	}
 	if event.OnDeadline == "missed" {
+		if ladder {
+			if end, ok := r.ladderRetryCutoff(date, event, state); ok {
+				return end, "TIER_UNTIL_EXPIRED"
+			}
+		}
 		return deadlineAt, "ON_DEADLINE_MISSED"
 	}
 	if ladder {
@@ -684,7 +748,9 @@ func (r *liveRunner) acquireHeavyAttempt(x Instance, date string, event *config.
 				}
 			}
 			r.mu.Unlock()
-			if expiryReason == "RETRIES_EXHAUSTED_BY_LATE_UNTIL" {
+			if expiryReason == "TIER_UNTIL_EXPIRED" {
+				r.finishLadderUntilExpired(x, date, prior)
+			} else if expiryReason == "RETRIES_EXHAUSTED_BY_LATE_UNTIL" {
 				r.finishLateRetries(x, date, event, prior)
 			} else {
 				lastError := expiryReason
@@ -1402,8 +1468,17 @@ func (r *liveRunner) execute(x Instance, date string) {
 			return
 		}
 	}
-	if x.TriggerType != "startup" && event.OnDeadline == "missed" && !r.clock.Now().Truncate(time.Second).Before(deadlineAt.Truncate(time.Second)) {
+	deadlineMissed := true
+	if len(event.Ladder) > 0 {
+		_, retryWindow := r.ladderRetryCutoff(date, event, prior)
+		deadlineMissed = !retryWindow
+	}
+	if x.TriggerType != "startup" && event.OnDeadline == "missed" && deadlineMissed && !r.clock.Now().Truncate(time.Second).Before(deadlineAt.Truncate(time.Second)) {
+		if prior.Status == "MISSED" {
+			return
+		}
 		r.setState(x, date, instanceState{Status: "MISSED", Attempts: prior.Attempts, CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: "ON_DEADLINE_MISSED"})
+		_ = r.alert("MISSED", map[string]any{"event": x.EventID, "date": date, "error": "ON_DEADLINE_MISSED"})
 		return
 	}
 	if (x.TriggerType != "startup" || x.EventID == "fetch_item") && !phaseAllowedAt(event, func() string { p, _ := r.currentPhase(r.clock.Now()); return p }(), r.clock.Now(), c, r.loc) {
@@ -1477,6 +1552,9 @@ func (r *liveRunner) execute(x Instance, date string) {
 		if x.LateUntil != "" && event.OnDeadline != "degrade" && event.OnDeadline != "missed" {
 			cutoff = x.LateUntil
 		}
+		if retryCutoff, ok := r.ladderRetryCutoff(date, event, prior); ok {
+			cutoff = retryCutoff.Format("15:04:05")
+		}
 		deadline, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
 		ready := false
 		lastGateReason := "gate not ready"
@@ -1491,6 +1569,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 			processSlots <- struct{}{}
 			gateEvent := *event
 			gateEvent.Timeout = event.Gate.Timeout
+			gateEvent.Trigger.Deadline = cutoff
 			if gateEvent.Timeout == "" {
 				gateEvent.Timeout = "15s"
 			}
@@ -1549,8 +1628,14 @@ func (r *liveRunner) execute(x Instance, date string) {
 				degradeRequested = true
 				_, _ = r.appendLedger(date, "GATE_POLL_SUMMARY", map[string]any{"event": x.EventID, "instance": x.ID, "poll_count": pollCount, "first_polled_at": firstPollAt, "last_polled_at": lastPollAt, "outcome": "degrade_requested", "reason": lastGateReason})
 			} else if event.OnDeadline == "missed" {
-				_, _ = r.appendLedger(date, "GATE_POLL_SUMMARY", map[string]any{"event": x.EventID, "instance": x.ID, "poll_count": pollCount, "first_polled_at": firstPollAt, "last_polled_at": lastPollAt, "outcome": "missed", "reason": lastGateReason})
-				r.setState(x, date, instanceState{Status: "MISSED", Attempts: prior.Attempts, LastError: lastGateReason, CompletedAt: r.clock.Now().Format(time.RFC3339)})
+				if _, retryWindow := r.ladderRetryCutoff(date, event, prior); retryWindow {
+					_, _ = r.appendLedger(date, "GATE_POLL_SUMMARY", map[string]any{"event": x.EventID, "instance": x.ID, "poll_count": pollCount, "first_polled_at": firstPollAt, "last_polled_at": lastPollAt, "outcome": "failed_final", "reason": lastGateReason})
+					r.finishLadderRetryWindowExpired(x, date, event, prior)
+				} else {
+					_, _ = r.appendLedger(date, "GATE_POLL_SUMMARY", map[string]any{"event": x.EventID, "instance": x.ID, "poll_count": pollCount, "first_polled_at": firstPollAt, "last_polled_at": lastPollAt, "outcome": "missed", "reason": lastGateReason})
+					r.setState(x, date, instanceState{Status: "MISSED", Attempts: prior.Attempts, LastError: lastGateReason, CompletedAt: r.clock.Now().Format(time.RFC3339)})
+					_ = r.alert("MISSED", map[string]any{"event": x.EventID, "date": date, "error": lastGateReason})
+				}
 				return
 			} else {
 				_, _ = r.appendLedger(date, "GATE_POLL_SUMMARY", map[string]any{"event": x.EventID, "instance": x.ID, "poll_count": pollCount, "first_polled_at": firstPollAt, "last_polled_at": lastPollAt, "outcome": "blocked", "reason": lastGateReason})
@@ -1580,23 +1665,35 @@ func (r *liveRunner) execute(x Instance, date string) {
 				loader = readLoad1
 			}
 			cutoff := x.Deadline
-			if x.LateUntil != "" {
+			if x.LateUntil != "" && event.OnDeadline != "missed" {
 				cutoff = x.LateUntil
+			}
+			if retryCutoff, ok := r.ladderRetryCutoff(date, event, prior); ok {
+				cutoff = retryCutoff.Format("15:04:05")
 			}
 			end, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
 			for {
 				load, err := loader()
+				if x.TriggerType != "startup" && event.OnDeadline == "missed" && deadlineMissed && !r.clock.Now().Truncate(time.Second).Before(deadlineAt.Truncate(time.Second)) {
+					r.setState(x, date, instanceState{Status: "MISSED", Attempts: prior.Attempts, StartedAt: st.StartedAt, LastError: "ON_DEADLINE_MISSED", CompletedAt: r.clock.Now().Format(time.RFC3339)})
+					_ = r.alert("MISSED", map[string]any{"event": x.EventID, "date": date, "error": "ON_DEADLINE_MISSED"})
+					return
+				}
+				if !r.clock.Now().Before(end) || r.clock.Now().In(r.loc).Format("2006-01-02") != date {
+					if _, retryWindow := r.ladderRetryCutoff(date, event, prior); retryWindow {
+						r.finishLadderRetryWindowExpired(x, date, event, prior)
+					} else {
+						r.setState(x, date, instanceState{Status: "MISSED", LastError: "DEFER_LOAD_EXPIRED", CompletedAt: r.clock.Now().Format(time.RFC3339)})
+						_ = r.alert("MISSED", map[string]any{"date": date, "instances": []string{x.ID}, "count": 1, "summary": true})
+					}
+					return
+				}
 				if err == nil && load <= threshold {
 					break
 				}
 				reason := fmt.Sprintf("load1 %.2f exceeds %.2f", load, threshold)
 				if err != nil {
 					reason = "load1 unavailable: " + err.Error()
-				}
-				if !r.clock.Now().Before(end) || r.clock.Now().In(r.loc).Format("2006-01-02") != date {
-					r.setState(x, date, instanceState{Status: "MISSED", LastError: "DEFER_LOAD_EXPIRED: " + reason, CompletedAt: r.clock.Now().Format(time.RFC3339)})
-					_ = r.alert("MISSED", map[string]any{"date": date, "instances": []string{x.ID}, "count": 1, "summary": true})
-					return
 				}
 				r.setState(x, date, instanceState{Status: "DEFER_LOAD", LastError: reason, NextAttemptAt: r.clock.Now().Add(time.Minute).Format(time.RFC3339), Late: st.Late})
 				delay := time.Minute
@@ -1625,6 +1722,9 @@ func (r *liveRunner) execute(x Instance, date string) {
 	cutoff := x.Deadline
 	if x.LateUntil != "" && event.OnDeadline != "missed" {
 		cutoff = x.LateUntil
+	}
+	if retryCutoff, ok := r.ladderRetryCutoff(date, event, prior); ok {
+		cutoff = retryCutoff.Format("15:04:05")
 	}
 	startCutoff, parseErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
 	isLadder := len(event.Ladder) > 0
@@ -1883,7 +1983,8 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 			state.Rung, state.Tier, state.RungAttempts = rungNumber, tier.Name, 0
 		}
 		budgetEnabled := tier.BudgetEnabled == nil || *tier.BudgetEnabled
-		if budgetEnabled && !deadlineAt.IsZero() {
+		_, retryWindow := r.ladderRetryCutoff(date, event, state)
+		if !retryWindow && budgetEnabled && !deadlineAt.IsZero() {
 			remaining := deadlineAt.Sub(r.clock.Now())
 			timeout, err := time.ParseDuration(tier.Timeout)
 			if err != nil || remaining <= timeout {
@@ -1902,6 +2003,10 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 				cutoffText = event.LateUntil
 			}
 			if cutoff, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoffText, r.loc); err == nil && !r.clock.Now().Before(cutoff) {
+				if _, retryWindow := r.ladderRetryCutoff(date, event, state); retryWindow && state.RungAttempts > 0 {
+					finishFailure("TIER_UNTIL_EXPIRED", "", index, tier)
+					return
+				}
 				if state.RungAttempts == 0 {
 					skipped = append(skipped, tier.Name)
 				}
@@ -1920,10 +2025,15 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 					cutoffText = event.LateUntil
 				}
 				if cutoff, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoffText, r.loc); err == nil && !r.clock.Now().Before(cutoff) {
+					if _, retryWindow := r.ladderRetryCutoff(date, event, state); retryWindow && state.RungAttempts > 0 {
+						finishFailure("TIER_UNTIL_EXPIRED", "", index, tier)
+						return
+					}
 					break
 				}
 			}
-			if budgetEnabled && !deadlineAt.IsZero() {
+			_, retryWindow = r.ladderRetryCutoff(date, event, state)
+			if !retryWindow && budgetEnabled && !deadlineAt.IsZero() {
 				remaining := deadlineAt.Sub(r.clock.Now())
 				timeout, err := time.ParseDuration(tier.Timeout)
 				if err != nil || remaining <= timeout {
@@ -2024,6 +2134,22 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 					state.SkippedTiers = append([]string(nil), skipped...)
 					_, _ = r.appendLedger(date, "TIER_RETRY_SCHEDULED", map[string]any{"instance": x.ID, "rung": rungNumber, "tier": tier.Name, "rung_attempt": state.RungAttempts, "next_attempt_at": state.NextAttemptAt, "until": cutoff.Format(time.RFC3339)})
 					r.setState(x, date, state)
+					return
+				}
+			}
+			if tier.Until != "" {
+				cutoffText := tier.Until
+				if cutoffText == "late_until" {
+					cutoffText = event.LateUntil
+				}
+				if cutoff, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoffText, r.loc); err == nil && !r.clock.Now().Before(cutoff) {
+					if _, retryWindow := r.ladderRetryCutoff(date, event, state); !retryWindow {
+						if delay > 0 {
+							r.waitClock(delay)
+						}
+						continue
+					}
+					finishFailure("TIER_UNTIL_EXPIRED", "", index, tier)
 					return
 				}
 			}
@@ -2799,6 +2925,9 @@ func (r *liveRunner) schedule(now time.Time) {
 		running := r.running[x.ID]
 		paused := r.paused[x.EventID] || r.paused["*"]
 		r.mu.Unlock()
+		if retryCutoff, ok := r.ladderRetryCutoff(date, event, st); ok {
+			end = retryCutoff
+		}
 		if exists && isTerminal(st.Status) {
 			continue
 		}
@@ -2819,8 +2948,12 @@ func (r *liveRunner) schedule(now time.Time) {
 		}
 		phase, _ := r.currentPhase(now)
 		if exists && st.Status == "DEFERRED" && windowExpired(now, end) {
-			r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: now.Format(time.RFC3339), LastError: "PHASE_DEFER_EXPIRED"})
-			missedNow = append(missedNow, x.ID)
+			if _, retryWindow := r.ladderRetryCutoff(date, event, st); retryWindow {
+				r.finishLadderRetryWindowExpired(x, date, event, st)
+			} else {
+				r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: now.Format(time.RFC3339), LastError: "PHASE_DEFER_EXPIRED"})
+				missedNow = append(missedNow, x.ID)
+			}
 			continue
 		}
 		if event != nil && !phaseAllowedAt(event, phase, now, c, r.loc) {
@@ -2839,21 +2972,32 @@ func (r *liveRunner) schedule(now time.Time) {
 			}
 			continue
 		}
-		if event.OnDeadline == "missed" && !running && !now.Truncate(time.Second).Before(deadlineAt.Truncate(time.Second)) {
+		deadlineMissed := true
+		if len(event.Ladder) > 0 {
+			_, retryWindow := r.ladderRetryCutoff(date, event, st)
+			deadlineMissed = !retryWindow
+		}
+		if event.OnDeadline == "missed" && deadlineMissed && !running && !now.Truncate(time.Second).Before(deadlineAt.Truncate(time.Second)) {
 			r.setState(x, date, instanceState{Status: "MISSED", Attempts: st.Attempts, CompletedAt: now.Format(time.RFC3339), LastError: "ON_DEADLINE_MISSED"})
 			missedNow = append(missedNow, x.ID)
 			continue
 		}
 		degradeDue := event.OnDeadline == "degrade" && !now.Truncate(time.Second).Before(deadlineAt.Truncate(time.Second))
 		if exists && st.Status == "RETRY_WAIT" && !now.Before(end) {
-			if event := findEvent(c, x.EventID); event != nil {
+			if _, retryWindow := r.ladderRetryCutoff(date, event, st); retryWindow {
+				r.finishLadderRetryWindowExpired(x, date, event, st)
+			} else if event := findEvent(c, x.EventID); event != nil {
 				r.finishLateRetries(x, date, event, st)
 			}
 			continue
 		}
 		if exists && !running && windowExpired(now, end) && !isTerminal(st.Status) {
-			r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: now.Format(time.RFC3339), LastError: "SCHEDULING_WINDOW_EXPIRED"})
-			missedNow = append(missedNow, x.ID)
+			if _, retryWindow := r.ladderRetryCutoff(date, event, st); retryWindow {
+				r.finishLadderRetryWindowExpired(x, date, event, st)
+			} else {
+				r.setState(x, date, instanceState{Status: "MISSED", CompletedAt: now.Format(time.RFC3339), LastError: "SCHEDULING_WINDOW_EXPIRED"})
+				missedNow = append(missedNow, x.ID)
+			}
 			continue
 		}
 		if windowExpired(now, end) && !exists {

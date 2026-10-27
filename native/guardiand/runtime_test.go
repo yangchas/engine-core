@@ -3134,6 +3134,243 @@ exit 75
 	}
 }
 
+func TestC557DeadlineRetryUsesTierUntil(t *testing.T) {
+	type sourceEvent struct {
+		ID              string          `json:"event_id"`
+		At              json.RawMessage `json:"at"`
+		Deadline        string          `json:"deadline"`
+		LateUntil       string          `json:"late_until"`
+		OnDeadline      string          `json:"on_deadline"`
+		Profile         string          `json:"profile"`
+		Cost            string          `json:"cost"`
+		RetryUntilLate  bool            `json:"retry_until_late"`
+		SilentUntilLast bool            `json:"silent_until_last"`
+	}
+	var source struct {
+		Events   []sourceEvent `json:"events"`
+		Profiles map[string]struct {
+			Ladder []config.LadderTier `json:"ladder"`
+		} `json:"profiles"`
+	}
+	b, err := os.ReadFile(filepath.Join("..", "..", "src", "engine_core", "guardian", "schedule.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &source); err != nil {
+		t.Fatal(err)
+	}
+
+	scaleDuration := func(d time.Duration) time.Duration {
+		seconds := d / time.Minute
+		if d%time.Minute != 0 {
+			seconds++
+		}
+		if seconds < 1 {
+			seconds = 1
+		}
+		return seconds * time.Second
+	}
+	scaleTimeout := func(d time.Duration) time.Duration {
+		units := d / time.Minute
+		if d%time.Minute != 0 {
+			units++
+		}
+		if units < 1 {
+			units = 1
+		}
+		return units * 10 * time.Millisecond
+	}
+	scaledClock := func(from, to string) string {
+		parse := func(value string) time.Time {
+			parsed, err := time.Parse("15:04:05", value)
+			if err != nil {
+				t.Fatalf("invalid production schedule clock %q: %v", value, err)
+			}
+			return parsed
+		}
+		seconds := int(scaleDuration(parse(to).Sub(parse(from))) / time.Second)
+		return time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(seconds) * time.Second).Format("15:04:05")
+	}
+	production := map[string]config.Event{}
+	for _, id := range []string{"startup_0830", "baostock_probe_1730", "baostock_retry_2000"} {
+		var item *sourceEvent
+		for i := range source.Events {
+			if source.Events[i].ID == id {
+				item = &source.Events[i]
+				break
+			}
+		}
+		if item == nil {
+			t.Fatalf("production schedule is missing %s", id)
+		}
+		var at string
+		if err := json.Unmarshal(item.At, &at); err != nil {
+			t.Fatalf("production schedule event %s has invalid at value %s: %v", id, item.At, err)
+		}
+		profile, ok := source.Profiles[item.Profile]
+		if !ok || len(profile.Ladder) == 0 {
+			t.Fatalf("production schedule profile %s has no ladder", item.Profile)
+		}
+		ladder := append([]config.LadderTier(nil), profile.Ladder...)
+		for i := range ladder {
+			if d, err := time.ParseDuration(ladder[i].Timeout); err == nil {
+				ladder[i].Timeout = scaleTimeout(d).String()
+			}
+			if ladder[i].Backoff != "" {
+				parts := strings.SplitN(ladder[i].Backoff, "*", 2)
+				if d, err := time.ParseDuration(parts[0]); err == nil {
+					parts[0] = scaleDuration(d).String()
+				}
+				ladder[i].Backoff = strings.Join(parts, "*")
+			}
+			if d, err := time.ParseDuration(ladder[i].BackoffCap); err == nil {
+				ladder[i].BackoffCap = scaleDuration(d).String()
+			}
+		}
+		production[id] = config.Event{
+			ID: id, Enabled: true, Handler: "handler", Catchup: "run_in_window", Cost: item.Cost,
+			Trigger:   config.Trigger{Type: "window", Start: "00:00:00", Deadline: scaledClock(at, item.Deadline)},
+			LateUntil: scaledClock(at, item.LateUntil), OnDeadline: item.OnDeadline,
+			Retry: config.Retry{UntilLate: item.RetryUntilLate, SilentUntilLast: item.SilentUntilLast},
+			Gate:  config.Gate{Ref: "calendar_ready", Poll: "1s", Timeout: "1s"}, Ladder: ladder,
+		}
+	}
+
+	date := "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	base, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 00:00:00", loc)
+	writeRunner := func(t *testing.T, event config.Event) (*liveRunner, *fakeClock, string, string, func()) {
+		t.Helper()
+		root := t.TempDir()
+		calls := filepath.Join(root, "calls.txt")
+		release := filepath.Join(root, "release")
+		handler := writeC545Script(t, filepath.Join(root, "handler.sh"), `printf '%s\n' call >> "$CALL_LOG"
+n=$(wc -l < "$CALL_LOG")
+if [ "$n" -eq 1 ]; then
+  while [ ! -e "$RELEASE" ]; do sleep 0.01; done
+  sleep 5
+fi
+printf '%s\n' '{"contract":1,"status":"ok"}'
+`)
+		gate := writeC545Script(t, filepath.Join(root, "gate.sh"), `printf '%s\n' '{"contract":1,"status":"ready","reason":"calendar_ready"}'
+`)
+		t.Setenv("CALL_LOG", calls)
+		t.Setenv("RELEASE", release)
+		fc := newFakeClock(base)
+		r, closeRunner := newC545Runner(t, root, date, fc, config.Config{Events: []config.Event{event}, Handlers: map[string]config.Handler{
+			"handler": {Argv: []string{handler}, GateArgv: []string{gate}, EnvAllow: []string{"CALL_LOG", "RELEASE"}},
+		}})
+		return r, fc, calls, release, closeRunner
+	}
+	runPastDeadlineFailure := func(t *testing.T, event config.Event) (*liveRunner, *fakeClock, string, func()) {
+		t.Helper()
+		r, fc, calls, release, closeRunner := writeRunner(t, event)
+		advanced := make(chan bool, 1)
+		go func() {
+			end := time.Now().Add(5 * time.Second)
+			for time.Now().Before(end) {
+				if _, err := os.Stat(calls); err == nil {
+					deadline, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+event.Trigger.Deadline, loc)
+					if !fc.Now().Before(deadline) {
+						advanced <- false
+						return
+					}
+					fc.Advance(deadline.Sub(base) + time.Second)
+					_ = os.WriteFile(release, []byte("go"), 0600)
+					advanced <- true
+					return
+				}
+				runtime.Gosched()
+			}
+			advanced <- false
+		}()
+		r.schedule(base)
+		if !<-advanced {
+			closeRunner()
+			t.Fatal("first handler attempt did not start")
+		}
+		waitFor(t, func() bool {
+			st := runtimeTestState(r, date+"/"+event.ID)
+			r.mu.Lock()
+			running := r.running[event.ID]
+			r.mu.Unlock()
+			return st.Status == "RETRY_WAIT" && !running
+		})
+		return r, fc, calls, closeRunner
+	}
+
+	for _, id := range []string{"startup_0830", "baostock_probe_1730", "baostock_retry_2000"} {
+		t.Run("retry succeeds after deadline/"+id, func(t *testing.T) {
+			event := production[id]
+			r, fc, _, closeRunner := runPastDeadlineFailure(t, event)
+			defer closeRunner()
+			first := runtimeTestState(r, date+"/"+id)
+			if first.Attempts != 1 || first.Status != "RETRY_WAIT" || first.LastError != "HANDLER_TIMEOUT" {
+				t.Fatalf("first attempt result=%+v, want HANDLER_TIMEOUT and retry wait after one pre-deadline attempt", first)
+			}
+			next, err := time.Parse(time.RFC3339, first.NextAttemptAt)
+			until, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+event.LateUntil, loc)
+			if err != nil || !next.Before(until) {
+				t.Fatalf("next attempt %q must be due before tier until %s", first.NextAttemptAt, until.Format(time.RFC3339))
+			}
+			fc.Advance(next.Sub(fc.Now()))
+			r.schedule(fc.Now())
+			waitFor(t, func() bool { return isTerminal(runtimeTestState(r, date+"/"+id).Status) })
+			state := runtimeTestState(r, date+"/"+id)
+			if state.Status != "SUCCEEDED" || state.Attempts != 2 || r.alertDaily != 0 {
+				t.Fatalf("post-deadline retry result=%+v alerts=%d, want SUCCEEDED after two attempts and no MISSED alert", state, r.alertDaily)
+			}
+		})
+	}
+
+	t.Run("until expiry is terminal and alerts once", func(t *testing.T) {
+		event := production["baostock_probe_1730"]
+		r, fc, _, closeRunner := runPastDeadlineFailure(t, event)
+		defer closeRunner()
+		until, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+event.LateUntil, loc)
+		fc.Advance(until.Sub(fc.Now()) + time.Second)
+		r.schedule(fc.Now())
+		state := runtimeTestState(r, date+"/"+event.ID)
+		if state.Status != "FAILED_FINAL" || state.LastError != "TIER_UNTIL_EXPIRED" || r.alertDaily != 1 {
+			t.Fatalf("expired retry result=%+v alerts=%d, want FAILED_FINAL/TIER_UNTIL_EXPIRED and one alert", state, r.alertDaily)
+		}
+		r.schedule(fc.Now())
+		if got := runtimeTestState(r, date+"/"+event.ID); got.Status != "FAILED_FINAL" || r.alertDaily != 1 {
+			t.Fatalf("repeated scheduler pass result=%+v alerts=%d, want one alert total", got, r.alertDaily)
+		}
+	})
+
+	t.Run("never started remains missed", func(t *testing.T) {
+		event := config.Event{ID: "never_started", Enabled: true, Handler: "handler", Catchup: "run_in_window", OnDeadline: "missed",
+			Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:00:05"}}
+		late, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:06", loc)
+		fc := newFakeClock(late)
+		r, closeRunner := newC545Runner(t, t.TempDir(), date, fc, config.Config{Events: []config.Event{event}})
+		defer closeRunner()
+		r.schedule(late)
+		state := runtimeTestState(r, date+"/"+event.ID)
+		if state.Status != "MISSED" || state.Attempts != 0 || r.alertDaily != 1 {
+			t.Fatalf("never-started result=%+v alerts=%d, want MISSED with one alert", state, r.alertDaily)
+		}
+	})
+
+	t.Run("ordinary retry remains bounded by event deadline", func(t *testing.T) {
+		event := config.Event{ID: "ordinary_retry", Enabled: true, Handler: "handler", Catchup: "run_in_window", OnDeadline: "missed",
+			Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "09:00:05"}}
+		late, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:06", loc)
+		fc := newFakeClock(late)
+		r, closeRunner := newC545Runner(t, t.TempDir(), date, fc, config.Config{Events: []config.Event{event}})
+		defer closeRunner()
+		x := Instance{ID: event.ID, EventID: event.ID, TriggerType: "window", Start: event.Trigger.Start, Deadline: event.Trigger.Deadline}
+		r.setState(x, date, instanceState{Status: "RETRY_WAIT", Attempts: 1, StartedAt: "2026-10-20T09:00:04+08:00", NextAttemptAt: late.Format(time.RFC3339), LastError: "HANDLER_TIMEOUT"})
+		r.schedule(late)
+		state := runtimeTestState(r, date+"/"+event.ID)
+		if state.Status != "MISSED" || state.Attempts != 1 || r.alertDaily != 1 {
+			t.Fatalf("ordinary retry result=%+v alerts=%d, want event-deadline MISSED with one alert", state, r.alertDaily)
+		}
+	})
+}
+
 func TestC548ScenarioMatrix(t *testing.T) {
 	date := "2026-10-20"
 	loc, err := time.LoadLocation("Asia/Shanghai")
