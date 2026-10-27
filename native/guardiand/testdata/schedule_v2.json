@@ -1283,15 +1283,15 @@
       "calendar": "trading_day"
     },
     {
-      "available_after": "17:30:00",
+      "available_after": "17:40:00",
       "data_date_offset": 0,
-      "deadline": "17:39:59",
+      "deadline": "17:49:59",
       "depends_on": [],
       "event_id": "baostock_probe_1730",
       "gate": "calendar_ready",
       "handler": "baostock_probe",
       "max_attempts": 3,
-      "start": "17:30:00",
+      "start": "17:40:00",
       "timeout_seconds": 3600,
       "trigger_type": "window",
       "order": null,
@@ -1316,7 +1316,7 @@
       "calendar": "trading_day"
     },
     {
-      "available_after": "17:30:00",
+      "available_after": "17:40:00",
       "data_date_offset": 0,
       "deadline": "18:29:59",
       "depends_on": [],
@@ -1324,7 +1324,7 @@
       "gate": "calendar_ready",
       "handler": "baostock_probe",
       "max_attempts": 3,
-      "start": "17:40:00",
+      "start": "17:50:00",
       "timeout_seconds": 3600,
       "trigger_type": "window",
       "order": null,
