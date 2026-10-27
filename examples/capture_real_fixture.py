@@ -7,6 +7,7 @@ Fixtures under tests/fixtures/real/ must come from here (or from copying a commi
   capture_real_fixture.py ths_hot_rank
   capture_real_fixture.py kaipan_hot_plates [--date YYYY-MM-DD]
   capture_real_fixture.py kaipan_pool [--date YYYY-MM-DD] [--level 1]
+  capture_real_fixture.py wencai_daily_kline --date YYYY-MM-DD
 """
 from __future__ import annotations
 
@@ -49,6 +50,36 @@ def _kaipan(call: str, **kwargs) -> object:
     return getattr(importlib.import_module("pykaipan.pykaipan"), call)(**kwargs)
 
 
+def _wencai_daily_kline(day: str) -> tuple[object, dict]:
+    from engine_core.data_pipeline.providers.wencai_daily_adapter import (
+        MAX_PAGES, PAGE_SIZE, build_daily_kline_query, fetch_daily_kline,
+    )
+
+    class RateGate:
+        def __init__(self):
+            self.last_request = 0.0
+            self.request_count = 1
+
+        def request(self):
+            now = time.monotonic()
+            delay = max(0.0, 10.0 - (now - self.last_request)) if self.last_request else 0.0
+            if delay:
+                time.sleep(delay)
+            self.last_request = time.monotonic()
+            self.request_count += 1
+
+    gate = RateGate()
+    payload = fetch_daily_kline(day, context=gate, page_size=PAGE_SIZE, max_pages=MAX_PAGES)
+    params = {"query": build_daily_kline_query(day), "loop": False,
+              "page_size": PAGE_SIZE, "max_pages": MAX_PAGES,
+              "min_interval_seconds": 10, "max_requests": MAX_PAGES}
+    return payload, {"call": "pywencai.wencai.get_robot_data", "params": params,
+                     "page_count": payload.get("page_count"),
+                     "expected_count": payload.get("expected_count"),
+                     "partial": payload.get("partial"),
+                     "source_dates": payload.get("source_dates")}
+
+
 def capture(kind: str, day: str, level: int) -> tuple[str, object, dict]:
     if kind == "ths_hot_rank":
         raw, meta = _ths_raw()
@@ -59,12 +90,16 @@ def capture(kind: str, day: str, level: int) -> tuple[str, object, dict]:
     if kind == "kaipan_pool":
         params = {"date": day, "ban": str(level), "size": "2000"}
         return "kaipan_pool", _kaipan("getHisBans", **params), {"call": "getHisBans", "params": params}
+    if kind == "wencai_daily_kline":
+        raw, meta = _wencai_daily_kline(day)
+        return "wencai_daily_kline", raw, meta
     raise SystemExit("unknown kind " + kind)
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("kind", choices=["ths_hot_rank", "kaipan_hot_plates", "kaipan_pool"])
+    parser.add_argument("kind", choices=["ths_hot_rank", "kaipan_hot_plates", "kaipan_pool",
+                                         "wencai_daily_kline"])
     parser.add_argument("--date", default=datetime.now(TZ).date().isoformat())
     parser.add_argument("--level", type=int, default=1)
     args = parser.parse_args(argv)

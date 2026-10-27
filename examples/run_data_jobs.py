@@ -265,6 +265,10 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
 
     daily_fetch = DailyKlineBaostockAdapter()
 
+    def wencai_daily_fetch(day: str, context: Any = None) -> Any:
+        from engine_core.data_pipeline.providers.wencai_daily_adapter import fetch_daily_kline
+        return fetch_daily_kline(day, context)
+
     class LazyKaipanClient:
         def _sdk(self):
             return importlib.import_module("pykaipan.pykaipan")
@@ -328,7 +332,8 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
                                   reasons_checkpoint_path=checkpoint)
         return provider.limit_reasons(day, context=context)
 
-    return {"symbol_universe": universe_fetch, "daily_kline": daily_fetch, "limit_up_pool": pool_fetch,
+    return {"symbol_universe": universe_fetch, "daily_kline": daily_fetch,
+            "wencai_daily_kline": wencai_daily_fetch, "limit_up_pool": pool_fetch,
             "plate_members": members_fetch, "hot_plates": hot_fetch,
             "limit_reasons": reasons_fetch}
 
@@ -600,7 +605,10 @@ def main(argv: list[str] | None = None) -> int:
                 if wencai_fetch is not None:
                     universe = load_dataset("symbol_universe", args.date, prefer="file",
                                             catalog=ArtifactCatalog(args.artifact_root))
-                    expected_count = len(universe.rows) if universe is not None else None
+                    if universe is None:
+                        raise RuntimeError("symbol_universe_artifact_required:" + args.date)
+                    expected_count = sum(str(row.get("trade_status", "")).strip() != "0"
+                                         for row in universe.rows)
                     configured["wencai"] = WencaiDailyProvider(
                         wencai_fetch, state_path=Path(args.artifact_root) / ".provider_state" / "wencai.json",
                         max_requests=args.max_requests, expected_count=expected_count,
@@ -630,15 +638,20 @@ def main(argv: list[str] | None = None) -> int:
                         for event in (attempt.get("error_events") or []))
                     for attempt in attempts
                 )
-                failure_code = "STALL_NO_PROGRESS" if stall_detected else "DAILY_KLINE_ALL_PROVIDERS_FAILED"
+                failure_attempt = next((attempt for attempt in attempts if attempt.get("retryable")), None)
+                failure_attempt = failure_attempt or (attempts[-1] if attempts else {})
+                retryable = any(bool(attempt.get("retryable")) for attempt in attempts)
+                failure_code = ("STALL_NO_PROGRESS" if stall_detected else
+                                "DAILY_KLINE_ALL_PROVIDERS_FAILED" if retryable else
+                                str(failure_attempt.get("error_code") or "DAILY_KLINE_ALL_PROVIDERS_FAILED"))
                 print(json.dumps({"job": name, "status": "PROVIDER_UNAVAILABLE_OR_COVERAGE_LOW",
                                   "providers": daily_providers, "mode": "DRY_RUN" if not (args.execute or args.write) else "WRITE",
                                   "error_code": failure_code}, sort_keys=True))
                 daily_contract = ContractJobResult(
                     contract=1, job=name, trade_date=args.date, status="failed", tier=0,
                     source=None, dataset=name, version=None, row_count=None, coverage=None,
-                    error_code=failure_code, retryable=True,
-                    attempts=len(daily_providers),
+                    error_code=failure_code, retryable=retryable,
+                    attempts=len(attempts),
                     elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
                     detail={"providers": daily_providers, "provider_attempts": attempts})
                 daily_kline_exit_code = emit_job_result(daily_contract)

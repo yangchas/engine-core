@@ -143,7 +143,7 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
                           "elapsed_ms": elapsed,
                           "reason": str(item.get("reason") or "")}
             for key in ("login_ms", "query_ms", "query_count", "error_code", "error_events",
-                        "chain_result", "call_result", "coverage",
+                        "chain_result", "call_result", "coverage", "retryable", "tier_no_data",
                         "completed_symbols", "expected_symbols", "resumed_count", "checkpoint_saved",
                         "checkpoint_path", "baostock_budget_seconds"):
                 if key in item:
@@ -228,6 +228,61 @@ class ArtifactCatalog:
             return value if isinstance(value, dict) else {"datasets": {}}
         except (OSError, ValueError):
             return {"schema_version": 1, "datasets": {}}
+
+    def _latest_tier(self, catalog: Mapping[str, Any], trade_date: str,
+                     latest: Mapping[str, Any]) -> int:
+        entry = catalog.get("datasets", {}).get("daily_kline", {})
+        version = latest.get("version")
+        for item in entry.get("dates", {}).get(trade_date, []):
+            if item.get("version") != version:
+                continue
+            if type(item.get("tier")) is int:
+                return item["tier"]
+            manifest_path = Path(str(item.get("manifest") or ""))
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return 0
+            if type(manifest.get("tier")) is int:
+                return manifest["tier"]
+            provider = manifest.get("provider") or manifest.get("source")
+            return {"baostock": 0, "wencai": 1, "q2_final": 2,
+                    "legacy_q2_final": 2}.get(provider, 1)
+        return 0
+
+    def _can_advance_latest(self, catalog: Mapping[str, Any], dataset: str,
+                            trade_date: str, manifest: Mapping[str, Any]) -> bool:
+        entry = catalog.get("datasets", {}).get(dataset, {})
+        latest = entry.get("latest")
+        if not isinstance(latest, Mapping):
+            return True
+        latest_date = str(latest.get("trade_date", ""))
+        if trade_date > latest_date:
+            return True
+        if trade_date < latest_date or dataset != "daily_kline":
+            return False
+        incoming_tier = manifest.get("tier")
+        if type(incoming_tier) is not int:
+            incoming_tier = 0 if manifest.get("provider") == "baostock" else 1
+        return incoming_tier <= self._latest_tier(catalog, latest_date, latest)
+
+    def advance_daily_kline_latest(self, trade_date: str,
+                                   manifest: Mapping[str, Any]) -> bool:
+        """Promote the newest day, or the best tier for that day, to the latest pointer."""
+        with _catalog_lock(self.root):
+            catalog = self.read()
+            entry = catalog.setdefault("datasets", {}).setdefault(
+                "daily_kline", {"dates": {}, "latest": None})
+            if not self._can_advance_latest(catalog, "daily_kline", trade_date, manifest):
+                return False
+            version = str(manifest["version"])
+            entry["latest"] = {"trade_date": trade_date, "version": version}
+            _atomic_write(self.path, canonical_json(catalog) + b"\n")
+            _atomic_write(self.root / "daily_kline" / "latest.json", canonical_json({
+                "trade_date": trade_date, "version": version,
+                "manifest": manifest.get("manifest_uri"),
+            }) + b"\n")
+            return True
 
     def commit(self, dataset: str, trade_date: str, rows: Sequence[Mapping[str, Any]],
                manifest: Mapping[str, Any], *, source: str, authority: str = "LIVE",
@@ -324,6 +379,8 @@ class ArtifactCatalog:
                 catalog_version = {"version": version, "manifest": str(manifest_path),
                                  "sha256": digest, "row_count": len(rows), "as_of": result.get("as_of"),
                                  "source": source, "business_status": result.get("business_status"),
+                                 **({"tier": result["tier"]} if type(result.get("tier")) is int else {}),
+                                 **({"degraded": result["degraded"]} if type(result.get("degraded")) is bool else {}),
                                  **{key: result[key] for key in ("available_at", "committed_at", "authority")
                                     if key in result},
                                  **({"node_fingerprint": result["node_fingerprint"]}
@@ -342,7 +399,7 @@ class ArtifactCatalog:
             if (result.get("business_status") != "PROVISIONAL"
                     and not (spec is not None and spec.gate_mode == "enforce"
                              and gate is not None and gate["gate_status"] == "FAIL")
-                    and (current_latest is None or trade_date >= current_latest.get("trade_date", ""))):
+                    and self._can_advance_latest(catalog, dataset, trade_date, result)):
                 entry["latest"] = {"trade_date": trade_date, "version": version}
             _atomic_write(self.path, canonical_json(catalog) + b"\n")
             latest = entry.get("latest")

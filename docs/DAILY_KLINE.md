@@ -22,6 +22,20 @@ C541: `DailyKlineProviderChain.fetch_chain` 和 `run_data_jobs.py --job daily_kl
 
 C554: guardian 按“分区 + 自然日 + heavy 静默 phase”累计日K补取预算，默认每窗口 3 次、两次真实取数至少间隔 10 分钟；窗口耗尽记录 `GAP_WINDOW_EXHAUSTED` 和 `next_retry_window`，之后由 `boot_reconcile` / `runtime_reconcile_*` 在下一静默窗口重新扫描。启动与运行时都检查最近 5 个交易日（旧到新，每轮只选一个缺失或降级分区）；盘中只排队到下一个静默 phase。连续 3 个交易日的窗口都耗尽时将 GAP 提升为 `GAP_ESCALATED` 并复用现有 alert handler 告警一次，后续窗口仍继续重试；正式版本写入后 GAP 标为 `RESOLVED`。参数可用 `CORE_DAILY_KLINE_UPGRADE_MAX_ATTEMPTS`、`CORE_DAILY_KLINE_UPGRADE_MIN_INTERVAL_SECONDS`、`CORE_DAILY_KLINE_UPGRADE_ESCALATE_TRADING_DAYS`、`CORE_DAILY_KLINE_BACKFILL_DAYS` 覆盖。
 
+### Provider 阶梯与字段口径（C563）
+
+Provider 优先级为 Baostock → 问财 → q2_final。`TIER_NO_DATA` 立即尝试下一档；限流、超时和网络错误可重试并继续阶梯；参数或代码错误确定性失败，不继续调用低优先级来源。仅配置 `wencai` 时只调用问财。低档结果标记 `degraded=true` 和 tier，不覆盖同日已有的更高质量版本。问财日期只从简洁日期加字段列表查询，例如 `2026-10-26开盘价，最高价，最低价，收盘价，前收盘价，涨跌幅，成交量(股)，成交额(元)，股票代码`；不要加“A股日线行情”等市场描述。验收人先前实验中，`2026年10月26日A股日线行情...` 的字段日期后缀落在 `20261027`；简洁的 `2026-10-26开盘价，收盘价，涨跌幅` 与 `20261026收盘价，涨跌幅，前收盘价` 返回 `[20261026]`。本卡实抓的简洁完整字段查询也返回 2026-10-26 后缀，响应为 30 行；列日期由适配器记录到 `source_dates`，一致性标记随 manifest 保存，日期拒绝逻辑留给 C564。
+
+规范行统一为 `symbol`（六位数字）和 `code`（`sh.`/`sz.` 市场前缀），价格元、`pct_chg` 基点、成交额元、成交量股。来源转换依据：
+
+| 来源 | 价格 | `pct_chg` | 成交额 | 成交量 | 证据/转换 |
+|---|---|---|---|---|---|
+| Baostock | 元 | 百分比 → bp（×100） | 元 | 股 | 2026-10-26 真实 Baostock 29 只样本 |
+| 问财 | 元 | 百分比 → bp（×100） | 元 | 股 | 真实响应请求明确 `成交量(股)`、`成交额(元)`；600519 的成交量 4,159,916、成交额 5,574,287,630 元 |
+| q2_final | 元 | 百分比 → bp（×100） | 元 | 手 → 股（×100） | 已捕获 Q2 响应与规范转换；q2_final 未用真实 Redis 验证 |
+
+2026-10-26 真实 Baostock 与问财共同覆盖的 29 个活跃 universe 代码，`open/high/low/close/pct_chg` 比较分别为 29 项、0 不一致；比较容差为 `max(0.011, 0.2%)`。本次问财响应只覆盖该日活跃 universe 的 29/5,219（排除 1 条 universe 外记录），不能据此声称全市场覆盖。清洗时先丢弃并计数 universe 外记录；重复代码按规范非空字段最多、再按规范 JSON 字典序最小确定性选取，并记录重复总数、冲突代码数和样本质量说明。覆盖率分母固定为本地同日活跃股票 universe；停牌股票不进入分母。
+
 ### 读取方
 
 - `data_pipeline/access.py:41-53,86-100,248-263`：读 manifest/catalog 的 `business_status` 与 `quality.coverage`，选择版本并标注非 FORMAL 结果。

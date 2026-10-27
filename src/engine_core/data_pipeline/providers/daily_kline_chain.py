@@ -7,6 +7,7 @@ import math
 import os
 import queue
 import re
+import socket
 import threading
 import time
 from datetime import date, datetime, time as day_time, timedelta
@@ -16,6 +17,11 @@ from zoneinfo import ZoneInfo
 
 from ..storage import ArtifactCatalog, _atomic_write, canonical_json
 from ..registry.daily_kline import classify_daily_kline
+from ..daily_kline_schema import (
+    CANONICAL_FIELD_UNITS,
+    SOURCE_FIELD_UNITS,
+    canonicalize_daily_kline_payload,
+)
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 PRIORITY = ("baostock", "wencai", "q2_final")
@@ -48,6 +54,44 @@ def _number(value: Any) -> float | None:
 
 def _text(value: Any) -> str:
     return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value)
+
+
+def classify_provider_error(value: Any = None, *, status: str | None = None,
+                            error_code: str | None = None,
+                            reason: str | None = None,
+                            retryable: bool | None = None) -> tuple[str, bool, bool]:
+    """Return (code, retryable, tier_no_data) without treating programming errors as transient."""
+    marker = " ".join(str(item or "") for item in (status, error_code, reason, value)).strip()
+    upper = marker.upper()
+    if "TIER_NO_DATA" in upper or upper in {"EMPTY_RESPONSE", "NO_DATA"}:
+        return "TIER_NO_DATA", False, True
+    if "STALL_NO_PROGRESS" in upper:
+        return "STALL_NO_PROGRESS", True, False
+    if retryable is True or "WENCAI_BLOCKED" in upper:
+        if re.search(r"RATE.?LIMIT|TOO MANY REQUESTS|HTTP.?429", upper):
+            return "RATE_LIMITED", True, False
+        if isinstance(value, (TimeoutError, socket.timeout)) or re.search(r"TIMEOUT|TIMED OUT", upper):
+            return "FETCH_TIMEOUT", True, False
+        if re.search(r"NETWORK|CONNECTION|DNS|HTTP.?5\d\d|502|503|504|WENCAI_BLOCKED|STALL_NO_PROGRESS",
+                     upper):
+            return "NETWORK_ERROR", True, False
+        return (error_code or "RETRYABLE_PROVIDER_ERROR").upper(), True, False
+    if isinstance(value, (TimeoutError, socket.timeout)) or re.search(
+            r"TIMEOUT|TIMED OUT|RATE.?LIMIT|TOO MANY REQUESTS|HTTP.?429|NETWORK|CONNECTION|DNS|HTTP.?5\d\d|502|503|504|STALL_NO_PROGRESS",
+            upper):
+        code = "RATE_LIMITED" if re.search(r"RATE.?LIMIT|TOO MANY REQUESTS|HTTP.?429", upper) else (
+            "FETCH_TIMEOUT" if isinstance(value, (TimeoutError, socket.timeout)) or "TIMEOUT" in upper
+            or "TIMED OUT" in upper else "NETWORK_ERROR")
+        return code, True, False
+    if (re.search(r"UNAVAILABLE|SERVICE UNAVAILABLE", upper) and
+            not re.search(r"NOT.?CONFIGURED|INVALID|PARAMETER|BAD.?CODE|UNKNOWN.?CODE", upper)):
+        return "NETWORK_ERROR", True, False
+    if isinstance(value, (ValueError, TypeError, KeyError)) or re.search(
+            r"INVALID|PARAMETER|BAD.?CODE|UNKNOWN.?CODE|SCHEMA.?INVALID|CONFIGURATION|NOT_CONFIGURED",
+            upper):
+        return (error_code or "INVALID_REQUEST").upper(), False, False
+    return (error_code or type(value).__name__.upper() if isinstance(value, BaseException)
+            else error_code or "PROVIDER_ERROR"), False, False
 
 
 class Q2FinalProvider:
@@ -105,17 +149,18 @@ class Q2FinalProvider:
             }
             rows.append(row)
         expected = len(symbols)
-        return {
+        payload = {
             "rows": rows,
             "expected_count": expected,
             "stale_count": len(stale),
             "stale_symbols": stale,
             "partial": len(rows) < expected,
-            "field_units": {"close/high/low/pre_close": "yuan", "amount_yuan": "yuan",
-                            "volume": "UNKNOWN"},
+            "field_units": {"price": "yuan", "pct_chg": "percent", "amount_yuan": "yuan",
+                            "volume": "hands"},
             "field_completeness": {"open": "MISSING", "adjustment": "UNADJUSTED_UNKNOWN"},
             "source_dependency": self.source_dependency,
         }
+        return canonicalize_daily_kline_payload("q2_final", payload)
 
     def snapshot(self, trade_date: str, artifact_root: str | Path, *,
                  now: str | datetime | None = None) -> Any:
@@ -124,7 +169,7 @@ class Q2FinalProvider:
 
         current = _clock(now)
         started = time.monotonic()
-        payload = self.fetch(trade_date, now=current)
+        payload = canonicalize_daily_kline_payload("q2_final", self.fetch(trade_date, now=current))
         if payload.get("status") == "PROVIDER_UNAVAILABLE":
             return None
         rows, quality = DailyKlineProviderChain._quality(payload)
@@ -142,24 +187,17 @@ class Q2FinalProvider:
             "as_of": current.isoformat(), "quality": {**quality, "status": "DEGRADED"},
             "degraded": True, "degraded_label": "DEGRADED:q2_final",
             "status": "DEGRADED:q2_final",
+            "tier": 2,
             "business_status": classify_daily_kline("q2_final", quality.get("coverage"),
                                                       quality.get("field_completeness", {})),
             "provider_attempts": attempts,
-            "field_completeness": payload["field_completeness"], "field_units": payload["field_units"],
+            "field_completeness": payload["field_completeness"],
+            "field_units": CANONICAL_FIELD_UNITS,
+            "source_field_units": payload["source_field_units"],
         }
         committed = ArtifactCatalog(artifact_root).commit("daily_kline", trade_date, rows,
                                                            manifest, source=self.source)
-        latest = ArtifactCatalog(artifact_root).read().get("datasets", {}).get("daily_kline", {}).get("latest")
-        if latest is None or str(latest.get("trade_date", "")) <= trade_date:
-            catalog = ArtifactCatalog(artifact_root)
-            document = catalog.read()
-            entry = document.setdefault("datasets", {}).setdefault("daily_kline", {"dates": {}, "latest": None})
-            entry["latest"] = {"trade_date": trade_date, "version": committed["version"]}
-            _atomic_write(catalog.path, canonical_json(document) + b"\n")
-            _atomic_write(catalog.root / "daily_kline" / "latest.json", canonical_json({
-                "trade_date": trade_date, "version": committed["version"],
-                "manifest": committed["manifest_uri"],
-            }) + b"\n")
+        ArtifactCatalog(artifact_root).advance_daily_kline_latest(trade_date, committed)
         return JobResult(committed, rows)
 
 
@@ -213,7 +251,8 @@ class WencaiDailyProvider:
         state = self._state()
         wall = self.clock_fn()
         if float(state.get("blocked_until", 0)) > wall:
-            return {**unavailable, "reason": "circuit_open"}
+            return {**unavailable, "reason": "circuit_open", "error_code": "RATE_LIMITED",
+                    "retryable": True}
         history = [float(item) for item in state.get("requests", []) if wall - float(item) < 60]
         last = float(state.get("last_request", 0))
         wait = self.min_interval_seconds - (wall - last) if last else 0
@@ -222,7 +261,8 @@ class WencaiDailyProvider:
             wall = self.clock_fn()
             history = [item for item in history if wall - item < 60]
         if len(history) >= self.max_requests:
-            return {**unavailable, "reason": "rate_limited"}
+            return {**unavailable, "reason": "rate_limited", "error_code": "RATE_LIMITED",
+                    "retryable": True}
         history.append(wall)
         state.update({"requests": history, "last_request": wall})
         self._save_state(state)
@@ -262,7 +302,8 @@ class WencaiDailyProvider:
                 state = self._state()
                 state["blocked_until"] = self.clock_fn() + self.breaker_seconds
                 self._save_state(state)
-                return {**unavailable, "reason": "provider_blocked", "status_code": 403}
+                return {**unavailable, "reason": "provider_blocked", "status_code": 403,
+                        "error_code": "WENCAI_BLOCKED", "retryable": True}
             payload = dict(raw) if isinstance(raw, Mapping) else {"rows": raw}
             payload["rows"] = self._normalize_rows(payload.get("rows", []), trade_date)
             if "expected_count" not in payload and self.expected_count is not None:
@@ -270,6 +311,9 @@ class WencaiDailyProvider:
                                              if callable(self.expected_count) else self.expected_count)
             payload["source"] = self.source
             payload["source_dependency"] = self.source_dependency
+            if not payload["rows"] and payload.get("status") not in {"PROVIDER_UNAVAILABLE", "TIER_NO_DATA"}:
+                payload.update({"status": "TIER_NO_DATA", "error_code": "TIER_NO_DATA",
+                                "retryable": False, "reason": "empty_response"})
             payload.setdefault("field_completeness", {"adjustment": "UNKNOWN"})
             return payload
         except Exception as exc:
@@ -277,37 +321,28 @@ class WencaiDailyProvider:
                 state = self._state()
                 state["blocked_until"] = self.clock_fn() + self.breaker_seconds
                 self._save_state(state)
-                return {**unavailable, "reason": "provider_blocked", "status_code": 403}
-            return {**unavailable, "reason": f"fetch_failed:{type(exc).__name__}"}
+                return {**unavailable, "reason": "provider_blocked", "status_code": 403,
+                        "error_code": "WENCAI_BLOCKED", "retryable": True}
+            error_code, retryable, tier_no_data = classify_provider_error(exc)
+            return {**unavailable, "reason": f"fetch_failed:{type(exc).__name__}",
+                    "status": "TIER_NO_DATA" if tier_no_data else "PROVIDER_UNAVAILABLE",
+                    "error_code": error_code, "retryable": retryable}
 
     @staticmethod
     def _normalize_rows(raw_rows: Any, trade_date: str) -> list[dict[str, Any]]:
-        from ...wencai_fallback import _find as find_wencai_field
+        from .wencai_daily_adapter import _field_value
         from ...wencai_fallback import _number as normalize_wencai_number
         from ...wencai_fallback import _records as normalize_wencai_records
         from ...wencai_fallback import _symbol as normalize_wencai_symbol
 
-        aliases = {
-            "date": ("date", "日期"),
-            "open": ("open", "开盘", "开盘价"), "high": ("high", "最高", "最高价"),
-            "low": ("low", "最低", "最低价"), "close": ("close", "收盘", "收盘价"),
-            "pre_close": ("pre_close", "昨收", "前收盘"),
-            "pct_chg": ("pct_chg", "涨跌幅", "涨幅"),
-            "volume": ("volume", "成交量"),
-            "amount_yuan": ("amount_yuan", "amount", "成交额", "成交金额"),
-        }
+        fields = ("open", "high", "low", "close", "pre_close", "pct_chg", "volume", "amount_yuan")
         normalized: list[dict[str, Any]] = []
         for raw in normalize_wencai_records(raw_rows):
             symbol = normalize_wencai_symbol(raw)
             row: dict[str, Any] = {"symbol": symbol, "date": trade_date}
-            found_date = find_wencai_field(raw, *aliases["date"])
-            if found_date is not None:
-                row["date"] = str(found_date).replace("/", "-")[:10]
-            for output, candidates in aliases.items():
-                if output == "date":
-                    continue
-                row[output] = normalize_wencai_number(find_wencai_field(raw, *candidates))
-            if row.get("symbol") and row.get("date") == trade_date:
+            for output in fields:
+                row[output] = normalize_wencai_number(_field_value(raw, output, trade_date))
+            if row.get("symbol"):
                 row["source"] = "wencai"
                 row["quality"] = "DEGRADED"
                 normalized.append(row)
@@ -322,6 +357,78 @@ class DailyKlineProviderChain:
         self.coverage_threshold = coverage_threshold
         self._published: dict[str, list[dict[str, Any]]] = {}
         self.last_attempts: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _symbol_of(row: Mapping[str, Any]) -> str:
+        value = str(row.get("symbol", row.get("code", "")) or "").strip()
+        if "." in value:
+            value = value.rsplit(".", 1)[-1]
+        return value.zfill(6) if value.isdigit() else value
+
+    def _canonical_rows(self, source: str, trade_date: str,
+                        payload: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
+        """Normalize units, remove non-universe rows, and select one duplicate deterministically."""
+        normalized_payload = dict(payload)
+        raw_rows = payload.get("rows", [])
+        if not isinstance(raw_rows, (list, tuple)):
+            raise ValueError("schema_invalid:rows_not_a_list")
+        universe_path = self.catalog.locate("symbol_universe", trade_date)
+        universe: set[str] | None = None
+        if universe_path is not None:
+            universe = {self._symbol_of(row) for row in self.catalog.read_rows(universe_path)}
+            universe.discard("")
+
+        conversion_units = payload.get("field_units")
+        if not isinstance(conversion_units, Mapping):
+            conversion_units = SOURCE_FIELD_UNITS[source]
+        source_units = payload.get("source_field_units")
+        if not isinstance(source_units, Mapping):
+            source_units = conversion_units
+        groups: dict[str, list[dict[str, Any]]] = {}
+        excluded = 0
+        invalid = 0
+        for raw in raw_rows:
+            if not isinstance(raw, Mapping):
+                invalid += 1
+                continue
+            symbol = self._symbol_of(raw)
+            if not symbol or len(symbol) != 6 or not symbol.isdigit():
+                invalid += 1
+                continue
+            if universe is not None and symbol not in universe:
+                excluded += 1
+                continue
+            row = canonicalize_daily_kline_payload(
+                source, {"rows": [raw], "field_units": conversion_units})["rows"][0]
+            groups.setdefault(symbol, []).append(row)
+
+        rows: list[dict[str, Any]] = []
+        duplicate_rows = duplicate_symbols = conflicting_symbols = 0
+        value_fields = ("open", "high", "low", "close", "pre_close", "pct_chg", "amount_yuan", "volume")
+        for symbol, candidates in sorted(groups.items()):
+            if len(candidates) > 1:
+                duplicate_rows += len(candidates) - 1
+                duplicate_symbols += 1
+                signatures = {tuple(candidate.get(field) for field in value_fields)
+                              for candidate in candidates}
+                conflicting_symbols += int(len(signatures) > 1)
+            candidates.sort(key=lambda row: (
+                -sum(row.get(field) is not None for field in value_fields),
+                json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            ))
+            rows.append(candidates[0])
+
+        normalized_payload["rows"] = rows
+        normalized_payload["field_units"] = dict(CANONICAL_FIELD_UNITS)
+        normalized_payload["source_field_units"] = dict(source_units)
+        normalized_payload["tier"] = {"baostock": 0, "wencai": 1, "q2_final": 2}[source]
+        normalized_payload["degraded"] = source != "baostock"
+        normalized_payload["source_dates"] = payload.get("source_dates", {})
+        counts = {"input_rows": len(raw_rows), "universe_excluded_rows": excluded,
+                  "invalid_rows": invalid, "duplicate_rows": duplicate_rows,
+                  "duplicate_symbols": duplicate_symbols,
+                  "conflicting_duplicate_symbols": conflicting_symbols}
+        return normalized_payload, counts
 
     @staticmethod
     def _call(provider: Any, trade_date: str, now: datetime) -> Any:
@@ -384,7 +491,9 @@ class DailyKlineProviderChain:
                    "partial": bool(payload.get("partial")) or coverage is None or coverage < 1,
                    "status": "READY" if coverage is not None and coverage >= 0.98 else "PARTIAL",
                    "field_completeness": complete_fields,
-                   "field_units": payload.get("field_units", {})}
+                   "field_units": payload.get("field_units", CANONICAL_FIELD_UNITS),
+                   "source_field_units": payload.get("source_field_units", {}),
+                   "source_dates": payload.get("source_dates", {})}
         return rows, quality
 
     def _apply_active_universe_coverage(self, trade_date: str, rows: list[dict[str, Any]],
@@ -498,16 +607,7 @@ class DailyKlineProviderChain:
             new_manifest["reconciliation"] = comparisons[-1]
 
     def _advance_latest_pointer(self, trade_date: str, manifest: Mapping[str, Any]) -> None:
-        catalog = self.catalog.read()
-        entry = catalog.setdefault("datasets", {}).setdefault("daily_kline", {"dates": {}, "latest": None})
-        latest = entry.get("latest")
-        if latest and str(latest.get("trade_date", "")) > trade_date:
-            return
-        entry["latest"] = {"trade_date": trade_date, "version": manifest["version"]}
-        _atomic_write(self.catalog.path, canonical_json(catalog) + b"\n")
-        pointer = {"trade_date": trade_date, "version": manifest["version"],
-                   "manifest": manifest["manifest_uri"]}
-        _atomic_write(self.catalog.root / "daily_kline" / "latest.json", canonical_json(pointer) + b"\n")
+        self.catalog.advance_daily_kline_latest(trade_date, manifest)
 
     def _append_job_log(self, trade_date: str, *, started_at: str, elapsed_ms: float,
                         result: str, timing: Mapping[str, Any] | None = None) -> None:
@@ -586,13 +686,45 @@ class DailyKlineProviderChain:
                 timing = payload.get("baostock_timing") if isinstance(payload.get("baostock_timing"), Mapping) else {}
                 if bounded_baostock:
                     provider.total_timeout_seconds = original_total_timeout
+                status = str(payload.get("status") or "")
+                if not payload.get("rows") and not status:
+                    timing_result = str(timing.get("result") or "").lower()
+                    if source == "baostock" and timing_result in {"budget_exhausted", "timeout", "error"}:
+                        failure_code = ("DAILY_KLINE_BUDGET_EXHAUSTED" if timing_result == "budget_exhausted"
+                                        else timing.get("error_code"))
+                        failure_reason = timing.get("error_events") or timing_result
+                        error_code, retryable, _ = classify_provider_error(
+                            error_code=failure_code, reason=failure_reason,
+                            retryable=timing_result in {"budget_exhausted", "timeout"})
+                        payload.update({"status": "PROVIDER_UNAVAILABLE", "error_code": error_code,
+                                        "retryable": retryable, "reason": f"baostock_{timing_result}"})
+                    else:
+                        payload.update({"status": "TIER_NO_DATA", "error_code": "TIER_NO_DATA",
+                                        "retryable": False, "reason": "empty_response"})
+                    status = str(payload["status"])
+                if status in {"PROVIDER_UNAVAILABLE", "TIER_NO_DATA"}:
+                    error_code, retryable, tier_no_data = classify_provider_error(
+                        status=status, error_code=payload.get("error_code"),
+                        reason=payload.get("reason"), retryable=payload.get("retryable"))
+                    attempt = {"provider": source, "attempted_at": current.isoformat(),
+                               "result": "TIER_NO_DATA" if tier_no_data else "ERROR",
+                               "chain_result": "REJECTED", "reason": payload.get("reason", status),
+                               "error_code": error_code, "retryable": retryable,
+                               "tier_no_data": tier_no_data,
+                               "elapsed_ms": round((time.monotonic() - started) * 1000, 3)}
+                    attempts.append(attempt)
+                    if not retryable and not tier_no_data:
+                        break
+                    continue
+                payload, row_counts = self._canonical_rows(source, trade_date, payload)
+                payload["data_quality"] = row_counts
                 rows, quality = self._quality(payload)
+                quality["data_quality"] = row_counts
                 sample_scope = payload.get("sample_scope") == "symbols_file"
                 if sample_scope:
                     quality = self._apply_sample_coverage(trade_date, rows, payload, quality)
                 else:
                     quality = self._apply_active_universe_coverage(trade_date, rows, quality)
-                status = payload.get("status")
                 elapsed_ms = round((time.monotonic() - started) * 1000, 3)
                 call_result = str(timing.get("result") or ("error" if status == "PROVIDER_UNAVAILABLE" else "ok"))
                 if source == "baostock":
@@ -606,17 +738,28 @@ class DailyKlineProviderChain:
                                       "checkpoint_saved", "checkpoint_path")}
                 if source == "baostock":
                     baostock_progress["baostock_budget_seconds"] = call_budget
-                if (status == "PROVIDER_UNAVAILABLE" or quality["coverage"] is None or
-                        quality["coverage"] < self.coverage_threshold or
+                if (quality["coverage"] is None or quality["coverage"] < self.coverage_threshold or
                         (source == "baostock" and call_result in {"budget_exhausted", "timeout", "error"})):
+                    reason = "coverage_unknown_or_below_threshold"
+                    error_code = "COVERAGE_LOW"
+                    retryable = False
+                    if source == "baostock" and call_result in {"budget_exhausted", "timeout", "error"}:
+                        timing_code = timing.get("error_code")
+                        error_code, retryable, _ = classify_provider_error(
+                            error_code=("DAILY_KLINE_BUDGET_EXHAUSTED" if call_result == "budget_exhausted"
+                                        else timing_code or call_result),
+                            reason=timing.get("error_events"))
+                        reason = ("baostock_budget_exhausted" if call_result == "budget_exhausted"
+                                  else "baostock_retryable_failure" if retryable else "baostock_quality_rejected")
                     attempt = {"provider": source, "attempted_at": timing.get("started_at") or current.isoformat(),
                                "result": call_result if source == "baostock" else "REJECTED",
                                "chain_result": "REJECTED",
-                               "reason": payload.get("reason", "coverage_unknown_or_below_threshold"),
+                               "reason": reason,
+                               "error_code": error_code, "retryable": retryable,
                                "coverage": quality["coverage"], "elapsed_ms": elapsed_ms}
                     if source == "baostock":
                         attempt.update({key: timing.get(key) for key in
-                                        ("login_ms", "query_ms", "query_count", "error_code", "error_events")})
+                                        ("login_ms", "query_ms", "query_count", "error_events")})
                         attempt.update(baostock_progress)
                         if call_result == "budget_exhausted":
                             attempt["reason"] = "baostock_budget_exhausted"
@@ -625,6 +768,7 @@ class DailyKlineProviderChain:
                 attempt = {"provider": source, "attempted_at": timing.get("started_at") or current.isoformat(),
                            "result": call_result if source == "baostock" else "ACCEPTED",
                            "chain_result": "ACCEPTED", "reason": "coverage_accepted",
+                           "error_code": None, "retryable": False,
                            "coverage": quality["coverage"], "elapsed_ms": elapsed_ms}
                 if source == "baostock":
                     attempt.update({key: timing.get(key) for key in
@@ -652,6 +796,18 @@ class DailyKlineProviderChain:
                     "tier": payload.get("tier", 1 if degraded else 0),
                     "provider_attempts": attempts, "field_completeness": quality["field_completeness"],
                     "field_units": quality["field_units"],
+                    "source_field_units": quality["source_field_units"],
+                    "source_dates": payload.get("source_dates", {}),
+                    "source_dates_consistent": payload.get("source_dates_consistent"),
+                    "quality_notes": {
+                        "universe_excluded_rows": row_counts["universe_excluded_rows"],
+                        "invalid_rows": row_counts["invalid_rows"],
+                        "duplicate_rows": row_counts["duplicate_rows"],
+                        "duplicate_symbols": row_counts["duplicate_symbols"],
+                        "conflicting_duplicate_symbols": row_counts["conflicting_duplicate_symbols"],
+                        "duplicate_selection": "most_non_null_canonical_fields_then_lexicographically_smallest_canonical_json",
+                        "coverage_denominator": "local_active_symbol_universe",
+                    },
                 }
                 if sample_scope:
                     manifest["sample_scope"] = "symbols_file"
@@ -679,6 +835,11 @@ class DailyKlineProviderChain:
                 is_timeout = "TIMEOUT" in str(exc).upper() or isinstance(exc, TimeoutError)
                 call_result = ("budget_exhausted" if is_budget_exhausted else
                                "timeout" if is_timeout else "error")
+                if is_budget_exhausted:
+                    error_code, retryable = "DAILY_KLINE_BUDGET_EXHAUSTED", True
+                else:
+                    error_code, retryable, _ = classify_provider_error(
+                        exc, error_code=timing.get("error_code"))
                 if source == "baostock":
                     self._append_job_log(trade_date, started_at=str(timing.get("started_at") or started_at), elapsed_ms=elapsed_ms,
                                          result=call_result, timing=timing)
@@ -688,14 +849,17 @@ class DailyKlineProviderChain:
                            "reason": ("baostock_budget_exhausted" if source == "baostock" and
                                       call_result == "budget_exhausted" else
                                       f"provider_error:{type(exc).__name__}"),
+                           "error_code": error_code, "retryable": retryable,
                            "elapsed_ms": elapsed_ms}
                 if source == "baostock":
                     attempt.update({key: timing.get(key) for key in
-                                    ("login_ms", "query_ms", "query_count", "error_code", "error_events")})
+                                    ("login_ms", "query_ms", "query_count", "error_events")})
                     attempt.update({key: progress.get(key) for key in
                                     ("completed_symbols", "expected_symbols", "resumed_count",
                                      "checkpoint_saved", "checkpoint_path")})
                     attempt["baostock_budget_seconds"] = call_budget
                 attempts.append(attempt)
+                if not retryable:
+                    break
         self.last_attempts = list(attempts)
         return None

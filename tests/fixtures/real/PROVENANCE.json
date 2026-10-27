@@ -419,5 +419,34 @@
    "source_sha256": "6952848d015a9dbee1c4397b19a5870572652cff5d03f706f77378d7c6a9b134",
    "trade_date": "2026-10-23"
   }
+ },
+ "wencai_daily_kline_2026-10-26_2109.json": {
+  "bytes": 24346,
+  "call": "pywencai.get",
+  "command": "examples/capture_real_fixture.py wencai_daily_kline --date 2026-10-26",
+  "fetched_at": "2026-10-27T21:09:32+08:00",
+  "kind": "raw_upstream_response",
+  "page_count": 1,
+  "params": {
+   "loop": false,
+   "max_pages": 10,
+   "max_requests": 10,
+   "min_interval_seconds": 10,
+   "page_size": 1000,
+   "query": "2026-10-26开盘价，最高价，最低价，收盘价，前收盘价，涨跌幅，成交量(股)，成交额(元)，股票代码"
+  },
+  "sha256": "3a936735b8eb6ddb077d0689cc41595c3fdb715a74daef37f297297fa9cb839e",
+  "source": "wencai_daily_kline",
+  "source_dates": {
+   "amount_yuan": "2026-10-26",
+   "close": "2026-10-26",
+   "high": "2026-10-26",
+   "low": "2026-10-26",
+   "open": "2026-10-26",
+   "pct_chg": "2026-10-26",
+   "pre_close": "2026-10-26",
+   "volume": "2026-10-26"
+  },
+  "trade_date": "2026-10-26"
  }
 }

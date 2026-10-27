@@ -73,8 +73,17 @@ def test_daily_kline_chain_gates_by_available_at_and_uses_quality_priority(tmp_p
     assert calls == ["wencai"]
 
 
-def test_q2_provider_is_read_only_converts_units_and_rejects_stale_rows():
+def test_q2_provider_is_read_only_and_returns_the_shared_shape_from_captured_hashes():
+    import gzip
+    import json
+    from pathlib import Path
     from engine_core.data_pipeline.providers.daily_kline_chain import Q2FinalProvider
+    from engine_core.data_pipeline.daily_kline_schema import CANONICAL_ROW_FIELDS
+
+    fixture = Path(__file__).parent / "fixtures" / "real" / "c526" / "redis_q2_hashes_20261023_first60.json.gz"
+    with gzip.open(fixture, "rt", encoding="utf-8") as handle:
+        captured = json.load(handle)
+    raw = captured["000001"]["value"]
 
     class Pipeline:
         def __init__(self, redis):
@@ -90,12 +99,12 @@ def test_q2_provider_is_read_only_converts_units_and_rejects_stale_rows():
 
     class Redis:
         def __init__(self):
-            self.rows = {"q2:600000": {"px": "11540", "pc": "11000", "amt": "1234", "vol": "100", "mx": "11600", "mn": "10900", "ts": "1792159500000"}}
+            self.rows = {"q2:000001": raw}
             self.writes = []
 
         def smembers(self, key):
-            assert key == "q2:active:2026-10-16"
-            return {"600000"}
+            assert key == "q2:active:2026-10-23"
+            return {"000001"}
 
         def pipeline(self, transaction=False):
             return Pipeline(self)
@@ -107,14 +116,276 @@ def test_q2_provider_is_read_only_converts_units_and_rejects_stale_rows():
             raise AttributeError(name)
 
     redis = Redis()
-    result = Q2FinalProvider(redis).fetch("2026-10-16", now="2026-10-16T15:05:00+08:00")
+    result = Q2FinalProvider(redis).fetch("2026-10-23", now="2026-10-23T15:05:00+08:00")
     row = result["rows"][0]
-    assert row["close"] == 11.54
-    assert row["pre_close"] == 11.0
-    assert row["pct_chg"] == pytest.approx((11.54 / 11.0 - 1) * 100)
-    assert row["open"] is None and row["open_missing"] is True
-    assert result["field_units"]["volume"] == "UNKNOWN"
+    assert tuple(row) == CANONICAL_ROW_FIELDS
+    assert row["symbol"] == "000001" and row["code"] == "sz.000001"
+    assert row["close"] == 11.2 and row["pre_close"] == 11.3
+    assert row["pct_chg"] == -88
+    assert row["volume"] == 144_880_600
+    assert row["amount_yuan"] == 1_628_277_248
+    assert row["open"] is None and row["tier"] == 2 and row["degraded"] is True
+    assert result["source_field_units"]["volume"] == "hands"
+    assert result["field_units"]["volume"] == "shares"
     assert redis.writes == []
+
+
+def test_daily_kline_tiers_normalize_captured_rows_to_registry_units():
+    import gzip
+    import json
+    from pathlib import Path
+    from engine_core.data_pipeline.daily_kline_schema import canonicalize_daily_kline_row
+
+    fixtures = Path(__file__).parent / "fixtures" / "real"
+    baostock_path = (fixtures / "core_artifacts" / "c522" / "daily_kline" /
+                     "2026-10-23" / "formal" / "rows.jsonl.gz")
+    q2_path = fixtures / "c526" / "daily_kline_q2_final_first200.json.gz"
+    with gzip.open(baostock_path, "rt", encoding="utf-8") as handle:
+        baostock = next(json.loads(line) for line in handle if json.loads(line)["symbol"] == "000001")
+    with gzip.open(q2_path, "rt", encoding="utf-8") as handle:
+        q2 = next(row for row in json.load(handle)["rows"] if row["symbol"] == "000001")
+
+    formal = canonicalize_daily_kline_row("baostock", baostock)
+    degraded = canonicalize_daily_kline_row("q2_final", q2)
+
+    assert formal.keys() == degraded.keys()
+    assert formal["symbol"] == degraded["symbol"] == "000001"
+    assert formal["code"] == degraded["code"] == "sz.000001"
+    assert formal["pct_chg"] == degraded["pct_chg"] == -88
+    assert formal["volume"] == 144_880_560
+    assert degraded["volume"] == 144_880_600
+    assert formal["amount_yuan"] == pytest.approx(1_628_277_173.38)
+    assert degraded["amount_yuan"] == pytest.approx(1_628_277_248)
+
+
+def test_daily_kline_fallback_classifies_errors_and_obeys_tier_order(tmp_path):
+    import gzip
+    import json
+    from pathlib import Path
+    from engine_core.data_pipeline.providers.daily_kline_chain import (
+        DailyKlineProviderChain, Q2FinalProvider,
+    )
+    from engine_core.data_pipeline.job_contract import JobResult
+
+    fixture = Path(__file__).parent / "fixtures" / "real" / "c526" / "redis_q2_hashes_20261023_first60.json.gz"
+    with gzip.open(fixture, "rt", encoding="utf-8") as handle:
+        captured = json.load(handle)
+    raw = captured["000001"]["value"]
+
+    class Pipeline:
+        def __init__(self, redis):
+            self.redis, self.keys = redis, []
+        def hgetall(self, key):
+            self.keys.append(key)
+        def execute(self):
+            return [self.redis.rows[key] for key in self.keys]
+
+    class Redis:
+        rows = {"q2:000001": raw}
+        def smembers(self, key):
+            assert key == "q2:active:2026-10-23"
+            return {"000001"}
+        def pipeline(self, transaction=False):
+            return Pipeline(self)
+
+    calls = []
+    def baostock_timeout(_day):
+        calls.append("baostock")
+        raise TimeoutError("BAOSTOCK_TIMEOUT")
+
+    def wencai_empty(_day):
+        calls.append("wencai")
+        return {"status": "TIER_NO_DATA", "error_code": "TIER_NO_DATA", "rows": []}
+
+    q2 = Q2FinalProvider(Redis())
+    chain = DailyKlineProviderChain(providers={
+        "baostock": baostock_timeout,
+        "wencai": wencai_empty,
+        "q2_final": lambda day: calls.append("q2_final") or q2.fetch(
+            day, now="2026-10-23T15:05:00+08:00"),
+    }, artifact_root=tmp_path / "fallback")
+    result = chain.fetch_chain("2026-10-23", now="2026-10-23T17:30:00+08:00")
+    assert calls == ["baostock", "wencai", "q2_final"]
+    assert result.manifest["source"] == "legacy_q2_final"
+    assert result.manifest["tier"] == 2 and result.manifest["degraded"] is True
+    assert [item["error_code"] for item in chain.last_attempts[:2]] == ["FETCH_TIMEOUT", "TIER_NO_DATA"]
+    assert chain.last_attempts[0]["retryable"] is True
+    assert chain.last_attempts[1]["tier_no_data"] is True
+
+    wencai_calls = []
+    wencai_only = DailyKlineProviderChain(providers={
+        "wencai": lambda _day: wencai_calls.append("wencai") or {
+            "status": "TIER_NO_DATA", "error_code": "TIER_NO_DATA", "rows": [],
+        },
+    }, artifact_root=tmp_path / "wencai_only")
+    assert wencai_only.fetch_chain("2026-10-23", now="2026-10-23T16:00:00+08:00") is None
+    assert wencai_calls == ["wencai"]
+    assert all(item["provider"] != "baostock" for item in wencai_only.last_attempts)
+
+    all_failed = DailyKlineProviderChain(providers={
+        "baostock": lambda _day: (_ for _ in ()).throw(TimeoutError("socket timeout")),
+        "wencai": lambda _day: {"status": "PROVIDER_UNAVAILABLE", "error_code": "RATE_LIMITED",
+                                 "retryable": True, "rows": []},
+        "q2_final": lambda _day: (_ for _ in ()).throw(TimeoutError("network timeout")),
+    }, artifact_root=tmp_path / "all_failed")
+    assert all_failed.fetch_chain("2026-10-23", now="2026-10-23T17:30:00+08:00") is None
+    assert [item["retryable"] for item in all_failed.last_attempts] == [True, True, True]
+    failure = JobResult(contract=1, job="daily_kline", trade_date="2026-10-23", status="failed",
+                        tier=0, source=None, dataset="daily_kline", version=None, row_count=None,
+                        coverage=None, error_code="FETCH_TIMEOUT", retryable=True,
+                        attempts=len(all_failed.last_attempts), elapsed_ms=0, detail=None)
+    assert failure.exit_code == 30
+
+    deterministic_calls = []
+    deterministic = DailyKlineProviderChain(providers={
+        "baostock": lambda _day: (_ for _ in ()).throw(ValueError("invalid stock code")),
+        "wencai": lambda _day: deterministic_calls.append("wencai") or {
+            "rows": [{"symbol": "000001", "close": 11.2}], "expected_count": 1,
+        },
+    }, artifact_root=tmp_path / "deterministic")
+    assert deterministic.fetch_chain("2026-10-23", now="2026-10-23T17:30:00+08:00") is None
+    assert deterministic.last_attempts[0]["error_code"] == "INVALID_REQUEST"
+    assert deterministic.last_attempts[0]["retryable"] is False
+    assert deterministic_calls == []
+
+
+def test_wencai_adapter_captures_date_evidence_and_comparator_rejects_unit_mutation():
+    import gzip
+    import json
+    from pathlib import Path
+    from engine_core.data_pipeline.daily_kline_schema import (
+        CANONICAL_FIELD_UNITS, canonicalize_daily_kline_row,
+    )
+    from engine_core.data_pipeline.providers.wencai_daily_adapter import (
+        build_daily_kline_query, fetch_daily_kline,
+    )
+    from examples.compare_daily_kline_partitions import ComparisonError, compare_partitions
+
+    query = build_daily_kline_query("2026-10-26")
+    assert query.startswith("2026-10-26") and "A股日线行情" not in query
+    fixture_dir = Path(__file__).parent / "fixtures" / "real"
+    capture_paths = sorted(fixture_dir.glob("wencai_daily_kline_2026-10-26_*.json"))
+    assert capture_paths, "run the required pytest --live capture before offline adapter validation"
+    captured = json.loads(capture_paths[-1].read_text(encoding="utf-8"))
+    raw_rows = captured["rows"]
+    calls = []
+    def query_page(**kwargs):
+        calls.append(kwargs)
+        start = (kwargs["page"] - 1) * 15
+        return {"data": raw_rows[start:start + 15], "row_count": len(raw_rows)}
+
+    payload = fetch_daily_kline("2026-10-26", query_fn=query_page, page_size=15, max_pages=2)
+    assert len(calls) == 2 and calls[0]["query"] == query
+    assert [call["page"] for call in calls] == [1, 2]
+    assert payload["expected_count"] == len(raw_rows)
+    assert payload["partial"] is False and payload["page_count"] == 2
+    assert payload["source_dates"] == {"amount_yuan": "2026-10-26", "open": "2026-10-26",
+                                       "close": "2026-10-26", "high": "2026-10-26",
+                                       "low": "2026-10-26", "pct_chg": "2026-10-26",
+                                       "pre_close": "2026-10-26", "volume": "2026-10-26"}
+    assert payload["source_dates_consistent"] is True
+
+    from engine_core.data_pipeline.providers.daily_kline_chain import WencaiDailyProvider
+    raw = next(row for row in raw_rows if _symbol_from_wencai_row(row) == "600519")
+    wencai_row = WencaiDailyProvider._normalize_rows([raw], "2026-10-26")[0]
+    row = canonicalize_daily_kline_row("wencai", wencai_row, field_units=payload["field_units"])
+    assert row["open"] == 1325.4 and row["high"] == 1350.0
+    assert row["low"] == 1324.79 and row["close"] == 1349.98
+    assert row["pre_close"] == 1335.0 and row["pct_chg"] == 112
+    assert row["volume"] == 4_159_916
+    assert row["amount_yuan"] == pytest.approx(5_574_287_630)
+    baostock_manifest = {"provider": "baostock", "source": "baostock",
+                         "field_units": CANONICAL_FIELD_UNITS}
+    baostock_path = (fixture_dir / "core_artifacts" / "c522" / "daily_kline" /
+                     "2026-10-23" / "formal" / "rows.jsonl.gz")
+    with gzip.open(baostock_path, "rt", encoding="utf-8") as handle:
+        baostock_row = next(json.loads(line) for line in handle
+                            if json.loads(line).get("symbol") == "600519")
+    formal = canonicalize_daily_kline_row("baostock", baostock_row)
+    wencai_manifest = {"provider": "wencai", "source": "wencai",
+                       "field_units": CANONICAL_FIELD_UNITS,
+                       "source_dates": payload["source_dates"]}
+    compared = compare_partitions(baostock_manifest, [formal], wencai_manifest, [row])
+    assert compared["status"] == "PASS" and compared["common_symbols"] == 1
+    mutated = {**wencai_manifest, "field_units": {**CANONICAL_FIELD_UNITS, "volume": "hands"}}
+    with pytest.raises(ComparisonError, match="field_units_invalid"):
+        compare_partitions(baostock_manifest, [formal], mutated, [row])
+
+
+def _symbol_from_wencai_row(row):
+    from engine_core.wencai_fallback import _symbol
+    return _symbol(row)
+
+
+@pytest.mark.live
+def test_wencai_live_contract_pulls_concise_date_query_and_records_source_dates():
+    import json
+    from pathlib import Path
+    import subprocess
+    import sys
+    import time
+    import pywencai
+    from engine_core.data_pipeline.providers.daily_kline_chain import WencaiDailyProvider
+    from engine_core.data_pipeline.daily_kline_schema import canonicalize_daily_kline_row
+    from engine_core.data_pipeline.providers.wencai_daily_adapter import (
+        _field_value, _records, _source_dates,
+    )
+    from engine_core.wencai_fallback import _number, _symbol
+
+    root = Path(__file__).resolve().parents[1]
+    capture = subprocess.run(
+        [sys.executable, "examples/capture_real_fixture.py", "wencai_daily_kline",
+         "--date", "2026-10-26"], cwd=root, check=True, text=True, capture_output=True,
+    )
+    capture_name = capture.stdout.split()[0]
+    captured_path = root / "tests" / "fixtures" / "real" / capture_name
+    payload = json.loads(captured_path.read_text(encoding="utf-8"))
+    rows = payload.get("rows", [])
+    assert rows and payload.get("source_dates", {}).get("close")
+    assert payload.get("page_count", 0) <= 60
+
+    main_row = next((row for row in rows if _symbol(row) == "600519"), None)
+    assert main_row is not None
+    canonical_600519 = canonicalize_daily_kline_row(
+        "wencai", WencaiDailyProvider._normalize_rows([main_row], "2026-10-26")[0],
+        field_units=payload["field_units"],
+    )
+    simple_query = "20261026收盘价，涨跌幅，前收盘价，股票代码"
+    time.sleep(10)
+    compact_rows = _records(pywencai.get(
+        query=simple_query, loop=False, page=1, perpage=10000, query_type="stock",
+        sort_key="股票代码", sort_order="asc", retry=0, strict=True,
+    ))
+    compact_dates, _ = _source_dates(compact_rows)
+    compact_row = next((row for row in compact_rows if _symbol(row) == "600519"), None)
+
+    compact_values = {field: _number(_field_value(compact_row, field, "2026-10-26"))
+                      if compact_row is not None else None
+                      for field in ("close", "pre_close", "pct_chg")}
+    assert canonical_600519["open"] == 1325.4
+    assert canonical_600519["high"] == 1350.0
+    assert canonical_600519["low"] == 1324.79
+    assert canonical_600519["close"] == 1349.98
+    assert canonical_600519["pre_close"] == 1335.0
+    assert canonical_600519["pct_chg"] == 112
+    assert compact_values["close"] == 1349.98
+    assert compact_values["pre_close"] == 1335.0
+    assert compact_values["pct_chg"] == pytest.approx(1.12209738)
+
+    summary = {
+        "query": payload.get("query"), "row_count": len(rows),
+        "page_count": payload.get("page_count"), "source_dates": payload.get("source_dates"),
+        "source_dates_consistent": payload.get("source_dates_consistent"),
+        "source_field_units": payload.get("field_units"),
+        "600519_source": {field: canonical_600519[field]
+                          for field in ("open", "high", "low", "close", "pre_close", "pct_chg",
+                                        "amount_yuan", "volume")},
+        "compact_query": simple_query, "compact_source_dates": compact_dates,
+        "compact_600519": compact_values,
+        "capture": str(captured_path), "capture_command": capture.args,
+        "capture_stdout": capture.stdout.strip(),
+    }
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
 def test_daily_kline_chain_requires_coverage_and_supersedes_degraded_version(tmp_path):
