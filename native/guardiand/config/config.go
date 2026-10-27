@@ -94,6 +94,10 @@ type LadderTier struct {
 	SilentUntilLast  bool           `json:"silent_until_last,omitempty"`
 	Source           string         `json:"source,omitempty"`
 	BudgetEnabled    *bool          `json:"budget_enabled,omitempty"`
+	// OnTimeout "advance" moves to the next rung when an attempt hits its timeout instead of retrying the same rung.
+	OnTimeout string `json:"on_timeout,omitempty"`
+	// AlertOnFallback sends one alert when this rung failed with a deterministic (non TIER_*) error and a later rung succeeded.
+	AlertOnFallback bool `json:"alert_on_fallback,omitempty"`
 }
 type Event struct {
 	ID              string          `json:"id"`
@@ -354,6 +358,9 @@ func Validate(c Config) []Issue {
 					if cap, err := time.ParseDuration(rung.BackoffCap); err != nil || cap <= 0 || cap > 24*time.Hour {
 						add(rk+".backoff_cap", "LADDER_BACKOFF", "cap must be positive and at most 24h")
 					}
+				}
+				if rung.OnTimeout != "" && rung.OnTimeout != "retry" && rung.OnTimeout != "advance" {
+					add(rk+".on_timeout", "LADDER_ON_TIMEOUT", "expected retry or advance")
 				}
 				if rung.Until != "" && rung.Until != "late_until" {
 					if _, err := time.Parse("15:04:05", rung.Until); err != nil {

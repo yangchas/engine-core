@@ -153,6 +153,25 @@ def _is_consecutive_failed_trading_days(root: Path, failed_days: list[str], toda
     return len(recent) == count and today in recent and set(recent).issubset(set(failed_days))
 
 
+def _daily_kline_trigger_time() -> str:
+    """HH:MM:SS of the schedule event named by the registry's daily_kline late_policy.trigger_event."""
+    from .scheduler import _schedule_source
+
+    item = next((entry for entry in load_registry() if entry["id"] == "daily_kline"), None)
+    policy = (item or {}).get("late_policy") or {}
+    event_id = str(policy.get("trigger_event") or "")
+    event = next((raw for raw in _schedule_source().get("events", [])
+                  if isinstance(raw, dict) and (raw.get("event_id") or raw.get("id")) == event_id), None)
+    start = (event or {}).get("at", (event or {}).get("start"))
+    if isinstance(start, list):
+        start = start[0] if start else None
+    if not isinstance(start, str) or not start:
+        start = policy.get("trigger_at") if not event_id else None  # registry entry without an event reference
+    if not isinstance(start, str) or not start:
+        raise ValueError("daily_kline_trigger_event_unresolved:" + event_id)
+    return start if len(start) == 8 else start + ":00"
+
+
 def _daily_kline_candidates(root: Path, trade_date: str, now: datetime) -> list[str]:
     """Return the last M eligible trading-day partitions, oldest first."""
     try:
@@ -160,11 +179,7 @@ def _daily_kline_candidates(root: Path, trade_date: str, now: datetime) -> list[
         days = matrix.get("days", [])
     except (OSError, ValueError):
         return []
-    try:
-        item = next(item for item in load_registry() if item["id"] == "daily_kline")
-        trigger = str((item.get("late_policy") or {}).get("trigger_at", "17:30:00"))
-    except (StopIteration, TypeError):
-        trigger = "17:30:00"
+    trigger = _daily_kline_trigger_time()
     latest = trade_date if now.strftime("%H:%M:%S") >= trigger else (
         datetime.fromisoformat(trade_date).date() - timedelta(days=1)).isoformat()
     candidates = sorted(str(row["d"]) for row in days

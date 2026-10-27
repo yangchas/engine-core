@@ -603,6 +603,8 @@ type scheduleTier struct {
 	Timeout       string         `json:"timeout"`
 	Until         string         `json:"until"`
 	BudgetEnabled *bool          `json:"budget_enabled"`
+	OnTimeout       string `json:"on_timeout"`
+	AlertOnFallback bool   `json:"alert_on_fallback"`
 }
 
 type scheduleProfile struct {
@@ -657,7 +659,7 @@ type scheduleV3Event struct {
 	Args            map[string]any  `json:"args"`
 }
 
-var scheduleHandlers = []string{"auction_report", "auction_watch", "baostock_probe", "boot_apply_plan",
+var scheduleHandlers = []string{"auction_report", "auction_watch", "baostock_probe", "daily_kline_close", "boot_apply_plan",
 	"boot_data_health", "boot_reconcile", "boot_trade_day", "calendar_refresh", "close_capture",
 	"close_report", "fetch_item", "intraday_data", "kaipan_fetch", "kaipan_hot_capture", "selftest",
 	"night_report", "open_report", "postmarket_data", "premarket_data", "snapshot_check"}
@@ -906,7 +908,7 @@ func compileScheduleTier(t scheduleTier, source string, fallbackTimeout string) 
 		timeout = fallbackTimeout
 	}
 	return config.LadderTier{Name: t.Name, Args: t.Args, Attempts: t.Attempts, Backoff: t.Backoff,
-		BackoffCap: t.BackoffCap, Timeout: timeout, Until: t.Until, BudgetEnabled: t.BudgetEnabled, Source: source}
+		BackoffCap: t.BackoffCap, Timeout: timeout, Until: t.Until, BudgetEnabled: t.BudgetEnabled, OnTimeout: t.OnTimeout, AlertOnFallback: t.AlertOnFallback, Source: source}
 }
 
 func compileScheduleV3(b []byte) (config.Config, error) {

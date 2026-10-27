@@ -118,6 +118,7 @@ Every event key must be read by the Go schedule migrator. Python loads the same 
 | 09:30–15:00 three-minute analyses | `intraday_HHMM` events and `open_report_*` | Checkpoint gate; event identities are trade-date scoped |
 | Kaipan periodic hot-plate refresh | `kaipan_hot_HHMMSS` | Exact configured sampling times |
 | 15:05 close mark | `close_mark_1505` and `kaipan_hot_150500` | Close capture adapter; no automatic Redis/TD write |
+| 15:05 daily bars | `daily_kline_close_1505` | wencai then q2_final rungs (config order), provisional/degraded catalog versions, backfill until 17:35; see docs/DAILY_KLINE.md |
 | 17:30 EOD lifecycle waits for Baostock | `baostock_probe_1730`, `baostock_retry_*`, `postmarket_publish` | Readiness is explicit; publication waits for daily bars |
 | 17:40+ recap and night audit | `close_recap`, `night_recap` | Calendar/data gates; no automatic email |
 

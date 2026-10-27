@@ -668,9 +668,15 @@ def main(argv: list[str] | None = None) -> int:
                 retryable = any(bool(attempt.get("retryable")) for attempt in attempts)
                 preserve_wencai_retry = (failure_attempt.get("provider") == "wencai" and
                                          bool(failure_attempt.get("retryable")))
+                # A single-provider run (one guardian ladder rung) keeps that provider's own TIER_* verdict
+                # (NO_DATA / DATE_MISMATCH / DATE_NO_REFERENCE) so the scheduler can advance without alerting.
+                preserve_tier_code = (len(daily_providers) == 1 and not failure_attempt.get("retryable") and
+                                      str(failure_attempt.get("error_code") or "").startswith("TIER_"))
+                if preserve_tier_code:
+                    retryable = False
                 failure_code = ("STALL_NO_PROGRESS" if stall_detected else
                                 str(failure_attempt.get("error_code") or "DAILY_KLINE_ALL_PROVIDERS_FAILED")
-                                if preserve_wencai_retry else "DAILY_KLINE_ALL_PROVIDERS_FAILED")
+                                if (preserve_wencai_retry or preserve_tier_code) else "DAILY_KLINE_ALL_PROVIDERS_FAILED")
                 print(json.dumps({"job": name, "status": "PROVIDER_UNAVAILABLE_OR_COVERAGE_LOW",
                                   "providers": daily_providers, "mode": "DRY_RUN" if not (args.execute or args.write) else "WRITE",
                                   "error_code": failure_code}, sort_keys=True))

@@ -137,12 +137,15 @@ def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
         if event.get("trigger_type") == "startup" or event.get("handler") == "boot_apply_plan":
             continue
         _, payload = guardian_handler._run(_core_request(event["event_id"]))
-        if event["handler"] == "close_capture":
+        if event["handler"] == "daily_kline_close":
+            # Providers come from the ladder rung's args; a bare request is refused, never defaulted (C566).
+            assert payload["error_code"] == "CONFIG_ERROR", payload
+        elif event["handler"] == "close_capture":
             assert payload["status"] == "not_applicable"
         else:
             assert payload["status"] == "ok", (event["event_id"], payload)
     assert set(called) == {e["handler"] for e in events
-                           if e.get("trigger_type") != "startup" and e.get("handler") != "boot_apply_plan"} - {"close_capture"}
+                           if e.get("trigger_type") != "startup" and e.get("handler") != "boot_apply_plan"} - {"close_capture", "daily_kline_close"}
     assert all(o.write and o.run for o in seen_opts)  # live mode writes, like the old guardian
 
 

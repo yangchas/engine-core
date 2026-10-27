@@ -222,6 +222,7 @@ type instanceState struct {
 	Tier          string   `json:"tier,omitempty"`
 	RungAttempts  int      `json:"rung_attempts,omitempty"`
 	SkippedTiers  []string `json:"skipped_tiers,omitempty"`
+	FallbackFailures []string `json:"fallback_failures,omitempty"`
 	StartedAt     string   `json:"started_at"`
 	CompletedAt   string   `json:"completed_at"`
 	LastError     string   `json:"last_error"`
@@ -649,6 +650,7 @@ func (r *liveRunner) finishLadderRetryFailure(x Instance, date string, prior ins
 	state := instanceState{
 		Status: "FAILED_FINAL", Attempts: prior.Attempts, Rung: prior.Rung, Tier: prior.Tier,
 		RungAttempts: prior.RungAttempts, SkippedTiers: append([]string(nil), prior.SkippedTiers...),
+		FallbackFailures: append([]string(nil), prior.FallbackFailures...),
 		StartedAt: prior.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: reason,
 		DataDate: prior.DataDate,
 	}
@@ -1548,6 +1550,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 		st.Tier = prior.Tier
 		st.RungAttempts = prior.RungAttempts
 		st.SkippedTiers = append([]string(nil), prior.SkippedTiers...)
+		st.FallbackFailures = append([]string(nil), prior.FallbackFailures...)
 		if prior.StartedAt != "" {
 			st.StartedAt = prior.StartedAt
 		}
@@ -1999,6 +2002,19 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 		r.setState(x, date, state)
 		_ = r.alert("FAILED_FINAL", map[string]any{"event": x.ID, "event_id": x.EventID, "date": date, "error": state.LastError, "tier": tier.Name})
 	}
+	// recordFallbackFailure remembers a rung that failed deterministically so a later successful rung can alert once.
+	recordFallbackFailure := func(tier config.LadderTier, code string) {
+		if !tier.AlertOnFallback || strings.HasPrefix(code, "TIER_") {
+			return
+		}
+		entry := tier.Name + ":" + code
+		for _, seen := range state.FallbackFailures {
+			if seen == entry {
+				return
+			}
+		}
+		state.FallbackFailures = append(state.FallbackFailures, entry)
+	}
 
 	for index := first; index < len(event.Ladder); index++ {
 		tier := event.Ladder[index]
@@ -2116,7 +2132,19 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 				state.CompletedAt = r.clock.Now().Format(time.RFC3339)
 				state.SkippedTiers = append([]string(nil), skipped...)
 				r.setState(x, date, state)
+				if len(state.FallbackFailures) > 0 {
+					_ = r.alert("TIER_FALLBACK", map[string]any{"event": x.ID, "event_id": x.EventID, "date": date, "failed_tiers": append([]string(nil), state.FallbackFailures...), "succeeded_tier": tier.Name, "error": strings.Join(state.FallbackFailures, ",") + " -> " + tier.Name})
+				}
 				return
+			}
+			if code == "HANDLER_TIMEOUT" && tier.OnTimeout == "advance" {
+				_, _ = r.appendLedger(date, "TIER_FAILED", map[string]any{"instance": x.ID, "rung": rungNumber, "tier": tier.Name, "rung_attempt": state.RungAttempts, "attempt": state.Attempts, "error_code": code, "detail": detail, "retryable": retryable, "advance": true, "on_timeout": "advance"})
+				if index == len(event.Ladder)-1 {
+					finishFailure(code, detail, index, tier)
+					return
+				}
+				state.RungAttempts = 0
+				break
 			}
 			if code == "TIER_NO_DATA" {
 				_, _ = r.appendLedger(date, "TIER_FAILED", map[string]any{"instance": x.ID, "rung": rungNumber, "tier": tier.Name, "rung_attempt": state.RungAttempts, "attempt": state.Attempts, "error_code": code, "detail": detail, "advance": true})
@@ -2130,6 +2158,7 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 			permanentExit40 := exitCode(invokeErr) == 40
 			_, _ = r.appendLedger(date, "TIER_FAILED", map[string]any{"instance": x.ID, "rung": rungNumber, "tier": tier.Name, "rung_attempt": state.RungAttempts, "attempt": state.Attempts, "error_code": code, "detail": detail, "retryable": retryable, "advance": permanentExit40})
 			if permanentExit40 {
+				recordFallbackFailure(tier, code)
 				if index == len(event.Ladder)-1 {
 					finishFailure(code, detail, index, tier)
 					return
@@ -2401,6 +2430,9 @@ func (r *liveRunner) invokeDetailedTier(argv []string, e *config.Event, x Instan
 		}
 	}
 	in := map[string]any{"contract": 1, "event": e.ID, "instance": x.ID, "attempt": attempt, "run_id": r.boot + "-" + x.ID, "idem_key": date + "/" + x.ID, "trade_date": date, "data_date": dataDate, "asof": date + "T" + x.Start + "+08:00", "deadline_at": date + "T" + x.Deadline + "+08:00", "degrade_requested": degradeRequested && !gate, "tier": tier, "degraded": degraded, "skipped_tiers": skippedTiers, "sandbox": map[string]any{"on": false, "root": ""}, "args": e.Args, "gate": map[string]any{"ref": e.Gate.Ref, "params": e.Gate.Params, "probe": gate}}
+	if !gate {
+		in["timeout_seconds"] = int(time.Duration(timeout) / time.Second)
+	}
 	if e.ID == "fetch_item" {
 		in["item_id"] = strings.TrimPrefix(x.ID, "fetch_item:")
 	}

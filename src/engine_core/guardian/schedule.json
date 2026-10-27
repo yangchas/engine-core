@@ -262,6 +262,38 @@
           "timeout": "5m"
         }
       ]
+    },
+    "daily_kline_close": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "wencai",
+          "args": {
+            "providers": "wencai"
+          },
+          "attempts": 2,
+          "backoff": "60s*1",
+          "timeout": "10m",
+          "budget_enabled": false,
+          "on_timeout": "advance",
+          "alert_on_fallback": true
+        },
+        {
+          "name": "q2_final",
+          "args": {
+            "providers": "q2_final"
+          },
+          "attempts": 2,
+          "backoff": "30s*1",
+          "timeout": "3m",
+          "budget_enabled": false,
+          "on_timeout": "advance",
+          "alert_on_fallback": true
+        }
+      ]
     }
   },
   "events": [
@@ -1409,6 +1441,30 @@
       "event_id": "close_mark_1505",
       "at": "15:05:00",
       "profile": "policy_08"
+    },
+    {
+      "event_id": "daily_kline_close_1505",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "15:05:00",
+      "deadline": "17:35:00",
+      "late_until": "17:35:00",
+      "gate": "calendar_ready",
+      "handler": "daily_kline_close",
+      "profile": "daily_kline_close",
+      "catchup_mode": "run_in_window",
+      "on_deadline": "missed",
+      "cost": "heavy",
+      "phases": [
+        "CLOSE",
+        "POST_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "data_date_offset": 0,
+      "available_after": "15:05:00",
+      "depends_on": [],
+      "after": []
     },
     {
       "available_after": null,

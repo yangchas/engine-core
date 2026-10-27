@@ -265,6 +265,9 @@ def _run(request):
                             args=args, timeout_seconds=int(request.get("timeout_seconds") or getattr(base, "timeout_seconds", 300)),
                             data_date_offset=getattr(base, "data_date_offset", 0))
     now = datetime.fromisoformat(asof)
+    if name == "daily_kline_close":
+        from engine_core.guardian.daily_kline_close import run_close_tier
+        return run_close_tier(request, root, dry_run=dry)
     if name == "close_capture":
         return 0, {"contract": 1, "status": "not_applicable", "error_code": "",
                    "retryable": False, "artifacts": [], "detail": "close_capture_not_implemented"}
@@ -343,6 +346,9 @@ def _send_alert(request, dry_run):
         key = (str(item.get("event", "unknown")), str(item.get("reason", "unspecified")))
         grouped[key] = grouped.get(key, 0) + 1
     lines = [f"{event}: {reason} ({count})" for (event, reason), count in sorted(grouped.items())]
+    if reason == "TIER_FALLBACK" and inner.get("error"):
+        # failed tier(s) -> succeeded tier, e.g. "wencai:DETERMINISTIC_FAILURE -> q2_final"
+        lines = [f"{line} {inner['error']}" for line in lines]
     from_addr = "reports@localhost"
     config = None
     if not dry_run:

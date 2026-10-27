@@ -24,7 +24,7 @@ GO_EVENT_FIELDS = frozenset({
     "on_start", "data_date_offset", "available_after", "depends_on", "args",
 })
 HANDLERS = {"auction_report", "auction_watch", "baostock_probe", "boot_apply_plan",
-            "boot_data_health", "boot_reconcile", "boot_trade_day", "calendar_refresh",
+            "boot_data_health", "daily_kline_close", "boot_reconcile", "boot_trade_day", "calendar_refresh",
             "close_capture", "close_report", "fetch_item", "intraday_data", "kaipan_fetch",
             "kaipan_hot_capture", "night_report", "open_report", "postmarket_data",
             "premarket_data", "snapshot_check"}
@@ -36,7 +36,8 @@ GO_V3_PROFILE_FIELDS = frozenset({"catchup", "retry_backoff", "retry_until_late"
                                   "silent_until_last", "ladder", "window"})
 GO_V3_WINDOW_FIELDS = frozenset({"deadline", "late_until"})
 GO_V3_TIER_FIELDS = frozenset({"name", "args", "attempts", "backoff", "backoff_cap",
-                                "timeout", "until", "budget_enabled"})
+                                "timeout", "until", "budget_enabled",
+                                "on_timeout", "alert_on_fallback"})
 GO_V3_EVENT_FIELDS = frozenset({
     "id", "event_id", "enabled", "calendar", "trigger_type", "at", "deadline",
     "late_until", "window", "profile", "catchup", "ladder", "gate", "handler",
@@ -380,6 +381,10 @@ def _v3_tiers(value: Any, scope: str, late_until: str) -> list[dict[str, Any]] |
             raise ValueError("schedule_ladder_late_until_required:" + path)
         _v3_mapping(tier.get("args"), path + ".args")
         _v3_bool(tier.get("budget_enabled"), path + ".budget_enabled")
+        on_timeout = _v3_string(tier.get("on_timeout"), path + ".on_timeout")
+        if on_timeout not in {"", "retry", "advance"}:
+            raise ValueError("schedule_ladder_on_timeout_invalid:" + path)
+        _v3_bool(tier.get("alert_on_fallback"), path + ".alert_on_fallback")
         tiers.append({**tier, "name": name, "attempts": attempts, "timeout": timeout,
                       "backoff": backoff, "backoff_cap": cap, "until": until})
     return tiers
