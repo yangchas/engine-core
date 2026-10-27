@@ -417,6 +417,40 @@ class DailyKlineProviderChain:
                         "status": "READY" if coverage is not None and coverage >= 0.98 else "PARTIAL"})
         return quality
 
+    def _apply_sample_coverage(self, trade_date: str, rows: list[dict[str, Any]],
+                               payload: Mapping[str, Any], quality: dict[str, Any]) -> dict[str, Any]:
+        sample_symbols = payload.get("sample_symbols")
+        if not isinstance(sample_symbols, (list, tuple)):
+            raise ValueError("symbols_file_sample_symbols_required")
+        sample = {str(value).rsplit(".", 1)[-1].zfill(6) for value in sample_symbols}
+        universe_path = self.catalog.locate("symbol_universe", trade_date)
+        if universe_path is None:
+            raise ValueError("symbol_universe_artifact_required:" + trade_date)
+        universe_rows = self.catalog.read_rows(universe_path)
+
+        def symbol_of(row: Mapping[str, Any]) -> str:
+            value = str(row.get("symbol", row.get("code", ""))).strip()
+            if "." in value:
+                value = value.rsplit(".", 1)[-1]
+            return value.zfill(6) if value.isdigit() else value
+
+        universe = {symbol_of(row): row for row in universe_rows}
+        if sample - universe.keys():
+            raise ValueError("symbols_file_outside_universe")
+        suspended = {symbol for symbol in sample
+                     if str(universe[symbol].get("trade_status", "")).strip() == "0"}
+        active = sample - suspended
+        row_symbols = {symbol_of(row) for row in rows}
+        present = active & row_symbols
+        coverage = len(present) / len(active) if active else None
+        quality.update({"expected_count": len(active), "expected_basis": "symbols_file_active",
+                        "sample_symbol_count": len(sample), "suspended_in_universe": len(suspended),
+                        "suspended_without_bar": len(suspended - row_symbols),
+                        "coverage": coverage,
+                        "missing": len(active - row_symbols) if active else None,
+                        "partial": True, "status": "PARTIAL"})
+        return quality
+
     @staticmethod
     def _reconcile(old_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) -> dict[str, Any]:
         old = {str(row.get("symbol")): row for row in old_rows}
@@ -482,6 +516,8 @@ class DailyKlineProviderChain:
         record = {"job": "daily_kline", "trade_date": trade_date, "provider": "baostock",
                   "started_at": started_at, "elapsed_ms": elapsed_ms,
                   "login_ms": timing.get("login_ms"), "query_ms": timing.get("query_ms"),
+                  "query_count": timing.get("query_count"),
+                  "error_events": timing.get("error_events", []),
                   "result": result, "error_code": timing.get("error_code")}
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
@@ -550,7 +586,11 @@ class DailyKlineProviderChain:
                 if bounded_baostock:
                     provider.total_timeout_seconds = original_total_timeout
                 rows, quality = self._quality(payload)
-                quality = self._apply_active_universe_coverage(trade_date, rows, quality)
+                sample_scope = payload.get("sample_scope") == "symbols_file"
+                if sample_scope:
+                    quality = self._apply_sample_coverage(trade_date, rows, payload, quality)
+                else:
+                    quality = self._apply_active_universe_coverage(trade_date, rows, quality)
                 status = payload.get("status")
                 elapsed_ms = round((time.monotonic() - started) * 1000, 3)
                 call_result = str(timing.get("result") or ("error" if status == "PROVIDER_UNAVAILABLE" else "ok"))
@@ -574,7 +614,8 @@ class DailyKlineProviderChain:
                                "reason": payload.get("reason", "coverage_unknown_or_below_threshold"),
                                "coverage": quality["coverage"], "elapsed_ms": elapsed_ms}
                     if source == "baostock":
-                        attempt.update({key: timing.get(key) for key in ("login_ms", "query_ms", "error_code")})
+                        attempt.update({key: timing.get(key) for key in
+                                        ("login_ms", "query_ms", "query_count", "error_code", "error_events")})
                         attempt.update(baostock_progress)
                         if call_result == "budget_exhausted":
                             attempt["reason"] = "baostock_budget_exhausted"
@@ -585,12 +626,13 @@ class DailyKlineProviderChain:
                            "chain_result": "ACCEPTED", "reason": "coverage_accepted",
                            "coverage": quality["coverage"], "elapsed_ms": elapsed_ms}
                 if source == "baostock":
-                    attempt.update({key: timing.get(key) for key in ("login_ms", "query_ms", "error_code")})
+                    attempt.update({key: timing.get(key) for key in
+                                    ("login_ms", "query_ms", "query_count", "error_code", "error_events")})
                     attempt.update(baostock_progress)
                 attempts.append(attempt)
                 degraded = source != "baostock"
                 quality["status"] = "DEGRADED" if degraded else quality["status"]
-                business_status = ("PROVISIONAL" if degraded else
+                business_status = ("PROVISIONAL" if degraded or sample_scope else
                                    classify_daily_kline(source, quality.get("coverage"),
                                                         quality.get("field_completeness", {})))
                 manifest: dict[str, Any] = {
@@ -602,19 +644,25 @@ class DailyKlineProviderChain:
                     "available_at": available.isoformat(), "fetched_at": current.isoformat(),
                     "as_of": current.isoformat(), "quality": quality, "degraded": degraded,
                     "degraded_label": f"DEGRADED:{source}" if degraded else None,
-                    "status": f"DEGRADED:{source}" if degraded else "FORMAL",
+                    "status": (f"DEGRADED:{source}" if degraded else
+                               "SAMPLE_ONLY" if sample_scope else "FORMAL"),
                     "business_status": business_status,
+                    "tier": payload.get("tier", 1 if degraded else 0),
                     "provider_attempts": attempts, "field_completeness": quality["field_completeness"],
                     "field_units": quality["field_units"],
                 }
+                if sample_scope:
+                    manifest["sample_scope"] = "symbols_file"
+                    manifest["sample_symbols"] = list(payload["sample_symbols"])
                 if persist:
                     committed = self.catalog.commit("daily_kline", trade_date, rows, manifest, source=manifest["source"])
                     manifest.update(committed)
                     prior_rows = self._published.setdefault(trade_date, [])
-                    if source == "baostock":
+                    if source == "baostock" and not sample_scope:
                         self._supersede_prior(trade_date, manifest, rows)
                         _atomic_write(Path(manifest["manifest_uri"]), canonical_json(manifest) + b"\n")
-                    self._advance_latest_pointer(trade_date, manifest)
+                    if not sample_scope:
+                        self._advance_latest_pointer(trade_date, manifest)
                     prior_rows.append(manifest)
                 return JobResult(manifest, rows)
             except Exception as exc:
@@ -639,7 +687,8 @@ class DailyKlineProviderChain:
                                       f"provider_error:{type(exc).__name__}"),
                            "elapsed_ms": elapsed_ms}
                 if source == "baostock":
-                    attempt.update({key: timing.get(key) for key in ("login_ms", "query_ms", "error_code")})
+                    attempt.update({key: timing.get(key) for key in
+                                    ("login_ms", "query_ms", "query_count", "error_code", "error_events")})
                     attempt.update({key: progress.get(key) for key in
                                     ("completed_symbols", "expected_symbols", "resumed_count",
                                      "checkpoint_saved", "checkpoint_path")})

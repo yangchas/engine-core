@@ -52,11 +52,19 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
     result["provider"] = provider
 
     quality = dict(result.get("quality") or {})
+    sample_scope = result.get("sample_scope") == "symbols_file"
+    sample_symbols_value = result.get("sample_symbols")
+    sample_symbols = ({str(value).rsplit(".", 1)[-1].zfill(6) for value in sample_symbols_value}
+                      if sample_scope and isinstance(sample_symbols_value, (list, tuple)) else set())
     universe_path = catalog.locate("symbol_universe", trade_date)
     row_symbols = {_daily_kline_symbol(row.get("symbol", row.get("code"))) for row in rows}
     row_symbols.discard("")
     quality["row_count"] = len(rows)
+    if sample_scope and not sample_symbols:
+        raise ValueError("symbols_file_sample_symbols_required")
     if universe_path is None:
+        if sample_scope:
+            raise ValueError("symbol_universe_artifact_required:" + trade_date)
         quality.update({"expected_count": None, "expected_basis": "universe_unavailable",
                         "suspended_in_universe": None, "suspended_without_bar": None,
                         "coverage": None, "missing": None, "partial": True,
@@ -66,17 +74,32 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
         by_symbol = {_daily_kline_symbol(row.get("symbol", row.get("code"))): row
                      for row in universe_rows}
         by_symbol.pop("", None)
-        suspended = {symbol for symbol, row in by_symbol.items()
-                     if str(row.get("trade_status", "")).strip() == "0"}
-        active = set(by_symbol) - suspended
-        active_missing = active - row_symbols
-        coverage = len(active & row_symbols) / len(active) if active else None
-        quality.update({"expected_count": len(active), "expected_basis": "universe_active",
-                        "suspended_in_universe": len(suspended),
-                        "suspended_without_bar": len(suspended - row_symbols),
-                        "coverage": coverage, "missing": len(active_missing) if active else None,
-                        "partial": coverage is None or coverage < 1.0,
-                        "status": "READY" if coverage is not None and coverage >= 0.98 else "PARTIAL"})
+        if sample_scope:
+            if sample_symbols - by_symbol.keys():
+                raise ValueError("symbols_file_outside_universe")
+            suspended = {symbol for symbol in sample_symbols
+                         if str(by_symbol[symbol].get("trade_status", "")).strip() == "0"}
+            active = sample_symbols - suspended
+            active_missing = active - row_symbols
+            coverage = len(active & row_symbols) / len(active) if active else None
+            quality.update({"expected_count": len(active), "expected_basis": "symbols_file_active",
+                            "sample_symbol_count": len(sample_symbols),
+                            "suspended_in_universe": len(suspended),
+                            "suspended_without_bar": len(suspended - row_symbols),
+                            "coverage": coverage, "missing": len(active_missing) if active else None,
+                            "partial": True, "status": "PARTIAL"})
+        else:
+            suspended = {symbol for symbol, row in by_symbol.items()
+                         if str(row.get("trade_status", "")).strip() == "0"}
+            active = set(by_symbol) - suspended
+            active_missing = active - row_symbols
+            coverage = len(active & row_symbols) / len(active) if active else None
+            quality.update({"expected_count": len(active), "expected_basis": "universe_active",
+                            "suspended_in_universe": len(suspended),
+                            "suspended_without_bar": len(suspended - row_symbols),
+                            "coverage": coverage, "missing": len(active_missing) if active else None,
+                            "partial": coverage is None or coverage < 1.0,
+                            "status": "READY" if coverage is not None and coverage >= 0.98 else "PARTIAL"})
     # Derive the eight required field states from the committed rows. Missing
     # values are excused only when every affected symbol is suspended in the
     # same-date universe; declared provider labels cannot override this check.
@@ -97,7 +120,8 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
     quality["field_completeness"] = completeness
     result["field_completeness"] = completeness
     result["quality"] = quality
-    result["business_status"] = classify_daily_kline(provider, quality.get("coverage"), completeness)
+    result["business_status"] = ("PROVISIONAL" if sample_scope else
+                                  classify_daily_kline(provider, quality.get("coverage"), completeness))
 
     attempts = result.get("provider_attempts")
     normalized_attempts = []
@@ -118,7 +142,8 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
                           "attempted_at": _daily_kline_time(item.get("attempted_at")),
                           "elapsed_ms": elapsed,
                           "reason": str(item.get("reason") or "")}
-            for key in ("login_ms", "query_ms", "error_code", "chain_result", "call_result", "coverage",
+            for key in ("login_ms", "query_ms", "query_count", "error_code", "error_events",
+                        "chain_result", "call_result", "coverage",
                         "completed_symbols", "expected_symbols", "resumed_count", "checkpoint_saved",
                         "checkpoint_path", "baostock_budget_seconds"):
                 if key in item:
@@ -208,6 +233,14 @@ class ArtifactCatalog:
                manifest: Mapping[str, Any], *, source: str, authority: str = "LIVE",
                clock: Any = None, adapter: str | None = None,
                context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        if dataset == "daily_kline" and manifest.get("sample_scope") == "symbols_file":
+            production_root = Path(os.getenv("CORE_DATA_ROOT", "~/core-data")).expanduser().resolve()
+            try:
+                self.root.expanduser().resolve().relative_to(production_root)
+            except ValueError:
+                pass
+            else:
+                raise ValueError("symbols_file_artifact_root_cannot_be_core_data_root")
         prepared_manifest = (_prepare_daily_kline_manifest(self, trade_date, rows, manifest)
                              if dataset == "daily_kline" else dict(manifest))
         gate = None

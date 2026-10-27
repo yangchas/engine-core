@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import inspect
 import json
@@ -120,15 +121,60 @@ def _normalize_universe_rows(source_rows: list[list[str]]) -> list[dict[str, str
     return [by_symbol[symbol] for symbol in sorted(by_symbol)]
 
 
+def _symbols_file(path: str | Path, universe_rows: list[dict[str, Any]]) -> list[str]:
+    """Read a bounded debug cohort and ensure every identifier belongs to the PIT universe."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise RuntimeError(f"symbols_file_unreadable:{type(exc).__name__}") from None
+    symbols: list[str] = []
+    for line_number, raw in enumerate(lines, 1):
+        value = raw.strip()
+        if not value:
+            continue
+        if len(value) != 6 or not value.isdigit():
+            raise ValueError(f"symbols_file_invalid_code:line={line_number}")
+        if value in symbols:
+            raise ValueError(f"symbols_file_duplicate_code:line={line_number}")
+        symbols.append(value)
+    if not symbols:
+        raise ValueError("symbols_file_empty")
+    available = {str(row.get("symbol", row.get("code", ""))).rsplit(".", 1)[-1].zfill(6)
+                 for row in universe_rows}
+    unknown = sorted(set(symbols) - available)
+    if unknown:
+        raise ValueError("symbols_file_outside_universe:" + ",".join(unknown[:5]))
+    return symbols
+
+
+def _require_sample_artifact_root(path: str | Path) -> str:
+    root = Path(path).expanduser().resolve()
+    production_root = Path(os.getenv("CORE_DATA_ROOT", "~/core-data")).expanduser().resolve()
+    try:
+        root.relative_to(production_root)
+    except ValueError:
+        return str(root)
+    raise ValueError("symbols_file_artifact_root_cannot_be_core_data_root")
+
+
 def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
                       write_enabled: bool, *, baostock_timeout_seconds: float = 60.0,
-                      baostock_total_timeout_seconds: float | None = None) -> dict[str, Any]:
+                      baostock_total_timeout_seconds: float | None = None,
+                      baostock_symbols_file: str | None = None) -> dict[str, Any]:
     """Construct lazy read-only adapters; optional SDK imports happen on fetch."""
+    sample_path = Path(baostock_symbols_file).expanduser() if baostock_symbols_file else None
+    if sample_path is not None:
+        artifact_root = _require_sample_artifact_root(artifact_root)
+    sample_token = (hashlib.sha256(sample_path.read_bytes()).hexdigest()[:12]
+                    if sample_path is not None else None)
+
     def symbols_for(day: str) -> list[str]:
         found = load_dataset("symbol_universe", day, prefer="file",
                              catalog=ArtifactCatalog(artifact_root))
         if found is None:
             raise RuntimeError("symbol_universe_artifact_required:" + day)
+        if sample_path is not None:
+            return _symbols_file(sample_path, found.rows)
         return [str(row.get("symbol", row.get("code", ""))).zfill(6) for row in found.rows]
 
     def universe_fetch(day: str, context: Any = None) -> dict[str, Any]:
@@ -187,7 +233,9 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
             from engine_core.daily_kline_capture import BaostockClient
             from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider
             checkpoint = (Path(artifact_root) / ".checkpoints" / f"daily_kline-{day}.json"
-                          if write_enabled else None)
+                          if write_enabled or sample_path is not None else None)
+            if checkpoint is not None and sample_token is not None:
+                checkpoint = checkpoint.with_name(f"daily_kline-{day}-sample-{sample_token}.json")
 
             def client_factory() -> Any:
                 import baostock as bs
@@ -196,7 +244,7 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
             provider = BaostockDailyProvider(
                 client_factory=client_factory, symbols=symbols_for,
                 checkpoint_path=checkpoint, timeout_seconds=baostock_timeout_seconds,
-                total_timeout_seconds=self.total_timeout_seconds,
+                total_timeout_seconds=self.total_timeout_seconds, sample_scope=sample_path is not None,
             )
             result = provider.fetch(day, context)
             universe = load_dataset("symbol_universe", day, prefer="file",
@@ -367,13 +415,29 @@ def main(argv: list[str] | None = None) -> int:
                         help="fraction of the chain budget reserved for Baostock")
     parser.add_argument("--backfill-days", type=int, default=10,
                         help="plate_members trading dates, newest first")
-    parser.add_argument("--providers", default="baostock,wencai,q2_final",
+    parser.add_argument("--providers",
                         help="daily_kline source set; fixed quality order is baostock,wencai,q2_final")
+    parser.add_argument("--symbols-file", help="debug-only one-symbol-per-line Baostock cohort")
     parser.add_argument("--adapter", help="injected module:function returning dataset fetch callables")
-    parser.add_argument("--artifact-root", default=os.getenv("CORE_DATA_ROOT", "~/core-data"))
+    parser.add_argument("--artifact-root", help="artifact root (required with --symbols-file)")
     parser.add_argument("--td-database", help="allowlisted independent database: core_data/core_intraday")
     args = parser.parse_args(argv)
+    artifact_root_explicit = args.artifact_root is not None
+    args.artifact_root = args.artifact_root or os.getenv("CORE_DATA_ROOT", "~/core-data")
     args.artifact_root = str(Path(args.artifact_root).expanduser())
+    if args.symbols_file and args.job != "daily_kline":
+        parser.error("--symbols-file is only valid with --job daily_kline")
+    if args.symbols_file:
+        if args.write or args.td_write:
+            parser.error("--symbols-file cannot publish to Redis or TD")
+        if not artifact_root_explicit:
+            parser.error("--symbols-file requires an explicit --artifact-root")
+        try:
+            args.artifact_root = _require_sample_artifact_root(args.artifact_root)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.providers is None:
+        args.providers = "baostock" if args.symbols_file else "baostock,wencai,q2_final"
     if args.td_write and (not args.write or not args.td_database):
         parser.error("--td-write requires --write and --td-database")
     if args.budget_seconds <= 0:
@@ -385,9 +449,12 @@ def main(argv: list[str] | None = None) -> int:
         "",
         args.max_requests, args.write or args.execute,
         baostock_timeout_seconds=args.baostock_timeout_seconds,
-        baostock_total_timeout_seconds=args.baostock_total_timeout_seconds)
+        baostock_total_timeout_seconds=args.baostock_total_timeout_seconds,
+        baostock_symbols_file=args.symbols_file)
     adapters.update(_load_adapter(args.adapter))
     daily_providers = [name.strip() for name in args.providers.split(",") if name.strip()]
+    if args.symbols_file and daily_providers != ["baostock"]:
+        parser.error("--symbols-file requires --providers baostock")
     unknown_providers = set(daily_providers) - {"baostock", "wencai", "q2_final"}
     if unknown_providers:
         parser.error("unknown daily provider: " + ",".join(sorted(unknown_providers)))
@@ -566,10 +633,12 @@ def main(argv: list[str] | None = None) -> int:
                               "quality": result.manifest["quality"], "provider_attempts": result.manifest["provider_attempts"],
                               "storage_uri": result.manifest.get("storage_uri"),
                               "mode": "DRY_RUN" if not (args.execute or args.write) else "WRITE"}, sort_keys=True))
-            degraded = result.manifest.get("provider") != "baostock"
+            sample_only = result.manifest.get("sample_scope") == "symbols_file"
+            degraded = result.manifest.get("provider") != "baostock" or sample_only
             daily_contract = ContractJobResult(
                 contract=1, job=name, trade_date=args.date,
-                status="degraded" if degraded else "ok", tier=1 if degraded else 0,
+                status="degraded" if degraded else "ok",
+                tier=result.manifest.get("tier", 1 if result.manifest.get("provider") != "baostock" else 0),
                 source=str(result.manifest.get("provider") or result.manifest.get("source") or "UNKNOWN"),
                 dataset=name, version=result.manifest.get("version"),
                 row_count=len(result.rows), coverage=result.manifest.get("quality", {}).get("coverage"),
@@ -577,6 +646,7 @@ def main(argv: list[str] | None = None) -> int:
                 attempts=len(result.manifest.get("provider_attempts", [])),
                 elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
                 detail={"business_status": result.manifest.get("business_status"),
+                        "sample_scope": result.manifest.get("sample_scope"),
                         "provider_attempts": result.manifest.get("provider_attempts", [])})
             daily_kline_exit_code = emit_job_result(daily_contract)
             if args.job != "all":

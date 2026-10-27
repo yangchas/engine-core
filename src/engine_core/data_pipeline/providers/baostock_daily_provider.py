@@ -1,6 +1,7 @@
 """Baostock daily-bar adapter. Network clients and the symbol universe are injected."""
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import os
@@ -16,6 +17,10 @@ from zoneinfo import ZoneInfo
 from ...daily_kline_capture import parse_row, to_baostock_code
 
 
+class _BaostockCallTimeout(TimeoutError):
+    """Caller deadline expired while the daemon worker may still be blocked."""
+
+
 class BaostockDailyProvider:
     source = "baostock"
     source_dependency = "independent_provider"
@@ -25,7 +30,7 @@ class BaostockDailyProvider:
                  timeout_seconds: float = 30, retries: int = 2, max_consecutive_errors: int = 25,
                  sleep_fn: Callable[[float], None] = time.sleep, timeout_call: Callable[..., Any] | None = None,
                  checkpoint_path: str | Path | None = None,
-                 total_timeout_seconds: float | None = None):
+                 total_timeout_seconds: float | None = None, sample_scope: bool = False):
         self.client_factory = client_factory
         self.symbols = symbols
         self.timeout_seconds = float(timeout_seconds)
@@ -40,12 +45,14 @@ class BaostockDailyProvider:
         self.sleep_fn = sleep_fn
         self.timeout_call = timeout_call or self._timeout_call
         self.checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else None
-        self._timing: dict[str, Any] = {"login_ms": 0.0, "query_ms": 0.0, "error_code": None}
+        self.sample_scope = bool(sample_scope)
+        self._timing: dict[str, Any] = {"login_ms": 0.0, "query_ms": 0.0,
+                                        "query_count": 0, "error_code": None, "error_events": []}
         self._checkpoint_saved = False
 
     CHECKPOINT_EVERY = 25
 
-    def _load_checkpoint(self, trade_date: str) -> dict[str, dict[str, Any]]:
+    def _load_checkpoint(self, trade_date: str, expected: Sequence[str]) -> dict[str, dict[str, Any]]:
         if self.checkpoint_path is None or not self.checkpoint_path.is_file():
             return {}
         try:
@@ -54,15 +61,22 @@ class BaostockDailyProvider:
             return {}
         if payload.get("trade_date") != trade_date or not isinstance(payload.get("rows"), list):
             return {}
+        expected_digest = hashlib.sha256("\n".join(expected).encode("ascii")).hexdigest()
+        stored_digest = payload.get("symbols_sha256")
+        if ((self.sample_scope and stored_digest != expected_digest) or
+                (stored_digest is not None and stored_digest != expected_digest)):
+            return {}
         return {str(row["symbol"]): row for row in payload["rows"]
-                if isinstance(row, dict) and row.get("symbol")}
+                if isinstance(row, dict) and row.get("symbol") and str(row["symbol"]) in expected}
 
-    def _save_checkpoint(self, trade_date: str, rows: Mapping[str, Mapping[str, Any]]) -> None:
+    def _save_checkpoint(self, trade_date: str, rows: Mapping[str, Mapping[str, Any]],
+                         expected: Sequence[str]) -> None:
         if self.checkpoint_path is None:
             return
         self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.checkpoint_path.with_name(self.checkpoint_path.name + ".tmp")
-        temporary.write_text(json.dumps({"trade_date": trade_date,
+        symbols_digest = hashlib.sha256("\n".join(expected).encode("ascii")).hexdigest()
+        temporary.write_text(json.dumps({"trade_date": trade_date, "symbols_sha256": symbols_digest,
             "rows": [dict(rows[key]) for key in sorted(rows)]}, ensure_ascii=False,
             sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         os.replace(temporary, self.checkpoint_path)
@@ -87,7 +101,7 @@ class BaostockDailyProvider:
         try:
             succeeded, value = result.get(timeout=timeout)
         except queue.Empty:
-            raise TimeoutError("BAOSTOCK_TIMEOUT") from None
+            raise _BaostockCallTimeout("BAOSTOCK_TIMEOUT") from None
         if succeeded:
             return value
         if isinstance(value, TimeoutError):
@@ -100,13 +114,32 @@ class BaostockDailyProvider:
 
     def _error_code(self, client: Any, exc: BaseException) -> str:
         code = getattr(client, "last_error_code", None) or getattr(exc, "error_code", None)
-        if code:
+        if code and str(code) != "0":
             return str(code)
         if isinstance(exc, TimeoutError) or "BAOSTOCK_TIMEOUT" in str(exc):
             return "BAOSTOCK_TIMEOUT"
-        if "BAOSTOCK_CONNECTION_ERROR" in str(exc):
+        message = str(exc).lower()
+        if self._is_connection_failure(exc, client):
             return "BAOSTOCK_CONNECTION_ERROR"
+        if "login" in message and any(marker in message for marker in ("fail", "error", "denied")):
+            return "BAOSTOCK_LOGIN_FAILED"
         return type(exc).__name__
+
+    @staticmethod
+    def _is_connection_failure(exc: BaseException, client: Any | None = None) -> bool:
+        if isinstance(exc, (ConnectionError, OSError)):
+            return True
+        message = str(exc).lower()
+        markers = (
+            "baostock_connection_error", "bad file descriptor", "接收数据异常",
+            "receive data error", "connection reset", "connection aborted",
+            "broken pipe", "not connected", "socket is closed", "socket closed",
+            "login failed", "login error", "login denied",
+        )
+        if any(marker in message for marker in markers):
+            return True
+        code = getattr(client, "last_error_code", None) if client is not None else None
+        return code is not None and str(code) not in {"", "0"}
 
     def _annotate_exception(self, exc: BaseException, client: Any) -> None:
         self._timing["result"] = ("timeout" if "TIMEOUT" in str(exc).upper()
@@ -119,6 +152,13 @@ class BaostockDailyProvider:
         except (AttributeError, TypeError):
             pass
 
+    def _record_error(self, stage: str, client: Any, exc: BaseException) -> dict[str, Any]:
+        event = {"stage": stage, "error_type": type(exc).__name__,
+                 "error_code": self._error_code(client, exc), "message": str(exc),
+                 "retryable": self._is_timeout(exc) or self._is_connection_failure(exc, client)}
+        self._timing.setdefault("error_events", []).append(event)
+        return event
+
     def _timed_login_call(self, client: Any) -> None:
         started = time.monotonic()
         try:
@@ -126,6 +166,7 @@ class BaostockDailyProvider:
             self._timing["error_code"] = "0"
         except Exception as exc:
             self._timing["error_code"] = self._error_code(client, exc)
+            self._record_error("login", client, exc)
             raise
         finally:
             self._timing["login_ms"] += round((time.monotonic() - started) * 1000, 3)
@@ -142,8 +183,15 @@ class BaostockDailyProvider:
                 self.timeout_seconds = saved * self.LOGIN_TIMEOUT_FACTOR if self.timeout_call == self._timeout_call else saved
                 self._timed_login_call(client)
                 return
-            except (TimeoutError, RuntimeError) as exc:
+            except _BaostockCallTimeout as exc:
+                if self._timing.get("error_events"):
+                    self._timing["error_events"][-1]["action"] = "call_timeout_abort"
+                raise exc
+            except (TimeoutError, RuntimeError, ConnectionError, OSError) as exc:
                 last = exc
+                if self._timing.get("error_events"):
+                    self._timing["error_events"][-1]["action"] = (
+                        "login_retry" if attempt < self.retries else "retry_limit_reached")
                 if attempt < self.retries:
                     delay = min(2 ** (attempt + 2), 30)
                     if self.deadline is not None:
@@ -184,6 +232,7 @@ class BaostockDailyProvider:
         except (TypeError, ValueError):
             supports_timeout = False
         args = (code, day, self.timeout_seconds) if supports_timeout else (code, day)
+        self._timing["query_count"] = int(self._timing.get("query_count", 0)) + 1
         started = time.monotonic()
         try:
             result = self.timeout_call(query, *args)
@@ -191,12 +240,14 @@ class BaostockDailyProvider:
             return result
         except Exception as exc:
             self._timing["error_code"] = self._error_code(client, exc)
+            self._record_error("query", client, exc)
             raise
         finally:
             self._timing["query_ms"] += round((time.monotonic() - started) * 1000, 3)
 
     def fetch(self, trade_date: str, context: Any = None) -> dict[str, Any]:
-        self._timing = {"login_ms": 0.0, "query_ms": 0.0, "error_code": None,
+        self._timing = {"login_ms": 0.0, "query_ms": 0.0, "query_count": 0,
+                        "error_code": None, "error_events": [],
                         "started_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()}
         self._checkpoint_saved = False
         self.deadline = (time.monotonic() + self.total_timeout_seconds
@@ -208,10 +259,12 @@ class BaostockDailyProvider:
         client = self.client_factory()
         if hasattr(client, "timeout_seconds"):
             client.timeout_seconds = self.timeout_seconds
-        checkpoint = self._load_checkpoint(trade_date)
+        checkpoint = self._load_checkpoint(trade_date, expected)
         resumed_count = sum(symbol in checkpoint for symbol in expected)
-        rows: list[dict[str, Any]] = list(checkpoint.values())
-        missing: list[str] = []
+        rows: list[dict[str, Any]] = [row for row in checkpoint.values()
+                                      if not row.get("__checkpoint_no_bar")]
+        missing: list[str] = [symbol for symbol, row in checkpoint.items()
+                              if row.get("__checkpoint_no_bar")]
         errors: list[dict[str, str]] = []
         consecutive = 0
         transport_failed = False
@@ -221,6 +274,8 @@ class BaostockDailyProvider:
             try:
                 self._login(client)
             except Exception as exc:
+                if isinstance(exc, _BaostockCallTimeout):
+                    transport_failed = True
                 if self.deadline is not None and not self._deadline_left() and self._is_timeout(exc):
                     budget_exhausted = True
                 else:
@@ -246,15 +301,29 @@ class BaostockDailyProvider:
                         break
                     except Exception as exc:
                         last_error = exc
-                        transport = (isinstance(exc, (TimeoutError, ConnectionError, OSError))
-                                     or "BAOSTOCK_TIMEOUT" in str(exc) or "BAOSTOCK_CONNECTION_ERROR" in str(exc))
+                        timed_out = self._is_timeout(exc)
+                        transport = timed_out or self._is_connection_failure(exc, client)
                         if transport:
-                            # A stalled session (Baostock "接收数据异常" / hung call) is usually cured by a fresh login:
-                            # back off, re-login and retry this symbol before giving the whole pull up.
-                            if self.deadline is not None and not self._deadline_left() and self._is_timeout(exc):
-                                budget_exhausted = True
-                                break
+                            event = self._timing.get("error_events", [{}])[-1]
+                            if isinstance(exc, _BaostockCallTimeout):
+                                # The daemon worker may still own the shared SDK socket. Do not
+                                # logout/reuse it in this process; return retryably at the caller.
+                                event["action"] = "call_timeout_abort"
+                                transport_failed = True
+                                if self.deadline is not None and not self._deadline_left():
+                                    event["action"] = "total_budget_exhausted_checkpoint"
+                                    budget_exhausted = True
+                                    break
+                                raise TimeoutError("BAOSTOCK_TIMEOUT") from None
+                            if timed_out:
+                                self._annotate_exception(exc, client)
+                                if self.deadline is not None and not self._deadline_left():
+                                    event["action"] = "total_budget_exhausted_checkpoint"
+                                    transport_failed = True
+                                    budget_exhausted = True
+                                    break
                             if attempt < self.retries and self._deadline_left():
+                                event["action"] = "bounded_logout_fresh_login_retry"
                                 delay = min(2 ** (attempt + 2), 30)
                                 if self.deadline is not None:
                                     delay = min(delay, max(0.0, self.deadline - time.monotonic()))
@@ -264,30 +333,49 @@ class BaostockDailyProvider:
                                 self.sleep_fn(delay)
                                 if not self._deadline_left():
                                     budget_exhausted = True
+                                    transport_failed = True
                                     break
                                 try:
+                                    # Logout is itself bounded and can reset Baostock's shared
+                                    # socket context before the fresh client's login.
                                     self.timeout_call(client.logout)
-                                except Exception:
-                                    pass
+                                except Exception as logout_error:
+                                    logout_event = self._record_error("logout", client, logout_error)
+                                    if isinstance(logout_error, _BaostockCallTimeout):
+                                        logout_event["action"] = "call_timeout_abort"
+                                        transport_failed = True
+                                        raise TimeoutError("BAOSTOCK_TIMEOUT") from None
+                                    logout_event["action"] = "cleanup_failed_continue"
                                 if not self._deadline_left():
                                     budget_exhausted = True
+                                    transport_failed = True
                                     break
                                 try:
-                                    self._timed_login_call(client)
+                                    client = self.client_factory()
+                                    if hasattr(client, "timeout_seconds"):
+                                        client.timeout_seconds = self.timeout_seconds
+                                    self._login(client)
                                 except Exception as relogin_error:
                                     self._annotate_exception(relogin_error, client)
                                     if self.deadline is not None and not self._deadline_left() and self._is_timeout(relogin_error):
                                         budget_exhausted = True
                                         break
+                                    transport_failed = True
+                                    if isinstance(relogin_error, _BaostockCallTimeout):
+                                        raise TimeoutError("BAOSTOCK_TIMEOUT") from None
+                                    raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from relogin_error
                                 continue
                             transport_failed = True
                             self._annotate_exception(exc, client)
-                            if isinstance(exc, TimeoutError) or "BAOSTOCK_TIMEOUT" in str(exc):
+                            event["action"] = "retry_limit_reached"
+                            if timed_out:
                                 error = TimeoutError("BAOSTOCK_TIMEOUT")
                                 self._annotate_exception(error, client)
                                 raise error from None
                             raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from exc
                         if attempt < self.retries:
+                            if self._timing.get("error_events"):
+                                self._timing["error_events"][-1]["action"] = "symbol_retry"
                             delay = min(2 ** attempt, 8)
                             if self.deadline is not None:
                                 delay = min(delay, max(0.0, self.deadline - time.monotonic()))
@@ -302,6 +390,8 @@ class BaostockDailyProvider:
                     break
                 if last_error is not None:
                     errors.append({"symbol": symbol, "error_type": type(last_error).__name__})
+                    if self._timing.get("error_events"):
+                        self._timing["error_events"][-1]["action"] = "symbol_skipped"
                     consecutive += 1
                     if consecutive >= self.max_consecutive_errors:
                         break
@@ -309,6 +399,12 @@ class BaostockDailyProvider:
                 found = list(response or [])
                 if not found:
                     missing.append(symbol)
+                    checkpoint[symbol] = {"symbol": symbol, "date": trade_date,
+                                          "__checkpoint_no_bar": True}
+                    unsaved += 1
+                    if unsaved >= self.CHECKPOINT_EVERY:
+                        self._save_checkpoint(trade_date, checkpoint, expected)
+                        unsaved = 0
                     consecutive = 0
                     continue
                 consecutive = 0
@@ -329,7 +425,7 @@ class BaostockDailyProvider:
                 # Resume point: rewriting the whole checkpoint per symbol made the capture O(n^2) (~1.5 symbols/s instead
                 # of the ~5/s Baostock answers at), so persist every CHECKPOINT_EVERY symbols and always on the way out.
                 if unsaved >= self.CHECKPOINT_EVERY:
-                    self._save_checkpoint(trade_date, checkpoint)
+                    self._save_checkpoint(trade_date, checkpoint, expected)
                     unsaved = 0
         except Exception as exc:
             self._annotate_exception(exc, client)
@@ -340,26 +436,33 @@ class BaostockDailyProvider:
                 pass
             raise
         finally:
-            if unsaved:
-                self._save_checkpoint(trade_date, checkpoint)
+            if self.checkpoint_path is not None and (unsaved or budget_exhausted or
+                                                     not self.checkpoint_path.is_file()):
+                self._save_checkpoint(trade_date, checkpoint, expected)
             if not transport_failed and self._deadline_left():
                 try:
                     self.timeout_call(client.logout)
-                except Exception:
-                    # Logout is cleanup. A timeout here must not discard the bars and
-                    # checkpoint already collected within the provider's work budget.
-                    if self.deadline is None and not budget_exhausted:
-                        raise
+                except Exception as exc:
+                    event = self._record_error("logout", client, exc)
+                    event["action"] = "cleanup_warning_data_retained"
         suspended = sum(bool(row.get("suspended")) for row in rows)
         mismatch = sum(bool(row.get("mismatch")) for row in rows)
         result = "budget_exhausted" if budget_exhausted else "error" if errors else "ok"
+        if budget_exhausted:
+            self._timing["result"] = "budget_exhausted"
+            self._timing["error_code"] = "BAOSTOCK_TOTAL_TIMEOUT"
         progress = self._progress(trade_date, expected, checkpoint, resumed_count, result)
-        return {"rows": rows, "expected_count": len(expected), "missing_count": len(missing),
-                "missing_symbols": missing, "suspended_count": suspended,
+        returned_rows = [row for row in rows if not row.get("__checkpoint_no_bar")]
+        result_meta = {"rows": returned_rows, "expected_count": len(expected), "missing_count": len(missing),
+                "missing_symbols": sorted(set(missing)), "suspended_count": suspended,
                 "mismatch_count": mismatch, "errors": errors,
                 "partial": bool(missing or errors or len(rows) < len(expected)),
                 "resumed_count": resumed_count,
                 **progress,
                 "baostock_timing": {**self._timing, **progress,
                                     "error_code": (self._timing.get("error_code") or "0")}}
+        if self.sample_scope:
+            result_meta.update({"sample_scope": "symbols_file", "sample_symbols": expected,
+                                "tier": 0, "source": self.source})
+        return result_meta
 

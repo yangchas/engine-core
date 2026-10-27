@@ -370,4 +370,9 @@ class BaostockClient:
             self.last_query_ms = round((time.monotonic() - started) * 1000, 3)
 
     def logout(self) -> None:
-        self.module.logout()
+        result = self.module.logout()
+        error_code = str(getattr(result, "error_code", "0"))
+        self.last_error_code = error_code
+        if error_code != "0":
+            message = getattr(result, "error_msg", "")
+            raise RuntimeError(f"Baostock logout failed: {message or error_code}")

@@ -125,6 +125,9 @@ def _quality(rows: list[dict[str, Any]], fetch_meta: Mapping[str, Any]) -> dict[
     declared_status = fetch_meta.get("quality_status")
     if declared_status not in {"READY", "PARTIAL", "DEGRADED"}:
         declared_status = None
+    if fetch_meta.get("sample_scope") == "symbols_file":
+        partial = True
+        declared_status = "PARTIAL"
     return {"coverage": coverage, "missing": missing, "row_count": len(rows),
             "status": declared_status or
                      ("PARTIAL" if partial or (coverage is not None and coverage < 1) else "READY"),
@@ -233,12 +236,18 @@ class JobRunner:
             computed = computed.get("rows", rows)
         rows = _clean_rows(spec, _redact(computed))
         quality = _quality(rows, fetch_meta)
+        if fetch_meta.get("sample_scope") == "symbols_file":
+            quality["partial"] = True
+            quality["status"] = "PARTIAL"
         digest_payload = b"\n".join(canonical_json(row) for row in rows)
         if len(digest_payload) > self.max_payload_bytes:
             raise ValueError("quality_invalid:artifact_payload_budget")
         fetched = (clock.astimezone(ZoneInfo("Asia/Shanghai")).isoformat() if name == "daily_kline"
                    else clock.isoformat().replace("+00:00", "Z"))
         declared_available_at = available_at or fetch_meta.get("available_at")
+        if (name == "daily_kline" and not isinstance(source, str) and
+                fetch_meta.get("source") in {"baostock", "wencai", "q2_final"}):
+            source = str(fetch_meta["source"])
         safe_source = source if isinstance(source, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", source) else spec.source
         raw_digest = fetch_meta.get("raw_sha256")
         if not isinstance(raw_digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", raw_digest):
@@ -264,7 +273,8 @@ class JobRunner:
                              "universe_delta_count") if key in fetch_meta}
         if provider_details:
             manifest["provider_details"] = provider_details
-        for key in ("carried_forward_from", "universe_asof", "tier", "degraded"):
+        for key in ("carried_forward_from", "universe_asof", "tier", "degraded",
+                    "sample_scope", "sample_symbols"):
             if key in fetch_meta:
                 manifest[key] = fetch_meta[key]
         if name == "daily_kline":
@@ -285,7 +295,8 @@ class JobRunner:
                     "elapsed_ms": fetch_meta.get("elapsed_ms"),
                     "reason": "baostock_fetch_timing",
                     "login_ms": timing.get("login_ms"), "query_ms": timing.get("query_ms"),
-                    "error_code": timing.get("error_code"),
+                    "query_count": timing.get("query_count"), "error_code": timing.get("error_code"),
+                    "error_events": timing.get("error_events", []),
                 }]
             else:
                 manifest["provider_attempts"] = [{
@@ -293,8 +304,9 @@ class JobRunner:
                     "elapsed_ms": None, "reason": "provider_attempts_not_returned_by_fetch",
                 }]
             manifest["field_completeness"] = fetch_meta.get("field_completeness", {})
-            manifest["business_status"] = classify_daily_kline(provider, quality.get("coverage"),
-                                                               manifest["field_completeness"])
+            manifest["business_status"] = ("PROVISIONAL" if fetch_meta.get("sample_scope") == "symbols_file"
+                                           else classify_daily_kline(provider, quality.get("coverage"),
+                                                                     manifest["field_completeness"]))
         elif fetch_meta.get("partial"):
             manifest["business_status"] = "PARTIAL"
         if dry_run:
