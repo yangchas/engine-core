@@ -51,7 +51,7 @@ def test_baostock_login_hang_on_local_socket_is_retryable_timeout():
         server_thread.join(0.5)
 
 
-def test_daily_kline_chain_gates_by_available_at_and_uses_quality_priority(tmp_path):
+def test_daily_kline_chain_gates_wencai_availability_and_rejects_missing_date_evidence(tmp_path):
     from engine_core.data_pipeline.providers.daily_kline_chain import DailyKlineProviderChain
 
     calls = []
@@ -68,9 +68,9 @@ def test_daily_kline_chain_gates_by_available_at_and_uses_quality_priority(tmp_p
     assert early is None
     assert calls == []
     result = chain.fetch_chain("2026-10-16", now="2026-10-16T15:05:00+08:00")
-    assert result.manifest["source"] == "wencai"
-    assert result.manifest["degraded"] is True
+    assert result is None
     assert calls == ["wencai"]
+    assert chain.last_attempts[-1]["error_code"] == "TIER_DATE_MISMATCH"
 
 
 def test_q2_provider_is_read_only_and_returns_the_shared_shape_from_captured_hashes():
@@ -392,7 +392,7 @@ def test_daily_kline_chain_requires_coverage_and_supersedes_degraded_version(tmp
     from engine_core.data_pipeline.providers.daily_kline_chain import DailyKlineProviderChain
 
     low = lambda day: {"rows": [{"symbol": "600000", "close": 9}], "expected_count": 2}
-    chain = DailyKlineProviderChain(providers={"wencai": low, "q2_final": low}, artifact_root=tmp_path,
+    chain = DailyKlineProviderChain(providers={"q2_final": low}, artifact_root=tmp_path,
                                     coverage_threshold=0.98)
     result = chain.fetch_chain("2026-10-16", now="2026-10-16T16:00:00+08:00", persist=True)
     assert result is None
@@ -402,11 +402,12 @@ def test_daily_kline_chain_requires_coverage_and_supersedes_degraded_version(tmp
     )
     assert unknown_coverage.fetch_chain("2026-10-16", now="2026-10-16T16:00:00+08:00") is None
 
-    chain.providers["wencai"] = lambda day: {"rows": [{"symbol": "600000", "close": 9}], "expected_count": 1}
+    chain.providers["q2_final"] = lambda day: {"rows": [{"symbol": "600000", "close": 9}], "expected_count": 1}
     degraded = chain.fetch_chain("2026-10-16", now="2026-10-16T16:00:00+08:00", persist=True)
     chain.providers["baostock"] = lambda day: {"rows": [{"symbol": "600000", "close": 10}], "expected_count": 1}
     formal = chain.fetch_chain("2026-10-16", now="2026-10-16T17:30:00+08:00", persist=True)
 
+    assert degraded.manifest["source"] == "legacy_q2_final"
     assert degraded.manifest["degraded"] is True
     assert formal.manifest["source"] == "baostock"
     assert formal.manifest["degraded"] is False

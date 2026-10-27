@@ -427,11 +427,28 @@ def main(argv: list[str] | None = None) -> int:
                         help="plate_members trading dates, newest first")
     parser.add_argument("--providers",
                         help="daily_kline source set; fixed quality order is baostock,wencai,q2_final")
+    parser.add_argument("--wencai-date-validation-threshold", type=float, default=0.95,
+                        help="minimum pre_close and pct_chg consistency ratio for WenCai dates")
+    parser.add_argument("--wencai-reference-coverage-threshold", type=float, default=0.95,
+                        help="minimum active-universe coverage in the prior-day close reference")
+    parser.add_argument("--wencai-reference-strategy",
+                        choices=["previous_trade_date", "explicit"], default="previous_trade_date",
+                        help="use the local trade calendar or an explicit prior reference date")
+    parser.add_argument("--wencai-reference-date",
+                        help="prior daily_kline date required with --wencai-reference-strategy explicit")
+    parser.add_argument("--wencai-min-interval-seconds", type=float, default=10.0,
+                        help="minimum delay between WenCai page requests; values below 10 are clamped")
+    parser.add_argument("--wencai-retry-attempts", type=int, default=2,
+                        help="same-tier WenCai attempts before returning a retryable incomplete result")
+    parser.add_argument("--wencai-retry-backoff-seconds", type=float, default=10.0,
+                        help="delay between same-tier WenCai attempts")
     parser.add_argument("--symbols-file", help="debug-only one-symbol-per-line Baostock cohort")
     parser.add_argument("--adapter", help="injected module:function returning dataset fetch callables")
     parser.add_argument("--artifact-root", help="artifact root (required with --symbols-file)")
     parser.add_argument("--td-database", help="allowlisted independent database: core_data/core_intraday")
     args = parser.parse_args(argv)
+    if args.wencai_reference_strategy == "explicit" and not args.wencai_reference_date:
+        parser.error("--wencai-reference-date is required with --wencai-reference-strategy explicit")
     artifact_root_explicit = args.artifact_root is not None
     args.artifact_root = args.artifact_root or os.getenv("CORE_DATA_ROOT", "~/core-data")
     args.artifact_root = str(Path(args.artifact_root).expanduser())
@@ -612,6 +629,7 @@ def main(argv: list[str] | None = None) -> int:
                     configured["wencai"] = WencaiDailyProvider(
                         wencai_fetch, state_path=Path(args.artifact_root) / ".provider_state" / "wencai.json",
                         max_requests=args.max_requests, expected_count=expected_count,
+                        min_interval_seconds=args.wencai_min_interval_seconds,
                     )
                 else:
                     configured["wencai"] = lambda _day: {
@@ -625,7 +643,15 @@ def main(argv: list[str] | None = None) -> int:
                         q2_redis = redis_package.Redis.from_url(redis_url, decode_responses=False)
                 configured["q2_final"] = (Q2FinalProvider(q2_redis) if q2_redis is not None else
                     lambda _day: {"status": "PROVIDER_UNAVAILABLE", "reason": "q2_redis_not_configured", "rows": []})
-            chain = DailyKlineProviderChain(providers=configured, artifact_root=args.artifact_root)
+            chain = DailyKlineProviderChain(
+                providers=configured, artifact_root=args.artifact_root,
+                wencai_date_validation_threshold=args.wencai_date_validation_threshold,
+                wencai_reference_coverage_threshold=args.wencai_reference_coverage_threshold,
+                wencai_reference_strategy=args.wencai_reference_strategy,
+                wencai_reference_date=args.wencai_reference_date,
+                wencai_retry_attempts=args.wencai_retry_attempts,
+                wencai_retry_backoff_seconds=args.wencai_retry_backoff_seconds,
+            )
             result = chain.fetch_chain(
                 args.date, persist=bool(args.execute or args.write),
                 budget_seconds=args.budget_seconds,
@@ -638,12 +664,13 @@ def main(argv: list[str] | None = None) -> int:
                         for event in (attempt.get("error_events") or []))
                     for attempt in attempts
                 )
-                failure_attempt = next((attempt for attempt in attempts if attempt.get("retryable")), None)
-                failure_attempt = failure_attempt or (attempts[-1] if attempts else {})
+                failure_attempt = attempts[-1] if attempts else {}
                 retryable = any(bool(attempt.get("retryable")) for attempt in attempts)
+                preserve_wencai_retry = (failure_attempt.get("provider") == "wencai" and
+                                         bool(failure_attempt.get("retryable")))
                 failure_code = ("STALL_NO_PROGRESS" if stall_detected else
-                                "DAILY_KLINE_ALL_PROVIDERS_FAILED" if retryable else
-                                str(failure_attempt.get("error_code") or "DAILY_KLINE_ALL_PROVIDERS_FAILED"))
+                                str(failure_attempt.get("error_code") or "DAILY_KLINE_ALL_PROVIDERS_FAILED")
+                                if preserve_wencai_retry else "DAILY_KLINE_ALL_PROVIDERS_FAILED")
                 print(json.dumps({"job": name, "status": "PROVIDER_UNAVAILABLE_OR_COVERAGE_LOW",
                                   "providers": daily_providers, "mode": "DRY_RUN" if not (args.execute or args.write) else "WRITE",
                                   "error_code": failure_code}, sort_keys=True))

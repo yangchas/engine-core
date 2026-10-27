@@ -26,6 +26,7 @@ from ..daily_kline_schema import (
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 PRIORITY = ("baostock", "wencai", "q2_final")
 AVAILABLE_AFTER = {"baostock": (17, 30), "wencai": (15, 5), "q2_final": (15, 5)}
+WENCAI_DATE_FIELDS = ("open", "high", "low", "close", "pre_close", "pct_chg", "volume", "amount_yuan")
 
 
 def _clock(value: str | datetime | None) -> datetime:
@@ -50,6 +51,19 @@ def _number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _ratio_meets_threshold(numerator: int, denominator: int, threshold: float) -> bool:
+    return denominator > 0 and numerator / denominator >= threshold
+
+
+def _normalize_source_date(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    compact = value.strip().replace("-", "")
+    if len(compact) != 8 or not compact.isdigit():
+        return None
+    return f"{compact[:4]}-{compact[4:6]}-{compact[6:]}"
 
 
 def _text(value: Any) -> str:
@@ -311,7 +325,12 @@ class WencaiDailyProvider:
                                              if callable(self.expected_count) else self.expected_count)
             payload["source"] = self.source
             payload["source_dependency"] = self.source_dependency
-            if not payload["rows"] and payload.get("status") not in {"PROVIDER_UNAVAILABLE", "TIER_NO_DATA"}:
+            if not payload["rows"] and payload.get("partial"):
+                payload.setdefault("status", "PROVIDER_UNAVAILABLE")
+                payload.setdefault("error_code", "TIER_PARTIAL")
+                payload["retryable"] = True
+                payload.setdefault("reason", "partial_response_without_rows")
+            elif not payload["rows"] and payload.get("status") not in {"PROVIDER_UNAVAILABLE", "TIER_NO_DATA"}:
                 payload.update({"status": "TIER_NO_DATA", "error_code": "TIER_NO_DATA",
                                 "retryable": False, "reason": "empty_response"})
             payload.setdefault("field_completeness", {"adjustment": "UNKNOWN"})
@@ -351,12 +370,250 @@ class WencaiDailyProvider:
 
 class DailyKlineProviderChain:
     def __init__(self, *, providers: Mapping[str, Any], artifact_root: str | Path,
-                 coverage_threshold: float = 0.98):
+                 coverage_threshold: float = 0.98,
+                 wencai_date_validation_threshold: float = 0.95,
+                 wencai_reference_coverage_threshold: float = 0.95,
+                 wencai_reference_strategy: str = "previous_trade_date",
+                 wencai_reference_date: str | None = None,
+                 wencai_retry_attempts: int = 2,
+                 wencai_retry_backoff_seconds: float = 10.0,
+                 sleep_fn: Callable[[float], None] = time.sleep):
         self.providers = dict(providers)
         self.catalog = ArtifactCatalog(artifact_root)
         self.coverage_threshold = coverage_threshold
+        if not 0 < float(wencai_date_validation_threshold) <= 1:
+            raise ValueError("wencai_date_validation_threshold_must_be_between_zero_and_one")
+        if not 0 < float(wencai_reference_coverage_threshold) <= 1:
+            raise ValueError("wencai_reference_coverage_threshold_must_be_between_zero_and_one")
+        if wencai_reference_strategy not in {"previous_trade_date", "explicit"}:
+            raise ValueError("wencai_reference_strategy_invalid")
+        if wencai_reference_strategy == "explicit" and not wencai_reference_date:
+            raise ValueError("wencai_reference_date_required_for_explicit_strategy")
+        if wencai_reference_date is not None:
+            wencai_reference_date = date.fromisoformat(wencai_reference_date).isoformat()
+        self.wencai_date_validation_threshold = float(wencai_date_validation_threshold)
+        self.wencai_reference_coverage_threshold = float(wencai_reference_coverage_threshold)
+        self.wencai_reference_strategy = wencai_reference_strategy
+        self.wencai_reference_date = wencai_reference_date
+        self.wencai_retry_attempts = max(1, int(wencai_retry_attempts))
+        self.wencai_retry_backoff_seconds = max(0.0, float(wencai_retry_backoff_seconds))
+        self.sleep_fn = sleep_fn
         self._published: dict[str, list[dict[str, Any]]] = {}
         self.last_attempts: list[dict[str, Any]] = []
+
+    def _wencai_reference_day(self, trade_date: str) -> str | None:
+        if self.wencai_reference_strategy == "explicit":
+            return self.wencai_reference_date
+        try:
+            from ..trade_calendar import previous_trade_date
+
+            return previous_trade_date(trade_date, root=self.catalog.root).isoformat()
+        except Exception:
+            return None
+
+    def _wencai_date_evidence(self, trade_date: str, payload: Mapping[str, Any],
+                              rows: list[dict[str, Any]], quality: Mapping[str, Any]
+                              ) -> tuple[str | None, dict[str, Any]]:
+        source_dates = payload.get("source_dates")
+        date_detail: dict[str, Any] = {"requested_date": trade_date, "source_dates": source_dates,
+                                       "source_dates_consistent": payload.get("source_dates_consistent")}
+        if not isinstance(source_dates, Mapping):
+            return "TIER_DATE_MISMATCH", {**date_detail, "source_dates_status": "MISSING"}
+        missing_fields = []
+        mismatched_fields: dict[str, Any] = {}
+        for field in WENCAI_DATE_FIELDS:
+            value = source_dates.get(field)
+            values = value if isinstance(value, (list, tuple, set)) else [value]
+            normalized = [_normalize_source_date(item) for item in values]
+            normalized = [item for item in normalized if item is not None]
+            if not normalized:
+                missing_fields.append(field)
+            elif any(item != trade_date for item in normalized):
+                mismatched_fields[field] = sorted(set(normalized))
+        all_source_dates = payload.get("source_date_values")
+        if isinstance(all_source_dates, (list, tuple, set)):
+            normalized_all = [_normalize_source_date(item) for item in all_source_dates]
+            normalized_all = [item for item in normalized_all if item is not None]
+            if any(item != trade_date for item in normalized_all):
+                mismatched_fields["numeric_columns"] = sorted(set(normalized_all))
+            if not normalized_all:
+                missing_fields.append("numeric_columns")
+        if missing_fields or mismatched_fields or payload.get("source_dates_consistent") is False:
+            return "TIER_DATE_MISMATCH", {
+                **date_detail, "source_dates_status": "MISMATCH",
+                "missing_fields": sorted(set(missing_fields)),
+                "mismatched_fields": mismatched_fields,
+            }
+
+        reference_date = self._wencai_reference_day(trade_date)
+        if not reference_date or reference_date >= trade_date:
+            return "TIER_DATE_NO_REFERENCE", {
+                **date_detail, "source_dates_status": "MATCH", "reference_date": reference_date,
+                "reason": "previous_trade_date_unavailable",
+            }
+        reference_path = self.catalog.locate("daily_kline", reference_date)
+        if reference_path is None:
+            return "TIER_DATE_NO_REFERENCE", {
+                **date_detail, "source_dates_status": "MATCH", "reference_date": reference_date,
+                "reason": "reference_partition_missing",
+            }
+        try:
+            reference_rows = self.catalog.read_rows(reference_path)
+        except (OSError, ValueError, TypeError):
+            reference_rows = []
+        reference_manifest: dict[str, Any] = {}
+        try:
+            reference_manifest = json.loads(reference_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        if reference_manifest.get("trade_date") not in (None, reference_date):
+            return "TIER_DATE_NO_REFERENCE", {
+                **date_detail, "source_dates_status": "MATCH", "reference_date": reference_date,
+                "reason": "reference_date_mismatch",
+            }
+        reference_by_symbol = {
+            self._symbol_of(row): _number(row.get("close")) for row in reference_rows
+            if self._symbol_of(row) and _number(row.get("close")) is not None
+        }
+        comparable = [(row, reference_by_symbol[self._symbol_of(row)]) for row in rows
+                      if self._symbol_of(row) in reference_by_symbol]
+        expected = quality.get("expected_count")
+        denominator = int(expected) if isinstance(expected, (int, float)) and expected > 0 else len(rows)
+        reference_coverage = len(comparable) / denominator if denominator else 0.0
+        base_detail = {
+            **date_detail, "source_dates_status": "MATCH", "reference_date": reference_date,
+            "reference_coverage": reference_coverage,
+            "reference_coverage_threshold": self.wencai_reference_coverage_threshold,
+            "reference_row_count": len(comparable), "reference_denominator": denominator,
+        }
+        if (not comparable or not _ratio_meets_threshold(
+                len(comparable), denominator, self.wencai_reference_coverage_threshold)):
+            return "TIER_DATE_NO_REFERENCE", {**base_detail, "reason": "reference_coverage_low"}
+
+        preclose_comparable = [(row, previous_close) for row, previous_close in comparable
+                               if _number(row.get("pre_close")) is not None]
+        preclose_matches = sum(abs(float(row["pre_close"]) - previous_close) <= 0.01
+                               for row, previous_close in preclose_comparable)
+        preclose_ratio = (preclose_matches / len(preclose_comparable)
+                          if preclose_comparable else 0.0)
+        pct_comparable = [row for row in rows if _number(row.get("close")) is not None
+                          and _number(row.get("pre_close")) not in (None, 0)
+                          and _number(row.get("pct_chg")) is not None]
+        pct_matches = 0
+        for row in pct_comparable:
+            expected_bp = (float(row["close"]) / float(row["pre_close"]) - 1.0) * 10_000.0
+            pct_matches += abs(float(row["pct_chg"]) - expected_bp) <= 1.0
+        pct_ratio = pct_matches / len(pct_comparable) if pct_comparable else 0.0
+        detail = {
+            **base_detail,
+            "pre_close_match_count": preclose_matches,
+            "pre_close_comparable_count": len(preclose_comparable),
+            "pre_close_match_ratio": preclose_ratio,
+            "pct_chg_consistent_count": pct_matches,
+            "pct_chg_comparable_count": len(pct_comparable),
+            "pct_chg_consistency_ratio": pct_ratio,
+            "match_threshold": self.wencai_date_validation_threshold,
+        }
+        if (not preclose_comparable or not pct_comparable or
+                not _ratio_meets_threshold(preclose_matches, len(preclose_comparable),
+                                           self.wencai_date_validation_threshold) or
+                not _ratio_meets_threshold(pct_matches, len(pct_comparable),
+                                           self.wencai_date_validation_threshold)):
+            detail.update({"status": "REJECTED", "reason": "column_date_and_value_evidence_conflict"})
+            return "TIER_DATE_MISMATCH", detail
+        return None, {**detail, "status": "MATCH"}
+
+    def _save_wencai_checkpoint(self, trade_date: str, payload: Mapping[str, Any],
+                                rows: list[dict[str, Any]], quality: Mapping[str, Any],
+                                error_code: str) -> None:
+        path = self.catalog.root / ".checkpoints" / f"daily_kline-wencai-{trade_date}.json"
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+            if len(previous.get("rows", [])) > len(rows):
+                return
+        except (OSError, ValueError, TypeError):
+            pass
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(path, canonical_json({
+            "trade_date": trade_date, "provider": "wencai", "error_code": error_code,
+            "expected_count": quality.get("expected_count"), "coverage": quality.get("coverage"),
+            "partial": True, "source_dates": payload.get("source_dates", {}), "rows": rows,
+        }) + b"\n")
+
+    def _fetch_wencai_with_retries(self, provider: Any, trade_date: str, now: datetime,
+                                   deadline: float) -> tuple[dict[str, Any] | None,
+                                                            list[dict[str, Any]], bool]:
+        retry_records: list[dict[str, Any]] = []
+        for attempt_number in range(1, self.wencai_retry_attempts + 1):
+            remaining = max(0.0, deadline - time.monotonic())
+            if remaining <= 0:
+                retry_records.append({"provider": "wencai", "result": "ERROR",
+                                      "chain_result": "REJECTED", "error_code": "DAILY_KLINE_BUDGET_EXHAUSTED",
+                                      "retryable": True, "reason": "wencai_retry_budget_exhausted"})
+                return None, retry_records, True
+            started = time.monotonic()
+            try:
+                raw = self._call_bounded(provider, trade_date, now, remaining)
+                payload = dict(raw) if isinstance(raw, Mapping) else {"rows": raw}
+            except Exception as exc:
+                error_code, retryable, _ = classify_provider_error(exc)
+                retry_records.append({"provider": "wencai", "result": "ERROR",
+                                      "chain_result": "RETRY" if retryable and attempt_number < self.wencai_retry_attempts else "REJECTED",
+                                      "error_code": error_code, "retryable": retryable,
+                                      "reason": f"provider_error:{type(exc).__name__}",
+                                      "attempt_number": attempt_number,
+                                      "elapsed_ms": round((time.monotonic() - started) * 1000, 3)})
+                if retryable and attempt_number < self.wencai_retry_attempts:
+                    self.sleep_fn(self.wencai_retry_backoff_seconds)
+                    continue
+                return None, retry_records, True
+
+            status = str(payload.get("status") or "")
+            if status in {"PROVIDER_UNAVAILABLE", "TIER_NO_DATA"}:
+                error_code, retryable, tier_no_data = classify_provider_error(
+                    status=status, error_code=payload.get("error_code"),
+                    reason=payload.get("reason"), retryable=payload.get("retryable"))
+                if retryable:
+                    retry_records.append({"provider": "wencai", "result": "ERROR",
+                                          "chain_result": "RETRY" if attempt_number < self.wencai_retry_attempts else "REJECTED",
+                                          "error_code": error_code, "retryable": True,
+                                          "reason": payload.get("reason", status),
+                                          "attempt_number": attempt_number,
+                                          "elapsed_ms": round((time.monotonic() - started) * 1000, 3)})
+                    if attempt_number < self.wencai_retry_attempts:
+                        self.sleep_fn(self.wencai_retry_backoff_seconds)
+                        continue
+                    return None, retry_records, True
+                if tier_no_data:
+                    return payload, retry_records, False
+                return None, retry_records, True
+
+            try:
+                normalized, _ = self._canonical_rows("wencai", trade_date, payload)
+                rows, quality = self._quality(normalized)
+                quality = self._apply_active_universe_coverage(trade_date, rows, quality)
+            except Exception:
+                return payload, retry_records, False
+            incomplete = (bool(payload.get("partial")) or quality.get("coverage") is None or
+                          quality.get("coverage") < self.coverage_threshold)
+            if not incomplete:
+                return payload, retry_records, False
+
+            error_code = str(payload.get("error_code") or
+                             ("TIER_PARTIAL" if payload.get("partial") else "COVERAGE_LOW"))
+            retry_records.append({"provider": "wencai", "result": "PARTIAL",
+                                  "chain_result": "RETRY" if attempt_number < self.wencai_retry_attempts else "REJECTED",
+                                  "error_code": error_code, "retryable": True,
+                                  "reason": ("upstream_partial" if payload.get("partial") else "coverage_below_threshold"),
+                                  "coverage": quality.get("coverage"),
+                                  "attempt_number": attempt_number,
+                                  "elapsed_ms": round((time.monotonic() - started) * 1000, 3)})
+            self._save_wencai_checkpoint(trade_date, payload, rows, quality, error_code)
+            if attempt_number < self.wencai_retry_attempts:
+                self.sleep_fn(self.wencai_retry_backoff_seconds)
+                continue
+            return None, retry_records, True
+        return None, retry_records, True
 
     @staticmethod
     def _symbol_of(row: Mapping[str, Any]) -> str:
@@ -678,7 +935,14 @@ class DailyKlineProviderChain:
             started = time.monotonic()
             started_at = datetime.now(SHANGHAI).isoformat()
             try:
-                if source == "baostock" and bounded_baostock:
+                if source == "wencai":
+                    payload, retry_records, exhausted = self._fetch_wencai_with_retries(
+                        provider, trade_date, current, chain_deadline)
+                    attempts.extend(retry_records)
+                    if exhausted or payload is None:
+                        self.last_attempts = list(attempts)
+                        return None
+                elif source == "baostock" and bounded_baostock:
                     payload = self._call(provider, trade_date, current)
                 else:
                     payload = self._call_bounded(provider, trade_date, current, call_budget)
@@ -765,6 +1029,21 @@ class DailyKlineProviderChain:
                             attempt["reason"] = "baostock_budget_exhausted"
                     attempts.append(attempt)
                     continue
+                if source == "wencai":
+                    error_code, date_detail = self._wencai_date_evidence(
+                        trade_date, payload, rows, quality)
+                    payload["wencai_date_validation"] = date_detail
+                    if error_code:
+                        attempts.append({
+                            "provider": source, "attempted_at": current.isoformat(),
+                            "result": "REJECTED", "chain_result": "REJECTED",
+                            "reason": date_detail.get("reason", "wencai_date_evidence_rejected"),
+                            "error_code": error_code, "retryable": False,
+                            "coverage": quality.get("coverage"), "error_detail": date_detail,
+                            "elapsed_ms": elapsed_ms,
+                        })
+                        self.last_attempts = list(attempts)
+                        return None
                 attempt = {"provider": source, "attempted_at": timing.get("started_at") or current.isoformat(),
                            "result": call_result if source == "baostock" else "ACCEPTED",
                            "chain_result": "ACCEPTED", "reason": "coverage_accepted",
@@ -777,6 +1056,7 @@ class DailyKlineProviderChain:
                 attempts.append(attempt)
                 degraded = source != "baostock"
                 quality["status"] = "DEGRADED" if degraded else quality["status"]
+                same_day_temporary = source == "wencai" and trade_date == current.date().isoformat()
                 business_status = ("PROVISIONAL" if degraded or sample_scope else
                                    classify_daily_kline(source, quality.get("coverage"),
                                                         quality.get("field_completeness", {})))
@@ -790,7 +1070,8 @@ class DailyKlineProviderChain:
                     "available_at": available.isoformat(), "fetched_at": current.isoformat(),
                     "as_of": current.isoformat(), "quality": quality, "degraded": degraded,
                     "degraded_label": f"DEGRADED:{source}" if degraded else None,
-                    "status": (f"DEGRADED:{source}" if degraded else
+                    "status": ("SAME_DAY_TEMPORARY" if same_day_temporary else
+                               f"DEGRADED:{source}" if degraded else
                                "SAMPLE_ONLY" if sample_scope else "FORMAL"),
                     "business_status": business_status,
                     "tier": payload.get("tier", 1 if degraded else 0),
@@ -799,6 +1080,7 @@ class DailyKlineProviderChain:
                     "source_field_units": quality["source_field_units"],
                     "source_dates": payload.get("source_dates", {}),
                     "source_dates_consistent": payload.get("source_dates_consistent"),
+                    "wencai_date_validation": payload.get("wencai_date_validation"),
                     "quality_notes": {
                         "universe_excluded_rows": row_counts["universe_excluded_rows"],
                         "invalid_rows": row_counts["invalid_rows"],

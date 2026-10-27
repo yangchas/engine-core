@@ -1,5 +1,16 @@
 # Project Knowledge
 
+- `[VERIFIED 2026-10-27 — C564 WenCai daily-kline guard]` WenCai numeric
+  column suffixes (`[YYYYMMDD]`) are checked against the requested date. After
+  local active-universe completeness passes, the prior-session close and
+  `pct_chg` consistency must also meet the configured threshold; missing
+  reference data or either date conflict is rejected. Partial/low-coverage
+  responses retry within the WenCai tier and leave a checkpoint, not a daily
+  partition; same-day WenCai artifacts remain provisional and do not advance
+  `latest`. The two real 2026-10-26 attempts returned 177 rows (3.39%) and
+  correctly exited 30 as partial, with no partition; 2026-10-27 was not queried
+  within the two-request budget. Evidence: `/home/exedev/validation/s1/C564/`.
+
 - `[VERIFIED 2026-10-26 — C551 heavy attempt admission]` Native Guardian now
   owns the global heavy slot only during a handler attempt. Gate polling, load
   deferral, retry backoff, and dependency waits do not reserve it; heavy waiters

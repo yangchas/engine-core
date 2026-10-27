@@ -6,9 +6,10 @@ from datetime import date
 from typing import Any, Callable, Mapping
 
 
-PAGE_SIZE = 100
+PAGE_SIZE = 1000
 MAX_PAGES = 60
 _FIELDS = "开盘价，最高价，最低价，收盘价，前收盘价，涨跌幅，成交量(股)，成交额(元)，股票代码"
+_DATE_FIELDS = ("open", "high", "low", "close", "pre_close", "pct_chg", "volume", "amount_yuan")
 
 
 def build_daily_kline_query(trade_date: str) -> str:
@@ -72,6 +73,10 @@ def _field_value(row: Mapping[str, Any], field: str, trade_date: str) -> Any:
 
 def _field_for_header(header: Any) -> str | None:
     value = re.sub(r"\[\d{8}\]$", "", str(header)).lower().replace(" ", "")
+    # WenCai may append live quote fields beside the requested historical
+    # columns. They do not carry a date suffix and are not date evidence.
+    if any(token in value for token in ("最新", "现价")):
+        return None
     if any(item in value for item in ("前收盘", "昨收", "pre_close", "preclose")):
         return "pre_close"
     aliases = {
@@ -89,17 +94,24 @@ def _field_for_header(header: Any) -> str | None:
 
 def _source_dates(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
     found: dict[str, set[str]] = {}
+    missing: set[str] = set()
     all_dates: set[str] = set()
     for row in rows:
         for header in row:
             match = re.search(r"\[(\d{8})\]$", str(header))
             field = _field_for_header(header)
-            if match and field:
+            if field and match:
                 value = f"{match.group(1)[:4]}-{match.group(1)[4:6]}-{match.group(1)[6:]}"
                 found.setdefault(field, set()).add(value)
                 all_dates.add(value)
-    return ({key: sorted(values)[0] if len(values) == 1 else sorted(values)
-             for key, values in sorted(found.items())}, sorted(all_dates))
+            elif field:
+                missing.add(field)
+    source_dates = {
+        field: (None if field in missing or not found.get(field) else
+                sorted(found[field])[0] if len(found[field]) == 1 else sorted(found[field]))
+        for field in _DATE_FIELDS
+    }
+    return source_dates, sorted(all_dates)
 
 
 def _source_units(rows: list[dict[str, Any]]) -> dict[str, str]:
@@ -140,12 +152,19 @@ def fetch_daily_kline(trade_date: str, context: Any = None, *,
     rows: list[dict[str, Any]] = []
     page_count = 0
     total_count: int | None = None
+    page_error: Exception | None = None
     for page in range(1, max_pages + 1):
-        if page > 1 and context is not None:
-            context.request()
-        result = query_fn(query=question, page=page, perpage=page_size,
-                          query_type="stock", sort_key="股票代码", sort_order="asc",
-                          retry=0, strict=True)
+        try:
+            if page > 1 and context is not None:
+                context.request()
+            result = query_fn(query=question, page=page, perpage=page_size,
+                              query_type="stock", sort_key="股票代码", sort_order="asc",
+                              retry=0, strict=True)
+        except Exception as exc:
+            if not rows:
+                raise
+            page_error = exc
+            break
         page_rows = _records(result)
         page_count += 1
         rows.extend(page_rows)
@@ -168,13 +187,21 @@ def fetch_daily_kline(trade_date: str, context: Any = None, *,
         "query": question,
         "source_dates": source_dates,
         "source_date_values": source_date_values,
-        "source_dates_consistent": len(source_date_values) <= 1,
+        "source_dates_consistent": (bool(source_date_values) and len(source_date_values) == 1 and
+                                    all(source_dates.get(field) is not None for field in _DATE_FIELDS)),
         "field_units": _source_units(rows),
     }
     if total_count is not None:
         payload["expected_count"] = total_count
         payload["source_row_count"] = total_count
         payload["partial"] = len(rows) < total_count
+    if page_error is not None:
+        timed_out = isinstance(page_error, TimeoutError) or re.search(
+            r"TIMEOUT|TIMED OUT|READ TIMEOUT", str(page_error), re.I)
+        payload.update({"partial": True,
+                        "error_code": "UPSTREAM_TIMEOUT" if timed_out else "TIER_PARTIAL",
+                        "retryable": True,
+                        "reason": f"page_fetch_failed:{type(page_error).__name__}"})
     if not rows:
         payload.update({"status": "TIER_NO_DATA", "error_code": "TIER_NO_DATA",
                         "retryable": False, "reason": "empty_response"})

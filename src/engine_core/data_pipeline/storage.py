@@ -252,6 +252,8 @@ class ArtifactCatalog:
 
     def _can_advance_latest(self, catalog: Mapping[str, Any], dataset: str,
                             trade_date: str, manifest: Mapping[str, Any]) -> bool:
+        if dataset == "daily_kline" and manifest.get("status") == "SAME_DAY_TEMPORARY":
+            return False
         entry = catalog.get("datasets", {}).get(dataset, {})
         latest = entry.get("latest")
         if not isinstance(latest, Mapping):
