@@ -1421,9 +1421,9 @@
       "profile": "policy_09"
     },
     {
-      "available_after": "17:30:00",
+      "available_after": "17:40:00",
       "data_date_offset": 0,
-      "deadline": "17:39:59",
+      "deadline": "17:49:59",
       "depends_on": [],
       "gate": "calendar_ready",
       "handler": "baostock_probe",
@@ -1448,7 +1448,7 @@
       "enabled": true,
       "calendar": "trading_day",
       "event_id": "baostock_probe_1730",
-      "at": "17:30:00",
+      "at": "17:40:00",
       "profile": "policy_11",
       "args": {
         "failure_classes": {
@@ -1516,7 +1516,7 @@
       }
     },
     {
-      "available_after": "17:30:00",
+      "available_after": "17:40:00",
       "data_date_offset": 0,
       "deadline": "18:29:59",
       "depends_on": [],
@@ -1543,7 +1543,7 @@
       "enabled": true,
       "calendar": "trading_day",
       "event_id": "baostock_retry_1740",
-      "at": "17:40:00",
+      "at": "17:50:00",
       "profile": "policy_11",
       "args": {
         "failure_classes": {

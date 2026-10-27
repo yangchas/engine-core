@@ -250,16 +250,16 @@ def test_default_event_table_has_full_day_sampling_and_daily_sequence():
     assert len(hot) == 18
 
 
-def test_daily_kline_available_after_gate_starts_at_1730(tmp_path):
+def test_daily_kline_available_after_gate_starts_at_1740(tmp_path):
     from dataclasses import replace
     event = replace(next(e for e in default_events() if e.event_id == "baostock_probe_1730"), start="17:00:00")
     calls = tmp_path / "baostock"
     guardian = Guardian([event], calendar_dates={"2026-10-16"}, state_root=tmp_path / "state",
                         gates={"calendar_ready": lambda *_: True},
                         handlers={"baostock_probe": lambda *_: calls.write_text("ran")})
-    guardian.tick(datetime.fromisoformat("2026-10-16T17:29:59+08:00"))
+    guardian.tick(datetime.fromisoformat("2026-10-16T17:39:59+08:00"))
     assert not calls.exists()
-    guardian.tick(datetime.fromisoformat("2026-10-16T17:30:00+08:00"))
+    guardian.tick(datetime.fromisoformat("2026-10-16T17:40:00+08:00"))
     assert calls.read_text() == "ran"
 
 
