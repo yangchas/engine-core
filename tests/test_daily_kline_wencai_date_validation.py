@@ -214,7 +214,7 @@ def test_date_validation_requires_reference_and_uses_configured_ratio_boundaries
     assert chain.last_attempts[-1]["retryable"] is False
 
 
-def test_same_day_wencai_version_is_temporary_and_does_not_advance_latest(tmp_path):
+def test_same_day_wencai_after_close_is_provisional_and_advances_latest(tmp_path):
     from engine_core.data_pipeline.storage import ArtifactCatalog
 
     rows, _ = _captured_rows()
@@ -230,8 +230,9 @@ def test_same_day_wencai_version_is_temporary_and_does_not_advance_latest(tmp_pa
     result = chain.fetch_chain(REQUEST_DATE, now="2026-10-26T16:00:00+08:00", persist=True)
 
     assert result is not None
-    assert result.manifest["status"] == "SAME_DAY_TEMPORARY"
+    assert result.manifest["status"] == "DEGRADED:wencai"
     assert result.manifest["business_status"] == "PROVISIONAL"
     catalog = catalog_obj.read()["datasets"]["daily_kline"]
-    assert catalog["latest"] == previous_latest
-    assert REQUEST_DATE not in (tmp_path / "daily_kline" / "latest.json").read_text()
+    assert catalog["latest"] != previous_latest
+    assert catalog["latest"]["trade_date"] == REQUEST_DATE
+    assert REQUEST_DATE in (tmp_path / "daily_kline" / "latest.json").read_text()

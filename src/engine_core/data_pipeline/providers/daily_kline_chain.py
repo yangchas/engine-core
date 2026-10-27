@@ -1056,7 +1056,6 @@ class DailyKlineProviderChain:
                 attempts.append(attempt)
                 degraded = source != "baostock"
                 quality["status"] = "DEGRADED" if degraded else quality["status"]
-                same_day_temporary = source == "wencai" and trade_date == current.date().isoformat()
                 business_status = ("PROVISIONAL" if degraded or sample_scope else
                                    classify_daily_kline(source, quality.get("coverage"),
                                                         quality.get("field_completeness", {})))
@@ -1070,8 +1069,7 @@ class DailyKlineProviderChain:
                     "available_at": available.isoformat(), "fetched_at": current.isoformat(),
                     "as_of": current.isoformat(), "quality": quality, "degraded": degraded,
                     "degraded_label": f"DEGRADED:{source}" if degraded else None,
-                    "status": ("SAME_DAY_TEMPORARY" if same_day_temporary else
-                               f"DEGRADED:{source}" if degraded else
+                    "status": (f"DEGRADED:{source}" if degraded else
                                "SAMPLE_ONLY" if sample_scope else "FORMAL"),
                     "business_status": business_status,
                     "tier": payload.get("tier", 1 if degraded else 0),
