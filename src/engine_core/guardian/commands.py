@@ -3,7 +3,77 @@ from __future__ import annotations
 
 import os
 import json
+import math
+from collections.abc import Mapping
+from numbers import Real
 from pathlib import Path
+
+
+_DAILY_KLINE_PROVIDERS = ("baostock", "wencai", "q2_final")
+
+
+def _event_args(event):
+    return getattr(event, "args", None) or {}
+
+
+def _arg(event_args, name, default=None):
+    if isinstance(event_args, Mapping):
+        return event_args.get(name, default)
+    return getattr(event_args, name, default)
+
+
+def _has_arg(event_args, name):
+    if isinstance(event_args, Mapping):
+        return name in event_args
+    return hasattr(event_args, name)
+
+
+def daily_kline_budget_seconds(timeout_seconds, event_args):
+    """Return the daily-kline subprocess budget bounded by its event timeout."""
+    if timeout_seconds is None or timeout_seconds == "":
+        return None
+    ratio = _arg(event_args, "budget_ratio", 0.9)
+    floor = _arg(event_args, "budget_floor_seconds", 60)
+    if isinstance(ratio, bool) or not isinstance(ratio, Real):
+        raise ValueError("daily_kline_budget_ratio_must_be_between_zero_and_one")
+    try:
+        ratio = float(ratio)
+    except (OverflowError, TypeError, ValueError):
+        raise ValueError("daily_kline_budget_ratio_must_be_between_zero_and_one") from None
+    if not math.isfinite(ratio) or not 0 < ratio <= 1:
+        raise ValueError("daily_kline_budget_ratio_must_be_between_zero_and_one")
+    if type(floor) is not int or floor < 1:
+        raise ValueError("daily_kline_budget_floor_seconds_must_be_positive_int")
+    if isinstance(timeout_seconds, bool):
+        raise ValueError("daily_kline_timeout_seconds_invalid")
+    try:
+        timeout = float(timeout_seconds)
+    except (OverflowError, TypeError, ValueError):
+        raise ValueError("daily_kline_timeout_seconds_invalid") from None
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("daily_kline_timeout_seconds_must_be_positive")
+    return max(floor, int(timeout * ratio))
+
+
+def _daily_kline_provider_arg(value):
+    if isinstance(value, str):
+        items = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        items = value
+    else:
+        raise ValueError("daily_kline_providers_must_be_list_or_csv")
+    providers = []
+    for item in items:
+        if not isinstance(item, str):
+            raise ValueError("daily_kline_provider_invalid")
+        name = item.strip()
+        if name not in _DAILY_KLINE_PROVIDERS:
+            raise ValueError("daily_kline_provider_invalid:" + name)
+        if name not in providers:
+            providers.append(name)
+    if not providers:
+        raise ValueError("daily_kline_providers_empty")
+    return ",".join(providers)
 
 
 def validate_handler_postcondition(name: str, day: str, root: str | Path) -> tuple[bool, str]:
@@ -101,11 +171,15 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
     if name == "kaipan_job":
         cmd = [py, str(repo / "examples/run_data_jobs.py"), "--job", opts.job,
                "--date", day, "--artifact-root", str(root)]
-        timeout = getattr(event, "timeout_seconds", None)
-        if opts.job == "daily_kline" and timeout:
+        if opts.job == "daily_kline":
             # Keep the chain budget inside the event timeout so a long Baostock
             # fetch checkpoints and falls back instead of being killed.
-            cmd.extend(["--budget-seconds", str(max(60, int(float(timeout) * 0.9)))])
+            args = _event_args(event)
+            budget = daily_kline_budget_seconds(getattr(event, "timeout_seconds", None), args)
+            if budget is not None:
+                cmd.extend(["--budget-seconds", str(budget)])
+            if _has_arg(args, "providers"):
+                cmd.extend(["--providers", _daily_kline_provider_arg(_arg(args, "providers"))])
         if opts.write:
             cmd.append("--write")
         elif getattr(opts, "simulate_clock", False):
@@ -125,6 +199,11 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
         cmd = __import__("shlex").split(external) + [day] if external else [
             py, str(repo / "examples/core_data_daily.py"), "--phase", "postmarket", "--date", day,
             "--artifact-root", str(root)]
+        if not external:
+            budget = daily_kline_budget_seconds(
+                getattr(event, "timeout_seconds", None), _event_args(event))
+            if budget is not None:
+                cmd.extend(["--baostock-total-timeout-seconds", str(budget)])
         if opts.write:
             cmd.append("--write")
         if opts.td_write:

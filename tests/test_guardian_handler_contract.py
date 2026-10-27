@@ -408,3 +408,120 @@ def test_daily_kline_job_budget_follows_event_timeout():
             assert cmd[cmd.index("--budget-seconds") + 1] == expect
         else:
             assert "--budget-seconds" not in cmd
+
+
+def test_schedule_args_control_daily_kline_budget_and_providers():
+    from engine_core.guardian.commands import build_handler_command
+    from types import SimpleNamespace
+
+    opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False,
+                           email_self=False, job="daily_kline")
+    event = SimpleNamespace(timeout_seconds=1000, args={
+        "budget_ratio": 0.5, "budget_floor_seconds": 1,
+        "providers": ["wencai", "q2_final", "wencai"],
+    })
+    cmd = build_handler_command("kaipan_job", event, opts, ROOT / "artifacts",
+                                "2026-10-26", sys.executable, ROOT)
+    assert cmd[cmd.index("--budget-seconds") + 1] == "500"
+    assert cmd[cmd.index("--providers") + 1] == "wencai,q2_final"
+
+
+def test_daily_kline_budget_defaults_floor_and_custom_values():
+    from engine_core.guardian.commands import daily_kline_budget_seconds
+
+    assert daily_kline_budget_seconds(None, {}) is None
+    assert daily_kline_budget_seconds("", {}) is None
+    assert daily_kline_budget_seconds(1000, {}) == 900
+    assert daily_kline_budget_seconds(30, {}) == 60
+    assert daily_kline_budget_seconds(1000, {"budget_ratio": 0.5,
+                                               "budget_floor_seconds": 1}) == 500
+    assert daily_kline_budget_seconds(1000, SimpleNamespace(budget_ratio=1,
+                                                              budget_floor_seconds=1)) == 1000
+    assert daily_kline_budget_seconds(100, {"budget_floor_seconds": 95}) == 95
+
+
+@pytest.mark.parametrize("args", [
+    {"budget_ratio": True}, {"budget_ratio": 0}, {"budget_ratio": -0.1},
+    {"budget_ratio": 1.01}, {"budget_ratio": "0.5"},
+    {"budget_ratio": float("nan")}, {"budget_ratio": float("inf")},
+    {"budget_floor_seconds": True}, {"budget_floor_seconds": 0},
+    {"budget_floor_seconds": 1.5}, {"budget_floor_seconds": "60"},
+])
+def test_invalid_daily_kline_budget_values_raise(args):
+    from engine_core.guardian.commands import daily_kline_budget_seconds
+
+    with pytest.raises(ValueError):
+        daily_kline_budget_seconds(1000, args)
+
+
+@pytest.mark.parametrize(("providers", "expected"), [
+    ("wencai", "wencai"),
+    ("baostock, wencai ,baostock", "baostock,wencai"),
+    ([" wencai", "q2_final", "wencai "], "wencai,q2_final"),
+    ((" q2_final", "baostock", "baostock "), "q2_final,baostock"),
+])
+def test_daily_kline_provider_argument_forms_are_normalized(providers, expected):
+    from engine_core.guardian.commands import build_handler_command
+
+    opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False,
+                           email_self=False, job="daily_kline")
+    event = SimpleNamespace(timeout_seconds=1000, args={"providers": providers})
+    cmd = build_handler_command("kaipan_job", event, opts, ROOT / "artifacts",
+                                "2026-10-26", sys.executable, ROOT)
+    assert cmd[cmd.index("--providers") + 1] == expected
+
+
+@pytest.mark.parametrize("providers", [
+    [], "", " , ", "baostock,nope", ["wencai", ""], 5, ["baostock", 3],
+])
+def test_invalid_daily_kline_providers_raise(providers):
+    from engine_core.guardian.commands import build_handler_command
+
+    opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False,
+                           email_self=False, job="daily_kline")
+    event = SimpleNamespace(timeout_seconds=1000, args={"providers": providers})
+    with pytest.raises(ValueError):
+        build_handler_command("kaipan_job", event, opts, ROOT / "artifacts",
+                              "2026-10-26", sys.executable, ROOT)
+
+
+def test_missing_providers_keeps_default_command_shape_and_other_jobs_ignore_bad_args():
+    from engine_core.guardian.commands import build_handler_command
+
+    opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False,
+                           email_self=False, job="daily_kline")
+    event = SimpleNamespace(timeout_seconds=1000, args={})
+    cmd = build_handler_command("kaipan_job", event, opts, ROOT / "artifacts",
+                                "2026-10-26", sys.executable, ROOT)
+    assert cmd == [sys.executable, str(ROOT / "examples/run_data_jobs.py"),
+                   "--job", "daily_kline", "--date", "2026-10-26",
+                   "--artifact-root", str(ROOT / "artifacts"),
+                   "--budget-seconds", "900", "--write"]
+    assert "--providers" not in cmd
+
+    opts.job = "limit_up_pool"
+    bad_event = SimpleNamespace(timeout_seconds=1000, args={
+        "budget_ratio": True, "budget_floor_seconds": 0, "providers": "bad",
+    })
+    unaffected = build_handler_command("kaipan_job", bad_event, opts, ROOT / "artifacts",
+                                       "2026-10-26", sys.executable, ROOT)
+    assert "--budget-seconds" not in unaffected and "--providers" not in unaffected
+
+
+def test_baostock_probe_budget_is_bounded_and_external_command_is_unchanged(monkeypatch):
+    from engine_core.guardian.commands import build_handler_command
+
+    opts = SimpleNamespace(write=False, td_write=False)
+    event = SimpleNamespace(timeout_seconds=1000, args={
+        "budget_ratio": 0.5, "budget_floor_seconds": 1,
+    })
+    monkeypatch.delenv("CORE_BAOSTOCK_PROBE_COMMAND", raising=False)
+    builtin = build_handler_command("baostock_probe", event, opts, ROOT / "artifacts",
+                                    "2026-10-26", sys.executable, ROOT)
+    assert builtin[builtin.index("--baostock-total-timeout-seconds") + 1] == "500"
+
+    monkeypatch.setenv("CORE_BAOSTOCK_PROBE_COMMAND", "python custom_probe.py")
+    invalid_event = SimpleNamespace(timeout_seconds=1000, args={"budget_ratio": True})
+    external = build_handler_command("baostock_probe", invalid_event, opts, ROOT / "artifacts",
+                                     "2026-10-26", sys.executable, ROOT)
+    assert external == ["python", "custom_probe.py", "2026-10-26"]
