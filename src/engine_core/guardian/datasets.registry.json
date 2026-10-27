@@ -171,7 +171,7 @@
       "phases": [
         "POST_MARKET"
       ],
-      "cadence": "日K就绪后重算",
+      "cadence": "日K就绪(>=PROVISIONAL)即派生;日K升FORMAL后重算为新版本",
       "rule": "从 daily_kline 派生；要求前置日K与足够历史窗口。",
       "freshness": {
         "partition": "D",
@@ -192,29 +192,41 @@
         "mode": "fetch_now",
         "valid_until": null,
         "depends_on": [
-          "daily_kline"
+          "daily_kline",
+          "symbol_universe"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
         "partition_before_trigger": "D-1",
         "trigger_event": "baostock_probe_1730"
       },
       "cost": {
-        "class": "heavy",
-        "basis": "UNKNOWN duration; conservative",
-        "set_by": "claude 2026-10-20 default"
+        "class": "medium",
+        "basis": "measured C571 2026-10-28: 10.1s for 2026-10-27 over 82 daily_kline partitions (5224 rows); no network, one catalog read/write",
+        "set_by": "claude C571 2026-10-28"
       },
       "fetch_job": {
         "argv": [
           "{python}",
-          "examples/backfill_daily_history.py",
-          "--from",
+          "examples/build_daily_derived.py",
+          "--dataset",
+          "daily_indicators",
+          "--date",
           "{date}",
-          "--to",
-          "{date}",
-          "--reindex-only",
-          "--write"
+          "--artifact-root",
+          "{artifact_root}"
         ],
         "timeout_seconds": 600
+      },
+      "derive": {
+        "algorithm": "derived_v1",
+        "min_upstream_status": "PROVISIONAL",
+        "upstream": [
+          "daily_kline",
+          "symbol_universe"
+        ],
+        "recompute_on_input_change": true,
+        "window_days": 120,
+        "trigger": "upstream daily_kline partition present at >= min_upstream_status (gate), not a fixed clock time; a PROVISIONAL result is recomputed as a new version once daily_kline is FORMAL"
       }
     },
     {
@@ -227,7 +239,7 @@
       "phases": [
         "POST_MARKET"
       ],
-      "cadence": "日K与指标就绪后重算",
+      "cadence": "日K与指标就绪即派生;任一上游版本变化后重算为新版本",
       "rule": "派生报告特征；依赖 daily_kline/daily_indicators。",
       "freshness": {
         "partition": "D",
@@ -249,7 +261,8 @@
         "valid_until": null,
         "depends_on": [
           "daily_kline",
-          "daily_indicators"
+          "daily_indicators",
+          "symbol_universe"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
         "partition_before_trigger": "D-1",
@@ -263,11 +276,27 @@
       "fetch_job": {
         "argv": [
           "{python}",
-          "examples/build_daily_report_features.py",
+          "examples/build_daily_derived.py",
+          "--dataset",
+          "daily_report_features",
           "--date",
-          "{date}"
+          "{date}",
+          "--artifact-root",
+          "{artifact_root}"
         ],
         "timeout_seconds": 300
+      },
+      "derive": {
+        "algorithm": "derived_v1",
+        "min_upstream_status": "PROVISIONAL",
+        "upstream": [
+          "daily_kline",
+          "daily_indicators",
+          "symbol_universe"
+        ],
+        "recompute_on_input_change": true,
+        "window_days": 120,
+        "trigger": "upstream daily_kline (>= min_upstream_status) and the same-day daily_indicators version; recomputed as a new version when either changes"
       }
     },
     {

@@ -7,6 +7,7 @@ import math
 import multiprocessing
 import os
 import socket
+import time
 from collections import defaultdict
 from datetime import date, datetime, time as day_time, timezone
 from pathlib import Path
@@ -234,19 +235,143 @@ def build_daily_report_features(rows: Sequence[Mapping[str, Any]], *, trade_date
     return result
 
 
-def materialize_daily_report_features(catalog: ArtifactCatalog, *, trade_date: str, asof: str,
-                                      redis: Any = None) -> dict[str, Any]:
-    """Read canonical history, persist immutable features, and publish a compressed hot view."""
-    history, history_meta = core_history_rows(catalog, through_date=trade_date, asof=asof, max_days=120)
-    rows = build_daily_report_features(history, trade_date=trade_date)
-    from .data_pipeline.lineage import daily_kline_input
-    inputs = daily_kline_input(catalog, trade_date)
-    available_at = history_meta.get("available_at")
-    manifest = catalog.commit("daily_report_features", trade_date, rows,
-                              {"dataset": "daily_report_features", "source": "core_data",
-                               "available_at": available_at, "as_of": asof,
-                               "quality": {"row_count": len(rows), "history_trade_dates": history_meta.get("history_trade_dates")},
-                               "dependencies": ["daily_kline"], "inputs": inputs}, source="core_derived")
+def load_derived_inputs(catalog: ArtifactCatalog, trade_date: str, *, max_days: int = 120,
+                        with_indicators: bool = False,
+                        allow_kline_universe: bool = False) -> dict[str, Any]:
+    """Adapter: read the best-quality persisted upstream partitions into a pure-builder request skeleton."""
+    from .data_pipeline.derived_daily import select_best
+    snapshot = catalog.read().get("datasets", {})
+    kline = snapshot.get("daily_kline", {}).get("dates", {})
+    parts: list[dict[str, Any]] = []
+    for day in sorted(d for d in kline if d <= trade_date)[-max_days:]:
+        entry = select_best([v for v in kline[day] if isinstance(v, dict)])
+        path = Path(entry["manifest"]) if entry and entry.get("manifest") else None
+        if path is None or not path.is_file():
+            continue
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        parts.append({"trade_date": day, "version": manifest.get("version"),
+                      "business_status": manifest.get("business_status"), "source": manifest.get("source"),
+                      "available_at": manifest.get("available_at"), "rows": catalog.read_rows(path)})
+    request: dict[str, Any] = {"daily_kline": parts, "window": {"max_days": max_days}}
+    upath = catalog.locate("symbol_universe", trade_date)
+    if upath is not None and upath.is_file():
+        umanifest = json.loads(upath.read_text(encoding="utf-8"))
+        request["symbol_universe"] = {"trade_date": trade_date, "version": umanifest.get("version"),
+                                      "business_status": umanifest.get("business_status"),
+                                      "rows": catalog.read_rows(upath)}
+    elif allow_kline_universe:
+        own = next((p for p in parts if p["trade_date"] == trade_date), None)
+        if own is not None:
+            symbols = {}
+            for row in own["rows"]:
+                symbol = str(row.get("symbol") or row.get("code") or "").zfill(6)
+                if symbol.isdigit():
+                    symbols[symbol] = "0" if row.get("suspended") else "1"
+            request["symbol_universe"] = {"trade_date": trade_date, "version": None,
+                                          "basis": "daily_kline_symbols",
+                                          "rows": [{"symbol": s, "trade_status": t} for s, t in sorted(symbols.items())]}
+    if with_indicators:
+        ipath = catalog.locate("daily_indicators", trade_date)
+        if ipath is not None and ipath.is_file():
+            ipart = json.loads(ipath.read_text(encoding="utf-8"))
+            request["daily_indicators"] = {"trade_date": trade_date, "version": ipart.get("version"),
+                                           "business_status": ipart.get("business_status"),
+                                           "source": ipart.get("source")}
+    return request
+
+
+def _resolve_as_of(value: str | None, request: Mapping[str, Any], trade_date: str) -> str:
+    """None -> now; "kline_available" -> the instant the day's own daily_kline became available (history import:
+    a derived partition is never visible earlier than the bar it derives from, nor stamped later than needed)."""
+    if value == "kline_available":
+        own = next((p for p in request["daily_kline"] if p["trade_date"] == trade_date), None)
+        if own is None or not own.get("available_at"):
+            from .data_pipeline.derived_daily import UpstreamNotReady
+            raise UpstreamNotReady("DAILY_KLINE_MISSING", trade_date)
+        return datetime.fromisoformat(str(own["available_at"]).replace("Z", "+00:00")).astimezone(SHANGHAI).isoformat()
+    return value or datetime.now(timezone.utc).isoformat()
+
+
+def derived_up_to_date(catalog: ArtifactCatalog, dataset: str, trade_date: str) -> bool:
+    """A derived partition of the current algorithm exists and none of its recorded inputs changed."""
+    from .data_pipeline.derived_daily import ALGORITHM, inputs_stale, select_best
+    snapshot = catalog.read()
+    entries = snapshot.get("datasets", {}).get(dataset, {}).get("dates", {}).get(trade_date) or []
+    best = select_best([e for e in entries if isinstance(e, dict)])
+    if best is None or best.get("source") != ALGORITHM:
+        return False
+    try:
+        manifest = json.loads(Path(best["manifest"]).read_text(encoding="utf-8"))
+    except (OSError, ValueError, KeyError):
+        return False
+    if inputs_stale(snapshot, dataset, trade_date, manifest):
+        return False
+    if dataset == "daily_report_features":
+        ipath = catalog.locate("daily_indicators", trade_date)
+        recorded = (manifest.get("inputs") or {}).get("daily_indicators", {}).get("version")
+        current = json.loads(ipath.read_text(encoding="utf-8")).get("version") if ipath and ipath.is_file() else None
+        return recorded is not None and recorded == current
+    return True
+
+
+def _commit_partition(catalog: ArtifactCatalog, partition: Any, started: float,
+                      now: datetime | None = None) -> dict[str, Any]:
+    manifest = dict(partition.manifest)
+    attempts = [dict(item, elapsed_ms=round((time.monotonic() - started) * 1000, 3))
+                for item in manifest["provider_attempts"]]
+    manifest["provider_attempts"] = attempts
+    extra = {"clock": (lambda: now)} if now is not None else {}
+    return catalog.commit(manifest["dataset"], manifest["trade_date"], partition.rows, manifest,
+                          source=manifest["provider"], **extra)
+
+
+def materialize_daily_indicators(catalog: ArtifactCatalog, *, trade_date: str, as_of: str | None = None,
+                                 min_upstream_status: str = "PROVISIONAL", max_days: int = 120,
+                                 force: bool = False, allow_kline_universe: bool = False,
+                                 now: datetime | None = None) -> dict[str, Any]:
+    """Adapter: load upstream partitions, run the pure builder, commit one derived_v1 version.
+
+    ``now`` (tz-aware) is a test hook for fake-clock runs: it is the PIT cutoff and the commit clock."""
+    from .data_pipeline.derived_daily import build_daily_indicators
+    started = time.monotonic()
+    if not force and derived_up_to_date(catalog, "daily_indicators", trade_date):
+        return {"status": "UP_TO_DATE", "dataset": "daily_indicators", "trade_date": trade_date}
+    request = load_derived_inputs(catalog, trade_date, max_days=max_days,
+                                  allow_kline_universe=allow_kline_universe)
+    request.update(trade_date=trade_date, as_of=_resolve_as_of(as_of or (now.isoformat() if now else None), request,
+                                                              trade_date),
+                   min_upstream_status=min_upstream_status)
+    partition = build_daily_indicators(request)
+    manifest = _commit_partition(catalog, partition, started, now)
+    return {"status": "COMMITTED", "dataset": "daily_indicators", "trade_date": trade_date,
+            "version": manifest["version"], "business_status": manifest["business_status"],
+            "row_count": manifest["row_count"]}
+
+
+def materialize_daily_report_features(catalog: ArtifactCatalog, *, trade_date: str, asof: str | None = None,
+                                      redis: Any = None, min_upstream_status: str = "PROVISIONAL",
+                                      max_days: int = 120, force: bool = False,
+                                      allow_kline_universe: bool = False,
+                                      now: datetime | None = None) -> dict[str, Any]:
+    """Adapter: persist PIT-safe report features through the pure builder and publish the hot Redis view."""
+    from .data_pipeline.derived_daily import build_daily_report_features as build
+    started = time.monotonic()
+    if not force and derived_up_to_date(catalog, "daily_report_features", trade_date):
+        existing = catalog.locate("daily_report_features", trade_date)
+        manifest = json.loads(existing.read_text(encoding="utf-8"))
+        return {"status": "UP_TO_DATE", "manifest": manifest, "row_count": manifest.get("row_count"),
+                "available_at": manifest.get("available_at"),
+                "history_trade_dates": (manifest.get("quality") or {}).get("history_trade_dates"),
+                "cache_bytes": None}
+    request = load_derived_inputs(catalog, trade_date, max_days=max_days, with_indicators=True,
+                                  allow_kline_universe=allow_kline_universe)
+    request.update(trade_date=trade_date, as_of=_resolve_as_of(asof or (now.isoformat() if now else None), request,
+                                                              trade_date),
+                   min_upstream_status=min_upstream_status)
+    partition = build(request)
+    manifest = _commit_partition(catalog, partition, started, now)
+    rows = partition.rows
+    available_at = manifest.get("available_at")
     cache = {"schema_version": 1, "dataset": "daily_report_features", "trade_date": trade_date,
              "source": "core_data", "available_at": available_at, "row_count": len(rows), "rows": rows}
     encoded = gzip.compress(canonical_json(cache), mtime=0)
@@ -257,8 +382,8 @@ def materialize_daily_report_features(catalog: ArtifactCatalog, *, trade_date: s
         readback = redis.get(f"core:cache:data:daily_report_features:{trade_date}")
         if gzip.decompress(readback) != canonical_json(cache):
             raise RuntimeError("daily_report_features_redis_readback_mismatch")
-    return {"manifest": manifest, "row_count": len(rows), "available_at": available_at,
-            "history_trade_dates": history_meta.get("history_trade_dates"),
+    return {"status": "COMMITTED", "manifest": manifest, "row_count": len(rows), "available_at": available_at,
+            "history_trade_dates": (partition.manifest["quality"] or {}).get("history_trade_dates"),
             "cache_bytes": len(encoded) if redis is not None else None}
 
 
@@ -511,15 +636,8 @@ def backfill_daily_history(catalog: ArtifactCatalog, *, start: str, end: str,
                     "row_count": len(day_rows), "backfill_range": [start, end]}
         committed.append(catalog.commit("daily_kline", day, sorted(day_rows.values(), key=lambda row: row["symbol"]),
                                         manifest, source="baostock"))
-        history, _meta = core_history_rows(catalog, through_date=day, asof=available.isoformat(), max_days=120)
-        indicators = build_indicator_rows(history, trade_date=day)
-        from .data_pipeline.lineage import daily_kline_input
-        catalog.commit("daily_indicators", day, indicators,
-                       {"schema_version": 1, "dataset": "daily_indicators", "trade_date": day,
-                        "source": "core_derived", "available_at": available.isoformat(),
-                        "field_units": {"avg_turnover_5d": "UNVERIFIED"}, "row_count": len(indicators),
-                        "inputs": daily_kline_input(catalog, day)},
-                       source="core_derived")
+        materialize_daily_indicators(catalog, trade_date=day, as_of="kline_available",
+                                     allow_kline_universe=True, force=True)
     cache_rows, cache_meta = core_history_rows(catalog, through_date=end,
                                                asof=datetime.combine(date.fromisoformat(end), day_time(23, 59), SHANGHAI).isoformat(),
                                                max_days=120)
@@ -554,29 +672,16 @@ def reindex_daily_indicators(catalog: ArtifactCatalog, *, start: str, end: str, 
         kline_manifest = catalog.locate("daily_kline", day)
         if kline_manifest is None or not kline_manifest.is_file():
             raise RuntimeError(f"daily_kline_manifest_missing:{day}")
-        # Indicators cannot be visible before the daily_kline they derive from (kline may land after 17:30).
-        try:
-            kline_meta = json.loads(kline_manifest.read_text(encoding="utf-8"))
-            kline_at = datetime.fromisoformat(str(kline_meta.get("available_at", "")).replace("Z", "+00:00"))
-        except (OSError, ValueError, TypeError) as exc:
-            raise RuntimeError(f"daily_kline_manifest_unreadable:{day}:{type(exc).__name__}") from exc
+        # The pure builder refuses a day whose own daily_kline is missing/below quality and records the exact
+        # upstream versions, so a later FORMAL upgrade is detected as a stale input and recomputed.
         from .guardian.registry import kline_coverage_problem
-        problem = kline_coverage_problem(kline_meta.get("quality"))
+        problem = kline_coverage_problem(json.loads(kline_manifest.read_text(encoding="utf-8")).get("quality"))
         if problem:
             raise RuntimeError(f"{problem}:{day}")
-        if kline_at.tzinfo is not None and kline_at.astimezone(SHANGHAI) > available:
-            available = kline_at.astimezone(SHANGHAI)
-        history, _meta = core_history_rows(catalog, through_date=day, asof=available.isoformat(), max_days=120)
-        indicators = build_indicator_rows(history, trade_date=day)
-        if not indicators:
+        result = materialize_daily_indicators(catalog, trade_date=day, as_of="kline_available",
+                                              allow_kline_universe=True)
+        if result["status"] == "COMMITTED" and not result["row_count"]:
             raise RuntimeError(f"daily_indicators_empty:{day}")
-        from .data_pipeline.lineage import daily_kline_input
-        catalog.commit("daily_indicators", day, indicators,
-                       {"schema_version": 1, "dataset": "daily_indicators", "trade_date": day,
-                        "source": "core_derived", "available_at": available.isoformat(),
-                        "field_units": {"avg_turnover_5d": "UNVERIFIED"}, "row_count": len(indicators),
-                        "reindex": True, "inputs": daily_kline_input(catalog, day)},
-                       source="core_derived")
     cache_rows, cache_meta = core_history_rows(catalog, through_date=end,
                                                asof=datetime.combine(date.fromisoformat(end), day_time(23, 59), SHANGHAI).isoformat(),
                                                max_days=120)

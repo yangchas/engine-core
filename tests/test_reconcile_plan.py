@@ -86,7 +86,8 @@ def test_dependencies_ordered_and_downstream_blocked_while_upstream_deferred():
     order = [r["id"] for r in rows]
     assert order.index("auction_baseline") < order.index("auction_stock_facts")
     by = {r["id"]: r for r in rows}
-    assert by["daily_indicators"]["action"] == "DEFER"
+    # C571: derived daily datasets are gated on a present daily_kline partition, so with none they are not planned
+    assert "daily_indicators" not in by and "daily_report_features" not in by
     assert by["auction_stock_facts"]["action"] in {"FETCH_NOW", "DEFER"}
 
 

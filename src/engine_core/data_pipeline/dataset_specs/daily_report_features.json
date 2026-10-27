@@ -1,10 +1,17 @@
 {
  "dataset": "daily_report_features",
- "status": "DRAFT: columns/types/units inferred from the latest real partition (2026-10-28); to be confirmed by the owning data card",
+ "status": "CONFIRMED by C571 (2026-10-28): columns/units/windows per docs/DAILY_INDICATORS.md; derived_v1",
+ "derived": true,
+ "allowed_providers": [
+  "derived_v1"
+ ],
  "primary_key": [
   "symbol"
  ],
  "symbol_column": "symbol",
+ "sentinel_symbols": [
+  "__MARKET__"
+ ],
  "date_columns": [
   "trade_date"
  ],
@@ -28,7 +35,10 @@
   },
   "feature_type": {
    "type": "str",
-   "nullable": false
+   "nullable": false,
+   "enum": [
+    "daily_report_features_v1"
+   ]
   },
   "last_history_date": {
    "type": "date",
@@ -42,12 +52,12 @@
   "amount_history_dates_64": {
    "type": "list",
    "nullable": true,
-   "optional": true
+   "sentinel_only": true
   },
   "opening_history_72": {
    "type": "list",
    "nullable": true,
-   "optional": true
+   "sentinel_only": true
   },
   "position_20d": {
    "type": "float",
@@ -91,8 +101,7 @@
   },
   "streak": {
    "type": "int",
-   "nullable": false,
-   "min": 0
+   "nullable": false
   }
  }
 }

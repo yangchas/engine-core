@@ -456,7 +456,7 @@ def test_all_bundled_specs_load_and_are_wellformed():
         assert spec["dataset"] == name and spec["columns"] and "coverage" in spec
         for col, d in spec["columns"].items():
             assert d["type"] in ("str", "float", "int", "bool", "list", "dict", "date"), (name, col)
-        if name != "daily_kline":
+        if name not in ("daily_kline", "daily_indicators", "daily_report_features"):
             assert spec["status"].startswith("DRAFT")
 
 

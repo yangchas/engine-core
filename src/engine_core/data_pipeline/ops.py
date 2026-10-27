@@ -95,6 +95,29 @@ _PHASE_JOBS = {
 }
 
 
+def run_derived_daily(root: str | Path, day: str, errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build daily_indicators then daily_report_features for ``day`` when their upstream is ready."""
+    from ..daily_history import materialize_daily_indicators, materialize_daily_report_features
+    from .derived_daily import UpstreamNotReady
+    catalog = ArtifactCatalog(root)
+    out: list[dict[str, Any]] = []
+    for name, build in (("daily_indicators", materialize_daily_indicators),
+                        ("daily_report_features", materialize_daily_report_features)):
+        try:
+            result = build(catalog, trade_date=day)
+            manifest = result.get("manifest") or result
+            out.append({"job": name, "status": result["status"], "version": manifest.get("version"),
+                        "business_status": manifest.get("business_status"),
+                        "row_count": manifest.get("row_count")})
+        except UpstreamNotReady as exc:
+            out.append({"job": name, "status": "SKIPPED_UPSTREAM_NOT_READY", "reason": exc.code})
+            break
+        except Exception as exc:
+            errors.append({"job": name, "status": "FAILED", "error": str(exc)[:120]})
+            break
+    return out
+
+
 def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                     adapters: Mapping[str, Callable[..., Any]], trading_dates: Iterable[str] | None,
                     write: bool, redis: Any = None, td_adapter: Any = None,
@@ -184,6 +207,11 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                                 "sha256": job.manifest.get("sha256")})
             except Exception as exc:
                 errors.append({"job": name, "status": "FAILED", "error": str(exc)[:120]})
+        if phase == "postmarket" and write:
+            # C571: the derived daily datasets are produced as soon as the gated daily_kline of this day is
+            # present (any quality >= PROVISIONAL), by the same event that published it; a later FORMAL upgrade
+            # reruns this phase (probe events / reconcile) and the stale-input check rebuilds a new version.
+            results.extend(run_derived_daily(root, job_trade_date, errors))
         baseline_append = None
         amount_provider = adapters.get("auction_amount_provider")
         if phase == "postmarket" and amount_provider is not None:

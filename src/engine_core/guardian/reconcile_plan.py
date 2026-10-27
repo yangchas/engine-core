@@ -14,7 +14,7 @@ from typing import Any, Mapping
 
 from .registry import (REGISTRY_PATH, catalog_manifest, catalog_partition_present,
                        daily_kline_needs_upgrade, derived_daily_kline_input_stale,
-                       load_registry)
+                       derived_needs_build, load_registry)
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -147,6 +147,7 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
 
     due: dict[str, tuple[str | None, dict[str, Any]]] = {}
     upgrade_versions: dict[str, str] = {}
+    derive_reasons: dict[str, str] = {}
     for item in items:
         dataset = item["artifact"].get("catalog_dataset")
         policy = item.get("late_policy")
@@ -173,6 +174,22 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                 if degraded and version:
                     upgrade_versions[item["id"]] = version
                 break
+            continue
+        derive = item.get("derive")
+        if derive:
+            # C571: derived daily datasets are gated on their upstream partitions, never on a clock time, and are
+            # checked for every recent trading-day candidate (late start backfill + upgrade after FORMAL).
+            if daily_kline_candidates is not None:
+                candidates = sorted(set(daily_kline_candidates))
+            else:
+                candidates = [trade_date if _clock(now) >= _hms(policy["trigger_at"]) else prev_trade_date]
+            for candidate in candidates:
+                reason = derived_needs_build(catalog, dataset, candidate, now,
+                                             derive.get("min_upstream_status", "PROVISIONAL")) if candidate else None
+                if reason:
+                    due[item["id"]] = (candidate, policy)
+                    derive_reasons[item["id"]] = reason
+                    break
             continue
         triggered = _clock(now) >= _hms(policy["trigger_at"])
         target = trade_date if triggered else (prev_trade_date if policy.get("partition_before_trigger") == "D-1" else None)
@@ -232,12 +249,20 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
             plan.append({"id": item_id, "partition": target, "action": "NO_FETCH_JOB",
                          "reason": "independent_fetch_job_unconfigured"})
             return
-        blocked = [dep for dep in policy.get("depends_on", [])
-                   if dep in due and next(r["action"] for r in plan if r["id"] == dep) not in {"FETCH_NOW"}]
+        # A dependency blocks only when it is due for the SAME partition and is a real missing-data fetch. An
+        # upgrade of another day (or of this day, when the derived item already accepts the current quality) must
+        # not hold derived work hostage: 2026-10-27 derived stayed unbuilt because the 10-22 daily_kline upgrade
+        # was load-deferred and, being a dependency by id, blocked the 10-27 partitions.
+        same_partition = [dep for dep in policy.get("depends_on", [])
+                          if dep in due and due[dep][0] == target and dep not in upgrade_versions]
+        blocked = [dep for dep in same_partition
+                   if next(r["action"] for r in plan if r["id"] == dep) not in {"FETCH_NOW"}]
         cost = (by_id[item_id].get("cost") or {}).get("class", "medium")
         entry = {"id": item_id, "partition": target, "cost": cost, "event": by_id[item_id].get("guardian_event"),
                  "fetch_job": by_id[item_id].get("fetch_job"), "phase": phase,
-                 "depends_on": list(policy.get("depends_on", []))}
+                 "depends_on": same_partition if item_id in derive_reasons else list(policy.get("depends_on", []))}
+        if item_id in derive_reasons:
+            entry["reason"] = "derive:" + derive_reasons[item_id]
         if item_id in upgrade_versions:
             entry.update({"upgrade_daily_kline": True, "upgrade_version": upgrade_versions[item_id],
                           "reason": "upgrade_degraded_daily_kline", "depends_on": []})

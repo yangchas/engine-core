@@ -1,6 +1,10 @@
 {
  "dataset": "daily_indicators",
- "status": "DRAFT: columns/types/units inferred from the latest real partition (2026-10-28); to be confirmed by the owning data card",
+ "status": "CONFIRMED by C571 (2026-10-28): columns/units/windows per docs/DAILY_INDICATORS.md; derived_v1",
+ "derived": true,
+ "allowed_providers": [
+  "derived_v1"
+ ],
  "primary_key": [
   "symbol"
  ],
@@ -19,39 +23,6 @@
   "date": {
    "type": "date",
    "nullable": false
-  },
-  "source": {
-   "type": "str",
-   "nullable": false
-  },
-  "field_units": {
-   "type": "dict",
-   "nullable": false
-  },
-  "avg_turnover_5d": {
-   "type": "float",
-   "nullable": true,
-   "unit": "percent"
-  },
-  "vol_ratio": {
-   "type": "float",
-   "nullable": true
-  },
-  "bias_20": {
-   "type": "float",
-   "nullable": true,
-   "unit": "percent"
-  },
-  "change_pct_5d": {
-   "type": "float",
-   "nullable": true,
-   "unit": "percent"
-  },
-  "limit_up_days_5": {
-   "type": "int",
-   "nullable": true,
-   "min": 0,
-   "max": 5
   },
   "ma5": {
    "type": "float",
@@ -74,11 +45,42 @@
    "min": 0,
    "zero_suspicious": true
   },
+  "bias_20": {
+   "type": "float",
+   "nullable": true,
+   "unit": "percent"
+  },
   "rsi_6": {
    "type": "float",
    "nullable": true,
    "min": 0,
    "max": 100
+  },
+  "change_pct_5d": {
+   "type": "float",
+   "nullable": true,
+   "unit": "percent"
+  },
+  "avg_turnover_5d": {
+   "type": "float",
+   "nullable": true,
+   "unit": "percent",
+   "min": 0,
+   "all_null_ok": true,
+   "all_null_reason": "needs turnover on all 5 window days; daily_kline 2026-10-26 (legacy_q2_final, PROVISIONAL) carries no turnover field, so every partition whose 5-day window contains 10-26 is null until that day is FORMAL"
+  },
+  "limit_up_days_5": {
+   "type": "int",
+   "nullable": true,
+   "min": 0,
+   "max": 5
+  },
+  "vol_ratio": {
+   "type": "float",
+   "nullable": true,
+   "min": 0,
+   "all_null_ok": true,
+   "all_null_reason": "needs turnover on 20 window days (see avg_turnover_5d): null while the window contains 2026-10-26 (no turnover in the PROVISIONAL legacy_q2_final bar)"
   }
  }
 }

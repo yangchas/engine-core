@@ -953,7 +953,9 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
             result = _run_fetch_job(item, partition, timeout, root, schedule_args=schedule_args)
         else:
             result = _run_fetch_job(item, partition, timeout, root)
-        _verify_partition(item, partition, root, clock)
+        # The postcondition is judged after the job: a partition committed by this very job has
+        # available_at == its commit instant, later than the clock sampled before the job ran.
+        _verify_partition(item, partition, root, clock if now is not None else datetime.now().astimezone())
         if upgrade:
             state = _record_daily_kline_upgrade(root, partition, succeeded=True, now=clock, phase=phase)
             if state:

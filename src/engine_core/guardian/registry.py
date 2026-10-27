@@ -67,11 +67,58 @@ def daily_kline_needs_upgrade(manifest: Mapping[str, Any] | None) -> bool:
                 and str(completeness.get("open", "")).upper() in {"MISSING", "PARTIAL"}))
 
 
+DERIVED_DAILY = frozenset({"daily_indicators", "daily_report_features"})
+
+
+def _best_entry_manifest(catalog: Mapping[str, Any], dataset: str, day: str) -> dict[str, Any] | None:
+    """Manifest of the highest-quality catalogued version of one partition (newest wins ties)."""
+    from ..data_pipeline.derived_daily import select_best
+    entries = catalog.get("datasets", {}).get(dataset, {}).get("dates", {}).get(day) or []
+    if isinstance(entries, Mapping):
+        entries = [entries]
+    best = select_best([e for e in entries if isinstance(e, Mapping)])
+    if best is None:
+        return None
+    metadata = dict(best)
+    try:
+        manifest = json.loads(Path(str(best["manifest"])).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, KeyError):
+        return metadata
+    return {**manifest, **metadata} if isinstance(manifest, Mapping) else metadata
+
+
+def derived_needs_build(catalog: Mapping[str, Any], dataset: str, day: str, now: datetime,
+                        min_status: str = "PROVISIONAL") -> str | None:
+    """Why a derived daily partition must be (re)built now, or None.
+
+    Event gate, not a clock: the partition's own daily_kline must be present (coverage, availability) at
+    ``min_status`` or better. Then it is due when the derived partition is missing, or one of its recorded input
+    versions is no longer the best catalogued version (e.g. daily_kline PROVISIONAL -> FORMAL).
+    """
+    from ..data_pipeline.derived_daily import STATUS_RANK, inputs_stale, normalize_status
+    kline = _best_entry_manifest(catalog, "daily_kline", day)
+    if kline is None or not catalog_partition_present(catalog, "daily_kline", day, now):
+        return None
+    if STATUS_RANK[normalize_status(kline.get("business_status"))] < STATUS_RANK[normalize_status(min_status)]:
+        return None
+    if not catalog_partition_present(catalog, "symbol_universe", day, now):
+        return None   # coverage denominator not ready; never derive against an unknown universe
+    derived = _best_entry_manifest(catalog, dataset, day)
+    if derived is None or not catalog_partition_present(catalog, dataset, day, now):
+        return "missing"
+    if inputs_stale(catalog, dataset, day, derived):
+        return "inputs_changed"
+    return None
+
+
 def derived_daily_kline_input_stale(catalog: Mapping[str, Any], dataset: str, day: str) -> bool:
     """Old manifests without inputs are intentionally unknown, not retroactively stale."""
     if dataset not in {"daily_indicators", "ladder_daily", "stock_day_facts", "daily_report_features"}:
         return False
     derived = catalog_manifest(catalog, dataset, day)
+    if (dataset in DERIVED_DAILY and isinstance(derived, Mapping) and derived.get("input_refs")):
+        from ..data_pipeline.derived_daily import inputs_stale
+        return inputs_stale(catalog, dataset, day, derived)
     inputs = derived.get("inputs") if isinstance(derived, Mapping) else None
     recorded = inputs.get("daily_kline") if isinstance(inputs, Mapping) else None
     if not isinstance(recorded, Mapping) or not recorded.get("version"):

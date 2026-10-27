@@ -16,17 +16,23 @@ from engine_core.data_pipeline.storage import ArtifactCatalog
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date", required=True, help="daily_kline date used to build the feature snapshot")
-    parser.add_argument("--asof", help="PIT cutoff; defaults to end of the selected date in Asia/Shanghai")
+    parser.add_argument("--asof", help="tz-aware PIT cutoff; defaults to now (must not be later than the commit time)")
     parser.add_argument("--artifact-root", default=os.getenv("CORE_DATA_ROOT", "~/core-data"))
     parser.add_argument("--publish-redis", action="store_true")
     args = parser.parse_args()
-    asof = args.asof or f"{args.date}T23:59:59+08:00"
+    asof = args.asof
     redis = None
     if args.publish_redis:
         import redis as redis_package
         redis = redis_package.Redis.from_url(os.environ["REDIS_URL"], decode_responses=False)
-    result = materialize_daily_report_features(ArtifactCatalog(Path(args.artifact_root).expanduser()),
-                                               trade_date=args.date, asof=asof, redis=redis)
+    from engine_core.data_pipeline.derived_daily import UpstreamNotReady
+    try:
+        result = materialize_daily_report_features(ArtifactCatalog(Path(args.artifact_root).expanduser()),
+                                                   trade_date=args.date, asof=asof, redis=redis)
+    except UpstreamNotReady as exc:
+        print(json.dumps({"job": "daily_report_features", "trade_date": args.date, "status": "not_applicable",
+                          "error_code": exc.code}, sort_keys=True))
+        return 20
     print(json.dumps({"job": "daily_report_features", "trade_date": args.date,
                       "row_count": result["row_count"], "available_at": result["available_at"],
                       "history_trade_dates": result["history_trade_dates"],

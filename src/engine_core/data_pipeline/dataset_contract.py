@@ -272,9 +272,15 @@ def _check_manifest(rep: Report, dataset: str, trade_date: str, chosen: dict[str
                "provider_attempts absent/empty or items missing required keys",
                bad=_examples(bad_attempts))
     chain = m.get("provider_chain")
-    rep.result(isinstance(chain, list) and bool(chain) and m.get("provider") in chain, "A3d",
-               "provider_chain_contains_provider",
-               f"provider_chain {chain!r} must be a non-empty list containing provider {m.get('provider')!r}")
+    if spec.get("derived"):
+        # derived datasets have no fetch ladder: the algorithm id is the provider and the chain is empty
+        rep.result(chain == [] and bool(m.get("provider")), "A3d", "derived_provider_chain_empty",
+                   f"derived dataset: provider_chain must be [] and provider the algorithm id, got "
+                   f"{chain!r} / {m.get('provider')!r}")
+    else:
+        rep.result(isinstance(chain, list) and bool(chain) and m.get("provider") in chain, "A3d",
+                   "provider_chain_contains_provider",
+                   f"provider_chain {chain!r} must be a non-empty list containing provider {m.get('provider')!r}")
     rep.result(m.get("dataset") == dataset and m.get("trade_date") == trade_date, "A4", "identity_fields",
                f"manifest dataset/trade_date = {m.get('dataset')!r}/{m.get('trade_date')!r}, "
                f"expected {dataset!r}/{trade_date!r}")
@@ -347,9 +353,17 @@ def _check_rows(rep: Report, trade_date: str, m: dict[str, Any], rows: list[dict
                 spec: dict[str, Any]) -> None:
     cols: dict[str, dict[str, Any]] = spec.get("columns", {})
     sym_col = spec.get("symbol_column", "symbol")
+    sentinels = set(spec.get("sentinel_symbols") or [])
+    if sentinels and sym_col:
+        # bounded exception: a declared market-level row (e.g. __MARKET__), at most one per sentinel symbol
+        counts = {sv: sum(1 for r in rows if r.get(sym_col) == sv) for sv in sentinels}
+        rep.result(all(c <= 1 for c in counts.values()), "B1a", "sentinel_rows_at_most_one",
+                   f"sentinel rows must appear at most once each: {counts}", counts=counts)
+    data_rows = [r for r in rows if not (sentinels and r.get(sym_col) in sentinels)]
+    sentinel_rows = [r for r in rows if sentinels and r.get(sym_col) in sentinels]
     if sym_col:
-        bad = [r.get(sym_col) for r in rows if not (isinstance(r.get(sym_col), str)
-                                                    and _SYMBOL_RE.match(r[sym_col]))]
+        bad = [r.get(sym_col) for r in data_rows if not (isinstance(r.get(sym_col), str)
+                                                         and _SYMBOL_RE.match(r[sym_col]))]
         rep.result(not bad, "B1", "symbol_six_digit_string",
                    f"{len(bad)} rows with {sym_col} not a 6-digit string", count=len(bad),
                    examples=_examples(bad))
@@ -376,11 +390,14 @@ def _check_rows(rep: Report, trade_date: str, m: dict[str, Any], rows: list[dict
                        "rows are not sorted by primary key (fixed ordering is required for idempotent sha256)")
     else:
         rep.fail("B3", "primary_key_unique", "spec declares no primary_key")
-    _check_columns(rep, rows, cols, spec)
+    _check_columns(rep, rows, cols, spec, data_rows, sentinel_rows)
 
 
 def _check_columns(rep: Report, rows: list[dict[str, Any]], cols: dict[str, dict[str, Any]],
-                   spec: dict[str, Any]) -> None:
+                   spec: dict[str, Any], data_rows: list[dict[str, Any]] | None = None,
+                   sentinel_rows: list[dict[str, Any]] | None = None) -> None:
+    data_rows = rows if data_rows is None else data_rows
+    sentinel_rows = sentinel_rows or []
     seen: set[str] = set()
     for r in rows:
         seen.update(r)
@@ -393,8 +410,9 @@ def _check_columns(rep: Report, rows: list[dict[str, Any]], cols: dict[str, dict
     for name, d in cols.items():
         if name not in seen:
             continue
-        values = [r.get(name) for r in rows]
-        _check_one_column(rep, name, d, rows, values)
+        subset = sentinel_rows if d.get("sentinel_only") else data_rows
+        values = [r.get(name) for r in subset]
+        _check_one_column(rep, name, d, subset, values)
 
 
 def _check_one_column(rep: Report, name: str, d: dict[str, Any], rows: list[dict[str, Any]],
@@ -414,6 +432,9 @@ def _check_one_column(rep: Report, name: str, d: dict[str, Any], rows: list[dict
     elif nulls and len(nulls) == len(values) and not d.get("all_null_ok", False):
         rep.fail("B6b", f"all_null_{name}", f"column {name} is null in every row (declared nullable but "
                  "carries no data)", count=len(nulls))
+    elif nulls and len(nulls) == len(values):
+        rep.warn("B6b", f"all_null_{name}", f"column {name} is null in every row; spec allows it: "
+                 f"{d.get('all_null_reason', 'no reason recorded')}", count=len(nulls))
     nums = [v for v in values if _is_number(v) and math.isfinite(v)]
     lo, hi = d.get("min"), d.get("max")
     if nums and (lo is not None or hi is not None):
@@ -457,7 +478,8 @@ def _check_coverage(rep: Report, catalog: ArtifactCatalog, trade_date: str, m: d
     by_symbol.pop("", None)
     suspended = {s for s, r in by_symbol.items() if str(r.get("trade_status", "")).strip() == "0"}
     active = set(by_symbol) - suspended
-    row_syms = [r.get(sym) for r in rows]
+    sentinels = set(spec.get("sentinel_symbols") or [])
+    row_syms = [r.get(sym) for r in rows if r.get(sym) not in sentinels]
     present = set(row_syms)
     inside = len(active & present)
     recomputed = {

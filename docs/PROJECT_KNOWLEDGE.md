@@ -1922,3 +1922,5 @@ Evidence：
   development candidate `b2aa169`; metadata is not independent build proof.
   TASK-008 remains `PARTIAL_EVIDENCE`; NORMAL opening and TD write health remain
   `UNPROVEN`.
+
+- [VERIFIED 2026-10-28 C571 — derived daily datasets] `daily_indicators` and `daily_report_features` are produced by the pure builders in `data_pipeline/derived_daily.py` (source `derived_v1`, `provider_chain=[]`, manifest `inputs` mapping + `input_refs`), gated on a present daily_kline partition (>= PROVISIONAL) and re-derived as a new version when any recorded upstream version changes; details, ledger evidence for the 2026-10-26/27 non-trigger and the cross-partition dependency block, unit/window facts and limits: `docs/DAILY_INDICATORS.md`. Real persisted daily_kline `pct_chg` is percent points (not bp as `docs/DAILY_KLINE.md` states). `startup.fetch_item` now verifies the partition postcondition with the post-job clock. `ArtifactCatalog` hashes only a Mapping `inputs` into the version, and does not move `latest` within the same trade_date for non-kline datasets (storage.py, not changed by C571).
