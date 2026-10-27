@@ -69,7 +69,7 @@ def test_get_reads_committed_real_rows_and_filters_as_of_and_tag(tmp_path):
     manifest, rows = _fixture()
     catalog = ArtifactCatalog(tmp_path / "core")
     for source, hour, tag in (("baostock", 10, "0925"), ("legacy_q2_final", 11, "0924")):
-        version_manifest = dict(manifest, tag=tag)
+        version_manifest = dict(manifest, tag=tag, provider="q2_final" if source == "legacy_q2_final" else "baostock")
         catalog.commit(
             "daily_kline", "2026-10-23", rows, version_manifest, source=source,
             clock=lambda hour=hour: datetime(2026, 10, 25, hour, tzinfo=timezone.utc),

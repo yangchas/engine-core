@@ -154,7 +154,7 @@ def test_chain_replays_real_rows_and_appends_baostock_job_log(tmp_path):
                        write=True)
     assert degraded["manifest"]["provider"] == "q2_final"
     assert degraded["manifest"]["source"] == "q2_final"
-    assert degraded["manifest"]["provider_chain"] == "q2_final>wencai"
+    assert degraded["manifest"]["provider_chain"] == ["q2_final", "wencai"]
     assert degraded["manifest"]["business_status"] != "FORMAL"
     degraded_attempt = degraded["manifest"]["provider_attempts"][0]
     assert {"provider", "result", "attempted_at", "elapsed_ms", "reason"} <= set(degraded_attempt)
@@ -181,7 +181,7 @@ def test_job_runner_keeps_actual_provider_and_attempt_metadata(tmp_path):
 
     assert result.manifest["provider"] == "baostock"
     assert result.manifest["source"] == "baostock"
-    assert result.manifest["provider_chain"] == "baostock>wencai>q2_final"
+    assert result.manifest["provider_chain"] == ["baostock", "wencai", "q2_final"]
     assert "/source=baostock/" in result.manifest["manifest_uri"]
     persisted = result.manifest["provider_attempts"][0]
     assert {"provider", "result", "attempted_at", "elapsed_ms", "reason"} <= set(persisted)
@@ -203,6 +203,14 @@ def test_legacy_composite_source_partition_remains_readable(tmp_path):
                                 "field_completeness": {field: "COMPLETE" for field in FIELDS}},
                                source="baostock>wencai>q2_final")
 
-    assert "/source=baostock>wencai>q2_final/" in committed["manifest_uri"]
+    # C576: the writer now names the directory after the actual provider, even for a chain label ...
+    assert "/source=baostock/" in committed["manifest_uri"]
+    # ... and a legacy composite directory written earlier (never rewritten) stays readable.
+    import shutil
+    day_dir = tmp_path / "daily_kline" / f"trade_date={day}"
+    shutil.move(str(day_dir / "source=baostock"), str(day_dir / "source=baostock>wencai>q2_final"))
+    for path in list(tmp_path.rglob("manifest.json")) + [tmp_path / "catalog.json", tmp_path / "daily_kline" / "latest.json"]:
+        path.write_text(path.read_text().replace("source=baostock/", "source=baostock>wencai>q2_final/"))
+    assert (day_dir / "source=baostock>wencai>q2_final").is_dir()
     loaded = load_dataset("daily_kline", day, prefer="file", catalog=catalog)
     assert loaded is not None and len(loaded.rows) == len(rows)

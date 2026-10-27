@@ -105,7 +105,14 @@ def build(root: Path, rows, universe_rows=None, **kw):
     return write_partition(root, "daily_kline", rows, manifest_extra, **kw)
 
 
+LEGACY_SPEC_PATH = (REPO / "src" / "engine_core" / "data_pipeline" / "dataset_specs" / "daily_kline_legacy.json")
+
+
 def run_check(root, **kw):
+    # These synthetic/real-copy partitions use the raw percent layout (pre-canonical schema, C540):
+    # they are checked against the legacy spec. The canonical layout is covered in
+    # test_daily_kline_manifest_contract.py (C576).
+    kw.setdefault("spec", load_spec("daily_kline", LEGACY_SPEC_PATH))
     return check_partition(root, "daily_kline", DATE, **kw)
 
 
@@ -142,7 +149,7 @@ def test_conformant_partition_passes(clean):
 def test_cli_exit_codes_and_json(clean, tmp_path):
     root, run, _ = clean
     cmd = [sys.executable, str(REPO / "examples" / "check_dataset_contract.py"), "--dataset", "daily_kline",
-           "--date", DATE, "--root", str(root)]
+           "--date", DATE, "--root", str(root), "--spec", str(LEGACY_SPEC_PATH)]
     ok = subprocess.run(cmd, capture_output=True, text=True)
     assert ok.returncode == 0, ok.stderr
     assert json.loads(ok.stdout)["ok"] is True

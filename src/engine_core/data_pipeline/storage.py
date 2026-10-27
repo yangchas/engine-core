@@ -38,6 +38,92 @@ def _daily_kline_symbol(value: Any) -> str:
     return symbol.zfill(6) if symbol.isdigit() else symbol
 
 
+_DAILY_KLINE_CHAIN_ORDER = ("baostock", "wencai", "q2_final")
+_DAILY_KLINE_CANONICAL_UNITS = {
+    "open": "yuan", "high": "yuan", "low": "yuan", "close": "yuan", "pre_close": "yuan",
+    "pct_chg": "bp", "amount_yuan": "yuan", "volume": "shares"}
+# Raw single-provider layout written before the canonical schema (percent pct_chg, turnover columns).
+_DAILY_KLINE_LEGACY_UNITS = {
+    "open": "yuan", "high": "yuan", "low": "yuan", "close": "yuan", "pre_close": "yuan",
+    "pct_chg": "percent", "amount_yuan": "yuan", "volume": "shares",
+    "turnover": "percent", "turnover_pct": "percent"}
+
+
+def _daily_kline_provider_name(value: Any) -> str:
+    text = str(value or "").strip()
+    return "q2_final" if text == "legacy_q2_final" else text
+
+
+def _daily_kline_provider_from_rows(rows: Sequence[Mapping[str, Any]]) -> str | None:
+    """Pick the provider that supplied most field values of a merged (degraded) row set."""
+    counts: dict[str, int] = {}
+    for row in rows:
+        sources = row.get("field_sources")
+        if isinstance(sources, Mapping):
+            for value in sources.values():
+                name = _daily_kline_provider_name(value)
+                if name in _DAILY_KLINE_PROVIDERS:
+                    counts[name] = counts.get(name, 0) + 1
+    if not counts:
+        return None
+    return max(_DAILY_KLINE_CHAIN_ORDER, key=lambda name: (counts.get(name, 0), -_DAILY_KLINE_CHAIN_ORDER.index(name)))
+
+
+def _daily_kline_chain_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        value = value.replace(",", ">").split(">")
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [name for name in dict.fromkeys(_daily_kline_provider_name(item) for item in value) if name]
+
+
+def finalize_daily_kline_contract_fields(result: dict[str, Any],
+                                         rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Single exit for the dataset-contract manifest fields of daily_kline (design/24 section 4).
+
+    Every writer (provider chain, q2 snapshot, degraded capture, job runner) reaches it through
+    ArtifactCatalog.commit, so no writer builds these fields on its own.
+    """
+    provider = result.get("provider")
+    declared_source = result.get("source")
+    if provider in _DAILY_KLINE_PROVIDERS:
+        if declared_source not in (None, provider):
+            result["declared_source"] = declared_source
+        result["source"] = provider
+    chain = _daily_kline_chain_list(result.get("provider_chain"))
+    if not chain:
+        chain = [str(provider)]
+    elif provider not in chain:
+        chain.append(str(provider))
+    result["provider_chain"] = chain
+    status = result.get("business_status")
+    # A fallback rung is degraded even when its data is good enough to be PROVISIONAL.
+    result["degraded"] = bool(status == "DEGRADED" or provider != "baostock")
+    legacy_layout = any("turnover_pct" in row or "suspended" in row for row in rows)
+    units = dict(_DAILY_KLINE_LEGACY_UNITS if legacy_layout else _DAILY_KLINE_CANONICAL_UNITS)
+    if legacy_layout:
+        present = set().union(*(set(row) for row in rows)) if rows else set()
+        units = {key: value for key, value in units.items() if key in present}
+    result["field_units"] = units
+    attempts = []
+    for item in result.get("provider_attempts") or []:
+        item = dict(item)
+        count = item.get("row_count")
+        if isinstance(count, bool) or not isinstance(count, int):
+            accepted = item.get("provider") == provider and str(item.get("result")) in {"ACCEPTED", "ok", "OK"}
+            count = len(rows) if accepted else None
+        item["row_count"] = count
+        attempts.append(item)
+    result["provider_attempts"] = attempts
+    quality = dict(result.get("quality") or {})
+    notes = result.get("quality_notes")
+    notes = notes if isinstance(notes, Mapping) else {}
+    quality["dropped_outside_universe"] = notes.get("universe_excluded_rows")
+    quality["dropped_duplicates"] = notes.get("duplicate_rows")
+    result["quality"] = quality
+    return result
+
+
 def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
                                   rows: Sequence[Mapping[str, Any]], manifest: Mapping[str, Any]) -> dict[str, Any]:
     """Fill authoritative provider, active-universe quality, status, and local timestamps."""
@@ -49,6 +135,8 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
     if provider not in _DAILY_KLINE_PROVIDERS and provider != "UNKNOWN":
         provider = source if source in _DAILY_KLINE_PROVIDERS else (
             "q2_final" if source == "legacy_q2_final" else "UNKNOWN")
+    if provider not in _DAILY_KLINE_PROVIDERS:
+        provider = _daily_kline_provider_from_rows(rows) or provider
     result["provider"] = provider
 
     quality = dict(result.get("quality") or {})
@@ -145,7 +233,7 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
             for key in ("login_ms", "query_ms", "query_count", "error_code", "error_events",
                         "chain_result", "call_result", "coverage", "retryable", "tier_no_data",
                         "completed_symbols", "expected_symbols", "resumed_count", "checkpoint_saved",
-                        "checkpoint_path", "baostock_budget_seconds"):
+                        "checkpoint_path", "baostock_budget_seconds", "row_count", "stale_count"):
                 if key in item:
                     normalized[key] = item[key]
             normalized_attempts.append(normalized)
@@ -158,7 +246,7 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
     for key in ("available_at", "declared_available_at", "fetched_at", "as_of"):
         if key in result:
             result[key] = _daily_kline_time(result[key])
-    return result
+    return finalize_daily_kline_contract_fields(result, rows)
 
 
 def available_at_trust(manifest: Mapping[str, Any]) -> str:
@@ -300,6 +388,8 @@ class ArtifactCatalog:
                 raise ValueError("symbols_file_artifact_root_cannot_be_core_data_root")
         prepared_manifest = (_prepare_daily_kline_manifest(self, trade_date, rows, manifest)
                              if dataset == "daily_kline" else dict(manifest))
+        if dataset == "daily_kline" and prepared_manifest.get("provider") in _DAILY_KLINE_PROVIDERS:
+            source = str(prepared_manifest["provider"])  # directory = actual provider, never a chain label
         gate = None
         from .registry import DATASETS
         spec = DATASETS.get(dataset)

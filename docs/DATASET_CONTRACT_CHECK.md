@@ -69,3 +69,30 @@ real value (pct_chg, counts) does not set it.
 mutation suite (unit swap, symbol format, deleted manifest field, 0 for null, chain-label source, row_count)
 run on both a synthetic partition and a conformant copy of the real 2026-10-27 daily_kline partition
 (temp root; skipped when core-data is absent).
+
+## daily_kline writer and legacy partitions (C576)
+
+Single exit: `storage.finalize_daily_kline_contract_fields` (called at the end of `_prepare_daily_kline_manifest`,
+which `ArtifactCatalog.commit` runs for every daily_kline write: provider chain, Q2 snapshot, degraded capture,
+job runner). It writes `source`/directory = actual provider (a caller's chain label is kept only as
+`declared_source`), `provider_chain` (list, always containing the provider), `degraded`, `field_units`,
+`provider_attempts[].row_count` and `quality.dropped_outside_universe/dropped_duplicates`
+(from `quality_notes.universe_excluded_rows/duplicate_rows`; `null` when the writer reports no drop counts, as in the
+Q2 snapshot and degraded capture paths). A merged q2_final+wencai row set takes the provider that supplied most
+field values (`field_sources`).
+
+Rulings: `degraded` is true iff `business_status == DEGRADED` or the provider is not the spec's `primary_provider`
+(baostock): a wencai/q2_final partition is PROVISIONAL (C575) and degraded. A `PARTIAL` business status (coverage
+below 0.98) is outside the contract vocabulary and is reported by A5; it is not remapped. Canonical rows use
+pct_chg in basis points (docs/DAILY_KLINE.md); `dataset_specs/daily_kline.json` describes that layout
+(`provider_overrides` lets q2_final have an all-null `open`). `daily_kline_legacy.json` describes the earlier raw
+percent layout.
+
+Historical partitions (for example the real 2026-10-27 `source=baostock>wencai>q2_final`) are never rewritten.
+Their violations disappear when the next formal upgrade writes a new version. `--legacy-tolerant` is a read-only
+switch: for a manifest without `provider_chain` it checks against the legacy spec and reports A2, A3, A3c, A3d, A5,
+A11, C4 as WARN with a `LEGACY-WAIVED` prefix (`legacy_waived` in the report). Partitions that carry
+`provider_chain` are checked exactly as before.
+
+Known remaining failure: E3 for PROVISIONAL partitions that advance latest on purpose (C575 wencai same-day, Q2
+snapshot at 15:05); the catalog policy and design/24 section 2 disagree and need a decision.

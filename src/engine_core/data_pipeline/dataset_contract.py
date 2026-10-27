@@ -142,9 +142,31 @@ def _examples(items: list[Any], n: int = 5) -> list[Any]:
     return items[:n]
 
 
+# Checks a pre-C576 daily_kline partition cannot satisfy: its manifest never carried the contract fields.
+LEGACY_WAIVABLE = ("A2", "A3", "A3c", "A3d", "A5", "A11", "C4")
+
+
+def apply_provider_overrides(spec: dict[str, Any], provider: Any) -> dict[str, Any]:
+    """Merge ``provider_overrides[provider].columns`` into the column specs (e.g. q2_final has no open)."""
+    override = (spec.get("provider_overrides") or {}).get(provider)
+    if not override:
+        return spec
+    merged = dict(spec)
+    cols = {name: dict(col) for name, col in spec.get("columns", {}).items()}
+    for name, patch in (override.get("columns") or {}).items():
+        cols[name] = {**cols.get(name, {}), **patch}
+    merged["columns"] = cols
+    return merged
+
+
 def check_partition(root: str | Path, dataset: str, trade_date: str, *, version: str | None = None,
-                    spec: dict[str, Any] | None = None) -> Report:
+                    spec: dict[str, Any] | None = None, legacy_tolerant: bool = False) -> Report:
+    """``legacy_tolerant`` (read-only switch, default off): a partition whose manifest has no
+    ``provider_chain`` predates C576; it is checked against ``<dataset>_legacy.json`` (when present and no
+    explicit spec was given) and its manifest-structure FAILs (LEGACY_WAIVABLE) are reported as WARN.
+    Current partitions are checked exactly as without the switch."""
     root = Path(root)
+    explicit_spec = spec is not None
     report = Report(dataset, trade_date, root)
     spec = spec or load_spec(dataset)
     report.meta["spec_status"] = spec.get("status", "UNKNOWN")
@@ -165,6 +187,14 @@ def check_partition(root: str | Path, dataset: str, trade_date: str, *, version:
     except (OSError, ValueError) as exc:
         report.fail("A0", "manifest_readable", f"{manifest_path}: {exc}")
         return report
+    legacy = bool(legacy_tolerant and "provider_chain" not in manifest)
+    if legacy:
+        report.meta["legacy_tolerant"] = True
+        legacy_path = SPEC_DIR / f"{dataset}_legacy.json"
+        if not explicit_spec and legacy_path.is_file():
+            spec = load_spec(dataset, legacy_path)
+            report.meta["spec_status"] = spec.get("status", "UNKNOWN")
+    spec = apply_provider_overrides(spec, manifest.get("provider"))
     rows_path = Path(manifest.get("rows_uri") or manifest_path.with_name("rows.jsonl.gz"))
     try:
         raw = _read_rows_raw(rows_path)
@@ -180,6 +210,14 @@ def check_partition(root: str | Path, dataset: str, trade_date: str, *, version:
     _check_coverage(report, catalog, trade_date, manifest, rows, spec)
     _check_idempotency(report, manifest, rows, raw, spec)
     _check_versions(report, cat, catalog, dataset, trade_date, entries, chosen, root, spec)
+    if legacy:
+        waived = []
+        for check in report.checks:
+            if check["status"] == "FAIL" and check["id"] in LEGACY_WAIVABLE:
+                check["status"] = "WARN"
+                check["message"] = "LEGACY-WAIVED (pre-C576 partition, never rewritten): " + check["message"]
+                waived.append(check["id"])
+        report.meta["legacy_waived"] = sorted(set(waived))
     return report
 
 
@@ -242,10 +280,14 @@ def _check_manifest(rep: Report, dataset: str, trade_date: str, chosen: dict[str
                f"expected {dataset!r}/{trade_date!r}")
     status = m.get("business_status")
     deg = m.get("degraded")
-    consistent = status in STATUSES and isinstance(deg, bool) and deg == (status == "DEGRADED")
+    primary = spec.get("primary_provider")
+    expected_deg = (status == "DEGRADED") or (bool(primary) and m.get("provider") != primary)
+    consistent = status in STATUSES and isinstance(deg, bool) and deg == expected_deg
+    rule = ("true iff business_status == DEGRADED" if not primary else
+            f"true iff business_status == DEGRADED or provider != primary provider {primary!r}")
     rep.result(consistent, "A5", "business_status_degraded_consistent",
                f"business_status={status!r} degraded={deg!r}: status must be one of {STATUSES}, "
-               "degraded bool and true iff business_status == DEGRADED",
+               f"degraded bool and {rule}",
                business_status=status, degraded=deg)
     rep.result(m.get("row_count") == len(rows) == chosen.get("row_count"), "A6", "row_count_matches",
                f"manifest.row_count={m.get('row_count')} actual rows={len(rows)} catalog={chosen.get('row_count')}")

@@ -1,7 +1,7 @@
 {
  "dataset": "daily_kline",
  "status": "BASELINE",
- "note": "Baseline spec. Units: price=yuan, pct_chg=percent, volume=shares, amount_yuan=yuan (units.py vocabulary). Column list taken from the real 2026-10-27 partition; not relaxed to fit it.",
+ "note": "Canonical layout of docs/DAILY_KLINE.md and daily_kline_schema.py: price/amount yuan, pct_chg basis points (int), volume shares (int). Rows of the degraded merge (q2_final+wencai) carry field_sources and no code/tier; q2_final has no open.",
  "primary_key": [
   "symbol"
  ],
@@ -18,6 +18,7 @@
   "basis": "universe_active",
   "universe_dataset": "symbol_universe"
  },
+ "primary_provider": "baostock",
  "columns": {
   "symbol": {
    "type": "str",
@@ -29,87 +30,90 @@
   },
   "code": {
    "type": "str",
-   "nullable": false
+   "nullable": true,
+   "optional": true
   },
   "open": {
    "type": "float",
-   "nullable": false,
+   "nullable": true,
    "unit": "yuan",
    "min": 0,
    "zero_suspicious": true
   },
   "high": {
    "type": "float",
-   "nullable": false,
+   "nullable": true,
    "unit": "yuan",
    "min": 0,
    "zero_suspicious": true
   },
   "low": {
    "type": "float",
-   "nullable": false,
+   "nullable": true,
    "unit": "yuan",
    "min": 0,
    "zero_suspicious": true
   },
   "close": {
    "type": "float",
-   "nullable": false,
+   "nullable": true,
    "unit": "yuan",
    "min": 0,
    "zero_suspicious": true
   },
   "pre_close": {
    "type": "float",
-   "nullable": false,
+   "nullable": true,
    "unit": "yuan",
    "min": 0,
    "zero_suspicious": true
   },
   "pct_chg": {
-   "type": "float",
+   "type": "int",
    "nullable": true,
-   "unit": "percent",
-   "min": -100,
-   "max": 2000
-  },
-  "volume": {
-   "type": "float",
-   "nullable": true,
-   "unit": "shares",
-   "min": 0,
-   "zero_suspicious": true
+   "unit": "bp",
+   "min": -10000,
+   "max": 200000
   },
   "amount_yuan": {
    "type": "float",
    "nullable": true,
    "unit": "yuan",
-   "min": 0,
-   "zero_suspicious": true
-  },
-  "turnover": {
-   "type": "float",
-   "nullable": true,
-   "unit": "percent",
    "min": 0
   },
-  "turnover_pct": {
-   "type": "float",
+  "volume": {
+   "type": "int",
    "nullable": true,
-   "unit": "percent",
+   "unit": "shares",
    "min": 0
   },
-  "suspended": {
-   "type": "bool",
-   "nullable": false
-  },
-  "mismatch": {
-   "type": "bool",
-   "nullable": false
-  },
-  "universe_version": {
+  "source": {
    "type": "str",
    "nullable": false
+  },
+  "degraded": {
+   "type": "bool",
+   "nullable": false
+  },
+  "tier": {
+   "type": "int",
+   "nullable": true,
+   "optional": true
+  },
+  "field_sources": {
+   "type": "dict",
+   "nullable": true,
+   "optional": true
+  }
+ },
+ "provider_overrides": {
+  "q2_final": {
+   "columns": {
+    "open": {
+     "all_null_ok": true,
+     "zero_suspicious": false
+    }
+   }
   }
  }
 }

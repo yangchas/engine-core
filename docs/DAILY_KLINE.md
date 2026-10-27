@@ -56,3 +56,9 @@ Provider 优先级为 Baostock → 问财 → q2_final。`TIER_NO_DATA` 立即�
 - Catalog result: wencai writes a tier-1 version (`business_status=PROVISIONAL`, `status=DEGRADED:wencai`, or `SAME_DAY_TEMPORARY` on the trade day itself, which never moves `latest`); q2_final writes tier 2 `DEGRADED:q2_final`. Before fetching, the handler ranks the existing versions of the partition (baostock/FORMAL 0, wencai 1, q2_final 2; symbol-file samples ignored); an equal or better version answers `ALREADY_SATISFIED` (exit 20, ledger `SKIPPED_SATISFIED`), so a restart or a later trigger never refetches or lowers the partition. The formal Baostock version written after 17:40 supersedes both through the existing tier rules.
 - Catch-up: a guardian that starts after 15:05 and before 17:35 runs the event immediately; after 17:35 it is `MISSED` (the formal Baostock events and `boot_reconcile` cover the day).
 - `_daily_kline_candidates` reads the boundary time from the schedule event named by the registry `late_policy.trigger_event`; there is no hard-coded 17:30 fallback, and an unresolvable event raises.
+
+## Manifest contract fields (C576)
+
+All writers get `provider_chain`, `degraded`, `field_units`, attempt `row_count`, `quality.dropped_*` and
+`source=<actual provider>` from one function; see docs/DATASET_CONTRACT_CHECK.md, section "daily_kline writer and
+legacy partitions". Old partitions stay readable and unchanged.

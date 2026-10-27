@@ -25,6 +25,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", default=os.path.expanduser("~/core-data"))
     ap.add_argument("--version", help="check this version instead of the best-quality one")
     ap.add_argument("--spec", help="spec JSON path (default: dataset_specs/<dataset>.json)")
+    ap.add_argument("--legacy-tolerant", action="store_true",
+                    help="read-only: report manifest-structure violations of pre-C576 partitions "
+                         "(no provider_chain) as WARN and use dataset_specs/<dataset>_legacy.json; "
+                         "never changes what current partitions are checked against")
     ap.add_argument("--format", choices=("json", "text"), default="json")
     ap.add_argument("--out", help="also write the JSON report to this file")
     args = ap.parse_args(argv)
@@ -39,7 +43,8 @@ def main(argv: list[str] | None = None) -> int:
         if date is None:
             print(f"no partitions for {args.dataset} in {args.root}", file=sys.stderr)
             return 1
-    report = check_partition(args.root, args.dataset, date, version=args.version, spec=spec)
+    report = check_partition(args.root, args.dataset, date, version=args.version, spec=spec if args.spec else None,
+                             legacy_tolerant=args.legacy_tolerant)
     data = report.to_dict()
     text = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True)
     if args.out:

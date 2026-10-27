@@ -407,7 +407,7 @@ def test_daily_kline_chain_requires_coverage_and_supersedes_degraded_version(tmp
     chain.providers["baostock"] = lambda day: {"rows": [{"symbol": "600000", "close": 10}], "expected_count": 1}
     formal = chain.fetch_chain("2026-10-16", now="2026-10-16T17:30:00+08:00", persist=True)
 
-    assert degraded.manifest["source"] == "legacy_q2_final"
+    assert degraded.manifest["source"] == "q2_final"
     assert degraded.manifest["degraded"] is True
     assert formal.manifest["source"] == "baostock"
     assert formal.manifest["degraded"] is False
