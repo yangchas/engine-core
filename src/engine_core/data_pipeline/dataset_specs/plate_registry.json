@@ -1,0 +1,66 @@
+{
+ "dataset": "plate_registry",
+ "status": "DRAFT: columns/types/units inferred from the latest real partition (2026-10-28); to be confirmed by the owning data card",
+ "primary_key": [
+  "code"
+ ],
+ "symbol_column": null,
+ "date_columns": [
+  "pit_date"
+ ],
+ "earliest_available_local": null,
+ "coverage": {
+  "basis": "none"
+ },
+ "columns": {
+  "code": {
+   "type": "str",
+   "nullable": false
+  },
+  "plate_code": {
+   "type": "str",
+   "nullable": false
+  },
+  "name": {
+   "type": "str",
+   "nullable": true
+  },
+  "class": {
+   "type": "str",
+   "nullable": false
+  },
+  "family": {
+   "type": "str",
+   "nullable": false
+  },
+  "parent": {
+   "type": "str",
+   "nullable": true
+  },
+  "children": {
+   "type": "list",
+   "nullable": false
+  },
+  "flags": {
+   "type": "list",
+   "nullable": false
+  },
+  "generic_factor": {
+   "type": "bool",
+   "nullable": false
+  },
+  "size": {
+   "type": "int",
+   "nullable": false,
+   "min": 0
+  },
+  "pit_date": {
+   "type": "date",
+   "nullable": false
+  },
+  "available_at": {
+   "type": "str",
+   "nullable": false
+  }
+ }
+}

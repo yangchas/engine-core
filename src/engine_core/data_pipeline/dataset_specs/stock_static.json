@@ -1,0 +1,81 @@
+{
+ "dataset": "stock_static",
+ "status": "DRAFT: columns/types/units inferred from the latest real partition (2026-10-28); to be confirmed by the owning data card",
+ "primary_key": [
+  "symbol"
+ ],
+ "symbol_column": "symbol",
+ "date_columns": [],
+ "earliest_available_local": null,
+ "coverage": {
+  "basis": "universe_active",
+  "universe_dataset": "symbol_universe"
+ },
+ "columns": {
+  "symbol": {
+   "type": "str",
+   "nullable": false
+  },
+  "name": {
+   "type": "str",
+   "nullable": false
+  },
+  "industry": {
+   "type": "str",
+   "nullable": true
+  },
+  "listing_date": {
+   "type": "date",
+   "nullable": true
+  },
+  "is_new_stock": {
+   "type": "bool",
+   "nullable": true
+  },
+  "is_st": {
+   "type": "bool",
+   "nullable": true
+  },
+  "limit_width_pct": {
+   "type": "int",
+   "nullable": false,
+   "unit": "percent",
+   "enum": [
+    5,
+    10,
+    20,
+    30
+   ]
+  },
+  "float_cap_yuan": {
+   "type": "float",
+   "nullable": false,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "total_cap_yuan": {
+   "type": "float",
+   "nullable": false,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "cap_as_of": {
+   "type": "date",
+   "nullable": false
+  },
+  "pit_date": {
+   "type": "date",
+   "nullable": false
+  },
+  "source_quality": {
+   "type": "str",
+   "nullable": false
+  },
+  "available_at": {
+   "type": "str",
+   "nullable": false
+  }
+ }
+}

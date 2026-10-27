@@ -1,0 +1,46 @@
+{
+ "dataset": "limit_reasons",
+ "status": "DRAFT: columns/types/units inferred from the latest real partition (2026-10-28); to be confirmed by the owning data card",
+ "primary_key": [
+  "symbol"
+ ],
+ "symbol_column": "symbol",
+ "date_columns": [
+  "trade_date",
+  "event_date"
+ ],
+ "earliest_available_local": "15:00",
+ "coverage": {
+  "basis": "none"
+ },
+ "columns": {
+  "symbol": {
+   "type": "str",
+   "nullable": false
+  },
+  "trade_date": {
+   "type": "date",
+   "nullable": false
+  },
+  "event_date": {
+   "type": "date",
+   "nullable": false
+  },
+  "reason": {
+   "type": "str",
+   "nullable": false
+  },
+  "plate_codes": {
+   "type": "list",
+   "nullable": false
+  },
+  "parent_plate_code": {
+   "type": "str",
+   "nullable": false
+  },
+  "type": {
+   "type": "str",
+   "nullable": false
+  }
+ }
+}

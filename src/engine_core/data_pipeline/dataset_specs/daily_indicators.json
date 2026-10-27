@@ -1,0 +1,84 @@
+{
+ "dataset": "daily_indicators",
+ "status": "DRAFT: columns/types/units inferred from the latest real partition (2026-10-28); to be confirmed by the owning data card",
+ "primary_key": [
+  "symbol"
+ ],
+ "symbol_column": "symbol",
+ "date_columns": [],
+ "earliest_available_local": "15:00",
+ "coverage": {
+  "basis": "universe_active",
+  "universe_dataset": "symbol_universe"
+ },
+ "columns": {
+  "symbol": {
+   "type": "str",
+   "nullable": false
+  },
+  "date": {
+   "type": "date",
+   "nullable": false
+  },
+  "source": {
+   "type": "str",
+   "nullable": false
+  },
+  "field_units": {
+   "type": "dict",
+   "nullable": false
+  },
+  "avg_turnover_5d": {
+   "type": "float",
+   "nullable": true,
+   "unit": "percent"
+  },
+  "vol_ratio": {
+   "type": "float",
+   "nullable": true
+  },
+  "bias_20": {
+   "type": "float",
+   "nullable": true,
+   "unit": "percent"
+  },
+  "change_pct_5d": {
+   "type": "float",
+   "nullable": true,
+   "unit": "percent"
+  },
+  "limit_up_days_5": {
+   "type": "int",
+   "nullable": true,
+   "min": 0,
+   "max": 5
+  },
+  "ma5": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "ma10": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "ma20": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "rsi_6": {
+   "type": "float",
+   "nullable": true,
+   "min": 0,
+   "max": 100
+  }
+ }
+}

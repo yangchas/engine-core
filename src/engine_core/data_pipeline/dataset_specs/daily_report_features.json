@@ -1,0 +1,98 @@
+{
+ "dataset": "daily_report_features",
+ "status": "DRAFT: columns/types/units inferred from the latest real partition (2026-10-28); to be confirmed by the owning data card",
+ "primary_key": [
+  "symbol"
+ ],
+ "symbol_column": "symbol",
+ "date_columns": [
+  "trade_date"
+ ],
+ "earliest_available_local": "15:00",
+ "coverage": {
+  "basis": "universe_active",
+  "universe_dataset": "symbol_universe"
+ },
+ "columns": {
+  "symbol": {
+   "type": "str",
+   "nullable": false
+  },
+  "date": {
+   "type": "date",
+   "nullable": false
+  },
+  "trade_date": {
+   "type": "date",
+   "nullable": false
+  },
+  "feature_type": {
+   "type": "str",
+   "nullable": false
+  },
+  "last_history_date": {
+   "type": "date",
+   "nullable": true
+  },
+  "amount_history_64": {
+   "type": "list",
+   "nullable": true,
+   "unit": "yuan"
+  },
+  "amount_history_dates_64": {
+   "type": "list",
+   "nullable": true,
+   "optional": true
+  },
+  "opening_history_72": {
+   "type": "list",
+   "nullable": true,
+   "optional": true
+  },
+  "position_20d": {
+   "type": "float",
+   "nullable": true,
+   "min": 0,
+   "max": 1
+  },
+  "position_close_days": {
+   "type": "int",
+   "nullable": false,
+   "min": 0,
+   "max": 20
+  },
+  "prev_day_amount_yuan": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "range20_high": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "range20_low": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "range20_last_close": {
+   "type": "float",
+   "nullable": true,
+   "unit": "yuan",
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "streak": {
+   "type": "int",
+   "nullable": false,
+   "min": 0
+  }
+ }
+}

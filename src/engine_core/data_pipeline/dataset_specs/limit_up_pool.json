@@ -1,0 +1,38 @@
+{
+ "dataset": "limit_up_pool",
+ "status": "DRAFT: columns/types/units inferred from the latest real partition (2026-10-28); to be confirmed by the owning data card",
+ "primary_key": [
+  "symbol"
+ ],
+ "symbol_column": "symbol",
+ "date_columns": [
+  "trade_date"
+ ],
+ "earliest_available_local": "15:00",
+ "coverage": {
+  "basis": "none"
+ },
+ "columns": {
+  "symbol": {
+   "type": "str",
+   "nullable": false
+  },
+  "trade_date": {
+   "type": "date",
+   "nullable": false
+  },
+  "name": {
+   "type": "str",
+   "nullable": false
+  },
+  "lb_days": {
+   "type": "int",
+   "nullable": false,
+   "min": 1
+  },
+  "in_legacy_pool": {
+   "type": "bool",
+   "nullable": false
+  }
+ }
+}
