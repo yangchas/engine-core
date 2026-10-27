@@ -701,7 +701,21 @@ func TestHeavySlotCoversHandlerAttemptButNotGatePolling(t *testing.T) {
 	l.now = fc.Now
 	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
 	x := Instance{ID: "gated", EventID: "gated", Start: "09:00:00", Deadline: "10:00:10"}
-	go r.execute(x, date)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.execute(x, date)
+	}()
+	defer func() {
+		// Join the executor before TempDir cleanup. On an early assertion failure,
+		// move the fake clock past the gate deadline so the poller can exit too.
+		fc.Advance(time.Minute)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("executor did not exit before TempDir cleanup")
+		}
+	}()
 	waitFor(t, func() bool { return ledgerTypeCounts(t, root, date)["GATE_POLL"] > 0 })
 	waitFor(t, func() bool { return fc.waitCount() > 0 })
 	r.mu.Lock()
@@ -2950,6 +2964,91 @@ printf '%s\n' '{"contract":1,"status":"ok"}'
 			t.Fatalf("late_until tier calls=%v", tiers)
 		}
 	})
+}
+
+func TestC559Exit40IsPermanentWhile30And75Retry(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		exitCode  string
+		wantCalls int
+		wantGaps  []time.Duration
+	}{
+		{name: "exit 40 is permanent", exitCode: "40", wantCalls: 1},
+		{name: "exit 30 retries", exitCode: "30", wantCalls: 3, wantGaps: []time.Duration{5 * time.Minute, 10 * time.Minute}},
+		{name: "exit 75 retries", exitCode: "75", wantCalls: 3, wantGaps: []time.Duration{5 * time.Minute, 10 * time.Minute}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, date := t.TempDir(), "2026-10-20"
+			loc, _ := time.LoadLocation("Asia/Shanghai")
+			now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 09:00:00", loc)
+			calls := filepath.Join(root, "calls.txt")
+			script := writeC545Script(t, filepath.Join(root, "handler.sh"), `printf '%s\n' "$EXIT_CODE" >> "$CALL_LOG"
+if [ "$EXIT_CODE" = 40 ]; then
+  printf '%s\n' '{"contract":1,"status":"failed","error_code":"DETERMINISTIC_FAILURE","retryable":false}'
+else
+  printf '%s\n' '{"contract":1,"status":"failed","error_code":"TEMP","retryable":true}'
+fi
+exit "$EXIT_CODE"
+`)
+			t.Setenv("CALL_LOG", calls)
+			t.Setenv("EXIT_CODE", tc.exitCode)
+			budgetEnabled := false
+			event := config.Event{ID: "exit_code", Handler: "h", Ladder: []config.LadderTier{
+				{Name: "primary", Attempts: 3, Backoff: "5m*2", Timeout: "20m", BudgetEnabled: &budgetEnabled},
+			}}
+			fc := newFakeClock(now)
+			r, closeRunner := newC545Runner(t, root, date, fc, config.Config{
+				Events:   []config.Event{event},
+				Handlers: map[string]config.Handler{"h": {Argv: []string{script}, EnvAllow: []string{"CALL_LOG", "EXIT_CODE"}}},
+			})
+			defer closeRunner()
+
+			advanceStop := make(chan struct{})
+			advancesDone := make(chan struct{})
+			go func() {
+				defer close(advancesDone)
+				for i, d := range []time.Duration{5 * time.Minute, 10 * time.Minute} {
+					for fc.waitCount() <= i {
+						select {
+						case <-advanceStop:
+							return
+						default:
+						}
+						runtime.Gosched()
+					}
+					select {
+					case <-advanceStop:
+						return
+					default:
+					}
+					fc.Advance(d)
+				}
+			}()
+			r.execute(Instance{ID: event.ID, EventID: event.ID, TriggerType: "startup"}, date)
+			close(advanceStop)
+			<-advancesDone
+
+			got := runtimeTestState(r, date+"/"+event.ID)
+			if got.Status != "FAILED_FINAL" || got.Attempts != tc.wantCalls || r.alertDaily != 1 {
+				t.Fatalf("state=%+v alerts=%d, want FAILED_FINAL after %d attempt(s) and one alert", got, r.alertDaily, tc.wantCalls)
+			}
+			b, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+			if len(lines) != tc.wantCalls {
+				t.Fatalf("handler calls=%d, want %d", len(lines), tc.wantCalls)
+			}
+			var wantAdvance time.Duration
+			for _, gap := range tc.wantGaps {
+				wantAdvance += gap
+			}
+			if got := fc.Now().Sub(now); got != wantAdvance || fc.waitCount() != len(tc.wantGaps) {
+				t.Fatalf("fake clock advanced %s with %d waits, want %s with %d waits", got, fc.waitCount(), wantAdvance, len(tc.wantGaps))
+			}
+		})
+	}
 }
 
 func TestC547StartupLadderAppliesDeadlineTimeBudget(t *testing.T) {

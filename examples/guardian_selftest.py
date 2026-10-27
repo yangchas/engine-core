@@ -19,6 +19,7 @@ import atexit
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -174,6 +175,24 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _advance_fake_clock(case: Scenario, by: str) -> None:
+    request = {"t": "req", "id": f"selftest-advance-{case.fake_clock_advances}",
+               "op": "clock.advance", "args": {"by": by}}
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(3.0)
+        client.connect(str(case.state_root / "guardiand.sock"))
+        client.sendall((json.dumps(request, separators=(",", ":")) + "\n").encode())
+        response = bytearray()
+        while b"\n" not in response:
+            chunk = client.recv(4096)
+            if not chunk:
+                raise RuntimeError(f"{case.name} fakeclock socket closed without a response")
+            response.extend(chunk)
+    payload = json.loads(bytes(response).splitlines()[0])
+    if payload.get("ok") is not True:
+        raise RuntimeError(f"{case.name} fakeclock advance {by} failed: {payload}")
+
+
 def _write_captured_trade_dates(path: Path) -> None:
     fixture = ROOT / "tests" / "fixtures" / "trade_calendar" / "baostock-2026-01-01_2026-12-31.json"
     source = json.loads(fixture.read_text(encoding="utf-8"))
@@ -222,10 +241,28 @@ def _event(
 def _handler_config() -> dict[str, Any]:
     py = sys.executable
     handler = str(HANDLER)
+    exit40 = "\n".join((
+        "import datetime, json, os, sys",
+        "request = json.load(sys.stdin)",
+        "record = dict((key, request.get(key)) for key in ('event', 'instance', 'attempt', 'tier', 'degraded', 'args'))",
+        "record['wall_clock'] = datetime.datetime.now().astimezone().isoformat(timespec='seconds')",
+        "with open(os.path.join(os.environ['SELFTEST_DIR'], 'calls.jsonl'), 'a', encoding='utf-8') as stream:",
+        "    stream.write(json.dumps(record, separators=(',', ':')) + '\\n')",
+        "print(json.dumps(dict(contract=1, status='failed', error_code='DETERMINISTIC_FAILURE',",
+        "                  retryable=False, detail='selftest deterministic exit 40'), separators=(',', ':')))",
+        "sys.exit(40)",
+    ))
     return {
         "selftest": {
             "argv": [py, handler, "run"],
             "gate_argv": [py, handler, "gate"],
+            "cwd": str(ROOT),
+            "env_allow": ["SELFTEST_DIR"],
+            "supports_degrade": True,
+            "max_output_bytes": 1048576,
+        },
+        "selftest_exit40": {
+            "argv": [py, "-c", exit40],
             "cwd": str(ROOT),
             "env_allow": ["SELFTEST_DIR"],
             "supports_degrade": True,
@@ -273,6 +310,8 @@ class Scenario:
     date: str
     special: str = ""
     actions: list[tuple[float, Path, str]] = field(default_factory=list)
+    fake_clock: bool = False
+    fake_clock_advances: int = 0
     config_path: Path = field(init=False)
     state_root: Path = field(init=False)
     selftest_dir: Path = field(init=False)
@@ -423,8 +462,13 @@ class Scenario:
             "GOTOOLCHAIN": "local",
             "GOPROXY": "off",
         }
+        command = [str(self.binary), "run", "--config", str(self.config_path), "--state-root", str(self.state_root)]
+        if self.fake_clock:
+            if self.scheduled is None:
+                raise RuntimeError(f"{self.name} fakeclock scenario requires a start time")
+            command.extend(["--mode=fakeclock", "--clock-start", self.scheduled.isoformat(timespec="seconds")])
         self.process = subprocess.Popen(
-            [str(self.binary), "run", "--config", str(self.config_path), "--state-root", str(self.state_root)],
+            command,
             cwd=str(self.work),
             env=safe_env,
             stdout=self.log_stream,
@@ -568,6 +612,8 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
         "S30": 72 if fast else 465,
         "S31": 74 if fast else 480,
         "S32": 76 if fast else 495,
+        "S33": 78 if fast else 510,
+        "S34": 80 if fast else 525,
     }
 
     def at(key: str) -> datetime:
@@ -1014,6 +1060,23 @@ def _make_scenarios(mode: str, minutes: int, base: Path, date: str, fault: str) 
     ], ["delayed_gate", "gate_poll_probe"], "probe ends before gate opens; gated attempt starts after readiness", s, 28,
        actions=[((s - now).total_seconds() + 5, gate_path, "ready\n")]))
 
+    # S33 drives the fake clock through the production 5m*2 ladder backoff.
+    s = at("S33")
+    s33 = mk("S33 five minute ladder backoff", "S33", [
+        _event("retryable_5m2", s, deadline=s + timedelta(minutes=20), behavior="fail_always",
+               ladder=[{"name": "primary", "attempts": 3, "backoff": "5m*2", "timeout": "1s"}]),
+    ], ["retryable_5m2"], "3 retryable attempts separated by 5m and 10m fake-clock intervals", s, 32)
+    s33.fake_clock = True
+    cases.append(s33)
+
+    # S34 verifies exit 40 stops the rung after one attempt and alerts once.
+    s = at("S34")
+    cases.append(mk("S34 deterministic exit 40", "S34", [
+        _event("deterministic_40", s, deadline=s + timedelta(seconds=30),
+               handler="selftest_exit40",
+               ladder=[{"name": "primary", "attempts": 3, "backoff": "1s*2", "timeout": "3s"}]),
+    ], ["deterministic_40"], "FAILED_FINAL after one exit-40 attempt; one alert", s, 20))
+
     for case in cases:
         case.binary = base / "guardiand-selftest"
         case.write_config(getattr(case, "_calendar_dates", None))
@@ -1116,12 +1179,23 @@ def _evaluate(case: Scenario) -> list[str]:
         if len(case.calls_for("every_day")) != 1 or status("every_day") != "SUCCEEDED":
             errors.append(f"every_day calls/status={len(case.calls_for('every_day'))}/{status('every_day')}")
     elif case.name.startswith("S12"):
+        try:
+            captured_dates = json.loads(case.calendar_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            captured_dates = []
         for event_id in ("offset_minus_one", "offset_zero"):
             rows = case.calls_for(event_id)
             if len(rows) != 1:
                 errors.append(f"{event_id} calls={len(rows)}")
             else:
-                expected_date = "2026-10-23" if event_id == "offset_minus_one" else rows[0].get("trade_date")
+                expected_date = rows[0].get("trade_date")
+                if event_id == "offset_minus_one":
+                    if expected_date not in captured_dates:
+                        errors.append(f"trade_date missing from captured calendar: {expected_date}")
+                        expected_date = None
+                    else:
+                        expected_date = captured_dates[captured_dates.index(expected_date) - 1] \
+                            if captured_dates.index(expected_date) > 0 else None
                 if rows[0].get("data_date") != expected_date:
                     errors.append(f"{event_id} data_date={rows[0].get('data_date')} expected={expected_date}")
         row = case.calls_for("offset_minus_one")
@@ -1346,6 +1420,29 @@ def _evaluate(case: Scenario) -> list[str]:
             errors.append(f"probe/gate timing evidence={len(ready_polls)}/{probe_end}/{gated_start}")
         elif not (probe_end <= datetime.fromisoformat(str(ready_polls[0].get("polled_at"))) <= gated_start):
             errors.append("probe did not finish before gated attempt admission")
+    elif case.name.startswith("S33"):
+        rows = case.calls_for("retryable_5m2")
+        attempts = [row for row in case.ledger()
+                    if row.get("type") == "TIER_ATTEMPT"
+                    and (row.get("data") or {}).get("instance") == "retryable_5m2"]
+        times = [datetime.fromisoformat(str(row["ts"])) for row in attempts]
+        gaps = [(times[i + 1] - times[i]).total_seconds() for i in range(len(times) - 1)]
+        if status("retryable_5m2") != "FAILED_FINAL" or len(rows) != 3 or len(attempts) != 3:
+            errors.append(f"status/call/attempt counts={status('retryable_5m2')}/{len(rows)}/{len(attempts)}")
+        if gaps != [300.0, 600.0]:
+            errors.append(f"fake-clock retry intervals={gaps}, expected [300.0, 600.0]")
+    elif case.name.startswith("S34"):
+        rows = case.calls_for("deterministic_40")
+        failures = [row.get("data", {}) for row in case.ledger()
+                    if row.get("type") == "TIER_FAILED"
+                    and (row.get("data") or {}).get("instance") == "deterministic_40"]
+        alerts = _read_jsonl(case.selftest_dir / "alerts.jsonl")
+        if status("deterministic_40") != "FAILED_FINAL" or len(rows) != 1 or len(failures) != 1:
+            errors.append(f"status/call/tier-failure counts={status('deterministic_40')}/{len(rows)}/{len(failures)}")
+        if len(failures) != 1 or failures[0].get("retryable") is not False:
+            errors.append(f"deterministic exit-40 failure row={failures}")
+        if len(alerts) != 1:
+            errors.append(f"deterministic exit-40 alert count={len(alerts)}, expected 1")
     return errors
 
 
@@ -1491,9 +1588,19 @@ def _run_cases(cases: list[Scenario], binary: Path, deadline: float) -> list[dic
                     case.stop()
                     case.result = {"name": case.name, "scheduled": _fmt(case.scheduled), "actual": _actual(case)[0], "deviation": _actual(case)[1], "expected": case.expected, "observed": _actual(case)[2], "passed": False, "reasons": [f"injected 30s backoff observed {gap:.3f}s interval"]}
                     continue
+            if case.name.startswith("S33") and case.fake_clock:
+                failures = [row for row in case.ledger()
+                            if row.get("type") == "TIER_FAILED"
+                            and (row.get("data") or {}).get("instance") == "retryable_5m2"]
+                if len(failures) > case.fake_clock_advances and case.fake_clock_advances < 2:
+                    # Give the runner a scheduler turn to install the fake timer
+                    # before advancing past its due time.
+                    time.sleep(0.05)
+                    _advance_fake_clock(case, "5m" if case.fake_clock_advances == 0 else "10m")
+                    case.fake_clock_advances += 1
             if case.terminal():
-                # S04 alert delivery can complete after its terminal state write.
-                if case.name.startswith(("S04", "S17", "S23")) and len(_read_jsonl(case.selftest_dir / "alerts.jsonl")) == 0:
+                # Alert delivery can complete after the terminal state write.
+                if case.name.startswith(("S04", "S17", "S23", "S34")) and len(_read_jsonl(case.selftest_dir / "alerts.jsonl")) == 0:
                     continue
                 if case.special in {"restart", "restart_ladder"} and not case.restarted:
                     continue

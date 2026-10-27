@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,130 @@ def _premarket_owner_is_open(request):
     # second command while another same-date premarket owner is still active.
     return any(owner != event_id and owner in active
                for owner in ("startup_0830", "premarket_slice_0850"))
+
+
+def _failure_classes(request):
+    args = request.get("args") if isinstance(request.get("args"), dict) else {}
+    configured = args.get("failure_classes")
+    if isinstance(configured, dict):
+        return configured
+    return {
+        "retryable": {
+            "exit_codes": [30, 75],
+            "exception_types": ["TimeoutError", "TimeoutExpired", "ConnectionError"],
+            "error_codes": ["BAOSTOCK_TIMEOUT", "BAOSTOCK_CONNECTION_ERROR",
+                            "BAOSTOCK_LOGIN_FAILED", "BAOSTOCK_LOGIN_ERROR",
+                            "BAOSTOCK_RATE_LIMITED", "BAOSTOCK_RECEIVE_EXCEPTION",
+                            "FETCH_TIMEOUT", "RATE_LIMITED"],
+            "message_patterns": ["receive exception", "connection error", "connection_error",
+                                 "rate limit", "too many requests", "login failed",
+                                 "login_error", "baostock_login_failed"],
+        },
+        "deterministic": {
+            "exit_codes": [2, 40, 64],
+            "exception_types": ["AssertionError", "AttributeError", "IndexError", "KeyError",
+                                "NameError", "SyntaxError", "TypeError", "ValueError",
+                                "JSONDecodeError", "ContractError"],
+            "error_codes": ["COMMAND_ARGUMENT_ERROR", "CONFIG_ERROR", "CONTRACT_ERROR",
+                            "CONTRACT_INVALID", "CONTRACT_VIOLATION", "POSTCONDITION_FAILED"],
+            "message_patterns": [],
+        },
+        "default": "deterministic",
+    }
+
+
+def _classify_failure(request, *, error=None, result=None):
+    classes = _failure_classes(request)
+    details = result.get("detail") if isinstance(result, dict) else None
+    texts = [str(error)] if error is not None else []
+    codes = []
+    exception_types = set()
+    if error is not None:
+        exception_types.update(cls.__name__ for cls in type(error).__mro__)
+        code = getattr(error, "error_code", None)
+        if code:
+            codes.append(str(code))
+        for line in str(error).splitlines():
+            try:
+                diagnostic = json.loads(line)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(diagnostic, dict):
+                continue
+            code = diagnostic.get("error_code")
+            if code:
+                codes.append(str(code))
+            for key in ("error", "detail", "message", "stderr_tail"):
+                value = diagnostic.get(key)
+                if value:
+                    texts.append(str(value))
+            detail = diagnostic.get("detail")
+            if isinstance(detail, dict):
+                for key in ("error_code", "error", "stderr_tail"):
+                    value = detail.get(key)
+                    if key == "error_code" and value:
+                        codes.append(str(value))
+                    elif value:
+                        texts.append(str(value))
+    if isinstance(result, dict):
+        for key in ("error_code", "error", "detail", "stderr_tail"):
+            value = result.get(key)
+            if key == "error_code" and value:
+                codes.append(str(value))
+            elif value:
+                texts.append(str(value))
+        if isinstance(details, dict):
+            for key in ("error_code", "error", "stderr_tail"):
+                value = details.get(key)
+                if key == "error_code" and value:
+                    codes.append(str(value))
+                elif value:
+                    texts.append(str(value))
+    combined = "\n".join(texts + codes).lower()
+    exit_codes = {int(value) for value in re.findall(r"command_exit=(\d+)", combined)}
+    exit_codes.update(int(value) for value in re.findall(r"fetch_exit_(\d+)", combined))
+    normalized_codes = {value.upper() for value in codes}
+
+    for category in ("deterministic", "retryable"):
+        rules = classes.get(category)
+        if not isinstance(rules, dict):
+            continue
+        configured_codes = {str(value).upper() for value in rules.get("error_codes", [])}
+        configured_exceptions = {str(value) for value in rules.get("exception_types", [])}
+        configured_exits = {int(value) for value in rules.get("exit_codes", [])}
+        patterns = [str(value).lower() for value in rules.get("message_patterns", [])]
+        if (normalized_codes & configured_codes or exit_codes & configured_exits
+                or exception_types & configured_exceptions
+                or any(pattern and pattern in combined for pattern in patterns)):
+            return category
+    default = classes.get("default", "deterministic")
+    return default if default in {"deterministic", "retryable"} else "deterministic"
+
+
+def _failure_response(request, *, error=None, result=None):
+    category = _classify_failure(request, error=error, result=result)
+    payload = dict(result) if isinstance(result, dict) else {
+        "contract": 1, "status": "failed", "artifacts": [],
+        "detail": str(error) if error is not None else "command_failed",
+    }
+    payload["contract"] = 1
+    payload["status"] = "failed"
+    if category == "deterministic":
+        payload["error_code"] = "DETERMINISTIC_FAILURE"
+        payload["retryable"] = False
+        return 40, payload
+    code = getattr(error, "error_code", None) if error is not None else None
+    if not code and isinstance(result, dict):
+        code = result.get("error_code")
+        details = result.get("detail")
+        if not code and isinstance(details, dict):
+            code = details.get("error_code")
+    if not code and error is not None:
+        match = re.search(r"command_exit=(\d+)", str(error))
+        code = "COMMAND_EXIT_" + match.group(1) if match else type(error).__name__.upper()
+    payload["error_code"] = str(code or "RETRYABLE_FAILURE")
+    payload["retryable"] = True
+    return 75, payload
 
 
 def _run(request):
@@ -83,7 +208,9 @@ def _run(request):
                 result["detail"]["alert"] = _send_alert({
                     "event": "daily_kline_upgrade", "trade_date": str(trade_date),
                     "now": now, "reason": "GAP_ESCALATED"}, dry)
-        return (75 if result["status"] == "failed" and result.get("retryable") else 0), result
+        if result["status"] == "failed":
+            return _failure_response(request, result=result)
+        return 0, result
     if not configured_handler:
         return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
                     "retryable": False, "detail": "unknown_event:" + event_id}
@@ -120,14 +247,14 @@ def _run(request):
             from engine_core.guardian.commands import validate_handler_postcondition
             ok, reason = validate_handler_postcondition(name, target_day, root)
             if not ok:
-                return 0, {"contract": 1, "status": "failed", "error_code": "POSTCONDITION_FAILED",
-                           "retryable": True, "artifacts": [], "detail": reason}
+                return _failure_response(request, result={
+                    "contract": 1, "status": "failed", "error_code": "POSTCONDITION_FAILED",
+                    "retryable": False, "artifacts": [], "detail": reason})
         degraded = isinstance(result, str) and result.startswith("DEGRADED:")
         return 0, {"contract": 1, "status": "degraded" if degraded else "ok",
                    "error_code": "", "retryable": False, "artifacts": [], "detail": result}
     except Exception as exc:
-        return 75, {"contract": 1, "status": "failed", "error_code": type(exc).__name__.upper(),
-                    "retryable": True, "artifacts": [], "detail": str(exc)}
+        return _failure_response(request, error=exc)
 
 
 def _gate(name, request=None):

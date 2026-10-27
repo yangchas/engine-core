@@ -1993,7 +1993,16 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 				state.RungAttempts = 0
 				break
 			}
-			_, _ = r.appendLedger(date, "TIER_FAILED", map[string]any{"instance": x.ID, "rung": rungNumber, "tier": tier.Name, "rung_attempt": state.RungAttempts, "attempt": state.Attempts, "error_code": code, "detail": detail, "retryable": retryable})
+			permanentExit40 := exitCode(invokeErr) == 40
+			_, _ = r.appendLedger(date, "TIER_FAILED", map[string]any{"instance": x.ID, "rung": rungNumber, "tier": tier.Name, "rung_attempt": state.RungAttempts, "attempt": state.Attempts, "error_code": code, "detail": detail, "retryable": retryable, "advance": permanentExit40})
+			if permanentExit40 {
+				if index == len(event.Ladder)-1 {
+					finishFailure(code, detail, index, tier)
+					return
+				}
+				state.RungAttempts = 0
+				break
+			}
 			if !retryable {
 				finishFailure(code, detail, index, tier)
 				return
@@ -2327,6 +2336,16 @@ func decodeResult(out []byte, err error) (status, code string, retry bool, detai
 		}
 		if parsed && v.ErrorCode == "TIER_NO_DATA" && exitCode(err) == 40 {
 			return "failed", "TIER_NO_DATA", false, detailText
+		}
+		if exitCode(err) == 40 {
+			code := "DETERMINISTIC_FAILURE"
+			if parsed && v.Status == "failed" && v.ErrorCode != "" {
+				code = v.ErrorCode
+			}
+			if detailText == "" {
+				detailText = err.Error()
+			}
+			return "failed", code, false, detailText
 		}
 		if parsed && v.ErrorCode == "ALREADY_SATISFIED" && exitCode(err) == 20 {
 			return "already_satisfied", "ALREADY_SATISFIED", false, detailText

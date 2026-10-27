@@ -96,6 +96,14 @@ def _module_callable(spec: str):
     return getattr(importlib.import_module(module_name), attr)
 
 
+def _command_failure(result: subprocess.CompletedProcess) -> RuntimeError:
+    parts = [f"command_exit={result.returncode}"]
+    for label, output in (("stdout", result.stdout), ("stderr", result.stderr)):
+        if output:
+            parts.extend((f"{label}_tail:", str(output)[-500:].rstrip()))
+    return RuntimeError("\n".join(parts))
+
+
 def _build_gate_status(path: str | None):
     try:
         payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8")) if path else {}
@@ -204,7 +212,7 @@ def _command_handler(name: str, opts, root: Path):
                 result = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True,
                                         timeout=event.timeout_seconds, check=False)
                 if result.returncode:
-                    raise RuntimeError(f"command_exit={result.returncode}: {result.stderr[-500:]}")
+                    raise _command_failure(result)
             return "Core Kaipan jobs checked; existing date versions reused"
         elif name in {"premarket_data", "intraday_data", "postmarket_data", "auction_report",
                       "open_report", "close_report", "kaipan_hot_capture", "baostock_probe", "night_report"}:
@@ -214,7 +222,7 @@ def _command_handler(name: str, opts, root: Path):
         result = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True,
                                 timeout=event.timeout_seconds, check=False)
         if result.returncode:
-            raise RuntimeError(f"command_exit={result.returncode}: {result.stderr[-500:]}")
+            raise _command_failure(result)
         if name == "premarket_data":
             try:
                 report = json.loads(result.stdout)

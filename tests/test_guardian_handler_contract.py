@@ -156,10 +156,108 @@ def test_successful_command_fails_when_postcondition_is_missing(monkeypatch):
                         lambda *_: (lambda *_args: "command_succeeded"))
     monkeypatch.setattr(commands, "validate_handler_postcondition",
                         lambda *_: (False, "symbol_universe_manifest_missing"))
-    _, payload = guardian_handler._run(_core_request(event["event_id"]))
+    code, payload = guardian_handler._run(_core_request(event["event_id"]))
+    assert code == 40
     assert payload["status"] == "failed"
-    assert payload["error_code"] == "POSTCONDITION_FAILED"
+    assert payload["error_code"] == "DETERMINISTIC_FAILURE"
+    assert payload["retryable"] is False
+
+
+def _baostock_probe_request():
+    request = _core_request("baostock_probe_1730")
+    request.update(handler="baostock_probe", asof="2026-10-20T17:30:00+08:00")
+    event = next(e for e in _schedule_events() if e["event_id"] == "baostock_probe_1730")
+    request["args"] = event.get("args") or {}
+    return request
+
+
+def _set_external_baostock_command(monkeypatch, *argv):
+    import shlex
+    monkeypatch.setenv("CORE_BAOSTOCK_PROBE_COMMAND", shlex.join(argv))
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+
+
+def test_baostock_exit_two_is_fast_deterministic_failure(monkeypatch):
+    import time
+    from examples import guardian_handler
+
+    _set_external_baostock_command(monkeypatch, sys.executable, "-c", "import sys; sys.exit(2)")
+    started = time.monotonic()
+    code, payload = guardian_handler._run(_baostock_probe_request())
+
+    assert time.monotonic() - started < 1.0
+    assert code == 40
+    assert payload["error_code"] == "DETERMINISTIC_FAILURE"
+    assert payload["retryable"] is False
+
+
+@pytest.mark.parametrize(("message", "want_code", "want_retryable"), [
+    ('{"error_code":"BAOSTOCK_RECEIVE_EXCEPTION","detail":"recv failed"}', 75, True),
+    ('{"error_code":"COMMAND_ARGUMENT_ERROR","detail":"invalid symbol argument"}', 40, False),
+])
+def test_baostock_failure_stdout_is_classified_and_preserved(monkeypatch, message, want_code, want_retryable):
+    from examples import guardian_handler
+
+    script = f"import sys; print({message!r}); sys.exit(1)"
+    _set_external_baostock_command(monkeypatch, sys.executable, "-c", script)
+
+    code, payload = guardian_handler._run(_baostock_probe_request())
+
+    assert code == want_code
+    assert payload["retryable"] is want_retryable
+    assert message in str(payload["detail"])
+
+
+@pytest.mark.parametrize(("command", "timeout_seconds"), [
+    ((sys.executable, "-c", "import time; time.sleep(2)"), 1),
+    ((sys.executable, "-c", "import sys; sys.stderr.write('BAOSTOCK_CONNECTION_ERROR: receive exception'); sys.exit(1)"), 5),
+])
+def test_baostock_timeout_and_receive_failures_keep_retry_path(monkeypatch, command, timeout_seconds):
+    from examples import guardian_handler
+
+    _set_external_baostock_command(monkeypatch, *command)
+    request = _baostock_probe_request()
+    request["timeout_seconds"] = timeout_seconds
+    code, payload = guardian_handler._run(request)
+
+    assert code == 75
+    assert payload["status"] == "failed"
     assert payload["retryable"] is True
+
+
+def test_baostock_failure_classification_comes_from_request_args(monkeypatch):
+    from examples import guardian_handler
+
+    _set_external_baostock_command(monkeypatch, sys.executable, "-c", "import sys; sys.exit(2)")
+    request = _baostock_probe_request()
+    classes = request["args"]["failure_classes"]
+    classes["deterministic"]["exit_codes"].remove(2)
+    classes["retryable"]["exit_codes"].append(2)
+
+    code, payload = guardian_handler._run(request)
+
+    assert code == 75
+    assert payload["retryable"] is True
+
+
+def test_postmarket_baostock_and_fetch_profiles_use_five_minute_backoff():
+    schedule = json.loads((ROOT / "src/engine_core/guardian/schedule.json").read_text())
+    profiles = schedule["profiles"]
+    events = {event["event_id"]: event for event in schedule["events"]}
+    baostock_ids = ("baostock_probe_1730", "baostock_retry_1740",
+                    "baostock_retry_1830", "baostock_retry_2000")
+
+    for event_id in baostock_ids:
+        assert events[event_id]["profile"] == "policy_11"
+        assert events[event_id]["late_until"] == "23:30:00"
+    assert events["fetch_item"]["profile"] == "policy_04"
+    for profile_id in ("policy_04", "policy_11"):
+        assert profiles[profile_id]["retry_backoff"] == "5m"
+        rung = profiles[profile_id]["ladder"][0]
+        assert (rung["attempts"], rung["backoff"], rung["timeout"]) == (3, "5m*2", "20m")
+    assert profiles["policy_11"]["ladder"][0]["until"] == "late_until"
+    assert all("failure_classes" in events[event_id].get("args", {})
+               for event_id in (*baostock_ids, "fetch_item"))
 
 
 def test_runtime_reconciliation_uses_enqueue_only_bridge(monkeypatch, tmp_path):
