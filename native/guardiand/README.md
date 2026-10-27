@@ -74,11 +74,13 @@ without a registry fetch job may keep `on_start` for late reporting.
 Events may set `cost` to `light`, `medium` (the default), or `heavy`. Light
 work bypasses class concurrency limits; medium work uses the configured class
 slot; heavy work uses one independent global slot and reports waiters as
-`QUEUED_HEAVY`. All work shares a 16-process hard cap. `heavy_max_load1`
-defaults to `0` (disabled), accepts a numeric load-1 threshold or `"cpus"`,
+`QUEUED_HEAVY`. All work shares a 16-process hard cap. `heavy_max_load5`
+defaults to `0` (disabled), accepts a numeric load-5 threshold or `"cpus"`,
 and delays heavy starts by 60 seconds while `/proc/loadavg` is above the
-threshold. Load deferrals are recorded as `DEFER_LOAD` without consuming
-attempts or emitting alerts.
+threshold. `heavy_max_load1` remains a fallback for older schedules.
+`heavy_load_defer_max_polls` defaults to 6; after that many consecutive
+deferrals, guardiand sends one warning and lets the event join the heavy FIFO.
+Load deferrals are recorded as `DEFER_LOAD` without consuming attempts.
 
 The heavy slot is held only during a handler attempt. Gate polling, load
 deferral, and retry backoff do not reserve it; each attempt takes a FIFO place

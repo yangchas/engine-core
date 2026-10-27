@@ -382,7 +382,7 @@ type liveRunner struct {
 	heavyWaiters     []*heavyWaiter
 	heavyChanged     chan struct{}
 	processSlots     chan struct{}
-	loadavg          func() (float64, error)
+	load5            func() (float64, error)
 	alertSeen        map[string]bool
 	alertAttempts    map[string]int
 	alertInFlight    map[string]bool
@@ -525,30 +525,41 @@ func fetchItemEvent(event *config.Event, state instanceState) *config.Event {
 }
 
 func configuredHeavyLoad(c config.Config) float64 {
-	if len(c.HeavyMaxLoad1) == 0 {
+	threshold := c.HeavyMaxLoad5
+	if len(threshold) == 0 {
+		threshold = c.HeavyMaxLoad1
+	}
+	if len(threshold) == 0 {
 		return 0
 	}
 	var number float64
-	if json.Unmarshal(c.HeavyMaxLoad1, &number) == nil {
+	if json.Unmarshal(threshold, &number) == nil {
 		return number
 	}
 	var value string
-	if json.Unmarshal(c.HeavyMaxLoad1, &value) == nil && value == "cpus" {
+	if json.Unmarshal(threshold, &value) == nil && value == "cpus" {
 		return float64(runtime.NumCPU())
 	}
 	return 0
 }
 
-func readLoad1() (float64, error) {
+func configuredHeavyLoadDeferMaxPolls(c config.Config) int {
+	if c.HeavyLoadDeferMaxPolls == nil {
+		return 6
+	}
+	return *c.HeavyLoadDeferMaxPolls
+}
+
+func readLoad5() (float64, error) {
 	b, err := os.ReadFile("/proc/loadavg")
 	if err != nil {
 		return 0, err
 	}
 	fields := strings.Fields(string(b))
-	if len(fields) == 0 {
-		return 0, fmt.Errorf("empty /proc/loadavg")
+	if len(fields) < 2 {
+		return 0, fmt.Errorf("missing load5 in /proc/loadavg")
 	}
-	return strconv.ParseFloat(fields[0], 64)
+	return strconv.ParseFloat(fields[1], 64)
 }
 
 func (r *liveRunner) processSemaphore() chan struct{} {
@@ -1660,10 +1671,12 @@ func (r *liveRunner) execute(x Instance, date string) {
 	if cost == "heavy" {
 		threshold := configuredHeavyLoad(c)
 		if threshold > 0 {
-			loader := r.loadavg
+			loader := r.load5
 			if loader == nil {
-				loader = readLoad1
+				loader = readLoad5
 			}
+			deferredPolls := 0
+			maxDeferredPolls := configuredHeavyLoadDeferMaxPolls(c)
 			cutoff := x.Deadline
 			if x.LateUntil != "" && event.OnDeadline != "missed" {
 				cutoff = x.LateUntil
@@ -1691,10 +1704,21 @@ func (r *liveRunner) execute(x Instance, date string) {
 				if err == nil && load <= threshold {
 					break
 				}
-				reason := fmt.Sprintf("load1 %.2f exceeds %.2f", load, threshold)
+				reason := fmt.Sprintf("load5 %.2f exceeds %.2f", load, threshold)
 				if err != nil {
-					reason = "load1 unavailable: " + err.Error()
+					reason = "load5 unavailable: " + err.Error()
 				}
+				if deferredPolls >= maxDeferredPolls {
+					warning := map[string]any{"event": x.EventID, "date": date, "threshold": threshold, "deferred_polls": deferredPolls}
+					if err == nil {
+						warning["load5"] = load
+					} else {
+						warning["load_error"] = err.Error()
+					}
+					_ = r.alert("HEAVY_LOAD_DEFERRED_TOO_LONG", warning)
+					break
+				}
+				deferredPolls++
 				r.setState(x, date, instanceState{Status: "DEFER_LOAD", LastError: reason, NextAttemptAt: r.clock.Now().Add(time.Minute).Format(time.RFC3339), Late: st.Late})
 				delay := time.Minute
 				if left := end.Sub(r.clock.Now()); left < delay {

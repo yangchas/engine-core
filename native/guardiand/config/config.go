@@ -22,14 +22,16 @@ type Config struct {
 	Calendars     map[string]struct {
 		File string `json:"file"`
 	} `json:"calendars,omitempty"`
-	Concurrency   map[string]json.RawMessage `json:"concurrency,omitempty"`
-	HeavyMaxLoad1 json.RawMessage            `json:"heavy_max_load1,omitempty"`
-	HeavyCutoffs  map[string]string          `json:"heavy_cutoffs,omitempty"`
-	Handlers      map[string]Handler         `json:"handlers,omitempty"`
-	Alerts        map[string]json.RawMessage `json:"alerts,omitempty"`
-	Events        []Event                    `json:"events"`
-	Phases        []Phase                    `json:"phases,omitempty"`
-	Datasets      json.RawMessage            `json:"datasets,omitempty"`
+	Concurrency            map[string]json.RawMessage `json:"concurrency,omitempty"`
+	HeavyMaxLoad1          json.RawMessage            `json:"heavy_max_load1,omitempty"`
+	HeavyMaxLoad5          json.RawMessage            `json:"heavy_max_load5,omitempty"`
+	HeavyLoadDeferMaxPolls *int                       `json:"heavy_load_defer_max_polls,omitempty"`
+	HeavyCutoffs           map[string]string          `json:"heavy_cutoffs,omitempty"`
+	Handlers               map[string]Handler         `json:"handlers,omitempty"`
+	Alerts                 map[string]json.RawMessage `json:"alerts,omitempty"`
+	Events                 []Event                    `json:"events"`
+	Phases                 []Phase                    `json:"phases,omitempty"`
+	Datasets               json.RawMessage            `json:"datasets,omitempty"`
 }
 type Phase struct {
 	Name  string `json:"name"`
@@ -411,24 +413,32 @@ func Validate(c Config) []Issue {
 			}
 		}
 	}
-	if len(c.HeavyMaxLoad1) > 0 {
+	validateLoadThreshold := func(name string, raw json.RawMessage) {
+		if len(raw) == 0 {
+			return
+		}
 		var value any
-		if err := json.Unmarshal(c.HeavyMaxLoad1, &value); err != nil {
-			add("heavy_max_load1", "LOAD_THRESHOLD", "expected nonnegative number or cpus")
+		if err := json.Unmarshal(raw, &value); err != nil {
+			add(name, "LOAD_THRESHOLD", "expected nonnegative number or cpus")
 		} else {
 			switch v := value.(type) {
 			case float64:
 				if v < 0 {
-					add("heavy_max_load1", "LOAD_THRESHOLD", "must be nonnegative")
+					add(name, "LOAD_THRESHOLD", "must be nonnegative")
 				}
 			case string:
 				if v != "cpus" {
-					add("heavy_max_load1", "LOAD_THRESHOLD", "expected nonnegative number or cpus")
+					add(name, "LOAD_THRESHOLD", "expected nonnegative number or cpus")
 				}
 			default:
-				add("heavy_max_load1", "LOAD_THRESHOLD", "expected nonnegative number or cpus")
+				add(name, "LOAD_THRESHOLD", "expected nonnegative number or cpus")
 			}
 		}
+	}
+	validateLoadThreshold("heavy_max_load1", c.HeavyMaxLoad1)
+	validateLoadThreshold("heavy_max_load5", c.HeavyMaxLoad5)
+	if c.HeavyLoadDeferMaxPolls != nil && *c.HeavyLoadDeferMaxPolls < 1 {
+		add("heavy_load_defer_max_polls", "LOAD_DEFER_POLLS", "must be positive")
 	}
 	graph := map[string][]string{}
 	for i, e := range c.Events {

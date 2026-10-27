@@ -21,6 +21,14 @@ class _BaostockCallTimeout(TimeoutError):
     """Caller deadline expired while the daemon worker may still be blocked."""
 
 
+class _BaostockStall(_BaostockCallTimeout):
+    """No new row or checkpoint arrived during the configured progress window."""
+
+    def __init__(self) -> None:
+        super().__init__("STALL_NO_PROGRESS")
+        self.error_code = "STALL_NO_PROGRESS"
+
+
 class BaostockDailyProvider:
     source = "baostock"
     source_dependency = "independent_provider"
@@ -30,7 +38,8 @@ class BaostockDailyProvider:
                  timeout_seconds: float = 30, retries: int = 2, max_consecutive_errors: int = 25,
                  sleep_fn: Callable[[float], None] = time.sleep, timeout_call: Callable[..., Any] | None = None,
                  checkpoint_path: str | Path | None = None,
-                 total_timeout_seconds: float | None = None, sample_scope: bool = False):
+                 total_timeout_seconds: float | None = None, sample_scope: bool = False,
+                 no_progress_timeout_seconds: float = 300):
         self.client_factory = client_factory
         self.symbols = symbols
         self.timeout_seconds = float(timeout_seconds)
@@ -38,8 +47,12 @@ class BaostockDailyProvider:
             raise ValueError("timeout_seconds_must_be_positive")
         if total_timeout_seconds is not None and total_timeout_seconds <= 0:
             raise ValueError("total_timeout_seconds_must_be_positive")
+        if no_progress_timeout_seconds <= 0:
+            raise ValueError("no_progress_timeout_seconds_must_be_positive")
         self.total_timeout_seconds = total_timeout_seconds
+        self.no_progress_timeout_seconds = float(no_progress_timeout_seconds)
         self.deadline: float | None = None
+        self.progress_deadline: float | None = None
         self.retries = max(0, int(retries))
         self.max_consecutive_errors = max(1, int(max_consecutive_errors))
         self.sleep_fn = sleep_fn
@@ -92,15 +105,23 @@ class BaostockDailyProvider:
                 result.put((False, exc))
 
         timeout = self.timeout_seconds
+        stall_deadline = self.progress_deadline
         if self.deadline is not None:
             timeout = min(timeout, self.deadline - time.monotonic())
             if timeout <= 0:
                 raise TimeoutError("BAOSTOCK_TIMEOUT") from None
+        if stall_deadline is not None:
+            timeout = min(timeout, stall_deadline - time.monotonic())
+            if timeout <= 0:
+                raise _BaostockStall() from None
         worker = threading.Thread(target=invoke, name="baostock-call", daemon=True)
         worker.start()
         try:
             succeeded, value = result.get(timeout=timeout)
         except queue.Empty:
+            if (stall_deadline is not None and time.monotonic() >= stall_deadline and
+                    (self.deadline is None or stall_deadline <= self.deadline)):
+                raise _BaostockStall() from None
             raise _BaostockCallTimeout("BAOSTOCK_TIMEOUT") from None
         if succeeded:
             return value
@@ -113,6 +134,8 @@ class BaostockDailyProvider:
     LOGIN_TIMEOUT_FACTOR = 5.0  # login gets 5x the per-query bound (30s -> 150s)
 
     def _error_code(self, client: Any, exc: BaseException) -> str:
+        if isinstance(exc, _BaostockStall):
+            return "STALL_NO_PROGRESS"
         code = getattr(client, "last_error_code", None) or getattr(exc, "error_code", None)
         if code and str(code) != "0":
             return str(code)
@@ -250,6 +273,7 @@ class BaostockDailyProvider:
                         "error_code": None, "error_events": [],
                         "started_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()}
         self._checkpoint_saved = False
+        self.progress_deadline = None
         self.deadline = (time.monotonic() + self.total_timeout_seconds
                          if self.total_timeout_seconds is not None else None)
         if context is not None:
@@ -273,6 +297,7 @@ class BaostockDailyProvider:
         try:
             try:
                 self._login(client)
+                self.progress_deadline = time.monotonic() + self.no_progress_timeout_seconds
             except Exception as exc:
                 if isinstance(exc, _BaostockCallTimeout):
                     transport_failed = True
@@ -305,6 +330,11 @@ class BaostockDailyProvider:
                         transport = timed_out or self._is_connection_failure(exc, client)
                         if transport:
                             event = self._timing.get("error_events", [{}])[-1]
+                            if isinstance(exc, _BaostockStall):
+                                event["action"] = "stall_no_progress"
+                                transport_failed = True
+                                self._annotate_exception(exc, client)
+                                raise exc
                             if isinstance(exc, _BaostockCallTimeout):
                                 # The daemon worker may still own the shared SDK socket. Do not
                                 # logout/reuse it in this process; return retryably at the caller.
@@ -401,6 +431,7 @@ class BaostockDailyProvider:
                     missing.append(symbol)
                     checkpoint[symbol] = {"symbol": symbol, "date": trade_date,
                                           "__checkpoint_no_bar": True}
+                    self.progress_deadline = time.monotonic() + self.no_progress_timeout_seconds
                     unsaved += 1
                     if unsaved >= self.CHECKPOINT_EVERY:
                         self._save_checkpoint(trade_date, checkpoint, expected)
@@ -421,6 +452,7 @@ class BaostockDailyProvider:
                     row["turnover"] = row.get("turnover_pct")
                     rows.append(row)
                     checkpoint[symbol] = row
+                    self.progress_deadline = time.monotonic() + self.no_progress_timeout_seconds
                     unsaved += 1
                 # Resume point: rewriting the whole checkpoint per symbol made the capture O(n^2) (~1.5 symbols/s instead
                 # of the ~5/s Baostock answers at), so persist every CHECKPOINT_EVERY symbols and always on the way out.

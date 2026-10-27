@@ -153,6 +153,8 @@ def test_chain_replays_real_rows_and_appends_baostock_job_log(tmp_path):
                        now=datetime.fromisoformat("2026-10-23T18:00:00+08:00"),
                        write=True)
     assert degraded["manifest"]["provider"] == "q2_final"
+    assert degraded["manifest"]["source"] == "q2_final"
+    assert degraded["manifest"]["provider_chain"] == "q2_final>wencai"
     assert degraded["manifest"]["business_status"] != "FORMAL"
     degraded_attempt = degraded["manifest"]["provider_attempts"][0]
     assert {"provider", "result", "attempted_at", "elapsed_ms", "reason"} <= set(degraded_attempt)
@@ -173,13 +175,34 @@ def test_job_runner_keeps_actual_provider_and_attempt_metadata(tmp_path):
                "query_ms": 8.0, "error_code": "0"}
     runner = JobRunner(artifact_root=tmp_path, budget=RequestBudget(min_interval_seconds=0))
     result = runner.run("daily_kline", day,
-                        fetch=lambda _: {"rows": rows, "provider": "baostock",
+                        fetch=lambda _: {"rows": rows, "source": "baostock", "provider": "baostock",
                                          "provider_attempts": [attempt]},
-                        source="baostock", now="2026-10-26T10:00:00+08:00")
+                        source="baostock>wencai>q2_final", now="2026-10-26T10:00:00+08:00")
 
     assert result.manifest["provider"] == "baostock"
+    assert result.manifest["source"] == "baostock"
+    assert result.manifest["provider_chain"] == "baostock>wencai>q2_final"
+    assert "/source=baostock/" in result.manifest["manifest_uri"]
     persisted = result.manifest["provider_attempts"][0]
     assert {"provider", "result", "attempted_at", "elapsed_ms", "reason"} <= set(persisted)
     assert persisted["attempted_at"] == "2026-10-26T01:30:00+08:00"
     assert persisted["login_ms"] == 2.0 and persisted["query_ms"] == 8.0
     assert result.manifest["business_status"] == "FORMAL"
+
+
+def test_legacy_composite_source_partition_remains_readable(tmp_path):
+    from engine_core.data_pipeline.reader import load_dataset
+
+    day = "2026-10-23"
+    _, rows = _artifact("c522/daily_kline/2026-10-23/formal")
+    catalog = ArtifactCatalog(tmp_path)
+    _install_universe(catalog, day)
+    committed = catalog.commit("daily_kline", day, rows,
+                               {"dataset": "daily_kline", "trade_date": day,
+                                "provider": "baostock", "provider_attempts": [],
+                                "field_completeness": {field: "COMPLETE" for field in FIELDS}},
+                               source="baostock>wencai>q2_final")
+
+    assert "/source=baostock>wencai>q2_final/" in committed["manifest_uri"]
+    loaded = load_dataset("daily_kline", day, prefer="file", catalog=catalog)
+    assert loaded is not None and len(loaded.rows) == len(rows)

@@ -321,6 +321,7 @@ class DailyKlineProviderChain:
         self.catalog = ArtifactCatalog(artifact_root)
         self.coverage_threshold = coverage_threshold
         self._published: dict[str, list[dict[str, Any]]] = {}
+        self.last_attempts: list[dict[str, Any]] = []
 
     @staticmethod
     def _call(provider: Any, trade_date: str, now: datetime) -> Any:
@@ -639,6 +640,7 @@ class DailyKlineProviderChain:
                     "schema_version": 1, "dataset": "daily_kline", "trade_date": trade_date,
                     "provider": source,
                     "source": payload.get("source", "legacy_q2_final" if source == "q2_final" else source),
+                    "provider_chain": ">".join(PRIORITY),
                     "source_dependency": payload.get("source_dependency", "legacy_redis_q2" if source == "q2_final" else
                                                        "independent_wencai" if source == "wencai" else "independent_provider"),
                     "available_at": available.isoformat(), "fetched_at": current.isoformat(),
@@ -664,6 +666,7 @@ class DailyKlineProviderChain:
                     if not sample_scope:
                         self._advance_latest_pointer(trade_date, manifest)
                     prior_rows.append(manifest)
+                self.last_attempts = list(attempts)
                 return JobResult(manifest, rows)
             except Exception as exc:
                 if bounded_baostock:
@@ -694,4 +697,5 @@ class DailyKlineProviderChain:
                                      "checkpoint_saved", "checkpoint_path")})
                     attempt["baostock_budget_seconds"] = call_budget
                 attempts.append(attempt)
+        self.last_attempts = list(attempts)
         return None

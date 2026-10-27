@@ -67,7 +67,7 @@ def _failure_classes(request):
         "retryable": {
             "exit_codes": [30, 75],
             "exception_types": ["TimeoutError", "TimeoutExpired", "ConnectionError"],
-            "error_codes": ["BAOSTOCK_TIMEOUT", "BAOSTOCK_CONNECTION_ERROR",
+            "error_codes": ["STALL_NO_PROGRESS", "BAOSTOCK_TIMEOUT", "BAOSTOCK_CONNECTION_ERROR",
                             "BAOSTOCK_LOGIN_FAILED", "BAOSTOCK_LOGIN_ERROR",
                             "BAOSTOCK_RATE_LIMITED", "BAOSTOCK_RECEIVE_EXCEPTION",
                             "FETCH_TIMEOUT", "RATE_LIMITED"],
@@ -221,14 +221,16 @@ def _run(request):
             result = boot_apply_plan(str(trade_date), reconciled["detail"].get("plan", []), root,
                                      now=now, phase=str(request.get("phase") or ""), dry_run=dry,
                                      enqueue_only=runtime_reconcile,
-                                     active_events=request.get("active_events"))
+                                     active_events=request.get("active_events"),
+                                     schedule_args=args)
             if reconciled["detail"].get("load_defer_alert"):
                 result.setdefault("detail", {})["load_defer_alert"] = reconciled["detail"]["load_defer_alert"]
             _send_load_defer_alert(request, result, dry)
         else:
             result = fetch_item(str(request.get("item_id") or ""), str(request.get("data_date") or trade_date),
                                 root, dry_run=dry, now=now,
-                                phase=str(request.get("phase") or "") or None)
+                                phase=str(request.get("phase") or "") or None,
+                                schedule_args=args)
             upgrade = result.get("detail", {}).get("upgrade")
             if upgrade and upgrade.get("escalated_now"):
                 result["detail"]["alert"] = _send_alert({

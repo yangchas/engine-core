@@ -18,6 +18,21 @@ func TestLadderConfigSchemaAccepted(t *testing.T) {
 	}
 }
 
+func TestHeavyLoad5AndDeferralPollLimitValidate(t *testing.T) {
+	valid := []byte(`{"schema_version":1,"config_version":1,"name":"x","timezone":"Asia/Shanghai","heavy_max_load5":3,"heavy_load_defer_max_polls":6,"events":[]}`)
+	if _, issues := Decode(valid); len(issues) != 0 {
+		t.Fatalf("valid load5 gate rejected: %+v", issues)
+	}
+	invalid := []byte(`{"schema_version":1,"config_version":1,"name":"x","timezone":"Asia/Shanghai","heavy_max_load5":3,"heavy_load_defer_max_polls":0,"events":[]}`)
+	_, issues := Decode(invalid)
+	for _, issue := range issues {
+		if issue.Path == "heavy_load_defer_max_polls" && issue.Code == "LOAD_DEFER_POLLS" {
+			return
+		}
+	}
+	t.Fatalf("zero deferral poll limit was accepted: %+v", issues)
+}
+
 func TestAtTimesMustRemainDistinctAfterInstanceExpansion(t *testing.T) {
 	c := Config{SchemaVersion: 1, ConfigVersion: 1, Name: "x", Timezone: "Asia/Shanghai", Events: []Event{{
 		ID: "two_triggers", Trigger: Trigger{Type: "window", Start: "09:00:00", Deadline: "09:10:00", AtTimes: []string{"09:00:00", "09:00:01"}},

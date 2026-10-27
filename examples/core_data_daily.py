@@ -76,6 +76,8 @@ def main(argv=None) -> int:
     parser.add_argument("--baostock-timeout-seconds", type=float, default=30.0)
     parser.add_argument("--baostock-total-timeout-seconds", type=float,
                         help="optional wall-clock budget for the daily_kline task")
+    parser.add_argument("--baostock-no-progress-seconds", type=float, default=300.0,
+                        help="fail retryably when Baostock produces no row/checkpoint progress")
     parser.add_argument("--symbols-file", help="debug-only one-symbol-per-line Baostock cohort")
     parser.add_argument("--artifact-root", help="artifact root (required with --symbols-file)")
     parser.add_argument("--no-lock", action="store_true")
@@ -84,6 +86,8 @@ def main(argv=None) -> int:
     args.artifact_root = args.artifact_root or os.getenv("CORE_DATA_ROOT", "~/core-data")
     if args.td_write and not args.write:
         parser.error("--td-write requires --write")
+    if args.baostock_no_progress_seconds <= 0:
+        parser.error("--baostock-no-progress-seconds must be positive")
     if args.symbols_file and args.phase != "postmarket":
         parser.error("--symbols-file is only valid with --phase postmarket")
     if args.symbols_file and (args.write or args.td_write):
@@ -103,6 +107,7 @@ def main(argv=None) -> int:
                                   args.max_requests, args.write,
                                   baostock_timeout_seconds=args.baostock_timeout_seconds,
                                   baostock_total_timeout_seconds=args.baostock_total_timeout_seconds,
+                                  baostock_no_progress_seconds=args.baostock_no_progress_seconds,
                                   baostock_symbols_file=args.symbols_file)
     if args.adapter:
         if args.symbols_file:

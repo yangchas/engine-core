@@ -28,6 +28,12 @@ def _has_arg(event_args, name):
     return hasattr(event_args, name)
 
 
+def _append_baostock_no_progress(cmd, event_args):
+    if _has_arg(event_args, "baostock_no_progress_seconds"):
+        cmd.extend(["--baostock-no-progress-seconds",
+                    str(_arg(event_args, "baostock_no_progress_seconds"))])
+
+
 def daily_kline_budget_seconds(timeout_seconds, event_args):
     """Return the daily-kline subprocess budget bounded by its event timeout."""
     if timeout_seconds is None or timeout_seconds == "":
@@ -149,6 +155,7 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
             cmd.append("--write")
         if opts.td_write:
             cmd.extend(["--write", "--td-write"])
+        _append_baostock_no_progress(cmd, _event_args(event))
         return cmd
     if name in {"auction_report", "open_report", "close_report"}:
         stage = {"auction_report": "auction", "open_report": "open", "close_report": "close"}[name]
@@ -180,6 +187,7 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
                 cmd.extend(["--budget-seconds", str(budget)])
             if _has_arg(args, "providers"):
                 cmd.extend(["--providers", _daily_kline_provider_arg(_arg(args, "providers"))])
+            _append_baostock_no_progress(cmd, args)
         if opts.write:
             cmd.append("--write")
         elif getattr(opts, "simulate_clock", False):
@@ -200,10 +208,12 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
             py, str(repo / "examples/core_data_daily.py"), "--phase", "postmarket", "--date", day,
             "--artifact-root", str(root)]
         if not external:
+            event_args = _event_args(event)
             budget = daily_kline_budget_seconds(
-                getattr(event, "timeout_seconds", None), _event_args(event))
+                getattr(event, "timeout_seconds", None), event_args)
             if budget is not None:
                 cmd.extend(["--baostock-total-timeout-seconds", str(budget)])
+            _append_baostock_no_progress(cmd, event_args)
         if opts.write:
             cmd.append("--write")
         if opts.td_write:

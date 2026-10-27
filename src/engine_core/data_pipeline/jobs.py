@@ -245,9 +245,19 @@ class JobRunner:
         fetched = (clock.astimezone(ZoneInfo("Asia/Shanghai")).isoformat() if name == "daily_kline"
                    else clock.isoformat().replace("+00:00", "Z"))
         declared_available_at = available_at or fetch_meta.get("available_at")
-        if (name == "daily_kline" and not isinstance(source, str) and
-                fetch_meta.get("source") in {"baostock", "wencai", "q2_final"}):
-            source = str(fetch_meta["source"])
+        provider_chain = None
+        if name == "daily_kline":
+            requested_source = source
+            actual_source = fetch_meta.get("source")
+            actual_provider = fetch_meta.get("provider")
+            if actual_source not in {"baostock", "wencai", "q2_final", "legacy_q2_final"}:
+                actual_source = ("legacy_q2_final" if actual_provider == "q2_final" else actual_provider)
+            if actual_source in {"baostock", "wencai", "legacy_q2_final", "q2_final"}:
+                source = str(actual_source)
+            provider_chain = fetch_meta.get("provider_chain")
+            if not isinstance(provider_chain, str) or not provider_chain:
+                provider_chain = (requested_source if isinstance(requested_source, str)
+                                  and requested_source else str(source or spec.source))
         safe_source = source if isinstance(source, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", source) else spec.source
         raw_digest = fetch_meta.get("raw_sha256")
         if not isinstance(raw_digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", raw_digest):
@@ -278,6 +288,7 @@ class JobRunner:
             if key in fetch_meta:
                 manifest[key] = fetch_meta[key]
         if name == "daily_kline":
+            manifest["provider_chain"] = provider_chain
             provider = fetch_meta.get("provider")
             if provider not in {"baostock", "wencai", "q2_final"}:
                 provider = "baostock" if isinstance(fetch_meta.get("baostock_timing"), Mapping) else (

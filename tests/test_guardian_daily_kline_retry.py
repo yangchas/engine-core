@@ -65,6 +65,32 @@ def test_sa_window_budget_throttles_eight_minutes_and_exhausts_at_three(tmp_path
     assert gap["next_retry_window"] == "2026-10-27:PRE_MARKET"
 
 
+def test_legacy_exhausted_without_window_does_not_block_next_quiet_window(tmp_path, monkeypatch):
+    from engine_core.guardian import startup
+
+    _calendar(tmp_path, [("2026-10-26", True)])
+    _catalog(tmp_path, {"2026-10-26": "PROVISIONAL"})
+    (tmp_path / "guardian-upgrade-attempts.json").write_text(json.dumps({
+        "2026-10-26": {"status": "exhausted", "attempts": 3,
+                       "reason": "upgrade_attempt_budget_exhausted"}}))
+    monkeypatch.setattr(startup, "load_registry", _daily_registry)
+    monkeypatch.setattr(startup, "items_for_phase", lambda _phase, items: items)
+    monkeypatch.setattr(startup.os, "getloadavg", lambda: (0.0, 0.0, 0.0))
+    monkeypatch.setattr(startup.os, "cpu_count", lambda: 4)
+
+    result = startup.boot_reconcile(
+        "2026-10-26", "POST_MARKET", {"items": []}, tmp_path,
+        now=datetime.fromisoformat("2026-10-26T21:30:00+08:00"))
+    action = next(row for row in result["detail"]["plan"] if row["id"] == "daily_kline")
+
+    assert action["partition"] == "2026-10-26" and action["action"] == "FETCH_NOW"
+    queued = startup.boot_apply_plan(
+        "2026-10-26", result["detail"]["plan"], tmp_path,
+        now="2026-10-26T21:30:00+08:00", phase="POST_MARKET", enqueue_only=True)
+    deferred = next(row for row in queued["detail"]["deferred"] if row["id"] == "daily_kline")
+    assert deferred["partition"] == "2026-10-26"
+
+
 def test_sb_next_premarket_requeues_old_exhausted_partition_and_success_resolves(tmp_path, monkeypatch):
     from engine_core.guardian import startup
     from engine_core.guardian.reconcile_plan import reconcile_plan

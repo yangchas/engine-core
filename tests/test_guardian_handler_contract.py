@@ -418,12 +418,14 @@ def test_schedule_args_control_daily_kline_budget_and_providers():
                            email_self=False, job="daily_kline")
     event = SimpleNamespace(timeout_seconds=1000, args={
         "budget_ratio": 0.5, "budget_floor_seconds": 1,
+        "baostock_no_progress_seconds": 43,
         "providers": ["wencai", "q2_final", "wencai"],
     })
     cmd = build_handler_command("kaipan_job", event, opts, ROOT / "artifacts",
                                 "2026-10-26", sys.executable, ROOT)
     assert cmd[cmd.index("--budget-seconds") + 1] == "500"
     assert cmd[cmd.index("--providers") + 1] == "wencai,q2_final"
+    assert cmd[cmd.index("--baostock-no-progress-seconds") + 1] == "43"
 
 
 def test_daily_kline_budget_defaults_floor_and_custom_values():
@@ -514,11 +516,13 @@ def test_baostock_probe_budget_is_bounded_and_external_command_is_unchanged(monk
     opts = SimpleNamespace(write=False, td_write=False)
     event = SimpleNamespace(timeout_seconds=1000, args={
         "budget_ratio": 0.5, "budget_floor_seconds": 1,
+        "baostock_no_progress_seconds": 43,
     })
     monkeypatch.delenv("CORE_BAOSTOCK_PROBE_COMMAND", raising=False)
     builtin = build_handler_command("baostock_probe", event, opts, ROOT / "artifacts",
                                     "2026-10-26", sys.executable, ROOT)
     assert builtin[builtin.index("--baostock-total-timeout-seconds") + 1] == "500"
+    assert builtin[builtin.index("--baostock-no-progress-seconds") + 1] == "43"
 
     monkeypatch.setenv("CORE_BAOSTOCK_PROBE_COMMAND", "python custom_probe.py")
     invalid_event = SimpleNamespace(timeout_seconds=1000, args={"budget_ratio": True})

@@ -54,6 +54,65 @@ def test_query_timeout_is_bounded_and_preserves_an_empty_checkpoint(tmp_path):
     assert client.logout_calls == 0  # a still-blocked call is not reused or logged out in-process
 
 
+def test_no_progress_stall_fails_before_the_provider_total_timeout(tmp_path):
+    from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider
+
+    class HungClient:
+        def login(self):
+            pass
+
+        def query(self, code, day):
+            time.sleep(0.4)
+            return [CAPTURED_ROW]
+
+        def logout(self):
+            pytest.fail("a blocked SDK socket must not be reused for logout")
+
+    checkpoint = tmp_path / "stall-checkpoint.json"
+    provider = BaostockDailyProvider(client_factory=HungClient, symbols=[SYMBOL],
+                                     timeout_seconds=0.5, retries=0,
+                                     total_timeout_seconds=1,
+                                     no_progress_timeout_seconds=0.05,
+                                     checkpoint_path=checkpoint)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="STALL_NO_PROGRESS") as raised:
+        provider.fetch(DAY)
+
+    assert time.monotonic() - started < 0.2
+    assert raised.value.error_code == "STALL_NO_PROGRESS"
+    assert raised.value.baostock_timing["error_code"] == "STALL_NO_PROGRESS"
+    assert raised.value.baostock_timing["error_events"][-1]["action"] == "stall_no_progress"
+    assert json.loads(checkpoint.read_text(encoding="utf-8"))["rows"] == []
+
+
+def test_slow_baostock_queries_with_row_progress_are_not_stalled(tmp_path):
+    from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider
+
+    real_rows = json.loads((FIXTURES / "c526/daily_kline_baostock_first200.json").read_text(
+        encoding="utf-8"))["rows"][:2]
+    by_symbol = {row["symbol"]: row for row in real_rows}
+    symbols = list(by_symbol)
+
+    class ProgressClient:
+        def login(self):
+            pass
+
+        def query(self, code, day):
+            time.sleep(0.04)
+            return [by_symbol[code.rsplit(".", 1)[-1]]]
+
+        def logout(self):
+            pass
+
+    result = BaostockDailyProvider(client_factory=ProgressClient, symbols=symbols,
+                                   timeout_seconds=0.2, retries=0,
+                                   no_progress_timeout_seconds=0.06,
+                                   checkpoint_path=tmp_path / "progress-checkpoint.json").fetch(DAY)
+
+    assert [row["symbol"] for row in result["rows"]] == symbols
+    assert result["baostock_timing"]["error_code"] == "0"
+
+
 def test_connection_failure_relogs_in_on_a_fresh_client_and_retries_the_symbol(tmp_path):
     from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider
 
@@ -284,6 +343,50 @@ def test_run_data_jobs_returns_30_and_keeps_checkpoint_on_total_budget(tmp_path,
     assert contract["error_code"] == "DAILY_KLINE_ALL_PROVIDERS_FAILED"
     assert contract["detail"]["providers"] == ["baostock"]
     assert json.loads(checkpoint.read_text(encoding="utf-8"))["rows"] == []
+
+
+def test_run_data_jobs_reports_stall_as_retryable_exit_30(tmp_path, monkeypatch, capsys):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from examples import run_data_jobs
+
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "artifacts"
+    real_universe = _real_universe()
+    symbol_row = next(row for row in real_universe
+                      if str(row.get("symbol", row.get("code", ""))).rsplit(".", 1)[-1].zfill(6) == SYMBOL)
+    ArtifactCatalog(root).commit("symbol_universe", DAY, [symbol_row], {"as_of": DAY},
+                                 source="baostock_query_all_stock")
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text(f"{SYMBOL}\n", encoding="utf-8")
+    fake_baostock = ModuleType("baostock")
+    fake_baostock.login = lambda: SimpleNamespace(error_code="0", error_msg="")
+    fake_baostock.logout = lambda: SimpleNamespace(error_code="0", error_msg="")
+
+    def hung_query(*_args, **_kwargs):
+        time.sleep(0.3)
+        raise AssertionError("no-progress guard should return before this fake response")
+
+    fake_baostock.query_history_k_data_plus = hung_query
+    monkeypatch.setitem(sys.modules, "baostock", fake_baostock)
+    started = time.monotonic()
+    exit_code = run_data_jobs.main([
+        "--job", "daily_kline", "--date", DAY, "--execute", "--providers", "baostock",
+        "--symbols-file", str(sample_file), "--artifact-root", str(root),
+        "--baostock-timeout-seconds", "0.5", "--baostock-total-timeout-seconds", "1",
+        "--baostock-no-progress-seconds", "0.04", "--budget-seconds", "2",
+        "--baostock-budget-fraction", "1",
+    ])
+    elapsed = time.monotonic() - started
+    contract = json.loads([line for line in capsys.readouterr().out.splitlines() if line.strip()][-1])
+
+    assert exit_code == 30
+    assert elapsed < 0.2
+    assert contract["error_code"] == "STALL_NO_PROGRESS"
+    assert contract["retryable"] is True
+    assert contract["detail"]["provider_attempts"][0]["error_code"] == "STALL_NO_PROGRESS"
 
 
 def test_core_data_daily_symbols_file_runs_probe_without_derived_jobs(tmp_path, monkeypatch, capsys):

@@ -194,18 +194,13 @@ def _record_daily_kline_upgrade(root: Path, partition: str, *, succeeded: bool,
 
     window_id = daily_kline_window_id(clock, phase)
     if state.get("window_id") != window_id:
-        legacy_exhausted_today = (not state.get("window_id") and
-                                  state.get("status") in {"exhausted", "GAP_WINDOW_EXHAUSTED"} and
-                                  clock.date().isoformat() <= partition)
-        if legacy_exhausted_today:
-            state["window_id"] = window_id
-            state["attempts"] = DAILY_KLINE_UPGRADE_MAX_ATTEMPTS
-        else:
-            state["attempts"] = 0
-            state["window_id"] = window_id
-            if not state.get("escalation_alerted"):
-                state.update(status="queued", reason="retry_window_open")
-            state.pop("next_retry_window", None)
+        # Legacy exhausted records predate window-scoped budgets. Keep their
+        # history, but start a fresh budget for this actual quiet window.
+        state["attempts"] = 0
+        state["window_id"] = window_id
+        if not state.get("escalation_alerted"):
+            state.update(status="queued", reason="retry_window_open")
+        state.pop("next_retry_window", None)
 
     escalated_now = False
     if succeeded:
@@ -554,13 +549,18 @@ class FetchJobError(RuntimeError):
         self.stderr = stderr[-300:]
 
 
-def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | Path | None = None) -> dict[str, Any]:
+def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | Path | None = None,
+                   schedule_args: Mapping[str, Any] | None = None) -> dict[str, Any]:
     argv, configured_timeout = _fetch_spec(item)
     timeout = min(timeout, configured_timeout)
     artifact_root = str(Path(root or os.environ.get("CORE_DATA_ROOT") or "~/core-data").expanduser())
     replacements = {"date": day, "trade_date": day, "item": str(item["id"]), "python": sys.executable,
                     "artifact_root": artifact_root}
     command = [part.format_map(replacements) for part in argv]
+    if item.get("id") == "daily_kline" and isinstance(schedule_args, Mapping):
+        no_progress = schedule_args.get("baostock_no_progress_seconds")
+        if no_progress is not None:
+            command.extend(["--baostock-no-progress-seconds", str(no_progress)])
     try:
         completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout,
                                    check=False, env=os.environ.copy())
@@ -660,7 +660,8 @@ def _verify_partition(item: dict[str, Any], day: str, root: str | Path | None,
 def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Path, *,
                     now: datetime | str | None = None, phase: str = "", dry_run: bool | None = None,
                     enqueue_only: bool = False,
-                    active_events: Mapping[str, str] | list[str] | None = None) -> dict[str, Any]:
+                    active_events: Mapping[str, str] | list[str] | None = None,
+                    schedule_args: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Execute the startup plan with bounded light concurrency and explicit deferred work."""
     root = Path(root).expanduser()
     clock = _now(now, trade_date)
@@ -692,7 +693,11 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
         else:
             try:
                 timeout = float(item.get("fetch_job", {}).get("timeout_seconds", 300)) if isinstance(item.get("fetch_job"), dict) else 300
-                detail = _run_fetch_job(item, str(action["partition"]), timeout, root)
+                if schedule_args is None:
+                    detail = _run_fetch_job(item, str(action["partition"]), timeout, root)
+                else:
+                    detail = _run_fetch_job(item, str(action["partition"]), timeout, root,
+                                            schedule_args=schedule_args)
                 _verify_partition(item, str(action["partition"]), root)
                 row.update(status="ok", detail=detail)
             except Exception as exc:
@@ -904,7 +909,8 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
 
 def fetch_item(item_id: str, partition: str, root: str | Path, *,
                dry_run: bool | None = None, now: datetime | str | None = None,
-               phase: str | None = None) -> dict[str, Any]:
+               phase: str | None = None,
+               schedule_args: Mapping[str, Any] | None = None) -> dict[str, Any]:
     started = time.monotonic()
     root = Path(root).expanduser()
     if dry_run is None:
@@ -928,7 +934,10 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
             return _result("degraded", detail)
     try:
         _argv, timeout = _fetch_spec(item)
-        result = _run_fetch_job(item, partition, timeout, root)
+        if schedule_args:
+            result = _run_fetch_job(item, partition, timeout, root, schedule_args=schedule_args)
+        else:
+            result = _run_fetch_job(item, partition, timeout, root)
         _verify_partition(item, partition, root, clock)
         if upgrade:
             state = _record_daily_kline_upgrade(root, partition, succeeded=True, now=clock, phase=phase)

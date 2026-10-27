@@ -232,8 +232,9 @@ func TestMigrationV2PreservesConfiguredStartupAndWindowPolicies(t *testing.T) {
 		name      string
 		path      string
 		wantCount int
+		wantLoad1 bool
 	}{
-		{name: "v2 fixture", path: filepath.Join("testdata", "schedule_v2.json"), wantCount: 62},
+		{name: "v2 fixture", path: filepath.Join("testdata", "schedule_v2.json"), wantCount: 62, wantLoad1: true},
 		{name: "current v3", path: filepath.Join("../../../engine_core/src/engine_core/guardian/schedule.json"), wantCount: 63},
 	}
 	for _, source := range sources {
@@ -247,9 +248,11 @@ func TestMigrationV2PreservesConfiguredStartupAndWindowPolicies(t *testing.T) {
 				t.Fatal(err)
 			}
 			var got struct {
-				HeavyMaxLoad1 float64           `json:"heavy_max_load1"`
-				HeavyCutoffs  map[string]string `json:"heavy_cutoffs"`
-				Events        []struct {
+				HeavyMaxLoad1          float64           `json:"heavy_max_load1"`
+				HeavyMaxLoad5          float64           `json:"heavy_max_load5"`
+				HeavyLoadDeferMaxPolls int               `json:"heavy_load_defer_max_polls"`
+				HeavyCutoffs           map[string]string `json:"heavy_cutoffs"`
+				Events                 []struct {
 					ID      string `json:"id"`
 					Handler string `json:"handler"`
 					Trigger struct {
@@ -269,8 +272,14 @@ func TestMigrationV2PreservesConfiguredStartupAndWindowPolicies(t *testing.T) {
 			if err = json.Unmarshal(b, &got); err != nil {
 				t.Fatal(err)
 			}
-			if got.HeavyMaxLoad1 != 3 || got.HeavyCutoffs["PRE_MARKET"] != "09:10:00" || len(got.Events) != source.wantCount {
-				t.Fatalf("global config/events lost: maxload=%v cutoffs=%v count=%d want=%d", got.HeavyMaxLoad1, got.HeavyCutoffs, len(got.Events), source.wantCount)
+			loadThreshold := got.HeavyMaxLoad5
+			if source.wantLoad1 {
+				loadThreshold = got.HeavyMaxLoad1
+			} else if got.HeavyLoadDeferMaxPolls != 6 {
+				t.Fatalf("load deferral poll cap=%d, want 6", got.HeavyLoadDeferMaxPolls)
+			}
+			if loadThreshold != 3 || got.HeavyCutoffs["PRE_MARKET"] != "09:10:00" || len(got.Events) != source.wantCount {
+				t.Fatalf("global config/events lost: maxload=%v cutoffs=%v count=%d want=%d", loadThreshold, got.HeavyCutoffs, len(got.Events), source.wantCount)
 			}
 			byID := map[string]struct {
 				ID      string `json:"id"`

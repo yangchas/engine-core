@@ -80,7 +80,8 @@ def test_default_events_load_all_window_and_startup_definitions_from_config(tmp_
         pass
     else:
         raise AssertionError("derived compatibility property is writable")
-    assert config["global"]["heavy_max_load1"] == source["global"]["heavy_max_load1"]
+    assert config["global"]["heavy_max_load5"] == source["global"]["heavy_max_load5"]
+    assert config["global"]["heavy_load_defer_max_polls"] == source["global"]["heavy_load_defer_max_polls"]
 
 
 def test_registry_trigger_event_resolves_to_the_single_schedule_start():

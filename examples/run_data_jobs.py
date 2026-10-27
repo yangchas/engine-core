@@ -12,7 +12,7 @@ import time
 from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
 from engine_core.data_pipeline.registry import DATASETS, get_dataset
@@ -160,6 +160,7 @@ def _require_sample_artifact_root(path: str | Path) -> str:
 def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
                       write_enabled: bool, *, baostock_timeout_seconds: float = 60.0,
                       baostock_total_timeout_seconds: float | None = None,
+                      baostock_no_progress_seconds: float = 300.0,
                       baostock_symbols_file: str | None = None) -> dict[str, Any]:
     """Construct lazy read-only adapters; optional SDK imports happen on fetch."""
     sample_path = Path(baostock_symbols_file).expanduser() if baostock_symbols_file else None
@@ -244,7 +245,9 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
             provider = BaostockDailyProvider(
                 client_factory=client_factory, symbols=symbols_for,
                 checkpoint_path=checkpoint, timeout_seconds=baostock_timeout_seconds,
-                total_timeout_seconds=self.total_timeout_seconds, sample_scope=sample_path is not None,
+                total_timeout_seconds=self.total_timeout_seconds,
+                no_progress_timeout_seconds=baostock_no_progress_seconds,
+                sample_scope=sample_path is not None,
             )
             result = provider.fetch(day, context)
             universe = load_dataset("symbol_universe", day, prefer="file",
@@ -408,6 +411,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="hard caller wait for each Baostock operation")
     parser.add_argument("--baostock-total-timeout-seconds", type=float,
                         help="optional wall-clock budget for the complete daily_kline fetch")
+    parser.add_argument("--baostock-no-progress-seconds", type=float, default=300.0,
+                        help="fail retryably when Baostock produces no row/checkpoint progress")
     parser.add_argument("--budget-seconds", type=float,
                         default=os.getenv("CORE_DAILY_KLINE_BUDGET_SECONDS") or 240.0,
                         help="wall-clock budget for the complete daily_kline provider chain")
@@ -442,6 +447,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--td-write requires --write and --td-database")
     if args.budget_seconds <= 0:
         parser.error("--budget-seconds must be positive")
+    if args.baostock_no_progress_seconds <= 0:
+        parser.error("--baostock-no-progress-seconds must be positive")
     if not 0 < args.baostock_budget_fraction <= 1:
         parser.error("--baostock-budget-fraction must be greater than 0 and at most 1")
     names = list(DATASETS) if args.job == "all" else [args.job]
@@ -450,6 +457,7 @@ def main(argv: list[str] | None = None) -> int:
         args.max_requests, args.write or args.execute,
         baostock_timeout_seconds=args.baostock_timeout_seconds,
         baostock_total_timeout_seconds=args.baostock_total_timeout_seconds,
+        baostock_no_progress_seconds=args.baostock_no_progress_seconds,
         baostock_symbols_file=args.symbols_file)
     adapters.update(_load_adapter(args.adapter))
     daily_providers = [name.strip() for name in args.providers.split(",") if name.strip()]
@@ -615,15 +623,24 @@ def main(argv: list[str] | None = None) -> int:
                 budget_seconds=args.budget_seconds,
                 baostock_budget_fraction=args.baostock_budget_fraction)
             if result is None:
+                attempts = chain.last_attempts
+                stall_detected = any(
+                    attempt.get("error_code") == "STALL_NO_PROGRESS" or
+                    any(isinstance(event, Mapping) and event.get("error_code") == "STALL_NO_PROGRESS"
+                        for event in (attempt.get("error_events") or []))
+                    for attempt in attempts
+                )
+                failure_code = "STALL_NO_PROGRESS" if stall_detected else "DAILY_KLINE_ALL_PROVIDERS_FAILED"
                 print(json.dumps({"job": name, "status": "PROVIDER_UNAVAILABLE_OR_COVERAGE_LOW",
-                                  "providers": daily_providers, "mode": "DRY_RUN" if not (args.execute or args.write) else "WRITE"}, sort_keys=True))
+                                  "providers": daily_providers, "mode": "DRY_RUN" if not (args.execute or args.write) else "WRITE",
+                                  "error_code": failure_code}, sort_keys=True))
                 daily_contract = ContractJobResult(
                     contract=1, job=name, trade_date=args.date, status="failed", tier=0,
                     source=None, dataset=name, version=None, row_count=None, coverage=None,
-                    error_code="DAILY_KLINE_ALL_PROVIDERS_FAILED", retryable=True,
+                    error_code=failure_code, retryable=True,
                     attempts=len(daily_providers),
                     elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
-                    detail={"providers": daily_providers})
+                    detail={"providers": daily_providers, "provider_attempts": attempts})
                 daily_kline_exit_code = emit_job_result(daily_contract)
                 if args.job != "all":
                     return daily_kline_exit_code

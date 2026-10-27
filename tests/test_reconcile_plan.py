@@ -150,7 +150,8 @@ def test_real_degraded_daily_kline_is_scheduled_for_upgrade_without_blocking_der
                                        "status": "exhausted", "attempts": 3,
                                        "reason": "upgrade_attempt_budget_exhausted"}})
     exhausted_by_id = {row["id"]: row for row in exhausted}
-    assert "daily_kline" not in exhausted_by_id
+    assert exhausted_by_id["daily_kline"]["action"] == "FETCH_NOW"
+    assert exhausted_by_id["daily_kline"]["reason"] == "upgrade_degraded_daily_kline"
     assert exhausted_by_id["daily_indicators"]["action"] == "FETCH_NOW"
 
 

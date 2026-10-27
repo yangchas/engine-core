@@ -233,6 +233,7 @@ def capture(
         "trade_date": trade_date,
         "provider": provider_name,
         "source": ">".join(sources) if sources else "none",
+        "provider_chain": "q2_final>wencai",
         "source_dependency": "legacy_redis_q2+independent_wencai",
         "available_at": available_at,
         "fetched_at": available_at,

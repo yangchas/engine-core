@@ -3,7 +3,8 @@
   "revision": 3,
   "timezone": "Asia/Shanghai",
   "global": {
-    "heavy_max_load1": 3.0,
+    "heavy_max_load5": 3.0,
+    "heavy_load_defer_max_polls": 6,
     "heavy_cutoffs": {
       "PRE_MARKET": "09:10:00"
     },
@@ -288,7 +289,8 @@
       "profile": "policy_01",
       "args": {
         "reconcile_max_load5": "cpus",
-        "daily_kline_load_defer_window_limit": 3
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
       }
     },
     {
@@ -405,6 +407,7 @@
               "ConnectionError"
             ],
             "error_codes": [
+              "STALL_NO_PROGRESS",
               "BAOSTOCK_TIMEOUT",
               "BAOSTOCK_CONNECTION_ERROR",
               "BAOSTOCK_LOGIN_FAILED",
@@ -454,7 +457,8 @@
             "message_patterns": []
           },
           "default": "deterministic"
-        }
+        },
+        "baostock_no_progress_seconds": 300
       }
     },
     {
@@ -1471,6 +1475,7 @@
               "ConnectionError"
             ],
             "error_codes": [
+              "STALL_NO_PROGRESS",
               "BAOSTOCK_TIMEOUT",
               "BAOSTOCK_CONNECTION_ERROR",
               "BAOSTOCK_LOGIN_FAILED",
@@ -1520,7 +1525,8 @@
             "message_patterns": []
           },
           "default": "deterministic"
-        }
+        },
+        "baostock_no_progress_seconds": 300
       }
     },
     {
@@ -1566,6 +1572,7 @@
               "ConnectionError"
             ],
             "error_codes": [
+              "STALL_NO_PROGRESS",
               "BAOSTOCK_TIMEOUT",
               "BAOSTOCK_CONNECTION_ERROR",
               "BAOSTOCK_LOGIN_FAILED",
@@ -1615,7 +1622,8 @@
             "message_patterns": []
           },
           "default": "deterministic"
-        }
+        },
+        "baostock_no_progress_seconds": 300
       }
     },
     {
@@ -1672,7 +1680,10 @@
       "calendar": "trading_day",
       "event_id": "postmarket_publish",
       "at": "17:40:00",
-      "profile": "policy_05"
+      "profile": "policy_05",
+      "args": {
+        "baostock_no_progress_seconds": 300
+      }
     },
     {
       "available_after": "17:30:00",
@@ -1717,6 +1728,7 @@
               "ConnectionError"
             ],
             "error_codes": [
+              "STALL_NO_PROGRESS",
               "BAOSTOCK_TIMEOUT",
               "BAOSTOCK_CONNECTION_ERROR",
               "BAOSTOCK_LOGIN_FAILED",
@@ -1766,7 +1778,8 @@
             "message_patterns": []
           },
           "default": "deterministic"
-        }
+        },
+        "baostock_no_progress_seconds": 300
       }
     },
     {
@@ -1809,6 +1822,7 @@
               "ConnectionError"
             ],
             "error_codes": [
+              "STALL_NO_PROGRESS",
               "BAOSTOCK_TIMEOUT",
               "BAOSTOCK_CONNECTION_ERROR",
               "BAOSTOCK_LOGIN_FAILED",
@@ -1858,7 +1872,8 @@
             "message_patterns": []
           },
           "default": "deterministic"
-        }
+        },
+        "baostock_no_progress_seconds": 300
       }
     },
     {
@@ -1883,7 +1898,8 @@
         "reconciliation_checkpoint": "PRE_MARKET",
         "checkpoint_reason": "Before PRE_MARKET heavy cutoff 09:10; recheck startup_0830 and premarket_slice_0850 expectations.",
         "reconcile_max_load5": "cpus",
-        "daily_kline_load_defer_window_limit": 3
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
       },
       "event_id": "runtime_reconcile_0900",
       "at": "09:00:00",
@@ -1911,7 +1927,8 @@
         "reconciliation_checkpoint": "OPEN",
         "checkpoint_reason": "After auction_baseline expected_by 09:20 and the 09:30 open; collect post-auction outputs.",
         "reconcile_max_load5": "cpus",
-        "daily_kline_load_defer_window_limit": 3
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
       },
       "event_id": "runtime_reconcile_0935",
       "at": "09:35:00",
@@ -1939,7 +1956,8 @@
         "reconciliation_checkpoint": "INTRADAY_AM",
         "checkpoint_reason": "First post-open checkpoint after hot_rank expected_by 09:40; recover delayed morning outputs.",
         "reconcile_max_load5": "cpus",
-        "daily_kline_load_defer_window_limit": 3
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
       },
       "event_id": "runtime_reconcile_1000",
       "at": "10:00:00",
@@ -1967,7 +1985,8 @@
         "reconciliation_checkpoint": "MIDDAY_BREAK",
         "checkpoint_reason": "End of morning session and start of MIDDAY_BREAK; collect AM outputs before quiet-phase work.",
         "reconcile_max_load5": "cpus",
-        "daily_kline_load_defer_window_limit": 3
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
       },
       "event_id": "runtime_reconcile_1145",
       "at": "11:45:00",
@@ -1995,7 +2014,8 @@
         "reconciliation_checkpoint": "INTRADAY_PM",
         "checkpoint_reason": "After midday pause and PM restart; reconcile outputs missing across the session boundary.",
         "reconcile_max_load5": "cpus",
-        "daily_kline_load_defer_window_limit": 3
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
       },
       "event_id": "runtime_reconcile_1330",
       "at": "13:30:00",
@@ -2023,7 +2043,8 @@
         "reconciliation_checkpoint": "CLOSE",
         "checkpoint_reason": "Before the 15:30 close boundary; catch late session outputs before postmarket.",
         "reconcile_max_load5": "cpus",
-        "daily_kline_load_defer_window_limit": 3
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
       },
       "event_id": "runtime_reconcile_1520",
       "at": "15:20:00",
@@ -2051,7 +2072,8 @@
         "reconciliation_checkpoint": "POST_MARKET",
         "checkpoint_reason": "After close in POST_MARKET; recover close and final-session outputs.",
         "reconcile_max_load5": "cpus",
-        "daily_kline_load_defer_window_limit": 3
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
       },
       "event_id": "runtime_reconcile_1540",
       "at": "15:40:00",
@@ -2079,7 +2101,8 @@
         "reconciliation_checkpoint": "POST_MARKET",
         "checkpoint_reason": "After baostock_probe_1730; first reconciliation for daily bars and evening outputs.",
         "reconcile_max_load5": "cpus",
-        "daily_kline_load_defer_window_limit": 3
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
       },
       "event_id": "runtime_reconcile_1745",
       "at": "17:45:00",
@@ -2107,7 +2130,8 @@
         "reconciliation_checkpoint": "POST_MARKET",
         "checkpoint_reason": "Later postmarket retry window for delayed source deliveries after the first evening pass.",
         "reconcile_max_load5": "cpus",
-        "daily_kline_load_defer_window_limit": 3
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
       },
       "event_id": "runtime_reconcile_1930",
       "at": "19:30:00",
@@ -2135,7 +2159,8 @@
         "reconciliation_checkpoint": "POST_MARKET",
         "checkpoint_reason": "Final postmarket reconciliation for long-tail arrivals before the daily cycle ends.",
         "reconcile_max_load5": "cpus",
-        "daily_kline_load_defer_window_limit": 3
+        "daily_kline_load_defer_window_limit": 3,
+        "baostock_no_progress_seconds": 300
       },
       "event_id": "runtime_reconcile_2100",
       "at": "21:00:00",

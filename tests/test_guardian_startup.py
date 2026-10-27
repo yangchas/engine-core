@@ -344,6 +344,35 @@ def test_fetch_job_stdout_shape_and_exit_status_are_checked_before_catalog_postc
         startup._run_fetch_job(item | {"fetch_job": {"argv": [sys.executable, "-c", 'import json;print(json.dumps(dict(status="failed")))'], "timeout_seconds": 20}}, "2026-10-23", 20)
 
 
+def test_fetch_job_passes_schedule_no_progress_budget_to_daily_kline_command(monkeypatch, tmp_path):
+    import json
+    import sys
+
+    from engine_core.guardian import startup
+
+    captured = {}
+
+    class Completed:
+        returncode = 0
+        stdout = json.dumps({"version": "v1", "row_count": 1})
+        stderr = ""
+
+    def fake_run(command, **_kwargs):
+        captured["command"] = command
+        return Completed()
+
+    monkeypatch.setattr(startup.subprocess, "run", fake_run)
+    monkeypatch.setattr("engine_core.guardian.registry.catalog_partition_present", lambda *_args: True)
+    item = {"id": "daily_kline", "fetch_job": {
+        "argv": [sys.executable, "-m", "examples.run_data_jobs", "--job", "daily_kline",
+                 "--date", "{date}"], "timeout_seconds": 30}}
+
+    startup._run_fetch_job(item, "2026-10-26", 30, tmp_path,
+                           schedule_args={"baostock_no_progress_seconds": 47})
+
+    assert captured["command"][-2:] == ["--baostock-no-progress-seconds", "47"]
+
+
 def test_fetch_item_success_requires_the_partition_to_exist_in_the_catalog_afterwards(tmp_path):
     """A job that exits 0 with an unfamiliar status (real ladder_daily prints PARTIAL_ST_FILTER_UNAVAILABLE) is judged by the catalog."""
     import sys

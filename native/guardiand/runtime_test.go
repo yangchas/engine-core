@@ -655,7 +655,7 @@ func TestHeavyLoadDeferralUsesFakeClockWithoutAttempts(t *testing.T) {
 	}
 	defer l.close()
 	l.now = fc.Now
-	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, loadavg: func() (float64, error) {
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}, load5: func() (float64, error) {
 		loads++
 		if loads == 1 {
 			return 2, nil
@@ -673,6 +673,120 @@ func TestHeavyLoadDeferralUsesFakeClockWithoutAttempts(t *testing.T) {
 	waitFor(t, func() bool { return isTerminal(getState().Status) })
 	if st := getState(); st.Status != "SUCCEEDED" || st.Attempts != 1 || loads != 2 {
 		t.Fatalf("heavy result=%+v load checks=%d", st, loads)
+	}
+}
+
+func TestHeavyLoadUsesLoad5SoAnInstantLoad1SpikeDoesNotDefer(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
+	fc := newFakeClock(now)
+	script := filepath.Join(root, "ok.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	var c config.Config
+	if err := json.Unmarshal([]byte(`{"heavy_max_load1":1,"heavy_max_load5":3,"heavy_load_defer_max_polls":6}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	e := config.Event{ID: "heavy", Handler: "h", Cost: "heavy", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "10:30:00"}, LateUntil: "11:00:00"}
+	c.Events = []config.Event{e}
+	c.Handlers = map[string]config.Handler{"h": {Argv: []string{script}}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	loads := 0
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}, load5: func() (float64, error) {
+		loads++
+		return 2, nil // load5 is healthy while instantaneous load1 may be spiking.
+	}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.execute(Instance{ID: "heavy", EventID: "heavy", Start: "09:00:00", Deadline: "10:30:00", LateUntil: "11:00:00"}, date)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		fc.Advance(2 * time.Hour)
+		<-done
+		t.Fatalf("load5 below threshold deferred execution: state=%+v", runtimeTestState(r, date+"/heavy"))
+	}
+	if got := runtimeTestState(r, date+"/heavy"); got.Status != "SUCCEEDED" || got.Attempts != 1 || loads != 1 {
+		t.Fatalf("load5 result=%+v load checks=%d", got, loads)
+	}
+}
+
+func TestHeavyLoadDefersSixPollsThenAlertsAndRunsOnce(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
+	fc := newFakeClock(now)
+	script := filepath.Join(root, "ok.sh")
+	alertScript := filepath.Join(root, "alert.sh")
+	alertOutput := filepath.Join(root, "alerts.jsonl")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(alertScript, []byte("#!/bin/sh\ncat >> \"$ALERT_OUTPUT\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	var c config.Config
+	if err := json.Unmarshal([]byte(`{"heavy_max_load5":3}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	e := config.Event{ID: "heavy", Handler: "h", Cost: "heavy", Trigger: config.Trigger{Type: "window", Start: "09:00:00", Deadline: "10:30:00"}, LateUntil: "11:00:00"}
+	c.Events = []config.Event{e}
+	c.Handlers = map[string]config.Handler{"h": {Argv: []string{script}}, "alert": {Argv: []string{alertScript}, EnvAllow: []string{"ALERT_OUTPUT"}}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	t.Setenv("ALERT_OUTPUT", alertOutput)
+	loads := 0
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}, alertMinutes: map[int64]int{}, load5: func() (float64, error) {
+		loads++
+		return 4, nil
+	}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.execute(Instance{ID: "heavy", EventID: "heavy", Start: "09:00:00", Deadline: "10:30:00", LateUntil: "11:00:00"}, date)
+	}()
+	defer func() {
+		fc.Advance(time.Hour)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("load gate did not stop after clock advance")
+		}
+	}()
+	for poll := 1; poll <= 6; poll++ {
+		waitFor(t, func() bool { return fc.waitCount() >= poll })
+		if got := runtimeTestState(r, date+"/heavy"); got.Status != "DEFER_LOAD" || got.Attempts != 0 {
+			t.Fatalf("poll %d consumed an attempt or did not defer: %+v", poll, got)
+		}
+		fc.Advance(time.Minute)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("sustained high load was not released after the configured deferral limit: state=%+v", runtimeTestState(r, date+"/heavy"))
+	}
+	if got := runtimeTestState(r, date+"/heavy"); got.Status != "SUCCEEDED" || got.Attempts != 1 || loads != 7 {
+		t.Fatalf("released heavy result=%+v load checks=%d", got, loads)
+	}
+	if got := ledgerTypeCounts(t, root, date)["ALERT_OUT"]; got != 1 {
+		t.Fatalf("sustained load alerts=%d, want one", got)
+	}
+	alertBytes, err := os.ReadFile(alertOutput)
+	if err != nil || !strings.Contains(string(alertBytes), "HEAVY_LOAD_DEFERRED_TOO_LONG") {
+		t.Fatalf("load warning not delivered: err=%v body=%q", err, alertBytes)
 	}
 }
 

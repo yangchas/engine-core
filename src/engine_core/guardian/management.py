@@ -30,7 +30,8 @@ HANDLERS = {"auction_report", "auction_watch", "baostock_probe", "boot_apply_pla
             "premarket_data", "snapshot_check"}
 GO_V3_HANDLERS = HANDLERS | {"selftest"}
 GO_V3_TOP_FIELDS = frozenset({"schema_version", "revision", "timezone", "global", "profiles", "events"})
-GO_V3_GLOBAL_FIELDS = frozenset({"heavy_max_load1", "heavy_cutoffs", "phases"})
+GO_V3_GLOBAL_FIELDS = frozenset({"heavy_max_load1", "heavy_max_load5",
+                                "heavy_load_defer_max_polls", "heavy_cutoffs", "phases"})
 GO_V3_PROFILE_FIELDS = frozenset({"catchup", "retry_backoff", "retry_until_late",
                                   "silent_until_last", "ladder", "window"})
 GO_V3_WINDOW_FIELDS = frozenset({"deadline", "late_until"})
@@ -392,8 +393,10 @@ def _v3_validate_global(value: Any) -> tuple[set[str], Any]:
                                                (v is not None and not isinstance(v, str))
                                                for k, v in cutoffs.items()):
             raise ValueError("schedule_v3_type_invalid:global.heavy_cutoffs")
-    heavy = global_config.get("heavy_max_load1")
-    if "heavy_max_load1" in global_config:
+    for key in ("heavy_max_load1", "heavy_max_load5"):
+        heavy = global_config.get(key)
+        if key not in global_config:
+            continue
         if isinstance(heavy, bool) or not (isinstance(heavy, (int, float)) or heavy is None or
                                            isinstance(heavy, str) and heavy == "cpus"):
             raise ValueError("schedule_v3_load_threshold_invalid")
@@ -406,6 +409,10 @@ def _v3_validate_global(value: Any) -> tuple[set[str], Any]:
                 raise ValueError("schedule_v3_load_threshold_invalid")
         if heavy is None:
             raise ValueError("schedule_v3_load_threshold_invalid")
+    defer_polls = global_config.get("heavy_load_defer_max_polls")
+    if "heavy_load_defer_max_polls" in global_config and (
+            isinstance(defer_polls, bool) or not isinstance(defer_polls, int) or defer_polls < 1):
+        raise ValueError("schedule_v3_load_defer_polls_invalid")
     phases_value = global_config.get("phases")
     if phases_value is None:
         return {name for name, _, _ in _V3_DEFAULT_PHASES}, global_config

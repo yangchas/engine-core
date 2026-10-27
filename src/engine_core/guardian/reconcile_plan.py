@@ -70,10 +70,10 @@ def daily_kline_retry_availability(attempt: Any, now: datetime,
     """Check a per-partition quiet-window budget and the minimum interval."""
     if not isinstance(attempt, Mapping):
         return True, ""
-    if (not attempt.get("window_id") and partition and
-            attempt.get("status") in {"exhausted", "GAP_WINDOW_EXHAUSTED"} and
-            now.date().isoformat() <= partition):
-        return False, "window_budget_exhausted"
+    # Pre-C554/C562 records did not identify a quiet window. They are retained as
+    # history, but cannot consume the budget belonging to the current window.
+    if not attempt.get("window_id"):
+        return True, ""
     if attempt.get("window_id") != daily_kline_window_id(now, phase):
         return True, ""
     if int(attempt.get("attempts", 0) or 0) >= DAILY_KLINE_UPGRADE_MAX_ATTEMPTS:
@@ -90,6 +90,22 @@ def daily_kline_retry_availability(attempt: Any, now: datetime,
         except (TypeError, ValueError, OverflowError):
             pass
     return True, ""
+
+
+def daily_kline_catalog_state(catalog: Mapping[str, Any], dataset: str,
+                              partition: str, now: datetime) -> dict[str, Any]:
+    """Single catalog coverage/upgrade decision point for daily-kline planning.
+
+    C567 can replace the catalog presence source here without duplicating the
+    candidate and target-date logic below.
+    """
+    manifest = catalog_manifest(catalog, dataset, partition)
+    return {
+        "manifest": manifest,
+        "version": str((manifest or {}).get("version", "")),
+        "present": catalog_partition_present(catalog, dataset, partition, now),
+        "needs_upgrade": daily_kline_needs_upgrade(manifest),
+    }
 
 
 def _hms(value: str) -> tuple[int, int, int]:
@@ -142,10 +158,10 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
             continue
         if item["id"] == "daily_kline" and daily_kline_candidates is not None:
             for candidate in sorted(set(daily_kline_candidates)):
-                current_manifest = catalog_manifest(catalog, dataset, candidate)
-                version = str((current_manifest or {}).get("version", ""))
-                degraded = daily_kline_needs_upgrade(current_manifest)
-                if catalog_partition_present(catalog, dataset, candidate, now) and not degraded:
+                state = daily_kline_catalog_state(catalog, dataset, candidate, now)
+                version = state["version"]
+                degraded = state["needs_upgrade"]
+                if state["present"] and not degraded:
                     continue
                 attempt = (upgrade_attempts or {}).get(candidate)
                 if attempt is None:
@@ -172,10 +188,10 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                 continue
             target = trade_date
         if item["id"] == "daily_kline":
-            current_manifest = catalog_manifest(catalog, dataset, target)
-            version = str((current_manifest or {}).get("version", ""))
+            state = daily_kline_catalog_state(catalog, dataset, target, now)
+            version = state["version"]
             budget_key = target
-            if daily_kline_needs_upgrade(current_manifest) and version:
+            if state["needs_upgrade"] and version:
                 attempt = (upgrade_attempts or {}).get(budget_key)
                 if attempt is None:
                     attempt = (upgrade_attempts or {}).get(f"{target}:{version}")
@@ -184,7 +200,10 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                     due[item["id"]] = (target, policy)
                     upgrade_versions[item["id"]] = version
                 continue
-        if (not catalog_partition_present(catalog, dataset, target, now)
+        state = (daily_kline_catalog_state(catalog, dataset, target, now)
+                 if item["id"] == "daily_kline" else None)
+        if ((not state["present"] if state is not None
+             else not catalog_partition_present(catalog, dataset, target, now))
                 or derived_daily_kline_input_stale(catalog, dataset, target)):
             due[item["id"]] = (target, policy)
 
