@@ -5,20 +5,27 @@ import math
 from typing import Any, Mapping
 
 
+# C579: the canonical row is the compatible superset of every real partition column and every
+# consumer-read column (docs/DAILY_KLINE.md "Consumer evidence"). pct_chg is a PERCENT float
+# (1.5044 = +1.5044%) exactly like all live partitions; turnover_pct is percent and may be null.
 CANONICAL_ROW_FIELDS = (
     "symbol", "code", "date", "open", "high", "low", "close", "pre_close",
-    "pct_chg", "amount_yuan", "volume", "source", "degraded", "tier",
+    "pct_chg", "turnover_pct", "amount_yuan", "volume", "suspended",
+    "source", "degraded", "tier",
 )
 CANONICAL_FIELD_UNITS = {
     "open": "yuan", "high": "yuan", "low": "yuan", "close": "yuan",
-    "pre_close": "yuan", "pct_chg": "bp", "amount_yuan": "yuan",
-    "volume": "shares",
+    "pre_close": "yuan", "pct_chg": "percent", "turnover_pct": "percent",
+    "amount_yuan": "yuan", "volume": "shares",
 }
 TIER_BY_SOURCE = {"baostock": 0, "wencai": 1, "q2_final": 2}
 SOURCE_FIELD_UNITS = {
-    "baostock": {"price": "yuan", "pct_chg": "percent", "amount_yuan": "yuan", "volume": "shares"},
-    "wencai": {"price": "yuan", "pct_chg": "percent", "amount_yuan": "yuan", "volume": "shares"},
-    "q2_final": {"price": "yuan", "pct_chg": "percent", "amount_yuan": "yuan", "volume": "hands"},
+    "baostock": {"price": "yuan", "pct_chg": "percent", "turnover_pct": "percent",
+                 "amount_yuan": "yuan", "volume": "shares"},
+    "wencai": {"price": "yuan", "pct_chg": "percent", "turnover_pct": "percent",
+               "amount_yuan": "yuan", "volume": "shares"},
+    "q2_final": {"price": "yuan", "pct_chg": "percent", "turnover_pct": "percent",
+                 "amount_yuan": "yuan", "volume": "hands"},
 }
 
 
@@ -112,10 +119,16 @@ def canonicalize_daily_kline_row(source: str, row: Mapping[str, Any], *,
     pct = _number(row.get("pct_chg", row.get("pctChg")))
     pct_unit = _unit(units, "pct_chg", source)
     if pct is not None:
-        if pct_unit in {"percent", "%", "百分比"}:
-            pct *= 100.0
-        elif pct_unit not in {"bp", "bps"}:
+        if pct_unit in {"bp", "bps"}:
+            pct /= 100.0
+        elif pct_unit not in {"percent", "%", "百分比"}:
             raise ValueError("schema_invalid:pct_chg_unit_unknown")
+
+    turnover = _number(row.get("turnover_pct", row.get("turnover", row.get("turn"))))
+    if turnover is not None and _unit(units, "turnover_pct", source) not in {"percent", "%", "百分比"}:
+        raise ValueError("schema_invalid:turnover_pct_unit_unknown")
+    suspended = row.get("suspended")
+    suspended = suspended if isinstance(suspended, bool) else None  # no flag from source -> null, never inferred
 
     amount = _number(row.get("amount_yuan", row.get("amount", row.get("成交额"))))
     if amount is not None:
@@ -131,9 +144,11 @@ def canonicalize_daily_kline_row(source: str, row: Mapping[str, Any], *,
         "code": _market_code(symbol, row.get("code")),
         "date": str(row.get("date") or ""),
         **values,
-        "pct_chg": int(round(pct)) if pct is not None else None,
-        "amount_yuan": amount,
-        "volume": int(round(volume)) if volume is not None else None,
+        "pct_chg": round(pct, 4) if pct is not None else None,
+        "turnover_pct": round(turnover, 4) if turnover is not None else None,
+        "amount_yuan": round(amount, 2) if amount is not None else None,
+        "volume": float(round(volume)) if volume is not None else None,
+        "suspended": suspended,
         "source": source,
         "degraded": tier > 0,
         "tier": tier,

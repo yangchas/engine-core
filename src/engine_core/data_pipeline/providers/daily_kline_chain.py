@@ -501,8 +501,8 @@ class DailyKlineProviderChain:
                           and _number(row.get("pct_chg")) is not None]
         pct_matches = 0
         for row in pct_comparable:
-            expected_bp = (float(row["close"]) / float(row["pre_close"]) - 1.0) * 10_000.0
-            pct_matches += abs(float(row["pct_chg"]) - expected_bp) <= 1.0
+            expected_pct = (float(row["close"]) / float(row["pre_close"]) - 1.0) * 100.0  # canonical pct_chg is percent (C579)
+            pct_matches += abs(float(row["pct_chg"]) - expected_pct) <= 0.01 + 1e-9
         pct_ratio = pct_matches / len(pct_comparable) if pct_comparable else 0.0
         detail = {
             **base_detail,

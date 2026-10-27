@@ -426,14 +426,53 @@ def test_formal_over_lower_quality_selected_and_locate_flagged(tmp_path):
     assert "E1" in failed_ids(low_check)
 
 
-def test_latest_advanced_by_provisional_fails(tmp_path):
+def _point_latest(root, version, date=DATE):
+    cat = json.loads((root / "catalog.json").read_text())
+    cat["datasets"]["daily_kline"]["latest"] = {"trade_date": date, "version": version}
+    (root / "catalog.json").write_text(json.dumps(cat))
+
+
+def test_latest_advanced_by_provisional_ok_when_nothing_better_exists(tmp_path):
+    # design/24 (2026-10-28): the 15:05 close data may hold latest until the formal version arrives
+    build(tmp_path, synthetic_rows(), status="PROVISIONAL", make_latest=False)
+    cat = json.loads((tmp_path / "catalog.json").read_text())
+    _point_latest(tmp_path, cat["datasets"]["daily_kline"]["dates"][DATE][0]["version"])
+    assert "E3" not in failed_ids(run_check(tmp_path))
+
+
+def test_latest_on_provisional_while_formal_exists_same_day_fails(tmp_path):
+    rows = synthetic_rows()
+    build(tmp_path, rows)  # FORMAL, latest
+    low = [dict(r) for r in rows]
+    low[0]["close"] = 11.0
+    run = write_partition(tmp_path, "daily_kline", low, {"provider_chain": ["q2_final"]}, source="q2_final",
+                          status="PROVISIONAL", make_latest=False)
+    _point_latest(tmp_path, run.name)
+    assert "E3" in failed_ids(run_check(tmp_path))
+
+
+def test_latest_on_provisional_while_formal_exists_on_newer_day_fails(tmp_path):
     rows = synthetic_rows()
     build(tmp_path, rows, status="PROVISIONAL", make_latest=False)
     cat = json.loads((tmp_path / "catalog.json").read_text())
     v = cat["datasets"]["daily_kline"]["dates"][DATE][0]["version"]
-    cat["datasets"]["daily_kline"]["latest"] = {"trade_date": DATE, "version": v}
+    cat["datasets"]["daily_kline"]["dates"]["2026-10-28"] = [
+        {"version": "sha256-n", "manifest": "x", "business_status": "FORMAL", "source": "baostock"}]
     (tmp_path / "catalog.json").write_text(json.dumps(cat))
+    _point_latest(tmp_path, v)
     assert "E3" in failed_ids(run_check(tmp_path))
+
+
+def test_partial_status_requires_degraded_and_quality_partial(tmp_path):
+    rows = synthetic_rows()
+    ok = build(tmp_path, rows, status="PROVISIONAL", make_latest=False,
+               manifest_extra={"business_status": "PARTIAL", "degraded": True})
+    rewrite_manifest(ok, lambda m: m["quality"].update(partial=True))
+    assert "A5" not in failed_ids(run_check(tmp_path))
+    rewrite_manifest(ok, lambda m: m.update(degraded=False))
+    assert "A5" in failed_ids(run_check(tmp_path))
+    rewrite_manifest(ok, lambda m: m.update(degraded=True) or m["quality"].update(partial=False))
+    assert "A5" in failed_ids(run_check(tmp_path))
 
 
 def test_latest_sample_authority_fails(clean):

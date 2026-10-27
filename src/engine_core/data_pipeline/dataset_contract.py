@@ -287,12 +287,16 @@ def _check_manifest(rep: Report, dataset: str, trade_date: str, chosen: dict[str
     status = m.get("business_status")
     deg = m.get("degraded")
     primary = spec.get("primary_provider")
-    expected_deg = (status == "DEGRADED") or (bool(primary) and m.get("provider") != primary)
-    consistent = status in STATUSES and isinstance(deg, bool) and deg == expected_deg
-    rule = ("true iff business_status == DEGRADED" if not primary else
-            f"true iff business_status == DEGRADED or provider != primary provider {primary!r}")
+    partial_status = status == "PARTIAL"  # design/24 (2026-10-28): PARTIAL is degraded and counts quality.partial
+    expected_deg = (status == "DEGRADED") or partial_status or (bool(primary) and m.get("provider") != primary)
+    consistent = (status in STATUSES or partial_status) and isinstance(deg, bool) and deg == expected_deg
+    if partial_status:
+        consistent = consistent and (m.get("quality") or {}).get("partial") is True
+    rule = ("true iff business_status in (DEGRADED, PARTIAL)" if not primary else
+            f"true iff business_status in (DEGRADED, PARTIAL) or provider != primary provider {primary!r}; "
+            "PARTIAL also needs quality.partial=true")
     rep.result(consistent, "A5", "business_status_degraded_consistent",
-               f"business_status={status!r} degraded={deg!r}: status must be one of {STATUSES}, "
+               f"business_status={status!r} degraded={deg!r}: status must be one of {STATUSES} or PARTIAL, "
                f"degraded bool and {rule}",
                business_status=status, degraded=deg)
     rep.result(m.get("row_count") == len(rows) == chosen.get("row_count"), "A6", "row_count_matches",
@@ -555,10 +559,17 @@ def _check_versions(rep: Report, cat: dict[str, Any], catalog: ArtifactCatalog, 
         except (OSError, ValueError):
             pass
     sample = lm.get("authority") in ("SAMPLE", "TEST") or lm.get("sample") is True or lm.get("is_sample") is True
-    rep.result(lv is not None and lstatus not in ("PROVISIONAL", "DEGRADED") and not sample, "E3",
-               "latest_not_advanced_by_low_quality_or_sample",
-               f"latest -> {latest} points at business_status={lstatus!r}, sample={sample}: "
-               "PROVISIONAL/DEGRADED/sample versions must not advance latest" if lv else
+    # design/24 (2026-10-28): a low-quality version may hold latest only while no higher-quality
+    # version exists for that date or any newer date; samples never may.
+    lrank = _rank(lstatus)
+    dates = cat["datasets"][dataset].get("dates") or {}
+    better = sorted(d for d, items in dates.items() if d >= str(latest.get("trade_date"))
+                    and any(_rank(e.get("business_status")) > lrank for e in items))
+    ok = lv is not None and not sample and (lrank >= QUALITY_RANK["FORMAL"] or not better)
+    rep.result(ok, "E3", "latest_not_replacing_higher_quality_or_sample",
+               (f"latest -> {latest} points at business_status={lstatus!r}, sample={sample}; "
+                f"higher-quality versions exist on {better}: a low-quality version may only hold latest "
+                "when none exists for that date or newer; samples never") if lv else
                f"latest -> {latest} not found among catalog versions", latest=latest)
     if latest.get("trade_date") == trade_date and best_rank == QUALITY_RANK["FORMAL"]:
         rep.result(_rank(lstatus) == 3, "E4", "latest_is_formal_when_formal_exists",

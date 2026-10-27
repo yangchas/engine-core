@@ -83,10 +83,13 @@ field values (`field_sources`).
 
 Rulings: `degraded` is true iff `business_status == DEGRADED` or the provider is not the spec's `primary_provider`
 (baostock): a wencai/q2_final partition is PROVISIONAL (C575) and degraded. A `PARTIAL` business status (coverage
-below 0.98) is outside the contract vocabulary and is reported by A5; it is not remapped. Canonical rows use
-pct_chg in basis points (docs/DAILY_KLINE.md); `dataset_specs/daily_kline.json` describes that layout
-(`provider_overrides` lets q2_final have an all-null `open`). `daily_kline_legacy.json` describes the earlier raw
-percent layout.
+below 0.98, design/24 ruling of 2026-10-28) is degraded and sets `quality.partial=true`; A5 checks both, and the
+writer (`finalize_daily_kline_contract_fields`) does both. E3: a PROVISIONAL/DEGRADED version may hold `latest` only while
+no higher-quality version exists for that date or any newer date; a sample never may. Canonical rows (C579) use
+pct_chg as a percent float and carry `turnover_pct` / `suspended` (docs/DAILY_KLINE.md, "Consumer evidence");
+`dataset_specs/daily_kline.json` describes that layout (`provider_overrides`: q2_final has an all-null `open`;
+wencai/q2_final have all-null optional `turnover_pct` and `suspended`). `daily_kline_legacy.json` describes the
+earlier raw layout (same units, extra bookkeeping columns).
 
 Historical partitions (for example the real 2026-10-27 `source=baostock>wencai>q2_final`) are never rewritten.
 Their violations disappear when the next formal upgrade writes a new version. `--legacy-tolerant` is a read-only

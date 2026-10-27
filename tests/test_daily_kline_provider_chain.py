@@ -121,7 +121,7 @@ def test_q2_provider_is_read_only_and_returns_the_shared_shape_from_captured_has
     assert tuple(row) == CANONICAL_ROW_FIELDS
     assert row["symbol"] == "000001" and row["code"] == "sz.000001"
     assert row["close"] == 11.2 and row["pre_close"] == 11.3
-    assert row["pct_chg"] == -88
+    assert row["pct_chg"] == pytest.approx(-0.885, abs=1e-4)
     assert row["volume"] == 144_880_600
     assert row["amount_yuan"] == 1_628_277_248
     assert row["open"] is None and row["tier"] == 2 and row["degraded"] is True
@@ -151,7 +151,7 @@ def test_daily_kline_tiers_normalize_captured_rows_to_registry_units():
     assert formal.keys() == degraded.keys()
     assert formal["symbol"] == degraded["symbol"] == "000001"
     assert formal["code"] == degraded["code"] == "sz.000001"
-    assert formal["pct_chg"] == degraded["pct_chg"] == -88
+    assert formal["pct_chg"] == pytest.approx(degraded["pct_chg"], abs=2e-4) == pytest.approx(-0.885, abs=2e-4)
     assert formal["volume"] == 144_880_560
     assert degraded["volume"] == 144_880_600
     assert formal["amount_yuan"] == pytest.approx(1_628_277_173.38)
@@ -291,7 +291,7 @@ def test_wencai_adapter_captures_date_evidence_and_comparator_rejects_unit_mutat
     row = canonicalize_daily_kline_row("wencai", wencai_row, field_units=payload["field_units"])
     assert row["open"] == 1325.4 and row["high"] == 1350.0
     assert row["low"] == 1324.79 and row["close"] == 1349.98
-    assert row["pre_close"] == 1335.0 and row["pct_chg"] == 112
+    assert row["pre_close"] == 1335.0 and row["pct_chg"] == pytest.approx(1.1221, abs=1e-4)
     assert row["volume"] == 4_159_916
     assert row["amount_yuan"] == pytest.approx(5_574_287_630)
     baostock_manifest = {"provider": "baostock", "source": "baostock",
@@ -306,7 +306,9 @@ def test_wencai_adapter_captures_date_evidence_and_comparator_rejects_unit_mutat
                        "field_units": CANONICAL_FIELD_UNITS,
                        "source_dates": payload["source_dates"]}
     compared = compare_partitions(baostock_manifest, [formal], wencai_manifest, [row])
-    assert compared["status"] == "PASS" and compared["common_symbols"] == 1
+    # the fixtures are different trade days (10-23 baostock vs 10-26 wencai): structure/units pass, values differ
+    assert compared["status"] == "FAIL_VALUES" and compared["common_symbols"] == 1
+    assert compared["value_comparison"]["pct_chg"]["compared"] == 1
     mutated = {**wencai_manifest, "field_units": {**CANONICAL_FIELD_UNITS, "volume": "hands"}}
     with pytest.raises(ComparisonError, match="field_units_invalid"):
         compare_partitions(baostock_manifest, [formal], mutated, [row])
@@ -367,7 +369,7 @@ def test_wencai_live_contract_pulls_concise_date_query_and_records_source_dates(
     assert canonical_600519["low"] == 1324.79
     assert canonical_600519["close"] == 1349.98
     assert canonical_600519["pre_close"] == 1335.0
-    assert canonical_600519["pct_chg"] == 112
+    assert canonical_600519["pct_chg"] == pytest.approx(1.1221, abs=1e-4)
     assert compact_values["close"] == 1349.98
     assert compact_values["pre_close"] == 1335.0
     assert compact_values["pct_chg"] == pytest.approx(1.12209738)

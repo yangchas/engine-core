@@ -1,7 +1,7 @@
 {
  "dataset": "daily_kline",
  "status": "BASELINE",
- "note": "Canonical layout of docs/DAILY_KLINE.md and daily_kline_schema.py: price/amount yuan, pct_chg basis points (int), volume shares (int). Rows of the degraded merge (q2_final+wencai) carry field_sources and no code/tier; q2_final has no open.",
+ "note": "Canonical layout (C579) = compatible superset of all real partitions and consumers: price/amount yuan, pct_chg PERCENT float (as every live partition), turnover_pct percent (nullable), volume shares, suspended bool|null. Rows of the degraded merge (q2_final+wencai) carry field_sources and no code/tier; q2_final has no open.",
  "primary_key": [
   "symbol"
  ],
@@ -69,11 +69,17 @@
    "zero_suspicious": true
   },
   "pct_chg": {
-   "type": "int",
+   "type": "float",
    "nullable": true,
-   "unit": "bp",
-   "min": -10000,
-   "max": 200000
+   "unit": "percent",
+   "min": -100,
+   "max": 2000
+  },
+  "turnover_pct": {
+   "type": "float",
+   "nullable": true,
+   "unit": "percent",
+   "min": 0
   },
   "amount_yuan": {
    "type": "float",
@@ -82,10 +88,15 @@
    "min": 0
   },
   "volume": {
-   "type": "int",
+   "type": "float",
    "nullable": true,
    "unit": "shares",
-   "min": 0
+   "min": 0,
+   "zero_suspicious": true
+  },
+  "suspended": {
+   "type": "bool",
+   "nullable": true
   },
   "source": {
    "type": "str",
@@ -112,6 +123,30 @@
     "open": {
      "all_null_ok": true,
      "zero_suspicious": false
+    },
+    "turnover_pct": {
+     "all_null_ok": true,
+     "optional": true,
+     "unit": null
+    },
+    "suspended": {
+     "all_null_ok": true,
+     "optional": true,
+     "unit": null
+    }
+   }
+  },
+  "wencai": {
+   "columns": {
+    "turnover_pct": {
+     "all_null_ok": true,
+     "optional": true,
+     "unit": null
+    },
+    "suspended": {
+     "all_null_ok": true,
+     "optional": true,
+     "unit": null
     }
    }
   }

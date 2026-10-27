@@ -39,14 +39,12 @@ def _daily_kline_symbol(value: Any) -> str:
 
 
 _DAILY_KLINE_CHAIN_ORDER = ("baostock", "wencai", "q2_final")
+# C579: one unit table for every daily_kline row layout (live partitions and the canonical chain
+# agree: pct_chg and turnover are percent, volume shares, amounts yuan). Only declared for columns present.
 _DAILY_KLINE_CANONICAL_UNITS = {
     "open": "yuan", "high": "yuan", "low": "yuan", "close": "yuan", "pre_close": "yuan",
-    "pct_chg": "bp", "amount_yuan": "yuan", "volume": "shares"}
-# Raw single-provider layout written before the canonical schema (percent pct_chg, turnover columns).
-_DAILY_KLINE_LEGACY_UNITS = {
-    "open": "yuan", "high": "yuan", "low": "yuan", "close": "yuan", "pre_close": "yuan",
-    "pct_chg": "percent", "amount_yuan": "yuan", "volume": "shares",
-    "turnover": "percent", "turnover_pct": "percent"}
+    "pct_chg": "percent", "turnover_pct": "percent", "amount_yuan": "yuan", "volume": "shares"}
+_DAILY_KLINE_LEGACY_UNITS = {**_DAILY_KLINE_CANONICAL_UNITS, "turnover": "percent"}
 
 
 def _daily_kline_provider_name(value: Any) -> str:
@@ -98,11 +96,10 @@ def finalize_daily_kline_contract_fields(result: dict[str, Any],
     result["provider_chain"] = chain
     status = result.get("business_status")
     # A fallback rung is degraded even when its data is good enough to be PROVISIONAL.
-    result["degraded"] = bool(status == "DEGRADED" or provider != "baostock")
-    legacy_layout = any("turnover_pct" in row or "suspended" in row for row in rows)
-    units = dict(_DAILY_KLINE_LEGACY_UNITS if legacy_layout else _DAILY_KLINE_CANONICAL_UNITS)
-    if legacy_layout:
-        present = set().union(*(set(row) for row in rows)) if rows else set()
+    result["degraded"] = bool(status in ("DEGRADED", "PARTIAL") or provider != "baostock")
+    units = dict(_DAILY_KLINE_LEGACY_UNITS)
+    if rows:
+        present = set().union(*(set(row) for row in rows))
         units = {key: value for key, value in units.items() if key in present}
     result["field_units"] = units
     attempts = []
@@ -118,6 +115,8 @@ def finalize_daily_kline_contract_fields(result: dict[str, Any],
     quality = dict(result.get("quality") or {})
     notes = result.get("quality_notes")
     notes = notes if isinstance(notes, Mapping) else {}
+    if status == "PARTIAL":
+        quality["partial"] = True
     quality["dropped_outside_universe"] = notes.get("universe_excluded_rows")
     quality["dropped_duplicates"] = notes.get("duplicate_rows")
     result["quality"] = quality
@@ -390,6 +389,9 @@ class ArtifactCatalog:
                              if dataset == "daily_kline" else dict(manifest))
         if dataset == "daily_kline" and prepared_manifest.get("provider") in _DAILY_KLINE_PROVIDERS:
             source = str(prepared_manifest["provider"])  # directory = actual provider, never a chain label
+        if (dataset == "daily_kline" and adapter is None and rows
+                and all("tier" in row and "turnover_pct" in row for row in rows[:200])):
+            adapter = "baostock"  # canonical rows are the Baostock-native layout, whatever provider filled them
         gate = None
         from .registry import DATASETS
         spec = DATASETS.get(dataset)

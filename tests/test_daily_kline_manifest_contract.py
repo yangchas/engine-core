@@ -118,7 +118,7 @@ def test_baostock_chain_partition_passes_contract(tmp_path):
     assert "/source=baostock/" in manifest["manifest_uri"]
     assert manifest["provider_chain"] == ["baostock", "wencai", "q2_final"]
     assert manifest["degraded"] is False and manifest["business_status"] == "FORMAL"
-    assert manifest["field_units"]["pct_chg"] == "bp"
+    assert manifest["field_units"]["pct_chg"] == "percent"
     assert manifest["provider_attempts"][-1]["row_count"] == manifest["row_count"]
     quality = manifest["quality"]
     assert quality["dropped_outside_universe"] == manifest["quality_notes"]["universe_excluded_rows"]
@@ -133,10 +133,10 @@ def test_wencai_chain_partition_passes_contract(tmp_path):
     assert manifest["provider_chain"][0] == "baostock" and "wencai" in manifest["provider_chain"]
     assert manifest["business_status"] == "PROVISIONAL" and manifest["degraded"] is True
     assert all("row_count" in a for a in manifest["provider_attempts"])
-    # C575 deliberately lets same-day wencai (PROVISIONAL) advance latest; design/24 section 2 / check E3 says
-    # PROVISIONAL must not. That is a catalog-policy conflict, not a manifest defect: it is the only failure.
+    # design/24 (2026-10-28): a low-quality version may advance latest while no higher-quality version exists
+    # for that date or newer, so the same-day wencai partition passes E3 and the whole checker (C579).
     report = check_partition(tmp_path, "daily_kline", WENCAI_DAY)
-    assert set(_failures(report)) == {"E3"}, _failures(report)
+    assert _failures(report) == {}, _failures(report)
 
 
 def test_q2_snapshot_partition_passes_contract(tmp_path):
@@ -147,8 +147,8 @@ def test_q2_snapshot_partition_passes_contract(tmp_path):
     assert manifest["degraded"] is True and manifest["provider_chain"] == ["q2_final"]
     assert manifest["provider_attempts"][0]["row_count"] == manifest["row_count"]
     assert manifest["quality"]["dropped_outside_universe"] is None  # snapshot path does not report drops
-    # snapshot() advances latest on purpose (15:05 provisional close); see the wencai test for check E3
-    assert set(_failures(check_partition(tmp_path, "daily_kline", DAY))) == {"E3"}
+    # snapshot() advances latest on purpose (15:05 provisional close); E3 passes while nothing better exists
+    assert _failures(check_partition(tmp_path, "daily_kline", DAY)) == {}
 
 
 def test_degraded_capture_partition_passes_contract(tmp_path):
