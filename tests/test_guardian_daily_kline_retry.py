@@ -208,3 +208,75 @@ def test_sf_live_exhausted_state_is_requeued_next_premarket(tmp_path, monkeypatc
     deferred = next(row for row in queued["detail"]["deferred"] if row["id"] == "daily_kline")
     assert deferred["partition"] == "2026-10-26"
     assert deferred["run_in_phases"] == ["PRE_MARKET"]
+
+
+def test_sg_load_deferrals_alert_after_three_windows_then_queue_once_under_load(tmp_path, monkeypatch):
+    from examples import guardian_handler
+    from engine_core.guardian import startup
+    from engine_core.guardian.scheduler import default_events
+
+    trade_date = "2026-10-27"
+    _calendar(tmp_path, [("2026-10-26", True), (trade_date, True)])
+    _catalog(tmp_path, {})
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    daily_item = next(item for item in startup.load_registry() if item["id"] == "daily_kline")
+    monkeypatch.setattr(startup, "load_registry", lambda: [daily_item])
+    monkeypatch.setattr(startup.os, "getloadavg", lambda: (0.5, 3.0, 0.1))
+    monkeypatch.setattr(startup.os, "cpu_count", lambda: 2)
+    alerts = []
+    monkeypatch.setattr(guardian_handler, "_send_alert",
+                        lambda request, _dry: alerts.append(request) or {"status": "sent"})
+
+    events = {event.event_id: event for event in default_events()}
+    policy = dict(events["boot_reconcile"].args)
+    for phase, now in (("NIGHT", f"{trade_date}T01:00:00+08:00"),
+                       ("PRE_MARKET", f"{trade_date}T08:30:00+08:00"),
+                       ("MIDDAY_BREAK", f"{trade_date}T12:00:00+08:00")):
+        code, result = guardian_handler._run({"handler": "boot_reconcile", "trade_date": trade_date,
+            "phase": phase, "now": now, **policy})
+        assert code == 0
+        action = next(row for row in result["detail"]["plan"] if row["id"] == "daily_kline")
+        assert action["action"] == "DEFER" and action["deferred_by_load"] is True
+
+    state = json.loads((tmp_path / "guardian-upgrade-attempts.json").read_text())["2026-10-26"]
+    assert state["attempts"] == 0
+    assert state["deferred_by_load"] is True
+    assert state["consecutive_load_defer_windows"] == 3
+    assert len(alerts) == 1
+
+    code, queued = guardian_handler._run({"handler": "boot_apply_plan", "event": "runtime_reconcile_1540",
+        "trade_date": trade_date, "phase": "CLOSE", "now": f"{trade_date}T15:40:00+08:00",
+        "args": dict(events["runtime_reconcile_1540"].args)})
+    assert code == 0
+    row = next(row for row in queued["detail"]["results"] if row["id"] == "daily_kline")
+    assert row["status"] == "queued" and row["load_override_once"] is True
+    state = json.loads((tmp_path / "guardian-upgrade-attempts.json").read_text())["2026-10-26"]
+    assert state["attempts"] == 0
+    assert state["load_override_queued_window"] == f"{trade_date}:CLOSE"
+
+
+def test_sh_low_load_reconcile_queues_daily_kline_normally(tmp_path, monkeypatch):
+    from examples import guardian_handler
+    from engine_core.guardian import startup
+    from engine_core.guardian.scheduler import default_events
+
+    trade_date = "2026-10-27"
+    _calendar(tmp_path, [("2026-10-26", True), (trade_date, True)])
+    _catalog(tmp_path, {})
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    daily_item = next(item for item in startup.load_registry() if item["id"] == "daily_kline")
+    monkeypatch.setattr(startup, "load_registry", lambda: [daily_item])
+    monkeypatch.setattr(startup.os, "getloadavg", lambda: (0.5, 1.0, 0.1))
+    monkeypatch.setattr(startup.os, "cpu_count", lambda: 2)
+    monkeypatch.setattr(guardian_handler, "_send_alert",
+                        lambda *_args, **_kwargs: {"status": "unexpected"})
+    event = next(event for event in default_events() if event.event_id == "boot_reconcile")
+
+    code, result = guardian_handler._run({"handler": "boot_reconcile", "trade_date": trade_date,
+        "phase": "POST_MARKET", "now": f"{trade_date}T18:00:00+08:00",
+        "args": dict(event.args)})
+
+    assert code == 0
+    action = next(row for row in result["detail"]["plan"] if row["id"] == "daily_kline")
+    assert action["action"] == "FETCH_NOW"
+    assert not (tmp_path / "guardian-upgrade-attempts.json").exists()

@@ -91,9 +91,9 @@ def test_dependencies_ordered_and_downstream_blocked_while_upstream_deferred():
 
 
 def test_heavy_deferred_under_load():
-    busy = _plan(19, 30, phase="POST_MARKET", load1=9.0, cpus=4)
+    busy = _plan(19, 30, phase="POST_MARKET", load5=9.0, load_threshold=4.0)
     assert busy["daily_kline"]["action"] == "DEFER"
-    assert _plan(19, 30, phase="POST_MARKET", load1=1.0, cpus=4)["daily_kline"]["action"] == "FETCH_NOW"
+    assert _plan(19, 30, phase="POST_MARKET", load5=1.0, load_threshold=4.0)["daily_kline"]["action"] == "FETCH_NOW"
 
 
 def test_retired_item_is_never_planned_and_production_registry_has_no_policyless_gap():

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -38,6 +39,106 @@ def _load_daily_kline_upgrade_states(root: Path) -> dict[str, Any]:
     except (OSError, ValueError):
         states = {}
     return states if isinstance(states, dict) else {}
+
+
+def _save_daily_kline_upgrade_states(root: Path, states: dict[str, Any]) -> None:
+    from ..data_pipeline.storage import _atomic_write, canonical_json
+
+    _atomic_write(root / "guardian-upgrade-attempts.json", canonical_json(states) + b"\n")
+
+
+def _resolve_reconcile_load5_limit(value: Any, cpus: int) -> float:
+    if isinstance(value, str) and value.lower() in {"cpus", "cpu_count"}:
+        return float(cpus)
+    if isinstance(value, bool):
+        return float(cpus)
+    try:
+        limit = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return float(cpus)
+    return limit if math.isfinite(limit) and limit >= 0 else float(cpus)
+
+
+def _resolve_load_defer_window_limit(value: Any) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 3
+    return limit if limit >= 1 else 3
+
+
+def _record_daily_kline_load_deferral(root: Path, partition: str, *, now: datetime,
+                                      phase: str, window_limit: int, load5: float,
+                                      load_threshold: float) -> dict[str, Any] | None:
+    from .reconcile_plan import daily_kline_next_retry_window, daily_kline_window_id
+
+    states = _load_daily_kline_upgrade_states(root)
+    previous = states.get(partition)
+    state = dict(previous) if isinstance(previous, dict) else {"status": "queued", "attempts": 0}
+    window_id = daily_kline_window_id(now, phase)
+    if state.get("load_defer_last_window_id") == window_id:
+        return None
+    consecutive = (int(state.get("consecutive_load_defer_windows", 0) or 0) + 1
+                   if state.get("load_defer_next_window_id") == window_id else 1)
+    next_window = daily_kline_next_retry_window(now, phase)
+    state.update(deferred_by_load=True, consecutive_load_defer_windows=consecutive,
+                 load_defer_last_window_id=window_id,
+                 load_defer_next_window_id=next_window,
+                 last_load5=load5, load_threshold=load_threshold)
+    alert = None
+    if consecutive >= window_limit:
+        state["load_override_window_id"] = next_window
+        if not state.get("load_defer_alerted"):
+            state["load_defer_alerted"] = True
+            alert = {"event": "daily_kline_load_deferred",
+                     "reason": "daily_kline_deferred_by_load_for_consecutive_quiet_windows",
+                     "partition": partition, "consecutive_windows": consecutive,
+                     "next_window": next_window, "load5": load5,
+                     "load_threshold": load_threshold}
+    states[partition] = state
+    _save_daily_kline_upgrade_states(root, states)
+    return alert
+
+
+def _clear_daily_kline_load_deferral(root: Path, partition: str) -> None:
+    states = _load_daily_kline_upgrade_states(root)
+    previous = states.get(partition)
+    if not isinstance(previous, dict) or not any(key in previous for key in (
+            "deferred_by_load", "consecutive_load_defer_windows", "load_override_window_id")):
+        return
+    state = dict(previous)
+    state.update(deferred_by_load=False, consecutive_load_defer_windows=0)
+    for key in ("load_defer_last_window_id", "load_defer_next_window_id", "load_override_window_id"):
+        state.pop(key, None)
+    states[partition] = state
+    _save_daily_kline_upgrade_states(root, states)
+
+
+def _claim_daily_kline_load_override(root: Path, action: dict[str, Any], *, now: datetime,
+                                     phase: str, dry_run: bool) -> bool:
+    if not action.get("load_override_once"):
+        return True
+    if dry_run:
+        return True
+    from .reconcile_plan import daily_kline_window_id
+
+    partition = str(action.get("partition", ""))
+    window_id = daily_kline_window_id(now, phase)
+    states = _load_daily_kline_upgrade_states(root)
+    previous = states.get(partition)
+    if not isinstance(previous, dict):
+        return False
+    if (previous.get("load_override_window_id") != window_id or
+            previous.get("load_override_queued_window") == window_id):
+        return False
+    state = dict(previous)
+    state["load_override_queued_window"] = window_id
+    state.update(deferred_by_load=False, consecutive_load_defer_windows=0)
+    for key in ("load_defer_last_window_id", "load_defer_next_window_id", "load_override_window_id"):
+        state.pop(key, None)
+    states[partition] = state
+    _save_daily_kline_upgrade_states(root, states)
+    return True
 
 
 def _is_consecutive_failed_trading_days(root: Path, failed_days: list[str], today: str) -> bool:
@@ -338,7 +439,9 @@ def boot_data_health(trade_date: str, prev_trade_date: str | None, root: str | P
 
 
 def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
-                   root: str | Path, *, now: datetime | str | None = None) -> dict[str, Any]:
+                   root: str | Path, *, now: datetime | str | None = None,
+                   reconcile_max_load5: Any = "cpus",
+                   daily_kline_load_defer_window_limit: Any = 3) -> dict[str, Any]:
     root = Path(root).expanduser()
     if phase == "NON_TRADING":
         return _result("ok", {"phase": phase, "trade_date": trade_date, "gaps": []})
@@ -387,8 +490,10 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
                      "recommendation": event or "NO_OWNER_EVENT",
                      "explanation": "expected artifact missing or overdue for current/past phase"})
     plan = []
+    load5 = None
+    load_threshold = None
+    window_limit = _resolve_load_defer_window_limit(daily_kline_load_defer_window_limit)
     try:
-        import os
         from .reconcile_plan import reconcile_plan
         catalog = json.loads((root / "catalog.json").read_text(encoding="utf-8"))
         try:
@@ -401,14 +506,35 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
         except (OSError, ValueError):
             upgrade_attempts = {}
         daily_kline_candidates = _daily_kline_candidates(root, trade_date, clock)
+        try:
+            load5 = float(os.getloadavg()[1])
+        except (AttributeError, IndexError, OSError, TypeError, ValueError):
+            load5 = None
+        cpus = os.cpu_count() or 1
+        load_threshold = _resolve_reconcile_load5_limit(reconcile_max_load5, cpus)
         plan = reconcile_plan(clock, catalog, trade_date=trade_date, prev_trade_date=previous,
-                              phase=phase, load1=os.getloadavg()[0], cpus=os.cpu_count(),
+                              phase=phase, load5=load5, load_threshold=load_threshold,
                               upgrade_attempts=upgrade_attempts,
                               daily_kline_candidates=daily_kline_candidates)
     except Exception as exc:  # the plan is advisory; never fail the boot check for it
         plan = [{"id": "*", "action": "PLAN_ERROR", "error": type(exc).__name__}]
+    load_defer_alert = None
+    daily_kline_action = next((row for row in plan if row.get("id") == "daily_kline"), None)
+    if daily_kline_action and daily_kline_action.get("deferred_by_load"):
+        try:
+            load_defer_alert = _record_daily_kline_load_deferral(
+                root, str(daily_kline_action.get("partition", "")), now=clock, phase=phase,
+                window_limit=window_limit, load5=float(load5),
+                load_threshold=float(load_threshold))
+        except (OSError, TypeError, ValueError):
+            load_defer_alert = None
+    elif (daily_kline_action and not daily_kline_action.get("load_override_once") and
+          not daily_kline_action.get("deferred_by_load")):
+        _clear_daily_kline_load_deferral(root, str(daily_kline_action.get("partition", "")))
     detail = {"phase": phase, "trade_date": trade_date, "gaps": gaps, "plan": plan,
               "recheck_required": bool(health.get("status") == "failed" or health.get("calendar", {}).get("status") == "failed")}
+    if load_defer_alert:
+        detail["load_defer_alert"] = load_defer_alert
     return _result("degraded" if gaps or detail["recheck_required"] else "ok", detail)
 
 
@@ -555,6 +681,12 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
         started = time.monotonic()
         row = {"id": item["id"], "action": "FETCH_NOW", "partition": str(action.get("partition", "")),
                "cost": (item.get("cost") or {}).get("class", "medium")}
+        if action.get("load_override_once"):
+            row["load_override_once"] = True
+            if not _claim_daily_kline_load_override(root, action, now=clock, phase=phase,
+                                                    dry_run=bool(dry_run)):
+                row.update(status="already_queued", elapsed_ms=0)
+                return row
         if dry_run:
             row.update(status="dry_run")
         else:
@@ -684,6 +816,12 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
             if enqueue_only:
                 layer_results = []
                 for item, action in light:
+                    if not _claim_daily_kline_load_override(root, action, now=clock, phase=phase,
+                                                            dry_run=bool(dry_run)):
+                        layer_results.append({"id": item["id"], "action": "FETCH_NOW",
+                                              "partition": str(action.get("partition", "")),
+                                              "status": "already_queued", "elapsed_ms": 0})
+                        continue
                     deps = action.get("depends_on")
                     if not isinstance(deps, list):
                         deps = (item.get("late_policy") or {}).get("depends_on", [])
@@ -697,12 +835,19 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
                                           "partition": str(action.get("partition", "")),
                                           "status": "queued", "run_in_phases": run_phases,
                                           "cost": item_cost,
+                                          **({"load_override_once": True} if action.get("load_override_once") else {}),
                                           "elapsed_ms": 0})
             else:
                 futures = [pool.submit(execute, pair) for pair in light]
                 layer_results = [future.result() for future in futures]
         for item, action in serial:
             if enqueue_only:
+                if not _claim_daily_kline_load_override(root, action, now=clock, phase=phase,
+                                                        dry_run=bool(dry_run)):
+                    layer_results.append({"id": item["id"], "action": "FETCH_NOW",
+                                          "partition": str(action.get("partition", "")),
+                                          "status": "already_queued", "elapsed_ms": 0})
+                    continue
                 deps = action.get("depends_on")
                 if not isinstance(deps, list):
                     deps = (item.get("late_policy") or {}).get("depends_on", [])
@@ -716,6 +861,7 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
                                       "partition": str(action.get("partition", "")),
                                       "status": "queued", "run_in_phases": run_phases,
                                       "cost": item_cost,
+                                      **({"load_override_once": True} if action.get("load_override_once") else {}),
                                       "elapsed_ms": 0})
                 continue
             # Non-light fetches (minutes: limit_reasons ~9min, daily bars) must not hold the boot chain, which blocks the

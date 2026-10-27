@@ -41,6 +41,23 @@ def _premarket_owner_is_open(request):
                for owner in ("startup_0830", "premarket_slice_0850"))
 
 
+def _send_load_defer_alert(request, result, dry_run):
+    detail = result.get("detail") if isinstance(result, dict) else None
+    pending = detail.get("load_defer_alert") if isinstance(detail, dict) else None
+    if not isinstance(pending, dict):
+        return
+    alert = _send_alert({"event": pending.get("event", "daily_kline_load_deferred"),
+                         "trade_date": request.get("trade_date"), "now": request.get("now"),
+                         "reason": pending.get("reason", "daily_kline_deferred_by_load"),
+                         "error": (f"partition={pending.get('partition')} "
+                                   f"windows={pending.get('consecutive_windows')} "
+                                   f"next_window={pending.get('next_window')} "
+                                   f"load5={pending.get('load5')} "
+                                   f"threshold={pending.get('load_threshold')}"),
+                         }, dry_run)
+    pending["delivery"] = alert
+
+
 def _failure_classes(request):
     args = request.get("args") if isinstance(request.get("args"), dict) else {}
     configured = args.get("failure_classes")
@@ -183,6 +200,11 @@ def _run(request):
         root = Path(os.environ.get("CORE_DATA_ROOT", "~/core-data")).expanduser()
         dry = os.environ.get("GUARDIAN_DRY_RUN") == "1"
         now = request.get("now")
+        args = request.get("args") if isinstance(request.get("args"), dict) else {}
+        reconcile_options = {
+            "reconcile_max_load5": args.get("reconcile_max_load5", "cpus"),
+            "daily_kline_load_defer_window_limit": args.get("daily_kline_load_defer_window_limit", 3),
+        }
         if configured_handler == "boot_trade_day":
             result = boot_trade_day(str(trade_date), root)
         elif configured_handler == "boot_data_health":
@@ -190,15 +212,19 @@ def _run(request):
                                       now=now, dry_run=dry)
         elif configured_handler == "boot_reconcile":
             result = boot_reconcile(str(trade_date), str(request.get("phase") or ""),
-                                    request.get("health"), root, now=now)
+                                    request.get("health"), root, now=now, **reconcile_options)
+            _send_load_defer_alert(request, result, dry)
         elif configured_handler == "boot_apply_plan":
             reconciled = boot_reconcile(str(trade_date), str(request.get("phase") or ""),
-                                        request.get("health"), root, now=now)
+                                        request.get("health"), root, now=now, **reconcile_options)
             runtime_reconcile = str(request.get("event") or "").startswith("runtime_reconcile_")
             result = boot_apply_plan(str(trade_date), reconciled["detail"].get("plan", []), root,
                                      now=now, phase=str(request.get("phase") or ""), dry_run=dry,
                                      enqueue_only=runtime_reconcile,
                                      active_events=request.get("active_events"))
+            if reconciled["detail"].get("load_defer_alert"):
+                result.setdefault("detail", {})["load_defer_alert"] = reconciled["detail"]["load_defer_alert"]
+            _send_load_defer_alert(request, result, dry)
         else:
             result = fetch_item(str(request.get("item_id") or ""), str(request.get("data_date") or trade_date),
                                 root, dry_run=dry, now=now,

@@ -107,8 +107,8 @@ def _rules() -> dict[str, Any]:
 
 def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_date: str,
                    prev_trade_date: str | None, registry: list[dict[str, Any]] | None = None,
-                   phase: str | None = None, load1: float | None = None,
-                   cpus: int | None = None,
+                   phase: str | None = None, load5: float | None = None,
+                   load_threshold: float | None = None,
                    upgrade_attempts: Mapping[str, Any] | None = None,
                    daily_kline_candidates: list[str] | None = None) -> list[dict[str, Any]]:
     """Ordered actions for late items on a trading day (dependencies first).
@@ -231,9 +231,22 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                 plan.append({**entry, "action": "DEFER", "reason": "session_or_busy_phase:" + str(phase),
                              "run_at": "next quiet phase (" + "/".join(sorted(quiet)) + ")"})
                 return
-            if load1 is not None and cpus and load1 > cpus:
-                plan.append({**entry, "action": "DEFER", "reason": f"load1={load1}>cpus={cpus}"})
-                return
+            if load5 is not None and load_threshold is not None and load5 > load_threshold:
+                current_window = daily_kline_window_id(now, phase)
+                load_state = (upgrade_attempts or {}).get(str(target), {}) if item_id == "daily_kline" else {}
+                if isinstance(load_state, Mapping) and load_state.get("load_override_window_id") == current_window:
+                    if load_state.get("load_override_queued_window") == current_window:
+                        plan.append({**entry, "action": "DEFER", "reason": "load_override_already_queued",
+                                     "deferred_by_load": False, "load5": load5,
+                                     "load_threshold": load_threshold})
+                        return
+                    entry["load_override_once"] = True
+                else:
+                    plan.append({**entry, "action": "DEFER",
+                                 "reason": f"load5={load5}>threshold={load_threshold}",
+                                 "deferred_by_load": True, "load5": load5,
+                                 "load_threshold": load_threshold})
+                    return
         plan.append({**entry, "action": "FETCH_NOW", "lane": "parallel" if cost == "light" else "serial"})
 
     for item_id in [i["id"] for i in items if i["id"] in due]:
