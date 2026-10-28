@@ -97,7 +97,19 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
     # Exactly one stable-level aggregation supplies every current watermark.
     watermarks = store.latest_watermarks()
     from ..guardian.daily_kline_coverage import TdCoverageSource
-    coverage = TdCoverageSource(store).coverage(dates, watermarks)
+    from .storage import ArtifactCatalog
+    manifest_path = ArtifactCatalog(base).locate("daily_kline", target)
+    known_missing = {}
+    if manifest_path is not None:
+        try:
+            current_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            current_quality = current_manifest.get("quality") or {}
+            value = current_quality.get("known_missing")
+            if isinstance(value, Mapping):
+                known_missing = value
+        except (OSError, ValueError, TypeError):
+            known_missing = {}
+    coverage = TdCoverageSource(store).coverage(dates, watermarks, known_missing)
     if client is None:
         import baostock as bs
         range_client = BaostockRangeClient(bs, read_timeout=30.0)

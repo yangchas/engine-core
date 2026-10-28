@@ -22,7 +22,8 @@ INDEX = {name: meta for name, meta in PROVENANCE.items()
          if isinstance(meta, dict) and meta.get("kind") == "raw_upstream_response"}
 CORE_ARTIFACT_INDEX = PROVENANCE.get("_core_artifacts", {})
 C526_EXCERPT_INDEX = PROVENANCE.get("_c526_excerpts", {})
-SOURCES = {"ths_hot_rank", "kaipan_hot_plates", "kaipan_pool", "wencai_daily_kline"}
+SOURCES = {"ths_hot_rank", "kaipan_hot_plates", "kaipan_pool", "wencai_daily_kline",
+           "baostock_query_all_stock"}
 CREDENTIAL_WORDS = ("token", "password", "secret", "cookie", "authorization")
 
 

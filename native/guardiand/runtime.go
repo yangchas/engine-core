@@ -216,22 +216,22 @@ func (l *ledger) close() error {
 }
 
 type instanceState struct {
-	Status        string   `json:"status"`
-	Attempts      int      `json:"attempts"`
-	Rung          int      `json:"rung,omitempty"`
-	Tier          string   `json:"tier,omitempty"`
-	RungAttempts  int      `json:"rung_attempts,omitempty"`
-	SkippedTiers  []string `json:"skipped_tiers,omitempty"`
+	Status           string   `json:"status"`
+	Attempts         int      `json:"attempts"`
+	Rung             int      `json:"rung,omitempty"`
+	Tier             string   `json:"tier,omitempty"`
+	RungAttempts     int      `json:"rung_attempts,omitempty"`
+	SkippedTiers     []string `json:"skipped_tiers,omitempty"`
 	FallbackFailures []string `json:"fallback_failures,omitempty"`
-	StartedAt     string   `json:"started_at"`
-	CompletedAt   string   `json:"completed_at"`
-	LastError     string   `json:"last_error"`
-	NextAttemptAt string   `json:"next_attempt_at,omitempty"`
-	Late          bool     `json:"late,omitempty"`
-	NextPhase     string   `json:"next_phase,omitempty"`
-	DataDate      string   `json:"data_date,omitempty"`
-	WaitFor       []string `json:"wait_for,omitempty"`
-	Cost          string   `json:"cost,omitempty"`
+	StartedAt        string   `json:"started_at"`
+	CompletedAt      string   `json:"completed_at"`
+	LastError        string   `json:"last_error"`
+	NextAttemptAt    string   `json:"next_attempt_at,omitempty"`
+	Late             bool     `json:"late,omitempty"`
+	NextPhase        string   `json:"next_phase,omitempty"`
+	DataDate         string   `json:"data_date,omitempty"`
+	WaitFor          []string `json:"wait_for,omitempty"`
+	Cost             string   `json:"cost,omitempty"`
 }
 type runState struct {
 	EventID   string        `json:"event_id"`
@@ -651,7 +651,7 @@ func (r *liveRunner) finishLadderRetryFailure(x Instance, date string, prior ins
 		Status: "FAILED_FINAL", Attempts: prior.Attempts, Rung: prior.Rung, Tier: prior.Tier,
 		RungAttempts: prior.RungAttempts, SkippedTiers: append([]string(nil), prior.SkippedTiers...),
 		FallbackFailures: append([]string(nil), prior.FallbackFailures...),
-		StartedAt: prior.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: reason,
+		StartedAt:        prior.StartedAt, CompletedAt: r.clock.Now().Format(time.RFC3339), LastError: reason,
 		DataDate: prior.DataDate,
 	}
 	r.setState(x, date, state)
@@ -2506,6 +2506,7 @@ func (b *limitedBuffer) Bytes() []byte { return b.b }
 func decodeResult(out []byte, err error) (status, code string, retry bool, detail string) {
 	var v struct {
 		Contract  int             `json:"contract"`
+		Job       string          `json:"job"`
 		Status    string          `json:"status"`
 		ErrorCode string          `json:"error_code"`
 		Retryable bool            `json:"retryable"`
@@ -2530,6 +2531,9 @@ func decodeResult(out []byte, err error) (status, code string, retry bool, detai
 		}
 		if parsed && v.ErrorCode == "TARGET_DATE_UNRESOLVED" && exitCode(err) == 30 {
 			return "failed", "TARGET_DATE_UNRESOLVED", true, detailText
+		}
+		if parsed && v.Job == "daily_kline" && v.Status == "failed" && v.ErrorCode == "TIER_PARTIAL" && v.Retryable && exitCode(err) == 30 {
+			return "failed", "TIER_PARTIAL", true, detailText
 		}
 		if parsed && v.ErrorCode == "TIER_NO_DATA" && exitCode(err) == 40 {
 			return "failed", "TIER_NO_DATA", false, detailText

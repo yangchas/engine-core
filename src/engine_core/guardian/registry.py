@@ -23,8 +23,20 @@ def kline_coverage_problem(quality: Any) -> str | None:
     """None when a daily_kline manifest quality block is complete enough; else a short reason."""
     if not isinstance(quality, Mapping):
         return None
+    if "coverage_threshold" in quality:
+        threshold = quality.get("coverage_threshold")
+        empty_max = quality.get("source_empty_max")
+        empty_count = quality.get("source_empty_count")
+        unexpected_count = quality.get("unexpected_count")
+        if (isinstance(unexpected_count, int) and unexpected_count > 0):
+            return f"daily_kline_unexpected_missing:{unexpected_count}"
+        if (isinstance(empty_max, int) and isinstance(empty_count, int)
+                and empty_count > empty_max):
+            return f"daily_kline_source_empty:{empty_count}>{empty_max}"
+    else:
+        threshold = MIN_KLINE_COVERAGE
     coverage = quality.get("coverage")
-    if isinstance(coverage, (int, float)) and coverage < MIN_KLINE_COVERAGE:
+    if isinstance(coverage, (int, float)) and isinstance(threshold, (int, float)) and coverage < threshold:
         return f"daily_kline_partial:{coverage:.3f}"
     return None
 

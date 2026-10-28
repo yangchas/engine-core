@@ -2381,6 +2381,12 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
                                    for tag in ("0932", "0935", "0940", "0945")})
             data["data_quality"]["daily_source"] = "CORE_CATALOG:daily_kline"
             data["data_quality"]["catalog_field_coverage"] = close_catalog_manifest["field_coverage"]
+            daily_provenance = close_catalog_manifest.get("datasets", {}).get("daily_kline", {})
+            daily_quality = daily_provenance.get("quality", {}) if isinstance(daily_provenance, Mapping) else {}
+            known_missing = daily_quality.get("known_missing", {}) if isinstance(daily_quality, Mapping) else {}
+            data["data_quality"]["baostock_source_unavailable"] = sorted(
+                str(symbol).zfill(6) for symbol, category in known_missing.items()
+                if category == "SOURCE_UNAVAILABLE") if isinstance(known_missing, Mapping) else []
             data["data_quality"]["checkpoints"] = "MISSING; close market statistics remain available"
             close_manifest = close_catalog_manifest
             if close_catalog_manifest.get("field_coverage", {}).get("p0932_pct", {}).get("valid_n", 0) == 0:

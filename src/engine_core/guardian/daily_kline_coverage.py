@@ -56,13 +56,16 @@ class TdCoverageSource:
             return {}
         return self.store.latest_watermarks()
 
-    def coverage(self, dates: Sequence[str], watermarks: Mapping[str, str] | None = None) -> dict[str, DayCoverage]:
+    def coverage(self, dates: Sequence[str], watermarks: Mapping[str, str] | None = None,
+                 known_missing: Mapping[str, str] | None = None) -> dict[str, DayCoverage]:
         from ..data_pipeline.td_sink import pick_best
         result: dict[str, DayCoverage] = {}
         if not self.store.schema_exists():
             return {day: DayCoverage(day, MISSING, self.origin, reason="td_schema_absent") for day in dates}
         counts = self.store.day_counts(list(dates))
         watermarks = watermarks or {}
+        ignored_watermarks = {str(symbol).zfill(6) for symbol, category in (known_missing or {}).items()
+                              if category == "SOURCE_UNAVAILABLE"}
         latest_day = max(dates, default="")
         for day in dates:
             current = pick_best(self.store.read_versions(day))
@@ -83,7 +86,8 @@ class TdCoverageSource:
             elif provider != "baostock":
                 result[day] = DayCoverage(day, LOW_QUALITY, self.origin,
                                           reason="non_baostock_provider:" + (provider or "unknown"), **base)
-            elif day == latest_day and any(value < day for value in watermarks.values()):
+            elif day == latest_day and any(value < day for symbol, value in watermarks.items()
+                                           if str(symbol).zfill(6) not in ignored_watermarks):
                 result[day] = DayCoverage(day, INCOMPLETE, self.origin, reason="symbol_watermark_behind_target",
                                           **base)
             elif base["needs_upgrade"]:
@@ -156,7 +160,8 @@ class CoverageResult:
 
 
 def resolve_coverage(dates: Sequence[str], primary: CoverageSource | None,
-                     trading_dates: Sequence[str], history_min_trading_days: int = 10) -> CoverageResult:
+                     trading_dates: Sequence[str], history_min_trading_days: int = 10,
+                     known_missing: Mapping[str, str] | None = None) -> CoverageResult:
     """Read TD once for all-symbol watermarks. A TD outage stays UNKNOWN and never starts a mass fetch."""
     from ..data_pipeline.td_sink import TdUnavailable
     if primary is None:
@@ -164,7 +169,8 @@ def resolve_coverage(dates: Sequence[str], primary: CoverageSource | None,
                                for day in dates}, "unknown", "td_not_configured")
     try:
         watermarks = primary.latest_watermarks() if isinstance(primary, TdCoverageSource) else {}
-        days = primary.coverage(dates, watermarks) if isinstance(primary, TdCoverageSource) else primary.coverage(dates)
+        days = (primary.coverage(dates, watermarks, known_missing)
+                if isinstance(primary, TdCoverageSource) else primary.coverage(dates))
         plan = (build_gap_fill_plan(watermarks, max(dates, default=""), trading_dates,
                                     history_min_trading_days, day_states=days)
                 if dates else [])

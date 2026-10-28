@@ -66,6 +66,7 @@ def _sample_probe(args, root: Path, adapters) -> int:
 
 
 def main(argv=None) -> int:
+    started = time.monotonic()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", required=True, choices=["premarket", "intraday", "postmarket"])
     parser.add_argument("--date", default=date.today().isoformat())
@@ -78,6 +79,8 @@ def main(argv=None) -> int:
                         help="optional wall-clock budget for the daily_kline task")
     parser.add_argument("--baostock-no-progress-seconds", type=float, default=300.0,
                         help="fail retryably when Baostock produces no row/checkpoint progress")
+    parser.add_argument("--baostock-formal-coverage-threshold", type=float, default=None)
+    parser.add_argument("--baostock-source-empty-max", type=int, default=None)
     parser.add_argument("--symbols-file", help="debug-only one-symbol-per-line Baostock cohort")
     parser.add_argument("--artifact-root", help="artifact root (required with --symbols-file)")
     parser.add_argument("--no-lock", action="store_true")
@@ -88,6 +91,15 @@ def main(argv=None) -> int:
         parser.error("--td-write requires --write")
     if args.baostock_no_progress_seconds <= 0:
         parser.error("--baostock-no-progress-seconds must be positive")
+    from engine_core.data_pipeline.registry.daily_kline import BAOSTOCK_COMPLETION_POLICY
+    baostock_policy = {
+        "formal_coverage_threshold": (BAOSTOCK_COMPLETION_POLICY["formal_coverage_threshold"]
+                                      if args.baostock_formal_coverage_threshold is None
+                                      else args.baostock_formal_coverage_threshold),
+        "source_empty_max": (BAOSTOCK_COMPLETION_POLICY["source_empty_max"]
+                             if args.baostock_source_empty_max is None
+                             else args.baostock_source_empty_max),
+    }
     if args.symbols_file and args.phase != "postmarket":
         parser.error("--symbols-file is only valid with --phase postmarket")
     if args.symbols_file and (args.write or args.td_write):
@@ -135,7 +147,8 @@ def main(argv=None) -> int:
     try:
         result = run_daily_phase(args.phase, args.date, root=root, adapters=adapters,
             trading_dates=trade_dates, write=args.write, redis=redis,
-            td_adapter=adapters.get("td_writer"), td_write=args.td_write, lock=not args.no_lock)
+            td_adapter=adapters.get("td_writer"), td_write=args.td_write,
+            baostock_policy=baostock_policy, lock=not args.no_lock)
     finally:
         if td_store is not None:
             td_store.close()
@@ -149,6 +162,17 @@ def main(argv=None) -> int:
     if args.symbols_file:
         result["sample_scope"] = "symbols_file"
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    if result.get("error_code") == "TIER_PARTIAL":
+        daily = next((item for item in result.get("jobs", []) if item.get("job") == "daily_kline"), {})
+        return emit_job_result(ContractJobResult(
+            contract=1, job="daily_kline", trade_date=args.date, status="failed", tier=0,
+            source="baostock", dataset="daily_kline", version=daily.get("version"),
+            row_count=daily.get("row_count"), coverage=daily.get("coverage"),
+            error_code="TIER_PARTIAL", retryable=True, attempts=1,
+            elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+            detail={"business_status": daily.get("business_status"),
+                    "known_missing": daily.get("known_missing", {}),
+                    "alert_required": daily.get("alert_required")}))
     if result["status"] not in {"READY", "SKIPPED_NON_TRADING_DAY"}:
         if result.get("error_code") == "TD_UNAVAILABLE":
             return 30

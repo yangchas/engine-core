@@ -2716,6 +2716,16 @@ func TestDecodeResultKeepsHandlerDetailOnNonZeroExit(t *testing.T) {
 	if _, code, _, _ := decodeResult([]byte("garbage\n"), nil); code != "CONTRACT_INVALID" {
 		t.Fatal(code)
 	}
+	partial := []byte(`{"contract":1,"job":"daily_kline","status":"failed","error_code":"TIER_PARTIAL","retryable":true,"detail":{"coverage":0.668}}` + "\n")
+	status, code, retry, _ = decodeResult(partial, localExitError{code: 30, text: "exit status 30"})
+	if status != "failed" || code != "TIER_PARTIAL" || !retry {
+		t.Fatalf("retryable partial result decoded as %q,%q,%t", status, code, retry)
+	}
+	otherPartial := []byte(`{"contract":1,"job":"limit_up_pool","status":"failed","error_code":"TIER_PARTIAL","retryable":true,"detail":{"coverage":0.668}}` + "\n")
+	status, code, retry, _ = decodeResult(otherPartial, localExitError{code: 30, text: "exit status 30"})
+	if status != "failed" || code != "INTERNAL_ERROR" || !retry {
+		t.Fatalf("non-daily partial result decoded as %q,%q,%t", status, code, retry)
+	}
 }
 
 func TestDecodeResultAcceptsDegradedExitCode10(t *testing.T) {

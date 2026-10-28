@@ -38,6 +38,7 @@ class BaostockDailyProvider:
                  timeout_seconds: float = 30, retries: int = 2, max_consecutive_errors: int = 25,
                  sleep_fn: Callable[[float], None] = time.sleep, timeout_call: Callable[..., Any] | None = None,
                  checkpoint_path: str | Path | None = None,
+                 source_universe_checkpoint: str | Path | None = None,
                  total_timeout_seconds: float | None = None, sample_scope: bool = False,
                  no_progress_timeout_seconds: float = 300):
         self.client_factory = client_factory
@@ -58,6 +59,8 @@ class BaostockDailyProvider:
         self.sleep_fn = sleep_fn
         self.timeout_call = timeout_call or self._timeout_call
         self.checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else None
+        self.source_universe_checkpoint = (Path(source_universe_checkpoint)
+                                           if source_universe_checkpoint is not None else None)
         self.sample_scope = bool(sample_scope)
         self._timing: dict[str, Any] = {"login_ms": 0.0, "query_ms": 0.0,
                                         "query_count": 0, "error_code": None, "error_events": []}
@@ -268,6 +271,52 @@ class BaostockDailyProvider:
         finally:
             self._timing["query_ms"] += round((time.monotonic() - started) * 1000, 3)
 
+    def _source_universe(self, client: Any, day: str) -> tuple[list[str] | None, str | None]:
+        path = self.source_universe_checkpoint
+        if path is not None and path.is_file():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                symbols = payload.get("symbols") if payload.get("trade_date") == day else None
+                if isinstance(symbols, list) and symbols:
+                    return sorted({str(value).zfill(6) for value in symbols}), None
+            except (OSError, ValueError, TypeError):
+                pass
+        module = getattr(client, "module", None)
+        query = getattr(module, "query_all_stock", None)
+        if not callable(query):
+            return None, "query_all_stock_unavailable"
+        started = time.monotonic()
+        try:
+            self._timing["query_count"] = int(self._timing.get("query_count", 0)) + 1
+            result = self.timeout_call(lambda: query(day=day))
+            if str(getattr(result, "error_code", "0")) != "0":
+                return None, "query_all_stock_error"
+            fields = list(getattr(result, "fields", ()) or ())
+            if "code" not in fields:
+                return None, "query_all_stock_schema_invalid"
+            code_index = fields.index("code")
+            symbols: set[str] = set()
+            while result.next():
+                row = result.get_row_data()
+                if code_index >= len(row):
+                    continue
+                symbol = str(row[code_index]).rsplit(".", 1)[-1]
+                if symbol.isdigit() and len(symbol) == 6:
+                    symbols.add(symbol)
+            if not symbols:
+                return None, "query_all_stock_empty"
+            values = sorted(symbols)
+            if path is not None:
+                from ...data_pipeline.storage import _atomic_write, canonical_json
+                payload = {"trade_date": day, "source": "baostock.query_all_stock",
+                           "symbols": values}
+                _atomic_write(path, canonical_json(payload) + b"\n")
+            return values, None
+        except Exception as exc:
+            return None, "query_all_stock_failed:" + type(exc).__name__
+        finally:
+            self._timing["query_ms"] += round((time.monotonic() - started) * 1000, 3)
+
     def fetch(self, trade_date: str, context: Any = None) -> dict[str, Any]:
         self._timing = {"login_ms": 0.0, "query_ms": 0.0, "query_count": 0,
                         "error_code": None, "error_events": [],
@@ -294,6 +343,8 @@ class BaostockDailyProvider:
         transport_failed = False
         unsaved = 0
         budget_exhausted = False
+        source_symbols: list[str] | None = None
+        source_universe_error: str | None = "not_queried"
         try:
             try:
                 self._login(client)
@@ -305,6 +356,10 @@ class BaostockDailyProvider:
                     budget_exhausted = True
                 else:
                     raise
+            if self.sample_scope:
+                source_universe_error = "sample_scope"
+            else:
+                source_symbols, source_universe_error = self._source_universe(client, trade_date)
             for symbol in expected:
                 if budget_exhausted:
                     break
@@ -488,6 +543,8 @@ class BaostockDailyProvider:
         result_meta = {"rows": returned_rows, "expected_count": len(expected), "missing_count": len(missing),
                 "missing_symbols": sorted(set(missing)), "suspended_count": suspended,
                 "mismatch_count": mismatch, "errors": errors,
+                "source_symbols": source_symbols,
+                "source_universe_error": source_universe_error,
                 "partial": bool(missing or errors or len(rows) < len(expected)),
                 "resumed_count": resumed_count,
                 **progress,

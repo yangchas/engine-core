@@ -191,7 +191,8 @@ class JobRunner:
             source: str | None = None, expected_count: int | None = None,
             as_of: str | None = None, available_at: str | None = None,
             source_event_at: str | None = None, algorithm_version: str = "1",
-            dry_run: bool = False) -> JobResult:
+            dry_run: bool = False,
+            baostock_policy: Mapping[str, Any] | None = None) -> JobResult:
         spec = get_dataset(name)
         day = datetime.strptime(trade_date, "%Y-%m-%d").date()
         clock = _parse_now(now)
@@ -236,6 +237,35 @@ class JobRunner:
             computed = computed.get("rows", rows)
         rows = _clean_rows(spec, _redact(computed))
         quality = _quality(rows, fetch_meta)
+        baostock_completion = None
+        if (name == "daily_kline" and fetch_meta.get("provider") == "baostock" and
+                fetch_meta.get("sample_scope") != "symbols_file"):
+            expected_symbols = fetch_meta.get("expected_symbols")
+            if isinstance(expected_symbols, (list, tuple, set)):
+                from .baostock_completion import classify_missing_symbols, evaluate_baostock_completion
+                from .registry.daily_kline import BAOSTOCK_COMPLETION_POLICY
+                policy = dict(BAOSTOCK_COMPLETION_POLICY)
+                if baostock_policy is not None:
+                    policy.update(baostock_policy)
+                bar_symbols = {row.get("symbol") for row in rows if row.get("symbol")}
+                source_symbols = fetch_meta.get("source_symbols")
+                if not isinstance(source_symbols, (list, tuple, set)):
+                    source_symbols = None
+                known_missing = classify_missing_symbols(expected_symbols, bar_symbols, source_symbols)
+                baostock_completion = evaluate_baostock_completion(
+                    expected_symbols, bar_symbols, known_missing,
+                    coverage_threshold=policy["formal_coverage_threshold"],
+                    max_source_empty=policy["source_empty_max"])
+                quality.update(baostock_completion["quality"])
+                quality["classification_source"] = "baostock.query_all_stock"
+                quality["source_universe_status"] = "READY" if source_symbols is not None else "UNKNOWN"
+                quality["source_universe_symbol_count"] = len(source_symbols or ())
+                if source_symbols is not None:
+                    quality["source_universe_sha256"] = hashlib.sha256(
+                        "\n".join(sorted({str(value).zfill(6) for value in source_symbols})).encode("ascii")
+                    ).hexdigest()
+                elif fetch_meta.get("source_universe_error"):
+                    quality["source_universe_error"] = str(fetch_meta["source_universe_error"])
         if fetch_meta.get("sample_scope") == "symbols_file":
             quality["partial"] = True
             quality["status"] = "PARTIAL"
@@ -316,8 +346,15 @@ class JobRunner:
                 }]
             manifest["field_completeness"] = fetch_meta.get("field_completeness", {})
             manifest["business_status"] = ("PROVISIONAL" if fetch_meta.get("sample_scope") == "symbols_file"
+                                           else baostock_completion["business_status"]
+                                           if baostock_completion is not None
                                            else classify_daily_kline(provider, quality.get("coverage"),
                                                                      manifest["field_completeness"]))
+            if baostock_completion is not None:
+                policy = dict(BAOSTOCK_COMPLETION_POLICY)
+                if baostock_policy is not None:
+                    policy.update(baostock_policy)
+                manifest["completion_policy"] = policy
         elif fetch_meta.get("partial"):
             manifest["business_status"] = "PARTIAL"
         if dry_run:
@@ -329,8 +366,11 @@ class JobRunner:
         committed["cache_publish"] = "SKIPPED"
         if td_write:
             if self.td_adapter is None: raise RuntimeError("td_adapter_not_configured")
-            self.td_adapter.write_dataset(spec, trade_date, rows, committed)
-            committed["td_publish"] = "READY"
+            if baostock_completion is not None and not baostock_completion["quality"].get("status") == "READY":
+                committed["td_publish"] = "SKIPPED_PARTIAL"
+            else:
+                self.td_adapter.write_dataset(spec, trade_date, rows, committed)
+                committed["td_publish"] = "READY"
         if publish:
             if self.redis is None: raise RuntimeError("redis_adapter_not_configured")
             self._publish_redis(spec, trade_date, committed, rows, safe_source)

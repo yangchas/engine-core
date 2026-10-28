@@ -8,6 +8,11 @@ DAILY_KLINE_QUALITY_FIELDS = (
     "open", "high", "low", "close", "pre_close", "pct_chg", "amount_yuan", "volume",
 )
 
+BAOSTOCK_COMPLETION_POLICY = {
+    "formal_coverage_threshold": 0.995,
+    "source_empty_max": 20,
+}
+
 
 def classify_daily_kline(provider: str, coverage: float | None,
                          field_completeness: Mapping[str, str] | object) -> str:

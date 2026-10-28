@@ -122,6 +122,7 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                     adapters: Mapping[str, Callable[..., Any]], trading_dates: Iterable[str] | None,
                     write: bool, redis: Any = None, td_adapter: Any = None,
                     td_write: bool = False, now: str | None = None,
+                    baostock_policy: Mapping[str, Any] | None = None,
                     lock: bool = True) -> dict[str, Any]:
     if phase not in _PHASE_JOBS:
         raise ValueError("unknown_phase")
@@ -204,11 +205,21 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                 job = runner.run(name, dataset_day, fetch=fetch, now=now,
                                  publish=bool(write and redis is not None),
                                  td_write=bool(td_write and name in {"daily_kline", "auction_baseline"}),
+                                 baostock_policy=baostock_policy if name == "daily_kline" else None,
                                  dry_run=not write)
                 results.append({"job": name, "status": job.manifest["quality"]["status"],
                                 "version": job.manifest.get("version"),
                                 "row_count": job.manifest["row_count"],
-                                "sha256": job.manifest.get("sha256")})
+                                "sha256": job.manifest.get("sha256"),
+                                "business_status": job.manifest.get("business_status"),
+                                "coverage": job.manifest["quality"].get("coverage"),
+                                "known_missing": job.manifest["quality"].get("known_missing", {}),
+                                "alert_required": job.manifest["quality"].get("alert_required")})
+                if (name == "daily_kline" and job.manifest.get("completion_policy")
+                        and job.manifest.get("business_status") == "PARTIAL"):
+                    errors.append({"job": name, "status": "FAILED", "error_code": "TIER_PARTIAL",
+                                   "retryable": True, "coverage": job.manifest["quality"].get("coverage"),
+                                   "known_missing": job.manifest["quality"].get("known_missing", {})})
             except Exception as exc:
                 from .td_sink import TdUnavailable, TdVerifyError
                 error_code = ("TD_UNAVAILABLE" if isinstance(exc, TdUnavailable) else
@@ -264,6 +275,8 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
             result["error_code"], result["retryable"] = "TD_UNAVAILABLE", True
         elif any(item.get("error_code") == "TD_VERIFY_FAILED" for item in errors):
             result["error_code"], result["retryable"] = "TD_VERIFY_FAILED", False
+        elif any(item.get("error_code") == "TIER_PARTIAL" for item in errors):
+            result["error_code"], result["retryable"] = "TIER_PARTIAL", True
         if baseline_append is not None:
             result["auction_baseline_append"] = baseline_append
         if write:

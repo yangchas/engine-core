@@ -195,11 +195,17 @@ def daily_kline_coverage(root: Path, candidates: list[str], catalog: dict[str, A
     """TD-only self-check and one aggregate watermark read for every stock."""
     from .daily_kline_coverage import build_primary_source, resolve_coverage, td_settings
     from ..data_pipeline.trade_calendar import TradeCalendarStore
+    from .registry import catalog_manifest
     settings = settings if settings is not None else td_settings()
     primary = build_primary_source(settings, store=store)
     trading_dates = TradeCalendarStore(root).all_trading_dates()
     depth = int((settings or {}).get("history_min_trading_days", DAILY_KLINE_BACKFILL_DAYS))
-    return resolve_coverage(candidates, primary, trading_dates, history_min_trading_days=depth)
+    latest = max(candidates, default="")
+    latest_manifest = catalog_manifest(catalog, "daily_kline", latest) if latest else None
+    quality = latest_manifest.get("quality") if isinstance(latest_manifest, Mapping) else None
+    known_missing = quality.get("known_missing") if isinstance(quality, Mapping) else None
+    return resolve_coverage(candidates, primary, trading_dates, history_min_trading_days=depth,
+                            known_missing=known_missing if isinstance(known_missing, Mapping) else None)
 
 
 def _record_daily_kline_upgrade(root: Path, partition: str, *, succeeded: bool,

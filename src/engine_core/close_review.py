@@ -629,7 +629,10 @@ def render_close_markdown(data: Mapping[str, Any]) -> str:
     ref_note = "参考数据：" + "；".join(f"{name}{'可用' if refs.get(key, {}).get('status') == 'READY' else '缺失'}"
                                          for key, name in (("stock_names", "名称表"), ("stock_caps", "市值表"))) + "。" if refs else ""
     limitations = "；限制：" + "；".join(data["data_quality"].get("limitations", [])) if data["data_quality"].get("limitations") else ""
-    lines += ["", "## 数据质量", "", f"覆盖：收盘 {data['data_quality']['close_pct_coverage']}/{data['data_quality']['included_stock_count']}，0925 {data['data_quality']['auction_pct_coverage']}，0932 {data['data_quality']['p0932_coverage']}，0945 {data['data_quality']['p0945_coverage']}；竞价价 FINAL/INDICATIVE {data['data_quality']['final_count']}/{data['data_quality']['indicative_count']}；首次达到时刻 UNKNOWN（检查点间未观测）。{cp_note}{ref_note}日线来源：{data['data_quality']['daily_source']}。缺失字段保持缺失。{limitations}", ""]
+    source_unavailable = data["data_quality"].get("baostock_source_unavailable", [])
+    source_note = ("Baostock 来源暂缺：" + "、".join(source_unavailable) + "。"
+                   if source_unavailable else "")
+    lines += ["", "## 数据质量", "", f"覆盖：收盘 {data['data_quality']['close_pct_coverage']}/{data['data_quality']['included_stock_count']}，0925 {data['data_quality']['auction_pct_coverage']}，0932 {data['data_quality']['p0932_coverage']}，0945 {data['data_quality']['p0945_coverage']}；竞价价 FINAL/INDICATIVE {data['data_quality']['final_count']}/{data['data_quality']['indicative_count']}；首次达到时刻 UNKNOWN（检查点间未观测）。{cp_note}{ref_note}日线来源：{data['data_quality']['daily_source']}。{source_note}缺失字段保持缺失。{limitations}", ""]
     return "\n".join(lines)
 
 

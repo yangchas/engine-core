@@ -267,6 +267,8 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
             provider = BaostockDailyProvider(
                 client_factory=client_factory, symbols=symbols_for,
                 checkpoint_path=checkpoint, timeout_seconds=baostock_timeout_seconds,
+                source_universe_checkpoint=(Path(artifact_root) / ".checkpoints" /
+                                            f"baostock-source-universe-{day}.json"),
                 total_timeout_seconds=self.total_timeout_seconds,
                 no_progress_timeout_seconds=baostock_no_progress_seconds,
                 sample_scope=sample_path is not None,
@@ -278,6 +280,9 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
                 raise RuntimeError("symbol_universe_artifact_required:" + day)
             identity = {str(row.get("symbol", "")).zfill(6): row
                         for row in universe.rows if row.get("symbol")}
+            result["expected_symbols"] = sorted(
+                symbol for symbol, row in identity.items()
+                if str(row.get("trade_status", "")).strip() != "0")
             for row in result.get("rows", []):
                 source = identity.get(str(row.get("symbol", "")).zfill(6))
                 if source is not None:

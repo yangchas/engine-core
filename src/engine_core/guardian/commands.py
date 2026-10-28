@@ -35,6 +35,17 @@ def _append_baostock_no_progress(cmd, event_args):
                     str(_arg(event_args, "baostock_no_progress_seconds"))])
 
 
+def _append_baostock_completion_policy(cmd, event_args):
+    policy = _arg(event_args, "daily_kline_policy")
+    if not isinstance(policy, Mapping):
+        return
+    if "formal_coverage_threshold" in policy:
+        cmd.extend(["--baostock-formal-coverage-threshold",
+                    str(policy["formal_coverage_threshold"])])
+    if "source_empty_max" in policy:
+        cmd.extend(["--baostock-source-empty-max", str(policy["source_empty_max"])])
+
+
 _WENCAI_ARG_FLAGS = (
     ("wencai_cookie_file", "--wencai-cookie-file"),
     ("wencai_cooldown_seconds", "--wencai-cooldown-seconds"),
@@ -185,6 +196,7 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
         if opts.td_write:
             cmd.extend(["--write", "--td-write"])
         _append_baostock_no_progress(cmd, _event_args(event))
+        _append_baostock_completion_policy(cmd, _event_args(event))
         return cmd
     if name in {"auction_report", "open_report", "close_report"}:
         stage = {"auction_report": "auction", "open_report": "open", "close_report": "close"}[name]
@@ -244,6 +256,7 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
             if budget is not None:
                 cmd.extend(["--baostock-total-timeout-seconds", str(budget)])
             _append_baostock_no_progress(cmd, event_args)
+            _append_baostock_completion_policy(cmd, event_args)
         if opts.write:
             cmd.append("--write")
         if opts.td_write or opts.write:

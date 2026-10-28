@@ -206,9 +206,24 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
         completeness[field] = status
     quality["field_completeness"] = completeness
     result["field_completeness"] = completeness
+    completion_policy = result.get("completion_policy")
+    if provider == "baostock" and isinstance(completion_policy, Mapping):
+        from .baostock_completion import evaluate_baostock_completion
+        known_missing = quality.get("known_missing")
+        if not isinstance(known_missing, Mapping):
+            raise ValueError("known_missing_incomplete")
+        completion = evaluate_baostock_completion(
+            active if universe_path is not None else sample_symbols, row_symbols, known_missing,
+            coverage_threshold=completion_policy.get("formal_coverage_threshold"),
+            max_source_empty=completion_policy.get("source_empty_max"))
+        quality.update(completion["quality"])
+        result["business_status"] = completion["business_status"]
+    else:
+        result["business_status"] = ("PROVISIONAL" if sample_scope else
+                                      classify_daily_kline(provider, quality.get("coverage"), completeness))
+    quality["field_completeness"] = completeness
+    result["field_completeness"] = completeness
     result["quality"] = quality
-    result["business_status"] = ("PROVISIONAL" if sample_scope else
-                                  classify_daily_kline(provider, quality.get("coverage"), completeness))
 
     attempts = result.get("provider_attempts")
     normalized_attempts = []

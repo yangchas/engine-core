@@ -520,12 +520,20 @@ def test_baostock_probe_budget_is_bounded_and_external_command_is_unchanged(monk
     event = SimpleNamespace(timeout_seconds=1000, args={
         "budget_ratio": 0.5, "budget_floor_seconds": 1,
         "baostock_no_progress_seconds": 43,
+        "daily_kline_policy": {"formal_coverage_threshold": 0.995, "source_empty_max": 20},
     })
     monkeypatch.delenv("CORE_BAOSTOCK_PROBE_COMMAND", raising=False)
     builtin = build_handler_command("baostock_probe", event, opts, ROOT / "artifacts",
                                     "2026-10-26", sys.executable, ROOT)
     assert builtin[builtin.index("--baostock-total-timeout-seconds") + 1] == "500"
     assert builtin[builtin.index("--baostock-no-progress-seconds") + 1] == "43"
+    assert builtin[builtin.index("--baostock-formal-coverage-threshold") + 1] == "0.995"
+    assert builtin[builtin.index("--baostock-source-empty-max") + 1] == "20"
+
+    postmarket = build_handler_command("postmarket_data", event, opts, ROOT / "artifacts",
+                                       "2026-10-26", sys.executable, ROOT)
+    assert postmarket[postmarket.index("--baostock-formal-coverage-threshold") + 1] == "0.995"
+    assert postmarket[postmarket.index("--baostock-source-empty-max") + 1] == "20"
 
     monkeypatch.setenv("CORE_BAOSTOCK_PROBE_COMMAND", "python custom_probe.py")
     invalid_event = SimpleNamespace(timeout_seconds=1000, args={"budget_ratio": True})
