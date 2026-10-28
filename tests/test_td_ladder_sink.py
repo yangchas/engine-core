@@ -36,19 +36,24 @@ def test_column_mapping_is_the_documented_one(tmp_path):
                                       "day_source_chain": row["day_source_chain"], "quality": "OK"}
 
 
-def test_sync_is_idempotent_and_versioned(tmp_path):
+def test_in_task_write_is_idempotent_and_versioned_without_catalog_reread(tmp_path, monkeypatch):
     store = MemoryLadderStore()
     sink = LadderTdSink(store, tmp_path)
     first = commit(tmp_path)
-    out = sink.sync_date("2026-10-27")
-    assert out.status == "synced" and out.version == first["version"] and out.row_count == first["row_count"]
-    assert sink.sync_date("2026-10-27").status == "unchanged"                       # no new write
-    calls = len(store.versions["2026-10-27"])
-    sink.sync_date("2026-10-27")
-    assert len(store.versions["2026-10-27"]) == calls
+    catalog = ArtifactCatalog(tmp_path)
+    rows = catalog.read_rows(Path(first["manifest_uri"]))
     second = commit(tmp_path, as_of="2026-10-29T00:00:00+08:00", source_ladder=["kaipan", "daily_kline"])
+    second_rows = catalog.read_rows(Path(second["manifest_uri"]))
+    monkeypatch.setattr(ArtifactCatalog, "read",
+                        lambda _self: (_ for _ in ()).throw(AssertionError("catalog reread")))
+    out = sink.write_partition("2026-10-27", rows, first)
+    assert out.status == "synced" and out.version == first["version"] and out.row_count == first["row_count"]
+    assert sink.write_partition("2026-10-27", rows, first).status == "unchanged"    # no new write
+    calls = len(store.versions["2026-10-27"])
+    sink.write_partition("2026-10-27", rows, first)
+    assert len(store.versions["2026-10-27"]) == calls
     assert second["version"] != first["version"]
-    out = sink.sync_date("2026-10-27")
+    out = sink.write_partition("2026-10-27", second_rows, second)
     assert out.status == "synced" and out.version == second["version"]               # replaced the day
     assert len(store.days["2026-10-27"]) == second["row_count"]
     assert {r["version"] for r in store.days["2026-10-27"].values()} == {second["version"]}

@@ -63,7 +63,7 @@ def test_real_write_readback_idempotent_and_supersede(td, tmp_path):
 
     _fresh(td)
     _m, rows = load_real("formal")
-    commit_day(tmp_path, DAY, "wencai", rows=rows[:NROWS])             # PROVISIONAL, all NROWS symbols
+    commit_day(tmp_path, DAY, "baostock", rows=rows[:NROWS])           # Baostock provisional partition
     sink = DailyKlineTdSink(td, tmp_path)
     low = sink.sync_dates([DAY])[0]
     assert low.status == "synced" and low.row_count == NROWS and td.day_counts([DAY]) == {DAY: NROWS}
@@ -105,7 +105,7 @@ def test_real_coverage_source_states(td, tmp_path):
 
     _fresh(td)
     _m, rows = load_real("formal")
-    commit_day(tmp_path, "2026-10-21", "wencai", rows=rows[:200])
+    commit_day(tmp_path, "2026-10-21", "baostock", rows=rows[:200])
     commit_day(tmp_path, "2026-10-22", "baostock")
     sink = DailyKlineTdSink(td, tmp_path)
     sink.sync_dates(["2026-10-21", "2026-10-22"])

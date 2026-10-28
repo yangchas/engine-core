@@ -279,7 +279,7 @@ def test_kaipan_rung_commits_formal_partition_that_passes_the_contract_checker(t
     store = MemoryPoolStore()
     code, body = d1.run_pool_tier(request("kaipan"), tmp_path, deps=make_deps(store=store))
     assert code == 0 and body["status"] == "ok", body
-    assert body["detail"]["td_sync"]["status"] == "ok" and store.days[DAY]
+    assert body["detail"]["td_write"]["status"] == "ok" and store.days[DAY]
     report = check_partition(tmp_path, "limit_up_pool", DAY)
     assert report.passed, report.summary()
     manifest = json.loads(ArtifactCatalog(tmp_path).locate("limit_up_pool", DAY).read_text(encoding="utf-8"))
@@ -371,15 +371,11 @@ def test_dry_run_fetches_nothing(tmp_path):
     assert code == 0 and body["status"] == "not_applicable"
 
 
-def test_td_outage_does_not_fail_the_fetch_and_next_sync_catches_up(tmp_path):
+def test_td_outage_fails_the_fetch_task_as_retryable(tmp_path):
     store = MemoryPoolStore()
     store.fail = "unavailable"
     code, body = d1.run_pool_tier(request("kaipan"), tmp_path, deps=make_deps(store=store))
-    assert code == 0 and body["detail"]["td_sync"]["error_code"] == "TD_UNAVAILABLE"
-    store.fail = None
-    out = LimitPoolTdSink(store, tmp_path).sync_dates([DAY])[0]
-    assert out.status == "synced" and store.days[DAY]
-    assert LimitPoolTdSink(store, tmp_path).sync_dates([DAY])[0].status == "unchanged"
+    assert code == 30 and body["retryable"] and body["error_code"] == "TD_UNAVAILABLE"
 
 
 def test_ladder_pass_reads_rungs_from_schedule_and_stops_at_first_success(tmp_path):
@@ -589,20 +585,9 @@ def test_mutation_no_date_evidence_would_accept_a_wrong_day():
         lp.build_wencai("2026-10-27", doc["data"], reported_total=doc["row_count"])
 
 
-def test_td_sync_event_also_catches_up_the_limit_pool(tmp_path, monkeypatch):
-    """The scheduled td_sync sweep copies pool partitions the fetch-time sync could not (TD was down)."""
-    from engine_core.data_pipeline.td_sink import MemoryTdStore
-    from engine_core.guardian.td_sync import run_td_sync
-    from td_sink_support import commit_day
-
-    monkeypatch.setenv("CORE_TD_DATABASE", "core_dev_c580_unit")
+def test_td_failure_does_not_advance_to_next_limit_pool_rung(tmp_path):
     down = MemoryPoolStore()
     down.fail = "unavailable"
-    first = d1.run_pool_tier(request("kaipan"), tmp_path, deps=make_deps(store=down))
-    assert first[0] == 0 and first[1]["detail"]["td_sync"]["status"] == "unavailable"
-    commit_day(tmp_path, "2026-10-23", "baostock")         # the sweep needs at least one daily_kline day to run
-    pool_store = MemoryPoolStore()
-    code, body = run_td_sync({"trade_date": DAY, "args": {}, "now": "2026-10-26T18:00:00+08:00"}, tmp_path,
-                             store=MemoryTdStore(), pool_store=pool_store)
-    assert code == 0 and body["detail"]["limit_up_pool"]["status"] == "ok"
-    assert body["detail"]["limit_up_pool"]["outcomes"][0]["status"] == "synced" and len(pool_store.days[DAY]) == 55
+    code, body = d1.run_ladder_once(DAY, tmp_path, deps=make_deps(store=down, kaipan=False))
+    assert code == 30 and body["error_code"] == "TD_UNAVAILABLE"
+    assert [r["tier"] for r in body["detail"]["ladder_pass"]] == ["kaipan", "wencai"]

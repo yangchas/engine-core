@@ -31,20 +31,22 @@ def registry_config() -> dict:
         "window_days": derive.get("window_days", 20)}
 
 
-def td_post_sync(root: Path, day: str) -> dict:
-    """Best effort: a TD problem is a warning, the catalog write already succeeded (transitional rule)."""
-    if not os.environ.get("TD_CONFIG"):
-        return {"status": "skipped", "reason": "TD_CONFIG_not_set"}
+def td_write(root: Path, day: str, rows, manifest) -> dict:
+    """Write and verify this task's in-memory partition before reporting success."""
+    from engine_core.data_pipeline.td_ladder_sink import LadderTdSink, TaosLadderStore
+    from engine_core.data_pipeline.td_sink import TdUnavailable, TdVerifyError
+    from engine_core.guardian.daily_kline_coverage import td_settings
+    settings = td_settings()
+    if settings is None or not os.environ.get("TD_CONFIG"):
+        raise TdUnavailable("td_sink_not_configured")
+    store = TaosLadderStore(str(settings["database"]))
     try:
-        from engine_core.guardian.daily_kline_coverage import td_settings
-        from engine_core.guardian.td_sync import sync_ladder_daily
-        settings = td_settings()
-        if settings is None:
-            return {"status": "skipped", "reason": "td_sink_not_configured"}
-        return {"status": "ok", "database": settings["database"],
-                "outcomes": sync_ladder_daily(root, settings, 1, days=[day])}
-    except Exception as exc:
-        return {"status": "warning", "error": f"{type(exc).__name__}:{str(exc)[:200]}"}
+        outcome = LadderTdSink(store, root).write_partition(day, rows, manifest)
+    finally:
+        store.close()
+    if outcome.status not in {"synced", "unchanged", "skipped_lower"}:
+        raise TdVerifyError("td_ladder_write_failed:" + day + ":" + outcome.status)
+    return {"status": "verified", "database": settings["database"], "outcome": outcome.as_dict()}
 
 
 def main(argv=None) -> int:
@@ -53,7 +55,6 @@ def main(argv=None) -> int:
     parser.add_argument("--artifact-root", default=os.getenv("CORE_DATA_ROOT", "~/core-data"))
     parser.add_argument("--now", help="tz-aware fake clock (acceptance checks): PIT cutoff and commit clock")
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--no-td", action="store_true")
     args = parser.parse_args(argv)
     started = time.monotonic()
     now = datetime.fromisoformat(args.now) if args.now else None
@@ -63,10 +64,10 @@ def main(argv=None) -> int:
     out = {"job": "ladder_daily", "dataset": "ladder_daily", "trade_date": args.date}
     try:
         from engine_core.ladder_daily_adapter import materialize_ladder_daily
-        out.update(materialize_ladder_daily(ArtifactCatalog(root), trade_date=args.date, config=registry_config(),
-                                            now=now, force=args.force, state_dir=root / "guardian-native"))
-        if not args.no_td and out.get("status") in ("COMMITTED", "UP_TO_DATE"):
-            out["td"] = td_post_sync(root, args.date)
+        out.update(materialize_ladder_daily(
+            ArtifactCatalog(root), trade_date=args.date, config=registry_config(), now=now, force=args.force,
+            state_dir=root / "guardian-native", on_committed=lambda day, rows, manifest:
+            td_write(root, day, rows, manifest)))
         out["elapsed_ms"] = round((time.monotonic() - started) * 1000)
         print(json.dumps(out, ensure_ascii=False, sort_keys=True, default=str))
         return 0
@@ -78,11 +79,17 @@ def main(argv=None) -> int:
         out.update(status="failed", error_code="CONTRACT_ERROR", error=f"{type(exc).__name__}:{exc}"[:300])
         print(json.dumps(out, ensure_ascii=False, sort_keys=True))
         return 40
-    except (OSError, RuntimeError) as exc:
-        out.update(status="failed", error_code="FETCH_TIMEOUT" if isinstance(exc, TimeoutError) else "IO_ERROR",
-                   error=f"{type(exc).__name__}:{exc}"[:300])
+    except Exception as exc:
+        from engine_core.data_pipeline.td_sink import TdUnavailable, TdVerifyError
+        if isinstance(exc, TdUnavailable):
+            code, error_code = 30, "TD_UNAVAILABLE"
+        elif isinstance(exc, TdVerifyError):
+            code, error_code = 40, "TD_VERIFY_FAILED"
+        else:
+            code, error_code = 30, "FETCH_TIMEOUT" if isinstance(exc, TimeoutError) else "IO_ERROR"
+        out.update(status="failed", error_code=error_code, error=f"{type(exc).__name__}:{exc}"[:300])
         print(json.dumps(out, ensure_ascii=False, sort_keys=True))
-        return 30
+        return code
 
 
 if __name__ == "__main__":

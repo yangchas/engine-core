@@ -523,8 +523,10 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
     if args.providers is None:
         args.providers = "baostock" if args.symbols_file else "baostock,wencai,q2_final"
-    if args.td_write and (not args.write or not args.td_database):
-        parser.error("--td-write requires --write and --td-database")
+    if args.td_write and not (args.write or args.execute):
+        parser.error("--td-write requires --write or --execute")
+    if args.td_write and args.job != "daily_kline":
+        parser.error("--td-write is only valid with --job daily_kline")
     if args.budget_seconds <= 0:
         parser.error("--budget-seconds must be positive")
     if args.baostock_no_progress_seconds <= 0:
@@ -750,10 +752,55 @@ def main(argv: list[str] | None = None) -> int:
                 if args.job != "all":
                     return daily_kline_exit_code
                 continue
+            td_result = None
+            if args.td_write and result.manifest.get("provider") == "baostock":
+                from engine_core.data_pipeline.td_sink import (DailyKlineTdSink, TdSourceRejected,
+                                                                TdUnavailable, TdVerifyError)
+                from engine_core.guardian.daily_kline_coverage import make_store, td_settings
+                try:
+                    settings = td_settings(database=args.td_database)
+                    if settings is None or not os.environ.get("TD_CONFIG"):
+                        raise TdUnavailable("td_not_configured")
+                    store = make_store(settings)
+                    try:
+                        td_result = DailyKlineTdSink(store, args.artifact_root).write_partition(
+                            args.date, result.rows, result.manifest).as_dict()
+                    finally:
+                        store.close()
+                except TdUnavailable as exc:
+                    return emit_job_result(ContractJobResult(
+                        contract=1, job=name, trade_date=args.date, status="failed", tier=0,
+                        source="baostock", dataset=name, version=result.manifest.get("version"),
+                        row_count=len(result.rows), coverage=result.manifest.get("quality", {}).get("coverage"),
+                        error_code="TD_UNAVAILABLE", retryable=True, attempts=len(result.manifest.get("provider_attempts", [])),
+                        elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
+                        detail={"error": str(exc)[:200], "catalog_version": result.manifest.get("version")}))
+                except (TdVerifyError, TdSourceRejected) as exc:
+                    return emit_job_result(ContractJobResult(
+                        contract=1, job=name, trade_date=args.date, status="failed", tier=0,
+                        source="baostock", dataset=name, version=result.manifest.get("version"),
+                        row_count=len(result.rows), coverage=result.manifest.get("quality", {}).get("coverage"),
+                        error_code="TD_VERIFY_FAILED", retryable=False,
+                        attempts=len(result.manifest.get("provider_attempts", [])),
+                        elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
+                        detail={"error": str(exc)[:300], "catalog_version": result.manifest.get("version")}))
+                except Exception as exc:
+                    return emit_job_result(ContractJobResult(
+                        contract=1, job=name, trade_date=args.date, status="failed", tier=0,
+                        source="baostock", dataset=name, version=result.manifest.get("version"),
+                        row_count=len(result.rows), coverage=result.manifest.get("quality", {}).get("coverage"),
+                        error_code="TD_WRITE_FAILED", retryable=False,
+                        attempts=len(result.manifest.get("provider_attempts", [])),
+                        elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
+                        detail={"error": type(exc).__name__ + ":" + str(exc)[:300],
+                                "catalog_version": result.manifest.get("version")}))
+            elif args.td_write:
+                td_result = {"status": "skipped_non_baostock", "provider": result.manifest.get("provider")}
             print(json.dumps({"job": name, "version": result.manifest.get("version"),
                               "source": result.manifest.get("source"), "degraded": result.manifest.get("degraded"),
                               "quality": result.manifest["quality"], "provider_attempts": result.manifest["provider_attempts"],
                               "storage_uri": result.manifest.get("storage_uri"),
+                              "td_publish": td_result,
                               "mode": "DRY_RUN" if not (args.execute or args.write) else "WRITE"}, sort_keys=True))
             sample_only = result.manifest.get("sample_scope") == "symbols_file"
             degraded = result.manifest.get("provider") != "baostock" or sample_only
@@ -769,6 +816,7 @@ def main(argv: list[str] | None = None) -> int:
                 elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
                 detail={"business_status": result.manifest.get("business_status"),
                         "sample_scope": result.manifest.get("sample_scope"),
+                        "td_publish": td_result,
                         "provider_attempts": result.manifest.get("provider_attempts", [])})
             daily_kline_exit_code = emit_job_result(daily_contract)
             if args.job != "all":

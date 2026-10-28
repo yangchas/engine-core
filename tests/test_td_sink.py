@@ -52,11 +52,31 @@ def test_sync_writes_reads_back_and_is_idempotent(tmp_path):
     assert len(store.read_versions(DAY)) == 1
 
 
+def test_sync_rejects_wencai_daily_kline_before_any_td_write(tmp_path):
+    import json
+    from pathlib import Path
+
+    from engine_core.data_pipeline.td_sink import TdSourceRejected
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+
+    commit_day(tmp_path, DAY, "wencai")
+    sink, store = _sink(tmp_path)
+    catalog = ArtifactCatalog(tmp_path)
+    entry = catalog.read()["datasets"]["daily_kline"]["dates"][DAY][-1]
+    manifest = json.loads(Path(entry["manifest"]).read_text(encoding="utf-8"))
+    rows = catalog.read_rows(Path(entry["manifest"]))
+    with pytest.raises(TdSourceRejected, match="baostock"):
+        sink.write_partition(DAY, rows, manifest)
+    assert store.days == {}
+    assert "replace_day" not in store.calls
+    assert store.read_versions(DAY) == []
+
+
 def test_formal_supersedes_provisional_and_lower_never_replaces(tmp_path):
     from engine_core.data_pipeline.td_sink import pick_best
 
     _manifest, rows = load_real("formal")
-    commit_day(tmp_path, DAY, "wencai", rows=rows[:200])           # fewer rows, degraded provider
+    commit_day(tmp_path, DAY, "baostock", rows=rows[:200])         # Baostock partition with incomplete coverage
     sink, store = _sink(tmp_path)
     low = sink.sync_dates([DAY])[0]
     assert low.status == "synced" and low.business_status != "FORMAL" and low.row_count == 200
@@ -66,7 +86,7 @@ def test_formal_supersedes_provisional_and_lower_never_replaces(tmp_path):
     assert store.day_counts([DAY]) == {DAY: NROWS}                  # the 200-row day was replaced, not merged
     assert pick_best(store.read_versions(DAY))["version"] == formal.version
     assert {r["version"] for r in store.read_day_rows(DAY, ["000001"]).values()} == {formal.version}
-    commit_day(tmp_path, DAY, "wencai", rows=rows[:150])           # a later low-quality write
+    commit_day(tmp_path, DAY, "baostock", rows=rows[:150])         # a later lower-coverage Baostock write
     lower = sink.sync_dates([DAY])[0]
     assert lower.status == "unchanged" or lower.status == "skipped_lower"
     assert store.day_counts([DAY]) == {DAY: NROWS}
@@ -99,32 +119,21 @@ def test_td_outage_retries_then_recovers_and_catches_up(tmp_path):
     assert store.day_counts([DAY, "2026-10-26"]) == {DAY: NROWS, "2026-10-26": NROWS}
 
 
-def test_handler_outage_is_retryable_exit_30_and_recovery_clears_alert_marker(tmp_path, monkeypatch):
-    from engine_core.guardian.td_sync import run_td_sync
-    from engine_core.data_pipeline.td_sink import MemoryTdStore
+def test_job_runner_does_not_return_success_when_td_write_fails(tmp_path):
+    from engine_core.data_pipeline.jobs import JobRunner
+    from engine_core.data_pipeline.td_sink import DailyKlineTdSink, MemoryTdStore, TdUnavailable
 
-    commit_day(tmp_path, DAY, "baostock")
-    monkeypatch.setenv("CORE_TD_DATABASE", "core_dev_c567_unit")
+    _manifest, rows = load_real("formal")
     store = MemoryTdStore()
     store.fail = "unavailable"
-    request = {"trade_date": DAY, "args": {}, "now": "2026-10-23T18:00:00+08:00"}
-    code, body = run_td_sync(request, tmp_path, store=store)
-    assert code == 30 and body["error_code"] == "TD_UNAVAILABLE" and body["retryable"] is True
-    store.fail = None
-    code, body = run_td_sync(request, tmp_path, store=store)
-    assert code == 0 and body["detail"]["outcomes"][0]["status"] == "synced"
-    code, body = run_td_sync(request, tmp_path, store=store)
-    assert code == 0 and body["detail"]["outcomes"][0]["status"] == "unchanged"
-
-
-def test_handler_refuses_forbidden_database(tmp_path, monkeypatch):
-    from engine_core.guardian.td_sync import run_td_sync
-    from engine_core.data_pipeline.td_sink import MemoryTdStore
-
-    commit_day(tmp_path, DAY, "baostock")
-    monkeypatch.setenv("CORE_TD_DATABASE", "market_data1")
-    code, body = run_td_sync({"trade_date": DAY, "args": {}}, tmp_path, store=MemoryTdStore())
-    assert code == 40 and body["error_code"] == "CONFIG_ERROR"
+    runner = JobRunner(artifact_root=tmp_path, td_adapter=DailyKlineTdSink(store, tmp_path))
+    payload = {"rows": rows, "source": "baostock", "provider": "baostock", "expected_count": len(rows),
+               "field_units": {"volume": "shares"},
+               "field_completeness": {field: "COMPLETE" for field in
+                                      ("open", "high", "low", "close", "pre_close", "pct_chg", "amount_yuan",
+                                       "volume", "turnover_pct")}}
+    with pytest.raises(TdUnavailable):
+        runner.run("daily_kline", DAY, fetch=lambda _day: payload, td_write=True, source="baostock")
 
 
 # ---- mutations: a wrong mapping/unit/partial write must fail read-back verification ------------------------------------
@@ -190,7 +199,7 @@ def test_mutation_stale_rows_from_older_version_are_caught(tmp_path):
             self.days[trade_date] = {**old, **self.days[trade_date]}
 
     _manifest, rows = load_real("formal")
-    commit_day(tmp_path, DAY, "wencai", rows=rows[300:420])        # disjoint symbols
+    commit_day(tmp_path, DAY, "baostock", rows=rows[300:420])      # disjoint symbols
     sink, store = _sink(tmp_path, KeepsOldRows())
     sink.sync_dates([DAY])
     commit_day(tmp_path, DAY, "baostock")
@@ -221,37 +230,22 @@ def test_ddl_declares_contract_columns_and_keep():
 
 
 # ---- guardian wiring -----------------------------------------------------------------------------------------------
-def test_schedule_declares_td_sync_events_with_retry_policy_and_go_whitelist():
+def test_schedule_and_handlers_have_no_td_sync_path():
     from pathlib import Path
 
     from engine_core.guardian.management import HANDLERS
 
     root = Path(__file__).resolve().parents[1]
     schedule = json.loads((root / "src/engine_core/guardian/schedule.json").read_text(encoding="utf-8"))
-    events = [e for e in schedule["events"] if e.get("handler") == "td_sync_daily_kline"]
-    assert [e["event_id"] for e in events] == ["td_sync_1515", "td_sync_1800", "td_sync_2015", "td_sync_2335"]
-    for event in events:
-        profile = schedule["profiles"][event["profile"]]
-        assert profile["catchup"] == "run_in_window" and profile["retry_until_late"] is True
-        assert event["cost"] == "light" and event["calendar"] == "trading_day" and event["late_until"] > event["deadline"]
-    assert "td_sync_daily_kline" in HANDLERS
-    assert '"td_sync_daily_kline"' in (root / "native/guardiand/main.go").read_text(encoding="utf-8")
+    assert not [e for e in schedule["events"] if e.get("event_id", "").startswith("td_sync_")]
+    assert "td_sync_daily_kline" not in HANDLERS
+    assert '"td_sync_daily_kline"' not in (root / "native/guardiand/main.go").read_text(encoding="utf-8")
     # the Go compiler test fixture is the checked-in schedule
     assert (root / "native/guardiand/testdata/schedule.json").read_text() == (
         root / "src/engine_core/guardian/schedule.json").read_text()
 
 
-def test_guardian_handler_dispatches_the_event_and_syncs(tmp_path, monkeypatch):
-    from examples import guardian_handler
-    from engine_core.data_pipeline.td_sink import MemoryTdStore
-    from engine_core.guardian import daily_kline_coverage
+def test_guardian_handler_contract_excludes_removed_td_sync_handler():
+    from engine_core.guardian.management import HANDLERS
 
-    commit_day(tmp_path, DAY, "baostock")
-    store = MemoryTdStore()
-    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
-    monkeypatch.setenv("CORE_TD_DATABASE", "core_dev_c567_dispatch")
-    monkeypatch.setattr(daily_kline_coverage, "make_store", lambda settings: store)
-    code, body = guardian_handler._run({"event": "td_sync_1515", "trade_date": DAY, "handler": "td_sync_daily_kline",
-                                        "now": DAY + "T15:15:00+08:00", "args": {}})
-    assert code == 0 and body["detail"]["outcomes"][0]["status"] == "synced"
-    assert store.day_counts([DAY]) == {DAY: NROWS}
+    assert "td_sync_daily_kline" not in HANDLERS

@@ -59,7 +59,7 @@ def test_real_schema_has_every_contract_column_with_the_declared_type(td):
 def test_real_kaipan_pool_roundtrips_every_cell_and_is_idempotent(td, tmp_path):
     _fresh(td)
     code, body = d1.run_pool_tier(request("kaipan"), tmp_path, deps=make_deps(store=td))
-    assert code == 0 and body["detail"]["td_sync"]["status"] == "ok", body
+    assert code == 0 and body["detail"]["td_write"]["status"] == "ok", body
     catalog = ArtifactCatalog(tmp_path)
     rows = catalog.read_rows(catalog.locate("limit_up_pool", DAY))
     mapped, _ = map_rows(rows)

@@ -177,12 +177,16 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
             fetch = adapters.get(name)
             if name == "ladder_daily" and fetch is None and runner.catalog.locate("daily_kline", job_trade_date):
                 try:
-                    derived = backfill_ladder_daily(runner, job_trade_date, job_trade_date)
+                    derived = backfill_ladder_daily(runner, job_trade_date, job_trade_date, td_write=bool(write and td_write))
                     results.append({"job": name, "status": derived["status"],
                                     "row_count": derived.get("row_count"),
                                     "reference_comparison": derived.get("reference_comparison")})
                 except Exception as exc:
-                    errors.append({"job": name, "status": "FAILED", "error": str(exc)[:120]})
+                    from .td_sink import TdUnavailable, TdVerifyError
+                    error_code = ("TD_UNAVAILABLE" if isinstance(exc, TdUnavailable) else
+                                  "TD_VERIFY_FAILED" if isinstance(exc, TdVerifyError) else None)
+                    errors.append({"job": name, "status": "FAILED", "error": str(exc)[:120],
+                                   **({"error_code": error_code} if error_code else {})})
                 continue
             if name == "stock_day_facts" and fetch is None:
                 def fetch_stock_day_facts(day: str) -> dict[str, Any]:
@@ -206,7 +210,11 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                                 "row_count": job.manifest["row_count"],
                                 "sha256": job.manifest.get("sha256")})
             except Exception as exc:
-                errors.append({"job": name, "status": "FAILED", "error": str(exc)[:120]})
+                from .td_sink import TdUnavailable, TdVerifyError
+                error_code = ("TD_UNAVAILABLE" if isinstance(exc, TdUnavailable) else
+                              "TD_VERIFY_FAILED" if isinstance(exc, TdVerifyError) else None)
+                errors.append({"job": name, "status": "FAILED", "error": str(exc)[:120],
+                               **({"error_code": error_code} if error_code else {})})
         if phase == "postmarket" and write:
             # C571: the derived daily datasets are produced as soon as the gated daily_kline of this day is
             # present (any quality >= PROVISIONAL), by the same event that published it; a later FORMAL upgrade
@@ -252,6 +260,10 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                 baseline_append = {"status": "FAILED", "error": str(exc)[:120]}
         result = {"phase": phase, "trade_date": trade_date,
                   "status": "FAILED" if errors else "READY", "jobs": results, "errors": errors}
+        if any(item.get("error_code") == "TD_UNAVAILABLE" for item in errors):
+            result["error_code"], result["retryable"] = "TD_UNAVAILABLE", True
+        elif any(item.get("error_code") == "TD_VERIFY_FAILED" for item in errors):
+            result["error_code"], result["retryable"] = "TD_VERIFY_FAILED", False
         if baseline_append is not None:
             result["auction_baseline_append"] = baseline_append
         if write:
@@ -305,7 +317,7 @@ def backfill_daily_kline(runner: JobRunner, start: str, end: str, *, fetch: Call
             "td_reconciliation": reports, "ladder_reconciliation": ladder_report}
 
 
-def backfill_ladder_daily(runner: JobRunner, start: str, end: str, *,
+def backfill_ladder_daily(runner: JobRunner, start: str, end: str, *, td_write: bool = False,
                           reference_path: str | Path | None = None, config: Mapping[str, Any] | None = None,
                           **materialize_kwargs: Any) -> dict[str, Any]:
     """C577: derive ladder_daily per day with the stateless ladder_v1 builder (docs/LADDER_DAILY.md).
@@ -317,19 +329,42 @@ def backfill_ladder_daily(runner: JobRunner, start: str, end: str, *,
     first, last = date.fromisoformat(start), date.fromisoformat(end)
     if last < first: raise ValueError("backfill_date_range_invalid")
     days = [(first + timedelta(days=offset)).isoformat() for offset in range((last - first).days + 1)]
-    processed, skipped, rows = [], [], 0
+    processed, skipped, rows, td_outcomes = [], [], 0, []
     for day in days:
+        on_committed = None
+        if td_write:
+            from ..guardian.daily_kline_coverage import td_settings
+            from .td_ladder_sink import LadderTdSink, TaosLadderStore
+            from .td_sink import TdUnavailable, TdVerifyError
+            settings = td_settings()
+            if settings is None or not os.environ.get("TD_CONFIG"):
+                raise TdUnavailable("td_sink_not_configured")
+
+            def on_committed(commit_day, commit_rows, manifest):
+                store = TaosLadderStore(str(settings["database"]))
+                try:
+                    outcome = LadderTdSink(store, runner.root).write_partition(commit_day, commit_rows, manifest)
+                finally:
+                    store.close()
+                if outcome.status not in {"synced", "unchanged", "skipped_lower"}:
+                    raise TdVerifyError("td_ladder_write_failed:" + commit_day + ":" + outcome.status)
+                return outcome.as_dict()
+
         try:
-            result = materialize_ladder_daily(runner.catalog, trade_date=day, config=config, **materialize_kwargs)
+            result = materialize_ladder_daily(runner.catalog, trade_date=day, config=config,
+                                              on_committed=on_committed, **materialize_kwargs)
         except (UpstreamNotReady, KeyError):
             skipped.append(day)   # non-trading day or no limit-up set obtainable: nothing derived, nothing invented
             continue
-        if result["status"] == "COMMITTED":
+        if td_write and result.get("td_write"):
+            td_outcomes.append(result["td_write"])
+        if result["status"] in {"COMMITTED", "UP_TO_DATE"}:
             processed.append(day)
             rows += int(result.get("row_count") or 0)
     comparison = compare_ladder_reference(runner.catalog, reference_path) if reference_path else None
     return {"dataset": "ladder_daily", "from": start, "to": end, "processed": processed, "row_count": rows,
-            "skipped": skipped, "status": "LADDER_V1", "reference_comparison": comparison}
+            "skipped": skipped, "status": "LADDER_V1", "td_outcomes": td_outcomes,
+            "reference_comparison": comparison}
 
 
 def reconcile_daily_rows(core_rows: Iterable[Mapping[str, Any]],

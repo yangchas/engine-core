@@ -1,9 +1,4 @@
-"""Where does the guardian look to decide that a daily_kline day is covered? (C567)
-
-One interface, ``CoverageSource.coverage(dates)``; the TD implementation is primary, the catalog implementation is the
-read-only fallback. A TD that cannot be read yields UNKNOWN (never "missing"): the caller falls back to the catalog and
-labels the result with its origin, so an outage cannot trigger a mass re-fetch.
-"""
+"""TD-only daily-kline coverage and per-symbol watermark planning."""
 from __future__ import annotations
 
 import json
@@ -24,7 +19,7 @@ UNKNOWN = "UNKNOWN"          # the source could not be read
 class DayCoverage:
     date: str
     state: str
-    origin: str                      # "td" | "catalog"
+    origin: str = "td"
     version: str = ""
     business_status: str = ""
     rank_level: int = 0
@@ -55,12 +50,20 @@ class TdCoverageSource:
     def __init__(self, store: Any):
         self.store = store
 
-    def coverage(self, dates: Sequence[str]) -> dict[str, DayCoverage]:
+    def latest_watermarks(self) -> dict[str, str]:
+        """Use exactly one TD aggregate for every symbol; callers must not loop over per-symbol queries."""
+        if not self.store.schema_exists():
+            return {}
+        return self.store.latest_watermarks()
+
+    def coverage(self, dates: Sequence[str], watermarks: Mapping[str, str] | None = None) -> dict[str, DayCoverage]:
         from ..data_pipeline.td_sink import pick_best
         result: dict[str, DayCoverage] = {}
         if not self.store.schema_exists():
             return {day: DayCoverage(day, MISSING, self.origin, reason="td_schema_absent") for day in dates}
         counts = self.store.day_counts(list(dates))
+        watermarks = watermarks or {}
+        latest_day = max(dates, default="")
         for day in dates:
             current = pick_best(self.store.read_versions(day))
             if current is None:
@@ -70,11 +73,18 @@ class TdCoverageSource:
                 continue
             expected = int(current.get("row_count") or 0)
             rows = counts.get(day, 0)
+            provider = str(current.get("provider") or current.get("source") or "").lower()
             base = dict(version=str(current["version"]), business_status=str(current.get("business_status") or ""),
                         rank_level=int(current.get("rank_level") or 0),
                         needs_upgrade=bool(current.get("needs_upgrade")), rows=rows)
             if rows != expected or expected <= 0:
                 result[day] = DayCoverage(day, INCOMPLETE, self.origin, reason=f"rows={rows}!=version_rows={expected}",
+                                          **base)
+            elif provider != "baostock":
+                result[day] = DayCoverage(day, LOW_QUALITY, self.origin,
+                                          reason="non_baostock_provider:" + (provider or "unknown"), **base)
+            elif day == latest_day and any(value < day for value in watermarks.values()):
+                result[day] = DayCoverage(day, INCOMPLETE, self.origin, reason="symbol_watermark_behind_target",
                                           **base)
             elif base["needs_upgrade"]:
                 result[day] = DayCoverage(day, LOW_QUALITY, self.origin, reason="only_" + (
@@ -84,48 +94,84 @@ class TdCoverageSource:
         return result
 
 
-class CatalogCoverageSource:
-    """Read-only catalog judgement (the pre-C567 behaviour), used as the labelled fallback."""
-    origin = "catalog"
-
-    def __init__(self, catalog: Mapping[str, Any], now: datetime):
-        self.catalog = catalog
-        self.now = now
-
-    def coverage(self, dates: Sequence[str]) -> dict[str, DayCoverage]:
-        from .registry import catalog_manifest, catalog_partition_present, daily_kline_needs_upgrade
-        result = {}
-        for day in dates:
-            manifest = catalog_manifest(self.catalog, "daily_kline", day)
-            present = catalog_partition_present(self.catalog, "daily_kline", day, self.now)
-            upgrade = daily_kline_needs_upgrade(manifest)
-            state = MISSING if not present else (LOW_QUALITY if upgrade else OK)
-            result[day] = DayCoverage(day, state, self.origin, version=str((manifest or {}).get("version", "")),
-                                      business_status=str((manifest or {}).get("business_status") or ""),
-                                      needs_upgrade=upgrade, rows=int((manifest or {}).get("row_count") or 0))
-        return result
+def build_gap_fill_plan(watermarks: Mapping[str, str], target_date: str, trading_dates: Sequence[str],
+                        history_min_trading_days: int = 10, *,
+                        day_states: Mapping[str, Any] | None = None,
+                        symbols: Sequence[str] | None = None,
+                        symbol_gap_dates: Mapping[str, Sequence[str]] | None = None) -> list[dict[str, Any]]:
+    """Plan one Baostock date range per lagging symbol; nearest missing dates are listed first."""
+    from datetime import date
+    target = date.fromisoformat(target_date).isoformat()
+    sessions = sorted({date.fromisoformat(str(day)).isoformat() for day in trading_dates if str(day) <= target})
+    if target not in sessions:
+        raise ValueError("target_not_in_trade_calendar:" + target)
+    depth = max(1, int(history_min_trading_days))
+    floor_index = max(0, len(sessions) - depth)
+    gap_days = []
+    for day, value in (day_states or {}).items():
+        state = getattr(value, "state", value.get("state") if isinstance(value, Mapping) else value)
+        reason = getattr(value, "reason", value.get("reason", "") if isinstance(value, Mapping) else "")
+        # A target-day watermark lag is already represented per symbol below. Forcing that whole day
+        # would turn one lagging symbol into a full-universe request.
+        full_day_gap = (state in {MISSING, LOW_QUALITY} or
+                        (state == INCOMPLETE and reason != "symbol_watermark_behind_target"))
+        if day in sessions and full_day_gap:
+            gap_days.append(str(day))
+    forced_index = min((sessions.index(day) for day in gap_days), default=len(sessions))
+    ranges: list[dict[str, Any]] = []
+    known = {str(symbol): str(watermark)[:10] for symbol, watermark in watermarks.items()}
+    universe = ({str(value) for value in symbols} if symbols is not None else set(known))
+    for symbol in sorted(universe):
+        last = known.get(symbol, "")
+        later = [index for index, day in enumerate(sessions) if day > last]
+        start_index = max(floor_index, later[0] if later else len(sessions))
+        # A missing or provisional whole-day partition may sit before a symbol's latest watermark.
+        # Re-read from that earliest affected session through the target so TD + Baostock can rebuild it.
+        start_index = min(start_index, forced_index)
+        forced_symbol_dates = [str(day) for day in (symbol_gap_dates or {}).get(symbol, ()) if str(day) in sessions]
+        if forced_symbol_dates:
+            start_index = min(start_index, min(sessions.index(day) for day in forced_symbol_dates))
+        if start_index < len(sessions):
+            ranges.append({"symbol": symbol, "watermark": last or None,
+                           "start_date": sessions[start_index], "end_date": target,
+                           "trade_dates": sessions[start_index:],
+                           "gap_dates": [day for day in gap_days if day >= sessions[start_index]] +
+                                        [day for day in forced_symbol_dates if day >= sessions[start_index]]})
+    ranges.sort(key=lambda item: (item["start_date"], item["symbol"]), reverse=True)
+    return ranges
 
 
 @dataclass(frozen=True)
 class CoverageResult:
     days: dict[str, DayCoverage]
-    origin: str                   # "td" | "catalog_fallback" | "catalog"
-    unknown_reason: str = ""      # why TD could not be used (empty when origin == "td")
+    origin: str
+    unknown_reason: str = ""
+    watermarks: dict[str, str] | None = None
+    gap_fill_plan: list[dict[str, Any]] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {"origin": self.origin, "unknown_reason": self.unknown_reason,
+                "watermarks": self.watermarks or {}, "gap_fill_plan": self.gap_fill_plan or [],
                 "days": {day: cov.as_dict() for day, cov in sorted(self.days.items())}}
 
 
-def resolve_coverage(dates: Sequence[str], primary: CoverageSource | None, fallback: CoverageSource) -> CoverageResult:
-    """TD first. Any TD read failure -> catalog fallback, labelled; TD not configured -> plain catalog."""
+def resolve_coverage(dates: Sequence[str], primary: CoverageSource | None,
+                     trading_dates: Sequence[str], history_min_trading_days: int = 10) -> CoverageResult:
+    """Read TD once for all-symbol watermarks. A TD outage stays UNKNOWN and never starts a mass fetch."""
     from ..data_pipeline.td_sink import TdUnavailable
     if primary is None:
-        return CoverageResult(fallback.coverage(dates), "catalog", "td_not_configured")
+        return CoverageResult({day: DayCoverage(day, UNKNOWN, "unknown", reason="td_not_configured")
+                               for day in dates}, "unknown", "td_not_configured")
     try:
-        return CoverageResult(primary.coverage(dates), primary.origin)
+        watermarks = primary.latest_watermarks() if isinstance(primary, TdCoverageSource) else {}
+        days = primary.coverage(dates, watermarks) if isinstance(primary, TdCoverageSource) else primary.coverage(dates)
+        plan = (build_gap_fill_plan(watermarks, max(dates, default=""), trading_dates,
+                                    history_min_trading_days, day_states=days)
+                if dates else [])
+        return CoverageResult(days, primary.origin, watermarks=watermarks, gap_fill_plan=plan)
     except TdUnavailable as exc:
-        return CoverageResult(fallback.coverage(dates), "catalog_fallback", str(exc)[:200])
+        return CoverageResult({day: DayCoverage(day, UNKNOWN, "unknown", reason=str(exc)[:200]) for day in dates},
+                              "unknown", str(exc)[:200])
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -175,10 +221,10 @@ def note_td_readability(root: Path, result: CoverageResult, now: datetime) -> di
         if state.get("unreadable_since"):
             _atomic_write(path, canonical_json({"unreadable_since": None, "recovered_at": now.isoformat()}) + b"\n")
         return None
-    if result.origin != "catalog_fallback":
+    if result.origin != "unknown":
         return None
     if state.get("unreadable_since"):
         return None
     _atomic_write(path, canonical_json({"unreadable_since": now.isoformat(), "reason": result.unknown_reason}) + b"\n")
-    return {"event": "daily_kline_td_unreadable", "reason": "daily_kline_td_selfcheck_unknown_catalog_fallback",
+    return {"event": "daily_kline_td_unreadable", "reason": "daily_kline_td_selfcheck_unknown",
             "error": result.unknown_reason}

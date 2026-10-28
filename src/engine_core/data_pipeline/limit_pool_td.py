@@ -299,36 +299,52 @@ class LimitPoolTdSink:
             ts += 1
         return ts
 
+    def write_partition(self, trade_date: str, rows: Sequence[Mapping[str, Any]],
+                        manifest: Mapping[str, Any]) -> SyncOutcome:
+        """Write the producer's just-committed partition without rereading it from the catalog."""
+        if str(manifest.get("trade_date") or trade_date) != trade_date:
+            raise TdVerifyError("td_trade_date_mismatch:" + trade_date)
+        if not manifest.get("version") or int(manifest.get("row_count") or -1) != len(rows):
+            raise TdVerifyError("td_partition_manifest_mismatch:" + trade_date)
+        if not self.store.schema_exists():
+            self.store.ensure_schema()
+        existing = self.store.read_versions(trade_date)
+        current = pick_best(existing)
+        current_key = version_rank(current.get("business_status"), False) if current else None
+        best_key = version_rank(manifest.get("business_status"), False)
+        if current is not None and current_key > best_key:
+            return SyncOutcome(trade_date, "skipped_lower", str(current["version"]), current.get("business_status"),
+                                   int(current.get("row_count") or 0),
+                                   {"partition_version": manifest["version"], "reason": "td_has_higher_quality_version"})
+        if current is not None and current.get("version") == manifest.get("version") and \
+                self.store.day_counts([trade_date]).get(trade_date) == int(manifest.get("row_count") or -1):
+            return SyncOutcome(trade_date, "unchanged", str(manifest["version"]), current.get("business_status"),
+                               int(current["row_count"]))
+        mapped, dropped = map_rows(rows)
+        if not mapped:
+            raise TdVerifyError("td_partition_maps_to_zero_rows:" + trade_date)
+        self.store.replace_day(trade_date, str(manifest["version"]), mapped)
+        report = self.verify_day(trade_date, manifest, mapped)
+        meta = self._meta(trade_date, manifest, dropped, self._meta_ts(trade_date, manifest, existing))
+        self.store.write_version(meta)
+        readback = next((item for item in self.store.read_versions(trade_date)
+                         if str(item.get("version")) == str(manifest["version"])), None)
+        if (readback is None or str(readback.get("sha256") or "") != str(manifest.get("sha256") or "")
+                or int(readback.get("row_count") or -1) != len(mapped)
+                or self.store.day_counts([trade_date]).get(trade_date) != len(mapped)):
+            raise TdVerifyError("td_version_readback_mismatch:" + trade_date)
+        return SyncOutcome(trade_date, "synced", str(manifest["version"]), meta["business_status"], len(mapped),
+                           {"sha256": str(manifest.get("sha256") or ""), "cells_compared": report["cells_compared"],
+                            "version_row_verified": True})
+
     def sync_date(self, trade_date: str, catalog: Mapping[str, Any] | None = None) -> SyncOutcome:
         catalog = catalog if catalog is not None else self._catalog()
         best = pick_best(catalog_candidates(catalog, trade_date))
         if best is None:
             return SyncOutcome(trade_date, "no_catalog_version")
-        if not self.store.schema_exists():
-            self.store.ensure_schema()
-        existing = self.store.read_versions(trade_date)
-        current = pick_best(existing)
-        if current is not None:
-            current_key = version_rank(current.get("business_status"), False)
-            best_key = version_rank(best.get("business_status"), False)
-            if current_key > best_key:
-                return SyncOutcome(trade_date, "skipped_lower", str(current["version"]), current.get("business_status"),
-                                   int(current.get("row_count") or 0),
-                                   {"catalog_version": best["version"], "reason": "td_has_higher_quality_version"})
-            if current["version"] == best["version"] and \
-                    self.store.day_counts([trade_date]).get(trade_date) == int(current.get("row_count") or -1):
-                return SyncOutcome(trade_date, "unchanged", str(best["version"]), current.get("business_status"),
-                                   int(current["row_count"]))
         from .storage import ArtifactCatalog
         rows = ArtifactCatalog(self.root).read_rows(Path(str(best["manifest"])))
-        mapped, dropped = map_rows(rows)
-        self.store.replace_day(trade_date, str(best["version"]), mapped)
-        report = self.verify_day(trade_date, best, mapped)
-        meta = self._meta(trade_date, best, dropped, self._meta_ts(trade_date, best, existing))
-        self.store.write_version(meta)
-        return SyncOutcome(trade_date, "synced", str(best["version"]), meta["business_status"], len(mapped),
-                           {"previous_version": current["version"] if current else None, "dropped_rows": dropped,
-                            "cells_compared": report["cells_compared"]})
+        return self.write_partition(trade_date, rows, best)
 
     def sync_dates(self, dates: Sequence[str]) -> list[SyncOutcome]:
         catalog = self._catalog()

@@ -448,14 +448,24 @@ def read_daily_history_cache(redis: Any, trade_date: str, *, asof: str,
 
 
 class BaostockRangeClient:
-    """Baostock interval reader with socket timeout and one reconnect retry."""
+    """Baostock interval reader with bounded calls and one reconnect retry."""
     def __init__(self, module: Any, *, read_timeout: float = 30.0):
         if read_timeout <= 0:
             raise ValueError("read_timeout_must_be_positive")
         self.module = module
         self.read_timeout = read_timeout
+        self.poisoned = False
+        self.logout_error: str | None = None
 
     def login(self) -> None:
+        from .daily_kline_capture import call_with_timeout
+        try:
+            call_with_timeout(self._login, timeout_seconds=self.read_timeout)
+        except TimeoutError:
+            self.poisoned = True
+            raise
+
+    def _login(self) -> None:
         previous_timeout = socket.getdefaulttimeout()
         socket.setdefaulttimeout(self.read_timeout)
         try:
@@ -471,7 +481,16 @@ class BaostockRangeClient:
         sock.settimeout(self.read_timeout)
 
     def reconnect(self) -> None:
+        self._reset_session()
+        self._login()
+
+    @staticmethod
+    def _context():
         from baostock.common import context
+        return context
+
+    def _reset_session(self) -> None:
+        context = self._context()
         sock = getattr(context, "default_socket", None)
         if sock is not None:
             try:
@@ -479,9 +498,8 @@ class BaostockRangeClient:
             except OSError:
                 pass
         setattr(context, "default_socket", None)
-        self.login()
 
-    def query(self, symbol: str, start: str, end: str) -> list[dict[str, Any]]:
+    def _query(self, symbol: str, start: str, end: str) -> list[dict[str, Any]]:
         code = to_baostock_code(symbol)
         last_error: Exception | None = None
         for attempt in range(2):
@@ -512,6 +530,35 @@ class BaostockRangeClient:
                     break
                 self.reconnect()
         raise RuntimeError(f"baostock_range_failed:{type(last_error).__name__}")
+
+    def query(self, symbol: str, start: str, end: str) -> list[dict[str, Any]]:
+        from .daily_kline_capture import call_with_timeout
+        if self.poisoned:
+            raise TimeoutError("BAOSTOCK_SESSION_POISONED")
+        try:
+            return call_with_timeout(self._query, symbol, start, end,
+                                     timeout_seconds=self.read_timeout)
+        except TimeoutError:
+            # A timed-out worker still owns the Baostock session. Never reuse or log out that socket.
+            self.poisoned = True
+            raise
+
+    def logout(self) -> bool:
+        from .daily_kline_capture import call_with_timeout
+        if self.poisoned:
+            return False
+        try:
+            result = call_with_timeout(self.module.logout, timeout_seconds=self.read_timeout)
+            error_code = str(getattr(result, "error_code", "0"))
+            if error_code != "0":
+                self.logout_error = "baostock_logout_failed:" + error_code
+                return False
+            return True
+        except Exception as exc:  # cleanup failure must not erase already fetched rows
+            self.logout_error = type(exc).__name__ + ":" + str(exc)[:160]
+            if isinstance(exc, TimeoutError):
+                self.poisoned = True
+            return False
 
 
 def _symbols_from_core(catalog: ArtifactCatalog) -> list[str]:

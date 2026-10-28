@@ -659,7 +659,7 @@ type scheduleV3Event struct {
 	Args            map[string]any  `json:"args"`
 }
 
-var scheduleHandlers = []string{"auction_report", "auction_watch", "baostock_probe", "daily_kline_close", "td_sync_daily_kline", "boot_apply_plan",
+var scheduleHandlers = []string{"auction_report", "auction_watch", "baostock_probe", "daily_kline_close", "boot_apply_plan",
 	"boot_data_health", "boot_reconcile", "boot_trade_day", "calendar_refresh", "close_capture",
 	"close_report", "fetch_item", "intraday_data", "kaipan_fetch", "kaipan_hot_capture", "selftest",
 	"night_report", "open_report", "postmarket_data", "premarket_data", "snapshot_check"}

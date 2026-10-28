@@ -115,8 +115,32 @@ def existing_rank(root: str | Path, day: str) -> int | None:
     return best
 
 
-def _td_sync(root: Path, day: str, deps: PoolDeps) -> dict[str, Any]:
-    """Copy the best catalog version into TD.  Best effort: the catalog write already decided success."""
+def existing_partition(root: str | Path, day: str) -> tuple[int, list[dict[str, Any]], dict[str, Any]] | None:
+    """Load the already committed result so a retried producer can finish its TD write idempotently."""
+    from ..data_pipeline.storage import ArtifactCatalog
+    catalog = ArtifactCatalog(root)
+    entries = catalog.read().get("datasets", {}).get(core.DATASET, {}).get("dates", {}).get(day, [])
+    best = None
+    for entry in entries:
+        try:
+            import json
+            manifest = json.loads(Path(str(entry.get("manifest") or "")).read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(manifest, dict) or int(manifest.get("schema_version") or 0) < core.SCHEMA_VERSION \
+                or manifest.get("sample_scope"):
+            continue
+        rank = core.PROVIDER_RANK.get(str(manifest.get("provider")))
+        if rank is not None and (best is None or rank < best[0]):
+            best = (rank, {**manifest, **entry})
+    if best is None:
+        return None
+    return best[0], catalog.read_rows(Path(str(best[1]["manifest"]))), best[1]
+
+
+def _td_write(root: Path, day: str, rows: list[dict[str, Any]], manifest: Mapping[str, Any],
+              deps: PoolDeps) -> dict[str, Any]:
+    """Write and verify the partition directly from the producing task's in-memory result."""
     from ..data_pipeline.limit_pool_td import LimitPoolTdSink, PoolTaosStore
     from ..data_pipeline.td_sink import TdUnavailable, TdVerifyError
     from .daily_kline_coverage import td_settings
@@ -127,9 +151,10 @@ def _td_sync(root: Path, day: str, deps: PoolDeps) -> dict[str, Any]:
         else:
             settings = td_settings()
             if settings is None or not os.environ.get("TD_CONFIG"):
-                return {"status": "skipped", "reason": "td_not_configured"}
+                return {"status": "unavailable", "error_code": "TD_UNAVAILABLE",
+                        "error": "td_not_configured"}
             store = PoolTaosStore(str(settings["database"]))
-        outcome = LimitPoolTdSink(store, root).sync_date(day)
+        outcome = LimitPoolTdSink(store, root).write_partition(day, rows, manifest)
         return {"status": "ok", "outcome": outcome.as_dict()}
     except TdUnavailable as exc:
         return {"status": "unavailable", "error_code": "TD_UNAVAILABLE", "error": str(exc)[:200]}
@@ -210,6 +235,10 @@ def run_ladder_once(day: str, root: str | Path, *, schedule_path: str | Path | N
             body["detail"] = {**(body["detail"] if isinstance(body["detail"], dict) else {"note": body["detail"]}),
                               "ladder_pass": tried}
             return code, body
+        if body.get("error_code") in {"TD_UNAVAILABLE", "TD_VERIFY_FAILED", "TD_SYNC_ERROR"}:
+            body["detail"] = {**(body["detail"] if isinstance(body["detail"], dict) else {"note": body["detail"]}),
+                              "ladder_pass": tried}
+            return code, body
     return reply(40, "failed", "TIER_NO_DATA", False, {"partition": day, "ladder_pass": tried,
                                                        "reason": "every configured rung failed; pool MISSING"})
 
@@ -239,10 +268,21 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
     wanted = core.PROVIDER_RANK[provider]
     have = existing_rank(root, day)
     if have is not None and have <= wanted:
-        sync = _td_sync(root, day, deps) if not dry_run else {"status": "dry_run"}
+        td_write = {"status": "dry_run"}
+        if not dry_run:
+            previous = existing_partition(root, day)
+            if previous is not None:
+                _rank, old_rows, old_manifest = previous
+                td_write = _td_write(root, day, old_rows, old_manifest, deps)
+                if td_write.get("status") == "unavailable":
+                    return reply(30, "failed", "TD_UNAVAILABLE", True,
+                                 {"partition": day, "td_write": td_write})
+                if td_write.get("status") != "ok":
+                    code = "TD_VERIFY_FAILED" if td_write.get("status") == "verify_failed" else "TD_WRITE_FAILED"
+                    return reply(40, "failed", code, False, {"partition": day, "td_write": td_write})
         return reply(20, "not_applicable", "ALREADY_SATISFIED", False,
                      {"partition": day, "existing_rank": have, "wanted_rank": wanted, "source": source,
-                      "td_sync": sync})
+                      "td_write": td_write})
     if dry_run:
         return reply(0, "not_applicable", "", False, "guardian_dry_run_no_fetch")
     started = time.monotonic()
@@ -269,9 +309,18 @@ def run_pool_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: bool
     manifest["provider_details"] = {**manifest.get("provider_details", {}), **extra}
     committed = ArtifactCatalog(root).commit(core.DATASET, day, partition.rows, manifest, source=provider,
                                              authority="LIVE", clock=deps.now_utc)
-    sync = _td_sync(root, day, deps)
+    td_write = _td_write(root, day, partition.rows, committed, deps)
+    if td_write.get("status") == "unavailable":
+        return reply(30, "failed", "TD_UNAVAILABLE", True,
+                     {"partition": day, "source": provider, "version": committed.get("version"),
+                      "row_count": committed.get("row_count"), "td_write": td_write, "tier": request.get("tier")})
+    if td_write.get("status") != "ok":
+        code = "TD_VERIFY_FAILED" if td_write.get("status") == "verify_failed" else "TD_WRITE_FAILED"
+        return reply(40, "failed", code, False,
+                     {"partition": day, "source": provider, "version": committed.get("version"),
+                      "row_count": committed.get("row_count"), "td_write": td_write, "tier": request.get("tier")})
     detail = {"partition": day, "source": provider, "version": committed.get("version"),
               "row_count": committed.get("row_count"), "business_status": committed.get("business_status"),
-              "coverage": committed["quality"].get("coverage"), "td_sync": sync, "tier": request.get("tier")}
+              "coverage": committed["quality"].get("coverage"), "td_write": td_write, "tier": request.get("tier")}
     degraded = bool(manifest.get("degraded"))
     return reply(10 if degraded else 0, "degraded" if degraded else "ok", "", False, detail)

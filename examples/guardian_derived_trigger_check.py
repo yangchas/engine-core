@@ -40,6 +40,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from engine_core.data_pipeline import derived_daily  # noqa: E402
 from engine_core.data_pipeline.storage import ArtifactCatalog, canonical_json  # noqa: E402
 from engine_core.guardian import reconcile_plan as rp  # noqa: E402
+from engine_core.guardian.daily_kline_coverage import DayCoverage, LOW_QUALITY, MISSING, OK  # noqa: E402
 from engine_core.guardian.registry import load_registry  # noqa: E402
 from engine_core.guardian.startup import _verify_partition  # noqa: E402
 
@@ -112,11 +113,30 @@ class Run:
     def candidates(self, upto: str) -> list[str]:
         return [d for d in self.days if d <= upto][-5:]
 
+    def td_coverage(self, candidates: list[str]) -> dict[str, DayCoverage]:
+        coverage = {}
+        for day in candidates:
+            versions = self.versions("daily_kline", day)
+            if not versions:
+                coverage[day] = DayCoverage(day, MISSING, "td")
+                continue
+            version = versions[-1]
+            state = (OK if version.get("business_status") == "FORMAL"
+                     and version.get("source") == "baostock" else LOW_QUALITY)
+            coverage[day] = DayCoverage(
+                day, state, "td", version=str(version.get("version") or ""),
+                business_status=str(version.get("business_status") or ""),
+                needs_upgrade=state == LOW_QUALITY, rows=int(version.get("row_count") or 0))
+        return coverage
+
     # ------------------------------------------------------------------ guardian planning + job execution
     def plan(self, now: str, upto: str, *, load5: float | None = None) -> list[dict]:
+        candidates = self.candidates(upto)
         full = rp.reconcile_plan(datetime.fromisoformat(now), self.catalog(), trade_date=upto,
                                  prev_trade_date=None, phase="POST_MARKET", load5=load5, load_threshold=2.0,
-                                 upgrade_attempts={}, daily_kline_candidates=self.candidates(upto))
+                                 upgrade_attempts={}, daily_kline_candidates=candidates,
+                                 daily_kline_coverage=self.td_coverage(candidates),
+                                 daily_kline_coverage_origin="td")
         return [p for p in full if p["id"] in DERIVE_IDS or p["id"] == "daily_kline"]
 
     def run_job(self, entry: dict, now: str) -> dict:

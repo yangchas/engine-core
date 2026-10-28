@@ -138,14 +138,13 @@
       "fetch_job": {
         "argv": [
           "{python}",
-          "examples/run_data_jobs.py",
-          "--job",
-          "daily_kline",
+          "examples/backfill_td_daily_kline.py",
           "--date",
           "{date}",
-          "--execute"
+          "--artifact-root",
+          "{artifact_root}"
         ],
-        "timeout_seconds": 3600,
+        "timeout_seconds": 7200,
         "degraded": {
           "argv": [
             "{python}",
@@ -165,9 +164,9 @@
         "super_table": "daily_kline_v1",
         "meta_table": "daily_kline_versions",
         "self_check": true,
-        "post_fetch_sync": true,
-        "lookback_trading_days": 10,
-        "authority": "transitional: catalog is the versioned ledger until TD reconciles; TD decides coverage/missing (C567)",
+        "history_min_trading_days": 10,
+        "baostock_total_timeout_seconds": 6900,
+        "authority": "Baostock is the only daily_kline provider written to TD; TD watermarks decide gaps",
         "doc": "docs/DAILY_KLINE_TD.md"
       }
     },

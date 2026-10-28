@@ -44,6 +44,10 @@ class TdVerifyError(RuntimeError):
     """Read-back differs from the catalog: deterministic, the day is not complete."""
 
 
+class TdSourceRejected(ValueError):
+    """Only a partition whose actual provider is Baostock may enter daily_kline_v1."""
+
+
 def validate_database_name(name: str) -> str:
     text = str(name or "")
     if not _DB_NAME.match(text) or text in FORBIDDEN_DATABASES:
@@ -388,13 +392,18 @@ class TaosStore:
                 "n_volume": int(r[6] or 0), "sum_pct": float(r[7] or 0.0), "n_pct": int(r[8] or 0),
                 "n_open": int(r[9] or 0), "n_turnover": int(r[10] or 0)}
 
-    def read_day_rows(self, trade_date: str, symbols: Sequence[str]) -> dict[str, dict[str, Any]]:
+    def read_day_rows(self, trade_date: str, symbols: Sequence[str] | None = None) -> dict[str, dict[str, Any]]:
         _check_date(trade_date)
-        if not symbols:
+        if symbols is not None and not symbols:
             return {}
-        quoted = ",".join("'" + s + "'" for s in symbols if _SYMBOL.match(s))
+        symbol_filter = ""
+        if symbols is not None:
+            quoted = ",".join("'" + s + "'" for s in symbols if _SYMBOL.match(s))
+            if not quoted:
+                return {}
+            symbol_filter = f" AND symbol IN ({quoted})"
         rows = self._run(f"SELECT symbol, {', '.join(DATA_COLUMNS)}, version FROM {self.database}.{SUPER_TABLE} "
-                         f"WHERE {self._day_filter(trade_date)} AND symbol IN ({quoted})", missing_ok=True)
+                         f"WHERE {self._day_filter(trade_date)}{symbol_filter}", missing_ok=True)
         return {row[0]: {**dict(zip(DATA_COLUMNS, row[1:1 + len(DATA_COLUMNS)])), "version": row[-1]} for row in rows}
 
     def day_counts(self, dates: Sequence[str]) -> dict[str, int]:
@@ -405,6 +414,24 @@ class TaosStore:
                              missing_ok=True)
             out[day] = int(rows[0][0]) if rows else 0
         return out
+
+    def latest_watermarks(self) -> dict[str, str]:
+        """Fetch every symbol's latest daily-bar date in one stable-level aggregation."""
+        rows = self._run(f"SELECT symbol, LAST(ts) FROM {self.database}.{SUPER_TABLE} GROUP BY symbol",
+                         missing_ok=True)
+        result: dict[str, str] = {}
+        for symbol, value in rows:
+            if isinstance(value, datetime):
+                day = value.date().isoformat()
+            elif isinstance(value, _date):
+                day = value.isoformat()
+            elif isinstance(value, (int, float)):
+                day = datetime.fromtimestamp(float(value) / 1_000_000, timezone.utc).astimezone(SHANGHAI).date().isoformat()
+            else:
+                day = str(value or "")[:10]
+            if day:
+                result[str(symbol)] = day
+        return result
 
     def drop_database(self) -> None:
         """Only for temporary test databases (core_dev_*): refuses every other name."""
@@ -471,14 +498,24 @@ class MemoryTdStore:
             agg["n_turnover"] += row.get("turnover_pct") is not None
         return agg
 
-    def read_day_rows(self, trade_date: str, symbols: Sequence[str]) -> dict[str, dict[str, Any]]:
+    def read_day_rows(self, trade_date: str, symbols: Sequence[str] | None = None) -> dict[str, dict[str, Any]]:
         self._guard("read_day_rows")
         day = self.days.get(trade_date, {})
-        return {symbol: dict(day[symbol]) for symbol in symbols if symbol in day}
+        return ({symbol: dict(values) for symbol, values in day.items()} if symbols is None else
+                {symbol: dict(day[symbol]) for symbol in symbols if symbol in day})
 
     def day_counts(self, dates: Sequence[str]) -> dict[str, int]:
         self._guard("day_counts")
         return {day: len(self.days.get(day, {})) for day in dates}
+
+    def latest_watermarks(self) -> dict[str, str]:
+        self._guard("latest_watermarks")
+        result: dict[str, str] = {}
+        for day, rows in self.days.items():
+            for symbol in rows:
+                if day > result.get(symbol, ""):
+                    result[symbol] = day
+        return result
 
     def close(self) -> None:
         pass
@@ -610,11 +647,63 @@ class DailyKlineTdSink:
             raise TdVerifyError("td_readback_mismatch:" + trade_date + ":" + "; ".join(problems[:4]))
         return report
 
+    def write_dataset(self, spec: Any, trade_date: str, rows: Sequence[Mapping[str, Any]],
+                      manifest: Mapping[str, Any]) -> SyncOutcome:
+        """Persist the just-built Baostock partition and verify its TD version row before returning."""
+        if getattr(spec, "name", None) != "daily_kline":
+            raise TdSourceRejected("td_daily_kline_sink_rejects_dataset:" + str(getattr(spec, "name", None)))
+        return self.write_partition(trade_date, rows, manifest)
+
+    def write_partition(self, trade_date: str, rows: Sequence[Mapping[str, Any]],
+                        manifest: Mapping[str, Any]) -> SyncOutcome:
+        _check_date(trade_date)
+        provider = str(manifest.get("provider") or "").lower()
+        if provider != "baostock":
+            raise TdSourceRejected("td_daily_kline_requires_provider_baostock:" + (provider or "UNKNOWN"))
+        if str(manifest.get("trade_date") or trade_date) != trade_date:
+            raise TdVerifyError("td_trade_date_mismatch:" + trade_date)
+        version = str(manifest.get("version") or "")
+        if not version or not rows or int(manifest.get("row_count") or -1) != len(rows):
+            raise TdVerifyError("td_partition_manifest_mismatch:" + trade_date)
+        # The artifact digest binds this exact row sequence. The version row is read back after writing and
+        # must carry the same digest and row count before the task can report success.
+        from .storage import canonical_json
+        import hashlib
+        digest = hashlib.sha256(b"\n".join(canonical_json(dict(row)) for row in rows) + b"\n").hexdigest()
+        if digest != str(manifest.get("sha256") or ""):
+            raise TdVerifyError("td_partition_sha256_mismatch:" + trade_date)
+        best = dict(manifest)
+        from ..guardian.registry import daily_kline_needs_upgrade
+        best["needs_upgrade"] = daily_kline_needs_upgrade(best)
+        if not self.store.schema_exists():
+            self.store.ensure_schema()
+        existing = self.store.read_versions(trade_date)
+        mapped, dropped = map_rows(rows, best)
+        if not mapped:
+            raise TdVerifyError("td_partition_maps_to_zero_rows:" + trade_date)
+        self.store.replace_day(trade_date, version, mapped)
+        report = self.verify_day(trade_date, best, rows, mapped)
+        meta = self._meta_for(trade_date, best, dropped, self._meta_ts(trade_date, best, existing))
+        self.store.write_version(meta)
+        versions = self.store.read_versions(trade_date)
+        read_back = next((item for item in versions if str(item.get("version")) == version), None)
+        counts = self.store.day_counts([trade_date])
+        if (read_back is None or str(read_back.get("sha256") or "") != digest
+                or int(read_back.get("row_count") or -1) != len(mapped)
+                or counts.get(trade_date) != len(mapped)):
+            raise TdVerifyError("td_version_readback_mismatch:" + trade_date)
+        return SyncOutcome(trade_date, "synced", version, meta["business_status"], len(mapped),
+                           {"sha256": digest, "sample_size": report["sample_size"],
+                            "version_row_verified": True})
+
     def sync_date(self, trade_date: str, catalog: Mapping[str, Any] | None = None) -> SyncOutcome:
         catalog = catalog if catalog is not None else self._catalog()
         best = self.best_catalog_version(trade_date, catalog)
         if best is None:
             return SyncOutcome(trade_date, "no_catalog_version")
+        if str(best.get("provider") or "").lower() != "baostock":
+            raise TdSourceRejected("td_daily_kline_requires_provider_baostock:" +
+                                   str(best.get("provider") or best.get("source") or "UNKNOWN"))
         if not self.store.schema_exists():
             self.store.ensure_schema()
         existing = self.store.read_versions(trade_date)

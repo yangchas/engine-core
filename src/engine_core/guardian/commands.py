@@ -246,7 +246,7 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
             _append_baostock_no_progress(cmd, event_args)
         if opts.write:
             cmd.append("--write")
-        if opts.td_write:
+        if opts.td_write or opts.write:
             cmd.extend(["--write", "--td-write"])
         return cmd
     if name == "night_report":

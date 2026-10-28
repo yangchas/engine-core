@@ -50,14 +50,13 @@ MUTATIONS = [
     ("locate_ignores_quality", STORAGE, "if dataset == \"limit_up_pool\" and len(versions) > 1:",
      "if False:"),
     ("td_readback_not_verified", "src/engine_core/data_pipeline/limit_pool_td.py",
-     "        report = self.verify_day(trade_date, best, mapped)", "        report = {\"cells_compared\": 0}"),
+     "        report = self.verify_day(trade_date, manifest, mapped)", "        report = {\"cells_compared\": 0}"),
 ]
 
 
 def run_pytest(tree: Path) -> tuple[int, str]:
     env = {**os.environ, "PYTHONPATH": str(tree / "src"), "PYTHONDONTWRITEBYTECODE": "1"}
-    done = subprocess.run([sys.executable, "-m", "pytest", "tests/test_limit_pool.py", "-q", "-x", "-p", "no:cacheprovider",
-                           "--deselect", "tests/test_limit_pool.py::test_td_sync_event_also_catches_up_the_limit_pool"],
+    done = subprocess.run([sys.executable, "-m", "pytest", "tests/test_limit_pool.py", "-q", "-x", "-p", "no:cacheprovider"],
                           cwd=tree, env=env, capture_output=True, text=True, timeout=300)
     tail = [line for line in done.stdout.splitlines() if line.startswith(("FAILED", "ERROR")) or " passed" in line or " failed" in line]
     return done.returncode, "; ".join(tail[-2:])

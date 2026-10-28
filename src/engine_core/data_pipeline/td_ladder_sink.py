@@ -212,14 +212,18 @@ class LadderTdSink:
         days = sorted(cat.get("datasets", {}).get("ladder_daily", {}).get("dates", {}))
         return [d for d in days if self._best(cat, d)[0] == "ok"][-max(1, lookback):]
 
-    def sync_date(self, day: str) -> LadderOutcome:
-        from .storage import ArtifactCatalog
-        catalog = ArtifactCatalog(self.root)
-        state, best = self._best(catalog.read(), day)
-        if state == "legacy":
-            return LadderOutcome(day, "legacy_only", detail={"reason": "only_pre_C577_partition"})
-        if best is None:
-            return LadderOutcome(day, "no_catalog_version")
+    def write_partition(self, day: str, rows: Sequence[Mapping[str, Any]], manifest: Mapping[str, Any]) -> LadderOutcome:
+        """Persist the partition produced by this task without rereading catalog as a source."""
+        _check_date(day)
+        best = dict(manifest)
+        if str(best.get("trade_date") or day) != day:
+            raise TdVerifyError("td_ladder_partition_date_mismatch:" + day)
+        row_count = int(best.get("row_count") if best.get("row_count") is not None else len(rows))
+        if row_count != len(rows):
+            raise TdVerifyError(f"td_ladder_partition_row_count_mismatch:{day}:{row_count}:{len(rows)}")
+        mapped = map_rows(rows)
+        if len(mapped) != len(rows):
+            raise TdVerifyError(f"td_ladder_partition_invalid_symbols:{day}:{len(rows)}:{len(mapped)}")
         if not self.store.schema_exists():
             self.store.ensure_schema()
         existing = self.store.read_versions(day)
@@ -228,13 +232,14 @@ class LadderTdSink:
             if version_rank(held.get("business_status"), False) > key:
                 return LadderOutcome(day, "skipped_lower", str(held["version"]), int(held.get("row_count") or 0),
                                      {"catalog_version": best["version"]})
-        agg = self.store.day_aggregates(day)
         same = [h for h in existing if h["version"] == best["version"]]
-        if same and agg["count"] == int(same[-1].get("row_count") or -1):
-            return LadderOutcome(day, "unchanged", str(best["version"]), agg["count"])
-        manifest_path = Path(str(best["manifest"]))
-        rows = catalog.read_rows(manifest_path)
-        mapped = map_rows(rows)
+        if same:
+            agg = self.store.day_aggregates(day)
+            same_meta = same[-1]
+            if (agg.get("count") == len(mapped)
+                    and int(same_meta.get("row_count") or -1) == len(mapped)
+                    and str(same_meta.get("sha256") or "") == str(best.get("sha256") or "")):
+                return LadderOutcome(day, "unchanged", str(best["version"]), len(mapped))
         self.store.replace_day(day, str(best["version"]), mapped)
         self._verify(day, best, rows, mapped)
         moment = _parse_instant(best.get("available_at") or best.get("committed_at"))
@@ -255,8 +260,26 @@ class LadderTdSink:
                                   "row_count": len(mapped), "sha256": str(best.get("sha256") or ""),
                                   "available_at": str(best.get("available_at") or ""),
                                   "synced_at": self.clock().isoformat(), "schema_version": SCHEMA_VERSION})
+        readback = next((item for item in self.store.read_versions(day)
+                         if str(item.get("version")) == str(best["version"])), None)
+        final_count = self.store.day_aggregates(day).get("count")
+        if (readback is None or str(readback.get("sha256") or "") != str(best.get("sha256") or "")
+                or int(readback.get("row_count") or -1) != len(mapped) or int(final_count or 0) != len(mapped)):
+            raise TdVerifyError("td_ladder_version_readback_mismatch:" + day)
         return LadderOutcome(day, "synced", str(best["version"]), len(mapped),
                              {"previous_versions": [h["version"] for h in existing]})
+
+    def sync_date(self, day: str) -> LadderOutcome:
+        """Compatibility helper for explicit catalog reconciliation; producers use write_partition."""
+        from .storage import ArtifactCatalog
+        catalog = ArtifactCatalog(self.root)
+        state, best = self._best(catalog.read(), day)
+        if state == "legacy":
+            return LadderOutcome(day, "legacy_only", detail={"reason": "only_pre_C577_partition"})
+        if best is None:
+            return LadderOutcome(day, "no_catalog_version")
+        rows = catalog.read_rows(Path(str(best["manifest"])))
+        return self.write_partition(day, rows, best)
 
     def _verify(self, day: str, best: Mapping[str, Any], rows, mapped) -> None:
         agg = self.store.day_aggregates(day)

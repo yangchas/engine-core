@@ -52,6 +52,12 @@ EMPTY = {"datasets": {name: {"dates": {}} for name in NAMES}}
 
 
 def _plan(hour, minute, catalog=EMPTY, **kw):
+    if "daily_kline_coverage" not in kw:
+        from engine_core.guardian.daily_kline_coverage import DayCoverage, MISSING
+        kw["daily_kline_coverage"] = {
+            day: DayCoverage(day, MISSING, "td") for day in ("2026-10-19", "2026-10-20")
+        }
+        kw["daily_kline_coverage_origin"] = "td"
     return {row["id"]: row for row in reconcile_plan(
         datetime(2026, 10, 20, hour, minute, tzinfo=TZ), catalog, trade_date="2026-10-20",
         prev_trade_date="2026-10-19", **kw)}
@@ -128,14 +134,21 @@ def test_real_degraded_daily_kline_is_scheduled_for_upgrade_without_blocking_der
     kline_versions = catalog["datasets"]["daily_kline"]["dates"]["2026-10-21"]
     degraded = next(version for version in kline_versions
                     if version["version"] == "sha256-b9968b2b7331b1a4")
+    degraded_manifest = json.loads(Path(degraded["manifest"]).read_text(encoding="utf-8"))
     catalog = copy.deepcopy(catalog)
     catalog["datasets"]["daily_kline"]["dates"]["2026-10-21"] = [degraded]
     for dataset in ("daily_indicators", "ladder_daily", "stock_day_facts", "daily_report_features"):
         catalog.get("datasets", {}).get(dataset, {}).get("dates", {}).pop("2026-10-21", None)
     now = datetime(2026, 10, 21, 19, 0, tzinfo=TZ)
+    from engine_core.guardian.daily_kline_coverage import DayCoverage, LOW_QUALITY
+    coverage = {"2026-10-21": DayCoverage(
+        "2026-10-21", LOW_QUALITY, "td", version=degraded["version"],
+        business_status=degraded_manifest["business_status"], needs_upgrade=True,
+        rows=int(degraded_manifest.get("row_count") or 0))}
 
     plan = reconcile_plan(now, catalog, trade_date="2026-10-21", prev_trade_date="2026-10-20",
-                          phase="POST_MARKET")
+                          phase="POST_MARKET", daily_kline_coverage=coverage,
+                          daily_kline_coverage_origin="td")
     by_id = {row["id"]: row for row in plan}
 
     assert by_id["daily_kline"]["action"] == "FETCH_NOW"
@@ -149,7 +162,9 @@ def test_real_degraded_daily_kline_is_scheduled_for_upgrade_without_blocking_der
                                phase="POST_MARKET", upgrade_attempts={
                                    "2026-10-21": {
                                        "status": "exhausted", "attempts": 3,
-                                       "reason": "upgrade_attempt_budget_exhausted"}})
+                                       "reason": "upgrade_attempt_budget_exhausted"}},
+                               daily_kline_coverage=coverage,
+                               daily_kline_coverage_origin="td")
     exhausted_by_id = {row["id"]: row for row in exhausted}
     assert exhausted_by_id["daily_kline"]["action"] == "FETCH_NOW"
     assert exhausted_by_id["daily_kline"]["reason"] == "upgrade_degraded_daily_kline"

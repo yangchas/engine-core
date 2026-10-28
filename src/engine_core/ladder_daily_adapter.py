@@ -185,10 +185,23 @@ def up_to_date(catalog: ArtifactCatalog, trade_date: str) -> bool:
 
 def materialize_ladder_daily(catalog: ArtifactCatalog, *, trade_date: str, config: Mapping[str, Any] | None = None,
                              now: datetime | None = None, force: bool = False, kaipan_fetch=None, wencai_fetch=None,
-                             state_dir: Path | None = None) -> dict[str, Any]:
+                             state_dir: Path | None = None,
+                             on_committed: Callable[[str, list[dict[str, Any]], Mapping[str, Any]], Any] | None = None
+                             ) -> dict[str, Any]:
     cfg = {**DEFAULT_CONFIG, **(config or {})}
     if not force and up_to_date(catalog, trade_date):
-        return {"status": "UP_TO_DATE", "dataset": "ladder_daily", "trade_date": trade_date}
+        result = {"status": "UP_TO_DATE", "dataset": "ladder_daily", "trade_date": trade_date}
+        if on_committed is not None:
+            path, manifest = _best_manifest(catalog.read(), "ladder_daily", trade_date)
+            if path is None or manifest is None:
+                raise RuntimeError("ladder_partition_missing_after_up_to_date:" + trade_date)
+            entries = catalog.read().get("datasets", {}).get("ladder_daily", {}).get("dates", {}).get(trade_date) or []
+            best = select_best([e for e in entries if isinstance(e, Mapping)])
+            committed = {**manifest, **(best or {})}
+            td_result = on_committed(trade_date, catalog.read_rows(path), committed)
+            if td_result is not None:
+                result["td_write"] = td_result
+        return result
     started = time.monotonic()
     when = now or datetime.now(timezone.utc)
     calendar = trading_days(catalog.root, trade_date)
@@ -224,11 +237,16 @@ def materialize_ladder_daily(catalog: ArtifactCatalog, *, trade_date: str, confi
     extra = {"clock": (lambda: now)} if now is not None else {}
     committed = catalog.commit("ladder_daily", trade_date, partition.rows, manifest, source=manifest["provider"],
                                **extra)
-    return {"status": "COMMITTED", "dataset": "ladder_daily", "trade_date": trade_date,
+    result = {"status": "COMMITTED", "dataset": "ladder_daily", "trade_date": trade_date,
             "version": committed["version"], "business_status": committed["business_status"],
             "row_count": committed["row_count"], "provider": committed["provider"],
             "provider_chain": committed["provider_chain"], "max_streak": committed["quality"]["max_streak"],
             "live_fetches": loader.live_log}
+    if on_committed is not None:
+        td_result = on_committed(trade_date, [dict(row) for row in partition.rows], committed)
+        if td_result is not None:
+            result["td_write"] = td_result
+    return result
 
 
 def _listings(catalog: ArtifactCatalog) -> dict[str, str]:

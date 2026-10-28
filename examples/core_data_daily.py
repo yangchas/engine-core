@@ -109,6 +109,7 @@ def main(argv=None) -> int:
                                   baostock_total_timeout_seconds=args.baostock_total_timeout_seconds,
                                   baostock_no_progress_seconds=args.baostock_no_progress_seconds,
                                   baostock_symbols_file=args.symbols_file)
+    adapters = dict(adapters)
     if args.adapter:
         if args.symbols_file:
             parser.error("--symbols-file cannot be combined with --adapter")
@@ -123,9 +124,21 @@ def main(argv=None) -> int:
         redis = redis_package.Redis.from_url(os.environ["CORE_REDIS_URL"], decode_responses=True)
     from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
     trade_dates = TradeCalendarStore(root).all_trading_dates() or None
-    result = run_daily_phase(args.phase, args.date, root=root, adapters=adapters,
-        trading_dates=trade_dates, write=args.write, redis=redis,
-        td_adapter=adapters.get("td_writer"), td_write=args.td_write, lock=not args.no_lock)
+    td_store = None
+    if args.td_write and adapters.get("td_writer") is None:
+        from engine_core.data_pipeline.td_sink import DailyKlineTdSink, TaosStore
+        from engine_core.guardian.daily_kline_coverage import td_settings
+        settings = td_settings()
+        database = (settings or {}).get("database") or os.getenv("CORE_TD_DATABASE") or "core_data"
+        td_store = TaosStore(str(database))
+        adapters["td_writer"] = DailyKlineTdSink(td_store, root)
+    try:
+        result = run_daily_phase(args.phase, args.date, root=root, adapters=adapters,
+            trading_dates=trade_dates, write=args.write, redis=redis,
+            td_adapter=adapters.get("td_writer"), td_write=args.td_write, lock=not args.no_lock)
+    finally:
+        if td_store is not None:
+            td_store.close()
     result["recommended_cron"] = [
         "50 8 * * 1-5 core_data_daily.py --phase premarket --write",
         "*/5 9-15 * * 1-5 core_data_daily.py --phase intraday --write",
@@ -137,6 +150,10 @@ def main(argv=None) -> int:
         result["sample_scope"] = "symbols_file"
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     if result["status"] not in {"READY", "SKIPPED_NON_TRADING_DAY"}:
+        if result.get("error_code") == "TD_UNAVAILABLE":
+            return 30
+        if result.get("error_code") == "TD_VERIFY_FAILED":
+            return 40
         return 2
     return 10 if args.symbols_file else 0
 

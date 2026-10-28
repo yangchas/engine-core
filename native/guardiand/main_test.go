@@ -235,7 +235,7 @@ func TestMigrationV2PreservesConfiguredStartupAndWindowPolicies(t *testing.T) {
 		wantLoad1 bool
 	}{
 		{name: "v2 fixture", path: filepath.Join("testdata", "schedule_v2.json"), wantCount: 62, wantLoad1: true},
-		{name: "current v3", path: filepath.Join("../../../engine_core/src/engine_core/guardian/schedule.json"), wantCount: 70},
+		{name: "current v3", path: filepath.Join("../../../engine_core/src/engine_core/guardian/schedule.json"), wantCount: 66},
 	}
 	for _, source := range sources {
 		t.Run(source.name, func(t *testing.T) {

@@ -284,9 +284,6 @@ def _run(request):
                             args=args, timeout_seconds=int(request.get("timeout_seconds") or getattr(base, "timeout_seconds", 300)),
                             data_date_offset=getattr(base, "data_date_offset", 0))
     now = datetime.fromisoformat(asof)
-    if name == "td_sync_daily_kline":
-        from engine_core.guardian.td_sync import run_td_sync
-        return run_td_sync(request, root, dry_run=dry)
     if name == "daily_kline_close":
         from engine_core.guardian.daily_kline_close import run_close_tier
         return run_close_tier(request, root, dry_run=dry)
