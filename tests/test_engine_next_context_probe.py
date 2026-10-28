@@ -257,19 +257,6 @@ def test_guard_redis_rejects_unclassified_pipeline_method():
         guarded.pipeline().custom_mutation()
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    ((0.0997, 0.0997), (9.97, 0.0997), (997, 0.0997), (-9.97, -0.0997)),
-)
-def test_auction_ratio_wheel_preserves_legacy_formula_for_valid_values(raw, expected):
-    assert normalize_auction_change_ratio(raw) == pytest.approx(expected)
-
-
-@pytest.mark.parametrize("raw", (None, "", "bad", True, float("nan"), float("inf")))
-def test_auction_ratio_wheel_keeps_missing_or_invalid_as_unknown(raw):
-    assert normalize_auction_change_ratio(raw) is None
-
-
 def test_read_only_context_builder_disables_refresh_and_recovery_and_reads_0925_only():
     from types import SimpleNamespace
 

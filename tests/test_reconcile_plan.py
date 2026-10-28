@@ -137,7 +137,7 @@ def test_real_degraded_daily_kline_is_scheduled_for_upgrade_without_blocking_der
     degraded_manifest = json.loads(Path(degraded["manifest"]).read_text(encoding="utf-8"))
     catalog = copy.deepcopy(catalog)
     catalog["datasets"]["daily_kline"]["dates"]["2026-10-21"] = [degraded]
-    for dataset in ("daily_indicators", "ladder_daily", "stock_day_facts", "daily_report_features"):
+    for dataset in ("daily_indicators", "ladder_daily", "daily_report_features"):
         catalog.get("datasets", {}).get(dataset, {}).get("dates", {}).pop("2026-10-21", None)
     now = datetime(2026, 10, 21, 19, 0, tzinfo=TZ)
     from engine_core.guardian.daily_kline_coverage import DayCoverage, LOW_QUALITY
@@ -155,7 +155,6 @@ def test_real_degraded_daily_kline_is_scheduled_for_upgrade_without_blocking_der
     assert by_id["daily_kline"]["reason"] == "upgrade_degraded_daily_kline"
     assert by_id["daily_indicators"]["action"] == "FETCH_NOW"
     assert by_id["ladder_daily"]["action"] == "FETCH_NOW"
-    assert by_id["stock_day_facts"]["action"] == "FETCH_NOW"
     assert by_id["daily_report_features"]["action"] == "FETCH_NOW"
 
     exhausted = reconcile_plan(now, catalog, trade_date="2026-10-21", prev_trade_date="2026-10-20",

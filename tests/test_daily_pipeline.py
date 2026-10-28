@@ -897,7 +897,7 @@ def test_close_catalog_inputs_join_frozen_market_and_auction_facts(tmp_path):
     catalog = ArtifactCatalog(tmp_path / "catalog")
     for trade_date in ("2026-10-16", "2026-10-19"):
         source_date = "2026-10-15" if trade_date == "2026-10-16" else "2026-10-16"
-        for dataset, artifact_date in (("daily_kline", trade_date), ("stock_day_facts", trade_date),
+        for dataset, artifact_date in (("daily_kline", trade_date),
                                        ("auction_stock_facts", trade_date), ("auction_panorama", trade_date),
                                        ("limit_up_pool", source_date), ("plate_members", trade_date),
                                        ("stock_theme_assignment", trade_date)):

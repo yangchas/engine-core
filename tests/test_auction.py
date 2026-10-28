@@ -32,10 +32,6 @@ def test_normalize_auction_change_ratio_keeps_unknown_values_unavailable(raw):
     assert normalize_auction_change_ratio(raw) is None
 
 
-def test_normalize_auction_change_ratio_does_not_create_zero_from_missing():
-    assert normalize_auction_change_ratio(None) is None
-
-
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [(-8, -0.08), (0, 0.0), (100, 1.0), (250, 2.5)],

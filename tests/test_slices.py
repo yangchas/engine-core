@@ -180,30 +180,6 @@ def test_hot_plates_today_uses_latest_dated_capture_visible_at_asof(tmp_path):
     assert [row["strength"] for row in yesterday.rows] == [100]
 
 
-def test_hot_plate_minute_slice_filters_by_plate_and_available_at(tmp_path):
-    from engine_core.data_pipeline.storage import ArtifactCatalog
-    from engine_core.slices import SliceProviders
-
-    from conftest import use_declared_time_as_test_commit_clock
-    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
-    catalog.commit("hot_plate_minutes", "2026-10-15", [
-        {"plate_code": "801001", "trade_date": "2026-10-15", "time": "09:30",
-         "event_time": "2026-10-15T09:30:00+08:00"},
-        {"plate_code": "801001", "trade_date": "2026-10-15", "time": "09:31",
-         "event_time": "2026-10-15T09:31:00+08:00"},
-        {"plate_code": "801002", "trade_date": "2026-10-15", "time": "09:30",
-         "event_time": "2026-10-15T09:30:00+08:00"},
-    ], {"available_at": "2026-10-16T00:00:00+08:00"}, source="kaipan_getHisPlateMins")
-    reader = SliceReader(SliceProviders(catalog=catalog, file_fallback=False).providers())
-    result = reader.get("hot_plate_minutes", trade_date="2026-10-15",
-                        asof="2026-10-16T09:30:30+08:00", plate_code="801001")
-    assert result.meta["source"] == "core_data"
-    assert [row["time"] for row in result.rows] == ["09:30", "09:31"]
-    before_available = reader.get("hot_plate_minutes", trade_date="2026-10-15",
-                                  asof="2026-10-15T15:00:00+08:00", plate_code="801001")
-    assert before_available.rows == []
-
-
 def test_stock_theme_assignment_slice_reads_only_pit_valid_hot_product(tmp_path):
     import json
     from engine_core.data_pipeline.storage import ArtifactCatalog

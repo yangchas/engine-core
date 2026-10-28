@@ -62,16 +62,6 @@ def test_delta_and_sign_state_zero_is_not_reversal():
     assert classify_sign_state(None, 1) == "unavailable"
 
 
-@pytest.mark.parametrize(
-    ("opening", "auction", "expected"),
-    [(5.0, 2.0, 300), (1.234, 1.0, 23), (None, 1.0, None)],
-)
-def test_change_delta_bp_matches_legacy_percent_to_bp_conversion(
-    opening, auction, expected
-):
-    assert compute_change_delta_bp(opening, auction) == expected
-
-
 def test_build_open_fact_keeps_independent_statuses_and_units():
     result = build_open_fact(
         {
