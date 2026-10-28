@@ -851,5 +851,101 @@
   "row_count": 9024,
   "source_date_echo": null,
   "snapshot_semantics": "current response; provider supplies no source-date echo"
+ },
+ "kaipan_ban_reasons_2026-10-29_002982_st200_0537.json": {
+  "source": "kaipan_ban_reasons",
+  "trade_date": "2026-10-29",
+  "fetched_at": "2026-10-29T05:37:45+08:00",
+  "bytes": 28307,
+  "sha256": "44c681bf9f15d9bf352e5bc9b89ba2496b2f50db6d9ccda033522a8a8678c516",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_ban_reasons --symbol 002982 --st 200",
+  "call": "getBanReasons",
+  "params": {
+   "code": "002982",
+   "st": 200
+  },
+  "request_count": 1,
+  "response_count": 31
+ },
+ "kaipan_pool_2026-10-23_L1_0537.json": {
+  "source": "kaipan_pool",
+  "trade_date": "2026-10-23",
+  "fetched_at": "2026-10-29T05:37:58+08:00",
+  "bytes": 22320,
+  "sha256": "56d407935da4344a983ed2b2efd83db0463ac16de84443bc44c0c7f0669bbfec",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_pool --date 2026-10-23 --level 1",
+  "call": "getHisBans",
+  "params": {
+   "date": "2026-10-23",
+   "ban": "1",
+   "size": "2000"
+  }
+ },
+ "kaipan_ban_reasons_2026-10-29_003021_st200_0538.json": {
+  "source": "kaipan_ban_reasons",
+  "trade_date": "2026-10-29",
+  "fetched_at": "2026-10-29T05:38:40+08:00",
+  "bytes": 55480,
+  "sha256": "325e16d206c0958e981df984cf4e6d9460a5009b8a5e925ebd1e1a3e7eeed3fb",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_ban_reasons --symbol 003021 --st 200",
+  "call": "getBanReasons",
+  "params": {
+   "code": "003021",
+   "st": 200
+  },
+  "request_count": 1,
+  "response_count": 51
+ },
+ "wencai_limit_up_pool_2026-10-23_0539.json": {
+  "source": "wencai_limit_up_pool",
+  "trade_date": "2026-10-23",
+  "fetched_at": "2026-10-29T05:39:35+08:00",
+  "bytes": 132239,
+  "sha256": "dc5d048f7068fd9ff9a3d463d94e711c0d85974bd1f1e12f1cb2f693f44b046a",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py wencai_limit_up_pool --date 2026-10-23",
+  "call": "pywencai.wencai.get_robot_data",
+  "params": {
+   "query": "2026-10-23涨停;连板天数;去除st"
+  },
+  "request_count": 1,
+  "response_count": 82,
+  "reported_total": 82,
+  "cookie_status": "used"
+ },
+ "wencai_limit_up_pool_2026-10-26_0539.json": {
+  "source": "wencai_limit_up_pool",
+  "trade_date": "2026-10-26",
+  "fetched_at": "2026-10-29T05:39:41+08:00",
+  "bytes": 83618,
+  "sha256": "4abda53ed1fe704564116360297d91aef4e55460c5983e49badb542431738f27",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py wencai_limit_up_pool --date 2026-10-26",
+  "call": "pywencai.wencai.get_robot_data",
+  "params": {
+   "query": "2026-10-26涨停;连板天数;去除st"
+  },
+  "request_count": 1,
+  "response_count": 55,
+  "reported_total": 55,
+  "cookie_status": "used"
+ },
+ "kaipan_pool_2026-10-26_L1_0540.json": {
+  "source": "kaipan_pool",
+  "trade_date": "2026-10-26",
+  "fetched_at": "2026-10-29T05:40:35+08:00",
+  "bytes": 12778,
+  "sha256": "394e90343503fe203e1d535245b3817a5ff1b59d987a3a2272ba3e9182e48357",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_pool --date 2026-10-26 --level 1",
+  "call": "getHisBans",
+  "params": {
+   "date": "2026-10-26",
+   "ban": "1",
+   "size": "2000"
+  }
  }
 }

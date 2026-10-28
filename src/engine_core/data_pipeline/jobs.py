@@ -236,6 +236,12 @@ class JobRunner:
         if isinstance(computed, Mapping):
             computed = computed.get("rows", rows)
         rows = _clean_rows(spec, _redact(computed))
+        if name == "limit_reasons":
+            if any(row.get("date") != trade_date for row in rows):
+                raise ValueError("temporal_invalid:limit_reasons_date_mismatch")
+            keys = [(row.get("date"), row.get("symbol")) for row in rows]
+            if len(keys) != len(set(keys)):
+                raise ValueError("quality_invalid:limit_reasons_duplicate_key")
         quality = _quality(rows, fetch_meta)
         baostock_completion = None
         if (name == "daily_kline" and fetch_meta.get("provider") == "baostock" and
@@ -306,13 +312,47 @@ class JobRunner:
         }
         if isinstance(fetch_meta.get("inputs"), Mapping):
             manifest["inputs"] = dict(fetch_meta["inputs"])
+        if name == "limit_reasons":
+            # The point-in-time cutoff is part of this dataset's identity. Include it in the
+            # version inputs so a corrected timezone-aware as_of creates a new immutable version.
+            version_inputs = dict(manifest.get("inputs", {}))
+            version_inputs["point_in_time_as_of"] = str(as_of or fetch_meta.get("as_of") or trade_date)
+            manifest["inputs"] = version_inputs
         provider_details = {key: fetch_meta[key] for key in
                             ("failed_plates", "completed_plate_count", "queried_plate_count",
                              "unqueried_plate_count", "universe_duplicate_conflicts",
                              "queried_symbol_count", "unqueried_symbol_count", "overwritten_symbol_count",
-                             "universe_delta_count") if key in fetch_meta}
+                             "universe_delta_count", "source_counts", "historical_attribution_count",
+                             "identity_mismatch_count", "identity_mismatch_codes", "reason_unknown_count",
+                             "all_sources_error", "kaipan_errors", "history_page_size") if key in fetch_meta}
         if provider_details:
             manifest["provider_details"] = provider_details
+        if name == "limit_reasons":
+            provider = str(fetch_meta.get("provider") or "UNKNOWN")
+            safe_source = provider if re.fullmatch(r"[A-Za-z0-9_.()= -]{1,96}", provider) else spec.source
+            source = safe_source
+            manifest["source"] = safe_source
+            manifest["provider"] = provider
+            manifest["provider_chain"] = list(fetch_meta.get("provider_chain", ()))
+            manifest["provider_attempts"] = list(fetch_meta.get("provider_attempts", ()))
+            business_status = str(fetch_meta.get("business_status") or "FORMAL")
+            manifest["business_status"] = "MISSING" if fetch_meta.get("all_sources_error") else business_status
+            primary_providers = set(spec.primary_providers or ((spec.source,) if spec.source else ()))
+            manifest["degraded"] = (business_status in {"DEGRADED", "PARTIAL"} or
+                                     (bool(primary_providers) and provider not in primary_providers))
+            manifest["field_units"] = {}
+            quality.update({
+                "expected_basis": "pool_members",
+                "expected_count": int(fetch_meta.get("expected_count") or 0),
+                "missing": int(fetch_meta.get("missing_count") or 0),
+                "field_completeness": dict(fetch_meta.get("field_completeness") or {}),
+                "partial": bool(fetch_meta.get("partial")),
+                "dropped_duplicates": 0,
+            })
+            if fetch_meta.get("all_sources_error"):
+                manifest.update({"mode": "MISSING", "storage_backend": None, "storage_uri": None,
+                                 "manifest_uri": None, "rows_uri": None, "cache_publish": "SKIPPED"})
+                return JobResult(manifest, rows)
         for key in ("carried_forward_from", "universe_asof", "tier", "degraded",
                     "sample_scope", "sample_symbols"):
             if key in fetch_meta:

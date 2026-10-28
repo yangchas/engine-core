@@ -323,8 +323,9 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         def get_his_plate_mins(self, plate: str, day: str) -> Any:
             return self._sdk().getHisPlateMins(s=plate, date=day)
 
-        def get_ban_reasons(self, symbol: str) -> Any:
-            return self._sdk().getBanReasons(code=symbol)
+        def get_ban_reasons(self, symbol: str, *, st: int = 200) -> Any:
+            from engine_core.data_pipeline.providers.kaipan_sdk_adapter import get_ban_reasons
+            return get_ban_reasons(symbol, st=st)
 
     def kaipan_provider(day: str):
         from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
@@ -354,19 +355,129 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
 
     def reasons_fetch(day: str, context: Any = None) -> Any:
         from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+        from engine_core.data_pipeline.limit_pool import build_wencai
+        from engine_core.data_pipeline.limit_reasons import build_limit_reasons
         checkpoint = Path(artifact_root) / ".checkpoints" / f"limit_reasons-{day}.json" if write_enabled else None
+        catalog = ArtifactCatalog(artifact_root)
         pool = load_dataset("limit_up_pool", day, prefer="file",
-                            catalog=ArtifactCatalog(artifact_root))
+                            catalog=catalog)
         if pool is None:
             raise RuntimeError("limit_up_pool_artifact_required:" + day)
+        pool_rows = pool.rows
         symbols = sorted({str(row.get("symbol", row.get("code", ""))).zfill(6)
-                          for row in pool.rows if row.get("symbol") or row.get("code")})
+                          for row in pool_rows if row.get("symbol") or row.get("code")})
         if not symbols:
             raise RuntimeError("limit_up_pool_has_no_symbols:" + day)
-        provider = KaipanProvider(LazyKaipanClient(), symbols=symbols,
-                                  max_requests=max(max_requests, len(symbols)),
-                                  reasons_checkpoint_path=checkpoint)
-        return provider.limit_reasons(day, context=context)
+        pool_source = str(pool.manifest.get("provider") or pool.manifest.get("source") or "").lower()
+        has_kaipan_pool = "kaipan" in pool_source
+        direct_symbols = ({str(row.get("symbol", row.get("code", ""))).zfill(6)
+                           for row in pool_rows
+                           if (row.get("symbol") or row.get("code")) and row.get("reason_category") not in (None, "")}
+                          if has_kaipan_pool else set())
+        reasons_result: dict[str, Any] = {"rows": [], "request_count": 0, "errors": [],
+                                          "queried_symbol_count": 0, "unqueried_symbol_count": 0,
+                                          "history_page_size": 200}
+        attempts: list[dict[str, Any]] = [{"provider": "kaipan_getHisBans", "result": "READY",
+                                          "elapsed_ms": 0, "reason": "saved_limit_up_pool_rows",
+                                          "row_count": len(direct_symbols), "request_count": 0}]
+        needs_kaipan = sorted(set(symbols) - direct_symbols)
+        if needs_kaipan:
+            provider = KaipanProvider(LazyKaipanClient(), symbols=needs_kaipan,
+                                      max_requests=max(max_requests, len(needs_kaipan)),
+                                      reasons_checkpoint_path=checkpoint)
+            started = time.monotonic()
+            try:
+                reasons_result = provider.limit_reasons(day, context=context, symbols=needs_kaipan)
+                attempts.append({"provider": "kaipan_getBanReasons(st=200)",
+                                 "result": "PARTIAL" if reasons_result.get("partial") else "READY",
+                                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                                 "reason": "full_history", "row_count": len(reasons_result.get("rows", ())),
+                                 "request_count": int(reasons_result.get("request_count") or 0)})
+            except Exception as exc:  # keep the WenCai/history rungs available after provider errors
+                reasons_result = {**reasons_result, "error_code": type(exc).__name__}
+                attempts.append({"provider": "kaipan_getBanReasons(st=200)", "result": "FAILED",
+                                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                                 "reason": type(exc).__name__, "row_count": len(reasons_result.get("rows", ())),
+                                 "request_count": int(reasons_result.get("request_count") or 0)})
+        else:
+            attempts.append({"provider": "kaipan_getBanReasons(st=200)", "result": "NOT_NEEDED",
+                             "elapsed_ms": 0, "reason": "pool_rows_cover_all_members", "row_count": 0,
+                             "request_count": 0})
+
+        exact_symbols = {str(row.get("symbol", "")).zfill(6) for row in reasons_result.get("rows", ())
+                         if str(row.get("event_date", ""))[:10] == day and str(row.get("type", "0")) == "0"}
+        pool_wencai_symbols = {str(row.get("symbol", row.get("code", ""))).zfill(6)
+                              for row in pool_rows
+                              if (row.get("symbol") or row.get("code")) and
+                              row.get("wc_reason_category", row.get("reason_class")) not in (None, "")}
+        needs_wencai = set(symbols) - direct_symbols - exact_symbols - pool_wencai_symbols
+        wencai_rows: list[dict[str, Any]] = []
+        wencai_request_count = 0
+        if needs_wencai:
+            started = time.monotonic()
+            try:
+                from engine_core.data_pipeline.providers.limit_pool_sources import fetch_wencai_pool
+                options = dict(wencai_options or {})
+                fetched = fetch_wencai_pool(
+                    day, cookie_file=options.get("cookie_file", "~/core-data/secrets/wencai.cookie"),
+                    max_requests=3, cooldown_seconds=60, cooldown_max_seconds=300, max_cooldowns=2)
+                partition = build_wencai(day, fetched["records"], reported_total=fetched.get("reported_total"))
+                wencai_rows = [row for row in partition.rows if row.get("symbol") in needs_wencai]
+                wencai_request_count = int(fetched.get("request_count") or 0)
+                attempts.append({"provider": "wencai_limit_up_pool.wc_reason_category", "result": "READY",
+                                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                                 "reason": "fallback_pool_query", "row_count": len(wencai_rows),
+                                 "request_count": wencai_request_count})
+            except Exception as exc:  # noqa: BLE001 - a failed fallback is recorded without exposing cookies
+                attempts.append({"provider": "wencai_limit_up_pool.wc_reason_category", "result": "FAILED",
+                                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                                 "reason": type(exc).__name__, "row_count": 0,
+                                 "request_count": wencai_request_count})
+        else:
+            attempts.append({"provider": "wencai_limit_up_pool.wc_reason_category", "result": "NOT_NEEDED",
+                             "elapsed_ms": 0, "reason": "higher_tier_sources_cover_members", "row_count": 0,
+                             "request_count": 0})
+
+        registry = [{"plate_code": code} for code in
+                    _plate_codes(artifact_root, day, os.getenv("CORE_PLATE_REGISTRY"))]
+        members = load_dataset("plate_members", day, prefer="file", catalog=catalog)
+        built = build_limit_reasons(
+            day, pool_rows, kaipan_rows=reasons_result.get("rows", ()), wencai_rows=wencai_rows,
+            plate_registry_rows=registry,
+            plate_registry_loaded=bool(registry),
+            plate_member_rows=members.rows if members else (), plate_members_loaded=members is not None,
+            pool_source=pool_source)
+        attempts.append({"provider": "historical_attribution",
+                         "result": "DEGRADED" if built["historical_attribution_count"] else "NOT_NEEDED",
+                         "elapsed_ms": 0, "reason": "latest_type0_date_before_trade_date",
+                         "row_count": built["historical_attribution_count"], "request_count": 0})
+        all_sources_failed = built["status"] == "MISSING"
+        partial = built["missing_count"] > 0
+        quality_status = "PARTIAL" if partial else "DEGRADED" if built["status"] == "DEGRADED" else "READY"
+        used = built["source_counts"]
+        if used.get("KAIPAN_GET_HIS_BANS", 0):
+            selected_provider = "kaipan_getHisBans"
+        elif used.get("KAIPAN_GET_BAN_REASONS", 0):
+            selected_provider = "kaipan_getBanReasons(st=200)"
+        elif used.get("WENCAI_LIMIT_UP_POOL", 0):
+            selected_provider = "wencai_limit_up_pool.wc_reason_category"
+        else:
+            selected_provider = "historical_attribution"
+        business_status = ("PARTIAL" if partial else
+                           "DEGRADED" if built["historical_attribution_count"] else
+                           "PROVISIONAL" if used.get("WENCAI_LIMIT_UP_POOL", 0) else "FORMAL")
+        field_completeness = {
+            key: sum(row.get(key) not in (None, "") for row in built["rows"])
+            for key in ("reason", "main_reason", "plate_code")}
+        return {**built, "expected_count": len(symbols), "coverage_count": built["coverage_count"],
+                "partial": partial, "quality_status": quality_status,
+                "business_status": business_status, "degraded": business_status in {"DEGRADED", "PARTIAL"},
+                "provider": selected_provider, "field_completeness": field_completeness,
+                "request_count": int(reasons_result.get("request_count") or 0) + wencai_request_count,
+                "provider_chain": built["provider_chain"], "provider_attempts": attempts,
+                "all_sources_error": "ALL_SOURCES_FAILED" if all_sources_failed else None,
+                "kaipan_errors": reasons_result.get("errors", []),
+                "history_page_size": reasons_result.get("history_page_size", 200)}
 
     return {"symbol_universe": universe_fetch, "daily_kline": daily_fetch,
             "wencai_daily_kline": wencai_daily_fetch, "limit_up_pool": pool_fetch,
@@ -827,9 +938,13 @@ def main(argv: list[str] | None = None) -> int:
             if args.job != "all":
                 return daily_kline_exit_code
             continue
+        job_started = time.monotonic()
+        run_kwargs = {}
+        if name == "limit_reasons":
+            run_kwargs["as_of"] = args.date + "T15:00:00+08:00"
         result = runner.run(name, args.date, fetch=adapters[name], publish=args.write,
                             td_write=args.td_write, source=get_dataset(name).source,
-                            dry_run=not (args.write or args.execute))
+                            dry_run=not (args.write or args.execute), **run_kwargs)
         print(json.dumps({"job": name, "version": result.manifest.get("version"),
                           "row_count": result.manifest["row_count"],
                           "sha256": result.manifest.get("sha256"),
@@ -837,6 +952,30 @@ def main(argv: list[str] | None = None) -> int:
                           "storage_uri": result.manifest["storage_uri"],
                           "cache_publish": result.manifest["cache_publish"],
                           "mode": result.manifest.get("mode", "WRITE")}, sort_keys=True))
+        if name == "limit_reasons":
+            details = result.manifest.get("provider_details", {})
+            missing_all = result.manifest.get("business_status") == "MISSING"
+            attempts = result.manifest.get("provider_attempts", [])
+            contract = ContractJobResult(
+                contract=1, job=name, trade_date=args.date,
+                status="failed" if missing_all else
+                       "degraded" if result.manifest.get("quality", {}).get("status") in {"PARTIAL", "DEGRADED"}
+                       else "ok",
+                tier=0 if result.manifest.get("provider_chain") else 1,
+                source="provider_chain", dataset=name,
+                version=result.manifest.get("version"), row_count=len(result.rows),
+                coverage=result.manifest.get("quality", {}).get("coverage"),
+                error_code="ALL_SOURCES_FAILED" if missing_all else None,
+                retryable=missing_all, attempts=len(attempts),
+                elapsed_ms=round((time.monotonic() - job_started) * 1000, 3),
+                detail={"business_status": result.manifest.get("business_status"),
+                        "provider_chain": result.manifest.get("provider_chain", []),
+                        "provider_attempts": attempts,
+                        "source_counts": details.get("source_counts"),
+                        "missing_count": result.manifest.get("quality", {}).get("missing")})
+            exit_code = emit_job_result(contract)
+            if args.job != "all":
+                return exit_code
     return daily_kline_exit_code
 
 

@@ -10,7 +10,7 @@ import hashlib
 import json
 import math
 import re
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -287,13 +287,21 @@ def _check_manifest(rep: Report, dataset: str, trade_date: str, chosen: dict[str
     status = m.get("business_status")
     deg = m.get("degraded")
     primary = spec.get("primary_provider")
+    primaries = spec.get("primary_providers")
+    if isinstance(primaries, list) and primaries:
+        accepted_primaries = set(primaries)
+    else:
+        accepted_primaries = {primary} if primary else set()
     partial_status = status == "PARTIAL"  # design/24 (2026-10-28): PARTIAL is degraded and counts quality.partial
-    expected_deg = (status == "DEGRADED") or partial_status or (bool(primary) and m.get("provider") != primary)
+    expected_deg = (status == "DEGRADED") or partial_status or (
+        bool(accepted_primaries) and m.get("provider") not in accepted_primaries
+    )
     consistent = (status in STATUSES or partial_status) and isinstance(deg, bool) and deg == expected_deg
     if partial_status:
         consistent = consistent and (m.get("quality") or {}).get("partial") is True
-    rule = ("true iff business_status in (DEGRADED, PARTIAL)" if not primary else
-            f"true iff business_status in (DEGRADED, PARTIAL) or provider != primary provider {primary!r}; "
+    rule = ("true iff business_status in (DEGRADED, PARTIAL)" if not accepted_primaries else
+            f"true iff business_status in (DEGRADED, PARTIAL) or provider not in primary providers "
+            f"{sorted(accepted_primaries)!r}; "
             "PARTIAL also needs quality.partial=true")
     rep.result(consistent, "A5", "business_status_degraded_consistent",
                f"business_status={status!r} degraded={deg!r}: status must be one of {STATUSES} or PARTIAL, "
@@ -392,6 +400,26 @@ def _check_rows(rep: Report, trade_date: str, m: dict[str, Any], rows: list[dict
         bad2 = [r.get(dc) for r in rows if r.get(dc) != trade_date]
         rep.result(not bad2, "B2b", f"date_column_{dc}_equals_trade_date",
                    f"{len(bad2)} rows whose {dc} != {trade_date}", count=len(bad2), examples=_examples(bad2))
+    for name, definition in cols.items():
+        bound_column = definition.get("not_after")
+        if not bound_column:
+            continue
+        malformed, future = [], []
+        for index, row in enumerate(rows):
+            value, bound = row.get(name), row.get(bound_column)
+            if value is None:
+                continue
+            try:
+                value_day = date.fromisoformat(value)
+                bound_day = date.fromisoformat(bound)
+            except (TypeError, ValueError):
+                malformed.append({"row": index, "value": value, "bound": bound})
+                continue
+            if value_day > bound_day:
+                future.append({"row": index, "value": value, "bound_column": bound_column, "bound": bound})
+        rep.result(not malformed and not future, f"B2c_{name}", f"{name}_not_after_{bound_column}",
+                   f"{len(future)} {name} values later than {bound_column}; {len(malformed)} invalid date bounds",
+                   future=_examples(future), malformed=_examples(malformed))
     pk = spec.get("primary_key") or []
     if pk:
         keys = [tuple(json.dumps(r.get(k), sort_keys=True) for k in pk) for r in rows]

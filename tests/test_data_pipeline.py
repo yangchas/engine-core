@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -62,14 +63,31 @@ def test_job_pipeline_persists_immutable_artifact_and_manifest(name, tmp_path):
     redis = None
     runner = JobRunner(artifact_root=tmp_path, redis=redis,
                        budget=RequestBudget(min_interval_seconds=0))
-    rows = [{"symbol": "1", "value": 3, "missing": None}]
-    result = runner.run(name, "2026-10-15", fetch=lambda _: rows, now="2026-10-16T10:00:00Z")
+    trade_date = "2026-10-15"
+    if name == "limit_reasons":
+        from engine_core.data_pipeline.limit_pool import kaipan_row
+        from engine_core.data_pipeline.limit_reasons import build_limit_reasons
+        trade_date = "2026-10-23"
+        fixture = Path(__file__).parent / "fixtures/real/kaipan_pool_2026-10-23_L1_0537.json"
+        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        raw = next(row for page in payload["info"] if isinstance(page, list)
+                   for row in page if isinstance(row, list) and len(row) >= 23)
+        pool_row = kaipan_row(raw, 1, trade_date)
+        rows = build_limit_reasons(trade_date, [pool_row], pool_source="kaipan_getHisBans")["rows"]
+    else:
+        rows = [{"symbol": "1", "value": 3, "missing": None}]
+    now = "2026-10-27T10:00:00Z" if name == "limit_reasons" else "2026-10-16T10:00:00Z"
+    result = runner.run(name, trade_date, fetch=lambda _: rows, now=now)
     assert result.manifest["row_count"] == 1
     assert result.manifest["storage_backend"] == "artifact"
-    loaded = load_dataset(name, "2026-10-15", catalog=ArtifactCatalog(tmp_path))
-    assert loaded.rows[0]["symbol"] == "000001"
-    assert loaded.rows[0]["missing"] is None
-    rerun = runner.run(name, "2026-10-15", fetch=lambda _: rows, now="2026-10-16T11:00:00Z")
+    loaded = load_dataset(name, trade_date, catalog=ArtifactCatalog(tmp_path))
+    if name == "limit_reasons":
+        assert loaded.rows[0]["date"] == trade_date
+        assert loaded.rows[0]["symbol"].isdigit()
+    else:
+        assert loaded.rows[0]["symbol"] == "000001"
+        assert loaded.rows[0]["missing"] is None
+    rerun = runner.run(name, trade_date, fetch=lambda _: rows, now=now)
     assert rerun.manifest["version"] == result.manifest["version"]
 
 
@@ -267,26 +285,40 @@ def test_injected_kaipan_provider_fetches_pool_and_honors_request_limit(tmp_path
     assert [row["symbol"] for row in guarded["rows"]] == ["600001", "600002"]
     assert guarded["rows"][0]["name"] == "有效"
 
+    capture_root = Path(__file__).resolve().parent / "fixtures/real"
+    reason_payloads = {
+        "002982": json.loads((capture_root / "kaipan_ban_reasons_2026-10-29_002982_st200_0537.json")
+                             .read_text(encoding="utf-8")),
+        "003021": json.loads((capture_root / "kaipan_ban_reasons_2026-10-29_003021_st200_0538.json")
+                             .read_text(encoding="utf-8")),
+    }
+
+    class Reasons:
+        def get_ban_reasons(self, symbol, *, st):
+            assert st == 200
+            return reason_payloads[symbol]
+
     partial = KaipanProvider(
-        type("Reasons", (), {"get_ban_reasons": lambda _self, _symbol: {"List": []}})(),
-        symbols=["600001", "600002"], max_requests=1, sleep_fn=lambda _: None,
-    ).limit_reasons("2026-10-15")
+        Reasons(), symbols=["002982", "003021"], max_requests=1, sleep_fn=lambda _: None,
+    ).limit_reasons("2026-10-22")
     assert partial["partial"] is True
     assert partial["unqueried_symbol_count"] == 1
 
     checkpointed = KaipanProvider(
-        type("Reasons", (), {"get_ban_reasons": lambda _self, _symbol: {"List": []}})(),
-        symbols=["600001", "600002"], max_requests=1, sleep_fn=lambda _: None,
+        Reasons(), symbols=["002982", "003021"], max_requests=1, sleep_fn=lambda _: None,
         reasons_checkpoint_path=tmp_path / "reasons.json",
     )
-    assert checkpointed.limit_reasons("2026-10-15")["partial"] is True
+    first = checkpointed.limit_reasons("2026-10-22")
+    assert first["partial"] is True
+    assert first["rows"] and all(row["event_date"] <= "2026-10-22" for row in first["rows"])
     resumed = KaipanProvider(
-        type("Reasons", (), {"get_ban_reasons": lambda _self, _symbol: {"List": []}})(),
-        symbols=["600001", "600002"], max_requests=1, sleep_fn=lambda _: None,
+        Reasons(), symbols=["002982", "003021"], max_requests=1, sleep_fn=lambda _: None,
         reasons_checkpoint_path=tmp_path / "reasons.json",
-    ).limit_reasons("2026-10-15")
+    ).limit_reasons("2026-10-22")
     assert resumed["partial"] is False
     assert resumed["unqueried_symbol_count"] == 0
+    assert any(row["symbol"] == "003021" and row["event_date"] == "2026-10-22"
+               for row in resumed["rows"])
 
 
 def test_kaipan_provider_uses_sdk_plate_methods_and_normalizes_rows():
@@ -433,20 +465,22 @@ def test_kaipan_provider_normalizes_historical_plate_minute_trend():
                                   "day": "2026-10-15"}
 
 
-def test_limit_reasons_marks_symbols_whose_target_day_reason_was_overwritten_as_partial():
-    """STUB client (shape captured from real Kaipan 2026-10-21: only the latest reason is returned, dated today)."""
+def test_limit_reasons_rejects_clients_without_full_history_parameter():
     from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
 
     class Client:
+        called = False
         def get_ban_reasons(self, symbol):
-            date = "2026-10-21" if symbol == "001239" else "2026-10-20"
-            return {"StockID": symbol, "List": [{"Date": date, "Type": "0", "Reason": "r", "ZSCode": []}]}
+            self.called = True
+            raise AssertionError("latest-only query must not be sent")
 
-    result = KaipanProvider(Client(), max_requests=10, min_interval_seconds=0).limit_reasons(
-        "2026-10-20", symbols=["001239", "600178"])
-    assert [row["symbol"] for row in result["rows"]] == ["600178"]
-    assert result["expected_count"] == 2 and result["coverage_count"] == 1
-    assert result["overwritten_symbol_count"] == 1 and result["partial"] is True
+    client = Client()
+    result = KaipanProvider(client, max_requests=10, min_interval_seconds=0).limit_reasons(
+        "2026-10-22", symbols=["003021"])
+    assert client.called is False
+    assert result["rows"] == []
+    assert result["partial"] is True
+    assert result["errors"] == [{"symbol": "003021", "error_code": "kaipan_full_history_st_unsupported"}]
 
 
 def test_baostock_capture_resumes_from_checkpoint_after_a_mid_run_timeout_without_losing_progress(tmp_path):

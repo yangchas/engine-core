@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import json
 import os
+import inspect
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -72,7 +73,7 @@ class KaipanProvider:
                 return method
         raise AttributeError(f"kaipan_method_unavailable:{names[0]}")
 
-    def _call(self, fn: Callable[..., Any], *args: Any) -> Any:
+    def _call(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         # Reserve request slots under a lock, but allow the HTTP calls to overlap.
         # This keeps the configured request spacing while bounding member fetch
         # concurrency independently.
@@ -88,7 +89,7 @@ class KaipanProvider:
             self._requests += 1
             self._last_request = self.monotonic_fn()
         try:
-            value = fn(*args)
+            value = fn(*args, **kwargs)
         except Exception as exc:
             if any(token in str(exc).lower() for token in ("403", "forbidden", "captcha", "anti-bot")):
                 with self._request_lock:
@@ -301,8 +302,7 @@ class KaipanProvider:
                       symbols: Iterable[str] | None = None) -> dict[str, Any]:
         rows: list[dict[str, Any]] = []
         done: set[str] = set()
-        # getBanReasons returns only a stock's LATEST reason: once it limits up again, the target day's entry is gone.
-        # Such symbols are counted as overwritten (missing for this day), never silently as covered.
+        # Every production request is explicitly st=200 so later limit-ups cannot hide the target-day record.
         overwritten: set[str] = set()
         if self.reasons_checkpoint_path is not None and self.reasons_checkpoint_path.is_file():
             try:
@@ -318,26 +318,44 @@ class KaipanProvider:
         rows = [row for row in rows if str(row.get("symbol", "")).zfill(6) in requested_set]
         done.intersection_update(requested_set)
         queried_now = 0
+        errors: list[dict[str, str]] = []
         for raw_symbol in requested:
             symbol = str(raw_symbol).zfill(6)
             if symbol in done:
                 continue
             if self._requests >= self.max_requests:
                 break
-            response = self._call(self.client.get_ban_reasons, symbol)
+            method = self._client_method("get_ban_reasons", "getBanReasons")
+            try:
+                parameters = inspect.signature(method).parameters.values()
+                accepts_st = any(item.name == "st" or item.kind == inspect.Parameter.VAR_KEYWORD
+                                 for item in parameters)
+            except (TypeError, ValueError):
+                accepts_st = True
+            if not accepts_st:
+                errors.append({"symbol": symbol, "error_code": "kaipan_full_history_st_unsupported"})
+                break
+            try:
+                response = self._call(method, symbol, st=200)
+            except (RuntimeError, ValueError, AttributeError) as exc:
+                errors.append({"symbol": symbol, "error_code": str(exc).split(":", 1)[0]})
+                break
             queried_now += 1
-            done.add(symbol)
             if not isinstance(response, Mapping):
-                raise ValueError("kaipan_unexpected_reason_shape")
+                errors.append({"symbol": symbol, "error_code": "kaipan_unexpected_reason_shape"})
+                break
             entries = response.get("List", response.get("list", []))
             if not isinstance(entries, (list, tuple)):
-                raise ValueError("kaipan_unexpected_reason_shape")
+                errors.append({"symbol": symbol, "error_code": "kaipan_unexpected_reason_shape"})
+                break
             kept = 0
             for entry in entries:
                 if not isinstance(entry, Mapping):
                     continue
                 event_date = str(entry.get("Date") or "")[:10]
-                if event_date and event_date > trade_date:
+                if not event_date or event_date > trade_date:
+                    continue
+                if str(entry.get("Type", "")) != "0":
                     continue
                 kept += 1
                 rows.append({"symbol": symbol, "event_date": event_date,
@@ -346,13 +364,14 @@ class KaipanProvider:
                              "parent_plate_code": entry.get("PZSCode"), "trade_date": trade_date})
             if entries and not kept:
                 overwritten.add(symbol)
+            done.add(symbol)
             self._save_reasons_checkpoint(trade_date, done, rows, overwritten)
         remaining = [str(symbol).zfill(6) for symbol in requested if str(symbol).zfill(6) not in done]
         overwritten &= requested_set
         return {"rows": rows, "expected_count": len(requested), "coverage_count": len(done - overwritten),
                 "queried_symbol_count": queried_now, "overwritten_symbol_count": len(overwritten),
                 "unqueried_symbol_count": len(remaining), "partial": bool(remaining or overwritten),
-                "request_count": self._requests}
+                "request_count": self._requests, "errors": errors, "history_page_size": 200}
 
     def _save_reasons_checkpoint(self, trade_date: str, done: set[str],
                                  rows: Sequence[Mapping[str, Any]], overwritten: set[str] = frozenset()) -> None:

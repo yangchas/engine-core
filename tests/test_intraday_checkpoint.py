@@ -323,7 +323,12 @@ def test_schedule_has_d1_refs_event_before_startup():
     events = {e.event_id: e for e in default_events()}
     e = events["d1_refs_0045"]
     assert e.handler == "kaipan_fetch" and e.data_date_offset == -1 and e.start < "08:30:00"
-    assert set(e.args["datasets"]) == {"limit_reasons", "plate_members", "hot_plates"}
+    assert set(e.args["datasets"]) == {"plate_members", "hot_plates"}
+    reasons = events["limit_reasons_d1"]
+    assert reasons.handler == "kaipan_fetch" and reasons.data_date_offset == -1
+    assert reasons.start == "00:45:00" and reasons.deadline == "08:50:00"
+    assert reasons.depends_on == ("limit_pool_d1",)
+    assert set(reasons.args["datasets"]) == {"limit_reasons"}
     deps = events["startup_0830"].args["theme_deps"]
     assert deps["on_missing"] == "degrade" and deps["wait_seconds"] > 0
 

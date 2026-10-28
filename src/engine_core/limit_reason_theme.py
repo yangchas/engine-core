@@ -121,6 +121,70 @@ def _short_reason(value: Any) -> str:
     return text[:12]
 
 
+def attribute_main_reason(record: Mapping[str, Any], *, registry_codes: Any,
+                          member_codes: Any = None) -> dict[str, Any]:
+    """Select one reason and its explicit Kaipan plate identity without inferring either from board membership.
+
+    ``PZSCode`` is the recorded parent (main) plate when present; otherwise the first recorded ``ZSCode`` is kept.
+    Missing registry identities remain in the output and are marked for reconciliation.
+    """
+    raw_reason = record.get("Reason", record.get("reason", record.get("reason_category")))
+    heading = (str(raw_reason or "").split(";", 1)[0].split("；", 1)[0]
+               .splitlines()[0].strip() if raw_reason else "")
+    main_reason = re.split(r"\s*[+＋]\s*", heading, maxsplit=1)[0].strip()
+    main_reason = re.split(r"\s*[（(]", main_reason, maxsplit=1)[0].strip()
+
+    raw_codes = record.get("ZSCode", record.get("plate_codes", record.get("plate_code", ())))
+    if isinstance(raw_codes, str):
+        codes = [part.strip() for part in re.split(r"[,，;；\s]+", raw_codes) if part.strip()]
+    elif isinstance(raw_codes, Sequence):
+        codes = [str(code).strip() for code in raw_codes if str(code).strip()]
+    else:
+        codes = []
+    parent = str(record.get("PZSCode", record.get("parent_plate_code", "")) or "").strip()
+    if parent in {"0", "None", "none", "null", "nan"}:
+        parent = ""
+    primary_code = parent or (codes[0] if codes else "")
+
+    def codes_from(value: Any) -> set[str]:
+        if isinstance(value, Mapping):
+            if "plate_code" in value or "code" in value:
+                return {str(row.get("plate_code", row.get("code"))).strip()
+                        for row in (value,) if row.get("plate_code", row.get("code")) not in (None, "")}
+            return {str(code).strip() for code in value}
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            result = set()
+            for row in value:
+                if isinstance(row, Mapping):
+                    code = row.get("plate_code", row.get("code"))
+                    if code not in (None, ""):
+                        result.add(str(code).strip())
+                elif row not in (None, ""):
+                    result.add(str(row).strip())
+            return result
+        if isinstance(value, (set, frozenset)):
+            return {str(row).strip() for row in value if row not in (None, "")}
+        if value is None:
+            return set()
+        return {str(value).strip()}
+
+    registry_available = registry_codes is not None
+    registry = codes_from(registry_codes)
+    memberships = codes_from(member_codes)
+    all_codes = list(dict.fromkeys(([parent] if parent else []) + codes))
+    identity_mismatches = [code for code in all_codes if registry_available and code not in registry]
+    return {
+        "main_reason": main_reason or None,
+        "reason_unknown": not bool(main_reason),
+        "main_plate_code": primary_code or None,
+        "plate_codes": codes,
+        "parent_plate_code": parent or None,
+        "plate_registry_match": primary_code in registry if primary_code and registry_available else None,
+        "plate_member_match": primary_code in memberships if primary_code and member_codes is not None else None,
+        "identity_mismatch_codes": identity_mismatches,
+    }
+
+
 def _static_candidates(raw: Any) -> list[Mapping[str, Any]]:
     if isinstance(raw, str):
         return [{"name": raw}]

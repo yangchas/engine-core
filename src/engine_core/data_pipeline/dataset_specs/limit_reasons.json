@@ -1,46 +1,39 @@
 {
  "dataset": "limit_reasons",
- "status": "DRAFT: columns/types/units inferred from the latest real partition (2026-10-28); to be confirmed by the owning data card",
- "primary_key": [
-  "symbol"
- ],
+ "status": "C581",
+ "note": "Cold D-1 limit-up reason attribution. date describes the pool trade date. One row per available pool member; expected_basis=pool_members and expected_count is the yesterday pool size. Reason source order: saved Kaipan getHisBans row, Kaipan getBanReasons st=200, WenCai 涨停原因类别, then last Type=0 reason dated before the described trade date (DEGRADED/HISTORICAL_ATTRIBUTION). Reasons dated after date are never used.",
+ "primary_key": ["date", "symbol"],
+ "primary_provider": "kaipan_getHisBans",
+ "primary_providers": ["kaipan_getHisBans", "kaipan_getBanReasons(st=200)"],
  "symbol_column": "symbol",
- "date_columns": [
-  "trade_date",
-  "event_date"
- ],
+ "date_columns": ["date"],
+ "row_order": "primary_key",
  "earliest_available_local": "15:00",
- "coverage": {
-  "basis": "none"
+ "allowed_providers": [
+  "kaipan_getHisBans",
+  "kaipan_getBanReasons(st=200)",
+  "wencai_limit_up_pool.wc_reason_category",
+  "historical_attribution"
+ ],
+ "coverage": {"basis": "pool_members"},
+ "provider_overrides": {
+  "kaipan_getHisBans": {"earliest_available_next_day_local": "00:30"},
+  "kaipan_getBanReasons(st=200)": {"earliest_available_next_day_local": "00:30"}
  },
  "columns": {
-  "symbol": {
-   "type": "str",
-   "nullable": false
-  },
-  "trade_date": {
-   "type": "date",
-   "nullable": false
-  },
-  "event_date": {
-   "type": "date",
-   "nullable": false
-  },
-  "reason": {
-   "type": "str",
-   "nullable": false
-  },
-  "plate_codes": {
-   "type": "list",
-   "nullable": false
-  },
-  "parent_plate_code": {
-   "type": "str",
-   "nullable": false
-  },
-  "type": {
-   "type": "str",
-   "nullable": false
-  }
+  "date": {"type": "date", "nullable": false, "note": "described trade date, YYYY-MM-DD"},
+  "symbol": {"type": "str", "nullable": false, "note": "6-digit stock code"},
+  "event_date": {"type": "date", "nullable": true, "not_after": "date", "note": "date of selected reason; must not exceed date"},
+  "reason": {"type": "str", "nullable": true, "note": "verbatim selected reason/category"},
+  "main_reason": {"type": "str", "nullable": true, "note": "one selected reason category; unknown is explicit"},
+  "reason_unknown": {"type": "bool", "nullable": false},
+  "plate_code": {"type": "str", "nullable": true, "note": "unique main plate code: PZSCode else first ZSCode"},
+  "plate_codes": {"type": "list", "nullable": false, "note": "source-provided board codes: all detailed ZSCode values, or saved pool row's single code"},
+  "parent_plate_code": {"type": "str", "nullable": true, "all_null_ok": true, "all_null_reason": "Kaipan PZSCode is absent or zero for the observed reasons", "note": "explicit PZSCode when present"},
+  "plate_registry_match": {"type": "bool", "nullable": true},
+  "plate_member_match": {"type": "bool", "nullable": true, "all_null_ok": true, "all_null_reason": "dated plate_members input may be unavailable"},
+  "plate_identity_status": {"type": "str", "nullable": false},
+  "source": {"type": "str", "nullable": false},
+  "status": {"type": "str", "nullable": false}
  }
 }
