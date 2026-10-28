@@ -92,3 +92,10 @@ grep 范围：本仓库 src/examples/tests，以及线上旧系统 `/home/exedev
 All writers get `provider_chain`, `degraded`, `field_units`, attempt `row_count`, `quality.dropped_*` and
 `source=<actual provider>` from one function; see docs/DATASET_CONTRACT_CHECK.md, section "daily_kline writer and
 legacy partitions". Old partitions stay readable and unchanged.
+
+## TD storage and TD-based self-check (C567)
+
+The catalog is the transitional versioned ledger; the Core-owned TD database (`core_data.daily_kline_v1`, version table
+`daily_kline_versions`) is the query store and decides coverage in `boot_reconcile`. Tables, unit mapping, version
+rules, guardian events (`td_sync_*`), the `SYNC_TD` plan action, the UNKNOWN/fallback rule and the Redis decision are in
+`docs/DAILY_KLINE_TD.md`.

@@ -58,6 +58,17 @@ def _send_load_defer_alert(request, result, dry_run):
     pending["delivery"] = alert
 
 
+def _send_td_coverage_alert(request, result, dry_run):
+    detail = result.get("detail") if isinstance(result, dict) else None
+    pending = detail.get("td_coverage_alert") if isinstance(detail, dict) else None
+    if not isinstance(pending, dict):
+        return
+    pending["delivery"] = _send_alert({"event": pending.get("event", "daily_kline_td_unreadable"),
+                                       "trade_date": request.get("trade_date"), "now": request.get("now"),
+                                       "reason": pending.get("reason", "daily_kline_td_selfcheck_unknown"),
+                                       "error": pending.get("error")}, dry_run)
+
+
 def _failure_classes(request):
     args = request.get("args") if isinstance(request.get("args"), dict) else {}
     configured = args.get("failure_classes")
@@ -214,6 +225,7 @@ def _run(request):
             result = boot_reconcile(str(trade_date), str(request.get("phase") or ""),
                                     request.get("health"), root, now=now, **reconcile_options)
             _send_load_defer_alert(request, result, dry)
+            _send_td_coverage_alert(request, result, dry)
         elif configured_handler == "boot_apply_plan":
             reconciled = boot_reconcile(str(trade_date), str(request.get("phase") or ""),
                                         request.get("health"), root, now=now, **reconcile_options)
@@ -225,7 +237,10 @@ def _run(request):
                                      schedule_args=args)
             if reconciled["detail"].get("load_defer_alert"):
                 result.setdefault("detail", {})["load_defer_alert"] = reconciled["detail"]["load_defer_alert"]
+            if reconciled["detail"].get("td_coverage_alert"):
+                result.setdefault("detail", {})["td_coverage_alert"] = reconciled["detail"]["td_coverage_alert"]
             _send_load_defer_alert(request, result, dry)
+            _send_td_coverage_alert(request, result, dry)
         else:
             result = fetch_item(str(request.get("item_id") or ""), str(request.get("data_date") or trade_date),
                                 root, dry_run=dry, now=now,
@@ -265,6 +280,9 @@ def _run(request):
                             args=args, timeout_seconds=int(request.get("timeout_seconds") or getattr(base, "timeout_seconds", 300)),
                             data_date_offset=getattr(base, "data_date_offset", 0))
     now = datetime.fromisoformat(asof)
+    if name == "td_sync_daily_kline":
+        from engine_core.guardian.td_sync import run_td_sync
+        return run_td_sync(request, root, dry_run=dry)
     if name == "daily_kline_close":
         from engine_core.guardian.daily_kline_close import run_close_tier
         return run_close_tier(request, root, dry_run=dry)

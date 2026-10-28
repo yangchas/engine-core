@@ -188,6 +188,44 @@ def _daily_kline_candidates(root: Path, trade_date: str, now: datetime) -> list[
     return candidates[-DAILY_KLINE_BACKFILL_DAYS:]
 
 
+def daily_kline_coverage(root: Path, candidates: list[str], catalog: dict[str, Any], now: datetime,
+                         *, store: Any = None, settings: dict[str, Any] | None = None):
+    """Self-check source for the candidate days: Core TD first, labelled read-only catalog fallback (C567)."""
+    from .daily_kline_coverage import (CatalogCoverageSource, build_primary_source, resolve_coverage, td_settings)
+    settings = settings if settings is not None else td_settings()
+    primary = build_primary_source(settings, store=store)
+    return resolve_coverage(candidates, primary, CatalogCoverageSource(catalog, now))
+
+
+def td_sync_partitions(root: Path, partitions: list[str], *, dry_run: bool = False, store: Any = None,
+                       settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Copy the best catalog version of ``partitions`` into Core TD (idempotent). Never raises."""
+    from .daily_kline_coverage import make_store, td_settings
+    from ..data_pipeline.td_sink import DailyKlineTdSink, TdUnavailable, TdVerifyError, sync_with_retry
+    settings = settings if settings is not None else td_settings()
+    if settings is None:
+        return {"status": "skipped", "reason": "td_sink_not_configured", "partitions": partitions}
+    if dry_run:
+        return {"status": "dry_run", "partitions": partitions, "database": settings["database"]}
+    own = store is None
+    store = store or make_store(settings)
+    try:
+        outcomes = sync_with_retry(DailyKlineTdSink(store, root), partitions, attempts=2, backoff_seconds=1.0)
+        return {"status": "ok", "database": settings["database"], "outcomes": [o.as_dict() for o in outcomes]}
+    except TdUnavailable as exc:
+        return {"status": "unavailable", "error_code": "TD_UNAVAILABLE", "error": str(exc)[:200],
+                "partitions": partitions}
+    except TdVerifyError as exc:
+        return {"status": "verify_failed", "error_code": "TD_VERIFY_FAILED", "error": str(exc)[:300],
+                "partitions": partitions}
+    except Exception as exc:  # never break the caller's fetch/plan for a sink bug
+        return {"status": "error", "error_code": "TD_SYNC_ERROR", "error": type(exc).__name__ + ":" + str(exc)[:200],
+                "partitions": partitions}
+    finally:
+        if own:
+            store.close()
+
+
 def _record_daily_kline_upgrade(root: Path, partition: str, *, succeeded: bool,
                                 now: datetime | str | None = None,
                                 phase: str | None = None) -> dict[str, Any] | None:
@@ -500,6 +538,8 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
                      "recommendation": event or "NO_OWNER_EVENT",
                      "explanation": "expected artifact missing or overdue for current/past phase"})
     plan = []
+    coverage = None
+    td_alert = None
     load5 = None
     load_threshold = None
     window_limit = _resolve_load_defer_window_limit(daily_kline_load_defer_window_limit)
@@ -522,10 +562,15 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
             load5 = None
         cpus = os.cpu_count() or 1
         load_threshold = _resolve_reconcile_load5_limit(reconcile_max_load5, cpus)
+        coverage = daily_kline_coverage(root, daily_kline_candidates, catalog, clock)
+        from .daily_kline_coverage import note_td_readability
+        td_alert = note_td_readability(root, coverage, clock)
         plan = reconcile_plan(clock, catalog, trade_date=trade_date, prev_trade_date=previous,
                               phase=phase, load5=load5, load_threshold=load_threshold,
                               upgrade_attempts=upgrade_attempts,
-                              daily_kline_candidates=daily_kline_candidates)
+                              daily_kline_candidates=daily_kline_candidates,
+                              daily_kline_coverage=coverage.days,
+                              daily_kline_coverage_origin=coverage.origin)
     except Exception as exc:  # the plan is advisory; never fail the boot check for it
         plan = [{"id": "*", "action": "PLAN_ERROR", "error": type(exc).__name__}]
     load_defer_alert = None
@@ -545,6 +590,11 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
               "recheck_required": bool(health.get("status") == "failed" or health.get("calendar", {}).get("status") == "failed")}
     if load_defer_alert:
         detail["load_defer_alert"] = load_defer_alert
+    if coverage is not None:
+        detail["daily_kline_coverage"] = {"origin": coverage.origin, "unknown_reason": coverage.unknown_reason,
+                                          "states": {d: c.state for d, c in sorted(coverage.days.items())}}
+        if td_alert:
+            detail["td_coverage_alert"] = td_alert
     return _result("degraded" if gaps or detail["recheck_required"] else "ok", detail)
 
 
@@ -758,6 +808,15 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
         kind = action.get("action")
         started = time.monotonic()
         try:
+            if kind == "SYNC_TD":
+                synced = td_sync_partitions(root, [str(p) for p in action.get("partitions") or [action.get("partition")]],
+                                            dry_run=bool(dry_run))
+                ok = synced["status"] in {"ok", "dry_run", "skipped"}
+                return {"id": item_id, "action": kind, "partition": action.get("partition"),
+                        "status": "ok" if ok else "failed", "detail": synced,
+                        **({} if ok else {"error_code": synced.get("error_code", "TD_SYNC_ERROR"),
+                                          "error": synced.get("error", ""), "retryable": True}),
+                        "elapsed_ms": round((time.monotonic() - started) * 1000)}
             if not item:
                 return {"id": item_id, "action": kind, "status": "failed",
                         "error_code": "UNKNOWN_ITEM", "error": "unknown_item", "stderr": "", "elapsed_ms": 0}
@@ -956,6 +1015,14 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
         # The postcondition is judged after the job: a partition committed by this very job has
         # available_at == its commit instant, later than the clock sampled before the job ran.
         _verify_partition(item, partition, root, clock if now is not None else datetime.now().astimezone())
+        if item_id == "daily_kline":
+            from .daily_kline_coverage import td_settings
+            td_cfg = td_settings()
+            if td_cfg and td_cfg.get("post_fetch_sync") and os.environ.get("TD_CONFIG"):
+                # transitional: the catalog write above is what makes the fetch succeed; a lagging TD only warns
+                td_detail = td_sync_partitions(root, [partition], settings=td_cfg)
+                key = "td_sync" if td_detail["status"] == "ok" else "td_sync_warning"
+                result = {**(result if isinstance(result, dict) else {}), key: td_detail}
         if upgrade:
             state = _record_daily_kline_upgrade(root, partition, succeeded=True, now=clock, phase=phase)
             if state:

@@ -159,6 +159,16 @@
           "default_mode": "dry-run",
           "write_flag": "--write"
         }
+      },
+      "td_sink": {
+        "database": "core_data",
+        "super_table": "daily_kline_v1",
+        "meta_table": "daily_kline_versions",
+        "self_check": true,
+        "post_fetch_sync": true,
+        "lookback_trading_days": 10,
+        "authority": "transitional: catalog is the versioned ledger until TD reconciles; TD decides coverage/missing (C567)",
+        "doc": "docs/DAILY_KLINE_TD.md"
       }
     },
     {

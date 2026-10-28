@@ -108,6 +108,34 @@ def daily_kline_catalog_state(catalog: Mapping[str, Any], dataset: str,
     }
 
 
+def daily_kline_day_state(catalog: Mapping[str, Any], dataset: str, partition: str, now: datetime,
+                          coverage: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Coverage/upgrade decision for one daily-kline day (C567).
+
+    ``coverage`` maps day -> DayCoverage from ``daily_kline_coverage.resolve_coverage``. With TD as the origin the
+    day's presence and quality come from TD, never from whether a catalog file exists. A catalog version that is
+    better than what TD holds is not re-fetched: it is flagged ``sync_td`` and copied. Without TD coverage (not
+    configured, or UNKNOWN -> labelled catalog fallback) the old catalog judgement applies unchanged.
+    """
+    state = daily_kline_catalog_state(catalog, dataset, partition, now)
+    cov = (coverage or {}).get(partition)
+    state.update(sync_td=False, origin="catalog")
+    if cov is None or getattr(cov, "origin", "catalog") != "td":
+        return state
+    from .daily_kline_coverage import INCOMPLETE, LOW_QUALITY, MISSING, OK
+    from ..data_pipeline.td_sink import version_rank
+    state["origin"] = "td"
+    if cov.state == OK:
+        return {**state, "version": cov.version, "present": True, "needs_upgrade": False}
+    catalog_rank = version_rank((state["manifest"] or {}).get("business_status"), state["needs_upgrade"])
+    td_rank = (cov.rank_level, 0 if cov.needs_upgrade else 1)
+    if state["present"] and (cov.state in {MISSING, INCOMPLETE} or catalog_rank > td_rank):
+        return {**state, "sync_td": True}  # copy the better catalog version; fetch only if the catalog itself is low
+    if cov.state == LOW_QUALITY:
+        return {**state, "version": cov.version, "present": True, "needs_upgrade": True}
+    return {**state, "version": "", "present": False, "needs_upgrade": False}
+
+
 def _hms(value: str) -> tuple[int, int, int]:
     parts = [int(p) for p in str(value).split(":")] + [0, 0]
     return parts[0], parts[1], parts[2]
@@ -126,7 +154,9 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                    phase: str | None = None, load5: float | None = None,
                    load_threshold: float | None = None,
                    upgrade_attempts: Mapping[str, Any] | None = None,
-                   daily_kline_candidates: list[str] | None = None) -> list[dict[str, Any]]:
+                   daily_kline_candidates: list[str] | None = None,
+                   daily_kline_coverage: Mapping[str, Any] | None = None,
+                   daily_kline_coverage_origin: str = "catalog") -> list[dict[str, Any]]:
     """Ordered actions for late items on a trading day (dependencies first).
 
     FETCH_NOW  late and cheap enough to run now; ``lane`` is ``parallel`` (light) or ``serial``;
@@ -148,6 +178,7 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
     due: dict[str, tuple[str | None, dict[str, Any]]] = {}
     upgrade_versions: dict[str, str] = {}
     derive_reasons: dict[str, str] = {}
+    td_sync_days: set[str] = set()
     for item in items:
         dataset = item["artifact"].get("catalog_dataset")
         policy = item.get("late_policy")
@@ -158,8 +189,11 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                 due.setdefault(item["id"], (None, {}))
             continue
         if item["id"] == "daily_kline" and daily_kline_candidates is not None:
+            for candidate in sorted(set(daily_kline_candidates)):  # every candidate may need a TD copy, even past the fetch pick
+                if daily_kline_day_state(catalog, dataset, candidate, now, daily_kline_coverage)["sync_td"]:
+                    td_sync_days.add(candidate)
             for candidate in sorted(set(daily_kline_candidates)):
-                state = daily_kline_catalog_state(catalog, dataset, candidate, now)
+                state = daily_kline_day_state(catalog, dataset, candidate, now, daily_kline_coverage)
                 version = state["version"]
                 degraded = state["needs_upgrade"]
                 if state["present"] and not degraded:
@@ -205,7 +239,9 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                 continue
             target = trade_date
         if item["id"] == "daily_kline":
-            state = daily_kline_catalog_state(catalog, dataset, target, now)
+            state = daily_kline_day_state(catalog, dataset, target, now, daily_kline_coverage)
+            if state["sync_td"]:
+                td_sync_days.add(target)
             version = state["version"]
             budget_key = target
             if state["needs_upgrade"] and version:
@@ -217,7 +253,7 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                     due[item["id"]] = (target, policy)
                     upgrade_versions[item["id"]] = version
                 continue
-        state = (daily_kline_catalog_state(catalog, dataset, target, now)
+        state = (daily_kline_day_state(catalog, dataset, target, now, daily_kline_coverage)
                  if item["id"] == "daily_kline" else None)
         if ((not state["present"] if state is not None
              else not catalog_partition_present(catalog, dataset, target, now))
@@ -259,6 +295,7 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
                    if next(r["action"] for r in plan if r["id"] == dep) not in {"FETCH_NOW"}]
         cost = (by_id[item_id].get("cost") or {}).get("class", "medium")
         entry = {"id": item_id, "partition": target, "cost": cost, "event": by_id[item_id].get("guardian_event"),
+                 **({"coverage_origin": daily_kline_coverage_origin} if item_id == "daily_kline" else {}),
                  "fetch_job": by_id[item_id].get("fetch_job"), "phase": phase,
                  "depends_on": same_partition if item_id in derive_reasons else list(policy.get("depends_on", []))}
         if item_id in derive_reasons:
@@ -295,4 +332,9 @@ def reconcile_plan(now: datetime, catalog: str | Mapping[str, Any], *, trade_dat
 
     for item_id in [i["id"] for i in items if i["id"] in due]:
         visit(item_id)
+    if td_sync_days:
+        days = sorted(td_sync_days)
+        plan.insert(0, {"id": "daily_kline_td_sync", "action": "SYNC_TD", "partition": days[0], "partitions": days,
+                        "cost": "light", "reason": "catalog_version_not_in_td", "depends_on": [],
+                        "coverage_origin": daily_kline_coverage_origin})
     return plan
