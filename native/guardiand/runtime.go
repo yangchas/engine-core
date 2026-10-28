@@ -1824,76 +1824,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 			if strings.Contains(event.ID, "calendar_refresh") {
 				r.scheduleBootRerun(date)
 			}
-			if event.ID == "boot_apply_plan" || strings.TrimPrefix(event.Handler, "legacy_") == "boot_apply_plan" {
-				var response struct {
-					Detail struct {
-						Deferred []struct {
-							ID          string   `json:"id"`
-							Partition   string   `json:"partition"`
-							RunInPhases []string `json:"run_in_phases"`
-							DependsOn   []string `json:"depends_on"`
-							Cost        string   `json:"cost"`
-						} `json:"deferred"`
-						Results []struct {
-							ID                 string          `json:"id"`
-							Status             string          `json:"status"`
-							Partition          string          `json:"partition"`
-							Retryable          bool            `json:"retryable"`
-							ErrorCode          string          `json:"error_code"`
-							FailedDependencies []string        `json:"failed_dependencies"`
-							Cost               string          `json:"cost"`
-							Detail             json.RawMessage `json:"detail"`
-						} `json:"results"`
-					} `json:"detail"`
-				}
-				lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-				if len(lines) > 0 && json.Unmarshal([]byte(lines[len(lines)-1]), &response) == nil {
-					// Items that failed inside the plan are not silently dropped: record the detail and requeue them as
-					// independent fetch_item instances so the normal 3-attempt/backoff/one-alert rules apply.
-					phaseNow, _ := r.currentPhase(r.clock.Now())
-					for _, res := range response.Detail.Results {
-						if res.Status != "failed" && res.Status != "DEPENDENCY_FAILED" {
-							continue
-						}
-						_, _ = r.appendLedger(date, "APPLY_ITEM_FAILED", map[string]any{"item": res.ID, "status": res.Status, "error_code": res.ErrorCode, "retryable": res.Retryable, "detail": res.Detail})
-						if res.ID == "" || res.Partition == "" || !res.Retryable {
-							continue
-						}
-						instanceID := "fetch_item:" + res.ID
-						r.mu.Lock()
-						priorResult, exists := r.states[date+"/"+instanceID]
-						r.mu.Unlock()
-						if exists && priorResult.Status != "SUCCEEDED" && priorResult.Status != "SUCCEEDED_DEGRADED" {
-							continue
-						}
-						r.setState(Instance{ID: instanceID, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}, date,
-							instanceState{Status: "DEFERRED", LastError: "requeued after failed plan item " + res.ErrorCode,
-								NextPhase: phaseNow, DataDate: res.Partition, Cost: res.Cost, WaitFor: fetchItemDependencies(res.FailedDependencies)})
-					}
-					for _, deferred := range response.Detail.Deferred {
-						if deferred.ID == "" || len(deferred.RunInPhases) == 0 {
-							continue
-						}
-						instanceID := "fetch_item:" + deferred.ID
-						key := date + "/" + instanceID
-						r.mu.Lock()
-						prior, exists := r.states[key]
-						r.mu.Unlock()
-						// The plan lists an item only when its partition is missing in the catalog. A recorded success means the
-						// data was removed or invalidated since (e.g. rebuilt after a partial input): the old success is stale,
-						// so re-arm it with a fresh budget. Terminal failures stay for the operator (requeue).
-						if exists && prior.Status != "SUCCEEDED" && prior.Status != "SUCCEEDED_DEGRADED" {
-							continue
-						}
-						deferredInstance := Instance{ID: instanceID, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}
-						wait := make([]string, 0, len(deferred.DependsOn))
-						for _, dep := range deferred.DependsOn {
-							wait = append(wait, "fetch_item:"+dep)
-						}
-						r.setState(deferredInstance, date, instanceState{Status: "DEFERRED", LastError: "waiting for " + deferred.RunInPhases[0], NextPhase: deferred.RunInPhases[0], DataDate: deferred.Partition, WaitFor: wait, Cost: deferred.Cost})
-					}
-				}
-			}
+			r.enqueueResponseFetchItems(date, event, out)
 			r.mu.Lock()
 			wasBlocked := r.gateAlerted != nil && r.gateAlerted[event.Handler]
 			if wasBlocked {
@@ -1961,6 +1892,89 @@ func (r *liveRunner) execute(x Instance, date string) {
 		// Queued data fetches are startup-type instances but are real work: a spent budget must reach a human once,
 		// keyed by the item so different items are not collapsed into one alert.
 		_ = r.alert(status, map[string]any{"event": x.ID, "date": date, "error": last})
+	}
+}
+
+type responseFetchItems struct {
+	Detail struct {
+		Deferred []struct {
+			ID          string   `json:"id"`
+			Partition   string   `json:"partition"`
+			RunInPhases []string `json:"run_in_phases"`
+			DependsOn   []string `json:"depends_on"`
+			Cost        string   `json:"cost"`
+		} `json:"deferred"`
+		Results []struct {
+			ID                 string          `json:"id"`
+			Status             string          `json:"status"`
+			Partition          string          `json:"partition"`
+			Retryable          bool            `json:"retryable"`
+			ErrorCode          string          `json:"error_code"`
+			FailedDependencies []string        `json:"failed_dependencies"`
+			Cost               string          `json:"cost"`
+			Detail             json.RawMessage `json:"detail"`
+		} `json:"results"`
+	} `json:"detail"`
+}
+
+// enqueueResponseFetchItems turns handler-level deferred and retryable item results into
+// ordinary fetch_item instances, independent of which runtime path invoked the handler.
+func (r *liveRunner) enqueueResponseFetchItems(date string, event *config.Event, out []byte) {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 0 {
+		return
+	}
+	var response responseFetchItems
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &response); err != nil {
+		return
+	}
+
+	failureLedgerEvent := "HANDLER_ITEM_FAILED"
+	failedItemKind := "handler item"
+	if event.ID == "boot_apply_plan" || strings.TrimPrefix(event.Handler, "legacy_") == "boot_apply_plan" {
+		failureLedgerEvent = "APPLY_ITEM_FAILED"
+		failedItemKind = "plan item"
+	}
+	phaseNow, _ := r.currentPhase(r.clock.Now())
+	for _, res := range response.Detail.Results {
+		if res.Status != "failed" && res.Status != "DEPENDENCY_FAILED" {
+			continue
+		}
+		_, _ = r.appendLedger(date, failureLedgerEvent, map[string]any{"item": res.ID, "status": res.Status, "error_code": res.ErrorCode, "retryable": res.Retryable, "detail": res.Detail})
+		if res.ID == "" || res.Partition == "" || !res.Retryable {
+			continue
+		}
+		instanceID := "fetch_item:" + res.ID
+		r.mu.Lock()
+		priorResult, exists := r.states[date+"/"+instanceID]
+		r.mu.Unlock()
+		if exists && priorResult.Status != "SUCCEEDED" && priorResult.Status != "SUCCEEDED_DEGRADED" {
+			continue
+		}
+		r.setState(Instance{ID: instanceID, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}, date,
+			instanceState{Status: "DEFERRED", LastError: "requeued after failed " + failedItemKind + " " + res.ErrorCode,
+				NextPhase: phaseNow, DataDate: res.Partition, Cost: res.Cost, WaitFor: fetchItemDependencies(res.FailedDependencies)})
+	}
+	for _, deferred := range response.Detail.Deferred {
+		if deferred.ID == "" || len(deferred.RunInPhases) == 0 {
+			continue
+		}
+		instanceID := "fetch_item:" + deferred.ID
+		key := date + "/" + instanceID
+		r.mu.Lock()
+		prior, exists := r.states[key]
+		r.mu.Unlock()
+		// A successful prior run may be stale; re-arm it with a fresh retry budget.
+		if exists && prior.Status != "SUCCEEDED" && prior.Status != "SUCCEEDED_DEGRADED" {
+			continue
+		}
+		deferredInstance := Instance{ID: instanceID, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}
+		wait := make([]string, 0, len(deferred.DependsOn))
+		for _, dep := range deferred.DependsOn {
+			wait = append(wait, "fetch_item:"+dep)
+		}
+		r.setState(deferredInstance, date, instanceState{Status: "DEFERRED", LastError: "waiting for " + deferred.RunInPhases[0],
+			NextPhase: deferred.RunInPhases[0], DataDate: deferred.Partition, WaitFor: wait, Cost: deferred.Cost})
 	}
 }
 
@@ -2132,6 +2146,7 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 				state.CompletedAt = r.clock.Now().Format(time.RFC3339)
 				state.SkippedTiers = append([]string(nil), skipped...)
 				r.setState(x, date, state)
+				r.enqueueResponseFetchItems(date, event, out)
 				if len(state.FallbackFailures) > 0 {
 					_ = r.alert("TIER_FALLBACK", map[string]any{"event": x.ID, "event_id": x.EventID, "date": date, "failed_tiers": append([]string(nil), state.FallbackFailures...), "succeeded_tier": tier.Name, "error": strings.Join(state.FallbackFailures, ",") + " -> " + tier.Name})
 				}

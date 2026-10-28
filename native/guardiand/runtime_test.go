@@ -371,6 +371,65 @@ func TestConfiguredRuntimeReconcileHandlerSchedulesDeferredFetchItem(t *testing.
 	}
 }
 
+func TestLadderRuntimeReconcileSchedulesDeferredFetchAfterDependency(t *testing.T) {
+	root, date := t.TempDir(), "2026-10-20"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 10:00:00", loc)
+	fc := newFakeClock(now)
+	reconcile := filepath.Join(root, "reconcile.sh")
+	fetch := filepath.Join(root, "fetch.sh")
+	response := `{"contract":1,"status":"ok","detail":{"deferred":[{"id":"daily_kline","partition":"2026-10-20","run_in_phases":["MIDDAY_BREAK"],"cost":"medium"},{"id":"daily_indicators","partition":"2026-10-20","run_in_phases":["MIDDAY_BREAK"],"depends_on":["daily_kline"],"cost":"medium"}],"results":[{"id":"retryable_daily_facts","status":"DEPENDENCY_FAILED","partition":"2026-10-19","retryable":true,"error_code":"DEPENDENCY_FAILED","failed_dependencies":["symbol_universe"],"cost":"light"}]}}`
+	if err := os.WriteFile(reconcile, []byte("#!/bin/sh\nprintf '%s\\n' '"+response+"'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fetch, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	calendar := filepath.Join(root, "calendar.json")
+	if err := os.WriteFile(calendar, []byte(`["2026-10-20"]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := config.Config{Events: []config.Event{
+		{ID: "runtime_reconcile_2100", Handler: "boot_apply_plan", Trigger: config.Trigger{Type: "startup"},
+			Ladder: []config.LadderTier{{Name: "legacy", Attempts: 1, Timeout: "60s"}}},
+		{ID: "fetch_item", Handler: "fetch", Trigger: config.Trigger{Type: "startup"},
+			Phases: []string{"MIDDAY_BREAK"}, Ladder: []config.LadderTier{{Name: "primary", Attempts: 3,
+				Backoff: "1m*2", BackoffCap: "5m", Timeout: "60s"}}},
+	}, Handlers: map[string]config.Handler{"boot_apply_plan": {Argv: []string{reconcile}}, "fetch": {Argv: []string{fetch}}},
+		Calendars: map[string]struct {
+			File string `json:"file"`
+		}{"trading": {File: calendar}}}
+	l, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.close()
+	l.now = fc.Now
+	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l,
+		states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	getState := func(id string) instanceState { r.mu.Lock(); defer r.mu.Unlock(); return r.states[date+"/"+id] }
+	r.execute(Instance{ID: "runtime_reconcile_2100", EventID: "runtime_reconcile_2100", Start: "09:00:00",
+		Deadline: "23:59:59", TriggerType: "startup"}, date)
+	for _, item := range []string{"daily_kline", "daily_indicators"} {
+		got := getState("fetch_item:" + item)
+		if got.Status != "DEFERRED" || got.NextPhase != "MIDDAY_BREAK" || got.DataDate != date {
+			t.Fatalf("runtime reconcile deferred %s state=%+v", item, got)
+		}
+	}
+	if got := getState("fetch_item:daily_indicators"); len(got.WaitFor) != 1 || got.WaitFor[0] != "fetch_item:daily_kline" {
+		t.Fatalf("derived item lost its upstream dependency: %+v", got)
+	}
+	if got := getState("fetch_item:retryable_daily_facts"); got.Status != "DEFERRED" || got.DataDate != "2026-10-19" || len(got.WaitFor) != 1 || got.WaitFor[0] != "fetch_item:symbol_universe" {
+		t.Fatalf("retryable item failure was not requeued: %+v", got)
+	}
+
+	fc.Advance(90 * time.Minute)
+	r.schedule(fc.Now())
+	waitFor(t, func() bool { return getState("fetch_item:daily_kline").Status == "SUCCEEDED" })
+	r.schedule(fc.Now())
+	waitFor(t, func() bool { return getState("fetch_item:daily_indicators").Status == "SUCCEEDED" })
+}
+
 func TestRuntimeReconcileDoesNotRearmAnInFlightFetchItem(t *testing.T) {
 	root, date := t.TempDir(), "2026-10-20"
 	loc, _ := time.LoadLocation("Asia/Shanghai")
