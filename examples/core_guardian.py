@@ -34,6 +34,10 @@ class _CoveredDates(set):
         self.coverage_start = start
         self.coverage_end = end
 
+CALENDAR_REFRESH_RETRIES = 2
+CALENDAR_REFRESH_RETRY_DELAY = 20.0
+
+
 def _calendar_alert_once(root: Path, day: str, reason: str) -> bool:
     marker = root / "guardian" / "calendar_alerts.json"
     try:
@@ -119,8 +123,17 @@ def _command_handler(name: str, opts, root: Path):
         if name == "calendar_refresh":
             store = TradeCalendarStore(root)
             refresh_mode = (getattr(event, "args", None) or {}).get("refresh")
+            event_args = getattr(event, "args", None) or {}
+            # conditional (non-force) refresh retries by default; the schedule needs no new fields
+            retries = max(0, int(event_args.get("retries", CALENDAR_REFRESH_RETRIES)))
+            delay = float(event_args.get("retry_delay_seconds", CALENDAR_REFRESH_RETRY_DELAY))
             result = (store.force_refresh(now=now) if refresh_mode == "force" else
                       store.refresh_if_needed(now=now))
+            for _ in range(retries):  # unsuccessful refresh: retry quietly; only the final failure alerts
+                if result.get("status") == "CONFIRMED":
+                    break
+                time.sleep(delay)
+                result = store.force_refresh(now=now)
             if result.get("status") != "CONFIRMED":
                 status = "STALE" if result.get("version") else result.get("status", "UNKNOWN")
                 reason = str(result.get("reason_code", "REFRESH_FAILED"))

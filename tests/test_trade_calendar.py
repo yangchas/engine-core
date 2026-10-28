@@ -332,7 +332,7 @@ def test_alert_entrypoint_still_deduplicates_calendar_failure(tmp_path, monkeypa
     monkeypatch.setattr(mail, "send_message", lambda *a, **kw:
                         sent.append((a, kw)) or SimpleNamespace(status="FAKE_SMTP_CAPTURED"))
     cli._ALERTED.clear()
-    event = next(item for item in cli.default_events() if item.event_id == "calendar_refresh_0800")
+    event = SimpleNamespace(event_id="calendar_refresh_0800", args={"retries": 0})
     opts = SimpleNamespace(email_self=True, run=True, simulate_clock=None)
     now = datetime.fromisoformat("2026-10-20T08:00:00+08:00")
     for _ in range(4):
@@ -501,3 +501,50 @@ def test_szse_month_transient_error_is_retried(tmp_path, monkeypatch):
         return sz(year, month)
     result = store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=flaky)
     assert failed and result["status"] == "CONFIRMED"
+
+
+def test_refresh_if_needed_refreshes_when_forward_coverage_under_30_days(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from engine_core.data_pipeline import trade_calendar
+    monkeypatch.setattr(trade_calendar, "_market_today", lambda: date(2026, 10, 20))
+    store = TradeCalendarStore(tmp_path)
+    bao, sz = _source_fetchers()
+    store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)
+    assert store.calendar_status(date(2026, 10, 20))["lit_days_ahead"] == 30
+    calls = []
+    monkeypatch.setattr(TradeCalendarStore, "refresh", lambda self, **kw: calls.append(kw) or {"status": "CONFIRMED"})
+    store.refresh_if_needed(now=datetime(2026, 10, 20, 8, tzinfo=timezone.utc))
+    assert calls == []
+    # next day the horizon is 29 natural days: must refresh (previously only below 20)
+    store.refresh_if_needed(now=datetime(2026, 10, 21, 8, tzinfo=timezone.utc))
+    assert len(calls) == 1
+
+
+def test_calendar_refresh_retries_then_alerts_once_and_exports_consistent(tmp_path, monkeypatch):
+    from datetime import datetime
+    import examples.core_guardian as cli
+    import engine_core.report_mailer as mail
+    monkeypatch.setattr(cli.time, "sleep", lambda *_: None)
+    attempts = []
+    monkeypatch.setattr(TradeCalendarStore, "refresh_if_needed",
+                        lambda *a, **kw: attempts.append("need") or {"status": "STALE", "reason_code": "X"})
+    monkeypatch.setattr(TradeCalendarStore, "force_refresh",
+                        lambda *a, **kw: attempts.append("force") or {"status": "STALE", "reason_code": "X"})
+    sent = []
+    monkeypatch.setattr(mail, "load_smtp_config", lambda: SimpleNamespace(from_addr="r@localhost"))
+    monkeypatch.setattr(mail, "send_message", lambda *a, **kw: sent.append(1) or SimpleNamespace(status="FAKE"))
+    cli._ALERTED.clear()
+    event = next(i for i in cli.default_events() if i.event_id == "calendar_refresh_0800")
+    opts = SimpleNamespace(email_self=True, run=True, simulate_clock=None)
+    out = cli._command_handler("calendar_refresh", opts, tmp_path)(
+        event, datetime.fromisoformat("2026-10-20T08:00:00+08:00"), {}, False)
+    assert out.startswith("DEGRADED:") and attempts == ["need", "force", "force"] and len(sent) == 1
+
+
+def test_trade_dates_json_matches_matrix_after_refresh(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import trade_calendar
+    monkeypatch.setattr(trade_calendar, "_market_today", lambda: date(2026, 10, 20))
+    store = TradeCalendarStore(tmp_path)
+    bao, sz = _source_fetchers()
+    store.refresh(now=date(2026, 10, 20), baostock_fetch=bao, szse_fetch=sz)
+    assert json.loads((tmp_path / "trade_dates.json").read_text()) == store.all_trading_dates()

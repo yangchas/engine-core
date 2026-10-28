@@ -16,6 +16,11 @@ from zoneinfo import ZoneInfo
 from ..calendar import CalendarCoverageError, parse_trade_date
 
 
+# Forward coverage (natural days past today) below which a conditional refresh must run.
+# refresh() lights today+30, so this is "refresh whenever the horizon is no longer a full 30 days".
+MIN_FORWARD_DAYS = 30
+
+
 class CalendarSourceError(RuntimeError):
     pass
 
@@ -340,7 +345,7 @@ class TradeCalendarStore:
         last_ok = (matrix or {}).get("last_ok_at")
         age = 999 if not matrix or not last_ok else max(0, (datetime.now(timezone.utc) -
             datetime.fromisoformat(matrix["last_ok_at"].replace("Z", "+00:00")).astimezone(timezone.utc)).days)
-        if not matrix or age > 7 or status["lit_days_ahead"] is None or status["lit_days_ahead"] < 20:
+        if not matrix or age > 7 or status["lit_days_ahead"] is None or status["lit_days_ahead"] < MIN_FORWARD_DAYS:
             return self.refresh(now=local)
         return {**status, "status": "CONFIRMED"}
 
