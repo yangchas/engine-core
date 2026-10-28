@@ -1,0 +1,15 @@
+{
+ "snapshots": {
+  "2026-10-28": {
+   "active_symbols": 5226,
+   "bytes": 333199,
+   "captured_at": "2026-10-28T17:17:12+08:00",
+   "command": "SMEMBERS q2:active:YYYYMMDD; HGETALL q2:{symbol}",
+   "file": "q2_20261028.json.gz",
+   "hashes": 5226,
+   "sha256": "ff2e93e4ffaf00d7ea3f8300d26c36927e2f8a08629ef4df03e9dcd361718f85",
+   "source": "Redis q2 active set and hashes (read only)",
+   "trade_date": "2026-10-28"
+  }
+ }
+}
