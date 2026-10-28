@@ -1,4 +1,10 @@
-"""Read-only q2/WenCai daily bars for the 15:05 degraded capture."""
+"""Read-only q2/WenCai daily bars for the 15:05 degraded capture.
+
+Status (C584): still live (guardian datasets.registry fetch_job.degraded). The q2 tier here is
+the same Q2FinalProvider as the C564 chain, which converts q2 hands to shares (x100); this
+module additionally converts WenCai volume/amount by declared units and writes field_units
+(volume=shares) identical to the canonical layout. Do not add a second unit path here.
+"""
 from __future__ import annotations
 
 import importlib
@@ -15,6 +21,8 @@ from zoneinfo import ZoneInfo
 
 from .data_pipeline.providers.daily_kline_chain import Q2FinalProvider, WencaiDailyProvider
 from .data_pipeline.registry.daily_kline import classify_daily_kline
+from .data_pipeline.daily_kline_schema import (CANONICAL_FIELD_UNITS, _amount_multiplier,
+                                               _unit, _volume_multiplier)
 from .data_pipeline.storage import ArtifactCatalog
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -160,6 +168,32 @@ def compose_degraded_rows(
     }
 
 
+def wencai_rows_to_canonical_units(rows: Sequence[Mapping[str, Any]],
+                                   source_units: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Convert WenCai volume/amount to canonical shares/yuan using the payload's declared units.
+
+    An undeclared or unrecognised unit nulls the field rather than guessing (C584).
+    """
+    units = dict(source_units or {})
+    try:
+        volume_k: float | None = _volume_multiplier(_unit(units, "volume", "wencai"))
+    except ValueError:
+        volume_k = None
+    try:
+        amount_k: float | None = _amount_multiplier(_unit(units, "amount_yuan", "wencai"))
+    except ValueError:
+        amount_k = None
+    out = []
+    for row in rows:
+        row = dict(row)
+        if row.get("volume") is not None:
+            row["volume"] = float(round(row["volume"] * volume_k)) if volume_k else None
+        if row.get("amount_yuan") is not None:
+            row["amount_yuan"] = round(row["amount_yuan"] * amount_k, 2) if amount_k else None
+        out.append(row)
+    return out
+
+
 def _load_adapter(spec: str | None) -> Callable[..., Any] | None:
     if not spec:
         return None
@@ -213,7 +247,9 @@ def capture(
         wencai_started = time.monotonic()
         wencai_payload = provider.fetch(trade_date, now=current)
         wencai_elapsed_ms = round((time.monotonic() - wencai_started) * 1000, 3)
-    wencai_rows = wencai_payload.get("rows", [])
+    wencai_rows = wencai_rows_to_canonical_units(
+        wencai_payload.get("rows", []),
+        wencai_payload.get("source_field_units") or wencai_payload.get("field_units"))
     rows, quality = compose_degraded_rows(q2_rows, wencai_rows,
                                           expected_symbols=expected_symbols,
                                           expected_count=expected_count or q2_payload.get("expected_count"))
@@ -239,9 +275,7 @@ def capture(
         "fetched_at": available_at,
         "as_of": available_at,
         "quality": {**quality, "partial": True, "field_completeness": field_completeness,
-                    "field_units": {"open/high/low/close/pre_close": "yuan",
-                                    "pct_chg": "percent", "amount_yuan": "yuan",
-                                    "volume": "UNKNOWN"}},
+                    "field_units": dict(CANONICAL_FIELD_UNITS)},
         "degraded": True,
         "degraded_label": "DEGRADED:q2_final>wencai",
         "status": "DEGRADED:q2_final>wencai",
@@ -260,8 +294,7 @@ def capture(
              "status": wencai_payload.get("status", "READY"), "row_count": len(wencai_rows)},
         ],
         "field_completeness": field_completeness,
-        "field_units": {"open/high/low/close/pre_close": "yuan", "pct_chg": "percent",
-                        "amount_yuan": "yuan", "volume": "UNKNOWN"},
+        "field_units": dict(CANONICAL_FIELD_UNITS),
     }
     if write:
         manifest = ArtifactCatalog(root).commit("daily_kline", trade_date, rows, manifest,

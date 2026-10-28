@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `data_pipeline/providers/daily_kline_chain.py:147`（Q2 快照） | 保留 `legacy_q2_final` | `q2_final`；一次带 `ACCEPTED`、尝试时间、耗时和原因的尝试 | writer 按活跃 universe 重算覆盖率与字段完整度，分类为 `PROVISIONAL`；新时间统一为上海时区 |
 | `data_pipeline/providers/daily_kline_chain.py:497`（provider chain） | 保留各 provider 原标签 | 实际胜出 provider；所有尝试按顺序记录。Baostock 另记录 `login_ms`、`query_ms`、调用结果和错误码 | 业务状态由共享分类器决定；Baostock 调用向 `job_log/<日期>.jsonl` 追加 |
-| `daily_kline_degraded.py:266` | 保留组合来源目录标签 | 按实际填充字段来源写 `q2_final`/`wencai`；来源无法唯一判定时写 `UNKNOWN`；记录各来源尝试 | 分类器决定业务状态；时间统一为 `+08:00` |
+| `daily_kline_degraded.py:266` | 保留组合来源目录标签 | 按实际填充字段来源写 `q2_final`/`wencai`；来源无法唯一判定时写 `UNKNOWN`；记录各来源尝试 | 分类器决定业务状态；时间统一为 `+08:00` | C584：q2 档量由 Q2FinalProvider 手→股（×100）；WenCai 档按载荷声明单位换算（未知则置 null）；quality.field_units 与顶层均为 shares，不再写 UNKNOWN。
 | `data_pipeline/jobs.py` 的 `JobRunner.run` | 保留 job source | 使用 fetch metadata 的 provider/attempts；仅有 Baostock 计时时写计时项；缺少尝试信息时标为 `UNKNOWN`，不伪造尝试时间 | 所有 commit 经 `ArtifactCatalog.commit` 重算质量、分类状态并规范时间 |
 | `daily_history.py:512`（历史回填） | `baostock` | 从精确 source 得到 `baostock`；上游没有尝试元数据时记录 `UNKNOWN` 尝试，时间和耗时为空 | 同一 writer 重算质量与业务状态；该旧回填调用未提供逐调用计时 |
 
