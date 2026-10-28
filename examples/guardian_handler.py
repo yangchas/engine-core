@@ -286,6 +286,11 @@ def _run(request):
     if name == "daily_kline_close":
         from engine_core.guardian.daily_kline_close import run_close_tier
         return run_close_tier(request, root, dry_run=dry)
+    if name == "kaipan_fetch" and args.get("dataset") == "limit_up_pool":
+        # C580: D-1 limit-up pool ladder rung (kaipan / wencai / td per schedule.json); other kaipan_fetch events
+        # (kaipan_refresh_0850: reasons, hot plates, members) keep the command path below.
+        from engine_core.guardian.limit_pool_d1 import run_pool_tier
+        return run_pool_tier({**request, "data_date": target_day}, root, dry_run=dry)
     if name == "close_capture":
         return 0, {"contract": 1, "status": "not_applicable", "error_code": "",
                    "retryable": False, "artifacts": [], "detail": "close_capture_not_implemented"}

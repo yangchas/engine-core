@@ -73,7 +73,7 @@ def test_schedule_declares_the_1505_event_and_ladder_order():
     assert [t["args"]["providers"] for t in profile["ladder"]] == ["wencai", "q2_final"]
     assert all(t["on_timeout"] == "advance" and t["alert_on_fallback"] for t in profile["ladder"])
     for other in schedule["events"]:
-        if other["event_id"] == event["event_id"]:
+        if other["event_id"] in (event["event_id"], "limit_pool_d1"):   # C580 adopts the same rung semantics on purpose
             continue
         ladder = other.get("ladder") or schedule["profiles"].get(other.get("profile"), {}).get("ladder", [])
         assert not any(t.get("on_timeout") or t.get("alert_on_fallback") for t in ladder), other["event_id"]

@@ -314,39 +314,43 @@
       "owner": "kaipan_fetch",
       "artifact": {
         "catalog_dataset": "limit_up_pool",
-        "date_basis": "08:50 目标交易日 D 获取前一交易日 D-1 池/原因"
+        "date_basis": "D 日取前一交易日 D-1 的池(name=D-1, 抓取时刻另记 fetched_at);D-1 数据 D 日 00:30 起可得"
       },
       "phases": [
         "PRE_MARKET"
       ],
-      "cadence": "每交易日 08:50",
-      "rule": "Kaipan 历史接口获取昨日条目；限频和分页由 provider 执行。",
+      "cadence": "每交易日 00:40 起(limit_pool_d1);Kaipan 每 15 分钟重试至 08:50,之后问财、TD 推导",
+      "rule": "阶梯在 schedule.json 配置(profile limit_pool_d1):Kaipan getHisBans(FORMAL,保留 23 个位置字段) → 问财'{date}涨停;连板天数;去除st'(PROVISIONAL) → TD 日K 推导(DEGRADED,推导池,去 ST 取不到则 st_filter=UNAVAILABLE)。只有配置里写了的降级才发生;低质量版本不覆盖高质量版本。",
       "freshness": {
         "partition": "D-1",
-        "expected_by": "09:05",
+        "expected_by": "08:50",
         "basis": "trading_day",
-        "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
+        "set_by": "C580 2026-10-28"
       },
-      "retry": "schedule max_attempts=1; provider-level retry UNKNOWN",
-      "degrade": [],
+      "retry": "schedule profile limit_pool_d1: kaipan 34x15m(retry_until 08:50) / wencai 2x30m / td_derived 2x5m; 全链失败 FAILED_FINAL + 告警一次",
+      "degrade": [
+        "08:50 之后 Kaipan 仍未发布 → 问财池(PROVISIONAL,成员与 Kaipan 一致)",
+        "问财失败 → TD 日K 推导池(DEGRADED,推导而非供应商事实,无封单证据)",
+        "全部失败 → 显式 MISSED/FAILED_FINAL,不伪造"
+      ],
       "lifecycle": {
         "init": "rebuild from retained source/artifacts",
         "force": "recompute",
         "clear": "clear then rebuild"
       },
-      "notes": "schedule kaipan_refresh_0850; source adapter in run_data_jobs; ask data operator about retry policy.",
-      "guardian_event": "kaipan_refresh_0850",
+      "notes": "C580: 昨日池唯一写入模块 guardian/limit_pool_d1.py(目录账本 + TD 表 limit_up_pool_v1);docs/LIMIT_UP_POOL.md。kaipan_refresh_0850 仍负责原因/热板/成员,并经 run_data_jobs --job limit_up_pool 单趟复核池(ALREADY_SATISFIED 时不动)。",
+      "guardian_event": "limit_pool_d1",
       "late_policy": {
         "mode": "fetch_now",
         "valid_until": null,
         "depends_on": [],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_event": "kaipan_refresh_0850"
+        "set_by": "C580 2026-10-28",
+        "trigger_event": "limit_pool_d1"
       },
       "cost": {
         "class": "light",
-        "basis": "single Kaipan ladder, seconds",
-        "set_by": "claude 2026-10-20 default"
+        "basis": "Kaipan 6-12 次请求(10s 间隔);问财 1 页;TD 一次 SELECT",
+        "set_by": "C580 2026-10-28"
       },
       "fetch_job": {
         "argv": [
@@ -358,7 +362,14 @@
           "{date}",
           "--execute"
         ],
-        "timeout_seconds": 300
+        "timeout_seconds": 900
+      },
+      "td_sink": {
+        "database": "core_data",
+        "super_table": "limit_up_pool_v1",
+        "meta_table": "limit_up_pool_versions",
+        "authority": "cold data -> TD; catalog partition is the transitional versioned ledger (design/24 section 2)",
+        "doc": "docs/LIMIT_UP_POOL.md"
       }
     },
     {

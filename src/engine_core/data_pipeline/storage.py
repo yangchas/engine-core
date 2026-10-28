@@ -348,6 +348,14 @@ class ArtifactCatalog:
         latest_date = str(latest.get("trade_date", ""))
         if trade_date > latest_date:
             return True
+        if dataset == "limit_up_pool" and trade_date == latest_date:
+            # C580: same described day -> latest only moves to equal-or-better quality (FORMAL > PROVISIONAL > DEGRADED),
+            # so a late Kaipan version replaces a TD-derived latest and a late TD version never replaces Kaipan.
+            rank = {"DEGRADED": 1, "PROVISIONAL": 2, "FORMAL": 3}
+            held = next((item for item in entry.get("dates", {}).get(latest_date, [])
+                         if item.get("version") == latest.get("version")), {})
+            return (rank.get(str(manifest.get("business_status") or "").upper(), 2)
+                    >= rank.get(str(held.get("business_status") or "").upper(), 2))
         if trade_date < latest_date or dataset != "daily_kline":
             return False
         incoming_tier = manifest.get("tier")
@@ -490,7 +498,7 @@ class ArtifactCatalog:
                         if gate is not None:
                             item["gate_status"] = gate["gate_status"]
             current_latest = entry.get("latest")
-            if (result.get("business_status") != "PROVISIONAL"
+            if ((result.get("business_status") != "PROVISIONAL" or dataset == "limit_up_pool")
                     and not (spec is not None and spec.gate_mode == "enforce"
                              and gate is not None and gate["gate_status"] == "FAIL")
                     and self._can_advance_latest(catalog, dataset, trade_date, result)):
@@ -516,6 +524,13 @@ class ArtifactCatalog:
             for version in reversed(versions):
                 if not _is_degraded_symbol_universe(version, self.root):
                     return Path(version["manifest"])
+        if dataset == "limit_up_pool" and len(versions) > 1:
+            # C580: FORMAL (Kaipan) > PROVISIONAL (WenCai) > DEGRADED (TD derived); unlabeled legacy = PROVISIONAL;
+            # equal quality -> the most recently appended.  A later lower-quality commit never hides a better one.
+            rank = {"DEGRADED": 1, "PROVISIONAL": 2, "FORMAL": 3}
+            best = max(enumerate(versions), key=lambda item: (
+                rank.get(str(item[1].get("business_status") or "").upper(), 2), item[0]))[1]
+            return Path(best["manifest"])
         return Path(versions[-1]["manifest"])
 
     def read_rows(self, manifest_path: Path) -> list[dict[str, Any]]:

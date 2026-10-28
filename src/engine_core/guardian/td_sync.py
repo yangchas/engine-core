@@ -18,7 +18,8 @@ def _response(code: int, status: str, detail: Any, *, error_code: str = "", retr
     return code, body
 
 
-def run_td_sync(request: Mapping[str, Any], root: Path, *, dry_run: bool = False, store: Any = None):
+def run_td_sync(request: Mapping[str, Any], root: Path, *, dry_run: bool = False, store: Any = None,
+                pool_store: Any = None):
     from .daily_kline_coverage import make_store, td_settings
     from ..data_pipeline.td_sink import (DailyKlineTdSink, TdUnavailable, TdVerifyError, sync_with_retry,
                                          validate_database_name)
@@ -45,6 +46,7 @@ def run_td_sync(request: Mapping[str, Any], root: Path, *, dry_run: bool = False
         outcomes = sync_with_retry(sink, dates, attempts=int(args.get("attempts") or 1),
                                    backoff_seconds=float(args.get("backoff_seconds") or 1.0))
         detail = {"database": settings["database"], "outcomes": [o.as_dict() for o in outcomes]}
+        detail["limit_up_pool"] = _sync_pool(settings, root, lookback, today, pool_store)
         _clear_unreadable(root, request)
         return _response(0, "ok", detail)
     except TdUnavailable as exc:
@@ -54,6 +56,25 @@ def run_td_sync(request: Mapping[str, Any], root: Path, *, dry_run: bool = False
     finally:
         if own:
             store.close()
+
+
+def _sync_pool(settings: Mapping[str, Any], root: Path, lookback: int, today: str | None, pool_store: Any) -> dict:
+    """C580 catch-up of the D-1 limit-up pool partitions into TD (idempotent, best effort: never fails this event)."""
+    try:
+        from ..data_pipeline.limit_pool_td import LimitPoolTdSink, PoolTaosStore
+        own = pool_store is None
+        store = pool_store or PoolTaosStore(str(settings["database"]))
+        try:
+            sink = LimitPoolTdSink(store, root)
+            dates = sink.pending_dates(lookback, today)
+            if not dates:
+                return {"status": "skipped", "reason": "no_catalog_days"}
+            return {"status": "ok", "outcomes": [o.as_dict() for o in sink.sync_dates(dates)]}
+        finally:
+            if own:
+                store.close()
+    except Exception as exc:  # noqa: BLE001 - the daily_kline sweep above decides this event's result
+        return {"status": "error", "error": type(exc).__name__ + ":" + str(exc)[:200]}
 
 
 def _clear_unreadable(root: Path, request: Mapping[str, Any]) -> None:

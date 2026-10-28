@@ -303,6 +303,65 @@
           "alert_on_fallback": true
         }
       ]
+    },
+    "limit_pool_d1": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "kaipan",
+          "args": {
+            "dataset": "limit_up_pool",
+            "source": "kaipan",
+            "chain": "kaipan_getHisBans,wencai,td_derived",
+            "retry_until": "08:50:00",
+            "kaipan_min_interval_seconds": 10,
+            "kaipan_max_requests": 30
+          },
+          "attempts": 34,
+          "backoff": "15m*1",
+          "timeout": "5m",
+          "budget_enabled": false,
+          "on_timeout": "advance",
+          "alert_on_fallback": true
+        },
+        {
+          "name": "wencai",
+          "args": {
+            "dataset": "limit_up_pool",
+            "source": "wencai",
+            "chain": "kaipan_getHisBans,wencai,td_derived",
+            "wencai_cookie_file": "~/core-data/secrets/wencai.cookie",
+            "wencai_cooldown_seconds": 60,
+            "wencai_cooldown_max_seconds": 300,
+            "wencai_max_cooldowns": 2,
+            "wencai_max_total_requests": 3
+          },
+          "attempts": 2,
+          "backoff": "30m*1",
+          "timeout": "10m",
+          "budget_enabled": false,
+          "on_timeout": "advance",
+          "alert_on_fallback": true
+        },
+        {
+          "name": "td_derived",
+          "args": {
+            "dataset": "limit_up_pool",
+            "source": "td",
+            "chain": "kaipan_getHisBans,wencai,td_derived",
+            "td_lookback_calendar_days": 40
+          },
+          "attempts": 2,
+          "backoff": "5m*1",
+          "timeout": "5m",
+          "budget_enabled": false,
+          "on_timeout": "advance",
+          "alert_on_fallback": true
+        }
+      ]
     }
   },
   "events": [
@@ -601,6 +660,29 @@
       "event_id": "startup_0830",
       "at": "08:30:00",
       "profile": "policy_06"
+    },
+    {
+      "event_id": "limit_pool_d1",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "00:40:00",
+      "deadline": "15:00:00",
+      "late_until": "15:00:00",
+      "gate": "calendar_ready",
+      "handler": "kaipan_fetch",
+      "profile": "limit_pool_d1",
+      "catchup_mode": "run_in_window",
+      "on_deadline": "missed",
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "on_start": null,
+      "data_date_offset": -1,
+      "available_after": "00:30:00",
+      "depends_on": [],
+      "after": [],
+      "order": null
     },
     {
       "available_after": "00:00:00",

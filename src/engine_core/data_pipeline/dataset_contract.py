@@ -10,7 +10,7 @@ import hashlib
 import json
 import math
 import re
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -151,7 +151,7 @@ def apply_provider_overrides(spec: dict[str, Any], provider: Any) -> dict[str, A
     override = (spec.get("provider_overrides") or {}).get(provider)
     if not override:
         return spec
-    merged = dict(spec)
+    merged = {**spec, **{key: value for key, value in override.items() if key != "columns"}}
     cols = {name: dict(col) for name, col in spec.get("columns", {}).items()}
     for name, patch in (override.get("columns") or {}).items():
         cols[name] = {**cols.get(name, {}), **patch}
@@ -338,6 +338,16 @@ def _check_times(rep: Report, trade_date: str, m: dict[str, Any], spec: dict[str
                    floor=floor.isoformat())
     else:
         rep.skip("A10", "no_look_ahead", "spec declares no earliest_available_local")
+    next_day = spec.get("earliest_available_next_day_local")
+    if next_day and av is not None:
+        # vendor publishes the described day only on the following calendar day (Kaipan getHisBans: D+1 00:30)
+        hh, mm = (int(x) for x in next_day.split(":"))
+        floor = datetime.combine(datetime.fromisoformat(trade_date).date() + timedelta(days=1), time(hh, mm),
+                                 tzinfo=_SHANGHAI)
+        rep.result(av >= floor, "A10b", "no_look_ahead_vendor_publication",
+                   f"available_at {m.get('available_at')} earlier than {next_day} Asia/Shanghai on the day after "
+                   f"{trade_date}: the vendor does not publish the day before that",
+                   floor=floor.isoformat())
 
 
 def _check_units(rep: Report, m: dict[str, Any], spec: dict[str, Any]) -> None:
@@ -469,6 +479,9 @@ def _check_coverage(rep: Report, catalog: ArtifactCatalog, trade_date: str, m: d
         rep.result(q.get("expected_basis") in (None, "none", "not_applicable"), "C1", "expected_basis_not_applicable",
                    f"spec says no universe coverage but manifest declares expected_basis={q.get('expected_basis')!r}")
         return
+    if basis == "pool_members":
+        _check_pool_coverage(rep, m, q, rows)
+        return
     rep.result(q.get("expected_basis") == basis, "C1", "expected_basis_matches_spec",
                f"manifest.quality.expected_basis={q.get('expected_basis')!r}, spec expects {basis!r}")
     udata = cov.get("universe_dataset", "symbol_universe")
@@ -513,6 +526,25 @@ def _check_coverage(rep: Report, catalog: ArtifactCatalog, trade_date: str, m: d
     rep.result(len(declared_counts) == 2, "C4", "drop_counts_declared",
                "manifest.quality must carry dropped_outside_universe and dropped_duplicates counts "
                f"(contract §3); present: {declared_counts}")
+
+
+def _check_pool_coverage(rep: Report, m: dict[str, Any], q: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    """Coverage of a pool dataset: denominator = members the source itself reports (never the universe)."""
+    rep.result(q.get("expected_basis") == "pool_members", "C1", "expected_basis_matches_spec",
+               f"manifest.quality.expected_basis={q.get('expected_basis')!r}, spec expects 'pool_members'")
+    expected, missing, coverage = q.get("expected_count"), q.get("missing"), q.get("coverage")
+    ok_types = isinstance(expected, int) and isinstance(missing, int) and _is_number(coverage)
+    consistent = (ok_types and expected >= len(rows) and missing == expected - len(rows)
+                  and abs(coverage - (len(rows) / expected if expected else 0.0)) < 1e-6)
+    rep.result(consistent, "C2", "pool_coverage_recomputed_equals_declared",
+               f"declared expected_count={expected!r} missing={missing!r} coverage={coverage!r} vs rows={len(rows)}: "
+               "coverage must equal rows/expected_count and missing expected_count-rows",
+               rows=len(rows))
+    rep.result(q.get("partial") is (bool(missing) if isinstance(missing, int) else None), "C2b",
+               "partial_flag_matches_missing", f"quality.partial={q.get('partial')!r} but missing={missing!r}")
+    rep.result("dropped_duplicates" in q, "C4", "drop_counts_declared",
+               "manifest.quality must carry dropped_duplicates (contract section 3)")
+    rep.stats["pool_coverage"] = {"rows": len(rows), "expected_count": expected, "missing": missing}
 
 
 # ---------------------------------------------------------------- D: idempotency

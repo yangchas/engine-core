@@ -499,6 +499,17 @@ def main(argv: list[str] | None = None) -> int:
     artifact_root_explicit = args.artifact_root is not None
     args.artifact_root = args.artifact_root or os.getenv("CORE_DATA_ROOT", "~/core-data")
     args.artifact_root = str(Path(args.artifact_root).expanduser())
+    if args.job == "limit_up_pool":
+        # C580: the pool has one writer, the tiered D-1 module (catalog ledger + TD).  One pass over the rungs that
+        # schedule.json configures; nothing is fetched unless --execute/--write says so.
+        from engine_core.guardian.limit_pool_d1 import run_ladder_once
+        if not (args.execute or args.write):
+            print(json.dumps({"contract": 1, "status": "not_applicable", "error_code": "", "retryable": False,
+                              "detail": "dry_run_no_fetch"}))
+            return 0
+        code, body = run_ladder_once(args.date, args.artifact_root)
+        print(json.dumps(body, ensure_ascii=False, separators=(",", ":")))
+        return code
     if args.symbols_file and args.job != "daily_kline":
         parser.error("--symbols-file is only valid with --job daily_kline")
     if args.symbols_file:

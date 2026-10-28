@@ -58,8 +58,8 @@ def _plan(hour, minute, catalog=EMPTY, **kw):
 
 
 def test_before_trigger_nothing_is_fetched_after_trigger_it_is():
-    assert "limit_up_pool" not in _plan(8, 49)          # trigger 08:50 still ahead
-    for hour, minute in ((8, 50), (8, 56), (9, 6), (9, 16), (9, 26), (9, 36), (13, 0)):
+    assert "limit_up_pool" not in _plan(0, 39)          # C580: trigger is the 00:40 limit_pool_d1 event, still ahead
+    for hour, minute in ((0, 40), (8, 49), (8, 56), (9, 6), (9, 16), (9, 26), (9, 36), (13, 0)):
         assert _plan(hour, minute)["limit_up_pool"]["action"] == "FETCH_NOW"
     assert _plan(9, 6)["limit_up_pool"]["lane"] == "parallel"  # light: no waiting
 

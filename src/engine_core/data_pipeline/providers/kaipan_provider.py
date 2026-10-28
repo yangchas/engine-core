@@ -107,8 +107,12 @@ class KaipanProvider:
         return value
 
     def limit_up_pool(self, trade_date: str, *, max_levels: int = 10,
-                      context: Any = None) -> dict[str, Any]:
+                      context: Any = None, not_ready_ok: bool = False) -> dict[str, Any]:
+        """Walk getHisBans level by level.  Besides the legacy ``rows`` it returns ``pages`` (level -> every
+        positional record plus the date string the vendor echoes in ``info``) so no field is thrown away (C580).
+        ``not_ready_ok``: errcode 1020 at level 1 (day not published yet) returns empty ``pages`` instead of raising."""
         rows, seen = [], set()
+        pages: dict[int, dict[str, Any]] = {}
         for level in range(1, max_levels + 1):
             try:
                 response = self._call(self.client.get_his_bans, trade_date, level)
@@ -124,7 +128,16 @@ class KaipanProvider:
             if (level > 1 and isinstance(response, Mapping) and "info" not in response
                     and str(response.get("errcode")) == "1020"):
                 break  # real Kaipan 2026-10-20: errcode 1020 past the highest populated level
-            for raw in _pool_rows(response):
+            if (level == 1 and not_ready_ok and isinstance(response, Mapping) and "info" not in response
+                    and str(response.get("errcode")) == "1020"):
+                break  # real Kaipan 2026-10-28: the day is not published yet (D+1 00:30)
+            echo = None
+            if isinstance(response, Mapping) and isinstance(response.get("info"), (list, tuple)):
+                echo = next((item for item in response["info"] if isinstance(item, str)
+                             and re.fullmatch(r"\d{4}-\d{2}-\d{2}", item)), None)
+            page_records = _pool_rows(response)
+            pages[level] = {"records": [list(raw) for raw in page_records], "date_echo": echo}
+            for raw in page_records:
                 # The legacy pool contract requires the complete positional
                 # record (16 fields). Short tuples are metadata/noise and must
                 # not become partially trusted pool members.
@@ -136,7 +149,7 @@ class KaipanProvider:
                 seen.add(symbol)
                 rows.append({"symbol": symbol, "name": str(raw[1]) if len(raw) > 1 else None,
                              "lb_days": level, "in_legacy_pool": True, "trade_date": trade_date})
-        return {"rows": rows, "expected_count": len(seen), "request_count": self._requests}
+        return {"rows": rows, "expected_count": len(seen), "request_count": self._requests, "pages": pages}
 
     def plate_members(self, trade_date: str, *, context: Any = None,
                       page_size: int = 2000, concurrency: int = 4) -> dict[str, Any]:

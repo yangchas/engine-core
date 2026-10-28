@@ -1,6 +1,7 @@
 {
  "dataset": "limit_up_pool",
- "status": "DRAFT: columns/types/units inferred from the latest real partition (2026-10-28); to be confirmed by the owning data card",
+ "status": "BASELINE",
+ "note": "C580: D-1 limit-up pool, one row per member (symbol,date). date = the described trade day D-1, never the fetch day. Three sources in quality order: kaipan_getHisBans (FORMAL, 23 positional fields kept; kp_NN = raw position NN, meaning unverified) > wencai (PROVISIONAL, wc_* columns) > td_derived (DEGRADED, inferred from TD daily bars). Coverage denominator = number of members the source reports (expected_basis pool_members), not the universe. Pool excludes ST (vendor definition; td_derived by name).",
  "primary_key": [
   "symbol"
  ],
@@ -8,31 +9,271 @@
  "date_columns": [
   "trade_date"
  ],
+ "row_order": "primary_key",
  "earliest_available_local": "15:00",
+ "allowed_providers": [
+  "kaipan_getHisBans",
+  "wencai",
+  "td_derived"
+ ],
+ "primary_provider": "kaipan_getHisBans",
  "coverage": {
-  "basis": "none"
+  "basis": "pool_members"
+ },
+ "provider_overrides": {
+  "kaipan_getHisBans": {
+   "earliest_available_next_day_local": "00:30"
+  }
  },
  "columns": {
   "symbol": {
    "type": "str",
-   "nullable": false
+   "nullable": false,
+   "note": "6-digit code"
+  },
+  "date": {
+   "type": "str",
+   "nullable": false,
+   "note": "described trade date D-1 (YYYY-MM-DD), never the fetch date"
   },
   "trade_date": {
-   "type": "date",
-   "nullable": false
+   "type": "str",
+   "nullable": false,
+   "note": "legacy alias of date, kept for existing readers"
   },
   "name": {
    "type": "str",
-   "nullable": false
+   "nullable": true,
+   "note": "short name"
   },
   "lb_days": {
    "type": "int",
    "nullable": false,
+   "unit": "days",
+   "note": "consecutive limit-up days up to and including date",
    "min": 1
   },
   "in_legacy_pool": {
    "type": "bool",
-   "nullable": false
+   "nullable": false,
+   "note": "always true: kept for existing readers"
+  },
+  "price": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "unit": "yuan",
+   "note": "close of date (Kaipan [21], TD close)",
+   "min": 0
+  },
+  "pct_chg": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "unit": "percent",
+   "note": "close change of date (Kaipan [22], TD pct_chg)",
+   "min": 0,
+   "max": 1000
+  },
+  "limit_time_epoch": {
+   "type": "int",
+   "nullable": true,
+   "optional": true,
+   "unit": "unix_seconds",
+   "note": "Kaipan [4]; 2026-10-27 sample 1793064300 = 09:25:00 CST"
+  },
+  "seal_time_text": {
+   "type": "str",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [3]; empty in every sample (null)",
+   "all_null_ok": true,
+   "all_null_reason": "empty string in every real Kaipan sample (2026-10-19, 2026-10-27); stored as null"
+  },
+  "reason_category": {
+   "type": "str",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [5] short limit-up reason / plate category (e.g. 商业航天)"
+  },
+  "reason_plates_text": {
+   "type": "str",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [12] plate / theme text, '、'-separated"
+  },
+  "plate_code": {
+   "type": "str",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [19] plate index code (e.g. 801843)"
+  },
+  "kp_02": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [2] raw, unverified (always 0 in samples)"
+  },
+  "kp_06": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [6] raw, unverified amount-like"
+  },
+  "kp_07": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [7] raw, unverified amount-like"
+  },
+  "kp_08": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [8] raw, unverified amount-like"
+  },
+  "kp_09": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [9] raw, unverified amount-like"
+  },
+  "kp_10": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [10] raw, equals [8]-[9] in every sample"
+  },
+  "kp_11": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [11] raw, unverified amount-like"
+  },
+  "kp_13": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [13] raw, unverified (cap-like magnitude)"
+  },
+  "kp_14": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [14] raw, unverified"
+  },
+  "kp_15": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [15] raw; equals the ladder level in samples (lb_days is the level)"
+  },
+  "kp_16": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [16] raw 0/1 flag, unverified"
+  },
+  "kp_17": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [17] raw, unverified"
+  },
+  "kp_18": {
+   "type": "str",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [18] raw text, empty in samples (null)",
+   "all_null_ok": true,
+   "all_null_reason": "empty string in every real Kaipan sample (2026-10-19, 2026-10-27); stored as null"
+  },
+  "kp_20": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "note": "Kaipan [20] raw integer, unverified"
+  },
+  "wc_limit_type": {
+   "type": "str",
+   "nullable": true,
+   "optional": true,
+   "note": "WenCai 涨停类型 (e.g. 放量涨停)"
+  },
+  "wc_streak_text": {
+   "type": "str",
+   "nullable": true,
+   "optional": true,
+   "note": "WenCai 几天几板 (e.g. 首板涨停)"
+  },
+  "wc_first_limit_time": {
+   "type": "str",
+   "nullable": true,
+   "optional": true,
+   "unit": "HH:MM:SS",
+   "note": "WenCai 首次涨停时间"
+  },
+  "wc_last_limit_time": {
+   "type": "str",
+   "nullable": true,
+   "optional": true,
+   "unit": "HH:MM:SS",
+   "note": "WenCai 最终涨停时间"
+  },
+  "wc_open_count": {
+   "type": "int",
+   "nullable": true,
+   "optional": true,
+   "unit": "count",
+   "note": "WenCai 涨停开板次数"
+  },
+  "wc_seal_volume_shares": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "unit": "shares",
+   "note": "WenCai 涨停封单量"
+  },
+  "wc_seal_amount_yuan": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "unit": "yuan",
+   "note": "WenCai 涨停封单额"
+  },
+  "wc_seal_vol_ratio": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "unit": "percent_unverified",
+   "note": "WenCai 涨停封单量占成交量比, as reported"
+  },
+  "wc_seal_float_ratio": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "unit": "percent_unverified",
+   "note": "WenCai 涨停封单量占流通a股比, as reported"
+  },
+  "wc_float_mktcap_yuan": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "unit": "yuan",
+   "note": "WenCai a股市值(不含限售股) of the dated column"
+  },
+  "wc_reason_category": {
+   "type": "str",
+   "nullable": true,
+   "optional": true,
+   "note": "WenCai 涨停原因类别, '+'-separated"
+  },
+  "limit_pct": {
+   "type": "float",
+   "nullable": true,
+   "optional": true,
+   "unit": "percent",
+   "note": "board limit used by the derivation (10/20/30), from the symbol prefix only"
   }
  }
 }
