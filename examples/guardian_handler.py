@@ -295,6 +295,15 @@ def _run(request):
         # (kaipan_refresh_0850: reasons, hot plates, members) keep the command path below.
         from engine_core.guardian.limit_pool_d1 import run_pool_tier
         return run_pool_tier({**request, "data_date": target_day}, root, dry_run=dry)
+    checkpoint_reply = None
+    if name == "intraday_data" and args.get("checkpoint") is not None:
+        # C587: the time-critical part is the Redis q2 checkpoint (source order / tolerance in schedule.json). It runs
+        # first; the legacy hot_plates refresh below is independent of ticks and may never fail the event, because a
+        # retry could no longer reproduce the checkpoint window.
+        from engine_core.guardian.intraday_checkpoint_run import run_checkpoint
+        code, checkpoint_reply = run_checkpoint({**request, "start": start, "data_date": target_day}, root, dry_run=dry)
+        if code not in (0, 10):
+            return code, checkpoint_reply
     if name == "close_capture":
         return 0, {"contract": 1, "status": "not_applicable", "error_code": "",
                    "retryable": False, "artifacts": [], "detail": "close_capture_not_implemented"}
@@ -303,15 +312,22 @@ def _run(request):
                                                     bool(request.get("degrade_requested")))
         if not dry:
             from engine_core.guardian.commands import validate_handler_postcondition
-            ok, reason = validate_handler_postcondition(name, target_day, root)
+            ok, reason = validate_handler_postcondition(name, target_day, root, args.get("datasets"))
             if not ok:
                 return _failure_response(request, result={
                     "contract": 1, "status": "failed", "error_code": "POSTCONDITION_FAILED",
                     "retryable": False, "artifacts": [], "detail": reason})
         degraded = isinstance(result, str) and result.startswith("DEGRADED:")
+        if checkpoint_reply is not None:
+            degraded = degraded or checkpoint_reply["status"] == "degraded"
+            result = {"checkpoint": checkpoint_reply["detail"], "hot_plates": str(result)[-300:]}
         return 0, {"contract": 1, "status": "degraded" if degraded else "ok",
                    "error_code": "", "retryable": False, "artifacts": [], "detail": result}
     except Exception as exc:
+        if checkpoint_reply is not None:
+            return 0, {"contract": 1, "status": "degraded", "error_code": "", "retryable": False, "artifacts": [],
+                       "detail": {"checkpoint": checkpoint_reply["detail"],
+                                  "hot_plates_error": f"{type(exc).__name__}:{str(exc)[:200]}"}}
         return _failure_response(request, error=exc)
 
 
@@ -331,6 +347,16 @@ def _gate(name, request=None):
     if fn is None or event is None:
         _json({"status": "not_ready", "reason": "unknown_gate"})
         return 64
+    asof = str(request.get("asof") or "")
+    if len(asof) >= 19 and asof[10] == "T":
+        # C587: the runtime's own start time and args are authoritative (same values as schedule.json in production);
+        # this lets a shifted-trigger acceptance run gate on its real cut-off instead of the repository's.
+        import dataclasses
+        sent = request.get("args") if isinstance(request.get("args"), dict) and request.get("args") else None
+        due = str(request.get("deadline_at") or "")
+        deadline = due[11:19] if len(due) >= 19 and due[10] == "T" else max(asof[11:19], event.deadline)
+        event = dataclasses.replace(event, start=asof[11:19], deadline=deadline,
+                                    args=sent if sent is not None else event.args)
     try:
         now = datetime.fromisoformat(request.get("now")) if request.get("now") else None
         if now is not None and now.tzinfo is None:

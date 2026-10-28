@@ -141,9 +141,40 @@ def build_and_commit_stock_theme_assignment(
     return catalog.commit("stock_theme_assignment", trade_date, rows, manifest, source=source)
 
 
+def _why_unavailable(catalog: ArtifactCatalog, dataset: str, day: str | None, asof: str) -> str:
+    """Name the exact reason a dataset/day is not usable at ``asof`` (C587): absent / not yet available / failed."""
+    entries = catalog.read().get("datasets", {}).get(dataset, {}).get("dates", {}).get(day or "", [])
+    if not entries:
+        return f"{dataset}[{day}]:absent_from_catalog"
+    cutoff = _pit_time(asof)
+    late, failed, unreadable = [], 0, 0
+    for entry in entries:
+        try:
+            manifest = json.loads(Path(entry.get("manifest") or "").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            unreadable += 1
+            continue
+        quality = manifest.get("quality")
+        if isinstance(quality, dict) and quality.get("status") == "FAILED":
+            failed += 1
+            continue
+        available = _pit_time(manifest.get("available_at"))
+        if available is None or cutoff is None or available > cutoff:
+            late.append(str(manifest.get("available_at")))
+    if late:
+        return f"{dataset}[{day}]:available_at_after_asof(available_at={min(late)},asof={asof})"
+    if failed:
+        return f"{dataset}[{day}]:all_versions_failed_quality"
+    return f"{dataset}[{day}]:manifest_unreadable"
+
+
 def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
-                                  previous: str, asof: str) -> bool:
-    """Build the target-day theme view from PIT-ready Core artifacts only."""
+                                  previous: str, asof: str,
+                                  diagnostics: list[str] | None = None) -> bool:
+    """Build the target-day theme view from PIT-ready Core artifacts only.
+
+    On False, ``diagnostics`` (when given) receives one specific reason per missing input (C587)."""
+    diag = diagnostics if diagnostics is not None else []
     from .limit_reason_theme import (THEME_SNAPSHOT_NODE_SCHEMA,
                                      load_kaipan_theme_snapshot, theme_snapshot_node_inputs,
                                      theme_snapshot_version)
@@ -208,6 +239,13 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
                row.get("Reason", row.get("reason")))
         unique_reasons[key] = row
     reasons = list(unique_reasons.values())
+    if not pool:
+        diag.append("limit_up_pool:" + _why_unavailable(catalog, "limit_up_pool", previous, asof))
+    if not registry:
+        diag.append(f"plate_registry:no_version_on_or_before_{trade_date}_available_at_or_before_asof")
+    if not reasons:
+        diag.append("limit_reasons:no_pit_ready_rows_on_or_before_" + trade_date + ";latest=" +
+                    _why_unavailable(catalog, "limit_reasons", previous, asof))
     if not pool or not registry or not reasons:
         return False
     registry_rows, registry_manifest = registry
@@ -225,6 +263,7 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
         calendar_dates = [day for day in calendar.all_trading_dates()
                           if day <= previous_session.isoformat()]
     except ValueError:
+        diag.append("trade_calendar:previous_session_unavailable")
         return False
     # Keep a cold, immutable D06 assignment artifact beside the report snapshot.
     # The existing theme snapshot remains for compatibility during migration.
@@ -254,6 +293,9 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
     member_codes: dict[str, set[str]] = {}
     member_rows: list[dict[str, Any]] = []
     members_data = load("plate_members", previous)
+    if not members_data:
+        # Not fatal (the snapshot degrades to pool/reason labels) but never silent.
+        diag.append("plate_members:" + _why_unavailable(catalog, "plate_members", previous, asof) + "(degraded_input)")
     if members_data:
         member_rows, _ = _pit_rows(members_data[0], asof)
         for row in member_rows:
@@ -294,6 +336,7 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
             reason_rows=reasons, hot_rows=hot[0] if hot else (), trading_dates=calendar_dates),
         asof=asof)
     if snapshot.get("status") not in {"READY", "PARTIAL"}:
+        diag.append("theme_snapshot:node_status=" + str(snapshot.get("status")))
         return False
     input_version = theme_snapshot_version(node_inputs)
     visibility_sha256 = input_version
@@ -320,8 +363,24 @@ def _prepare_theme_snapshot_cache(catalog: ArtifactCatalog, trade_date: str,
     return True
 
 
+THEME_FETCH_JOBS = {"limit_up_pool": "limit_up_pool", "limit_reasons": "limit_reasons",
+                    "plate_members": "plate_members"}
+
+
+def _theme_gap_jobs(diag: list[str]) -> list[str]:
+    return [job for prefix, job in THEME_FETCH_JOBS.items() if any(d.startswith(prefix + ":") for d in diag)]
+
+
 def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
-                      asof: str | None = None) -> dict[str, Any]:
+                      asof: str | None = None, theme_wait_seconds: float = 0.0,
+                      theme_poll_seconds: float = 30.0, theme_on_missing: str = "fail",
+                      sleep: Any = time.sleep) -> dict[str, Any]:
+    """``theme_wait_seconds``/``theme_poll_seconds``/``theme_on_missing`` (C587, from schedule.json ``args.theme_deps``):
+    when the yesterday pool / reasons / members the theme snapshot needs are missing or not yet available, retry the
+    fetch and re-check inside the wait window instead of failing at once.  After the window ``fail`` keeps the old
+    error, ``degrade`` reports a single warning (status PARTIAL) and still returns the other preparation steps."""
+    if theme_on_missing not in {"fail", "degrade"}:
+        raise ValueError("invalid_theme_on_missing")
     date.fromisoformat(trade_date)
     live_default_asof = asof is None
     asof = asof or datetime.now().astimezone().isoformat()
@@ -357,6 +416,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
          "row_count": None, "version": None, "elapsed_ms": 0.0},
     ]
     errors: list[str] = []
+    warnings: list[str] = []
     timings: dict[str, float] = {}
     symbol_contract_status: str | None = None
     if write and previous:
@@ -469,11 +529,43 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
         if rc:
             errors.append("plate_amount_baseline:COMMAND_FAILED:" + out[-240:])
         try:
-            if not _prepare_theme_snapshot_cache(fresh_catalog := ArtifactCatalog(root),
-                                                 trade_date, previous, asof):
-                errors.append("theme_snapshot:PRECOMPUTE_UNAVAILABLE")
+            theme_started = time.monotonic()
+            budget = max(0.0, float(theme_wait_seconds))
+            waited = 0.0
+            polls = 0
+            while True:
+                if live_default_asof:
+                    # Jobs fetched above are visible only from their commit time; a live run's cut-off is "now".
+                    asof = datetime.now().astimezone().isoformat()
+                diag: list[str] = []
+                built = _prepare_theme_snapshot_cache(fresh_catalog := ArtifactCatalog(root),
+                                                      trade_date, previous, asof, diagnostics=diag)
+                if built and not diag:
+                    break
+                if waited >= budget:
+                    break
+                polls += 1
+                nap = max(0.0, min(float(theme_poll_seconds), budget - waited))
+                sleep(nap)
+                retry_started = time.monotonic()
+                for job in _theme_gap_jobs(diag):
+                    rc, _out = _run(repo, "run_data_jobs.py", ["--job", job, "--date", previous, "--write",
+                                    "--artifact-root", str(root), "--max-requests", "15"])
+                waited += max(nap, 0.001) + (time.monotonic() - retry_started)
+            timings["theme_snapshot"] = round((time.monotonic() - theme_started) * 1000, 3)
+            import logging
+            log = logging.getLogger(__name__)
+            if built and not diag:
+                pass
+            elif built:
+                warnings.append("theme_snapshot:DEGRADED_INPUT:" + ";".join(diag))
+                log.warning("theme_snapshot built with missing inputs after %s polls: %s", polls, "; ".join(diag))
+            elif theme_on_missing == "degrade":
+                warnings.append("theme_snapshot:SKIPPED_MISSING_INPUT:" + ";".join(diag))
+                log.warning("theme_snapshot skipped (degrade) after %s polls: %s", polls, "; ".join(diag))
             else:
-                timings["theme_snapshot"] = 0.0
+                log.error("theme_snapshot PRECOMPUTE_UNAVAILABLE after %s polls: %s", polls, "; ".join(diag))
+                errors.append("theme_snapshot:PRECOMPUTE_UNAVAILABLE:" + ";".join(diag)[:600])
         except Exception as exc:
             errors.append("theme_snapshot:" + str(exc)[:200])
     # Re-read after writes and annotate each real artifact state.
@@ -503,5 +595,5 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                 item["elapsed_ms"] = timings[item["step"]]
     return {"trade_date": trade_date, "previous_trade_date": previous,
             "mode": "WRITE" if write else "DRY_RUN", "steps": steps,
-            "errors": errors,
-            "status": "READY" if all(s["status"] == "READY" for s in steps) and not errors else "PARTIAL"}
+            "errors": errors, "warnings": warnings,
+            "status": "READY" if all(s["status"] == "READY" for s in steps) and not errors and not warnings else "PARTIAL"}

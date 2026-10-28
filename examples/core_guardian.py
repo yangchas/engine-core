@@ -203,7 +203,7 @@ def _command_handler(name: str, opts, root: Path):
         if name == "kaipan_fetch":
             from engine_core.data_pipeline.storage import ArtifactCatalog
             catalog = ArtifactCatalog(root)
-            for job in ("limit_up_pool", "limit_reasons", "hot_plates", "plate_members"):
+            for job in tuple((getattr(event, "args", None) or {}).get("datasets") or ("limit_up_pool", "limit_reasons", "hot_plates", "plate_members")):
                 existing = catalog.locate(job, day)
                 if existing is not None:
                     try:
@@ -250,6 +250,8 @@ def _command_handler(name: str, opts, root: Path):
                        if isinstance(item, dict) and item.get("status") == "MISSING"]
             if missing:
                 raise RuntimeError("prep_critical_missing:" + ",".join(missing))
+            if report.get("warnings"):
+                return "DEGRADED:prep_warnings:" + ";".join(map(str, report["warnings"]))[-400:]
             if report.get("status") == "PARTIAL":
                 partial = [str(item.get("step")) for item in report.get("steps", [])
                            if isinstance(item, dict) and item.get("status") == "PARTIAL"]

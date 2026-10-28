@@ -659,7 +659,14 @@
       "calendar": "trading_day",
       "event_id": "startup_0830",
       "at": "08:30:00",
-      "profile": "policy_06"
+      "profile": "policy_06",
+      "args": {
+        "theme_deps": {
+          "wait_seconds": 180,
+          "poll_seconds": 30,
+          "on_missing": "degrade"
+        }
+      }
     },
     {
       "event_id": "limit_pool_d1",
@@ -683,6 +690,35 @@
       "depends_on": [],
       "after": [],
       "order": null
+    },
+    {
+      "available_after": "00:30:00",
+      "data_date_offset": -1,
+      "deadline": "08:25:00",
+      "depends_on": [],
+      "gate": "calendar_ready",
+      "handler": "kaipan_fetch",
+      "trigger_type": "window",
+      "order": null,
+      "after": [],
+      "on_deadline": "missed",
+      "late_until": "15:00:00",
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "on_start": null,
+      "enabled": true,
+      "calendar": "trading_day",
+      "event_id": "d1_refs_0045",
+      "at": "00:45:00",
+      "profile": "policy_07",
+      "args": {
+        "datasets": [
+          "limit_reasons",
+          "plate_members",
+          "hot_plates"
+        ]
+      }
     },
     {
       "available_after": "00:00:00",
@@ -729,7 +765,14 @@
       "calendar": "trading_day",
       "event_id": "premarket_slice_0850",
       "at": "08:50:00",
-      "profile": "policy_05"
+      "profile": "policy_05",
+      "args": {
+        "theme_deps": {
+          "wait_seconds": 180,
+          "poll_seconds": 30,
+          "on_missing": "degrade"
+        }
+      }
     },
     {
       "available_after": null,
@@ -754,7 +797,14 @@
       "calendar": "trading_day",
       "event_id": "startup_0900",
       "at": "09:00:00",
-      "profile": "policy_05"
+      "profile": "policy_05",
+      "args": {
+        "theme_deps": {
+          "wait_seconds": 180,
+          "poll_seconds": 30,
+          "on_missing": "degrade"
+        }
+      }
     },
     {
       "available_after": null,
@@ -1081,7 +1131,7 @@
     {
       "available_after": null,
       "data_date_offset": 0,
-      "deadline": "09:33:59",
+      "deadline": "09:36:59",
       "depends_on": [],
       "gate": "checkpoint_ready",
       "handler": "intraday_data",
@@ -1098,7 +1148,19 @@
       "calendar": "trading_day",
       "event_id": "intraday_33",
       "at": "09:33:05",
-      "profile": "policy_10"
+      "profile": "policy_10",
+      "args": {
+        "checkpoint": {
+          "sources": [
+            "redis_q2",
+            "td"
+          ],
+          "tolerance_seconds": 60,
+          "min_symbols": 4000,
+          "td_until": "09:45:59",
+          "redis_timeout_seconds": 5
+        }
+      }
     },
     {
       "available_after": null,
@@ -1130,7 +1192,7 @@
     {
       "available_after": null,
       "data_date_offset": 0,
-      "deadline": "09:38:59",
+      "deadline": "09:39:59",
       "depends_on": [],
       "gate": "checkpoint_ready",
       "handler": "intraday_data",
@@ -1147,12 +1209,24 @@
       "calendar": "trading_day",
       "event_id": "intraday_36",
       "at": "09:36:05",
-      "profile": "policy_10"
+      "profile": "policy_10",
+      "args": {
+        "checkpoint": {
+          "sources": [
+            "redis_q2",
+            "td"
+          ],
+          "tolerance_seconds": 60,
+          "min_symbols": 4000,
+          "td_until": "09:45:59",
+          "redis_timeout_seconds": 5
+        }
+      }
     },
     {
       "available_after": null,
       "data_date_offset": 0,
-      "deadline": "09:41:59",
+      "deadline": "09:42:59",
       "depends_on": [],
       "gate": "checkpoint_ready",
       "handler": "intraday_data",
@@ -1169,7 +1243,19 @@
       "calendar": "trading_day",
       "event_id": "intraday_39",
       "at": "09:39:05",
-      "profile": "policy_10"
+      "profile": "policy_10",
+      "args": {
+        "checkpoint": {
+          "sources": [
+            "redis_q2",
+            "td"
+          ],
+          "tolerance_seconds": 60,
+          "min_symbols": 4000,
+          "td_until": "09:45:59",
+          "redis_timeout_seconds": 5
+        }
+      }
     },
     {
       "available_after": null,
@@ -1223,7 +1309,7 @@
     {
       "available_after": null,
       "data_date_offset": 0,
-      "deadline": "09:44:59",
+      "deadline": "09:45:59",
       "depends_on": [],
       "gate": "checkpoint_ready",
       "handler": "intraday_data",
@@ -1240,7 +1326,19 @@
       "calendar": "trading_day",
       "event_id": "intraday_42",
       "at": "09:42:05",
-      "profile": "policy_10"
+      "profile": "policy_10",
+      "args": {
+        "checkpoint": {
+          "sources": [
+            "redis_q2",
+            "td"
+          ],
+          "tolerance_seconds": 60,
+          "min_symbols": 4000,
+          "td_until": "09:45:59",
+          "redis_timeout_seconds": 5
+        }
+      }
     },
     {
       "available_after": null,
@@ -1262,7 +1360,19 @@
       "calendar": "trading_day",
       "event_id": "intraday_45",
       "at": "09:45:05",
-      "profile": "policy_10"
+      "profile": "policy_10",
+      "args": {
+        "checkpoint": {
+          "sources": [
+            "redis_q2",
+            "td"
+          ],
+          "tolerance_seconds": 60,
+          "min_symbols": 4000,
+          "td_until": "09:45:59",
+          "redis_timeout_seconds": 5
+        }
+      }
     },
     {
       "available_after": null,

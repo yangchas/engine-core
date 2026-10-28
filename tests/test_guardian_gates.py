@@ -87,7 +87,8 @@ class FakeTD:
 
 def test_intraday_0933_uses_093300_window_not_090000(monkeypatch):
     from engine_core.guardian.scheduler import default_events
-    event = next(e for e in default_events() if e.event_id == "intraday_33")
+    import dataclasses
+    event = dataclasses.replace(next(e for e in default_events() if e.event_id == "intraday_33"), args=None)  # TD-only path
     calls = []
     def query(sql):
         calls.append(sql)
@@ -102,10 +103,12 @@ def test_intraday_deadlines_cover_their_three_minute_data_windows():
     from engine_core.guardian.scheduler import default_events
     events = {e.event_id: e for e in default_events()}
     assert {event_id: events[event_id].deadline
-            for event_id in ("intraday_36", "intraday_39", "intraday_42", "intraday_45")} == {
-                "intraday_36": "09:38:59",
-                "intraday_39": "09:41:59",
-                "intraday_42": "09:44:59",
+            for event_id in ("intraday_33", "intraday_36", "intraday_39", "intraday_42", "intraday_45")} == {
+                # C587: cutoff + 3:59 (TD wrote ~2:45-2:53 after the cutoff; the old +2:54 deadline lost the race)
+                "intraday_33": "09:36:59",
+                "intraday_36": "09:39:59",
+                "intraday_39": "09:42:59",
+                "intraday_42": "09:45:59",
                 "intraday_45": "09:48:59",
             }
 
@@ -117,7 +120,8 @@ def test_same_tick_cache_does_not_confuse_two_event_cutoffs(monkeypatch):
         return [(str(i),) for i in range(4000)] if "09:45:18" in sql else []
     monkeypatch.setattr("engine_core.guardian.gates._query", query)
     now = datetime.fromisoformat("2026-10-19T09:45:30+08:00")
-    assert not checkpoint_ready(events["intraday_45"], now, {})
+    import dataclasses
+    assert not checkpoint_ready(dataclasses.replace(events["intraday_45"], args=None), now, {})
     assert checkpoint_ready(events["open_report_0945"], now, {})
 
 
@@ -159,7 +163,8 @@ def test_checkpoint_timeout_returns_diagnostic_reason(monkeypatch):
     import engine_core.guardian.gates as gates
     from engine_core.guardian.scheduler import default_events
 
-    event = next(e for e in default_events() if e.event_id == "intraday_33")
+    import dataclasses
+    event = dataclasses.replace(next(e for e in default_events() if e.event_id == "intraday_33"), args=None)
     monkeypatch.setenv("GUARDIAN_TD_QUERY_TIMEOUT_SECONDS", "0.01")
     monkeypatch.setattr(gates, "_query", lambda _sql: (time.sleep(0.1), [])[1])
     gates._CACHE.clear()
@@ -175,7 +180,8 @@ def test_checkpoint_gate_reports_latest_visible_tick_timestamp(monkeypatch):
     import engine_core.guardian.gates as gates
     from engine_core.guardian.scheduler import default_events
 
-    event = next(e for e in default_events() if e.event_id == "intraday_33")
+    import dataclasses
+    event = dataclasses.replace(next(e for e in default_events() if e.event_id == "intraday_33"), args=None)
     gates._CACHE.clear()
     monkeypatch.setattr(gates, "_query_bounded", lambda _sql: (
         [(f"600{i:03d}", "2026-10-19 09:33:02.750000") for i in range(gates.MIN_CHECKPOINT_SYMBOLS)], 1.0))

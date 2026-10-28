@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 import json
 import math
 from collections.abc import Mapping
@@ -102,7 +103,8 @@ def _daily_kline_provider_arg(value):
     return ",".join(providers)
 
 
-def validate_handler_postcondition(name: str, day: str, root: str | Path) -> tuple[bool, str]:
+def validate_handler_postcondition(name: str, day: str, root: str | Path,
+                                   datasets: Any = None) -> tuple[bool, str]:
     """Read Core catalog/file outputs after a successful guardian command."""
     root = Path(root).expanduser()
     if name == "calendar_refresh":
@@ -125,7 +127,8 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path) -> tup
         # versioned reference input; neither is emitted for each trade date.
         datasets = ("symbol_universe",)
     elif name == "kaipan_fetch":
-        datasets = ("limit_up_pool",)
+        # C587: an event that lists its own datasets (D-1 reasons/members) is judged on those, not on the pool.
+        datasets = tuple(datasets) if datasets else ("limit_up_pool",)
     elif name == "kaipan_hot_capture":
         datasets = ("hot_plates",)
     else:
@@ -142,12 +145,12 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path) -> tup
         manifest_path = catalog.locate(dataset, target)
         if manifest_path is None or not manifest_path.is_file():
             if name == "kaipan_fetch":
-                return False, "limit_up_pool_missing_or_empty"
+                return False, dataset + "_missing_or_empty"
             return False, dataset + "_manifest_missing"
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             if name == "kaipan_fetch" and int(manifest.get("row_count", 0)) <= 0:
-                return False, "limit_up_pool_missing_or_empty"
+                return False, dataset + "_missing_or_empty"
             if dataset == "daily_kline":
                 from .registry import kline_coverage_problem
                 problem = kline_coverage_problem(manifest.get("quality"))
@@ -166,6 +169,12 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
                "--artifact-root", str(root)]
         if opts.write:
             cmd.append("--write")
+        deps = _event_args(event).get("theme_deps") if isinstance(_event_args(event), dict) else None
+        if isinstance(deps, dict):
+            # C587: dependency wait / degrade policy for the yesterday pool, reasons and members (schedule.json).
+            cmd.extend(["--theme-wait-seconds", str(deps.get("wait_seconds", 0)),
+                        "--theme-poll-seconds", str(deps.get("poll_seconds", 30)),
+                        "--theme-on-missing", str(deps.get("on_missing", "fail"))])
         return cmd
     if name in {"intraday_data", "postmarket_data"}:
         phase = {"intraday_data": "intraday", "postmarket_data": "postmarket"}[name]

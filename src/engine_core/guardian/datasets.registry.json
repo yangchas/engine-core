@@ -1256,8 +1256,8 @@
       "id": "intraday_tick_stream",
       "owner": "intraday_data",
       "artifact": {
-        "catalog_dataset": null,
-        "date_basis": "same trade_date and captured_at; exact output date key UNKNOWN"
+        "catalog_dataset": "intraday_checkpoint",
+        "date_basis": "trade_date = per-row q2 ts date; checkpoint time in manifest.checkpoint (C587, docs/INTRADAY_CHECKPOINT.md)"
       },
       "phases": [
         "OPEN",
@@ -1266,7 +1266,7 @@
         "INTRADAY_PM",
         "CLOSE_AUCTION"
       ],
-      "cadence": "3-minute schedule checkpoints; TD stock_tick currently observed only through 09:45:59",
+      "cadence": "3-minute schedule checkpoints; source Redis q2 (primary, whole session) with TD stock_tick as check/fallback through 09:45:59",
       "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
       "freshness": "UNKNOWN",
       "retry": "per guardian_event (until_late/backoff, see C350)",
@@ -1535,7 +1535,7 @@
         "force": "none",
         "clear": "none"
       },
-      "notes": "Current schedule intraday events continue after 09:45 although this source table is observed through 09:45:59; ask data operator whether design or retention window."
+      "notes": "TD stores no tick after 09:45:59 (C377); since C587 the intraday gate/handler read Redis q2 first and use this table only up to args.checkpoint.td_until."
     }
   ],
   "quiet_phases_for_heavy": [

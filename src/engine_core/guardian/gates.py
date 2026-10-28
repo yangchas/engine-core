@@ -151,7 +151,7 @@ def auction_snapshot_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
     return _cached(gate, event, now, f"{tag}:{threshold}", check)
 
 
-def checkpoint_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
+def _td_checkpoint_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
     def check():
         started = time.monotonic()
         cutoff = _checkpoint_cutoff(event, now.date())
@@ -194,6 +194,72 @@ def checkpoint_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
         return GateResult(status="ready" if count >= MIN_CHECKPOINT_SYMBOLS else "not_ready",
                           reason="checkpoint_threshold_met" if count >= MIN_CHECKPOINT_SYMBOLS else "checkpoint_below_threshold",
                           row_count=count, checkpoint_ts=checkpoint_ts, timeout_seconds=timeout,
+                          elapsed_ms=round((time.monotonic() - started) * 1000), **detail)
+    return _cached("checkpoint_ready_td", event, now, f"{getattr(event, 'start', '')}:{getattr(event, 'handler', '')}", check)
+
+
+def checkpoint_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
+    """Config-driven checkpoint gate (C587).
+
+    An event whose ``args.checkpoint`` is set (schedule.json) walks ``sources`` in the configured order: ``redis_q2``
+    reads the live ``q2:{symbol}`` hashes and needs ``min_symbols`` rows whose own ``ts`` lies in
+    ``[cutoff, cutoff + tolerance_seconds]``; ``td`` is the legacy stock_tick_v2 check and only counts up to ``td_until``.
+    An event without that block keeps the TD-only behaviour (open_report events).
+    """
+    args = getattr(event, "args", None)
+    if not isinstance(args, dict) or args.get("checkpoint") is None:
+        return _td_checkpoint_ready(event, now, ctx)
+
+    def check():
+        from . import intraday_checkpoint_run as run
+        from ..data_pipeline.intraday_checkpoint import CheckpointError, parse_config
+        started = time.monotonic()
+        try:
+            cfg = parse_config(args)
+        except CheckpointError as exc:
+            return GateResult(status="not_ready", reason="CHECKPOINT_CONFIG_ERROR", detail=exc.detail, elapsed_ms=0)
+        cutoff = _checkpoint_cutoff(event, now.date())
+        stamp = cutoff.strftime("%H:%M:%S")
+        window = [cutoff.strftime("%Y-%m-%d %H:%M:%S"),
+                  (cutoff + timedelta(seconds=cfg["tolerance_seconds"])).strftime("%Y-%m-%d %H:%M:%S")]
+        detail = {"query_window": window, "threshold": cfg["min_symbols"], "sources": cfg["sources"]}
+        if cutoff > now.replace(tzinfo=None):
+            return GateResult(status="not_ready", reason="WINDOW_NOT_REACHED", row_count=0,
+                              elapsed_ms=round((time.monotonic() - started) * 1000), **detail)
+        tried = []
+        for source in cfg["sources"]:
+            if source == "redis_q2":
+                try:
+                    if isinstance(ctx, dict) and "q2_redis" in ctx:
+                        client = ctx["q2_redis"]
+                    else:
+                        client = run.redis_client(cfg["redis_timeout_seconds"])
+                    probe = run.redis_probe(client, now.date().isoformat(), stamp, cfg)
+                except Exception as exc:
+                    tried.append({"source": "redis_q2", "state": "error", "reason": type(exc).__name__})
+                    continue
+                tried.append(probe)
+                if probe["state"] == "ready":
+                    return GateResult(status="ready", reason="checkpoint_threshold_met", source="redis_q2",
+                                      row_count=probe["in_window"], probes=tried,
+                                      elapsed_ms=round((time.monotonic() - started) * 1000), **detail)
+            else:
+                if stamp > cfg["td_until"]:
+                    tried.append({"source": "td", "state": "skipped", "reason": "td_has_no_ticks_after_" + cfg["td_until"]})
+                    continue
+                td_result = _td_checkpoint_ready(event, now, ctx)
+                tried.append({"source": "td", "state": td_result.get("status"), "reason": td_result.get("reason"),
+                              "row_count": td_result.get("row_count")})
+                if td_result.get("status") == "ready":
+                    return GateResult(status="ready", reason="checkpoint_threshold_met", source="td",
+                                      row_count=td_result.get("row_count"), probes=tried,
+                                      checkpoint_ts=td_result.get("checkpoint_ts"),
+                                      elapsed_ms=round((time.monotonic() - started) * 1000), **detail)
+        primary = tried[0] if tried else {}
+        reason = ("REDIS_UNREADABLE" if primary.get("state") == "error" else
+                  "CHECKPOINT_WINDOW_PASSED" if primary.get("state") == "passed" else
+                  "checkpoint_below_threshold")
+        return GateResult(status="not_ready", reason=reason, row_count=primary.get("in_window", 0), probes=tried,
                           elapsed_ms=round((time.monotonic() - started) * 1000), **detail)
     return _cached("checkpoint_ready", event, now, f"{getattr(event, 'start', '')}:{getattr(event, 'handler', '')}", check)
 
