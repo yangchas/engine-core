@@ -67,7 +67,7 @@ def daily_kline_needs_upgrade(manifest: Mapping[str, Any] | None) -> bool:
                 and str(completeness.get("open", "")).upper() in {"MISSING", "PARTIAL"}))
 
 
-DERIVED_DAILY = frozenset({"daily_indicators", "daily_report_features"})
+DERIVED_DAILY = frozenset({"daily_indicators", "daily_report_features", "ladder_daily"})
 
 
 def _best_entry_manifest(catalog: Mapping[str, Any], dataset: str, day: str) -> dict[str, Any] | None:
@@ -101,11 +101,13 @@ def derived_needs_build(catalog: Mapping[str, Any], dataset: str, day: str, now:
         return None
     if STATUS_RANK[normalize_status(kline.get("business_status"))] < STATUS_RANK[normalize_status(min_status)]:
         return None
-    if not catalog_partition_present(catalog, "symbol_universe", day, now):
+    if dataset != "ladder_daily" and not catalog_partition_present(catalog, "symbol_universe", day, now):
         return None   # coverage denominator not ready; never derive against an unknown universe
     derived = _best_entry_manifest(catalog, dataset, day)
     if derived is None or not catalog_partition_present(catalog, dataset, day, now):
         return "missing"
+    if dataset == "ladder_daily" and derived.get("algorithm_version") != "ladder_v1":
+        return "algorithm_replaced"   # C577: pre-C577 relay-accumulated partitions are superseded, not patched
     if inputs_stale(catalog, dataset, day, derived):
         return "inputs_changed"
     return None

@@ -82,12 +82,19 @@ def lowest_status(statuses: Sequence[str]) -> str:
     return min((normalize_status(s) for s in statuses), key=lambda s: STATUS_RANK[s])
 
 
+LEGACY_LADDER_SOURCE = "core_price_close_proxy"   # pre-C577 ladder_daily (relay accumulation): never wins
+
+
+def version_rank_key(status: Any, source: Any = None) -> int:
+    return 0 if source == LEGACY_LADDER_SOURCE else STATUS_RANK[normalize_status(status)]
+
+
 def select_best(entries: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     """Highest-quality catalog entry of one partition; ties go to the most recently appended."""
     best = None
     for entry in entries:
-        if best is None or STATUS_RANK[normalize_status(entry.get("business_status"))] >= STATUS_RANK[
-                normalize_status(best.get("business_status"))]:
+        if best is None or version_rank_key(entry.get("business_status"), entry.get("source")) >= version_rank_key(
+                best.get("business_status"), best.get("source")):
             best = entry
     return best
 
@@ -301,6 +308,8 @@ def inputs_stale(catalog: Mapping[str, Any], dataset: str, day: str, manifest: M
             current = best(str(ref.get("dataset")), str(ref.get("trade_date")))
             if current is not None and current != ref.get("version"):
                 return True
+        if (manifest.get("window") or {}).get("fixed_days"):
+            return False   # ladder_daily (C577): the visited days are recorded exactly; every ref was compared above
         max_days = int((manifest.get("window") or {}).get("max_days", DEFAULT_MAX_DAYS))
         current_days = sorted(d for d in datasets.get("daily_kline", {}).get("dates", {}) if d <= day)[-max_days:]
         return set(current_days) != recorded_kline and bool(current_days)

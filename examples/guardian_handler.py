@@ -230,7 +230,11 @@ def _run(request):
             reconciled = boot_reconcile(str(trade_date), str(request.get("phase") or ""),
                                         request.get("health"), root, now=now, **reconcile_options)
             runtime_reconcile = str(request.get("event") or "").startswith("runtime_reconcile_")
-            result = boot_apply_plan(str(trade_date), reconciled["detail"].get("plan", []), root,
+            plan = reconciled["detail"].get("plan", [])
+            only = args.get("only_items")      # acceptance runs (C577): restrict a real reconcile pass to named items
+            if isinstance(only, list) and only:
+                plan = [row for row in plan if row.get("id") in only]
+            result = boot_apply_plan(str(trade_date), plan, root,
                                      now=now, phase=str(request.get("phase") or ""), dry_run=dry,
                                      enqueue_only=runtime_reconcile,
                                      active_events=request.get("active_events"),

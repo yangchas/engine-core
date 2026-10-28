@@ -306,85 +306,30 @@ def backfill_daily_kline(runner: JobRunner, start: str, end: str, *, fetch: Call
 
 
 def backfill_ladder_daily(runner: JobRunner, start: str, end: str, *,
-                          reference_path: str | Path | None = None) -> dict[str, Any]:
-    """Derive only the study's close-price proxy; never claim seal/order truth."""
+                          reference_path: str | Path | None = None, config: Mapping[str, Any] | None = None,
+                          **materialize_kwargs: Any) -> dict[str, Any]:
+    """C577: derive ladder_daily per day with the stateless ladder_v1 builder (docs/LADDER_DAILY.md).
+
+    The pre-C577 relay accumulation (streak carried over from the previous ladder partition, close-price proxy)
+    is gone; every day is recomputed from its own window of per-day limit-up sets."""
+    from ..ladder_daily_adapter import materialize_ladder_daily
+    from .derived_daily import UpstreamNotReady
     first, last = date.fromisoformat(start), date.fromisoformat(end)
     if last < first: raise ValueError("backfill_date_range_invalid")
-    days = [(first + timedelta(days=offset)).isoformat()
-            for offset in range((last - first).days + 1)]
-    catalog = runner.catalog
-    from ..guardian.registry import derived_daily_kline_input_stale
-    from .lineage import daily_kline_input
-    source_rows = {}
-    missing = []
+    days = [(first + timedelta(days=offset)).isoformat() for offset in range((last - first).days + 1)]
+    processed, skipped, rows = [], [], 0
     for day in days:
-        manifest_path = catalog.locate("daily_kline", day)
-        if manifest_path is None:
-            missing.append(day)
+        try:
+            result = materialize_ladder_daily(runner.catalog, trade_date=day, config=config, **materialize_kwargs)
+        except (UpstreamNotReady, KeyError):
+            skipped.append(day)   # non-trading day or no limit-up set obtainable: nothing derived, nothing invented
             continue
-        source_rows[day] = catalog.read_rows(manifest_path)
-    symbols = sorted({str(row.get("symbol", "")).zfill(6) for rows in source_rows.values()
-                      for row in rows if row.get("symbol")})
-    streak = {symbol: 0 for symbol in symbols}
-    catalog_data = catalog.read().get("datasets", {}).get("ladder_daily", {}).get("dates", {})
-    previous_days = sorted(day for day in catalog_data if day < start)
-    if previous_days:
-        previous_manifest = catalog.locate("ladder_daily", previous_days[-1])
-        if previous_manifest:
-            for prior in catalog.read_rows(previous_manifest):
-                symbol = str(prior.get("symbol", "")).zfill(6)
-                if symbol: streak[symbol] = int(prior.get("streak_n", 0) or 0)
-    processed = []
-    for day in days:
-        if day not in source_rows: continue
-        if (catalog.locate("ladder_daily", day)
-                and not derived_daily_kline_input_stale(catalog.read(), "ladder_daily", day)):
-            continue
-        day_rows = {str(row.get("symbol", "")).zfill(6): row for row in source_rows[day] if row.get("symbol")}
-        derived = []
-        for symbol in symbols:
-            row = day_rows.get(symbol)
-            state = "MISSING"
-            close = row.get("close") if row else None
-            amount = row.get("amount_yuan", row.get("amount")) if row else None
-            pct = row.get("pct_chg") if row else None
-            up = False
-            if row and close not in (None, 0) and amount == 0:
-                state = "NO_TRADE_OBSERVED"
-            elif row and close not in (None, 0) and pct is not None and amount is not None:
-                try:
-                    implied = (Decimal(str(close)) / (Decimal(1) + Decimal(str(pct)) / Decimal(100)))
-                    pre_close = implied.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                    fraction = Decimal(limit_percent(symbol)) / Decimal(100)
-                    limit_up = (pre_close * (Decimal(1) + fraction)).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP)
-                    up = Decimal(str(close)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) == limit_up
-                    state = "PRICE_CLOSE_PROXY" if amount > 0 else "NO_TRADE_OBSERVED"
-                except (InvalidOperation, ValueError, ZeroDivisionError, TypeError):
-                    state = "MISSING"
-            if state == "NO_TRADE_OBSERVED":
-                pass
-            elif state == "MISSING":
-                streak[symbol] = 0
-            else:
-                streak[symbol] = streak[symbol] + 1 if up else 0
-            derived.append({"symbol": symbol, "trade_date": day, "limit_up": up,
-                            "streak_n": streak[symbol], "status": state,
-                            "seal_source": "PRICE_CLOSE_PROXY", "st_filter": "UNAVAILABLE"})
-        # Name-based ST/new-listing exclusions used by the study cannot be
-        # reconstructed from a daily bar that has no point-in-time name field.
-        # JobRunner detects the optional FetchContext by positional arity; a
-        # default-bound rows parameter incorrectly looks like that context.
-        runner.run("ladder_daily", day, fetch=lambda _day: {
-            "rows": derived, "expected_count": len(derived), "partial": True,
-            "inputs": daily_kline_input(catalog, day)},
-            source="core_price_close_proxy", dry_run=False)
-        processed.append(day)
-    comparison = compare_ladder_reference(catalog, reference_path) if reference_path else None
-    return {"dataset": "ladder_daily", "from": start, "to": end, "processed": processed,
-            "row_count": sum(len(source_rows[day]) for day in processed),
-            "missing_daily_kline": missing, "status": "PARTIAL_ST_FILTER_UNAVAILABLE",
-            "reference_comparison": comparison}
+        if result["status"] == "COMMITTED":
+            processed.append(day)
+            rows += int(result.get("row_count") or 0)
+    comparison = compare_ladder_reference(runner.catalog, reference_path) if reference_path else None
+    return {"dataset": "ladder_daily", "from": start, "to": end, "processed": processed, "row_count": rows,
+            "skipped": skipped, "status": "LADDER_V1", "reference_comparison": comparison}
 
 
 def reconcile_daily_rows(core_rows: Iterable[Mapping[str, Any]],

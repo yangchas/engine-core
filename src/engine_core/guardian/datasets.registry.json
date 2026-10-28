@@ -928,8 +928,8 @@
       "phases": [
         "POST_MARKET"
       ],
-      "cadence": "盘后生成",
-      "rule": "依赖涨停/连板事实；构建门槛待核。",
+      "cadence": "日K(D)就绪(>=PROVISIONAL)即派生;输入版本变化后重算为新版本",
+      "rule": "C577 ladder_v1:逐日涨停集合(日K连贯>Kaipan指定历史日涨停池>问财>UNKNOWN),窗口内无状态,不接力上一分区。docs/LADDER_DAILY.md",
       "freshness": {
         "partition": "D",
         "expected_by": "19:00",
@@ -949,8 +949,7 @@
         "mode": "fetch_now",
         "valid_until": null,
         "depends_on": [
-          "daily_kline",
-          "daily_indicators"
+          "daily_kline"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
         "partition_before_trigger": "D-1",
@@ -958,22 +957,50 @@
       },
       "cost": {
         "class": "medium",
-        "basis": "UNKNOWN duration",
-        "set_by": "claude 2026-10-20 default"
+        "basis": "C577: catalog-only run (daily bars) measured in docs/LADDER_DAILY.md; Kaipan/WenCai rungs add network only for days without usable bars",
+        "set_by": "claude C577 2026-10-28"
       },
       "fetch_job": {
         "argv": [
           "{python}",
-          "examples/core_data_backfill.py",
-          "--dataset",
-          "ladder_daily",
-          "--from",
+          "examples/build_ladder_daily.py",
+          "--date",
           "{date}",
-          "--to",
-          "{date}",
-          "--write"
+          "--artifact-root",
+          "{artifact_root}"
         ],
         "timeout_seconds": 600
+      },
+      "derive": {
+        "algorithm": "ladder_v1",
+        "min_upstream_status": "PROVISIONAL",
+        "upstream": [
+          "daily_kline",
+          "limit_up_pool"
+        ],
+        "recompute_on_input_change": true,
+        "window_days": 20,
+        "source_ladder": [
+          "daily_kline",
+          "kaipan",
+          "wencai"
+        ],
+        "continuity_min_ratio": 0.95,
+        "kaipan": {
+          "live": true,
+          "max_requests": 12
+        },
+        "wencai": {
+          "live": true,
+          "min_interval_seconds": 10,
+          "max_queries_per_run": 2,
+          "cookie_path": "~/core-data/secrets/wencai.cookie"
+        },
+        "trigger": "daily_kline(D) present at >= min_upstream_status (gate, not a clock time); rebuilt as a new version when a recorded input version changes or the partition predates ladder_v1"
+      },
+      "td_sink": {
+        "table": "ladder_daily_v1",
+        "version_table": "ladder_daily_versions"
       }
     },
     {

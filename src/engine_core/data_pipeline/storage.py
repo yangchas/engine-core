@@ -356,6 +356,15 @@ class ArtifactCatalog:
                          if item.get("version") == latest.get("version")), {})
             return (rank.get(str(manifest.get("business_status") or "").upper(), 2)
                     >= rank.get(str(held.get("business_status") or "").upper(), 2))
+        if dataset == "ladder_daily" and trade_date == latest_date:
+            # C577: a re-derived version of the same day replaces latest unless latest is strictly better
+            # (design/24 section 2 latest rule); the legacy close-price-proxy partitions rank below everything.
+            from .derived_daily import version_rank_key
+            current = next((v for v in entry.get("dates", {}).get(latest_date, [])
+                            if v.get("version") == latest.get("version")), None)
+            incoming = version_rank_key(manifest.get("business_status"), manifest.get("source"))
+            return current is None or incoming >= version_rank_key(current.get("business_status"),
+                                                                   current.get("source"))
         if trade_date < latest_date or dataset != "daily_kline":
             return False
         incoming_tier = manifest.get("tier")
@@ -498,7 +507,7 @@ class ArtifactCatalog:
                         if gate is not None:
                             item["gate_status"] = gate["gate_status"]
             current_latest = entry.get("latest")
-            if ((result.get("business_status") != "PROVISIONAL" or dataset == "limit_up_pool")
+            if (((result.get("business_status") != "PROVISIONAL") or dataset in ("limit_up_pool", "ladder_daily"))
                     and not (spec is not None and spec.gate_mode == "enforce"
                              and gate is not None and gate["gate_status"] == "FAIL")
                     and self._can_advance_latest(catalog, dataset, trade_date, result)):

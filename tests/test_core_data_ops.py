@@ -46,14 +46,17 @@ def test_ladder_daily_backfill_accepts_real_daily_bar_fixture(tmp_path):
          "quality": {"partial": True}}, source="fixture_real_daily_kline")
     runner = JobRunner(artifact_root=tmp_path,
                        budget=RequestBudget(max_requests=10, min_interval_seconds=0))
-    report = backfill_ladder_daily(runner, "2026-10-19", "2026-10-19")
-    assert report["processed"] == ["2026-10-19"]
-    assert report["row_count"] == len(fixture["rows"]) == 5
-    output = catalog.read_rows(catalog.locate("ladder_daily", "2026-10-19"))
-    assert len(output) == 5
-    assert {row["status"] for row in output} == {"PRICE_CLOSE_PROXY"}
-    assert all(row["seal_source"] == "PRICE_CLOSE_PROXY" and
-               row["st_filter"] == "UNAVAILABLE" for row in output)
+    # C577: the relay accumulation / close-price proxy is gone. A single isolated day of bars cannot be proven
+    # continuous with its predecessor and no other rung answers (live rungs off): nothing is written or invented.
+    cfg = {"kaipan": {"live": False}, "wencai": {"live": False}}
+    report = backfill_ladder_daily(runner, "2026-10-19", "2026-10-19", config=cfg)
+    assert report["processed"] == [] and report["skipped"] == ["2026-10-19"]
+    assert report["status"] == "LADDER_V1"
+    assert catalog.locate("ladder_daily", "2026-10-19") is None
+    _seed_c325_calendar(tmp_path)
+    report = backfill_ladder_daily(runner, "2026-10-19", "2026-10-19", config=cfg)
+    assert report["processed"] == [] and report["skipped"] == ["2026-10-19"]
+    assert catalog.locate("ladder_daily", "2026-10-19") is None
 
 
 def test_non_trading_day_is_recorded_without_fetch(tmp_path):

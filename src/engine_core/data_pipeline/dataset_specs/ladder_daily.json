@@ -1,0 +1,22 @@
+{
+ "dataset": "ladder_daily",
+ "status": "CONFIRMED by C577 (2026-10-28): ladder_v1, per-day limit-up sets (daily_kline > kaipan > wencai), stateless window, sparse rows (limit-up symbols of the day only); docs/LADDER_DAILY.md",
+ "primary_key": ["symbol"],
+ "symbol_column": "symbol",
+ "date_columns": ["date", "trade_date"],
+ "row_order": "primary_key",
+ "earliest_available_local": "15:00",
+ "allowed_providers": ["derived_daily_kline", "kaipan", "wencai"],
+ "primary_provider": "derived_daily_kline",
+ "coverage": {"basis": "none"},
+ "columns": {
+  "symbol": {"type": "str", "nullable": false},
+  "date": {"type": "date", "nullable": false},
+  "trade_date": {"type": "date", "nullable": false},
+  "limit_up": {"type": "bool", "nullable": false},
+  "streak_n": {"type": "int", "nullable": false, "min": 1, "unit": "trading_days"},
+  "streak_start_date": {"type": "date", "nullable": false},
+  "day_source_chain": {"type": "str", "nullable": false},
+  "quality": {"type": "str", "nullable": false}
+ }
+}

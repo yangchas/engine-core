@@ -19,7 +19,7 @@ def _response(code: int, status: str, detail: Any, *, error_code: str = "", retr
 
 
 def run_td_sync(request: Mapping[str, Any], root: Path, *, dry_run: bool = False, store: Any = None,
-                pool_store: Any = None):
+                pool_store: Any = None, ladder_store: Any = None):
     from .daily_kline_coverage import make_store, td_settings
     from ..data_pipeline.td_sink import (DailyKlineTdSink, TdUnavailable, TdVerifyError, sync_with_retry,
                                          validate_database_name)
@@ -47,6 +47,7 @@ def run_td_sync(request: Mapping[str, Any], root: Path, *, dry_run: bool = False
                                    backoff_seconds=float(args.get("backoff_seconds") or 1.0))
         detail = {"database": settings["database"], "outcomes": [o.as_dict() for o in outcomes]}
         detail["limit_up_pool"] = _sync_pool(settings, root, lookback, today, pool_store)
+        detail["ladder_daily"] = sync_ladder_daily(root, settings, lookback, store=ladder_store)
         _clear_unreadable(root, request)
         return _response(0, "ok", detail)
     except TdUnavailable as exc:
@@ -86,3 +87,19 @@ def _clear_unreadable(root: Path, request: Mapping[str, Any]) -> None:
         note_td_readability(root, CoverageResult({}, "td"), now)
     except Exception:
         pass
+
+
+def sync_ladder_daily(root: Path, settings: Mapping[str, Any], lookback: int, *, store: Any = None,
+                      days: list[str] | None = None) -> list[dict[str, Any]]:
+    """C577: copy the best ladder_daily catalog versions into Core TD with the same sink rules (idempotent).
+    TdUnavailable / TdVerifyError propagate to the caller's handling (retryable / deterministic)."""
+    from ..data_pipeline.td_ladder_sink import LadderTdSink, TaosLadderStore
+    own = store is None
+    store = store or TaosLadderStore(str(settings["database"]))
+    try:
+        sink = LadderTdSink(store, root)
+        todo = days if days is not None else sink.pending_dates(lookback)
+        return [o.as_dict() for o in sink.sync_dates(todo)]
+    finally:
+        if own:
+            store.close()
