@@ -326,6 +326,12 @@ def _run(request):
                             args=args, timeout_seconds=int(request.get("timeout_seconds") or getattr(base, "timeout_seconds", 300)),
                             data_date_offset=getattr(base, "data_date_offset", 0))
     now = datetime.fromisoformat(asof)
+    if name == "intraday_data" and args.get("dataset") == "limit_up_pool_today":
+        from engine_core.guardian.limit_up_today import run as run_limit_up_today
+        today_request = {**request, "data_date": target_day, "args": args}
+        if request.get("asof") or request.get("now"):
+            today_request["as_of"] = request.get("asof") or request.get("now")
+        return run_limit_up_today(today_request, root, dry_run=dry)
     if name == "daily_kline_close":
         from engine_core.guardian.daily_kline_close import run_close_tier
         return run_close_tier(request, root, dry_run=dry)

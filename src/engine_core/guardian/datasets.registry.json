@@ -372,6 +372,72 @@
       }
     },
     {
+      "id": "limit_up_pool_today",
+      "owner": "intraday_data",
+      "artifact": {
+        "catalog_dataset": "limit_up_pool_today",
+        "date_basis": "D 的采样时点版本；主键 (symbol,date,as_of)"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END",
+        "OPEN",
+        "INTRADAY_AM",
+        "MIDDAY_BREAK",
+        "PM_OPEN",
+        "INTRADAY_PM",
+        "CLOSE"
+      ],
+      "cadence": "与 schedule.json 的 kaipan_hot_* 时点对齐；15:20 另做一次 WenCai 收盘确认",
+      "rule": "C582: Redis q2 active/hash 的 px/pc 按板块涨停幅度和分位价格计算为主；封单额仅来源有可验证的金额字段时填写。ST 信息缺失标 UNAVAILABLE。WenCai 每日最多一次、间隔至少 30 分钟，只用于收盘互校或配置的收盘回补。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "15:20",
+        "basis": "trading_day",
+        "set_by": "C582 2026-10-29"
+      },
+      "retry": "盘中 Redis 每事件最多 3 次、1s 退避；WenCai 收盘事件最多 1 次/日，不在盘中重试阶梯中",
+      "degrade": [
+        "Redis 盘中失败时不自动请求 WenCai；只有 schedule 明确配置的收盘确认事件才请求",
+        "收盘 Redis 失败时按 close_confirm 事件配置使用一次 WenCai，并标 PROVISIONAL",
+        "没有可验证的封单字段时 seal_amount=null；ST 信息缺失时 st_status=UNAVAILABLE"
+      ],
+      "lifecycle": {
+        "init": "rebuild from retained source/artifacts",
+        "force": "recompute a new as_of version",
+        "clear": "clear then rebuild"
+      },
+      "notes": "C582: hot view uses Core Redis namespace core:cache:data:limit_up_pool_today:* with 604800 second TTL; cold close target is core_data.limit_up_pool_today_v1. Current card runtime verification remains read-only for Redis/TD.",
+      "guardian_event": "limit_up_today_091600",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": null,
+        "depends_on": [
+          "symbol_universe"
+        ],
+        "set_by": "C582 2026-10-29",
+        "trigger_event": "limit_up_today_091600"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "Redis q2 active set plus HGETALL batch per sample; WenCai one bounded 100-row page after close",
+        "set_by": "C582 2026-10-29"
+      },
+      "redis_hot_view": {
+        "namespace": "core:cache:data:limit_up_pool_today",
+        "ttl_seconds": 604800,
+        "version_key": "{namespace}:{date}:{version}",
+        "date_key": "{namespace}:{date}",
+        "latest_key": "{namespace}:latest"
+      },
+      "td_sink": {
+        "database": "core_data",
+        "super_table": "limit_up_pool_today_v1",
+        "authority": "close snapshot cold copy; no TD DDL in C582",
+        "doc": "docs/LIMIT_UP_TODAY.md"
+      }
+    },
+    {
       "id": "limit_reasons",
       "owner": "kaipan_fetch",
       "artifact": {

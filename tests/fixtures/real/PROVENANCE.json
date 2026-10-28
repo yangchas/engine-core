@@ -313,6 +313,54 @@
    "source_path": "/home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-0fefa9a4f0def573/rows.jsonl.gz",
    "trade_date": "2026-10-29",
    "version": "sha256-0fefa9a4f0def573"
+  },
+  "core_artifacts/c594/daily_kline/2026-10-28/C582-formal/manifest.json": {
+   "bytes": 3157,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-7d183db2ab889e12/manifest.json tests/fixtures/real/core_artifacts/c594/daily_kline/2026-10-28/C582-formal/manifest.json",
+   "copied_at": "2026-10-29T06:58:39+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_manifest",
+   "sha256": "1185ef610d82e258e5cb5154d4b522102b9017416fdb4ae860b18158cf749bde",
+   "source": "baostock",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-7d183db2ab889e12/manifest.json",
+   "trade_date": "2026-10-28",
+   "version": "sha256-7d183db2ab889e12"
+  },
+  "core_artifacts/c594/daily_kline/2026-10-28/C582-formal/rows.jsonl.gz": {
+   "bytes": 257139,
+   "command": "cp /home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-7d183db2ab889e12/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/daily_kline/2026-10-28/C582-formal/rows.jsonl.gz",
+   "copied_at": "2026-10-29T06:58:39+08:00",
+   "dataset": "daily_kline",
+   "kind": "core_artifact_rows",
+   "sha256": "1f16056ef9f17aa0e8c8da288a557d02698830a37ebf003ec0e806d194b12e9d",
+   "source": "baostock",
+   "source_path": "/home/exedev/core-data/daily_kline/trade_date=2026-10-28/source=baostock/sha256-7d183db2ab889e12/rows.jsonl.gz",
+   "trade_date": "2026-10-28",
+   "version": "sha256-7d183db2ab889e12"
+  },
+  "core_artifacts/c594/symbol_universe/2026-10-28/C582-actual/manifest.json": {
+   "bytes": 1418,
+   "command": "cp /home/exedev/core-data/symbol_universe/trade_date=2026-10-28/source=baostock_query_all_stock/sha256-08c8f8c688bdd288/manifest.json tests/fixtures/real/core_artifacts/c594/symbol_universe/2026-10-28/C582-actual/manifest.json",
+   "copied_at": "2026-10-29T06:58:40+08:00",
+   "dataset": "symbol_universe",
+   "kind": "core_artifact_manifest",
+   "sha256": "830dc691200cf5c99f3e82e5996aeec7cebb54f1bffe4c148547f07dad1b1103",
+   "source": "baostock_query_all_stock",
+   "source_path": "/home/exedev/core-data/symbol_universe/trade_date=2026-10-28/source=baostock_query_all_stock/sha256-08c8f8c688bdd288/manifest.json",
+   "trade_date": "2026-10-28",
+   "version": "sha256-08c8f8c688bdd288"
+  },
+  "core_artifacts/c594/symbol_universe/2026-10-28/C582-actual/rows.jsonl.gz": {
+   "bytes": 73519,
+   "command": "cp /home/exedev/core-data/symbol_universe/trade_date=2026-10-28/source=baostock_query_all_stock/sha256-08c8f8c688bdd288/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/symbol_universe/2026-10-28/C582-actual/rows.jsonl.gz",
+   "copied_at": "2026-10-29T06:58:40+08:00",
+   "dataset": "symbol_universe",
+   "kind": "core_artifact_rows",
+   "sha256": "d1ebbfc53ce6fb05fb39a75f9415106b1e397825c5a4a15e6b2ccb790adbcb9d",
+   "source": "baostock_query_all_stock",
+   "source_path": "/home/exedev/core-data/symbol_universe/trade_date=2026-10-28/source=baostock_query_all_stock/sha256-08c8f8c688bdd288/rows.jsonl.gz",
+   "trade_date": "2026-10-28",
+   "version": "sha256-08c8f8c688bdd288"
   }
  },
  "kaipan_hot_plates_2026-10-23_1441.json": {
@@ -947,5 +995,69 @@
    "ban": "1",
    "size": "2000"
   }
+ },
+ "wencai_limit_up_pool_today_2026-10-28_0702.json": {
+  "source": "wencai_limit_up_pool_today",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T07:02:09+08:00",
+  "bytes": 115899,
+  "sha256": "a7ac32d1b8746864dc156fcd8d7247eb808a798906f827d2c5d11fa027cb625b",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py wencai_limit_up_pool_today --date 2026-10-28",
+  "call": "pywencai.wencai.get_robot_data",
+  "params": {
+   "query": "2026-10-28涨停;封单额;开板次数;首次涨停时间;最终涨停时间;去除st",
+   "page": 1,
+   "perpage": 100,
+   "retry": 0,
+   "max_requests": 1
+  },
+  "request_count": 1,
+  "reported_total": 72,
+  "complete": true,
+  "truncated": false
+ },
+ "q2_limit_up_pool_today_2026-10-28_0702.json": {
+  "source": "q2_limit_up_pool_today",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T07:02:57+08:00",
+  "bytes": 2411019,
+  "sha256": "1ccae307151ffb8eb086457503b3266e049b25f5bf4fdc3a9565577b9938de33",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py q2_limit_up_pool_today --date 2026-10-28",
+  "call": "Redis SMEMBERS + pipelined HGETALL",
+  "key": "q2:active:20261028",
+  "active_symbol_count": 5226,
+  "field_names": [
+   "a20",
+   "a24",
+   "a25",
+   "am",
+   "amt",
+   "amt2m",
+   "amt5m",
+   "ar",
+   "br",
+   "ia",
+   "iv",
+   "ln",
+   "ls",
+   "mk",
+   "mn",
+   "mx",
+   "pc",
+   "ph",
+   "px",
+   "spd1m",
+   "ts",
+   "vec3m",
+   "vec5m",
+   "vol"
+  ],
+  "read_only_commands": [
+   "EXISTS",
+   "SMEMBERS",
+   "HGETALL"
+  ]
  }
 }

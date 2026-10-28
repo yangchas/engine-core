@@ -8,6 +8,8 @@ Fixtures under tests/fixtures/real/ must come from here (or from copying a commi
   capture_real_fixture.py kaipan_hot_plates [--date YYYY-MM-DD]
   capture_real_fixture.py kaipan_pool [--date YYYY-MM-DD] [--level 1]
   capture_real_fixture.py wencai_daily_kline --date YYYY-MM-DD
+  capture_real_fixture.py wencai_limit_up_pool_today --date YYYY-MM-DD
+  capture_real_fixture.py q2_limit_up_pool_today --date YYYY-MM-DD
   capture_real_fixture.py baostock_query_all_stock --date YYYY-MM-DD
   capture_real_fixture.py kaipan_plate_members --date YYYY-MM-DD --plate-code 801001
 """
@@ -83,6 +85,28 @@ def _wencai_daily_kline(day: str) -> tuple[object, dict]:
                      "source_dates": payload.get("source_dates")}
 
 
+def _wencai_limit_up_pool_today(day: str) -> tuple[object, dict]:
+    from engine_core.data_pipeline.providers.limit_up_today_sources import fetch_wencai_today
+
+    payload = fetch_wencai_today(day)
+    return payload["records"], {"call": "pywencai.wencai.get_robot_data",
+                                "params": {"query": payload["question"], "page": 1,
+                                           "perpage": 100, "retry": 0, "max_requests": 1},
+                                "request_count": payload["request_count"],
+                                "reported_total": payload["reported_total"],
+                                "complete": payload["complete"], "truncated": payload["truncated"]}
+
+
+def _q2_limit_up_pool_today(day: str) -> tuple[object, dict]:
+    from engine_core.data_pipeline.providers.limit_up_today_sources import read_q2_snapshot
+
+    payload = read_q2_snapshot(day)
+    fields = sorted({field for values in payload["hashes"].values() for field in values})
+    return payload, {"call": "Redis SMEMBERS + pipelined HGETALL", "key": f"q2:active:{day.replace('-', '')}",
+                     "active_symbol_count": len(payload["active_symbols"]), "field_names": fields,
+                     "read_only_commands": ["EXISTS", "SMEMBERS", "HGETALL"]}
+
+
 def _baostock_query_all_stock(day: str) -> tuple[object, dict]:
     import baostock as bs
 
@@ -153,6 +177,12 @@ def capture(kind: str, day: str, level: int, *, plate_code: str | None = None,
     if kind == "wencai_daily_kline":
         raw, meta = _wencai_daily_kline(day)
         return "wencai_daily_kline", raw, meta
+    if kind == "wencai_limit_up_pool_today":
+        raw, meta = _wencai_limit_up_pool_today(day)
+        return "wencai_limit_up_pool_today", raw, meta
+    if kind == "q2_limit_up_pool_today":
+        raw, meta = _q2_limit_up_pool_today(day)
+        return "q2_limit_up_pool_today", raw, meta
     if kind == "baostock_query_all_stock":
         raw, meta = _baostock_query_all_stock(day)
         return "baostock_query_all_stock", raw, meta
@@ -224,7 +254,9 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("kind", nargs="?", choices=["ths_hot_rank", "kaipan_hot_plates", "kaipan_pool",
                                                      "kaipan_plate_members",
-                                                     "wencai_daily_kline", "baostock_query_all_stock",
+                                                     "wencai_daily_kline", "wencai_limit_up_pool_today",
+                                                     "q2_limit_up_pool_today",
+                                                     "baostock_query_all_stock",
                                                      "baostock_stock_basic"])
     parser.add_argument("--date", default=datetime.now(TZ).date().isoformat())
     parser.add_argument("--level", type=int, default=1)

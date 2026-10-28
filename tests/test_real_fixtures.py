@@ -23,7 +23,9 @@ INDEX = {name: meta for name, meta in PROVENANCE.items()
 CORE_ARTIFACT_INDEX = PROVENANCE.get("_core_artifacts", {})
 C526_EXCERPT_INDEX = PROVENANCE.get("_c526_excerpts", {})
 SOURCES = {"ths_hot_rank", "kaipan_hot_plates", "kaipan_pool", "wencai_daily_kline",
-           "kaipan_plate_members", "baostock_query_all_stock", "baostock_stock_basic"}
+           "kaipan_ban_reasons", "wencai_limit_up_pool",
+           "wencai_limit_up_pool_today", "q2_limit_up_pool_today", "kaipan_plate_members", "baostock_query_all_stock",
+           "baostock_stock_basic"}
 CREDENTIAL_WORDS = ("token", "password", "secret", "cookie", "authorization")
 
 

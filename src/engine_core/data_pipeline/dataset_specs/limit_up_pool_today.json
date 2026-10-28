@@ -1,0 +1,29 @@
+{
+ "dataset": "limit_up_pool_today",
+ "status": "C582",
+ "note": "PIT snapshots of today's limit-up candidates. Redis Q2 px/pc rounded to the board price is primary; WenCai is a single low-frequency close confirmation/fallback. Q2 has no verified seal amount, so seal_amount remains null unless WenCai supplies a date-matched amount with a verified unit. ST name unavailable is explicit and never treated as NON_ST.",
+ "primary_key": ["symbol", "date", "as_of"],
+ "symbol_column": "symbol",
+ "date_columns": ["date"],
+ "row_order": "primary_key",
+ "allowed_providers": ["redis_q2", "wencai"],
+ "primary_provider": "redis_q2",
+ "coverage": {"basis": "none"},
+ "columns": {
+  "symbol": {"type": "str", "nullable": false, "note": "Six digit security identifier."},
+  "date": {"type": "date", "nullable": false, "note": "Described trade date."},
+  "as_of": {"type": "str", "nullable": false, "unit": "iso_datetime", "note": "Asia/Shanghai sample time; source timestamps after this time are excluded."},
+  "pct": {"type": "float", "nullable": true, "unit": "percent", "note": "Q2 px/pc change or date-matched WenCai value."},
+  "limit_up": {"type": "bool", "nullable": false, "note": "Member matched the board-rounded limit price or the dated WenCai limit-up query."},
+  "limit_price": {"type": "float", "nullable": true, "unit": "yuan", "note": "Board limit rounded half-up to one cent; null for WenCai-only fallback."},
+  "seal_amount": {"type": "float", "nullable": true, "unit": "yuan", "all_null_ok": true, "all_null_reason": "Q2 has no verified seal-amount field; WenCai amount is included only when its date suffix and unit are verified."},
+  "first_limit_time": {"type": "str", "nullable": true, "unit": "local_time", "all_null_ok": true, "all_null_reason": "Q2 does not provide this field; WenCai may omit it."},
+  "final_limit_time": {"type": "str", "nullable": true, "unit": "local_time", "optional": true, "all_null_ok": true, "all_null_reason": "Q2 does not provide this field; WenCai may omit it."},
+  "open_count": {"type": "int", "nullable": true, "unit": "count", "all_null_ok": true, "all_null_reason": "Q2 does not provide this field; WenCai may omit it."},
+  "source": {"type": "str", "nullable": false, "note": "Per-row provider attribution."},
+  "source_ts": {"type": "str", "nullable": true, "unit": "iso_datetime", "all_null_ok": true, "all_null_reason": "WenCai-only rows do not expose a quote timestamp."},
+  "st_status": {"type": "str", "nullable": false, "enum": ["NON_ST", "UNAVAILABLE"], "note": "Never defaults to NON_ST when the name map is missing."},
+  "redis_phase": {"type": "str", "nullable": true, "optional": true, "all_null_ok": true, "all_null_reason": "WenCai-only fallback has no Q2 phase."},
+  "wencai_confirmed": {"type": "bool", "nullable": false, "optional": true, "note": "True when the WenCai close query returned the member."}
+ }
+}

@@ -371,6 +371,16 @@ class ArtifactCatalog:
                          if item.get("version") == latest.get("version")), {})
             return (rank.get(str(manifest.get("business_status") or "").upper(), 2)
                     >= rank.get(str(held.get("business_status") or "").upper(), 2))
+        if dataset == "limit_up_pool_today" and trade_date == latest_date:
+            # C582: quality wins first; within equal quality, the newest sampled as_of is latest.
+            rank = {"DEGRADED": 1, "PROVISIONAL": 2, "FORMAL": 3}
+            held = next((item for item in entry.get("dates", {}).get(latest_date, [])
+                         if item.get("version") == latest.get("version")), {})
+            incoming_rank = rank.get(str(manifest.get("business_status") or "").upper(), 0)
+            held_rank = rank.get(str(held.get("business_status") or "").upper(), 0)
+            if incoming_rank != held_rank:
+                return incoming_rank > held_rank
+            return str(manifest.get("as_of") or "") >= str(held.get("as_of") or "")
         if dataset == "ladder_daily" and trade_date == latest_date:
             # C577: a re-derived version of the same day replaces latest unless latest is strictly better
             # (design/24 section 2 latest rule); the legacy close-price-proxy partitions rank below everything.
@@ -525,7 +535,7 @@ class ArtifactCatalog:
             # C573: stock_static is a current-reference snapshot without provider date echo. A
             # newer PROVISIONAL date may advance latest; the manifest still prevents PIT use.
             if (((result.get("business_status") != "PROVISIONAL") or
-                 dataset in ("limit_up_pool", "ladder_daily", "stock_static"))
+                 dataset in ("limit_up_pool", "limit_up_pool_today", "ladder_daily", "stock_static"))
                     and not (spec is not None and spec.gate_mode == "enforce"
                              and gate is not None and gate["gate_status"] == "FAIL")
                     and self._can_advance_latest(catalog, dataset, trade_date, result)):
@@ -557,6 +567,12 @@ class ArtifactCatalog:
             rank = {"DEGRADED": 1, "PROVISIONAL": 2, "FORMAL": 3}
             best = max(enumerate(versions), key=lambda item: (
                 rank.get(str(item[1].get("business_status") or "").upper(), 2), item[0]))[1]
+            return Path(best["manifest"])
+        if dataset == "limit_up_pool_today" and len(versions) > 1:
+            rank = {"DEGRADED": 1, "PROVISIONAL": 2, "FORMAL": 3}
+            best = max(enumerate(versions), key=lambda item: (
+                rank.get(str(item[1].get("business_status") or "").upper(), 0),
+                str(item[1].get("as_of") or ""), item[0]))[1]
             return Path(best["manifest"])
         return Path(versions[-1]["manifest"])
 
