@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "revision": 3,
+  "revision": 4,
   "timezone": "Asia/Shanghai",
   "global": {
     "heavy_max_load5": 3.0,
@@ -771,6 +771,47 @@
           "wait_seconds": 180,
           "poll_seconds": 30,
           "on_missing": "degrade"
+        }
+      }
+    },
+    {
+      "available_after": null,
+      "data_date_offset": 0,
+      "deadline": "09:10:00",
+      "depends_on": [],
+      "gate": "calendar_ready",
+      "handler": "premarket_data",
+      "trigger_type": "window",
+      "order": null,
+      "after": [],
+      "on_deadline": "missed",
+      "late_until": "15:00:00",
+      "cost": "light",
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "on_start": "reconcile",
+      "enabled": true,
+      "calendar": "trading_day",
+      "event_id": "static_data_refresh_0850",
+      "at": "08:50:00",
+      "profile": "policy_05",
+      "args": {
+        "static_data_refresh": {
+          "datasets": [
+            "plate_registry",
+            "plate_members",
+            "stock_static"
+          ],
+          "trigger_time": "08:50",
+          "weekly_days": 7,
+          "max_age_days": 8,
+          "kaipan_max_requests": 400,
+          "fallbacks": [],
+          "registry_source": null,
+          "registry_source_complete": false
         }
       }
     },

@@ -522,7 +522,10 @@ class ArtifactCatalog:
                         if gate is not None:
                             item["gate_status"] = gate["gate_status"]
             current_latest = entry.get("latest")
-            if (((result.get("business_status") != "PROVISIONAL") or dataset in ("limit_up_pool", "ladder_daily"))
+            # C573: stock_static is a current-reference snapshot without provider date echo. A
+            # newer PROVISIONAL date may advance latest; the manifest still prevents PIT use.
+            if (((result.get("business_status") != "PROVISIONAL") or
+                 dataset in ("limit_up_pool", "ladder_daily", "stock_static"))
                     and not (spec is not None and spec.gate_mode == "enforce"
                              and gate is not None and gate["gate_status"] == "FAIL")
                     and self._can_advance_latest(catalog, dataset, trade_date, result)):

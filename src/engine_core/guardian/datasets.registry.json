@@ -528,31 +528,31 @@
       "phases": [
         "PRE_MARKET"
       ],
-      "cadence": "每周+新证券触发",
+      "cadence": "weekly PRE_MARKET + new security detected in symbol_universe",
       "rule": "按板块码获取成员快照；目标日结论只消费可用的点时成员。",
       "freshness": {
         "partition": "latest",
         "max_age_days": 8,
         "basis": "calendar_days",
-        "set_by": "claude 2026-10-20 default (cadence is weekly + new-security trigger)"
+        "set_by": "C573: weekly_days=7; stale_alert after 8 calendar days"
       },
-      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "retry": "schedule policy_05: 3 attempts, 60s exponential backoff capped at 10m, retry until 15:00; no fallback",
       "degrade": [],
       "lifecycle": {
         "init": "cold fetch when absent",
         "force": "fetch regardless of freshness",
         "clear": "move aside to timestamped .bak; restore on failure"
       },
-      "notes": "C328 recommendation; current prep path loads previous-date members; verify weekly/new-symbol trigger with data operator.",
-      "guardian_event": "premarket_slice_0850",
+      "notes": "C573: refresh uses the latest plate_registry code identity and bounded Kaipan getHisPlateIds requests; incomplete provider results fail and retry. Unregistered member codes are retained and counted.",
+      "guardian_event": "static_data_refresh_0850",
       "late_policy": {
         "mode": "fetch_now",
-        "valid_until": null,
+        "valid_until": "15:00:00",
         "depends_on": [
           "symbol_universe"
         ],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_event": "premarket_slice_0850"
+        "set_by": "C573: weekly PRE_MARKET refresh; daily new-symbol check; startup catches up in the configured window",
+        "trigger_event": "static_data_refresh_0850"
       },
       "cost": {
         "class": "medium",
@@ -582,58 +582,68 @@
       "phases": [
         "PRE_MARKET"
       ],
-      "cadence": "UNKNOWN",
+      "cadence": "weekly PRE_MARKET + new symbol_universe code",
       "rule": "板块代码登记/名称映射，需与成员关系身份一致。",
-      "freshness": "UNKNOWN",
-      "retry": "none (no guardian event)",
+      "freshness": {
+        "partition": "latest",
+        "max_age_days": 8,
+        "basis": "calendar_days",
+        "set_by": "C573: weekly_days=7; stale_alert after 8 calendar days"
+      },
+      "retry": "schedule policy_05: 3 attempts, 60s exponential backoff capped at 10m, retry until 15:00; no fallback",
       "degrade": [],
       "lifecycle": {
         "init": "cold fetch when absent",
         "force": "fetch regardless of freshness",
         "clear": "move aside to timestamped .bak; restore on failure"
       },
-      "notes": "需人工/外部参考数据导入；参考 examples/import_reference_to_core_store.py。catalog 只有 2026-10-14 版，available_at 为脚本硬编码，真实刷新源未配置。",
+      "notes": "C573: full live registry source is not configured. The event records SOURCE_NOT_CONFIGURED and stale age; hot-board ranking and prior snapshots are not used as substitutes. Configure an explicit complete source before writes.",
       "late_policy": {
-        "mode": "manual",
-        "depends_on": [],
-        "set_by": "C360: no configured automatic refresh source",
-        "trigger_event": "startup_0830"
+        "mode": "fetch_now",
+        "valid_until": "15:00:00",
+        "depends_on": [
+          "symbol_universe"
+        ],
+        "set_by": "C573: weekly PRE_MARKET refresh; daily new-symbol check; startup catches up in the configured window",
+        "trigger_event": "static_data_refresh_0850"
       },
-      "guardian_event": null
+      "guardian_event": "static_data_refresh_0850"
     },
     {
       "id": "stock_static",
       "owner": "premarket_data",
       "artifact": {
         "catalog_dataset": "stock_static",
-        "date_basis": "snapshot trade_date; point-in-time semantics UNKNOWN"
+        "date_basis": "snapshot trade_date; source date echo for Baostock basic is UNKNOWN"
       },
       "phases": [
         "PRE_MARKET"
       ],
-      "cadence": "每周+新证券触发",
+      "cadence": "weekly PRE_MARKET + new symbol_universe code",
       "rule": "静态证券属性/名称映射；不可将非点时快照作为历史真值。",
       "freshness": {
         "partition": "latest",
         "max_age_days": 8,
         "basis": "calendar_days",
-        "set_by": "claude 2026-10-20 default (cadence is weekly + new-security trigger)"
+        "set_by": "C573: weekly_days=7; stale_alert after 8 calendar days"
       },
-      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "retry": "schedule policy_05: 3 attempts, 60s exponential backoff capped at 10m, retry until 15:00; no fallback",
       "degrade": [],
       "lifecycle": {
         "init": "cold fetch when absent",
         "force": "fetch regardless of freshness",
         "clear": "move aside to timestamped .bak; restore on failure"
       },
-      "notes": "需人工/外部参考数据导入；参考 examples/import_reference_to_core_store.py。catalog 只有 2026-10-14 版，available_at 为脚本硬编码，真实刷新源未配置。",
-      "guardian_event": "premarket_slice_0850",
+      "notes": "C573: stock_static joins latest symbol_universe with Baostock query_stock_basic; source date echo is absent, missing basic/listing fields remain null and are counted. No fallback provider is configured.",
+      "guardian_event": "static_data_refresh_0850",
       "late_policy": {
-        "mode": "manual",
-        "valid_until": null,
-        "depends_on": [],
-        "set_by": "C360: no configured automatic refresh source",
-        "trigger_event": "startup_0830"
+        "mode": "fetch_now",
+        "valid_until": "15:00:00",
+        "depends_on": [
+          "symbol_universe"
+        ],
+        "set_by": "C573: weekly PRE_MARKET refresh; daily new-symbol check; startup catches up in the configured window",
+        "trigger_event": "static_data_refresh_0850"
       },
       "cost": {
         "class": "light",
@@ -1456,7 +1466,7 @@
       "phases": [
         "PRE_MARKET"
       ],
-      "cadence": "与 stock_static 同步；具体触发 UNKNOWN",
+      "cadence": "与 stock_static 同步：每周 PRE_MARKET + symbol_universe 新证券触发",
       "rule": "名称映射视图；实际 catalog artifact is stock_static。",
       "freshness": {
         "partition": "latest",
@@ -1471,16 +1481,16 @@
         "force": "fetch regardless of freshness",
         "clear": "move aside to timestamped .bak; restore on failure"
       },
-      "notes": "需人工/外部参考数据导入；参考 examples/import_reference_to_core_store.py。catalog 只有 2026-10-14 版，available_at 为脚本硬编码，真实刷新源未配置。",
-      "guardian_event": "premarket_slice_0850",
+      "notes": "name_map is a derived view of stock_static; C573 refreshes the shared stock_static catalog snapshot and records Baostock/universe evidence.",
+      "guardian_event": "static_data_refresh_0850",
       "late_policy": {
-        "mode": "manual",
-        "valid_until": null,
+        "mode": "fetch_now",
+        "valid_until": "15:00:00",
         "depends_on": [
           "stock_static"
         ],
-        "set_by": "C360: no configured automatic refresh source",
-        "trigger_event": "startup_0830"
+        "set_by": "C573: stock_static weekly PRE_MARKET refresh; daily new-symbol check; startup catches up in the configured window",
+        "trigger_event": "static_data_refresh_0850"
       },
       "cost": {
         "class": "light",

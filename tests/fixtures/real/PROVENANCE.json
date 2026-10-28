@@ -217,6 +217,102 @@
    "source_path": "/home/exedev/core-data/symbol_universe/trade_date=2026-10-28/source=baostock_query_all_stock/sha256-08c8f8c688bdd288/rows.jsonl.gz",
    "trade_date": "2026-10-28",
    "version": "sha256-08c8f8c688bdd288"
+  },
+  "core_artifacts/c594/plate_registry/2026-10-13/current/manifest.json": {
+   "bytes": 1388,
+   "command": "cp /home/exedev/core-data/plate_registry/trade_date=2026-10-13/source=import_from_validation/sha256-e60d77f986a69861/manifest.json tests/fixtures/real/core_artifacts/c594/plate_registry/2026-10-13/current/manifest.json",
+   "copied_at": "2026-10-29T04:20:39+08:00",
+   "dataset": "plate_registry",
+   "kind": "core_artifact_manifest",
+   "sha256": "655d8917ad100c959f43f8c11b0f7170cff59e94010b69cae466392713441491",
+   "source": "UNKNOWN",
+   "source_path": "/home/exedev/core-data/plate_registry/trade_date=2026-10-13/source=import_from_validation/sha256-e60d77f986a69861/manifest.json",
+   "trade_date": "2026-10-13",
+   "version": "sha256-e60d77f986a69861"
+  },
+  "core_artifacts/c594/plate_registry/2026-10-13/current/rows.jsonl.gz": {
+   "bytes": 17900,
+   "command": "cp /home/exedev/core-data/plate_registry/trade_date=2026-10-13/source=import_from_validation/sha256-e60d77f986a69861/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/plate_registry/2026-10-13/current/rows.jsonl.gz",
+   "copied_at": "2026-10-29T04:20:39+08:00",
+   "dataset": "plate_registry",
+   "kind": "core_artifact_rows",
+   "sha256": "abbc56c7ece00433c820d491bebcbaea1faca1a4addce5614a68c306d2c98e74",
+   "source": "UNKNOWN",
+   "source_path": "/home/exedev/core-data/plate_registry/trade_date=2026-10-13/source=import_from_validation/sha256-e60d77f986a69861/rows.jsonl.gz",
+   "trade_date": "2026-10-13",
+   "version": "sha256-e60d77f986a69861"
+  },
+  "core_artifacts/c594/plate_members/2026-10-28/current/manifest.json": {
+   "bytes": 1426,
+   "command": "cp /home/exedev/core-data/plate_members/trade_date=2026-10-28/source=kaipan_getHisPlateIds/sha256-509339f55a225534/manifest.json tests/fixtures/real/core_artifacts/c594/plate_members/2026-10-28/current/manifest.json",
+   "copied_at": "2026-10-29T04:20:40+08:00",
+   "dataset": "plate_members",
+   "kind": "core_artifact_manifest",
+   "sha256": "e6d08bb879760d30b93aa85c9ec480309bee03541431ba1426ff9ed49a7fe0fb",
+   "source": "kaipan_getHisPlateIds",
+   "source_path": "/home/exedev/core-data/plate_members/trade_date=2026-10-28/source=kaipan_getHisPlateIds/sha256-509339f55a225534/manifest.json",
+   "trade_date": "2026-10-28",
+   "version": "sha256-509339f55a225534"
+  },
+  "core_artifacts/c594/plate_members/2026-10-28/current/rows.jsonl.gz": {
+   "bytes": 957625,
+   "command": "cp /home/exedev/core-data/plate_members/trade_date=2026-10-28/source=kaipan_getHisPlateIds/sha256-509339f55a225534/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/plate_members/2026-10-28/current/rows.jsonl.gz",
+   "copied_at": "2026-10-29T04:20:40+08:00",
+   "dataset": "plate_members",
+   "kind": "core_artifact_rows",
+   "sha256": "ca745416100faaccb98445c37483b3d01f9855f4573f0a020b5eee4dc2eab755",
+   "source": "kaipan_getHisPlateIds",
+   "source_path": "/home/exedev/core-data/plate_members/trade_date=2026-10-28/source=kaipan_getHisPlateIds/sha256-509339f55a225534/rows.jsonl.gz",
+   "trade_date": "2026-10-28",
+   "version": "sha256-509339f55a225534"
+  },
+  "core_artifacts/c594/stock_static/2026-10-14/current/manifest.json": {
+   "bytes": 1650,
+   "command": "cp /home/exedev/core-data/stock_static/trade_date=2026-10-14/source=import_from_validation/sha256-ec9dd58b7cab36a2/manifest.json tests/fixtures/real/core_artifacts/c594/stock_static/2026-10-14/current/manifest.json",
+   "copied_at": "2026-10-29T04:20:40+08:00",
+   "dataset": "stock_static",
+   "kind": "core_artifact_manifest",
+   "sha256": "609900c766625791548bdfe0a9216bda853298a3e185f3102dd8298731c3c0d9",
+   "source": "UNKNOWN",
+   "source_path": "/home/exedev/core-data/stock_static/trade_date=2026-10-14/source=import_from_validation/sha256-ec9dd58b7cab36a2/manifest.json",
+   "trade_date": "2026-10-14",
+   "version": "sha256-ec9dd58b7cab36a2"
+  },
+  "core_artifacts/c594/stock_static/2026-10-14/current/rows.jsonl.gz": {
+   "bytes": 216463,
+   "command": "cp /home/exedev/core-data/stock_static/trade_date=2026-10-14/source=import_from_validation/sha256-ec9dd58b7cab36a2/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/stock_static/2026-10-14/current/rows.jsonl.gz",
+   "copied_at": "2026-10-29T04:20:40+08:00",
+   "dataset": "stock_static",
+   "kind": "core_artifact_rows",
+   "sha256": "4849cbb7b0121f07b0e5a6de34d68b35c5e653bab9f9bdb675fc1bf38bad7241",
+   "source": "UNKNOWN",
+   "source_path": "/home/exedev/core-data/stock_static/trade_date=2026-10-14/source=import_from_validation/sha256-ec9dd58b7cab36a2/rows.jsonl.gz",
+   "trade_date": "2026-10-14",
+   "version": "sha256-ec9dd58b7cab36a2"
+  },
+  "core_artifacts/c594/stock_static/2026-10-29/c573_guardian/manifest.json": {
+   "bytes": 2587,
+   "command": "cp /home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-0fefa9a4f0def573/manifest.json tests/fixtures/real/core_artifacts/c594/stock_static/2026-10-29/c573_guardian/manifest.json",
+   "copied_at": "2026-10-29T04:55:58+08:00",
+   "dataset": "stock_static",
+   "kind": "core_artifact_manifest",
+   "sha256": "ce28fce5296e658ba27338f126d73c7c4f892892c1bdbac8702b5471db37ac86",
+   "source": "baostock_stock_basic",
+   "source_path": "/home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-0fefa9a4f0def573/manifest.json",
+   "trade_date": "2026-10-29",
+   "version": "sha256-0fefa9a4f0def573"
+  },
+  "core_artifacts/c594/stock_static/2026-10-29/c573_guardian/rows.jsonl.gz": {
+   "bytes": 81399,
+   "command": "cp /home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-0fefa9a4f0def573/rows.jsonl.gz tests/fixtures/real/core_artifacts/c594/stock_static/2026-10-29/c573_guardian/rows.jsonl.gz",
+   "copied_at": "2026-10-29T04:55:58+08:00",
+   "dataset": "stock_static",
+   "kind": "core_artifact_rows",
+   "sha256": "575bd8a2aede336e59c47b7fb1152700b5146ce6f26ab671b2557d3e3113dab2",
+   "source": "baostock_stock_basic",
+   "source_path": "/home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-0fefa9a4f0def573/rows.jsonl.gz",
+   "trade_date": "2026-10-29",
+   "version": "sha256-0fefa9a4f0def573"
   }
  },
  "kaipan_hot_plates_2026-10-23_1441.json": {
@@ -535,5 +631,225 @@
   "sha256": "6310735e13a2c6170bb1137a7ccd0d6a0b5ba005c2654939e00ffc6e2d236c0b",
   "source": "baostock_query_all_stock",
   "trade_date": "2026-10-28"
+ },
+ "baostock_stock_basic_2026-10-29_0418.json": {
+  "source": "baostock_stock_basic",
+  "trade_date": "2026-10-29",
+  "fetched_at": "2026-10-29T04:18:56+08:00",
+  "bytes": 356047,
+  "sha256": "d4a82c7c909287ad312aaf22a8d43ffbf503aefc5d69a3cfc9a6e3ee540c1786",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py baostock_stock_basic --date 2026-10-29",
+  "call": "baostock.query_stock_basic",
+  "params": {},
+  "request_count": 1,
+  "row_count": 4000,
+  "source_date_echo": null,
+  "snapshot_semantics": "current response; provider supplies no source-date echo"
+ },
+ "kaipan_plate_members_2026-10-28_801050_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:42+08:00",
+  "bytes": 14629,
+  "sha256": "9c37ccb181ef276b095578e66a4e757e4d32f41f36fdc4913538168a2a0ed1c5",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801050 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801050",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 20,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801535_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:43+08:00",
+  "bytes": 18379,
+  "sha256": "d9af0ca85df4ab2559d15a10bab8fe2a2d79ceb956efb437e61511e1ac8b6dc5",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801535 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801535",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 25,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801873_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:44+08:00",
+  "bytes": 24381,
+  "sha256": "4468d225a37bf6114f2b627257f9d3ed74139166fbd4963814762b0e27a1cb92",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801873 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801873",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 33,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801295_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:45+08:00",
+  "bytes": 32031,
+  "sha256": "c73e8cd0e12c17627f83ca4e028b4176a2244478a38a8e24f67a65990e1bf08a",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801295 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801295",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 43,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801200_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:46+08:00",
+  "bytes": 43555,
+  "sha256": "d70c1cc7f956e011f48bbde969033bf915915b5d7a2ef0b84ef38a22e52d02f5",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801200 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801200",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 59,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801376_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:47+08:00",
+  "bytes": 61997,
+  "sha256": "53b40a246f5b2fc02f5c9b664defd1cea31f2c9049c9cb748c99ba743e870bd2",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801376 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801376",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 84,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801182_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:48+08:00",
+  "bytes": 85077,
+  "sha256": "a2312634d5c20f6dbae6bad95b15992d8efb8700299adfe6291a9b7395555260",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801182 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801182",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 118,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801260_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:49+08:00",
+  "bytes": 147202,
+  "sha256": "24aa367abe6bf8eef6bd8639845cd48ee2b34d0fdd6098b0e1fbf9117d078abd",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801260 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801260",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 203,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801553_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:50+08:00",
+  "bytes": 259717,
+  "sha256": "7e86637786ba8ca11caf5df45e61cb6905d9406c5f06a4a308b663e6f9c21ad9",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801553 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801553",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 362,
+  "source_date_echo": null
+ },
+ "kaipan_plate_members_2026-10-28_801085_i0_0436.json": {
+  "source": "kaipan_plate_members",
+  "trade_date": "2026-10-28",
+  "fetched_at": "2026-10-29T04:36:51+08:00",
+  "bytes": 1102677,
+  "sha256": "9634e457e9cd66d04dde6c224e2f668dc15dc2d3789041f482642921f4b6b593",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_plate_members --date 2026-10-28 --plate-code 801085 --page-size 2000",
+  "call": "getHisPlateIds",
+  "params": {
+   "p": "801085",
+   "date": "2026-10-28",
+   "index": "0",
+   "size": "2000"
+  },
+  "request_count": 1,
+  "response_count": 1530,
+  "source_date_echo": null
+ },
+ "baostock_stock_basic_2026-10-29_0454.json": {
+  "source": "baostock_stock_basic",
+  "trade_date": "2026-10-29",
+  "fetched_at": "2026-10-29T04:54:33+08:00",
+  "bytes": 795612,
+  "sha256": "4187921b6a98342a35f70b10802894f44fa53d514e9892ce28cc473d65c38641",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py baostock_stock_basic --date 2026-10-29",
+  "call": "baostock.query_stock_basic",
+  "params": {},
+  "request_count": 1,
+  "row_count": 9024,
+  "source_date_echo": null,
+  "snapshot_semantics": "current response; provider supplies no source-date echo"
  }
 }

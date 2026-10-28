@@ -1,15 +1,17 @@
 {
  "dataset": "stock_static",
- "status": "DRAFT: columns/types/units inferred from the latest real partition (2026-10-28); to be confirmed by the owning data card",
+ "status": "DRAFT; C573 immutable static snapshot; missing provider fields remain null and quality is PARTIAL",
  "primary_key": [
   "symbol"
  ],
  "symbol_column": "symbol",
- "date_columns": [],
+ "date_columns": [
+  "date"
+ ],
  "earliest_available_local": null,
  "coverage": {
-  "basis": "universe_active",
-  "universe_dataset": "symbol_universe"
+  "basis": "none",
+  "note": "Snapshot is cross-sourced from the latest available universe and current basic response; per-source dates are in manifest.source_dates. Same-day universe coverage is not asserted."
  },
  "columns": {
   "symbol": {
@@ -22,7 +24,9 @@
   },
   "industry": {
    "type": "str",
-   "nullable": true
+   "nullable": true,
+   "all_null_ok": true,
+   "all_null_reason": "Baostock stock_basic and symbol_universe do not provide industry; no configured fallback source."
   },
   "listing_date": {
    "type": "date",
@@ -30,7 +34,9 @@
   },
   "is_new_stock": {
    "type": "bool",
-   "nullable": true
+   "nullable": true,
+   "all_null_ok": true,
+   "all_null_reason": "No configured source provides an as-of new-stock classification."
   },
   "is_st": {
    "type": "bool",
@@ -38,36 +44,46 @@
   },
   "limit_width_pct": {
    "type": "int",
-   "nullable": false,
+   "nullable": true,
    "unit": "percent",
    "enum": [
     5,
     10,
     20,
     30
-   ]
+   ],
+   "all_null_ok": true,
+   "all_null_reason": "No current source provides limit-width policy as data; it is not inferred from code."
   },
   "float_cap_yuan": {
    "type": "float",
-   "nullable": false,
+   "nullable": true,
    "unit": "yuan",
    "min": 0,
-   "zero_suspicious": true
+   "zero_suspicious": true,
+   "all_null_ok": true,
+   "all_null_reason": "Baostock stock_basic and symbol_universe do not provide float market capitalization; no configured fallback source."
   },
   "total_cap_yuan": {
    "type": "float",
-   "nullable": false,
+   "nullable": true,
    "unit": "yuan",
    "min": 0,
-   "zero_suspicious": true
+   "zero_suspicious": true,
+   "all_null_ok": true,
+   "all_null_reason": "Baostock stock_basic and symbol_universe do not provide total market capitalization; no configured fallback source."
   },
   "cap_as_of": {
    "type": "date",
-   "nullable": false
+   "nullable": true,
+   "all_null_ok": true,
+   "all_null_reason": "No cap source is configured."
   },
   "pit_date": {
    "type": "date",
-   "nullable": false
+   "nullable": true,
+   "all_null_ok": true,
+   "all_null_reason": "Neither current source echoes a PIT date."
   },
   "source_quality": {
    "type": "str",
@@ -75,6 +91,18 @@
   },
   "available_at": {
    "type": "str",
+   "nullable": false
+  },
+  "market_board": {
+   "type": "str",
+   "nullable": false
+  },
+  "exchange": {
+   "type": "str",
+   "nullable": false
+  },
+  "date": {
+   "type": "date",
    "nullable": false
   }
  }

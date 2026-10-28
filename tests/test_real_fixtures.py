@@ -23,7 +23,7 @@ INDEX = {name: meta for name, meta in PROVENANCE.items()
 CORE_ARTIFACT_INDEX = PROVENANCE.get("_core_artifacts", {})
 C526_EXCERPT_INDEX = PROVENANCE.get("_c526_excerpts", {})
 SOURCES = {"ths_hot_rank", "kaipan_hot_plates", "kaipan_pool", "wencai_daily_kline",
-           "baostock_query_all_stock"}
+           "kaipan_plate_members", "baostock_query_all_stock", "baostock_stock_basic"}
 CREDENTIAL_WORDS = ("token", "password", "secret", "cookie", "authorization")
 
 
@@ -125,6 +125,32 @@ def test_kaipan_limit_up_pool_real_responses():
 def test_kaipan_pool_unavailable_day_is_real_error_shape():
     unavailable = load("kaipan_pool_2026-10-23_L1_")
     assert str(unavailable.get("errcode")) == "1020" and "info" not in unavailable
+
+
+class ReplayKaipanPlateMembers:
+    def __init__(self, response):
+        self.response = response
+
+    def get_his_plate_ids(self, plate, day, index, size):
+        assert index == "0"
+        return self.response
+
+
+def test_kaipan_plate_members_parse_ten_captured_real_responses():
+    paths = sorted(REAL.glob("kaipan_plate_members_2026-10-28_*_i0_*.json"))
+    assert len(paths) == 10
+    for path in paths:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        plate = path.name.split("_")[4]
+        out = KaipanProvider(
+            ReplayKaipanPlateMembers(raw), plate_codes=(plate,), max_requests=1,
+            min_interval_seconds=0, sleep_fn=lambda _: None,
+        ).plate_members("2026-10-28", page_size=2000, concurrency=1)
+        expected_symbols = [str(row[0]).zfill(6) for row in raw["list"]]
+        assert not out["partial"], path.name
+        assert out["request_count"] == 1, path.name
+        assert len(out["rows"]) == int(raw["Count"]) == len(expected_symbols), path.name
+        assert [row["symbol"] for row in out["rows"]] == expected_symbols, path.name
 
 
 @pytest.mark.live

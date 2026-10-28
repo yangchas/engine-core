@@ -121,6 +121,10 @@ def _command_handler(name: str, opts, root: Path):
     def handler(event: EventSpec, now: datetime, _context, degraded: bool):
         event_id = getattr(event, "event_id", name)
         day = now.date().isoformat()
+        event_args = getattr(event, "args", None) or {}
+        if name == "premarket_data" and isinstance(event_args.get("static_data_refresh"), dict):
+            from examples.static_data_refresh import refresh_static_data
+            return refresh_static_data(event, now, root)
         if name == "calendar_refresh":
             store = TradeCalendarStore(root)
             refresh_mode = (getattr(event, "args", None) or {}).get("refresh")
@@ -175,7 +179,6 @@ def _command_handler(name: str, opts, root: Path):
             day = previous_trade_date(root, day) or ""
             if not day:
                 raise RuntimeError("previous_trade_date_unavailable")
-        event_args = getattr(event, "args", None) or {}
         if name == "daily_kline_backfill":
             target = day
             if event_args.get("target") == "prev_trade_day":

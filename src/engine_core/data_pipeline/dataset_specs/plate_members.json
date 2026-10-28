@@ -1,6 +1,6 @@
 {
  "dataset": "plate_members",
- "status": "DRAFT: columns/types/units inferred from the latest real partition (2026-10-28); to be confirmed by the owning data card",
+ "status": "DRAFT; C573 immutable dated membership snapshot; unregistered plate identities are retained and counted",
  "primary_key": [
   "plate_code",
   "symbol"
@@ -32,6 +32,10 @@
   },
   "plate_member_label": {
    "type": "str",
+   "nullable": false
+  },
+  "date": {
+   "type": "date",
    "nullable": false
   }
  }

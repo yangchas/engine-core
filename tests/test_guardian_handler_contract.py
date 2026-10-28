@@ -25,6 +25,24 @@ def _core_request(event_id, trade_date="2026-10-19"):
             "gate": {"ref": "", "params": None, "probe": False}}
 
 
+def test_static_data_refresh_event_routes_to_adapter(monkeypatch, tmp_path):
+    from datetime import datetime
+    from examples import core_guardian, static_data_refresh
+
+    event = SimpleNamespace(event_id="static_data_refresh_0850",
+                            args={"static_data_refresh": {"datasets": ["stock_static"]}})
+    now = datetime.fromisoformat("2026-10-29T08:55:00+08:00")
+    seen = {}
+    monkeypatch.setattr(
+        static_data_refresh, "refresh_static_data",
+        lambda actual_event, actual_now, root:
+            seen.update(event=actual_event, now=actual_now, root=root) or "REFRESHED",
+    )
+    handler = core_guardian._command_handler("premarket_data", SimpleNamespace(), tmp_path)
+    assert handler(event, now, {}, False) == "REFRESHED"
+    assert seen == {"event": event, "now": now, "root": tmp_path}
+
+
 def test_handler_run_contract_round_trip_close_capture_not_applicable():
     event_id = next(e["event_id"] for e in _schedule_events() if e["handler"] == "close_capture")
     result = subprocess.run([sys.executable, "examples/guardian_handler.py", "run"],

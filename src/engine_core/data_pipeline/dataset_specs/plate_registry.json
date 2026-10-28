@@ -1,12 +1,12 @@
 {
  "dataset": "plate_registry",
- "status": "DRAFT: columns/types/units inferred from the latest real partition (2026-10-28); to be confirmed by the owning data card",
+ "status": "DRAFT; C573 immutable static snapshot; plate_code is identity, code is retained as a compatibility alias",
  "primary_key": [
-  "code"
+  "plate_code"
  ],
  "symbol_column": null,
  "date_columns": [
-  "pit_date"
+  "date"
  ],
  "earliest_available_local": null,
  "coverage": {
@@ -60,6 +60,10 @@
   },
   "available_at": {
    "type": "str",
+   "nullable": false
+  },
+  "date": {
+   "type": "date",
    "nullable": false
   }
  }
