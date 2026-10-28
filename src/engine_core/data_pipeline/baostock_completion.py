@@ -89,3 +89,23 @@ def evaluate_baostock_completion(expected_symbols: Sequence[Any] | Set[Any],
             "retryable": not formal,
             "error_code": None if formal else "TIER_PARTIAL",
             "exit_code": 0 if formal else 30}
+
+
+def should_wait_for_baostock_gap(result: Mapping[str, Any], minimum_coverage: float) -> bool:
+    """Keep a local, source-empty gap open for repair without admitting broad failures."""
+    if isinstance(minimum_coverage, bool) or not isinstance(minimum_coverage, (int, float)) or \
+            not math.isfinite(minimum_coverage) or not 0 < minimum_coverage <= 1:
+        raise ValueError("baostock_gap_minimum_coverage_invalid")
+    quality = result.get("quality")
+    if not isinstance(quality, Mapping):
+        return False
+    missing = quality.get("known_missing")
+    return (result.get("business_status") == "PARTIAL" and result.get("retryable") is True and
+            result.get("error_code") == "TIER_PARTIAL" and
+            isinstance(quality.get("coverage"), (int, float)) and
+            not isinstance(quality.get("coverage"), bool) and
+            float(quality["coverage"]) >= float(minimum_coverage) and
+            isinstance(missing, Mapping) and bool(missing) and
+            any(category == "SOURCE_EMPTY" for category in missing.values()) and
+            all(category in {"SOURCE_EMPTY", "SOURCE_UNAVAILABLE"}
+                for category in missing.values()))

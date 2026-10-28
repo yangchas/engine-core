@@ -301,11 +301,7 @@ func startupClassify(c config.Config, now time.Time) (missed, active []Instance)
 		event := findEvent(c, x.EventID)
 		start, e1 := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Start, now.Location())
 		deadline, deadlineErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, now.Location())
-		end := deadline
-		endErr := deadlineErr
-		if x.LateUntil != "" {
-			end, endErr = time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.LateUntil, now.Location())
-		}
+		end, endErr := instanceWindowCutoff(date, x, now.Location())
 		if e1 != nil || deadlineErr != nil || endErr != nil {
 			continue
 		}
@@ -344,11 +340,7 @@ func triggerWindowAllowed(x Instance, date string, now time.Time, loc *time.Loca
 	if e != nil {
 		return e
 	}
-	cutoff := x.Deadline
-	if x.LateUntil != "" {
-		cutoff = x.LateUntil
-	}
-	end, e := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, loc)
+	end, e := instanceWindowCutoff(date, x, loc)
 	if e != nil {
 		return e
 	}
@@ -399,6 +391,67 @@ type liveRunner struct {
 	bootReruns       int
 	bootRerunIDs     map[string]bool
 	bootRerunPending bool
+	crossDateLoaded  string
+}
+
+func clockAt(date, clock string, dateOffsetDays int, loc *time.Location) (time.Time, error) {
+	day, err := time.ParseInLocation("2006-01-02", date, loc)
+	if err != nil {
+		return time.Time{}, err
+	}
+	day = day.AddDate(0, 0, dateOffsetDays)
+	return time.ParseInLocation("2006-01-02 15:04:05", day.Format("2006-01-02")+" "+clock, loc)
+}
+
+func lateUntilDateOffset(days int, errorCodes []string, state instanceState) int {
+	if len(errorCodes) == 0 {
+		return days
+	}
+	for _, code := range errorCodes {
+		if code != "" && state.LastError == code {
+			return days
+		}
+	}
+	return 0
+}
+
+func lateUntilClock(defaultClock string, overrides map[string]string, state instanceState) string {
+	if value := overrides[state.LastError]; value != "" {
+		return value
+	}
+	return defaultClock
+}
+
+func instanceWindowCutoff(date string, x Instance, loc *time.Location, states ...instanceState) (time.Time, error) {
+	clock, offset := x.Deadline, 0
+	if x.LateUntil != "" {
+		var state instanceState
+		if len(states) > 0 {
+			state = states[0]
+		}
+		clock = lateUntilClock(x.LateUntil, x.LateUntilClockByErrorCode, state)
+		offset = lateUntilDateOffset(x.LateUntilDateOffsetDays, x.LateUntilDateOffsetErrorCodes, state)
+	}
+	return clockAt(date, clock, offset, loc)
+}
+
+func eventLateUntil(date string, event *config.Event, loc *time.Location, states ...instanceState) (time.Time, error) {
+	if event == nil || event.LateUntil == "" {
+		return time.Time{}, fmt.Errorf("late_until_missing")
+	}
+	var state instanceState
+	if len(states) > 0 {
+		state = states[0]
+	}
+	offset := lateUntilDateOffset(event.LateUntilDateOffsetDays, event.LateUntilDateOffsetErrorCodes, state)
+	return clockAt(date, lateUntilClock(event.LateUntil, event.LateUntilClockByErrorCode, state), offset, loc)
+}
+
+func tierUntil(date string, event *config.Event, clock string, loc *time.Location, states ...instanceState) (time.Time, error) {
+	if clock == "late_until" {
+		return eventLateUntil(date, event, loc, states...)
+	}
+	return clockAt(date, clock, 0, loc)
 }
 
 func phaseIn(now time.Time, phases []config.Phase, tradingDay bool) (string, string) {
@@ -640,7 +693,8 @@ func (r *liveRunner) ladderRetryCutoff(date string, event *config.Event, state i
 		return time.Time{}, false
 	}
 	if cutoff == "late_until" {
-		cutoff = event.LateUntil
+		end, err := eventLateUntil(date, event, r.loc, state)
+		return end, err == nil
 	}
 	end, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
 	return end, err == nil
@@ -655,7 +709,20 @@ func (r *liveRunner) finishLadderRetryFailure(x Instance, date string, prior ins
 		DataDate: prior.DataDate,
 	}
 	r.setState(x, date, state)
-	_ = r.alert("FAILED_FINAL", map[string]any{"event": x.ID, "event_id": x.EventID, "date": date, "error": state.LastError, "tier": state.Tier})
+	alertData := map[string]any{"event": x.ID, "event_id": x.EventID, "date": date, "error": state.LastError, "tier": state.Tier}
+	if strings.HasPrefix(x.EventID, "baostock_") {
+		if prior.LastError == "TIER_PARTIAL" || prior.LastError == "BAOSTOCK_LOCAL_GAP_WAIT" {
+			// The four Baostock windows share one repair deadline. Suppress data-gap
+			// alerts while their retry ladder is still open, then deduplicate the
+			// final unresolved gap by trade date.
+			if reason != "TIER_UNTIL_EXPIRED" {
+				return
+			}
+			alertData = map[string]any{"event": "baostock_gapfill_final", "date": date,
+				"error": "UNRESOLVED_LOCAL_GAP"}
+		}
+	}
+	_ = r.alert("FAILED_FINAL", alertData)
 }
 
 func (r *liveRunner) finishLadderUntilExpired(x Instance, date string, prior instanceState) {
@@ -689,11 +756,7 @@ func (r *liveRunner) heavyQueueExpiry(x Instance, date string, event *config.Eve
 	if ladder {
 		return time.Time{}, ""
 	}
-	cutoff := x.Deadline
-	if x.LateUntil != "" {
-		cutoff = x.LateUntil
-	}
-	end, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
+	end, err := instanceWindowCutoff(date, x, r.loc)
 	if err != nil {
 		return time.Time{}, ""
 	}
@@ -1133,7 +1196,7 @@ func (r *liveRunner) runBootEvents(now time.Time) error {
 				r.bootSummary["gap:"+x.ID] = "MISSED_NO_LATE_UNTIL"
 				continue
 			}
-			cutoff, pe := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.LateUntil, r.loc)
+			cutoff, pe := instanceWindowCutoff(date, x, r.loc)
 			if pe == nil && now.Before(cutoff) {
 				go r.execute(x, date)
 			}
@@ -1222,11 +1285,7 @@ func (r *liveRunner) pendingOwnerEvents(date string, now time.Time) map[string]s
 		}
 		if !exists {
 			start, startErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Start, r.loc)
-			cutoff := x.Deadline
-			if x.LateUntil != "" {
-				cutoff = x.LateUntil
-			}
-			end, parseErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
+			end, parseErr := instanceWindowCutoff(date, x, r.loc)
 			if startErr != nil || parseErr != nil || now.Before(start) || !now.Before(end) {
 				continue
 			}
@@ -1350,6 +1409,109 @@ func (r *liveRunner) recover() error {
 		}
 	}
 	return scan.Err()
+}
+
+func (r *liveRunner) recoverPreviousCrossDateRetries(date string, c config.Config) {
+	r.mu.Lock()
+	if r.crossDateLoaded == date {
+		r.mu.Unlock()
+		return
+	}
+	r.crossDateLoaded = date
+	r.mu.Unlock()
+	day, err := time.ParseInLocation("2006-01-02", date, r.loc)
+	if err != nil {
+		return
+	}
+	previous := day.AddDate(0, 0, -1).Format("2006-01-02")
+	wanted := map[string]bool{}
+	for _, event := range c.Events {
+		if event.LateUntilDateOffsetDays == 1 && event.LateUntil != "" {
+			wanted[event.ID] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return
+	}
+	file, err := os.Open(filepath.Join(r.root, "ledger", previous+".jsonl"))
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	loaded := map[string]instanceState{}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var rec ledgerRecord
+		if json.Unmarshal(scanner.Bytes(), &rec) != nil || rec.CRC32 != recordCRC(rec) || rec.Type != "INSTANCE_STATE" {
+			continue
+		}
+		body, _ := json.Marshal(rec.Data)
+		var state runState
+		if json.Unmarshal(body, &state) == nil && state.TradeDate == previous && wanted[state.EventID] {
+			event := findEvent(c, state.EventID)
+			if event != nil && lateUntilDateOffset(event.LateUntilDateOffsetDays,
+				event.LateUntilDateOffsetErrorCodes, state.State) == 0 {
+				continue
+			}
+			loaded[previous+"/"+state.Instance] = state.State
+		}
+	}
+	r.mu.Lock()
+	for key, state := range loaded {
+		r.states[key] = state
+	}
+	r.mu.Unlock()
+}
+
+func (r *liveRunner) schedulePreviousCrossDateRetries(now time.Time, date string, c config.Config) {
+	day, err := time.ParseInLocation("2006-01-02", date, r.loc)
+	if err != nil {
+		return
+	}
+	previous := day.AddDate(0, 0, -1).Format("2006-01-02")
+	xs, _, err := runtimeInstances(c, previous)
+	if err != nil {
+		return
+	}
+	for _, x := range xs {
+		if x.LateUntilDateOffsetDays != 1 {
+			continue
+		}
+		event := findEvent(c, x.EventID)
+		if event == nil {
+			continue
+		}
+		key := previous + "/" + x.ID
+		r.mu.Lock()
+		state, exists := r.states[key]
+		running := r.running[x.ID]
+		paused := r.paused[x.EventID] || r.paused["*"]
+		r.mu.Unlock()
+		if !exists || state.Status != "RETRY_WAIT" || running {
+			continue
+		}
+		if lateUntilDateOffset(event.LateUntilDateOffsetDays,
+			event.LateUntilDateOffsetErrorCodes, state) == 0 {
+			continue
+		}
+		cutoff, ok := r.ladderRetryCutoff(previous, event, state)
+		if !ok {
+			cutoff, err = eventLateUntil(previous, event, r.loc, state)
+			ok = err == nil
+		}
+		if !ok {
+			continue
+		}
+		if !now.Before(cutoff) {
+			r.finishLadderRetryWindowExpired(x, previous, event, state)
+			continue
+		}
+		next, parseErr := time.Parse(time.RFC3339, state.NextAttemptAt)
+		if parseErr == nil && now.Before(next) || paused {
+			continue
+		}
+		go r.execute(x, previous)
+	}
 }
 func (r *liveRunner) setState(x Instance, date string, s instanceState) {
 	key := date + "/" + x.ID
@@ -1541,6 +1703,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 	}
 	if prior.Status == "RUNNING" || prior.Status == "LATE_RUN" || prior.Status == "RETRY_WAIT" || prior.Status == "DEFERRED" || prior.Status == "DEFER_LOAD" || prior.Status == "QUEUED_HEAVY" {
 		st.Attempts = prior.Attempts
+		st.LastError = prior.LastError
 		st.DataDate = prior.DataDate
 		if st.DataDate == "" {
 			st.DataDate = x.DataDate
@@ -1562,14 +1725,13 @@ func (r *liveRunner) execute(x Instance, date string) {
 		if d, e := time.ParseDuration(event.Gate.Poll); e == nil && d > 0 {
 			poll = d
 		}
-		cutoff := x.Deadline
-		if x.LateUntil != "" && event.OnDeadline != "degrade" && event.OnDeadline != "missed" {
-			cutoff = x.LateUntil
+		deadline, _ := instanceWindowCutoff(date, x, r.loc)
+		if event.OnDeadline == "missed" {
+			deadline, _ = time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
 		}
 		if retryCutoff, ok := r.ladderRetryCutoff(date, event, prior); ok {
-			cutoff = retryCutoff.Format("15:04:05")
+			deadline = retryCutoff
 		}
-		deadline, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
 		ready := false
 		lastGateReason := "gate not ready"
 		pollCount := 0
@@ -1583,7 +1745,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 			processSlots <- struct{}{}
 			gateEvent := *event
 			gateEvent.Timeout = event.Gate.Timeout
-			gateEvent.Trigger.Deadline = cutoff
+			gateEvent.Trigger.Deadline = deadline.Format("15:04:05")
 			if gateEvent.Timeout == "" {
 				gateEvent.Timeout = "15s"
 			}
@@ -1680,14 +1842,13 @@ func (r *liveRunner) execute(x Instance, date string) {
 			}
 			deferredPolls := 0
 			maxDeferredPolls := configuredHeavyLoadDeferMaxPolls(c)
-			cutoff := x.Deadline
-			if x.LateUntil != "" && event.OnDeadline != "missed" {
-				cutoff = x.LateUntil
+			end, _ := instanceWindowCutoff(date, x, r.loc)
+			if event.OnDeadline == "missed" {
+				end, _ = time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
 			}
 			if retryCutoff, ok := r.ladderRetryCutoff(date, event, prior); ok {
-				cutoff = retryCutoff.Format("15:04:05")
+				end = retryCutoff
 			}
-			end, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
 			for {
 				load, err := loader()
 				if x.TriggerType != "startup" && event.OnDeadline == "missed" && deadlineMissed && !r.clock.Now().Truncate(time.Second).Before(deadlineAt.Truncate(time.Second)) {
@@ -1695,7 +1856,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 					_ = r.alert("MISSED", map[string]any{"event": x.EventID, "date": date, "error": "ON_DEADLINE_MISSED"})
 					return
 				}
-				if !r.clock.Now().Before(end) || r.clock.Now().In(r.loc).Format("2006-01-02") != date {
+				if !r.clock.Now().Before(end) {
 					if _, retryWindow := r.ladderRetryCutoff(date, event, prior); retryWindow {
 						r.finishLadderRetryWindowExpired(x, date, event, prior)
 					} else {
@@ -1746,14 +1907,13 @@ func (r *liveRunner) execute(x Instance, date string) {
 			<-slots
 		}
 	}()
-	cutoff := x.Deadline
-	if x.LateUntil != "" && event.OnDeadline != "missed" {
-		cutoff = x.LateUntil
+	startCutoff, parseErr := instanceWindowCutoff(date, x, r.loc)
+	if event.OnDeadline == "missed" {
+		startCutoff, parseErr = time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
 	}
 	if retryCutoff, ok := r.ladderRetryCutoff(date, event, prior); ok {
-		cutoff = retryCutoff.Format("15:04:05")
+		startCutoff, parseErr = retryCutoff, nil
 	}
-	startCutoff, parseErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
 	isLadder := len(event.Ladder) > 0
 	if !isLadder && x.TriggerType != "startup" && parseErr == nil && !r.clock.Now().Before(startCutoff) && prior.Status == "RETRY_WAIT" {
 		r.finishLateRetries(x, date, event, st)
@@ -1862,7 +2022,7 @@ func (r *liveRunner) execute(x Instance, date string) {
 			r.finishRetriesExhausted(x, date, event, st)
 			return
 		}
-		cutoff, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+event.LateUntil, r.loc)
+		cutoff, err := eventLateUntil(date, event, r.loc, instanceState{LastError: last})
 		if err == nil && r.clock.Now().Before(cutoff) {
 			delay := retryBackoff(event.Retry.Backoff, st.Attempts, max)
 			next := r.clock.Now().Add(delay)
@@ -2052,11 +2212,7 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 			}
 		}
 		if tier.Until != "" {
-			cutoffText := tier.Until
-			if cutoffText == "late_until" {
-				cutoffText = event.LateUntil
-			}
-			if cutoff, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoffText, r.loc); err == nil && !r.clock.Now().Before(cutoff) {
+			if cutoff, err := tierUntil(date, event, tier.Until, r.loc, state); err == nil && !r.clock.Now().Before(cutoff) {
 				if _, retryWindow := r.ladderRetryCutoff(date, event, state); retryWindow && state.RungAttempts > 0 {
 					finishFailure("TIER_UNTIL_EXPIRED", "", index, tier)
 					return
@@ -2074,11 +2230,7 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 		}
 		for state.RungAttempts < tier.Attempts {
 			if tier.Until != "" {
-				cutoffText := tier.Until
-				if cutoffText == "late_until" {
-					cutoffText = event.LateUntil
-				}
-				if cutoff, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoffText, r.loc); err == nil && !r.clock.Now().Before(cutoff) {
+				if cutoff, err := tierUntil(date, event, tier.Until, r.loc, state); err == nil && !r.clock.Now().Before(cutoff) {
 					if _, retryWindow := r.ladderRetryCutoff(date, event, state); retryWindow && state.RungAttempts > 0 {
 						finishFailure("TIER_UNTIL_EXPIRED", "", index, tier)
 						return
@@ -2190,7 +2342,7 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 			}
 			delay := config.BackoffDelay(tier.Backoff, state.RungAttempts, tier.BackoffCap)
 			if tier.Until == "late_until" {
-				if cutoff, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+event.LateUntil, r.loc); err == nil && r.clock.Now().Before(cutoff) {
+				if cutoff, err := eventLateUntil(date, event, r.loc, instanceState{LastError: code}); err == nil && r.clock.Now().Before(cutoff) {
 					next := r.clock.Now().Add(delay)
 					if next.After(cutoff) {
 						next = cutoff
@@ -2206,11 +2358,7 @@ func (r *liveRunner) executeLadder(x Instance, date string, event *config.Event,
 				}
 			}
 			if tier.Until != "" {
-				cutoffText := tier.Until
-				if cutoffText == "late_until" {
-					cutoffText = event.LateUntil
-				}
-				if cutoff, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoffText, r.loc); err == nil && !r.clock.Now().Before(cutoff) {
+				if cutoff, err := tierUntil(date, event, tier.Until, r.loc, instanceState{LastError: code}); err == nil && !r.clock.Now().Before(cutoff) {
 					if _, retryWindow := r.ladderRetryCutoff(date, event, state); !retryWindow {
 						if delay > 0 {
 							r.waitClock(delay)
@@ -2411,7 +2559,10 @@ func (r *liveRunner) invokeDetailedTier(argv []string, e *config.Event, x Instan
 		if e.LateUntil != "" && e.OnDeadline != "degrade" && e.OnDeadline != "missed" {
 			cutoff = e.LateUntil
 		}
-		deadline, parseErr := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
+		deadline, parseErr := clockAt(date, cutoff, 0, r.loc)
+		if e.LateUntil != "" && e.LateUntilDateOffsetDays > 0 {
+			deadline, parseErr = eventLateUntil(date, e, r.loc)
+		}
 		if parseErr == nil {
 			remaining := deadline.Sub(r.clock.Now())
 			if remaining <= 0 {
@@ -2955,6 +3106,8 @@ func (r *liveRunner) schedule(now time.Time) {
 	r.configMu.RLock()
 	c := r.c
 	r.configMu.RUnlock()
+	r.recoverPreviousCrossDateRetries(date, c)
+	r.schedulePreviousCrossDateRetries(now, date, c)
 	xs, _, err := runtimeInstances(c, date)
 	if err != nil {
 		return
@@ -2990,7 +3143,10 @@ func (r *liveRunner) schedule(now time.Time) {
 		if event.OnDeadline == "missed" {
 			cutoff = x.Deadline
 		}
-		end, e2 := time.ParseInLocation("2006-01-02 15:04:05", date+" "+cutoff, r.loc)
+		end, e2 := clockAt(date, cutoff, x.LateUntilDateOffsetDays, r.loc)
+		if event.OnDeadline == "missed" {
+			end, e2 = time.ParseInLocation("2006-01-02 15:04:05", date+" "+x.Deadline, r.loc)
+		}
 		if e1 != nil || e2 != nil || e3 != nil {
 			continue
 		}

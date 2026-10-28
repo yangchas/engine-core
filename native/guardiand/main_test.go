@@ -77,7 +77,7 @@ func TestResolvePreviousTradeDayUsesCapturedTradingCalendar(t *testing.T) {
 }
 
 func TestCompileScheduleV3ProfilesAtListAndLegacyFields(t *testing.T) {
-	source := []byte(`{"schema_version":3,"timezone":"Asia/Shanghai","profiles":{"auction":{"catchup":"run_in_window","window":{"deadline":"09:30"},"ladder":[{"name":"redis","args":{"source":"redis"},"attempts":2,"backoff":"2s*2","timeout":"3s"},{"name":"td","args":{"source":"td"},"attempts":1,"timeout":"5s"}]}},"events":[{"id":"auction_report","at":["09:25","09:26:30"],"deadline":"09:29","handler":"auction_report","profile":"auction"},{"id":"legacy_report","at":"09:27","deadline":"09:29","handler":"auction_report","timeout_seconds":8,"max_attempts":3,"retry_backoff":"2s","retry_until_late":true,"late_until":"10:00","catchup_mode":"run_in_window"}]}`)
+	source := []byte(`{"schema_version":3,"timezone":"Asia/Shanghai","profiles":{"auction":{"catchup":"run_in_window","window":{"deadline":"09:30"},"ladder":[{"name":"redis","args":{"source":"redis"},"attempts":2,"backoff":"2s*2","timeout":"3s"},{"name":"td","args":{"source":"td"},"attempts":1,"timeout":"5s"}]}},"events":[{"id":"auction_report","at":["09:25","09:26:30"],"deadline":"09:29","handler":"auction_report","profile":"auction"},{"id":"legacy_report","at":"09:27","deadline":"09:29","handler":"auction_report","timeout_seconds":8,"max_attempts":3,"retry_backoff":"2s","retry_until_late":true,"late_until":"10:00","late_until_date_offset_days":1,"late_until_clock_by_error_code":{"BAOSTOCK_LOCAL_GAP_WAIT":"08:00"},"catchup_mode":"run_in_window"}]}`)
 	c, err := compileScheduleV3(source)
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +89,12 @@ func TestCompileScheduleV3ProfilesAtListAndLegacyFields(t *testing.T) {
 		t.Fatalf("effective sources not recorded: %+v", c.Events[0])
 	}
 	legacy := c.Events[1]
+	if legacy.LateUntilDateOffsetDays != 1 {
+		t.Fatalf("late_until_date_offset_days=%d, want 1", legacy.LateUntilDateOffsetDays)
+	}
+	if legacy.LateUntilClockByErrorCode["BAOSTOCK_LOCAL_GAP_WAIT"] != "08:00:00" {
+		t.Fatalf("late_until_clock_by_error_code=%v, want normalized 08:00:00", legacy.LateUntilClockByErrorCode)
+	}
 	if len(legacy.Ladder) != 1 || legacy.Ladder[0].Attempts != 3 || legacy.Ladder[0].Until != "late_until" || legacy.Ladder[0].BudgetEnabled == nil || *legacy.Ladder[0].BudgetEnabled {
 		t.Fatalf("legacy fields not downgraded: %+v", legacy.Ladder)
 	}

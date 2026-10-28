@@ -280,6 +280,48 @@ def _run(request):
         asof = asof[:11] + "09:26:00" + asof[19:]  # panorama rejects an as-of after 09:26:00; the 09:26:30 start only delays the run
     start = datetime.fromisoformat(asof).strftime("%H:%M:%S")
     args =request.get("args") if isinstance(request.get("args"), dict) else {}
+    if name == "daily_kline_backfill":
+        from engine_core.guardian.daily_kline_backfill import run_daily_kline_backfill
+        from engine_core.prep_trade_day import previous_trade_date
+        target = target_day
+        if args.get("target") == "prev_trade_day":
+            target = previous_trade_date(root, str(trade_date)) or ""
+        if not target:
+            return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                        "retryable": False, "detail": "backfill_target_unavailable"}
+        try:
+            result = run_daily_kline_backfill(root, target, args=args)
+        except Exception as exc:
+            return _failure_response(request, error=exc)
+        if result.get("status") == "WAITING":
+            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+                       "artifacts": [], "detail": result}
+        if result.get("status") not in {"OK", "NO_GAPS"}:
+            return 75, {"contract": 1, "status": "failed", "error_code": "BAOSTOCK_GAPFILL_RETRY",
+                        "retryable": True, "artifacts": [], "detail": result}
+        return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+                   "artifacts": [], "detail": result}
+    if name == "baostock_probe" and isinstance(args.get("baostock_gapfill_policy"), dict) and not dry:
+        from engine_core.guardian.daily_kline_backfill import run_daily_kline_backfill
+        gap_policy = args["baostock_gapfill_policy"]
+        try:
+            result = run_daily_kline_backfill(
+                root, target_day, args={**args, "minimum_coverage": gap_policy.get("minimum_coverage", 0.90)},
+                only_source_empty=True)
+        except Exception as exc:
+            if "BAOSTOCK_GAP_UNRESOLVED" in str(exc):
+                return 75, {"contract": 1, "status": "failed", "error_code": "TIER_PARTIAL",
+                            "retryable": True, "artifacts": [], "detail": str(exc)}
+            return _failure_response(request, error=exc)
+        if result.get("status") in {"OK", "NO_GAPS"}:
+            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+                       "artifacts": [], "detail": result}
+        if result.get("status") == "WAITING":
+            return 75, {"contract": 1, "status": "failed", "error_code": "BAOSTOCK_LOCAL_GAP_WAIT",
+                        "retryable": True, "artifacts": [], "detail": result}
+        if result.get("status") != "NOT_ELIGIBLE":
+            return 75, {"contract": 1, "status": "failed", "error_code": "BAOSTOCK_GAPFILL_RETRY",
+                        "retryable": True, "artifacts": [], "detail": result}
     event = SimpleNamespace(event_id=event_id, handler=name, gate=getattr(base, "gate", "always"), start=start,
                             args=args, timeout_seconds=int(request.get("timeout_seconds") or getattr(base, "timeout_seconds", 300)),
                             data_date_offset=getattr(base, "data_date_offset", 0))

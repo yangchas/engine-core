@@ -24,7 +24,7 @@ GO_EVENT_FIELDS = frozenset({
     "on_start", "data_date_offset", "available_after", "depends_on", "args",
 })
 HANDLERS = {"auction_report", "auction_watch", "baostock_probe", "boot_apply_plan",
-            "boot_data_health", "daily_kline_close", "boot_reconcile", "boot_trade_day", "calendar_refresh",
+            "boot_data_health", "daily_kline_backfill", "daily_kline_close", "boot_reconcile", "boot_trade_day", "calendar_refresh",
             "close_capture", "close_report", "fetch_item", "intraday_data", "kaipan_fetch",
             "kaipan_hot_capture", "night_report", "open_report", "postmarket_data",
             "premarket_data", "snapshot_check"}
@@ -44,7 +44,8 @@ GO_V3_EVENT_FIELDS = frozenset({
     "timeout_seconds", "max_attempts", "retry_backoff", "retry_until_late",
     "silent_until_last", "catchup_mode", "on_deadline", "order", "after", "cost",
     "phases", "on_phase_mismatch", "on_start", "data_date_offset", "available_after",
-    "depends_on", "args",
+    "late_until_date_offset_days", "late_until_date_offset_error_codes",
+    "late_until_clock_by_error_code", "depends_on", "args",
 })
 GO_V3_PHASE_FIELDS = frozenset({"name", "start", "end"})
 _V3_DEFAULT_PHASES = (
@@ -548,7 +549,29 @@ def _v3_validate_schedule(payload: dict[str, Any], previous: dict[str, Any] | No
             deadline = _v3_time(deadline, path + ".deadline")[0]
         if late_until:
             late_until = _v3_time(late_until, path + ".late_until")[0]
-        if trigger_type == "window" and deadline and late_until and late_until < deadline:
+        late_until_date_offset = _v3_int(event.get("late_until_date_offset_days"),
+                                         path + ".late_until_date_offset_days")
+        if late_until_date_offset not in {0, 1} or late_until_date_offset and not late_until:
+            raise ValueError("schedule_v3_late_until_date_offset_invalid:" + event_id)
+        late_until_date_offset_error_codes = _v3_string_list(
+            event.get("late_until_date_offset_error_codes"), path + ".late_until_date_offset_error_codes")
+        if (any(not code or code.strip() != code for code in late_until_date_offset_error_codes) or
+                late_until_date_offset_error_codes and late_until_date_offset == 0):
+            raise ValueError("schedule_v3_late_until_date_offset_error_codes_invalid:" + event_id)
+        clock_overrides_raw = event.get("late_until_clock_by_error_code")
+        if clock_overrides_raw is None:
+            clock_overrides_raw = {}
+        if not isinstance(clock_overrides_raw, dict):
+            raise ValueError("schedule_v3_late_until_clock_by_error_code_invalid:" + event_id)
+        clock_overrides = {}
+        for code, value in clock_overrides_raw.items():
+            if not isinstance(code, str) or not code or code.strip() != code:
+                raise ValueError("schedule_v3_late_until_clock_by_error_code_invalid:" + event_id)
+            clock_value = _v3_string(value, path + ".late_until_clock_by_error_code." + code)
+            clock_overrides[code] = _v3_time(
+                clock_value, path + ".late_until_clock_by_error_code." + code)[0]
+        if (trigger_type == "window" and deadline and late_until and
+                late_until_date_offset == 0 and late_until < deadline):
             raise ValueError("schedule_v3_late_until_order:" + event_id)
         if trigger_type == "window" and (not normalized_at or not deadline):
             raise ValueError("schedule_v3_window_required:" + event_id)
@@ -640,6 +663,9 @@ def _v3_validate_schedule(payload: dict[str, Any], previous: dict[str, Any] | No
             available_after=available_after, data_date_offset=_v3_int(event.get("data_date_offset"), path + ".data_date_offset"),
             trigger_type=trigger_type, order=_v3_int(event.get("order"), path + ".order"),
             after=tuple(after), late_until=late_until or None,
+            late_until_date_offset_days=late_until_date_offset,
+            late_until_date_offset_error_codes=tuple(late_until_date_offset_error_codes),
+            late_until_clock_by_error_code=clock_overrides,
             cost=cost or None,
             phases=tuple(phases) if phases is not None else None,
             on_phase_mismatch=phase_mismatch or None, on_start=on_start or None,

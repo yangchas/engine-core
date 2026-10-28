@@ -69,6 +69,7 @@ HANDLER_IMPLEMENTATIONS = {
     "intraday_data": "examples/core_data_daily.py:intraday",
     "postmarket_data": "examples/core_data_daily.py:postmarket",
     "baostock_probe": "examples/core_data_daily.py:postmarket (Baostock daily job)",
+    "daily_kline_backfill": "TD-watermark Baostock range repair",
     "close_capture": "NOT_IMPLEMENTED",
     "close_report": "examples/run_daily_reports.py:close",
     "calendar_refresh": "Core versioned trading calendar refresh",
@@ -174,6 +175,30 @@ def _command_handler(name: str, opts, root: Path):
             day = previous_trade_date(root, day) or ""
             if not day:
                 raise RuntimeError("previous_trade_date_unavailable")
+        event_args = getattr(event, "args", None) or {}
+        if name == "daily_kline_backfill":
+            target = day
+            if event_args.get("target") == "prev_trade_day":
+                target = previous_trade_date(root, day) or ""
+            if not target:
+                raise RuntimeError("daily_kline_backfill_target_unavailable")
+            from engine_core.guardian.daily_kline_backfill import run_daily_kline_backfill
+            return json.dumps(run_daily_kline_backfill(root, target, args=event_args),
+                              ensure_ascii=False, separators=(",", ":"))
+        if (name == "baostock_probe" and isinstance(event_args.get("baostock_gapfill_policy"), dict)
+                and not getattr(opts, "simulate_clock", False)):
+            from engine_core.guardian.daily_kline_backfill import run_daily_kline_backfill
+            gap_policy = event_args["baostock_gapfill_policy"]
+            result = run_daily_kline_backfill(
+                root, day, args={**event_args,
+                                 "minimum_coverage": gap_policy.get("minimum_coverage", 0.90)},
+                only_source_empty=True)
+            if result.get("status") in {"OK", "NO_GAPS"}:
+                return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            if result.get("status") == "WAITING":
+                raise RuntimeError("BAOSTOCK_LOCAL_GAP_WAIT:" + json.dumps(result, ensure_ascii=False))
+            if result.get("status") != "NOT_ELIGIBLE":
+                raise RuntimeError("BAOSTOCK_GAPFILL_RETRY:" + json.dumps(result, ensure_ascii=False))
         py = sys.executable
         repo = Path(__file__).resolve().parents[1]
         env = os.environ.copy()

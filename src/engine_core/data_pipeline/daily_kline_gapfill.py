@@ -26,9 +26,12 @@ def _all_baostock_symbols(module: Any, target: str) -> list[str]:
         raise RuntimeError("BAOSTOCK_UNIVERSE_QUERY_FAILED")
     fields = list(getattr(result, "fields", ()))
     code_index = fields.index("code") if "code" in fields else 0
+    status_index = fields.index("tradeStatus") if "tradeStatus" in fields else None
     symbols = set()
     while result.next():
         row = result.get_row_data()
+        if status_index is not None and status_index < len(row) and str(row[status_index]).strip() == "0":
+            continue
         raw = str(row[code_index] if code_index < len(row) else "")
         symbol = raw.rsplit(".", 1)[-1]
         if _SYMBOL.fullmatch(symbol):
@@ -74,7 +77,9 @@ def _td_rows_to_daily(day: str, stored: Mapping[str, Mapping[str, Any]]) -> dict
 def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                                history_min_trading_days: int = 10,
                                total_timeout_seconds: float = 6900.0,
-                               client: Any = None) -> dict[str, Any]:
+                               client: Any = None, only_source_empty: bool = False,
+                               minimum_coverage: float = 0.90,
+                               completion_policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Fetch one interval per lagging symbol, merge TD rows by day, and commit catalog+TD in one task."""
     from ..daily_history import BaostockRangeClient
     from ..guardian.daily_kline_coverage import build_gap_fill_plan
@@ -98,17 +103,41 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
     watermarks = store.latest_watermarks()
     from ..guardian.daily_kline_coverage import TdCoverageSource
     from .storage import ArtifactCatalog
-    manifest_path = ArtifactCatalog(base).locate("daily_kline", target)
+    catalog = ArtifactCatalog(base)
+    manifest_path = catalog.locate("daily_kline", target)
+    partition_rows: list[dict[str, Any]] = []
+    partition_manifest: dict[str, Any] = {}
     known_missing = {}
     if manifest_path is not None:
         try:
             current_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            partition_manifest = current_manifest
+            partition_rows = catalog.read_rows(manifest_path)
             current_quality = current_manifest.get("quality") or {}
             value = current_quality.get("known_missing")
             if isinstance(value, Mapping):
                 known_missing = value
         except (OSError, ValueError, TypeError):
             known_missing = {}
+    artifact_symbols_by_day = {
+        target: {str(row.get("symbol", row.get("code", ""))).zfill(6) for row in partition_rows}
+    }
+    td_symbols_by_day: dict[str, set[str]] = {}
+
+    def artifact_symbols(day: str) -> set[str]:
+        if day not in artifact_symbols_by_day:
+            day_manifest = catalog.locate("daily_kline", day)
+            rows = catalog.read_rows(day_manifest) if day_manifest is not None else []
+            artifact_symbols_by_day[day] = {
+                str(row.get("symbol", row.get("code", ""))).zfill(6) for row in rows
+            }
+        return artifact_symbols_by_day[day]
+
+    def td_symbols(day: str) -> set[str]:
+        if day not in td_symbols_by_day:
+            td_symbols_by_day[day] = set(store.read_day_rows(day))
+        return td_symbols_by_day[day]
+
     coverage = TdCoverageSource(store).coverage(dates, watermarks, known_missing)
     if client is None:
         import baostock as bs
@@ -128,25 +157,98 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
         except TimeoutError:
             setattr(range_client, "poisoned", True)
             raise
-        planner_states: dict[str, Any] = {}
-        symbol_gap_dates: dict[str, list[str]] = defaultdict(list)
-        for day, cov in coverage.items():
-            if cov.state in {"MISSING", "LOW_QUALITY"}:
-                planner_states[day] = cov
-            elif cov.state == "INCOMPLETE" and cov.reason != "symbol_watermark_behind_target":
-                held = store.read_day_rows(day)
-                missing_symbols = set(universe) - set(held)
-                if missing_symbols:
-                    for symbol in missing_symbols:
-                        symbol_gap_dates[symbol].append(day)
+        expected_symbols: set[str] = set()
+        expected_symbols_by_day: dict[str, set[str] | None] = {}
+
+        def active_symbols_for_day(day: str) -> set[str] | None:
+            if day not in expected_symbols_by_day:
+                universe_path = catalog.locate("symbol_universe", day)
+                if universe_path is None:
+                    expected_symbols_by_day[day] = None
                 else:
-                    # Counts/metadata disagree even though the current universe is present; rebuild the day.
-                    planner_states[day] = cov
-        # A lagging/new symbol gets one range request, with C561 serial pacing and no extra sessions.
-        # New listings without a watermark are treated as missing for the configured recent window.
-        gap_plan = build_gap_fill_plan(watermarks, target, sessions, depth,
-                                       day_states=planner_states, symbols=universe,
-                                       symbol_gap_dates=symbol_gap_dates)
+                    rows = catalog.read_rows(universe_path)
+                    expected_symbols_by_day[day] = {
+                        str(row.get("symbol", row.get("code", ""))).zfill(6)
+                        for row in rows if str(row.get("trade_status", "")).strip() != "0"
+                    }
+            return expected_symbols_by_day[day]
+
+        if only_source_empty:
+            universe_path = catalog.locate("symbol_universe", target)
+            if (manifest_path is None or universe_path is None or
+                    str(partition_manifest.get("provider", "")).lower() != "baostock"):
+                gap_plan = []
+                eligibility_status = "NOT_ELIGIBLE"
+            else:
+                expected_symbols = active_symbols_for_day(target) or set()
+                partition_symbols = {str(row.get("symbol", row.get("code", ""))).zfill(6)
+                                     for row in partition_rows}
+                from .baostock_completion import (classify_missing_symbols,
+                                                  evaluate_baostock_completion,
+                                                  should_wait_for_baostock_gap)
+                policy = dict(completion_policy or {})
+                if "formal_coverage_threshold" not in policy or "source_empty_max" not in policy:
+                    raise ValueError("baostock_gapfill_completion_policy_required")
+                missing = classify_missing_symbols(expected_symbols, partition_symbols, universe)
+                completion = evaluate_baostock_completion(
+                    expected_symbols, partition_symbols, missing,
+                    coverage_threshold=policy["formal_coverage_threshold"],
+                    max_source_empty=policy["source_empty_max"])
+                if not missing:
+                    gap_plan = []
+                    eligibility_status = "NO_GAPS"
+                elif not should_wait_for_baostock_gap(completion, minimum_coverage):
+                    gap_plan = []
+                    eligibility_status = "NOT_ELIGIBLE"
+                else:
+                    gap_plan = [{"symbol": symbol, "start_date": target, "end_date": target,
+                                 "trade_dates": [target], "gap_dates": [target],
+                                 "watermark": watermarks.get(symbol)}
+                                for symbol, category in sorted(missing.items())
+                                if category == "SOURCE_EMPTY" and symbol in universe]
+                    eligibility_status = "ELIGIBLE"
+        else:
+            target_universe = active_symbols_for_day(target)
+            if manifest_path is not None and target_universe is not None and partition_manifest.get("provider") == "baostock":
+                from .baostock_completion import (classify_missing_symbols,
+                                                  evaluate_baostock_completion,
+                                                  should_wait_for_baostock_gap)
+                from .registry.daily_kline import BAOSTOCK_COMPLETION_POLICY
+                policy = dict(BAOSTOCK_COMPLETION_POLICY)
+                policy.update(completion_policy or {})
+                target_symbols = {str(row.get("symbol", row.get("code", ""))).zfill(6)
+                                  for row in partition_rows}
+                target_missing = classify_missing_symbols(target_universe, target_symbols, universe)
+                target_completion = evaluate_baostock_completion(
+                    target_universe, target_symbols, target_missing,
+                    coverage_threshold=policy["formal_coverage_threshold"],
+                    max_source_empty=policy["source_empty_max"])
+                if target_missing and not should_wait_for_baostock_gap(target_completion, minimum_coverage):
+                    gap_plan = []
+                    eligibility_status = "NOT_ELIGIBLE"
+                else:
+                    gap_plan = None
+            else:
+                gap_plan = None
+            if gap_plan is None:
+                symbol_gap_dates: dict[str, list[str]] = defaultdict(list)
+                for day, cov in coverage.items():
+                    if cov.state == "OK":
+                        continue
+                    # Catalog rows count as present while repairing TD. Otherwise a missing TD version
+                    # would turn an existing 5k-row catalog partition into a full-market Baostock request.
+                    present = artifact_symbols(day) | td_symbols(day)
+                    # query_all_stock may include delisted/index/other symbols outside the catalog's
+                    # date-specific active universe. Only request gaps that the day actually expects.
+                    day_universe = active_symbols_for_day(day)
+                    expected_for_day = day_universe if day_universe is not None else set(universe)
+                    for symbol in (expected_for_day & set(universe)) - present:
+                        symbol_gap_dates[symbol].append(day)
+                # A lagging/new symbol gets one range request per missing symbol, newest date first.
+                gap_plan = build_gap_fill_plan(watermarks, target, sessions, depth,
+                                               symbols=sorted(symbol_gap_dates),
+                                               symbol_gap_dates=symbol_gap_dates)
+                eligibility_status = "ELIGIBLE" if gap_plan else "NO_GAPS"
         fetched_by_day: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
         checkpoint_root = base / ".checkpoints" / f"daily-kline-td-gap-{target}"
         actual_queries = 0
@@ -154,6 +256,10 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
             if time.monotonic() >= deadline:
                 raise TimeoutError("BAOSTOCK_TOTAL_BUDGET_EXHAUSTED")
             symbol, start, end = item["symbol"], item["start_date"], item["end_date"]
+            missing_days = [day for day in item["trade_dates"]
+                            if symbol not in artifact_symbols(day) and symbol not in td_symbols(day)]
+            if not missing_days:
+                continue  # The catalog already has the rows; this range is only a TD rehydrate.
             checkpoint = checkpoint_root / f"range-{start}-{end}" / f"{symbol}.json.gz"
             rows = _load_checkpoint(checkpoint, symbol, start, end)
             if rows is not None and not any(str(row.get("date")) == target for row in rows):
@@ -180,7 +286,7 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                 logout_error = type(exc).__name__ + ":" + str(exc)[:160]
 
     if not gap_plan:
-        return {"status": "NO_GAPS", "target": target, "watermark_symbols": len(watermarks),
+        return {"status": eligibility_status, "target": target, "watermark_symbols": len(watermarks),
                 "range_symbols": 0, "range_queries": 0, "partitions": [],
                 "elapsed_seconds": round(time.monotonic() - started, 3),
                 "baostock_logout_error": logout_error}
@@ -190,7 +296,6 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                        td_adapter=DailyKlineTdSink(store, base),
                        budget=RequestBudget(max_requests=max(1, len(gap_plan)), min_interval_seconds=0))
     outcomes = []
-    target_gap_symbols = {str(item["symbol"]) for item in gap_plan if target in item["trade_dates"]}
     for day in affected_dates:
         versions = store.read_versions(day)
         baostock_versions = {str(item.get("version")) for item in versions
@@ -198,31 +303,65 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
         stored = store.read_day_rows(day) if baostock_versions else {}
         existing = _td_rows_to_daily(day, {symbol: row for symbol, row in stored.items()
                                            if str(row.get("version") or "") in baostock_versions})
-        merged = {**existing, **fetched_by_day.get(day, {})}
+        day_manifest = catalog.locate("daily_kline", day)
+        artifact_rows = (catalog.read_rows(day_manifest)
+                         if day_manifest is not None and day == target else [])
+        artifact_existing = {str(row.get("symbol", row.get("code", ""))).zfill(6):
+                             {**row, "symbol": str(row.get("symbol", row.get("code", ""))).zfill(6),
+                              "date": day} for row in artifact_rows}
+        merged = {**artifact_existing, **existing, **fetched_by_day.get(day, {})}
         if not merged:
             continue
-        if day == target:
-            missing_symbols = sorted(target_gap_symbols - set(merged))
-            if missing_symbols:
-                raise RuntimeError("BAOSTOCK_GAP_UNRESOLVED:target_symbols_missing:" +
-                                   ",".join(missing_symbols[:12]))
         rows = sorted(merged.values(), key=lambda row: row["symbol"])
         completeness = {field: ("COMPLETE" if all(row.get(field) is not None for row in rows)
                                 else "SUSPENDED_ONLY" if all(row.get("suspended") for row in rows)
                                 else "PARTIAL") for field in _QUALITY_FIELDS}
+        day_expected_symbols = active_symbols_for_day(day)
+        day_expected_count = len(day_expected_symbols) if day_expected_symbols is not None else len(universe)
         meta = {"rows": rows, "source": "baostock", "provider": "baostock",
-                "expected_count": len(universe), "field_completeness": completeness,
+                "expected_count": day_expected_count, "field_completeness": completeness,
                 "provider_attempts": [{"provider": "baostock", "result": "ok",
                                        "reason": "td_watermark_range_fill"}],
                 "available_at": datetime.now(SHANGHAI).isoformat(),
                 "as_of": day, "request_count": len([x for x in gap_plan if day in x["trade_dates"]])}
+        if day == target and day_expected_symbols is not None:
+            meta.update({"expected_symbols": sorted(day_expected_symbols),
+                         "source_symbols": universe})
         result = runner.run("daily_kline", day, fetch=lambda _day: meta,
-                            td_write=True, source="baostock", expected_count=len(universe))
-        outcomes.append({"trade_date": day, "row_count": len(result.rows), "version": result.manifest["version"],
-                         "sha256": result.manifest["sha256"], "td_publish": result.manifest.get("td_publish")})
+                            td_write=True, source="baostock", expected_count=day_expected_count,
+                            baostock_policy=completion_policy if day == target else None)
+        outcome = {"trade_date": day, "row_count": len(result.rows), "version": result.manifest["version"],
+                   "sha256": result.manifest["sha256"], "td_publish": result.manifest.get("td_publish")}
+        if day == target:
+            quality = dict(result.manifest.get("quality") or {})
+            business_status = result.manifest.get("business_status")
+            if day_expected_symbols is not None:
+                from .baostock_completion import classify_missing_symbols, evaluate_baostock_completion
+                from .registry.daily_kline import BAOSTOCK_COMPLETION_POLICY
+                policy = dict(BAOSTOCK_COMPLETION_POLICY)
+                policy.update(completion_policy or {})
+                bar_symbols = {str(row.get("symbol", row.get("code", ""))).zfill(6)
+                               for row in result.rows}
+                missing = classify_missing_symbols(day_expected_symbols, bar_symbols, universe)
+                completion = evaluate_baostock_completion(
+                    day_expected_symbols, bar_symbols, missing,
+                    coverage_threshold=policy["formal_coverage_threshold"],
+                    max_source_empty=policy["source_empty_max"])
+                business_status = completion["business_status"]
+                quality.update(completion["quality"])
+            outcome.update({"business_status": business_status, "quality": quality})
+        outcomes.append(outcome)
     if target not in {str(item["trade_date"]) for item in outcomes}:
         raise RuntimeError("BAOSTOCK_GAP_UNRESOLVED:target_partition_missing:" + target)
-    return {"status": "OK", "target": target, "watermark_symbols": len(watermarks),
+    target_result = next(item for item in outcomes if str(item["trade_date"]) == target)
+    complete = target_result.get("business_status") == "FORMAL" and target_result.get("td_publish") == "READY"
+    quality = target_result.get("quality") or {}
+    def count_quality(name: str) -> int:
+        return int(quality.get(name) or 0)
+    return {"status": "OK" if complete else "WAITING", "target": target, "watermark_symbols": len(watermarks),
             "range_symbols": len(gap_plan), "range_queries": actual_queries, "partitions": outcomes,
+            "remaining_missing": count_quality("missing"),
+            "remaining_source_empty": count_quality("source_empty_count"),
+            "remaining_unexpected": count_quality("unexpected_count"),
             "elapsed_seconds": round(time.monotonic() - started, 3),
             "baostock_logout_error": logout_error}

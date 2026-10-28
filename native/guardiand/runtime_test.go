@@ -3317,6 +3317,98 @@ exit 75
 	}
 }
 
+func TestC595CrossDateRetryRecoversAndRunsBeforeConfiguredCutoff(t *testing.T) {
+	root, previous, date := t.TempDir(), "2026-10-20", "2026-10-21"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 01:00:00", loc)
+	fc := newFakeClock(now)
+	previousLedger, err := openLedger(root, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorState := instanceState{
+		Status: "RETRY_WAIT", Attempts: 1, Rung: 1, Tier: "primary", RungAttempts: 1,
+		StartedAt: previous + "T17:40:00+08:00", NextAttemptAt: date + "T00:30:00+08:00",
+		LastError: "BAOSTOCK_LOCAL_GAP_WAIT",
+	}
+	if err := previousLedger.append("INSTANCE_STATE", runState{
+		EventID: "baostock_probe", Instance: "baostock_probe", TradeDate: previous, State: priorState,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := previousLedger.close(); err != nil {
+		t.Fatal(err)
+	}
+	currentLedger, err := openLedger(root, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer currentLedger.close()
+	currentLedger.now = fc.Now
+	script := filepath.Join(root, "success.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	event := config.Event{
+		ID: "baostock_probe", Handler: "h", Calendar: json.RawMessage(`"every_day"`),
+		Trigger:   config.Trigger{Type: "window", Start: "17:40:00", Deadline: "17:49:59"},
+		LateUntil: "23:30:00", LateUntilDateOffsetDays: 1,
+		LateUntilClockByErrorCode:     map[string]string{"BAOSTOCK_LOCAL_GAP_WAIT": "08:00:00"},
+		LateUntilDateOffsetErrorCodes: []string{"BAOSTOCK_LOCAL_GAP_WAIT"}, OnDeadline: "missed", Catchup: "run_in_window",
+		Ladder: []config.LadderTier{{Name: "primary", Attempts: 32, Backoff: "30m*1", Timeout: "20m", Until: "late_until"}},
+	}
+	c := config.Config{Events: []config.Event{event}, Handlers: map[string]config.Handler{"h": {Argv: []string{script}}}}
+	r := &liveRunner{
+		c: c, root: root, loc: loc, start: now, clock: fc, fake: fc, ledger: currentLedger,
+		states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{},
+		alertSeen: map[string]bool{}, alertMinutes: map[int64]int{},
+	}
+	r.recoverPreviousCrossDateRetries(date, c)
+	if got := runtimeTestState(r, previous+"/baostock_probe"); got.Status != "RETRY_WAIT" || got.Attempts != 1 {
+		t.Fatalf("previous retry not recovered: %+v", got)
+	}
+	cutoff, ok := r.ladderRetryCutoff(previous, &event, priorState)
+	wantCutoff, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 08:00:00", loc)
+	if !ok || !cutoff.Equal(wantCutoff) {
+		t.Fatalf("cross-date cutoff=%v ok=%v, want %v", cutoff, ok, wantCutoff)
+	}
+	broadPartial := priorState
+	broadPartial.LastError = "TIER_PARTIAL"
+	cutoff, ok = r.ladderRetryCutoff(previous, &event, broadPartial)
+	wantCutoff, _ = time.ParseInLocation("2006-01-02 15:04:05", previous+" 23:30:00", loc)
+	if !ok || !cutoff.Equal(wantCutoff) {
+		t.Fatalf("broad partial cutoff=%v ok=%v, want same-day %v", cutoff, ok, wantCutoff)
+	}
+	r.schedulePreviousCrossDateRetries(now, date, c)
+	waitFor(t, func() bool { return runtimeTestState(r, previous+"/baostock_probe").Status == "SUCCEEDED" })
+	if got := runtimeTestState(r, previous+"/baostock_probe"); got.Attempts != 2 {
+		t.Fatalf("cross-date retry state=%+v, want second attempt", got)
+	}
+}
+
+func TestC595BaostockFinalPartialAlertsOnceForDate(t *testing.T) {
+	date, eventDate := "2026-10-29", "2026-10-28"
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now, _ := time.ParseInLocation("2006-01-02 15:04:05", date+" 08:00:00", loc)
+	fc := newFakeClock(now)
+	root := t.TempDir()
+	c := config.Config{Handlers: map[string]config.Handler{"alert": {Argv: []string{"/bin/true"}}}}
+	r, closeRunner := newC545Runner(t, root, date, fc, c)
+	defer closeRunner()
+	for _, id := range []string{"baostock_probe_1730", "baostock_retry_1740", "baostock_retry_1830", "baostock_retry_2000"} {
+		r.finishLadderRetryFailure(Instance{ID: id, EventID: id}, eventDate,
+			instanceState{Status: "RETRY_WAIT", Attempts: 20, LastError: "TIER_PARTIAL"}, "TIER_UNTIL_EXPIRED")
+	}
+	if r.alertDaily != 1 {
+		t.Fatalf("final Baostock partials emitted %d alerts, want one date-level alert", r.alertDaily)
+	}
+	r.finishLadderRetryFailure(Instance{ID: "baostock_retry_2000", EventID: "baostock_retry_2000"}, eventDate,
+		instanceState{Status: "RETRY_WAIT", Attempts: 20, LastError: "BAOSTOCK_LOCAL_GAP_WAIT"}, "TIER_UNTIL_EXPIRED")
+	if r.alertDaily != 1 {
+		t.Fatalf("local-gap final failures were not deduplicated by date: %d", r.alertDaily)
+	}
+}
+
 func TestC557DeadlineRetryUsesTierUntil(t *testing.T) {
 	type sourceEvent struct {
 		ID              string          `json:"event_id"`

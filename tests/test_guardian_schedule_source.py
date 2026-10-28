@@ -41,6 +41,21 @@ def test_schedule_fields_match_go_migrator_and_native_fixture_provenance():
     assert native_path.read_bytes() == source_bytes
     provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
     assert provenance["sha256"] == hashlib.sha256(source_bytes).hexdigest()
+    events = {event["event_id"]: event for event in schedule["events"]}
+    baostock = [event for event in schedule["events"] if event.get("handler") == "baostock_probe"]
+    assert len(baostock) == 4
+    assert all(event["late_until"] == "23:30:00" and
+               event["late_until_date_offset_days"] == 1 and
+               event["late_until_date_offset_error_codes"] == ["BAOSTOCK_LOCAL_GAP_WAIT"] and
+               event["late_until_clock_by_error_code"] == {"BAOSTOCK_LOCAL_GAP_WAIT": "08:00:00"} and
+               "BAOSTOCK_LOCAL_GAP_WAIT" in event["args"]["failure_classes"]["retryable"]["error_codes"] and
+               event["args"]["baostock_gapfill_policy"]["minimum_coverage"] == 0.90
+               for event in baostock)
+    assert schedule["profiles"]["policy_11"]["ladder"][0]["attempts"] == 32
+    assert schedule["profiles"]["policy_11"]["ladder"][0]["backoff"] == "30m*1"
+    assert events["daily_kline_backfill"]["enabled"] is True
+    assert events["daily_kline_backfill"]["handler"] == "daily_kline_backfill"
+    assert events["daily_kline_backfill"]["at"] == ["01:00", "08:00"]
 
 
 def test_default_events_load_all_window_and_startup_definitions_from_config(tmp_path):
@@ -63,6 +78,8 @@ def test_default_events_load_all_window_and_startup_definitions_from_config(tmp_
     assert extension.catchup is False
     assert extension.retry_base_seconds == 1
     assert extension.retry_max_seconds == 300
+    baostock = next(event for event in events if event.event_id == "baostock_probe_1730")
+    assert baostock.late_until_clock_by_error_code == {"BAOSTOCK_LOCAL_GAP_WAIT": "08:00:00"}
     derived = EventSpec("derived", "09:20:00", "09:21:00", "always", "calendar_refresh",
                         catchup_mode="run_in_window", on_deadline="degrade",
                         retry_backoff="1m", phases=("any",))

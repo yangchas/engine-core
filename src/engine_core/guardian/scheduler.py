@@ -57,6 +57,9 @@ class EventSpec:
     order: int | None = None
     after: tuple[str, ...] = ()
     late_until: str | None = None
+    late_until_date_offset_days: int = 0
+    late_until_date_offset_error_codes: tuple[str, ...] = ()
+    late_until_clock_by_error_code: Mapping[str, str] | None = None
     cost: str | None = None
     phases: tuple[str, ...] | None = None
     on_phase_mismatch: str | None = None
@@ -82,6 +85,22 @@ class EventSpec:
             raise ValueError("invalid_trigger_type")
         if self.trigger_type == "window" and _clock(self.start) > _clock(self.deadline):
             raise ValueError("event_deadline_before_start")
+        if self.late_until_date_offset_days not in {0, 1} or \
+                self.late_until_date_offset_days and not self.late_until:
+            raise ValueError("invalid_late_until_date_offset")
+        if self.late_until_date_offset_error_codes and self.late_until_date_offset_days == 0:
+            raise ValueError("invalid_late_until_date_offset_error_codes")
+        if any(not isinstance(code, str) or not code for code in self.late_until_date_offset_error_codes):
+            raise ValueError("invalid_late_until_date_offset_error_codes")
+        clock_overrides = {}
+        for code, value in (self.late_until_clock_by_error_code or {}).items():
+            if not isinstance(code, str) or not code or code.strip() != code or not isinstance(value, str):
+                raise ValueError("invalid_late_until_clock_by_error_code")
+            try:
+                clock_overrides[code] = _clock(value).strftime("%H:%M:%S")
+            except ValueError as exc:
+                raise ValueError("invalid_late_until_clock_by_error_code") from exc
+        object.__setattr__(self, "late_until_clock_by_error_code", clock_overrides)
 
     @property
     def catchup(self) -> bool:

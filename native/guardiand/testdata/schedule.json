@@ -239,13 +239,13 @@
       "catchup": "run_in_window",
       "retry_backoff": "5m",
       "retry_until_late": true,
-      "silent_until_last": false,
+      "silent_until_last": true,
       "ladder": [
         {
           "name": "legacy",
-          "attempts": 3,
-          "backoff": "5m*2",
-          "backoff_cap": "10m",
+          "attempts": 32,
+          "backoff": "30m*1",
+          "backoff_cap": "30m",
           "timeout": "20m",
           "budget_enabled": false,
           "until": "late_until"
@@ -1741,7 +1741,8 @@
               "BAOSTOCK_RECEIVE_EXCEPTION",
               "FETCH_TIMEOUT",
               "RATE_LIMITED",
-              "TIER_PARTIAL"
+              "TIER_PARTIAL",
+              "BAOSTOCK_LOCAL_GAP_WAIT"
             ],
             "message_patterns": [
               "receive exception",
@@ -1788,7 +1789,17 @@
         "daily_kline_policy": {
           "formal_coverage_threshold": 0.995,
           "source_empty_max": 20
+        },
+        "baostock_gapfill_policy": {
+          "minimum_coverage": 0.9
         }
+      },
+      "late_until_date_offset_days": 1,
+      "late_until_date_offset_error_codes": [
+        "BAOSTOCK_LOCAL_GAP_WAIT"
+      ],
+      "late_until_clock_by_error_code": {
+        "BAOSTOCK_LOCAL_GAP_WAIT": "08:00:00"
       }
     },
     {
@@ -1843,7 +1854,8 @@
               "BAOSTOCK_RECEIVE_EXCEPTION",
               "FETCH_TIMEOUT",
               "RATE_LIMITED",
-              "TIER_PARTIAL"
+              "TIER_PARTIAL",
+              "BAOSTOCK_LOCAL_GAP_WAIT"
             ],
             "message_patterns": [
               "receive exception",
@@ -1890,7 +1902,17 @@
         "daily_kline_policy": {
           "formal_coverage_threshold": 0.995,
           "source_empty_max": 20
+        },
+        "baostock_gapfill_policy": {
+          "minimum_coverage": 0.9
         }
+      },
+      "late_until_date_offset_days": 1,
+      "late_until_date_offset_error_codes": [
+        "BAOSTOCK_LOCAL_GAP_WAIT"
+      ],
+      "late_until_clock_by_error_code": {
+        "BAOSTOCK_LOCAL_GAP_WAIT": "08:00:00"
       }
     },
     {
@@ -2008,7 +2030,8 @@
               "BAOSTOCK_RECEIVE_EXCEPTION",
               "FETCH_TIMEOUT",
               "RATE_LIMITED",
-              "TIER_PARTIAL"
+              "TIER_PARTIAL",
+              "BAOSTOCK_LOCAL_GAP_WAIT"
             ],
             "message_patterns": [
               "receive exception",
@@ -2055,7 +2078,17 @@
         "daily_kline_policy": {
           "formal_coverage_threshold": 0.995,
           "source_empty_max": 20
+        },
+        "baostock_gapfill_policy": {
+          "minimum_coverage": 0.9
         }
+      },
+      "late_until_date_offset_days": 1,
+      "late_until_date_offset_error_codes": [
+        "BAOSTOCK_LOCAL_GAP_WAIT"
+      ],
+      "late_until_clock_by_error_code": {
+        "BAOSTOCK_LOCAL_GAP_WAIT": "08:00:00"
       }
     },
     {
@@ -2107,7 +2140,8 @@
               "BAOSTOCK_RECEIVE_EXCEPTION",
               "FETCH_TIMEOUT",
               "RATE_LIMITED",
-              "TIER_PARTIAL"
+              "TIER_PARTIAL",
+              "BAOSTOCK_LOCAL_GAP_WAIT"
             ],
             "message_patterns": [
               "receive exception",
@@ -2154,7 +2188,18 @@
         "daily_kline_policy": {
           "formal_coverage_threshold": 0.995,
           "source_empty_max": 20
+        },
+        "baostock_gapfill_policy": {
+          "minimum_coverage": 0.9
         }
+      },
+      "late_until_date_offset_days": 1,
+      "silent_until_last": true,
+      "late_until_date_offset_error_codes": [
+        "BAOSTOCK_LOCAL_GAP_WAIT"
+      ],
+      "late_until_clock_by_error_code": {
+        "BAOSTOCK_LOCAL_GAP_WAIT": "08:00:00"
       }
     },
     {
@@ -2449,7 +2494,7 @@
     },
     {
       "event_id": "daily_kline_backfill",
-      "enabled": false,
+      "enabled": true,
       "calendar": "every_day",
       "trigger_type": "window",
       "at": [
@@ -2457,9 +2502,13 @@
         "08:00"
       ],
       "deadline": "08:15",
-      "handler": "selftest",
+      "handler": "daily_kline_backfill",
       "args": {
-        "target": "prev_trade_day"
+        "target": "prev_trade_day",
+        "daily_kline_policy": {
+          "formal_coverage_threshold": 0.995,
+          "source_empty_max": 20
+        }
       },
       "profile": "kline",
       "phases": [

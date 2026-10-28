@@ -16,21 +16,24 @@ import (
 )
 
 type Instance struct {
-	ID               string `json:"id"`
-	EventID          string `json:"event_id"`
-	Start            string `json:"start"`
-	Deadline         string `json:"deadline"`
-	LateUntil        string `json:"late_until,omitempty"`
-	Timeout          string `json:"timeout"`
-	MaxAttempts      int    `json:"max_attempts"`
-	Catchup          string `json:"catchup"`
-	OnDeadline       string `json:"on_deadline"`
-	Calendar         string `json:"calendar"`
-	TriggerType      string `json:"trigger_type,omitempty"`
-	DataDate         string `json:"data_date,omitempty"`
-	TargetDate       string `json:"target_date,omitempty"`
-	DataDateOffset   int    `json:"data_date_offset,omitempty"`
-	DegradeRequested bool   `json:"-"`
+	ID                            string            `json:"id"`
+	EventID                       string            `json:"event_id"`
+	Start                         string            `json:"start"`
+	Deadline                      string            `json:"deadline"`
+	LateUntil                     string            `json:"late_until,omitempty"`
+	LateUntilClockByErrorCode     map[string]string `json:"late_until_clock_by_error_code,omitempty"`
+	LateUntilDateOffsetDays       int               `json:"late_until_date_offset_days,omitempty"`
+	LateUntilDateOffsetErrorCodes []string          `json:"late_until_date_offset_error_codes,omitempty"`
+	Timeout                       string            `json:"timeout"`
+	MaxAttempts                   int               `json:"max_attempts"`
+	Catchup                       string            `json:"catchup"`
+	OnDeadline                    string            `json:"on_deadline"`
+	Calendar                      string            `json:"calendar"`
+	TriggerType                   string            `json:"trigger_type,omitempty"`
+	DataDate                      string            `json:"data_date,omitempty"`
+	TargetDate                    string            `json:"target_date,omitempty"`
+	DataDateOffset                int               `json:"data_date_offset,omitempty"`
+	DegradeRequested              bool              `json:"-"`
 }
 
 func main() {
@@ -255,20 +258,20 @@ func instancesWithExcluded(c config.Config, date string, includeExcluded bool) (
 			if len(e.Trigger.AtTimes) > 0 {
 				for _, at := range e.Trigger.AtTimes {
 					id := e.ID + "@" + at[:5]
-					out = append(out, Instance{ID: id, EventID: e.ID, Start: at, Deadline: e.Trigger.Deadline, LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: catch, OnDeadline: e.OnDeadline, Calendar: status, TargetDate: targetDate, DataDateOffset: e.DataDateOffset})
+					out = append(out, Instance{ID: id, EventID: e.ID, Start: at, Deadline: e.Trigger.Deadline, LateUntil: e.LateUntil, LateUntilClockByErrorCode: e.LateUntilClockByErrorCode, LateUntilDateOffsetDays: e.LateUntilDateOffsetDays, LateUntilDateOffsetErrorCodes: append([]string(nil), e.LateUntilDateOffsetErrorCodes...), Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: catch, OnDeadline: e.OnDeadline, Calendar: status, TargetDate: targetDate, DataDateOffset: e.DataDateOffset})
 					if len(out) > 10000 {
 						return nil, "", fmt.Errorf("at instance limit exceeded")
 					}
 				}
 				continue
 			}
-			out = append(out, Instance{ID: e.ID, EventID: e.ID, Start: e.Trigger.Start, Deadline: e.Trigger.Deadline, LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: catch, OnDeadline: e.OnDeadline, Calendar: status, TargetDate: targetDate, DataDateOffset: e.DataDateOffset})
+			out = append(out, Instance{ID: e.ID, EventID: e.ID, Start: e.Trigger.Start, Deadline: e.Trigger.Deadline, LateUntil: e.LateUntil, LateUntilClockByErrorCode: e.LateUntilClockByErrorCode, LateUntilDateOffsetDays: e.LateUntilDateOffsetDays, LateUntilDateOffsetErrorCodes: append([]string(nil), e.LateUntilDateOffsetErrorCodes...), Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: catch, OnDeadline: e.OnDeadline, Calendar: status, TargetDate: targetDate, DataDateOffset: e.DataDateOffset})
 			continue
 		}
 		if e.Trigger.Type == "at" {
 			d := time.Duration(configDuration(e.Trigger.Window))
 			end := clock(e.Trigger.At).Add(d)
-			out = append(out, Instance{ID: e.ID, EventID: e.ID, Start: e.Trigger.At, Deadline: end.Format("15:04:05"), LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: e.Catchup, OnDeadline: e.OnDeadline, Calendar: status, TargetDate: targetDate, DataDateOffset: e.DataDateOffset})
+			out = append(out, Instance{ID: e.ID, EventID: e.ID, Start: e.Trigger.At, Deadline: end.Format("15:04:05"), LateUntil: e.LateUntil, LateUntilClockByErrorCode: e.LateUntilClockByErrorCode, LateUntilDateOffsetDays: e.LateUntilDateOffsetDays, LateUntilDateOffsetErrorCodes: append([]string(nil), e.LateUntilDateOffsetErrorCodes...), Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: e.Catchup, OnDeadline: e.OnDeadline, Calendar: status, TargetDate: targetDate, DataDateOffset: e.DataDateOffset})
 			continue
 		}
 		start, end := clock(e.Trigger.Start), clock(e.Trigger.Until)
@@ -284,7 +287,7 @@ func instancesWithExcluded(c config.Config, date string, includeExcluded bool) (
 			if catch == "" {
 				catch = "skip"
 			}
-			out = append(out, Instance{ID: e.ID + "@" + s, EventID: e.ID, Start: s, Deadline: t.Add(win).Format("15:04:05"), LateUntil: e.LateUntil, Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: catch, OnDeadline: e.OnDeadline, Calendar: status, TargetDate: targetDate, DataDateOffset: e.DataDateOffset})
+			out = append(out, Instance{ID: e.ID + "@" + s, EventID: e.ID, Start: s, Deadline: t.Add(win).Format("15:04:05"), LateUntil: e.LateUntil, LateUntilClockByErrorCode: e.LateUntilClockByErrorCode, LateUntilDateOffsetDays: e.LateUntilDateOffsetDays, LateUntilDateOffsetErrorCodes: append([]string(nil), e.LateUntilDateOffsetErrorCodes...), Timeout: e.Timeout, MaxAttempts: e.Retry.MaxAttempts, Catchup: catch, OnDeadline: e.OnDeadline, Calendar: status, TargetDate: targetDate, DataDateOffset: e.DataDateOffset})
 			if len(out) > 10000 {
 				return nil, "", fmt.Errorf("interval instance limit exceeded")
 			}
@@ -595,16 +598,16 @@ type scheduleWindow struct {
 }
 
 type scheduleTier struct {
-	Name          string         `json:"name"`
-	Args          map[string]any `json:"args"`
-	Attempts      int            `json:"attempts"`
-	Backoff       string         `json:"backoff"`
-	BackoffCap    string         `json:"backoff_cap"`
-	Timeout       string         `json:"timeout"`
-	Until         string         `json:"until"`
-	BudgetEnabled *bool          `json:"budget_enabled"`
-	OnTimeout       string `json:"on_timeout"`
-	AlertOnFallback bool   `json:"alert_on_fallback"`
+	Name            string         `json:"name"`
+	Args            map[string]any `json:"args"`
+	Attempts        int            `json:"attempts"`
+	Backoff         string         `json:"backoff"`
+	BackoffCap      string         `json:"backoff_cap"`
+	Timeout         string         `json:"timeout"`
+	Until           string         `json:"until"`
+	BudgetEnabled   *bool          `json:"budget_enabled"`
+	OnTimeout       string         `json:"on_timeout"`
+	AlertOnFallback bool           `json:"alert_on_fallback"`
 }
 
 type scheduleProfile struct {
@@ -626,40 +629,43 @@ type scheduleV3 struct {
 }
 
 type scheduleV3Event struct {
-	ID              string          `json:"id"`
-	EventID         string          `json:"event_id"`
-	Enabled         bool            `json:"enabled"`
-	Calendar        string          `json:"calendar"`
-	TriggerType     string          `json:"trigger_type"`
-	At              json.RawMessage `json:"at"`
-	Deadline        string          `json:"deadline"`
-	LateUntil       string          `json:"late_until"`
-	Window          *scheduleWindow `json:"window"`
-	Profile         string          `json:"profile"`
-	Catchup         string          `json:"catchup"`
-	Ladder          []scheduleTier  `json:"ladder"`
-	Gate            string          `json:"gate"`
-	Handler         string          `json:"handler"`
-	Timeout         int             `json:"timeout_seconds"`
-	MaxAttempts     int             `json:"max_attempts"`
-	RetryBackoff    string          `json:"retry_backoff"`
-	RetryUntilLate  bool            `json:"retry_until_late"`
-	SilentUntilLast bool            `json:"silent_until_last"`
-	CatchupMode     string          `json:"catchup_mode"`
-	OnDeadline      string          `json:"on_deadline"`
-	Order           int             `json:"order"`
-	After           []string        `json:"after"`
-	Cost            string          `json:"cost"`
-	Phases          []string        `json:"phases"`
-	OnPhaseMismatch string          `json:"on_phase_mismatch"`
-	OnStart         string          `json:"on_start"`
-	DataDateOffset  int             `json:"data_date_offset"`
-	AvailableAfter  *string         `json:"available_after"`
-	DependsOn       []string        `json:"depends_on"`
-	Args            map[string]any  `json:"args"`
+	ID                            string            `json:"id"`
+	EventID                       string            `json:"event_id"`
+	Enabled                       bool              `json:"enabled"`
+	Calendar                      string            `json:"calendar"`
+	TriggerType                   string            `json:"trigger_type"`
+	At                            json.RawMessage   `json:"at"`
+	Deadline                      string            `json:"deadline"`
+	LateUntil                     string            `json:"late_until"`
+	LateUntilClockByErrorCode     map[string]string `json:"late_until_clock_by_error_code"`
+	LateUntilDateOffsetErrorCodes []string          `json:"late_until_date_offset_error_codes"`
+	Window                        *scheduleWindow   `json:"window"`
+	Profile                       string            `json:"profile"`
+	Catchup                       string            `json:"catchup"`
+	Ladder                        []scheduleTier    `json:"ladder"`
+	Gate                          string            `json:"gate"`
+	Handler                       string            `json:"handler"`
+	Timeout                       int               `json:"timeout_seconds"`
+	MaxAttempts                   int               `json:"max_attempts"`
+	RetryBackoff                  string            `json:"retry_backoff"`
+	RetryUntilLate                bool              `json:"retry_until_late"`
+	SilentUntilLast               bool              `json:"silent_until_last"`
+	CatchupMode                   string            `json:"catchup_mode"`
+	OnDeadline                    string            `json:"on_deadline"`
+	Order                         int               `json:"order"`
+	After                         []string          `json:"after"`
+	Cost                          string            `json:"cost"`
+	Phases                        []string          `json:"phases"`
+	OnPhaseMismatch               string            `json:"on_phase_mismatch"`
+	OnStart                       string            `json:"on_start"`
+	DataDateOffset                int               `json:"data_date_offset"`
+	LateUntilDateOffsetDays       int               `json:"late_until_date_offset_days"`
+	AvailableAfter                *string           `json:"available_after"`
+	DependsOn                     []string          `json:"depends_on"`
+	Args                          map[string]any    `json:"args"`
 }
 
-var scheduleHandlers = []string{"auction_report", "auction_watch", "baostock_probe", "daily_kline_close", "boot_apply_plan",
+var scheduleHandlers = []string{"auction_report", "auction_watch", "baostock_probe", "daily_kline_backfill", "daily_kline_close", "boot_apply_plan",
 	"boot_data_health", "boot_reconcile", "boot_trade_day", "calendar_refresh", "close_capture",
 	"close_report", "fetch_item", "intraday_data", "kaipan_fetch", "kaipan_hot_capture", "selftest",
 	"night_report", "open_report", "postmarket_data", "premarket_data", "snapshot_check"}
@@ -977,6 +983,29 @@ func compileScheduleV3(b []byte) (config.Config, error) {
 			window.LateUntil = event.LateUntil
 			windowSource = "event"
 		}
+		if event.LateUntilDateOffsetDays < 0 || event.LateUntilDateOffsetDays > 1 ||
+			(event.LateUntilDateOffsetDays > 0 && window.LateUntil == "") {
+			return config.Config{}, fmt.Errorf("event %s has invalid late_until_date_offset_days", eventID)
+		}
+		if len(event.LateUntilDateOffsetErrorCodes) > 0 && event.LateUntilDateOffsetDays == 0 {
+			return config.Config{}, fmt.Errorf("event %s requires late_until_date_offset_days for error codes", eventID)
+		}
+		for _, code := range event.LateUntilDateOffsetErrorCodes {
+			if strings.TrimSpace(code) != code || code == "" {
+				return config.Config{}, fmt.Errorf("event %s has invalid late_until_date_offset_error_codes", eventID)
+			}
+		}
+		clockOverrides := make(map[string]string, len(event.LateUntilClockByErrorCode))
+		for code, value := range event.LateUntilClockByErrorCode {
+			if strings.TrimSpace(code) != code || code == "" {
+				return config.Config{}, fmt.Errorf("event %s has invalid late_until_clock_by_error_code", eventID)
+			}
+			normalized, err := normalizeScheduleTime(value)
+			if err != nil {
+				return config.Config{}, fmt.Errorf("event %s has invalid late_until_clock_by_error_code for %s", eventID, code)
+			}
+			clockOverrides[code] = normalized
+		}
 		if triggerType == "window" && window.Deadline == "" {
 			return config.Config{}, fmt.Errorf("event %s requires window.deadline", eventID)
 		}
@@ -1063,7 +1092,10 @@ func compileScheduleV3(b []byte) (config.Config, error) {
 		retryUntilLate := event.RetryUntilLate || profile.RetryUntilLate
 		silentUntilLast := event.SilentUntilLast || profile.SilentUntilLast
 		ev := config.Event{ID: eventID, Enabled: event.Enabled, Disabled: !event.Enabled, Calendar: raw(event.Calendar), Trigger: trigger,
-			DataDateOffset: event.DataDateOffset, AvailableAfter: event.AvailableAfter, Handler: handler,
+			DataDateOffset: event.DataDateOffset, LateUntilDateOffsetDays: event.LateUntilDateOffsetDays,
+			LateUntilDateOffsetErrorCodes: append([]string(nil), event.LateUntilDateOffsetErrorCodes...),
+			LateUntilClockByErrorCode:     clockOverrides,
+			AvailableAfter:                event.AvailableAfter, Handler: handler,
 			Gate: config.Gate{Ref: event.Gate}, Timeout: ladder[0].Timeout, LateUntil: window.LateUntil,
 			Retry: config.Retry{MaxAttempts: ladder[0].Attempts, Backoff: retryBackoff,
 				UntilLate: retryUntilLate, SilentUntilLast: silentUntilLast},

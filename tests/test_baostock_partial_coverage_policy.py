@@ -9,6 +9,7 @@ import pytest
 from engine_core.data_pipeline.baostock_completion import (
     classify_missing_symbols,
     evaluate_baostock_completion,
+    should_wait_for_baostock_gap,
 )
 from engine_core.data_pipeline.jobs import JobRunner
 from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider
@@ -115,6 +116,20 @@ def test_real_20261028_latest_missing_classification_is_not_silently_weakened():
     loosened_threshold = evaluate_baostock_completion(
         active, bars, missing, coverage_threshold=0.98, max_source_empty=20)
     assert loosened_threshold["business_status"] == "PARTIAL"  # 73 SOURCE_EMPTY still exceed the configured cap.
+
+
+def test_real_partial_partitions_choose_gap_wait_only_above_local_coverage_floor():
+    policy = _policy()
+    results = {}
+    for partition in ("coverage_0668", "coverage_0986"):
+        active, bars, source_symbols, _ = _real_inputs(partition)
+        missing = classify_missing_symbols(active, bars, source_symbols)
+        results[partition] = evaluate_baostock_completion(
+            active, bars, missing, coverage_threshold=policy["formal_coverage_threshold"],
+            max_source_empty=policy["source_empty_max"])
+
+    assert should_wait_for_baostock_gap(results["coverage_0986"], minimum_coverage=0.90) is True
+    assert should_wait_for_baostock_gap(results["coverage_0668"], minimum_coverage=0.90) is False
 
 
 def test_baostock_all_stock_uses_real_response_and_day_checkpoint_once(tmp_path):
