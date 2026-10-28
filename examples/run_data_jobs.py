@@ -157,11 +157,33 @@ def _require_sample_artifact_root(path: str | Path) -> str:
     raise ValueError("symbols_file_artifact_root_cannot_be_core_data_root")
 
 
+def _wencai_options(args: Any, parser: Any) -> dict[str, Any]:
+    try:
+        edges = tuple(None if item.strip().lower() in {"", "none"} else float(item)
+                      for item in str(args.wencai_segment_edges_yi).split(","))
+    except ValueError:
+        parser.error("--wencai-segment-edges-yi must be numbers or none")
+    if (args.wencai_cooldown_seconds < 0 or args.wencai_cooldown_max_seconds < 0 or args.wencai_max_cooldowns < 0
+            or args.wencai_max_total_requests < 1 or args.wencai_segment_max_rows < 1
+            or not 0 < args.wencai_coverage_threshold <= 1):
+        parser.error("invalid WenCai throttle/segment bounds")
+    return {"cookie_file": args.wencai_cookie_file or None,
+            "cooldown_seconds": args.wencai_cooldown_seconds,
+            "cooldown_max_seconds": args.wencai_cooldown_max_seconds,
+            "max_cooldowns_per_page": args.wencai_max_cooldowns,
+            "max_total_requests": args.wencai_max_total_requests,
+            "segment_enabled": args.wencai_segments == "on",
+            "segment_edges_yi": edges,
+            "segment_max_rows": args.wencai_segment_max_rows,
+            "coverage_threshold": args.wencai_coverage_threshold}
+
+
 def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
                       write_enabled: bool, *, baostock_timeout_seconds: float = 60.0,
                       baostock_total_timeout_seconds: float | None = None,
                       baostock_no_progress_seconds: float = 300.0,
-                      baostock_symbols_file: str | None = None) -> dict[str, Any]:
+                      baostock_symbols_file: str | None = None,
+                      wencai_options: dict[str, Any] | None = None) -> dict[str, Any]:
     """Construct lazy read-only adapters; optional SDK imports happen on fetch."""
     sample_path = Path(baostock_symbols_file).expanduser() if baostock_symbols_file else None
     if sample_path is not None:
@@ -267,7 +289,16 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
 
     def wencai_daily_fetch(day: str, context: Any = None) -> Any:
         from engine_core.data_pipeline.providers.wencai_daily_adapter import fetch_daily_kline
-        return fetch_daily_kline(day, context)
+        options = dict(wencai_options or {})
+        universe = load_dataset("symbol_universe", day, prefer="file",
+                                catalog=ArtifactCatalog(artifact_root))
+        if universe is not None:
+            options["universe_symbols"] = [str(row.get("symbol", "")).zfill(6) for row in universe.rows
+                                           if row.get("symbol") and str(row.get("trade_status", "")).strip() != "0"]
+        if write_enabled:
+            options["checkpoint_path"] = (Path(artifact_root) / ".checkpoints" /
+                                          f"daily_kline-wencai-pages-{day}.json")
+        return fetch_daily_kline(day, context, **options)
 
     class LazyKaipanClient:
         def _sdk(self):
@@ -442,6 +473,22 @@ def main(argv: list[str] | None = None) -> int:
                         help="same-tier WenCai attempts before returning a retryable incomplete result")
     parser.add_argument("--wencai-retry-backoff-seconds", type=float, default=10.0,
                         help="delay between same-tier WenCai attempts")
+    parser.add_argument("--wencai-cookie-file", default="~/core-data/secrets/wencai.cookie",
+                        help="optional WenCai login cookie file (content never printed); missing file = anonymous")
+    parser.add_argument("--wencai-cooldown-seconds", type=float, default=60.0,
+                        help="first cooldown before re-requesting a missing/truncated page; doubles per retry")
+    parser.add_argument("--wencai-cooldown-max-seconds", type=float, default=300.0)
+    parser.add_argument("--wencai-max-cooldowns", type=int, default=3, help="cooldown retries per page")
+    parser.add_argument("--wencai-max-total-requests", type=int, default=150,
+                        help="hard cap on upstream requests of one fetch (pages, retries, segments)")
+    parser.add_argument("--wencai-segments", choices=("on", "off"), default="on",
+                        help="market-cap segmented fallback when paging stays incomplete")
+    parser.add_argument("--wencai-segment-edges-yi", default="0,15,25,35,50,80,150,500,none",
+                        help="comma list of circulating market-cap edges in yi yuan, starting at 0, none = open end")
+    parser.add_argument("--wencai-segment-max-rows", type=int, default=1500,
+                        help="a segment reporting more rows than this is split before paging")
+    parser.add_argument("--wencai-coverage-threshold", type=float, default=0.95,
+                        help="segmented fetch succeeds only at this local-universe coverage")
     parser.add_argument("--symbols-file", help="debug-only one-symbol-per-line Baostock cohort")
     parser.add_argument("--adapter", help="injected module:function returning dataset fetch callables")
     parser.add_argument("--artifact-root", help="artifact root (required with --symbols-file)")
@@ -480,7 +527,8 @@ def main(argv: list[str] | None = None) -> int:
         baostock_timeout_seconds=args.baostock_timeout_seconds,
         baostock_total_timeout_seconds=args.baostock_total_timeout_seconds,
         baostock_no_progress_seconds=args.baostock_no_progress_seconds,
-        baostock_symbols_file=args.symbols_file)
+        baostock_symbols_file=args.symbols_file,
+        wencai_options=_wencai_options(args, parser))
     adapters.update(_load_adapter(args.adapter))
     daily_providers = [name.strip() for name in args.providers.split(",") if name.strip()]
     if args.symbols_file and daily_providers != ["baostock"]:

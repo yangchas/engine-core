@@ -99,3 +99,23 @@ The catalog is the transitional versioned ledger; the Core-owned TD database (`c
 `daily_kline_versions`) is the query store and decides coverage in `boot_reconcile`. Tables, unit mapping, version
 rules, guardian events (`td_sync_*`), the `SYNC_TD` plan action, the UNKNOWN/fallback rule and the Redis decision are in
 `docs/DAILY_KLINE_TD.md`.
+
+## WenCai fetch stability: cookie, cooldown, market-cap segments (C569)
+
+Code: `data_pipeline/providers/wencai_daily_adapter.py` (`fetch_daily_kline`); knobs are `wencai_*` args of the `wencai` rung in `schedule.json`, forwarded by `guardian/commands.py` to `examples/run_data_jobs.py --wencai-*`.
+
+- Cookie (optional): `wencai_cookie_file` (default `~/core-data/secrets/wencai.cookie`, mode 600). Read only inside the adapter and passed in the request; logs carry only `cookie: used|absent|expired` and its length. Missing file = anonymous. A rejected first page (error or empty) is retried once anonymously; if that works the cookie is `expired`, one WARNING is logged, and the rest of the fetch is anonymous.
+- Page size is 100: the upstream caps `perpage` at 100 (`perpage=1000` returned 30 rows or an error on 2026-10-28; the earlier constant 1000 was wrong). 5,580 rows = 56 pages.
+- Cooldown: a failed, empty or short page before the reported end is re-requested after `cooldown_seconds` (60, doubling, capped at `cooldown_max_seconds` 300, at most `wencai_max_cooldowns` 3 per page). Pages already fetched are kept (also in `.checkpoints/daily_kline-wencai-pages-<day>.json`, resumed by the next attempt within 6 h, deleted on success). `wencai_max_total_requests` (150) bounds all upstream requests.
+- Segments: if paging stays incomplete, ranges of circulating market cap (`wencai_segment_edges_yi`, default `0,15,25,35,50,80,150,500,none`) are fetched with their own paging; a range reporting more than `wencai_segment_max_rows` (1500) rows, or still incomplete, is halved. Each segment gets a row-count check and a column-date check (`[YYYYMMDD]` of all eight fields must be the trade date, else the segment is dropped). Rows are merged and de-duplicated with the C563 rule; success needs `wencai_coverage_threshold` (0.95) of the local active universe, otherwise `TIER_PARTIAL` (exit 30, retryable).
+- The wencai rung timeout is now 25m: one full 56-page fetch takes 12.4 min at the 10 s page gap.
+
+Real checks, trade day 2026-10-27, compared with the Baostock FORMAL partition (open/high/low/close/pre_close, tolerance 0.011); evidence `fw/evidence/C569/real_*.json`:
+
+| run | result |
+|---|---|
+| anonymous, paged | 56 pages, 5,580 rows, 746 s, no cooldown, not truncated; 5,223 common symbols, 0 mismatches |
+| cookie, `perpage=1000` (misconfigured, before the fix) | page 1 returned 30 rows; 150 requests; no 403; cookie accepted; 2,023 common symbols compared, 0 mismatches |
+| cookie, forced segmented (primary paging made to look truncated) | segments 0-50 yi and 150+ yi complete (553/805/768/827/706/286 rows); the 50-150 yi ranges failed with ReadTimeout/ConnectionError; 4,249 rows, universe coverage 74.6%, so `TIER_PARTIAL`; 3,899 common symbols, 0 mismatches |
+
+Conclusions: the cookie made no observable difference in accepting requests or page contents; whether it relaxes throttling is NOT established (no run was truncated, with or without it, once `perpage=100` was used; only 3 full fetches were allowed). Segments return the same values as Baostock; their weak point was transient timeouts after ~100 requests in 14 minutes, which led to the fix that a segment's failed first page is also cooled down and retried (offline-tested, not re-run against the real service). Recommended: `perpage` 100, 10 s page gap, cooldown 60 s doubling to 300 s, request cap 150, rung timeout 25m.

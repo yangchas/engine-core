@@ -34,6 +34,26 @@ def _append_baostock_no_progress(cmd, event_args):
                     str(_arg(event_args, "baostock_no_progress_seconds"))])
 
 
+_WENCAI_ARG_FLAGS = (
+    ("wencai_cookie_file", "--wencai-cookie-file"),
+    ("wencai_cooldown_seconds", "--wencai-cooldown-seconds"),
+    ("wencai_cooldown_max_seconds", "--wencai-cooldown-max-seconds"),
+    ("wencai_max_cooldowns", "--wencai-max-cooldowns"),
+    ("wencai_max_total_requests", "--wencai-max-total-requests"),
+    ("wencai_segments", "--wencai-segments"),
+    ("wencai_segment_edges_yi", "--wencai-segment-edges-yi"),
+    ("wencai_segment_max_rows", "--wencai-segment-max-rows"),
+    ("wencai_coverage_threshold", "--wencai-coverage-threshold"),
+)
+
+
+def _append_wencai_args(cmd, event_args):
+    """Config-only WenCai knobs (schedule.json ladder args) become CLI flags; Python holds no defaults here."""
+    for name, flag in _WENCAI_ARG_FLAGS:
+        if _has_arg(event_args, name):
+            cmd.extend([flag, str(_arg(event_args, name))])
+
+
 def daily_kline_budget_seconds(timeout_seconds, event_args):
     """Return the daily-kline subprocess budget bounded by its event timeout."""
     if timeout_seconds is None or timeout_seconds == "":
@@ -188,6 +208,7 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
             if _has_arg(args, "providers"):
                 cmd.extend(["--providers", _daily_kline_provider_arg(_arg(args, "providers"))])
             _append_baostock_no_progress(cmd, args)
+            _append_wencai_args(cmd, args)
         if opts.write:
             cmd.append("--write")
         elif getattr(opts, "simulate_clock", False):

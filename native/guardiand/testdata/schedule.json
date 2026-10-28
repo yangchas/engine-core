@@ -272,11 +272,20 @@
         {
           "name": "wencai",
           "args": {
-            "providers": "wencai"
+            "providers": "wencai",
+            "wencai_cookie_file": "~/core-data/secrets/wencai.cookie",
+            "wencai_cooldown_seconds": 60,
+            "wencai_cooldown_max_seconds": 300,
+            "wencai_max_cooldowns": 3,
+            "wencai_max_total_requests": 150,
+            "wencai_segments": "on",
+            "wencai_segment_edges_yi": "0,15,25,35,50,80,150,500,none",
+            "wencai_segment_max_rows": 1500,
+            "wencai_coverage_threshold": 0.95
           },
           "attempts": 2,
           "backoff": "60s*1",
-          "timeout": "10m",
+          "timeout": "25m",
           "budget_enabled": false,
           "on_timeout": "advance",
           "alert_on_fallback": true
