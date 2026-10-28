@@ -137,10 +137,37 @@ def test_core_single_event_failure_alert_is_formatted():
 def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
     from examples import guardian_handler
     from examples import core_guardian
+    from engine_core.guardian import daily_kline_backfill
 
     events = _schedule_events()
     called = []
     seen_opts = []
+    backfill_calls = []
+
+    # The dispatch smoke test uses the event's real schedule args. Its date and
+    # neighbours come from the captured BaoStock calendar response, normalized
+    # into the isolated Core calendar consumed by previous_trade_date().
+    trade_date = "2026-10-19"
+    captured_calendar = json.loads((ROOT / "tests/fixtures/trade_calendar/baostock-2026-01-01_2026-12-31.json").read_text())
+    calendar_rows = [row for row in captured_calendar["rows"]
+                     if "2026-10-15" <= row["calendar_date"] <= "2026-10-21"]
+    assert any(row["calendar_date"] == trade_date and row["is_trading_day"] == "1"
+               for row in calendar_rows)
+    root = Path(os.environ["CORE_DATA_ROOT"])
+    calendar_dir = root / "trade_calendar"
+    calendar_dir.mkdir(parents=True, exist_ok=True)
+    calendar = [{"d": row["calendar_date"], "t": int(row["is_trading_day"]),
+                 "src": "BS", "u": "captured-real-response"} for row in calendar_rows]
+    (calendar_dir / "calendar.json").write_text(json.dumps({
+        "schema": "CoreTradeCalendarMatrixV1", "lit_from": calendar[0]["d"],
+        "lit_to": calendar[-1]["d"], "days": calendar,
+    }), encoding="utf-8")
+
+    def fake_backfill(backfill_root, target, *, args):
+        backfill_calls.append((backfill_root, target, args))
+        return {"status": "NO_GAPS"}
+
+    monkeypatch.setattr(daily_kline_backfill, "run_daily_kline_backfill", fake_backfill)
 
     def fake_factory(name, opts, root):
         called.append(name)
@@ -154,17 +181,25 @@ def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
         # is exercised by the configured runtime-reconciliation Go test.
         if event.get("trigger_type") == "startup" or event.get("handler") == "boot_apply_plan":
             continue
-        _, payload = guardian_handler._run(_core_request(event["event_id"]))
+        request = _core_request(event["event_id"], trade_date=trade_date)
+        if event["handler"] == "daily_kline_backfill":
+            request["args"] = event["args"]
+        _, payload = guardian_handler._run(request)
         if event["handler"] == "daily_kline_close":
             # Providers come from the ladder rung's args; a bare request is refused, never defaulted (C566).
             assert payload["error_code"] == "CONFIG_ERROR", payload
+        elif event["handler"] == "daily_kline_backfill":
+            assert payload["status"] == "ok", payload
         elif event["handler"] == "close_capture":
             assert payload["status"] == "not_applicable"
         else:
             assert payload["status"] == "ok", (event["event_id"], payload)
     assert set(called) == {e["handler"] for e in events
-                           if e.get("trigger_type") != "startup" and e.get("handler") != "boot_apply_plan"} - {"close_capture", "daily_kline_close"}
+                           if e.get("trigger_type") != "startup" and e.get("handler") != "boot_apply_plan"} - {
+                               "close_capture", "daily_kline_close", "daily_kline_backfill"}
     assert all(o.write and o.run for o in seen_opts)  # live mode writes, like the old guardian
+    assert backfill_calls == [(root, "2026-10-16", next(
+        event["args"] for event in events if event["handler"] == "daily_kline_backfill"))]
 
 
 def test_successful_command_fails_when_postcondition_is_missing(monkeypatch):
@@ -261,7 +296,7 @@ def test_baostock_failure_classification_comes_from_request_args(monkeypatch):
     assert payload["retryable"] is True
 
 
-def test_postmarket_baostock_and_fetch_profiles_use_five_minute_backoff():
+def test_fetch_item_and_baostock_profiles_keep_their_retry_contracts():
     schedule = json.loads((ROOT / "src/engine_core/guardian/schedule.json").read_text())
     profiles = schedule["profiles"]
     events = {event["event_id"]: event for event in schedule["events"]}
@@ -272,11 +307,16 @@ def test_postmarket_baostock_and_fetch_profiles_use_five_minute_backoff():
         assert events[event_id]["profile"] == "policy_11"
         assert events[event_id]["late_until"] == "23:30:00"
     assert events["fetch_item"]["profile"] == "policy_04"
-    for profile_id in ("policy_04", "policy_11"):
-        assert profiles[profile_id]["retry_backoff"] == "5m"
-        rung = profiles[profile_id]["ladder"][0]
-        assert (rung["attempts"], rung["backoff"], rung["timeout"]) == (3, "5m*2", "20m")
-    assert profiles["policy_11"]["ladder"][0]["until"] == "late_until"
+    policy_04 = profiles["policy_04"]
+    assert policy_04["retry_backoff"] == "5m"
+    fetch_rung = policy_04["ladder"][0]
+    assert (fetch_rung["attempts"], fetch_rung["backoff"], fetch_rung["timeout"]) == (3, "5m*2", "20m")
+
+    policy_11 = profiles["policy_11"]
+    assert policy_11["silent_until_last"] is True
+    baostock_rung = policy_11["ladder"][0]
+    assert (baostock_rung["attempts"], baostock_rung["backoff"], baostock_rung["backoff_cap"],
+            baostock_rung["timeout"], baostock_rung["until"]) == (32, "30m*1", "30m", "20m", "late_until")
     assert all("failure_classes" in events[event_id].get("args", {})
                for event_id in (*baostock_ids, "fetch_item"))
 
