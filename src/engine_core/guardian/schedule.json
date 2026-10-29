@@ -467,7 +467,7 @@
           "attempts": 5,
           "backoff": "5m*2",
           "backoff_cap": "30m",
-          "timeout": "2h",
+          "timeout": "2h10m",
           "budget_enabled": false,
           "on_timeout": "retry",
           "until": "late_until"
