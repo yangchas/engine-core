@@ -19,7 +19,7 @@ from .daily_kline_capture import parse_row, to_baostock_code
 from .data_pipeline.storage import ArtifactCatalog, canonical_json
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
-_RANGE_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,turn,pctChg"
+_RANGE_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,turn,pctChg,tradestatus"
 HOT_KLINE_DAYS = 5
 
 

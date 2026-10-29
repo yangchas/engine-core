@@ -323,10 +323,10 @@ def _schedule_event_name(event_id: str) -> str:
 
 
 def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[str], run_token: str,
-                     now: datetime, minutes: int, *,
+                     now: datetime, minutes: int, *, window_minutes: int = 60,
                      event_args: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
-    if minutes < 1:
-        raise ValueError("minutes_must_be_at_least_1")
+    if minutes < 1 or window_minutes < 1:
+        raise ValueError("rehearsal_minutes_must_be_at_least_1")
     by_id = {str(event.get("event_id")): event for event in schedule["events"]
              if isinstance(event, dict) and event.get("event_id")}
     requested = list(dict.fromkeys([event_id, *with_events]))
@@ -373,7 +373,7 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
     trigger = now.astimezone(TZ) + timedelta(minutes=minutes)
     # Keep the archived retry/backoff semantics runnable; e.g. limit_pool_d1
     # has a 30-minute source-ladder backoff after its first attempt.
-    deadline = trigger + timedelta(minutes=60)
+    deadline = trigger + timedelta(minutes=window_minutes)
     if deadline.date() != trigger.date():
         raise ValueError("rehearsal_window_crosses_midnight")
     at_text = trigger.strftime("%H:%M:%S")
@@ -1215,6 +1215,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--td-database", default=os.environ.get("CORE_TD_DATABASE") or DEFAULT_TD_DATABASE,
                         help="pre-existing core_dev_* TD database; never created by this tool")
     parser.add_argument("--timeout-minutes", type=int, default=45, help="terminal-state wait limit; default 45")
+    parser.add_argument("--window-minutes", type=int, default=60,
+                        help="temporary event deadline window; default 60")
     parser.add_argument("--refresh-output", action="store_true",
                         help="hide this event's output date in the temporary catalog to exercise a fresh write")
     parser.add_argument("--refresh-output-event", action="append", default=[],
@@ -1322,11 +1324,12 @@ def run_rehearsal(args: argparse.Namespace) -> int:
         now = datetime.now(TZ)
         trigger = now + timedelta(minutes=args.minutes)
         trigger_at = trigger.isoformat(timespec="seconds")
-        deadline_at = (trigger + timedelta(minutes=60)).isoformat(timespec="seconds")
+        deadline_at = (trigger + timedelta(minutes=args.window_minutes)).isoformat(timespec="seconds")
         event_args_overrides = parse_event_args(args.event_args_json)
         prepared, event_ids = prepare_schedule(archive_schedule, args.event,
                                                [item for group in args.with_events for item in group],
                                                root.name, now, args.minutes,
+                                               window_minutes=args.window_minutes,
                                                event_args=event_args_overrides)
         if fetch_item_id is not None:
             seed_fetch_item_state(state_root, event_ids[args.event], target_data_date, trigger_at)
@@ -1565,6 +1568,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--minutes must be at least 1")
     if args.timeout_minutes < 1:
         parser.error("--timeout-minutes must be at least 1")
+    if args.window_minutes < 1:
+        parser.error("--window-minutes must be at least 1")
     try:
         return run_rehearsal(args)
     except (ValueError, RuntimeError) as exc:

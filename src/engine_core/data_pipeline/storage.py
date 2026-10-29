@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import gzip
 import json
+import math
 import os
 import tempfile
 from contextlib import contextmanager
@@ -17,6 +18,7 @@ from zoneinfo import ZoneInfo
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DAILY_KLINE_PROVIDERS = {"baostock", "wencai", "q2_final"}
 _DAILY_KLINE_FIELDS = ("open", "high", "low", "close", "pre_close", "pct_chg", "amount_yuan", "volume")
+_DAILY_KLINE_STATUS_RANK = {"MISSING": 0, "DEGRADED": 1, "PARTIAL": 2, "PROVISIONAL": 3, "FORMAL": 4}
 
 
 def _daily_kline_time(value: Any) -> str | None:
@@ -65,6 +67,35 @@ def _daily_kline_provider_from_rows(rows: Sequence[Mapping[str, Any]]) -> str | 
     if not counts:
         return None
     return max(_DAILY_KLINE_CHAIN_ORDER, key=lambda name: (counts.get(name, 0), -_DAILY_KLINE_CHAIN_ORDER.index(name)))
+
+
+def _daily_kline_version_key(manifest: Mapping[str, Any]) -> tuple[int, float, int]:
+    status = str(manifest.get("business_status") or "").upper()
+    quality = manifest.get("quality")
+    coverage = quality.get("coverage") if isinstance(quality, Mapping) else manifest.get("coverage")
+    if isinstance(coverage, bool) or not isinstance(coverage, (int, float)) or not math.isfinite(coverage):
+        coverage = -1.0
+    provider = _daily_kline_provider_name(manifest.get("provider") or manifest.get("source"))
+    tier = manifest.get("tier")
+    if type(tier) is not int:
+        tier = {"baostock": 0, "wencai": 1, "q2_final": 2}.get(provider, 3)
+    return (_DAILY_KLINE_STATUS_RANK.get(status, -1), float(coverage), -tier)
+
+
+def _daily_kline_catalog_version(version: Mapping[str, Any], root: Path) -> dict[str, Any]:
+    result = dict(version)
+    path_value = result.get("manifest")
+    if path_value:
+        path = Path(str(path_value))
+        if not path.is_absolute():
+            path = root / path
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            manifest = {}
+        if isinstance(manifest, Mapping):
+            result.update(manifest)
+    return result
 
 
 def _daily_kline_chain_list(value: Any) -> list[str]:
@@ -199,13 +230,20 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
     # values are excused only when every affected symbol is suspended in the
     # same-date universe; declared provider labels cannot override this check.
     universe_suspended = suspended if universe_path is not None else set()
+    provider_suspended = ({_daily_kline_symbol(row.get("symbol", row.get("code"))) for row in rows
+                           if provider == "baostock" and row.get("date") == trade_date
+                           and str(row.get("source_trade_status", "")).strip() == "0"}
+                          if rows else set())
+    field_missing_exemptions = universe_suspended | provider_suspended
+    quality["baostock_suspended_rows"] = len(provider_suspended)
+    quality["baostock_suspended_not_in_universe"] = len(provider_suspended - universe_suspended)
     completeness: dict[str, str] = {}
     for field in _DAILY_KLINE_FIELDS:
         missing_symbols = {_daily_kline_symbol(row.get("symbol", row.get("code")))
                            for row in rows if row.get(field) is None}
         if rows and not missing_symbols:
             status = "COMPLETE"
-        elif missing_symbols and universe_path is not None and missing_symbols <= universe_suspended:
+        elif missing_symbols and missing_symbols <= field_missing_exemptions:
             status = "SUSPENDED_ONLY"
         elif not any(row.get(field) is not None for row in rows):
             status = "MISSING"
@@ -215,6 +253,16 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
     quality["field_completeness"] = completeness
     result["field_completeness"] = completeness
     completion_policy = result.get("completion_policy")
+    from .registry.daily_kline import DAILY_KLINE_QUALITY_FIELDS
+    source_dates = result.get("source_dates")
+    source_date_values = result.get("source_date_values")
+    date_evidence_complete = (
+        isinstance(source_dates, Mapping) and
+        all(source_dates.get(field) == trade_date for field in DAILY_KLINE_QUALITY_FIELDS) and
+        result.get("source_dates_consistent") is True and
+        isinstance(source_date_values, (list, tuple)) and
+        list(source_date_values) == [trade_date]
+    )
     if provider == "baostock" and isinstance(completion_policy, Mapping):
         from .baostock_completion import evaluate_baostock_completion
         known_missing = quality.get("known_missing")
@@ -225,10 +273,22 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
             coverage_threshold=completion_policy.get("formal_coverage_threshold"),
             max_source_empty=completion_policy.get("source_empty_max"))
         quality.update(completion["quality"])
-        result["business_status"] = completion["business_status"]
+        business_status = completion["business_status"]
     else:
-        result["business_status"] = ("PROVISIONAL" if sample_scope else
-                                      classify_daily_kline(provider, quality.get("coverage"), completeness))
+        business_status = ("PROVISIONAL" if sample_scope else
+                           classify_daily_kline(provider, quality.get("coverage"), completeness))
+    if provider == "baostock" and not sample_scope and business_status in {"FORMAL", "PROVISIONAL"}:
+        measured_status = classify_daily_kline(provider, quality.get("coverage"), completeness)
+        downgrade_reasons = [
+            reason for reason, condition in (
+                ("required_fields_incomplete", measured_status != "FORMAL"),
+                ("source_date_evidence_incomplete", not date_evidence_complete),
+            ) if condition
+        ]
+        if downgrade_reasons:
+            business_status = "PROVISIONAL"
+            quality["formal_downgrade_reasons"] = downgrade_reasons
+    result["business_status"] = business_status
     quality["field_completeness"] = completeness
     result["field_completeness"] = completeness
     result["quality"] = quality
@@ -428,10 +488,10 @@ class ArtifactCatalog:
                                                                    current.get("source"))
         if trade_date < latest_date or dataset != "daily_kline":
             return False
-        incoming_tier = manifest.get("tier")
-        if type(incoming_tier) is not int:
-            incoming_tier = 0 if manifest.get("provider") == "baostock" else 1
-        return incoming_tier <= self._latest_tier(catalog, latest_date, latest)
+        held = next((item for item in entry.get("dates", {}).get(latest_date, [])
+                     if item.get("version") == latest.get("version")), {})
+        held_manifest = _daily_kline_catalog_version(held, self.root)
+        return _daily_kline_version_key(manifest) >= _daily_kline_version_key(held_manifest)
 
     def advance_daily_kline_latest(self, trade_date: str,
                                    manifest: Mapping[str, Any]) -> bool:
@@ -556,6 +616,8 @@ class ArtifactCatalog:
                                  "source": source, "business_status": result.get("business_status"),
                                  **({"tier": result["tier"]} if type(result.get("tier")) is int else {}),
                                  **({"degraded": result["degraded"]} if type(result.get("degraded")) is bool else {}),
+                                 **({"coverage": result["quality"].get("coverage")}
+                                    if isinstance(result.get("quality"), Mapping) else {}),
                                  **{key: result[key] for key in ("available_at", "committed_at", "authority")
                                     if key in result},
                                  **({"node_fingerprint": result["node_fingerprint"]}
@@ -573,7 +635,7 @@ class ArtifactCatalog:
             current_latest = entry.get("latest")
             # C573: stock_static is a current-reference snapshot without provider date echo. A
             # newer PROVISIONAL date may advance latest; the manifest still prevents PIT use.
-            if (((result.get("business_status") != "PROVISIONAL") or
+            if (((result.get("business_status") != "PROVISIONAL") or dataset == "daily_kline" or
                  dataset in ("limit_up_pool", "limit_up_pool_today", "ladder_daily", "stock_static",
                              "hot_plates"))
                     and not (spec is not None and spec.gate_mode == "enforce"
@@ -613,6 +675,10 @@ class ArtifactCatalog:
             best = max(enumerate(versions), key=lambda item: (
                 rank.get(str(item[1].get("business_status") or "").upper(), 0),
                 str(item[1].get("as_of") or ""), item[0]))[1]
+            return Path(best["manifest"])
+        if dataset == "daily_kline" and len(versions) > 1:
+            best = max(enumerate(versions), key=lambda item: (
+                _daily_kline_version_key(_daily_kline_catalog_version(item[1], self.root)), item[0]))[1]
             return Path(best["manifest"])
         return Path(versions[-1]["manifest"])
 

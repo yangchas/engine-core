@@ -11,7 +11,7 @@ from typing import Any, Mapping
 CANONICAL_ROW_FIELDS = (
     "symbol", "code", "date", "open", "high", "low", "close", "pre_close",
     "pct_chg", "turnover_pct", "amount_yuan", "volume", "suspended",
-    "source", "degraded", "tier",
+    "source_trade_status", "source", "degraded", "tier",
 )
 CANONICAL_FIELD_UNITS = {
     "open": "yuan", "high": "yuan", "low": "yuan", "close": "yuan",
@@ -129,6 +129,9 @@ def canonicalize_daily_kline_row(source: str, row: Mapping[str, Any], *,
         raise ValueError("schema_invalid:turnover_pct_unit_unknown")
     suspended = row.get("suspended")
     suspended = suspended if isinstance(suspended, bool) else None  # no flag from source -> null, never inferred
+    raw_trade_status = row.get("source_trade_status", row.get("tradestatus", row.get("trade_status")))
+    trade_status = str(raw_trade_status).strip() if raw_trade_status not in (None, "") else None
+    source_trade_status = trade_status if source == "baostock" and trade_status in {"0", "1"} else None
 
     amount = _number(row.get("amount_yuan", row.get("amount", row.get("成交额"))))
     if amount is not None:
@@ -149,6 +152,7 @@ def canonicalize_daily_kline_row(source: str, row: Mapping[str, Any], *,
         "amount_yuan": round(amount, 2) if amount is not None else None,
         "volume": float(round(volume)) if volume is not None else None,
         "suspended": suspended,
+        "source_trade_status": source_trade_status,
         "source": source,
         "degraded": tier > 0,
         "tier": tier,
