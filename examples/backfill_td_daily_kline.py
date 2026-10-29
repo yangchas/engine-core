@@ -19,6 +19,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--td-database")
     parser.add_argument("--baostock-no-progress-seconds", type=float, default=300.0,
                         help="fail retryably when Baostock produces no range data or checkpoint progress")
+    parser.add_argument("--baostock-source-universe-seconds", type=float,
+                        help="classification-only query_all_stock timeout; defaults to 300 seconds")
+    parser.add_argument("--baostock-range-concurrency", type=int, choices=(1, 2),
+                        help="parallel isolated per-symbol range sessions (default: 1)")
+    parser.add_argument("--prefetch-baostock-universe", action="store_true",
+                        help="allow query_all_stock cache prefetch during the night window")
     args = parser.parse_args(argv)
     if args.baostock_no_progress_seconds <= 0:
         parser.error("--baostock-no-progress-seconds must be positive")
@@ -31,12 +37,21 @@ def main(argv: list[str] | None = None) -> int:
             raise TdUnavailable("td_not_configured")
         store = make_store(settings)
         try:
+            source_universe_timeout = (args.baostock_source_universe_seconds
+                                       if args.baostock_source_universe_seconds is not None else
+                                       float(settings.get("baostock_source_universe_seconds", 300)))
+            range_concurrency = (args.baostock_range_concurrency
+                                 if args.baostock_range_concurrency is not None else
+                                 int(settings.get("baostock_range_concurrency", 1)))
             result = run_td_daily_kline_gapfill(args.artifact_root, args.date, store=store,
                                                 history_min_trading_days=int(
                                                     settings.get("history_min_trading_days", 10)),
                                                 total_timeout_seconds=float(
                                                     settings.get("baostock_total_timeout_seconds", 6900)),
-                                                no_progress_timeout_seconds=args.baostock_no_progress_seconds)
+                                                no_progress_timeout_seconds=args.baostock_no_progress_seconds,
+                                                source_universe_timeout_seconds=source_universe_timeout,
+                                                range_concurrency=range_concurrency,
+                                                prefetch_source_universe=args.prefetch_baostock_universe)
         finally:
             store.close()
         outcomes = result.get("partitions", [])

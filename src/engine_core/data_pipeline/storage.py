@@ -143,7 +143,14 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
     sample_symbols_value = result.get("sample_symbols")
     sample_symbols = ({str(value).rsplit(".", 1)[-1].zfill(6) for value in sample_symbols_value}
                       if sample_scope and isinstance(sample_symbols_value, (list, tuple)) else set())
+    universe_trade_date = trade_date
     universe_path = catalog.locate("symbol_universe", trade_date)
+    declared_universe_date = result.get("universe_trade_date")
+    if (universe_path is None and isinstance(declared_universe_date, str) and
+            declared_universe_date <= trade_date):
+        universe_path = catalog.locate("symbol_universe", declared_universe_date)
+        if universe_path is not None:
+            universe_trade_date = declared_universe_date
     row_symbols = {_daily_kline_symbol(row.get("symbol", row.get("code"))) for row in rows}
     row_symbols.discard("")
     quality["row_count"] = len(rows)
@@ -182,6 +189,7 @@ def _prepare_daily_kline_manifest(catalog: "ArtifactCatalog", trade_date: str,
             active_missing = active - row_symbols
             coverage = len(active & row_symbols) / len(active) if active else None
             quality.update({"expected_count": len(active), "expected_basis": "universe_active",
+                            "universe_trade_date": universe_trade_date,
                             "suspended_in_universe": len(suspended),
                             "suspended_without_bar": len(suspended - row_symbols),
                             "coverage": coverage, "missing": len(active_missing) if active else None,

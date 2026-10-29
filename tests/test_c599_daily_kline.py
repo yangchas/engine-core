@@ -41,7 +41,7 @@ def test_daily_kline_backfill_not_eligible_is_not_applicable(monkeypatch):
                "trade_date": "2026-10-29", "data_date": "2026-10-28", "args": {}}
     code, payload = guardian_handler._run(request)
     assert (code, payload["status"], payload["error_code"], payload["retryable"]) == (
-        20, "not_applicable", "", False)
+        0, "ok", "", False)
 
 
 def test_rehearsal_can_queue_one_real_fetch_item_instance(tmp_path):

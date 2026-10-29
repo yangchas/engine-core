@@ -263,14 +263,23 @@ class JobRunner:
                     coverage_threshold=policy["formal_coverage_threshold"],
                     max_source_empty=policy["source_empty_max"])
                 quality.update(baostock_completion["quality"])
-                quality["classification_source"] = "baostock.query_all_stock"
-                quality["source_universe_status"] = "READY" if source_symbols is not None else "UNKNOWN"
-                quality["source_universe_symbol_count"] = len(source_symbols or ())
-                if source_symbols is not None:
+                source_status = fetch_meta.get("source_universe_status")
+                if source_status not in {"READY", "UNAVAILABLE", "NOT_REQUIRED"}:
+                    source_status = "READY" if source_symbols is not None else "UNKNOWN"
+                quality["classification_source"] = (
+                    "baostock.query_all_stock" if source_status == "READY" else
+                    "local_universe_fallback" if source_status == "UNAVAILABLE" else
+                    "not_required")
+                quality["source_universe_status"] = source_status
+                quality["source_universe_symbol_count"] = (
+                    len(source_symbols or ()) if source_status == "READY" else 0)
+                if source_status == "READY" and source_symbols is not None:
                     quality["source_universe_sha256"] = hashlib.sha256(
                         "\n".join(sorted({str(value).zfill(6) for value in source_symbols})).encode("ascii")
                     ).hexdigest()
-                elif fetch_meta.get("source_universe_error"):
+                if fetch_meta.get("source_universe_provenance"):
+                    quality["source_universe_provenance"] = dict(fetch_meta["source_universe_provenance"])
+                if fetch_meta.get("source_universe_error"):
                     quality["source_universe_error"] = str(fetch_meta["source_universe_error"])
         if fetch_meta.get("sample_scope") == "symbols_file":
             quality["partial"] = True
@@ -407,7 +416,7 @@ class JobRunner:
                 manifest.update({"mode": "MISSING", "storage_backend": None, "storage_uri": None,
                                  "manifest_uri": None, "rows_uri": None, "cache_publish": "SKIPPED"})
                 return JobResult(manifest, rows)
-        for key in ("carried_forward_from", "universe_asof", "tier", "degraded",
+        for key in ("carried_forward_from", "universe_asof", "universe_trade_date", "tier", "degraded",
                     "sample_scope", "sample_symbols"):
             if key in fetch_meta:
                 manifest[key] = fetch_meta[key]

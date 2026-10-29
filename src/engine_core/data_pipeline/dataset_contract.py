@@ -572,9 +572,15 @@ def _check_coverage(rep: Report, catalog: ArtifactCatalog, trade_date: str, m: d
                f"manifest.quality.expected_basis={q.get('expected_basis')!r}, spec expects {basis!r}")
     udata = cov.get("universe_dataset", "symbol_universe")
     upath = catalog.locate(udata, trade_date)
+    universe_trade_date = trade_date
     if upath is None:
-        rep.warn("C2", "coverage_recomputed", f"no {udata} partition for {trade_date}: coverage unverifiable")
-        return
+        declared_universe_date = q.get("universe_trade_date")
+        if (isinstance(declared_universe_date, str) and declared_universe_date <= trade_date):
+            universe_trade_date = declared_universe_date
+            upath = catalog.locate(udata, universe_trade_date)
+        if upath is None:
+            rep.warn("C2", "coverage_recomputed", f"no {udata} partition on or before {trade_date}: coverage unverifiable")
+            return
     urows = catalog.read_rows(upath)
     sym = spec.get("symbol_column", "symbol")
     by_symbol = {str(r.get("symbol", "")).strip(): r for r in urows}
@@ -592,7 +598,12 @@ def _check_coverage(rep: Report, catalog: ArtifactCatalog, trade_date: str, m: d
     }
     outside = len([s for s in row_syms if s not in by_symbol])
     rep.stats.update({"recomputed": recomputed, "rows_outside_universe": outside,
-                      "universe_partition": str(upath)})
+                      "universe_trade_date": universe_trade_date, "universe_partition": str(upath)})
+    if "universe_trade_date" in q:
+        declared_universe_date = q.get("universe_trade_date")
+        rep.result(isinstance(declared_universe_date, str) and declared_universe_date == universe_trade_date,
+                   "C2a", "universe_trade_date_matches_catalog",
+                   f"quality.universe_trade_date={declared_universe_date!r}, catalog date={universe_trade_date!r}")
     diffs = {}
     for key, val in recomputed.items():
         if key not in q:

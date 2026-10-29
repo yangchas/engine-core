@@ -196,7 +196,11 @@ def test_real_td_waterline_with_no_missing_days_returns_no_gaps(tmp_path):
             return self.rows[self.index]
 
     class Module:
+        def __init__(self):
+            self.query_all_stock_calls = 0
+
         def query_all_stock(self, *, day):
+            self.query_all_stock_calls += 1
             assert day == target
             return Result()
 
@@ -228,6 +232,7 @@ def test_real_td_waterline_with_no_missing_days_returns_no_gaps(tmp_path):
     assert outcome["status"] == "NO_GAPS"
     assert outcome["range_symbols"] == 0 and outcome["range_queries"] == 0
     assert client.queries == []
+    assert client.module.query_all_stock_calls == 0
 
 
 @pytest.mark.parametrize("only_source_empty", [True, False], ids=["late-source-empty", "waterline-backfill"])
@@ -345,3 +350,169 @@ def test_real_partial_catalog_waterline_requests_only_source_empty_symbols(
     assert outcome["remaining_source_empty"] == 73
     assert outcome["partitions"][0]["business_status"] == "PARTIAL"
     assert outcome["partitions"][0]["td_publish"] == "SKIPPED_PARTIAL"
+
+
+def _seed_real_c594_small_gap(root):
+    import gzip
+
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+
+    repo = __import__("pathlib").Path(__file__).parents[1]
+    fixtures = repo / "tests" / "fixtures" / "real"
+    c594 = fixtures / "core_artifacts" / "c594"
+
+    def rows(path):
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+    target = "2026-10-28"
+    previous = "2026-10-27"
+    calendar = root / "trade_calendar" / "calendar.json"
+    calendar.parent.mkdir(parents=True)
+    calendar.write_text(json.dumps({"schema": "CoreTradeCalendarMatrixV1", "lit_from": previous,
+                                    "lit_to": target, "days": [{"d": previous, "t": 1},
+                                                                  {"d": target, "t": 1}]}),
+                        encoding="utf-8")
+    universe_rows = rows(c594 / "symbol_universe" / target / "C582-actual" / "rows.jsonl.gz")
+    bars = rows(c594 / "daily_kline" / target / "C582-formal" / "rows.jsonl.gz")
+    source_payload = json.loads((fixtures / "baostock_query_all_stock_2026-10-28_2301.json")
+                                .read_text(encoding="utf-8"))
+    code_index = source_payload["fields"].index("code")
+    status_index = source_payload["fields"].index("tradeStatus")
+    source_symbols = {str(row[code_index]).rsplit(".", 1)[-1] for row in source_payload["rows"]
+                      if str(row[status_index]).strip() != "0"}
+    universe_by_symbol = {str(row.get("symbol", row.get("code", ""))).zfill(6): row
+                          for row in universe_rows
+                          if str(row.get("trade_status", "")).strip() != "0"}
+    bars_by_symbol = {str(row.get("symbol", row.get("code", ""))).zfill(6): row for row in bars}
+    selected = sorted(set(universe_by_symbol) & set(bars_by_symbol) & source_symbols)[:21]
+    assert len(selected) == 21
+    missing_symbol = selected[-1]
+    catalog = ArtifactCatalog(root)
+    # This deliberately uses the nearest prior local universe, with rows captured from C594.
+    catalog.commit("symbol_universe", previous,
+                   [universe_by_symbol[symbol] for symbol in selected],
+                   {"trade_date": previous, "as_of": previous}, source="baostock")
+    catalog.commit("daily_kline", target,
+                   [bars_by_symbol[symbol] for symbol in selected[:-1]],
+                   {"trade_date": target, "as_of": target, "provider": "baostock",
+                    "business_status": "PARTIAL", "universe_trade_date": previous}, source="baostock")
+    return target, selected, missing_symbol, bars_by_symbol, source_payload
+
+
+def test_gapfill_caches_real_source_universe_and_uses_nearest_local_universe(tmp_path):
+    from engine_core.data_pipeline.daily_kline_gapfill import run_td_daily_kline_gapfill
+    from engine_core.data_pipeline.td_sink import MemoryTdStore
+
+    target, selected, missing_symbol, _bars, source_payload = _seed_real_c594_small_gap(tmp_path)
+
+    class Result:
+        error_code = "0"
+        fields = source_payload["fields"]
+
+        def __init__(self):
+            self.index = -1
+
+        def next(self):
+            self.index += 1
+            return self.index < len(source_payload["rows"])
+
+        def get_row_data(self):
+            return source_payload["rows"][self.index]
+
+    class Module:
+        def __init__(self):
+            self.query_all_stock_calls = 0
+
+        def query_all_stock(self, *, day):
+            self.query_all_stock_calls += 1
+            assert day == target
+            return Result()
+
+    class RangeClient:
+        read_timeout = 5
+        poisoned = False
+
+        def __init__(self):
+            self.module = Module()
+            self.queries = []
+
+        def login(self):
+            pass
+
+        def query(self, symbol, start, end):
+            self.queries.append((symbol, start, end))
+            return []
+
+        def logout(self):
+            return True
+
+    client = RangeClient()
+    store = MemoryTdStore()
+    store.ensure_schema()
+    policy = {"formal_coverage_threshold": 0.995, "source_empty_max": 20}
+    first = run_td_daily_kline_gapfill(tmp_path, target, store=store, history_min_trading_days=1,
+                                       client=client, only_source_empty=True, completion_policy=policy)
+    second = run_td_daily_kline_gapfill(tmp_path, target, store=store, history_min_trading_days=1,
+                                        client=client, only_source_empty=True, completion_policy=policy)
+
+    cache_path = tmp_path / ".checkpoints" / "baostock-query-all-stock" / f"{target}.json"
+    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert client.module.query_all_stock_calls == 1
+    assert cache["provider"] == "baostock.query_all_stock" and cache["trade_date"] == target
+    assert cache["row_count"] == len(source_payload["rows"]) and cache["symbol_count"] == len(cache["symbols"])
+    assert cache["fetched_at"].endswith("+08:00")
+    assert first["range_queries"] == second["range_queries"] == 1
+    assert first["source_universe_provenance"]["cache"] == "MISS"
+    assert second["source_universe_provenance"]["cache"] == "HIT"
+    assert client.queries == [(missing_symbol, target, target), (missing_symbol, target, target)]
+    assert len(selected) == 21
+
+
+def test_gapfill_timeout_classification_falls_back_to_source_empty_and_keeps_fetching(tmp_path):
+    from engine_core.data_pipeline.daily_kline_gapfill import run_td_daily_kline_gapfill
+    from engine_core.data_pipeline.td_sink import MemoryTdStore
+
+    target, _selected, missing_symbol, bars, _source_payload = _seed_real_c594_small_gap(tmp_path)
+
+    class Module:
+        def __init__(self):
+            self.query_all_stock_calls = 0
+
+        def query_all_stock(self, *, day):
+            self.query_all_stock_calls += 1
+            assert day == target
+            raise TimeoutError("simulated slow source classification")
+
+    class RangeClient:
+        read_timeout = 5
+        poisoned = False
+
+        def __init__(self):
+            self.module = Module()
+            self.queries = []
+
+        def login(self):
+            pass
+
+        def query(self, symbol, start, end):
+            self.queries.append((symbol, start, end))
+            return [{**bars[symbol], "date": target}]
+
+        def logout(self):
+            return True
+
+    client = RangeClient()
+    store = MemoryTdStore()
+    store.ensure_schema()
+    outcome = run_td_daily_kline_gapfill(
+        tmp_path, target, store=store, history_min_trading_days=1, client=client,
+        only_source_empty=True, source_universe_timeout_seconds=1,
+        completion_policy={"formal_coverage_threshold": 0.995, "source_empty_max": 20})
+
+    assert client.module.query_all_stock_calls == 1
+    assert client.queries == [(missing_symbol, target, target)]
+    assert outcome["status"] == "OK" and outcome["range_queries"] == 1
+    assert outcome["source_universe_status"] == "UNAVAILABLE"
+    assert outcome["source_universe_error"] == "BAOSTOCK_TIMEOUT"
+    assert not (tmp_path / ".checkpoints" / "baostock-query-all-stock" / f"{target}.json").exists()

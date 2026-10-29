@@ -297,7 +297,7 @@ def _run(request):
             return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
                        "artifacts": [], "detail": result}
         if result.get("status") == "NOT_ELIGIBLE":
-            return 20, {"contract": 1, "status": "not_applicable", "error_code": "",
+            return 0, {"contract": 1, "status": "ok", "error_code": "",
                         "retryable": False, "artifacts": [], "detail": result}
         if result.get("status") not in {"OK", "NO_GAPS"}:
             return 75, {"contract": 1, "status": "failed", "error_code": "BAOSTOCK_GAPFILL_RETRY",

@@ -22,6 +22,12 @@ C541: `DailyKlineProviderChain.fetch_chain` 和 `run_data_jobs.py --job daily_kl
 
 C554: guardian 按“分区 + 自然日 + heavy 静默 phase”累计日K补取预算，默认每窗口 3 次、两次真实取数至少间隔 10 分钟；窗口耗尽记录 `GAP_WINDOW_EXHAUSTED` 和 `next_retry_window`，之后由 `boot_reconcile` / `runtime_reconcile_*` 在下一静默窗口重新扫描。启动与运行时都检查最近 5 个交易日（旧到新，每轮只选一个缺失或降级分区）；盘中只排队到下一个静默 phase。连续 3 个交易日的窗口都耗尽时将 GAP 提升为 `GAP_ESCALATED` 并复用现有 alert handler 告警一次，后续窗口仍继续重试；正式版本写入后 GAP 标为 `RESOLVED`。参数可用 `CORE_DAILY_KLINE_UPGRADE_MAX_ATTEMPTS`、`CORE_DAILY_KLINE_UPGRADE_MIN_INTERVAL_SECONDS`、`CORE_DAILY_KLINE_UPGRADE_ESCALATE_TRADING_DAYS`、`CORE_DAILY_KLINE_BACKFILL_DAYS` 覆盖。
 
+## TD 水位回补的证券宇宙与 Baostock 限流（C603）
+
+`daily_kline_backfill` 的缺口分母来自 Core catalog 中目标日或不晚于目标日的最近 `symbol_universe` 分区；按其中 `trade_status != "0"` 选活跃股票，并将实际采用的 `universe_trade_date` 记录进 manifest。没有可用本地 universe 时停止并报告缺失，不调用白天的 `query_all_stock` 来发现证券。`query_all_stock(day=target)` 仅在 Baostock FORMAL 分区需要 C594 缺口分类时调用；结果按交易日缓存到 `.checkpoints/baostock-query-all-stock/<date>.json`，包含取数时刻、原始行数、去重代码数和代码。默认独立超时 300 秒，超时或上游错误时该轮缺失按 `SOURCE_EMPTY` 保留以便重试；它不改变 C594 的 FORMAL 覆盖率 0.995、`source_empty_max=20` 或本地回补门槛。可通过 `baostock_source_universe_seconds` 配置超时，`prefetch_baostock_universe=true` 仅在 22:30 至次日 08:00 的夜间窗口允许预取。
+
+回补按最近缺口日期优先，每只缺口股票只发一个区间请求并保存可重试 checkpoint。默认单路；`baostock_range_concurrency` 可设为 1 或 2，值为 2 时使用独立进程和 Baostock 会话，避免共享模块 socket 并发。每个会话仍按序请求股票，并受总时限、无进展时限和单次读取超时约束。
+
 ### Provider 阶梯与字段口径（C563）
 
 Provider 优先级为 Baostock → 问财 → q2_final。`TIER_NO_DATA` 立即尝试下一档；限流、超时和网络错误可重试并继续阶梯；参数或代码错误确定性失败，不继续调用低优先级来源。仅配置 `wencai` 时只调用问财。低档结果标记 `degraded=true` 和 tier，不覆盖同日已有的更高质量版本。问财日期只从简洁日期加字段列表查询，例如 `2026-10-26开盘价，最高价，最低价，收盘价，前收盘价，涨跌幅，成交量(股)，成交额(元)，股票代码`；不要加“A股日线行情”等市场描述。验收人先前实验中，`2026年10月26日A股日线行情...` 的字段日期后缀落在 `20261027`；简洁的 `2026-10-26开盘价，收盘价，涨跌幅` 与 `20261026收盘价，涨跌幅，前收盘价` 返回 `[20261026]`。本卡实抓的简洁完整字段查询也返回 2026-10-26 后缀，响应为 30 行；列日期由适配器记录到 `source_dates`，一致性标记随 manifest 保存，日期拒绝逻辑留给 C564。
