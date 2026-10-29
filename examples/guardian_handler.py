@@ -193,6 +193,23 @@ def _failure_response(request, *, error=None, result=None):
     return 75, payload
 
 
+
+def _has_baostock_daily_kline(root, day: str) -> bool:
+    """The gap-only path repairs an existing Baostock partition; with none for the day, fall through to the
+    full close pull (2026-10-29: every Baostock event carried the gap policy, so no event ever fetched the day)."""
+    try:
+        import json
+        from engine_core.data_pipeline.storage import ArtifactCatalog
+        catalog = ArtifactCatalog(root)
+        entries = catalog.read().get("datasets", {}).get("daily_kline", {}).get("dates", {}).get(day, [])
+        for entry in entries:
+            manifest = json.loads(Path(str(entry.get("manifest") or "")).read_text(encoding="utf-8"))
+            if str(manifest.get("provider") or "").lower() == "baostock":
+                return True
+    except Exception:
+        return False
+    return False
+
 def _run(request):
     from examples.core_guardian import _command_handler
 
@@ -307,7 +324,8 @@ def _run(request):
                         "retryable": True, "artifacts": [], "detail": result}
         return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
                    "artifacts": [], "detail": result}
-    if name == "baostock_probe" and isinstance(args.get("baostock_gapfill_policy"), dict) and not dry:
+    if (name == "baostock_probe" and isinstance(args.get("baostock_gapfill_policy"), dict) and not dry
+            and _has_baostock_daily_kline(root, target_day)):
         from engine_core.guardian.daily_kline_backfill import run_daily_kline_backfill
         gap_policy = args["baostock_gapfill_policy"]
         try:
