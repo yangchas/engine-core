@@ -382,10 +382,12 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
 
     trigger = now.astimezone(TZ) + timedelta(minutes=minutes)
     # Keep the archived retry/backoff semantics runnable; e.g. limit_pool_d1
-    # has a 30-minute source-ladder backoff after its first attempt.
-    deadline = trigger + timedelta(minutes=60)
-    if deadline.date() != trigger.date():
-        raise ValueError("rehearsal_window_crosses_midnight")
+    # has a 30-minute source-ladder backoff after its first attempt. If the
+    # rehearsal starts late, keep its deadline inside the simulated day.
+    deadline = min(
+        trigger + timedelta(minutes=60),
+        trigger.replace(hour=23, minute=59, second=59, microsecond=0),
+    )
     at_text = trigger.strftime("%H:%M:%S")
     deadline_text = deadline.strftime("%H:%M:%S")
     for event in selected:

@@ -38,6 +38,18 @@ def test_retime_uses_real_limit_pool_schedule_and_clears_phase_limit() -> None:
     assert event["gate"] == "calendar_ready"
 
 
+def test_rehearsal_deadline_is_clamped_to_the_same_calendar_day() -> None:
+    prepared, event_ids = rehearsal.prepare_schedule(
+        real_schedule(), "static_data_refresh_0850", [], "rh123abc",
+        datetime(2026, 10, 29, 23, 8, 0, tzinfo=TZ), 1,
+    )
+
+    event = next(row for row in prepared["events"] if row["event_id"] == event_ids["static_data_refresh_0850"])
+    assert event["at"] == "23:09:00"
+    assert event["deadline"] == "23:59:59"
+    assert event["late_until"] == "23:59:59"
+
+
 def test_filter_preserves_and_remaps_real_dependency_edges() -> None:
     schedule = real_schedule()
 
