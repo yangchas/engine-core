@@ -30,7 +30,7 @@
       "cadence": "每周全量+每日读取",
       "rule": "日历为交易日主判据；预测与已冻结历史不可被失败更新覆盖。",
       "freshness": "UNKNOWN",
-      "retry": "none (no guardian event)",
+      "retry": "event=calendar_refresh_0005 profile=policy_05 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=300s cap=10m until=15:00; event=calendar_refresh_0800 profile=policy_05 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=300s cap=10m until=15:00",
       "degrade": [],
       "lifecycle": {
         "init": "cold fetch when absent",
@@ -58,7 +58,7 @@
         "basis": "trading_day",
         "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
       },
-      "retry": "Python schedule kaipan_refresh_0850 max_attempts=1; fetch_item per-item requeue/Go retries UNKNOWN",
+      "retry": "event=startup_0830 profile=policy_06 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=901s cap=10m until=09:10; event=fetch_item profile=policy_04 rungs=legacy; legacy attempts=3 backoff=5m*2 timeout=20m cap=5m; per-item requeue details UNKNOWN",
       "degrade": [],
       "lifecycle": {
         "init": "rebuild from retained source/artifacts",
@@ -102,7 +102,7 @@
       "phases": [
         "POST_MARKET"
       ],
-      "cadence": "15:05 降级探测；17:30 正式",
+      "cadence": "15:05 降级探测；17:40 Baostock 正式获取",
       "rule": "Baostock 日线；日历/universe 与来源覆盖质量门槛。",
       "freshness": {
         "partition": "D",
@@ -110,17 +110,17 @@
         "basis": "trading_day",
         "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
       },
-      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "retry": "event=daily_kline_close_1505 profile=daily_kline_close rungs=wencai>q2_final; wencai attempts=2 backoff=60s*1 timeout=25m; q2_final attempts=2 backoff=30s*1 timeout=3m; event=baostock_probe_1730 profile=policy_11 rungs=legacy; legacy attempts=32 backoff=30m*1 timeout=20m cap=30m until=23:30",
       "degrade": [
-        "15:05 q2_final→wencai: q2 优先，问财只补空字段；逐行/逐字段标来源，coverage/missing 明示，quality.status 固定 PARTIAL；不得推进 latest 或冒充正式版",
-        "17:30 正式获取"
+        "15:05 event=daily_kline_close_1505 profile=daily_kline_close rungs=wencai>q2_final; schedule 顺序为问财优先、Q2 补空字段；逐行/逐字段标来源，coverage/missing 明示，quality.status 固定 PARTIAL；不得推进 latest 或冒充正式版",
+        "17:40 event=baostock_probe_1730 profile=policy_11 rungs=legacy; Baostock 正式获取"
       ],
       "lifecycle": {
         "init": "rebuild from retained source/artifacts",
         "force": "recompute",
         "clear": "clear then rebuild"
       },
-      "notes": "15:05/17:30 are knowledge recommendations and current schedule baostock probe starts 17:30; later availability seen in facts. Ask data operator to confirm freshness cutoff.",
+      "notes": "Provider priority is baostock>wencai>q2_final; the 15:05 schedule event explicitly runs wencai>q2_final. Schedule v23 sets baostock_probe_1730 at 17:40 with late_until 23:30.",
       "guardian_event": "postmarket_publish",
       "late_policy": {
         "mode": "fetch_now",
@@ -326,7 +326,7 @@
         "basis": "trading_day",
         "set_by": "C580 2026-10-28"
       },
-      "retry": "schedule profile limit_pool_d1: kaipan 34x15m(retry_until 08:50) / wencai 2x30m / td_derived 2x5m; 全链失败 FAILED_FINAL + 告警一次",
+      "retry": "event=limit_pool_d1 profile=limit_pool_d1 rungs=kaipan>wencai>td_derived; kaipan attempts=34 backoff=15m*1 timeout=5m retry_until=08:50; wencai attempts=2 backoff=30m*1 timeout=10m; td_derived attempts=2 backoff=5m*1 timeout=5m; 全链失败 FAILED_FINAL + 告警一次",
       "degrade": [
         "08:50 之后 Kaipan 仍未发布 → 问财池(PROVISIONAL,成员与 Kaipan 一致)",
         "问财失败 → TD 日K 推导池(DEGRADED,推导而非供应商事实,无封单证据)",
@@ -375,7 +375,7 @@
       "id": "limit_up_pool_today",
       "owner": "intraday_data",
       "artifact": {
-        "catalog_dataset": "limit_up_pool_today",
+        "catalog_dataset": null,
         "date_basis": "D 的采样时点版本；主键 (symbol,date,as_of)"
       },
       "phases": [
@@ -396,7 +396,7 @@
         "basis": "trading_day",
         "set_by": "C582 2026-10-29"
       },
-      "retry": "盘中 Redis 每事件最多 3 次、1s 退避；WenCai 收盘事件最多 1 次/日，不在盘中重试阶梯中",
+      "retry": "盘中 Redis 事件按各 schedule event 配置重试（如 event=limit_up_today_091600 max_attempts=3 retry_backoff=1s timeout=30s）；WenCai 收盘 event=limit_up_today_close_confirm_152000 max_attempts=1 timeout=300s，每日最多 1 次，不在盘中重试阶梯中",
       "degrade": [
         "Redis 盘中失败时不自动请求 WenCai；只有 schedule 明确配置的收盘确认事件才请求",
         "收盘 Redis 失败时按 close_confirm 事件配置使用一次 WenCai，并标 PROVISIONAL",
@@ -407,7 +407,7 @@
         "force": "recompute a new as_of version",
         "clear": "clear then rebuild"
       },
-      "notes": "C582: hot view uses Core Redis namespace core:cache:data:limit_up_pool_today:* with 604800 second TTL; cold close target is core_data.limit_up_pool_today_v1. Current card runtime verification remains read-only for Redis/TD.",
+      "notes": "C582: hot view uses Core Redis namespace core:cache:data:limit_up_pool_today:* with 604800 second TTL; intraday and close-confirm results remain Redis-only, with no TD sink or catalog partition.",
       "guardian_event": "limit_up_today_091600",
       "late_policy": {
         "mode": "fetch_now",
@@ -429,12 +429,6 @@
         "version_key": "{namespace}:{date}:{version}",
         "date_key": "{namespace}:{date}",
         "latest_key": "{namespace}:latest"
-      },
-      "td_sink": {
-        "database": "core_data",
-        "super_table": "limit_up_pool_today_v1",
-        "authority": "close snapshot cold copy; no TD DDL in C582",
-        "doc": "docs/LIMIT_UP_TODAY.md"
       }
     },
     {
@@ -455,14 +449,14 @@
         "basis": "trading_day",
         "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
       },
-      "retry": "schedule max_attempts=1; provider-level retry UNKNOWN",
+      "retry": "event=limit_reasons_d1 profile=limit_reasons_d1 rungs=legacy; legacy attempts=3 backoff=5m*2 timeout=5m cap=5m until=08:50",
       "degrade": [],
       "lifecycle": {
         "init": "rebuild from retained source/artifacts",
         "force": "recompute",
         "clear": "clear then rebuild"
       },
-      "notes": "schedule kaipan_refresh_0850; source adapter in run_data_jobs; ask data operator about retry policy. | C389 2026-10-21: Kaipan getBanReasons returns only the LATEST reason per stock; a symbol that limited up again on D loses its D-1 entry. Late backfill after D's reasons start (>~09:20) is therefore PARTIAL: overwritten symbols are counted missing (quality.partial, provider_details.overwritten_symbol_count). The 08:50 capture is the only complete one.",
+      "notes": "schedule event limit_reasons_d1; source adapter in run_data_jobs. | C389 2026-10-21: Kaipan getBanReasons returns only the LATEST reason per stock; a symbol that limited up again on D loses its D-1 entry. Late backfill after D's reasons start (>~09:20) is therefore PARTIAL: overwritten symbols are counted missing (quality.partial, provider_details.overwritten_symbol_count). The 08:50 capture is the only complete one.",
       "guardian_event": "kaipan_refresh_0850",
       "late_policy": {
         "mode": "fetch_now",
@@ -514,7 +508,7 @@
         "basis": "trading_day",
         "set_by": "C379 2026-10-21"
       },
-      "retry": "one bounded history attempt; failed dates and expired windows are gap_only",
+      "retry": "event=hot_plates_history_0815 profile=hot_plates_history max_attempts=1 timeout=300s; failed dates and expired windows are gap_only",
       "degrade": [],
       "lifecycle": {
         "init": "fetch historical date when absent",
@@ -650,7 +644,7 @@
         "basis": "calendar_days",
         "set_by": "C573: weekly_days=7; stale_alert after 8 calendar days"
       },
-      "retry": "schedule policy_05: 3 attempts, 60s exponential backoff capped at 10m, retry until 15:00; no fallback",
+      "retry": "event=static_data_refresh_0850 profile=policy_05 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=300s cap=10m until=15:00; no fallback",
       "degrade": [],
       "lifecycle": {
         "init": "cold fetch when absent",
@@ -704,7 +698,7 @@
         "basis": "calendar_days",
         "set_by": "C573: weekly_days=7; stale_alert after 8 calendar days"
       },
-      "retry": "schedule policy_05: 3 attempts, 60s exponential backoff capped at 10m, retry until 15:00; no fallback",
+      "retry": "event=static_data_refresh_0850 profile=policy_05 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=300s cap=10m until=15:00; no fallback",
       "degrade": [],
       "lifecycle": {
         "init": "cold fetch when absent",
@@ -741,7 +735,7 @@
         "basis": "calendar_days",
         "set_by": "C573: weekly_days=7; stale_alert after 8 calendar days"
       },
-      "retry": "schedule policy_05: 3 attempts, 60s exponential backoff capped at 10m, retry until 15:00; no fallback",
+      "retry": "event=static_data_refresh_0850 profile=policy_05 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=300s cap=10m until=15:00; no fallback",
       "degrade": [],
       "lifecycle": {
         "init": "cold fetch when absent",
@@ -1379,7 +1373,7 @@
       "id": "intraday_tick_stream",
       "owner": "intraday_data",
       "artifact": {
-        "catalog_dataset": "intraday_checkpoint",
+        "catalog_dataset": null,
         "date_basis": "trade_date = per-row q2 ts date; checkpoint time in manifest.checkpoint (C587, docs/INTRADAY_CHECKPOINT.md)"
       },
       "phases": [
@@ -1389,8 +1383,8 @@
         "INTRADAY_PM",
         "CLOSE_AUCTION"
       ],
-      "cadence": "3-minute schedule checkpoints; source Redis q2 (primary, whole session) with TD stock_tick as check/fallback through 09:45:59",
-      "rule": "报告/时点产物按阶段生成；未发现对应 Core catalog dataset，产物路径/格式待确认。",
+      "cadence": "3-minute schedule checkpoints; input source is Redis q2 (primary, whole session) with TD stock_tick as check/fallback through 09:45:59; checkpoint output is temporary Redis-only and is not persisted to TD or catalog.",
+      "rule": "盘中检查点仅为临时 Redis 输出；不落地到 TD，也不写 catalog 临时分区。",
       "freshness": "UNKNOWN",
       "retry": "per guardian_event (until_late/backoff, see C350)",
       "degrade": [],
@@ -1399,7 +1393,7 @@
         "force": "append a new version",
         "clear": "not provided"
       },
-      "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
+      "notes": "Checkpoint output is temporary Redis-only; no TD persistence and no catalog temporary partition.",
       "guardian_event": "intraday_33"
     },
     {

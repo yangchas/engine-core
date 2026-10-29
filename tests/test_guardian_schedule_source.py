@@ -112,6 +112,154 @@ def test_registry_trigger_event_resolves_to_the_single_schedule_start():
             assert policy.get("trigger_at") is None
 
 
+def _duration_seconds(value):
+    match = re.fullmatch(r"(\d+)([sm])", value)
+    assert match, f"unsupported duration {value!r}"
+    scale = {"s": 1, "m": 60}[match.group(2)]
+    return int(match.group(1)) * scale
+
+
+def _assert_registry_schedule_text_consistency(registry, schedule):
+    events = {event["event_id"]: event for event in schedule["events"]}
+    handlers = {event.get("handler") for event in schedule["events"]}
+    profiles = schedule["profiles"]
+    event_tag = re.compile(r"\bevent=([a-z0-9_]+)(?:\s+profile=([a-z0-9_]+))?")
+    rung_claim = re.compile(
+        r"\b([a-z][a-z0-9_]*)\s+attempts=(\d+)\s+backoff=(\d+[sm]\*\d+)"
+        r"(?:\s+timeout=(\d+[sm]))?(?:\s+cap=(\d+[sm]))?"
+        r"(?:\s+until=(\d{2}:\d{2}))?(?:\s+retry_until=(\d{2}:\d{2}))?"
+    )
+
+    for item in registry["items"]:
+        owner = item.get("guardian_event")
+        assert owner is None or owner in events or owner in handlers, (
+            f"{item['id']}.guardian_event does not resolve in schedule: {owner}"
+        )
+        for text in [str(item.get("retry", "")), *map(str, item.get("degrade", []))]:
+            tags = list(event_tag.finditer(text))
+            has_schedule_claim = re.search(
+                r"\b(?:max_attempts|retry_backoff|attempts|backoff)=|\brungs=|"
+                r"\bschedule\s+(?:max_attempts|profile|policy)\b",
+                text,
+            )
+            assert not has_schedule_claim or tags, (
+                f"{item['id']} schedule retry/degrade claim lacks an event= reference: {text}"
+            )
+            for index, tag in enumerate(tags):
+                event_id, declared_profile = tag.groups()
+                assert event_id in events, f"{item['id']} references missing schedule event {event_id}"
+                event = events[event_id]
+                profile_name = declared_profile or event.get("profile")
+                if declared_profile:
+                    assert declared_profile in profiles, (
+                        f"{item['id']} references missing profile {declared_profile}"
+                    )
+                    assert event.get("profile") == declared_profile, (
+                        f"{item['id']} profile mismatch for {event_id}: {declared_profile}"
+                    )
+                end = tags[index + 1].start() if index + 1 < len(tags) else len(text)
+                segment = text[tag.end():end]
+
+                rung_names = None
+                rung_match = re.search(r"\brungs=([a-z0-9_]+(?:>[a-z0-9_]+)*)", segment)
+                if rung_match:
+                    rung_names = rung_match.group(1).split(">")
+                    assert profile_name in profiles, f"{item['id']} has no profile for rungs"
+                    configured = [rung["name"] for rung in profiles[profile_name]["ladder"]]
+                    assert rung_names == configured, (
+                        f"{item['id']} rung order {rung_names} != {configured}"
+                    )
+
+                claims = list(rung_claim.finditer(segment))
+                for claim in claims:
+                    assert profile_name in profiles, f"{item['id']} has no profile for ladder claim"
+                    name, attempts, backoff, timeout, cap, until, retry_until = claim.groups()
+                    ladder = {rung["name"]: rung for rung in profiles[profile_name]["ladder"]}
+                    assert name in ladder, f"{item['id']} references missing rung {name} in {profile_name}"
+                    rung = ladder[name]
+                    assert rung["attempts"] == int(attempts), (
+                        f"{item['id']} {name} attempts={attempts} != schedule {rung['attempts']}"
+                    )
+                    assert rung["backoff"] == backoff, (
+                        f"{item['id']} {name} backoff={backoff} != schedule {rung['backoff']}"
+                    )
+                    if timeout:
+                        assert _duration_seconds(rung["timeout"]) == _duration_seconds(timeout)
+                    if cap:
+                        assert rung.get("backoff_cap") == cap
+                    if until:
+                        assert event.get("late_until", "")[:5] == until
+                    if retry_until:
+                        assert rung.get("args", {}).get("retry_until") == f"{retry_until}:00"
+
+                direct_attempts = re.search(r"\bmax_attempts=(\d+)\b", segment)
+                if direct_attempts:
+                    actual = event.get("max_attempts")
+                    if actual is None and profile_name:
+                        ladder = profiles[profile_name]["ladder"]
+                        if len(ladder) == 1:
+                            actual = ladder[0]["attempts"]
+                    assert actual == int(direct_attempts.group(1)), (
+                        f"{item['id']} {event_id} max_attempts={direct_attempts.group(1)} != schedule {actual}"
+                    )
+                direct_backoff = re.search(r"\bretry_backoff=(\d+[sm])\b", segment)
+                if direct_backoff:
+                    actual = event.get("retry_backoff")
+                    if actual is None and profile_name:
+                        actual = profiles[profile_name].get("retry_backoff")
+                    assert actual == direct_backoff.group(1), (
+                        f"{item['id']} {event_id} retry_backoff={direct_backoff.group(1)} != schedule {actual}"
+                    )
+                direct_timeout = re.search(r"\btimeout=(\d+[sm])\b", segment)
+                if direct_timeout and not claims:
+                    actual = event.get("timeout_seconds")
+                    if actual is None and profile_name:
+                        ladder = profiles[profile_name]["ladder"]
+                        if len(ladder) == 1:
+                            actual = _duration_seconds(ladder[0]["timeout"])
+                    assert actual is not None and actual == _duration_seconds(direct_timeout.group(1)), (
+                        f"{item['id']} {event_id} timeout={direct_timeout.group(1)} != schedule {actual}"
+                    )
+
+
+def test_registry_retry_and_degrade_claims_match_schedule_events_and_profiles():
+    registry = json.loads((ROOT / "src/engine_core/guardian/datasets.registry.json").read_text())
+    schedule = json.loads((ROOT / "src/engine_core/guardian/schedule.json").read_text())
+    items = {item["id"]: item for item in registry["items"]}
+    events = {event["event_id"]: event for event in schedule["events"]}
+
+    daily_text = " ".join([items["daily_kline"]["retry"], *items["daily_kline"]["degrade"]])
+    assert "event=daily_kline_close_1505 profile=daily_kline_close" in daily_text
+    assert [rung["name"] for rung in schedule["profiles"]["daily_kline_close"]["ladder"]] == [
+        "wencai", "q2_final"
+    ]
+    assert events["daily_kline_close_1505"]["profile"] == "daily_kline_close"
+
+    _assert_registry_schedule_text_consistency(registry, schedule)
+
+    redis_events = [
+        event for event in schedule["events"]
+        if event.get("args", {}).get("dataset") == "limit_up_pool_today"
+        and event.get("args", {}).get("tier") == "redis"
+    ]
+    assert redis_events
+    assert all(event.get("max_attempts") == 3 for event in redis_events)
+    assert all(event.get("retry_backoff") == "1s" for event in redis_events)
+    close_confirm = events["limit_up_today_close_confirm_152000"]
+    assert close_confirm["max_attempts"] == 1
+    assert close_confirm["timeout_seconds"] == 300
+
+    today = items["limit_up_pool_today"]
+    checkpoint = items["intraday_tick_stream"]
+    assert "td_sink" not in today
+    assert today["artifact"]["catalog_dataset"] is None
+    assert checkpoint["artifact"]["catalog_dataset"] is None
+    assert "Redis" in checkpoint["rule"]
+    assert "不落地到 TD" in checkpoint["rule"]
+    assert "no TD persistence" in checkpoint["notes"]
+    assert "no catalog temporary partition" in checkpoint["notes"]
+
+
 def test_hot_plate_capture_schedule_matches_contract_windows_and_retry_budgets():
     schedule = json.loads((ROOT / "src/engine_core/guardian/schedule.json").read_text())
     events = [event for event in schedule["events"]
