@@ -49,6 +49,12 @@ def _assert(condition: bool, name: str, detail: Any = None) -> dict[str, Any]:
     return {"name": name, "status": "PASS" if condition else "FAIL", "detail": detail}
 
 
+def _symbol(row: dict[str, Any]) -> str:
+    value = str(row.get("symbol") or row.get("code") or "").strip()
+    value = value.rsplit(".", 1)[-1]
+    return value.zfill(6) if value.isdigit() else ""
+
+
 def _run_rehearsal(day: str, output: Path, timeout_minutes: int,
                    window_minutes: int) -> tuple[dict[str, Any], list[str]]:
     args = {
@@ -167,31 +173,57 @@ def _run_resume_sample(day: str, output: Path) -> tuple[list[dict[str, Any]], di
     (output / "resume_second.stdout").write_text(second.stdout, encoding="utf-8")
     (output / "resume_second.stderr").write_text(second.stderr, encoding="utf-8")
     result, attempt = _attempt_from_stdout(second.stdout)
-    total = attempt.get("expected_symbols")
-    resumed = attempt.get("resumed_count")
-    completed = attempt.get("completed_symbols")
     queries = attempt.get("query_count")
-    retry_margin = max(5, len(sample) // 100)
     checks = [
         _assert(first.returncode == -signal.SIGTERM, "first_run_sigterm", first.returncode),
         _assert(checkpoint_count >= 100, "checkpoint_saved_before_sigterm", checkpoint_count),
-        _assert(second.returncode == 10 and result.get("status") == "degraded",
-                "resumed_sample_completed", {"exit_code": second.returncode, "status": result.get("status")}),
-        _assert(total == len(sample) and completed == len(sample), "sample_all_symbols_completed",
-                {"expected": len(sample), "provider_expected": total, "completed": completed}),
-        _assert(isinstance(resumed, int) and resumed >= checkpoint_count,
-                "completed_symbols_not_requeried", {"checkpoint": checkpoint_count, "resumed": resumed}),
-        _assert(isinstance(queries, int) and queries <= len(sample) - checkpoint_count + retry_margin,
-                "resume_query_count_bounded", {"queries": queries, "sample": len(sample),
-                                                 "checkpoint": checkpoint_count, "retry_margin": retry_margin}),
-        _assert(isinstance(result.get("coverage"), (int, float)) and result["coverage"] >= 0.98,
+        _assert(second.returncode == 10 and result.get("status") == "degraded" and
+                attempt.get("result") == "ok", "resumed_sample_completed",
+                {"exit_code": second.returncode, "status": result.get("status"),
+                 "provider_result": attempt.get("result")}),
+        _assert(result.get("row_count") == len(sample), "sample_all_symbols_completed",
+                {"expected": len(sample), "row_count": result.get("row_count")}),
+        _assert(isinstance(queries, int) and queries == len(sample) - checkpoint_count,
+                "completed_symbols_not_requeried", {"queries": queries, "sample": len(sample),
+                                                     "checkpoint": checkpoint_count}),
+        _assert(isinstance(result.get("coverage"), (int, float)) and result["coverage"] >= 0.995,
                 "sample_coverage", result.get("coverage")),
     ]
     details = {"sample_count": len(sample), "symbols_sha256": hashlib.sha256(
         symbols_path.read_bytes()).hexdigest(), "checkpoint_count_at_sigterm": checkpoint_count,
         "provider_attempt": attempt, "exit_code": second.returncode,
+        "row_count": result.get("row_count"), "coverage": result.get("coverage"),
+        "quality": (result.get("detail") or {}).get("quality"),
         "elapsed_seconds": round(float(result.get("elapsed_ms") or 0) / 1000, 3)}
     return checks, details
+
+
+def _run_repeat_event(data_root: Path, day: str, expected_version: str,
+                      output: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join((str(ROOT / "src"), str(ROOT), env.get("PYTHONPATH", "")))
+    env["CORE_DATA_ROOT"] = str(data_root)
+    env["GUARDIAN_DRY_RUN"] = "0"
+    env["GUARDIAN_EMAIL_SELF"] = "0"
+    request = {"event": "baostock_probe_1730", "handler": "baostock_probe",
+               "trade_date": day, "data_date": day, "asof": day + "T17:40:00+08:00",
+               "args": {"dataset": "daily_kline"}}
+    cmd = [str(VENV_PYTHON), str(ROOT / "examples/guardian_handler.py"), "run"]
+    proc = subprocess.run(cmd, cwd=ROOT, env=env, input=json.dumps(request), text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    (output / "repeat_event.stdout").write_text(proc.stdout, encoding="utf-8")
+    (output / "repeat_event.stderr").write_text(proc.stderr, encoding="utf-8")
+    lines = [line for line in proc.stdout.splitlines() if line.strip()]
+    result = json.loads(lines[-1]) if lines else {}
+    detail = result.get("detail") if isinstance(result.get("detail"), dict) else {}
+    checks = [
+        _assert(proc.returncode == 0 and result.get("status") == "ok", "later_event_success",
+                {"exit_code": proc.returncode, "status": result.get("status")}),
+        _assert(detail.get("status") == "ALREADY_COMPLETE" and detail.get("version") == expected_version
+                and detail.get("queries") == 0, "later_event_skips_complete_partition",
+                {"detail": detail, "expected_version": expected_version}),
+    ]
+    return {"result": result, "command": cmd}, checks
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -238,6 +270,12 @@ def main(argv: list[str] | None = None) -> int:
         quality = manifest.get("quality") if isinstance(manifest.get("quality"), dict) else {}
         expected = quality.get("expected_count")
         rows = catalog.read_rows(manifest_path) if manifest_path else []
+        universe_path = catalog.locate("symbol_universe", day)
+        universe_rows = catalog.read_rows(universe_path) if universe_path else []
+        expected_symbols = {_symbol(row) for row in universe_rows} - {""}
+        actual_symbols = {_symbol(row) for row in rows} - {""}
+        missing_symbols = sorted(expected_symbols - actual_symbols)
+        extra_symbols = sorted(actual_symbols - expected_symbols)
         latest = catalog.read().get("datasets", {}).get("daily_kline", {}).get("latest") or {}
         latest_file = _load_json(data_root / "daily_kline/latest.json")
         checks.extend([
@@ -253,25 +291,36 @@ def main(argv: list[str] | None = None) -> int:
                     {"business_status": manifest.get("business_status"),
                      "field_completeness": manifest.get("field_completeness"),
                      "source_dates": manifest.get("source_dates")}),
+            _assert(bool(expected_symbols) and not missing_symbols and not extra_symbols and
+                    len(rows) == len(expected_symbols), "full_universe_symbols_processed",
+                    {"expected_symbols": len(expected_symbols), "partition_symbols": len(actual_symbols),
+                     "row_count": len(rows), "missing_count": len(missing_symbols),
+                     "extra_count": len(extra_symbols), "missing_sample": missing_symbols[:8],
+                     "extra_sample": extra_symbols[:8]}),
         ])
+        if manifest.get("business_status") == "FORMAL":
+            repeat_event, repeat_checks = _run_repeat_event(
+                data_root, day, str(manifest.get("version") or ""), output)
+            checks.extend(repeat_checks)
+        else:
+            repeat_event = {"skipped": True, "reason": "daily_kline_not_formal"}
+            checks.append(_assert(False, "later_event_skips_complete_partition", repeat_event))
         td_rows = rehearsal.get("td_snapshot_rows", {}).get("after", {})
         td_daily = {key: value for key, value in td_rows.items() if "daily_kline" in key.lower()}
         checks.append(_assert(bool(td_daily) and any(value > 0 for value in td_daily.values()),
                               "td_daily_kline_readback", td_daily))
         attempts = manifest.get("provider_attempts", [])
         timing = next((item for item in attempts if item.get("provider") == "baostock"), {})
-        checks.append(_assert(timing.get("completed_symbols") == timing.get("expected_symbols") and
-                              isinstance(timing.get("expected_symbols"), int) and
-                              timing.get("expected_symbols", 0) > 0,
-                              "full_market_symbols_processed",
-                              {"completed_symbols": timing.get("completed_symbols"),
-                               "expected_symbols": timing.get("expected_symbols"),
-                               "query_count": timing.get("query_count")}))
+        checks.append(_assert(timing.get("result") == "ok" and
+                              isinstance(timing.get("query_count"), int) and timing["query_count"] > 0,
+                              "full_market_provider_completed",
+                              {"result": timing.get("result"), "query_count": timing.get("query_count"),
+                               "row_count": timing.get("row_count")}))
         result["facts"].update({"row_count": len(rows), "expected_count": expected,
                                 "coverage": quality.get("coverage"),
                                 "business_status": manifest.get("business_status"),
                                 "provider_attempt": timing, "manifest": str(manifest_path),
-                                "rehearsal_root": str(root)})
+                                "rehearsal_root": str(root), "repeat_event": repeat_event})
         resume_checks, resume_facts = _run_resume_sample(day, output)
         checks.extend(resume_checks)
         result["facts"]["resume_sample"] = resume_facts

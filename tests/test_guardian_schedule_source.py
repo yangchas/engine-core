@@ -44,6 +44,7 @@ def test_schedule_fields_match_go_migrator_and_native_fixture_provenance():
     events = {event["event_id"]: event for event in schedule["events"]}
     baostock = [event for event in schedule["events"] if event.get("handler") == "baostock_probe"]
     assert len(baostock) == 4
+    assert all(event["args"]["dataset"] == "daily_kline" for event in baostock)
     assert all(event["late_until"] == "23:30:00" and
                event["late_until_date_offset_days"] == 1 and
                event["late_until_date_offset_error_codes"] == ["BAOSTOCK_LOCAL_GAP_WAIT"] and
