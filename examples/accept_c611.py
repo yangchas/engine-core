@@ -69,6 +69,7 @@ def _rehearse(database: str) -> dict[str, Any]:
     command = [sys.executable, str(ROOT / "examples/rehearse_event.py"),
                "--event", "limit_up_detail_d1", "--with", "limit_pool_d1", "--minutes", "1",
                "--refresh-output-event", "limit_pool_d1",
+               "--event-args-json", '{"backfill_depth":5}',
                "--td-database", database, "--timeout-minutes", "45"]
     completed = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, timeout=46 * 60, check=False)

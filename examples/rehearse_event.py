@@ -323,7 +323,8 @@ def _schedule_event_name(event_id: str) -> str:
 
 
 def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[str], run_token: str,
-                     now: datetime, minutes: int) -> tuple[dict[str, Any], dict[str, str]]:
+                     now: datetime, minutes: int, *,
+                     event_args: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
     if minutes < 1:
         raise ValueError("minutes_must_be_at_least_1")
     by_id = {str(event.get("event_id")): event for event in schedule["events"]
@@ -378,6 +379,11 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
     for event in selected:
         original_id = str(event["event_id"])
         event["event_id"] = schedule_ids[original_id]
+        if original_id == _schedule_event_name(event_id) and event_args:
+            existing_args = event.get("args") or {}
+            if not isinstance(existing_args, dict):
+                raise ValueError("event_args_target_not_object:" + original_id)
+            event["args"] = {**existing_args, **event_args}
         for key in ("depends_on", "after"):
             if key in event:
                 event[key] = _remap_event_references(event[key], schedule_ids)
@@ -1191,9 +1197,23 @@ def _parser() -> argparse.ArgumentParser:
                         help="hide this event's output date in the temporary catalog to exercise a fresh write")
     parser.add_argument("--refresh-output-event", action="append", default=[],
                         help="also hide a selected --event/--with event's output date in the temporary catalog")
+    parser.add_argument("--event-args-json",
+                        help="JSON object merged into the selected --event args in the isolated schedule")
     parser.add_argument("--keep", action="store_true",
                         help="retain temporary files (all rehearsal directories are retained by policy)")
     return parser
+
+
+def parse_event_args(value: str | None) -> dict[str, Any]:
+    if value is None or value == "":
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        raise ValueError("event_args_json_invalid") from None
+    if not isinstance(parsed, dict) or any(not isinstance(key, str) or not key for key in parsed):
+        raise ValueError("event_args_json_must_be_object")
+    return parsed
 
 
 def run_rehearsal(args: argparse.Namespace) -> int:
@@ -1281,9 +1301,11 @@ def run_rehearsal(args: argparse.Namespace) -> int:
         trigger = now + timedelta(minutes=args.minutes)
         trigger_at = trigger.isoformat(timespec="seconds")
         deadline_at = (trigger + timedelta(minutes=60)).isoformat(timespec="seconds")
+        event_args_overrides = parse_event_args(args.event_args_json)
         prepared, event_ids = prepare_schedule(archive_schedule, args.event,
                                                [item for group in args.with_events for item in group],
-                                               root.name, now, args.minutes)
+                                               root.name, now, args.minutes,
+                                               event_args=event_args_overrides)
         if fetch_item_id is not None:
             seed_fetch_item_state(state_root, event_ids[args.event], target_data_date, trigger_at)
         refresh_events = list(args.refresh_output_event)
@@ -1304,6 +1326,8 @@ def run_rehearsal(args: argparse.Namespace) -> int:
         tracked_event_id, tracked_instance_ids = _tracked_ledger_target(args.event, event_ids)
         summary.update({"event_id_map": event_ids, "temporary_event_id": event_ids[args.event],
                         "trigger_at": trigger_at, "deadline_at": deadline_at})
+        if event_args_overrides:
+            summary["event_args_overrides"] = event_args_overrides
         staged_schedule = root / "schedule.json"
         staged_schedule.write_text(json.dumps(prepared, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         config_result = _run_migrate_and_make_config(binary, archive_root, staged_schedule, root, VENV_PYTHON,
