@@ -364,8 +364,10 @@ class TaosStore:
 
     def delete_versions(self, trade_date: str) -> None:
         _check_date(trade_date)
-        self._run(f"DELETE FROM {self.database}.{META_TABLE} WHERE trade_date = '{trade_date}'",
-                  missing_ok=True)
+        # TDengine only accepts DELETE with a definite time window, never a plain column predicate.
+        for row in self.read_versions(trade_date):
+            self._run(f"DELETE FROM {self.database}.{META_TABLE} WHERE ts = {int(row['ts'])}",
+                      missing_ok=True)
 
     # -- day rows ---------------------------------------------------------------------------------------------------
     def replace_day(self, trade_date: str, version: str, mapped: Mapping[str, Mapping[str, Any]]) -> None:
