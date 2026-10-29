@@ -1059,5 +1059,21 @@
    "SMEMBERS",
    "HGETALL"
   ]
+ },
+ "kaipan_stock_dde_2026-10-29_000001_1516.json": {
+  "source": "kaipan_stock_dde",
+  "trade_date": "2026-10-29",
+  "fetched_at": "2026-10-29T15:16:02+08:00",
+  "bytes": 54805,
+  "sha256": "1198f415236442adf27957c47106f5e4b34899cebd3ae721250031539af86488",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_stock_dde --symbol 000001 --date 2026-10-29",
+  "call": "getHisStockDDE",
+  "params": {
+   "code": "000001",
+   "date": "2026-10-29"
+  },
+  "request_count": 1,
+  "source_date_echo": "Date"
  }
 }
