@@ -112,6 +112,58 @@ def test_registry_trigger_event_resolves_to_the_single_schedule_start():
             assert policy.get("trigger_at") is None
 
 
+def test_hot_plate_capture_schedule_matches_contract_windows_and_retry_budgets():
+    schedule = json.loads((ROOT / "src/engine_core/guardian/schedule.json").read_text())
+    events = [event for event in schedule["events"]
+              if event.get("handler") == "kaipan_hot_capture" and
+              event.get("event_id", "").startswith("kaipan_hot_")]
+    expected = {
+        "09:16:10": "09:17:30", "09:21:10": "09:23:00",
+        "09:25:20": "09:25:50", "09:28:30": "09:30:00",
+        "09:32:20": "09:33:30", "09:35:20": "09:36:30",
+        "09:40:20": "09:41:30", "09:45:20": "09:46:30",
+        "10:10:00": "10:12:00", "10:20:00": "10:22:00",
+        "10:30:00": "10:32:00", "10:45:00": "10:47:00",
+        "11:00:00": "11:02:00", "11:25:00": "11:27:00",
+        "13:30:00": "13:32:00", "14:30:00": "14:32:00",
+        "14:50:00": "14:52:00", "15:10:00": "15:12:00",
+    }
+    assert len(events) == 18
+    assert {event["at"]: event["deadline"] for event in events} == expected
+    profiles = schedule["profiles"]
+    for event in events:
+        assert event["args"]["max_pages"] == 5
+        assert event["args"]["datasets"] == ["hot_plates", event["event_id"]]
+        ladder = profiles[event["profile"]]["ladder"][0]
+        assert ladder["attempts"] >= 2
+        if event["at"] == "09:25:20":
+            assert ladder["attempts"] == 2
+            assert event["deadline"] == "09:25:50"
+            assert ladder["timeout"] == "10s"
+            assert ladder["backoff"] == "2s*1"
+    reconcile = next(event for event in schedule["events"]
+                     if event.get("event_id") == "hot_plates_gap_reconcile_151500")
+    assert reconcile["at"] == "15:15:00"
+    assert reconcile["args"] == {"reconcile_only": True, "datasets": ["hot_plates_gaps"]}
+    assert schedule["profiles"][reconcile["profile"]]["ladder"][0]["attempts"] == 1
+
+
+def test_hot_plate_history_has_a_premarket_gap_only_schedule():
+    schedule = json.loads((ROOT / "src/engine_core/guardian/schedule.json").read_text())
+    event = next(event for event in schedule["events"]
+                 if event.get("event_id") == "hot_plates_history_0815")
+
+    assert event["handler"] == "kaipan_hot_capture"
+    assert event["at"] == "08:15:00"
+    assert event["deadline"] == "08:30:00"
+    assert event["on_deadline"] == "missed"
+    assert event["args"]["hot_plates_history_days"] == 3
+    assert event["args"]["datasets"] == ["hot_plates_history", "hot_plates_history_days=3"]
+    profile = schedule["profiles"][event["profile"]]["ladder"][0]
+    assert profile["attempts"] == 1
+    assert profile["timeout"] == "300s"
+
+
 
 def test_runtime_reconciliation_checkpoints_are_configured_and_use_fetch_plan():
     import json

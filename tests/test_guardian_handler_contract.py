@@ -431,6 +431,29 @@ def test_fakeclock_kaipan_job_persists_only_to_artifact_root():
     assert "--write" not in command
 
 
+def test_hot_plate_history_schedule_uses_artifact_only_job_command():
+    from engine_core.guardian.commands import build_handler_command
+    from types import SimpleNamespace
+
+    event = SimpleNamespace(event_id="hot_plates_history_0815", start="08:15:00",
+        deadline="08:30:00", args={"hot_plates_history_days": 3,
+                                   "datasets": ["hot_plates_history",
+                                                "hot_plates_history_days=3"]})
+    opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False,
+                           email_self=False, job="daily_kline")
+
+    command = build_handler_command("kaipan_hot_capture", event, opts,
+        ROOT / "artifacts", "2026-10-29", sys.executable, ROOT)
+
+    assert command[:4] == [sys.executable, str(ROOT / "examples/run_data_jobs.py"),
+                           "--job", "hot_plates"]
+    assert command[command.index("--hot-plates-history-days") + 1] == "3"
+    assert command[command.index("--hot-plates-scheduled-at") + 1] == "08:15:00"
+    assert command[command.index("--hot-plates-deadline") + 1] == "08:30:00"
+    assert command[-1] == "--execute"
+    assert "--write" not in command
+
+
 def test_auction_report_asof_is_clamped_to_0926_when_started_later(monkeypatch, tmp_path):
     from examples import core_guardian, guardian_handler
 

@@ -115,7 +115,8 @@ def _daily_kline_provider_arg(value):
 
 
 def validate_handler_postcondition(name: str, day: str, root: str | Path,
-                                   datasets: Any = None) -> tuple[bool, str]:
+                                   datasets: Any = None,
+                                   event_args: Any = None) -> tuple[bool, str]:
     """Read Core catalog/file outputs after a successful guardian command."""
     root = Path(root).expanduser()
     if name == "calendar_refresh":
@@ -141,7 +142,69 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path,
         # C587: an event that lists its own datasets (D-1 reasons/members) is judged on those, not on the pool.
         datasets = tuple(datasets) if datasets else ("limit_up_pool",)
     elif name == "kaipan_hot_capture":
-        datasets = ("hot_plates",)
+        declared = tuple(datasets) if datasets else ()
+        if "hot_plates_history" in declared:
+            from ..data_pipeline.hot_plates_gaps import (
+                _existing_gap_rows, history_capture_exists, history_event_id,
+                prior_hot_plate_dates,
+            )
+            count = _arg(event_args or {}, "hot_plates_history_days")
+            if count is None:
+                marker = next((value for value in declared
+                               if isinstance(value, str) and
+                               value.startswith("hot_plates_history_days=")), None)
+                try:
+                    count = int(marker.split("=", 1)[1]) if marker else 3
+                except ValueError:
+                    return False, "hot_plates_history_days_invalid"
+            try:
+                history_dates = prior_hot_plate_dates(root, day, count)
+            except (RuntimeError, ValueError, TypeError):
+                return False, "hot_plates_history_calendar_unknown"
+            for target_date in history_dates:
+                history_id = history_event_id(target_date)
+                if history_capture_exists(root, target_date):
+                    continue
+                gaps = _existing_gap_rows(catalog, target_date)
+                if any(row.get("event_id") == history_id and row.get("status") == "GAP"
+                       for row in gaps):
+                    continue
+                return False, "hot_plates_history_missing:" + target_date
+            return True, ""
+        if "hot_plates_gaps" in declared:
+            gap_path = catalog.locate("hot_plates_gaps", day)
+            gaps = catalog.read_rows(gap_path) if gap_path and gap_path.is_file() else []
+            manifest_path = catalog.locate("hot_plates", day)
+            if gaps or (manifest_path is not None and manifest_path.is_file()):
+                return True, ""
+            return False, "hot_plates_gap_reconcile_missing_output"
+        event_id = next((value for value in declared
+                         if isinstance(value, str) and value.startswith("kaipan_hot_")), None)
+        manifest_path = catalog.locate("hot_plates", day)
+        if manifest_path is not None and manifest_path.is_file():
+            if event_id is None:
+                return True, ""
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                rows = catalog.read_rows(manifest_path)
+                captured = (manifest.get("event_id") == event_id or
+                            any(row.get("event_id") == event_id for row in rows))
+                if captured:
+                    return True, ""
+            except (OSError, ValueError, TypeError):
+                return False, "hot_plates_manifest_invalid"
+        gap_path = catalog.locate("hot_plates_gaps", day)
+        if gap_path is not None and gap_path.is_file():
+            try:
+                gaps = catalog.read_rows(gap_path)
+            except (OSError, ValueError, TypeError):
+                return False, "hot_plates_gaps_invalid"
+            accepted = any(row.get("status") == "GAP" and
+                           (event_id is None or row.get("event_id") == event_id)
+                           for row in gaps)
+            if accepted:
+                return True, ""
+        return False, "hot_plates_event_missing" if event_id else "hot_plates_manifest_missing"
     else:
         datasets = ("daily_kline",)
     for dataset in datasets:
@@ -239,8 +302,42 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
             cmd.append("--execute")
         return cmd
     if name == "kaipan_hot_capture":
+        event_args = _event_args(event)
+        history_days = _arg(event_args, "hot_plates_history_days")
+        if history_days is not None:
+            if type(history_days) is not int or not 1 <= history_days <= 3:
+                raise ValueError("hot_plates_history_days_must_be_between_1_and_3")
+            cmd = [py, str(repo / "examples/run_data_jobs.py"), "--job", "hot_plates",
+                   "--date", day, "--artifact-root", str(root),
+                   "--hot-plates-history-days", str(history_days)]
+            scheduled_at = getattr(event, "start", None) or _arg(event_args, "scheduled_at")
+            deadline = getattr(event, "deadline", None) or _arg(event_args, "deadline")
+            if scheduled_at:
+                cmd.extend(["--hot-plates-scheduled-at", str(scheduled_at)])
+            if deadline:
+                cmd.extend(["--hot-plates-deadline", str(deadline)])
+            if opts.write or getattr(opts, "simulate_clock", False):
+                # History is stored as an immutable Core artifact; never publish it to Redis.
+                cmd.append("--execute")
+            return cmd
         cmd = [py, str(repo / "examples/capture_kaipan_plates.py"), "--trade-date", day,
                "--dataset", "hot_plates", "--artifact-root", str(root)]
+        if _arg(event_args, "reconcile_only"):
+            cmd.append("--reconcile-only")
+            if opts.write:
+                cmd.append("--write-artifact")
+            return cmd
+        event_id = getattr(event, "event_id", None) or _arg(event_args, "event_id")
+        scheduled_at = getattr(event, "start", None) or _arg(event_args, "scheduled_at")
+        deadline = getattr(event, "deadline", None) or _arg(event_args, "deadline")
+        if event_id:
+            cmd.extend(["--event-id", str(event_id)])
+        if scheduled_at:
+            cmd.extend(["--scheduled-at", str(scheduled_at)])
+        if deadline:
+            cmd.extend(["--deadline", str(deadline)])
+        if _has_arg(event_args, "max_pages"):
+            cmd.extend(["--max-pages", str(_arg(event_args, "max_pages"))])
         if opts.write:
             cmd.append("--execute")
         return cmd

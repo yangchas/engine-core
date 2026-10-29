@@ -233,22 +233,47 @@ class KaipanProvider:
             ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         os.replace(temporary, path)
 
-    def hot_plates(self, trade_date: str, *, context: Any = None,
-                   page_size: int = 50) -> dict[str, Any]:
-        response = self._call(self._client_method("get_his_plates", "getHisPlates"),
-                              trade_date, "0", str(page_size))
-        response_metadata = {key: response.get(key) for key in ("Time", "Min", "Max", "Day")
-                             if response.get(key) is not None} if isinstance(response, Mapping) else {}
-        response_days = response_metadata.get("Day")
-        if response_days is not None:
+    def hot_plates(self, trade_date: str, *, request_date: str | None = None,
+                   context: Any = None,
+                   page_size: int = 50, max_pages: int = 5) -> dict[str, Any]:
+        if page_size < 1 or max_pages < 1:
+            raise ValueError("kaipan_hot_plates_page_bounds_invalid")
+        api_date = trade_date if request_date is None else request_date
+        started = self.monotonic_fn()
+        method = self._client_method("get_his_plates", "getHisPlates")
+        pages, source_rows = [], []
+        response_total = None
+        for page_number in range(max_pages):
+            response = self._call(method, api_date, str(page_number * page_size), str(page_size))
+            if not isinstance(response, Mapping):
+                raise ValueError("kaipan_hot_plates_response_shape")
+            response_days = response.get("Day")
             if not isinstance(response_days, (list, tuple, set)):
                 response_days = [response_days]
             normalized_days = {str(day)[:10] for day in response_days if day is not None}
-            if normalized_days and trade_date not in normalized_days:
+            if trade_date and trade_date not in normalized_days:
                 raise ValueError("kaipan_hot_plates_response_date_mismatch")
+            raw_total = response.get("Total", response.get("Count"))
+            try:
+                page_total = int(raw_total)
+            except (TypeError, ValueError):
+                raise ValueError("kaipan_hot_plates_total_missing") from None
+            if page_total < 0 or (response_total is not None and response_total != page_total):
+                raise ValueError("kaipan_hot_plates_total_mismatch")
+            response_total = page_total
+            page_rows = _list_rows(response)
+            source_rows.extend(page_rows[:page_size])
+            pages.append(response)
+            if len(source_rows) >= response_total or len(page_rows) < page_size:
+                break
+
+        first_response = pages[0]
+        response_metadata = {key: first_response.get(key) for key in ("Time", "Min", "Max", "Day")
+                             if first_response.get(key) is not None}
+        elapsed_ms = max(0, int((self.monotonic_fn() - started) * 1000))
         captured_at = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
         rows = []
-        for raw in _list_rows(response)[:page_size]:
+        for raw in source_rows[:page_size * max_pages]:
             if isinstance(raw, Mapping):
                 row = dict(raw)
                 code = _code(row.get("plate_code", row.get("code")))
@@ -264,12 +289,28 @@ class KaipanProvider:
             row["captured_at"] = captured_at
             row["available_at"] = captured_at
             rows.append(row)
-        return {"rows": rows, "expected_count": len(rows), "request_count": self._requests,
-                "requested_date": trade_date, "response_time": response_metadata.get("Time"),
+        aggregate_response = dict(first_response)
+        row_key = next((key for key in ("list", "List", "data", "info")
+                        if isinstance(first_response.get(key), (list, tuple))), "list")
+        aggregate_response[row_key] = source_rows
+        return {"rows": rows, "expected_count": response_total, "coverage_count": len(rows),
+                "coverage_denominator": response_total, "response_total": response_total,
+                "page_size": page_size, "pages_received": len(pages),
+                "expected_pages": (response_total + page_size - 1) // page_size,
+                "partial": len(rows) < response_total,
+                "request_count": self._requests,
+                "requested_date": trade_date, "requested_api_date": api_date,
+                "response_time": response_metadata.get("Time"),
                 "response_min": response_metadata.get("Min"),
                 "response_max": response_metadata.get("Max"),
                 "response_day": response_metadata.get("Day"),
-                "fetched_at": captured_at, "available_at": captured_at}
+                "fetched_at": captured_at, "available_at": captured_at,
+                "raw_response": aggregate_response,
+                "response_pages": len(pages),
+                "provider_attempt": {"provider": "kaipan_getHisPlates", "result": "SUCCESS",
+                                     "elapsed_ms": elapsed_ms,
+                                     "reason": "paged_response" if len(pages) > 1 else "single_response",
+                                     "row_count": len(rows)}}
 
     def plate_minutes(self, plate_code: str, trade_date: str, *, context: Any = None) -> dict[str, Any]:
         code = _code(plate_code)

@@ -71,3 +71,29 @@ def test_partial_daily_kline_is_neither_present_nor_a_passed_postcondition(tmp_p
         source="baostock")
     assert catalog_partition_present(ArtifactCatalog(tmp_path).read(), "daily_kline", day, now)
     assert validate_handler_postcondition("baostock_probe", day, tmp_path) == (True, "")
+
+
+def test_hot_plate_history_postcondition_requires_each_prior_session_saved_or_gapped(
+        tmp_path, monkeypatch):
+    from engine_core.data_pipeline.hot_plates_gaps import record_hot_plates_gap
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+
+    dates = ["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29"]
+    monkeypatch.setattr(TradeCalendarStore, "all_trading_dates", lambda _self: dates)
+    datasets = ["hot_plates_history", "hot_plates_history_days=3"]
+    assert not validate_handler_postcondition("kaipan_hot_capture", "2026-10-29",
+                                              tmp_path, datasets)[0]
+
+    catalog = ArtifactCatalog(tmp_path)
+    for day in dates[:2]:
+        event_id = f"kaipan_history_{day.replace('-', '')}"
+        catalog.commit("hot_plates", day, [{"event_id": event_id}],
+            {"event_id": event_id, "captured_at": "2026-10-29T08:20:00+08:00"},
+            source="kaipan_getHisPlates")
+    record_hot_plates_gap(tmp_path, dates[2], "kaipan_history_20261028",
+        "2026-10-29T08:15:00+08:00", "2026-10-29T08:30:00+08:00",
+        "2026-10-29T08:31:00+08:00", "provider_failure")
+
+    assert validate_handler_postcondition("kaipan_hot_capture", "2026-10-29",
+                                          tmp_path, datasets) == (True, "")

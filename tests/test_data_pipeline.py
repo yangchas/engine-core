@@ -19,7 +19,7 @@ def test_registry_declares_tiered_storage_and_bounded_redis_views():
     assert set(DATASETS) >= DATASET_NAMES
     assert get_dataset("daily_kline").primary_backend == "artifact"
     assert get_dataset("daily_kline").redis_ttl_seconds == 7 * 86400
-    assert get_dataset("hot_plates").redis_ttl_seconds == 1800
+    assert get_dataset("hot_plates").redis_ttl_seconds == 7 * 86400
     assert get_dataset("hot_rank").source == "ths_hot_rank"
     assert get_dataset("plate_members").max_redis_payload_bytes == 64 * 1024
 
@@ -74,16 +74,35 @@ def test_job_pipeline_persists_immutable_artifact_and_manifest(name, tmp_path):
                    for row in page if isinstance(row, list) and len(row) >= 23)
         pool_row = kaipan_row(raw, 1, trade_date)
         rows = build_limit_reasons(trade_date, [pool_row], pool_source="kaipan_getHisBans")["rows"]
+    elif name == "hot_plates":
+        from engine_core.data_pipeline.hot_plates_builder import build_hot_plates
+        trade_date = "2026-10-23"
+        fixture = Path(__file__).parent / "fixtures/real/kaipan_hot_plates_2026-10-23_1441.json"
+        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        part = build_hot_plates({
+            "trade_date": trade_date,
+            "captured_at": "2026-10-23T14:41:16+08:00",
+            "response": payload,
+            "page_size": 50,
+        })
+        rows = {**part.manifest, "rows": part.rows}
     else:
         rows = [{"symbol": "1", "value": 3, "missing": None}]
-    now = "2026-10-27T10:00:00Z" if name == "limit_reasons" else "2026-10-16T10:00:00Z"
+    now = "2026-10-27T10:00:00Z" if name in {"limit_reasons", "hot_plates"} else "2026-10-16T10:00:00Z"
     result = runner.run(name, trade_date, fetch=lambda _: rows, now=now)
-    assert result.manifest["row_count"] == 1
+    assert result.manifest["row_count"] == (50 if name == "hot_plates" else 1)
     assert result.manifest["storage_backend"] == "artifact"
     loaded = load_dataset(name, trade_date, catalog=ArtifactCatalog(tmp_path))
     if name == "limit_reasons":
         assert loaded.rows[0]["date"] == trade_date
         assert loaded.rows[0]["symbol"].isdigit()
+    elif name == "hot_plates":
+        raw = json.loads((Path(__file__).parent / "fixtures/real/kaipan_hot_plates_2026-10-23_1441.json")
+                         .read_text(encoding="utf-8"))["list"][0]
+        assert loaded.rows[0]["plate_code"] == str(raw[0])
+        assert loaded.rows[0]["strength"] == raw[2]
+        assert loaded.rows[0]["change_pct"] == raw[3]
+        assert loaded.rows[0]["available_at"] == loaded.rows[0]["captured_at"]
     else:
         assert loaded.rows[0]["symbol"] == "000001"
         assert loaded.rows[0]["missing"] is None
@@ -322,13 +341,18 @@ def test_injected_kaipan_provider_fetches_pool_and_honors_request_limit(tmp_path
 
 
 def test_kaipan_provider_uses_sdk_plate_methods_and_normalizes_rows():
+    import json
+    from pathlib import Path
+
     from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+
+    fixture = Path(__file__).parent / "fixtures/real/kaipan_hot_plates_2026-10-23_1441.json"
+    payload = json.loads(fixture.read_text(encoding="utf-8"))
 
     class SDK:
         def getHisPlates(self, date, index, size):
-            assert (date, index, size) == ("2026-10-16", "0", "50")
-            return {"list": [["801001", "芯片", 12300, 1.25, 0, 500]],
-                    "Count": 1, "Day": ["2026-10-16"]}
+            assert (date, index, size) == ("", "0", "50")
+            return payload
 
         def getHisPlateIds(self, p, date, index, size):
             assert (p, date, index, size) == ("801001", "2026-10-16", "0", "30")
@@ -337,20 +361,36 @@ def test_kaipan_provider_uses_sdk_plate_methods_and_normalizes_rows():
 
     provider = KaipanProvider(SDK(), plate_codes=["801001"], max_requests=3,
                               sleep_fn=lambda _: None)
-    plates = provider.hot_plates("2026-10-16")
+    plates = provider.hot_plates("2026-10-23", request_date="", max_pages=1)
     members = provider.plate_members("2026-10-16", page_size=30)
-    assert [{key: value for key, value in row.items()
-             if key not in {"captured_at", "available_at"}} for row in plates["rows"]] == [
-        {"plate_code": "801001", "name": "芯片", "strength": 12300,
-         "change_pct": 1.25, "amount_yuan": 500, "trade_date": "2026-10-16"}]
+    raw = payload["list"][0]
+    assert len(plates["rows"]) == 50
+    assert plates["rows"][0]["plate_code"] == str(raw[0])
+    assert plates["rows"][0]["strength"] == raw[2]
+    assert plates["rows"][0]["change_pct"] == raw[3]
     assert plates["rows"][0]["captured_at"] == plates["rows"][0]["available_at"]
     assert plates["rows"][0]["available_at"] == plates["available_at"]
+    assert plates["requested_date"] == "2026-10-23"
+    assert plates["requested_api_date"] == ""
     assert members["rows"] == [{"plate_code": "801001", "symbol": "600001",
                                 "plate_class": "UNKNOWN", "plate_member_label": "芯片",
                                 "trade_date": "2026-10-16"}]
 
 
+def test_kaipan_hot_plates_rejects_mismatched_day_metadata():
+    from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+
+    class SDK:
+        def getHisPlates(self, date, index, size):
+            return {"list": [], "Total": 0, "Day": ["2026-10-22"]}
+
+    provider = KaipanProvider(SDK(), max_requests=1, sleep_fn=lambda _: None)
+    with pytest.raises(ValueError, match="kaipan_hot_plates_response_date_mismatch"):
+        provider.hot_plates("2026-10-23", request_date="", max_pages=1)
+
+
 def test_kaipan_default_job_uses_direct_sdk_and_resumable_member_checkpoints(tmp_path, monkeypatch):
+    import json
     import importlib
     import sys
     from pathlib import Path
@@ -366,18 +406,29 @@ def test_kaipan_default_job_uses_direct_sdk_and_resumable_member_checkpoints(tmp
     # The default adapter must lazily load the separately installed pykaipan
     # SDK directly, without importing the legacy adapter module.
     calls = []
+    fixture = Path(__file__).parent / "fixtures/real/kaipan_hot_plates_2026-10-23_1441.json"
+    hot_response = json.loads(fixture.read_text(encoding="utf-8"))
+
+    def get_hot_plates(date, index, size):
+        assert (date, index, size) == ("2026-10-23", "0", "50")
+        return hot_response
+
     def get_ids(plate, date, index, size):
         if plate == "801002":
             raise OSError("temporary")
         return {"list": [["600001", "甲"]], "Count": 1}
 
     sdk = SimpleNamespace(
-        getHisPlates=lambda **kwargs: {"list": [["801001", "测试"]], "Count": 1},
+        getHisPlates=get_hot_plates,
         getHisPlateIds=get_ids,
         getHisBans=lambda **kwargs: {"info": []},
         getHisPlateMins=lambda *args, **kwargs: {},
         getBanReasons=lambda *args, **kwargs: {"List": []},
     )
+    original_hot_plates = KaipanProvider.hot_plates
+    monkeypatch.setattr(KaipanProvider, "hot_plates",
+                        lambda self, day, **kwargs: original_hot_plates(
+                            self, day, max_pages=1, **kwargs))
     original_import = importlib.import_module
 
     def direct_import(name, *args, **kwargs):
@@ -391,8 +442,9 @@ def test_kaipan_default_job_uses_direct_sdk_and_resumable_member_checkpoints(tmp
     monkeypatch.setattr(importlib, "import_module", direct_import)
     monkeypatch.setattr(run_jobs, "_plate_codes", lambda *args: ["801001", "801002"])
     adapters = run_jobs._default_adapters(str(tmp_path), "/unused", 30, True)
-    hot = adapters["hot_plates"]("2026-10-16")
-    assert hot["rows"][0]["plate_code"] == "801001"
+    hot = adapters["hot_plates"]("2026-10-23")
+    assert hot["rows"][0]["plate_code"] == str(hot_response["list"][0][0])
+    assert hot["rows"][0]["strength"] == hot_response["list"][0][2]
     assert calls == ["pykaipan.pykaipan"]
 
     provider = KaipanProvider(

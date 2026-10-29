@@ -128,6 +128,7 @@ _TYPE_CHECK = {
     "bool": lambda v: isinstance(v, bool),
     "list": lambda v: isinstance(v, list),
     "dict": lambda v: isinstance(v, dict),
+    "raw": lambda v: v is None or isinstance(v, (str, int, float, bool, list, dict)),
     "date": lambda v: isinstance(v, str) and bool(_DATE_RE.match(v)),
 }
 
@@ -322,6 +323,33 @@ def _check_manifest(rep: Report, dataset: str, trade_date: str, chosen: dict[str
                f"manifest.sha256={m.get('sha256')!r} version={m.get('version')!r}; content sha256={payload_sha}")
     _check_times(rep, trade_date, m, spec)
     _check_units(rep, m, spec)
+    if dataset == "hot_plates":
+        captured_at = m.get("captured_at")
+        rep.result(m.get("available_at") == captured_at,
+                   "A13", "manifest_available_at_equals_capture",
+                   "manifest.available_at must equal manifest.captured_at",
+                   captured_at=captured_at, available_at=m.get("available_at"))
+        source_dates = m.get("source_dates") if isinstance(m.get("source_dates"), dict) else {}
+        rep.result(source_dates.get("kaipan_getHisPlates") == trade_date,
+                   "A12", "kaipan_day_matches_partition",
+                   "manifest.source_dates.kaipan_getHisPlates must equal partition trade_date",
+                   source_day=source_dates.get("kaipan_getHisPlates"), expected=trade_date)
+        bad_row_days = [row.get("source_day") for row in rows
+                        if not isinstance(row.get("source_day"), list) or
+                        trade_date not in row.get("source_day", [])]
+        rep.result(not bad_row_days, "B9", "row_day_evidence_matches_partition",
+                   f"{len(bad_row_days)} rows lack matching Kaipan Day evidence",
+                   count=len(bad_row_days), examples=_examples(bad_row_days))
+        bad_availability = [(row.get("captured_at"), row.get("available_at")) for row in rows
+                            if row.get("captured_at") != row.get("available_at")]
+        rep.result(not bad_availability, "B10", "row_available_at_equals_capture",
+                   f"{len(bad_availability)} rows have available_at different from captured_at",
+                   count=len(bad_availability), examples=_examples(bad_availability))
+        bad_capture_times = [row.get("captured_at") for row in rows
+                             if row.get("captured_at") != captured_at]
+        rep.result(not bad_capture_times, "B11", "row_capture_matches_manifest",
+                   f"{len(bad_capture_times)} rows differ from manifest.captured_at",
+                   count=len(bad_capture_times), examples=_examples(bad_capture_times))
 
 
 def _check_times(rep: Report, trade_date: str, m: dict[str, Any], spec: dict[str, Any]) -> None:
@@ -509,6 +537,36 @@ def _check_coverage(rep: Report, catalog: ArtifactCatalog, trade_date: str, m: d
         return
     if basis == "pool_members":
         _check_pool_coverage(rep, m, q, rows)
+        return
+    if basis == "response_total":
+        response_total, page_size = m.get("response_total"), m.get("page_size")
+        valid_numbers = (isinstance(response_total, int) and not isinstance(response_total, bool) and
+                         isinstance(page_size, int) and not isinstance(page_size, bool) and
+                         response_total >= 0 and page_size > 0)
+        denominator = response_total if valid_numbers else None
+        expected, missing, coverage = q.get("expected_count"), q.get("missing"), q.get("coverage")
+        count_ok = (valid_numbers and q.get("expected_basis") == basis and
+                    expected == denominator and missing == max(0, denominator - len(rows)) and
+                    q.get("coverage_count") == len(rows) and
+                    _is_number(coverage) and
+                    abs(coverage - (len(rows) / denominator if denominator else 1.0)) < 1e-6 and
+                    m.get("coverage_denominator") == denominator and
+                    isinstance(m.get("pages_received"), int) and m.get("pages_received") >= 1 and
+                    m.get("expected_pages") == ((denominator + page_size - 1) // page_size if denominator else 0))
+        rep.result(count_ok, "C1", "response_total_coverage_recomputed",
+                   "coverage must use the full response Total/Count; page_size only determines expected pages; "
+                   f"total={response_total!r} page_size={page_size!r} expected={expected!r} "
+                   f"missing={missing!r} coverage={coverage!r} rows={len(rows)}",
+                   denominator=denominator, rows=len(rows))
+        rep.result(q.get("partial") is (bool(missing) if isinstance(missing, int) else None),
+                   "C1b", "partial_flag_matches_missing",
+                   f"quality.partial={q.get('partial')!r} but missing={missing!r}")
+        rep.stats["response_total_coverage"] = {
+            "rows": len(rows), "response_total": response_total,
+            "page_size": page_size, "pages_received": m.get("pages_received"),
+            "expected_pages": m.get("expected_pages"), "denominator": denominator,
+            "coverage": coverage,
+        }
         return
     rep.result(q.get("expected_basis") == basis, "C1", "expected_basis_matches_spec",
                f"manifest.quality.expected_basis={q.get('expected_basis')!r}, spec expects {basis!r}")

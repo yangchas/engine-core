@@ -339,7 +339,16 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
 
     def hot_fetch(day: str, context: Any = None) -> Any:
         from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
-        return KaipanProvider(LazyKaipanClient(), max_requests=max_requests).hot_plates(day, context=context)
+        from engine_core.data_pipeline.hot_plates_builder import build_hot_plates
+        result = KaipanProvider(LazyKaipanClient(), max_requests=max_requests,
+                                min_interval_seconds=1).hot_plates(day, context=context)
+        built = build_hot_plates({"trade_date": day, "captured_at": result["fetched_at"],
+                                  "response": result["raw_response"], "page_size": 50,
+                                  "pages_received": result["pages_received"],
+                                  "event_id": f"kaipan_history_{day.replace('-', '')}",
+                                  "requested_api_date": result["requested_api_date"],
+                                  "provider_attempt": result["provider_attempt"]})
+        return {**built.manifest, "rows": built.rows, "request_count": result["request_count"]}
 
     def members_fetch(day: str, context: Any = None) -> Any:
         from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
@@ -549,7 +558,7 @@ def _carried_forward_universe(artifact_root: str, trade_date: str) -> dict[str, 
     raise RuntimeError("quality_invalid:no_recent_symbol_universe")
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, now_fn=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--job", required=True, choices=["all", *DATASETS.keys()])
     parser.add_argument("--date", default=date.today().isoformat())
@@ -572,6 +581,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="fraction of the chain budget reserved for Baostock")
     parser.add_argument("--backfill-days", type=int, default=10,
                         help="plate_members trading dates, newest first")
+    parser.add_argument("--hot-plates-history-days", type=int, default=3,
+                        help="most recent prior trading dates to capture; Kaipan retains about three")
+    parser.add_argument("--hot-plates-scheduled-at",
+                        help="history window start HH:MM:SS Asia/Shanghai")
+    parser.add_argument("--hot-plates-deadline",
+                        help="history window deadline HH:MM:SS Asia/Shanghai")
     parser.add_argument("--providers",
                         help="daily_kline source set; fixed quality order is baostock,wencai,q2_final")
     parser.add_argument("--wencai-date-validation-threshold", type=float, default=0.95,
@@ -610,6 +625,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--artifact-root", help="artifact root (required with --symbols-file)")
     parser.add_argument("--td-database", help="allowlisted independent database: core_data/core_intraday")
     args = parser.parse_args(argv)
+    if bool(args.hot_plates_scheduled_at) != bool(args.hot_plates_deadline):
+        parser.error("--hot-plates-scheduled-at and --hot-plates-deadline must be used together")
     if args.wencai_reference_strategy == "explicit" and not args.wencai_reference_date:
         parser.error("--wencai-reference-date is required with --wencai-reference-strategy explicit")
     artifact_root_explicit = args.artifact_root is not None
@@ -645,11 +662,44 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--td-write is only valid with --job daily_kline")
     if args.budget_seconds <= 0:
         parser.error("--budget-seconds must be positive")
+    if not 1 <= args.hot_plates_history_days <= 3:
+        parser.error("--hot-plates-history-days must be between 1 and 3")
     if args.baostock_no_progress_seconds <= 0:
         parser.error("--baostock-no-progress-seconds must be positive")
     if not 0 < args.baostock_budget_fraction <= 1:
         parser.error("--baostock-budget-fraction must be greater than 0 and at most 1")
     names = list(DATASETS) if args.job == "all" else [args.job]
+    hot_history_dates: list[str] = []
+    if "hot_plates" in names:
+        from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
+        sessions = [day for day in TradeCalendarStore(args.artifact_root).all_trading_dates()
+                    if day < args.date]
+        hot_history_dates = sessions[-args.hot_plates_history_days:]
+        if len(hot_history_dates) != args.hot_plates_history_days:
+            raise RuntimeError("hot_plates_calendar_history_unknown")
+        if args.hot_plates_deadline:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            from engine_core.data_pipeline.hot_plates_gaps import (
+                history_event_id, record_hot_plates_gap,
+            )
+            now = now_fn() if now_fn else datetime.now(ZoneInfo("Asia/Shanghai"))
+            deadline = datetime.fromisoformat(
+                f"{args.date}T{args.hot_plates_deadline}+08:00")
+            if now >= deadline:
+                scheduled = datetime.fromisoformat(
+                    f"{args.date}T{args.hot_plates_scheduled_at}+08:00")
+                observed_at = now.isoformat()
+                for target_date in hot_history_dates:
+                    gap = record_hot_plates_gap(args.artifact_root, target_date,
+                        history_event_id(target_date), scheduled.isoformat(),
+                        deadline.isoformat(), observed_at, "late_startup_after_deadline",
+                        persist=bool(args.execute or args.write))
+                    print(json.dumps({"job": "hot_plates", "date": target_date,
+                        "status": "GAP", "event_id": gap["event_id"],
+                        "reason": gap["gap_reason"],
+                        "fallback_status": gap["fallback_status"]}, sort_keys=True))
+                return 0
     adapters = _default_adapters(args.artifact_root,
         "",
         args.max_requests, args.write or args.execute,
@@ -785,6 +835,41 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     daily_kline_exit_code = 0
     for name in names:
+        if name == "hot_plates":
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            from engine_core.data_pipeline.hot_plates_gaps import (
+                history_event_id, record_hot_plates_gap,
+            )
+            observed_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+            for target_date in hot_history_dates:
+                job_started = time.monotonic()
+                try:
+                    result = runner.run(name, target_date, fetch=adapters[name], publish=False,
+                        td_write=False, source=get_dataset(name).source,
+                        dry_run=not (args.write or args.execute))
+                except Exception as exc:
+                    error = str(exc).lower()
+                    reason = ("response_day_mismatch" if "date_mismatch" in error or
+                              "response_date" in error else "historical_provider_failure")
+                    gap = record_hot_plates_gap(args.artifact_root, target_date,
+                        history_event_id(target_date),
+                        f"{args.date}T{args.hot_plates_scheduled_at or '08:50:00'}+08:00",
+                        f"{args.date}T{args.hot_plates_deadline or '09:05:00'}+08:00",
+                        observed_at, reason, persist=bool(args.execute or args.write))
+                    print(json.dumps({"job": name, "date": target_date, "status": "GAP",
+                        "event_id": gap["event_id"], "reason": gap["gap_reason"],
+                        "fallback_status": gap["fallback_status"],
+                        "elapsed_ms": round((time.monotonic() - job_started) * 1000, 3)}, sort_keys=True))
+                    continue
+                print(json.dumps({"job": name, "date": target_date,
+                    "version": result.manifest.get("version"), "row_count": result.manifest["row_count"],
+                    "response_total": result.manifest.get("response_total"),
+                    "coverage": result.manifest.get("quality", {}).get("coverage"),
+                    "status": result.manifest.get("business_status"),
+                    "storage_uri": result.manifest.get("storage_uri"),
+                    "mode": result.manifest.get("mode", "WRITE")}, sort_keys=True))
+            continue
         if name == "daily_kline":
             daily_started = time.monotonic()
             from engine_core.data_pipeline.providers.daily_kline_chain import (

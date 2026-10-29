@@ -1,0 +1,45 @@
+{
+  "dataset": "hot_plates",
+  "status": "C583: positional fields [0,1,2,3,5] mapped; strength is raw integer with UNKNOWN scale; unknown fields retained raw",
+  "primary_key": [
+    "plate_code",
+    "date",
+    "captured_at"
+  ],
+  "row_order": "source_rank",
+  "symbol_column": null,
+  "date_columns": [
+    "trade_date"
+  ],
+  "earliest_available_local": "09:15",
+  "primary_provider": "kaipan_getHisPlates",
+  "allowed_providers": [
+    "kaipan_getHisPlates"
+  ],
+  "coverage": {
+    "basis": "response_total",
+    "denominator": "Kaipan Total/Count for the full response; expected page count is ceil(Total/page_size)",
+    "note": "Coverage is rows_received / response_total. A page-limited snapshot remains PARTIAL; page_size is not the coverage denominator."
+  },
+  "columns": {
+    "plate_code": {"type": "str", "nullable": false, "unit": "Kaipan plate code"},
+    "name": {"type": "str", "nullable": true, "unit": "text"},
+    "strength": {"type": "raw", "nullable": true, "unit": "integer; scale and normalization UNKNOWN; raw positional field [2]"},
+    "change_pct": {"type": "raw", "nullable": true, "unit": "%"},
+    "amount_yuan": {"type": "raw", "nullable": true, "unit": "CNY"},
+    "raw_fields": {"type": "list", "nullable": false, "unit": "raw Kaipan positional row"},
+    "rank": {"type": "int", "nullable": false, "unit": "1-based response order"},
+    "date": {"type": "date", "nullable": false, "unit": "YYYY-MM-DD"},
+    "trade_date": {"type": "date", "nullable": false, "unit": "YYYY-MM-DD"},
+    "captured_at": {"type": "str", "nullable": false, "unit": "ISO 8601 timestamp with timezone"},
+    "available_at": {"type": "str", "nullable": false, "unit": "ISO 8601 timestamp with timezone"},
+    "event_id": {"type": "raw", "nullable": true, "unit": "schedule event identifier or null"},
+    "source_time": {"type": "raw", "nullable": true, "unit": "UNKNOWN; raw Kaipan Time metadata"},
+    "source_min": {"type": "str", "nullable": true, "unit": "UNKNOWN; raw Kaipan Min metadata"},
+    "source_max": {"type": "str", "nullable": true, "unit": "UNKNOWN; raw Kaipan Max metadata"},
+    "source_day": {"type": "list", "nullable": false, "unit": "YYYY-MM-DD response evidence"}
+  },
+  "manifest_columns": {
+    "requested_api_date": "Empty string for same-day intraday getHisPlates mode; YYYY-MM-DD for historical retrieval"
+  }
+}

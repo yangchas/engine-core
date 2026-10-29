@@ -1,0 +1,28 @@
+{
+  "dataset": "hot_plates_gaps",
+  "status": "C583: gap-only ledger for expired hot-plate capture windows",
+  "primary_key": ["event_id", "date"],
+  "row_order": "scheduled_at",
+  "symbol_column": null,
+  "date_columns": ["trade_date"],
+  "earliest_available_local": "event deadline",
+  "primary_provider": "guardian_gap_only",
+  "allowed_providers": ["guardian_gap_only"],
+  "coverage": {"basis": "none"},
+  "columns": {
+    "date": {"type": "date", "nullable": false, "unit": "YYYY-MM-DD"},
+    "trade_date": {"type": "date", "nullable": false, "unit": "YYYY-MM-DD"},
+    "event_id": {"type": "str", "nullable": false, "unit": "schedule event identifier"},
+    "scheduled_at": {"type": "str", "nullable": false, "unit": "ISO 8601 Asia/Shanghai"},
+    "deadline": {"type": "str", "nullable": false, "unit": "ISO 8601 Asia/Shanghai"},
+    "observed_at": {"type": "str", "nullable": false, "unit": "ISO 8601 Asia/Shanghai"},
+    "status": {"type": "enum", "nullable": false, "unit": "GAP"},
+    "late_policy": {"type": "enum", "nullable": false, "unit": "gap_only"},
+    "gap_reason": {"type": "str", "nullable": false, "unit": "reason code"},
+    "fallback_status": {"type": "enum", "nullable": false, "unit": "STALE or MISSING"},
+    "stale_version": {"type": "str", "nullable": true, "unit": "hot_plates version"},
+    "stale_captured_at": {"type": "str", "nullable": true, "unit": "ISO 8601 timestamp"},
+    "stale_manifest": {"type": "str", "nullable": true, "unit": "artifact manifest path"},
+    "fallback_source": {"type": "enum", "nullable": false, "unit": "none"}
+  }
+}

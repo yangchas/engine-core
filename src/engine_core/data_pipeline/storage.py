@@ -381,6 +381,34 @@ class ArtifactCatalog:
             if incoming_rank != held_rank:
                 return incoming_rank > held_rank
             return str(manifest.get("as_of") or "") >= str(held.get("as_of") or "")
+        if dataset == "hot_plates" and trade_date == latest_date:
+            # Intraday snapshots keep every version; latest points at the best quality, then newest capture.
+            rank = {"PARTIAL": 1, "DEGRADED": 1, "PROVISIONAL": 2, "FORMAL": 3}
+            held = next((item for item in entry.get("dates", {}).get(latest_date, [])
+                         if item.get("version") == latest.get("version")), {})
+            incoming_rank = rank.get(str(manifest.get("business_status") or "").upper(), 0)
+            held_rank = rank.get(str(held.get("business_status") or "").upper(), 0)
+            if incoming_rank != held_rank:
+                return incoming_rank > held_rank
+
+            def captured_at(item: Mapping[str, Any]) -> datetime | None:
+                value = item.get("available_at") or item.get("captured_at")
+                if not value and item.get("manifest"):
+                    try:
+                        value = json.loads(Path(item["manifest"]).read_text(encoding="utf-8")).get("captured_at")
+                    except (OSError, ValueError):
+                        value = None
+                try:
+                    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                except (TypeError, ValueError):
+                    return None
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=_SHANGHAI)
+                return parsed.astimezone(timezone.utc)
+
+            incoming_time = captured_at(manifest)
+            held_time = captured_at(held)
+            return incoming_time is not None and (held_time is None or incoming_time >= held_time)
         if dataset == "ladder_daily" and trade_date == latest_date:
             # C577: a re-derived version of the same day replaces latest unless latest is strictly better
             # (design/24 section 2 latest rule); the legacy close-price-proxy partitions rank below everything.
@@ -456,12 +484,15 @@ class ArtifactCatalog:
         run_dir = day_root / version
         data_path = run_dir / "rows.jsonl.gz"
         manifest_path = run_dir / "manifest.json"
+        if dataset == "hot_plates" and not prepared_manifest.get("captured_at"):
+            raise ValueError("hot_plates_captured_at_missing")
         committed_dt = (clock or (lambda: datetime.now(timezone.utc)))()
         if committed_dt.tzinfo is None:
             committed_dt = committed_dt.replace(tzinfo=timezone.utc)
         committed_dt = committed_dt.astimezone(timezone.utc)
         committed_at = committed_dt.isoformat().replace("+00:00", "Z")
-        available_at = committed_dt.astimezone(_SHANGHAI).isoformat() if dataset == "daily_kline" else committed_at
+        available_at = (committed_dt.astimezone(_SHANGHAI).isoformat() if dataset == "daily_kline" else
+                        str(prepared_manifest["captured_at"]) if dataset == "hot_plates" else committed_at)
         result = dict(prepared_manifest)
         declared = result.pop("available_at", None) or result.pop("declared_available_at", None)
         declared_authority = result.pop("authority", None)
@@ -535,7 +566,8 @@ class ArtifactCatalog:
             # C573: stock_static is a current-reference snapshot without provider date echo. A
             # newer PROVISIONAL date may advance latest; the manifest still prevents PIT use.
             if (((result.get("business_status") != "PROVISIONAL") or
-                 dataset in ("limit_up_pool", "limit_up_pool_today", "ladder_daily", "stock_static"))
+                 dataset in ("limit_up_pool", "limit_up_pool_today", "ladder_daily", "stock_static",
+                             "hot_plates"))
                     and not (spec is not None and spec.gate_mode == "enforce"
                              and gate is not None and gate["gate_status"] == "FAIL")
                     and self._can_advance_latest(catalog, dataset, trade_date, result)):

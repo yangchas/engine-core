@@ -506,30 +506,30 @@
         "CLOSE",
         "POST_MARKET"
       ],
-      "cadence": "D 日 09:16 起时点抓拍；D+1 缺失只记缺口",
-      "rule": "Kaipan getHisPlates 对历史日期返回的是当前交易日(Day=最新)，不能回补昨日；缺失只记缺口，绝不用当日数据冒充(provider 响应日期校验会拒绝)。",
+      "cadence": "D 08:15 fetch D-1 and latest configured N trading dates; expired windows are gap_only",
+      "rule": "getHisPlates historical rows are accepted only when response Day matches the requested trade date; fetch D-1 plus the configured latest N trading dates (default 3). Outside vendor retention, or on mismatch, record gap_only; never substitute today rows.",
       "freshness": {
         "partition": "D-1",
-        "expected_by": "08:50",
+        "expected_by": "08:30",
         "basis": "trading_day",
         "set_by": "C379 2026-10-21"
       },
-      "retry": "per guardian_event (until_late/backoff, see C350)",
+      "retry": "one bounded history attempt; failed dates and expired windows are gap_only",
       "degrade": [],
       "lifecycle": {
         "init": "fetch historical date when absent",
         "force": "append a new version",
         "clear": "not provided"
       },
-      "notes": "C379 实测:请求 2026-10-20 返回 response_day=2026-10-21，故 D-1 热板无法回补(gap_only)。原抓拍版本需保留。",
-      "guardian_event": "kaipan_refresh_0850",
+      "notes": "C379 observed response Day mismatch for an older date; retention is roughly three trading dates. Do not retry dates outside the configured retention window or manufacture rows.",
+      "guardian_event": "hot_plates_history_0815",
       "late_policy": {
         "mode": "gap_only",
         "valid_until": null,
         "depends_on": [],
-        "set_by": "C379 2026-10-21",
+        "set_by": "C583; premarket history event deadline in schedule.json",
         "partition_before_trigger": "D-1",
-        "trigger_event": "kaipan_refresh_0850"
+        "trigger_event": "hot_plates_history_0815"
       },
       "cost": {
         "class": "light",
@@ -554,8 +554,8 @@
         "INTRADAY_PM",
         "CLOSE"
       ],
-      "cadence": "按消费点采样；schedule 多时点",
-      "rule": "Kaipan 当日热板快照；保留采样时点与 source/as-of。",
+      "cadence": "18 Kaipan snapshots per trading day; each scheduled point appends a version",
+      "rule": "Kaipan getHisPlates today mode; captured_at is available_at. Failed/late point records a gap_only row with latest earlier snapshot marked STALE; no Wencai fallback exists.",
       "freshness": {
         "partition": "D",
         "expected_by": "09:20",
@@ -569,19 +569,67 @@
         "force": "append a new version",
         "clear": "not provided"
       },
-      "notes": "guardian kaipan_hot_capture scheduled many points; schedule currently has no explicit MIDDAY_BREAK phase semantics.",
+      "notes": "Schedule: 09:16:10, 09:21:10, 09:25:20, 09:28:30, 09:32:20, 09:35:20, 09:40:20, 09:45:20, 10:10, 10:20, 10:30, 10:45, 11:00, 11:25, 13:30, 14:30, 14:50, 15:10. Each point preserves a new captured_at version.",
       "guardian_event": "kaipan_hot_capture",
       "late_policy": {
         "mode": "gap_only",
-        "valid_until": "11:30",
+        "valid_until": null,
         "depends_on": [],
-        "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_event": "kaipan_hot_091600"
+        "set_by": "C583; per-event deadline in schedule.json",
+        "trigger_event": "kaipan_hot_091610"
       },
       "cost": {
         "class": "light",
-        "basis": "one Kaipan call",
-        "set_by": "claude 2026-10-20 default"
+        "basis": "one bounded Kaipan snapshot; page interval >=1s",
+        "set_by": "C583"
+      }
+    },
+    {
+      "id": "hot_plates_gaps",
+      "owner": "kaipan_hot_capture",
+      "artifact": {
+        "catalog_dataset": "hot_plates_gaps",
+        "date_basis": "scheduled event trade date"
+      },
+      "phases": [
+        "AUCTION",
+        "AUCTION_END",
+        "OPEN",
+        "INTRADAY_AM",
+        "MIDDAY_BREAK",
+        "PM_OPEN",
+        "INTRADAY_PM",
+        "CLOSE"
+      ],
+      "cadence": "after each expired hot-plate capture window",
+      "rule": "One idempotent GAP row per missed event; late_policy=gap_only; reference earlier snapshot as STALE when present.",
+      "freshness": {
+        "partition": "D/event_id",
+        "expected_by": "event deadline",
+        "basis": "schedule event",
+        "set_by": "C583"
+      },
+      "retry": "none; gap records do not trigger source retries",
+      "degrade": [],
+      "lifecycle": {
+        "init": "record at next hot capture or late startup",
+        "force": "idempotent by event_id",
+        "clear": "not provided"
+      },
+      "notes": "No Wencai hot-plate fallback; missing points remain explicit gaps.",
+      "guardian_event": "kaipan_hot_capture",
+      "late_policy": {
+        "mode": "gap_only",
+        "valid_until": null,
+        "depends_on": [],
+        "set_by": "C583",
+        "partition_before_trigger": "D/event_id",
+        "trigger_event": "kaipan_hot_091610"
+      },
+      "cost": {
+        "class": "light",
+        "basis": "local append only; no source request",
+        "set_by": "C583"
       }
     },
     {

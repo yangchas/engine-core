@@ -310,6 +310,60 @@ class JobRunner:
             "row_count": len(rows), "request_count": fetch_meta.get("request_count"),
             "raw_sha256": raw_digest,
         }
+        if name == "hot_plates":
+            provider = str(fetch_meta.get("provider") or safe_source)
+            captured_at = str(fetch_meta.get("captured_at") or
+                              (rows[0].get("captured_at") if rows else "") or fetched)
+            attempts = fetch_meta.get("provider_attempts")
+            if not isinstance(attempts, (list, tuple)) or not attempts:
+                attempts = [{"provider": provider, "result": "SUCCESS", "elapsed_ms": None,
+                             "reason": "provider_attempts_not_returned_by_fetch", "row_count": len(rows)}]
+            field_units = fetch_meta.get("field_units")
+            if not isinstance(field_units, Mapping):
+                field_units = {}
+            expected = fetch_meta.get("expected_count")
+            if not isinstance(expected, (int, float)) or isinstance(expected, bool):
+                raise ValueError("hot_plates_expected_count_missing")
+            expected = int(expected)
+            coverage_count = int(fetch_meta.get("coverage_count", len(rows)))
+            missing = int(max(0, expected - coverage_count))
+            partial = bool(fetch_meta.get("partial")) or missing > 0
+            business_status = str(fetch_meta.get("business_status") or
+                                   ("PARTIAL" if partial else "PROVISIONAL"))
+            quality.update({"expected_basis": str(fetch_meta.get("expected_basis") or "response_total"), "expected_count": expected,
+                            "coverage": coverage_count / expected if expected else 1.0,
+                            "missing": missing,
+                            "coverage_count": coverage_count,
+                            "field_completeness": {key: sum(row.get(key) not in (None, "") for row in rows)
+                                                   for key in ("plate_code", "name", "strength",
+                                                               "change_pct", "amount_yuan")},
+                            "partial": partial,
+                            "status": "PARTIAL" if partial else quality["status"]})
+            manifest.update({
+                "provider": provider,
+                "provider_chain": list(fetch_meta.get("provider_chain") or [provider]),
+                "provider_attempts": [dict(attempt) for attempt in attempts],
+                "captured_at": captured_at,
+                "fetched_at": captured_at,
+                "available_at": captured_at,
+                "as_of": captured_at,
+                "source_asof": trade_date,
+                "requested_api_date": fetch_meta.get("requested_api_date"),
+                "event_id": fetch_meta.get("event_id"),
+                "scheduled_at": fetch_meta.get("scheduled_at"),
+                "deadline": fetch_meta.get("deadline"),
+                "business_status": business_status,
+                "degraded": business_status in {"DEGRADED", "PARTIAL"},
+                "field_units": dict(field_units),
+                "source_dates": dict(fetch_meta.get("source_dates") or {}),
+                "response_total": fetch_meta.get("response_total"),
+                "page_size": fetch_meta.get("page_size"),
+                "coverage_denominator": fetch_meta.get("coverage_denominator"),
+                "coverage_count": coverage_count,
+                "pages_received": fetch_meta.get("pages_received"),
+                "expected_pages": fetch_meta.get("expected_pages"),
+                "response_metadata": dict(fetch_meta.get("response_metadata") or {}),
+            })
         if isinstance(fetch_meta.get("inputs"), Mapping):
             manifest["inputs"] = dict(fetch_meta["inputs"])
         if name == "limit_reasons":
