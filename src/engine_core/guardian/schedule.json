@@ -2577,7 +2577,6 @@
       ],
       "on_phase_mismatch": "defer",
       "data_date_offset": 0,
-      "available_after": "21:00:00",
       "depends_on": [],
       "after": [
         "daily_kline_close_1505",
