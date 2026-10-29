@@ -691,6 +691,8 @@ class ReadOnlyRedisProxy:
         if len(command) < 2:
             return None
         name = command[0].decode("ascii", "ignore").upper()
+        if name == "CLIENT" and command[1].decode("ascii", "ignore").upper() in {"SETINFO", "SETNAME"}:
+            return b"+OK\r\n"
         try:
             key = command[1].decode("utf-8")
         except UnicodeDecodeError:

@@ -69,6 +69,15 @@ def test_selected_event_args_can_be_overridden_for_isolated_rehearsal() -> None:
     assert all(tier["args"]["backfill_depth"] == 5 for tier in profile["ladder"])
 
 
+def test_readonly_redis_proxy_handles_client_setinfo_locally() -> None:
+    proxy = rehearsal.ReadOnlyRedisProxy("redis://127.0.0.1:6380/0")
+    try:
+        assert proxy.execute_local([b"CLIENT", b"SETINFO", b"LIB-NAME", b"redis-py"]) == b"+OK\r\n"
+        assert proxy.blocked_snapshot() == {}
+    finally:
+        proxy.close()
+
+
 def test_state_root_length_limit() -> None:
     rehearsal.validate_state_root_path(Path("/tmp/rh123abc/s"))
 
