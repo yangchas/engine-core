@@ -349,7 +349,7 @@ def _configure_kaipan_request_timeout(client: Any) -> None:
         return
 
     def post_with_timeout(*args, **kwargs):
-        kwargs.setdefault("timeout", KAIPAN_REQUEST_TIMEOUT)
+        kwargs["timeout"] = KAIPAN_REQUEST_TIMEOUT
         return original_post(*args, **kwargs)
 
     post_with_timeout.__engine_core_timeout_wrapper__ = True
