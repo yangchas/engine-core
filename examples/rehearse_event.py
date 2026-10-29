@@ -1189,6 +1189,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-minutes", type=int, default=45, help="terminal-state wait limit; default 45")
     parser.add_argument("--refresh-output", action="store_true",
                         help="hide this event's output date in the temporary catalog to exercise a fresh write")
+    parser.add_argument("--refresh-output-event", action="append", default=[],
+                        help="also hide a selected --event/--with event's output date in the temporary catalog")
     parser.add_argument("--keep", action="store_true",
                         help="retain temporary files (all rehearsal directories are retained by policy)")
     return parser
@@ -1284,8 +1286,21 @@ def run_rehearsal(args: argparse.Namespace) -> int:
                                                root.name, now, args.minutes)
         if fetch_item_id is not None:
             seed_fetch_item_state(state_root, event_ids[args.event], target_data_date, trigger_at)
+        refresh_events = list(args.refresh_output_event)
         if args.refresh_output:
-            summary["refreshed_output"] = refresh_staged_output(data_root, archive_schedule, args.event, today)
+            refresh_events.insert(0, args.event)
+        selected_events = {args.event, *(item for group in args.with_events for item in group)}
+        unselected_refresh_events = sorted(set(refresh_events) - selected_events)
+        if unselected_refresh_events:
+            raise ValueError("refresh_output_event_not_selected:" + ",".join(unselected_refresh_events))
+        refreshed_outputs = {
+            name: refresh_staged_output(data_root, archive_schedule, name, today)
+            for name in dict.fromkeys(refresh_events)
+        }
+        if args.refresh_output:
+            summary["refreshed_output"] = refreshed_outputs.pop(args.event)
+        if refreshed_outputs:
+            summary["refreshed_outputs"] = refreshed_outputs
         tracked_event_id, tracked_instance_ids = _tracked_ledger_target(args.event, event_ids)
         summary.update({"event_id_map": event_ids, "temporary_event_id": event_ids[args.event],
                         "trigger_at": trigger_at, "deadline_at": deadline_at})
