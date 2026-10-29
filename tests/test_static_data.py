@@ -142,6 +142,19 @@ def test_static_refresh_policy_fake_clock_and_mutations():
         )
 
 
+def test_plate_members_source_day_is_previous_trading_day(monkeypatch, tmp_path):
+    from engine_core import prep_trade_day
+    from examples import static_data_refresh
+
+    seen = {}
+    monkeypatch.setattr(
+        prep_trade_day, "previous_trade_date",
+        lambda root, day: seen.update(root=root, day=day) or "2026-10-28",
+    )
+    assert static_data_refresh._plate_members_query_date(tmp_path, "2026-10-29") == "2026-10-28"
+    assert seen == {"root": tmp_path, "day": "2026-10-29"}
+
+
 def test_static_refresh_schedule_and_name_map_policy_are_explicit():
     root = Path(__file__).resolve().parents[1]
     schedule = json.loads((root / "src/engine_core/guardian/schedule.json").read_text())

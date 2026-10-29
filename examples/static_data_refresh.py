@@ -34,6 +34,16 @@ class KaipanPlateMembersIncomplete(RuntimeError):
     error_code = "KAIPAN_PLATE_MEMBERS_INCOMPLETE"
 
 
+def _plate_members_query_date(core_root: Path, event_day: str) -> str:
+    """Kaipan serves historical plate membership, so refresh the last completed trading day."""
+    from engine_core.prep_trade_day import previous_trade_date
+
+    query_day = previous_trade_date(core_root, event_day)
+    if not query_day:
+        raise RuntimeError("plate_members_previous_trade_date_unavailable")
+    return query_day
+
+
 def _snapshot(catalog: ArtifactCatalog, dataset: str):
     path = catalog.locate(dataset)
     if path is None or not path.is_file():
@@ -200,6 +210,7 @@ def refresh_static_data(event, now: datetime, guardian_root: Path | None = None)
                     request_count=0, elapsed_ms=max(1, int((time_module.monotonic() - started) * 1000)),
                 )
             elif dataset == "plate_members":
+                members_trade_date = _plate_members_query_date(core_root, target_day)
                 registry_snapshot = td.read_latest("plate_registry")
                 registry_manifest: Mapping[str, Any]
                 if registry_snapshot is not None:
@@ -226,7 +237,7 @@ def refresh_static_data(event, now: datetime, guardian_root: Path | None = None)
                     min_interval_seconds=0.2,
                 )
                 fetch_started = time_module.monotonic()
-                fetched = provider.plate_members(target_day, concurrency=4)
+                fetched = provider.plate_members(members_trade_date, concurrency=4)
                 if fetched.get("partial"):
                     failed_plates = fetched.get("failed_plates") or []
                     failure_types = Counter(str(row.get("error_type") or "UNKNOWN")
@@ -239,7 +250,8 @@ def refresh_static_data(event, now: datetime, guardian_root: Path | None = None)
                         f"failed={len(failed_plates)},completed={fetched.get('completed_plate_count', 0)},"
                         f"queried={fetched.get('queried_plate_count', 0)},"
                         f"unqueried={fetched.get('unqueried_plate_count', 0)},"
-                        f"requests={fetched.get('request_count', 0)},elapsed_ms={elapsed_ms},"
+                        f"query_trade_date={members_trade_date},requests={fetched.get('request_count', 0)},"
+                        f"elapsed_ms={elapsed_ms},"
                         f"failure_types={json.dumps(dict(sorted(failure_types.items())), separators=(',', ':'))},"
                         f"failed_plate_codes={','.join(failed_codes[:20])}"
                     )
@@ -248,10 +260,10 @@ def refresh_static_data(event, now: datetime, guardian_root: Path | None = None)
                     "version": registry_manifest.get("version"),
                     "available_at": registry_manifest.get("available_at"),
                 }
-                source_dates[source] = {"query_trade_date": target_day,
+                source_dates[source] = {"query_trade_date": members_trade_date,
                                         "request_count": fetched.get("request_count")}
                 partition = build_plate_members(
-                    fetched["rows"], registry_rows, trade_date=target_day, as_of=as_of,
+                    fetched["rows"], registry_rows, trade_date=members_trade_date, as_of=as_of,
                     source_dates=source_dates,
                 )
                 fetched_row_count = len(fetched["rows"])
