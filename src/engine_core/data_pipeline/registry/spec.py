@@ -77,7 +77,7 @@ class DatasetSpec:
     schedule: str
     primary_backend: str = "artifact"
     hot_view: bool = True
-    redis_ttl_seconds: int = 604800
+    redis_ttl_seconds: int | None = None
     max_redis_payload_bytes: int = 65536
     retention_policy: str = "immutable_versions"
     dependencies: tuple[str, ...] = ()
@@ -98,6 +98,18 @@ class DatasetSpec:
     primary_providers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.hot_view and (
+            isinstance(self.redis_ttl_seconds, bool)
+            or not isinstance(self.redis_ttl_seconds, int)
+            or self.redis_ttl_seconds <= 0
+        ):
+            raise ValueError(f"redis_ttl_seconds_required_for_hot_view:{self.name}")
+        if not self.hot_view and self.redis_ttl_seconds is not None and (
+            isinstance(self.redis_ttl_seconds, bool)
+            or not isinstance(self.redis_ttl_seconds, int)
+            or self.redis_ttl_seconds < 0
+        ):
+            raise ValueError(f"invalid_redis_ttl_seconds:{self.name}")
         if self.gate_mode not in {"off", "observe", "enforce"}:
             raise ValueError(f"invalid gate mode: {self.gate_mode!r}")
         if isinstance(self.max_bad_ratio, bool) or not isinstance(self.max_bad_ratio, (int, float)) or not (

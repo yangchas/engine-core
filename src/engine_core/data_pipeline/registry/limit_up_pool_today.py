@@ -8,7 +8,7 @@ def _sources(redis_q2: str, wencai: str) -> dict[str, str]:
 
 SPEC = DatasetSpec(
     "limit_up_pool_today", "redis_q2>wencai", "kaipan_hot_* aligned; 15:20 close confirmation",
-    primary_backend="redis", hot_view=True, redis_ttl_seconds=604800,
+    primary_backend="redis", hot_view=True, redis_ttl_seconds=4 * 86400,
     max_redis_payload_bytes=1048576, dependencies=("symbol_universe",), point_in_time=True,
     source_dependency="legacy_readonly", fetch_budget_scope="redis_q2",
     empty_is_valid=True, key_fields=("symbol", "date", "as_of"),

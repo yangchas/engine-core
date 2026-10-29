@@ -11,7 +11,8 @@ def _keys(redis_q2: str, td: str, wencai: str) -> dict[str, str]:
 
 SPEC = DatasetSpec(
     "quote_slice", "redis_q2>td_auction_snapshot_v2>wencai_auction", "09:20/09:24/09:25_capture",
-    dependencies=("trade_calendar",), key_fields=("trade_date", "tag", "symbol"),
+    redis_ttl_seconds=7 * 86400, dependencies=("trade_calendar",),
+    key_fields=("trade_date", "tag", "symbol"),
     required_fields=("trade_date", "tag", "symbol"), fields=(
         FieldSpec("symbol", str, False, "none", _units("none:str", "none:str", "none:str"),
                   ("D-T1-22", "D-T1-23"), "VERIFIED", "Six digit stock identifier.",

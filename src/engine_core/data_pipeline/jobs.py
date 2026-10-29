@@ -498,6 +498,9 @@ class JobRunner:
 
     def _publish_redis(self, spec: DatasetSpec, trade_date: str, manifest: Mapping[str, Any],
                        rows: list[dict[str, Any]], source: str) -> None:
+        ttl = spec.redis_ttl_seconds
+        if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl <= 0:
+            raise ValueError(f"redis_ttl_seconds_required:{spec.name}")
         latest_key = f"core:cache:data:{spec.name}:latest"
         existing = _redis_get_json(self.redis, latest_key)
         existing_day = existing.get("trade_date") if existing else None
@@ -528,10 +531,10 @@ class JobRunner:
         # Keep status bounded and expire it like other coordination metadata.
         status = dict(list(status.items())[-32:])
         status_json = canonical_json(status).decode()
-        plan = [(version_key, version_json, spec.redis_ttl_seconds),
-                (date_key, date_json, spec.redis_ttl_seconds), (status_key, status_json, 7 * 86400)]
+        plan = [(version_key, version_json, ttl),
+                (date_key, date_json, ttl), (status_key, status_json, 7 * 86400)]
         if latest_json is not None:
-            plan.append((latest_key, latest_json, spec.redis_ttl_seconds))
+            plan.append((latest_key, latest_json, ttl))
         limit = max(1024, int(spec.max_redis_payload_bytes))
         too_large = [(key, len(value.encode("utf-8"))) for key, value, _ in plan
                      if len(value.encode("utf-8")) > limit]
@@ -575,8 +578,8 @@ class JobRunner:
                 if previous is None:
                     _redis_delete(self.redis, key)
                 else:
-                    ttl = prior_ttl if isinstance(prior_ttl, int) and prior_ttl > 0 else spec.redis_ttl_seconds
-                    _redis_set(self.redis, key, previous, ttl)
+                    restore_ttl = prior_ttl if isinstance(prior_ttl, int) and prior_ttl > 0 else ttl
+                    _redis_set(self.redis, key, previous, restore_ttl)
             raise
 
 

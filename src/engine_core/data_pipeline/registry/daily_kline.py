@@ -35,7 +35,8 @@ def _source_keys(baostock: str, wencai: str, q2_final: str) -> dict[str, str]:
 
 
 SPEC = DatasetSpec("daily_kline", "baostock>wencai>q2_final", "15:05_degrade_17:30_formal",
-                max_redis_payload_bytes=65536, dependencies=("trade_calendar", "symbol_universe"),
+                redis_ttl_seconds=7 * 86400, max_redis_payload_bytes=65536,
+                dependencies=("trade_calendar", "symbol_universe"),
                 source_dependency="tiered_baostock_wencai_legacy_redis_q2", key_fields=("symbol",),
                 required_fields=("symbol",), source_aliases={"legacy_q2_final": "q2_final"},
                 min_coverage=0.95, fields=(

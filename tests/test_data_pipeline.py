@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from engine_core.data_pipeline.registry import DATASETS, get_dataset
+from engine_core.data_pipeline.registry.spec import DatasetSpec
 from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
 from engine_core.data_pipeline.reader import load_dataset
 from engine_core.data_pipeline.storage import ArtifactCatalog
@@ -19,9 +20,35 @@ def test_registry_declares_tiered_storage_and_bounded_redis_views():
     assert set(DATASETS) >= DATASET_NAMES
     assert get_dataset("daily_kline").primary_backend == "artifact"
     assert get_dataset("daily_kline").redis_ttl_seconds == 7 * 86400
-    assert get_dataset("hot_plates").redis_ttl_seconds == 7 * 86400
+    assert get_dataset("hot_plates").redis_ttl_seconds == 4 * 86400
+    assert get_dataset("hot_rank").redis_ttl_seconds == 2 * 86400
+    assert get_dataset("limit_up_pool").redis_ttl_seconds == 4 * 86400
+    assert get_dataset("limit_reasons").redis_ttl_seconds == 4 * 86400
+    assert get_dataset("plate_members").redis_ttl_seconds == 4 * 86400
     assert get_dataset("hot_rank").source == "ths_hot_rank"
     assert get_dataset("plate_members").max_redis_payload_bytes == 64 * 1024
+    with pytest.raises(ValueError, match="redis_ttl_seconds_required_for_hot_view"):
+        DatasetSpec("missing_ttl", "source", "schedule")
+
+    registry_path = Path(__file__).parents[1] / "src/engine_core/guardian/datasets.registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    items = {item["id"]: item for item in registry["items"]}
+    for name, spec in DATASETS.items():
+        if not spec.hot_view or name not in items:
+            continue
+        assert isinstance(spec.redis_ttl_seconds, int) and spec.redis_ttl_seconds > 0
+        assert items[name].get("redis_ttl_seconds") == spec.redis_ttl_seconds
+    for name, ttl_seconds in {
+        "hot_plates_yesterday": 4 * 86400,
+        "auction_baseline": 4 * 86400,
+        "auction_stock_facts": 4 * 86400,
+        "auction_points": 4 * 86400,
+        "auction_panorama": 4 * 86400,
+        "plate_amount_baseline": 30 * 86400,
+    }.items():
+        assert items[name].get("redis_ttl_seconds") == ttl_seconds
+    today = items["limit_up_pool_today"]
+    assert today["redis_ttl_seconds"] == today["redis_hot_view"]["ttl_seconds"] == 4 * 86400
 
 
 def test_ths_hot_rank_provider_handles_empty_heat_and_403_circuit():
