@@ -205,6 +205,16 @@ def _quality(rows: Sequence[Mapping[str, Any]], reason_error_count: int = 0) -> 
             "parser_version": "c611-theme-v1", "source_date_evidence": "getHisBans.info_date_echo"}
 
 
+def _rows_by_symbol(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "")
+        if not symbol:
+            raise ValueError("limit_up_detail_symbol_missing")
+        result[symbol] = {**{column: row.get(column) for column in DATA_COLUMNS}, "symbol": symbol}
+    return result
+
+
 def run_limit_up_detail_gapfill(trade_date: str, *, database: str = DEFAULT_DATABASE,
                                 store: TaosLimitUpDetailStore | None = None, client: Any | None = None,
                                 redis_client: Any | None = None, force_dates: Sequence[str] = (),
@@ -229,8 +239,7 @@ def run_limit_up_detail_gapfill(trade_date: str, *, database: str = DEFAULT_DATA
     for day in candidates:
         if existing.get(day, 0) > 0 and day not in forced:
             stored = target_store.read_day_rows(day)
-            expected_rows[day] = {symbol: {column: row.get(column) for column in DATA_COLUMNS}
-                                  for symbol, row in stored.items()}
+            expected_rows[day] = _rows_by_symbol(list(stored.values()))
             versions_for_day = target_store.read_versions(day)
             versions[day] = versions_for_day[-1].get("version") if versions_for_day else None
             days[day] = {"status": "EXISTING", "row_count": len(stored), "version": versions[day]}
@@ -249,8 +258,7 @@ def run_limit_up_detail_gapfill(trade_date: str, *, database: str = DEFAULT_DATA
         persisted = target_store.store_day(day, rows, captured_at=collected["captured_at"],
                                            first_observed_at=prior_first or collected["captured_at"],
                                            quality=quality, business_status=quality["status"])
-        expected_rows[day] = {str(row["symbol"]): {column: row.get(column) for column in DATA_COLUMNS}
-                              for row in rows}
+        expected_rows[day] = _rows_by_symbol(rows)
         versions[day] = persisted["version"]
         days[day] = {"status": "WRITTEN", **persisted, "reason_matched_count": quality["reason_matched_count"],
                      "reason_error_count": reason_errors, "request_count": collected["request_count"]}

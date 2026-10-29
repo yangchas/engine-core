@@ -28,6 +28,8 @@ def test_real_kaipan_raw_detail_preserves_uncertain_fields_and_reason_lineage():
         "2026-10-23", [pool], {"002982": reasons},
         captured_at=pool_meta["fetched_at"], reason_captured_at={"002982": reason_meta["fetched_at"]},
     )
+    from engine_core.guardian.limit_up_detail_d1 import _rows_by_symbol
+    assert _rows_by_symbol(rows)["002982"]["symbol"] == "002982"
     row = next(item for item in rows if item["symbol"] == "002982")
 
     reason = next(item for item in reasons["List"]
