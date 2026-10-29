@@ -35,7 +35,9 @@ GO = Path("/bin/go")
 DEFAULT_TD_DATABASE = "core_dev_c590_632551160254"
 DEFAULT_TD_CONFIG = "/home/exedev/validation/operator-runs/taos-cfg"
 STATE_ROOT_MAX_CHARS = 40
-MIN_ROOT_FREE_BYTES = 5 * 1024 ** 3
+# The operator policy threshold is 5 GB (decimal); the rehearsal itself is
+# separately capped below 200 MiB.
+MIN_ROOT_FREE_BYTES = 5_000_000_000
 MAX_METADATA_FILE_BYTES = 5 * 1024 ** 2
 MAX_DATA_ROOT_BYTES = 50 * 1024 ** 2
 MAX_REHEARSAL_ROOT_BYTES = 200 * 1024 ** 2
