@@ -117,7 +117,7 @@ def main() -> int:
         dates = calendar_dates[-max(1, args.days):]
         store = TaosLimitUpDetailStore(args.database)
         result = run_limit_up_detail_gapfill(args.trade_date, store=store, force_dates=dates,
-                                             depth=max(20, len(dates)), include_rows=True)
+                                             depth=len(dates), include_rows=True)
         expected_by_day = result.get("expected_rows", {})
         if not isinstance(expected_by_day, dict):
             raise RuntimeError("gapfill_missing_expected_rows")
