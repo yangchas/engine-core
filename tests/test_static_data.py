@@ -165,8 +165,9 @@ def test_static_refresh_schedule_and_name_map_policy_are_explicit():
     assert event["handler"] == "premarket_data"
     assert event["at"] == "08:50:00" and event["late_until"] == "15:00:00"
     assert event["on_start"] == "reconcile"
+    assert event["profile"] == "policy_06"
     assert schedule["profiles"][event["profile"]]["ladder"][0] == {
-        "name": "legacy", "attempts": 3, "timeout": "300s", "backoff": "60s*2",
+        "name": "legacy", "attempts": 3, "timeout": "901s", "backoff": "60s*2",
         "backoff_cap": "10m", "until": "late_until", "budget_enabled": False,
     }
     assert cfg["datasets"] == ["plate_registry", "plate_members", "stock_static"]
