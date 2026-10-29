@@ -685,6 +685,7 @@ def test_baostock_probe_budget_is_bounded_and_external_command_is_unchanged(monk
     assert builtin[builtin.index("--baostock-no-progress-seconds") + 1] == "43"
     assert builtin[builtin.index("--baostock-formal-coverage-threshold") + 1] == "0.995"
     assert builtin[builtin.index("--baostock-source-empty-max") + 1] == "20"
+    assert "--skip-redis-publish" in builtin
 
     postmarket = build_handler_command("postmarket_data", event, opts, ROOT / "artifacts",
                                        "2026-10-26", sys.executable, ROOT)

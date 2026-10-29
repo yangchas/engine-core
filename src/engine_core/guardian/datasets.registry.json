@@ -110,7 +110,7 @@
         "basis": "trading_day",
         "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
       },
-      "retry": "event=daily_kline_close_1505 profile=daily_kline_close rungs=wencai>q2_final; wencai attempts=2 backoff=60s*1 timeout=25m; q2_final attempts=2 backoff=30s*1 timeout=3m; event=baostock_probe_1730 profile=policy_11 rungs=legacy; legacy attempts=32 backoff=30m*1 timeout=20m cap=30m until=23:30",
+      "retry": "event=daily_kline_close_1505 profile=daily_kline_close rungs=wencai>q2_final; wencai attempts=2 backoff=60s*1 timeout=25m; q2_final attempts=2 backoff=30s*1 timeout=3m; event=baostock_probe_1730 profile=policy_11 rungs=legacy; legacy attempts=32 backoff=30m*1 timeout=130m cap=30m until=23:30",
       "degrade": [
         "15:05 event=daily_kline_close_1505 profile=daily_kline_close rungs=wencai>q2_final; schedule 顺序为问财优先、Q2 补空字段；逐行/逐字段标来源，coverage/missing 明示，quality.status 固定 PARTIAL；不得推进 latest 或冒充正式版",
         "17:40 event=baostock_probe_1730 profile=policy_11 rungs=legacy; Baostock 正式获取"
@@ -132,7 +132,7 @@
       },
       "cost": {
         "class": "heavy",
-        "basis": "formal Baostock pull; guardian dry-run exceeded 60s (measuring) | C394 2026-10-21: real run is ~1 symbol/s (Baostock ~0.9s/query) => full 5224 pull ~85min, resumable per 25 symbols; fetch_job timeout 3600s",
+        "basis": "C616 2026-10-29: full real Baostock run processed 5224 queries in 54m46s; 2x=109m32s, so policy_11 uses a 130m rung; resumable per 25 symbols",
         "set_by": "claude 2026-10-20 default"
       },
       "fetch_job": {

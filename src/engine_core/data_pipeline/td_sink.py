@@ -370,7 +370,7 @@ class TaosStore:
                 if not _SYMBOL.match(symbol):
                     raise ValueError("bad_symbol:" + symbol)
                 literal = ", ".join(_literal(values.get(name)) for name in DATA_COLUMNS)
-                parts.append(f"{self.database}.d_{symbol} USING {self.database}.{SUPER_TABLE} TAGS('{symbol}') "
+                parts.append(f"{self.database}.daily_kline_{symbol} USING {self.database}.{SUPER_TABLE} TAGS('{symbol}') "
                              f"VALUES ({ts}, {literal}, {_literal(version)})")
             self._run("INSERT INTO " + " ".join(parts))
 

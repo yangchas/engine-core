@@ -58,7 +58,7 @@ def _symbol(row: dict[str, Any]) -> str:
 def _run_rehearsal(day: str, output: Path, timeout_minutes: int,
                    window_minutes: int) -> tuple[dict[str, Any], list[str]]:
     args = {
-        "baostock_budget_ratio": 1.0,
+        "budget_ratio": 1.0,
         "baostock_no_progress_seconds": 300,
     }
     cmd = [str(VENV_PYTHON), str(ROOT / "examples/rehearse_event.py"),
@@ -229,8 +229,8 @@ def _run_repeat_event(data_root: Path, day: str, expected_version: str,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date", help="recent trading day; defaults to Core daily_kline latest")
-    parser.add_argument("--timeout-minutes", type=int, default=145)
-    parser.add_argument("--window-minutes", type=int, default=130)
+    parser.add_argument("--timeout-minutes", type=int, default=155)
+    parser.add_argument("--window-minutes", type=int, default=145)
     parser.add_argument("--output-dir", help="evidence directory; defaults under fw/evidence/C616")
     args = parser.parse_args(argv)
     result: dict[str, Any] = {"card": "C616", "started_at": datetime.now().astimezone().isoformat(),
@@ -246,6 +246,15 @@ def main(argv: list[str] | None = None) -> int:
         result["trade_date"] = day
         if date.today().isoformat() != day:
             raise RuntimeError("rehearsal_event_requires_current_trade_date:" + day)
+        try:
+            resume_checks, resume_facts = _run_resume_sample(day, output)
+        except Exception as exc:
+            resume_checks = [_assert(False, "resume_sample_exception", f"{type(exc).__name__}:{exc}")]
+            resume_facts = {"error": f"{type(exc).__name__}:{exc}"}
+        result["checks"].extend(resume_checks)
+        result["facts"]["resume_sample"] = resume_facts
+        result["commands"]["resume_sample"] = "SIGTERM after >=100 real Baostock checkpoint rows, then resume"
+        time.sleep(420)  # Baostock cooldown between the resumed sample and the full-market pull.
         rehearsal, cmd = _run_rehearsal(day, output, args.timeout_minutes, args.window_minutes)
         result["commands"]["rehearse_event"] = cmd
         result["rehearsal"] = rehearsal
@@ -321,9 +330,6 @@ def main(argv: list[str] | None = None) -> int:
                                 "business_status": manifest.get("business_status"),
                                 "provider_attempt": timing, "manifest": str(manifest_path),
                                 "rehearsal_root": str(root), "repeat_event": repeat_event})
-        resume_checks, resume_facts = _run_resume_sample(day, output)
-        checks.extend(resume_checks)
-        result["facts"]["resume_sample"] = resume_facts
     except Exception as exc:  # report all failures as reviewable JSON
         result["error"] = f"{type(exc).__name__}:{exc}"
     result["finished_at"] = datetime.now().astimezone().isoformat()
