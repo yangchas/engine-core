@@ -47,7 +47,8 @@ TERMINAL_STATES = {
     "SKIPPED", "SKIPPED_NA", "SKIPPED_SATISFIED", "SKIPPED_PHASE", "SKIPPED_DEP",
 }
 EXPECTED_SUCCESS_STATES = {"SUCCEEDED", "SUCCEEDED_DEGRADED", "SKIPPED_NA", "SKIPPED_SATISFIED"}
-TD_VERSION_TABLES = ("daily_kline_versions", "limit_up_pool_versions", "ladder_daily_versions")
+TD_VERSION_TABLES = ("daily_kline_versions", "limit_up_pool_versions", "ladder_daily_versions",
+                     "limit_up_detail_versions")
 READ_ONLY_REDIS_COMMANDS = {
     "AUTH", "CLIENT", "COMMAND", "DBSIZE", "ECHO", "EXISTS", "GET", "GETBIT", "GETRANGE", "HGET",
     "HGETALL", "HEXISTS", "HKEYS", "HLEN", "HMGET", "HSCAN", "HSTRLEN", "HVALS", "INFO", "KEYS",
@@ -598,6 +599,11 @@ class _ReadOnlyRedisHandler(socketserver.StreamRequestHandler):
                 while True:
                     request, kind, value = _read_resp(self.rfile)
                     command = value if kind == b"*" and isinstance(value, list) else []
+                    local_response = server.execute_local(command)
+                    if local_response is not None:
+                        self.wfile.write(local_response)
+                        self.wfile.flush()
+                        continue
                     if not _redis_command_allowed(command):
                         name = command[0].decode("ascii", "ignore").upper() if command else "UNKNOWN"
                         server.record_blocked(name)
@@ -621,7 +627,7 @@ class _ReadOnlyRedisHandler(socketserver.StreamRequestHandler):
 
 
 class ReadOnlyRedisProxy:
-    """Forward Redis reads through the guard proxy; reject every data-mutating command locally."""
+    """Forward Redis reads; emulate C611 hash writes in memory and reject other mutations."""
 
     def __init__(self, redis_url: str):
         parsed = urlsplit(redis_url)
@@ -632,11 +638,15 @@ class ReadOnlyRedisProxy:
         self.upstream_port = 6380
         self.blocked_commands: Counter[str] = Counter()
         self._lock = threading.Lock()
+        self._local_hashes: dict[str, dict[bytes, bytes]] = {}
+        self._local_expiry: dict[str, float] = {}
+        self._local_lock = threading.Lock()
         self._server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _ReadOnlyRedisHandler)
         self._server.daemon_threads = True
         self._server.upstream_host = self.upstream_host
         self._server.upstream_port = self.upstream_port
         self._server.record_blocked = self.record_blocked
+        self._server.execute_local = self.execute_local
         self._thread = threading.Thread(target=self._server.serve_forever, name="rehearsal-redis-ro", daemon=True)
         self._thread.start()
         userinfo = parsed.netloc.rsplit("@", 1)[0] + "@" if "@" in parsed.netloc else ""
@@ -646,6 +656,86 @@ class ReadOnlyRedisProxy:
     def record_blocked(self, command: str) -> None:
         with self._lock:
             self.blocked_commands[command] += 1
+
+    @staticmethod
+    def _bulk(value: bytes | None) -> bytes:
+        if value is None:
+            return b"$-1\r\n"
+        return b"$" + str(len(value)).encode() + b"\r\n" + value + b"\r\n"
+
+    @staticmethod
+    def _array(values: list[bytes]) -> bytes:
+        return b"*" + str(len(values)).encode() + b"\r\n" + b"".join(
+            ReadOnlyRedisProxy._bulk(value) for value in values)
+
+    def execute_local(self, command: list[bytes]) -> bytes | None:
+        if len(command) < 2:
+            return None
+        name = command[0].decode("ascii", "ignore").upper()
+        try:
+            key = command[1].decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        if not re.fullmatch(r"core:(?:yest_limit_detail|limit_up_reason):\d{4}-\d{2}-\d{2}", key):
+            return None
+        if name not in {"HSET", "HDEL", "EXPIRE", "EXISTS", "HLEN", "TTL", "TYPE", "HGETALL", "HKEYS"}:
+            return None
+        with self._local_lock:
+            now = time.monotonic()
+            if self._local_expiry.get(key, float("inf")) <= now:
+                self._local_expiry.pop(key, None)
+                self._local_hashes.pop(key, None)
+            if name == "HSET":
+                if len(command) < 4 or (len(command) - 2) % 2:
+                    return b"-ERR wrong number of arguments for 'hset' command\r\n"
+                fields = self._local_hashes.setdefault(key, {})
+                added = 0
+                for index in range(2, len(command), 2):
+                    field, value = command[index], command[index + 1]
+                    added += field not in fields
+                    fields[field] = value
+                return b":" + str(added).encode() + b"\r\n"
+            if name == "HDEL":
+                fields = self._local_hashes.get(key, {})
+                removed = 0
+                for field in command[2:]:
+                    removed += fields.pop(field, None) is not None
+                if not fields:
+                    self._local_hashes.pop(key, None)
+                    self._local_expiry.pop(key, None)
+                return b":" + str(removed).encode() + b"\r\n"
+            if name == "EXPIRE":
+                if len(command) != 3 or key not in self._local_hashes:
+                    return b":0\r\n"
+                try:
+                    seconds = int(command[2])
+                except ValueError:
+                    return b"-ERR value is not an integer or out of range\r\n"
+                if seconds <= 0:
+                    self._local_hashes.pop(key, None)
+                    self._local_expiry.pop(key, None)
+                    return b":1\r\n"
+                self._local_expiry[key] = now + seconds
+                return b":1\r\n"
+            exists = key in self._local_hashes
+            if name == "EXISTS":
+                return b":" + (b"1" if exists else b"0") + b"\r\n"
+            if name == "HLEN":
+                return b":" + str(len(self._local_hashes.get(key, {}))).encode() + b"\r\n"
+            if name == "TTL":
+                if not exists:
+                    value = -2
+                elif key not in self._local_expiry:
+                    value = -1
+                else:
+                    value = max(0, int(self._local_expiry[key] - now))
+                return b":" + str(value).encode() + b"\r\n"
+            if name == "TYPE":
+                return (b"+hash\r\n" if exists else b"+none\r\n")
+            fields = self._local_hashes.get(key, {})
+            if name == "HKEYS":
+                return self._array(list(fields))
+            return self._array([item for pair in fields.items() for item in pair])
 
     def close(self) -> None:
         self._server.shutdown()
@@ -1344,7 +1434,7 @@ def run_rehearsal(args: argparse.Namespace) -> int:
                                          summary.get("email_self_env") == "0"),
              "guardian alert handler uses --dry-run; self-email disabled"),
             ("redis_is_read_only", proxy is not None and not blocked,
-             f"local read-only proxy; blocked commands={dict(blocked)}"),
+             f"guard proxy; C611 core hash writes are in-memory; blocked commands={dict(blocked)}"),
             ("core_data_redirected", data_root.is_dir() and str(data_root) != str(LIVE_DATA_ROOT),
              f"CORE_DATA_ROOT/artifact-root={data_root}"),
             ("td_database_preexisting_temp", bool(td_before is not None and summary.get("td_database_exists_after", True)

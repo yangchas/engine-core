@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "revision": 6,
+  "revision": 7,
   "timezone": "Asia/Shanghai",
   "global": {
     "heavy_max_load5": 3.0,
@@ -453,6 +453,31 @@
           "attempts": 1,
           "timeout": "10s",
           "budget_enabled": false
+        }
+      ]
+    },
+    "limit_up_detail_d1": {
+      "catchup": "run_in_window",
+      "retry_backoff": "5m",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "ladder": [
+        {
+          "name": "kaipan",
+          "args": {
+            "dataset": "limit_up_detail",
+            "source": "kaipan",
+            "backfill_depth": 20,
+            "degrade": "无降级链，等待重试到 08:50 前"
+          },
+          "attempts": 100,
+          "backoff": "5m*1",
+          "backoff_cap": "5m",
+          "timeout": "5m",
+          "budget_enabled": false,
+          "on_timeout": "retry",
+          "alert_on_fallback": false,
+          "until": "late_until"
         }
       ]
     }
@@ -3459,6 +3484,41 @@
       "phases": [
         "any"
       ]
+    },
+    {
+      "event_id": "limit_up_detail_d1",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "00:50:00",
+      "deadline": "08:50:00",
+      "late_until": "08:50:00",
+      "gate": "calendar_ready",
+      "handler": "kaipan_fetch",
+      "profile": "limit_up_detail_d1",
+      "catchup_mode": "run_in_window",
+      "on_deadline": "missed",
+      "cost": "light",
+      "phases": null,
+      "on_phase_mismatch": null,
+      "on_start": null,
+      "data_date_offset": -1,
+      "available_after": "00:40:00",
+      "depends_on": [
+        "limit_pool_d1"
+      ],
+      "after": [],
+      "order": null,
+      "max_attempts": 100,
+      "timeout_seconds": 300,
+      "retry_backoff": "5m",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "args": {
+        "dataset": "limit_up_detail",
+        "backfill_depth": 20,
+        "degrade": "无降级链，等待重试到 08:50 前"
+      }
     }
   ]
 }
