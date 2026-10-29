@@ -160,17 +160,21 @@ def test_kaipan_dde_builder_uses_echoed_dates_and_preserves_missing_as_null():
     from engine_core.data_pipeline.daily_dde import DdeStaleResponse
 
     raw = load("kaipan_stock_dde_2026-10-29_000001_")
-    partition = build_daily_dde(raw, symbol="000001", target_date="2026-10-28", max_days=20)
-    assert 1 <= len(partition.rows) <= 20
-    assert partition.rows[-1]["date"] == "2026-10-28"
+    partition = build_daily_dde(raw, symbol="000001", target_date="2026-10-28", history_trading_days=250)
+    assert len(partition.rows) == 250
+    dates = [row["date"] for row in partition.rows]
+    assert dates[0] == "2026-10-28"
+    assert dates == sorted(dates, reverse=True)
+    from datetime import date
+    assert (date.fromisoformat(dates[0]) - date.fromisoformat(dates[-1])).days > 250
     assert all(row["symbol"] == "000001" for row in partition.rows)
-    assert all(row["ddx"] is None and row["ddy"] is None and row["ddz"] is None for row in partition.rows)
-    assert all(row["large_net"] is None for row in partition.rows)
-    assert partition.manifest["source_dates"]["date"] == [row["date"] for row in partition.rows]
+    assert all(set(row) == {"symbol", "date", "ddje"} for row in partition.rows)
+    assert len({row["date"] for row in partition.rows}) == 250
+    assert partition.manifest["source_dates"]["date"] == dates
     assert partition.manifest["field_units"]["ddje"] == "yuan"
-    assert partition.manifest["field_units"]["ddx"] == "not_provided_by_source"
+    assert partition.manifest["field_units"] == {"ddje": "yuan"}
     with pytest.raises(DdeStaleResponse, match="stale|target_date_missing"):
-        build_daily_dde(raw, symbol="000001", target_date="2026-10-29", max_days=20)
+        build_daily_dde(raw, symbol="000001", target_date="2026-10-29", history_trading_days=250)
 
 
 @pytest.mark.live

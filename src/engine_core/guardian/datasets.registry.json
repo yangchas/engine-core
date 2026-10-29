@@ -183,7 +183,7 @@
         "PRE_MARKET"
       ],
       "cadence": "交易日 15:12；daily_kline_close_1505 完成后",
-      "rule": "唯一来源 Kaipan getHisStockDDE；单股一次取回多日，最多写最近 20 个响应交易日。字段缺失为 NULL，回显日期早于目标日视为 stale。",
+      "rule": "唯一来源 Kaipan getHisStockDDE；单股一次取回全史，按 history_trading_days 配置只写最近交易日（默认 250），新日期优先。字段缺失为 NULL，回显日期早于目标日视为 stale。",
       "freshness": {
         "partition": "D",
         "expected_by": "20:30",
@@ -199,10 +199,6 @@
         "stable": "daily_dde_v1",
         "columns": [
           "ddje",
-          "large_net",
-          "ddx",
-          "ddy",
-          "ddz",
           "version"
         ],
         "tags": [
@@ -211,11 +207,18 @@
         "timestamp": "ts"
       },
       "lifecycle": {
-        "init": "检查 core_data 存在并创建库内 daily_dde_v1 stable；从 Kaipan 回填缺失水位",
+        "init": "检查 core_data 存在并创建库内 daily_dde_v1 stable；按 symbol 聚合水位，只对缺目标日的股票回补",
         "force": "重取指定股票并原子批量写入后读回",
         "clear": "不提供删除操作"
       },
-      "notes": "来源响应实测提供 Date 与 DDJE；large_net/DDX/DDY/DDZ 未返回时保留 NULL。Redis 只写 core:dde_ready:{date} 并设置 TTL。",
+      "redis_hot_view": {
+        "namespace": "core:cache:data:daily_dde",
+        "key_pattern": "{namespace}:{date}",
+        "type": "hash",
+        "field": "symbol",
+        "ttl_seconds": 86400
+      },
+      "notes": "来源响应提供 Date 与 DDJE；large_net/DDX/DDY/DDZ 不存在于源响应。旧库四列恒为 0，不是数据。Redis 只写 core:cache:data:daily_dde:{date} hash，TTL 由本登记项配置。",
       "guardian_event": "daily_dde_postclose"
     },
     {

@@ -2559,9 +2559,9 @@
       ],
       "args": {
         "dataset": "daily_dde",
-        "max_workers": 3,
+        "max_workers": 2,
         "attempts": 3,
-        "redis_ttl_seconds": 86400,
+        "history_trading_days": 250,
         "write_redis": true
       }
     },

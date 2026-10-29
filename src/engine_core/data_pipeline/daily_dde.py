@@ -16,10 +16,11 @@ from .derived_daily import Partition
 
 DATASET = "daily_dde"
 SUPER_TABLE = "daily_dde_v1"
-DATA_COLUMNS = ("ddje", "large_net", "ddx", "ddy", "ddz")
-FIELD_UNITS = {"ddje": "yuan", "large_net": "not_provided_by_source",
-               "ddx": "not_provided_by_source", "ddy": "not_provided_by_source",
-               "ddz": "not_provided_by_source"}
+DATA_COLUMNS = ("ddje",)
+FIELD_UNITS = {"ddje": "yuan"}
+DEFAULT_HISTORY_TRADING_DAYS = 250
+DEFAULT_MAX_WORKERS = 2
+KAIPAN_REQUEST_TIMEOUT = (5.0, 15.0)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _SYMBOL_RE = re.compile(r"^\d{6}$")
 
@@ -62,23 +63,17 @@ def _number(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-def _field(raw: Mapping[str, Any], *keys: str) -> Any:
-    for key in keys:
-        if key in raw:
-            return raw[key]
-    return None
-
-
-def build_daily_dde(raw_response: Any, *, symbol: str, target_date: str, max_days: int = 20) -> Partition:
-    """Build at most ``max_days`` rows from Kaipan's echoed Date column, preserving absent values as NULL."""
+def build_daily_dde(raw_response: Any, *, symbol: str, target_date: str,
+                    history_trading_days: int = DEFAULT_HISTORY_TRADING_DAYS) -> Partition:
+    """Build the latest trading-day window from Kaipan's full-history response."""
     code = str(symbol).strip().zfill(6)
     if not _SYMBOL_RE.fullmatch(code):
         raise ValueError("invalid_dde_symbol")
     target = _date_text(target_date)
     if target is None:
         raise ValueError("invalid_dde_target_date")
-    if isinstance(max_days, bool) or int(max_days) < 1:
-        raise ValueError("max_days_must_be_positive")
+    if isinstance(history_trading_days, bool) or not 1 <= int(history_trading_days) <= 5000:
+        raise ValueError("history_trading_days_must_be_1_to_5000")
     if not isinstance(raw_response, Mapping):
         raise DdeError("kaipan_dde_response_not_object")
     errcode = str(raw_response.get("errcode", "0"))
@@ -94,15 +89,9 @@ def build_daily_dde(raw_response: Any, *, symbol: str, target_date: str, max_day
         if day is None or day > target:
             continue
         source_dates.append(day)
-        row = {"symbol": code, "date": day}
-        for name, aliases in (("ddje", ("DDJE", "ddje")),
-                              ("large_net", ("LARGE_NET", "large_net")),
-                              ("ddx", ("DDX", "ddx")),
-                              ("ddy", ("DDY", "ddy")),
-                              ("ddz", ("DDZ", "ddz"))):
-            values = _field(raw_response, *aliases)
-            value = values[index] if isinstance(values, (list, tuple)) and index < len(values) else None
-            row[name] = _number(value)
+        values = raw_response.get("DDJE", raw_response.get("ddje"))
+        value = values[index] if isinstance(values, (list, tuple)) and index < len(values) else None
+        row = {"symbol": code, "date": day, "ddje": _number(value)}
         rows_by_date[day] = row
     if not source_dates:
         raise DdeStaleResponse("kaipan_dde_has_no_date_at_or_before_target:" + target)
@@ -111,7 +100,9 @@ def build_daily_dde(raw_response: Any, *, symbol: str, target_date: str, max_day
         raise DdeStaleResponse(f"kaipan_dde_stale:latest={latest}:target={target}")
     if target not in rows_by_date:
         raise DdeStaleResponse(f"kaipan_dde_target_date_missing:target={target}:latest={latest}")
-    rows = [rows_by_date[day] for day in sorted(rows_by_date)[-int(max_days):]]
+    # Date is the provider's trading calendar for this symbol; keep the newest
+    # N returned sessions and write them newest-first for repair priority.
+    rows = [rows_by_date[day] for day in sorted(rows_by_date, reverse=True)[:int(history_trading_days)]]
     raw_digest = hashlib.sha256(json.dumps(raw_response, ensure_ascii=False, sort_keys=True,
                                            separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
     now = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -119,10 +110,7 @@ def build_daily_dde(raw_response: Any, *, symbol: str, target_date: str, max_day
         "schema_version": 1, "dataset": DATASET, "trade_date": target, "provider": "kaipan", "source": "kaipan",
         "symbol": code, "as_of": now, "available_at": now, "source_dates": {"date": [row["date"] for row in rows]},
         "field_units": dict(FIELD_UNITS), "unit_evidence": {
-            "ddje": "legacy TD same-date comparison; Kaipan field documentation was not present in the response",
-            "large_net": "Kaipan response has no large_net column; legacy writer did not populate it",
-            "ddx": "Kaipan response has no DDX column", "ddy": "Kaipan response has no DDY column",
-            "ddz": "Kaipan response has no DDZ column"},
+            "ddje": "Kaipan getHisStockDDE response DDJE field; unit yuan matches legacy daily_dde"},
         "row_count": len(rows), "raw_response_sha256": raw_digest,
         "version": raw_digest[:24], "quality": {"missing_values": {
             column: sum(row[column] is None for row in rows) for column in DATA_COLUMNS}},
@@ -197,8 +185,7 @@ class TaosDdeStore:
         if not self.database_exists():
             raise DdeError("td_database_must_already_exist:" + self.database)
         ddl = (f"CREATE STABLE IF NOT EXISTS {self.database}.{SUPER_TABLE} "
-               "(ts TIMESTAMP, ddje DOUBLE, large_net DOUBLE, ddx DOUBLE, ddy DOUBLE, ddz DOUBLE, "
-               "version VARCHAR(24)) TAGS (symbol VARCHAR(8))")
+               "(ts TIMESTAMP, ddje DOUBLE, version VARCHAR(24)) TAGS (symbol VARCHAR(8))")
         self._run(ddl)
         return ddl
 
@@ -226,7 +213,7 @@ class TaosDdeStore:
                      f"TAGS('{symbol}') VALUES " + " ".join(values))
         self._run(statement)
         readback = self._run(
-            f"SELECT ts, ddje, large_net, ddx, ddy, ddz, version FROM {self.database}.{child_table} "
+            f"SELECT ts, ddje, version FROM {self.database}.{child_table} "
             f"WHERE ts >= {_ts_us(minimum)} AND ts <= {_ts_us(maximum)}")
         got: dict[str, tuple] = {}
         for item in readback:
@@ -259,15 +246,15 @@ class TaosDdeStore:
         first = min(days)
         after_last = (date.fromisoformat(max(days)) + timedelta(days=1)).isoformat()
         quoted = ",".join("'" + symbol + "'" for symbol in sorted(set(symbols)) if _SYMBOL_RE.fullmatch(symbol))
-        legacy = self._run("SELECT symbol, ts, ddje, large_net, ddx, ddy, ddz FROM market_data1.daily_dde "
+        legacy = self._run("SELECT symbol, ts, ddje FROM market_data1.daily_dde "
                            f"WHERE ts >= '{first} 00:00:00' AND ts < '{after_last} 00:00:00' "
                            f"AND symbol IN ({quoted})")
         old = {}
         for item in legacy:
             day = _date_text(item[1])
             if day:
-                old[(str(item[0]), day)] = dict(zip(DATA_COLUMNS, item[2:]))
-        columns = {name: {"equal": 0, "different": 0, "missing_legacy": 0} for name in DATA_COLUMNS}
+                old[(str(item[0]), day)] = {"ddje": item[2]}
+        columns = {"ddje": {"equal": 0, "different": 0, "missing_legacy": 0}}
         reasons: dict[str, int] = {}
         equal = different = unmatched = 0
         for row in rows:
@@ -277,24 +264,25 @@ class TaosDdeStore:
                 reasons["no_legacy_row"] = reasons.get("no_legacy_row", 0) + 1
                 continue
             row_equal = True
-            for name in DATA_COLUMNS:
-                want, have = row.get(name), prior.get(name)
-                if want is None and have is None:
-                    columns[name]["equal"] += 1
-                elif want is None:
-                    columns[name]["different"] += 1
-                    row_equal = False
-                    reason = "source_field_not_returned_legacy_default_zero" if _number(have) == 0 else "source_field_not_returned"
-                    reasons[reason + ":" + name] = reasons.get(reason + ":" + name, 0) + 1
-                elif have is None:
-                    columns[name]["missing_legacy"] += 1
-                    row_equal = False
-                elif math.isclose(float(want), float(have), rel_tol=1e-6, abs_tol=1e-6):
-                    columns[name]["equal"] += 1
-                else:
-                    columns[name]["different"] += 1
-                    row_equal = False
-                    reasons["numeric_difference:" + name] = reasons.get("numeric_difference:" + name, 0) + 1
+            name = "ddje"
+            want, have = row.get(name), prior.get(name)
+            if want is None and have is None:
+                columns[name]["equal"] += 1
+            elif want is None:
+                columns[name]["different"] += 1
+                row_equal = False
+                reason = "source_ddje_missing_legacy_zero" if _number(have) == 0 else "source_ddje_missing"
+                reasons[reason] = reasons.get(reason, 0) + 1
+            elif have is None:
+                columns[name]["missing_legacy"] += 1
+                row_equal = False
+                reasons["legacy_ddje_missing"] = reasons.get("legacy_ddje_missing", 0) + 1
+            elif math.isclose(float(want), float(have), rel_tol=1e-6, abs_tol=1e-6):
+                columns[name]["equal"] += 1
+            else:
+                columns[name]["different"] += 1
+                row_equal = False
+                reasons["numeric_difference:ddje"] = reasons.get("numeric_difference:ddje", 0) + 1
             if row_equal:
                 equal += 1
             else:
@@ -324,11 +312,13 @@ def _active_symbols(root: Path, trade_date: str) -> list[str]:
 
 
 def _fetch_with_retry(fetcher: Callable[[str, str], Any], symbol: str, target_date: str,
-                      attempts: int, sleep: Callable[[float], None]) -> tuple[Partition | None, str | None, int]:
+                      history_trading_days: int, attempts: int,
+                      sleep: Callable[[float], None]) -> tuple[Partition | None, str | None, int]:
     last_error = "unknown"
     for attempt in range(1, attempts + 1):
         try:
-            return build_daily_dde(fetcher(symbol, target_date), symbol=symbol, target_date=target_date), None, attempt
+            return build_daily_dde(fetcher(symbol, target_date), symbol=symbol, target_date=target_date,
+                                   history_trading_days=history_trading_days), None, attempt
         except Exception as exc:
             last_error = type(exc).__name__ + ":" + str(exc)[:180]
             if attempt < attempts:
@@ -336,9 +326,40 @@ def _fetch_with_retry(fetcher: Callable[[str, str], Any], symbol: str, target_da
     return None, last_error, attempts
 
 
+def _redis_hot_view_config() -> tuple[str, int]:
+    registry_path = Path(__file__).parents[1] / "guardian" / "datasets.registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    dataset = next((item for item in registry.get("items", []) if item.get("id") == DATASET), None)
+    view = dataset.get("redis_hot_view") if isinstance(dataset, Mapping) else None
+    if not isinstance(view, Mapping) or not view.get("namespace"):
+        raise DdeError("dde_redis_hot_view_not_registered")
+    ttl = int(view.get("ttl_seconds") or 0)
+    if ttl < 1:
+        raise DdeError("dde_redis_ttl_not_registered")
+    return str(view["namespace"]).rstrip(":"), ttl
+
+
+def _configure_kaipan_request_timeout(client: Any) -> None:
+    """Bound the Kaipan SDK's requests.post call, which otherwise has no timeout."""
+    requests_module = getattr(client, "requests", None)
+    original_post = getattr(requests_module, "post", None)
+    if not callable(original_post):
+        raise DdeError("kaipan_requests_post_unavailable")
+    if getattr(original_post, "__engine_core_timeout_wrapper__", False):
+        return
+
+    def post_with_timeout(*args, **kwargs):
+        kwargs.setdefault("timeout", KAIPAN_REQUEST_TIMEOUT)
+        return original_post(*args, **kwargs)
+
+    post_with_timeout.__engine_core_timeout_wrapper__ = True
+    requests_module.post = post_with_timeout
+
+
 def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, database: str | None = None,
-                       root: str | Path | None = None, max_workers: int = 3, attempts: int = 3,
-                       redis_ttl_seconds: int = 86400, write_redis: bool = True,
+                       root: str | Path | None = None, max_workers: int = DEFAULT_MAX_WORKERS, attempts: int = 3,
+                       history_trading_days: int = DEFAULT_HISTORY_TRADING_DAYS,
+                       redis_ttl_seconds: int | None = None, write_redis: bool = True,
                        skip_redis: bool = False, store: TaosDdeStore | None = None,
                        fetcher: Callable[[str, str], Any] | None = None,
                        sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
@@ -349,20 +370,28 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
         raise ValueError("dde_max_workers_must_be_1_to_4")
     if isinstance(attempts, bool) or not 1 <= int(attempts) <= 5:
         raise ValueError("dde_attempts_must_be_1_to_5")
-    if int(redis_ttl_seconds) < 1:
+    if isinstance(history_trading_days, bool) or not 1 <= int(history_trading_days) <= 5000:
+        raise ValueError("history_trading_days_must_be_1_to_5000")
+    redis_namespace, registry_ttl = _redis_hot_view_config()
+    redis_ttl_seconds = registry_ttl if redis_ttl_seconds is None else int(redis_ttl_seconds)
+    if redis_ttl_seconds < 1:
         raise ValueError("dde_redis_ttl_must_be_positive")
     base = Path(root or os.environ.get("CORE_DATA_ROOT", "~/core-data")).expanduser()
     database_name = database or os.environ.get("CORE_TD_DATABASE") or "core_data"
     own = store is None
     store = store or TaosDdeStore(database_name)
     if fetcher is None:
-        def fetcher(symbol: str, day: str):
-            try:
-                from pykaipan import pykaipan
-            except ImportError:
-                import importlib
-                pykaipan = importlib.import_module("pykaipan.pykaipan")
+        try:
+            from pykaipan import pykaipan
+        except ImportError:
+            import importlib
+            pykaipan = importlib.import_module("pykaipan.pykaipan")
+        _configure_kaipan_request_timeout(pykaipan)
+
+        def fetch_from_kaipan(symbol: str, day: str):
             return pykaipan.getHisStockDDE(symbol, day)
+
+        fetcher = fetch_from_kaipan
     try:
         ddl = store.ensure_schema()
         before = store.latest_watermarks()
@@ -374,7 +403,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
         failed: dict[str, str] = {}
         request_count = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=int(max_workers)) as pool:
-            futures = {pool.submit(_fetch_with_retry, fetcher, symbol, target, int(attempts), sleep): symbol
+            futures = {pool.submit(_fetch_with_retry, fetcher, symbol, target, int(history_trading_days),
+                                   int(attempts), sleep): symbol
                        for symbol in requested}
             for future in concurrent.futures.as_completed(futures):
                 symbol = futures[future]
@@ -398,7 +428,14 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
             except Exception as exc:
                 write_failures[symbol] = type(exc).__name__ + ":" + str(exc)[:180]
         failed.update(write_failures)
-        after = store.latest_watermarks()
+        # The aggregate watermark query is issued once. Derive post-write watermarks
+        # from verified rows instead of issuing one more full-table aggregation.
+        after = dict(before)
+        for symbol, partition in fetched.items():
+            if symbol in write_failures or not partition.rows:
+                continue
+            latest = max(row["date"] for row in partition.rows)
+            after[symbol] = max(after.get(symbol, ""), latest)
         comparison = store.compare_legacy(sorted(fetched), successful_rows)
         redis_result: dict[str, Any] = {"written": False, "readback_verified": False, "key": None, "ttl": None}
         if skip_redis:
@@ -408,20 +445,25 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
             if not redis_url:
                 raise DdeError("REDIS_URL_required_for_dde_view")
             import redis
-            key = "core:dde_ready:" + target
-            view = {"dataset": DATASET, "date": target, "source": "kaipan", "field_units": FIELD_UNITS,
-                    "rows": [row for row in successful_rows if row["date"] == target]}
-            payload = json.dumps(view, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+            key = redis_namespace + ":" + target
+            target_rows = {row["symbol"]: json.dumps(row, ensure_ascii=False,
+                                                     separators=(",", ":"), sort_keys=True)
+                           for row in successful_rows if row["date"] == target}
             client = redis.Redis.from_url(redis_url, decode_responses=True, socket_timeout=5)
-            client.set(key, payload, ex=int(redis_ttl_seconds))
-            readback = client.get(key)
+            if target_rows:
+                client.hset(key, mapping=target_rows)
+                client.expire(key, int(redis_ttl_seconds))
+            readback = client.hgetall(key)
             ttl = int(client.ttl(key))
-            redis_result = {"written": True, "readback_verified": readback == payload,
-                            "key": key, "ttl": ttl, "row_count": len(view["rows"])}
-            if readback != payload or ttl < 1:
+            fields_verified = all(readback.get(symbol) == payload for symbol, payload in target_rows.items())
+            redis_result = {"written": bool(target_rows), "readback_verified": fields_verified,
+                            "key": key, "type": client.type(key), "ttl": ttl,
+                            "row_count": len(target_rows)}
+            if not fields_verified or ttl < 1:
                 raise DdeError("dde_redis_readback_failed")
         return {"status": "ok" if not failed else "partial", "database": store.database,
                 "ddl": ddl, "requested_symbols": len(requested), "request_count": request_count,
+                "history_trading_days": int(history_trading_days), "max_workers": int(max_workers),
                 "written_symbols": written_symbols, "rows_written": len(successful_rows),
                 "readback_verified": not write_failures and written_symbols == len(fetched),
                 "readback_mismatches": len(write_failures),
