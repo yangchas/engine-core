@@ -118,7 +118,7 @@ def test_sdk_adapter_rewrites_latest_only_request_to_full_history(monkeypatch):
     assert sdk.reques is request
 
 
-def test_provider_requests_full_history_checkpoints_and_excludes_future_reason(tmp_path):
+def test_provider_requests_full_history_without_checkpoint_and_excludes_future_reason(tmp_path, monkeypatch):
     from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
 
     payload = _reason_history("003021")
@@ -131,9 +131,9 @@ def test_provider_requests_full_history_checkpoints_and_excludes_future_reason(t
             return payload
 
     client = Client()
-    checkpoint = tmp_path / "kaipan-limit-reasons-checkpoint.json"
+    monkeypatch.chdir(tmp_path)
     provider = KaipanProvider(client, symbols=["003021"], max_requests=1, min_interval_seconds=0.2,
-                              sleep_fn=lambda _seconds: None, reasons_checkpoint_path=checkpoint)
+                              sleep_fn=lambda _seconds: None)
     result = provider.limit_reasons("2026-10-22", symbols=["003021"])
 
     assert client.calls == [("003021", 200)]
@@ -141,7 +141,7 @@ def test_provider_requests_full_history_checkpoints_and_excludes_future_reason(t
     dates = {row["event_date"] for row in result["rows"]}
     assert "2026-10-22" in dates
     assert all(event_date <= "2026-10-22" for event_date in dates)
-    assert json.loads(checkpoint.read_text(encoding="utf-8"))["done_symbols"] == ["003021"]
+    assert not list(tmp_path.rglob("*.json"))
 
 
 def test_real_sources_follow_kaipan_pool_then_history_then_wencai_priority():

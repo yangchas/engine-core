@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import gzip
+import inspect
 import json
 import os
 from pathlib import Path
@@ -153,6 +154,22 @@ def test_kaipan_plate_members_parse_ten_captured_real_responses():
         assert out["request_count"] == 1, path.name
         assert len(out["rows"]) == int(raw["Count"]) == len(expected_symbols), path.name
         assert [row["symbol"] for row in out["rows"]] == expected_symbols, path.name
+
+
+def test_kaipan_membership_adapter_has_no_checkpoint_api_and_replays_real_rows(tmp_path, monkeypatch):
+    checkpoint_options = {"members_checkpoint_path", "reasons_checkpoint_path"}
+    assert checkpoint_options.isdisjoint(inspect.signature(KaipanProvider.__init__).parameters)
+    monkeypatch.chdir(tmp_path)
+    path = sorted(REAL.glob("kaipan_plate_members_2026-10-28_*_i0_*.json"))[0]
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    plate = path.name.split("_")[4]
+    out = KaipanProvider(
+        ReplayKaipanPlateMembers(raw), plate_codes=(plate,), max_requests=1,
+        min_interval_seconds=0, sleep_fn=lambda _: None,
+    ).plate_members("2026-10-28", page_size=2000, concurrency=1)
+    assert not out["partial"]
+    assert len(out["rows"]) == int(raw["Count"])
+    assert not list(tmp_path.rglob("*.json"))
 
 
 def test_kaipan_dde_builder_uses_echoed_dates_and_preserves_missing_as_null():

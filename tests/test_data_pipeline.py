@@ -306,7 +306,7 @@ def test_injected_baostock_provider_separates_missing_suspended_and_mismatch():
     assert result["rows"][0]["turnover"] == 1.0
 
 
-def test_injected_kaipan_provider_fetches_pool_and_honors_request_limit(tmp_path):
+def test_injected_kaipan_provider_fetches_pool_and_retries_reasons_from_scratch():
     from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
 
     class Client:
@@ -350,21 +350,22 @@ def test_injected_kaipan_provider_fetches_pool_and_honors_request_limit(tmp_path
     assert partial["partial"] is True
     assert partial["unqueried_symbol_count"] == 1
 
-    checkpointed = KaipanProvider(
-        Reasons(), symbols=["002982", "003021"], max_requests=1, sleep_fn=lambda _: None,
-        reasons_checkpoint_path=tmp_path / "reasons.json",
-    )
-    first = checkpointed.limit_reasons("2026-10-22")
-    assert first["partial"] is True
-    assert first["rows"] and all(row["event_date"] <= "2026-10-22" for row in first["rows"])
-    resumed = KaipanProvider(
-        Reasons(), symbols=["002982", "003021"], max_requests=1, sleep_fn=lambda _: None,
-        reasons_checkpoint_path=tmp_path / "reasons.json",
+    calls = []
+
+    class TrackedReasons(Reasons):
+        def get_ban_reasons(self, symbol, *, st):
+            calls.append(symbol)
+            return super().get_ban_reasons(symbol, st=st)
+
+    retried = KaipanProvider(
+        TrackedReasons(), symbols=["002982", "003021"], max_requests=2, sleep_fn=lambda _: None,
     ).limit_reasons("2026-10-22")
-    assert resumed["partial"] is False
-    assert resumed["unqueried_symbol_count"] == 0
+    assert calls == ["002982", "003021"]
+    assert retried["partial"] is False
+    assert retried["unqueried_symbol_count"] == 0
+    assert retried["rows"] and all(row["event_date"] <= "2026-10-22" for row in retried["rows"])
     assert any(row["symbol"] == "003021" and row["event_date"] == "2026-10-22"
-               for row in resumed["rows"])
+               for row in retried["rows"])
 
 
 def test_kaipan_provider_uses_sdk_plate_methods_and_normalizes_rows():
@@ -416,7 +417,7 @@ def test_kaipan_hot_plates_rejects_mismatched_day_metadata():
         provider.hot_plates("2026-10-23", request_date="", max_pages=1)
 
 
-def test_kaipan_default_job_uses_direct_sdk_and_resumable_member_checkpoints(tmp_path, monkeypatch):
+def test_kaipan_default_job_uses_direct_sdk_and_retries_members_from_scratch(tmp_path, monkeypatch):
     import json
     import importlib
     import sys
@@ -425,10 +426,6 @@ def test_kaipan_default_job_uses_direct_sdk_and_resumable_member_checkpoints(tmp
 
     import examples.run_data_jobs as run_jobs
     from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
-
-    assert not run_jobs._is_complete_member_manifest({"quality": "REFERENCE", "row_count": 87364})
-    assert not run_jobs._is_complete_member_manifest({"quality": {"status": "PARTIAL"}, "row_count": 6815})
-    assert run_jobs._is_complete_member_manifest({"quality": {"status": "READY"}, "row_count": 88646})
 
     # The default adapter must lazily load the separately installed pykaipan
     # SDK directly, without importing the legacy adapter module.
@@ -440,10 +437,19 @@ def test_kaipan_default_job_uses_direct_sdk_and_resumable_member_checkpoints(tmp
         assert (date, index, size) == ("2026-10-23", "0", "50")
         return hot_response
 
+    capture_root = Path(__file__).parent / "fixtures/real"
+    member_payloads = {
+        plate: json.loads((capture_root / f"kaipan_plate_members_2026-10-28_{plate}_i0_0436.json")
+                          .read_text(encoding="utf-8"))
+        for plate in ("801182", "801873")
+    }
+    fail_second_plate = True
+
     def get_ids(plate, date, index, size):
-        if plate == "801002":
+        nonlocal fail_second_plate
+        if plate == "801873" and fail_second_plate:
             raise OSError("temporary")
-        return {"list": [["600001", "甲"]], "Count": 1}
+        return member_payloads[plate]
 
     sdk = SimpleNamespace(
         getHisPlates=get_hot_plates,
@@ -467,7 +473,7 @@ def test_kaipan_default_job_uses_direct_sdk_and_resumable_member_checkpoints(tmp
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(importlib, "import_module", direct_import)
-    monkeypatch.setattr(run_jobs, "_plate_codes", lambda *args: ["801001", "801002"])
+    monkeypatch.setattr(run_jobs, "_plate_codes", lambda *args: ["801182", "801873"])
     adapters = run_jobs._default_adapters(str(tmp_path), "/unused", 30, True)
     hot = adapters["hot_plates"]("2026-10-23")
     assert hot["rows"][0]["plate_code"] == str(hot_response["list"][0][0])
@@ -475,27 +481,30 @@ def test_kaipan_default_job_uses_direct_sdk_and_resumable_member_checkpoints(tmp
     assert calls == ["pykaipan.pykaipan"]
 
     provider = KaipanProvider(
-        sdk, plate_codes=["801001", "801002"], max_requests=10,
+        sdk, plate_codes=["801182", "801873"], max_requests=10,
         min_interval_seconds=0.2, sleep_fn=lambda _: None,
-        members_checkpoint_path=tmp_path / "members.json",
     )
     assert provider.min_interval_seconds == 0.2
-    first = provider.plate_members("2026-10-16", concurrency=4)
-    assert first["rows"][0]["symbol"] == "600001"
-    assert first["failed_plates"] == [{"plate_code": "801002", "error_type": "RuntimeError"}]
+    first = provider.plate_members("2026-10-28", concurrency=4)
+    assert first["rows"]
+    assert first["failed_plates"] == [{"plate_code": "801873", "error_type": "RuntimeError"}]
     assert first["partial"] is True
 
     retried = []
-    sdk.getHisPlateIds = lambda plate, date, index, size: retried.append(plate) or {
-        "list": [["600002", "乙"]], "Count": 1}
+    fail_second_plate = False
+    def retry_all(plate, date, index, size):
+        retried.append(plate)
+        return member_payloads[plate]
+
+    sdk.getHisPlateIds = retry_all
     resumed = KaipanProvider(
-        sdk, plate_codes=["801001", "801002"], max_requests=10,
+        sdk, plate_codes=["801182", "801873"], max_requests=10,
         min_interval_seconds=1, sleep_fn=lambda _: None,
-        members_checkpoint_path=tmp_path / "members.json",
-    ).plate_members("2026-10-16", concurrency=4)
-    assert retried == ["801002"]
-    assert {row["symbol"] for row in resumed["rows"]} == {"600001", "600002"}
+    ).plate_members("2026-10-28", concurrency=4)
+    assert sorted(retried) == ["801182", "801873"]
+    assert {row["plate_code"] for row in resumed["rows"]} == {"801182", "801873"}
     assert resumed["partial"] is False
+    assert not (tmp_path / ".checkpoints").exists()
 
     source = Path(run_jobs.__file__).read_text(encoding="utf-8")
     assert "examples.legacy_adapters" not in source

@@ -232,17 +232,24 @@ def _command_handler(name: str, opts, root: Path):
             from engine_core.data_pipeline.storage import ArtifactCatalog
             catalog = ArtifactCatalog(root)
             for job in tuple((getattr(event, "args", None) or {}).get("datasets") or ("limit_up_pool", "limit_reasons", "hot_plates", "plate_members")):
-                existing = catalog.locate(job, day)
-                if existing is not None:
+                if job == "plate_members":
+                    reusable = False
+                    if os.environ.get("TD_CONFIG"):
+                        from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+                        with ReferenceSnapshotStore() as snapshots:
+                            latest = snapshots.read_latest("plate_members")
+                        reusable = bool(latest and latest.get("trade_date") == day)
+                    if reusable:
+                        continue
+                else:
+                    existing = catalog.locate(job, day)
+                if job != "plate_members" and existing is not None:
                     try:
                         manifest = json.loads(existing.read_text(encoding="utf-8"))
                         quality = manifest.get("quality") if isinstance(manifest, dict) else None
-                        if job == "plate_members":
-                            from examples.run_data_jobs import _is_complete_member_manifest
-                            reusable = _is_complete_member_manifest(manifest)
-                        else:
-                            reusable = (isinstance(quality, dict) and quality.get("status") == "READY"
-                                        and int(manifest.get("row_count", 0)) > 0)
+                        reusable = (isinstance(quality, dict) and quality.get("status") == "READY"
+                                    and int(manifest.get("row_count", 0)) > 0)
                         if reusable:
                             continue
                     except (OSError, ValueError, TypeError):
