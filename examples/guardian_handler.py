@@ -306,7 +306,11 @@ def _run(request):
     if name == "auction_report" and asof[11:19] > "09:26:00":
         asof = asof[:11] + "09:26:00" + asof[19:]  # panorama rejects an as-of after 09:26:00; the 09:26:30 start only delays the run
     start = datetime.fromisoformat(asof).strftime("%H:%M:%S")
-    args =request.get("args") if isinstance(request.get("args"), dict) else {}
+    scheduled_args = getattr(base, "args", None)
+    request_args = request.get("args")
+    args = dict(scheduled_args) if isinstance(scheduled_args, dict) else {}
+    if isinstance(request_args, dict):
+        args.update(request_args)
     deadline_at = str(request.get("deadline_at") or "")
     deadline = (deadline_at[11:19] if len(deadline_at) >= 19 and deadline_at[10] == "T"
                 else getattr(base, "deadline", None))

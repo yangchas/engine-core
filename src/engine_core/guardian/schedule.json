@@ -458,17 +458,18 @@
     },
     "daily_dde": {
       "catchup": "run_in_window",
-      "retry_backoff": "60s",
+      "retry_backoff": "5m",
       "retry_until_late": true,
       "silent_until_last": false,
       "ladder": [
         {
           "name": "kaipan",
-          "attempts": 3,
-          "backoff": "60s*2",
-          "backoff_cap": "10m",
-          "timeout": "1200s",
+          "attempts": 5,
+          "backoff": "5m*2",
+          "backoff_cap": "30m",
+          "timeout": "2h",
           "budget_enabled": false,
+          "on_timeout": "retry",
           "until": "late_until"
         }
       ]
@@ -2559,10 +2560,9 @@
       "enabled": true,
       "calendar": "trading_day",
       "trigger_type": "window",
-      "at": "15:12:00",
-      "deadline": "20:30:00",
-      "late_until": "23:30:00",
-      "late_until_date_offset_days": 1,
+      "at": "21:00:00",
+      "deadline": "23:59:59",
+      "late_until": "23:59:59",
       "gate": "daily_kline_ready",
       "handler": "postmarket_data",
       "profile": "daily_dde",
@@ -2577,10 +2577,13 @@
       ],
       "on_phase_mismatch": "defer",
       "data_date_offset": 0,
-      "available_after": "15:05:00",
+      "available_after": "21:00:00",
       "depends_on": [],
       "after": [
-        "daily_kline_close_1505"
+        "daily_kline_close_1505",
+        "baostock_probe_1730",
+        "close_recap",
+        "postmarket_publish"
       ],
       "args": {
         "dataset": "daily_dde",

@@ -33,6 +33,18 @@ class DdeStaleResponse(DdeError):
     pass
 
 
+class DdeSyncRetryableError(DdeError):
+    """The run persisted verified progress but did not complete every requested symbol."""
+
+    retryable = True
+
+    def __init__(self, summary: Mapping[str, Any]):
+        self.summary = dict(summary)
+        self.summary.setdefault("error_code", "DDE_SYNC_INCOMPLETE_RETRYABLE")
+        super().__init__(self.summary["error_code"] + ":" + json.dumps(self.summary, ensure_ascii=False,
+                                                                        separators=(",", ":")))
+
+
 def _date_text(value: Any) -> str | None:
     if isinstance(value, datetime):
         text = value.date().isoformat()
@@ -193,6 +205,27 @@ class TaosDdeStore:
         rows = self._run(f"SELECT symbol, LAST(ts) FROM {self.database}.{SUPER_TABLE} GROUP BY symbol")
         return {str(symbol): _date_text(value) for symbol, value in rows if _date_text(value)}
 
+    def read_target_rows(self, symbols: Sequence[str], target_date: str) -> dict[str, dict[str, Any]]:
+        """Read the target-day projection from TD in bounded chunks."""
+        stamp = _ts_us(target_date)
+        found: dict[str, dict[str, Any]] = {}
+        unique = sorted(set(str(symbol) for symbol in symbols))
+        for offset in range(0, len(unique), 500):
+            chunk = unique[offset:offset + 500]
+            if not chunk:
+                continue
+            quoted = ",".join("'" + symbol + "'" for symbol in chunk if _SYMBOL_RE.fullmatch(symbol))
+            if not quoted:
+                continue
+            rows = self._run(f"SELECT symbol, ts, ddje FROM {self.database}.{SUPER_TABLE} "
+                             f"WHERE ts={stamp} AND symbol IN ({quoted})")
+            for symbol, ts, ddje in rows:
+                day = _date_text(ts)
+                code = str(symbol)
+                if day == target_date and code in chunk:
+                    found[code] = {"symbol": code, "date": day, "ddje": _number(ddje)}
+        return found
+
     def legacy_latest_date(self) -> str | None:
         rows = self._run("SELECT LAST(ts) FROM market_data1.daily_dde")
         return _date_text(rows[0][0]) if rows else None
@@ -311,19 +344,34 @@ def _active_symbols(root: Path, trade_date: str) -> list[str]:
                    and str(row.get("trade_status", "")).strip() == "1"})
 
 
+def _is_confirmed_empty_response(raw_response: Any) -> bool:
+    if not isinstance(raw_response, Mapping):
+        return False
+    if str(raw_response.get("errcode", "0")) not in {"", "0", "None"}:
+        return False
+    dates = raw_response.get("Date")
+    return isinstance(dates, (list, tuple)) and not dates
+
+
 def _fetch_with_retry(fetcher: Callable[[str, str], Any], symbol: str, target_date: str,
                       history_trading_days: int, attempts: int,
-                      sleep: Callable[[float], None]) -> tuple[Partition | None, str | None, int]:
+                      sleep: Callable[[float], None], known_symbols: set[str]
+                      ) -> tuple[Partition | None, str | None, int, bool]:
     last_error = "unknown"
     for attempt in range(1, attempts + 1):
         try:
-            return build_daily_dde(fetcher(symbol, target_date), symbol=symbol, target_date=target_date,
-                                   history_trading_days=history_trading_days), None, attempt
+            raw = fetcher(symbol, target_date)
+            if _is_confirmed_empty_response(raw):
+                if symbol in known_symbols:
+                    return None, None, attempt, True
+                raise DdeError("kaipan_dde_empty_for_unknown_symbol")
+            return build_daily_dde(raw, symbol=symbol, target_date=target_date,
+                                   history_trading_days=history_trading_days), None, attempt, False
         except Exception as exc:
             last_error = type(exc).__name__ + ":" + str(exc)[:180]
             if attempt < attempts:
                 sleep(min(30.0, 0.5 * 2 ** (attempt - 1)))
-    return None, last_error, attempts
+    return None, last_error, attempts, False
 
 
 def _redis_hot_view_config() -> tuple[str, int]:
@@ -372,6 +420,7 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
         raise ValueError("dde_attempts_must_be_1_to_5")
     if isinstance(history_trading_days, bool) or not 1 <= int(history_trading_days) <= 5000:
         raise ValueError("history_trading_days_must_be_1_to_5000")
+    started_at = time.monotonic()
     redis_namespace, registry_ttl = _redis_hot_view_config()
     redis_ttl_seconds = registry_ttl if redis_ttl_seconds is None else int(redis_ttl_seconds)
     if redis_ttl_seconds < 1:
@@ -395,60 +444,151 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
     try:
         ddl = store.ensure_schema()
         before = store.latest_watermarks()
-        requested = sorted(set(str(item).strip().zfill(6) for item in symbols)) if symbols is not None else _active_symbols(base, target)
-        if any(not _SYMBOL_RE.fullmatch(item) for item in requested):
+        candidates = sorted(set(str(item).strip().zfill(6) for item in symbols)) if symbols is not None else _active_symbols(base, target)
+        if any(not _SYMBOL_RE.fullmatch(item) for item in candidates):
             raise ValueError("invalid_dde_symbol_list")
-        requested = [symbol for symbol in requested if symbols is not None or before.get(symbol, "") < target]
-        fetched: dict[str, Partition] = {}
-        failed: dict[str, str] = {}
-        request_count = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=int(max_workers)) as pool:
-            futures = {pool.submit(_fetch_with_retry, fetcher, symbol, target, int(history_trading_days),
-                                   int(attempts), sleep): symbol
-                       for symbol in requested}
-            for future in concurrent.futures.as_completed(futures):
-                symbol = futures[future]
-                partition, error, used = future.result()
-                request_count += used
-                if partition is None:
-                    failed[symbol] = error or "fetch_failed"
-                else:
-                    fetched[symbol] = partition
-        successful_rows: list[dict[str, Any]] = []
-        write_failures = {}
-        written_symbols = 0
-        for symbol in sorted(fetched):
-            partition = fetched[symbol]
+        known_symbols = set(candidates) if symbols is None else set()
+        if symbols is not None:
             try:
-                count = store.write_and_verify(symbol, partition.rows, partition.manifest["version"])
-                written_symbols += 1
-                successful_rows.extend(partition.rows)
-                if count != len(partition.rows):
-                    raise DdeError("td_readback_row_count_mismatch")
-            except Exception as exc:
-                write_failures[symbol] = type(exc).__name__ + ":" + str(exc)[:180]
-        failed.update(write_failures)
-        # The aggregate watermark query is issued once. Derive post-write watermarks
-        # from verified rows instead of issuing one more full-table aggregation.
+                known_symbols = set(_active_symbols(base, target))
+            except Exception:
+                # Explicit-symbol callers may use an isolated root without a catalog.
+                known_symbols = set()
+        requested = [symbol for symbol in candidates if before.get(symbol, "") < target]
+        skipped_completed = len(candidates) - len(requested)
+        failed: dict[str, str] = {}
+        known_missing: dict[str, str] = {}
+        request_count = 0
+        written_rows = 0
+        written_symbols = 0
+        comparison = {"pairs": 0, "equal": 0, "different": 0, "unmatched": 0,
+                      "columns": {}, "reasons": {}}
+        comparison_symbols: list[str] = []
+        comparison_rows: list[dict[str, Any]] = []
+
+        def flush_comparison() -> None:
+            nonlocal comparison_symbols, comparison_rows
+            if not comparison_rows:
+                return
+            part = store.compare_legacy(comparison_symbols, comparison_rows)
+            for key in ("pairs", "equal", "different", "unmatched"):
+                comparison[key] += int(part.get(key) or 0)
+            for column, values in (part.get("columns") or {}).items():
+                target_values = comparison["columns"].setdefault(column, {})
+                for key, value in values.items():
+                    target_values[key] = target_values.get(key, 0) + int(value or 0)
+            for key, value in (part.get("reasons") or {}).items():
+                comparison["reasons"][key] = comparison["reasons"].get(key, 0) + int(value or 0)
+            comparison_symbols, comparison_rows = [], []
+
         after = dict(before)
-        for symbol, partition in fetched.items():
-            if symbol in write_failures or not partition.rows:
-                continue
-            latest = max(row["date"] for row in partition.rows)
-            after[symbol] = max(after.get(symbol, ""), latest)
-        comparison = store.compare_legacy(sorted(fetched), successful_rows)
+        processed = 0
+        last_progress_at = time.monotonic()
+        print(f"DDE_START target={target} candidates={len(candidates)} to_fetch={len(requested)} "
+              f"skipped_completed={skipped_completed} workers={int(max_workers)} attempts={int(attempts)}",
+              flush=True)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=int(max_workers)) as pool:
+            iterator = iter(requested)
+            pending: dict[concurrent.futures.Future, str] = {}
+            for _ in range(min(int(max_workers), len(requested))):
+                symbol = next(iterator, None)
+                if symbol is not None:
+                    pending[pool.submit(_fetch_with_retry, fetcher, symbol, target,
+                                        int(history_trading_days), int(attempts), sleep,
+                                        known_symbols)] = symbol
+            while pending:
+                done, _ = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
+                for future in done:
+                    symbol = pending.pop(future)
+                    try:
+                        partition, error, used, source_empty = future.result()
+                    except Exception as exc:
+                        partition, error, used, source_empty = None, type(exc).__name__ + ":" + str(exc)[:180], 1, False
+                    request_count += used
+                    if source_empty:
+                        known_missing[symbol] = "kaipan_confirmed_empty_response"
+                    elif partition is None:
+                        failed[symbol] = error or "fetch_failed"
+                    else:
+                        try:
+                            count = store.write_and_verify(symbol, partition.rows, partition.manifest["version"])
+                            if count != len(partition.rows):
+                                raise DdeError("td_readback_row_count_mismatch")
+                            written_symbols += 1
+                            written_rows += count
+                            latest = max(row["date"] for row in partition.rows)
+                            after[symbol] = max(after.get(symbol, ""), latest)
+                            comparison_symbols.append(symbol)
+                            comparison_rows.extend(partition.rows)
+                            if len(comparison_symbols) >= 50:
+                                flush_comparison()
+                        except Exception as exc:
+                            failed[symbol] = type(exc).__name__ + ":" + str(exc)[:180]
+                    processed += 1
+                    remaining = len(requested) - processed
+                    now = time.monotonic()
+                    if processed % 25 == 0 or now - last_progress_at >= 60 or remaining == 0:
+                        print(f"DDE_PROGRESS target={target} written={written_symbols} td_rows={written_rows} "
+                              f"failed={len(failed)} known_missing={len(known_missing)} "
+                              f"remaining={remaining} skipped_completed={skipped_completed} "
+                              f"requests={request_count}", flush=True)
+                        last_progress_at = now
+                    next_symbol = next(iterator, None)
+                    if next_symbol is not None:
+                        pending[pool.submit(_fetch_with_retry, fetcher, next_symbol, target,
+                                            int(history_trading_days), int(attempts), sleep,
+                                            known_symbols)] = next_symbol
+        flush_comparison()
+
+        # The run persists each verified symbol immediately. Any remaining source or
+        # TD error is retryable; Guardian can resume from the single aggregate watermark query.
+        summary = {"database": store.database, "target_date": target,
+                   "candidate_symbols": len(candidates), "requested_symbols": len(requested),
+                   "skipped_completed_symbols": skipped_completed,
+                   "request_count": request_count, "history_trading_days": int(history_trading_days),
+                   "max_workers": int(max_workers), "written_symbols": written_symbols,
+                   "rows_written": written_rows, "known_missing": [
+                       {"symbol": symbol, "reason": reason} for symbol, reason in sorted(known_missing.items())],
+                   "failed": [{"symbol": symbol, "reason": reason} for symbol, reason in sorted(failed.items())],
+                   "readback_verified": not failed,
+                   "watermarks_before": {symbol: before.get(symbol) for symbol in candidates[:20]},
+                   "watermarks_after": {symbol: after.get(symbol) for symbol in candidates[:20]},
+                   "watermark_counts": {"before": len(before), "after": len(after)},
+                   "legacy_comparison": comparison,
+                   "elapsed_seconds": round(time.monotonic() - started_at, 3)}
+        if failed:
+            summary["status"] = "failed"
+            summary["error_code"] = "DDE_SYNC_INCOMPLETE_RETRYABLE"
+            print(f"DDE_FAILED target={target} written={written_symbols} failed={len(failed)} "
+                  f"known_missing={len(known_missing)} remaining={len(failed)} "
+                  f"error_code=DDE_SYNC_INCOMPLETE_RETRYABLE", flush=True)
+            raise DdeSyncRetryableError(summary)
+
+        completed_symbols = set(candidates) - set(known_missing)
+        target_rows_by_symbol = store.read_target_rows(sorted(completed_symbols), target)
+        missing_target_rows = sorted(completed_symbols - set(target_rows_by_symbol))
+        if missing_target_rows:
+            summary["failed"] = [{"symbol": symbol, "reason": "td_target_date_row_missing"}
+                                 for symbol in missing_target_rows]
+            summary["status"] = "failed"
+            summary["error_code"] = "DDE_SYNC_INCOMPLETE_RETRYABLE"
+            print(f"DDE_FAILED target={target} written={written_symbols} failed={len(missing_target_rows)} "
+                  f"known_missing={len(known_missing)} remaining={len(missing_target_rows)} "
+                  f"error_code=DDE_SYNC_INCOMPLETE_RETRYABLE", flush=True)
+            raise DdeSyncRetryableError(summary)
+
         redis_result: dict[str, Any] = {"written": False, "readback_verified": False, "key": None, "ttl": None}
         if skip_redis:
             redis_result["skipped"] = True
-        elif write_redis and successful_rows:
+        elif write_redis and target_rows_by_symbol:
             redis_url = os.environ.get("REDIS_URL") or os.environ.get("CORE_REDIS_URL")
             if not redis_url:
                 raise DdeError("REDIS_URL_required_for_dde_view")
             import redis
             key = redis_namespace + ":" + target
-            target_rows = {row["symbol"]: json.dumps(row, ensure_ascii=False,
-                                                     separators=(",", ":"), sort_keys=True)
-                           for row in successful_rows if row["date"] == target}
+            target_rows = {symbol: json.dumps(row, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+                           for symbol, row in target_rows_by_symbol.items()}
             client = redis.Redis.from_url(redis_url, decode_responses=True, socket_timeout=5)
             if target_rows:
                 client.hset(key, mapping=target_rows)
@@ -461,18 +601,15 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                             "row_count": len(target_rows)}
             if not fields_verified or ttl < 1:
                 raise DdeError("dde_redis_readback_failed")
-        return {"status": "ok" if not failed else "partial", "database": store.database,
-                "ddl": ddl, "requested_symbols": len(requested), "request_count": request_count,
-                "history_trading_days": int(history_trading_days), "max_workers": int(max_workers),
-                "written_symbols": written_symbols, "rows_written": len(successful_rows),
-                "readback_verified": not write_failures and written_symbols == len(fetched),
-                "readback_mismatches": len(write_failures),
-                "known_missing": [{"symbol": symbol, "reason": reason} for symbol, reason in sorted(failed.items())],
-                "watermarks_before": {symbol: before.get(symbol) for symbol in requested[:20]},
-                "watermarks_after": {symbol: after.get(symbol) for symbol in requested[:20]},
-                "watermark_counts": {"before": len(before), "after": len(after)},
-                "legacy_comparison": comparison, "redis_readback_verified": bool(redis_result.get("readback_verified")),
-                "redis": redis_result}
+        summary.update({"status": "ok", "ddl": ddl, "readback_mismatches": 0,
+                       "redis_readback_verified": bool(redis_result.get("readback_verified")),
+                       "redis": redis_result})
+        summary.pop("failed", None)
+        print(f"DDE_COMPLETE target={target} symbols={len(candidates)} written={written_symbols} "
+              f"skipped_completed={skipped_completed} td_rows={written_rows} "
+              f"known_missing={json.dumps(summary['known_missing'], ensure_ascii=False, separators=(',', ':'))} "
+              f"elapsed_seconds={summary['elapsed_seconds']}", flush=True)
+        return summary
     finally:
         if own:
             store.close()

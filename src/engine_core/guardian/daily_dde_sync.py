@@ -14,7 +14,7 @@ def run(request: Mapping[str, Any], root: Path, *, dry_run: bool = False) -> tup
     if dry_run:
         return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
                    "artifacts": [], "detail": {"dry_run": True, "target_date": target_date}}
-    from ..data_pipeline.daily_dde import run_daily_dde_sync
+    from ..data_pipeline.daily_dde import DdeSyncRetryableError, run_daily_dde_sync
     try:
         result = run_daily_dde_sync(
             args.get("symbols") if isinstance(args.get("symbols"), list) else None,
@@ -24,6 +24,9 @@ def run(request: Mapping[str, Any], root: Path, *, dry_run: bool = False) -> tup
             redis_ttl_seconds=(int(args["redis_ttl_seconds"])
                                if args.get("redis_ttl_seconds") is not None else None),
             write_redis=bool(args.get("write_redis", True)), skip_redis=bool(args.get("skip_redis", False)))
+    except DdeSyncRetryableError as exc:
+        return 75, {"contract": 1, "status": "failed", "error_code": "DDE_SYNC_INCOMPLETE_RETRYABLE",
+                    "retryable": True, "artifacts": [], "detail": exc.summary}
     except Exception as exc:
         return 75, {"contract": 1, "status": "failed", "error_code": "DDE_SYNC_RETRYABLE",
                     "retryable": True, "artifacts": [],
