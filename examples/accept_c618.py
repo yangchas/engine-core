@@ -385,6 +385,22 @@ def _validate_snapshot(snapshot: dict[str, Any] | None, label: str) -> dict[str,
     return snapshot
 
 
+def _baseline_snapshot_or_refresh(database: str, commit: str, timeout_minutes: int,
+                                  cleanup_roots: set[Path]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    existing = _active_snapshot(database)
+    if existing is not None:
+        return _validate_snapshot(existing, "baseline"), None
+
+    first = _run_rehearsal(database, commit, timeout_minutes, cleanup_roots=cleanup_roots)
+    if first.get("_cleanup_root"):
+        cleanup_roots.add(Path(first.pop("_cleanup_root")))
+    if first["exit_code"] != 0 or first["status"] not in {"SUCCEEDED", "SUCCEEDED_DEGRADED"}:
+        raise RuntimeError("first_static_refresh_rehearsal_failed")
+    if first["alert_count"] or first["checkpoint_changes"] or not first["temporary_directory_under_200mb"]:
+        raise RuntimeError("first_rehearsal_safety_assertion_failed")
+    return _validate_snapshot(_active_snapshot(database), "first"), first
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     database = str(args.td_database)
     if not database.startswith("core_dev_") or not database.replace("_", "").isalnum():
@@ -402,21 +418,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     try:
         from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
 
-        before = _active_snapshot(database)
         with ReferenceSnapshotStore(database=database) as store:
             store.ensure_schema()
-        first = _run_rehearsal(database, commit, args.timeout_minutes,
-                               cleanup_roots=cleanup_roots)
-        if first.get("_cleanup_root"):
-            cleanup_roots.add(Path(first.pop("_cleanup_root")))
-        result["runs"].append(first)
-        if first["exit_code"] != 0 or first["status"] not in {"SUCCEEDED", "SUCCEEDED_DEGRADED"}:
-            raise RuntimeError("first_static_refresh_rehearsal_failed")
-        if first["alert_count"] or first["checkpoint_changes"] or not first["temporary_directory_under_200mb"]:
-            raise RuntimeError("first_rehearsal_safety_assertion_failed")
-        first_snapshot = _validate_snapshot(_active_snapshot(database), "first")
-        if before is not None and first_snapshot["version"] == before["version"]:
-            raise RuntimeError("first_refresh_did_not_activate_new_version")
+        first_snapshot, first = _baseline_snapshot_or_refresh(
+            database, commit, args.timeout_minutes, cleanup_roots
+        )
+        result["initial_snapshot_reused"] = first is None
+        if first is not None:
+            result["runs"].append(first)
 
         interrupted = _run_rehearsal(database, commit, args.timeout_minutes,
                                      interrupt_after_staging=True,

@@ -53,3 +53,19 @@ def test_staging_probe_uses_bounded_row_lookup(monkeypatch):
     assert "LIMIT 1" in queries[1]
     assert "COUNT" not in queries[1]
     assert connection.closed
+
+
+def test_initial_snapshot_reuses_a_complete_active_version(monkeypatch):
+    snapshot = {
+        "version": "20261029230000-abcdef123456", "row_count": 1, "readback_count": 1,
+        "sha256": "digest", "readback_sha256": "digest", "row_versions": ["20261029230000-abcdef123456"],
+        "request_count": 1, "elapsed_ms": 1,
+    }
+    monkeypatch.setattr(accept_c618, "_active_snapshot", lambda database: snapshot)
+    monkeypatch.setattr(accept_c618, "_run_rehearsal",
+                        lambda *args, **kwargs: pytest.fail("complete active baseline was refreshed again"))
+
+    baseline, initial_run = accept_c618._baseline_snapshot_or_refresh("core_dev_test", "commit", 30, set())
+
+    assert baseline == snapshot
+    assert initial_run is None
