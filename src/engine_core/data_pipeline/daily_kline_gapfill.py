@@ -597,6 +597,20 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                          "source_universe_status": source_universe_status,
                          "source_universe_error": source_universe_error,
                          "source_universe_provenance": source_universe_provenance})
+        elif set(day_expected_symbols) - set(rows_by_symbol):
+            # Historical gap days classify their own missing symbols with that day's Baostock list;
+            # kept in memory only, and left unclassified (retryable) when the source is unavailable.
+            try:
+                if client is None:
+                    day_symbols, _ = _fetch_baostock_universe_isolated(
+                        day, float(source_universe_timeout_seconds))
+                else:
+                    day_symbols, _ = call_with_timeout(
+                        _all_baostock_symbols_with_count, range_client.module, day,
+                        timeout_seconds=float(source_universe_timeout_seconds))
+                classified_source_symbols = set(day_symbols)
+            except Exception:
+                classified_source_symbols = None
         if classified_source_symbols is not None:
             meta["source_symbols"] = sorted(classified_source_symbols)
         result = runner.run("daily_kline", day, fetch=lambda _day: meta,
