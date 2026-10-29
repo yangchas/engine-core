@@ -73,6 +73,9 @@ def test_readonly_redis_proxy_handles_client_setinfo_locally() -> None:
     proxy = rehearsal.ReadOnlyRedisProxy("redis://127.0.0.1:6380/0")
     try:
         assert proxy.execute_local([b"CLIENT", b"SETINFO", b"LIB-NAME", b"redis-py"]) == b"+OK\r\n"
+        assert proxy.execute_local([
+            b"CLIENT", b"MAINT_NOTIFICATIONS", b"ON", b"moving-endpoint-type", b"internal-ip",
+        ]) == b"+OK\r\n"
         assert proxy.blocked_snapshot() == {}
     finally:
         proxy.close()
