@@ -194,9 +194,11 @@ def _failure_response(request, *, error=None, result=None):
 
 
 
-def _has_baostock_daily_kline(root, day: str) -> bool:
-    """The gap-only path repairs an existing Baostock partition; with none for the day, fall through to the
-    full close pull (2026-10-29: every Baostock event carried the gap policy, so no event ever fetched the day)."""
+def _has_baostock_daily_kline(root, day: str, minimum_coverage: float = 0.90) -> bool:
+    """The gap-only path repairs a nearly complete Baostock partition. With no Baostock partition, or one far below
+    ``minimum_coverage`` (a first pull cut short by its time budget, e.g. 2026-10-29: 3382/5217 = 0.648), fall through to
+    the full close pull, which resumes from its checkpoints. (2026-10-29: every Baostock event carried the gap policy, so
+    no event ever fetched the day, then none continued a partial first pull.)"""
     try:
         import json
         from engine_core.data_pipeline.storage import ArtifactCatalog
@@ -204,7 +206,15 @@ def _has_baostock_daily_kline(root, day: str) -> bool:
         entries = catalog.read().get("datasets", {}).get("daily_kline", {}).get("dates", {}).get(day, [])
         for entry in entries:
             manifest = json.loads(Path(str(entry.get("manifest") or "")).read_text(encoding="utf-8"))
-            if str(manifest.get("provider") or "").lower() == "baostock":
+            if str(manifest.get("provider") or "").lower() != "baostock":
+                continue
+            quality = manifest.get("quality") or {}
+            coverage = quality.get("coverage")
+            if coverage is None:
+                expected = quality.get("expected_count") or manifest.get("expected_count")
+                rows = manifest.get("row_count")
+                coverage = (float(rows) / float(expected)) if expected and rows is not None else None
+            if coverage is not None and float(coverage) >= float(minimum_coverage):
                 return True
     except Exception:
         return False
@@ -325,7 +335,7 @@ def _run(request):
         return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
                    "artifacts": [], "detail": result}
     if (name == "baostock_probe" and isinstance(args.get("baostock_gapfill_policy"), dict) and not dry
-            and _has_baostock_daily_kline(root, target_day)):
+            and _has_baostock_daily_kline(root, target_day, float(args["baostock_gapfill_policy"].get("minimum_coverage", 0.90)))):
         from engine_core.guardian.daily_kline_backfill import run_daily_kline_backfill
         gap_policy = args["baostock_gapfill_policy"]
         try:
