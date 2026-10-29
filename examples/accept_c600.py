@@ -69,10 +69,16 @@ def _rehearse(event_id: str, symbols: list[str], database: str, minutes: int) ->
     safety = report.get("result", {}).get("safety_checks") or []
     if state.get("status") != "SUCCEEDED":
         raise RuntimeError("guardian_ledger_not_succeeded:" + str(state.get("status")))
-    if not safety or not all(bool(item.get("passed")) for item in safety if isinstance(item, dict)):
-        raise RuntimeError("guardian_rehearsal_safety_check_failed")
+    rows = report.get("result", {}).get("event_ledger_rows") or []
+    alerts = [row for row in rows if isinstance(row, dict) and row.get("type") == "ALERT_OUT"]
+    if alerts:
+        raise RuntimeError("guardian_event_alerts:" + str(len(alerts)))
+    safety_failures = [item for item in safety if not isinstance(item, dict) or item.get("status") != "PASS"]
+    if not safety or safety_failures:
+        failed = [(item.get("name"), item.get("status")) for item in safety_failures if isinstance(item, dict)]
+        raise RuntimeError("guardian_rehearsal_safety_check_failed:" + json.dumps(failed))
     return {"exit_code": completed.returncode, "status": state.get("status"),
-            "ledger_rows": len(report.get("result", {}).get("event_ledger_rows") or []),
+            "ledger_rows": len(rows), "alerts": len(alerts),
             "safety_checks": safety,
             "result_json": result_line}
 
@@ -129,12 +135,13 @@ def main(argv=None) -> int:
             raise RuntimeError("acceptance_write_exceeded_20_symbols")
         if not dev.get("redis_readback_verified"):
             raise RuntimeError("redis_core_key_ttl_readback_failed")
-        rehearsal = _rehearse("daily_dde_postclose", symbols, args.database, args.minutes)
-        result.update({"status": "PASS", "symbols": len(symbols), "board_coverage": {
+        result.update({"symbols": len(symbols), "board_coverage": {
             "star": sum(symbol.startswith(("688", "689")) for symbol in symbols),
             "chinext": sum(symbol.startswith(("300", "301")) for symbol in symbols),
             "beijing": sum(symbol.startswith("920") for symbol in symbols)},
-            "core_dev": dev, "core_data": core, "guardian": rehearsal})
+            "core_dev": dev, "core_data": core})
+        rehearsal = _rehearse("daily_dde_postclose", symbols, args.database, args.minutes)
+        result.update({"status": "PASS", "guardian": rehearsal})
     except Exception as exc:  # acceptance must report machine-readable failure without credentials
         result["error"] = type(exc).__name__ + ":" + str(exc)[:2500]
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, default=str))
