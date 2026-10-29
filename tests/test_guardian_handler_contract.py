@@ -454,6 +454,81 @@ def test_hot_plate_history_schedule_uses_artifact_only_job_command():
     assert "--write" not in command
 
 
+def test_hot_plate_history_handler_passes_runtime_deadline_to_cli(monkeypatch, tmp_path):
+    from examples import core_guardian, guardian_handler
+    from engine_core.guardian.commands import build_handler_command
+    from engine_core.guardian.scheduler import default_events
+
+    schedule_event = next(item for item in default_events()
+                          if item.event_id == "hot_plates_history_0815")
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    seen = {}
+
+    def command_handler(name, opts, root):
+        def run(event, now, _context, _degraded):
+            seen["event"] = event
+            seen["command"] = build_handler_command(
+                name, event, opts, root, "2026-10-29", sys.executable, ROOT)
+            return "history_capture_command_built"
+        return run
+
+    monkeypatch.setattr(core_guardian, "_command_handler", command_handler)
+    code, payload = guardian_handler._run({
+        "event": schedule_event.event_id,
+        "handler": schedule_event.handler,
+        "trade_date": "2026-10-29",
+        "data_date": "2026-10-29",
+        "asof": "2026-10-29T08:20:00+08:00",
+        "deadline_at": "2026-10-29T08:22:00+08:00",
+        "now": "2026-10-29T08:20:00+08:00",
+        "args": schedule_event.args,
+    })
+
+    command = seen["command"]
+    assert code == 0 and payload["status"] == "ok"
+    assert command[command.index("--hot-plates-scheduled-at") + 1] == "08:20:00"
+    assert command[command.index("--hot-plates-deadline") + 1] == "08:22:00"
+
+
+def test_hot_plate_postcondition_receives_isolated_runtime_event_id(monkeypatch, tmp_path):
+    from examples import core_guardian, guardian_handler
+    from engine_core.guardian import commands
+    from engine_core.guardian.scheduler import default_events
+
+    schedule_event = next(item for item in default_events()
+                          if item.event_id == "kaipan_hot_093220")
+    runtime_event_id = schedule_event.event_id + "_rhfixture"
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.delenv("GUARDIAN_DRY_RUN", raising=False)
+    seen = {}
+
+    def command_handler(name, opts, root):
+        return lambda event, now, _context, _degraded: "capture_complete"
+
+    def validate(name, day, root, datasets=None, event_args=None):
+        seen.update(name=name, day=day, datasets=datasets, event_args=event_args)
+        return True, ""
+
+    monkeypatch.setattr(core_guardian, "_command_handler", command_handler)
+    monkeypatch.setattr(commands, "validate_handler_postcondition", validate)
+    code, payload = guardian_handler._run({
+        "event": runtime_event_id,
+        "handler": schedule_event.handler,
+        "trade_date": "2026-10-29",
+        "data_date": "2026-10-29",
+        "asof": "2026-10-29T09:32:20+08:00",
+        "deadline_at": "2026-10-29T10:32:20+08:00",
+        "now": "2026-10-29T09:32:20+08:00",
+        "args": schedule_event.args,
+    })
+
+    assert code == 0
+    assert payload["status"] == "ok"
+    assert seen["datasets"] == schedule_event.args["datasets"]
+    assert seen["event_args"]["event_id"] == runtime_event_id
+
+
 def test_auction_report_asof_is_clamped_to_0926_when_started_later(monkeypatch, tmp_path):
     from examples import core_guardian, guardian_handler
 

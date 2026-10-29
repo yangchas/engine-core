@@ -178,8 +178,10 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path,
             if gaps or (manifest_path is not None and manifest_path.is_file()):
                 return True, ""
             return False, "hot_plates_gap_reconcile_missing_output"
-        event_id = next((value for value in declared
-                         if isinstance(value, str) and value.startswith("kaipan_hot_")), None)
+        event_id = _arg(event_args or {}, "event_id")
+        if not isinstance(event_id, str) or not event_id.startswith("kaipan_hot_"):
+            event_id = next((value for value in declared
+                             if isinstance(value, str) and value.startswith("kaipan_hot_")), None)
         manifest_path = catalog.locate("hot_plates", day)
         if manifest_path is not None and manifest_path.is_file():
             if event_id is None:

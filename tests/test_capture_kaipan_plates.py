@@ -70,6 +70,59 @@ def test_hot_plates_capture_commits_a_new_fixture_version_each_run(tmp_path, mon
     assert all(manifest["event_id"].startswith("kaipan_hot_manual_") for manifest in manifests)
 
 
+def test_hot_plates_capture_survives_guarded_redis_publish(tmp_path, monkeypatch, capsys):
+    response = json.loads((ROOT / "tests/fixtures/real/kaipan_hot_plates_2026-10-23_1441.json")
+                          .read_text(encoding="utf-8"))
+
+    class FixtureSdk:
+        def getHisPlates(self, date, index, size):
+            assert (date, index, size) == ("", "0", "50")
+            return response
+
+    class GuardedRedis:
+        def __init__(self):
+            self.attempted_keys = []
+
+        def get(self, _key):
+            return None
+
+        def set(self, key, _value, ex=None):
+            self.attempted_keys.append(key)
+            raise PermissionError("isolated_guard_rejected_write")
+
+        def delete(self, _key):
+            raise AssertionError("a rejected first write must not need rollback")
+
+        def close(self):
+            pass
+
+    client = GuardedRedis()
+    monkeypatch.setattr(capture_kaipan_plates, "_KaipanSdk", FixtureSdk)
+    monkeypatch.setitem(sys.modules, "redis", SimpleNamespace(
+        Redis=SimpleNamespace(from_url=lambda *_args, **_kwargs: client)))
+    monkeypatch.setattr(kaipan_provider.time, "strftime",
+                        lambda fmt, *args: "2026-10-23T14:41:16+0800"
+                        if fmt == "%Y-%m-%dT%H:%M:%S%z" else real_strftime(fmt, *args))
+
+    result = capture_kaipan_plates.main(
+        ["--trade-date", "2026-10-23", "--dataset", "hot_plates",
+         "--artifact-root", str(tmp_path), "--max-pages", "1", "--execute"],
+        now_fn=lambda: __import__("datetime").datetime.fromisoformat(
+            "2026-10-23T14:41:15+08:00"))
+
+    output = capsys.readouterr().out
+    versions = ArtifactCatalog(tmp_path).read()["datasets"]["hot_plates"]["dates"]["2026-10-23"]
+    manifest = json.loads(Path(versions[-1]["manifest"]).read_text(encoding="utf-8"))
+    ledger = json.loads((tmp_path / "job_state.json").read_text(encoding="utf-8"))
+    assert result == 0
+    assert len(versions) == 1 and manifest["row_count"] == len(response["list"])
+    assert ledger["status"]["hot_plates"]["cache_publish"] == "WARN"
+    assert ledger["status"]["hot_plates"]["cache_publish_warning"] == "redis_publish_failed:PermissionError"
+    assert client.attempted_keys and all(key.startswith("core:") for key in client.attempted_keys)
+    assert "WARN dataset=hot_plates cache_publish=redis_publish_failed:PermissionError" in output
+    assert "CAPTURED dataset=hot_plates date=2026-10-23" in output and "cache=WARN" in output
+
+
 def test_late_hot_capture_startup_records_gap_without_provider_call(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(capture_kaipan_plates, "_KaipanSdk",
                         lambda: (_ for _ in ()).throw(AssertionError("provider must not be called")))

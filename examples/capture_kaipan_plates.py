@@ -288,6 +288,9 @@ def main(argv=None, *, now_fn=None) -> int:
                     raise
                 if not result.rows:
                     raise RuntimeError(f"empty_result_not_published:{dataset}:{trade_date}")
+                cache_warning = result.manifest.get("cache_publish_warning")
+                if cache_warning:
+                    print(f"WARN dataset={dataset} cache_publish={cache_warning}")
                 print(f"CAPTURED dataset={dataset} date={trade_date} rows={len(result.rows)} "
                       f"event={result.manifest.get('event_id', '')} "
                       f"status={result.manifest.get('business_status', result.manifest['quality']['status'])} "

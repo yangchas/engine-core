@@ -475,13 +475,24 @@ class JobRunner:
                 self.td_adapter.write_dataset(spec, trade_date, rows, committed)
                 committed["td_publish"] = "READY"
         if publish:
-            if self.redis is None: raise RuntimeError("redis_adapter_not_configured")
-            self._publish_redis(spec, trade_date, committed, rows, safe_source)
-            committed["cache_publish"] = "READY"
+            try:
+                if self.redis is None:
+                    raise RuntimeError("redis_adapter_not_configured")
+                self._publish_redis(spec, trade_date, committed, rows, safe_source)
+            except Exception as exc:
+                # Core artifacts and TD are authoritative; Redis is only a hot view.
+                # Keep the warning stable and credential-free in the result and job ledger.
+                committed["cache_publish"] = "WARN"
+                committed["cache_publish_warning"] = f"redis_publish_failed:{type(exc).__name__}"
+            else:
+                committed["cache_publish"] = "READY"
         state = self._state()
-        state.setdefault("status", {})[name] = {"trade_date": trade_date,
+        status = {"trade_date": trade_date,
             "available_at": committed["available_at"], "version": committed["version"],
             "quality": quality, "cache_publish": committed["cache_publish"]}
+        if committed.get("cache_publish_warning"):
+            status["cache_publish_warning"] = committed["cache_publish_warning"]
+        state.setdefault("status", {})[name] = status
         self._save_state(state)
         return JobResult(committed, rows)
 

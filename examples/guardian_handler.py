@@ -280,6 +280,9 @@ def _run(request):
         asof = asof[:11] + "09:26:00" + asof[19:]  # panorama rejects an as-of after 09:26:00; the 09:26:30 start only delays the run
     start = datetime.fromisoformat(asof).strftime("%H:%M:%S")
     args =request.get("args") if isinstance(request.get("args"), dict) else {}
+    deadline_at = str(request.get("deadline_at") or "")
+    deadline = (deadline_at[11:19] if len(deadline_at) >= 19 and deadline_at[10] == "T"
+                else getattr(base, "deadline", None))
     if name == "daily_kline_backfill":
         from engine_core.guardian.daily_kline_backfill import run_daily_kline_backfill
         from engine_core.prep_trade_day import previous_trade_date
@@ -328,6 +331,7 @@ def _run(request):
         return 75, {"contract": 1, "status": "failed", "error_code": "BAOSTOCK_GAPFILL_RETRY",
                     "retryable": True, "artifacts": [], "detail": result}
     event = SimpleNamespace(event_id=event_id, handler=name, gate=getattr(base, "gate", "always"), start=start,
+                            deadline=deadline,
                             args=args, timeout_seconds=int(request.get("timeout_seconds") or getattr(base, "timeout_seconds", 300)),
                             data_date_offset=getattr(base, "data_date_offset", 0))
     now = datetime.fromisoformat(asof)
@@ -362,7 +366,9 @@ def _run(request):
                                                     bool(request.get("degrade_requested")))
         if not dry:
             from engine_core.guardian.commands import validate_handler_postcondition
-            ok, reason = validate_handler_postcondition(name, target_day, root, args.get("datasets"))
+            postcondition_args = {**args, "event_id": event.event_id}
+            ok, reason = validate_handler_postcondition(
+                name, target_day, root, args.get("datasets"), postcondition_args)
             if not ok:
                 return _failure_response(request, result={
                     "contract": 1, "status": "failed", "error_code": "POSTCONDITION_FAILED",
