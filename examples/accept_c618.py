@@ -117,29 +117,33 @@ def _active_snapshot(database: str) -> dict[str, Any] | None:
 
 
 def _staging_after(database: str, started_epoch_ms: int) -> dict[str, Any] | None:
-    if "reference_snapshot_versions" not in _tables(database):
-        return None
-    row = _fetchone(
-        database,
-        "SELECT ts,version,row_count,sha256 FROM reference_snapshot_versions "
-        "WHERE dataset='plate_members' AND snapshot_state='STAGING' ORDER BY ts DESC LIMIT 1",
-    )
-    if row is None:
-        return None
-    stamp, version, row_count, sha256 = row
+    connection = _connect(database)
     try:
-        stamp_ms = int(stamp.timestamp() * 1000)
-    except (AttributeError, TypeError, ValueError):
-        stamp_ms = 0
-    if stamp_ms < started_epoch_ms:
-        return None
-    staged_rows = _fetchone(
-        database,
-        "SELECT COUNT(*) FROM plate_members_latest "
-        f"WHERE version='{str(version)}'",
-    )
-    return {"version": str(version), "row_count": int(row_count or 0), "sha256": str(sha256 or ""),
-            "written_row_count": int(staged_rows[0] or 0) if staged_rows else 0}
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT ts,version,row_count,sha256 FROM reference_snapshot_versions "
+            "WHERE dataset='plate_members' AND snapshot_state='STAGING' ORDER BY ts DESC LIMIT 1"
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        stamp, version, row_count, sha256 = row
+        try:
+            stamp_ms = int(stamp.timestamp() * 1000)
+        except (AttributeError, TypeError, ValueError):
+            stamp_ms = 0
+        if stamp_ms < started_epoch_ms:
+            return None
+        cursor.execute(
+            "SELECT row_id FROM plate_members_latest "
+            f"WHERE version='{str(version)}' ORDER BY ts DESC LIMIT 1"
+        )
+        return {
+            "version": str(version), "row_count": int(row_count or 0), "sha256": str(sha256 or ""),
+            "staged_row_present": cursor.fetchone() is not None,
+        }
+    finally:
+        connection.close()
 
 
 def _find_checkpoint_files(data_root: Path) -> dict[str, str]:
@@ -229,8 +233,9 @@ def _run_rehearsal(database: str, commit: str, timeout_minutes: int, *,
     checkpoint_changes: list[dict[str, Any]] = []
     interrupted = False
     interrupt_version: str | None = None
-    interrupt_written_row_count = 0
+    interrupt_staged_row_present = False
     last_staging_probe = 0.0
+    staging_probe_interval_seconds = 2.0
     staging_deadline = time.monotonic() + min(12 * 60, timeout_minutes * 60)
     runner_error: str | None = None
     output = ""
@@ -256,10 +261,10 @@ def _run_rehearsal(database: str, commit: str, timeout_minutes: int, *,
                                                "files": current})
             if (interrupt_after_staging and not interrupted
                     and time.monotonic() < staging_deadline
-                    and time.monotonic() - last_staging_probe >= 0.5):
+                    and time.monotonic() - last_staging_probe >= staging_probe_interval_seconds):
                 last_staging_probe = time.monotonic()
                 staged = _staging_after(database, started_epoch_ms)
-                if staged is not None and staged["written_row_count"] > 0:
+                if staged is not None and staged["staged_row_present"]:
                     if data_root is None:
                         data_root = _new_rehearsal_data_root(data_roots_before, process, 1.0)
                         if cleanup_roots is not None:
@@ -268,7 +273,7 @@ def _run_rehearsal(database: str, commit: str, timeout_minutes: int, *,
                     if guardian_pid is None:
                         raise RuntimeError("guardian_process_not_found_for_sigterm")
                     interrupt_version = staged["version"]
-                    interrupt_written_row_count = staged["written_row_count"]
+                    interrupt_staged_row_present = True
                     os.kill(guardian_pid, signal.SIGTERM)
                     interrupted = True
             time.sleep(0.1)
@@ -346,7 +351,7 @@ def _run_rehearsal(database: str, commit: str, timeout_minutes: int, *,
         "temporary_directory_under_200mb": isinstance(root_bytes, int) and root_bytes < MAX_ROOT_BYTES,
         "interrupted_by_sigterm": interrupted,
         "interrupted_version": interrupt_version,
-        "interrupted_written_row_count": interrupt_written_row_count,
+        "interrupted_staged_row_present": interrupt_staged_row_present,
         "rehearsal_root": str(result_path.parent) if result_path else None,
         "stdout_tail": output.splitlines()[-20:],
         "summary": {
@@ -421,7 +426,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         result["runs"].append(interrupted)
         if not interrupted["interrupted_by_sigterm"]:
             raise RuntimeError("sigterm_rehearsal_not_interrupted")
-        if interrupted["interrupted_written_row_count"] <= 0:
+        if not interrupted["interrupted_staged_row_present"]:
             raise RuntimeError("sigterm_did_not_interrupt_td_row_write")
         if interrupted["checkpoint_changes"]:
             raise RuntimeError("sigterm_rehearsal_created_checkpoint_files")
