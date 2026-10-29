@@ -635,8 +635,11 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
     incomplete_dates = [str(item["trade_date"]) for item in outcomes
                         if item.get("mode") == "RETRYABLE_INCOMPLETE" or item.get("td_publish") != "READY"]
     if not complete or incomplete_dates:
+        reasons = {str(item["trade_date"]): [item.get("mode"), item.get("error_code"), item.get("td_publish"),
+                                             item.get("business_status")]
+                   for item in outcomes if str(item["trade_date"]) in set(incomplete_dates or [target])}
         raise RuntimeError("BAOSTOCK_GAP_UNRESOLVED:coverage_or_evidence_incomplete:" +
-                           ",".join(incomplete_dates or [target]))
+                           ",".join(incomplete_dates or [target]) + ":" + json.dumps(reasons, sort_keys=True))
     quality = target_result.get("quality") or {}
     def count_quality(name: str) -> int:
         return int(quality.get(name) or 0)
