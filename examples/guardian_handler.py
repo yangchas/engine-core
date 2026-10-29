@@ -376,7 +376,9 @@ def _run(request):
     if name == "daily_kline_close":
         from engine_core.guardian.daily_kline_close import run_close_tier
         return run_close_tier(request, root, dry_run=dry)
-    if name == "postmarket_data" and args.get("dataset") == "daily_dde":
+    if name == "postmarket_data" and (args.get("dataset") == "daily_dde"
+                                       or event_id == "daily_dde_postclose"
+                                       or event_id.startswith("daily_dde_postclose_rh")):
         from engine_core.guardian.daily_dde_sync import run as run_daily_dde_sync
         return run_daily_dde_sync(request, root, dry_run=dry)
     if name == "kaipan_fetch" and args.get("dataset") == "limit_up_pool":

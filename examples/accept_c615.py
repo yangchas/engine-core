@@ -372,7 +372,16 @@ def main(argv: list[str] | None = None) -> int:
                               if symbol not in symbols and initial_watermarks.get(symbol, "") < args.date), None)
         if sample_symbol is None:
             raise RuntimeError("c615_no_unwatermarked_symbol_for_rehearsal")
-        report["checks"]["rehearsal"] = _rehearse(args.database, args.date, sample_symbol)
+        rehearsal = _rehearse(args.database, args.date, sample_symbol)
+        rehearsal_watermark = store.latest_watermarks().get(sample_symbol, "")
+        rehearsal_rows = _target_rows(store, args.database, args.date, [sample_symbol])
+        if rehearsal_watermark != args.date or rehearsal_rows <= 0:
+            raise RuntimeError("c615_rehearsal_did_not_write_dde_rows:" + json.dumps(
+                {"symbol": sample_symbol, "watermark": rehearsal_watermark, "target_date_rows": rehearsal_rows},
+                ensure_ascii=False))
+        rehearsal["td_symbol_latest_date"] = rehearsal_watermark
+        rehearsal["td_symbol_target_date_rows"] = rehearsal_rows
+        report["checks"]["rehearsal"] = rehearsal
         report["status"] = "PASS"
     except Exception as exc:
         report["error"] = type(exc).__name__ + ":" + str(exc)[:4000]
