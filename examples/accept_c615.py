@@ -226,13 +226,36 @@ def _target_rows(store: Any, database: str, trade_date: str, symbols: list[str])
     return total
 
 
+def _schedule_contract() -> dict[str, Any]:
+    schedule = json.loads((ROOT / "src/engine_core/guardian/schedule.json").read_text(encoding="utf-8"))
+    events = {str(item.get("event_id")): item for item in schedule.get("events", [])
+              if isinstance(item, dict) and item.get("event_id")}
+    target = events["daily_dde_postclose"]
+    expected_after = ["daily_kline_close_1505", "baostock_probe_1730", "close_recap", "postmarket_publish"]
+    profile = schedule["profiles"]["daily_dde"]
+    rung = profile["ladder"][0]
+    expected = {"at": "21:00:00", "deadline": "23:59:59", "late_until": "23:59:59", "cost": "heavy",
+                "after": expected_after}
+    actual = {key: target.get(key) for key in expected}
+    if actual != expected:
+        raise RuntimeError("c615_schedule_event_contract_mismatch:" + json.dumps(
+            {"expected": expected, "actual": actual}, ensure_ascii=False, sort_keys=True))
+    expected_rung = {"attempts": 5, "backoff": "5m*2", "backoff_cap": "30m", "timeout": "2h10m",
+                     "budget_enabled": False, "on_timeout": "retry", "until": "late_until"}
+    actual_rung = {key: rung.get(key) for key in expected_rung}
+    if actual_rung != expected_rung or profile.get("retry_until_late") is not True:
+        raise RuntimeError("c615_schedule_retry_contract_mismatch:" + json.dumps(
+            {"expected": expected_rung, "actual": actual_rung,
+             "retry_until_late": profile.get("retry_until_late")}, ensure_ascii=False, sort_keys=True))
+    return {"event": actual, "retry_profile": actual_rung, "retry_until_late": profile["retry_until_late"]}
+
+
 def _rehearse(database: str, trade_date: str, symbol: str) -> dict[str, Any]:
     event_args = json.dumps({"symbols": [symbol], "target_date": trade_date, "database": database,
                              "history_trading_days": HISTORY_TRADING_DAYS, "max_workers": MAX_WORKERS,
                              "write_redis": False, "skip_redis": True}, separators=(",", ":"))
     command = [sys.executable, str(ROOT / "examples/rehearse_event.py"), "--event", "daily_dde_postclose",
-               "--with", "daily_kline_close_1505", "baostock_probe_1730", "close_recap", "postmarket_publish",
-               "--minutes", "1", "--td-database", database, "--timeout-minutes", "180",
+               "--isolate-target", "--minutes", "1", "--td-database", database, "--timeout-minutes", "180",
                "--isolation-heavy-max-load5", "100",
                "--event-args-json", event_args]
     completed = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE,
@@ -247,6 +270,7 @@ def _rehearse(database: str, trade_date: str, symbol: str) -> dict[str, Any]:
     failed_safety = [item for item in safety if not isinstance(item, dict) or item.get("status") != "PASS"]
     check = {"return_code": completed.returncode, "status": state.get("status"),
              "ledger_rows": len(ledger), "alerts": len(alerts), "failed_safety_checks": len(failed_safety),
+             "isolated_target_dependencies": result.get("isolated_target_dependencies"),
              "isolation_heavy_max_load5": result.get("isolation_heavy_max_load5"),
              "result_json": result_path, "output_tail": lines[-12:]}
     if completed.returncode or state.get("status") != "SUCCEEDED" or alerts or not safety or failed_safety:
@@ -271,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from engine_core.data_pipeline.daily_dde import TaosDdeStore
 
+        report["checks"]["schedule"] = _schedule_contract()
         root = Path(args.root).expanduser()
         store = TaosDdeStore(args.database)
         if not store.database_exists():
@@ -328,6 +353,8 @@ def main(argv: list[str] | None = None) -> int:
                                           "full_market_extrapolation_seconds": round(extrapolation, 1),
                                           "schedule_timeout_safety_factor": 2,
                                           "timeout_seconds_recommended": int(extrapolation * 2)}
+        if int(extrapolation * 2) > 7800:
+            raise RuntimeError("c615_schedule_timeout_below_measured_safety_factor")
 
         bad_code = "999999"
         bad_result, _bad_timings = _sync(args.database, args.date, [bad_code], root)

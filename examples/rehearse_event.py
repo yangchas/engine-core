@@ -326,7 +326,8 @@ def _schedule_event_name(event_id: str) -> str:
 
 def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[str], run_token: str,
                      now: datetime, minutes: int, *,
-                     event_args: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
+                     event_args: dict[str, Any] | None = None,
+                     isolate_target: bool = False) -> tuple[dict[str, Any], dict[str, str]]:
     if minutes < 1:
         raise ValueError("minutes_must_be_at_least_1")
     by_id = {str(event.get("event_id")): event for event in schedule["events"]
@@ -365,6 +366,13 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
                 item_args = dict(event.get("args") or {})
                 item_args["baostock_no_progress_seconds"] = no_progress
                 event["args"] = item_args
+            continue
+        if isolate_target and event.get("event_id") == main_schedule_name:
+            # Run only the selected event in the temporary rehearsal schedule.
+            # The archived schedule remains unchanged and its ordering contract
+            # should be checked separately by the caller.
+            event["depends_on"] = []
+            event["after"] = []
             continue
         for key in ("depends_on", "after"):
             missing_dependencies.update(ref for ref in _event_references(event.get(key))
@@ -1219,6 +1227,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-minutes", type=int, default=45, help="terminal-state wait limit; default 45")
     parser.add_argument("--isolation-heavy-max-load5", type=float,
                         help="override the heavy-load gate in this isolated rehearsal only")
+    parser.add_argument("--isolate-target", action="store_true",
+                        help="clear dependencies only on the selected event in the temporary schedule")
     parser.add_argument("--refresh-output", action="store_true",
                         help="hide this event's output date in the temporary catalog to exercise a fresh write")
     parser.add_argument("--refresh-output-event", action="append", default=[],
@@ -1270,6 +1280,7 @@ def run_rehearsal(args: argparse.Namespace) -> int:
     today = datetime.now(TZ).date().isoformat()
     summary: dict[str, Any] = {
         "event": args.event, "with_events": [item for group in args.with_events for item in group],
+        "isolated_target_dependencies": bool(args.isolate_target),
         "root": str(root), "state_root": str(state_root), "state_root_chars": len(str(state_root)),
         "temporary_directory_retained": True, "keep_flag": bool(args.keep), "td_database": td_database,
         "trade_date": today, "started_at": datetime.now(TZ).isoformat(timespec="seconds"),
@@ -1331,7 +1342,8 @@ def run_rehearsal(args: argparse.Namespace) -> int:
         prepared, event_ids = prepare_schedule(archive_schedule, args.event,
                                                [item for group in args.with_events for item in group],
                                                root.name, now, args.minutes,
-                                               event_args=event_args_overrides)
+                                               event_args=event_args_overrides,
+                                               isolate_target=args.isolate_target)
         if args.isolation_heavy_max_load5 is not None:
             if not 0 < args.isolation_heavy_max_load5 < 1000:
                 raise ValueError("isolation_heavy_max_load5_out_of_range")
