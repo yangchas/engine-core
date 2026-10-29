@@ -1333,7 +1333,7 @@ def run_rehearsal(args: argparse.Namespace) -> int:
         if args.isolation_heavy_max_load5 is not None:
             if not 0 < args.isolation_heavy_max_load5 < 1000:
                 raise ValueError("isolation_heavy_max_load5_out_of_range")
-            prepared["heavy_max_load5"] = args.isolation_heavy_max_load5
+            prepared.setdefault("global", {})["heavy_max_load5"] = args.isolation_heavy_max_load5
             summary["isolation_heavy_max_load5"] = args.isolation_heavy_max_load5
         if fetch_item_id is not None:
             seed_fetch_item_state(state_root, event_ids[args.event], target_data_date, trigger_at)
