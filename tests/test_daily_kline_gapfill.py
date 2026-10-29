@@ -23,6 +23,26 @@ def _seed_td_day(store, day, rows):
                          "available_at": day + "T18:00:00+08:00"})
 
 
+def _seed_real_symbol_universe(root, day, symbols):
+    import gzip
+
+    from pathlib import Path
+
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+
+    fixture = (Path(__file__).parents[1] / "tests" / "fixtures" / "real" / "core_artifacts" /
+               "c540" / "symbol_universe" / "2026-10-23" / "actual" / "rows.jsonl.gz")
+    with gzip.open(fixture, "rt", encoding="utf-8") as handle:
+        captured = [json.loads(line) for line in handle if line.strip()]
+    by_symbol = {str(row.get("symbol", row.get("code", ""))).rsplit(".", 1)[-1].zfill(6): row
+                 for row in captured}
+    selected = [by_symbol[symbol] for symbol in symbols]
+    assert len(selected) == len(symbols)
+    ArtifactCatalog(root).commit(
+        "symbol_universe", day, selected,
+        {"trade_date": day, "as_of": "2026-10-22"}, source="baostock")
+
+
 def test_gapfill_queries_only_lagging_symbol_from_next_session_and_commits_catalog_and_td(tmp_path):
     from engine_core.data_pipeline.daily_kline_gapfill import run_td_daily_kline_gapfill
     from engine_core.data_pipeline.storage import ArtifactCatalog
@@ -39,6 +59,7 @@ def test_gapfill_queries_only_lagging_symbol_from_next_session_and_commits_catal
     _manifest, captured = load_real("formal")
     real = {row["symbol"]: row for row in captured if row["symbol"] in {"000001", "000002"}}
     assert set(real) == {"000001", "000002"}
+    _seed_real_symbol_universe(tmp_path, target, ["000001", "000002"])
     store = MemoryTdStore()
     store.ensure_schema()
     for day in sessions[:2]:
@@ -89,8 +110,8 @@ def test_gapfill_queries_only_lagging_symbol_from_next_session_and_commits_catal
     outcome = run_td_daily_kline_gapfill(tmp_path, target, store=store,
                                          history_min_trading_days=len(sessions), client=client)
 
-    assert outcome["status"] == "WAITING"
-    assert outcome["partitions"][0]["business_status"] == "PROVISIONAL"
+    assert outcome["status"] == "OK"
+    assert outcome["partitions"][0]["business_status"] == "FORMAL"
     assert outcome["range_symbols"] == 1 and outcome["range_queries"] == 1
     assert client.queries == [("000001", target, target)]
     assert store.calls.count("latest_watermarks") == 1
@@ -116,6 +137,7 @@ def test_gapfill_with_missing_target_rows_does_not_report_success(tmp_path):
     calendar.parent.mkdir(parents=True)
     calendar.write_text(json.dumps({"schema": "CoreTradeCalendarMatrixV1", "lit_from": target,
                                     "lit_to": target, "days": [{"d": target, "t": 1}]}), encoding="utf-8")
+    _seed_real_symbol_universe(tmp_path, target, ["000001"])
 
     class Result:
         error_code = "0"
@@ -467,6 +489,72 @@ def test_gapfill_caches_real_source_universe_and_uses_nearest_local_universe(tmp
     assert second["source_universe_provenance"]["cache"] == "HIT"
     assert client.queries == [(missing_symbol, target, target), (missing_symbol, target, target)]
     assert len(selected) == 21
+
+
+def test_gapfill_uses_latest_real_universe_when_target_partition_is_missing(tmp_path):
+    from engine_core.data_pipeline.daily_kline_gapfill import run_td_daily_kline_gapfill
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.data_pipeline.td_sink import MemoryTdStore
+
+    target, _selected, missing_symbol, bars, source_payload = _seed_real_c594_small_gap(tmp_path)
+    _seed_real_symbol_universe(tmp_path, "2026-10-23", _selected)
+    calendar = tmp_path / "trade_calendar" / "calendar.json"
+    calendar.write_text(json.dumps({"schema": "CoreTradeCalendarMatrixV1", "lit_from": target,
+                                    "lit_to": target, "days": [{"d": target, "t": 1}]}),
+                        encoding="utf-8")
+    assert ArtifactCatalog(tmp_path).locate("symbol_universe", target) is None
+
+    class Result:
+        error_code = "0"
+        fields = source_payload["fields"]
+
+        def __init__(self):
+            self.index = -1
+
+        def next(self):
+            self.index += 1
+            return self.index < len(source_payload["rows"])
+
+        def get_row_data(self):
+            return source_payload["rows"][self.index]
+
+    class Module:
+        def query_all_stock(self, *, day):
+            assert day == target
+            return Result()
+
+    class RangeClient:
+        read_timeout = 5
+        poisoned = False
+
+        def __init__(self):
+            self.module = Module()
+            self.queries = []
+
+        def login(self):
+            pass
+
+        def query(self, symbol, start, end):
+            self.queries.append((symbol, start, end))
+            assert (symbol, start, end) == (missing_symbol, target, target)
+            return [{**bars[symbol], "date": target}]
+
+        def logout(self):
+            return True
+
+    client = RangeClient()
+    store = MemoryTdStore()
+    store.ensure_schema()
+    outcome = run_td_daily_kline_gapfill(
+        tmp_path, target, store=store, history_min_trading_days=1, client=client,
+        only_source_empty=True,
+        completion_policy={"formal_coverage_threshold": 0.995, "source_empty_max": 20})
+
+    assert outcome["status"] == "OK"
+    assert outcome["range_queries"] == 1
+    assert client.queries == [(missing_symbol, target, target)]
+    assert outcome["universe_fallback_from"] == "2026-10-27"
+    assert outcome["partitions"][0]["universe_fallback_from"] == "2026-10-27"
 
 
 def test_gapfill_timeout_classification_falls_back_to_source_empty_and_keeps_fetching(tmp_path):

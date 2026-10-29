@@ -1,5 +1,12 @@
 # Project Knowledge
 
+- `[VERIFIED 2026-10-29 — C607 local-universe fallback]` Daily K-line gapfill
+  resolves each affected date against the latest cataloged `symbol_universe`
+  partition on or before that date. If the target uses an earlier partition,
+  `universe_fallback_from` is returned and persisted in its daily-kline metadata.
+  Verified with captured C540/C594 rows; this records implementation behavior,
+  not a market-wide rule. Evidence: `/home/exedev/fw/reports/C607.md`.
+
 - `[VERIFIED 2026-10-27 — C564 WenCai daily-kline guard]` WenCai numeric
   column suffixes (`[YYYYMMDD]`) are checked against the requested date. After
   local active-universe completeness passes, the prior-session close and

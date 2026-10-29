@@ -283,6 +283,8 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
     from ..guardian.daily_kline_coverage import TdCoverageSource
     from .storage import ArtifactCatalog
     catalog = ArtifactCatalog(base)
+    universe_partition_dates = sorted(
+        (catalog.read().get("datasets", {}).get("symbol_universe", {}).get("dates", {})).keys())
     manifest_path = catalog.locate("daily_kline", target)
     partition_rows: list[dict[str, Any]] = []
     partition_manifest: dict[str, Any] = {}
@@ -344,7 +346,7 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
 
     def active_symbols_for_day(day: str) -> set[str] | None:
         if day not in expected_symbols_by_day:
-            candidates = [candidate for candidate in sessions if candidate <= day]
+            candidates = [candidate for candidate in universe_partition_dates if candidate <= day]
             for candidate in reversed(candidates):
                 universe_path = catalog.locate("symbol_universe", candidate)
                 if universe_path is None:
@@ -403,6 +405,8 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
     gap_plan: list[dict[str, Any]] = []
     eligibility_status = "NO_GAPS"
     target_universe = active_symbols_for_day(target)
+    target_universe_date = universe_source_day_by_day[target]
+    universe_fallback_from = target_universe_date if target_universe_date != target else None
     target_missing_categories: dict[str, str] = {}
     target_classification_symbols: set[str] | None = None
     logged_in = False
@@ -590,7 +594,8 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                 "baostock_logout_error": logout_error,
                 "source_universe_status": source_universe_status,
                 "source_universe_error": source_universe_error,
-                "source_universe_provenance": source_universe_provenance}
+                "source_universe_provenance": source_universe_provenance,
+                "universe_fallback_from": universe_fallback_from}
 
     affected_dates = sorted({day for item in gap_plan for day in item["trade_dates"]}, reverse=True)
     runner = JobRunner(artifact_root=base,
@@ -624,6 +629,8 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
         meta = {"rows": rows, "source": "baostock", "provider": "baostock",
                 "expected_count": day_expected_count, "field_completeness": completeness,
                 "universe_trade_date": universe_source_day_by_day[day],
+                "universe_fallback_from": (universe_source_day_by_day[day]
+                                            if universe_source_day_by_day[day] != day else None),
                 "provider_attempts": [{"provider": "baostock", "result": "ok",
                                        "reason": "td_watermark_range_fill"}],
                 "available_at": datetime.now(SHANGHAI).isoformat(),
@@ -643,6 +650,7 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
         outcome = {"trade_date": day, "row_count": len(result.rows), "version": result.manifest["version"],
                    "sha256": result.manifest["sha256"], "td_publish": result.manifest.get("td_publish")}
         if day == target:
+            outcome["universe_fallback_from"] = universe_fallback_from
             quality = dict(result.manifest.get("quality") or {})
             business_status = result.manifest.get("business_status")
             from .baostock_completion import classify_missing_symbols, evaluate_baostock_completion
@@ -677,4 +685,5 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
             "baostock_logout_error": logout_error,
             "source_universe_status": source_universe_status,
             "source_universe_error": source_universe_error,
-            "source_universe_provenance": source_universe_provenance}
+            "source_universe_provenance": source_universe_provenance,
+            "universe_fallback_from": universe_fallback_from}
