@@ -228,7 +228,11 @@ def test_known_source_unavailable_symbol_does_not_fail_td_watermark_check():
 
         def read_versions(self, day):
             return [{"version": "real-fixture", "provider": "baostock", "row_count": 5150,
-                     "business_status": "FORMAL", "needs_upgrade": False}]
+                     "business_status": "FORMAL", "needs_upgrade": False,
+                     "source_dates": {field: DAY for field in (
+                         "open", "high", "low", "close", "pre_close", "pct_chg", "volume",
+                         "amount_yuan", "turnover_pct")},
+                     "source_date_values": [DAY], "source_dates_consistent": True}]
 
     from engine_core.guardian.daily_kline_coverage import INCOMPLETE, OK, TdCoverageSource
 

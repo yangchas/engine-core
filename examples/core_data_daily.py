@@ -119,12 +119,22 @@ def main(argv=None) -> int:
             root = Path(_require_sample_artifact_root(root))
         except ValueError as exc:
             parser.error(str(exc))
+    td_store = None
+    td_writer = None
+    if args.td_write:
+        from engine_core.data_pipeline.td_sink import DailyKlineTdSink, TaosStore
+        from engine_core.guardian.daily_kline_coverage import td_settings
+        settings = td_settings()
+        database = (settings or {}).get("database") or os.getenv("CORE_TD_DATABASE") or "core_data"
+        td_store = TaosStore(str(database))
+        td_writer = DailyKlineTdSink(td_store, root)
     adapters = _default_adapters(str(root), os.getenv("ENGINE_LEGACY_ROOT", "/home/exedev/repos/stock-situation-runtime"),
                                   args.max_requests, args.write,
                                   baostock_timeout_seconds=args.baostock_timeout_seconds,
                                   baostock_total_timeout_seconds=args.baostock_total_timeout_seconds,
                                   baostock_no_progress_seconds=args.baostock_no_progress_seconds,
-                                  baostock_symbols_file=args.symbols_file)
+                                  baostock_symbols_file=args.symbols_file,
+                                  td_progress_writer=td_writer)
     adapters = dict(adapters)
     if args.adapter:
         if args.symbols_file:
@@ -140,14 +150,8 @@ def main(argv=None) -> int:
         redis = redis_package.Redis.from_url(os.environ["CORE_REDIS_URL"], decode_responses=True)
     from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
     trade_dates = TradeCalendarStore(root).all_trading_dates() or None
-    td_store = None
     if args.td_write and adapters.get("td_writer") is None:
-        from engine_core.data_pipeline.td_sink import DailyKlineTdSink, TaosStore
-        from engine_core.guardian.daily_kline_coverage import td_settings
-        settings = td_settings()
-        database = (settings or {}).get("database") or os.getenv("CORE_TD_DATABASE") or "core_data"
-        td_store = TaosStore(str(database))
-        adapters["td_writer"] = DailyKlineTdSink(td_store, root)
+        adapters["td_writer"] = td_writer
     try:
         result = run_daily_phase(args.phase, args.date, root=root, adapters=adapters,
             trading_dates=trade_dates, write=args.write, redis=redis,

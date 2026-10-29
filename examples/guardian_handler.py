@@ -360,6 +360,10 @@ def _run(request):
         try:
             result = run_daily_kline_backfill(root, target, args=args)
         except Exception as exc:
+            if "BAOSTOCK_GAP_UNRESOLVED" in str(exc):
+                # progress is already in TD; an incomplete day is a resumable state, never a final failure
+                return 75, {"contract": 1, "status": "failed", "error_code": "TIER_PARTIAL",
+                            "retryable": True, "artifacts": [], "detail": str(exc)}
             return _failure_response(request, error=exc)
         if result.get("status") == "WAITING":
             return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,

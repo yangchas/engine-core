@@ -43,6 +43,7 @@ class BaostockDailyProvider:
                  sleep_fn: Callable[[float], None] = time.sleep, timeout_call: Callable[..., Any] | None = None,
                  checkpoint_path: str | Path | None = None,
                  source_universe_checkpoint: str | Path | None = None,
+                 progress_writer: Any = None,
                  total_timeout_seconds: float | None = None, sample_scope: bool = False,
                  no_progress_timeout_seconds: float = 300):
         self.client_factory = client_factory
@@ -65,6 +66,7 @@ class BaostockDailyProvider:
         self.checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else None
         self.source_universe_checkpoint = (Path(source_universe_checkpoint)
                                            if source_universe_checkpoint is not None else None)
+        self.progress_writer = progress_writer
         self.sample_scope = bool(sample_scope)
         self._timing: dict[str, Any] = {"login_ms": 0.0, "query_ms": 0.0,
                                         "query_count": 0, "error_code": None, "error_events": []}
@@ -257,13 +259,15 @@ class BaostockDailyProvider:
 
     def _progress(self, trade_date: str, expected: Sequence[str], checkpoint: Mapping[str, Any],
                   resumed_count: int, result: str) -> dict[str, Any]:
+        file_checkpoint = self.progress_writer is None
         return {
             "completed_symbols": sum(symbol in checkpoint for symbol in expected),
             "expected_symbols": len(expected),
             "resumed_count": resumed_count,
-            "checkpoint_saved": bool(self._checkpoint_saved or
-                                      (self.checkpoint_path is not None and self.checkpoint_path.is_file())),
-            "checkpoint_path": str(self.checkpoint_path) if self.checkpoint_path is not None else None,
+            "checkpoint_saved": bool(file_checkpoint and (self._checkpoint_saved or
+                                      (self.checkpoint_path is not None and self.checkpoint_path.is_file()))),
+            "checkpoint_path": (str(self.checkpoint_path)
+                                if file_checkpoint and self.checkpoint_path is not None else None),
             "result": result,
         }
 
@@ -348,7 +352,13 @@ class BaostockDailyProvider:
         client = self.client_factory()
         if hasattr(client, "timeout_seconds"):
             client.timeout_seconds = self.timeout_seconds
-        checkpoint = self._load_checkpoint(trade_date, expected)
+        # TD is the only resume authority once the progress sink is configured. Legacy JSON
+        # checkpoints must neither seed results nor be rewritten during this path.
+        checkpoint = self._load_checkpoint(trade_date, expected) if self.progress_writer is None else {}
+        if self.progress_writer is not None:
+            persisted = self.progress_writer.prepare_progress(trade_date, expected)
+            # TD is the resume authority. Overlay any legacy file checkpoint with its rows.
+            checkpoint.update(persisted)
         resumed_count = sum(symbol in checkpoint for symbol in expected)
         rows: list[dict[str, Any]] = [row for row in checkpoint.values()
                                       if not row.get("__checkpoint_no_bar")]
@@ -504,7 +514,7 @@ class BaostockDailyProvider:
                                           "__checkpoint_no_bar": True}
                     self.progress_deadline = time.monotonic() + self.no_progress_timeout_seconds
                     unsaved += 1
-                    if unsaved >= self.CHECKPOINT_EVERY:
+                    if self.progress_writer is None and unsaved >= self.CHECKPOINT_EVERY:
                         self._save_checkpoint(trade_date, checkpoint, expected)
                         unsaved = 0
                     consecutive = 0
@@ -521,13 +531,18 @@ class BaostockDailyProvider:
                     row["mismatch"] = bool(computed_pct is not None and source_pct is not None
                                            and abs(computed_pct - source_pct) > 0.02)
                     row["turnover"] = row.get("turnover_pct")
+                    if self.progress_writer is not None:
+                        from ..daily_kline_schema import CANONICAL_FIELD_UNITS
+                        self.progress_writer.write_progress(
+                            trade_date, [row], {"provider": "baostock",
+                                                "field_units": CANONICAL_FIELD_UNITS})
                     rows.append(row)
                     checkpoint[symbol] = row
                     self.progress_deadline = time.monotonic() + self.no_progress_timeout_seconds
                     unsaved += 1
                 # Resume point: rewriting the whole checkpoint per symbol made the capture O(n^2) (~1.5 symbols/s instead
                 # of the ~5/s Baostock answers at), so persist every CHECKPOINT_EVERY symbols and always on the way out.
-                if unsaved >= self.CHECKPOINT_EVERY:
+                if self.progress_writer is None and unsaved >= self.CHECKPOINT_EVERY:
                     self._save_checkpoint(trade_date, checkpoint, expected)
                     unsaved = 0
         except Exception as exc:
@@ -539,7 +554,7 @@ class BaostockDailyProvider:
                 pass
             raise
         finally:
-            if self.checkpoint_path is not None and (unsaved or budget_exhausted or
+            if self.progress_writer is None and self.checkpoint_path is not None and (unsaved or budget_exhausted or
                                                      not self.checkpoint_path.is_file()):
                 self._save_checkpoint(trade_date, checkpoint, expected)
             if not transport_failed and self._deadline_left():

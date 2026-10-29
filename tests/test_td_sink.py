@@ -51,6 +51,40 @@ def test_real_td_child_table_name_is_daily_kline_scoped(monkeypatch):
     assert "core_dev_c616_test.d_000010 USING" not in insert
 
 
+def test_progress_rows_resume_from_td_without_marking_day_complete(tmp_path):
+    from engine_core.data_pipeline.td_sink import DailyKlineTdSink, MemoryTdStore
+    from engine_core.guardian.daily_kline_coverage import INCOMPLETE, TdCoverageSource
+
+    _manifest, rows = load_real("formal")
+    store = MemoryTdStore()
+    sink = DailyKlineTdSink(store, tmp_path)
+    resumed = sink.prepare_progress(DAY, [rows[0]["symbol"]])
+    assert resumed == {}
+    sink.write_progress(DAY, [rows[0]], {"provider": "baostock", "field_units": {"volume": "shares"}})
+
+    assert set(sink.prepare_progress(DAY, [rows[0]["symbol"]])) == {rows[0]["symbol"]}
+    assert store.day_counts([DAY]) == {DAY: 1}
+    assert store.read_versions(DAY) == []
+    coverage = TdCoverageSource(store).coverage([DAY])[DAY]
+    assert coverage.state == INCOMPLETE
+    assert coverage.reason == "rows_without_version_metadata"
+    assert sink.read_complete_day(DAY) == {}
+
+
+def test_day_counts_uses_one_grouped_query_for_all_dates(monkeypatch):
+    from engine_core.data_pipeline.td_sink import TaosStore, trade_day_ts_us
+
+    store = TaosStore("core_dev_c617_counts")
+    statements = []
+    monkeypatch.setattr(store, "_run", lambda sql, **_kwargs: statements.append(sql) or [
+        (trade_day_ts_us(DAY), 7),
+    ])
+
+    assert store.day_counts([DAY, "2026-10-26"]) == {DAY: 7, "2026-10-26": 0}
+    assert len(statements) == 1
+    assert "GROUP BY ts" in statements[0]
+
+
 def test_sync_writes_reads_back_and_is_idempotent(tmp_path):
     commit_day(tmp_path, DAY, "baostock")
     sink, store = _sink(tmp_path)
@@ -59,6 +93,7 @@ def test_sync_writes_reads_back_and_is_idempotent(tmp_path):
     assert store.day_counts([DAY]) == {DAY: NROWS}
     versions = store.read_versions(DAY)
     assert len(versions) == 1 and versions[0]["row_count"] == NROWS and versions[0]["version"] == first.version
+    assert len(sink.read_complete_day(DAY)) == NROWS
     writes = store.calls.count("replace_day")
     again = sink.sync_dates([DAY])[0]
     assert again.status == "unchanged" and store.calls.count("replace_day") == writes   # no second write
@@ -141,6 +176,9 @@ def test_job_runner_does_not_return_success_when_td_write_fails(tmp_path):
     store.fail = "unavailable"
     runner = JobRunner(artifact_root=tmp_path, td_adapter=DailyKlineTdSink(store, tmp_path))
     payload = {"rows": rows, "source": "baostock", "provider": "baostock", "expected_count": len(rows),
+               "source_dates": {field: DAY for field in ("open", "high", "low", "close", "pre_close",
+                                                            "pct_chg", "amount_yuan", "volume")},
+               "source_dates_consistent": True, "source_date_values": [DAY],
                "field_units": {"volume": "shares"},
                "field_completeness": {field: "COMPLETE" for field in
                                       ("open", "high", "low", "close", "pre_close", "pct_chg", "amount_yuan",
@@ -262,3 +300,19 @@ def test_guardian_handler_contract_excludes_removed_td_sync_handler():
     from engine_core.guardian.management import HANDLERS
 
     assert "td_sync_daily_kline" not in HANDLERS
+
+
+def test_version_marker_without_date_evidence_is_dropped_and_day_refetched(tmp_path):
+    """C617 audit: a pre-evidence completion marker must self-heal (refetch), not fail deterministically."""
+    from engine_core.data_pipeline.td_sink import DailyKlineTdSink, MemoryTdStore
+
+    _manifest, rows = load_real("formal")
+    store = MemoryTdStore()
+    sink = DailyKlineTdSink(store, tmp_path)
+    sink.prepare_progress(DAY, [rows[0]["symbol"]])
+    sink.write_progress(DAY, [rows[0]], {"provider": "baostock", "field_units": {"volume": "shares"}})
+    store.write_version({"trade_date": DAY, "ts": 1, "version": "legacy", "provider": "baostock",
+                         "business_status": "FORMAL"})            # no source_dates evidence
+    fresh = DailyKlineTdSink(store, tmp_path)
+    assert fresh.prepare_progress(DAY, [rows[0]["symbol"]]) == {}   # nothing trusted: day is refetched
+    assert store.read_versions(DAY) == [] and store.day_counts([DAY]) == {DAY: 0}

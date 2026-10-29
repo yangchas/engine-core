@@ -1077,6 +1077,7 @@ class DailyKlineProviderChain:
                     "field_units": quality["field_units"],
                     "source_field_units": quality["source_field_units"],
                     "source_dates": payload.get("source_dates", {}),
+                    "source_date_values": payload.get("source_date_values", []),
                     "source_dates_consistent": payload.get("source_dates_consistent"),
                     "wencai_date_validation": payload.get("wencai_date_validation"),
                     "quality_notes": {
