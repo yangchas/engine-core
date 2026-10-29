@@ -1075,5 +1075,37 @@
   },
   "request_count": 1,
   "source_date_echo": "Date"
+ },
+ "kaipan_stock_dde_2026-10-29_600519_1539.json": {
+  "source": "kaipan_stock_dde",
+  "trade_date": "2026-10-29",
+  "fetched_at": "2026-10-29T15:39:58+08:00",
+  "bytes": 55537,
+  "sha256": "13437cd047cb1138fef400d5d7a2484a43252666482160017a637488952c6a73",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_stock_dde --symbol 600519 --date 2026-10-29",
+  "call": "getHisStockDDE",
+  "params": {
+   "code": "600519",
+   "date": "2026-10-29"
+  },
+  "request_count": 1,
+  "source_date_echo": "Date"
+ },
+ "kaipan_stock_dde_2026-10-29_688001_1540.json": {
+  "source": "kaipan_stock_dde",
+  "trade_date": "2026-10-29",
+  "fetched_at": "2026-10-29T15:40:03+08:00",
+  "bytes": 45116,
+  "sha256": "dcb0ce5293957543ca701a6cb18aa01d3b9924cf8602407743b790f3cca699ab",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_stock_dde --symbol 688001 --date 2026-10-29",
+  "call": "getHisStockDDE",
+  "params": {
+   "code": "688001",
+   "date": "2026-10-29"
+  },
+  "request_count": 1,
+  "source_date_echo": "Date"
  }
 }
