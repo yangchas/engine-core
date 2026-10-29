@@ -183,7 +183,8 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
                       baostock_total_timeout_seconds: float | None = None,
                       baostock_no_progress_seconds: float = 300.0,
                       baostock_symbols_file: str | None = None,
-                      wencai_options: dict[str, Any] | None = None) -> dict[str, Any]:
+                      wencai_options: dict[str, Any] | None = None,
+                      td_progress_writer: Any = None) -> dict[str, Any]:
     """Construct lazy read-only adapters; optional SDK imports happen on fetch."""
     sample_path = Path(baostock_symbols_file).expanduser() if baostock_symbols_file else None
     if sample_path is not None:
@@ -255,20 +256,21 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         def fetch(self, day: str, context: Any = None) -> Any:
             from engine_core.daily_kline_capture import BaostockClient
             from engine_core.data_pipeline.providers.baostock_daily_provider import BaostockDailyProvider
-            checkpoint = (Path(artifact_root) / ".checkpoints" / f"daily_kline-{day}.json"
-                          if write_enabled or sample_path is not None else None)
-            if checkpoint is not None and sample_token is not None:
-                checkpoint = checkpoint.with_name(f"daily_kline-{day}-sample-{sample_token}.json")
 
             def client_factory() -> Any:
                 import baostock as bs
                 return BaostockClient(bs)
 
+            checkpoint = (Path(artifact_root) / ".checkpoints" / f"daily_kline-{day}.json"
+                          if (write_enabled or sample_path is not None) and td_progress_writer is None else None)
+            if checkpoint is not None and sample_token is not None:
+                checkpoint = checkpoint.with_name(f"daily_kline-{day}-sample-{sample_token}.json")
             provider = BaostockDailyProvider(
                 client_factory=client_factory, symbols=symbols_for,
                 checkpoint_path=checkpoint, timeout_seconds=baostock_timeout_seconds,
                 source_universe_checkpoint=(Path(artifact_root) / ".checkpoints" /
                                             f"baostock-source-universe-{day}.json"),
+                progress_writer=td_progress_writer,
                 total_timeout_seconds=self.total_timeout_seconds,
                 no_progress_timeout_seconds=baostock_no_progress_seconds,
                 sample_scope=sample_path is not None,
@@ -283,6 +285,8 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
             result["expected_symbols"] = sorted(
                 symbol for symbol, row in identity.items()
                 if str(row.get("trade_status", "")).strip() != "0")
+            if td_progress_writer is not None:
+                result["rows"] = list(td_progress_writer.read_progress_rows(day, result["expected_symbols"]).values())
             for row in result.get("rows", []):
                 source = identity.get(str(row.get("symbol", "")).zfill(6))
                 if source is not None:
@@ -700,6 +704,16 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
                         "reason": gap["gap_reason"],
                         "fallback_status": gap["fallback_status"]}, sort_keys=True))
                 return 0
+    td_store = None
+    td_writer = None
+    if args.td_write:
+        from engine_core.data_pipeline.td_sink import DailyKlineTdSink
+        from engine_core.guardian.daily_kline_coverage import make_store, td_settings
+        settings = td_settings(database=args.td_database)
+        if settings is None or not os.environ.get("TD_CONFIG"):
+            raise RuntimeError("td_not_configured")
+        td_store = make_store(settings)
+        td_writer = DailyKlineTdSink(td_store, args.artifact_root)
     adapters = _default_adapters(args.artifact_root,
         "",
         args.max_requests, args.write or args.execute,
@@ -707,8 +721,11 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
         baostock_total_timeout_seconds=args.baostock_total_timeout_seconds,
         baostock_no_progress_seconds=args.baostock_no_progress_seconds,
         baostock_symbols_file=args.symbols_file,
-        wencai_options=_wencai_options(args, parser))
+        wencai_options=_wencai_options(args, parser),
+        td_progress_writer=td_writer)
     adapters.update(_load_adapter(args.adapter))
+    if td_writer is not None:
+        adapters.setdefault("td_writer", td_writer)
     daily_providers = [name.strip() for name in args.providers.split(",") if name.strip()]
     if args.symbols_file and daily_providers != ["baostock"]:
         parser.error("--symbols-file requires --providers baostock")
@@ -950,25 +967,24 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
                     elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
                     detail={"providers": daily_providers, "provider_attempts": attempts})
                 daily_kline_exit_code = emit_job_result(daily_contract)
+                if td_store is not None:
+                    td_store.close()
                 if args.job != "all":
                     return daily_kline_exit_code
                 continue
             td_result = None
             if args.td_write and result.manifest.get("provider") == "baostock":
-                from engine_core.data_pipeline.td_sink import (DailyKlineTdSink, TdSourceRejected,
+                from engine_core.data_pipeline.td_sink import (TdSourceRejected,
                                                                 TdUnavailable, TdVerifyError)
-                from engine_core.guardian.daily_kline_coverage import make_store, td_settings
                 try:
-                    settings = td_settings(database=args.td_database)
-                    if settings is None or not os.environ.get("TD_CONFIG"):
+                    if td_writer is None:
                         raise TdUnavailable("td_not_configured")
-                    store = make_store(settings)
-                    try:
-                        td_result = DailyKlineTdSink(store, args.artifact_root).write_partition(
-                            args.date, result.rows, result.manifest).as_dict()
-                    finally:
-                        store.close()
+                    td_result = td_writer.write_partition(args.date, result.rows, result.manifest).as_dict()
+                    if td_store is not None:
+                        td_store.close()
                 except TdUnavailable as exc:
+                    if td_store is not None:
+                        td_store.close()
                     return emit_job_result(ContractJobResult(
                         contract=1, job=name, trade_date=args.date, status="failed", tier=0,
                         source="baostock", dataset=name, version=result.manifest.get("version"),
@@ -977,6 +993,8 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
                         elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
                         detail={"error": str(exc)[:200], "catalog_version": result.manifest.get("version")}))
                 except (TdVerifyError, TdSourceRejected) as exc:
+                    if td_store is not None:
+                        td_store.close()
                     return emit_job_result(ContractJobResult(
                         contract=1, job=name, trade_date=args.date, status="failed", tier=0,
                         source="baostock", dataset=name, version=result.manifest.get("version"),
@@ -986,6 +1004,8 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
                         elapsed_ms=round((time.monotonic() - daily_started) * 1000, 3),
                         detail={"error": str(exc)[:300], "catalog_version": result.manifest.get("version")}))
                 except Exception as exc:
+                    if td_store is not None:
+                        td_store.close()
                     return emit_job_result(ContractJobResult(
                         contract=1, job=name, trade_date=args.date, status="failed", tier=0,
                         source="baostock", dataset=name, version=result.manifest.get("version"),
@@ -997,6 +1017,8 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
                                 "catalog_version": result.manifest.get("version")}))
             elif args.td_write:
                 td_result = {"status": "skipped_non_baostock", "provider": result.manifest.get("provider")}
+                if td_store is not None:
+                    td_store.close()
             print(json.dumps({"job": name, "version": result.manifest.get("version"),
                               "source": result.manifest.get("source"), "degraded": result.manifest.get("degraded"),
                               "quality": result.manifest["quality"], "provider_attempts": result.manifest["provider_attempts"],

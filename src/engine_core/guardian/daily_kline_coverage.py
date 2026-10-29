@@ -58,7 +58,7 @@ class TdCoverageSource:
 
     def coverage(self, dates: Sequence[str], watermarks: Mapping[str, str] | None = None,
                  known_missing: Mapping[str, str] | None = None) -> dict[str, DayCoverage]:
-        from ..data_pipeline.td_sink import pick_best
+        from ..data_pipeline.td_sink import has_baostock_date_evidence, pick_best
         result: dict[str, DayCoverage] = {}
         if not self.store.schema_exists():
             return {day: DayCoverage(day, MISSING, self.origin, reason="td_schema_absent") for day in dates}
@@ -86,6 +86,9 @@ class TdCoverageSource:
             elif provider != "baostock":
                 result[day] = DayCoverage(day, LOW_QUALITY, self.origin,
                                           reason="non_baostock_provider:" + (provider or "unknown"), **base)
+            elif not has_baostock_date_evidence(day, current):
+                result[day] = DayCoverage(day, INCOMPLETE, self.origin,
+                                          reason="source_date_evidence_incomplete", **base)
             elif day == latest_day and any(value < day for symbol, value in watermarks.items()
                                            if str(symbol).zfill(6) not in ignored_watermarks):
                 result[day] = DayCoverage(day, INCOMPLETE, self.origin, reason="symbol_watermark_behind_target",

@@ -463,6 +463,14 @@ class JobRunner:
                 manifest["completion_policy"] = policy
         elif fetch_meta.get("partial"):
             manifest["business_status"] = "PARTIAL"
+        if (td_write and name == "daily_kline" and fetch_meta.get("provider") == "baostock"):
+            from .td_sink import has_baostock_date_evidence
+            if not has_baostock_date_evidence(trade_date, fetch_meta):
+                manifest.update({"mode": "RETRYABLE_INCOMPLETE", "storage_backend": None,
+                                 "storage_uri": None, "manifest_uri": None, "rows_uri": None,
+                                 "cache_publish": "SKIPPED", "td_publish": "SKIPPED_INCOMPLETE",
+                                 "error_code": "SOURCE_DATE_EVIDENCE_INCOMPLETE", "retryable": True})
+                return JobResult(manifest, rows)
         if dry_run:
             manifest.update({"mode": "DRY_RUN", "storage_backend": None, "storage_uri": None,
                              "manifest_uri": None, "rows_uri": None, "cache_publish": "SKIPPED"})

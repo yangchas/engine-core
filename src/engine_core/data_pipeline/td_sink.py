@@ -34,6 +34,7 @@ _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 INSERT_CHUNK_ROWS = 400
 SUM_REL_TOLERANCE = 1e-9
 SAMPLE_ROWS = 120
+BAOSTOCK_PROGRESS_VERSION = "baostock_progress"
 
 
 class TdUnavailable(RuntimeError):
@@ -220,11 +221,14 @@ class TdStore(Protocol):
     def schema_exists(self) -> bool: ...
     def ensure_schema(self) -> None: ...
     def read_versions(self, trade_date: str) -> list[dict[str, Any]]: ...
+    def delete_versions(self, trade_date: str) -> None: ...
     def write_version(self, meta: Mapping[str, Any]) -> None: ...
     def replace_day(self, trade_date: str, version: str, mapped: Mapping[str, Mapping[str, Any]]) -> None: ...
+    def upsert_day(self, trade_date: str, version: str, mapped: Mapping[str, Mapping[str, Any]]) -> None: ...
     def day_aggregates(self, trade_date: str) -> dict[str, Any]: ...
-    def read_day_rows(self, trade_date: str, symbols: Sequence[str]) -> dict[str, dict[str, Any]]: ...
+    def read_day_rows(self, trade_date: str, symbols: Sequence[str] | None = None) -> dict[str, dict[str, Any]]: ...
     def day_counts(self, dates: Sequence[str]) -> dict[str, int]: ...
+    def latest_watermarks(self) -> dict[str, str]: ...
     def close(self) -> None: ...
 
 
@@ -358,11 +362,32 @@ class TaosStore:
                      + ", ".join(_literal(values.get(column)) for column in self._META_COLUMNS) + ")")
         self._run(statement)
 
+    def delete_versions(self, trade_date: str) -> None:
+        _check_date(trade_date)
+        self._run(f"DELETE FROM {self.database}.{META_TABLE} WHERE trade_date = '{trade_date}'",
+                  missing_ok=True)
+
     # -- day rows ---------------------------------------------------------------------------------------------------
     def replace_day(self, trade_date: str, version: str, mapped: Mapping[str, Mapping[str, Any]]) -> None:
         _check_date(trade_date)
         ts = trade_day_ts_us(trade_date)
         self._run(f"DELETE FROM {self.database}.{SUPER_TABLE} WHERE ts = {ts}", missing_ok=True)
+        items = sorted(mapped.items())
+        for start in range(0, len(items), INSERT_CHUNK_ROWS):
+            parts = []
+            for symbol, values in items[start:start + INSERT_CHUNK_ROWS]:
+                if not _SYMBOL.match(symbol):
+                    raise ValueError("bad_symbol:" + symbol)
+                literal = ", ".join(_literal(values.get(name)) for name in DATA_COLUMNS)
+                parts.append(f"{self.database}.daily_kline_{symbol} USING {self.database}.{SUPER_TABLE} TAGS('{symbol}') "
+                             f"VALUES ({ts}, {literal}, {_literal(version)})")
+            self._run("INSERT INTO " + " ".join(parts))
+
+    def upsert_day(self, trade_date: str, version: str,
+                   mapped: Mapping[str, Mapping[str, Any]]) -> None:
+        """Upsert progress rows at their day timestamp without replacing other symbols."""
+        _check_date(trade_date)
+        ts = trade_day_ts_us(trade_date)
         items = sorted(mapped.items())
         for start in range(0, len(items), INSERT_CHUNK_ROWS):
             parts = []
@@ -407,12 +432,27 @@ class TaosStore:
         return {row[0]: {**dict(zip(DATA_COLUMNS, row[1:1 + len(DATA_COLUMNS)])), "version": row[-1]} for row in rows}
 
     def day_counts(self, dates: Sequence[str]) -> dict[str, int]:
-        out = {}
-        for day in dates:
+        ordered = list(dict.fromkeys(dates))
+        for day in ordered:
             _check_date(day)
-            rows = self._run(f"SELECT COUNT(*) FROM {self.database}.{SUPER_TABLE} WHERE {self._day_filter(day)}",
-                             missing_ok=True)
-            out[day] = int(rows[0][0]) if rows else 0
+        out = {day: 0 for day in ordered}
+        if not ordered:
+            return out
+        timestamps = {trade_day_ts_us(day): day for day in ordered}
+        values = ", ".join(str(ts) for ts in timestamps)
+        rows = self._run(f"SELECT CAST(ts AS BIGINT), COUNT(*) FROM {self.database}.{SUPER_TABLE} "
+                         f"WHERE ts IN ({values}) GROUP BY ts", missing_ok=True)
+        for value, count in rows:
+            if isinstance(value, datetime):
+                day = value.date().isoformat()
+            elif isinstance(value, _date):
+                day = value.isoformat()
+            elif isinstance(value, (int, float)):
+                day = datetime.fromtimestamp(float(value) / 1_000_000, timezone.utc).astimezone(SHANGHAI).date().isoformat()
+            else:
+                day = str(value or "")[:10]
+            if day in out:
+                out[day] = int(count or 0)
         return out
 
     def latest_watermarks(self) -> dict[str, str]:
@@ -445,6 +485,21 @@ def _check_date(value: str) -> None:
         raise ValueError("bad_trade_date:" + str(value))
 
 
+def has_baostock_date_evidence(trade_date: str, value: Mapping[str, Any]) -> bool:
+    """Only exact per-field source dates can support a complete daily_kline version."""
+    from .registry.daily_kline import DAILY_KLINE_QUALITY_FIELDS
+
+    # Catalog manifests store these fields at top level; daily_kline_versions may
+    # carry them there or in the serialized quality object, depending on schema age.
+    quality = value.get("quality") if isinstance(value.get("quality"), Mapping) else value
+    dates = value.get("source_dates", quality.get("source_dates"))
+    date_values = value.get("source_date_values", quality.get("source_date_values"))
+    consistent = value.get("source_dates_consistent", quality.get("source_dates_consistent"))
+    return (consistent is True and date_values == [trade_date] and
+            isinstance(dates, Mapping) and all(dates.get(field) == trade_date
+                                               for field in DAILY_KLINE_QUALITY_FIELDS))
+
+
 class MemoryTdStore:
     """In-memory fake with the same semantics (used by unit tests; can be told to fail)."""
 
@@ -472,6 +527,10 @@ class MemoryTdStore:
         self._guard("read_versions")
         return [dict(item) for item in self.versions.get(trade_date, [])]
 
+    def delete_versions(self, trade_date: str) -> None:
+        self._guard("delete_versions")
+        self.versions.pop(trade_date, None)
+
     def write_version(self, meta: Mapping[str, Any]) -> None:
         self._guard("write_version")
         bucket = self.versions.setdefault(str(meta["trade_date"]), [])
@@ -482,6 +541,12 @@ class MemoryTdStore:
     def replace_day(self, trade_date: str, version: str, mapped: Mapping[str, Mapping[str, Any]]) -> None:
         self._guard("replace_day")
         self.days[trade_date] = {symbol: {**dict(values), "version": version} for symbol, values in mapped.items()}
+
+    def upsert_day(self, trade_date: str, version: str,
+                   mapped: Mapping[str, Mapping[str, Any]]) -> None:
+        self._guard("upsert_day")
+        day = self.days.setdefault(trade_date, {})
+        day.update({symbol: {**dict(values), "version": version} for symbol, values in mapped.items()})
 
     def day_aggregates(self, trade_date: str) -> dict[str, Any]:
         self._guard("day_aggregates")
@@ -568,6 +633,131 @@ class DailyKlineTdSink:
         self.store = store
         self.root = Path(root).expanduser()
         self.clock = clock or (lambda: datetime.now(SHANGHAI))
+        self._schema_ready = False
+        self._prepared_progress: set[str] = set()
+        self._invalidated_progress: set[str] = set()
+        self._progress_version_cleared: set[str] = set()
+
+    def _ensure_schema(self) -> None:
+        if self._schema_ready:
+            return
+        if not self.store.schema_exists():
+            self.store.ensure_schema()
+        self._schema_ready = True
+
+    @staticmethod
+    def _daily_rows(trade_date: str, stored: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+        from ..daily_kline_capture import to_baostock_code
+
+        result = {}
+        for symbol, row in stored.items():
+            result[symbol] = {
+                "symbol": symbol, "code": to_baostock_code(symbol), "date": trade_date,
+                "open": row.get("open"), "high": row.get("high"), "low": row.get("low"),
+                "close": row.get("close"), "pre_close": row.get("pre_close"),
+                "pct_chg": row.get("pct_chg"), "volume": row.get("volume_shares"),
+                "amount_yuan": row.get("amount_yuan"), "turnover_pct": row.get("turnover_pct"),
+                "suspended": row.get("suspended") if isinstance(row.get("suspended"), bool) else None,
+                "source_trade_status": None, "source": "baostock", "degraded": False, "tier": 0,
+            }
+        return result
+
+    def prepare_progress(self, trade_date: str, expected_symbols: Sequence[str], *,
+                         latest_watermarks: Mapping[str, str] | None = None,
+                         day_count: int | None = None) -> dict[str, dict[str, Any]]:
+        """Load date progress once from TD and remove a stale complete marker before filling a gap."""
+        _check_date(trade_date)
+        self._ensure_schema()
+        if latest_watermarks is None:
+            latest_watermarks = self.store.latest_watermarks()
+        if day_count is None:
+            day_count = self.store.day_counts([trade_date]).get(trade_date, 0)
+        versions = self.store.read_versions(trade_date)
+        current = pick_best(versions)
+        if current is not None and str(current.get("provider") or current.get("source") or "").lower() != "baostock":
+            raise TdSourceRejected("td_daily_kline_requires_provider_baostock:" +
+                                    str(current.get("provider") or current.get("source") or "UNKNOWN"))
+        stored = self.store.read_day_rows(trade_date)
+        expected = {str(symbol).zfill(6) for symbol in expected_symbols}
+        present = set(stored) & expected
+        if current is not None and not has_baostock_date_evidence(trade_date, current):
+            raise TdVerifyError("td_progress_source_date_evidence_missing:" + trade_date)
+        if current is not None:
+            # A running retry may not leave a completion marker visible while rows are changing.
+            self.store.delete_versions(trade_date)
+            self._invalidated_progress.add(trade_date)
+            self._progress_version_cleared.add(trade_date)
+            if stored:
+                mapped, dropped = map_rows(self._daily_rows(trade_date, stored).values(),
+                                           {"provider": "baostock"})
+                if dropped:
+                    raise TdVerifyError("td_progress_invalid_existing_rows:" + trade_date)
+                self.store.upsert_day(trade_date, BAOSTOCK_PROGRESS_VERSION, mapped)
+        elif stored:
+            # With no daily_kline_versions row this date is incomplete regardless
+            # of row tags. Preserve its Baostock table rows as TD-owned progress.
+            mapped, dropped = map_rows(self._daily_rows(trade_date, stored).values(),
+                                       {"provider": "baostock"})
+            if dropped:
+                raise TdVerifyError("td_progress_invalid_existing_rows:" + trade_date)
+            self.store.upsert_day(trade_date, BAOSTOCK_PROGRESS_VERSION, mapped)
+            self._progress_version_cleared.add(trade_date)
+        else:
+            self._progress_version_cleared.add(trade_date)
+        # Watermarks/counts are captured as one aggregate per operation; the day rows provide exact symbols.
+        self.progress_state = getattr(self, "progress_state", {})
+        self.progress_state[trade_date] = {"watermark_symbols": len(latest_watermarks),
+                                           "day_row_count": int(day_count),
+                                           "written_symbols": len(stored)}
+        self._prepared_progress.add(trade_date)
+        return self._daily_rows(trade_date, {symbol: stored[symbol] for symbol in present})
+
+    def write_progress(self, trade_date: str, rows: Sequence[Mapping[str, Any]],
+                       manifest: Mapping[str, Any]) -> int:
+        """Persist Baostock rows immediately; progress never creates a daily_kline_versions row."""
+        _check_date(trade_date)
+        provider = str(manifest.get("provider") or manifest.get("source") or "").lower()
+        if provider != "baostock":
+            raise TdSourceRejected("td_daily_kline_requires_provider_baostock:" + (provider or "UNKNOWN"))
+        if trade_date not in self._prepared_progress:
+            raise RuntimeError("td_progress_day_not_prepared:" + trade_date)
+        for row in rows:
+            if row.get("date") != trade_date:
+                raise TdVerifyError("td_progress_trade_date_mismatch:" + trade_date)
+        self._ensure_schema()
+        mapped, dropped = map_rows(rows, {**dict(manifest), "provider": "baostock"})
+        if dropped:
+            raise TdVerifyError("td_progress_invalid_rows:" + str(dropped))
+        if not mapped:
+            return 0
+        if trade_date not in self._progress_version_cleared:
+            self.store.delete_versions(trade_date)
+            self._invalidated_progress.add(trade_date)
+            self._progress_version_cleared.add(trade_date)
+        self.store.upsert_day(trade_date, BAOSTOCK_PROGRESS_VERSION, mapped)
+        return len(mapped)
+
+    def read_progress_rows(self, trade_date: str, symbols: Sequence[str] | None = None) -> dict[str, dict[str, Any]]:
+        """Internal resume view: includes unversioned partial rows and must not be used as complete coverage."""
+        _check_date(trade_date)
+        stored = self.store.read_day_rows(trade_date, symbols)
+        return self._daily_rows(trade_date, stored)
+
+    def read_complete_day(self, trade_date: str) -> dict[str, dict[str, Any]]:
+        """Consumer view: returns rows only when Baostock version metadata covers the stored date rows."""
+        _check_date(trade_date)
+        versions = self.store.read_versions(trade_date)
+        current = pick_best(versions)
+        if current is None or str(current.get("provider") or current.get("source") or "").lower() != "baostock":
+            return {}
+        if not has_baostock_date_evidence(trade_date, current):
+            return {}
+        rows = self.store.read_day_rows(trade_date)
+        if (not rows or int(current.get("row_count") or 0) != len(rows) or
+                any(str(row.get("version") or "") != str(current.get("version") or "")
+                    for row in rows.values())):
+            return {}
+        return self._daily_rows(trade_date, rows)
 
     def _catalog(self) -> dict[str, Any]:
         from .storage import ArtifactCatalog
@@ -585,6 +775,9 @@ class DailyKlineTdSink:
                                                   "missing") if key in quality}
         keep["dropped_rows"] = dropped
         keep["volume_factor"] = volume_factor(best)
+        keep["source_dates"] = dict(best.get("source_dates") or {})
+        keep["source_date_values"] = list(best.get("source_date_values") or [])
+        keep["source_dates_consistent"] = best.get("source_dates_consistent") is True
         provider = str(best.get("provider") or best.get("source") or "")
         return {"ts": ts, "trade_date": trade_date, "version": str(best["version"]),
                 "business_status": normalize_status(best.get("business_status")),
@@ -662,6 +855,8 @@ class DailyKlineTdSink:
             raise TdSourceRejected("td_daily_kline_requires_provider_baostock:" + (provider or "UNKNOWN"))
         if str(manifest.get("trade_date") or trade_date) != trade_date:
             raise TdVerifyError("td_trade_date_mismatch:" + trade_date)
+        if not has_baostock_date_evidence(trade_date, manifest):
+            raise TdVerifyError("td_baostock_date_evidence_incomplete:" + trade_date)
         version = str(manifest.get("version") or "")
         if not version or not rows or int(manifest.get("row_count") or -1) != len(rows):
             raise TdVerifyError("td_partition_manifest_mismatch:" + trade_date)
@@ -704,6 +899,10 @@ class DailyKlineTdSink:
         if str(best.get("provider") or "").lower() != "baostock":
             raise TdSourceRejected("td_daily_kline_requires_provider_baostock:" +
                                    str(best.get("provider") or best.get("source") or "UNKNOWN"))
+        if not has_baostock_date_evidence(trade_date, best):
+            return SyncOutcome(trade_date, "incomplete_date_evidence", str(best.get("version")),
+                               best.get("business_status"), int(best.get("row_count") or 0),
+                               {"reason": "source_dates_incomplete"})
         if not self.store.schema_exists():
             self.store.ensure_schema()
         existing = self.store.read_versions(trade_date)

@@ -16,11 +16,24 @@ def _seed_td_day(store, day, rows):
     assert dropped == 0
     version = "seed-" + day
     store.replace_day(day, version, mapped)
+    source_dates = {field: day for field in ("open", "high", "low", "close", "pre_close",
+                                              "pct_chg", "volume", "amount_yuan", "turnover_pct")}
     store.write_version({"ts": int(date.fromisoformat(day).strftime("%Y%m%d")) * 1_000_000,
                          "trade_date": day, "version": version, "provider": "baostock", "source": "baostock",
                          "business_status": "FORMAL", "rank_level": 3, "needs_upgrade": False,
                          "row_count": len(mapped), "sha256": "seed-" + day,
+                         "source_dates": source_dates, "source_date_values": [day],
+                         "source_dates_consistent": True,
                          "available_at": day + "T18:00:00+08:00"})
+
+
+def _seed_td_progress_day(store, root, day, rows, expected_symbols):
+    from engine_core.data_pipeline.td_sink import DailyKlineTdSink
+
+    sink = DailyKlineTdSink(store, root)
+    sink.prepare_progress(day, expected_symbols)
+    normalized = [{**row, "date": day} for row in rows]
+    sink.write_progress(day, normalized, {"provider": "baostock", "field_units": {"volume": "shares"}})
 
 
 def _seed_real_symbol_universe(root, day, symbols):
@@ -251,7 +264,7 @@ def test_real_td_waterline_with_no_missing_days_returns_no_gaps(tmp_path):
     outcome = run_td_daily_kline_gapfill(tmp_path, target, store=store,
                                          history_min_trading_days=1, client=client)
 
-    assert outcome["status"] == "NO_GAPS"
+    assert outcome["status"] == "OK" and outcome["eligibility_status"] == "NO_GAPS"
     assert outcome["range_symbols"] == 0 and outcome["range_queries"] == 0
     assert client.queries == []
     assert client.module.query_all_stock_calls == 0
@@ -347,31 +360,27 @@ def test_real_partial_catalog_waterline_requests_only_source_empty_symbols(
     client = RangeClient()
     store = MemoryTdStore()
     store.ensure_schema()
-    outcome = run_td_daily_kline_gapfill(tmp_path, target, store=store, history_min_trading_days=1,
-                                         client=client, only_source_empty=only_source_empty,
-                                         minimum_coverage=0.90,
-                                         completion_policy={"formal_coverage_threshold": 0.995,
-                                                            "source_empty_max": 20})
+    _seed_td_progress_day(store, tmp_path, target, partition_rows, sorted(active_symbols))
+    with pytest.raises(RuntimeError, match="BAOSTOCK_GAP_UNRESOLVED"):
+        run_td_daily_kline_gapfill(tmp_path, target, store=store, history_min_trading_days=1,
+                                   client=client, only_source_empty=only_source_empty,
+                                   minimum_coverage=0.90,
+                                   completion_policy={"formal_coverage_threshold": 0.995,
+                                                      "source_empty_max": 20})
 
     requested = {symbol for symbol, start, end in client.queries if start == target and end == target}
     if coverage_variant == "coverage_0668":
         assert requested == set()
         assert client.queries == []
-        assert outcome["status"] == "NOT_ELIGIBLE"
-        assert outcome["range_symbols"] == 0 and outcome["range_queries"] == 0
+        assert store.read_versions(target) == []
         return
     assert requested == expected_gap, (
         f"requested={len(requested)} expected={len(expected_gap)} "
         f"unexpected={sorted(requested - expected_gap)[:8]} missing={sorted(expected_gap - requested)[:8]}"
     )
     assert len(client.queries) == len(expected_gap)
-    assert outcome["status"] == "WAITING"
-    assert outcome["range_symbols"] == len(expected_gap)
-    assert outcome["range_queries"] == len(expected_gap)
-    assert outcome["remaining_missing"] == 74
-    assert outcome["remaining_source_empty"] == 73
-    assert outcome["partitions"][0]["business_status"] == "PARTIAL"
-    assert outcome["partitions"][0]["td_publish"] == "SKIPPED_PARTIAL"
+    assert store.day_counts([target])[target] == len(partition_rows)
+    assert store.read_versions(target) == []
 
 
 def _seed_real_c594_small_gap(root):
@@ -426,7 +435,7 @@ def test_gapfill_caches_real_source_universe_and_uses_nearest_local_universe(tmp
     from engine_core.data_pipeline.daily_kline_gapfill import run_td_daily_kline_gapfill
     from engine_core.data_pipeline.td_sink import MemoryTdStore
 
-    target, selected, missing_symbol, _bars, source_payload = _seed_real_c594_small_gap(tmp_path)
+    target, selected, missing_symbol, bars, source_payload = _seed_real_c594_small_gap(tmp_path)
 
     class Result:
         error_code = "0"
@@ -464,7 +473,7 @@ def test_gapfill_caches_real_source_universe_and_uses_nearest_local_universe(tmp
 
         def query(self, symbol, start, end):
             self.queries.append((symbol, start, end))
-            return []
+            return [{**bars[symbol], "date": target}]
 
         def logout(self):
             return True
@@ -472,6 +481,8 @@ def test_gapfill_caches_real_source_universe_and_uses_nearest_local_universe(tmp
     client = RangeClient()
     store = MemoryTdStore()
     store.ensure_schema()
+    _seed_td_progress_day(store, tmp_path, target,
+                          [bars[symbol] for symbol in selected[:-1]], selected)
     policy = {"formal_coverage_threshold": 0.995, "source_empty_max": 20}
     first = run_td_daily_kline_gapfill(tmp_path, target, store=store, history_min_trading_days=1,
                                        client=client, only_source_empty=True, completion_policy=policy)
@@ -484,10 +495,11 @@ def test_gapfill_caches_real_source_universe_and_uses_nearest_local_universe(tmp
     assert cache["provider"] == "baostock.query_all_stock" and cache["trade_date"] == target
     assert cache["row_count"] == len(source_payload["rows"]) and cache["symbol_count"] == len(cache["symbols"])
     assert cache["fetched_at"].endswith("+08:00")
-    assert first["range_queries"] == second["range_queries"] == 1
+    assert first["range_queries"] == 1 and second["range_queries"] == 0
     assert first["source_universe_provenance"]["cache"] == "MISS"
     assert second["source_universe_provenance"]["cache"] == "HIT"
-    assert client.queries == [(missing_symbol, target, target), (missing_symbol, target, target)]
+    assert client.queries == [(missing_symbol, target, target)]
+    assert len(store.read_versions(target)) == 1
     assert len(selected) == 21
 
 
@@ -545,6 +557,8 @@ def test_gapfill_uses_latest_real_universe_when_target_partition_is_missing(tmp_
     client = RangeClient()
     store = MemoryTdStore()
     store.ensure_schema()
+    _seed_td_progress_day(store, tmp_path, target,
+                          [bars[symbol] for symbol in _selected[:-1]], _selected)
     outcome = run_td_daily_kline_gapfill(
         tmp_path, target, store=store, history_min_trading_days=1, client=client,
         only_source_empty=True,
@@ -593,6 +607,8 @@ def test_gapfill_timeout_classification_falls_back_to_source_empty_and_keeps_fet
     client = RangeClient()
     store = MemoryTdStore()
     store.ensure_schema()
+    _seed_td_progress_day(store, tmp_path, target,
+                          [bars[symbol] for symbol in _selected[:-1]], _selected)
     outcome = run_td_daily_kline_gapfill(
         tmp_path, target, store=store, history_min_trading_days=1, client=client,
         only_source_empty=True, source_universe_timeout_seconds=1,
