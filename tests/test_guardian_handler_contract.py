@@ -43,6 +43,21 @@ def test_static_data_refresh_event_routes_to_adapter(monkeypatch, tmp_path):
     assert seen == {"event": event, "now": now, "root": tmp_path}
 
 
+def test_incomplete_kaipan_plate_members_is_retryable():
+    from examples import guardian_handler
+
+    class IncompletePlateMembers(RuntimeError):
+        error_code = "KAIPAN_PLATE_MEMBERS_INCOMPLETE"
+
+    code, payload = guardian_handler._failure_response(
+        {"event": "static_data_refresh_0850", "args": {}},
+        error=IncompletePlateMembers("failed_plates=2"),
+    )
+    assert code == 75
+    assert payload["error_code"] == "KAIPAN_PLATE_MEMBERS_INCOMPLETE"
+    assert payload["retryable"] is True
+
+
 def test_handler_run_contract_round_trip_close_capture_not_applicable():
     event_id = next(e["event_id"] for e in _schedule_events() if e["handler"] == "close_capture")
     result = subprocess.run([sys.executable, "examples/guardian_handler.py", "run"],

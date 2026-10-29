@@ -10,6 +10,7 @@ import json
 import os
 import re
 import time as time_module
+from collections import Counter
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Mapping
@@ -25,6 +26,12 @@ from engine_core.data_pipeline.storage import ArtifactCatalog
 from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+class KaipanPlateMembersIncomplete(RuntimeError):
+    """A whole reference snapshot can be retried when any plate fetch failed."""
+
+    error_code = "KAIPAN_PLATE_MEMBERS_INCOMPLETE"
 
 
 def _snapshot(catalog: ArtifactCatalog, dataset: str):
@@ -221,7 +228,21 @@ def refresh_static_data(event, now: datetime, guardian_root: Path | None = None)
                 fetch_started = time_module.monotonic()
                 fetched = provider.plate_members(target_day, concurrency=4)
                 if fetched.get("partial"):
-                    raise RuntimeError("kaipan_plate_members_incomplete_retry_all")
+                    failed_plates = fetched.get("failed_plates") or []
+                    failure_types = Counter(str(row.get("error_type") or "UNKNOWN")
+                                            for row in failed_plates if isinstance(row, Mapping))
+                    failed_codes = [str(row.get("plate_code") or "") for row in failed_plates
+                                    if isinstance(row, Mapping) and row.get("plate_code")]
+                    elapsed_ms = max(0, int((time_module.monotonic() - fetch_started) * 1000))
+                    raise KaipanPlateMembersIncomplete(
+                        "kaipan_plate_members_incomplete_retry_all:"
+                        f"failed={len(failed_plates)},completed={fetched.get('completed_plate_count', 0)},"
+                        f"queried={fetched.get('queried_plate_count', 0)},"
+                        f"unqueried={fetched.get('unqueried_plate_count', 0)},"
+                        f"requests={fetched.get('request_count', 0)},elapsed_ms={elapsed_ms},"
+                        f"failure_types={json.dumps(dict(sorted(failure_types.items())), separators=(',', ':'))},"
+                        f"failed_plate_codes={','.join(failed_codes[:20])}"
+                    )
                 source_dates["plate_registry"] = {
                     "trade_date": registry_manifest.get("trade_date"),
                     "version": registry_manifest.get("version"),
