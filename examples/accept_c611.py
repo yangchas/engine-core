@@ -129,7 +129,8 @@ def main() -> int:
             raise RuntimeError("td_readback_failed")
 
         kline_store, ladder_store = TaosStore("core_data"), TaosLadderStore("core_data")
-        crosscheck: dict[str, Any] = {"kline_mismatch_count": 0, "streak_mismatch_count": 0,
+        crosscheck: dict[str, Any] = {"kline_mismatch_count": 0, "kline_missing_count": 0,
+                                     "kline_compared_symbol_count": 0, "streak_mismatch_count": 0,
                                      "reasons": []}
         for day in [args.trade_date]:
             expected_rows = expected_by_day[day]
@@ -139,21 +140,22 @@ def main() -> int:
             for symbol, item in expected_rows.items():
                 bar = kline.get(symbol)
                 if bar is None:
-                    crosscheck["kline_mismatch_count"] += 1
+                    crosscheck["kline_missing_count"] += 1
                     crosscheck["reasons"].append({"trade_date": day, "symbol": symbol,
                                                   "check": "kline", "reason": "same_day_daily_kline_missing"})
-                    continue
-                for field, source_field, tolerance in (("price", "close", Decimal("0.01")),
-                                                        ("trade_amount_yuan", "amount_yuan", Decimal("100")),
-                                                        ("pct_chg", "pct_chg", Decimal("0.02"))):
-                    try:
-                        delta = abs(Decimal(str(item.get(field))) - Decimal(str(bar.get(source_field))))
-                    except (InvalidOperation, TypeError):
-                        delta = Decimal("Infinity")
-                    if delta > tolerance:
-                        crosscheck["kline_mismatch_count"] += 1
-                        crosscheck["reasons"].append({"trade_date": day, "symbol": symbol, "check": field,
-                                                      "reason": "daily_kline_value_differs", "delta": str(delta)})
+                else:
+                    crosscheck["kline_compared_symbol_count"] += 1
+                    for field, source_field, tolerance in (("price", "close", Decimal("0.01")),
+                                                            ("trade_amount_yuan", "amount_yuan", Decimal("100")),
+                                                            ("pct_chg", "pct_chg", Decimal("0.02"))):
+                        try:
+                            delta = abs(Decimal(str(item.get(field))) - Decimal(str(bar.get(source_field))))
+                        except (InvalidOperation, TypeError):
+                            delta = Decimal("Infinity")
+                        if delta > tolerance:
+                            crosscheck["kline_mismatch_count"] += 1
+                            crosscheck["reasons"].append({"trade_date": day, "symbol": symbol, "check": field,
+                                                          "reason": "daily_kline_value_differs", "delta": str(delta)})
                 derived = ladder.get(symbol)
                 if derived is None:
                     crosscheck["streak_mismatch_count"] += 1
