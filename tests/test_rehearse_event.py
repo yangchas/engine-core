@@ -65,6 +65,8 @@ def test_selected_event_args_can_be_overridden_for_isolated_rehearsal() -> None:
     target = next(event for event in prepared["events"]
                   if event["event_id"] == event_ids["limit_up_detail_d1"])
     assert target["args"]["backfill_depth"] == 5
+    profile = prepared["profiles"]["limit_up_detail_d1"]
+    assert all(tier["args"]["backfill_depth"] == 5 for tier in profile["ladder"])
 
 
 def test_state_root_length_limit() -> None:

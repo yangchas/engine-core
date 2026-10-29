@@ -331,6 +331,8 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
              if isinstance(event, dict) and event.get("event_id")}
     requested = list(dict.fromkeys([event_id, *with_events]))
     schedule_names = list(dict.fromkeys(_schedule_event_name(name) for name in requested))
+    main_schedule_name = _schedule_event_name(event_id)
+    main_profile_name = (by_id.get(main_schedule_name) or {}).get("profile")
     missing_ids = [name for name in requested if _schedule_event_name(name) not in by_id]
     if missing_ids:
         raise ValueError("event_not_in_schedule:" + ",".join(missing_ids))
@@ -397,7 +399,18 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
     for event in selected:
         name = event.get("profile")
         if name and name in schedule["profiles"]:
-            profiles[name] = copy.deepcopy(schedule["profiles"][name])
+            profile = copy.deepcopy(schedule["profiles"][name])
+            if event_args and name == main_profile_name:
+                ladder = profile.get("ladder")
+                if isinstance(ladder, list):
+                    for tier in ladder:
+                        if not isinstance(tier, dict):
+                            continue
+                        tier_args = tier.get("args") or {}
+                        if not isinstance(tier_args, dict):
+                            raise ValueError("event_args_tier_not_object:" + str(name))
+                        tier["args"] = {**tier_args, **event_args}
+            profiles[name] = profile
     prepared = copy.deepcopy(schedule)
     prepared["events"] = selected
     prepared["profiles"] = profiles
