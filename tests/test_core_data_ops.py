@@ -361,3 +361,23 @@ def test_core_data_daily_main_runs_postmarket_with_injected_adapter(monkeypatch,
     output = capsys.readouterr().out
     assert code == 0, output
     assert json.loads(output.splitlines()[-1])["status"] == "READY"
+
+
+def test_core_data_daily_can_skip_redis_publish_while_writing(monkeypatch, tmp_path, capsys):
+    from examples import core_data_daily, run_data_jobs
+
+    captured = {}
+    monkeypatch.delenv("CORE_REDIS_URL", raising=False)
+    monkeypatch.setattr(run_data_jobs, "_default_adapters", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(core_data_daily, "run_daily_phase",
+                        lambda *args, **kwargs: captured.update(kwargs) or {"status": "READY", "jobs": []})
+
+    code = core_data_daily.main([
+        "--phase", "postmarket", "--date", "2026-10-23", "--artifact-root", str(tmp_path),
+        "--write", "--skip-redis-publish", "--no-lock",
+    ])
+
+    assert code == 0
+    assert captured["write"] is True
+    assert captured["redis"] is None
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["status"] == "READY"

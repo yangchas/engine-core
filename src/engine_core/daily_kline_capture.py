@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 _BAOSTOCK_FIELDS = (
     "date", "code", "open", "high", "low", "close", "preclose", "volume",
-    "amount", "turn", "pctChg",
+    "amount", "turn", "pctChg", "tradestatus",
 )
 _NUMERIC_FIELDS = {
     "open": ("open",), "high": ("high",), "low": ("low",), "close": ("close",),
@@ -118,8 +118,13 @@ def parse_row(raw: Mapping[str, Any] | Sequence[Any]) -> dict[str, Any]:
     for output_name, candidates in _NUMERIC_FIELDS.items():
         value = next((data[name] for name in candidates if name in data), None)
         row[output_name] = _as_float(value)
+    raw_trade_status = data.get("tradestatus", data.get("trade_status"))
+    trade_status = str(raw_trade_status).strip() if raw_trade_status not in (None, "") else None
+    row["source_trade_status"] = trade_status if trade_status in {"0", "1"} else None
     volume, amount = row["volume"], row["amount_yuan"]
     row["suspended"] = (volume is None or volume == 0) and (amount is None or amount == 0)
+    if row["source_trade_status"] is not None:
+        row["suspended"] = row["source_trade_status"] == "0"
     return row
 
 

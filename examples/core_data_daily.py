@@ -71,6 +71,8 @@ def main(argv=None) -> int:
     parser.add_argument("--phase", required=True, choices=["premarket", "intraday", "postmarket"])
     parser.add_argument("--date", default=date.today().isoformat())
     parser.add_argument("--write", action="store_true")
+    parser.add_argument("--skip-redis-publish", action="store_true",
+                        help="persist postmarket artifacts without publishing Redis cache views")
     parser.add_argument("--td-write", action="store_true")
     parser.add_argument("--adapter", help="module:function returning adapter mapping")
     parser.add_argument("--max-requests", type=int, default=30)
@@ -104,7 +106,9 @@ def main(argv=None) -> int:
         parser.error("--symbols-file is only valid with --phase postmarket")
     if args.symbols_file and (args.write or args.td_write):
         parser.error("--symbols-file cannot publish to Redis or TD")
-    if args.write and not os.getenv("CORE_REDIS_URL"):
+    if args.skip_redis_publish and args.phase != "postmarket":
+        parser.error("--skip-redis-publish is only valid with --phase postmarket")
+    if args.write and not os.getenv("CORE_REDIS_URL") and not args.skip_redis_publish:
         parser.error("--write requires CORE_REDIS_URL")
     if args.symbols_file and not artifact_root_explicit:
         parser.error("--symbols-file requires an explicit --artifact-root")
@@ -131,7 +135,7 @@ def main(argv=None) -> int:
     if args.symbols_file:
         return _sample_probe(args, root, adapters)
     redis = None
-    if args.write and os.getenv("CORE_REDIS_URL"):
+    if args.write and os.getenv("CORE_REDIS_URL") and not args.skip_redis_publish:
         import redis as redis_package
         redis = redis_package.Redis.from_url(os.environ["CORE_REDIS_URL"], decode_responses=True)
     from engine_core.data_pipeline.trade_calendar import TradeCalendarStore

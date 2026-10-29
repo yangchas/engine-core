@@ -38,6 +38,19 @@ def test_mapping_columns_units_and_nulls():
     assert gap["volume_shares"] is None and gap["amount_yuan"] is None and gap["suspended"] is None
 
 
+def test_real_td_child_table_name_is_daily_kline_scoped(monkeypatch):
+    from engine_core.data_pipeline.td_sink import TaosStore
+
+    store = TaosStore("core_dev_c616_test")
+    statements = []
+    monkeypatch.setattr(store, "_run", lambda sql, **_kwargs: statements.append(sql) or [])
+    store.replace_day(DAY, "sha256-c616", {"000010": {}})
+
+    insert = statements[-1]
+    assert "core_dev_c616_test.daily_kline_000010 USING core_dev_c616_test.daily_kline_v1" in insert
+    assert "core_dev_c616_test.d_000010 USING" not in insert
+
+
 def test_sync_writes_reads_back_and_is_idempotent(tmp_path):
     commit_day(tmp_path, DAY, "baostock")
     sink, store = _sink(tmp_path)

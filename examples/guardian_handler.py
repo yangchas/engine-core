@@ -198,27 +198,61 @@ def _has_baostock_daily_kline(root, day: str, minimum_coverage: float = 0.90) ->
     """The gap-only path repairs a nearly complete Baostock partition. With no Baostock partition, or one far below
     ``minimum_coverage`` (a first pull cut short by its time budget, e.g. 2026-10-29: 3382/5217 = 0.648), fall through to
     the full close pull, which resumes from its checkpoints. (2026-10-29: every Baostock event carried the gap policy, so
-    no event ever fetched the day, then none continued a partial first pull.)"""
+    no event ever fetched the day, then none continued a partial first pull.) A full-coverage version with no missing
+    symbols but incomplete metadata also falls through to refresh the partition."""
     try:
         import json
         from engine_core.data_pipeline.storage import ArtifactCatalog
         catalog = ArtifactCatalog(root)
-        entries = catalog.read().get("datasets", {}).get("daily_kline", {}).get("dates", {}).get(day, [])
-        for entry in entries:
-            manifest = json.loads(Path(str(entry.get("manifest") or "")).read_text(encoding="utf-8"))
-            if str(manifest.get("provider") or "").lower() != "baostock":
-                continue
-            quality = manifest.get("quality") or {}
-            coverage = quality.get("coverage")
-            if coverage is None:
-                expected = quality.get("expected_count") or manifest.get("expected_count")
-                rows = manifest.get("row_count")
-                coverage = (float(rows) / float(expected)) if expected and rows is not None else None
-            if coverage is not None and float(coverage) >= float(minimum_coverage):
-                return True
+        manifest_path = catalog.locate("daily_kline", day)
+        if manifest_path is None:
+            return False
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if str(manifest.get("provider") or "").lower() != "baostock":
+            return False
+        quality = manifest.get("quality") or {}
+        coverage = quality.get("coverage")
+        expected = quality.get("expected_count") or manifest.get("expected_count")
+        rows = manifest.get("row_count")
+        if coverage is None:
+            coverage = (float(rows) / float(expected)) if expected and rows is not None else None
+        if coverage is None or float(coverage) < float(minimum_coverage):
+            return False
+        missing = quality.get("missing")
+        if type(missing) is int:
+            return missing > 0
+        return bool(expected and rows is not None and int(rows) < int(expected))
     except Exception:
         return False
-    return False
+
+
+def _formal_baostock_daily_kline(root, day: str) -> dict | None:
+    """Return today's fully evidenced Baostock version, if another event already completed it."""
+    try:
+        import json
+        from engine_core.data_pipeline.storage import ArtifactCatalog
+
+        catalog = ArtifactCatalog(root)
+        manifest_path = catalog.locate("daily_kline", day)
+        if manifest_path is None:
+            return None
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        quality = manifest.get("quality") if isinstance(manifest.get("quality"), dict) else {}
+        source_dates = manifest.get("source_dates") if isinstance(manifest.get("source_dates"), dict) else {}
+        fields = ("open", "high", "low", "close", "pre_close", "pct_chg", "volume", "amount_yuan")
+        completeness = manifest.get("field_completeness")
+        if (manifest.get("provider") != "baostock" or manifest.get("business_status") != "FORMAL" or
+                quality.get("coverage", 0) < 0.995 or manifest.get("source_asof") != day or
+                manifest.get("source_dates_consistent") is not True or
+                manifest.get("source_date_values") != [day] or
+                any(source_dates.get(field) != day for field in fields) or
+                not isinstance(completeness, dict) or
+                any(str(completeness.get(field, "")).upper() not in {"COMPLETE", "SUSPENDED_ONLY"}
+                    for field in fields)):
+            return None
+        return manifest
+    except (OSError, ValueError, TypeError):
+        return None
 
 def _run(request):
     from examples.core_guardian import _command_handler
@@ -338,6 +372,15 @@ def _run(request):
                         "retryable": True, "artifacts": [], "detail": result}
         return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
                    "artifacts": [], "detail": result}
+    if name == "baostock_probe" and not dry:
+        completed = _formal_baostock_daily_kline(root, target_day)
+        if completed is not None:
+            return 0, {"contract": 1, "status": "ok", "error_code": "",
+                       "retryable": False, "artifacts": [],
+                       "detail": {"status": "ALREADY_COMPLETE", "trade_date": target_day,
+                                  "version": completed.get("version"),
+                                  "coverage": (completed.get("quality") or {}).get("coverage"),
+                                  "queries": 0}}
     if (name == "baostock_probe" and isinstance(args.get("baostock_gapfill_policy"), dict) and not dry
             and _has_baostock_daily_kline(root, target_day, float(args["baostock_gapfill_policy"].get("minimum_coverage", 0.90)))):
         from engine_core.guardian.daily_kline_backfill import run_daily_kline_backfill

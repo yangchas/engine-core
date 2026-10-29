@@ -325,11 +325,11 @@ def _schedule_event_name(event_id: str) -> str:
 
 
 def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[str], run_token: str,
-                     now: datetime, minutes: int, *,
+                     now: datetime, minutes: int, *, window_minutes: int = 60,
                      event_args: dict[str, Any] | None = None,
                      isolate_target: bool = False) -> tuple[dict[str, Any], dict[str, str]]:
-    if minutes < 1:
-        raise ValueError("minutes_must_be_at_least_1")
+    if minutes < 1 or window_minutes < 1:
+        raise ValueError("rehearsal_minutes_must_be_at_least_1")
     by_id = {str(event.get("event_id")): event for event in schedule["events"]
              if isinstance(event, dict) and event.get("event_id")}
     requested = list(dict.fromkeys([event_id, *with_events]))
@@ -383,7 +383,7 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
     trigger = now.astimezone(TZ) + timedelta(minutes=minutes)
     # Keep the archived retry/backoff semantics runnable; e.g. limit_pool_d1
     # has a 30-minute source-ladder backoff after its first attempt.
-    deadline = trigger + timedelta(minutes=60)
+    deadline = trigger + timedelta(minutes=window_minutes)
     if deadline.date() != trigger.date():
         raise ValueError("rehearsal_window_crosses_midnight")
     at_text = trigger.strftime("%H:%M:%S")
@@ -1229,6 +1229,8 @@ def _parser() -> argparse.ArgumentParser:
                         help="override the heavy-load gate in this isolated rehearsal only")
     parser.add_argument("--isolate-target", action="store_true",
                         help="clear dependencies only on the selected event in the temporary schedule")
+    parser.add_argument("--window-minutes", type=int, default=60,
+                        help="temporary event deadline window; default 60")
     parser.add_argument("--refresh-output", action="store_true",
                         help="hide this event's output date in the temporary catalog to exercise a fresh write")
     parser.add_argument("--refresh-output-event", action="append", default=[],
@@ -1337,11 +1339,12 @@ def run_rehearsal(args: argparse.Namespace) -> int:
         now = datetime.now(TZ)
         trigger = now + timedelta(minutes=args.minutes)
         trigger_at = trigger.isoformat(timespec="seconds")
-        deadline_at = (trigger + timedelta(minutes=60)).isoformat(timespec="seconds")
+        deadline_at = (trigger + timedelta(minutes=args.window_minutes)).isoformat(timespec="seconds")
         event_args_overrides = parse_event_args(args.event_args_json)
         prepared, event_ids = prepare_schedule(archive_schedule, args.event,
                                                [item for group in args.with_events for item in group],
                                                root.name, now, args.minutes,
+                                               window_minutes=args.window_minutes,
                                                event_args=event_args_overrides,
                                                isolate_target=args.isolate_target)
         if args.isolation_heavy_max_load5 is not None:
@@ -1586,6 +1589,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--minutes must be at least 1")
     if args.timeout_minutes < 1:
         parser.error("--timeout-minutes must be at least 1")
+    if args.window_minutes < 1:
+        parser.error("--window-minutes must be at least 1")
     try:
         return run_rehearsal(args)
     except (ValueError, RuntimeError) as exc:

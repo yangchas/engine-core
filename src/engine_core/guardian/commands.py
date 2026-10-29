@@ -356,6 +356,7 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
                 cmd.extend(["--baostock-total-timeout-seconds", str(budget)])
             _append_baostock_no_progress(cmd, event_args)
             _append_baostock_completion_policy(cmd, event_args)
+            cmd.append("--skip-redis-publish")
         if opts.write:
             cmd.append("--write")
         if opts.td_write or opts.write:

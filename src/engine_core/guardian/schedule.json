@@ -246,7 +246,7 @@
           "attempts": 32,
           "backoff": "30m*1",
           "backoff_cap": "30m",
-          "timeout": "20m",
+          "timeout": "130m",
           "budget_enabled": false,
           "until": "late_until"
         }
@@ -2745,6 +2745,7 @@
       "at": "17:40:00",
       "profile": "policy_11",
       "args": {
+        "dataset": "daily_kline",
         "failure_classes": {
           "retryable": {
             "exit_codes": [
@@ -2817,7 +2818,8 @@
         },
         "baostock_gapfill_policy": {
           "minimum_coverage": 0.9
-        }
+        },
+        "budget_ratio": 1.0
       },
       "late_until_date_offset_days": 1,
       "late_until_date_offset_error_codes": [
@@ -2858,6 +2860,7 @@
       "at": "17:50:00",
       "profile": "policy_11",
       "args": {
+        "dataset": "daily_kline",
         "failure_classes": {
           "retryable": {
             "exit_codes": [
@@ -2930,7 +2933,8 @@
         },
         "baostock_gapfill_policy": {
           "minimum_coverage": 0.9
-        }
+        },
+        "budget_ratio": 1.0
       },
       "late_until_date_offset_days": 1,
       "late_until_date_offset_error_codes": [
@@ -3034,6 +3038,7 @@
       "at": "18:30:00",
       "profile": "policy_11",
       "args": {
+        "dataset": "daily_kline",
         "failure_classes": {
           "retryable": {
             "exit_codes": [
@@ -3106,7 +3111,8 @@
         },
         "baostock_gapfill_policy": {
           "minimum_coverage": 0.9
-        }
+        },
+        "budget_ratio": 1.0
       },
       "late_until_date_offset_days": 1,
       "late_until_date_offset_error_codes": [
@@ -3144,6 +3150,7 @@
       "at": "20:00:00",
       "profile": "policy_11",
       "args": {
+        "dataset": "daily_kline",
         "failure_classes": {
           "retryable": {
             "exit_codes": [
@@ -3216,7 +3223,8 @@
         },
         "baostock_gapfill_policy": {
           "minimum_coverage": 0.9
-        }
+        },
+        "budget_ratio": 1.0
       },
       "late_until_date_offset_days": 1,
       "silent_until_last": true,

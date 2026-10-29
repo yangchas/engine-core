@@ -422,6 +422,9 @@ class JobRunner:
                 manifest[key] = fetch_meta[key]
         if name == "daily_kline":
             manifest["provider_chain"] = provider_chain
+            manifest["source_dates"] = dict(fetch_meta.get("source_dates") or {})
+            manifest["source_date_values"] = list(fetch_meta.get("source_date_values") or [])
+            manifest["source_dates_consistent"] = fetch_meta.get("source_dates_consistent")
             provider = fetch_meta.get("provider")
             if provider not in {"baostock", "wencai", "q2_final"}:
                 provider = "baostock" if isinstance(fetch_meta.get("baostock_timing"), Mapping) else (
@@ -463,6 +466,13 @@ class JobRunner:
         if dry_run:
             manifest.update({"mode": "DRY_RUN", "storage_backend": None, "storage_uri": None,
                              "manifest_uri": None, "rows_uri": None, "cache_publish": "SKIPPED"})
+            return JobResult(manifest, rows)
+        if (name == "daily_kline" and baostock_completion is not None and
+                baostock_completion["business_status"] == "PARTIAL"):
+            manifest.update({"mode": "RETRYABLE_INCOMPLETE", "storage_backend": None,
+                             "storage_uri": None, "manifest_uri": None, "rows_uri": None,
+                             "cache_publish": "SKIPPED", "td_publish": "SKIPPED_PARTIAL",
+                             "error_code": "TIER_PARTIAL", "retryable": True})
             return JobResult(manifest, rows)
         # Durable artifact publication is the commit point. Redis/TD are later, optional tiers.
         committed = self.catalog.commit(name, trade_date, rows, manifest, source=safe_source)

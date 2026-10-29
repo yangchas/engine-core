@@ -197,7 +197,7 @@ func TestC566ProductionEventShape(t *testing.T) {
 	}
 	// no other production event gained the new semantics
 	for _, e := range c.Events {
-		if e.ID == event.ID || e.ID == "limit_pool_d1" { // C580 deliberately adopts on_timeout/alert_on_fallback
+		if e.ID == event.ID || e.ID == "limit_pool_d1" || e.ID == "daily_dde_postclose" || e.ID == "limit_up_detail_d1" { // C580/C615 deliberately adopt on_timeout/alert_on_fallback
 			continue
 		}
 		for _, tier := range e.Ladder {
@@ -226,7 +226,7 @@ func TestC566Scenarios(t *testing.T) {
 		{"normal 15:05 wencai ok", "15:05:00", map[string]string{"wencai": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "wencai", "wencai", 0, false}},
 		{"late start 15:30 backfills", "15:30:00", map[string]string{"wencai": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "wencai", "wencai", 0, false}},
 		{"late start 16:50 backfills", "16:50:00", map[string]string{"wencai": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "wencai", "wencai", 0, false}},
-		{"late start 17:34:00 still backfills", "17:34:00", map[string]string{"wencai": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "wencai", "wencai", 0, false}},
+		{"late start 17:30:00 still backfills", "17:30:00", map[string]string{"wencai": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "wencai", "wencai", 0, false}},
 		{"wencai no data -> q2 silently", "15:05:00", map[string]string{"wencai": "nodata40", "q2_final": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "q2_final", "wencai,q2_final", 0, false}},
 		{"wencai date mismatch -> q2 silently", "15:05:00", map[string]string{"wencai": "mismatch40", "q2_final": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "q2_final", "wencai,q2_final", 0, false}},
 		{"wencai timeout -> q2 without same-tier retry", "15:05:00", map[string]string{"wencai": "hang", "q2_final": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "q2_final", "wencai,q2_final", 0, false}},

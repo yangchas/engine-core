@@ -41,7 +41,11 @@ def commit_day(root, day: str, provider: str, *, rows=None, symbols=None, with_u
     meta = {"schema_version": 1, "dataset": "daily_kline", "trade_date": day, "provider": provider,
             "source": provider, "available_at": day + "T18:00:00+08:00"}
     if provider == "baostock":
+        from engine_core.data_pipeline.registry.daily_kline import DAILY_KLINE_QUALITY_FIELDS
         meta["field_units"] = {"volume": "shares"}
+        meta["source_dates"] = {field: day for field in DAILY_KLINE_QUALITY_FIELDS}  # C616: FORMAL needs per-field date evidence
+        meta["source_dates_consistent"] = True
+        meta["source_date_values"] = [day]
     # commit instant on the trade day itself, strictly increasing: a later commit is a later version of that day
     moment = datetime.fromisoformat(day + "T18:00:00+08:00") + timedelta(seconds=next(_TICK))
     return catalog.commit("daily_kline", day, day_rows, meta, source=provider, clock=lambda: moment)

@@ -316,7 +316,7 @@ def test_fetch_item_and_baostock_profiles_keep_their_retry_contracts():
     assert policy_11["silent_until_last"] is True
     baostock_rung = policy_11["ladder"][0]
     assert (baostock_rung["attempts"], baostock_rung["backoff"], baostock_rung["backoff_cap"],
-            baostock_rung["timeout"], baostock_rung["until"]) == (32, "30m*1", "30m", "20m", "late_until")
+            baostock_rung["timeout"], baostock_rung["until"]) == (32, "30m*1", "30m", "130m", "late_until")
     assert all("failure_classes" in events[event_id].get("args", {})
                for event_id in (*baostock_ids, "fetch_item"))
 
@@ -685,6 +685,7 @@ def test_baostock_probe_budget_is_bounded_and_external_command_is_unchanged(monk
     assert builtin[builtin.index("--baostock-no-progress-seconds") + 1] == "43"
     assert builtin[builtin.index("--baostock-formal-coverage-threshold") + 1] == "0.995"
     assert builtin[builtin.index("--baostock-source-empty-max") + 1] == "20"
+    assert "--skip-redis-publish" in builtin
 
     postmarket = build_handler_command("postmarket_data", event, opts, ROOT / "artifacts",
                                        "2026-10-26", sys.executable, ROOT)

@@ -17,6 +17,10 @@ from zoneinfo import ZoneInfo
 from ...daily_kline_capture import parse_row, to_baostock_code
 
 
+_SOURCE_DATE_FIELDS = ("open", "high", "low", "close", "pre_close", "pct_chg",
+                       "volume", "amount_yuan", "turnover_pct")
+
+
 class _BaostockCallTimeout(TimeoutError):
     """Caller deadline expired while the daemon worker may still be blocked."""
 
@@ -82,8 +86,20 @@ class BaostockDailyProvider:
         if ((self.sample_scope and stored_digest != expected_digest) or
                 (stored_digest is not None and stored_digest != expected_digest)):
             return {}
-        return {str(row["symbol"]): row for row in payload["rows"]
-                if isinstance(row, dict) and row.get("symbol") and str(row["symbol"]) in expected}
+        loaded = {}
+        for row in payload["rows"]:
+            if not isinstance(row, dict) or not row.get("symbol") or str(row["symbol"]) not in expected:
+                continue
+            values_need_status = any(row.get(field) is None for field in
+                                     ("open", "high", "low", "close", "pre_close", "pct_chg",
+                                      "amount_yuan", "volume"))
+            if (not row.get("__checkpoint_no_bar") and values_need_status and
+                    row.get("source_trade_status") not in {"0", "1"}):
+                # Old checkpoints lack Baostock's row-level tradestatus. Keep good rows and
+                # re-query only rows whose blank required values need suspension evidence.
+                continue
+            loaded[str(row["symbol"])] = row
+        return loaded
 
     def _save_checkpoint(self, trade_date: str, rows: Mapping[str, Mapping[str, Any]],
                          expected: Sequence[str]) -> None:
@@ -540,11 +556,20 @@ class BaostockDailyProvider:
             self._timing["error_code"] = "BAOSTOCK_TOTAL_TIMEOUT"
         progress = self._progress(trade_date, expected, checkpoint, resumed_count, result)
         returned_rows = [row for row in rows if not row.get("__checkpoint_no_bar")]
+        source_date_values = sorted({str(row.get("date") or "") for row in returned_rows
+                                     if row.get("date")})
+        source_dates_consistent = (bool(returned_rows) and source_date_values == [trade_date] and
+                                   all(row.get("date") == trade_date for row in returned_rows))
+        source_dates = {field: trade_date if source_dates_consistent else None
+                        for field in _SOURCE_DATE_FIELDS}
         result_meta = {"rows": returned_rows, "expected_count": len(expected), "missing_count": len(missing),
                 "missing_symbols": sorted(set(missing)), "suspended_count": suspended,
                 "mismatch_count": mismatch, "errors": errors,
                 "source_symbols": source_symbols,
                 "source_universe_error": source_universe_error,
+                "as_of": trade_date, "source_dates": source_dates,
+                "source_date_values": source_date_values,
+                "source_dates_consistent": source_dates_consistent,
                 "partial": bool(missing or errors or len(rows) < len(expected)),
                 "resumed_count": resumed_count,
                 **progress,
