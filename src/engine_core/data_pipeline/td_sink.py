@@ -681,7 +681,16 @@ class DailyKlineTdSink:
         expected = {str(symbol).zfill(6) for symbol in expected_symbols}
         present = set(stored) & expected
         if current is not None and not has_baostock_date_evidence(trade_date, current):
-            raise TdVerifyError("td_progress_source_date_evidence_missing:" + trade_date)
+            # A completion marker without per-field source dates cannot be trusted (written before the
+            # evidence rule). Drop the marker and its rows so this run refetches the day from Baostock
+            # instead of failing deterministically forever.
+            self.store.delete_versions(trade_date)
+            self.store.replace_day(trade_date, BAOSTOCK_PROGRESS_VERSION, {})
+            self._invalidated_progress.add(trade_date)
+            self._progress_version_cleared.add(trade_date)
+            current = None
+            stored = {}
+            present = set()
         if current is not None:
             # A running retry may not leave a completion marker visible while rows are changing.
             self.store.delete_versions(trade_date)

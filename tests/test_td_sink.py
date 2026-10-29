@@ -300,3 +300,19 @@ def test_guardian_handler_contract_excludes_removed_td_sync_handler():
     from engine_core.guardian.management import HANDLERS
 
     assert "td_sync_daily_kline" not in HANDLERS
+
+
+def test_version_marker_without_date_evidence_is_dropped_and_day_refetched(tmp_path):
+    """C617 audit: a pre-evidence completion marker must self-heal (refetch), not fail deterministically."""
+    from engine_core.data_pipeline.td_sink import DailyKlineTdSink, MemoryTdStore
+
+    _manifest, rows = load_real("formal")
+    store = MemoryTdStore()
+    sink = DailyKlineTdSink(store, tmp_path)
+    sink.prepare_progress(DAY, [rows[0]["symbol"]])
+    sink.write_progress(DAY, [rows[0]], {"provider": "baostock", "field_units": {"volume": "shares"}})
+    store.write_version({"trade_date": DAY, "ts": 1, "version": "legacy", "provider": "baostock",
+                         "business_status": "FORMAL"})            # no source_dates evidence
+    fresh = DailyKlineTdSink(store, tmp_path)
+    assert fresh.prepare_progress(DAY, [rows[0]["symbol"]]) == {}   # nothing trusted: day is refetched
+    assert store.read_versions(DAY) == [] and store.day_counts([DAY]) == {DAY: 0}
