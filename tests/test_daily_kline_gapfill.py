@@ -369,9 +369,15 @@ def test_real_partial_catalog_waterline_requests_only_source_empty_symbols(
                                                       "source_empty_max": 20})
 
     requested = {symbol for symbol, start, end in client.queries if start == target and end == target}
-    if coverage_variant == "coverage_0668":
+    if coverage_variant == "coverage_0668" and only_source_empty:
+        # probe path: a broadly failed day is left to the close pull, never range-filled
         assert requested == set()
         assert client.queries == []
+        assert store.read_versions(target) == []
+        return
+    if coverage_variant == "coverage_0668":
+        # history backfill is self-healing (C617): a day far below threshold is still range-filled
+        assert requested and requested <= set(active_symbols) - {row["symbol"] for row in partition_rows}
         assert store.read_versions(target) == []
         return
     assert requested == expected_gap, (

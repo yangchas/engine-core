@@ -441,12 +441,10 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                     target_universe, target_symbols, target_missing_categories,
                     coverage_threshold=policy["formal_coverage_threshold"],
                     max_source_empty=policy["source_empty_max"])
-                if (target_missing_categories and
-                        not should_wait_for_baostock_gap(target_completion, minimum_coverage)):
-                    gap_plan = []
-                    eligibility_status = "NOT_ELIGIBLE"
-                else:
-                    gap_plan = None
+                # History backfill is self-healing: a day far below the coverage threshold (a wiped or newly
+                # deepened TD) still gets per-symbol range fills. The "nearly complete only" guard belongs to
+                # the probe path (only_source_empty), not here.
+                gap_plan = None
             else:
                 gap_plan = None
             if gap_plan is None:
