@@ -296,6 +296,9 @@ def _run(request):
         if result.get("status") == "WAITING":
             return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
                        "artifacts": [], "detail": result}
+        if result.get("status") == "NOT_ELIGIBLE":
+            return 20, {"contract": 1, "status": "not_applicable", "error_code": "",
+                        "retryable": False, "artifacts": [], "detail": result}
         if result.get("status") not in {"OK", "NO_GAPS"}:
             return 75, {"contract": 1, "status": "failed", "error_code": "BAOSTOCK_GAPFILL_RETRY",
                         "retryable": True, "artifacts": [], "detail": result}
@@ -319,9 +322,11 @@ def _run(request):
         if result.get("status") == "WAITING":
             return 75, {"contract": 1, "status": "failed", "error_code": "BAOSTOCK_LOCAL_GAP_WAIT",
                         "retryable": True, "artifacts": [], "detail": result}
-        if result.get("status") != "NOT_ELIGIBLE":
-            return 75, {"contract": 1, "status": "failed", "error_code": "BAOSTOCK_GAPFILL_RETRY",
-                        "retryable": True, "artifacts": [], "detail": result}
+        if result.get("status") in {"NOT_ELIGIBLE", "NO_GAPS"}:
+            return 20, {"contract": 1, "status": "not_applicable", "error_code": "",
+                        "retryable": False, "artifacts": [], "detail": result}
+        return 75, {"contract": 1, "status": "failed", "error_code": "BAOSTOCK_GAPFILL_RETRY",
+                    "retryable": True, "artifacts": [], "detail": result}
     event = SimpleNamespace(event_id=event_id, handler=name, gate=getattr(base, "gate", "always"), start=start,
                             args=args, timeout_seconds=int(request.get("timeout_seconds") or getattr(base, "timeout_seconds", 300)),
                             data_date_offset=getattr(base, "data_date_offset", 0))

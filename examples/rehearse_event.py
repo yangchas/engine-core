@@ -308,6 +308,19 @@ def _remap_event_references(value: Any, event_ids: dict[str, str]) -> Any:
     return value
 
 
+def _fetch_item_name(event_id: str) -> str | None:
+    if not event_id.startswith("fetch_item:"):
+        return None
+    item_id = event_id.partition(":")[2]
+    if not item_id or ":" in item_id:
+        raise ValueError("invalid_fetch_item_event:" + event_id)
+    return item_id
+
+
+def _schedule_event_name(event_id: str) -> str:
+    return "fetch_item" if _fetch_item_name(event_id) is not None else event_id
+
+
 def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[str], run_token: str,
                      now: datetime, minutes: int) -> tuple[dict[str, Any], dict[str, str]]:
     if minutes < 1:
@@ -315,18 +328,38 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
     by_id = {str(event.get("event_id")): event for event in schedule["events"]
              if isinstance(event, dict) and event.get("event_id")}
     requested = list(dict.fromkeys([event_id, *with_events]))
-    missing_ids = [name for name in requested if name not in by_id]
+    schedule_names = list(dict.fromkeys(_schedule_event_name(name) for name in requested))
+    missing_ids = [name for name in requested if _schedule_event_name(name) not in by_id]
     if missing_ids:
         raise ValueError("event_not_in_schedule:" + ",".join(missing_ids))
+    if "fetch_item" in requested:
+        raise ValueError("fetch_item_requires_item_id")
 
     tag = re.sub(r"[^a-z0-9]", "", str(run_token).lower()).removeprefix("rh")[-10:]
     if not tag:
         raise ValueError("invalid_rehearsal_token")
-    event_ids = {name: f"{name}_rh{tag}" for name in requested}
-    selected = [copy.deepcopy(by_id[name]) for name in requested]
+    schedule_ids = {name: (name if name == "fetch_item" else f"{name}_rh{tag}")
+                    for name in schedule_names}
+    event_ids = {name: (name if _fetch_item_name(name) is not None
+                        else schedule_ids[_schedule_event_name(name)]) for name in requested}
+    selected = [copy.deepcopy(by_id[name]) for name in schedule_names]
     missing_dependencies: set[str] = set()
-    selected_set = set(requested)
+    selected_set = set(schedule_names)
+    direct_fetch_item = any(_fetch_item_name(name) is not None for name in requested)
     for event in selected:
+        if direct_fetch_item and event.get("event_id") == "fetch_item":
+            # The harness seeds one isolated child instance; the startup plan must not
+            # enqueue unrelated fetches or depend on boot_apply_plan.
+            event["depends_on"] = []
+            event["after"] = []
+            boot_plan = by_id.get("boot_apply_plan", {})
+            boot_args = boot_plan.get("args") if isinstance(boot_plan, dict) else None
+            no_progress = boot_args.get("baostock_no_progress_seconds") if isinstance(boot_args, dict) else None
+            if no_progress is not None:
+                event_args = dict(event.get("args") or {})
+                event_args["baostock_no_progress_seconds"] = no_progress
+                event["args"] = event_args
+            continue
         for key in ("depends_on", "after"):
             missing_dependencies.update(ref for ref in _event_references(event.get(key))
                                         if ref not in selected_set)
@@ -343,10 +376,10 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
     deadline_text = deadline.strftime("%H:%M:%S")
     for event in selected:
         original_id = str(event["event_id"])
-        event["event_id"] = event_ids[original_id]
+        event["event_id"] = schedule_ids[original_id]
         for key in ("depends_on", "after"):
             if key in event:
-                event[key] = _remap_event_references(event[key], event_ids)
+                event[key] = _remap_event_references(event[key], schedule_ids)
         event["at"] = at_text
         event["deadline"] = deadline_text
         if "late_until" in event:
@@ -362,6 +395,38 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
     prepared["events"] = selected
     prepared["profiles"] = profiles
     return prepared, event_ids
+
+
+def seed_fetch_item_state(state_root: Path, instance_id: str, data_date: str, due_at: str) -> None:
+    try:
+        if datetime.strptime(data_date, "%Y-%m-%d").date().isoformat() != data_date:
+            raise ValueError("invalid_date_shape")
+        due = datetime.fromisoformat(due_at)
+    except ValueError as exc:
+        raise ValueError("invalid_fetch_item_date") from exc
+    if due.tzinfo is None:
+        raise ValueError("fetch_item_due_at_requires_timezone")
+    ledger_root = state_root / "ledger"
+    ledger_root.mkdir(parents=True, exist_ok=True)
+    snapshot = {
+        "date": due.date().isoformat(),
+        "seq": 0,
+        "events": {instance_id: {
+            "status": "RETRY_WAIT",
+            "attempts": 0,
+            "next_attempt_at": due.isoformat(),
+            "data_date": data_date,
+        }},
+    }
+    (ledger_root / f"snapshot-{due.date().isoformat()}.json").write_text(
+        json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+
+
+def _tracked_ledger_target(event_id: str, event_ids: dict[str, str]) -> tuple[str, set[str]]:
+    tracked_id = event_ids[event_id]
+    if _fetch_item_name(event_id) is not None:
+        return "fetch_item", {tracked_id}
+    return tracked_id, {tracked_id}
 
 
 def event_output_partition(schedule: dict[str, Any], event_id: str, event_date: str,
@@ -813,7 +878,8 @@ def explain_live_catalog_change(before: dict[str, Any] | None, after: dict[str, 
         return {"status": "UNCHANGED"}
     if not append_only or ledger_before is None:
         return {"status": "UNEXPLAINED_CHANGE", "reason": "online_ledger_not_append_only"}
-    if any(token.encode() in line for token in temporary_event_ids for line in ledger_after):
+    appended_lines = ledger_after[len(ledger_before):]
+    if any(token.encode() in line for token in temporary_event_ids for line in appended_lines):
         return {"status": "UNEXPLAINED_CHANGE", "reason": "temporary_event_id_in_online_ledger"}
     if diff["removed"]:
         return {"status": "UNEXPLAINED_CHANGE", "reason": "live_catalog_partition_removed"}
@@ -994,7 +1060,7 @@ def _write_reports(root: Path, summary: dict[str, Any]) -> tuple[Path, Path]:
         f"# Guardian rehearsal: {summary.get('event', 'unknown')}",
         "",
         f"- Commit: `{summary.get('commit', 'UNKNOWN')}`",
-        f"- Temporary event ID: `{summary.get('temporary_event_id', 'UNKNOWN')}`",
+        f"- Tracked event/instance ID: `{summary.get('temporary_event_id', 'UNKNOWN')}`",
         f"- Trigger: `{summary.get('trigger_at', 'UNKNOWN')}`; deadline: `{summary.get('deadline_at', 'UNKNOWN')}`",
         f"- Final status: `{state.get('status', 'NO_STATE')}`; last error: `{state.get('last_error', '') or 'none'}`",
         f"- Temporary directory: `{root}` (retained)",
@@ -1023,6 +1089,7 @@ def _write_reports(root: Path, summary: dict[str, Any]) -> tuple[Path, Path]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--event", required=True, help="event_id from the archived schedule.json")
+    parser.add_argument("--data-date", help="target partition date when --event is fetch_item:<id>")
     parser.add_argument("--minutes", type=int, default=3, help="trigger lead time; default 3 minutes")
     parser.add_argument("--commit", default="HEAD", help="git commit to archive; default HEAD")
     parser.add_argument("--with", dest="with_events", nargs="+", action="append", default=[],
@@ -1074,6 +1141,8 @@ def run_rehearsal(args: argparse.Namespace) -> int:
     process_stopped = True
     trigger_at = deadline_at = ""
     event_ids: dict[str, str] = {}
+    tracked_event_id = ""
+    tracked_instance_ids: set[str] = set()
     redis_url = os.environ.get("REDIS_URL") or os.environ.get("CORE_REDIS_URL")
     try:
         if not VENV_PYTHON.is_file():
@@ -1101,6 +1170,21 @@ def run_rehearsal(args: argparse.Namespace) -> int:
         if not td_database_exists(td_database, td_config):
             raise RuntimeError("td_database_not_preexisting")
         archive_schedule = load_schedule(archive_root / "src/engine_core/guardian/schedule.json")
+        fetch_item_id = _fetch_item_name(args.event)
+        if args.data_date and fetch_item_id is None:
+            raise ValueError("data_date_requires_fetch_item_event")
+        if args.refresh_output and fetch_item_id is not None:
+            raise ValueError("refresh_output_not_supported_for_fetch_item_event")
+        if fetch_item_id is not None:
+            registry_path = archive_root / "src/engine_core/guardian/datasets.registry.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry_ids = {str(item.get("id")) for item in registry.get("items", [])
+                            if isinstance(item, dict) and item.get("id")}
+            if fetch_item_id not in registry_ids:
+                raise ValueError("fetch_item_not_in_registry:" + fetch_item_id)
+            target_data_date = args.data_date or today
+            datetime.strptime(target_data_date, "%Y-%m-%d")
+            summary["data_date"] = target_data_date
         now = datetime.now(TZ)
         trigger = now + timedelta(minutes=args.minutes)
         trigger_at = trigger.isoformat(timespec="seconds")
@@ -1108,8 +1192,11 @@ def run_rehearsal(args: argparse.Namespace) -> int:
         prepared, event_ids = prepare_schedule(archive_schedule, args.event,
                                                [item for group in args.with_events for item in group],
                                                root.name, now, args.minutes)
+        if fetch_item_id is not None:
+            seed_fetch_item_state(state_root, event_ids[args.event], target_data_date, trigger_at)
         if args.refresh_output:
             summary["refreshed_output"] = refresh_staged_output(data_root, archive_schedule, args.event, today)
+        tracked_event_id, tracked_instance_ids = _tracked_ledger_target(args.event, event_ids)
         summary.update({"event_id_map": event_ids, "temporary_event_id": event_ids[args.event],
                         "trigger_at": trigger_at, "deadline_at": deadline_at})
         staged_schedule = root / "schedule.json"
@@ -1153,8 +1240,8 @@ def run_rehearsal(args: argparse.Namespace) -> int:
             if proc.poll() is not None:
                 summary["process_exit_before_terminal"] = proc.returncode
                 break
-            rows, final_state = _ledger_event_rows(_read_ledger(local_ledger), event_ids[args.event],
-                                                  {event_ids[args.event]})
+            rows, final_state = _ledger_event_rows(_read_ledger(local_ledger), tracked_event_id,
+                                                  tracked_instance_ids)
             if final_state.get("status") in TERMINAL_STATES:
                 time.sleep(1)
                 break
@@ -1171,8 +1258,8 @@ def run_rehearsal(args: argparse.Namespace) -> int:
             proxy.close()
         if archive_root is not None and "event_ids" in locals() and args.event in event_ids:
             local_ledger = state_root / "ledger" / f"{today}.jsonl"
-            instance_ids = {event_ids[args.event]}
-            event_rows, final_state = _ledger_event_rows(_read_ledger(local_ledger), event_ids[args.event], instance_ids)
+            event_rows, final_state = _ledger_event_rows(_read_ledger(local_ledger), tracked_event_id,
+                                                         tracked_instance_ids)
             summary["event_ledger_rows"] = event_rows
             summary["final_state"] = final_state
             summary["ledger_row_count"] = len(_read_ledger(local_ledger))
@@ -1183,7 +1270,9 @@ def run_rehearsal(args: argparse.Namespace) -> int:
                               len(live_ledger_after) >= len(live_ledger_before) and
                               live_ledger_after[:len(live_ledger_before)] == live_ledger_before)
         unique_ids = set(event_ids.values())
-        temp_ids_absent = all(not any(token.encode() in line for token in unique_ids) for line in live_ledger_after)
+        appended_online_lines = live_ledger_after[len(live_ledger_before or []):]
+        temp_ids_absent = all(not any(token.encode() in line for line in appended_online_lines)
+                              for token in unique_ids)
         live_catalog_unchanged = live_catalog_sha_before is not None and live_catalog_sha_before == live_catalog_sha_after
         live_catalog_snapshot_after: dict[str, Any] | None = None
         try:

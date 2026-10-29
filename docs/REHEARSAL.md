@@ -7,9 +7,12 @@ python examples/rehearse_event.py --event limit_pool_d1
 python examples/rehearse_event.py --event limit_pool_d1 --refresh-output
 python examples/rehearse_event.py --event limit_reasons_d1 --with limit_pool_d1 --minutes 3
 python examples/rehearse_event.py --event daily_kline_backfill --timeout-minutes 45
+python examples/rehearse_event.py --event fetch_item:daily_kline --data-date 2026-10-20 --minutes 3
 ```
 
 `--minutes` 默认 3；`--timeout-minutes` 默认 45；`--commit` 默认 `HEAD`；`--with` 可重复指定依赖事件；`--td-database` 默认读取 `CORE_TD_DATABASE`，否则使用既有库 `core_dev_c590_632551160254`。数据库必须已存在且名称以 `core_dev_` 开头，工具不会建库或连接 `core_data`。`--keep` 为兼容参数；所有运行目录都会保留，不提供删除操作。
+
+`fetch_item:<registry-id>` 可直接重演一个 registry fetch 子项；它在隔离账本中只排入该子项，并按 `--data-date` 指定分区，未提供时使用当天。
 
 默认保留现有 catalog 状态；事件若发现目标分区已满足，会按真实语义跳过。需要验收新的上游写入路径时可加 `--refresh-output`：工具从真实 schedule/profile 解析主事件的数据集与目标日期，只从临时 catalog 隐藏该日期，并修正临时 latest 指针；原分区文件与线上 catalog 均不修改。此开关只影响主事件，不清除 `--with` 依赖事件的数据。
 

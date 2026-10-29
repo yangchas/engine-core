@@ -17,7 +17,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--date", required=True)
     parser.add_argument("--artifact-root", default=os.getenv("CORE_DATA_ROOT", "~/core-data"))
     parser.add_argument("--td-database")
+    parser.add_argument("--baostock-no-progress-seconds", type=float, default=300.0,
+                        help="fail retryably when Baostock produces no range data or checkpoint progress")
     args = parser.parse_args(argv)
+    if args.baostock_no_progress_seconds <= 0:
+        parser.error("--baostock-no-progress-seconds must be positive")
     try:
         date.fromisoformat(args.date)
         from engine_core.data_pipeline.daily_kline_gapfill import run_td_daily_kline_gapfill
@@ -31,7 +35,8 @@ def main(argv: list[str] | None = None) -> int:
                                                 history_min_trading_days=int(
                                                     settings.get("history_min_trading_days", 10)),
                                                 total_timeout_seconds=float(
-                                                    settings.get("baostock_total_timeout_seconds", 6900)))
+                                                    settings.get("baostock_total_timeout_seconds", 6900)),
+                                                no_progress_timeout_seconds=args.baostock_no_progress_seconds)
         finally:
             store.close()
         outcomes = result.get("partitions", [])

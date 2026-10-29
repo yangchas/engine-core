@@ -20,6 +20,7 @@ def run_daily_kline_backfill(root: str | Path, target: str, *, args: Mapping[str
             root, target, store=store,
             history_min_trading_days=int(options.get("history_min_trading_days", 10)),
             total_timeout_seconds=float(options.get("total_timeout_seconds", 6900)),
+            no_progress_timeout_seconds=float(options.get("baostock_no_progress_seconds", 300)),
             only_source_empty=only_source_empty,
             minimum_coverage=float(options.get("minimum_coverage", 0.90)),
             completion_policy=options.get("daily_kline_policy"),

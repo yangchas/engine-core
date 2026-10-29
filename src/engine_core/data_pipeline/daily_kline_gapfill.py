@@ -77,6 +77,7 @@ def _td_rows_to_daily(day: str, stored: Mapping[str, Mapping[str, Any]]) -> dict
 def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                                history_min_trading_days: int = 10,
                                total_timeout_seconds: float = 6900.0,
+                               no_progress_timeout_seconds: float = 300.0,
                                client: Any = None, only_source_empty: bool = False,
                                minimum_coverage: float = 0.90,
                                completion_policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -89,6 +90,8 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
 
     if total_timeout_seconds <= 0:
         raise ValueError("total_timeout_seconds_must_be_positive")
+    if no_progress_timeout_seconds <= 0:
+        raise ValueError("no_progress_timeout_seconds_must_be_positive")
     started = time.monotonic()
     deadline = started + float(total_timeout_seconds)
     base = Path(root).expanduser()
@@ -141,7 +144,7 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
     coverage = TdCoverageSource(store).coverage(dates, watermarks, known_missing)
     if client is None:
         import baostock as bs
-        range_client = BaostockRangeClient(bs, read_timeout=30.0)
+        range_client = BaostockRangeClient(bs, read_timeout=min(30.0, float(no_progress_timeout_seconds)))
     else:
         range_client = client
     from ..daily_kline_capture import call_with_timeout
@@ -252,9 +255,12 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
         fetched_by_day: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
         checkpoint_root = base / ".checkpoints" / f"daily-kline-td-gap-{target}"
         actual_queries = 0
+        last_progress_at = time.monotonic()
         for item in gap_plan:  # already sorted by newest start date first
             if time.monotonic() >= deadline:
                 raise TimeoutError("BAOSTOCK_TOTAL_BUDGET_EXHAUSTED")
+            if time.monotonic() - last_progress_at >= no_progress_timeout_seconds:
+                raise TimeoutError("BAOSTOCK_NO_PROGRESS_TIMEOUT")
             symbol, start, end = item["symbol"], item["start_date"], item["end_date"]
             missing_days = [day for day in item["trade_dates"]
                             if symbol not in artifact_symbols(day) and symbol not in td_symbols(day)]
@@ -270,6 +276,8 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                 # An empty/target-incomplete response is not a completed range. Keep it retryable.
                 if any(str(row.get("date")) == target for row in rows):
                     _save_checkpoint(checkpoint, symbol, start, end, rows)
+            if rows:
+                last_progress_at = time.monotonic()
             for row in rows:
                 fetched_by_day[str(row["date"])][symbol] = {**row, "date": str(row["date"]), "symbol": symbol}
     finally:
