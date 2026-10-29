@@ -31,6 +31,8 @@ def test_real_kaipan_raw_detail_preserves_uncertain_fields_and_reason_lineage():
     from engine_core.guardian.limit_up_detail_d1 import _rows_by_symbol
     assert _rows_by_symbol(rows)["002982"]["symbol"] == "002982"
     row = next(item for item in rows if item["symbol"] == "002982")
+    stored_projection = {key: value for key, value in row.items() if key != "symbol"}
+    assert _rows_by_symbol({"002982": stored_projection})["002982"]["symbol"] == "002982"
 
     reason = next(item for item in reasons["List"]
                   if item.get("Date") == "2026-10-23" and str(item.get("Type")) == "0")

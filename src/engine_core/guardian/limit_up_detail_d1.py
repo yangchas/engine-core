@@ -205,10 +205,13 @@ def _quality(rows: Sequence[Mapping[str, Any]], reason_error_count: int = 0) -> 
             "parser_version": "c611-theme-v1", "source_date_evidence": "getHisBans.info_date_echo"}
 
 
-def _rows_by_symbol(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+def _rows_by_symbol(rows: Sequence[Mapping[str, Any]] | Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        symbol = str(row.get("symbol") or "")
+    entries = rows.items() if isinstance(rows, Mapping) else ((None, row) for row in rows)
+    for key, row in entries:
+        if not isinstance(row, Mapping):
+            raise ValueError("limit_up_detail_row_invalid")
+        symbol = str(row.get("symbol") or key or "")
         if not symbol:
             raise ValueError("limit_up_detail_symbol_missing")
         result[symbol] = {**{column: row.get(column) for column in DATA_COLUMNS}, "symbol": symbol}
@@ -239,7 +242,7 @@ def run_limit_up_detail_gapfill(trade_date: str, *, database: str = DEFAULT_DATA
     for day in candidates:
         if existing.get(day, 0) > 0 and day not in forced:
             stored = target_store.read_day_rows(day)
-            expected_rows[day] = _rows_by_symbol(list(stored.values()))
+            expected_rows[day] = _rows_by_symbol(stored)
             versions_for_day = target_store.read_versions(day)
             versions[day] = versions_for_day[-1].get("version") if versions_for_day else None
             days[day] = {"status": "EXISTING", "row_count": len(stored), "version": versions[day]}
