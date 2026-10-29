@@ -53,6 +53,34 @@ def test_filter_preserves_and_remaps_real_dependency_edges() -> None:
     assert target["depends_on"] == [event_ids["limit_pool_d1"]]
 
 
+def test_selected_event_args_can_be_overridden_for_isolated_rehearsal() -> None:
+    schedule = real_schedule()
+    event_args = rehearsal.parse_event_args('{"backfill_depth":5}')
+
+    prepared, event_ids = rehearsal.prepare_schedule(
+        schedule, "limit_up_detail_d1", ["limit_pool_d1"], "rh123abc",
+        datetime(2026, 10, 29, 8, 0, 0, tzinfo=TZ), 3, event_args=event_args,
+    )
+
+    target = next(event for event in prepared["events"]
+                  if event["event_id"] == event_ids["limit_up_detail_d1"])
+    assert target["args"]["backfill_depth"] == 5
+    profile = prepared["profiles"]["limit_up_detail_d1"]
+    assert all(tier["args"]["backfill_depth"] == 5 for tier in profile["ladder"])
+
+
+def test_readonly_redis_proxy_handles_client_setinfo_locally() -> None:
+    proxy = rehearsal.ReadOnlyRedisProxy("redis://127.0.0.1:6380/0")
+    try:
+        assert proxy.execute_local([b"CLIENT", b"SETINFO", b"LIB-NAME", b"redis-py"]) == b"+OK\r\n"
+        assert proxy.execute_local([
+            b"CLIENT", b"MAINT_NOTIFICATIONS", b"ON", b"moving-endpoint-type", b"internal-ip",
+        ]) == b"+OK\r\n"
+        assert proxy.blocked_snapshot() == {}
+    finally:
+        proxy.close()
+
+
 def test_state_root_length_limit() -> None:
     rehearsal.validate_state_root_path(Path("/tmp/rh123abc/s"))
 

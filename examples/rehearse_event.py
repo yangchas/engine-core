@@ -47,7 +47,8 @@ TERMINAL_STATES = {
     "SKIPPED", "SKIPPED_NA", "SKIPPED_SATISFIED", "SKIPPED_PHASE", "SKIPPED_DEP",
 }
 EXPECTED_SUCCESS_STATES = {"SUCCEEDED", "SUCCEEDED_DEGRADED", "SKIPPED_NA", "SKIPPED_SATISFIED"}
-TD_VERSION_TABLES = ("daily_kline_versions", "limit_up_pool_versions", "ladder_daily_versions")
+TD_VERSION_TABLES = ("daily_kline_versions", "limit_up_pool_versions", "ladder_daily_versions",
+                     "limit_up_detail_versions")
 READ_ONLY_REDIS_COMMANDS = {
     "AUTH", "CLIENT", "COMMAND", "DBSIZE", "ECHO", "EXISTS", "GET", "GETBIT", "GETRANGE", "HGET",
     "HGETALL", "HEXISTS", "HKEYS", "HLEN", "HMGET", "HSCAN", "HSTRLEN", "HVALS", "INFO", "KEYS",
@@ -322,14 +323,16 @@ def _schedule_event_name(event_id: str) -> str:
 
 
 def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[str], run_token: str,
-                     now: datetime, minutes: int,
-                     event_args_override: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
+                     now: datetime, minutes: int, *,
+                     event_args: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
     if minutes < 1:
         raise ValueError("minutes_must_be_at_least_1")
     by_id = {str(event.get("event_id")): event for event in schedule["events"]
              if isinstance(event, dict) and event.get("event_id")}
     requested = list(dict.fromkeys([event_id, *with_events]))
     schedule_names = list(dict.fromkeys(_schedule_event_name(name) for name in requested))
+    main_schedule_name = _schedule_event_name(event_id)
+    main_profile_name = (by_id.get(main_schedule_name) or {}).get("profile")
     missing_ids = [name for name in requested if _schedule_event_name(name) not in by_id]
     if missing_ids:
         raise ValueError("event_not_in_schedule:" + ",".join(missing_ids))
@@ -344,13 +347,6 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
     event_ids = {name: (name if _fetch_item_name(name) is not None
                         else schedule_ids[_schedule_event_name(name)]) for name in requested}
     selected = [copy.deepcopy(by_id[name]) for name in schedule_names]
-    if event_args_override:
-        primary = next((item for item in selected if item.get("event_id") == _schedule_event_name(event_id)), None)
-        if primary is None:
-            raise ValueError("event_args_override_requires_primary_scheduled_event")
-        if not all(isinstance(key, str) and key for key in event_args_override):
-            raise ValueError("event_args_override_keys_must_be_nonempty_strings")
-        primary["args"] = {**(primary.get("args") or {}), **dict(event_args_override)}
     missing_dependencies: set[str] = set()
     selected_set = set(schedule_names)
     direct_fetch_item = any(_fetch_item_name(name) is not None for name in requested)
@@ -364,9 +360,9 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
             boot_args = boot_plan.get("args") if isinstance(boot_plan, dict) else None
             no_progress = boot_args.get("baostock_no_progress_seconds") if isinstance(boot_args, dict) else None
             if no_progress is not None:
-                event_args = dict(event.get("args") or {})
-                event_args["baostock_no_progress_seconds"] = no_progress
-                event["args"] = event_args
+                item_args = dict(event.get("args") or {})
+                item_args["baostock_no_progress_seconds"] = no_progress
+                event["args"] = item_args
             continue
         for key in ("depends_on", "after"):
             missing_dependencies.update(ref for ref in _event_references(event.get(key))
@@ -385,6 +381,11 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
     for event in selected:
         original_id = str(event["event_id"])
         event["event_id"] = schedule_ids[original_id]
+        if original_id == _schedule_event_name(event_id) and event_args:
+            existing_args = event.get("args") or {}
+            if not isinstance(existing_args, dict):
+                raise ValueError("event_args_target_not_object:" + original_id)
+            event["args"] = {**existing_args, **event_args}
         for key in ("depends_on", "after"):
             if key in event:
                 event[key] = _remap_event_references(event[key], schedule_ids)
@@ -400,7 +401,18 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
     for event in selected:
         name = event.get("profile")
         if name and name in schedule["profiles"]:
-            profiles[name] = copy.deepcopy(schedule["profiles"][name])
+            profile = copy.deepcopy(schedule["profiles"][name])
+            if event_args and name == main_profile_name:
+                ladder = profile.get("ladder")
+                if isinstance(ladder, list):
+                    for tier in ladder:
+                        if not isinstance(tier, dict):
+                            continue
+                        tier_args = tier.get("args") or {}
+                        if not isinstance(tier_args, dict):
+                            raise ValueError("event_args_tier_not_object:" + str(name))
+                        tier["args"] = {**tier_args, **event_args}
+            profiles[name] = profile
     prepared = copy.deepcopy(schedule)
     prepared["events"] = selected
     prepared["profiles"] = profiles
@@ -608,6 +620,11 @@ class _ReadOnlyRedisHandler(socketserver.StreamRequestHandler):
                 while True:
                     request, kind, value = _read_resp(self.rfile)
                     command = value if kind == b"*" and isinstance(value, list) else []
+                    local_response = server.execute_local(command)
+                    if local_response is not None:
+                        self.wfile.write(local_response)
+                        self.wfile.flush()
+                        continue
                     if not _redis_command_allowed(command):
                         name = command[0].decode("ascii", "ignore").upper() if command else "UNKNOWN"
                         server.record_blocked(name)
@@ -631,7 +648,7 @@ class _ReadOnlyRedisHandler(socketserver.StreamRequestHandler):
 
 
 class ReadOnlyRedisProxy:
-    """Forward Redis reads through the guard proxy; reject every data-mutating command locally."""
+    """Forward Redis reads; emulate C611 hash writes in memory and reject other mutations."""
 
     def __init__(self, redis_url: str):
         parsed = urlsplit(redis_url)
@@ -642,11 +659,15 @@ class ReadOnlyRedisProxy:
         self.upstream_port = 6380
         self.blocked_commands: Counter[str] = Counter()
         self._lock = threading.Lock()
+        self._local_hashes: dict[str, dict[bytes, bytes]] = {}
+        self._local_expiry: dict[str, float] = {}
+        self._local_lock = threading.Lock()
         self._server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _ReadOnlyRedisHandler)
         self._server.daemon_threads = True
         self._server.upstream_host = self.upstream_host
         self._server.upstream_port = self.upstream_port
         self._server.record_blocked = self.record_blocked
+        self._server.execute_local = self.execute_local
         self._thread = threading.Thread(target=self._server.serve_forever, name="rehearsal-redis-ro", daemon=True)
         self._thread.start()
         userinfo = parsed.netloc.rsplit("@", 1)[0] + "@" if "@" in parsed.netloc else ""
@@ -656,6 +677,93 @@ class ReadOnlyRedisProxy:
     def record_blocked(self, command: str) -> None:
         with self._lock:
             self.blocked_commands[command] += 1
+
+    @staticmethod
+    def _bulk(value: bytes | None) -> bytes:
+        if value is None:
+            return b"$-1\r\n"
+        return b"$" + str(len(value)).encode() + b"\r\n" + value + b"\r\n"
+
+    @staticmethod
+    def _array(values: list[bytes]) -> bytes:
+        return b"*" + str(len(values)).encode() + b"\r\n" + b"".join(
+            ReadOnlyRedisProxy._bulk(value) for value in values)
+
+    def execute_local(self, command: list[bytes]) -> bytes | None:
+        if len(command) < 2:
+            return None
+        name = command[0].decode("ascii", "ignore").upper()
+        if name == "CLIENT":
+            subcommand = command[1].decode("ascii", "ignore").upper()
+            if subcommand in {"SETINFO", "SETNAME"}:
+                return b"+OK\r\n"
+            if (subcommand == "MAINT_NOTIFICATIONS" and len(command) >= 3 and
+                    command[2].decode("ascii", "ignore").upper() in {"ON", "OFF"}):
+                return b"+OK\r\n"
+        try:
+            key = command[1].decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        if not re.fullmatch(r"core:(?:yest_limit_detail|limit_up_reason):\d{4}-\d{2}-\d{2}", key):
+            return None
+        if name not in {"HSET", "HDEL", "EXPIRE", "EXISTS", "HLEN", "TTL", "TYPE", "HGETALL", "HKEYS"}:
+            return None
+        with self._local_lock:
+            now = time.monotonic()
+            if self._local_expiry.get(key, float("inf")) <= now:
+                self._local_expiry.pop(key, None)
+                self._local_hashes.pop(key, None)
+            if name == "HSET":
+                if len(command) < 4 or (len(command) - 2) % 2:
+                    return b"-ERR wrong number of arguments for 'hset' command\r\n"
+                fields = self._local_hashes.setdefault(key, {})
+                added = 0
+                for index in range(2, len(command), 2):
+                    field, value = command[index], command[index + 1]
+                    added += field not in fields
+                    fields[field] = value
+                return b":" + str(added).encode() + b"\r\n"
+            if name == "HDEL":
+                fields = self._local_hashes.get(key, {})
+                removed = 0
+                for field in command[2:]:
+                    removed += fields.pop(field, None) is not None
+                if not fields:
+                    self._local_hashes.pop(key, None)
+                    self._local_expiry.pop(key, None)
+                return b":" + str(removed).encode() + b"\r\n"
+            if name == "EXPIRE":
+                if len(command) != 3 or key not in self._local_hashes:
+                    return b":0\r\n"
+                try:
+                    seconds = int(command[2])
+                except ValueError:
+                    return b"-ERR value is not an integer or out of range\r\n"
+                if seconds <= 0:
+                    self._local_hashes.pop(key, None)
+                    self._local_expiry.pop(key, None)
+                    return b":1\r\n"
+                self._local_expiry[key] = now + seconds
+                return b":1\r\n"
+            exists = key in self._local_hashes
+            if name == "EXISTS":
+                return b":" + (b"1" if exists else b"0") + b"\r\n"
+            if name == "HLEN":
+                return b":" + str(len(self._local_hashes.get(key, {}))).encode() + b"\r\n"
+            if name == "TTL":
+                if not exists:
+                    value = -2
+                elif key not in self._local_expiry:
+                    value = -1
+                else:
+                    value = max(0, int(self._local_expiry[key] - now))
+                return b":" + str(value).encode() + b"\r\n"
+            if name == "TYPE":
+                return (b"+hash\r\n" if exists else b"+none\r\n")
+            fields = self._local_hashes.get(key, {})
+            if name == "HKEYS":
+                return self._array(list(fields))
+            return self._array([item for pair in fields.items() for item in pair])
 
     def close(self) -> None:
         self._server.shutdown()
@@ -1109,10 +1217,25 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-minutes", type=int, default=45, help="terminal-state wait limit; default 45")
     parser.add_argument("--refresh-output", action="store_true",
                         help="hide this event's output date in the temporary catalog to exercise a fresh write")
-    parser.add_argument("--event-args-json", help="merge a JSON object into the selected event args for isolated acceptance")
+    parser.add_argument("--refresh-output-event", action="append", default=[],
+                        help="also hide a selected --event/--with event's output date in the temporary catalog")
+    parser.add_argument("--event-args-json",
+                        help="JSON object merged into the selected --event args in the isolated schedule")
     parser.add_argument("--keep", action="store_true",
                         help="retain temporary files (all rehearsal directories are retained by policy)")
     return parser
+
+
+def parse_event_args(value: str | None) -> dict[str, Any]:
+    if value is None or value == "":
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        raise ValueError("event_args_json_invalid") from None
+    if not isinstance(parsed, dict) or any(not isinstance(key, str) or not key for key in parsed):
+        raise ValueError("event_args_json_must_be_object")
+    return parsed
 
 
 def run_rehearsal(args: argparse.Namespace) -> int:
@@ -1200,19 +1323,33 @@ def run_rehearsal(args: argparse.Namespace) -> int:
         trigger = now + timedelta(minutes=args.minutes)
         trigger_at = trigger.isoformat(timespec="seconds")
         deadline_at = (trigger + timedelta(minutes=60)).isoformat(timespec="seconds")
-        event_args_override = json.loads(args.event_args_json) if args.event_args_json else None
-        if event_args_override is not None and not isinstance(event_args_override, dict):
-            raise ValueError("event_args_json_must_be_object")
+        event_args_overrides = parse_event_args(args.event_args_json)
         prepared, event_ids = prepare_schedule(archive_schedule, args.event,
                                                [item for group in args.with_events for item in group],
-                                               root.name, now, args.minutes, event_args_override)
+                                               root.name, now, args.minutes,
+                                               event_args=event_args_overrides)
         if fetch_item_id is not None:
             seed_fetch_item_state(state_root, event_ids[args.event], target_data_date, trigger_at)
+        refresh_events = list(args.refresh_output_event)
         if args.refresh_output:
-            summary["refreshed_output"] = refresh_staged_output(data_root, archive_schedule, args.event, today)
+            refresh_events.insert(0, args.event)
+        selected_events = {args.event, *(item for group in args.with_events for item in group)}
+        unselected_refresh_events = sorted(set(refresh_events) - selected_events)
+        if unselected_refresh_events:
+            raise ValueError("refresh_output_event_not_selected:" + ",".join(unselected_refresh_events))
+        refreshed_outputs = {
+            name: refresh_staged_output(data_root, archive_schedule, name, today)
+            for name in dict.fromkeys(refresh_events)
+        }
+        if args.refresh_output:
+            summary["refreshed_output"] = refreshed_outputs.pop(args.event)
+        if refreshed_outputs:
+            summary["refreshed_outputs"] = refreshed_outputs
         tracked_event_id, tracked_instance_ids = _tracked_ledger_target(args.event, event_ids)
         summary.update({"event_id_map": event_ids, "temporary_event_id": event_ids[args.event],
                         "trigger_at": trigger_at, "deadline_at": deadline_at})
+        if event_args_overrides:
+            summary["event_args_overrides"] = event_args_overrides
         staged_schedule = root / "schedule.json"
         staged_schedule.write_text(json.dumps(prepared, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         config_result = _run_migrate_and_make_config(binary, archive_root, staged_schedule, root, VENV_PYTHON,
@@ -1358,7 +1495,7 @@ def run_rehearsal(args: argparse.Namespace) -> int:
                                          summary.get("email_self_env") == "0"),
              "guardian alert handler uses --dry-run; self-email disabled"),
             ("redis_is_read_only", proxy is not None and not blocked,
-             f"local read-only proxy; blocked commands={dict(blocked)}"),
+             f"guard proxy; C611 core hash writes are in-memory; blocked commands={dict(blocked)}"),
             ("core_data_redirected", data_root.is_dir() and str(data_root) != str(LIVE_DATA_ROOT),
              f"CORE_DATA_ROOT/artifact-root={data_root}"),
             ("td_database_preexisting_temp", bool(td_before is not None and summary.get("td_database_exists_after", True)

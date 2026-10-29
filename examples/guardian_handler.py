@@ -380,6 +380,10 @@ def _run(request):
         # (kaipan_refresh_0850: reasons, hot plates, members) keep the command path below.
         from engine_core.guardian.limit_pool_d1 import run_pool_tier
         return run_pool_tier({**request, "data_date": target_day}, root, dry_run=dry)
+    if name == "kaipan_fetch" and args.get("dataset") == "limit_up_detail":
+        # C611: date-evidenced raw Kaipan detail -> Core TD and best-effort Redis hot views; no catalog partition.
+        from engine_core.guardian.limit_up_detail_d1 import run as run_limit_up_detail
+        return run_limit_up_detail({**request, "data_date": target_day}, root, dry_run=dry)
     checkpoint_reply = None
     if name == "intraday_data" and args.get("checkpoint") is not None:
         # C587: the time-critical part is the Redis q2 checkpoint (source order / tolerance in schedule.json). It runs

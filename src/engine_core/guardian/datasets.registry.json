@@ -1721,6 +1721,64 @@
         "clear": "none"
       },
       "notes": "TD stores no tick after 09:45:59 (C377); since C587 the intraday gate/handler read Redis q2 first and use this table only up to args.checkpoint.td_until."
+    },
+    {
+      "id": "limit_up_detail",
+      "owner": "kaipan_fetch",
+      "artifact": {
+        "catalog_dataset": null,
+        "date_basis": "D+1 00:50 起抓取开盘啦 D-1 昨日池明细及 Type=0 涨停原因"
+      },
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "cadence": "每交易日 00:50 起；依赖 limit_pool_d1 成功，Kaipan 每 5 分钟重试至 08:50",
+      "rule": "Kaipan getHisBans 原始 23 位行按 C610 高置信字段映射；候选位只留 kp_XX_raw。getBanReasons 仅用 Type=0 且 Date<=trade_date 的原文/主题/板块码；同日原因 FORMAL，历史归因 DEGRADED。TD 保存历史，Redis 提供热读。日期回补只补缺日，默认最近 20 个交易日。",
+      "freshness": {
+        "partition": "D-1",
+        "expected_by": "08:50",
+        "basis": "trading_day",
+        "set_by": "C611 2026-10-29"
+      },
+      "retry": "event=limit_up_detail_d1 profile=limit_up_detail_d1 rungs=kaipan; kaipan attempts=100 backoff=5m*1 timeout=5m until=08:50",
+      "degrade": [
+        "无降级链，等待重试到 08:50 前"
+      ],
+      "lifecycle": {
+        "init": "backfill missing trading dates from Kaipan, newest first, default depth 20",
+        "force": "refetch exact requested dates and write a new TD version",
+        "clear": "not supported; retained TD history is not deleted"
+      },
+      "notes": "C611: no catalog partition; TD core_data.limit_up_detail_v1 + limit_up_detail_versions; Redis core:yest_limit_detail:{trade_date} and core:limit_up_reason:{trade_date}. Pool date echo must equal request date.",
+      "guardian_event": "limit_up_detail_d1",
+      "late_policy": {
+        "mode": "fetch_now",
+        "valid_until": "08:50",
+        "depends_on": [
+          "limit_up_pool"
+        ],
+        "set_by": "C611 2026-10-29",
+        "trigger_event": "limit_up_detail_d1"
+      },
+      "cost": {
+        "class": "medium",
+        "basis": "Kaipan getHisBans 最多 10 个连板梯队请求，另按池内股票逐只请求 getBanReasons Type=0；深度回补默认 20 个交易日。",
+        "set_by": "C611 2026-10-29"
+      },
+      "td_sink": {
+        "database": "core_data",
+        "super_table": "limit_up_detail_v1",
+        "meta_table": "limit_up_detail_versions",
+        "authority": "cold data -> TD; no catalog partition",
+        "doc": "fw/evidence/C610/limit_up_detail_design.md"
+      },
+      "redis_hot_view": {
+        "namespace": "core:yest_limit_detail",
+        "ttl_seconds": 259200,
+        "date_key": "core:yest_limit_detail:{trade_date}",
+        "reason_key": "core:limit_up_reason:{trade_date}"
+      },
+      "redis_ttl_seconds": 259200
     }
   ],
   "quiet_phases_for_heavy": [
