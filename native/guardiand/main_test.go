@@ -241,7 +241,7 @@ func TestMigrationV2PreservesConfiguredStartupAndWindowPolicies(t *testing.T) {
 		wantLoad1 bool
 	}{
 		{name: "v2 fixture", path: filepath.Join("testdata", "schedule_v2.json"), wantCount: 62, wantLoad1: true},
-		{name: "current v3", path: filepath.Join("../../../engine_core/src/engine_core/guardian/schedule.json"), wantCount: 66},
+		{name: "current v3", path: filepath.Join("../../../engine_core/src/engine_core/guardian/schedule.json"), wantCount: -1}, // -1: count the events in the current schedule.json instead of a hard-coded number
 	}
 	for _, source := range sources {
 		t.Run(source.name, func(t *testing.T) {
@@ -283,6 +283,16 @@ func TestMigrationV2PreservesConfiguredStartupAndWindowPolicies(t *testing.T) {
 				loadThreshold = got.HeavyMaxLoad1
 			} else if got.HeavyLoadDeferMaxPolls != 6 {
 				t.Fatalf("load deferral poll cap=%d, want 6", got.HeavyLoadDeferMaxPolls)
+			}
+			if source.wantCount < 0 {
+				var raw struct {
+					Events []json.RawMessage `json:"events"`
+				}
+				data, readErr := os.ReadFile(source.path)
+				if readErr != nil || json.Unmarshal(data, &raw) != nil {
+					t.Fatalf("cannot count events in %s: %v", source.path, readErr)
+				}
+				source.wantCount = len(raw.Events)
 			}
 			if loadThreshold != 3 || got.HeavyCutoffs["PRE_MARKET"] != "09:10:00" || len(got.Events) != source.wantCount {
 				t.Fatalf("global config/events lost: maxload=%v cutoffs=%v count=%d want=%d", loadThreshold, got.HeavyCutoffs, len(got.Events), source.wantCount)

@@ -2536,7 +2536,7 @@
       "trigger_type": "window",
       "at": "15:12:00",
       "deadline": "20:30:00",
-      "late_until": "08:00:00",
+      "late_until": "23:30:00",
       "late_until_date_offset_days": 1,
       "gate": "daily_kline_ready",
       "handler": "postmarket_data",

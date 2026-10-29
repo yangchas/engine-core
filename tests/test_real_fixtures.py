@@ -103,7 +103,7 @@ class ReplayKaipan:
 
 def test_kaipan_hot_plates_parse_real_response():
     raw = load("kaipan_hot_plates_")
-    out = KaipanProvider(ReplayKaipan(plates=raw)).hot_plates(raw["Day"][0])
+    out = KaipanProvider(ReplayKaipan(plates=raw)).hot_plates(raw["Day"][0], max_pages=1)
     assert out["rows"] and len(out["rows"]) == min(len(raw["list"]), 50)
     assert out["response_day"] == raw["Day"] and out["requested_date"] == raw["Day"][0]
     first = out["rows"][0]
