@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "revision": 6,
+  "revision": 7,
   "timezone": "Asia/Shanghai",
   "global": {
     "heavy_max_load5": 3.0,
@@ -453,6 +453,23 @@
           "attempts": 1,
           "timeout": "10s",
           "budget_enabled": false
+        }
+      ]
+    },
+    "daily_dde": {
+      "catchup": "run_in_window",
+      "retry_backoff": "60s",
+      "retry_until_late": true,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "kaipan",
+          "attempts": 3,
+          "backoff": "60s*2",
+          "backoff_cap": "10m",
+          "timeout": "1200s",
+          "budget_enabled": false,
+          "until": "late_until"
         }
       ]
     }
@@ -2511,6 +2528,42 @@
       "available_after": "15:05:00",
       "depends_on": [],
       "after": []
+    },
+    {
+      "event_id": "daily_dde_postclose",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "15:12:00",
+      "deadline": "20:30:00",
+      "late_until": "08:00:00",
+      "late_until_date_offset_days": 1,
+      "gate": "daily_kline_ready",
+      "handler": "postmarket_data",
+      "profile": "daily_dde",
+      "catchup_mode": "run_in_window",
+      "on_deadline": "missed",
+      "cost": "heavy",
+      "phases": [
+        "CLOSE",
+        "POST_MARKET",
+        "NIGHT",
+        "PRE_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "data_date_offset": 0,
+      "available_after": "15:05:00",
+      "depends_on": [],
+      "after": [
+        "daily_kline_close_1505"
+      ],
+      "args": {
+        "dataset": "daily_dde",
+        "max_workers": 2,
+        "attempts": 3,
+        "history_trading_days": 250,
+        "write_redis": true
+      }
     },
     {
       "available_after": null,

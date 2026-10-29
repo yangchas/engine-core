@@ -24,7 +24,7 @@ CORE_ARTIFACT_INDEX = PROVENANCE.get("_core_artifacts", {})
 C526_EXCERPT_INDEX = PROVENANCE.get("_c526_excerpts", {})
 SOURCES = {"ths_hot_rank", "kaipan_hot_plates", "kaipan_pool", "wencai_daily_kline",
            "kaipan_ban_reasons", "wencai_limit_up_pool",
-           "wencai_limit_up_pool_today", "q2_limit_up_pool_today", "kaipan_plate_members", "baostock_query_all_stock",
+           "wencai_limit_up_pool_today", "q2_limit_up_pool_today", "kaipan_plate_members", "kaipan_stock_dde", "baostock_query_all_stock",
            "baostock_stock_basic"}
 CREDENTIAL_WORDS = ("token", "password", "secret", "cookie", "authorization")
 
@@ -153,6 +153,28 @@ def test_kaipan_plate_members_parse_ten_captured_real_responses():
         assert out["request_count"] == 1, path.name
         assert len(out["rows"]) == int(raw["Count"]) == len(expected_symbols), path.name
         assert [row["symbol"] for row in out["rows"]] == expected_symbols, path.name
+
+
+def test_kaipan_dde_builder_uses_echoed_dates_and_preserves_missing_as_null():
+    from engine_core.data_pipeline.daily_dde import build_daily_dde
+    from engine_core.data_pipeline.daily_dde import DdeStaleResponse
+
+    raw = load("kaipan_stock_dde_2026-10-29_000001_")
+    partition = build_daily_dde(raw, symbol="000001", target_date="2026-10-28", history_trading_days=250)
+    assert len(partition.rows) == 250
+    dates = [row["date"] for row in partition.rows]
+    assert dates[0] == "2026-10-28"
+    assert dates == sorted(dates, reverse=True)
+    from datetime import date
+    assert (date.fromisoformat(dates[0]) - date.fromisoformat(dates[-1])).days > 250
+    assert all(row["symbol"] == "000001" for row in partition.rows)
+    assert all(set(row) == {"symbol", "date", "ddje"} for row in partition.rows)
+    assert len({row["date"] for row in partition.rows}) == 250
+    assert partition.manifest["source_dates"]["date"] == dates
+    assert partition.manifest["field_units"]["ddje"] == "yuan"
+    assert partition.manifest["field_units"] == {"ddje": "yuan"}
+    with pytest.raises(DdeStaleResponse, match="stale|target_date_missing"):
+        build_daily_dde(raw, symbol="000001", target_date="2026-10-29", history_trading_days=250)
 
 
 @pytest.mark.live

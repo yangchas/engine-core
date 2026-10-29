@@ -22,7 +22,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from pathlib import PurePosixPath
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Mapping
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
@@ -322,7 +322,8 @@ def _schedule_event_name(event_id: str) -> str:
 
 
 def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[str], run_token: str,
-                     now: datetime, minutes: int) -> tuple[dict[str, Any], dict[str, str]]:
+                     now: datetime, minutes: int,
+                     event_args_override: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
     if minutes < 1:
         raise ValueError("minutes_must_be_at_least_1")
     by_id = {str(event.get("event_id")): event for event in schedule["events"]
@@ -343,6 +344,13 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
     event_ids = {name: (name if _fetch_item_name(name) is not None
                         else schedule_ids[_schedule_event_name(name)]) for name in requested}
     selected = [copy.deepcopy(by_id[name]) for name in schedule_names]
+    if event_args_override:
+        primary = next((item for item in selected if item.get("event_id") == _schedule_event_name(event_id)), None)
+        if primary is None:
+            raise ValueError("event_args_override_requires_primary_scheduled_event")
+        if not all(isinstance(key, str) and key for key in event_args_override):
+            raise ValueError("event_args_override_keys_must_be_nonempty_strings")
+        primary["args"] = {**(primary.get("args") or {}), **dict(event_args_override)}
     missing_dependencies: set[str] = set()
     selected_set = set(schedule_names)
     direct_fetch_item = any(_fetch_item_name(name) is not None for name in requested)
@@ -384,6 +392,8 @@ def prepare_schedule(schedule: dict[str, Any], event_id: str, with_events: list[
         event["deadline"] = deadline_text
         if "late_until" in event:
             event["late_until"] = deadline_text
+        event.pop("late_until_date_offset_days", None)
+        event.pop("late_until_date_offset_error_codes", None)
         event.pop("phases", None)
 
     profiles: dict[str, Any] = {}
@@ -1099,6 +1109,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-minutes", type=int, default=45, help="terminal-state wait limit; default 45")
     parser.add_argument("--refresh-output", action="store_true",
                         help="hide this event's output date in the temporary catalog to exercise a fresh write")
+    parser.add_argument("--event-args-json", help="merge a JSON object into the selected event args for isolated acceptance")
     parser.add_argument("--keep", action="store_true",
                         help="retain temporary files (all rehearsal directories are retained by policy)")
     return parser
@@ -1189,9 +1200,12 @@ def run_rehearsal(args: argparse.Namespace) -> int:
         trigger = now + timedelta(minutes=args.minutes)
         trigger_at = trigger.isoformat(timespec="seconds")
         deadline_at = (trigger + timedelta(minutes=60)).isoformat(timespec="seconds")
+        event_args_override = json.loads(args.event_args_json) if args.event_args_json else None
+        if event_args_override is not None and not isinstance(event_args_override, dict):
+            raise ValueError("event_args_json_must_be_object")
         prepared, event_ids = prepare_schedule(archive_schedule, args.event,
                                                [item for group in args.with_events for item in group],
-                                               root.name, now, args.minutes)
+                                               root.name, now, args.minutes, event_args_override)
         if fetch_item_id is not None:
             seed_fetch_item_state(state_root, event_ids[args.event], target_data_date, trigger_at)
         if args.refresh_output:

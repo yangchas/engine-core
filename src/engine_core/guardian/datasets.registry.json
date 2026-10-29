@@ -172,6 +172,57 @@
       "redis_ttl_seconds": 604800
     },
     {
+      "id": "daily_dde",
+      "owner": "postmarket_data",
+      "artifact": {
+        "td_stable": "daily_dde_v1",
+        "date_basis": "Kaipan 响应逐行 Date；目标分区日期须由响应包含"
+      },
+      "phases": [
+        "POST_MARKET",
+        "NIGHT",
+        "PRE_MARKET"
+      ],
+      "cadence": "交易日 15:12；daily_kline_close_1505 完成后",
+      "rule": "唯一来源 Kaipan getHisStockDDE；单股一次取回全史，按 history_trading_days 配置只写最近交易日（默认 250），新日期优先。字段缺失为 NULL，回显日期早于目标日视为 stale。",
+      "freshness": {
+        "partition": "D",
+        "expected_by": "20:30",
+        "basis": "trading_day",
+        "set_by": "C600"
+      },
+      "retry": "event=daily_dde_postclose profile=daily_dde rungs=kaipan; attempts=3, exponential backoff 60s*2 cap=10m; retry until next-day 08:00",
+      "degrade": [
+        "无降级链；缺失逐股记录 known_missing 并等待重试至次日盘前。"
+      ],
+      "td_sink": {
+        "database": "core_data",
+        "stable": "daily_dde_v1",
+        "columns": [
+          "ddje",
+          "version"
+        ],
+        "tags": [
+          "symbol"
+        ],
+        "timestamp": "ts"
+      },
+      "lifecycle": {
+        "init": "检查 core_data 存在并创建库内 daily_dde_v1 stable；按 symbol 聚合水位，只对缺目标日的股票回补",
+        "force": "重取指定股票并原子批量写入后读回",
+        "clear": "不提供删除操作"
+      },
+      "redis_hot_view": {
+        "namespace": "core:cache:data:daily_dde",
+        "key_pattern": "{namespace}:{date}",
+        "type": "hash",
+        "field": "symbol",
+        "ttl_seconds": 86400
+      },
+      "notes": "来源响应提供 Date 与 DDJE；large_net/DDX/DDY/DDZ 不存在于源响应。旧库四列恒为 0，不是数据。Redis 只写 core:cache:data:daily_dde:{date} hash，TTL 由本登记项配置。",
+      "guardian_event": "daily_dde_postclose"
+    },
+    {
       "id": "daily_indicators",
       "owner": "postmarket_data",
       "artifact": {

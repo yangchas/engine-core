@@ -344,6 +344,9 @@ def _run(request):
     if name == "daily_kline_close":
         from engine_core.guardian.daily_kline_close import run_close_tier
         return run_close_tier(request, root, dry_run=dry)
+    if name == "postmarket_data" and args.get("dataset") == "daily_dde":
+        from engine_core.guardian.daily_dde_sync import run as run_daily_dde_sync
+        return run_daily_dde_sync(request, root, dry_run=dry)
     if name == "kaipan_fetch" and args.get("dataset") == "limit_up_pool":
         # C580: D-1 limit-up pool ladder rung (kaipan / wencai / td per schedule.json); other kaipan_fetch events
         # (kaipan_refresh_0850: reasons, hot plates, members) keep the command path below.

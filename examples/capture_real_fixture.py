@@ -7,6 +7,7 @@ Fixtures under tests/fixtures/real/ must come from here (or from copying a commi
   capture_real_fixture.py ths_hot_rank
   capture_real_fixture.py kaipan_hot_plates [--date YYYY-MM-DD]
   capture_real_fixture.py kaipan_pool [--date YYYY-MM-DD] [--level 1]
+  capture_real_fixture.py kaipan_stock_dde --symbol 000001 [--date YYYY-MM-DD]
   capture_real_fixture.py wencai_daily_kline --date YYYY-MM-DD
   capture_real_fixture.py wencai_limit_up_pool_today --date YYYY-MM-DD
   capture_real_fixture.py q2_limit_up_pool_today --date YYYY-MM-DD
@@ -154,7 +155,7 @@ def _baostock_stock_basic() -> tuple[object, dict]:
 
 
 def capture(kind: str, day: str, level: int, *, plate_code: str | None = None,
-            index: int = 0, page_size: int = 2000) -> tuple[str, object, dict]:
+            index: int = 0, page_size: int = 2000, symbol: str | None = None) -> tuple[str, object, dict]:
     if kind == "ths_hot_rank":
         raw, meta = _ths_raw()
         return "ths_hot_rank", raw, meta
@@ -164,6 +165,13 @@ def capture(kind: str, day: str, level: int, *, plate_code: str | None = None,
     if kind == "kaipan_pool":
         params = {"date": day, "ban": str(level), "size": "2000"}
         return "kaipan_pool", _kaipan("getHisBans", **params), {"call": "getHisBans", "params": params}
+    if kind == "kaipan_stock_dde":
+        if not symbol or len(symbol) != 6 or not symbol.isdigit():
+            raise SystemExit("--symbol must be a six-digit stock code for kaipan_stock_dde")
+        params = {"code": symbol, "date": day}
+        raw = getattr(importlib.import_module("pykaipan.pykaipan"), "getHisStockDDE")(symbol, day)
+        return "kaipan_stock_dde", raw, {"call": "getHisStockDDE", "params": params,
+                                         "request_count": 1, "source_date_echo": "Date"}
     if kind == "kaipan_plate_members":
         if not plate_code or not plate_code.isdigit():
             raise SystemExit("--plate-code must be supplied for kaipan_plate_members")
@@ -253,7 +261,7 @@ def copy_catalog_artifact(dataset: str, day: str, version: str, label: str,
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("kind", nargs="?", choices=["ths_hot_rank", "kaipan_hot_plates", "kaipan_pool",
-                                                     "kaipan_plate_members",
+                                                     "kaipan_stock_dde", "kaipan_plate_members",
                                                      "wencai_daily_kline", "wencai_limit_up_pool_today",
                                                      "q2_limit_up_pool_today",
                                                      "baostock_query_all_stock",
@@ -261,6 +269,7 @@ def main(argv=None) -> int:
     parser.add_argument("--date", default=datetime.now(TZ).date().isoformat())
     parser.add_argument("--level", type=int, default=1)
     parser.add_argument("--plate-code")
+    parser.add_argument("--symbol")
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--page-size", type=int, default=2000)
     parser.add_argument("--from-catalog", action="store_true",
@@ -293,11 +302,12 @@ def main(argv=None) -> int:
         parser.error("--index must be non-negative and --page-size must be 1..2000")
     source, raw, meta = capture(args.kind, args.date, args.level,
                                 plate_code=args.plate_code, index=args.index,
-                                page_size=args.page_size)
+                                page_size=args.page_size, symbol=args.symbol)
     body = json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str, indent=1).encode("utf-8") + b"\n"
     level = f"_L{args.level}" if args.kind == "kaipan_pool" else ""
     plate_part = f"_{args.plate_code}_i{args.index}" if args.kind == "kaipan_plate_members" else ""
-    name = f"{source}_{args.date}{level}{plate_part}_{fetched_at[11:16].replace(':', '')}.json"
+    symbol_part = f"_{args.symbol}" if args.kind == "kaipan_stock_dde" else ""
+    name = f"{source}_{args.date}{level}{plate_part}{symbol_part}_{fetched_at[11:16].replace(':', '')}.json"
     REAL.mkdir(parents=True, exist_ok=True)
     (REAL / name).write_bytes(body)
     index = json.loads(PROVENANCE.read_text(encoding="utf-8")) if PROVENANCE.exists() else {}
