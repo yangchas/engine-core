@@ -1215,6 +1215,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--td-database", default=os.environ.get("CORE_TD_DATABASE") or DEFAULT_TD_DATABASE,
                         help="pre-existing core_dev_* TD database; never created by this tool")
     parser.add_argument("--timeout-minutes", type=int, default=45, help="terminal-state wait limit; default 45")
+    parser.add_argument("--isolation-heavy-max-load5", type=float,
+                        help="override the heavy-load gate in this isolated rehearsal only")
     parser.add_argument("--refresh-output", action="store_true",
                         help="hide this event's output date in the temporary catalog to exercise a fresh write")
     parser.add_argument("--refresh-output-event", action="append", default=[],
@@ -1328,6 +1330,11 @@ def run_rehearsal(args: argparse.Namespace) -> int:
                                                [item for group in args.with_events for item in group],
                                                root.name, now, args.minutes,
                                                event_args=event_args_overrides)
+        if args.isolation_heavy_max_load5 is not None:
+            if not 0 < args.isolation_heavy_max_load5 < 1000:
+                raise ValueError("isolation_heavy_max_load5_out_of_range")
+            prepared["heavy_max_load5"] = args.isolation_heavy_max_load5
+            summary["isolation_heavy_max_load5"] = args.isolation_heavy_max_load5
         if fetch_item_id is not None:
             seed_fetch_item_state(state_root, event_ids[args.event], target_data_date, trigger_at)
         refresh_events = list(args.refresh_output_event)

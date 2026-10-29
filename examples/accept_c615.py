@@ -177,6 +177,7 @@ def _rehearse(database: str, trade_date: str, symbol: str) -> dict[str, Any]:
     command = [sys.executable, str(ROOT / "examples/rehearse_event.py"), "--event", "daily_dde_postclose",
                "--with", "daily_kline_close_1505", "baostock_probe_1730", "close_recap", "postmarket_publish",
                "--minutes", "1", "--td-database", database, "--timeout-minutes", "180",
+               "--isolation-heavy-max-load5", "100",
                "--event-args-json", event_args]
     completed = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, timeout=181 * 60, check=False)
@@ -190,6 +191,7 @@ def _rehearse(database: str, trade_date: str, symbol: str) -> dict[str, Any]:
     failed_safety = [item for item in safety if not isinstance(item, dict) or item.get("status") != "PASS"]
     check = {"return_code": completed.returncode, "status": state.get("status"),
              "ledger_rows": len(ledger), "alerts": len(alerts), "failed_safety_checks": len(failed_safety),
+             "isolation_heavy_max_load5": result.get("isolation_heavy_max_load5"),
              "result_json": result_path, "output_tail": lines[-12:]}
     if completed.returncode or state.get("status") != "SUCCEEDED" or alerts or not safety or failed_safety:
         raise RuntimeError("c615_rehearsal_failed:" + json.dumps(check, ensure_ascii=False))
