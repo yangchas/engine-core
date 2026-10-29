@@ -561,7 +561,7 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
 
     runner = JobRunner(artifact_root=base,
                        td_adapter=progress_sink,
-                       budget=RequestBudget(max_requests=max(1, len(gap_plan or [])), min_interval_seconds=0))
+                       budget=RequestBudget(max_requests=max(1, len(affected_dates)), min_interval_seconds=0))
     outcomes = []
     for day in affected_dates:
         day_expected_symbols = active_symbols_for_day(day)
