@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
@@ -68,6 +69,61 @@ def _select_batch(active: list[str], watermarks: dict[str, str], trade_date: str
     selected = selected[:MIN_BATCH]
     return selected, {name: sum(_board(symbol) == name for symbol in selected)
                       for name in ("main", "chinext", "star", "beijing")}
+
+
+def _preflight_batch(active: list[str], watermarks: dict[str, str], trade_date: str
+                     ) -> tuple[list[str], dict[str, int], dict[str, Any]]:
+    from engine_core.data_pipeline.daily_dde import _fetch_with_retry
+
+    selected, _ = _select_batch(active, watermarks, trade_date)
+    eligible = sorted(set(active) | set(BSE_COVERAGE_SYMBOLS))
+    eligible = [symbol for symbol in eligible
+                if watermarks.get(symbol, "") < trade_date or symbol in BSE_COVERAGE_SYMBOLS]
+    candidates_by_board = {name: [symbol for symbol in eligible if _board(symbol) == name]
+                           for name in BOARD_MINIMUMS}
+    known_symbols = set(eligible)
+    timings: list[float] = []
+    fetcher = _live_fetcher(timings)
+
+    def check(symbol: str) -> tuple[bool, str | None, int]:
+        partition, error, attempts, known_missing = _fetch_with_retry(
+            fetcher, symbol, trade_date, HISTORY_TRADING_DAYS, 3, time.sleep, known_symbols)
+        reason = error or ("known_missing" if known_missing else None)
+        return partition is not None and reason is None, reason, attempts
+
+    checked: dict[str, tuple[bool, str | None, int]] = {}
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {pool.submit(check, symbol): symbol for symbol in selected}
+        for future in as_completed(futures):
+            checked[futures[future]] = future.result()
+
+    replacements: list[dict[str, str]] = []
+    used = set(selected)
+    for index, symbol in enumerate(list(selected)):
+        valid, reason, _attempts = checked[symbol]
+        if valid:
+            continue
+        replacement = None
+        for candidate in candidates_by_board[_board(symbol)]:
+            if candidate in used:
+                continue
+            used.add(candidate)
+            candidate_valid, candidate_reason, _candidate_attempts = check(candidate)
+            if candidate_valid:
+                replacement = candidate
+                break
+            replacements.append({"symbol": candidate, "reason": candidate_reason or "invalid_response"})
+        if replacement is None:
+            raise RuntimeError(f"no_live_target_date_replacement:{symbol}:{reason}")
+        selected[index] = replacement
+        replacements.append({"symbol": symbol, "reason": reason or "invalid_response"})
+
+    board_counts = {name: sum(_board(symbol) == name for symbol in selected) for name in BOARD_MINIMUMS}
+    if len(selected) != MIN_BATCH or any(board_counts[name] < BOARD_MINIMUMS[name] for name in BOARD_MINIMUMS):
+        raise RuntimeError("live_preflight_batch_coverage_failed")
+    return selected, board_counts, {"validated_symbols": MIN_BATCH,
+                                    "source_requests": len(timings),
+                                    "rejected_or_replaced": replacements}
 
 
 def _live_fetcher(timings: list[float]):
@@ -221,9 +277,10 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("validation_database_must_already_exist:" + args.database)
         active = _active_symbols(root, args.date)
         initial_watermarks = store.latest_watermarks()
-        symbols, board_counts = _select_batch(active, initial_watermarks, args.date)
+        symbols, board_counts, preflight = _preflight_batch(active, initial_watermarks, args.date)
         report["checks"]["batch"] = {"symbols": len(symbols), "board_counts": board_counts,
-                                       "source": "Core active symbol_universe + live Kaipan DDE"}
+                                       "source": "Core active symbol_universe + live Kaipan DDE",
+                                       "live_target_date_preflight": preflight}
 
         first = _interrupt_midrun(args.database, args.date, symbols, root)
         after_crash = store.latest_watermarks()
