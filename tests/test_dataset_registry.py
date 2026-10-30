@@ -50,3 +50,14 @@ def test_partition_freshness_states():
     overdue = by(stale_items(late, catalog, items, trade_date="2026-10-20", prev_trade_date="2026-10-19"))
     assert pending["daily_kline"] == "PENDING" and overdue["daily_kline"] == "OVERDUE"
     assert pending["limit_up_pool"] == overdue["limit_up_pool"] == "OK"
+
+
+def test_event_scoped_freshness_rule_is_unknown_not_a_crash():
+    from engine_core.guardian.registry import load_registry
+
+    gaps = [item for item in load_registry() if item["id"] == "hot_plates_gaps"]
+    assert gaps
+    catalog = {"datasets": {"hot_plates_gaps": {"dates": {}}}}
+    now = datetime(2026, 10, 30, 9, 13, tzinfo=timezone.utc)
+    result = stale_items(now, catalog, gaps, trade_date="2026-10-30", prev_trade_date="2026-10-29")
+    assert [(row["id"], row["status"]) for row in result] == [("hot_plates_gaps", "UNKNOWN")]

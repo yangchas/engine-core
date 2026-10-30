@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -304,6 +305,12 @@ def stale_items(now: datetime, catalog: str | Path | Mapping[str, Any],
         if not isinstance(rule, Mapping) or "partition" not in rule or ("expected_by" not in rule and rule["partition"] != "latest"):
             result.append({"id": item["id"], "status": "UNKNOWN", "dataset": dataset,
                            "reason": "no structured freshness rule"})
+            continue
+        if rule["partition"] != "latest" and (rule["partition"] not in {"D", "D-1"} or
+                                              not re.fullmatch(r"\d{1,2}:\d{2}", str(rule["expected_by"]))):
+            # Event-scoped rules (e.g. "D/event_id" with an "event deadline") have no catalog clock to age.
+            result.append({"id": item["id"], "status": "UNKNOWN", "dataset": dataset,
+                           "reason": "freshness rule is event-scoped"})
             continue
         if rule["partition"] == "latest":
             keys = sorted(k for k in record.get("dates", {}) if catalog_partition_present(payload, dataset, k, now))
