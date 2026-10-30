@@ -312,7 +312,25 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
     expected_symbols_by_day: dict[str, set[str] | None] = {}
     universe_source_day_by_day: dict[str, str | None] = {}
 
-    def active_symbols_for_day(day: str) -> set[str] | None:
+    day_source_symbols: dict[str, set[str] | None] = {}
+
+    def baostock_symbols_for_day(day: str) -> set[str] | None:
+        # That day's real Baostock stock list, in memory only; None when the source is unavailable.
+        if day not in day_source_symbols:
+            try:
+                if client is None:
+                    symbols, _ = _fetch_baostock_universe_isolated(
+                        day, float(source_universe_timeout_seconds))
+                else:
+                    symbols, _ = call_with_timeout(
+                        _all_baostock_symbols_with_count, range_client.module, day,
+                        timeout_seconds=float(source_universe_timeout_seconds))
+                day_source_symbols[day] = set(symbols)
+            except Exception:
+                day_source_symbols[day] = None
+        return day_source_symbols[day]
+
+    def active_symbols_for_day(day: str, *, fetch: bool = True) -> set[str] | None:
         if day not in expected_symbols_by_day:
             candidates = [candidate for candidate in universe_partition_dates if candidate <= day]
             for candidate in reversed(candidates):
@@ -327,8 +345,11 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                 universe_source_day_by_day[day] = candidate
                 break
             else:
-                expected_symbols_by_day[day] = None
-                universe_source_day_by_day[day] = None
+                if not fetch:
+                    return None
+                # No local universe on or before this day (e.g. a from-scratch history refill).
+                expected_symbols_by_day[day] = baostock_symbols_for_day(day)
+                universe_source_day_by_day[day] = day if expected_symbols_by_day[day] is not None else None
         return expected_symbols_by_day[day]
 
     def get_source_universe() -> set[str] | None:
@@ -372,8 +393,8 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
 
     gap_plan: list[dict[str, Any]] = []
     eligibility_status = "NO_GAPS"
-    target_universe = active_symbols_for_day(target)
-    target_universe_date = universe_source_day_by_day[target]
+    target_universe = active_symbols_for_day(target, fetch=False)
+    target_universe_date = universe_source_day_by_day.get(target)
     universe_fallback_from = target_universe_date if target_universe_date != target else None
     target_missing_categories: dict[str, str] = {}
     target_classification_symbols: set[str] | None = None
@@ -600,17 +621,7 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
         elif set(day_expected_symbols) - set(rows_by_symbol):
             # Historical gap days classify their own missing symbols with that day's Baostock list;
             # kept in memory only, and left unclassified (retryable) when the source is unavailable.
-            try:
-                if client is None:
-                    day_symbols, _ = _fetch_baostock_universe_isolated(
-                        day, float(source_universe_timeout_seconds))
-                else:
-                    day_symbols, _ = call_with_timeout(
-                        _all_baostock_symbols_with_count, range_client.module, day,
-                        timeout_seconds=float(source_universe_timeout_seconds))
-                classified_source_symbols = set(day_symbols)
-            except Exception:
-                classified_source_symbols = None
+            classified_source_symbols = baostock_symbols_for_day(day)
         if classified_source_symbols is not None:
             meta["source_symbols"] = sorted(classified_source_symbols)
         result = runner.run("daily_kline", day, fetch=lambda _day: meta,
