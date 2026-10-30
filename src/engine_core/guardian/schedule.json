@@ -3027,7 +3027,7 @@
       "at": "17:40:00",
       "profile": "policy_05",
       "args": {
-        "baostock_no_progress_seconds": 300,
+        "baostock_no_progress_seconds": 120,
         "daily_kline_policy": {
           "formal_coverage_threshold": 0.995,
           "source_empty_max": 20
