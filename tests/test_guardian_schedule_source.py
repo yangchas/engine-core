@@ -345,3 +345,16 @@ def test_runtime_reconciliation_checkpoints_are_configured_and_use_fetch_plan():
         profile = payload["profiles"][event["profile"]]
         assert profile["ladder"][0]["attempts"] == 1
         assert profile["catchup"] == "run_in_window"
+
+
+def test_postmarket_publish_stall_guard_fires_before_the_handler_timeout():
+    import json
+    from pathlib import Path
+
+    schedule = json.loads((Path(__file__).resolve().parents[1] / "src/engine_core/guardian/schedule.json")
+                          .read_text(encoding="utf-8"))
+    event = next(e for e in schedule["events"] if e["event_id"] == "postmarket_publish")
+    tier = schedule["profiles"][event["profile"]]["ladder"][0]
+    timeout = int(tier["timeout"].rstrip("s"))
+    # A hung Baostock pull must end as a clean retryable stall, not as a HANDLER_TIMEOUT kill.
+    assert event["args"]["baostock_no_progress_seconds"] < timeout
