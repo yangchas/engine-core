@@ -507,8 +507,8 @@
           "attempts": 16,
           "backoff": "5m*1",
           "backoff_cap": "5m",
-          "timeout": "150m",
-          "until": "late_until"
+          "timeout": "24h",
+          "budget_enabled": false
         }
       ]
     }

@@ -799,3 +799,16 @@ def test_range_client_waits_before_its_single_reconnect(monkeypatch):
     monkeypatch.setattr(client, "reconnect", lambda: sleeps.append("reconnect"))
     assert client._query("600000", "2026-10-01", "2026-10-02") == []
     assert sleeps == [2.0, "reconnect"]
+
+
+def test_backfill_has_no_total_time_budget_by_default():
+    import inspect
+    import json
+    from pathlib import Path
+    from engine_core.data_pipeline.daily_kline_gapfill import run_td_daily_kline_gapfill
+
+    assert inspect.signature(run_td_daily_kline_gapfill).parameters["total_timeout_seconds"].default is None
+    schedule = json.loads((Path(__file__).resolve().parents[1] / "src/engine_core/guardian/schedule.json")
+                          .read_text(encoding="utf-8"))
+    tier = schedule["profiles"]["kline_backfill"]["ladder"][0]
+    assert tier["budget_enabled"] is False and "until" not in tier
