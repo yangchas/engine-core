@@ -504,11 +504,11 @@
       "ladder": [
         {
           "name": "primary",
-          "attempts": 16,
-          "backoff": "5m*1",
-          "backoff_cap": "5m",
-          "timeout": "150m",
-          "until": "late_until"
+          "attempts": 3,
+          "backoff": "5m*2",
+          "backoff_cap": "20m",
+          "timeout": "12h",
+          "budget_enabled": false
         }
       ]
     }
@@ -3548,6 +3548,7 @@
       "handler": "daily_kline_backfill",
       "args": {
         "target": "prev_trade_day",
+        "total_timeout_seconds": 43200,
         "daily_kline_policy": {
           "formal_coverage_threshold": 0.995,
           "source_empty_max": 20

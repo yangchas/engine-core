@@ -71,6 +71,51 @@ def _baostock_universe_worker(target: str, result_queue: Any) -> None:
             pass
 
 
+def _baostock_universes_worker(days: list[str], result_queue: Any) -> None:
+    """One disposable login that reads several days' stock lists one after another."""
+    try:
+        import baostock as module
+        login = module.login()
+        if getattr(login, "error_code", "0") != "0":
+            raise RuntimeError("BAOSTOCK_LOGIN_FAILED")
+        try:
+            for day in days:
+                symbols, row_count = _all_baostock_symbols_with_count(module, day)
+                result_queue.put({"day": day, "symbols": symbols, "row_count": row_count})
+        finally:
+            module.logout()
+    except BaseException as exc:
+        try:
+            result_queue.put({"error": type(exc).__name__})
+        except Exception:
+            pass
+
+
+def _fetch_baostock_universes_isolated(days: list[str], per_day_timeout: float,
+                                       on_day: Any) -> bool:
+    """Stream per-day lists to on_day; stop at the first stall or error and report whether all arrived."""
+    import queue as queue_module
+    context = multiprocessing.get_context("spawn")
+    results = context.Queue()
+    process = context.Process(target=_baostock_universes_worker, args=(list(days), results), daemon=True)
+    process.start()
+    try:
+        for _ in days:
+            try:
+                result = results.get(timeout=per_day_timeout)
+            except queue_module.Empty:
+                return False
+            if "error" in result:
+                return False
+            on_day(result["day"], list(result["symbols"]), int(result["row_count"]))
+        return True
+    finally:
+        if process.is_alive():
+            process.terminate()
+        process.join(2)
+        results.close()
+
+
 def _fetch_baostock_universe_isolated(target: str, timeout_seconds: float) -> tuple[list[str], int]:
     context = multiprocessing.get_context("spawn")
     results = context.Queue(maxsize=1)
@@ -314,20 +359,46 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
 
     day_source_symbols: dict[str, set[str] | None] = {}
 
+    universe_failures = 0
+
     def baostock_symbols_for_day(day: str) -> set[str] | None:
-        # That day's real Baostock stock list, in memory only; None when the source is unavailable.
-        if day not in day_source_symbols:
-            try:
-                if client is None:
-                    symbols, _ = _fetch_baostock_universe_isolated(
-                        day, float(source_universe_timeout_seconds))
-                else:
-                    symbols, _ = call_with_timeout(
-                        _all_baostock_symbols_with_count, range_client.module, day,
-                        timeout_seconds=float(source_universe_timeout_seconds))
-                day_source_symbols[day] = set(symbols)
-            except Exception:
-                day_source_symbols[day] = None
+        # That day's real Baostock stock list; cached on disk so a retry never repeats a finished day.
+        nonlocal universe_failures
+        if day in day_source_symbols:
+            return day_source_symbols[day]
+        cached = _load_source_universe_cache(_source_universe_cache_path(base, day), day)
+        if cached is not None:
+            day_source_symbols[day] = set(cached["symbols"])
+            return day_source_symbols[day]
+        if universe_failures >= 2:
+            # Circuit breaker: the source is not answering, leave the rest to the retry ladder's backoff.
+            day_source_symbols[day] = None
+            return None
+
+        def remember(item_day: str, symbols: list[str], row_count: int) -> None:
+            saved = _save_source_universe_cache(
+                _source_universe_cache_path(base, item_day), item_day, symbols, row_count)
+            day_source_symbols[item_day] = set(saved["symbols"])
+
+        try:
+            if client is None:
+                batch = [day] + [item for item in sorted(coverage, reverse=True)
+                                 if item != day and coverage[item].state != "OK" and
+                                 item not in day_source_symbols and
+                                 _load_source_universe_cache(
+                                     _source_universe_cache_path(base, item), item) is None]
+                _fetch_baostock_universes_isolated(
+                    batch, float(source_universe_timeout_seconds), remember)
+            else:
+                symbols, row_count = call_with_timeout(
+                    _all_baostock_symbols_with_count, range_client.module, day,
+                    timeout_seconds=float(source_universe_timeout_seconds))
+                remember(day, symbols, row_count)
+        except Exception:
+            pass
+        if day_source_symbols.get(day) is None:
+            universe_failures += 1
+            day_source_symbols[day] = None
         return day_source_symbols[day]
 
     def active_symbols_for_day(day: str, *, fetch: bool = True) -> set[str] | None:

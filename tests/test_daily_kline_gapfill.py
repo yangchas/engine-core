@@ -644,6 +644,8 @@ def test_gapfill_without_any_local_universe_uses_that_days_baostock_list(tmp_pat
     assert client.queries and all(q[1:] == (target, target) for q in client.queries)
     assert missing_symbol in {q[0] for q in client.queries}
     assert outcome["partitions"][0]["universe_fallback_from"] is None
+    cache = tmp_path / ".checkpoints" / "baostock-query-all-stock" / f"{target}.json"
+    assert json.loads(cache.read_text(encoding="utf-8"))["trade_date"] == target
 
 
 def test_gapfill_timeout_classification_falls_back_to_source_empty_and_keeps_fetching(tmp_path):
@@ -695,3 +697,126 @@ def test_gapfill_timeout_classification_falls_back_to_source_empty_and_keeps_fet
     assert outcome["source_universe_status"] == "UNAVAILABLE"
     assert outcome["source_universe_error"] == "BAOSTOCK_TIMEOUT"
     assert not (tmp_path / ".checkpoints" / "baostock-query-all-stock" / f"{target}.json").exists()
+
+
+def _threaded_context(monkeypatch):
+    import queue
+    import threading
+    from engine_core.data_pipeline import daily_kline_gapfill as module
+
+    class Queue(queue.Queue):
+        def close(self):
+            pass
+
+    class Process:
+        def __init__(self, target, args, daemon=True):
+            self.thread = threading.Thread(target=target, args=args, daemon=True)
+
+        def start(self):
+            self.thread.start()
+
+        def is_alive(self):
+            return self.thread.is_alive()
+
+        def terminate(self):
+            pass
+
+        def join(self, timeout=None):
+            self.thread.join(timeout)
+
+    context = type("Context", (), {"Process": Process,
+                                   "Queue": staticmethod(lambda *a, **k: Queue())})
+    monkeypatch.setattr(module.multiprocessing, "get_context", lambda name: context)
+    return module
+
+
+def test_universes_stream_one_session_and_stop_at_first_stall(monkeypatch):
+    module = _threaded_context(monkeypatch)
+    release = __import__("threading").Event()
+
+    def stalled(days, result_queue):
+        result_queue.put({"day": days[0], "symbols": ["000001"], "row_count": 1})
+        release.wait(5)
+
+    monkeypatch.setattr(module, "_baostock_universes_worker", stalled)
+    seen = []
+    ok = module._fetch_baostock_universes_isolated(
+        ["2026-10-29", "2026-10-28", "2026-10-27"], 0.2, lambda d, s, n: seen.append((d, s, n)))
+    release.set()
+    assert ok is False
+    assert seen == [("2026-10-29", ["000001"], 1)]
+
+
+def test_universes_report_worker_error_without_waiting_for_remaining_days(monkeypatch):
+    module = _threaded_context(monkeypatch)
+    monkeypatch.setattr(module, "_baostock_universes_worker",
+                        lambda days, q: q.put({"error": "RuntimeError"}))
+    seen = []
+    started = __import__("time").monotonic()
+    assert module._fetch_baostock_universes_isolated(
+        ["2026-10-29", "2026-10-28"], 30.0, lambda *a: seen.append(a)) is False
+    assert not seen and __import__("time").monotonic() - started < 5
+
+
+def test_universes_all_days_arrive_from_one_worker(monkeypatch):
+    module = _threaded_context(monkeypatch)
+    calls = []
+
+    def worker(days, q):
+        calls.append(list(days))
+        for day in days:
+            q.put({"day": day, "symbols": ["000001"], "row_count": 1})
+
+    monkeypatch.setattr(module, "_baostock_universes_worker", worker)
+    seen = []
+    days = ["2026-10-29", "2026-10-28", "2026-10-27"]
+    assert module._fetch_baostock_universes_isolated(days, 1.0, lambda d, s, n: seen.append(d)) is True
+    assert calls == [days] and seen == days
+
+
+def test_range_client_waits_before_its_single_reconnect(monkeypatch):
+    from engine_core import daily_history
+
+    class Result:
+        error_code = "0"
+        fields = []
+
+        def next(self):
+            return False
+
+    class Module:
+        calls = 0
+
+        def query_history_k_data_plus(self, *a, **k):
+            Module.calls += 1
+            if Module.calls == 1:
+                raise ValueError("transient")
+            return Result()
+
+    client = daily_history.BaostockRangeClient(Module())
+    sleeps = []
+    monkeypatch.setattr(daily_history.time, "sleep", sleeps.append)
+    monkeypatch.setattr(client, "reconnect", lambda: sleeps.append("reconnect"))
+    assert client._query("600000", "2026-10-01", "2026-10-02") == []
+    assert sleeps == [2.0, "reconnect"]
+
+
+def test_only_the_post_close_backfill_event_gets_the_twelve_hour_budget():
+    import inspect
+    import json
+    from pathlib import Path
+    from engine_core.data_pipeline import daily_kline_gapfill
+
+    # Other callers (e.g. the baostock_probe gap check) keep the 6900 s default.
+    assert inspect.signature(daily_kline_gapfill.run_td_daily_kline_gapfill) \
+        .parameters["total_timeout_seconds"].default == 6900.0
+    schedule = json.loads((Path(__file__).resolve().parents[1] / "src/engine_core/guardian/schedule.json")
+                          .read_text(encoding="utf-8"))
+    events = {e["event_id"]: e for e in schedule["events"]}
+    assert events["daily_kline_backfill"]["args"]["total_timeout_seconds"] == 12 * 3600
+    assert [name for name, e in events.items()
+            if "args" in e and "total_timeout_seconds" in e["args"]] == ["daily_kline_backfill"]
+    tier = schedule["profiles"]["kline_backfill"]["ladder"][0]
+    # 3 attempts with exponential backoff, then give up on this time point; 12 h per attempt.
+    assert (tier["attempts"], tier["backoff"], tier["timeout"], tier["budget_enabled"]) == (3, "5m*2", "12h", False)
+    assert "until" not in tier
