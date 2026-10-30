@@ -3543,11 +3543,8 @@
       "enabled": true,
       "calendar": "every_day",
       "trigger_type": "window",
-      "at": [
-        "01:00",
-        "08:00"
-      ],
-      "deadline": "08:15",
+      "at": "01:00",
+      "deadline": "09:00",
       "handler": "daily_kline_backfill",
       "args": {
         "target": "prev_trade_day",
@@ -3560,7 +3557,7 @@
       "phases": [
         "any"
       ],
-      "late_until": "08:15:00"
+      "late_until": "09:00:00"
     },
     {
       "event_id": "limit_up_detail_d1",
