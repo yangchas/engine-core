@@ -56,7 +56,7 @@ def test_schedule_fields_match_go_migrator_and_native_fixture_provenance():
     assert schedule["profiles"]["policy_11"]["ladder"][0]["backoff"] == "30m*1"
     assert events["daily_kline_backfill"]["enabled"] is True
     assert events["daily_kline_backfill"]["handler"] == "daily_kline_backfill"
-    assert events["daily_kline_backfill"]["at"] == ["01:00", "08:00"]
+    assert events["daily_kline_backfill"]["at"] == "01:00"
 
 
 def test_default_events_load_all_window_and_startup_definitions_from_config(tmp_path):
