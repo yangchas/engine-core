@@ -95,6 +95,10 @@ def _failure_classes(request):
                             "CONTRACT_INVALID", "CONTRACT_VIOLATION", "POSTCONDITION_FAILED"],
             "message_patterns": [],
         },
+        # Baostock not having delivered yet is never a permanent failure, whatever exit code carried it.
+        "retryable_first": {"message_patterns": ["baostock_gap_unresolved",
+                                                 "td_daily_kline_requires_provider_baostock",
+                                                 "rate_limited:"]},
         "default": "deterministic",
     }
 
@@ -151,6 +155,10 @@ def _classify_failure(request, *, error=None, result=None):
     exit_codes.update(int(value) for value in re.findall(r"fetch_exit_(\d+)", combined))
     normalized_codes = {value.upper() for value in codes}
 
+    first = classes.get("retryable_first")
+    if isinstance(first, dict) and any(str(pattern).lower() in combined
+                                       for pattern in first.get("message_patterns", []) if pattern):
+        return "retryable"
     for category in ("deterministic", "retryable"):
         rules = classes.get(category)
         if not isinstance(rules, dict):

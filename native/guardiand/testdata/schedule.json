@@ -2822,7 +2822,14 @@
             ],
             "message_patterns": []
           },
-          "default": "deterministic"
+          "default": "deterministic",
+          "retryable_first": {
+            "message_patterns": [
+              "baostock_gap_unresolved",
+              "td_daily_kline_requires_provider_baostock",
+              "rate_limited:"
+            ]
+          }
         },
         "baostock_no_progress_seconds": 300,
         "daily_kline_policy": {
@@ -2937,7 +2944,14 @@
             ],
             "message_patterns": []
           },
-          "default": "deterministic"
+          "default": "deterministic",
+          "retryable_first": {
+            "message_patterns": [
+              "baostock_gap_unresolved",
+              "td_daily_kline_requires_provider_baostock",
+              "rate_limited:"
+            ]
+          }
         },
         "baostock_no_progress_seconds": 300,
         "daily_kline_policy": {
@@ -3115,7 +3129,14 @@
             ],
             "message_patterns": []
           },
-          "default": "deterministic"
+          "default": "deterministic",
+          "retryable_first": {
+            "message_patterns": [
+              "baostock_gap_unresolved",
+              "td_daily_kline_requires_provider_baostock",
+              "rate_limited:"
+            ]
+          }
         },
         "baostock_no_progress_seconds": 300,
         "daily_kline_policy": {
@@ -3227,7 +3248,14 @@
             ],
             "message_patterns": []
           },
-          "default": "deterministic"
+          "default": "deterministic",
+          "retryable_first": {
+            "message_patterns": [
+              "baostock_gap_unresolved",
+              "td_daily_kline_requires_provider_baostock",
+              "rate_limited:"
+            ]
+          }
         },
         "baostock_no_progress_seconds": 300,
         "daily_kline_policy": {
