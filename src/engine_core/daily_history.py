@@ -455,6 +455,7 @@ class BaostockRangeClient:
         self.module = module
         self.read_timeout = read_timeout
         self.poisoned = False
+        self.reconnect_backoff_seconds = 2.0
         self.logout_error: str | None = None
 
     def login(self) -> None:
@@ -528,6 +529,7 @@ class BaostockRangeClient:
                     raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from exc
                 if attempt:
                     break
+                time.sleep(self.reconnect_backoff_seconds)
                 self.reconnect()
         raise RuntimeError(f"baostock_range_failed:{type(last_error).__name__}")
 
