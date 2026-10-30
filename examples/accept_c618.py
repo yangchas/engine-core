@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import timezone
 from pathlib import Path
 from typing import Any
 
@@ -129,7 +130,8 @@ def _staging_after(database: str, started_epoch_ms: int) -> dict[str, Any] | Non
             return None
         stamp, version, row_count, sha256 = row
         try:
-            stamp_ms = int(stamp.timestamp() * 1000)
+            # Markers are written as UTC-naive strings (reference_snapshot_td._stamp) and read back unchanged.
+            stamp_ms = int(stamp.replace(tzinfo=timezone.utc).timestamp() * 1000)
         except (AttributeError, TypeError, ValueError):
             stamp_ms = 0
         if stamp_ms < started_epoch_ms:
