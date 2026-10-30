@@ -19,8 +19,9 @@ def run_daily_kline_backfill(root: str | Path, target: str, *, args: Mapping[str
         return run_td_daily_kline_gapfill(
             root, target, store=store,
             history_min_trading_days=int(options.get("history_min_trading_days", 10)),
-            total_timeout_seconds=(float(options["total_timeout_seconds"])
-                                   if options.get("total_timeout_seconds") is not None else None),
+            total_timeout_seconds=(None if "total_timeout_seconds" in options and
+                                   options["total_timeout_seconds"] is None
+                                   else float(options.get("total_timeout_seconds", 6900))),
             no_progress_timeout_seconds=float(options.get("baostock_no_progress_seconds", 300)),
             source_universe_timeout_seconds=float(options.get("baostock_source_universe_seconds", 300)),
             range_concurrency=int(options.get("baostock_range_concurrency", 1)),

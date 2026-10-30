@@ -3548,6 +3548,7 @@
       "handler": "daily_kline_backfill",
       "args": {
         "target": "prev_trade_day",
+        "total_timeout_seconds": null,
         "daily_kline_policy": {
           "formal_coverage_threshold": 0.995,
           "source_empty_max": 20

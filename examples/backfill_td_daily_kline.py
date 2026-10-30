@@ -46,10 +46,8 @@ def main(argv: list[str] | None = None) -> int:
             result = run_td_daily_kline_gapfill(args.artifact_root, args.date, store=store,
                                                 history_min_trading_days=int(
                                                     settings.get("history_min_trading_days", 10)),
-                                                total_timeout_seconds=(
-                                                    float(settings["baostock_total_timeout_seconds"])
-                                                    if settings.get("baostock_total_timeout_seconds") is not None
-                                                    else None),
+                                                total_timeout_seconds=float(
+                                                    settings.get("baostock_total_timeout_seconds", 6900)),
                                                 no_progress_timeout_seconds=args.baostock_no_progress_seconds,
                                                 source_universe_timeout_seconds=source_universe_timeout,
                                                 range_concurrency=range_concurrency,

@@ -270,7 +270,7 @@ def _td_rows_to_daily(day: str, stored: Mapping[str, Mapping[str, Any]]) -> dict
 
 def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                                history_min_trading_days: int = 10,
-                               total_timeout_seconds: float | None = None,
+                               total_timeout_seconds: float | None = 6900.0,
                                no_progress_timeout_seconds: float = 300.0,
                                source_universe_timeout_seconds: float = 300.0,
                                range_concurrency: int = 1,
@@ -296,7 +296,7 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
     if client is not None and range_concurrency != 1:
         raise ValueError("range_concurrency_requires_isolated_baostock_client")
     started = time.monotonic()
-    # No total budget by default: a post-close backfill runs until every gap is filled.
+    # None (explicit opt-in by the caller) means no total budget: run until every gap is filled.
     deadline = float("inf") if total_timeout_seconds is None else started + float(total_timeout_seconds)
     base = Path(root).expanduser()
     sessions = [day for day in TradeCalendarStore(base).all_trading_dates() if day <= target]

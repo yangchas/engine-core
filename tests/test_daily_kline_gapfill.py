@@ -801,14 +801,32 @@ def test_range_client_waits_before_its_single_reconnect(monkeypatch):
     assert sleeps == [2.0, "reconnect"]
 
 
-def test_backfill_has_no_total_time_budget_by_default():
+def test_only_the_post_close_backfill_event_drops_the_total_time_budget(monkeypatch):
     import inspect
     import json
     from pathlib import Path
-    from engine_core.data_pipeline.daily_kline_gapfill import run_td_daily_kline_gapfill
+    from engine_core.data_pipeline import daily_kline_gapfill
+    from engine_core.guardian import daily_kline_backfill
 
-    assert inspect.signature(run_td_daily_kline_gapfill).parameters["total_timeout_seconds"].default is None
+    # Other callers (e.g. the baostock_probe gap check) keep the 6900 s budget.
+    assert inspect.signature(daily_kline_gapfill.run_td_daily_kline_gapfill) \
+        .parameters["total_timeout_seconds"].default == 6900.0
     schedule = json.loads((Path(__file__).resolve().parents[1] / "src/engine_core/guardian/schedule.json")
                           .read_text(encoding="utf-8"))
+    events = {e["event_id"]: e for e in schedule["events"]}
+    assert events["daily_kline_backfill"]["args"]["total_timeout_seconds"] is None
+    assert [name for name, e in events.items()
+            if "args" in e and "total_timeout_seconds" in e["args"]] == ["daily_kline_backfill"]
     tier = schedule["profiles"]["kline_backfill"]["ladder"][0]
     assert tier["budget_enabled"] is False and "until" not in tier
+
+    seen = {}
+    monkeypatch.setattr(daily_kline_gapfill, "run_td_daily_kline_gapfill",
+                        lambda root, target, **kw: seen.update(kw) or {"status": "OK"})
+    import engine_core.guardian.daily_kline_coverage as coverage
+    monkeypatch.setattr(coverage, "td_settings", lambda: {"x": 1})
+    monkeypatch.setattr(coverage, "make_store", lambda settings: type("S", (), {"close": lambda self: None})())
+    daily_kline_backfill.run_daily_kline_backfill("/tmp", "2026-10-29", args={"total_timeout_seconds": None})
+    assert seen["total_timeout_seconds"] is None
+    daily_kline_backfill.run_daily_kline_backfill("/tmp", "2026-10-29", args={})
+    assert seen["total_timeout_seconds"] == 6900.0

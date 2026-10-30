@@ -165,6 +165,7 @@
         "meta_table": "daily_kline_versions",
         "self_check": true,
         "history_min_trading_days": 10,
+        "baostock_total_timeout_seconds": 6900,
         "authority": "Baostock is the only daily_kline provider written to TD; TD watermarks decide gaps",
         "doc": "docs/DAILY_KLINE_TD.md"
       },
