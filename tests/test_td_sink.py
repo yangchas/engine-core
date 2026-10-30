@@ -316,3 +316,36 @@ def test_version_marker_without_date_evidence_is_dropped_and_day_refetched(tmp_p
     fresh = DailyKlineTdSink(store, tmp_path)
     assert fresh.prepare_progress(DAY, [rows[0]["symbol"]]) == {}   # nothing trusted: day is refetched
     assert store.read_versions(DAY) == [] and store.day_counts([DAY]) == {DAY: 0}
+
+
+def test_legacy_chain_labelled_version_is_dropped_and_day_refetched_not_rejected(tmp_path):
+    """C628: a version labelled with the whole provider chain blocked every gap fill before any Baostock call."""
+    from engine_core.data_pipeline.td_sink import DailyKlineTdSink, MemoryTdStore
+
+    _manifest, rows = load_real("formal")
+    store = MemoryTdStore()
+    sink = DailyKlineTdSink(store, tmp_path)
+    sink.prepare_progress(DAY, [rows[0]["symbol"]])
+    sink.write_progress(DAY, [rows[0]], {"provider": "baostock", "field_units": {"volume": "shares"}})
+    store.write_version({"trade_date": DAY, "ts": 1, "version": "legacy-chain",
+                         "provider": "baostock>wencai>q2_final", "source": "baostock>wencai>q2_final",
+                         "business_status": "FORMAL"})
+    fresh = DailyKlineTdSink(store, tmp_path)
+    assert fresh.prepare_progress(DAY, [rows[0]["symbol"]]) == {}
+    assert store.read_versions(DAY) == [] and store.day_counts([DAY]) == {DAY: 0}
+
+
+def test_other_non_baostock_labelled_version_is_still_rejected(tmp_path):
+    import pytest
+    from engine_core.data_pipeline.td_sink import DailyKlineTdSink, MemoryTdStore, TdSourceRejected
+
+    _manifest, rows = load_real("formal")
+    store = MemoryTdStore()
+    sink = DailyKlineTdSink(store, tmp_path)
+    sink.prepare_progress(DAY, [rows[0]["symbol"]])
+    sink.write_progress(DAY, [rows[0]], {"provider": "baostock", "field_units": {"volume": "shares"}})
+    store.write_version({"trade_date": DAY, "ts": 1, "version": "wencai-one", "provider": "wencai",
+                         "source": "wencai", "business_status": "FORMAL"})
+    with pytest.raises(TdSourceRejected, match="wencai"):
+        DailyKlineTdSink(store, tmp_path).prepare_progress(DAY, [rows[0]["symbol"]])
+    assert store.day_counts([DAY]) == {DAY: 1}   # rejected before anything was dropped

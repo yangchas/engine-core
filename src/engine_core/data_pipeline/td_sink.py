@@ -45,6 +45,10 @@ class TdVerifyError(RuntimeError):
     """Read-back differs from the catalog: deterministic, the day is not complete."""
 
 
+# Labels written by the daily_kline chain before the source became the actual provider (before 2026-10-27).
+LEGACY_CHAIN_LABELS = frozenset({"baostock>wencai>q2_final"})
+
+
 class TdSourceRejected(ValueError):
     """Only a partition whose actual provider is Baostock may enter daily_kline_v1."""
 
@@ -676,16 +680,19 @@ class DailyKlineTdSink:
             day_count = self.store.day_counts([trade_date]).get(trade_date, 0)
         versions = self.store.read_versions(trade_date)
         current = pick_best(versions)
-        if current is not None and str(current.get("provider") or current.get("source") or "").lower() != "baostock":
+        label = str(current.get("provider") or current.get("source") or "").lower() if current is not None else ""
+        legacy_chain_label = label in LEGACY_CHAIN_LABELS
+        if current is not None and label != "baostock" and not legacy_chain_label:
             raise TdSourceRejected("td_daily_kline_requires_provider_baostock:" +
                                     str(current.get("provider") or current.get("source") or "UNKNOWN"))
         stored = self.store.read_day_rows(trade_date)
         expected = {str(symbol).zfill(6) for symbol in expected_symbols}
         present = set(stored) & expected
-        if current is not None and not has_baostock_date_evidence(trade_date, current):
+        if current is not None and (legacy_chain_label or not has_baostock_date_evidence(trade_date, current)):
             # A completion marker without per-field source dates cannot be trusted (written before the
-            # evidence rule). Drop the marker and its rows so this run refetches the day from Baostock
-            # instead of failing deterministically forever.
+            # evidence rule), and neither can one labelled with the whole provider chain (written before the
+            # source label became the actual provider: its rows may mix wencai/q2). Drop the marker and its
+            # rows so this run refetches the day from Baostock instead of failing deterministically forever.
             self.store.delete_versions(trade_date)
             self.store.replace_day(trade_date, BAOSTOCK_PROGRESS_VERSION, {})
             self._invalidated_progress.add(trade_date)
