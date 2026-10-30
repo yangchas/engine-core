@@ -712,3 +712,17 @@ def test_baostock_probe_budget_is_bounded_and_external_command_is_unchanged(monk
     external = build_handler_command("baostock_probe", invalid_event, opts, ROOT / "artifacts",
                                      "2026-10-26", sys.executable, ROOT)
     assert external == ["python", "custom_probe.py", "2026-10-26"]
+
+
+def test_baostock_not_delivered_yet_is_retryable_even_with_a_deterministic_exit_code():
+    from examples import guardian_handler
+
+    for message in ("BAOSTOCK_GAP_UNRESOLVED:target_incomplete_without_fetch_plan:2026-10-30",
+                    "td_daily_kline_requires_provider_baostock:baostock>wencai>q2_final",
+                    "fetch_failed:RuntimeError:rate_limited:window_budget"):
+        for request in ({"args": {}}, _baostock_probe_request()):
+            code, payload = guardian_handler._failure_response(
+                request, error=RuntimeError(message + " command_exit=40"))
+            assert (code, payload["retryable"]) == (75, True), message
+    code, payload = guardian_handler._failure_response({"args": {}}, error=RuntimeError("boom command_exit=40"))
+    assert (code, payload["retryable"]) == (40, False)
