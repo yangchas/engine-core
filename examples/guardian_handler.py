@@ -81,7 +81,7 @@ def _failure_classes(request):
             "error_codes": ["STALL_NO_PROGRESS", "BAOSTOCK_TIMEOUT", "BAOSTOCK_CONNECTION_ERROR",
                             "BAOSTOCK_LOGIN_FAILED", "BAOSTOCK_LOGIN_ERROR",
                             "BAOSTOCK_RATE_LIMITED", "BAOSTOCK_RECEIVE_EXCEPTION",
-                            "FETCH_TIMEOUT", "RATE_LIMITED"],
+                            "FETCH_TIMEOUT", "RATE_LIMITED", "KAIPAN_PLATE_MEMBERS_INCOMPLETE"],
             "message_patterns": ["receive exception", "connection error", "connection_error",
                                  "rate limit", "too many requests", "login failed",
                                  "login_error", "baostock_login_failed"],

@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "revision": 7,
+  "revision": 8,
   "timezone": "Asia/Shanghai",
   "global": {
     "heavy_max_load5": 3.0,
@@ -1011,7 +1011,7 @@
       "calendar": "trading_day",
       "event_id": "static_data_refresh_0850",
       "at": "08:50:00",
-      "profile": "policy_05",
+      "profile": "policy_06",
       "args": {
         "static_data_refresh": {
           "datasets": [

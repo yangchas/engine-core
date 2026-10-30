@@ -556,6 +556,30 @@ class SliceProviders:
         if request.slice_id in {"hot_plates_yesterday", "yest_limit_pool"} and not date:
             return _result(request, [], source="core_data", status="MISSING",
                            reason="PREVIOUS_TRADE_DATE_MISSING")
+        if (request.slice_id in {"stock_name_map", "plate_registry", "plate_members"}
+                and os.environ.get("TD_CONFIG")):
+            from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+            with ReferenceSnapshotStore() as store:
+                snapshot = store.read_latest(dataset)
+            snapshot_day = str((snapshot or {}).get("trade_date") or "")
+            available = (snapshot or {}).get("available_at")
+            cutoff = _parse_pit_timestamp(request.asof)
+            available_dt = _parse_pit_timestamp(available)
+            if (snapshot and snapshot_day and snapshot_day <= request.trade_date
+                    and cutoff is not None and available_dt is not None and available_dt <= cutoff):
+                rows = reader.as_rows(snapshot["rows"])
+                for row in rows:
+                    row.setdefault("available_at", available)
+                return _result(
+                    request, rows, source="core_data_td", status="READY",
+                    version=str(snapshot.get("version") or "unknown"),
+                    available_at=available, pit_date=snapshot_day,
+                    quality={"coverage": len(rows), "partial": False},
+                    lineage=[{"dataset": dataset, "source": "core_data_td",
+                              "requested_date": request.trade_date, "used_date": snapshot_day,
+                              "available_at": available}],
+                )
         exact_date = request.slice_id in {"hot_plates_today", "hot_plates_yesterday", "hot_rank",
                                          "hot_plate_minutes",
                                          "yest_limit_pool", "stock_theme_assignment"}

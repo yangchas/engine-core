@@ -10,9 +10,10 @@ import json
 import os
 import time
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
 from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
 from engine_core.data_pipeline.registry import DATASETS, get_dataset
@@ -35,7 +36,15 @@ def _load_adapter(spec: str | None) -> dict[str, Any]:
     return value
 
 
-def _plate_codes(artifact_root: str, trade_date: str, configured: str | None = None) -> list[str]:
+def _plate_registry_rows(artifact_root: str, trade_date: str,
+                         configured: str | None = None) -> list[dict[str, Any]]:
+    if os.environ.get("TD_CONFIG"):
+        from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+
+        with ReferenceSnapshotStore() as store:
+            latest = store.read_latest("plate_registry")
+        if latest is not None:
+            return [dict(row) for row in latest["rows"]]
     candidates = ([Path(configured)] if configured else []) + [
         Path(artifact_root) / "plate_registry.json",
         Path(artifact_root) / "plate" / "registry.json",
@@ -45,36 +54,82 @@ def _plate_codes(artifact_root: str, trade_date: str, configured: str | None = N
     if codes_path is not None:
         payload = json.loads(codes_path.read_text(encoding="utf-8"))
         plate_rows = payload.get("plates", []) if isinstance(payload, dict) else payload
-        return [str(item.get("plate_code", item.get("code", ""))
-                    if isinstance(item, dict) else item)
+        return [dict(item) if isinstance(item, dict) else {"plate_code": str(item)}
                 for item in plate_rows if isinstance(item, (dict, str, int))]
     catalog = ArtifactCatalog(artifact_root)
     path = catalog.locate("plate_registry", trade_date) or catalog.locate("plate_registry")
     if path is None:
         return []
+    return catalog.read_rows(path)
+
+
+def _plate_codes(artifact_root: str, trade_date: str, configured: str | None = None) -> list[str]:
     return list(dict.fromkeys(str(row.get("plate_code") or row.get("code") or "")
-                              for row in catalog.read_rows(path)
+                              for row in _plate_registry_rows(artifact_root, trade_date, configured)
                               if row.get("plate_code") or row.get("code")))
 
 
-def _is_complete_member_manifest(manifest: dict[str, Any]) -> bool:
-    if not isinstance(manifest, dict):
-        return False
-    quality = manifest.get("quality")
-    if not isinstance(quality, dict) or quality.get("status") != "READY":
-        return False
-    if manifest.get("business_status") == "PARTIAL":
-        return False
+def _refresh_plate_members_latest(trade_date: str, artifact_root: str, *, persist: bool,
+                                  max_requests: int) -> dict[str, Any]:
+    from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+    from engine_core.data_pipeline.static_data import build_plate_members
+
+    registry_rows = _plate_registry_rows(artifact_root, trade_date, os.getenv("CORE_PLATE_REGISTRY"))
+    if not registry_rows:
+        raise RuntimeError("plate_registry_reference_missing")
+    codes = list(dict.fromkeys(str(row.get("plate_code") or row.get("code") or "").strip()
+                               for row in registry_rows
+                               if row.get("plate_code") or row.get("code")))
+    if not codes:
+        raise RuntimeError("plate_registry_codes_missing")
+    classes = {str(row.get("plate_code") or row.get("code")): str(row.get("class") or "UNKNOWN")
+               for row in registry_rows}
+
+    class LazyKaipanClient:
+        def get_his_plate_ids(self, plate: str, day: str, index: int, size: int):
+            api = importlib.import_module("pykaipan.pykaipan")
+            return api.getHisPlateIds(p=plate, date=day, index=str(index), size=str(size))
+
+    source = "kaipan_getHisPlateIds"
+    available_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+    store = ReferenceSnapshotStore() if persist else None
+    version = store.begin("plate_members", source=source, available_at=available_at) if store else None
+    started = time.monotonic()
     try:
-        if int(manifest.get("row_count", 0)) <= 0:
-            return False
-    except (TypeError, ValueError):
-        return False
-    details = manifest.get("provider_details")
-    if isinstance(details, dict) and (details.get("failed_plates") or
-                                      details.get("unqueried_plate_count", 0)):
-        return False
-    return True
+        provider = KaipanProvider(LazyKaipanClient(), plate_codes=codes, plate_classes=classes,
+                                  max_requests=max(max_requests, len(codes) * 8),
+                                  min_interval_seconds=0.2)
+        fetched = provider.plate_members(trade_date, concurrency=4)
+        if fetched.get("partial"):
+            raise RuntimeError("kaipan_plate_members_incomplete_retry_all")
+        partition = build_plate_members(
+            fetched["rows"], registry_rows, trade_date=trade_date, as_of=available_at,
+            source_dates={"kaipan_getHisPlateIds": {"query_trade_date": trade_date,
+                                                     "request_count": fetched.get("request_count")}},
+        )
+        fetched_row_count = len(fetched["rows"])
+        if len(partition.rows) != fetched_row_count:
+            raise RuntimeError(
+                f"kaipan_plate_members_row_count_changed:{fetched_row_count}:{len(partition.rows)}"
+            )
+        elapsed_ms = max(1, int((time.monotonic() - started) * 1000))
+        committed = None
+        if store is not None and version is not None:
+            committed = store.write_and_activate(
+                "plate_members", version, partition.rows, source=source,
+                available_at=available_at, request_count=int(fetched.get("request_count") or 0),
+                elapsed_ms=elapsed_ms,
+            )
+        return {"dataset": "plate_members", "date": trade_date,
+                "status": "READY", "row_count": len(partition.rows),
+                "request_count": int(fetched.get("request_count") or 0),
+                "elapsed_ms": elapsed_ms, "fetched_row_count": fetched_row_count,
+                "persisted_to_td": committed is not None,
+                "snapshot": committed}
+    finally:
+        if store is not None:
+            store.close()
 
 
 def _universe_delta(current: set[str], previous: set[str], *, reject_ratio: float = 0.10) -> tuple[int, float]:
@@ -354,23 +409,10 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
                                   "provider_attempt": result["provider_attempt"]})
         return {**built.manifest, "rows": built.rows, "request_count": result["request_count"]}
 
-    def members_fetch(day: str, context: Any = None) -> Any:
-        from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
-        codes = _plate_codes(artifact_root, day, os.getenv("CORE_PLATE_REGISTRY"))
-        checkpoint = Path(artifact_root) / ".checkpoints" / f"plate_members-{day}.json" if write_enabled else None
-        provider = KaipanProvider(LazyKaipanClient(), plate_codes=codes,
-                                  max_requests=max(max_requests, len(codes) * 8),
-                                  min_interval_seconds=0.2,
-                                  members_checkpoint_path=checkpoint)
-        result = provider.plate_members(day, context=context, concurrency=4)
-        available = (date.fromisoformat(day) + timedelta(days=1)).isoformat() + "T00:00:00+08:00"
-        return {**result, "available_at": available}
-
     def reasons_fetch(day: str, context: Any = None) -> Any:
         from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider
         from engine_core.data_pipeline.limit_pool import build_wencai
         from engine_core.data_pipeline.limit_reasons import build_limit_reasons
-        checkpoint = Path(artifact_root) / ".checkpoints" / f"limit_reasons-{day}.json" if write_enabled else None
         catalog = ArtifactCatalog(artifact_root)
         pool = load_dataset("limit_up_pool", day, prefer="file",
                             catalog=catalog)
@@ -396,8 +438,7 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         needs_kaipan = sorted(set(symbols) - direct_symbols)
         if needs_kaipan:
             provider = KaipanProvider(LazyKaipanClient(), symbols=needs_kaipan,
-                                      max_requests=max(max_requests, len(needs_kaipan)),
-                                      reasons_checkpoint_path=checkpoint)
+                                      max_requests=max(max_requests, len(needs_kaipan)))
             started = time.monotonic()
             try:
                 reasons_result = provider.limit_reasons(day, context=context, symbols=needs_kaipan)
@@ -494,7 +535,7 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
 
     return {"symbol_universe": universe_fetch, "daily_kline": daily_fetch,
             "wencai_daily_kline": wencai_daily_fetch, "limit_up_pool": pool_fetch,
-            "plate_members": members_fetch, "hot_plates": hot_fetch,
+            "hot_plates": hot_fetch,
             "limit_reasons": reasons_fetch}
 
 
@@ -583,8 +624,8 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
                         help="wall-clock budget for the complete daily_kline provider chain")
     parser.add_argument("--baostock-budget-fraction", type=float, default=0.6,
                         help="fraction of the chain budget reserved for Baostock")
-    parser.add_argument("--backfill-days", type=int, default=10,
-                        help="plate_members trading dates, newest first")
+    parser.add_argument("--backfill-days", type=int, default=1,
+                        help="plate_members supports one latest TD snapshot only")
     parser.add_argument("--hot-plates-history-days", type=int, default=3,
                         help="most recent prior trading dates to capture; Kaipan retains about three")
     parser.add_argument("--hot-plates-scheduled-at",
@@ -672,7 +713,8 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
         parser.error("--baostock-no-progress-seconds must be positive")
     if not 0 < args.baostock_budget_fraction <= 1:
         parser.error("--baostock-budget-fraction must be greater than 0 and at most 1")
-    names = list(DATASETS) if args.job == "all" else [args.job]
+    names = ([name for name in DATASETS if name != "plate_members"] if args.job == "all"
+             else ([] if args.job == "plate_members" else [args.job]))
     hot_history_dates: list[str] = []
     if "hot_plates" in names:
         from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
@@ -811,44 +853,22 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
                 detail={"exception_type": type(exc).__name__})
             return emit_job_result(failed)
     if args.job == "plate_members":
-        if args.backfill_days < 1:
-            parser.error("--backfill-days must be at least 1")
+        if args.backfill_days != 1:
+            parser.error("plate_members stores only the latest snapshot; --backfill-days must be 1")
         catalog = ArtifactCatalog(args.artifact_root)
         trading_dates = sorted((day for day in catalog.read().get("datasets", {})
                                 .get("daily_kline", {}).get("dates", {}) if day <= args.date), reverse=True)
-        target_dates = trading_dates[:args.backfill_days]
-        if len(target_dates) < args.backfill_days:
-            parser.error(f"need {args.backfill_days} daily_kline trading dates on or before {args.date}; found {len(target_dates)}")
-        results = []
-        for target_date in target_dates:
-            existing = catalog.locate("plate_members", target_date)
-            if existing is not None:
-                manifest = json.loads(existing.read_text(encoding="utf-8"))
-                if _is_complete_member_manifest(manifest):
-                    line = {"job": "plate_members", "date": target_date,
-                            "status": "SKIPPED_EXISTING", "row_count": manifest["row_count"],
-                            "failed_plates": []}
-                    print(json.dumps(line, sort_keys=True))
-                    results.append(line)
-                    continue
-            available_at = (date.fromisoformat(target_date) + timedelta(days=1)).isoformat() + "T00:00:00+08:00"
-            result = runner.run("plate_members", target_date, fetch=adapters["plate_members"],
-                                publish=args.write, td_write=args.td_write,
-                                source=get_dataset("plate_members").source,
-                                available_at=available_at,
-                                dry_run=not (args.write or args.execute))
-            line = {"job": "plate_members", "date": target_date,
-                    "status": result.manifest["quality"]["status"],
-                    "row_count": result.manifest["row_count"],
-                    "failed_plates": result.manifest.get("provider_details", {}).get("failed_plates", []),
-                    "storage_uri": result.manifest.get("storage_uri"),
-                    "cache_publish": result.manifest.get("cache_publish")}
-            print(json.dumps(line, sort_keys=True))
-            results.append(line)
-        print(json.dumps({"job": "plate_members", "dates": len(results),
-                          "total_rows": sum(item.get("row_count", 0) for item in results),
-                          "failed_plate_count": sum(len(item.get("failed_plates", [])) for item in results)},
-                         sort_keys=True))
+        if not trading_dates:
+            parser.error(f"daily_kline has no trading date on or before {args.date}")
+        target_date = trading_dates[0]
+        started = time.monotonic()
+        result = _refresh_plate_members_latest(
+            target_date, args.artifact_root, persist=bool(args.write or args.execute),
+            max_requests=args.max_requests,
+        )
+        result["elapsed_ms"] = round((time.monotonic() - started) * 1000, 3)
+        result["persisted_to_td"] = bool(args.write or args.execute)
+        print(json.dumps(result, sort_keys=True))
         return 0
     daily_kline_exit_code = 0
     for name in names:

@@ -702,7 +702,7 @@
         "basis": "calendar_days",
         "set_by": "C573: weekly_days=7; stale_alert after 8 calendar days"
       },
-      "retry": "event=static_data_refresh_0850 profile=policy_05 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=300s cap=10m until=15:00; no fallback",
+      "retry": "event=static_data_refresh_0850 profile=policy_06 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=901s cap=10m until=15:00; no fallback",
       "degrade": [],
       "lifecycle": {
         "init": "cold fetch when absent",
@@ -757,7 +757,7 @@
         "basis": "calendar_days",
         "set_by": "C573: weekly_days=7; stale_alert after 8 calendar days"
       },
-      "retry": "event=static_data_refresh_0850 profile=policy_05 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=300s cap=10m until=15:00; no fallback",
+      "retry": "event=static_data_refresh_0850 profile=policy_06 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=901s cap=10m until=15:00; no fallback",
       "degrade": [],
       "lifecycle": {
         "init": "cold fetch when absent",
@@ -794,7 +794,7 @@
         "basis": "calendar_days",
         "set_by": "C573: weekly_days=7; stale_alert after 8 calendar days"
       },
-      "retry": "event=static_data_refresh_0850 profile=policy_05 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=300s cap=10m until=15:00; no fallback",
+      "retry": "event=static_data_refresh_0850 profile=policy_06 rungs=legacy; legacy attempts=3 backoff=60s*2 timeout=901s cap=10m until=15:00; no fallback",
       "degrade": [],
       "lifecycle": {
         "init": "cold fetch when absent",

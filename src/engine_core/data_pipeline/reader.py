@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import gzip
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +28,17 @@ def load_dataset(name: str, trade_date: str | None = None, *, prefer: str = "red
     spec = get_dataset(name)
     selected: dict[str, Any] | None = None
     discovered = "catalog"
-    if prefer == "redis" and redis is not None:
+    if name in {"plate_members", "plate_registry", "stock_static"} and os.environ.get("TD_CONFIG"):
+        from .reference_snapshot_td import ReferenceSnapshotStore
+
+        with ReferenceSnapshotStore() as store:
+            latest = store.read_latest(name)
+        if latest is not None and (trade_date is None or latest.get("trade_date") == trade_date):
+            selected = {key: value for key, value in latest.items() if key != "rows"}
+            selected.update({"dataset": name, "trade_date": latest.get("trade_date"),
+                             "business_status": "FORMAL", "rows": latest["rows"]})
+            discovered = "td"
+    if selected is None and prefer == "redis" and redis is not None:
         key = (f"core:cache:data:{name}:{trade_date}" if trade_date else
                f"core:cache:data:{name}:latest")
         raw = redis.get(key)

@@ -2,13 +2,10 @@
 from __future__ import annotations
 
 import re
-import json
-import os
 import inspect
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
@@ -47,9 +44,7 @@ class KaipanProvider:
     def __init__(self, client: Any, *, plate_codes: Iterable[str] = (), symbols: Iterable[str] = (),
                  plate_classes: Mapping[str, str] | None = None, max_requests: int = 30,
                  min_interval_seconds: float = 10, sleep_fn: Callable[[float], None] = time.sleep,
-                 monotonic_fn: Callable[[], float] = time.monotonic,
-                 reasons_checkpoint_path: str | Path | None = None,
-                 members_checkpoint_path: str | Path | None = None):
+                 monotonic_fn: Callable[[], float] = time.monotonic):
         self.client = client
         self.plate_codes = tuple(dict.fromkeys(str(code) for code in plate_codes))
         self.symbols = tuple(dict.fromkeys(str(symbol).zfill(6) for symbol in symbols))
@@ -61,10 +56,6 @@ class KaipanProvider:
         self._last_request: float | None = None
         self._tripped = False
         self._request_lock = threading.Lock()
-        self.reasons_checkpoint_path = (Path(reasons_checkpoint_path)
-                                        if reasons_checkpoint_path is not None else None)
-        self.members_checkpoint_path = (Path(members_checkpoint_path)
-                                        if members_checkpoint_path is not None else None)
 
     def _client_method(self, *names: str) -> Callable[..., Any]:
         for name in names:
@@ -156,9 +147,8 @@ class KaipanProvider:
                       page_size: int = 2000, concurrency: int = 4) -> dict[str, Any]:
         if not self.plate_codes:
             raise ValueError("kaipan_plate_codes_required")
-        cached = self._load_members_checkpoint(trade_date)
-        completed: dict[str, list[dict[str, Any]]] = cached.get("completed", {})
-        pending = [plate for plate in self.plate_codes if plate not in completed]
+        completed: dict[str, list[dict[str, Any]]] = {}
+        pending = list(self.plate_codes)
         failures: dict[str, str] = {}
 
         def fetch_plate(plate: str) -> list[dict[str, Any]]:
@@ -193,7 +183,6 @@ class KaipanProvider:
                 plate = futures[future]
                 try:
                     completed[plate] = future.result()
-                    self._save_members_checkpoint(trade_date, completed)
                 except Exception as exc:
                     failures[plate] = type(exc).__name__
         rows = [row for plate in self.plate_codes for row in completed.get(plate, ())]
@@ -206,32 +195,6 @@ class KaipanProvider:
                 "failed_plates": failed_plates,
                 "unqueried_plate_count": max(0, len(self.plate_codes) - len(completed)),
                 "request_count": self._requests}
-
-    def _load_members_checkpoint(self, trade_date: str) -> dict[str, Any]:
-        path = self.members_checkpoint_path
-        if path is None or not path.is_file():
-            return {"completed": {}}
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {"completed": {}}
-        if value.get("trade_date") != trade_date or not isinstance(value.get("completed"), Mapping):
-            return {"completed": {}}
-        allowed = set(self.plate_codes)
-        return {"completed": {str(code): [dict(row) for row in rows if isinstance(row, Mapping)]
-                              for code, rows in value["completed"].items()
-                              if str(code) in allowed and isinstance(rows, list)}}
-
-    def _save_members_checkpoint(self, trade_date: str,
-                                 completed: Mapping[str, Sequence[Mapping[str, Any]]]) -> None:
-        path = self.members_checkpoint_path
-        if path is None:
-            return
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(path.name + ".tmp")
-        temporary.write_text(json.dumps({"trade_date": trade_date, "completed": completed},
-            ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
-        os.replace(temporary, path)
 
     def hot_plates(self, trade_date: str, *, request_date: str | None = None,
                    context: Any = None,
@@ -345,19 +308,8 @@ class KaipanProvider:
         done: set[str] = set()
         # Every production request is explicitly st=200 so later limit-ups cannot hide the target-day record.
         overwritten: set[str] = set()
-        if self.reasons_checkpoint_path is not None and self.reasons_checkpoint_path.is_file():
-            try:
-                checkpoint = json.loads(self.reasons_checkpoint_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                checkpoint = {}
-            if checkpoint.get("trade_date") == trade_date:
-                done = set(map(str, checkpoint.get("done_symbols", ())))
-                rows = [dict(row) for row in checkpoint.get("rows", ()) if isinstance(row, Mapping)]
-                overwritten = set(map(str, checkpoint.get("overwritten_symbols", ())))
         requested = tuple(symbols if symbols is not None else self.symbols)
         requested_set = {str(symbol).zfill(6) for symbol in requested}
-        rows = [row for row in rows if str(row.get("symbol", "")).zfill(6) in requested_set]
-        done.intersection_update(requested_set)
         queried_now = 0
         errors: list[dict[str, str]] = []
         for raw_symbol in requested:
@@ -406,22 +358,10 @@ class KaipanProvider:
             if entries and not kept:
                 overwritten.add(symbol)
             done.add(symbol)
-            self._save_reasons_checkpoint(trade_date, done, rows, overwritten)
         remaining = [str(symbol).zfill(6) for symbol in requested if str(symbol).zfill(6) not in done]
         overwritten &= requested_set
         return {"rows": rows, "expected_count": len(requested), "coverage_count": len(done - overwritten),
                 "queried_symbol_count": queried_now, "overwritten_symbol_count": len(overwritten),
                 "unqueried_symbol_count": len(remaining), "partial": bool(remaining or overwritten),
                 "request_count": self._requests, "errors": errors, "history_page_size": 200}
-
-    def _save_reasons_checkpoint(self, trade_date: str, done: set[str],
-                                 rows: Sequence[Mapping[str, Any]], overwritten: set[str] = frozenset()) -> None:
-        if self.reasons_checkpoint_path is None:
-            return
-        self.reasons_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.reasons_checkpoint_path.with_name(self.reasons_checkpoint_path.name + ".tmp")
-        temporary.write_text(json.dumps({"trade_date": trade_date, "done_symbols": sorted(done),
-            "overwritten_symbols": sorted(overwritten), "rows": list(rows)}, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
-            encoding="utf-8")
-        os.replace(temporary, self.reasons_checkpoint_path)
 
