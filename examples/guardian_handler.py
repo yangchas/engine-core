@@ -202,6 +202,24 @@ def _failure_response(request, *, error=None, result=None):
 
 
 
+def _run_daily_kline_fill(request, root, target: str, args) -> tuple[int, dict]:
+    """Run the TD-driven per-symbol fill (C630). BUSY means another trigger point holds the lease: skip, no retry."""
+    from engine_core.data_pipeline.daily_kline_fill import run_daily_kline_fill_from_root
+    try:
+        result = run_daily_kline_fill_from_root(root, target, args=args)
+    except Exception as exc:
+        if "BAOSTOCK_GAP_UNRESOLVED" in str(exc):
+            # progress is already in TD; an incomplete day is a resumable state, never a final failure
+            return 75, {"contract": 1, "status": "failed", "error_code": "TIER_PARTIAL",
+                        "retryable": True, "artifacts": [], "detail": str(exc)}
+        return _failure_response(request, error=exc)
+    if result.get("status") == "BUSY":
+        return 20, {"contract": 1, "status": "not_applicable", "error_code": "", "retryable": False,
+                    "artifacts": [], "detail": result}
+    return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
+               "artifacts": [], "detail": result}
+
+
 def _has_baostock_daily_kline(root, day: str, minimum_coverage: float = 0.90) -> bool:
     """The gap-only path repairs a nearly complete Baostock partition. With no Baostock partition, or one far below
     ``minimum_coverage`` (a first pull cut short by its time budget, e.g. 2026-10-29: 3382/5217 = 0.648), fall through to
@@ -357,7 +375,6 @@ def _run(request):
     deadline = (deadline_at[11:19] if len(deadline_at) >= 19 and deadline_at[10] == "T"
                 else getattr(base, "deadline", None))
     if name == "daily_kline_backfill":
-        from engine_core.guardian.daily_kline_backfill import run_daily_kline_backfill
         from engine_core.prep_trade_day import previous_trade_date
         target = target_day
         if args.get("target") == "prev_trade_day":
@@ -365,58 +382,10 @@ def _run(request):
         if not target:
             return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
                         "retryable": False, "detail": "backfill_target_unavailable"}
-        try:
-            result = run_daily_kline_backfill(root, target, args=args)
-        except Exception as exc:
-            if "BAOSTOCK_GAP_UNRESOLVED" in str(exc):
-                # progress is already in TD; an incomplete day is a resumable state, never a final failure
-                return 75, {"contract": 1, "status": "failed", "error_code": "TIER_PARTIAL",
-                            "retryable": True, "artifacts": [], "detail": str(exc)}
-            return _failure_response(request, error=exc)
-        if result.get("status") == "WAITING":
-            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
-                       "artifacts": [], "detail": result}
-        if result.get("status") == "NOT_ELIGIBLE":
-            return 0, {"contract": 1, "status": "ok", "error_code": "",
-                        "retryable": False, "artifacts": [], "detail": result}
-        if result.get("status") not in {"OK", "NO_GAPS"}:
-            return 75, {"contract": 1, "status": "failed", "error_code": "BAOSTOCK_GAPFILL_RETRY",
-                        "retryable": True, "artifacts": [], "detail": result}
-        return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
-                   "artifacts": [], "detail": result}
+        return _run_daily_kline_fill(request, root, target, args)
     if name == "baostock_probe" and not dry:
-        completed = _formal_baostock_daily_kline(root, target_day)
-        if completed is not None:
-            return 0, {"contract": 1, "status": "ok", "error_code": "",
-                       "retryable": False, "artifacts": [],
-                       "detail": {"status": "ALREADY_COMPLETE", "trade_date": target_day,
-                                  "version": completed.get("version"),
-                                  "coverage": (completed.get("quality") or {}).get("coverage"),
-                                  "queries": 0}}
-    if (name == "baostock_probe" and isinstance(args.get("baostock_gapfill_policy"), dict) and not dry
-            and _has_baostock_daily_kline(root, target_day, float(args["baostock_gapfill_policy"].get("minimum_coverage", 0.90)))):
-        from engine_core.guardian.daily_kline_backfill import run_daily_kline_backfill
-        gap_policy = args["baostock_gapfill_policy"]
-        try:
-            result = run_daily_kline_backfill(
-                root, target_day, args={**args, "minimum_coverage": gap_policy.get("minimum_coverage", 0.90)},
-                only_source_empty=True)
-        except Exception as exc:
-            if "BAOSTOCK_GAP_UNRESOLVED" in str(exc):
-                return 75, {"contract": 1, "status": "failed", "error_code": "TIER_PARTIAL",
-                            "retryable": True, "artifacts": [], "detail": str(exc)}
-            return _failure_response(request, error=exc)
-        if result.get("status") in {"OK", "NO_GAPS"}:
-            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
-                       "artifacts": [], "detail": result}
-        if result.get("status") == "WAITING":
-            return 75, {"contract": 1, "status": "failed", "error_code": "BAOSTOCK_LOCAL_GAP_WAIT",
-                        "retryable": True, "artifacts": [], "detail": result}
-        if result.get("status") in {"NOT_ELIGIBLE", "NO_GAPS"}:
-            return 20, {"contract": 1, "status": "not_applicable", "error_code": "",
-                        "retryable": False, "artifacts": [], "detail": result}
-        return 75, {"contract": 1, "status": "failed", "error_code": "BAOSTOCK_GAPFILL_RETRY",
-                    "retryable": True, "artifacts": [], "detail": result}
+        # One path for every Baostock trigger point: the per-symbol fill reads TD, so a complete day costs nothing.
+        return _run_daily_kline_fill(request, root, target_day, args)
     event = SimpleNamespace(event_id=event_id, handler=name, gate=getattr(base, "gate", "always"), start=start,
                             deadline=deadline,
                             args=args, timeout_seconds=int(request.get("timeout_seconds") or getattr(base, "timeout_seconds", 300)),

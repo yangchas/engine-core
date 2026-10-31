@@ -45,6 +45,8 @@ class FixtureClient:
 
 
 class FakeRedis:
+    """Only what the guarded production Redis allows: SET NX EX, GET, EXPIRE, DEL (no EVAL)."""
+
     def __init__(self):
         self.data = {}
 
@@ -54,12 +56,14 @@ class FakeRedis:
         self.data[key] = value
         return True
 
-    def eval(self, script, numkeys, key, owner, *rest):
-        if self.data.get(key) != owner:
-            return 0
-        if "del" in script:
-            del self.data[key]
-        return 1
+    def get(self, key):
+        return self.data.get(key)
+
+    def expire(self, key, seconds):
+        return 1 if key in self.data else 0
+
+    def delete(self, key):
+        return 1 if self.data.pop(key, None) is not None else 0
 
 
 def fill(store, client, universe=SYMBOLS, **kwargs):
@@ -162,28 +166,28 @@ def test_below_threshold_at_the_end_is_a_retryable_failure_with_progress_kept():
 
 def test_lease_makes_a_second_trigger_skip_without_touching_baostock():
     redis = FakeRedis()
-    holder = RedisLease(redis, "lease:daily_kline_fill", owner="other")
+    holder = RedisLease(redis, "core:lease:daily_kline_fill", owner="other")
     assert holder.acquire()
     client = FixtureClient()
-    result = fill(MemoryTdStore(), client, lease=RedisLease(redis, "lease:daily_kline_fill", owner="me"))
+    result = fill(MemoryTdStore(), client, lease=RedisLease(redis, "core:lease:daily_kline_fill", owner="me"))
     assert result["status"] == "BUSY" and client.queries == [] and not client.logged_in
-    assert redis.data["lease:daily_kline_fill"] == "other"  # the loser never releases the holder's lease
+    assert redis.data["core:lease:daily_kline_fill"] == "other"  # the loser never releases the holder's lease
 
 
 def test_lease_is_released_after_the_run_and_lost_lease_stops_the_loop():
     redis = FakeRedis()
-    lease = RedisLease(redis, "k", owner="me")
+    lease = RedisLease(redis, "core:lease:k", owner="me")
     fill(MemoryTdStore(), FixtureClient(), lease=lease)
-    assert "k" not in redis.data
+    assert "core:lease:k" not in redis.data
 
     class Stolen(RedisLease):
         def renew(self):
-            redis.data["k"] = "thief"
+            redis.data["core:lease:k"] = "thief"
             return super().renew()
 
     client = FixtureClient()
     with pytest.raises(RuntimeError, match="lease_lost"):
-        fill(MemoryTdStore(), client, lease=Stolen(redis, "k", owner="me"))
+        fill(MemoryTdStore(), client, lease=Stolen(redis, "core:lease:k", owner="me"))
     assert client.queries == []
 
 
@@ -195,3 +199,42 @@ def test_legacy_chain_labelled_day_is_refetched_from_baostock():
     result = fill(store, FixtureClient(), universe={"000001"})
     assert result["status"] == "COMPLETE"
     assert store.days[TARGET]["000001"]["close"] != 1.0 and store.versions.get(TARGET) is None
+
+
+def test_completion_marker_is_published_on_coverage_alone(tmp_path):
+    from engine_core.data_pipeline.daily_kline_fill import publish_filled_days
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from tests.test_daily_kline_gapfill import _seed_real_symbol_universe
+
+    store = MemoryTdStore()
+    for day in DAYS:  # production has one symbol_universe partition per trade day
+        _seed_real_symbol_universe(tmp_path, day, sorted(SYMBOLS))
+    done = {}
+    result = run_daily_kline_fill(
+        TARGET, store=store, client=FixtureClient(), trading_dates=DAYS, expected_symbols=lambda _d: set(SYMBOLS),
+        depth=5, coverage_threshold=0.995, on_complete=lambda r: done.update(
+            partitions=publish_filled_days(tmp_path, store, r["work_days"], lambda _d: set(SYMBOLS), 0.995)))
+    assert result["status"] == "COMPLETE"
+    assert {item["business_status"] for item in done["partitions"]} == {"FORMAL"}
+    assert {item["td_publish"] for item in done["partitions"]} == {"READY"}
+    version = store.versions[TARGET][-1]
+    assert version["provider"] == "baostock" and version["row_count"] == 3
+    manifest = json.loads(ArtifactCatalog(tmp_path).locate("daily_kline", TARGET).read_text())
+    assert manifest["provider"] == "baostock" and manifest["business_status"] == "FORMAL"
+    # a rerun sees complete days and leaves the marker alone
+    again = run_daily_kline_fill(
+        TARGET, store=store, client=FixtureClient(), trading_dates=DAYS, expected_symbols=lambda _d: set(SYMBOLS),
+        depth=5, coverage_threshold=0.995)
+    assert again["status"] == "NO_GAPS" and store.versions[TARGET]
+
+
+def test_publish_rejects_a_threshold_the_formal_classifier_would_override(tmp_path):
+    from engine_core.data_pipeline.daily_kline_fill import publish_filled_days
+
+    with pytest.raises(ValueError, match="coverage_threshold_below_formal_floor"):
+        publish_filled_days(tmp_path, MemoryTdStore(), [TARGET], lambda _d: set(SYMBOLS), 0.9)
+
+
+def test_lease_keys_must_live_under_the_core_prefix_the_redis_guard_allows():
+    with pytest.raises(ValueError, match="lease_key_must_start_with"):
+        RedisLease(FakeRedis(), "lease:daily_kline_fill")

@@ -726,3 +726,29 @@ def test_baostock_not_delivered_yet_is_retryable_even_with_a_deterministic_exit_
             assert (code, payload["retryable"]) == (75, True), message
     code, payload = guardian_handler._failure_response({"args": {}}, error=RuntimeError("boom command_exit=40"))
     assert (code, payload["retryable"]) == (40, False)
+
+
+@pytest.mark.parametrize("outcome,expected", [
+    ({"status": "COMPLETE"}, (0, "ok", False)),
+    ({"status": "NO_GAPS"}, (0, "ok", False)),
+    ({"status": "BUSY"}, (20, "not_applicable", False)),
+    (RuntimeError("BAOSTOCK_GAP_UNRESOLVED:consecutive_failures:attempted=5"), (75, "failed", True)),
+])
+def test_baostock_probe_runs_the_td_fill_for_every_trigger_point(monkeypatch, outcome, expected):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import daily_kline_fill
+
+    seen = {}
+
+    def fake(root, target, *, args=None, **_kwargs):
+        seen["target"] = target
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(daily_kline_fill, "run_daily_kline_fill_from_root", fake)
+    monkeypatch.delenv("GUARDIAN_DRY_RUN", raising=False)
+    request = _baostock_probe_request()
+    code, payload = guardian_handler._run(request)
+    assert (code, payload["status"], payload["retryable"]) == expected
+    assert seen["target"] == (request.get("data_date") or request["trade_date"])

@@ -5,14 +5,18 @@ import os
 import uuid
 from typing import Any
 
-_RENEW = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('expire', KEYS[1], ARGV[2]) else return 0 end"
-_RELEASE = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
+LEASE_KEY_PREFIX = "core:lease:"  # the Redis guard proxy only allows delete-class commands on core: keys, and no EVAL
 
 
 class RedisLease:
-    """SET NX EX acquire, owner-checked renew/release. A crashed holder's lease simply expires."""
+    """SET NX EX acquire, owner-checked renew/release. A crashed holder's lease simply expires.
+
+    Plain commands only (the production Redis sits behind a guard that rejects EVAL), so renew/release are
+    check-then-act; the window is tiny against a TTL of minutes and a renewal after every symbol."""
 
     def __init__(self, client: Any, key: str, *, owner: str | None = None, ttl_seconds: int = 300):
+        if not key.startswith(LEASE_KEY_PREFIX):
+            raise ValueError("lease_key_must_start_with_" + LEASE_KEY_PREFIX)
         if ttl_seconds < 1:
             raise ValueError("lease_ttl_must_be_positive")
         self.client = client
@@ -29,10 +33,17 @@ class RedisLease:
         """False once the lease expired or was taken over; the holder must stop."""
         if not self.held:
             return False
-        self.held = bool(self.client.eval(_RENEW, 1, self.key, self.owner, self.ttl_seconds))
+        if self._current() != self.owner:
+            self.held = False
+            return False
+        self.held = bool(self.client.expire(self.key, self.ttl_seconds))
         return self.held
 
     def release(self) -> None:
-        if self.held:
-            self.client.eval(_RELEASE, 1, self.key, self.owner)
-            self.held = False
+        if self.held and self._current() == self.owner:
+            self.client.delete(self.key)
+        self.held = False
+
+    def _current(self) -> str | None:
+        value = self.client.get(self.key)
+        return value.decode() if isinstance(value, bytes) else value
