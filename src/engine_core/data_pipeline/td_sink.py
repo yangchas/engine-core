@@ -229,6 +229,7 @@ class TdStore(Protocol):
     def write_version(self, meta: Mapping[str, Any]) -> None: ...
     def replace_day(self, trade_date: str, version: str, mapped: Mapping[str, Mapping[str, Any]]) -> None: ...
     def upsert_day(self, trade_date: str, version: str, mapped: Mapping[str, Mapping[str, Any]]) -> None: ...
+    def upsert_symbol(self, symbol: str, version: str, by_day: Mapping[str, Mapping[str, Any]]) -> None: ...
     def day_aggregates(self, trade_date: str) -> dict[str, Any]: ...
     def read_day_rows(self, trade_date: str, symbols: Sequence[str] | None = None) -> dict[str, dict[str, Any]]: ...
     def day_counts(self, dates: Sequence[str]) -> dict[str, int]: ...
@@ -405,6 +406,20 @@ class TaosStore:
                              f"VALUES ({ts}, {literal}, {_literal(version)})")
             self._run("INSERT INTO " + " ".join(parts))
 
+    def upsert_symbol(self, symbol: str, version: str, by_day: Mapping[str, Mapping[str, Any]]) -> None:
+        """Write one symbol's rows for several days as ONE INSERT statement, the atomic unit of the fill loop."""
+        if not _SYMBOL.match(symbol):
+            raise ValueError("bad_symbol:" + symbol)
+        tuples = []
+        for day, values in sorted(by_day.items()):
+            _check_date(day)
+            literal = ", ".join(_literal(values.get(name)) for name in DATA_COLUMNS)
+            tuples.append(f"({trade_day_ts_us(day)}, {literal}, {_literal(version)})")
+        if not tuples:
+            return
+        self._run(f"INSERT INTO {self.database}.daily_kline_{symbol} USING {self.database}.{SUPER_TABLE} "
+                  f"TAGS('{symbol}') VALUES " + " ".join(tuples))
+
     def _day_filter(self, trade_date: str) -> str:
         return f"ts = {trade_day_ts_us(trade_date)}"
 
@@ -553,6 +568,15 @@ class MemoryTdStore:
         self._guard("upsert_day")
         day = self.days.setdefault(trade_date, {})
         day.update({symbol: {**dict(values), "version": version} for symbol, values in mapped.items()})
+
+    def upsert_symbol(self, symbol: str, version: str, by_day: Mapping[str, Mapping[str, Any]]) -> None:
+        self._guard("upsert_symbol")
+        if not _SYMBOL.match(symbol):
+            raise ValueError("bad_symbol:" + symbol)
+        for day, values in by_day.items():
+            _check_date(day)
+        for day, values in by_day.items():
+            self.days.setdefault(day, {})[symbol] = {**dict(values), "version": version}
 
     def day_aggregates(self, trade_date: str) -> dict[str, Any]:
         self._guard("day_aggregates")

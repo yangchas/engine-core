@@ -264,6 +264,9 @@ def checkpoint_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
     return _cached("checkpoint_ready", event, now, f"{getattr(event, 'start', '')}:{getattr(event, 'handler', '')}", check)
 
 
+FORMAL_SOURCE_FROM = "17:00"
+
+
 def daily_kline_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
     def check():
         started = time.monotonic()
@@ -299,6 +302,13 @@ def daily_kline_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
             except (OSError, ValueError, TypeError, KeyError):
                 universe_count = None
             reason = ""
+        if not reason and now.strftime("%H:%M") >= FORMAL_SOURCE_FROM and \
+                str(manifest.get("provider") or "").lower() != "baostock":
+            # Before 17:00 a wencai/q2 close is a usable quick recap; afterwards only Baostock counts as the day's bars.
+            return GateResult(status="not_ready", reason="DAILY_KLINE_REQUIRES_BAOSTOCK_AFTER_" + FORMAL_SOURCE_FROM.replace(":", ""),
+                              trade_date=day, row_count=row_count,
+                              version=manifest.get("version"),
+                              elapsed_ms=round((time.monotonic() - started) * 1000))
         fallback = universe_count is None or universe_count <= 0
         denominator = 4000 if fallback else universe_count
         threshold = 0.95

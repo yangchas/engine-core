@@ -1,0 +1,270 @@
+"""Daily-kline fill: TD is the only state. One symbol is one atomic write; a rerun resumes from what TD holds.
+
+The loop reads each day's coverage from TD, then fetches the missing symbols one by one (one range request per
+symbol) and writes each symbol to TD at once. It stops as soon as every day in the window reaches the coverage
+threshold (partial gaps are allowed) and fails fast when the source is clearly not answering.
+"""
+from __future__ import annotations
+
+import time
+from typing import Any, Callable, Mapping, Sequence
+
+from .td_sink import BAOSTOCK_PROGRESS_VERSION, DailyKlineTdSink, map_rows, pick_best
+
+MIN_FORMAL_COVERAGE = 0.98  # the floor hard-coded in registry.daily_kline.classify_daily_kline
+_MANIFEST = {"provider": "baostock", "source": "baostock", "field_units": {"volume": "shares"}}
+
+
+def _abort(reason: str, detail: Mapping[str, Any]) -> RuntimeError:
+    # "BAOSTOCK_GAP_UNRESOLVED" is what the guardian already classifies as retryable.
+    parts = ",".join(f"{key}={value}" for key, value in detail.items())
+    return RuntimeError(f"BAOSTOCK_GAP_UNRESOLVED:{reason}:{parts}")
+
+
+def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates: Sequence[str],
+                         expected_symbols: Callable[[str], set[str]], lease: Any = None, depth: int = 10,
+                         coverage_threshold: float = 0.995, max_consecutive_failures: int = 5,
+                         max_failure_ratio: float = 0.2, min_failure_samples: int = 20,
+                         max_consecutive_empty: int = 30, total_timeout_seconds: float = 43200.0,
+                         no_progress_timeout_seconds: float = 300.0,
+                         on_complete: Callable[[dict[str, Any]], None] | None = None,
+                         clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+    if not 0 < coverage_threshold <= 1:
+        raise ValueError("coverage_threshold_must_be_in_0_1")
+    sessions = sorted(day for day in trading_dates if day <= target)
+    if target not in sessions:
+        raise ValueError("target_not_in_trade_calendar:" + target)
+    if lease is not None and not lease.acquire():
+        return {"status": "BUSY", "target": target, "reason": "another_fill_is_running"}
+    started = clock()
+    logged_in = False
+    try:
+        days = sessions[-max(1, int(depth)):]
+        if not store.schema_exists():
+            store.ensure_schema()
+        sink = DailyKlineTdSink(store, ".")
+        watermarks = store.latest_watermarks()
+        expected = {day: set(expected_symbols(day)) for day in days}
+        present: dict[str, set[str]] = {}
+        work: list[str] = []
+        for day in days:
+            if not expected[day]:
+                raise _abort("symbol_universe_missing", {"day": day})
+            stored = set(store.read_day_rows(day)) & expected[day]
+            versions = store.read_versions(day)
+            current = pick_best(versions)
+            label = str((current or {}).get("provider") or (current or {}).get("source") or "").lower()
+            untrusted = current is not None and label != "baostock"
+            present[day] = set() if untrusted else stored
+            if untrusted or len(stored) / len(expected[day]) < coverage_threshold:
+                work.append(day)
+        if not work:
+            return {"status": "NO_GAPS", "target": target, "days": days,
+                    "coverage": {day: round(len(present[day]) / len(expected[day]), 4) for day in days},
+                    "elapsed_seconds": round(clock() - started, 3)}
+        for day in work:  # drops a stale completion marker / untrusted legacy rows, keeps TD-owned progress
+            present[day] = set(sink.prepare_progress(day, sorted(expected[day]), latest_watermarks=watermarks))
+
+        def coverage(day: str) -> float:
+            return len(present[day]) / len(expected[day])
+
+        def done() -> bool:
+            return all(coverage(day) >= coverage_threshold for day in work)
+
+        missing: dict[str, list[str]] = {}
+        for day in work:
+            for symbol in expected[day] - present[day]:
+                missing.setdefault(symbol, []).append(day)
+        order = sorted(missing, key=lambda symbol: (target not in missing[symbol], symbol))
+        stats = {"written_symbols": 0, "empty": 0, "failed": 0, "attempted": 0}
+        consecutive_failed = consecutive_empty = 0
+        if order:
+            client.login()
+            logged_in = True
+        last_progress = clock()
+        for symbol in order:
+            if done():
+                break
+            if clock() - started >= total_timeout_seconds:
+                raise _abort("total_budget_exhausted", stats)
+            if clock() - last_progress >= no_progress_timeout_seconds:
+                raise _abort("no_progress", stats)
+            if lease is not None and not lease.renew():
+                raise _abort("lease_lost", stats)
+            wanted = sorted(missing[symbol])
+            stats["attempted"] += 1
+            try:
+                rows = client.query(symbol, wanted[0], target)
+            except Exception as exc:
+                stats["failed"] += 1
+                consecutive_failed += 1
+                consecutive_empty = 0
+                if getattr(client, "poisoned", False):
+                    raise _abort("session_poisoned", {**stats, "error": type(exc).__name__}) from exc
+                if consecutive_failed >= max_consecutive_failures:
+                    raise _abort("consecutive_failures", {**stats, "error": type(exc).__name__}) from exc
+                if (stats["attempted"] >= min_failure_samples and
+                        stats["failed"] / stats["attempted"] > max_failure_ratio):
+                    raise _abort("failure_ratio", {**stats, "error": type(exc).__name__}) from exc
+                continue
+            by_day: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                day = str(row.get("date") or "")[:10]
+                if day in wanted:
+                    mapped, dropped = map_rows([{**row, "date": day, "symbol": symbol}], _MANIFEST)
+                    if dropped or symbol not in mapped:
+                        raise _abort("invalid_source_row", {"symbol": symbol, "day": day})
+                    by_day[day] = mapped[symbol]
+            if not by_day:
+                stats["empty"] += 1
+                consecutive_empty += 1
+                consecutive_failed = 0
+                # Nothing delivered yet (e.g. the day is not published): do not walk the whole universe to learn it.
+                if consecutive_empty >= max_consecutive_empty and stats["written_symbols"] == 0:
+                    raise _abort("source_not_delivered", stats)
+                continue
+            store.upsert_symbol(symbol, BAOSTOCK_PROGRESS_VERSION, by_day)
+            for day in by_day:
+                present[day].add(symbol)
+            stats["written_symbols"] += 1
+            consecutive_failed = consecutive_empty = 0
+            last_progress = clock()
+        result = {"status": "COMPLETE" if done() else "INCOMPLETE", "target": target, "days": days,
+                  "work_days": work, **stats,
+                  "coverage": {day: round(coverage(day), 4) for day in days if day in present},
+                  "elapsed_seconds": round(clock() - started, 3)}
+        if result["status"] == "INCOMPLETE":
+            raise _abort("coverage_below_threshold",
+                         {**stats, "coverage": result["coverage"], "threshold": coverage_threshold})
+        if on_complete is not None:  # runs while the lease is still held, so no other trigger can interleave
+            on_complete(result)
+        return result
+    finally:
+        if logged_in and callable(getattr(client, "logout", None)):
+            try:
+                client.logout()
+            except Exception:
+                pass
+        if lease is not None:
+            lease.release()
+
+
+def publish_filled_days(root: Any, store: Any, days: Sequence[str], expected_symbols: Callable[[str], set[str]],
+                        coverage_threshold: float) -> list[dict[str, Any]]:
+    """Write the completion marker (TD version + catalog manifest) for days whose rows reached the threshold.
+
+    Completion is judged on coverage alone: every missing symbol counts as source-empty and the allowed
+    number of those equals the universe size, so FORMAL means coverage >= threshold.
+    """
+    from datetime import datetime
+    from pathlib import Path
+    from zoneinfo import ZoneInfo
+
+    from .jobs import JobRunner, RequestBudget
+    from .registry.daily_kline import DAILY_KLINE_QUALITY_FIELDS
+
+    if coverage_threshold < MIN_FORMAL_COVERAGE:
+        # classify_daily_kline downgrades anything below this to PARTIAL/PROVISIONAL whatever the policy says.
+        raise ValueError(f"coverage_threshold_below_formal_floor:{MIN_FORMAL_COVERAGE}")
+    base = Path(root).expanduser()
+    sink = DailyKlineTdSink(store, base)
+    runner = JobRunner(artifact_root=base, td_adapter=sink,
+                       budget=RequestBudget(max_requests=max(1, len(days)), min_interval_seconds=0))
+    quality_fields = ("open", "high", "low", "close", "pre_close", "pct_chg", "amount_yuan", "volume")
+    outcomes = []
+    for day in days:
+        expected = set(expected_symbols(day))
+        rows = sorted(sink.read_progress_rows(day, sorted(expected)).values(), key=lambda row: row["symbol"])
+        completeness = {field: ("COMPLETE" if all(row.get(field) is not None for row in rows)
+                                else "SUSPENDED_ONLY" if all(row.get("suspended") for row in rows)
+                                else "PARTIAL") for field in quality_fields}
+        meta = {"rows": rows, "source": "baostock", "provider": "baostock", "expected_count": len(expected),
+                "field_completeness": completeness, "expected_symbols": sorted(expected),
+                "source_symbols": sorted(expected), "source_universe_status": "NOT_REQUIRED",
+                "field_units": {"volume": "shares"},
+                "source_dates": {field: day for field in DAILY_KLINE_QUALITY_FIELDS},
+                "source_date_values": [day], "source_dates_consistent": True,
+                "provider_attempts": [{"provider": "baostock", "result": "ok", "reason": "per_symbol_fill"}],
+                "available_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(), "as_of": day}
+        result = runner.run("daily_kline", day, fetch=(lambda payload: lambda _day: payload)(meta), td_write=True,
+                            source="baostock", expected_count=len(expected),
+                            baostock_policy={"formal_coverage_threshold": coverage_threshold,
+                                             "source_empty_max": len(expected)})
+        outcomes.append({"trade_date": day, "row_count": len(result.rows),
+                         "version": result.manifest.get("version"),
+                         "business_status": result.manifest.get("business_status"),
+                         "mode": result.manifest.get("mode"), "td_publish": result.manifest.get("td_publish"),
+                         "error_code": result.manifest.get("error_code")})
+    bad = [item for item in outcomes if item["td_publish"] != "READY" or item["mode"] == "RETRYABLE_INCOMPLETE"]
+    if bad:
+        raise _abort("publish_incomplete", {"days": ",".join(item["trade_date"] for item in bad)})
+    return outcomes
+
+
+def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str, Any] | None = None,
+                                   store: Any = None, client: Any = None, lease: Any = None,
+                                   trading_dates: Sequence[str] | None = None) -> dict[str, Any]:
+    """Production entry: wires the real TD store, calendar, local symbol universe, Baostock client and Redis lease."""
+    import os
+    from pathlib import Path
+
+    options = dict(args or {})
+    base = Path(root).expanduser()
+    own_store = store is None
+    if store is None:
+        from ..guardian.daily_kline_coverage import make_store, td_settings
+        settings = td_settings()
+        if settings is None:
+            raise RuntimeError("TD_DAILY_KLINE_BACKFILL_NOT_CONFIGURED")
+        store = make_store(settings)
+    if trading_dates is None:
+        from .trade_calendar import TradeCalendarStore
+        trading_dates = TradeCalendarStore(base).all_trading_dates()
+    from .storage import ArtifactCatalog
+    catalog = ArtifactCatalog(base)
+    universe_dates = sorted((catalog.read().get("datasets", {}).get("symbol_universe", {}).get("dates", {})))
+    memo: dict[str, set[str]] = {}
+
+    def expected_symbols(day: str) -> set[str]:
+        if day not in memo:
+            for candidate in reversed([item for item in universe_dates if item <= day]):
+                path = catalog.locate("symbol_universe", candidate)
+                if path is not None:
+                    memo[day] = {str(row.get("symbol", row.get("code", ""))).zfill(6)
+                                 for row in catalog.read_rows(path)
+                                 if str(row.get("trade_status", "")).strip() != "0"}
+                    break
+            else:
+                memo[day] = set()
+        return memo[day]
+
+    no_progress = float(options.get("baostock_no_progress_seconds", 300))
+    if client is None:
+        import baostock as bs
+        from ..daily_history import BaostockRangeClient
+        client = BaostockRangeClient(bs, read_timeout=min(30.0, no_progress))
+    if lease is None:
+        import redis
+        from .lease import RedisLease
+        url = os.getenv("CORE_REDIS_URL") or os.getenv("REDIS_URL") or "redis://127.0.0.1:6379/0"
+        lease = RedisLease(redis.Redis.from_url(url, socket_timeout=5, socket_connect_timeout=5),
+                           "core:lease:daily_kline_fill", ttl_seconds=int(options.get("lease_ttl_seconds", 300)))
+    threshold = float((options.get("daily_kline_policy") or {}).get("formal_coverage_threshold", 0.995))
+    if threshold < MIN_FORMAL_COVERAGE:
+        raise ValueError(f"coverage_threshold_below_formal_floor:{MIN_FORMAL_COVERAGE}")
+    try:
+        result = run_daily_kline_fill(
+            target, store=store, client=client, trading_dates=trading_dates, expected_symbols=expected_symbols,
+            lease=lease, depth=int(options.get("history_min_trading_days", 10)), coverage_threshold=threshold,
+            max_consecutive_failures=int(options.get("fill_max_consecutive_failures", 5)),
+            max_failure_ratio=float(options.get("fill_max_failure_ratio", 0.2)),
+            min_failure_samples=int(options.get("fill_min_failure_samples", 20)),
+            max_consecutive_empty=int(options.get("fill_max_consecutive_empty", 30)),
+            total_timeout_seconds=float(options.get("total_timeout_seconds", 43200)),
+            no_progress_timeout_seconds=no_progress,
+            on_complete=lambda done: done.__setitem__(
+                "partitions", publish_filled_days(base, store, done["work_days"], expected_symbols, threshold)))
+        return result
+    finally:
+        if own_store:
+            store.close()

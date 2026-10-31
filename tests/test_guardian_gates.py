@@ -57,8 +57,8 @@ def test_daily_kline_gate_requires_same_date_coverage_and_available_at(monkeypat
     rows = tmp_path / "rows.jsonl"
     rows.write_text("{}\n" * 95)
     universe.write_text('{"row_count":100}')
-    def install(trade_date="2026-10-19", row_count=95, available="2026-10-19T17:30:00+08:00"):
-        manifest.write_text(json.dumps({"trade_date": trade_date, "row_count": row_count,
+    def install(trade_date="2026-10-19", row_count=95, available="2026-10-19T17:30:00+08:00", provider="baostock"):
+        manifest.write_text(json.dumps({"trade_date": trade_date, "row_count": row_count, "provider": provider,
                                         "available_at": available, "rows_uri": str(rows)}))
     class Catalog:
         def __init__(self, *_): pass
@@ -75,6 +75,11 @@ def test_daily_kline_gate_requires_same_date_coverage_and_available_at(monkeypat
     assert not daily_kline_ready(event, now.replace(second=2), {})
     install(row_count=95)
     assert daily_kline_ready(event, now.replace(second=3), {})
+    # a quick-recap close (wencai) is usable before 17:00 but never counts as the day's bars afterwards
+    install(row_count=95, available="2026-10-19T15:10:00+08:00", provider="wencai")
+    assert daily_kline_ready(event, datetime.fromisoformat("2026-10-19T16:30:04+08:00"), {})
+    not_ready = daily_kline_ready(event, now.replace(second=4), {})
+    assert not not_ready and not_ready["reason"] == "DAILY_KLINE_REQUIRES_BAOSTOCK_AFTER_1700"
 
 
 class FakeTD:
