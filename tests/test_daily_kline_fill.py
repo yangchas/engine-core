@@ -238,3 +238,14 @@ def test_publish_rejects_a_threshold_the_formal_classifier_would_override(tmp_pa
 def test_lease_keys_must_live_under_the_core_prefix_the_redis_guard_allows():
     with pytest.raises(ValueError, match="lease_key_must_start_with"):
         RedisLease(FakeRedis(), "lease:daily_kline_fill")
+
+
+def test_redis_failure_on_the_lease_is_retryable_not_final():
+    class Down(RedisLease):
+        def acquire(self):
+            raise ConnectionError("redis down")
+
+    client = FixtureClient()
+    with pytest.raises(RuntimeError, match=r"BAOSTOCK_GAP_UNRESOLVED:lease_unavailable"):
+        fill(MemoryTdStore(), client, lease=Down(FakeRedis(), "core:lease:x"))
+    assert client.queries == []

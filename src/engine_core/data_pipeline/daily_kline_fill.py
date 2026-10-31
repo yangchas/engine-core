@@ -34,8 +34,13 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
     sessions = sorted(day for day in trading_dates if day <= target)
     if target not in sessions:
         raise ValueError("target_not_in_trade_calendar:" + target)
-    if lease is not None and not lease.acquire():
-        return {"status": "BUSY", "target": target, "reason": "another_fill_is_running"}
+    if lease is not None:
+        try:
+            acquired = lease.acquire()
+        except Exception as exc:  # Redis down is transient: retry later, never a final failure
+            raise _abort("lease_unavailable", {"error": type(exc).__name__}) from exc
+        if not acquired:
+            return {"status": "BUSY", "target": target, "reason": "another_fill_is_running"}
     started = clock()
     logged_in = False
     try:
@@ -243,7 +248,8 @@ def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str,
         import baostock as bs
         from ..daily_history import BaostockRangeClient
         client = BaostockRangeClient(bs, read_timeout=min(30.0, no_progress))
-    if lease is None:
+    if lease is None and str(options.get("fill_lease", "redis")).lower() != "off":
+        # "off" exists for read-only rehearsals; production schedules never set it.
         import redis
         from .lease import RedisLease
         url = os.getenv("CORE_REDIS_URL") or os.getenv("REDIS_URL") or "redis://127.0.0.1:6379/0"
