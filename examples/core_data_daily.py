@@ -86,6 +86,8 @@ def main(argv=None) -> int:
     parser.add_argument("--symbols-file", help="debug-only one-symbol-per-line Baostock cohort")
     parser.add_argument("--artifact-root", help="artifact root (required with --symbols-file)")
     parser.add_argument("--no-lock", action="store_true")
+    parser.add_argument("--no-daily-kline-fetch", action="store_true",
+                        help="postmarket only: never pull daily bars here (the TD fill owns that); wait for FORMAL")
     args = parser.parse_args(argv)
     artifact_root_explicit = args.artifact_root is not None
     args.artifact_root = args.artifact_root or os.getenv("CORE_DATA_ROOT", "~/core-data")
@@ -156,7 +158,8 @@ def main(argv=None) -> int:
         result = run_daily_phase(args.phase, args.date, root=root, adapters=adapters,
             trading_dates=trade_dates, write=args.write, redis=redis,
             td_adapter=adapters.get("td_writer"), td_write=args.td_write,
-            baostock_policy=baostock_policy, lock=not args.no_lock)
+            baostock_policy=baostock_policy, lock=not args.no_lock,
+            fetch_daily_kline=not args.no_daily_kline_fetch)
     finally:
         if td_store is not None:
             td_store.close()
@@ -181,6 +184,13 @@ def main(argv=None) -> int:
             detail={"business_status": daily.get("business_status"),
                     "known_missing": daily.get("known_missing", {}),
                     "alert_required": daily.get("alert_required")}))
+    if result.get("error_code") == "DAILY_KLINE_NOT_READY":
+        return emit_job_result(ContractJobResult(
+            contract=1, job="daily_kline", trade_date=args.date, status="failed", tier=0,
+            source="baostock", dataset="daily_kline", version=None, row_count=None, coverage=None,
+            error_code="DAILY_KLINE_NOT_READY", retryable=True, attempts=1,
+            elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+            detail={"waiting_for": "FORMAL baostock daily_kline from the TD fill"}))
     if result["status"] not in {"READY", "SKIPPED_NON_TRADING_DAY"}:
         if result.get("error_code") == "TD_UNAVAILABLE":
             return 30

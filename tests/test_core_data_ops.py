@@ -381,3 +381,68 @@ def test_core_data_daily_can_skip_redis_publish_while_writing(monkeypatch, tmp_p
     assert captured["write"] is True
     assert captured["redis"] is None
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["status"] == "READY"
+
+
+def test_postmarket_without_daily_kline_fetch_waits_instead_of_pulling_bars(tmp_path):
+    _seed_c325_calendar(tmp_path)
+    pulled = []
+    result = run_daily_phase("postmarket", "2026-10-16", root=tmp_path,
+        adapters={"daily_kline": lambda day: pulled.append(day) or {"rows": []}},
+        trading_dates=None, write=True, now="2026-10-16T18:00:00+08:00", lock=False,
+        fetch_daily_kline=False)
+    assert pulled == []
+    assert result["status"] == "FAILED"
+    assert (result["error_code"], result["retryable"]) == ("DAILY_KLINE_NOT_READY", True)
+    assert {job["job"]: job["status"] for job in result["jobs"]} == {
+        "ladder_daily": "SKIPPED_WAITING_DAILY_KLINE", "stock_day_facts": "SKIPPED_WAITING_DAILY_KLINE"}
+
+
+def test_postmarket_without_daily_kline_fetch_runs_the_dependents_once_a_published_baostock_day_exists(
+        monkeypatch, tmp_path):
+    import engine_core.data_pipeline.ops as ops
+
+    _seed_c325_calendar(tmp_path)
+    monkeypatch.setattr(ops, "_published_baostock_manifest",
+                        lambda _runner, _day: {"version": "v1", "row_count": 5000})
+    result = run_daily_phase("postmarket", "2026-10-16", root=tmp_path, adapters={}, trading_dates=None,
+                             write=False, now="2026-10-16T18:00:00+08:00", lock=False, fetch_daily_kline=False)
+    assert result["jobs"][0] == {"job": "daily_kline", "status": "SKIPPED_ALREADY_PUBLISHED",
+                                 "version": "v1", "row_count": 5000}
+    assert result.get("error_code") != "DAILY_KLINE_NOT_READY"
+
+
+def test_postmarket_readiness_ignores_which_version_locate_would_pick(tmp_path):
+    import json
+    from types import SimpleNamespace
+    from engine_core.data_pipeline.ops import _published_baostock_manifest
+
+    def stub(*manifests):
+        versions = []
+        for index, manifest in enumerate(manifests):
+            path = tmp_path / f"m{index}.json"
+            path.write_text(json.dumps(manifest))
+            versions.append({"manifest": str(path)})
+        catalog = SimpleNamespace(root=tmp_path, read=lambda: {"datasets": {"daily_kline": {"dates": {"d": versions}}}})
+        return SimpleNamespace(catalog=catalog)
+
+    def manifest(provider="baostock", status="FORMAL", coverage=1.0):
+        return {"provider": provider, "business_status": status, "quality": {"coverage": coverage}}
+
+    wencai_close = manifest("wencai", "PROVISIONAL", 1.0)           # 15:05 quick recap, outranks in locate()
+    assert _published_baostock_manifest(stub(wencai_close), "d") is None
+    assert _published_baostock_manifest(stub(wencai_close, manifest(status="PROVISIONAL", coverage=0.9958)), "d")
+    assert _published_baostock_manifest(stub(wencai_close, manifest(status="PROVISIONAL", coverage=0.98)), "d") is None
+
+
+def test_guardian_postmarket_command_never_fetches_daily_bars(tmp_path):
+    from types import SimpleNamespace
+    import sys
+    from pathlib import Path
+    from engine_core.guardian.commands import build_handler_command
+
+    opts = SimpleNamespace(write=True, td_write=False, simulate_clock=False, email_self=False, run=True)
+    event = SimpleNamespace(timeout_seconds=300, args={})
+    repo = Path(__file__).resolve().parents[1]
+    post = build_handler_command("postmarket_data", event, opts, tmp_path, "2026-10-26", sys.executable, repo)
+    intraday = build_handler_command("intraday_data", event, opts, tmp_path, "2026-10-26", sys.executable, repo)
+    assert "--no-daily-kline-fetch" in post and "--no-daily-kline-fetch" not in intraday
