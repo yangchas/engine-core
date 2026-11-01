@@ -125,7 +125,7 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                     baostock_policy: Mapping[str, Any] | None = None,
                     lock: bool = True, fetch_daily_kline: bool = True) -> dict[str, Any]:
     """``fetch_daily_kline=False``: this phase never pulls daily bars (the TD fill does, C630); it only waits for
-    a FORMAL Baostock partition and builds the datasets that depend on it once it exists."""
+    a published Baostock partition (coverage met) and builds the datasets that depend on it once it exists."""
     if phase not in _PHASE_JOBS:
         raise ValueError("unknown_phase")
     root = Path(root)
@@ -166,7 +166,7 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                 continue
             if phase == "postmarket" and not fetch_daily_kline:
                 if name == "daily_kline":
-                    ready = _formal_baostock_manifest(runner, job_trade_date)
+                    ready = _published_baostock_manifest(runner, job_trade_date)
                     if ready is None:
                         waiting_for_daily_kline = True
                         errors.append({"job": name, "status": "WAITING", "error_code": "DAILY_KLINE_NOT_READY",
@@ -314,7 +314,13 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
     return result
 
 
-def _formal_baostock_manifest(runner: JobRunner, day: str) -> dict[str, Any] | None:
+def _published_baostock_manifest(runner: JobRunner, day: str, min_coverage: float = 0.995) -> dict[str, Any] | None:
+    """The day's Baostock partition once the TD fill published it: coverage decides, not the FORMAL label.
+
+    A FORMAL downgrade to PROVISIONAL (a few rows with empty volume/amount) is a property of the data and never
+    clears; waiting for FORMAL would block the postmarket phase for good. C571 already builds the derived
+    datasets from any quality >= PROVISIONAL.
+    """
     path = runner.catalog.locate("daily_kline", day)
     if path is None:
         return None
@@ -322,9 +328,18 @@ def _formal_baostock_manifest(runner: JobRunner, day: str) -> dict[str, Any] | N
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    ok = (isinstance(manifest, dict) and str(manifest.get("provider") or "").lower() == "baostock" and
-          manifest.get("business_status") == "FORMAL")
-    return manifest if ok else None
+    if not isinstance(manifest, dict) or str(manifest.get("provider") or "").lower() != "baostock":
+        return None
+    if manifest.get("business_status") not in {"FORMAL", "PROVISIONAL"}:
+        return None
+    quality = manifest.get("quality") or {}
+    policy = manifest.get("completion_policy") or {}
+    threshold = policy.get("formal_coverage_threshold", quality.get("coverage_threshold", min_coverage))
+    coverage = quality.get("coverage")
+    if isinstance(coverage, bool) or not isinstance(coverage, (int, float)) or \
+            isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+        return None
+    return manifest if float(coverage) >= float(threshold) else None
 
 
 class _NullContext:

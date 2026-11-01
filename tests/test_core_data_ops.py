@@ -397,12 +397,12 @@ def test_postmarket_without_daily_kline_fetch_waits_instead_of_pulling_bars(tmp_
         "ladder_daily": "SKIPPED_WAITING_DAILY_KLINE", "stock_day_facts": "SKIPPED_WAITING_DAILY_KLINE"}
 
 
-def test_postmarket_without_daily_kline_fetch_runs_the_dependents_once_a_formal_baostock_day_exists(
+def test_postmarket_without_daily_kline_fetch_runs_the_dependents_once_a_published_baostock_day_exists(
         monkeypatch, tmp_path):
     import engine_core.data_pipeline.ops as ops
 
     _seed_c325_calendar(tmp_path)
-    monkeypatch.setattr(ops, "_formal_baostock_manifest",
+    monkeypatch.setattr(ops, "_published_baostock_manifest",
                         lambda _runner, _day: {"version": "v1", "row_count": 5000})
     result = run_daily_phase("postmarket", "2026-10-16", root=tmp_path, adapters={}, trading_dates=None,
                              write=False, now="2026-10-16T18:00:00+08:00", lock=False, fetch_daily_kline=False)
@@ -411,22 +411,28 @@ def test_postmarket_without_daily_kline_fetch_runs_the_dependents_once_a_formal_
     assert result.get("error_code") != "DAILY_KLINE_NOT_READY"
 
 
-def test_only_a_formal_baostock_manifest_counts_as_ready(tmp_path):
+def test_a_baostock_partition_with_enough_coverage_is_ready_whether_formal_or_provisional(tmp_path):
     import json
     from types import SimpleNamespace
-    from engine_core.data_pipeline.ops import _formal_baostock_manifest
+    from engine_core.data_pipeline.ops import _published_baostock_manifest
 
     def runner_for(manifest):
         path = tmp_path / "m.json"
         path.write_text(json.dumps(manifest))
         return SimpleNamespace(catalog=SimpleNamespace(locate=lambda _n, _d: path))
 
-    assert _formal_baostock_manifest(runner_for({"provider": "baostock", "business_status": "FORMAL"}), "d")
-    for manifest in ({"provider": "wencai", "business_status": "FORMAL"},
-                     {"provider": "baostock", "business_status": "PARTIAL"},
-                     {"provider": "baostock", "business_status": "PROVISIONAL"}):
-        assert _formal_baostock_manifest(runner_for(manifest), "d") is None
-    assert _formal_baostock_manifest(SimpleNamespace(catalog=SimpleNamespace(locate=lambda _n, _d: None)), "d") is None
+    def manifest(provider="baostock", status="FORMAL", coverage=1.0, **extra):
+        return {"provider": provider, "business_status": status, "quality": {"coverage": coverage}, **extra}
+
+    assert _published_baostock_manifest(runner_for(manifest()), "d")
+    # the real 2026-10-19 / 10-26 shape: coverage ok, FORMAL impossible (required_fields_incomplete)
+    assert _published_baostock_manifest(runner_for(manifest(status="PROVISIONAL", coverage=0.9954)), "d")
+    for bad in (manifest(provider="wencai", status="PROVISIONAL"), manifest(status="PARTIAL", coverage=0.999),
+                manifest(status="PROVISIONAL", coverage=0.98),
+                manifest(status="FORMAL", coverage=0.99, completion_policy={"formal_coverage_threshold": 0.995})):
+        assert _published_baostock_manifest(runner_for(bad), "d") is None
+    assert _published_baostock_manifest(
+        SimpleNamespace(catalog=SimpleNamespace(locate=lambda _n, _d: None)), "d") is None
 
 
 def test_guardian_postmarket_command_never_fetches_daily_bars(tmp_path):
