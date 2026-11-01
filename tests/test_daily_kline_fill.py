@@ -316,3 +316,51 @@ def test_a_stale_marker_row_count_is_republished():
         TARGET, store=store, client=FixtureClient(), trading_dates=DAYS, expected_symbols=lambda _d: set(SYMBOLS),
         depth=5, coverage_threshold=0.995, on_complete=lambda r: seen.append(r["publish_days"]))
     assert seen == [DAYS]
+
+
+@pytest.mark.parametrize("manifest,expected", [
+    ({"provider": "baostock", "business_status": "FORMAL", "quality": {"coverage": 1.0}}, True),
+    ({"provider": "baostock", "business_status": "PROVISIONAL", "quality": {"coverage": 0.9954}}, True),
+    ({"provider": "baostock", "business_status": "PROVISIONAL", "quality": {"coverage": 0.98}}, False),
+    ({"provider": "baostock", "business_status": "PARTIAL", "quality": {"coverage": 0.999}}, False),
+    ({"provider": "wencai", "business_status": "PROVISIONAL", "quality": {"coverage": 1.0}}, False),
+    (None, False),
+], ids=["formal", "provisional-enough-coverage", "provisional-low-coverage", "partial", "wencai", "absent"])
+def test_published_means_baostock_with_enough_coverage_whatever_the_formal_downgrade(tmp_path, manifest, expected):
+    from types import SimpleNamespace
+    from engine_core.data_pipeline.daily_kline_fill import _catalog_has_published_baostock
+
+    path = tmp_path / "m.json"
+    if manifest is not None:
+        path.write_text(json.dumps(manifest))
+    catalog = SimpleNamespace(locate=lambda _n, _d: path if manifest is not None else None)
+    assert _catalog_has_published_baostock(catalog, TARGET, 0.995) is expected
+
+
+def test_a_provisional_day_with_enough_coverage_is_not_published_again_on_every_trigger(tmp_path):
+    # Real shape from the 2026-10-26 rehearsal: coverage ok, FORMAL impossible (a row with empty volume).
+    from engine_core.data_pipeline.daily_kline_fill import _catalog_has_published_baostock, publish_filled_days
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from tests.test_daily_kline_gapfill import _seed_real_symbol_universe
+
+    class GappyVolume(FixtureClient):
+        def query(self, symbol, start, end):
+            rows = super().query(symbol, start, end)
+            return [{**row, "volume": None} if symbol == "000001" else row for row in rows]
+
+    for day in DAYS:
+        _seed_real_symbol_universe(tmp_path, day, sorted(SYMBOLS))
+    store, catalog = MemoryTdStore(), ArtifactCatalog(tmp_path)
+    publishes = []
+
+    def run(client):
+        return run_daily_kline_fill(
+            TARGET, store=store, client=client, trading_dates=DAYS, expected_symbols=lambda _d: set(SYMBOLS),
+            depth=5, coverage_threshold=0.995,
+            needs_publish=lambda day: not _catalog_has_published_baostock(catalog, day, 0.995),
+            on_complete=lambda r: publishes.append(publish_filled_days(
+                tmp_path, store, r["publish_days"], lambda _d: set(SYMBOLS), 0.995)))
+
+    assert run(GappyVolume())["status"] == "COMPLETE"
+    assert {p["business_status"] for p in publishes[0]} == {"PROVISIONAL"}
+    assert run(GappyVolume())["status"] == "NO_GAPS" and len(publishes) == 1

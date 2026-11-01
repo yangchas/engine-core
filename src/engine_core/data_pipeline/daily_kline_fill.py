@@ -169,8 +169,12 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
             lease.release()
 
 
-def _catalog_has_formal_baostock(catalog: Any, day: str) -> bool:
-    """What the postmarket phase waits for: a FORMAL Baostock manifest in the catalog."""
+def _catalog_has_published_baostock(catalog: Any, day: str, min_coverage: float) -> bool:
+    """A Baostock manifest whose coverage meets the threshold counts as published, FORMAL or PROVISIONAL.
+
+    PROVISIONAL with enough coverage is a property of the data (e.g. a few rows with empty volume), so
+    publishing again can never turn it FORMAL; only "no manifest" or "coverage below threshold" is unpublished.
+    """
     import json
     path = catalog.locate("daily_kline", day)
     if path is None:
@@ -179,8 +183,11 @@ def _catalog_has_formal_baostock(catalog: Any, day: str) -> bool:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return (isinstance(manifest, dict) and str(manifest.get("provider") or "").lower() == "baostock" and
-            manifest.get("business_status") == "FORMAL")
+    if not isinstance(manifest, dict) or str(manifest.get("provider") or "").lower() != "baostock":
+        return False
+    coverage = (manifest.get("quality") or {}).get("coverage")
+    return (manifest.get("business_status") in {"FORMAL", "PROVISIONAL"} and isinstance(coverage, (int, float))
+            and not isinstance(coverage, bool) and float(coverage) >= min_coverage)
 
 
 def publish_filled_days(root: Any, store: Any, days: Sequence[str], expected_symbols: Callable[[str], set[str]],
@@ -297,7 +304,7 @@ def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str,
             max_consecutive_empty=int(options.get("fill_max_consecutive_empty", 30)),
             total_timeout_seconds=float(options.get("total_timeout_seconds", 43200)),
             no_progress_timeout_seconds=no_progress,
-            needs_publish=lambda day: not _catalog_has_formal_baostock(catalog, day),
+            needs_publish=lambda day: not _catalog_has_published_baostock(catalog, day, threshold),
             on_complete=lambda done: done.__setitem__(
                 "partitions", publish_filled_days(base, store, done["publish_days"], expected_symbols, threshold)))
         return result
