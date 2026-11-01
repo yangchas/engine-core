@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Repair recent Core TD daily bars from Baostock, committing each date to catalog and TD together."""
+"""Repair recent Core TD daily bars from Baostock through the per-symbol TD fill (C630): one atomic TD write per
+symbol, single-flight Redis lease, fail-fast limits, completion marker published once coverage is met."""
 from __future__ import annotations
 
 import argparse
@@ -19,48 +20,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--td-database")
     parser.add_argument("--baostock-no-progress-seconds", type=float, default=300.0,
                         help="fail retryably when Baostock produces no range data or checkpoint progress")
-    parser.add_argument("--baostock-source-universe-seconds", type=float,
-                        help="classification-only query_all_stock timeout; defaults to 300 seconds")
-    parser.add_argument("--baostock-range-concurrency", type=int, choices=(1, 2),
-                        help="parallel isolated per-symbol range sessions (default: 1)")
-    parser.add_argument("--prefetch-baostock-universe", action="store_true",
-                        help="allow query_all_stock cache prefetch during the night window")
     args = parser.parse_args(argv)
     if args.baostock_no_progress_seconds <= 0:
         parser.error("--baostock-no-progress-seconds must be positive")
     try:
         date.fromisoformat(args.date)
-        from engine_core.data_pipeline.daily_kline_gapfill import run_td_daily_kline_gapfill
+        from engine_core.data_pipeline.daily_kline_fill import run_daily_kline_fill_from_root
         from engine_core.guardian.daily_kline_coverage import make_store, td_settings
         settings = td_settings(database=args.td_database)
         if settings is None or not os.environ.get("TD_CONFIG"):
             raise TdUnavailable("td_not_configured")
         store = make_store(settings)
         try:
-            source_universe_timeout = (args.baostock_source_universe_seconds
-                                       if args.baostock_source_universe_seconds is not None else
-                                       float(settings.get("baostock_source_universe_seconds", 300)))
-            range_concurrency = (args.baostock_range_concurrency
-                                 if args.baostock_range_concurrency is not None else
-                                 int(settings.get("baostock_range_concurrency", 1)))
-            result = run_td_daily_kline_gapfill(args.artifact_root, args.date, store=store,
-                                                history_min_trading_days=int(
-                                                    settings.get("history_min_trading_days", 10)),
-                                                total_timeout_seconds=float(
-                                                    settings.get("baostock_total_timeout_seconds", 6900)),
-                                                no_progress_timeout_seconds=args.baostock_no_progress_seconds,
-                                                source_universe_timeout_seconds=source_universe_timeout,
-                                                range_concurrency=range_concurrency,
-                                                prefetch_source_universe=args.prefetch_baostock_universe)
+            result = run_daily_kline_fill_from_root(
+                args.artifact_root, args.date, store=store,
+                args={"history_min_trading_days": int(settings.get("history_min_trading_days", 10)),
+                      "baostock_no_progress_seconds": args.baostock_no_progress_seconds,
+                      "total_timeout_seconds": float(settings.get("baostock_total_timeout_seconds", 6900))})
         finally:
             store.close()
+        if result.get("status") == "BUSY":  # another trigger point holds the lease and is filling: nothing to do
+            return emit(JobResult(1, "daily_kline", args.date, "not_applicable", 0, "baostock", "daily_kline",
+                                  None, None, None, None, False, 0, 0.0, result))
         outcomes = result.get("partitions", [])
         target = next((row for row in outcomes if row.get("trade_date") == args.date), {})
         return emit(JobResult(
             contract=1, job="daily_kline", trade_date=args.date, status="ok", tier=0,
             source="baostock", dataset="daily_kline", version=target.get("version"),
             row_count=target.get("row_count"), coverage=None, error_code=None, retryable=False,
-            attempts=int(result.get("range_queries", 0)), elapsed_ms=0.0, detail=result))
+            attempts=int(result.get("attempted", 0)), elapsed_ms=0.0, detail=result))
     except TdUnavailable as exc:
         return emit(JobResult(1, "daily_kline", args.date, "failed", 0, "baostock", "daily_kline", None,
                               None, None, "TD_UNAVAILABLE", True, 1, 0.0, {"error": str(exc)[:200]}))
