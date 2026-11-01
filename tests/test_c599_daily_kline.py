@@ -1,12 +1,10 @@
 import json
 
 
-def test_backfill_cli_accepts_and_forwards_guardian_no_progress_budget(monkeypatch, capsys, tmp_path):
+def _backfill_cli(monkeypatch, tmp_path, fake_fill):
     from examples import backfill_td_daily_kline
-    from engine_core.data_pipeline import daily_kline_gapfill
+    from engine_core.data_pipeline import daily_kline_fill
     from engine_core.guardian import daily_kline_coverage
-
-    seen = {}
 
     class Store:
         def close(self):
@@ -15,20 +13,38 @@ def test_backfill_cli_accepts_and_forwards_guardian_no_progress_budget(monkeypat
     monkeypatch.setenv("TD_CONFIG", "configured")
     monkeypatch.setattr(daily_kline_coverage, "td_settings", lambda **_kwargs: {})
     monkeypatch.setattr(daily_kline_coverage, "make_store", lambda _settings: Store())
+    monkeypatch.setattr(daily_kline_fill, "run_daily_kline_fill_from_root", fake_fill)
+    return backfill_td_daily_kline.main(["--date", "2026-10-20", "--artifact-root", str(tmp_path),
+                                         "--baostock-no-progress-seconds", "47"])
 
-    def fake_gapfill(root, target, **kwargs):
-        seen.update(root=str(root), target=target, **kwargs)
-        return {"status": "OK", "range_queries": 0,
+
+def test_backfill_cli_runs_the_td_fill_and_forwards_guardian_no_progress_budget(monkeypatch, capsys, tmp_path):
+    seen = {}
+
+    def fake_fill(root, target, *, args=None, store=None, **_kwargs):
+        seen.update(root=str(root), target=target, args=args)
+        return {"status": "COMPLETE", "attempted": 3,
                 "partitions": [{"trade_date": target, "row_count": 1, "version": "v1"}]}
 
-    monkeypatch.setattr(daily_kline_gapfill, "run_td_daily_kline_gapfill", fake_gapfill)
-    assert backfill_td_daily_kline.main([
-        "--date", "2026-10-20", "--artifact-root", str(tmp_path),
-        "--baostock-no-progress-seconds", "47",
-    ]) == 0
-    assert seen["no_progress_timeout_seconds"] == 47.0
+    assert _backfill_cli(monkeypatch, tmp_path, fake_fill) == 0
+    assert seen["args"]["baostock_no_progress_seconds"] == 47.0
     assert seen["target"] == "2026-10-20"
-    assert json.loads(capsys.readouterr().out)["status"] == "ok"
+    payload = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert (payload["status"], payload["version"], payload["attempts"]) == ("ok", "v1", 3)
+
+
+def test_backfill_cli_skips_when_another_trigger_holds_the_lease(monkeypatch, capsys, tmp_path):
+    code = _backfill_cli(monkeypatch, tmp_path, lambda *_a, **_k: {"status": "BUSY"})
+    assert code == 20 and json.loads(capsys.readouterr().out.splitlines()[-1])["status"] == "not_applicable"
+
+
+def test_backfill_cli_fail_fast_is_a_retryable_failure(monkeypatch, capsys, tmp_path):
+    def fake_fill(*_a, **_k):
+        raise RuntimeError("BAOSTOCK_GAP_UNRESOLVED:consecutive_failures:attempted=5")
+
+    assert _backfill_cli(monkeypatch, tmp_path, fake_fill) == 30
+    payload = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert (payload["status"], payload["retryable"]) == ("failed", True)
 
 
 def test_daily_kline_backfill_not_eligible_is_not_applicable(monkeypatch):
