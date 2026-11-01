@@ -262,6 +262,8 @@ def build_handler_command(name, event, opts, root: Path, day: str, py: str, repo
             cmd.extend(["--write", "--td-write"])
         _append_baostock_no_progress(cmd, _event_args(event))
         _append_baostock_completion_policy(cmd, _event_args(event))
+        if name == "postmarket_data":
+            cmd.append("--no-daily-kline-fetch")  # the TD fill (C630) is the only daily-bar puller
         return cmd
     if name in {"auction_report", "open_report", "close_report"}:
         stage = {"auction_report": "auction", "open_report": "open", "close_report": "close"}[name]

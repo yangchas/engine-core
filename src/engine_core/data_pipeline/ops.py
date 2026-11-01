@@ -123,7 +123,9 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                     write: bool, redis: Any = None, td_adapter: Any = None,
                     td_write: bool = False, now: str | None = None,
                     baostock_policy: Mapping[str, Any] | None = None,
-                    lock: bool = True) -> dict[str, Any]:
+                    lock: bool = True, fetch_daily_kline: bool = True) -> dict[str, Any]:
+    """``fetch_daily_kline=False``: this phase never pulls daily bars (the TD fill does, C630); it only waits for
+    a FORMAL Baostock partition and builds the datasets that depend on it once it exists."""
     if phase not in _PHASE_JOBS:
         raise ValueError("unknown_phase")
     root = Path(root)
@@ -157,10 +159,25 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
     with lock_context:
         runner = JobRunner(artifact_root=root, redis=redis, td_adapter=td_adapter,
                            budget=RequestBudget(max_requests=100, min_interval_seconds=0))
+        waiting_for_daily_kline = False
         for name in _PHASE_JOBS[phase]:
             if name not in DATASETS:
                 errors.append({"job": name, "status": "NOT_REGISTERED"})
                 continue
+            if phase == "postmarket" and not fetch_daily_kline:
+                if name == "daily_kline":
+                    ready = _formal_baostock_manifest(runner, job_trade_date)
+                    if ready is None:
+                        waiting_for_daily_kline = True
+                        errors.append({"job": name, "status": "WAITING", "error_code": "DAILY_KLINE_NOT_READY",
+                                       "retryable": True})
+                    else:
+                        results.append({"job": name, "status": "SKIPPED_ALREADY_PUBLISHED",
+                                        "version": ready.get("version"), "row_count": ready.get("row_count")})
+                    continue
+                if waiting_for_daily_kline:
+                    results.append({"job": name, "status": "SKIPPED_WAITING_DAILY_KLINE"})
+                    continue
             dataset_day = trade_date if name == "symbol_universe" else job_trade_date
             existing_path = runner.catalog.locate(name, dataset_day)
             if existing_path is not None and name != "hot_plates":
@@ -226,7 +243,7 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                               "TD_VERIFY_FAILED" if isinstance(exc, TdVerifyError) else None)
                 errors.append({"job": name, "status": "FAILED", "error": str(exc)[:120],
                                **({"error_code": error_code} if error_code else {})})
-        if phase == "postmarket" and write:
+        if phase == "postmarket" and write and not waiting_for_daily_kline:
             # C571: the derived daily datasets are produced as soon as the gated daily_kline of this day is
             # present (any quality >= PROVISIONAL), by the same event that published it; a later FORMAL upgrade
             # reruns this phase (probe events / reconcile) and the stale-input check rebuilds a new version.
@@ -275,6 +292,8 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
             result["error_code"], result["retryable"] = "TD_UNAVAILABLE", True
         elif any(item.get("error_code") == "TD_VERIFY_FAILED" for item in errors):
             result["error_code"], result["retryable"] = "TD_VERIFY_FAILED", False
+        elif any(item.get("error_code") == "DAILY_KLINE_NOT_READY" for item in errors):
+            result["error_code"], result["retryable"] = "DAILY_KLINE_NOT_READY", True
         elif any(item.get("error_code") == "TIER_PARTIAL" for item in errors):
             result["error_code"], result["retryable"] = "TIER_PARTIAL", True
         if baseline_append is not None:
@@ -293,6 +312,19 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                                             "jobs": results, "errors": errors}
                 redis.set(key, canonical_json(dict(list(status.items())[-32:])).decode("utf-8"), ex=7 * 86400)
     return result
+
+
+def _formal_baostock_manifest(runner: JobRunner, day: str) -> dict[str, Any] | None:
+    path = runner.catalog.locate("daily_kline", day)
+    if path is None:
+        return None
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    ok = (isinstance(manifest, dict) and str(manifest.get("provider") or "").lower() == "baostock" and
+          manifest.get("business_status") == "FORMAL")
+    return manifest if ok else None
 
 
 class _NullContext:
