@@ -50,7 +50,7 @@ def test_schedule_fields_match_go_migrator_and_native_fixture_provenance():
                event["late_until_date_offset_error_codes"] == ["BAOSTOCK_LOCAL_GAP_WAIT"] and
                event["late_until_clock_by_error_code"] == {"BAOSTOCK_LOCAL_GAP_WAIT": "08:00:00"} and
                "BAOSTOCK_LOCAL_GAP_WAIT" in event["args"]["failure_classes"]["retryable"]["error_codes"] and
-               event["args"]["baostock_gapfill_policy"]["minimum_coverage"] == 0.90
+               "baostock_gapfill_policy" not in event["args"]
                for event in baostock)
     assert schedule["profiles"]["policy_11"]["ladder"][0]["attempts"] == 32
     assert schedule["profiles"]["policy_11"]["ladder"][0]["backoff"] == "30m*1"
@@ -358,3 +358,32 @@ def test_postmarket_publish_stall_guard_fires_before_the_handler_timeout():
     timeout = int(tier["timeout"].rstrip("s"))
     # A hung Baostock pull must end as a clean retryable stall, not as a HANDLER_TIMEOUT kill.
     assert event["args"]["baostock_no_progress_seconds"] < timeout
+
+
+def test_fill_limits_are_configured_on_every_trigger_point_and_the_code_reads_every_key():
+    import re
+    from pathlib import Path
+
+    schedule = json.loads((Path(__file__).resolve().parents[1] /
+                           "src/engine_core/guardian/schedule.json").read_text(encoding="utf-8"))
+    fill_source = (Path(__file__).resolve().parents[1] /
+                   "src/engine_core/data_pipeline/daily_kline_fill.py").read_text(encoding="utf-8")
+    read_keys = set(re.findall(r'options\.get\("([a-z_]+)"', fill_source))
+    events = {e["event_id"]: e for e in schedule["events"]}
+    triggers = [e for e in schedule["events"] if e.get("handler") in {"baostock_probe", "daily_kline_backfill"}]
+    assert len(triggers) == 5
+    expected = {"history_min_trading_days", "fill_max_consecutive_failures", "fill_max_failure_ratio",
+                "fill_min_failure_samples", "fill_max_consecutive_empty", "lease_ttl_seconds"}
+    for event in triggers:
+        args = event["args"]
+        assert expected <= set(args), event["event_id"]
+        assert {key for key in args if key.startswith("fill_")} <= read_keys   # no key the code ignores
+        assert args["fill_max_consecutive_failures"] >= 1 and 0 < args["fill_max_failure_ratio"] <= 1
+    # a probe attempt ends itself (retryable) before the guardian would kill the handler at its profile timeout
+    for event in triggers:
+        if event["handler"] != "baostock_probe":
+            continue
+        ladder = schedule["profiles"][event["profile"]]["ladder"][0]
+        minutes = int(ladder["timeout"].rstrip("m"))
+        assert event["args"]["total_timeout_seconds"] < minutes * 60
+    assert events["daily_kline_backfill"]["args"]["total_timeout_seconds"] == 43200   # the user's 12 h cap

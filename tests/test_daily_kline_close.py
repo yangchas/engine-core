@@ -68,7 +68,9 @@ def test_schedule_declares_the_1505_event_and_ladder_order():
     assert event["at"] == "15:05:00" and event["calendar"] == "trading_day"
     assert event["cost"] == "heavy" and probe["cost"] == "heavy"
     assert event["catchup_mode"] == "run_in_window" and profile["catchup"] == "run_in_window"
-    assert event["late_until"] < probe["available_after"] and event["late_until"] == "17:35:00"
+    # 17:00 and later only Baostock counts (daily_kline_ready); the wencai/q2 quick recap window ends there
+    assert event["late_until"] < probe["available_after"] and event["late_until"] == "17:00:00"
+    assert event["deadline"] == "17:00:00"
     assert [t["name"] for t in profile["ladder"]] == ["wencai", "q2_final"]
     assert [t["args"]["providers"] for t in profile["ladder"]] == ["wencai", "q2_final"]
     assert all(t["on_timeout"] == "advance" and t["alert_on_fallback"] for t in profile["ladder"])

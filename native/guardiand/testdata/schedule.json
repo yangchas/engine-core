@@ -2550,8 +2550,8 @@
       "calendar": "trading_day",
       "trigger_type": "window",
       "at": "15:05:00",
-      "deadline": "17:35:00",
-      "late_until": "17:35:00",
+      "deadline": "17:00:00",
+      "late_until": "17:00:00",
       "gate": "calendar_ready",
       "handler": "daily_kline_close",
       "profile": "daily_kline_close",
@@ -2836,10 +2836,14 @@
           "formal_coverage_threshold": 0.995,
           "source_empty_max": 20
         },
-        "baostock_gapfill_policy": {
-          "minimum_coverage": 0.9
-        },
-        "budget_ratio": 1.0
+        "budget_ratio": 1.0,
+        "history_min_trading_days": 10,
+        "fill_max_consecutive_failures": 5,
+        "fill_max_failure_ratio": 0.2,
+        "fill_min_failure_samples": 20,
+        "fill_max_consecutive_empty": 30,
+        "lease_ttl_seconds": 300,
+        "total_timeout_seconds": 7000
       },
       "late_until_date_offset_days": 1,
       "late_until_date_offset_error_codes": [
@@ -2958,10 +2962,14 @@
           "formal_coverage_threshold": 0.995,
           "source_empty_max": 20
         },
-        "baostock_gapfill_policy": {
-          "minimum_coverage": 0.9
-        },
-        "budget_ratio": 1.0
+        "budget_ratio": 1.0,
+        "history_min_trading_days": 10,
+        "fill_max_consecutive_failures": 5,
+        "fill_max_failure_ratio": 0.2,
+        "fill_min_failure_samples": 20,
+        "fill_max_consecutive_empty": 30,
+        "lease_ttl_seconds": 300,
+        "total_timeout_seconds": 7000
       },
       "late_until_date_offset_days": 1,
       "late_until_date_offset_error_codes": [
@@ -3143,10 +3151,14 @@
           "formal_coverage_threshold": 0.995,
           "source_empty_max": 20
         },
-        "baostock_gapfill_policy": {
-          "minimum_coverage": 0.9
-        },
-        "budget_ratio": 1.0
+        "budget_ratio": 1.0,
+        "history_min_trading_days": 10,
+        "fill_max_consecutive_failures": 5,
+        "fill_max_failure_ratio": 0.2,
+        "fill_min_failure_samples": 20,
+        "fill_max_consecutive_empty": 30,
+        "lease_ttl_seconds": 300,
+        "total_timeout_seconds": 7000
       },
       "late_until_date_offset_days": 1,
       "late_until_date_offset_error_codes": [
@@ -3262,10 +3274,14 @@
           "formal_coverage_threshold": 0.995,
           "source_empty_max": 20
         },
-        "baostock_gapfill_policy": {
-          "minimum_coverage": 0.9
-        },
-        "budget_ratio": 1.0
+        "budget_ratio": 1.0,
+        "history_min_trading_days": 10,
+        "fill_max_consecutive_failures": 5,
+        "fill_max_failure_ratio": 0.2,
+        "fill_min_failure_samples": 20,
+        "fill_max_consecutive_empty": 30,
+        "lease_ttl_seconds": 300,
+        "total_timeout_seconds": 7000
       },
       "late_until_date_offset_days": 1,
       "silent_until_last": true,
@@ -3580,7 +3596,13 @@
         "daily_kline_policy": {
           "formal_coverage_threshold": 0.995,
           "source_empty_max": 20
-        }
+        },
+        "history_min_trading_days": 10,
+        "fill_max_consecutive_failures": 5,
+        "fill_max_failure_ratio": 0.2,
+        "fill_min_failure_samples": 20,
+        "fill_max_consecutive_empty": 30,
+        "lease_ttl_seconds": 300
       },
       "profile": "kline_backfill",
       "phases": [
