@@ -318,28 +318,10 @@ def test_a_stale_marker_row_count_is_republished():
     assert seen == [DAYS]
 
 
-@pytest.mark.parametrize("manifest,expected", [
-    ({"provider": "baostock", "business_status": "FORMAL", "quality": {"coverage": 1.0}}, True),
-    ({"provider": "baostock", "business_status": "PROVISIONAL", "quality": {"coverage": 0.9954}}, True),
-    ({"provider": "baostock", "business_status": "PROVISIONAL", "quality": {"coverage": 0.98}}, False),
-    ({"provider": "baostock", "business_status": "PARTIAL", "quality": {"coverage": 0.999}}, False),
-    ({"provider": "wencai", "business_status": "PROVISIONAL", "quality": {"coverage": 1.0}}, False),
-    (None, False),
-], ids=["formal", "provisional-enough-coverage", "provisional-low-coverage", "partial", "wencai", "absent"])
-def test_published_means_baostock_with_enough_coverage_whatever_the_formal_downgrade(tmp_path, manifest, expected):
-    from types import SimpleNamespace
-    from engine_core.data_pipeline.daily_kline_fill import _catalog_has_published_baostock
-
-    path = tmp_path / "m.json"
-    if manifest is not None:
-        path.write_text(json.dumps(manifest))
-    catalog = SimpleNamespace(locate=lambda _n, _d: path if manifest is not None else None)
-    assert _catalog_has_published_baostock(catalog, TARGET, 0.995) is expected
-
-
 def test_a_provisional_day_with_enough_coverage_is_not_published_again_on_every_trigger(tmp_path):
     # Real shape from the 2026-10-26 rehearsal: coverage ok, FORMAL impossible (a row with empty volume).
-    from engine_core.data_pipeline.daily_kline_fill import _catalog_has_published_baostock, publish_filled_days
+    from engine_core.data_pipeline.daily_kline_fill import publish_filled_days
+    from engine_core.data_pipeline.published_daily_kline import find_published_baostock_manifest
     from engine_core.data_pipeline.storage import ArtifactCatalog
     from tests.test_daily_kline_gapfill import _seed_real_symbol_universe
 
@@ -357,7 +339,7 @@ def test_a_provisional_day_with_enough_coverage_is_not_published_again_on_every_
         return run_daily_kline_fill(
             TARGET, store=store, client=client, trading_dates=DAYS, expected_symbols=lambda _d: set(SYMBOLS),
             depth=5, coverage_threshold=0.995,
-            needs_publish=lambda day: not _catalog_has_published_baostock(catalog, day, 0.995),
+            needs_publish=lambda day: find_published_baostock_manifest(catalog, day, 0.995) is None,
             on_complete=lambda r: publishes.append(publish_filled_days(
                 tmp_path, store, r["publish_days"], lambda _d: set(SYMBOLS), 0.995)))
 
