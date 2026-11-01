@@ -305,6 +305,10 @@ def _run(request):
         }
         if configured_handler == "boot_trade_day":
             result = boot_trade_day(str(trade_date), root)
+        elif configured_handler == "boot_data_health" and args.get("checks"):
+            # C635: the scheduled pre-open self-check reuses this handler (no new handler name for the Go binary)
+            from engine_core.guardian.preopen_check import run as run_preopen_check
+            return run_preopen_check({**request, "args": args, "trade_date": str(trade_date)}, root, dry_run=dry)
         elif configured_handler == "boot_data_health":
             result = boot_data_health(str(trade_date), request.get("prev_trade_date"), root,
                                       now=now, dry_run=dry)

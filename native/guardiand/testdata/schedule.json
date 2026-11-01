@@ -511,6 +511,23 @@
           "budget_enabled": false
         }
       ]
+    },
+    "preopen_check": {
+      "catchup": "run_in_window",
+      "retry_backoff": "10m",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 3,
+          "backoff": "10m*1",
+          "backoff_cap": "10m",
+          "timeout": "25m",
+          "budget_enabled": false,
+          "until": "late_until"
+        }
+      ]
     }
   },
   "events": [
@@ -932,6 +949,64 @@
           "hot_plates_history",
           "hot_plates_history_days=3"
         ]
+      }
+    },
+    {
+      "available_after": "08:35:00",
+      "data_date_offset": 0,
+      "deadline": "08:44:59",
+      "depends_on": [],
+      "gate": "calendar_ready",
+      "handler": "boot_data_health",
+      "trigger_type": "window",
+      "order": null,
+      "after": [],
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "on_deadline": "missed",
+      "catchup_mode": "run_in_window",
+      "late_until": "09:05:00",
+      "cost": "medium",
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "on_start": null,
+      "enabled": true,
+      "calendar": "trading_day",
+      "event_id": "preopen_check_0835",
+      "at": "08:35:00",
+      "profile": "preopen_check",
+      "args": {
+        "checks": {
+          "limit_up_pool": {
+            "statuses": [
+              "FORMAL",
+              "READY"
+            ],
+            "min_rows": 1
+          },
+          "hot_plates": {
+            "statuses": [
+              "READY",
+              "FORMAL",
+              "PROVISIONAL"
+            ],
+            "min_rows": 1,
+            "captured_after": "08:15:00"
+          },
+          "daily_kline": {
+            "coverage_threshold": 0.995,
+            "total_timeout_seconds": 1200
+          }
+        },
+        "history_min_trading_days": 10,
+        "fill_max_consecutive_failures": 5,
+        "fill_max_failure_ratio": 0.2,
+        "fill_min_failure_samples": 20,
+        "fill_max_consecutive_empty": 30,
+        "lease_ttl_seconds": 300,
+        "baostock_no_progress_seconds": 120
       }
     },
     {
