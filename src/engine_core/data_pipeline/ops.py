@@ -315,31 +315,9 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
 
 
 def _published_baostock_manifest(runner: JobRunner, day: str, min_coverage: float = 0.995) -> dict[str, Any] | None:
-    """The day's Baostock partition once the TD fill published it: coverage decides, not the FORMAL label.
-
-    A FORMAL downgrade to PROVISIONAL (a few rows with empty volume/amount) is a property of the data and never
-    clears; waiting for FORMAL would block the postmarket phase for good. C571 already builds the derived
-    datasets from any quality >= PROVISIONAL.
-    """
-    path = runner.catalog.locate("daily_kline", day)
-    if path is None:
-        return None
-    try:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(manifest, dict) or str(manifest.get("provider") or "").lower() != "baostock":
-        return None
-    if manifest.get("business_status") not in {"FORMAL", "PROVISIONAL"}:
-        return None
-    quality = manifest.get("quality") or {}
-    policy = manifest.get("completion_policy") or {}
-    threshold = policy.get("formal_coverage_threshold", quality.get("coverage_threshold", min_coverage))
-    coverage = quality.get("coverage")
-    if isinstance(coverage, bool) or not isinstance(coverage, (int, float)) or \
-            isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
-        return None
-    return manifest if float(coverage) >= float(threshold) else None
+    """The day's published Baostock partition (coverage decides, not the FORMAL label; all versions are scanned)."""
+    from .published_daily_kline import find_published_baostock_manifest
+    return find_published_baostock_manifest(runner.catalog, day, min_coverage)
 
 
 class _NullContext:

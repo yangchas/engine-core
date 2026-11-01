@@ -411,28 +411,27 @@ def test_postmarket_without_daily_kline_fetch_runs_the_dependents_once_a_publish
     assert result.get("error_code") != "DAILY_KLINE_NOT_READY"
 
 
-def test_a_baostock_partition_with_enough_coverage_is_ready_whether_formal_or_provisional(tmp_path):
+def test_postmarket_readiness_ignores_which_version_locate_would_pick(tmp_path):
     import json
     from types import SimpleNamespace
     from engine_core.data_pipeline.ops import _published_baostock_manifest
 
-    def runner_for(manifest):
-        path = tmp_path / "m.json"
-        path.write_text(json.dumps(manifest))
-        return SimpleNamespace(catalog=SimpleNamespace(locate=lambda _n, _d: path))
+    def stub(*manifests):
+        versions = []
+        for index, manifest in enumerate(manifests):
+            path = tmp_path / f"m{index}.json"
+            path.write_text(json.dumps(manifest))
+            versions.append({"manifest": str(path)})
+        catalog = SimpleNamespace(root=tmp_path, read=lambda: {"datasets": {"daily_kline": {"dates": {"d": versions}}}})
+        return SimpleNamespace(catalog=catalog)
 
-    def manifest(provider="baostock", status="FORMAL", coverage=1.0, **extra):
-        return {"provider": provider, "business_status": status, "quality": {"coverage": coverage}, **extra}
+    def manifest(provider="baostock", status="FORMAL", coverage=1.0):
+        return {"provider": provider, "business_status": status, "quality": {"coverage": coverage}}
 
-    assert _published_baostock_manifest(runner_for(manifest()), "d")
-    # the real 2026-10-19 / 10-26 shape: coverage ok, FORMAL impossible (required_fields_incomplete)
-    assert _published_baostock_manifest(runner_for(manifest(status="PROVISIONAL", coverage=0.9954)), "d")
-    for bad in (manifest(provider="wencai", status="PROVISIONAL"), manifest(status="PARTIAL", coverage=0.999),
-                manifest(status="PROVISIONAL", coverage=0.98),
-                manifest(status="FORMAL", coverage=0.99, completion_policy={"formal_coverage_threshold": 0.995})):
-        assert _published_baostock_manifest(runner_for(bad), "d") is None
-    assert _published_baostock_manifest(
-        SimpleNamespace(catalog=SimpleNamespace(locate=lambda _n, _d: None)), "d") is None
+    wencai_close = manifest("wencai", "PROVISIONAL", 1.0)           # 15:05 quick recap, outranks in locate()
+    assert _published_baostock_manifest(stub(wencai_close), "d") is None
+    assert _published_baostock_manifest(stub(wencai_close, manifest(status="PROVISIONAL", coverage=0.9958)), "d")
+    assert _published_baostock_manifest(stub(wencai_close, manifest(status="PROVISIONAL", coverage=0.98)), "d") is None
 
 
 def test_guardian_postmarket_command_never_fetches_daily_bars(tmp_path):
