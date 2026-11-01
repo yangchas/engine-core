@@ -9,7 +9,9 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Mapping, Sequence
 
-from .td_sink import BAOSTOCK_PROGRESS_VERSION, DailyKlineTdSink, map_rows, pick_best
+from .published_daily_kline import find_published_baostock_manifest
+from .td_sink import (BAOSTOCK_PROGRESS_VERSION, DailyKlineTdSink, has_baostock_date_evidence, map_rows,
+                      pick_best)
 
 MIN_FORMAL_COVERAGE = 0.98  # the floor hard-coded in registry.daily_kline.classify_daily_kline
 _MANIFEST = {"provider": "baostock", "source": "baostock", "field_units": {"volume": "shares"}}
@@ -21,6 +23,12 @@ def _abort(reason: str, detail: Mapping[str, Any]) -> RuntimeError:
     return RuntimeError(f"BAOSTOCK_GAP_UNRESOLVED:{reason}:{parts}")
 
 
+def _marker_is_current(current: Mapping[str, Any] | None, label: str, day: str, row_count: int) -> bool:
+    """A Baostock completion marker with date evidence whose row count still matches the stored rows."""
+    return (current is not None and label == "baostock" and has_baostock_date_evidence(day, current) and
+            int(current.get("row_count") or 0) == row_count)
+
+
 def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates: Sequence[str],
                          expected_symbols: Callable[[str], set[str]], lease: Any = None, depth: int = 10,
                          coverage_threshold: float = 0.995, max_consecutive_failures: int = 5,
@@ -28,14 +36,20 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
                          max_consecutive_empty: int = 30, total_timeout_seconds: float = 43200.0,
                          no_progress_timeout_seconds: float = 300.0,
                          on_complete: Callable[[dict[str, Any]], None] | None = None,
+                         needs_publish: Callable[[str], bool] | None = None,
                          clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
     if not 0 < coverage_threshold <= 1:
         raise ValueError("coverage_threshold_must_be_in_0_1")
     sessions = sorted(day for day in trading_dates if day <= target)
     if target not in sessions:
         raise ValueError("target_not_in_trade_calendar:" + target)
-    if lease is not None and not lease.acquire():
-        return {"status": "BUSY", "target": target, "reason": "another_fill_is_running"}
+    if lease is not None:
+        try:
+            acquired = lease.acquire()
+        except Exception as exc:  # Redis down is transient: retry later, never a final failure
+            raise _abort("lease_unavailable", {"error": type(exc).__name__}) from exc
+        if not acquired:
+            return {"status": "BUSY", "target": target, "reason": "another_fill_is_running"}
     started = clock()
     logged_in = False
     try:
@@ -47,10 +61,12 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
         expected = {day: set(expected_symbols(day)) for day in days}
         present: dict[str, set[str]] = {}
         work: list[str] = []
+        unpublished: list[str] = []
         for day in days:
             if not expected[day]:
                 raise _abort("symbol_universe_missing", {"day": day})
-            stored = set(store.read_day_rows(day)) & expected[day]
+            all_rows = store.read_day_rows(day)
+            stored = set(all_rows) & expected[day]
             versions = store.read_versions(day)
             current = pick_best(versions)
             label = str((current or {}).get("provider") or (current or {}).get("source") or "").lower()
@@ -58,7 +74,12 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
             present[day] = set() if untrusted else stored
             if untrusted or len(stored) / len(expected[day]) < coverage_threshold:
                 work.append(day)
-        if not work:
+            elif not _marker_is_current(current, label, day, len(all_rows)) or \
+                    (needs_publish is not None and needs_publish(day)):
+                # Enough rows but no usable completion marker (a run killed before publishing, or a manifest that
+                # never reached the catalog): publish it again instead of reporting "nothing to do" forever.
+                unpublished.append(day)
+        if not work and not unpublished:
             return {"status": "NO_GAPS", "target": target, "days": days,
                     "coverage": {day: round(len(present[day]) / len(expected[day]), 4) for day in days},
                     "elapsed_seconds": round(clock() - started, 3)}
@@ -130,7 +151,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
             consecutive_failed = consecutive_empty = 0
             last_progress = clock()
         result = {"status": "COMPLETE" if done() else "INCOMPLETE", "target": target, "days": days,
-                  "work_days": work, **stats,
+                  "work_days": work, "publish_days": sorted(set(work) | set(unpublished)), **stats,
                   "coverage": {day: round(coverage(day), 4) for day in days if day in present},
                   "elapsed_seconds": round(clock() - started, 3)}
         if result["status"] == "INCOMPLETE":
@@ -243,7 +264,8 @@ def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str,
         import baostock as bs
         from ..daily_history import BaostockRangeClient
         client = BaostockRangeClient(bs, read_timeout=min(30.0, no_progress))
-    if lease is None:
+    if lease is None and str(options.get("fill_lease", "redis")).lower() != "off":
+        # "off" exists for read-only rehearsals; production schedules never set it.
         import redis
         from .lease import RedisLease
         url = os.getenv("CORE_REDIS_URL") or os.getenv("REDIS_URL") or "redis://127.0.0.1:6379/0"
@@ -262,8 +284,9 @@ def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str,
             max_consecutive_empty=int(options.get("fill_max_consecutive_empty", 30)),
             total_timeout_seconds=float(options.get("total_timeout_seconds", 43200)),
             no_progress_timeout_seconds=no_progress,
+            needs_publish=lambda day: find_published_baostock_manifest(catalog, day, threshold) is None,
             on_complete=lambda done: done.__setitem__(
-                "partitions", publish_filled_days(base, store, done["work_days"], expected_symbols, threshold)))
+                "partitions", publish_filled_days(base, store, done["publish_days"], expected_symbols, threshold)))
         return result
     finally:
         if own_store:
