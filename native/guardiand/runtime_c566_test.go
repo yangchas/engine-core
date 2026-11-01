@@ -226,7 +226,7 @@ func TestC566Scenarios(t *testing.T) {
 		{"normal 15:05 wencai ok", "15:05:00", map[string]string{"wencai": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "wencai", "wencai", 0, false}},
 		{"late start 15:30 backfills", "15:30:00", map[string]string{"wencai": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "wencai", "wencai", 0, false}},
 		{"late start 16:50 backfills", "16:50:00", map[string]string{"wencai": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "wencai", "wencai", 0, false}},
-		{"late start 17:30:00 still backfills", "17:30:00", map[string]string{"wencai": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "wencai", "wencai", 0, false}},
+		{"late start 16:59:00 still backfills", "16:59:00", map[string]string{"wencai": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "wencai", "wencai", 0, false}},
 		{"wencai no data -> q2 silently", "15:05:00", map[string]string{"wencai": "nodata40", "q2_final": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "q2_final", "wencai,q2_final", 0, false}},
 		{"wencai date mismatch -> q2 silently", "15:05:00", map[string]string{"wencai": "mismatch40", "q2_final": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "q2_final", "wencai,q2_final", 0, false}},
 		{"wencai timeout -> q2 without same-tier retry", "15:05:00", map[string]string{"wencai": "hang", "q2_final": "ok10"}, nil, want{"SUCCEEDED_DEGRADED", "q2_final", "wencai,q2_final", 0, false}},
@@ -270,7 +270,7 @@ func TestC566Scenarios(t *testing.T) {
 }
 
 func TestC566StartAfterWindowIsMissedAndNeverFetches(t *testing.T) {
-	s := c566Setup(t, nil, map[string]string{"wencai": "ok10"}, "17:35:30")
+	s := c566Setup(t, nil, map[string]string{"wencai": "ok10"}, "17:00:30") // the window now ends at 17:00: only Baostock counts afterwards
 	defer s.closeFn()
 	s.r.schedule(s.fc.Now())
 	state := runtimeTestState(s.r, c566Date+"/"+s.event.ID)
