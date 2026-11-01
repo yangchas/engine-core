@@ -104,7 +104,11 @@ def test_partial_coverage_at_threshold_stops_early():
 def test_complete_data_means_no_fetch_login_or_marker_change():
     store = MemoryTdStore()
     fill(store, FixtureClient())
-    store.versions[TARGET] = [{"ts": 1, "version": "v1", "provider": "baostock"}]
+    fields = ("open", "high", "low", "close", "pre_close", "pct_chg", "amount_yuan", "volume")
+    for day in DAYS:
+        store.versions[day] = [{"ts": 1, "version": "v1", "provider": "baostock", "row_count": 3,
+                                "source_date_values": [day], "source_dates_consistent": True,
+                                "source_dates": {f: day for f in fields}}]
     client = FixtureClient()
     assert fill(store, client)["status"] == "NO_GAPS"
     assert client.queries == [] and not client.logged_in
@@ -249,3 +253,66 @@ def test_redis_failure_on_the_lease_is_retryable_not_final():
     with pytest.raises(RuntimeError, match=r"BAOSTOCK_GAP_UNRESOLVED:lease_unavailable"):
         fill(MemoryTdStore(), client, lease=Down(FakeRedis(), "core:lease:x"))
     assert client.queries == []
+
+
+def test_rerun_publishes_the_completion_marker_a_killed_run_never_wrote(tmp_path):
+    # Rows reached the threshold but the process died before the marker: the rerun used to say NO_GAPS forever,
+    # leaving postmarket waiting for a FORMAL Baostock partition that nothing would ever publish.
+    from engine_core.data_pipeline.daily_kline_fill import publish_filled_days
+    from tests.test_daily_kline_gapfill import _seed_real_symbol_universe
+
+    for day in DAYS:
+        _seed_real_symbol_universe(tmp_path, day, sorted(SYMBOLS))
+    store = MemoryTdStore()
+    fill(store, FixtureClient())  # no on_complete: the run "died" before publishing
+    assert not store.versions.get(TARGET)
+
+    published = {}
+    result = run_daily_kline_fill(
+        TARGET, store=store, client=FixtureClient(), trading_dates=DAYS, expected_symbols=lambda _d: set(SYMBOLS),
+        depth=5, coverage_threshold=0.995, on_complete=lambda r: published.update(
+            days=r["publish_days"], parts=publish_filled_days(tmp_path, store, r["publish_days"],
+                                                              lambda _d: set(SYMBOLS), 0.995)))
+    assert result["status"] == "COMPLETE" and result["written_symbols"] == 0
+    assert published["days"] == DAYS and {p["business_status"] for p in published["parts"]} == {"FORMAL"}
+    assert store.versions[TARGET][-1]["provider"] == "baostock"
+
+    again = run_daily_kline_fill(
+        TARGET, store=store, client=FixtureClient(), trading_dates=DAYS, expected_symbols=lambda _d: set(SYMBOLS),
+        depth=5, coverage_threshold=0.995, on_complete=lambda r: pytest.fail("a published day must not republish"))
+    assert again["status"] == "NO_GAPS"
+
+
+def test_a_missing_catalog_manifest_also_counts_as_unpublished():
+    store = MemoryTdStore()
+    fill(store, FixtureClient())
+    fields = ("open", "high", "low", "close", "pre_close", "pct_chg", "amount_yuan", "volume")
+    for day in DAYS:  # every day carries a consistent TD marker
+        store.versions[day] = [{"ts": 1, "version": "v", "provider": "baostock", "row_count": 3,
+                                "source_date_values": [day], "source_dates_consistent": True,
+                                "source_dates": {f: day for f in fields}}]
+    quiet = run_daily_kline_fill(
+        TARGET, store=store, client=FixtureClient(), trading_dates=DAYS, expected_symbols=lambda _d: set(SYMBOLS),
+        depth=5, coverage_threshold=0.995, needs_publish=lambda day: False)
+    assert quiet["status"] == "NO_GAPS"
+    seen = []
+    result = run_daily_kline_fill(
+        TARGET, store=store, client=FixtureClient(), trading_dates=DAYS, expected_symbols=lambda _d: set(SYMBOLS),
+        depth=5, coverage_threshold=0.995, needs_publish=lambda day: day == TARGET,
+        on_complete=lambda r: seen.append(r["publish_days"]))
+    assert result["status"] == "COMPLETE" and seen == [[TARGET]]
+
+
+def test_a_stale_marker_row_count_is_republished():
+    store = MemoryTdStore()
+    fill(store, FixtureClient())
+    fields = ("open", "high", "low", "close", "pre_close", "pct_chg", "amount_yuan", "volume")
+    for day in DAYS:
+        store.versions[day] = [{"ts": 1, "version": "v", "provider": "baostock", "row_count": 2,
+                                "source_date_values": [day], "source_dates_consistent": True,
+                                "source_dates": {f: day for f in fields}}]
+    seen = []
+    run_daily_kline_fill(
+        TARGET, store=store, client=FixtureClient(), trading_dates=DAYS, expected_symbols=lambda _d: set(SYMBOLS),
+        depth=5, coverage_threshold=0.995, on_complete=lambda r: seen.append(r["publish_days"]))
+    assert seen == [DAYS]
