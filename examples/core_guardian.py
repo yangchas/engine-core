@@ -102,7 +102,10 @@ def _module_callable(spec: str):
 
 
 def _command_failure(result: subprocess.CompletedProcess) -> RuntimeError:
-    parts = [f"command_exit={result.returncode}"]
+    # The ledger keeps only the head of this text; the exception is the LAST stderr line, so it goes first
+    # (close_recap failed for three evenings with only the start of its traceback visible).
+    lines = [line.strip() for line in str(result.stderr or "").splitlines() if line.strip()]
+    parts = [f"command_exit={result.returncode}" + (f" last_stderr_line={lines[-1][:200]}" if lines else "")]
     for label, output in (("stdout", result.stdout), ("stderr", result.stderr)):
         if output:
             parts.extend((f"{label}_tail:", str(output)[-500:].rstrip()))
