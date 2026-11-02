@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from . import live_pages
@@ -239,6 +239,27 @@ def _connect_td() -> tuple[Any, str | None]:
         return client, None
     except Exception as exc:  # degrade when TD driver/service is absent
         return _MissingTD(), f"TD_READ_UNAVAILABLE:{type(exc).__name__}"
+
+
+def _publish_report(src: "DailySources", stage: str, trade_date: str, report_text: str,
+                    connect: Callable[[], Any] | None = None) -> str:
+    """Write the report to the Redis cache and return the key.
+
+    The close report reads nothing from Redis, so ``src.redis`` stays unset for it; publishing still needs a writer.
+    Before this, ``--publish`` on the close stage always raised "requires an isolated Redis client" after the report
+    had been built, and close_recap failed every evening (2026-10-30, 11-02).
+    """
+    writer = src.redis
+    if writer is None and stage == "close":
+        try:
+            writer = (connect or _connect_redis)()
+        except Exception as exc:
+            raise RuntimeError("report_publish_redis_unavailable:" + type(exc).__name__) from exc
+    if writer is None:
+        raise RuntimeError("--publish requires an isolated Redis client")
+    key = f"core:cache:report:{trade_date}:{stage}"
+    CoreCacheWriter(writer, now_ms=int(time.time() * 1000)).client.set(key, report_text, ex=172800)
+    return key
 
 
 def _connect_redis() -> Any:
@@ -2648,11 +2669,7 @@ def run_daily_pipeline(*, stage: str, trade_date: str, asof: str | None = None,
     if degraded_q2 and stage != "close":
         manifest["degraded"].append("Q2_REDIS_UNAVAILABLE_OR_READ_FAILED")
     if publish:
-        if src.redis is None:
-            raise RuntimeError("--publish requires an isolated Redis client")
-        key = f"core:cache:report:{trade_date}:{stage}"
-        CoreCacheWriter(src.redis, now_ms=int(time.time() * 1000)).client.set(key, report_text, ex=172800)
-        manifest["published_key"] = key
+        manifest["published_key"] = _publish_report(src, stage, trade_date, report_text)
     manifest["email"] = {"status": "not_requested"}
     if email_to:
         try:
