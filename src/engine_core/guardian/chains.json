@@ -4,7 +4,7 @@
     "daily_kline": {
       "base": "daily_kline",
       "window_days": 10,
-      "max_builds_per_run": 12,
+      "max_builds_per_run": 40,
       "external": [
         "daily_kline",
         "limit_up_pool"
