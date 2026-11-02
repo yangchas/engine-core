@@ -41,6 +41,21 @@ def _premarket_owner_is_open(request):
                for owner in ("startup_0830", "premarket_slice_0850"))
 
 
+# Scheduled jobs that borrow the boot_data_health handler name (so the Go binary's handler list need not change) are
+# told apart by ONE args field. Interim (design 25 P4 removes the borrowing); tests tie every route to a scheduled event.
+BORROWED_JOBS = (("checks", "engine_core.guardian.preopen_check", "run"),
+                 ("chain", "engine_core.guardian.chain_sweep", "run"))
+
+
+def _borrowed_job(handler, args):
+    if handler != "boot_data_health":
+        return None
+    for field, module_name, function in BORROWED_JOBS:
+        if args.get(field):
+            return module_name, function
+    return None
+
+
 def _send_load_defer_alert(request, result, dry_run):
     detail = result.get("detail") if isinstance(result, dict) else None
     pending = detail.get("load_defer_alert") if isinstance(detail, dict) else None
@@ -305,10 +320,11 @@ def _run(request):
         }
         if configured_handler == "boot_trade_day":
             result = boot_trade_day(str(trade_date), root)
-        elif configured_handler == "boot_data_health" and args.get("checks"):
-            # C635: the scheduled pre-open self-check reuses this handler (no new handler name for the Go binary)
-            from engine_core.guardian.preopen_check import run as run_preopen_check
-            return run_preopen_check({**request, "args": args, "trade_date": str(trade_date)}, root, dry_run=dry)
+        elif _borrowed_job(configured_handler, args):
+            import importlib
+            module_name, function = _borrowed_job(configured_handler, args)
+            job = getattr(importlib.import_module(module_name), function)
+            return job({**request, "args": args, "trade_date": str(trade_date)}, root, dry_run=dry)
         elif configured_handler == "boot_data_health":
             result = boot_data_health(str(trade_date), request.get("prev_trade_date"), root,
                                       now=now, dry_run=dry)

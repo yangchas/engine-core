@@ -169,7 +169,7 @@ def plan(snapshot: Snapshot, config: ChainConfig, days: Sequence[str], status_fn
 
 
 def sweep(snapshot_fn: Callable[[], Snapshot], config: ChainConfig, *, today: str, runner: Runner,
-          status_fn: StatusFn, lease: Any = None, dry_run: bool = False,
+          status_fn: StatusFn, lease: Any = None, dry_run: bool = False, budget_seconds: float | None = None,
           clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
     """Build what is missing or stale, one node at a time, re-reading the catalog after every build."""
     started = clock()
@@ -189,14 +189,18 @@ def sweep(snapshot_fn: Callable[[], Snapshot], config: ChainConfig, *, today: st
         failed: list[dict[str, Any]] = []
         retry: list[dict[str, Any]] = []
         done: set = set()
+        not_built: set[tuple[str, str]] = set()      # (dataset, day) whose build returned non-zero this run
         capped = False
         while True:
             items, blocked = plan(snapshot_fn(), config, days, status_fn)
-            todo = [item for item in items if item.key not in done]
+            # a dependent is not built on top of an upstream that just failed: it would be stale again at once
+            todo = [item for item in items if item.key not in done
+                    and not any((need, item.day) in not_built for need in config.nodes[item.dataset])]
             if not todo:
                 break
-            if len(done) >= config.max_builds_per_run:
-                capped = True
+            if len(done) >= config.max_builds_per_run or (
+                    budget_seconds is not None and clock() - started >= budget_seconds):
+                capped = True              # the next sweep continues; the event is never killed mid-build by its timeout
                 break
             item = todo[0]
             done.add(item.key)
@@ -209,15 +213,20 @@ def sweep(snapshot_fn: Callable[[], Snapshot], config: ChainConfig, *, today: st
                 built.append(record)
             elif code in (20, 30):
                 retry.append(record)           # upstream not ready / transient: a later sweep tries again
+                not_built.add((item.dataset, item.day))
             else:
                 failed.append(record)
+                not_built.add((item.dataset, item.day))
         items, blocked = plan(snapshot_fn(), config, days, status_fn)
         not_converged = [item.as_dict() for item in items
                          if item.key in done and any(b["dataset"] == item.dataset and b["day"] == item.day
                                                      for b in built)]
         remaining = [item.as_dict() for item in items]
+        waiting = [item.as_dict() for item in items if item.key not in done
+                   and any((need, item.day) in not_built for need in config.nodes[item.dataset])]
         return {"status": "DONE", "days": days, "built": built, "retry": retry, "failed": failed,
-                "not_converged": not_converged, "remaining": remaining, "blocked": blocked, "capped": capped,
+                "not_converged": not_converged, "remaining": remaining, "waiting_on_failed_upstream": waiting,
+                "blocked": blocked, "capped": capped,
                 "elapsed_seconds": round(clock() - started, 3)}
     finally:
         if lease is not None:
