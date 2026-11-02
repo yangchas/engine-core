@@ -265,6 +265,7 @@ def checkpoint_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
 
 
 FORMAL_SOURCE_FROM = "17:00"
+GATE_COVERAGE_THRESHOLD = 0.95
 
 
 def daily_kline_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
@@ -287,6 +288,20 @@ def daily_kline_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
         except (OSError, ValueError, TypeError):
             return GateResult(status="not_ready", reason="DAILY_KLINE_MANIFEST_INVALID",
                               trade_date=day, elapsed_ms=round((time.monotonic() - started) * 1000))
+        if now.strftime("%H:%M") >= FORMAL_SOURCE_FROM and str(manifest.get("provider") or "").lower() != "baostock":
+            # locate() answers one "best" version; a wencai recap with coverage 1.0 outranks a published Baostock
+            # PROVISIONAL with coverage 0.995 (2026-11-02), so the version list is searched instead.
+            from engine_core.data_pipeline.published_daily_kline import find_published_baostock_manifest
+            published = find_published_baostock_manifest(catalog, day, GATE_COVERAGE_THRESHOLD)
+            if published is not None:
+                try:
+                    manifest = published
+                    row_count = int(manifest.get("row_count", 0))
+                    available_at = manifest.get("available_at")
+                    available_dt = datetime.fromisoformat(str(available_at).replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    return GateResult(status="not_ready", reason="DAILY_KLINE_MANIFEST_INVALID",
+                                      trade_date=day, elapsed_ms=round((time.monotonic() - started) * 1000))
         if manifest.get("trade_date") != day:
             reason = "DAILY_KLINE_DATE_MISMATCH"
             universe_count = None
@@ -311,7 +326,7 @@ def daily_kline_ready(event: Any, now: datetime, ctx: Any) -> GateResult:
                               elapsed_ms=round((time.monotonic() - started) * 1000))
         fallback = universe_count is None or universe_count <= 0
         denominator = 4000 if fallback else universe_count
-        threshold = 0.95
+        threshold = GATE_COVERAGE_THRESHOLD
         coverage = row_count / denominator if denominator else 0.0
         ready = (not reason and available_dt.tzinfo is not None and
                  available_dt <= (now if now.tzinfo else now.replace(tzinfo=available_dt.tzinfo)) and

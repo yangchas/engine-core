@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from pathlib import Path
 
 import pytest
 
@@ -208,3 +209,49 @@ def test_handler_gate_emits_diagnostic_reason_json(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert code == 75 and payload["reason"] == "TD_QUERY_TIMEOUT"
     assert payload["query_window"] == ["09:33:00", "09:33:03"]
+
+
+class _RealOutcomeCatalog:
+    """The 2026-11-02 18:42 state, from the copied production files: locate() answers the wencai recap (it outranks the
+    Baostock PROVISIONAL by coverage 1.0 vs 0.995) while a Baostock version exists in the version list."""
+
+    def __init__(self, root, baostock=True):
+        import json
+        self.root = root
+        fixture = Path(__file__).parent / "fixtures" / "real" / "core_artifacts" / "c641"
+        self.wencai = next((fixture / "daily_kline").glob("trade_date=2026-11-02/source=wencai/*/manifest.json"))
+        self.baostock = next((fixture / "daily_kline").glob("trade_date=2026-11-02/source=baostock/*/manifest.json"))
+        universe = next((fixture / "symbol_universe").glob("trade_date=2026-11-02/*/*/manifest.json"))
+        versions = [{"manifest": str(self.wencai)}] + ([{"manifest": str(self.baostock)}] if baostock else [])
+        self._data = {"datasets": {"daily_kline": {"dates": {"2026-11-02": versions}},
+                                   "symbol_universe": {"dates": {"2026-11-02": [{"manifest": str(universe)}]}}}}
+
+    def locate(self, dataset, day):
+        return self.wencai if dataset == "daily_kline" else None
+
+    def read(self):
+        return self._data
+
+
+def _gate_with(monkeypatch, tmp_path, now, **kwargs):
+    import engine_core.data_pipeline.storage as storage
+    monkeypatch.setattr(storage, "ArtifactCatalog", lambda root: _RealOutcomeCatalog(root, **kwargs))
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    event = type("Event", (), {"gate": "daily_kline_ready"})()
+    return daily_kline_ready(event, datetime.fromisoformat(now), {})
+
+
+def test_after_17_a_published_baostock_version_opens_the_gate_even_when_locate_answers_wencai(monkeypatch, tmp_path):
+    result = _gate_with(monkeypatch, tmp_path, "2026-11-02T18:45:11+08:00")     # distinct second: the gate caches per instant
+    assert result["status"] == "ready" and result["reason"] == "DAILY_KLINE_READY"
+    assert result["row_count"] == 5191 and result["version"] == "sha256-0842910cd5bcf104"     # the Baostock partition
+
+
+def test_after_17_without_a_baostock_version_the_wencai_recap_still_does_not_count(monkeypatch, tmp_path):
+    result = _gate_with(monkeypatch, tmp_path, "2026-11-02T18:45:22+08:00", baostock=False)
+    assert result["status"] == "not_ready" and result["reason"] == "DAILY_KLINE_REQUIRES_BAOSTOCK_AFTER_1700"
+
+
+def test_before_17_the_quick_recap_is_still_enough(monkeypatch, tmp_path):
+    result = _gate_with(monkeypatch, tmp_path, "2026-11-02T16:30:33+08:00", baostock=False)
+    assert result["status"] == "ready" and result["version"] == "sha256-5a4b196545b5c719"
