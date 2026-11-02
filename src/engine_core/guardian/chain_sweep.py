@@ -65,7 +65,7 @@ def run(request: Mapping[str, Any], root: str | Path, *, dry_run: bool = False,
     if code == 0:
         return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False, "artifacts": [], "detail": result}
     if code == 20:
-        return 20, {"contract": 1, "status": "not_applicable", "error_code": "", "retryable": False,
+        return 20, {"contract": 1, "status": "not_applicable", "error_code": "ALREADY_SATISFIED", "retryable": False,
                     "artifacts": [], "detail": result}
     if code == 30:
         return 75, {"contract": 1, "status": "failed", "error_code": "CHAIN_RETRY", "retryable": True,

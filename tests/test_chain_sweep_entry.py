@@ -48,6 +48,8 @@ def test_a_busy_lease_is_not_applicable_and_runs_nothing(monkeypatch):
 
     code, payload = run(runner=lambda *_a: pytest.fail("no builds"), lease=Busy())
     assert (code, payload["status"]) == (20, "not_applicable")
+    # guardiand treats exit 20 as done only when the reply says ALREADY_SATISFIED; anything else is a retryable failure
+    assert payload["error_code"] == "ALREADY_SATISFIED"
 
 
 def test_unknown_chain_or_missing_name_is_a_config_error_not_a_crash():
