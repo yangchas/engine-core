@@ -14,6 +14,7 @@ from .data_pipeline.storage import ArtifactCatalog, canonical_json
 DATASET = "plate_amount_baseline"
 SCHEMA = "plate_amount_baseline_v1"
 WINDOW_DAYS = 64
+SLOT_0945_WINDOW_START = "09:30:01"
 SLOTS = ("0925", "0945")
 
 
@@ -129,19 +130,22 @@ def _read_td(target_date: str, dates: Sequence[str]) -> list[dict[str, Any]]:
                 latest[key] = (stamp, amount)
         result.extend({"trade_date": day, "slot": "0925", "symbol": symbol, "amount_yuan": amount}
                       for (day, symbol), (_stamp, amount) in latest.items() if amount is not None)
-        for day in dates:
-            cutoff = day
-            cursor.execute("SELECT LAST(ts), symbol, LAST(amt_yuan) FROM market_data1.stock_tick_v2 "
-                           f'WHERE ts >= "{cutoff} 09:30:00" AND ts <= "{cutoff} 09:45:00" '
-                           "PARTITION BY symbol")
-            latest_tick: dict[str, tuple[str, Any]] = {}
-            for ts, symbol, amount in cursor.fetchall():
-                stamp = str(ts)
-                symbol = _symbol(symbol)
-                if symbol not in latest_tick or stamp >= latest_tick[symbol][0]:
-                    latest_tick[symbol] = (stamp, amount)
-            result.extend({"trade_date": day, "slot": "0945", "symbol": symbol, "amount_yuan": amount}
-                          for symbol, (_stamp, amount) in latest_tick.items() if amount is not None)
+        # One sliced query for the whole window instead of one scan per trading day. amt_yuan is the day's cumulative
+        # amount, so the last tick of each 15-minute slice is the cumulative value at the slice end. Slices are shifted
+        # by 1 s ([09:30:01, 09:45:01)), which makes the 09:30:01 slice end exactly at the 09:45:00 tick: the same
+        # value the old "ts <= 09:45:00" query returned (identical for every symbol on all 24 days checked 2026-11-02).
+        # For an interval amount, subtract the cumulative value of the earlier slice end.
+        first, last = min(dates), max(dates)
+        cursor.execute("SELECT _wstart, symbol, LAST(amt_yuan) FROM market_data1.stock_tick_v2 "
+                       f'WHERE ts >= "{first} 09:30:00" AND ts <= "{last} 09:45:00" '
+                       "PARTITION BY symbol INTERVAL(15m, 1s)")
+        wanted = set(dates)
+        for window_start, symbol, amount in cursor.fetchall():
+            stamp = str(window_start)
+            if stamp[11:19] != SLOT_0945_WINDOW_START or stamp[:10] not in wanted or amount is None:
+                continue
+            result.append({"trade_date": stamp[:10], "slot": "0945", "symbol": _symbol(symbol),
+                           "amount_yuan": amount})
     finally:
         connection.close()
     return result
