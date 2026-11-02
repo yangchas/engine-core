@@ -358,6 +358,9 @@ def boot_trade_day(trade_date: str, root: str | Path, *, probes: bool = True) ->
     return _result("ok", detail)
 
 
+TD_PROBE_TIMEOUT_SECONDS = 20.0
+
+
 def _timed_probe(fn, timeout: float = 5.0):
     pool = ThreadPoolExecutor(max_workers=1)
     try:
@@ -406,7 +409,9 @@ def _td_count(day: str, root: Path) -> Any:
 def _health_probes(root: Path) -> dict[str, Any]:
     probes: dict[str, Any] = {}
     try:
-        probes["td"] = _timed_probe(_td_probes)
+        # connect + LAST(ts) on stock_tick_v2 and auction_snapshot_v2 takes about 3-6 s on the shared TD; the 5 s default
+        # made every start report "td failed" and the whole health "degraded" (observed 2026-11-02).
+        probes["td"] = _timed_probe(_td_probes, timeout=TD_PROBE_TIMEOUT_SECONDS)
         probes["td"]["status"] = "ok"
     except Exception as exc:
         probes["td"] = {"status": "failed", "reason": type(exc).__name__}
