@@ -15,6 +15,7 @@ DATASET = "plate_amount_baseline"
 SCHEMA = "plate_amount_baseline_v1"
 WINDOW_DAYS = 64
 SLOT_0945_WINDOW_START = "09:30:01"
+SLICE_DAYS = 5
 SLOTS = ("0925", "0945")
 
 
@@ -111,6 +112,27 @@ def _td_connect():
     return taos.connect(**options)
 
 
+def _read_0945_slice(cursor: Any, days: Sequence[str], wanted: set[str]) -> list[dict[str, Any]]:
+    first, last = min(days), max(days)
+    try:
+        cursor.execute("SELECT _wstart, symbol, LAST(amt_yuan) FROM market_data1.stock_tick_v2 "
+                       f'WHERE ts >= "{first} 09:30:00" AND ts <= "{last} 09:45:00" '
+                       "PARTITION BY symbol INTERVAL(15m, 1s)")
+        fetched = cursor.fetchall()
+    except Exception as exc:
+        if "memory" in str(exc).lower() and len(days) > 1:
+            middle = len(days) // 2
+            return (_read_0945_slice(cursor, days[:middle], wanted) + _read_0945_slice(cursor, days[middle:], wanted))
+        raise
+    out = []
+    for window_start, symbol, amount in fetched:
+        stamp = str(window_start)
+        if stamp[11:19] != SLOT_0945_WINDOW_START or stamp[:10] not in wanted or amount is None:
+            continue
+        out.append({"trade_date": stamp[:10], "slot": "0945", "symbol": _symbol(symbol), "amount_yuan": amount})
+    return out
+
+
 def _read_td(target_date: str, dates: Sequence[str]) -> list[dict[str, Any]]:
     if not dates:
         return []
@@ -130,22 +152,17 @@ def _read_td(target_date: str, dates: Sequence[str]) -> list[dict[str, Any]]:
                 latest[key] = (stamp, amount)
         result.extend({"trade_date": day, "slot": "0925", "symbol": symbol, "amount_yuan": amount}
                       for (day, symbol), (_stamp, amount) in latest.items() if amount is not None)
-        # One sliced query for the whole window instead of one scan per trading day. amt_yuan is the day's cumulative
-        # amount, so the last tick of each 15-minute slice is the cumulative value at the slice end. Slices are shifted
-        # by 1 s ([09:30:01, 09:45:01)), which makes the 09:30:01 slice end exactly at the 09:45:00 tick: the same
-        # value the old "ts <= 09:45:00" query returned (identical for every symbol on all 24 days checked 2026-11-02).
+        # Sliced queries, not one scan per trading day and not one query for the whole window. amt_yuan is the day's
+        # cumulative amount, so the last tick of each 15-minute slice is the cumulative value at the slice end. Slices
+        # are shifted by 1 s ([09:30:01, 09:45:01)), which makes the 09:30:01 slice end exactly at the 09:45:00 tick:
+        # the value the old "ts <= 09:45:00" query returned (identical for every symbol on all 24 days checked
+        # 2026-11-02). Memory grows with symbols x windows, so a slice covers SLICE_DAYS trading days (about 5 s for
+        # 5 days on 2026-11-02 15:29); the whole 25-day window in one query ran out of query memory on the shared
+        # TDengine (0x073a) and took over 160 s. A slice that still runs out of memory is split in half and retried.
         # For an interval amount, subtract the cumulative value of the earlier slice end.
-        first, last = min(dates), max(dates)
-        cursor.execute("SELECT _wstart, symbol, LAST(amt_yuan) FROM market_data1.stock_tick_v2 "
-                       f'WHERE ts >= "{first} 09:30:00" AND ts <= "{last} 09:45:00" '
-                       "PARTITION BY symbol INTERVAL(15m, 1s)")
         wanted = set(dates)
-        for window_start, symbol, amount in cursor.fetchall():
-            stamp = str(window_start)
-            if stamp[11:19] != SLOT_0945_WINDOW_START or stamp[:10] not in wanted or amount is None:
-                continue
-            result.append({"trade_date": stamp[:10], "slot": "0945", "symbol": _symbol(symbol),
-                           "amount_yuan": amount})
+        for index in range(0, len(dates), SLICE_DAYS):
+            result.extend(_read_0945_slice(cursor, list(dates[index:index + SLICE_DAYS]), wanted))
     finally:
         connection.close()
     return result
