@@ -62,7 +62,7 @@ class _FakeConnection:
         pass
 
 
-def test_tick_amounts_for_the_whole_window_come_from_one_sliced_query(monkeypatch):
+def test_tick_amounts_come_from_a_few_sliced_queries_not_one_per_day_and_not_one_for_everything(monkeypatch):
     from engine_core import plate_amount_baseline as module
 
     dates = [f"2026-10-{day:02d}" for day in range(1, 25)]            # 24 trading days
@@ -75,14 +75,69 @@ def test_tick_amounts_for_the_whole_window_come_from_one_sliced_query(monkeypatc
     monkeypatch.setattr(module, "_td_connect", lambda: _FakeConnection(log, ticks))
     rows = module._read_td("2026-11-02", dates + ["2026-10-29", "2026-10-30"])
     tick_queries = [sql for sql in log if "stock_tick_v2" in sql]
-    assert len(tick_queries) == 1 and len(log) == 2                   # one auction query + one tick query, not 1 + 26
-    sql = tick_queries[0]
-    assert "INTERVAL(15m, 1s)" in sql and "PARTITION BY symbol" in sql and "LAST(amt_yuan)" in sql
-    assert '"2026-10-01 09:30:00"' in sql and '"2026-10-30 09:45:00"' in sql
+    assert len(tick_queries) == 6 and len(log) == 7                   # 26 days / 5 per slice = 6, plus the auction query
+    assert all("INTERVAL(15m, 1s)" in sql and "PARTITION BY symbol" in sql and "LAST(amt_yuan)" in sql
+               for sql in tick_queries)
+    assert '"2026-10-01 09:30:00"' in tick_queries[0] and '"2026-10-30 09:45:00"' in tick_queries[-1]
     slot = sorted((r["trade_date"], r["symbol"], r["amount_yuan"]) for r in rows if r["slot"] == "0945")
-    assert slot == [("2026-10-29", "000001", 400), ("2026-10-29", "600519", 900), ("2026-10-30", "000001", 410)]
+    # the fake answers every slice with the same ticks, so each requested day inside it is reported once per slice
+    assert {item for item in slot} == {("2026-10-29", "000001", 400), ("2026-10-29", "600519", 900),
+                                       ("2026-10-30", "000001", 410)}
     assert sorted((r["trade_date"], r["amount_yuan"]) for r in rows if r["slot"] == "0925") == [
         ("2026-10-29", 111), ("2026-10-30", 222)]
+
+
+class _MemoryExhaustedAbove:
+    """Cursor whose tick query fails with TDengine's 'Query memory exhausted' when a slice spans too many days."""
+
+    def __init__(self, limit_days, log):
+        self.limit_days, self.log, self.sql = limit_days, log, ""
+
+    def execute(self, sql):
+        self.sql = sql
+        if "stock_tick_v2" in sql:
+            first, last = sql.split('ts >= "')[1][:10], sql.split('ts <= "')[1][:10]
+            self.log.append((first, last))
+            span = int(last[8:]) - int(first[8:]) + 1
+            if span > self.limit_days:
+                raise RuntimeError("[0x073a]: Query memory exhausted")
+
+    def fetchall(self):
+        if "auction_snapshot_v2" in self.sql:
+            return []
+        first, last = self.log[-1]
+        return [(f"{first[:8]}{day:02d} 09:30:01", "000001", day)
+                for day in range(int(first[8:]), int(last[8:]) + 1)]
+
+
+def test_a_slice_that_runs_out_of_query_memory_is_split_and_retried(monkeypatch):
+    from engine_core import plate_amount_baseline as module
+
+    log: list = []
+    connection = type("C", (), {"cursor": lambda self: _MemoryExhaustedAbove(2, log), "close": lambda self: None})()
+    monkeypatch.setattr(module, "_td_connect", lambda: connection)
+    dates = [f"2026-10-{day:02d}" for day in range(1, 6)]            # one slice of 5 days, limit 2 days per query
+    rows = module._read_td("2026-11-02", dates)
+    assert sorted(r["trade_date"] for r in rows) == dates            # nothing lost by splitting
+    spans = [int(last[8:]) - int(first[8:]) + 1 for first, last in log]
+    assert spans[0] == 5                                              # the whole slice was tried first
+    assert sum(span for span in spans if span <= 2) == 5              # the queries that fit cover each day exactly once
+
+
+def test_other_tick_query_errors_are_not_swallowed(monkeypatch):
+    from engine_core import plate_amount_baseline as module
+
+    class Broken(_MemoryExhaustedAbove):
+        def execute(self, sql):
+            if "stock_tick_v2" in sql:
+                raise RuntimeError("[0x2603]: Table does not exist")
+            super().execute(sql)
+
+    connection = type("C", (), {"cursor": lambda self: Broken(99, []), "close": lambda self: None})()
+    monkeypatch.setattr(module, "_td_connect", lambda: connection)
+    import pytest
+    with pytest.raises(RuntimeError, match="Table does not exist"):
+        module._read_td("2026-11-02", ["2026-10-01", "2026-10-02"])
 
 
 def test_no_dates_means_no_td_connection(monkeypatch):
