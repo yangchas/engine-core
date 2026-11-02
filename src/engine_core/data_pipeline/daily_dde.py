@@ -226,6 +226,18 @@ class TaosDdeStore:
                     found[code] = {"symbol": code, "date": day, "ddje": _number(ddje)}
         return found
 
+    def read_suspended(self, symbols: Sequence[str], target_date: str) -> set[str]:
+        """Symbols whose daily_kline row of ``target_date`` says suspended: Kaipan has no same-day DDE for them."""
+        stamp = _ts_us(target_date)
+        unique = sorted(set(str(symbol) for symbol in symbols if _SYMBOL_RE.fullmatch(str(symbol))))
+        found: set[str] = set()
+        for offset in range(0, len(unique), 500):
+            quoted = ",".join("'" + symbol + "'" for symbol in unique[offset:offset + 500])
+            rows = self._run(f"SELECT symbol FROM {self.database}.daily_kline_v1 "
+                             f"WHERE ts={stamp} AND suspended=true AND symbol IN ({quoted})")
+            found.update(str(row[0]) for row in rows)
+        return found
+
     def legacy_latest_date(self) -> str | None:
         rows = self._run("SELECT LAST(ts) FROM market_data1.daily_dde")
         return _date_text(rows[0][0]) if rows else None
@@ -540,6 +552,13 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                                             int(history_trading_days), int(attempts), sleep,
                                             known_symbols)] = next_symbol
         flush_comparison()
+
+        stale = [symbol for symbol, reason in failed.items() if reason.startswith("DdeStaleResponse:")]
+        if stale:
+            # Kaipan publishes no same-day DDE for a suspended stock: that is the source's answer, not a fault.
+            for symbol in sorted(store.read_suspended(stale, target)):
+                known_missing[symbol] = "suspended_no_same_day_dde"
+                del failed[symbol]
 
         # The run persists each verified symbol immediately. Any remaining source or
         # TD error is retryable; Guardian can resume from the single aggregate watermark query.

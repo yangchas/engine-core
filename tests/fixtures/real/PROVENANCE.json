@@ -1623,5 +1623,21 @@
   },
   "request_count": 1,
   "source_date_echo": "Date"
+ },
+ "kaipan_stock_dde_2026-11-02_000831_0731.json": {
+  "source": "kaipan_stock_dde",
+  "trade_date": "2026-11-02",
+  "fetched_at": "2026-11-03T07:31:28+08:00",
+  "bytes": 54139,
+  "sha256": "c808465e4734e03c9bf29a75034616f8b471095daf803157418649e149a23963",
+  "kind": "raw_upstream_response",
+  "command": "examples/capture_real_fixture.py kaipan_stock_dde --symbol 000831 --date 2026-11-02",
+  "call": "getHisStockDDE",
+  "params": {
+   "code": "000831",
+   "date": "2026-11-02"
+  },
+  "request_count": 1,
+  "source_date_echo": "Date"
  }
 }
