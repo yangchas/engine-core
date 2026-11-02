@@ -33,6 +33,8 @@ def main(argv=None) -> int:
     parser.add_argument("--from", dest="start", required=True)
     parser.add_argument("--to", dest="end", required=True)
     parser.add_argument("--datasets", nargs="+", required=True)
+    parser.add_argument("--all-versions", action="store_true",
+                        help="copy every version's manifest of each dataset/day, not only the select_best one")
     args = parser.parse_args(argv)
     core = Path(args.core_root)
     provenance_path = REAL / "PROVENANCE.json"
@@ -46,13 +48,15 @@ def main(argv=None) -> int:
         for day, entries in sorted(catalog["datasets"].get(dataset, {}).get("dates", {}).items()):
             if not args.start <= day <= args.end:
                 continue
-            best = select_best([e for e in entries if isinstance(e, dict)])
-            if not best or not best.get("manifest"):
-                continue
-            source = Path(best["manifest"])
-            relative = source.relative_to(core)
-            copies.append((source, f"core_artifacts/{args.card}/{relative.as_posix()}", "core_artifact_manifest",
-                           dataset, day, best.get("version")))
+            chosen = [e for e in entries if isinstance(e, dict)] if args.all_versions else [
+                select_best([e for e in entries if isinstance(e, dict)])]
+            for best in chosen:
+                if not best or not best.get("manifest"):
+                    continue
+                source = Path(best["manifest"])
+                relative = source.relative_to(core)
+                copies.append((source, f"core_artifacts/{args.card}/{relative.as_posix()}", "core_artifact_manifest",
+                               dataset, day, best.get("version")))
     for source, name, kind, dataset, day, version in copies:
         target = REAL / name
         target.parent.mkdir(parents=True, exist_ok=True)
