@@ -74,8 +74,8 @@ def test_c526_real_excerpts_have_matching_provenance():
             assert not any(word in json.dumps(rows[0]).lower() for word in CREDENTIAL_WORDS), name
         else:
             assert meta["command"].startswith("cp ")
-            assert meta["kind"] in {"core_artifact_manifest", "core_artifact_rows"}
-        if meta["kind"] == "core_artifact_manifest":
+            assert meta["kind"] in {"core_artifact_manifest", "core_artifact_rows", "core_catalog_snapshot"}
+        if meta["kind"] in {"core_artifact_manifest", "core_catalog_snapshot"}:
             assert not any(word in body.decode("utf-8").lower() for word in CREDENTIAL_WORDS), name
 
 

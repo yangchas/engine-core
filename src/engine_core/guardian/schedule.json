@@ -528,6 +528,23 @@
           "until": "late_until"
         }
       ]
+    },
+    "chain_sweep": {
+      "catchup": "run_in_window",
+      "retry_backoff": "10m",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 3,
+          "backoff": "10m*1",
+          "backoff_cap": "10m",
+          "timeout": "25m",
+          "budget_enabled": false,
+          "until": "late_until"
+        }
+      ]
     }
   },
   "events": [
@@ -1084,6 +1101,142 @@
         "fill_max_consecutive_empty": 30,
         "lease_ttl_seconds": 300,
         "baostock_no_progress_seconds": 120
+      }
+    },
+    {
+      "available_after": "18:30:00",
+      "data_date_offset": 0,
+      "deadline": "18:39:59",
+      "depends_on": [],
+      "gate": "calendar_ready",
+      "handler": "boot_data_health",
+      "trigger_type": "window",
+      "order": null,
+      "after": [],
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "on_deadline": "missed",
+      "catchup_mode": "run_in_window",
+      "late_until": "19:20:00",
+      "cost": "medium",
+      "phases": [
+        "POST_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "on_start": null,
+      "enabled": true,
+      "calendar": "trading_day",
+      "event_id": "chain_sweep_1830",
+      "at": "18:30:00",
+      "profile": "chain_sweep",
+      "args": {
+        "chain": {
+          "name": "daily_kline",
+          "budget_seconds": 1200,
+          "lease_ttl_seconds": 300
+        }
+      }
+    },
+    {
+      "available_after": "20:30:00",
+      "data_date_offset": 0,
+      "deadline": "20:39:59",
+      "depends_on": [],
+      "gate": "calendar_ready",
+      "handler": "boot_data_health",
+      "trigger_type": "window",
+      "order": null,
+      "after": [],
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "on_deadline": "missed",
+      "catchup_mode": "run_in_window",
+      "late_until": "21:00:00",
+      "cost": "medium",
+      "phases": [
+        "POST_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "on_start": null,
+      "enabled": true,
+      "calendar": "trading_day",
+      "event_id": "chain_sweep_2030",
+      "at": "20:30:00",
+      "profile": "chain_sweep",
+      "args": {
+        "chain": {
+          "name": "daily_kline",
+          "budget_seconds": 1200,
+          "lease_ttl_seconds": 300
+        }
+      }
+    },
+    {
+      "available_after": "01:30:00",
+      "data_date_offset": 0,
+      "deadline": "01:39:59",
+      "depends_on": [],
+      "gate": "calendar_ready",
+      "handler": "boot_data_health",
+      "trigger_type": "window",
+      "order": null,
+      "after": [],
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "on_deadline": "missed",
+      "catchup_mode": "run_in_window",
+      "late_until": "02:30:00",
+      "cost": "medium",
+      "phases": [
+        "NIGHT"
+      ],
+      "on_phase_mismatch": "defer",
+      "on_start": null,
+      "enabled": true,
+      "calendar": "every_day",
+      "event_id": "chain_sweep_0130",
+      "at": "01:30:00",
+      "profile": "chain_sweep",
+      "args": {
+        "chain": {
+          "name": "daily_kline",
+          "budget_seconds": 1200,
+          "lease_ttl_seconds": 300
+        }
+      }
+    },
+    {
+      "available_after": "08:20:00",
+      "data_date_offset": 0,
+      "deadline": "08:29:59",
+      "depends_on": [],
+      "gate": "calendar_ready",
+      "handler": "boot_data_health",
+      "trigger_type": "window",
+      "order": null,
+      "after": [],
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "on_deadline": "missed",
+      "catchup_mode": "run_in_window",
+      "late_until": "08:34:00",
+      "cost": "medium",
+      "phases": [
+        "PRE_MARKET"
+      ],
+      "on_phase_mismatch": "defer",
+      "on_start": null,
+      "enabled": true,
+      "calendar": "trading_day",
+      "event_id": "chain_sweep_0820",
+      "at": "08:20:00",
+      "profile": "chain_sweep",
+      "args": {
+        "chain": {
+          "name": "daily_kline",
+          "budget_seconds": 600,
+          "lease_ttl_seconds": 300
+        }
       }
     },
     {

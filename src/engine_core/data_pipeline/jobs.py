@@ -319,6 +319,9 @@ class JobRunner:
             "row_count": len(rows), "request_count": fetch_meta.get("request_count"),
             "raw_sha256": raw_digest,
         }
+        for key in ("inputs", "input_refs", "window"):     # which upstream versions this partition was built from
+            if fetch_meta.get(key):
+                manifest[key] = fetch_meta[key]
         if name == "hot_plates":
             provider = str(fetch_meta.get("provider") or safe_source)
             captured_at = str(fetch_meta.get("captured_at") or
