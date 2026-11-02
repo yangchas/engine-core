@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -30,15 +31,26 @@ def _event_from_request(request):
     return by_id.get(str(raw)), str(raw)
 
 
-def _premarket_owner_is_open(request):
-    active = request.get("active_events")
-    if not isinstance(active, dict):
-        return False
-    event_id = str(request.get("event") or "")
-    # These owner events run the same broad prep_trade_day command. Avoid a
-    # second command while another same-date premarket owner is still active.
-    return any(owner != event_id and owner in active
-               for owner in ("startup_0830", "premarket_slice_0850"))
+@contextlib.contextmanager
+def _premarket_prep_lock(request):
+    """Yield True when this process holds the same-date prep lock, False when another prep process really runs.
+
+    The old check treated any unfinished owner event (even one waiting between retries) as "running", so the 09:00
+    safety-net attempt reported success without doing anything while the owner was timing out (2026-11-02). A kernel
+    flock is released when the holder exits, so only a live prep process counts.
+    """
+    from engine_core.data_pipeline.ops import FileLock
+    root = Path(os.environ.get("CORE_DATA_ROOT", "~/core-data")).expanduser()
+    lock = FileLock(root / ".locks" / "premarket-prep.lock")
+    try:
+        lock.acquire()
+    except RuntimeError:
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        lock.release()
 
 
 def _send_load_defer_alert(request, result, dry_run):
@@ -281,14 +293,21 @@ def _formal_baostock_daily_kline(root, day: str) -> dict | None:
         return None
 
 def _run(request):
+    base, _event_id = _event_from_request(request)
+    if str(request.get("handler") or (base.handler if base else "")) != "premarket_data":
+        return _run_event(request)
+    with _premarket_prep_lock(request) as holder:
+        if not holder:
+            return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False, "artifacts": [],
+                       "detail": "same_date_premarket_prep_process_running"}
+        return _run_event(request)
+
+
+def _run_event(request):
     from examples.core_guardian import _command_handler
 
     base, event_id = _event_from_request(request)
     configured_handler = str(request.get("handler") or (base.handler if base else ""))
-    if configured_handler == "premarket_data" and _premarket_owner_is_open(request):
-        return 0, {"contract": 1, "status": "ok", "error_code": "",
-                   "retryable": False, "artifacts": [],
-                   "detail": "same_date_premarket_owner_still_running"}
     if configured_handler in {"boot_trade_day", "boot_data_health", "boot_reconcile", "boot_apply_plan", "fetch_item"}:
         from engine_core.guardian.startup import boot_apply_plan, boot_data_health, boot_reconcile, boot_trade_day, fetch_item
         trade_date = request.get("trade_date")

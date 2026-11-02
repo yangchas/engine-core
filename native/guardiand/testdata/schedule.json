@@ -831,6 +831,83 @@
           "wait_seconds": 180,
           "poll_seconds": 30,
           "on_missing": "degrade"
+        },
+        "failure_classes": {
+          "retryable": {
+            "exit_codes": [
+              30,
+              75
+            ],
+            "exception_types": [
+              "TimeoutError",
+              "TimeoutExpired",
+              "ConnectionError"
+            ],
+            "error_codes": [
+              "STALL_NO_PROGRESS",
+              "BAOSTOCK_TIMEOUT",
+              "BAOSTOCK_CONNECTION_ERROR",
+              "BAOSTOCK_LOGIN_FAILED",
+              "BAOSTOCK_LOGIN_ERROR",
+              "BAOSTOCK_RATE_LIMITED",
+              "BAOSTOCK_RECEIVE_EXCEPTION",
+              "FETCH_TIMEOUT",
+              "RATE_LIMITED",
+              "TIER_PARTIAL",
+              "BAOSTOCK_LOCAL_GAP_WAIT"
+            ],
+            "message_patterns": [
+              "receive exception",
+              "connection error",
+              "connection_error",
+              "rate limit",
+              "too many requests",
+              "login failed",
+              "login_error",
+              "baostock_login_failed"
+            ]
+          },
+          "deterministic": {
+            "exit_codes": [
+              2,
+              40,
+              64
+            ],
+            "exception_types": [
+              "AssertionError",
+              "AttributeError",
+              "IndexError",
+              "KeyError",
+              "NameError",
+              "SyntaxError",
+              "TypeError",
+              "ValueError",
+              "JSONDecodeError",
+              "ContractError"
+            ],
+            "error_codes": [
+              "COMMAND_ARGUMENT_ERROR",
+              "CONFIG_ERROR",
+              "CONTRACT_ERROR",
+              "CONTRACT_INVALID",
+              "CONTRACT_VIOLATION",
+              "POSTCONDITION_FAILED"
+            ],
+            "message_patterns": []
+          },
+          "default": "deterministic",
+          "retryable_first": {
+            "message_patterns": [
+              "baostock_gap_unresolved",
+              "td_daily_kline_requires_provider_baostock",
+              "rate_limited:",
+              "daily_kline_missing",
+              "upstream_not_ready",
+              "taos.error",
+              "programmingerror",
+              "probe_timeout"
+            ]
+          }
         }
       }
     },
@@ -1060,6 +1137,83 @@
           "wait_seconds": 180,
           "poll_seconds": 30,
           "on_missing": "degrade"
+        },
+        "failure_classes": {
+          "retryable": {
+            "exit_codes": [
+              30,
+              75
+            ],
+            "exception_types": [
+              "TimeoutError",
+              "TimeoutExpired",
+              "ConnectionError"
+            ],
+            "error_codes": [
+              "STALL_NO_PROGRESS",
+              "BAOSTOCK_TIMEOUT",
+              "BAOSTOCK_CONNECTION_ERROR",
+              "BAOSTOCK_LOGIN_FAILED",
+              "BAOSTOCK_LOGIN_ERROR",
+              "BAOSTOCK_RATE_LIMITED",
+              "BAOSTOCK_RECEIVE_EXCEPTION",
+              "FETCH_TIMEOUT",
+              "RATE_LIMITED",
+              "TIER_PARTIAL",
+              "BAOSTOCK_LOCAL_GAP_WAIT"
+            ],
+            "message_patterns": [
+              "receive exception",
+              "connection error",
+              "connection_error",
+              "rate limit",
+              "too many requests",
+              "login failed",
+              "login_error",
+              "baostock_login_failed"
+            ]
+          },
+          "deterministic": {
+            "exit_codes": [
+              2,
+              40,
+              64
+            ],
+            "exception_types": [
+              "AssertionError",
+              "AttributeError",
+              "IndexError",
+              "KeyError",
+              "NameError",
+              "SyntaxError",
+              "TypeError",
+              "ValueError",
+              "JSONDecodeError",
+              "ContractError"
+            ],
+            "error_codes": [
+              "COMMAND_ARGUMENT_ERROR",
+              "CONFIG_ERROR",
+              "CONTRACT_ERROR",
+              "CONTRACT_INVALID",
+              "CONTRACT_VIOLATION",
+              "POSTCONDITION_FAILED"
+            ],
+            "message_patterns": []
+          },
+          "default": "deterministic",
+          "retryable_first": {
+            "message_patterns": [
+              "baostock_gap_unresolved",
+              "td_daily_kline_requires_provider_baostock",
+              "rate_limited:",
+              "daily_kline_missing",
+              "upstream_not_ready",
+              "taos.error",
+              "programmingerror",
+              "probe_timeout"
+            ]
+          }
         }
       }
     },
@@ -1133,6 +1287,83 @@
           "wait_seconds": 180,
           "poll_seconds": 30,
           "on_missing": "degrade"
+        },
+        "failure_classes": {
+          "retryable": {
+            "exit_codes": [
+              30,
+              75
+            ],
+            "exception_types": [
+              "TimeoutError",
+              "TimeoutExpired",
+              "ConnectionError"
+            ],
+            "error_codes": [
+              "STALL_NO_PROGRESS",
+              "BAOSTOCK_TIMEOUT",
+              "BAOSTOCK_CONNECTION_ERROR",
+              "BAOSTOCK_LOGIN_FAILED",
+              "BAOSTOCK_LOGIN_ERROR",
+              "BAOSTOCK_RATE_LIMITED",
+              "BAOSTOCK_RECEIVE_EXCEPTION",
+              "FETCH_TIMEOUT",
+              "RATE_LIMITED",
+              "TIER_PARTIAL",
+              "BAOSTOCK_LOCAL_GAP_WAIT"
+            ],
+            "message_patterns": [
+              "receive exception",
+              "connection error",
+              "connection_error",
+              "rate limit",
+              "too many requests",
+              "login failed",
+              "login_error",
+              "baostock_login_failed"
+            ]
+          },
+          "deterministic": {
+            "exit_codes": [
+              2,
+              40,
+              64
+            ],
+            "exception_types": [
+              "AssertionError",
+              "AttributeError",
+              "IndexError",
+              "KeyError",
+              "NameError",
+              "SyntaxError",
+              "TypeError",
+              "ValueError",
+              "JSONDecodeError",
+              "ContractError"
+            ],
+            "error_codes": [
+              "COMMAND_ARGUMENT_ERROR",
+              "CONFIG_ERROR",
+              "CONTRACT_ERROR",
+              "CONTRACT_INVALID",
+              "CONTRACT_VIOLATION",
+              "POSTCONDITION_FAILED"
+            ],
+            "message_patterns": []
+          },
+          "default": "deterministic",
+          "retryable_first": {
+            "message_patterns": [
+              "baostock_gap_unresolved",
+              "td_daily_kline_requires_provider_baostock",
+              "rate_limited:",
+              "daily_kline_missing",
+              "upstream_not_ready",
+              "taos.error",
+              "programmingerror",
+              "probe_timeout"
+            ]
+          }
         }
       }
     },
