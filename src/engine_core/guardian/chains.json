@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "chains": {
+    "daily_kline": {
+      "base": "daily_kline",
+      "window_days": 10,
+      "max_builds_per_run": 12,
+      "external": [
+        "daily_kline",
+        "limit_up_pool"
+      ],
+      "nodes": {
+        "daily_indicators": [
+          "daily_kline"
+        ],
+        "daily_report_features": [
+          "daily_kline",
+          "daily_indicators"
+        ],
+        "ladder_daily": [
+          "daily_kline",
+          "limit_up_pool"
+        ],
+        "stock_day_facts": [
+          "daily_kline"
+        ]
+      }
+    }
+  }
+}
