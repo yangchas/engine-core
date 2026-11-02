@@ -280,6 +280,33 @@ def load_derived_inputs(catalog: ArtifactCatalog, trade_date: str, *, max_days: 
     return request
 
 
+def pit_asof_with_late_inputs(catalog: ArtifactCatalog, trade_date: str, *, max_days: int = 120) -> str:
+    """End of ``trade_date``, or the instant the last input bar became available when that is later.
+
+    Baostock bars are published after midnight (2026-10-28..30 FORMAL arrived 01:00-01:51 the next day), so a
+    cutoff pinned to ``trade_date`` 23:59:59 hides the day's own bar and the build fails with DAILY_KLINE_MISSING.
+    A derived partition may never be visible before its inputs, and it is not stamped later than needed, so the
+    point-in-time rule holds: the features exist from the moment the last bar they use existed.
+    """
+    from .data_pipeline.derived_daily import select_best
+    end_of_day = datetime.fromisoformat(f"{trade_date}T23:59:59+08:00")
+    kline = catalog.read().get("datasets", {}).get("daily_kline", {}).get("dates", {})
+    latest = end_of_day
+    for day in sorted(d for d in kline if d <= trade_date)[-max_days:]:
+        best = select_best([v for v in kline[day] if isinstance(v, dict)])
+        path = Path(best["manifest"]) if best and best.get("manifest") else None
+        if path is None or not path.is_file():
+            continue
+        try:
+            available = datetime.fromisoformat(str(json.loads(path.read_text(encoding="utf-8")).get(
+                "available_at")).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        if available.tzinfo is not None and available > latest:
+            latest = available
+    return latest.astimezone(SHANGHAI).isoformat()
+
+
 def _resolve_as_of(value: str | None, request: Mapping[str, Any], trade_date: str) -> str:
     """None -> now; "kline_available" -> the instant the day's own daily_kline became available (history import:
     a derived partition is never visible earlier than the bar it derives from, nor stamped later than needed)."""

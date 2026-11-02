@@ -489,8 +489,9 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                 if not _manifest(catalog, "daily_indicators", previous, asof=asof):
                     reindex_daily_indicators(catalog, start=start, end=previous, redis=redis)
                 if not _manifest(catalog, "daily_report_features", previous, asof=asof):
+                    from .daily_history import pit_asof_with_late_inputs
                     materialize_daily_report_features(catalog, trade_date=previous,
-                        asof=f"{previous}T23:59:59+08:00", redis=redis)
+                        asof=pit_asof_with_late_inputs(catalog, previous), redis=redis)
             except Exception as exc:
                 errors.append("daily_features:" + str(exc)[:240])
             elapsed = round((time.monotonic() - started) * 1000, 3)
