@@ -41,35 +41,13 @@ def _previous(root, day):
 
 def fetch_item(item: str, day: str, artifact_root: str | Path, *, execute: bool = False):
     from engine_core.data_pipeline.storage import ArtifactCatalog
-    from engine_core.data_pipeline.ops import derive_stock_day_facts
     root = Path(artifact_root).expanduser()
     catalog = ArtifactCatalog(root)
     if item not in {"stock_day_facts", "stock_theme_assignment"}:
         return {"status": "failed", "error": "unsupported_item", "retryable": False}
     if item == "stock_day_facts":
-        source = _load(catalog, "daily_kline", day)
-        if source is None:
-            return {"status": "failed", "error": "daily_kline_missing", "retryable": True}
-        rows, source_manifest = source
-        source_quality = source_manifest.get("quality")
-        source_quality_status = (source_quality.get("status") if isinstance(source_quality, dict)
-                                 else source_quality)
-        facts, _quality = derive_stock_day_facts(
-            day, rows, {"source_version": source_manifest.get("version")})
-        available_at = datetime.now(TZ).isoformat()
-        manifest = {"trade_date": day, "as_of": available_at, "available_at": available_at,
-                    "source_dataset": "daily_kline", "source_version": source_manifest.get("version"),
-                    "quality": {"status": "READY"}, "business_status": "READY",
-                    "inputs": {"daily_kline": {"version": source_manifest.get("version"),
-                                                 "quality_status": source_quality_status,
-                                                 "source": source_manifest.get("source")}}}
-        result = {"item": item, "trade_date": day, "rows": len(facts), "read_only": not execute,
-                  "source_version": source_manifest.get("version"), "available_at": available_at,
-                  "quality": "CLOSE_PRICE_PROXY", "early_fields": "missing"}
-        if execute:
-            committed = catalog.commit(item, day, facts, manifest, source="registry_item_fetch")
-            result["version"] = committed["version"]
-        return {"status": "ok", **result}
+        from engine_core.data_pipeline.ops import build_stock_day_facts
+        return build_stock_day_facts(catalog, day, execute=execute)
 
     previous = _previous(root, day)
     if not previous:

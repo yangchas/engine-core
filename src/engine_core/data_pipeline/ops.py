@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from typing import Any, Callable, Iterable, Mapping
+from zoneinfo import ZoneInfo
 
 from .jobs import JobRunner, RequestBudget
 from .registry import DATASETS, get_dataset
@@ -38,6 +39,52 @@ def derive_stock_day_facts(day: str, source_rows: Iterable[Mapping[str, Any]],
             fact["source_version"] = metadata["source_version"]
         facts.append(fact)
     return facts, "CLOSE_PRICE_PROXY"
+
+
+def stock_day_facts_inputs(catalog: ArtifactCatalog, day: str) -> dict[str, Any] | None:
+    """Facts for ``day`` plus the exact daily_kline version they come from; None when the day has no usable bars.
+
+    The bars are chosen with ``select_best`` -- the selector the other derived builders and ``inputs_stale`` use --
+    so what is recorded here is what the freshness check later compares against (``locate`` and "newest appended"
+    pick different versions on 2026-10-16/19/21 and would make the day look stale forever). One input day, so the
+    window is fixed and is not compared with the 120-day rolling window.
+    """
+    from .derived_daily import select_best
+    entries = catalog.read().get("datasets", {}).get("daily_kline", {}).get("dates", {}).get(day) or []
+    best = select_best([e for e in entries if isinstance(e, Mapping)])
+    path = Path(best["manifest"]) if best and best.get("manifest") else None
+    if path is None or not path.is_file():
+        return None
+    version = best.get("version")
+    facts, _quality = derive_stock_day_facts(day, catalog.read_rows(path), {"source_version": version})
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    quality = manifest.get("quality")
+    return {"rows": facts, "source_version": version,
+            "inputs": {"daily_kline": {"version": version,
+                                       "quality_status": quality.get("status") if isinstance(quality, Mapping) else quality,
+                                       "source": best.get("source")}},
+            "input_refs": [{"dataset": "daily_kline", "trade_date": day, "version": version,
+                            "business_status": best.get("business_status")}],
+            "window": {"fixed_days": True}}
+
+
+def build_stock_day_facts(catalog: ArtifactCatalog, day: str, *, execute: bool) -> dict[str, Any]:
+    """Commit ``stock_day_facts`` for ``day`` (read-only when ``execute`` is false). Same input -> same version."""
+    built = stock_day_facts_inputs(catalog, day)
+    if built is None:
+        return {"status": "failed", "error": "daily_kline_missing", "retryable": True}
+    available_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+    manifest = {"trade_date": day, "as_of": available_at, "available_at": available_at,
+                "source_dataset": "daily_kline", "source_version": built["source_version"],
+                "quality": {"status": "READY"}, "business_status": "READY",
+                "inputs": built["inputs"], "input_refs": built["input_refs"], "window": built["window"]}
+    result = {"status": "ok", "item": "stock_day_facts", "trade_date": day, "rows": len(built["rows"]),
+              "read_only": not execute, "source_version": built["source_version"], "available_at": available_at,
+              "quality": "CLOSE_PRICE_PROXY", "early_fields": "missing"}
+    if execute:
+        result["version"] = catalog.commit("stock_day_facts", day, built["rows"], manifest,
+                                           source="registry_item_fetch")["version"]
+    return result
 
 
 class FileLock:
@@ -208,12 +255,11 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                 continue
             if name == "stock_day_facts" and fetch is None:
                 def fetch_stock_day_facts(day: str) -> dict[str, Any]:
-                    manifest_path = runner.catalog.locate("daily_kline", day)
-                    if manifest_path is None: raise RuntimeError("daily_kline_artifact_required")
-                    source_rows = runner.catalog.read_rows(manifest_path)
-                    facts, _quality = derive_stock_day_facts(day, source_rows)
-                    return {"rows": facts, "expected_count": len(facts),
-                            "partial": not bool(facts)}
+                    built = stock_day_facts_inputs(runner.catalog, day)
+                    if built is None: raise RuntimeError("daily_kline_artifact_required")
+                    return {"rows": built["rows"], "expected_count": len(built["rows"]),
+                            "partial": not bool(built["rows"]), "inputs": built["inputs"],
+                            "input_refs": built["input_refs"], "window": built["window"]}
                 fetch = fetch_stock_day_facts
             if fetch is None:
                 errors.append({"job": name, "status": "FETCHER_NOT_CONFIGURED"})
