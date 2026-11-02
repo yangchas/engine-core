@@ -557,16 +557,78 @@ def test_auction_report_asof_is_clamped_to_0926_when_started_later(monkeypatch, 
     assert seen["start"] == "09:26:00" and seen["now"].startswith("2026-10-22T09:26:00")
 
 
-def test_premarket_handler_defers_when_another_same_date_owner_is_running():
+def _premarket_request():
+    request = _core_request("startup_0900", "2026-10-22")
+    request.update(handler="premarket_data", active_events={"premarket_slice_0850": "2026-10-22"})
+    return request
+
+
+def test_premarket_handler_skips_only_while_a_prep_process_really_holds_the_lock(monkeypatch, tmp_path):
+    from engine_core.data_pipeline.ops import FileLock
     from examples import guardian_handler
 
-    request = _core_request("startup_0900", "2026-10-22")
-    request.update(handler="premarket_data", active_events={"startup_0830": "2026-10-22"})
-    code, payload = guardian_handler._run(request)
-    assert code == 0 and payload["status"] == "ok"
-    assert payload["detail"] == "same_date_premarket_owner_still_running"
-    request["event"] = "startup_0830"
-    assert guardian_handler._premarket_owner_is_open(request) is False
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    ran = []
+    monkeypatch.setattr(guardian_handler, "_run_event", lambda request: ran.append(1) or (0, {"status": "ok"}))
+    holder = FileLock(tmp_path / ".locks" / "premarket-prep.lock")
+    holder.acquire()                                        # another prep process is alive
+    try:
+        code, payload = guardian_handler._run(_premarket_request())
+    finally:
+        holder.release()
+    assert (code, payload["status"], payload["detail"]) == (0, "ok", "same_date_premarket_prep_process_running")
+    assert ran == []
+
+
+def test_premarket_handler_runs_when_the_owner_event_is_only_waiting_for_a_retry(monkeypatch, tmp_path):
+    # 2026-11-02 09:00: premarket_slice_0850 sat in RETRY_WAIT (listed in active_events, no process); the old guard
+    # reported success without doing anything and the owner then timed out twice more.
+    from examples import guardian_handler
+
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    ran = []
+    monkeypatch.setattr(guardian_handler, "_run_event", lambda request: ran.append(1) or (0, {"status": "ok"}))
+    assert guardian_handler._run(_premarket_request())[0] == 0 and ran == [1]
+    # and the lock is released afterwards, also when the run raises
+    monkeypatch.setattr(guardian_handler, "_run_event", lambda request: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        guardian_handler._run(_premarket_request())
+    monkeypatch.setattr(guardian_handler, "_run_event", lambda request: ran.append(2) or (0, {"status": "ok"}))
+    guardian_handler._run(_premarket_request())
+    assert ran == [1, 2]
+
+
+def test_other_handlers_never_touch_the_prep_lock(monkeypatch, tmp_path):
+    from examples import guardian_handler
+
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(guardian_handler, "_run_event", lambda request: (0, {"status": "ok"}))
+    request = _core_request("auction_report_0926", "2026-10-22")
+    assert guardian_handler._run(request) == (0, {"status": "ok"})
+    assert not (tmp_path / ".locks").exists()
+
+
+def _prep_event_args(event_id):
+    schedule = json.loads((Path(__file__).resolve().parents[1] /
+                           "src/engine_core/guardian/schedule.json").read_text(encoding="utf-8"))
+    return next(e for e in schedule["events"] if e["event_id"] == event_id)["args"]
+
+
+@pytest.mark.parametrize("event_id", ["startup_0830", "premarket_slice_0850", "startup_0900"])
+def test_prep_errors_from_late_upstream_data_or_a_td_hiccup_are_retryable(event_id):
+    from examples import guardian_handler
+
+    request = {"args": _prep_event_args(event_id)}
+    late = RuntimeError("prep_errors:daily_features:DAILY_KLINE_MISSING:2026-10-30;plate_amount_baseline:COMMAND_FAILED:"
+                        "taos.error.ProgrammingError command_exit=40")
+    code, payload = guardian_handler._failure_response(request, error=late)
+    assert (code, payload["retryable"]) == (75, True)
+    hiccup = RuntimeError("prep_errors:plate_amount_baseline:COMMAND_FAILED: taos_query raise ProgrammingError")
+    assert guardian_handler._failure_response(request, error=hiccup)[0] == 75
+    # the rest of the classification is intact: timeouts retry, contract errors and missing critical steps do not
+    assert guardian_handler._failure_response(request, error=TimeoutError("slow"))[0] == 75
+    assert guardian_handler._failure_response(request, error=RuntimeError("prep_critical_missing:symbol_universe"))[0] == 40
+    assert guardian_handler._failure_response(request, error=ValueError("bad config"))[0] == 40
 
 
 def test_daily_kline_job_budget_follows_event_timeout():
