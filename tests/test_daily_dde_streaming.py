@@ -72,3 +72,39 @@ def test_dde_writes_first_completed_symbol_before_other_fetch_finishes():
     assert wrote_before_release, "DDE waited for every source response before starting TD writes"
     assert result["status"] == "ok"
     assert set(store.writes) == {"600519", "688001"}
+
+
+class SuspendedAwareStore(RecordingDdeStore):
+    """Same recording store; ``suspended`` is the set TD returned for 2026-11-02 (evidence/C643)."""
+
+    def __init__(self, suspended):
+        super().__init__()
+        self.suspended = set(suspended)
+
+    def read_suspended(self, symbols, target_date):
+        return self.suspended & set(symbols)
+
+
+def test_dde_suspended_stock_without_same_day_dde_is_known_missing_not_failure():
+    store = SuspendedAwareStore({"000831"})
+    raw = json.loads((REAL / "kaipan_stock_dde_2026-11-02_000831_0731.json").read_text())
+    result = run_daily_dde_sync(
+        ["000831"], "2026-11-02", database=store.database, root=ROOT, max_workers=1, attempts=2,
+        history_trading_days=250, write_redis=False, skip_redis=True, store=store,
+        fetcher=lambda s, d: raw, sleep=lambda _s: None)
+    assert result["status"] == "ok"
+    assert result["known_missing"] == [{"symbol": "000831", "reason": "suspended_no_same_day_dde"}]
+    assert store.writes == []
+
+
+def test_dde_stale_response_for_a_stock_that_is_not_suspended_still_fails():
+    import pytest
+    from engine_core.data_pipeline.daily_dde import DdeSyncRetryableError
+    store = SuspendedAwareStore(set())
+    raw = json.loads((REAL / "kaipan_stock_dde_2026-11-02_000831_0731.json").read_text())
+    with pytest.raises(DdeSyncRetryableError) as caught:
+        run_daily_dde_sync(
+            ["000831"], "2026-11-02", database=store.database, root=ROOT, max_workers=1, attempts=2,
+            history_trading_days=250, write_redis=False, skip_redis=True, store=store,
+            fetcher=lambda s, d: raw, sleep=lambda _s: None)
+    assert [item["symbol"] for item in caught.value.summary["failed"]] == ["000831"]
