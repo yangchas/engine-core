@@ -244,6 +244,6 @@ def test_td_recordings_have_matching_provenance():
     for name, meta in recordings.items():
         body = (REAL / name).read_bytes()
         assert hashlib.sha256(body).hexdigest() == meta["sha256"], name
-        assert meta["kind"] in {"raw_td_result", "raw_td_error"} and meta["command"] and meta.get("source"), name
+        assert meta["kind"] in {"raw_td_result", "raw_td_error", "raw_td_function_output"} and meta["command"] and meta.get("source"), name
         text = (gzip.decompress(body) if name.endswith(".gz") else body).decode("utf-8").lower()
         assert not any(word in text for word in CREDENTIAL_WORDS), name

@@ -1,0 +1,9 @@
+{
+ "errno": "0x2603",
+ "message": "[0x2603]: Fail to get table info, error: Table does not exist",
+ "source": {
+  "client_exception": "ProgrammingError",
+  "provoked_by": "SELECT ts FROM market_data1.recorded_missing_table_c663 LIMIT 1",
+  "recorded_at": "2026-11-04T01:03:52+08:00"
+ }
+}

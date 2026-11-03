@@ -124,8 +124,33 @@ def scenario_dde_suspended(statements):
     connection = RecordingConnection(type("C", (), {"cursor": lambda self: inner(), "close": lambda self: None})(),
                                      statements, [])
     store._cursor = connection.cursor
-    store.read_suspended(["000831", "002129", "600519", "000001"], "2026-11-02")
-    return {"function": "TaosDdeStore.read_suspended", "args": [["000831", "002129", "600519", "000001"], "2026-11-02"]}
+    store.read_suspended(["000831"], "2026-11-02")
+    return {"function": "TaosDdeStore.read_suspended", "args": [["000831"], "2026-11-02"]}
+
+
+def scenario_dde_not_flagged_1103(statements):
+    """000831 has no daily_kline row for 2026-11-03: TD flags nothing as suspended, so a stale DDE stays a failure."""
+    from engine_core.data_pipeline.daily_dde import TaosDdeStore
+    store = TaosDdeStore("core_data")
+    inner = store._cursor
+    connection = RecordingConnection(type("C", (), {"cursor": lambda self: inner(), "close": lambda self: None})(),
+                                     statements, [])
+    store._cursor = connection.cursor
+    store.read_suspended(["000831"], "2026-11-03")
+    return {"function": "TaosDdeStore.read_suspended", "args": [["000831"], "2026-11-03"]}
+
+
+def scenario_plate_amount_other_error(statements):
+    """A tick statement fails with an error that is NOT memory exhaustion (real error text); it must surface labelled."""
+    tick = lambda sql: "stock_tick_v2" in sql
+    module, connection = _connect(statements, [(tick, real_error("table_does_not_exist"))])
+    module._td_connect = lambda: connection
+    try:
+        module._read_td("2026-11-02", ["2026-10-30"])
+    except RuntimeError:
+        pass
+    return {"function": "plate_amount_baseline._read_td", "args": ["2026-11-02", ["2026-10-30"]],
+            "injected": "tick statement -> real error 'table does not exist'"}
 
 
 SCENARIOS = {
@@ -134,10 +159,45 @@ SCENARIOS = {
     "plate_amount_symbol_split": scenario_plate_amount_symbol_split,
     "plate_amount_auction_halving": scenario_plate_amount_auction_halving,
     "dde_suspended": scenario_dde_suspended,
+    "dde_not_flagged_1103": scenario_dde_not_flagged_1103,
+    "plate_amount_other_error": scenario_plate_amount_other_error,
 }
 
 
+def output_reference_snapshot_plate_members():
+    """The real return value of ReferenceSnapshotStore.read_latest('plate_members') without its 91k payload rows
+    (its integrity check reads them all; what callers use is the marker: version, row_count, sha256, trade_date)."""
+    from engine_core.data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+    with ReferenceSnapshotStore() as store:
+        latest = store.read_latest("plate_members")
+    rows = latest.pop("rows")
+    latest["rows_omitted"] = len(rows)
+    return {"function": "ReferenceSnapshotStore.read_latest", "args": ["plate_members"]}, latest
+
+
+OUTPUTS = {"reference_snapshot_plate_members_latest": output_reference_snapshot_plate_members}
+
+
+def record_output(name):
+    call, value = OUTPUTS[name]()
+    now = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
+    directory = FIXTURES / "outputs"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.json"
+    path.write_text(json.dumps({"recorded_at": now, "call": call, "value": value}, ensure_ascii=False, indent=1,
+                               sort_keys=True) + "\n", encoding="utf-8")
+    provenance = json.loads(PROVENANCE.read_text(encoding="utf-8"))
+    provenance.setdefault("_td_recordings", {})[f"td/outputs/{name}.json"] = {
+        "kind": "raw_td_function_output", "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "bytes": path.stat().st_size, "recorded_at": now, "call": call,
+        "command": f"examples/record_td_scenario.py {name}", "source": "core TD (read-only)"}
+    PROVENANCE.write_text(json.dumps(provenance, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"{name}: {json.dumps(value, ensure_ascii=False)[:200]}")
+
+
 def record(name):
+    if name in OUTPUTS:
+        return record_output(name)
     statements: list[dict] = []
     call = SCENARIOS[name](statements)
     now = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
@@ -164,7 +224,7 @@ def main(argv=None):
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args(argv)
     if args.list or not args.names:
-        print("\n".join(SCENARIOS))
+        print("\n".join([*SCENARIOS, *OUTPUTS]))
         return 0
     if not os.environ.get("TD_CONFIG"):
         print("TD_CONFIG is required", file=sys.stderr)
