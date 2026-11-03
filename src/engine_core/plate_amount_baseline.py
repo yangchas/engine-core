@@ -112,18 +112,29 @@ def _td_connect():
     return taos.connect(**options)
 
 
-def _read_0945_slice(cursor: Any, days: Sequence[str], wanted: set[str]) -> list[dict[str, Any]]:
+SYMBOL_SPLITS = (("000000", "300000"), ("300000", "600000"), ("600000", "999999"))
+
+
+def _read_0945_slice(cursor: Any, days: Sequence[str], wanted: set[str],
+                     symbols: tuple[str, str] | None = None) -> list[dict[str, Any]]:
     first, last = min(days), max(days)
+    symbol_filter = f' AND symbol >= "{symbols[0]}" AND symbol < "{symbols[1]}"' if symbols else ""
     try:
         cursor.execute("SELECT _wstart, symbol, LAST(amt_yuan) FROM market_data1.stock_tick_v2 "
-                       f'WHERE ts >= "{first} 09:30:00" AND ts <= "{last} 09:45:00" '
+                       f'WHERE ts >= "{first} 09:30:00" AND ts <= "{last} 09:45:00"{symbol_filter} '
                        "PARTITION BY symbol INTERVAL(15m, 1s)")
         fetched = cursor.fetchall()
     except Exception as exc:
-        if "memory" in str(exc).lower() and len(days) > 1:
-            middle = len(days) // 2
-            return (_read_0945_slice(cursor, days[:middle], wanted) + _read_0945_slice(cursor, days[middle:], wanted))
-        raise
+        if "memory" in str(exc).lower():
+            if len(days) > 1:
+                middle = len(days) // 2
+                return (_read_0945_slice(cursor, days[:middle], wanted, symbols)
+                        + _read_0945_slice(cursor, days[middle:], wanted, symbols))
+            if symbols is None:  # one day still too big for the shared TDengine: split the symbols
+                return [row for part in SYMBOL_SPLITS
+                        for row in _read_0945_slice(cursor, days, wanted, part)]
+        raise RuntimeError(f"plate_amount_baseline_tick_slice {first}..{last}"
+                           f"{' ' + symbols[0] + '-' + symbols[1] if symbols else ''}: {exc}") from exc
     out = []
     for window_start, symbol, amount in fetched:
         stamp = str(window_start)
@@ -141,11 +152,15 @@ def _read_td(target_date: str, dates: Sequence[str]) -> list[dict[str, Any]]:
     quoted = ",".join(f'"{day.replace("-", "")}"' for day in dates)
     try:
         cursor = connection.cursor()
-        cursor.execute("SELECT ts, symbol, trade_date, auction_tag, match_amt_yuan "
-                       "FROM market_data1.auction_snapshot_v2 "
-                       f"WHERE trade_date IN ({quoted}) AND auction_tag=\"0925\" ORDER BY trade_date,symbol,ts")
+        try:
+            cursor.execute("SELECT ts, symbol, trade_date, auction_tag, match_amt_yuan "
+                           "FROM market_data1.auction_snapshot_v2 "
+                           f"WHERE trade_date IN ({quoted}) AND auction_tag=\"0925\" ORDER BY trade_date,symbol,ts")
+            auction_rows = cursor.fetchall()
+        except Exception as exc:
+            raise RuntimeError(f"plate_amount_baseline_auction_query {dates[0]}..{dates[-1]}: {exc}") from exc
         latest: dict[tuple[str, str], tuple[str, Any]] = {}
-        for ts, symbol, day, _tag, amount in cursor.fetchall():
+        for ts, symbol, day, _tag, amount in auction_rows:
             key = (_day(day), _symbol(symbol))
             stamp = str(ts)
             if key not in latest or stamp >= latest[key][0]:
