@@ -114,6 +114,21 @@ def _daily_kline_provider_arg(value):
     return ",".join(providers)
 
 
+_TD_SNAPSHOT_DATASETS = frozenset({"plate_members"})
+
+
+def _snapshot_problem(dataset: str, day: str) -> str:
+    """"" when the ACTIVE TD snapshot of ``dataset`` is dated ``day`` and non-empty, else the failure reason."""
+    from ..data_pipeline.reference_snapshot_td import ReferenceSnapshotStore
+    with ReferenceSnapshotStore() as snapshots:
+        latest = snapshots.read_latest(dataset)
+    if not latest or int(latest.get("row_count") or 0) <= 0:
+        return dataset + "_missing_or_empty"
+    if latest.get("trade_date") != day:
+        return f"{dataset}_snapshot_stale:{latest.get('trade_date')}"
+    return ""
+
+
 def validate_handler_postcondition(name: str, day: str, root: str | Path,
                                    datasets: Any = None,
                                    event_args: Any = None) -> tuple[bool, str]:
@@ -211,6 +226,12 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path,
         datasets = ("daily_kline",)
     for dataset in datasets:
         target = day
+        if name == "kaipan_fetch" and dataset in _TD_SNAPSHOT_DATASETS and os.environ.get("TD_CONFIG"):
+            # C618: reference snapshots live in TD (latest only); they have no per-date catalog partition.
+            problem = _snapshot_problem(dataset, day)
+            if problem:
+                return False, problem
+            continue
         if name == "kaipan_fetch":
             # The morning limit-up pool is the previous trade day's pool.
             from ..trade_day_context import previous_trade_date

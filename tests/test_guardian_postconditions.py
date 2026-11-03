@@ -97,3 +97,40 @@ def test_hot_plate_history_postcondition_requires_each_prior_session_saved_or_ga
 
     assert validate_handler_postcondition("kaipan_hot_capture", "2026-10-29",
                                           tmp_path, datasets) == (True, "")
+
+
+class _Snapshots:
+    """Stands in for the TD ReferenceSnapshotStore; the marker is the real ACTIVE plate_members one of 2026-11-03."""
+
+    marker = {"trade_date": "2026-11-02", "row_count": 91640}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def read_latest(self, dataset):
+        assert dataset == "plate_members"
+        return self.marker
+
+
+def _td_snapshots(monkeypatch, marker):
+    import engine_core.data_pipeline.reference_snapshot_td as module
+    monkeypatch.setenv("TD_CONFIG", "/nonexistent")
+    store = type("Store", (_Snapshots,), {"marker": marker})
+    monkeypatch.setattr(module, "ReferenceSnapshotStore", store)
+
+
+def test_plate_members_is_judged_on_the_td_snapshot_not_a_catalog_partition(tmp_path, monkeypatch):
+    _td_snapshots(monkeypatch, _Snapshots.marker)
+    assert validate_handler_postcondition("kaipan_fetch", "2026-11-02", tmp_path, ["plate_members"]) == (True, "")
+
+
+def test_plate_members_snapshot_of_another_day_or_empty_fails(tmp_path, monkeypatch):
+    _td_snapshots(monkeypatch, {"trade_date": "2026-10-30", "row_count": 91640})
+    assert validate_handler_postcondition("kaipan_fetch", "2026-11-02", tmp_path, ["plate_members"]) == (
+        False, "plate_members_snapshot_stale:2026-10-30")
+    _td_snapshots(monkeypatch, {"trade_date": "2026-11-02", "row_count": 0})
+    assert validate_handler_postcondition("kaipan_fetch", "2026-11-02", tmp_path, ["plate_members"]) == (
+        False, "plate_members_missing_or_empty")
