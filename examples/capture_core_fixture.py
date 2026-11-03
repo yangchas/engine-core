@@ -35,6 +35,8 @@ def main(argv=None) -> int:
     parser.add_argument("--datasets", nargs="+", required=True)
     parser.add_argument("--all-versions", action="store_true",
                         help="copy every version's manifest of each dataset/day, not only the select_best one")
+    parser.add_argument("--with-rows", action="store_true",
+                        help="also copy each captured manifest's rows file next to it (real rows, for pure-function tests)")
     args = parser.parse_args(argv)
     core = Path(args.core_root)
     provenance_path = REAL / "PROVENANCE.json"
@@ -57,6 +59,10 @@ def main(argv=None) -> int:
                 relative = source.relative_to(core)
                 copies.append((source, f"core_artifacts/{args.card}/{relative.as_posix()}", "core_artifact_manifest",
                                dataset, day, best.get("version")))
+                if args.with_rows:
+                    rows_source = Path(json.loads(source.read_text(encoding="utf-8"))["rows_uri"])
+                    copies.append((rows_source, f"core_artifacts/{args.card}/{relative.parent.as_posix()}/{rows_source.name}",
+                                   "core_artifact_rows", dataset, day, best.get("version")))
     for source, name, kind, dataset, day, version in copies:
         target = REAL / name
         target.parent.mkdir(parents=True, exist_ok=True)

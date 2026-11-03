@@ -877,6 +877,42 @@
    "source_path": "/home/exedev/core-data/symbol_universe/trade_date=2026-11-02/source=baostock_query_all_stock/sha256-c3db5abbdb4797b2/manifest.json",
    "trade_date": "2026-11-02",
    "version": "sha256-c3db5abbdb4797b2"
+  },
+  "core_artifacts/c651/catalog.json": {
+   "bytes": 395720,
+   "command": "cp /home/exedev/core-data/catalog.json tests/fixtures/real/core_artifacts/c651/catalog.json",
+   "copied_at": "2026-11-03T17:01:36+08:00",
+   "dataset": "catalog",
+   "kind": "core_catalog_snapshot",
+   "sha256": "8e6225fb2b79037151b08c74d6924042e5ec722689df9edaa0bacdb06e1a95a7",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/catalog.json",
+   "trade_date": null,
+   "version": null
+  },
+  "core_artifacts/c651/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/manifest.json": {
+   "bytes": 2587,
+   "command": "cp /home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/manifest.json tests/fixtures/real/core_artifacts/c651/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/manifest.json",
+   "copied_at": "2026-11-03T17:01:36+08:00",
+   "dataset": "stock_static",
+   "kind": "core_artifact_manifest",
+   "sha256": "2672b2f47c516159994167071bce96026aa1855ec701f6766bbbd577eece79bb",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/manifest.json",
+   "trade_date": "2026-10-29",
+   "version": "sha256-d2f57645aafb76b7"
+  },
+  "core_artifacts/c651/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/rows.jsonl.gz": {
+   "bytes": 81398,
+   "command": "cp /home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/rows.jsonl.gz tests/fixtures/real/core_artifacts/c651/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/rows.jsonl.gz",
+   "copied_at": "2026-11-03T17:01:36+08:00",
+   "dataset": "stock_static",
+   "kind": "core_artifact_rows",
+   "sha256": "b1fc374f927eae6da02ae956a72c60970b04e86198564ec8644f977fe673c75c",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/rows.jsonl.gz",
+   "trade_date": "2026-10-29",
+   "version": "sha256-d2f57645aafb76b7"
   }
  },
  "kaipan_hot_plates_2026-10-23_1441.json": {

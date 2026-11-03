@@ -1884,7 +1884,7 @@
           "formal_coverage_threshold": 0.995,
           "source_empty_max": 20
         },
-        "history_min_trading_days": 10,
+        "history_min_trading_days": 120,
         "fill_max_consecutive_failures": 5,
         "fill_max_failure_ratio": 0.2,
         "fill_min_failure_samples": 20,
