@@ -13,13 +13,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from engine_core.guardian.timeline import expand, to_timeline  # noqa: E402
+from engine_core.guardian.timeline import diff_schedules, expand, generate, to_timeline  # noqa: E402
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--schedule", default=str(ROOT / "src" / "engine_core" / "guardian" / "schedule.json"))
     parser.add_argument("--out")
+    parser.add_argument("--generate", help="write the canonical schedule text generated from the timeline")
     args = parser.parse_args(argv)
     schedule = json.loads(Path(args.schedule).read_text(encoding="utf-8"))
     doc = to_timeline(schedule)
@@ -32,6 +33,13 @@ def main(argv=None) -> int:
     print(json.dumps(report, ensure_ascii=False))
     if args.out:
         Path(args.out).write_text(json.dumps(doc, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    if args.generate:
+        text = generate(doc)
+        Path(args.generate).write_text(text, encoding="utf-8")
+        differences = diff_schedules(schedule, json.loads(text))
+        print(json.dumps({"generated_bytes": len(text.encode()), "differences_from_input": differences,
+                          "byte_identical_to_input": text == Path(args.schedule).read_text(encoding="utf-8")}))
+        lossless = lossless and not differences
     return 0 if lossless else 1
 
 

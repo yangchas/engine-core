@@ -48,3 +48,66 @@ def test_clocks_without_seconds_keep_their_absolute_deadline():
     doc = to_timeline(copy.deepcopy(schedule))
     assert "deadline_after_seconds" not in doc["functions"]["a"]
     assert canon(expand(doc)) == canon(schedule)
+
+
+# ---- P2.2: generator and equivalence gate -------------------------------------------------------------------
+
+import shutil
+import subprocess
+import tempfile
+
+import pytest
+
+from engine_core.guardian.timeline import diff_schedules, generate, render_schedule
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_generated_schedule_is_the_shipped_schedule_up_to_key_order():
+    text = generate(to_timeline(SCHEDULE))
+    assert diff_schedules(SCHEDULE, json.loads(text)) == []
+    assert canon(json.loads(text)) == canon(SCHEDULE)
+
+
+def test_generation_is_stable_text_not_just_equal_data():
+    text = generate(to_timeline(SCHEDULE))
+    assert generate(to_timeline(json.loads(text))) == text and render_schedule(SCHEDULE) == text
+
+
+def test_diff_names_the_event_and_the_field():
+    doc = to_timeline(SCHEDULE)
+    doc["functions"]["limit_up_today"]["cost"] = "heavy"
+    doc["timeline"][0]["run"][0]["id"] = doc["timeline"][0]["run"][0]["id"]
+    found = diff_schedules(SCHEDULE, expand(doc))
+    assert found and all(item.startswith("limit_up_today_") and item.endswith(":cost") for item in found)
+    assert len(found) == 18
+
+
+def test_an_unknown_event_key_is_rejected_instead_of_dropped():
+    schedule = json.loads(json.dumps(SCHEDULE))
+    schedule["events"][0]["surprise"] = 1
+    with pytest.raises(ValueError, match="event_keys_not_in_canonical_order"):
+        render_schedule(schedule)
+
+
+def _go_config(schedule_text: str, workdir: Path, name: str) -> dict:
+    source = workdir / f"{name}.schedule.json"
+    source.write_text(schedule_text, encoding="utf-8")
+    target = workdir / f"{name}.config.json"
+    done = subprocess.run(["go", "run", ".", "migrate", "--from", str(source), "--to", str(target)],
+                          cwd=ROOT / "native" / "guardiand", capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stderr[-400:]
+    return json.loads(target.read_text(encoding="utf-8"))
+
+
+@pytest.mark.skipif(shutil.which("go") is None, reason="go toolchain not available")
+def test_guardiand_migrate_reads_the_generated_schedule_as_the_shipped_one():
+    shipped = (ROOT / "src" / "engine_core" / "guardian" / "schedule.json").read_text(encoding="utf-8")
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        expected = _go_config(shipped, work, "shipped")
+        actual = _go_config(generate(to_timeline(SCHEDULE)), work, "generated")
+        assert expected["events"] and canon(actual) == canon(expected)
+        doc = to_timeline(SCHEDULE)
+        doc["functions"]["limit_up_today"]["cost"] = "heavy"
+        assert canon(_go_config(generate(doc), work, "mutant")) != canon(expected)
