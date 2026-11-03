@@ -75,7 +75,7 @@ def test_tick_amounts_come_from_a_few_sliced_queries_not_one_per_day_and_not_one
     monkeypatch.setattr(module, "_td_connect", lambda: _FakeConnection(log, ticks))
     rows = module._read_td("2026-11-02", dates + ["2026-10-29", "2026-10-30"])
     tick_queries = [sql for sql in log if "stock_tick_v2" in sql]
-    assert len(tick_queries) == 6 and len(log) == 7                   # 26 days / 5 per slice = 6, plus the auction query
+    assert len(tick_queries) == 6 and len(log) == 12                  # 26 days / 5 per slice = 6 tick slices and 6 auction slices
     assert all("INTERVAL(15m, 1s)" in sql and "PARTITION BY symbol" in sql and "LAST(amt_yuan)" in sql
                for sql in tick_queries)
     assert '"2026-10-01 09:30:00"' in tick_queries[0] and '"2026-10-30 09:45:00"' in tick_queries[-1]
@@ -192,3 +192,33 @@ def test_a_failed_tick_slice_names_its_stage_and_range(monkeypatch):
     monkeypatch.setattr(module, "_td_connect", lambda: connection)
     with pytest.raises(RuntimeError, match=r"plate_amount_baseline_tick_slice 2026-10-01\.\.2026-10-02.*Table does not exist"):
         module._read_td("2026-11-02", ["2026-10-01", "2026-10-02"])
+
+
+def test_an_auction_slice_that_runs_out_of_query_memory_is_halved(monkeypatch):
+    from engine_core import plate_amount_baseline as module
+
+    class Cursor:
+        def __init__(self):
+            self.sql, self.queries = "", []
+
+        def execute(self, sql):
+            self.sql = sql
+            if "auction_snapshot_v2" in sql:
+                self.queries.append(sql)
+                if sql.count('"2026') > 2 or sql.count('"2026') == 0 and sql.count(",") > 1:
+                    raise RuntimeError("[0x073a]: Query memory exhausted")
+
+        def fetchall(self):
+            if "auction_snapshot_v2" not in self.sql:
+                return []
+            days = [part.strip('"') for part in self.sql.split("IN (")[1].split(")")[0].split(",")]
+            return [(f"{day[:4]}-{day[4:6]}-{day[6:]} 09:25:06", "000001", day, "0925", int(day[6:]))
+                    for day in days]
+
+    cursor = Cursor()
+    connection = type("C", (), {"cursor": lambda self: cursor, "close": lambda self: None})()
+    monkeypatch.setattr(module, "_td_connect", lambda: connection)
+    dates = [f"2026-10-{day:02d}" for day in range(1, 6)]
+    rows = module._read_td("2026-11-02", dates)
+    assert sorted(r["trade_date"] for r in rows if r["slot"] == "0925") == dates   # nothing lost by halving
+    assert len(cursor.queries) > 1 and all("ORDER BY" not in sql for sql in cursor.queries)

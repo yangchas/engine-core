@@ -144,21 +144,37 @@ def _read_0945_slice(cursor: Any, days: Sequence[str], wanted: set[str],
     return out
 
 
+def _read_auction_rows(cursor: Any, days: Sequence[str]) -> list[tuple]:
+    """09:25 auction snapshots of ``days``; SLICE_DAYS per query, a slice that runs out of query memory is halved.
+    No ORDER BY: the caller keeps the latest snapshot per (day, symbol) itself, and sorting is what costs memory."""
+    rows: list[tuple] = []
+    for index in range(0, len(days), SLICE_DAYS):
+        rows.extend(_auction_slice(cursor, list(days[index:index + SLICE_DAYS])))
+    return rows
+
+
+def _auction_slice(cursor: Any, days: list[str]) -> list[tuple]:
+    quoted = ",".join(f'"{day.replace("-", "")}"' for day in days)
+    try:
+        cursor.execute("SELECT ts, symbol, trade_date, auction_tag, match_amt_yuan "
+                       "FROM market_data1.auction_snapshot_v2 "
+                       f'WHERE trade_date IN ({quoted}) AND auction_tag="0925"')
+        return list(cursor.fetchall())
+    except Exception as exc:
+        if "memory" in str(exc).lower() and len(days) > 1:
+            middle = len(days) // 2
+            return _auction_slice(cursor, days[:middle]) + _auction_slice(cursor, days[middle:])
+        raise RuntimeError(f"plate_amount_baseline_auction_query {days[0]}..{days[-1]}: {exc}") from exc
+
+
 def _read_td(target_date: str, dates: Sequence[str]) -> list[dict[str, Any]]:
     if not dates:
         return []
     connection = _td_connect()
     result: list[dict[str, Any]] = []
-    quoted = ",".join(f'"{day.replace("-", "")}"' for day in dates)
     try:
         cursor = connection.cursor()
-        try:
-            cursor.execute("SELECT ts, symbol, trade_date, auction_tag, match_amt_yuan "
-                           "FROM market_data1.auction_snapshot_v2 "
-                           f"WHERE trade_date IN ({quoted}) AND auction_tag=\"0925\" ORDER BY trade_date,symbol,ts")
-            auction_rows = cursor.fetchall()
-        except Exception as exc:
-            raise RuntimeError(f"plate_amount_baseline_auction_query {dates[0]}..{dates[-1]}: {exc}") from exc
+        auction_rows = _read_auction_rows(cursor, list(dates))
         latest: dict[tuple[str, str], tuple[str, Any]] = {}
         for ts, symbol, day, _tag, amount in auction_rows:
             key = (_day(day), _symbol(symbol))
