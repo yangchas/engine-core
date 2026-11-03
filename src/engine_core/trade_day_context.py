@@ -2,15 +2,12 @@
 
 Everything that needs a neighbouring trade date asks this module (backed by the Core trading calendar) instead of
 deriving it from catalog partitions, weekdays or ``date.today() - 1``. The context for the market day is also
-persisted (``<root>/trade_calendar/day_context.json``) by the daily calendar refresh and by every guardian start, so
-other processes and operators can read it without importing Python; readers never trust the file blindly — they
-recompute when its day or calendar version no longer matches.
+computed from the Core trading calendar on every ask. It used to be persisted as ``trade_calendar/day_context.json``;
+that derived cache is gone (design/31 B9: a data function leaves no intermediate files).
 """
 from __future__ import annotations
 
-import json
 import os
-import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -85,44 +82,15 @@ def build_context(root: str | Path | None = None, day: str | date | None = None)
     }
 
 
-def _path(root: Path) -> Path:
-    return root / "trade_calendar" / FILENAME
-
-
 def refresh_context(root: str | Path | None = None, day: str | date | None = None) -> dict[str, Any]:
-    """Recompute and atomically persist the context. Called by the daily calendar refresh and at every guardian start."""
-    base = _root(root)
-    context = build_context(base, day)
-    target = _path(base)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary = tempfile.mkstemp(dir=target.parent, prefix=".day_context-")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(context, stream, ensure_ascii=False, indent=2, sort_keys=True)
-            stream.write("\n")
-        os.replace(temporary, target)
-    except BaseException:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
-    return context
+    """The context for ``day``, computed from the calendar. Nothing is persisted: it is derived data (design/31 B9)."""
+    return build_context(_root(root), day)
 
 
 def load_context(root: str | Path | None = None, day: str | date | None = None) -> dict[str, Any]:
-    """The context for ``day``: the persisted one when it is for that day and the current calendar version, else recomputed."""
-    base = _root(root)
+    """The context for ``day`` (default: the market day), computed from the calendar."""
     wanted = date.fromisoformat(str(day)).isoformat() if day else market_today().isoformat()
-    try:
-        stored = json.loads(_path(base).read_text(encoding="utf-8"))
-        matrix = TradeCalendarStore(base).load() or {}
-        if (stored.get("schema") == SCHEMA and stored.get("as_of_day") == wanted
-                and stored.get("calendar_version") == matrix.get("last_ok_at")):
-            return stored
-    except (OSError, ValueError):
-        pass
-    return build_context(base, wanted)
+    return build_context(_root(root), wanted)
 
 
 def previous_trade_date(root: str | Path | None, day: str | date) -> str:
@@ -132,17 +100,3 @@ def previous_trade_date(root: str | Path | None, day: str | date) -> str:
 
 def next_trade_date(root: str | Path | None, day: str | date) -> str:
     return load_context(root, day)["next_trade_date"]
-
-
-def check_context(root: str | Path | None = None, day: str | date | None = None) -> dict[str, Any]:
-    """Compare the persisted file with a fresh computation (used by health checks)."""
-    base = _root(root)
-    fresh = build_context(base, day)
-    try:
-        stored = json.loads(_path(base).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"status": "MISSING", "fresh": fresh}
-    keys = ("as_of_day", "calendar_version", "prev_trade_date", "prev2_trade_date", "next_trade_date", "next2_trade_date",
-            "today_is_trading_day")
-    differing = [key for key in keys if stored.get(key) != fresh.get(key)]
-    return {"status": "OK" if not differing else "STALE", "differing": differing, "fresh": fresh}

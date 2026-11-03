@@ -1,5 +1,5 @@
-"""Trade-day context against the real Core trading calendar (read-only copy under tmp_path for writes)."""
-import json
+# DATA: real:~/core-data/trade_calendar (copied read-only into tmp_path; skipped when absent)
+"""Trade-day context against the real Core trading calendar; the context is computed, never persisted (design/31 B9)."""
 import shutil
 from pathlib import Path
 
@@ -38,28 +38,24 @@ def test_after_the_national_day_holiday_previous_is_the_last_session_before_it(r
     assert ctx.previous_trade_date(root, "2026-10-09") == "2026-10-08"
 
 
-def test_refresh_persists_and_load_reuses_only_a_matching_day_and_calendar_version(root):
-    written = ctx.refresh_context(root, "2026-10-21")
-    path = root / "trade_calendar" / ctx.FILENAME
-    assert json.loads(path.read_text())["prev_trade_date"] == "2026-10-20"
-    assert ctx.load_context(root, "2026-10-21")["generated_at"] == written["generated_at"]
-    other = ctx.load_context(root, "2026-10-22")           # different day: recomputed, never the stored one
-    assert other["as_of_day"] == "2026-10-22" and other["prev_trade_date"] == "2026-10-21"
-    stored = json.loads(path.read_text())
-    stored["calendar_version"] = "older-version"
-    path.write_text(json.dumps(stored))
-    assert ctx.load_context(root, "2026-10-21")["generated_at"] != written["generated_at"]
+def _files(root):
+    return sorted(path.name for path in (root / "trade_calendar").iterdir())
 
 
-def test_check_context_detects_a_tampered_file(root):
-    assert ctx.check_context(root, "2026-10-21")["status"] == "MISSING"
-    ctx.refresh_context(root, "2026-10-21")
-    assert ctx.check_context(root, "2026-10-21")["status"] == "OK"
-    path = root / "trade_calendar" / ctx.FILENAME
-    stored = json.loads(path.read_text())
-    stored["prev_trade_date"] = "2026-10-19"
-    path.write_text(json.dumps(stored))
-    assert ctx.check_context(root, "2026-10-21") ["differing"] == ["prev_trade_date"]
+def test_refresh_returns_the_context_and_writes_no_file(root):
+    before = _files(root)
+    context = ctx.refresh_context(root, "2026-10-21")
+    assert context["prev_trade_date"] == "2026-10-20" and context["next_trade_date"] == "2026-10-22"
+    assert _files(root) == before and "day_context.json" not in _files(root)
+
+
+def test_load_context_is_computed_from_the_calendar_for_the_asked_day_and_leaves_no_file(root):
+    before = _files(root)
+    loaded = ctx.load_context(root, "2026-10-22")
+    fresh = ctx.build_context(root, "2026-10-22")
+    assert {k: v for k, v in loaded.items() if k != "generated_at"} == {k: v for k, v in fresh.items() if k != "generated_at"}
+    assert loaded["as_of_day"] == "2026-10-22" and loaded["prev_trade_date"] == "2026-10-21"
+    assert _files(root) == before
 
 
 def test_no_module_derives_the_previous_trade_day_outside_the_context():
