@@ -114,7 +114,15 @@ def _daily_kline_provider_arg(value):
     return ",".join(providers)
 
 
-_TD_SNAPSHOT_DATASETS = frozenset({"plate_members"})
+def _registry_items():
+    from .registry import load_registry
+    return load_registry()
+
+
+def snapshot_datasets() -> frozenset[str]:
+    """Datasets whose authority is a TD reference snapshot, from the registry's storage declaration (CT-01)."""
+    return frozenset(item["id"] for item in _registry_items()
+                     if any(loc["kind"] == "td_snapshot" and loc["role"] == "authority" for loc in item["storage"]))
 
 
 def _snapshot_problem(dataset: str, day: str) -> str:
@@ -226,7 +234,7 @@ def validate_handler_postcondition(name: str, day: str, root: str | Path,
         datasets = ("daily_kline",)
     for dataset in datasets:
         target = day
-        if name == "kaipan_fetch" and dataset in _TD_SNAPSHOT_DATASETS and os.environ.get("TD_CONFIG"):
+        if name == "kaipan_fetch" and dataset in snapshot_datasets() and os.environ.get("TD_CONFIG"):
             # C618: reference snapshots live in TD (latest only); they have no per-date catalog partition.
             problem = _snapshot_problem(dataset, day)
             if problem:
