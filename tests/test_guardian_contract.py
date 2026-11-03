@@ -53,3 +53,13 @@ def test_handler_leaves_a_valid_reply_untouched(monkeypatch, capsys):
     reply = {"contract": 1, "status": "ok", "error_code": "", "retryable": False}
     exit_code, printed, err = _run_main(monkeypatch, capsys, 0, reply)
     assert (exit_code, printed, err) == (0, reply, "")
+
+
+def test_daily_kline_fill_busy_lease_reply_obeys_the_contract(monkeypatch, tmp_path):
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from examples import guardian_handler
+    import engine_core.data_pipeline.daily_kline_fill as fill
+    monkeypatch.setattr(fill, "run_daily_kline_fill_from_root", lambda root, target, args=None: {"status": "BUSY"})
+    code, reply = guardian_handler._run_daily_kline_fill({}, tmp_path, "2026-11-02", {})
+    assert code == 20 and check_reply(code, reply) == []

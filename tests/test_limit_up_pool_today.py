@@ -163,7 +163,7 @@ def test_wencai_budget_is_one_request_and_redis_failure_does_not_poll(tmp_path):
         wencai_snapshot=lambda _day: early_calls.append(_day) or response,
         clock=lambda: datetime.fromisoformat("2026-10-28T15:19:59+08:00"))
     code, early = runner.run(request, tmp_path / "early-window", deps=early_deps)
-    assert code == 64 and early["error_code"] == "WENCAI_WINDOW_CLOSED"
+    assert code == 40 and early["error_code"] == "WENCAI_WINDOW_CLOSED"
     assert early_calls == []
 
     offline = runner.TodayDeps(
