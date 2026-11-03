@@ -204,7 +204,7 @@ def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str
     request_clock = deps.clock()
     request_time = _local_datetime(None, request_clock)
     if not "15:20:00" <= request_time.strftime("%H:%M:%S") <= "16:00:00":
-        return 64, {"contract": 1, "status": "failed", "error_code": "WENCAI_WINDOW_CLOSED",
+        return 40, {"contract": 1, "status": "failed", "error_code": "WENCAI_WINDOW_CLOSED",
                     "retryable": False, "artifacts": [],
                     "detail": {"allowed_window": "15:20:00-16:00:00",
                                "request_time": request_time.isoformat(timespec="seconds")}}

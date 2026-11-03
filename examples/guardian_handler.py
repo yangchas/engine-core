@@ -241,7 +241,7 @@ def _run_daily_kline_fill(request, root, target: str, args) -> tuple[int, dict]:
                         "retryable": True, "artifacts": [], "detail": str(exc)}
         return _failure_response(request, error=exc)
     if result.get("status") == "BUSY":
-        return 20, {"contract": 1, "status": "not_applicable", "error_code": "", "retryable": False,
+        return 20, {"contract": 1, "status": "not_applicable", "error_code": "ALREADY_SATISFIED", "retryable": False,
                     "artifacts": [], "detail": result}
     return 0, {"contract": 1, "status": "ok", "error_code": "", "retryable": False,
                "artifacts": [], "detail": result}
