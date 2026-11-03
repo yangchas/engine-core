@@ -346,3 +346,38 @@ def test_a_provisional_day_with_enough_coverage_is_not_published_again_on_every_
     assert run(GappyVolume())["status"] == "COMPLETE"
     assert {p["business_status"] for p in publishes[0]} == {"PROVISIONAL"}
     assert run(GappyVolume())["status"] == "NO_GAPS" and len(publishes) == 1
+
+
+# ---- C651: expected symbols for days older than every symbol_universe partition ------------------------------------
+
+def _real_stock_static_rows():
+    import gzip
+    path = (Path(__file__).parent / "fixtures" / "real" / "core_artifacts" / "c651" / "stock_static"
+            / "trade_date=2026-10-29" / "source=baostock_stock_basic" / "sha256-d2f57645aafb76b7" / "rows.jsonl.gz")
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+def test_listed_symbols_follow_the_real_listing_dates():
+    from engine_core.data_pipeline.daily_kline_fill import listed_symbols
+    rows = _real_stock_static_rows()
+    newest = max((r for r in rows if r.get("listing_date")), key=lambda r: r["listing_date"])
+    oldest = min((r for r in rows if r.get("listing_date")), key=lambda r: r["listing_date"])
+    before = listed_symbols(rows, "2026-05-07")
+    assert oldest["symbol"] in before and newest["symbol"] not in before
+    assert newest["symbol"] in listed_symbols(rows, newest["listing_date"])
+    assert len(before) < len(listed_symbols(rows, "2026-10-29")) <= len(rows)
+
+
+def test_days_older_than_the_universe_use_listing_dates_newer_days_use_the_universe(tmp_path):
+    from engine_core.data_pipeline.daily_kline_fill import listed_symbols, make_expected_symbols
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from tests.test_daily_kline_gapfill import _seed_real_symbol_universe
+    rows = _real_stock_static_rows()
+    catalog = ArtifactCatalog(tmp_path)
+    catalog.commit("stock_static", "2026-10-29", rows, {"business_status": "PROVISIONAL"}, source="baostock_stock_basic")
+    _seed_real_symbol_universe(tmp_path, "2026-10-15", ["000001", "000002"])
+    expected = make_expected_symbols(ArtifactCatalog(tmp_path))
+    assert expected("2026-10-16") == {"000001", "000002"}                 # a universe partition exists at or before
+    assert expected("2026-05-07") == listed_symbols(rows, "2026-05-07")    # older than every partition
+    assert len(expected("2026-05-07")) > 1000

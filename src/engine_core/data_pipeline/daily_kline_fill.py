@@ -29,6 +29,16 @@ def _marker_is_current(current: Mapping[str, Any] | None, label: str, day: str, 
             int(current.get("row_count") or 0) == row_count)
 
 
+def listed_symbols(static_rows: Sequence[Mapping[str, Any]], day: str) -> set[str]:
+    """Symbols of ``stock_static`` already listed on ``day`` (``listing_date <= day``).
+
+    The expected set for a day older than every ``symbol_universe`` partition. It only knows the stocks listed today,
+    so delisted ones are not expected (nor fetched); a stock without a listing date is not expected either.
+    """
+    return {str(row.get("symbol", "")).zfill(6) for row in static_rows
+            if str(row.get("listing_date") or "") and str(row["listing_date"]) <= day and row.get("symbol")}
+
+
 def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates: Sequence[str],
                          expected_symbols: Callable[[str], set[str]], lease: Any = None, depth: int = 10,
                          coverage_threshold: float = 0.995, max_consecutive_failures: int = 5,
@@ -222,6 +232,29 @@ def publish_filled_days(root: Any, store: Any, days: Sequence[str], expected_sym
     return outcomes
 
 
+def make_expected_symbols(catalog: Any) -> Callable[[str], set[str]]:
+    """``day -> symbols the day must have``: the newest symbol_universe partition at or before the day (tradable ones);
+    for days older than every partition (a deep history load) the stock_static listing dates."""
+    universe_dates = sorted((catalog.read().get("datasets", {}).get("symbol_universe", {}).get("dates", {})))
+    memo: dict[str, set[str]] = {}
+
+    def expected_symbols(day: str) -> set[str]:
+        if day not in memo:
+            for candidate in reversed([item for item in universe_dates if item <= day]):
+                path = catalog.locate("symbol_universe", candidate)
+                if path is not None:
+                    memo[day] = {str(row.get("symbol", row.get("code", ""))).zfill(6)
+                                 for row in catalog.read_rows(path)
+                                 if str(row.get("trade_status", "")).strip() != "0"}
+                    break
+            else:
+                static_path = catalog.locate("stock_static")
+                memo[day] = listed_symbols(catalog.read_rows(static_path), day) if static_path is not None else set()
+        return memo[day]
+
+    return expected_symbols
+
+
 def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str, Any] | None = None,
                                    store: Any = None, client: Any = None, lease: Any = None,
                                    trading_dates: Sequence[str] | None = None) -> dict[str, Any]:
@@ -243,22 +276,7 @@ def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str,
         trading_dates = TradeCalendarStore(base).all_trading_dates()
     from .storage import ArtifactCatalog
     catalog = ArtifactCatalog(base)
-    universe_dates = sorted((catalog.read().get("datasets", {}).get("symbol_universe", {}).get("dates", {})))
-    memo: dict[str, set[str]] = {}
-
-    def expected_symbols(day: str) -> set[str]:
-        if day not in memo:
-            for candidate in reversed([item for item in universe_dates if item <= day]):
-                path = catalog.locate("symbol_universe", candidate)
-                if path is not None:
-                    memo[day] = {str(row.get("symbol", row.get("code", ""))).zfill(6)
-                                 for row in catalog.read_rows(path)
-                                 if str(row.get("trade_status", "")).strip() != "0"}
-                    break
-            else:
-                memo[day] = set()
-        return memo[day]
-
+    expected_symbols = make_expected_symbols(catalog)
     no_progress = float(options.get("baostock_no_progress_seconds", 300))
     if client is None:
         import baostock as bs
