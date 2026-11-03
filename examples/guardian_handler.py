@@ -597,6 +597,12 @@ def main(argv=None):
             if args.handler:
                 request["handler"] = args.handler
             code, result = _run(request)
+            from engine_core.guardian.contract import check_reply
+            violations = check_reply(code, result)
+            if violations:
+                # Observe first: guardiand would read this pair as a generic retryable failure or not at all.
+                result = {**result, "contract_violations": violations}
+                print("CONTRACT_VIOLATION exit=%s %s" % (code, ",".join(violations)), file=sys.stderr)
             _json(result)
             return code
         if args.command == "gate":
