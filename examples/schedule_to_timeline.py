@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from engine_core.guardian.timeline import diff_schedules, expand, generate, to_timeline  # noqa: E402
+from engine_core.guardian.timeline_check import validate_timeline  # noqa: E402
 
 
 def main(argv=None) -> int:
@@ -29,8 +30,10 @@ def main(argv=None) -> int:
     report = {"events": len(schedule["events"]), "functions": len(doc["functions"]),
               "time_points": len(doc["timeline"]), "startup_events": len(doc["startup"]),
               "policies": len(doc["policies"]), "bytes_flat": len(canon(schedule)),
-              "bytes_timeline": len(canon(doc)), "lossless": lossless}
+              "bytes_timeline": len(canon(doc)), "lossless": lossless,
+              "validation_problems": validate_timeline(doc)}
     print(json.dumps(report, ensure_ascii=False))
+    lossless = lossless and not report["validation_problems"]
     if args.out:
         Path(args.out).write_text(json.dumps(doc, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     if args.generate:

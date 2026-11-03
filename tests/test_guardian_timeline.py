@@ -111,3 +111,44 @@ def test_guardiand_migrate_reads_the_generated_schedule_as_the_shipped_one():
         doc = to_timeline(SCHEDULE)
         doc["functions"]["limit_up_today"]["cost"] = "heavy"
         assert canon(_go_config(generate(doc), work, "mutant")) != canon(expected)
+
+
+# ---- P2.3: validation ------------------------------------------------------------------------------------------
+
+from engine_core.guardian.timeline_check import validate_timeline
+
+
+def test_the_shipped_schedule_has_no_validation_problems():
+    assert validate_timeline(to_timeline(SCHEDULE)) == []
+
+
+def _doc():
+    return to_timeline(copy.deepcopy(SCHEDULE))
+
+
+def _first(doc, fn):
+    return next(item for point in doc["timeline"] for item in point["run"] if item["fn"] == fn)
+
+
+@pytest.mark.parametrize("break_it,expected", [
+    (lambda d: _first(d, "limit_up_today").update(fn="no_such_function"), "unknown_function:no_such_function"),
+    (lambda d: _first(d, "kaipan_hot").update(policy="no_such_policy"), "unknown_policy:no_such_policy"),
+    (lambda d: _first(d, "limit_up_today").update(deadline="09:00:00"), "deadline_before_start"),
+    (lambda d: _first(d, "limit_up_today").update(available_after="23:00:00"), "available_after_later_than_start"),
+    (lambda d: _first(d, "limit_up_today").update(late_until="00:01:00", deadline="09:40:00"), "late_until_before_deadline"),
+    (lambda d: d["functions"]["limit_up_today"].update(phases=["POST_MARKET"]), "start_in_a_phase_the_event_does_not_allow"),
+    (lambda d: d["functions"]["limit_up_today"].update(handler="no_such_handler"), "unknown_handler:no_such_handler"),
+    (lambda d: d["functions"]["limit_up_today"].update(gate="no_such_gate"), "unknown_gate:no_such_gate"),
+    (lambda d: _first(d, "limit_up_today").update(depends_on=["ghost_event"]), "depends_on_unknown_event:ghost_event"),
+    (lambda d: _first(d, "limit_up_today").update(after=["close_recap"]), "after_runs_later:close_recap"),
+    (lambda d: d["policies"]["policy_05"].update(ladder=[]), "empty_ladder"),
+    (lambda d: d["policies"]["daily_kline_close"]["ladder"][1].update(name="wencai"), "duplicate_tier_name"),
+    (lambda d: d["policies"]["policy_05"]["ladder"][0].update(attempts=0), "attempts_below_1"),
+    (lambda d: _first(d, "limit_up_today").update(id=_first(d, "kaipan_hot")["id"]), "duplicate_id"),
+    (lambda d: d["order"].pop(), "does_not_list_each_trigger_once"),
+    (lambda d: d["timeline"][3].update(at="25:61:00"), "bad_clock:at"),
+])
+def test_each_class_of_broken_timeline_is_rejected(break_it, expected):
+    doc = _doc()
+    break_it(doc)
+    assert any(expected in problem for problem in validate_timeline(doc)), validate_timeline(doc)
