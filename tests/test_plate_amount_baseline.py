@@ -145,3 +145,50 @@ def test_no_dates_means_no_td_connection(monkeypatch):
 
     monkeypatch.setattr(module, "_td_connect", lambda: (_ for _ in ()).throw(AssertionError("must not connect")))
     assert module._read_td("2026-11-02", []) == []
+
+
+def test_a_single_day_that_still_runs_out_of_memory_is_split_by_symbol_range(monkeypatch):
+    from engine_core import plate_amount_baseline as module
+
+    class OneDayTooBig:
+        def __init__(self):
+            self.sql, self.queries = "", []
+
+        def execute(self, sql):
+            self.sql = sql
+            if "stock_tick_v2" in sql:
+                self.queries.append(sql)
+                if "symbol >=" not in sql:
+                    raise RuntimeError("[0x073a]: Query memory exhausted")
+
+        def fetchall(self):
+            if "auction_snapshot_v2" in self.sql:
+                return []
+            low = self.sql.split('symbol >= "')[1][:6]
+            symbol = {"000000": "000001", "300000": "300750", "600000": "600519"}[low]
+            return [("2026-10-30 09:30:01", symbol, 100)]
+
+    cursor = OneDayTooBig()
+    connection = type("C", (), {"cursor": lambda self: cursor, "close": lambda self: None})()
+    monkeypatch.setattr(module, "_td_connect", lambda: connection)
+    rows = module._read_td("2026-11-02", ["2026-10-30"])
+    assert sorted(r["symbol"] for r in rows if r["slot"] == "0945") == ["000001", "300750", "600519"]
+    assert len(cursor.queries) == 4                                   # the whole day first, then three symbol ranges
+
+
+def test_a_failed_tick_slice_names_its_stage_and_range(monkeypatch):
+    from engine_core import plate_amount_baseline as module
+    import pytest
+
+    class Broken:
+        def execute(self, sql):
+            if "stock_tick_v2" in sql:
+                raise RuntimeError("[0x2603]: Table does not exist")
+
+        def fetchall(self):
+            return []
+
+    connection = type("C", (), {"cursor": lambda self: Broken(), "close": lambda self: None})()
+    monkeypatch.setattr(module, "_td_connect", lambda: connection)
+    with pytest.raises(RuntimeError, match=r"plate_amount_baseline_tick_slice 2026-10-01\.\.2026-10-02.*Table does not exist"):
+        module._read_td("2026-11-02", ["2026-10-01", "2026-10-02"])
