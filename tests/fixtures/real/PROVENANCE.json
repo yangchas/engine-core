@@ -1675,5 +1675,132 @@
   },
   "request_count": 1,
   "source_date_echo": "Date"
+ },
+ "_td_recordings": {
+  "td/errors/query_memory_exhausted_0x073a.json": {
+   "kind": "raw_td_error",
+   "sha256": "c6a57b7ec7d26264a7cf729e6f9eadce0b939a8dbd6f5a2a451fc487faa8b4cf",
+   "bytes": 319,
+   "command": "examples/capture_td_error.py query_memory_exhausted_0x073a /home/exedev/core-data/guardian-native/state/ledger/2026-11-03.jsonl --seq 135",
+   "source": {
+    "ledger": "/home/exedev/core-data/guardian-native/state/ledger/2026-11-03.jsonl",
+    "seq": 135,
+    "ts": "2026-11-03T08:38:18.263732595+08:00",
+    "record_sha256": "3341c6fb997bef9780b17abde38ae61bfca57c3b1e6eedbd0dc0c5799478c341"
+   }
+  },
+  "td/plate_amount_2day.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_2day",
+   "sha256": "9739bdb99f16b7c300711f8c48918e41db9e181e8235944d984b806d18eba0d0",
+   "bytes": 231744,
+   "recorded_at": "2026-11-04T01:01:32+08:00",
+   "statements": 2,
+   "rows": 37632,
+   "errors": 0,
+   "command": "examples/record_td_scenario.py plate_amount_2day",
+   "call": {
+    "function": "plate_amount_baseline._read_td",
+    "args": [
+     "2026-11-02",
+     [
+      "2026-10-29",
+      "2026-10-30"
+     ]
+    ]
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/plate_amount_slice_halving.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_slice_halving",
+   "sha256": "6ef6b0f802627d67afdd8f1db9321f5bbece5aea97f94ee30efc1cc1a506a7ba",
+   "bytes": 147983,
+   "recorded_at": "2026-11-04T01:01:35+08:00",
+   "statements": 4,
+   "rows": 20945,
+   "errors": 1,
+   "command": "examples/record_td_scenario.py plate_amount_slice_halving",
+   "call": {
+    "function": "plate_amount_baseline._read_td",
+    "args": [
+     "2026-11-02",
+     [
+      "2026-10-29",
+      "2026-10-30"
+     ]
+    ],
+    "injected": "2-day tick slice -> real error 0x073a"
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/plate_amount_symbol_split.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_symbol_split",
+   "sha256": "6569d3e39ee733fbcc1b5e25713e4356bf160fb13b1380921b6722a0e9ced347",
+   "bytes": 90820,
+   "recorded_at": "2026-11-04T01:01:38+08:00",
+   "statements": 5,
+   "rows": 12909,
+   "errors": 1,
+   "command": "examples/record_td_scenario.py plate_amount_symbol_split",
+   "call": {
+    "function": "plate_amount_baseline._read_td",
+    "args": [
+     "2026-11-02",
+     [
+      "2026-10-30"
+     ]
+    ],
+    "injected": "unfiltered 1-day tick slice -> real error 0x073a"
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/plate_amount_auction_halving.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_auction_halving",
+   "sha256": "7e5924a04817365b2de33ad5999d5065fef62a0903d283cbb2cdb43c56fefe7e",
+   "bytes": 36271,
+   "recorded_at": "2026-11-04T01:01:39+08:00",
+   "statements": 3,
+   "rows": 5223,
+   "errors": 1,
+   "command": "examples/record_td_scenario.py plate_amount_auction_halving",
+   "call": {
+    "function": "plate_amount_baseline._read_auction_rows",
+    "args": [
+     [
+      "2026-10-29",
+      "2026-10-30"
+     ]
+    ],
+    "injected": "2-day auction slice -> real error 0x073a"
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/dde_suspended.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "dde_suspended",
+   "sha256": "59235ae5e88d67edb8509374f36f7ffff09c143f294251e87b5c2dd44a5275c0",
+   "bytes": 320,
+   "recorded_at": "2026-11-04T01:01:41+08:00",
+   "statements": 1,
+   "rows": 2,
+   "errors": 0,
+   "command": "examples/record_td_scenario.py dde_suspended",
+   "call": {
+    "function": "TaosDdeStore.read_suspended",
+    "args": [
+     [
+      "000831",
+      "002129",
+      "600519",
+      "000001"
+     ],
+     "2026-11-02"
+    ]
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  }
  }
 }
