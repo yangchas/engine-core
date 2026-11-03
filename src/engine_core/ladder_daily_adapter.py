@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping
 from .data_pipeline.derived_daily import UpstreamNotReady, inputs_stale, normalize_status, select_best
 from .data_pipeline.ladder_daily import ALGORITHM, DEFAULT_LADDER, NeedInput, build_ladder_daily
 from .data_pipeline.storage import ArtifactCatalog
+from .runtime_state import ProviderState
 
 DEFAULT_CONFIG = {"source_ladder": list(DEFAULT_LADDER), "window_days": 20, "continuity_min_ratio": 0.95,
                   "kaipan": {"live": True, "max_requests": 12},
@@ -61,7 +62,7 @@ def default_kaipan_fetch(max_requests: int = 12) -> Callable[[str], list[dict]]:
     return fetch
 
 
-def default_wencai_fetch(cfg: Mapping[str, Any], state_path: Path) -> Callable[[str], dict]:
+def default_wencai_fetch(cfg: Mapping[str, Any], state: Any) -> Callable[[str], dict]:
     """WenCai "YYYY-MM-DD涨停" with a persistent min-interval gate and a per-run query budget; the day is only
     accepted when the dated column headers ``[YYYYMMDD]`` carry the requested day (date evidence)."""
     used = {"n": 0}
@@ -70,15 +71,11 @@ def default_wencai_fetch(cfg: Mapping[str, Any], state_path: Path) -> Callable[[
         if used["n"] >= int(cfg.get("max_queries_per_run", 2)):
             return {"status": "unavailable", "reason": "wencai_query_budget_exhausted"}
         interval = float(cfg.get("min_interval_seconds", 10.0))
-        try:
-            last = float(json.loads(state_path.read_text(encoding="utf-8")).get("last_request", 0))
-        except (OSError, ValueError):
-            last = 0.0
+        last = float(state.load().get("last_request", 0))
         wait = interval - (time.time() - last)
         if wait > 0:
             time.sleep(wait)
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(json.dumps({"last_request": time.time()}), encoding="utf-8")
+        state.save({"last_request": time.time()})
         used["n"] += 1
         cookie = None
         cookie_path = Path(str(cfg.get("cookie_path") or "")).expanduser()
@@ -185,7 +182,6 @@ def up_to_date(catalog: ArtifactCatalog, trade_date: str) -> bool:
 
 def materialize_ladder_daily(catalog: ArtifactCatalog, *, trade_date: str, config: Mapping[str, Any] | None = None,
                              now: datetime | None = None, force: bool = False, kaipan_fetch=None, wencai_fetch=None,
-                             state_dir: Path | None = None,
                              on_committed: Callable[[str, list[dict[str, Any]], Mapping[str, Any]], Any] | None = None
                              ) -> dict[str, Any]:
     cfg = {**DEFAULT_CONFIG, **(config or {})}
@@ -211,8 +207,7 @@ def materialize_ladder_daily(catalog: ArtifactCatalog, *, trade_date: str, confi
     if kaipan_fetch is None and "kaipan" in ladder and (cfg.get("kaipan") or {}).get("live"):
         kaipan_fetch = default_kaipan_fetch(int(cfg["kaipan"].get("max_requests", 12)))
     if wencai_fetch is None and "wencai" in ladder and (cfg.get("wencai") or {}).get("live"):
-        base = Path(state_dir) if state_dir else catalog.root / "guardian-native"
-        wencai_fetch = default_wencai_fetch(cfg["wencai"], base / "ladder_wencai_gate.json")
+        wencai_fetch = default_wencai_fetch(cfg["wencai"], ProviderState("wencai_ladder"))
     loader = Loader(catalog, cfg, kaipan_fetch=kaipan_fetch, wencai_fetch=wencai_fetch, when=when)
     listings = _listings(catalog)
     request = {"trade_date": trade_date, "as_of": when.isoformat(), "fetched_at": when.isoformat(),

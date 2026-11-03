@@ -66,7 +66,7 @@ def main(argv=None) -> int:
         from engine_core.ladder_daily_adapter import materialize_ladder_daily
         out.update(materialize_ladder_daily(
             ArtifactCatalog(root), trade_date=args.date, config=registry_config(), now=now, force=args.force,
-            state_dir=root / "guardian-native", on_committed=lambda day, rows, manifest:
+            on_committed=lambda day, rows, manifest:
             td_write(root, day, rows, manifest)))
         out["elapsed_ms"] = round((time.monotonic() - started) * 1000)
         print(json.dumps(out, ensure_ascii=False, sort_keys=True, default=str))

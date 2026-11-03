@@ -27,6 +27,7 @@ class TodayDeps:
     # Redis writes remain opt-in while this card's runtime permission is read-only.
     publish_hot: Callable[[Mapping[str, Any], list[dict[str, Any]]], Mapping[str, Any]] | None = None
     publish_td: Callable[[Mapping[str, Any], list[dict[str, Any]]], Mapping[str, Any]] | None = None
+    state: Any = None  # StateStore holding the wencai daily budget; Redis from the environment when None
 
 
 def _local_datetime(value: Any, fallback: datetime) -> datetime:
@@ -214,7 +215,8 @@ def _close_confirmation(day: str, root: Path, deps: TodayDeps, args: Mapping[str
     try:
         if args.get("wencai_confirmation") is not True:
             raise ValueError("wencai_confirmation_not_configured")
-        throttle = authorize_wencai_request(root, day, pre_request_time,
+        from ..runtime_state import StateStore
+        throttle = authorize_wencai_request(deps.state if deps.state is not None else StateStore(), day, pre_request_time,
                                             min_interval_seconds=min_interval,
                                             max_requests_per_day=max_per_day)
         fetched = deps.wencai_snapshot(day)

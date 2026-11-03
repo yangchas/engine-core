@@ -16,6 +16,14 @@ class StateUnavailable(RuntimeError):
     """Redis is not configured or not reachable."""
 
 
+def redis_configured() -> bool:
+    """True when throttle/breaker state should live in Redis. ``CORE_PROVIDER_STATE=memory`` keeps it in the process
+    (offline tests and replays, which have no Redis to throttle against)."""
+    if os.getenv("CORE_PROVIDER_STATE", "").lower() == "memory":
+        return False
+    return bool(os.getenv("CORE_REDIS_URL") or os.getenv("REDIS_URL"))
+
+
 def redis_from_env() -> Any | None:
     url = os.getenv("CORE_REDIS_URL") or os.getenv("REDIS_URL")
     if not url:
@@ -40,8 +48,9 @@ class StateStore:
         return key
 
     def get(self, key: str) -> Any | None:
+        name = self._key(key)
         try:
-            raw = self._redis().get(self._key(key))
+            raw = self._redis().get(name)
         except StateUnavailable:
             raise
         except Exception as exc:
@@ -51,8 +60,9 @@ class StateStore:
     def set(self, key: str, value: Any, ttl_seconds: int) -> None:
         if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or ttl_seconds <= 0:
             raise ValueError("state_ttl_must_be_positive")
+        name = self._key(key)
         try:
-            self._redis().set(self._key(key), json.dumps(value, sort_keys=True, separators=(",", ":")), ex=ttl_seconds)
+            self._redis().set(name, json.dumps(value, sort_keys=True, separators=(",", ":")), ex=ttl_seconds)
         except StateUnavailable:
             raise
         except Exception as exc:
@@ -62,8 +72,9 @@ class StateStore:
         """Set ``key`` only when it does not exist (SET NX EX); True when this caller now owns it."""
         if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or ttl_seconds <= 0:
             raise ValueError("state_ttl_must_be_positive")
+        name = self._key(key)
         try:
-            return bool(self._redis().set(self._key(key), json.dumps(value, sort_keys=True, separators=(",", ":")),
+            return bool(self._redis().set(name, json.dumps(value, sort_keys=True, separators=(",", ":")),
                                           nx=True, ex=ttl_seconds))
         except StateUnavailable:
             raise
@@ -71,9 +82,33 @@ class StateStore:
             raise StateUnavailable(type(exc).__name__) from exc
 
     def delete(self, key: str) -> None:
+        name = self._key(key)
         try:
-            self._redis().delete(self._key(key))
+            self._redis().delete(name)
         except StateUnavailable:
             raise
         except Exception as exc:
             raise StateUnavailable(type(exc).__name__) from exc
+
+
+class ProviderState:
+    """Throttle / circuit-breaker state of one external provider: ``core:provider:<name>:state`` with a 2-day TTL."""
+
+    TTL_SECONDS = 2 * 86400
+
+    def __init__(self, name: str, store: StateStore | None = None):
+        self.key = f"core:provider:{name}:state"
+        self._store = store
+
+    @property
+    def store(self) -> StateStore:
+        if self._store is None:
+            self._store = StateStore()
+        return self._store
+
+    def load(self) -> dict[str, Any]:
+        value = self.store.get(self.key)
+        return value if isinstance(value, dict) else {}
+
+    def save(self, value: Any) -> None:
+        self.store.set(self.key, dict(value), self.TTL_SECONDS)

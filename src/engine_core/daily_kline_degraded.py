@@ -242,7 +242,7 @@ def capture(
                                       "reason": "wencai_adapter_not_configured"}
     wencai_elapsed_ms = 0.0
     if wencai_fetch is not None:
-        provider = WencaiDailyProvider(wencai_fetch, state_path=None,
+        provider = WencaiDailyProvider(wencai_fetch, state=None,
                                        expected_count=expected_count)
         wencai_started = time.monotonic()
         wencai_payload = provider.fetch(trade_date, now=current)
