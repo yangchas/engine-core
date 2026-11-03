@@ -344,8 +344,8 @@ def run(request: Mapping[str, Any], root: str | Path, *, dry_run: bool = False,
         deps: TodayDeps | None = None) -> tuple[int, dict[str, Any]]:
     """Run one schedule-configured sample; only the close-confirm tier may call WenCai."""
     if dry_run:
-        return 20, {"contract": 1, "status": "not_applicable", "error_code": "",
-                    "retryable": False, "artifacts": [], "detail": "dry_run"}
+        return 0, {"contract": 1, "status": "not_applicable", "error_code": "",
+                   "retryable": False, "artifacts": [], "detail": "dry_run"}
     args = request.get("args") if isinstance(request.get("args"), Mapping) else {}
     tier = str(args.get("tier") or "redis")
     raw_day = request.get("data_date") or request.get("trade_date") or request.get("target_day")
