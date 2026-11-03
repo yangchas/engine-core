@@ -147,3 +147,11 @@ WantedBy=default.target
 ```
 
 Installing or enabling this unit requires separate user approval.
+
+
+## Editing the schedule (P2.4, design 28)
+`timeline.json` is the only schedule file to edit by hand: `functions` (what runs), `policies` (retry/backoff/degrade),
+`timeline` (time points with the functions hung on them) and `startup`. After editing run
+`python examples/generate_schedule.py`; it validates the timeline (`timeline_check.py`) and rewrites `schedule.json`,
+`native/guardiand/testdata/schedule.json` and the provenance sha. `generate_schedule.py --check` (and
+`tests/test_guardian_timeline_source.py`) fails when any of the three was edited by hand or not regenerated.
