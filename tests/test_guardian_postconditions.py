@@ -1,7 +1,20 @@
+# DATA: real:core_artifacts/c651/stock_static rows, td/outputs/reference_snapshot_plate_members_latest.json (derived variant: row_count=0 for the empty case); spec:calendar copy of ~/core-data/trade_calendar for the limit-pool case
+import gzip
 import json
 from pathlib import Path
 
 from engine_core.guardian.commands import validate_handler_postcondition
+
+
+def _real_rows(count=3):
+    # real stock_static rows (C651 capture of the 2026-10-29 partition); these tests only need a non-empty real partition
+    path = (Path(__file__).parent / "fixtures" / "real" / "core_artifacts" / "c651" / "stock_static"
+            / "trade_date=2026-10-29" / "source=baostock_stock_basic" / "sha256-d2f57645aafb76b7" / "rows.jsonl.gz")
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        return [json.loads(next(handle)) for _ in range(count)]
+
+
+REAL_ROWS = _real_rows()
 
 
 def _catalog(root: Path, dataset: str, day: str, rows=(), **manifest):
@@ -19,15 +32,15 @@ def test_kaipan_fetch_requires_nonempty_previous_day_limit_pool(tmp_path, monkey
         pytest.skip("real Core trade calendar not available")
     shutil.copytree(real_calendar, tmp_path / "trade_calendar")  # real calendar: previous(10-20) == 10-19
     assert validate_handler_postcondition("kaipan_fetch", "2026-10-20", tmp_path) == (False, "limit_up_pool_missing_or_empty")
-    _catalog(tmp_path, "limit_up_pool", "2026-10-20", [{"symbol": "600000"}])
+    _catalog(tmp_path, "limit_up_pool", "2026-10-20", REAL_ROWS)
     assert not validate_handler_postcondition("kaipan_fetch", "2026-10-20", tmp_path)[0]
-    _catalog(tmp_path, "limit_up_pool", "2026-10-19", [{"symbol": "600000"}])
+    _catalog(tmp_path, "limit_up_pool", "2026-10-19", REAL_ROWS)
     assert validate_handler_postcondition("kaipan_fetch", "2026-10-20", tmp_path) == (True, "")
 
 
 def test_daily_kline_postcondition_reads_catalog(tmp_path):
     assert not validate_handler_postcondition("postmarket_data", "2026-10-20", tmp_path)[0]
-    _catalog(tmp_path, "daily_kline", "2026-10-20", [{"symbol": "600000"}])
+    _catalog(tmp_path, "daily_kline", "2026-10-20", REAL_ROWS)
     assert validate_handler_postcondition("baostock_probe", "2026-10-20", tmp_path) == (True, "")
 
 
@@ -42,7 +55,7 @@ def test_calendar_postcondition_requires_lit_coverage(tmp_path):
 
 def test_premarket_requires_reference_manifests(tmp_path):
     assert not validate_handler_postcondition("premarket_data", "2026-10-20", tmp_path)[0]
-    _catalog(tmp_path, "symbol_universe", "2026-10-20", [{"symbol": "600000"}])
+    _catalog(tmp_path, "symbol_universe", "2026-10-20", REAL_ROWS)
     assert validate_handler_postcondition("premarket_data", "2026-10-20", tmp_path) == (True, "")
 
 
@@ -99,10 +112,14 @@ def test_hot_plate_history_postcondition_requires_each_prior_session_saved_or_ga
                                           tmp_path, datasets) == (True, "")
 
 
-class _Snapshots:
-    """Stands in for the TD ReferenceSnapshotStore; the marker is the real ACTIVE plate_members one of 2026-11-03."""
+MARKER = json.loads((Path(__file__).parent / "fixtures" / "real" / "td" / "outputs"
+                     / "reference_snapshot_plate_members_latest.json").read_text(encoding="utf-8"))["value"]
 
-    marker = {"trade_date": "2026-11-02", "row_count": 91640}
+
+class _Snapshots:
+    """Stands in for the TD ReferenceSnapshotStore: it returns the REAL read_latest result recorded on 2026-11-04."""
+
+    marker = MARKER
 
     def __enter__(self):
         return self
@@ -123,14 +140,14 @@ def _td_snapshots(monkeypatch, marker):
 
 
 def test_plate_members_is_judged_on_the_td_snapshot_not_a_catalog_partition(tmp_path, monkeypatch):
-    _td_snapshots(monkeypatch, _Snapshots.marker)
-    assert validate_handler_postcondition("kaipan_fetch", "2026-11-02", tmp_path, ["plate_members"]) == (True, "")
+    _td_snapshots(monkeypatch, MARKER)
+    assert validate_handler_postcondition("kaipan_fetch", MARKER["trade_date"], tmp_path, ["plate_members"]) == (True, "")
 
 
 def test_plate_members_snapshot_of_another_day_or_empty_fails(tmp_path, monkeypatch):
-    _td_snapshots(monkeypatch, {"trade_date": "2026-10-30", "row_count": 91640})
+    _td_snapshots(monkeypatch, MARKER)
     assert validate_handler_postcondition("kaipan_fetch", "2026-11-02", tmp_path, ["plate_members"]) == (
-        False, "plate_members_snapshot_stale:2026-10-30")
-    _td_snapshots(monkeypatch, {"trade_date": "2026-11-02", "row_count": 0})
-    assert validate_handler_postcondition("kaipan_fetch", "2026-11-02", tmp_path, ["plate_members"]) == (
+        False, f"plate_members_snapshot_stale:{MARKER['trade_date']}")
+    _td_snapshots(monkeypatch, {**MARKER, "row_count": 0})     # derived from the real record: only row_count changed
+    assert validate_handler_postcondition("kaipan_fetch", MARKER["trade_date"], tmp_path, ["plate_members"]) == (
         False, "plate_members_missing_or_empty")
