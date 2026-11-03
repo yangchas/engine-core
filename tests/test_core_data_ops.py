@@ -62,12 +62,17 @@ def test_ladder_daily_backfill_accepts_real_daily_bar_fixture(tmp_path):
 def test_non_trading_day_is_recorded_without_fetch(tmp_path):
     _seed_c325_calendar(tmp_path)
     calls = []
+    from engine_core.runtime_state import StateStore
+    from tests.memory_redis import MemoryRedis
+    redis_state = MemoryRedis()
     result = run_daily_phase("premarket", "2026-10-18", root=tmp_path,
                              adapters={}, trading_dates=None,
-                             write=True, redis=None)
+                             write=True, redis=None, state=StateStore(redis_state))
     assert result["status"] == "SKIPPED_NON_TRADING_DAY"
     assert calls == []
-    assert json.loads((tmp_path / "daily_status.json").read_text())["status"] == result["status"]
+    key = "core:jobs:daily_status:premarket"                                   # the phase status lives in Redis...
+    assert json.loads(redis_state.values[key])["status"] == result["status"] and 0 < redis_state.ttl(key) <= 3 * 86400
+    assert not (tmp_path / "daily_status.json").exists()                      # ...not in a file
 
 
 def test_daily_kline_retry_windows_are_bounded_and_ladder_computation_is_gated():

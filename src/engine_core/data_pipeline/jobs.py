@@ -145,8 +145,53 @@ def _redact(value: Any) -> Any:
     return value
 
 
+class JobState:
+    """Circuit breakers and per-dataset status of the job runner.
+
+    With a ``StateStore`` they are Redis keys (``core:jobs:breaker:<scope>`` until the cooldown ends,
+    ``core:jobs:status:<dataset>`` for 7 days), so every process sees the same breaker; without one they live in this
+    process only. They used to be ``job_state.json`` in the data root (design/31 B13)."""
+
+    STATUS_TTL_SECONDS = 7 * 86400
+
+    def __init__(self, store: Any | None = None):
+        self._store = store
+        self._breakers: dict[str, Any] = {}
+        self._status: dict[str, Any] = {}
+
+    def breaker(self, scope: str) -> Mapping[str, Any] | None:
+        if self._store is None:
+            return self._breakers.get(scope)
+        return self._store.get(f"core:jobs:breaker:{scope}")
+
+    def open_breaker(self, scope: str, now: datetime, category: str, *, hours: float) -> None:
+        entry = {"until": (now + timedelta(hours=hours)).isoformat(), "category": category}
+        if self._store is None:
+            self._breakers[scope] = entry
+        else:
+            self._store.set(f"core:jobs:breaker:{scope}", entry, int(hours * 3600) + 3600)
+
+    def set_status(self, name: str, entry: Mapping[str, Any]) -> None:
+        if self._store is None:
+            self._status[name] = dict(entry)
+        else:
+            self._store.set(f"core:jobs:status:{name}", dict(entry), self.STATUS_TTL_SECONDS)
+
+    def status(self, name: str) -> Mapping[str, Any] | None:
+        if self._store is None:
+            return self._status.get(name)
+        return self._store.get(f"core:jobs:status:{name}")
+
+
+def default_job_state() -> JobState:
+    """Redis-backed when the process has a Redis URL (production), in-process otherwise (offline tests and replays)."""
+    from ..runtime_state import StateStore, redis_configured
+    return JobState(StateStore()) if redis_configured() else JobState()
+
+
 class JobRunner:
     def __init__(self, *, artifact_root: str | Path, redis: Any = None, td_adapter: Any = None,
+                 state: JobState | None = None,
                  budget: RequestBudget | None = None, breaker_hours: float = 6,
                  max_payload_bytes: int = 64 * 1024 * 1024):
         self.catalog = ArtifactCatalog(artifact_root)
@@ -154,36 +199,21 @@ class JobRunner:
         self.redis = redis
         self.td_adapter = td_adapter
         self.budget = budget or RequestBudget()
+        self.state = state if state is not None else default_job_state()
         self.breaker_hours = breaker_hours
         self.max_payload_bytes = max_payload_bytes
 
-    def _state(self) -> dict[str, Any]:
-        path = self.root / "job_state.json"
-        try: return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError): return {"breakers": {}, "status": {}}
-
-    def _save_state(self, state: Mapping[str, Any]) -> None:
-        from .storage import _atomic_write
-        _atomic_write(self.root / "job_state.json", canonical_json(state) + b"\n")
-
     def _check_breaker(self, scope: str, now: datetime) -> None:
-        entry = self._state().get("breakers", {}).get(scope)
+        entry = self.state.breaker(scope)
         if entry and now < datetime.fromisoformat(entry["until"]):
             raise RuntimeError("circuit_open:provider_cooldown")
 
     def _open_breaker(self, scope: str, now: datetime, category: str) -> None:
-        state = self._state()
-        state.setdefault("breakers", {})[scope] = {
-            "until": (now + timedelta(hours=self.breaker_hours)).isoformat(),
-            "category": category,
-        }
-        self._save_state(state)
+        self.state.open_breaker(scope, now, category, hours=self.breaker_hours)
 
     def _record_failure(self, name: str, trade_date: str, category: str, now: datetime) -> None:
-        state = self._state()
-        state.setdefault("status", {})[name] = {"trade_date": trade_date,
-            "failed_at": now.isoformat(), "status": "FAILED", "reason": category}
-        self._save_state(state)
+        self.state.set_status(name, {"trade_date": trade_date, "failed_at": now.isoformat(), "status": "FAILED",
+                                     "reason": category})
 
     def run(self, name: str, trade_date: str, *, fetch: Callable[[str], Any],
             compute: Callable[[list[dict[str, Any]]], Any] | None = None,
@@ -507,14 +537,12 @@ class JobRunner:
                 committed["cache_publish_warning"] = f"redis_publish_failed:{type(exc).__name__}"
             else:
                 committed["cache_publish"] = "READY"
-        state = self._state()
         status = {"trade_date": trade_date,
             "available_at": committed["available_at"], "version": committed["version"],
             "quality": quality, "cache_publish": committed["cache_publish"]}
         if committed.get("cache_publish_warning"):
             status["cache_publish_warning"] = committed["cache_publish_warning"]
-        state.setdefault("status", {})[name] = status
-        self._save_state(state)
+        self.state.set_status(name, status)
         return JobResult(committed, rows)
 
     def _publish_redis(self, spec: DatasetSpec, trade_date: str, manifest: Mapping[str, Any],
