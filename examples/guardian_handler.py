@@ -123,9 +123,10 @@ def _failure_classes(request):
             "message_patterns": [],
         },
         # Baostock not having delivered yet is never a permanent failure, whatever exit code carried it.
+        # TD running out of query memory (0x073a) means another process holds the pool: retry later, never final.
         "retryable_first": {"message_patterns": ["baostock_gap_unresolved",
                                                  "td_daily_kline_requires_provider_baostock",
-                                                 "rate_limited:"]},
+                                                 "rate_limited:", "query memory exhausted", "0x073a"]},
         "default": "deterministic",
     }
 
