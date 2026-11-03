@@ -150,7 +150,11 @@ def test_validation_failure_does_not_publish_and_partial_fetch_circuits(tmp_path
     with pytest.raises(RuntimeError, match="circuit_open"):
         runner.run("hot_plates", "2026-10-15", fetch=lambda _: [],
                    now="2026-10-16T02:00:00Z")
-    assert "secret" not in (tmp_path / "job_state.json").read_text()
+    assert not (tmp_path / "job_state.json").exists()
+    recorded = {"hot_plates": runner.state.status("hot_plates"), "daily_kline": runner.state.status("daily_kline"),
+                "breakers": runner.state._breakers}
+    assert recorded["hot_plates"]["status"] == "FAILED" and recorded["breakers"]
+    assert "secret" not in repr(recorded)                      # the failure reason and breaker carry no credentials
 
 
 def test_daily_kline_without_universe_does_not_publish_latest(tmp_path):
