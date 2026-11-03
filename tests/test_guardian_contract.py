@@ -27,3 +27,29 @@ def test_limit_up_today_dry_run_reply_obeys_the_contract(tmp_path):
     from engine_core.guardian.limit_up_today import run
     code, reply = run({"trade_date": "2026-11-03", "args": {"tier": "redis"}}, tmp_path, dry_run=True)
     assert check_reply(code, reply) == []
+
+
+def _run_main(monkeypatch, capsys, code, reply):
+    import io
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from examples import guardian_handler
+    monkeypatch.setattr(guardian_handler, "_run", lambda request: (code, reply))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
+    exit_code = guardian_handler.main(["run"])
+    captured = capsys.readouterr()
+    return exit_code, json.loads(captured.out.strip().splitlines()[-1]), captured.err
+
+
+def test_handler_flags_a_contract_violation_without_changing_the_exit_code(monkeypatch, capsys):
+    reply = {"contract": 1, "status": "not_applicable", "error_code": "", "retryable": False}
+    exit_code, printed, err = _run_main(monkeypatch, capsys, 20, reply)
+    assert exit_code == 20
+    assert printed["contract_violations"] == ["exit_20_requires_not_applicable_and_ALREADY_SATISFIED"]
+    assert "CONTRACT_VIOLATION exit=20" in err
+
+
+def test_handler_leaves_a_valid_reply_untouched(monkeypatch, capsys):
+    reply = {"contract": 1, "status": "ok", "error_code": "", "retryable": False}
+    exit_code, printed, err = _run_main(monkeypatch, capsys, 0, reply)
+    assert (exit_code, printed, err) == (0, reply, "")
