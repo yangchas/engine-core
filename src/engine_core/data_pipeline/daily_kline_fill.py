@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Mapping, Sequence
 
+from ..errors import CoreError
 from .published_daily_kline import find_published_baostock_manifest
 from .td_sink import (BAOSTOCK_PROGRESS_VERSION, DailyKlineTdSink, has_baostock_date_evidence, map_rows,
                       pick_best)
@@ -17,10 +18,9 @@ MIN_FORMAL_COVERAGE = 0.98  # the floor hard-coded in registry.daily_kline.class
 _MANIFEST = {"provider": "baostock", "source": "baostock", "field_units": {"volume": "shares"}}
 
 
-def _abort(reason: str, detail: Mapping[str, Any]) -> RuntimeError:
-    # "BAOSTOCK_GAP_UNRESOLVED" is what the guardian already classifies as retryable.
+def _abort(reason: str, detail: Mapping[str, Any]) -> CoreError:
     parts = ",".join(f"{key}={value}" for key, value in detail.items())
-    return RuntimeError(f"BAOSTOCK_GAP_UNRESOLVED:{reason}:{parts}")
+    return CoreError("BAOSTOCK_GAP_UNRESOLVED", f"{reason}:{parts}")
 
 
 def _marker_is_current(current: Mapping[str, Any] | None, label: str, day: str, row_count: int) -> bool:

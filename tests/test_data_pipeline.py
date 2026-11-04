@@ -184,8 +184,9 @@ def test_provider_budget_and_td_adapter_are_offline_only():
 
     budget = RequestBudget(max_requests=2, min_interval_seconds=10)
     budget.consume("kaipan", at=0)
-    with pytest.raises(RuntimeError, match="rate_limited"):
+    with pytest.raises(RuntimeError) as refused:
         budget.consume("kaipan", at=9)
+    assert (refused.value.error_code, refused.value.retryable) == ("RATE_LIMITED", True)
     assert len(DDL) >= 2
     with pytest.raises(ValueError):
         validate_database_name("market_data1")

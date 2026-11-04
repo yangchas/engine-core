@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
+from .errors import CoreError
 
 
 _BAOSTOCK_FIELDS = (
@@ -107,7 +108,7 @@ def call_with_timeout(fn: Any, *args: Any, timeout_seconds: float = 30.0) -> Any
     if isinstance(value, TimeoutError):
         raise TimeoutError("BAOSTOCK_TIMEOUT") from None
     if isinstance(value, (ConnectionError, OSError)):
-        raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from value
+        raise CoreError("BAOSTOCK_CONNECTION_ERROR") from value
     raise value
 
 
@@ -186,7 +187,7 @@ def fetch_day(
                 if "BAOSTOCK_TIMEOUT" in str(exc):
                     raise TimeoutError("BAOSTOCK_TIMEOUT") from None
                 if isinstance(exc, (ConnectionError, OSError)):
-                    raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from exc
+                    raise CoreError("BAOSTOCK_CONNECTION_ERROR") from exc
                 errors.append({"symbol": symbol, "code": code, "msg": str(exc)})
                 if len(errors) > max_errors:
                     partial = True
@@ -331,7 +332,7 @@ class BaostockClient:
             self.last_error_code = error_code
             if error_code != "0":
                 self.last_error_code = error_code
-                raise RuntimeError(f"Baostock login failed: {getattr(result, 'error_msg', '')}")
+                raise CoreError("BAOSTOCK_LOGIN_FAILED", f"Baostock login failed: {getattr(result, 'error_msg', '')}")
             try:
                 from baostock.common import context
                 active_socket = getattr(context, "default_socket", None)

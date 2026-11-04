@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
+from ..errors import CoreError
 from .storage import _atomic_write, canonical_json
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -58,7 +59,7 @@ def _baostock_universe_worker(target: str, result_queue: Any) -> None:
         import baostock as module
         login = module.login()
         if getattr(login, "error_code", "0") != "0":
-            raise RuntimeError("BAOSTOCK_LOGIN_FAILED")
+            raise CoreError("BAOSTOCK_LOGIN_FAILED")
         try:
             symbols, row_count = _all_baostock_symbols_with_count(module, target)
             result_queue.put({"symbols": symbols, "row_count": row_count})
@@ -77,7 +78,7 @@ def _baostock_universes_worker(days: list[str], result_queue: Any) -> None:
         import baostock as module
         login = module.login()
         if getattr(login, "error_code", "0") != "0":
-            raise RuntimeError("BAOSTOCK_LOGIN_FAILED")
+            raise CoreError("BAOSTOCK_LOGIN_FAILED")
         try:
             for day in days:
                 symbols, row_count = _all_baostock_symbols_with_count(module, day)
@@ -638,7 +639,7 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
 
     if not affected_dates:
         if coverage.get(target) is None or coverage[target].state != "OK":
-            raise RuntimeError("BAOSTOCK_GAP_UNRESOLVED:target_incomplete_without_fetch_plan:" + target)
+            raise CoreError("BAOSTOCK_GAP_UNRESOLVED", "target_incomplete_without_fetch_plan:" + target)
         return {"status": "OK", "eligibility_status": eligibility_status,
                 "target": target, "watermark_symbols": len(watermarks),
                 "range_symbols": 0, "range_queries": 0, "partitions": [],
@@ -723,7 +724,7 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
             outcome.update({"business_status": business_status, "quality": quality})
         outcomes.append(outcome)
     if target not in {str(item["trade_date"]) for item in outcomes}:
-        raise RuntimeError("BAOSTOCK_GAP_UNRESOLVED:target_partition_missing:" + target)
+        raise CoreError("BAOSTOCK_GAP_UNRESOLVED", "target_partition_missing:" + target)
     target_result = next(item for item in outcomes if str(item["trade_date"]) == target)
     complete = target_result.get("business_status") == "FORMAL" and target_result.get("td_publish") == "READY"
     incomplete_dates = [str(item["trade_date"]) for item in outcomes
@@ -732,8 +733,8 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
         reasons = {str(item["trade_date"]): [item.get("mode"), item.get("error_code"), item.get("td_publish"),
                                              item.get("business_status")]
                    for item in outcomes if str(item["trade_date"]) in set(incomplete_dates or [target])}
-        raise RuntimeError("BAOSTOCK_GAP_UNRESOLVED:coverage_or_evidence_incomplete:" +
-                           ",".join(incomplete_dates or [target]) + ":" + json.dumps(reasons, sort_keys=True))
+        raise CoreError("BAOSTOCK_GAP_UNRESOLVED", "coverage_or_evidence_incomplete:" +
+                        ",".join(incomplete_dates or [target]) + ":" + json.dumps(reasons, sort_keys=True))
     quality = target_result.get("quality") or {}
     def count_quality(name: str) -> int:
         return int(quality.get(name) or 0)

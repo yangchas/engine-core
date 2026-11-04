@@ -1,4 +1,5 @@
 import json
+from engine_core.errors import CoreError
 
 
 def _backfill_cli(monkeypatch, tmp_path, fake_fill):
@@ -40,7 +41,7 @@ def test_backfill_cli_skips_when_another_trigger_holds_the_lease(monkeypatch, ca
 
 def test_backfill_cli_fail_fast_is_a_retryable_failure(monkeypatch, capsys, tmp_path):
     def fake_fill(*_a, **_k):
-        raise RuntimeError("BAOSTOCK_GAP_UNRESOLVED:consecutive_failures:attempted=5")
+        raise CoreError("BAOSTOCK_GAP_UNRESOLVED", "consecutive_failures:attempted=5")      # what the fill raises
 
     assert _backfill_cli(monkeypatch, tmp_path, fake_fill) == 30
     payload = json.loads(capsys.readouterr().out.splitlines()[-1])

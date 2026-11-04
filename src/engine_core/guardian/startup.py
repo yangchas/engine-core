@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..errors import CoreError
 from .registry import REGISTRY_PATH, items_for_phase, load_registry, stale_items
 
 PHASES = ("NIGHT", "PRE_MARKET", "AUCTION", "AUCTION_END", "OPEN",
@@ -370,7 +371,7 @@ def _timed_probe(fn, timeout: float = 5.0):
             return future.result(timeout=timeout)
         except TimeoutError:
             future.cancel()
-            raise RuntimeError("probe_timeout")
+            raise CoreError("PROBE_TIMEOUT")
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 

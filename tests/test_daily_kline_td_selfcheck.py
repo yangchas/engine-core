@@ -110,7 +110,7 @@ def test_td_outage_is_unknown_and_never_falls_back_to_catalog(env):
     plan, detail = _plan(root)
     assert plan == []
     assert detail["daily_kline_coverage"]["origin"] == "unknown"
-    assert detail["daily_kline_coverage"]["unknown_reason"].startswith("fake_td_down")
+    assert detail["daily_kline_coverage"]["unknown_reason"] == "TD_UNAVAILABLE:fake_td_down"      # code + reason
 
 
 def test_gap_plan_uses_next_trade_day_one_range_per_lagging_symbol_nearest_first():

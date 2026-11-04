@@ -113,8 +113,9 @@ def test_sync_rejects_wencai_daily_kline_before_any_td_write(tmp_path):
     entry = catalog.read()["datasets"]["daily_kline"]["dates"][DAY][-1]
     manifest = json.loads(Path(entry["manifest"]).read_text(encoding="utf-8"))
     rows = catalog.read_rows(Path(entry["manifest"]))
-    with pytest.raises(TdSourceRejected, match="baostock"):
+    with pytest.raises(TdSourceRejected) as rejected:
         sink.write_partition(DAY, rows, manifest)
+    assert (rejected.value.error_code, rejected.value.reason) == ("TD_REQUIRES_BAOSTOCK", "wencai")
     assert store.days == {}
     assert "replace_day" not in store.calls
     assert store.read_versions(DAY) == []

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
+from ...errors import CoreError
 from ...daily_kline_capture import parse_row, to_baostock_code
 
 
@@ -158,7 +159,7 @@ class BaostockDailyProvider:
         if isinstance(value, TimeoutError):
             raise TimeoutError("BAOSTOCK_TIMEOUT") from None
         if isinstance(value, (ConnectionError, OSError)):
-            raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from value
+            raise CoreError("BAOSTOCK_CONNECTION_ERROR") from value
         raise value
 
     LOGIN_TIMEOUT_FACTOR = 5.0  # login gets 5x the per-query bound (30s -> 150s)
@@ -255,7 +256,7 @@ class BaostockDailyProvider:
                     self.sleep_fn(delay)
             finally:
                 self.timeout_seconds = saved
-        error = last if last is not None else RuntimeError("BAOSTOCK_LOGIN_FAILED")
+        error = last if last is not None else CoreError("BAOSTOCK_LOGIN_FAILED")
         self._annotate_exception(error, client)
         raise error
 
@@ -483,7 +484,7 @@ class BaostockDailyProvider:
                                     transport_failed = True
                                     if isinstance(relogin_error, _BaostockCallTimeout):
                                         raise TimeoutError("BAOSTOCK_TIMEOUT") from None
-                                    raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from relogin_error
+                                    raise CoreError("BAOSTOCK_CONNECTION_ERROR") from relogin_error
                                 continue
                             transport_failed = True
                             self._annotate_exception(exc, client)
@@ -492,7 +493,7 @@ class BaostockDailyProvider:
                                 error = TimeoutError("BAOSTOCK_TIMEOUT")
                                 self._annotate_exception(error, client)
                                 raise error from None
-                            raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from exc
+                            raise CoreError("BAOSTOCK_CONNECTION_ERROR") from exc
                         if attempt < self.retries:
                             if self._timing.get("error_events"):
                                 self._timing["error_events"][-1]["action"] = "symbol_retry"

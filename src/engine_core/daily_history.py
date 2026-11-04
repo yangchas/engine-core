@@ -15,6 +15,7 @@ from concurrent.futures import ProcessPoolExecutor
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
+from .errors import CoreError
 from .daily_kline_capture import parse_row, to_baostock_code
 from .data_pipeline.storage import ArtifactCatalog, canonical_json
 
@@ -553,7 +554,7 @@ class BaostockRangeClient:
                 if isinstance(exc, (TimeoutError, socket.timeout)):
                     raise TimeoutError("BAOSTOCK_TIMEOUT") from None
                 if isinstance(exc, (ConnectionError, OSError)):
-                    raise RuntimeError("BAOSTOCK_CONNECTION_ERROR") from exc
+                    raise CoreError("BAOSTOCK_CONNECTION_ERROR") from exc
                 if attempt:
                     break
                 time.sleep(self.reconnect_backoff_seconds)

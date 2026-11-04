@@ -34,6 +34,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Sequence
+from ..errors import CoreError
 
 ALGORITHM = "derived_v1"
 SCHEMA_VERSION = 1
@@ -53,11 +54,13 @@ FEATURE_COLUMNS = ("last_history_date", "streak", "position_20d", "position_clos
                    "range20_high", "range20_last_close", "prev_day_amount_yuan", "amount_history_64")
 
 
-class UpstreamNotReady(RuntimeError):
-    """Raised when an upstream partition is missing / below the configured minimum quality."""
+class UpstreamNotReady(CoreError):
+    """Raised when an upstream partition is missing / below the configured minimum quality.
+
+    ``code`` (DAILY_KLINE_MISSING, SYMBOL_UNIVERSE_MISSING ...) says which input; the error code is UPSTREAM_NOT_READY."""
 
     def __init__(self, code: str, detail: str = ""):
-        super().__init__(code + (":" + detail if detail else ""))
+        super().__init__("UPSTREAM_NOT_READY", code + (":" + detail if detail else ""))
         self.code = code
         self.detail = detail
 
