@@ -452,11 +452,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
     own = store is None
     store = store or TaosDdeStore(database_name)
     if fetcher is None:
-        try:
-            from pykaipan import pykaipan
-        except ImportError:
-            import importlib
-            pykaipan = importlib.import_module("pykaipan.pykaipan")
+        import importlib
+        pykaipan = importlib.import_module("pykaipan.pykaipan")      # loaded by name: engine_core imports no SDK statically
         _configure_kaipan_request_timeout(pykaipan)
 
         def fetch_from_kaipan(symbol: str, day: str):

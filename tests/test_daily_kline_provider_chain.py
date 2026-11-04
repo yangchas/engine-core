@@ -515,7 +515,7 @@ def test_budget_truncates_baostock_saves_checkpoint_and_replays_q2_then_resumes(
         DailyKlineProviderChain, Q2FinalProvider,
     )
     from engine_core.data_pipeline.storage import ArtifactCatalog
-    from replay_quote_slice import load_v0, replay_clients
+    from replay_quote_slice import q2_excerpt_redis
 
     captured = _c541_real_daily_rows()
     fields = ("open", "high", "low", "close", "pre_close", "pct_chg", "amount_yuan", "volume")
@@ -523,7 +523,8 @@ def test_budget_truncates_baostock_saves_checkpoint_and_replays_q2_then_resumes(
     rows_by_symbol = {row["symbol"]: row for row in selected}
     symbols = list(rows_by_symbol)
     seed_real_symbol_universe(ArtifactCatalog(tmp_path), "2026-10-23", symbols=symbols)
-    replay_redis = replay_clients(load_v0())[0]
+    replay_redis, excerpt_symbols = q2_excerpt_redis()
+    assert set(symbols) <= set(excerpt_symbols)       # the 10 symbols are inside the recorded excerpt
     clock = _C541Clock()
     monkeypatch.setattr(time, "monotonic", clock.monotonic)
     checkpoint = tmp_path / ".checkpoints" / "daily_kline-2026-10-23.json"
@@ -606,11 +607,12 @@ def test_q2_final_replay_uses_real_terminal_hashes_and_active_universe_denominat
     from conftest import seed_real_symbol_universe
     from engine_core.data_pipeline.providers.daily_kline_chain import DailyKlineProviderChain, Q2FinalProvider
     from engine_core.data_pipeline.storage import ArtifactCatalog
-    from replay_quote_slice import load_v0, replay_clients
+    from replay_quote_slice import q2_excerpt_redis
 
-    replay_redis = replay_clients(load_v0())[0]
+    replay_redis, excerpt_symbols = q2_excerpt_redis()
     catalog = ArtifactCatalog(tmp_path)
-    universe = seed_real_symbol_universe(catalog, "2026-10-23")
+    # the recorded day is restricted to the excerpt's symbols, so the universe is restricted the same way
+    universe = seed_real_symbol_universe(catalog, "2026-10-23", symbols=excerpt_symbols)
     active_count = sum(row.get("trade_status") != "0" for row in universe)
     result = DailyKlineProviderChain(
         providers={"q2_final": Q2FinalProvider(replay_redis)}, artifact_root=tmp_path,
@@ -623,7 +625,7 @@ def test_q2_final_replay_uses_real_terminal_hashes_and_active_universe_denominat
     assert result.manifest["quality"]["coverage"] == 1.0
     assert result.manifest["provider_attempts"][-1]["provider"] == "q2_final"
     assert result.manifest["provider_attempts"][-1]["chain_result"] == "ACCEPTED"
-    assert len(result.rows) == 5221
+    assert len(result.rows) == active_count and active_count > 50     # every active symbol of the restricted day
 
 
 def test_baostock_fast_path_finishes_formal_with_real_captured_bars(monkeypatch, tmp_path):

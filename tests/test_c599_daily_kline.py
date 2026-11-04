@@ -47,17 +47,45 @@ def test_backfill_cli_fail_fast_is_a_retryable_failure(monkeypatch, capsys, tmp_
     assert (payload["status"], payload["retryable"]) == ("failed", True)
 
 
-def test_daily_kline_backfill_not_eligible_is_not_applicable(monkeypatch):
-    from examples import guardian_handler
-    from engine_core.guardian import daily_kline_backfill
+def _seed_calendar(root):
+    from pathlib import Path
+    from engine_core.data_pipeline.trade_calendar import TradeCalendarStore
 
-    monkeypatch.setattr(daily_kline_backfill, "run_daily_kline_backfill",
-                        lambda *_args, **_kwargs: {"status": "NOT_ELIGIBLE", "range_symbols": 0})
+    fixture = Path(__file__).parent / "fixtures" / "trade_calendar"
+    payload = json.loads((fixture / "baostock-2026-01-01_2026-12-31.json").read_bytes())
+    dates = [row["calendar_date"] for row in payload["rows"] if row["is_trading_day"] == "1"]
+    TradeCalendarStore(root).publish_confirmed(
+        dates, source="C325 BaoStock+SZSE", fetched_at="2026-10-20T00:00:00+00:00",
+        coverage_start="2026-01-01", coverage_end="2026-12-31",
+        raw_responses={path.name: path.read_bytes() for path in fixture.glob("*.json")})
+
+
+def test_daily_kline_backfill_reply_for_a_complete_day_and_for_a_busy_lease(monkeypatch):
+    """Since C630 the backfill event runs the TD-driven per-symbol fill; a day with nothing to fill is an ok reply
+    and a held lease is a skip that counts as satisfied (exit 20 with ALREADY_SATISFIED, C648)."""
+    from examples import guardian_handler
+    import os
+    from engine_core.data_pipeline import daily_kline_fill
+
+    _seed_calendar(os.environ["CORE_DATA_ROOT"])      # the event's target is "the previous trading day"
     request = {"contract": 1, "event": "daily_kline_backfill", "instance": "daily_kline_backfill@08:00",
                "trade_date": "2026-10-29", "data_date": "2026-10-28", "args": {}}
+    seen = []
+
+    def answer(status):
+        def fake(root, target, *, args=None, **_kwargs):
+            seen.append((target, status))
+            return {"status": status, "target": target}
+        return fake
+
+    monkeypatch.setattr(daily_kline_fill, "run_daily_kline_fill_from_root", answer("NO_GAPS"))
+    code, payload = guardian_handler._run(request)
+    assert (code, payload["status"], payload["error_code"], payload["retryable"]) == (0, "ok", "", False)
+    monkeypatch.setattr(daily_kline_fill, "run_daily_kline_fill_from_root", answer("BUSY"))
     code, payload = guardian_handler._run(request)
     assert (code, payload["status"], payload["error_code"], payload["retryable"]) == (
-        0, "ok", "", False)
+        20, "not_applicable", "ALREADY_SATISFIED", False)
+    assert [status for _, status in seen] == ["NO_GAPS", "BUSY"]
 
 
 def test_rehearsal_can_queue_one_real_fetch_item_instance(tmp_path):

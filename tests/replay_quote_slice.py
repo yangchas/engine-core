@@ -92,3 +92,14 @@ def load_v0():
 def replay_clients(raw):
     auction, q2, td = raw
     return ReplayRedis(auction, q2), ReplayTD(td)
+
+
+EXCERPT = Path(__file__).parent / "fixtures" / "real" / "c526" / "redis_q2_hashes_20261023_first60.json.gz"
+
+
+def q2_excerpt_redis():
+    """2026-10-23 terminal q2 hashes of the first 60 symbols (recorded excerpt, PROVENANCE `_c526_excerpts`).
+    The active set is the excerpt's own symbols: nothing is invented, the day is simply restricted to them."""
+    with gzip.open(EXCERPT, "rt", encoding="utf-8") as handle:
+        q2 = json.load(handle)
+    return ReplayRedis({"q2:active:20261023": {"type": "set", "value": sorted(q2)}}, q2), sorted(q2)
