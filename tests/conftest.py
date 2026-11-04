@@ -58,13 +58,31 @@ def pytest_collection_modifyitems(config, items):
 
 
 class _OfflineKaipanBlocked:
-    def __init__(self, name):
+    """Stands in for the real Kaipan SDK in offline tests: plain attributes (config, constants) read through to the
+    real module, but every request function (``get*``) raises instead of reaching the network."""
+
+    def __init__(self, name, real):
         self.__name__ = name
+        self._real = real
 
     def __getattr__(self, attribute):
-        if attribute.startswith("__"):          # import machinery probes (__spec__, __path__ ...)
+        if attribute.startswith("__") or self._real is None:
             raise AttributeError(attribute)
-        raise RuntimeError(f"offline test: real {self.__name__}.{attribute} call blocked (use --live for live tests)")
+        value = getattr(self._real, attribute)
+        if callable(value) and attribute.startswith("get"):
+            def blocked(*_args, **_kwargs):
+                raise RuntimeError(f"offline test: real {self.__name__}.{attribute} call blocked "
+                                   "(use --live for live tests)")
+            return blocked
+        return value
+
+
+def _real_kaipan_module():
+    try:
+        import importlib
+        return importlib.import_module("pykaipan.pykaipan")
+    except Exception:
+        return None
 
 
 @pytest.fixture(autouse=True)
@@ -79,7 +97,8 @@ def _isolated_slice_root(tmp_path, monkeypatch, request):
         # nor call the real Kaipan SDK: an offline test that reaches it blocks for minutes on the network
         # (test_postmarket_default_baostock_adapter..., via the ladder_daily live rung). Tests that need the SDK
         # inject their own module with monkeypatch.setitem(sys.modules, ...), which replaces this guard.
-        monkeypatch.setitem(sys.modules, "pykaipan.pykaipan", _OfflineKaipanBlocked("pykaipan.pykaipan"))
+        monkeypatch.setitem(sys.modules, "pykaipan.pykaipan",
+                            _OfflineKaipanBlocked("pykaipan.pykaipan", _real_kaipan_module()))
 from datetime import datetime, timezone
 
 
