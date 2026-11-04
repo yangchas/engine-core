@@ -163,6 +163,7 @@ def test_chain_replays_real_rows_and_appends_baostock_job_log(tmp_path):
 
 def test_job_runner_keeps_actual_provider_and_attempt_metadata(tmp_path):
     from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
+    from engine_core.data_pipeline.providers.baostock_daily_provider import source_date_evidence
     from conftest import seed_real_symbol_universe
 
     day = "2026-10-23"
@@ -176,7 +177,9 @@ def test_job_runner_keeps_actual_provider_and_attempt_metadata(tmp_path):
     runner = JobRunner(artifact_root=tmp_path, budget=RequestBudget(min_interval_seconds=0))
     result = runner.run("daily_kline", day,
                         fetch=lambda _: {"rows": rows, "source": "baostock", "provider": "baostock",
-                                         "provider_attempts": [attempt]},
+                                         "provider_attempts": [attempt],
+                                         # date evidence is measured from the rows by the real provider
+                                         **source_date_evidence(rows, day)},
                         source="baostock>wencai>q2_final", now="2026-10-26T10:00:00+08:00")
 
     assert result.manifest["provider"] == "baostock"

@@ -33,6 +33,15 @@ class _BaostockStall(_BaostockCallTimeout):
         self.error_code = "STALL_NO_PROGRESS"
 
 
+def source_date_evidence(returned_rows, trade_date: str) -> dict:
+    """Date evidence measured from the returned rows' own dates (what storage needs to grant FORMAL)."""
+    values = sorted({str(row.get("date") or "") for row in returned_rows if row.get("date")})
+    consistent = (bool(returned_rows) and values == [trade_date] and
+                  all(row.get("date") == trade_date for row in returned_rows))
+    return {"source_dates": {field: trade_date if consistent else None for field in _SOURCE_DATE_FIELDS},
+            "source_date_values": values, "source_dates_consistent": consistent}
+
+
 class BaostockDailyProvider:
     source = "baostock"
     source_dependency = "independent_provider"
@@ -571,12 +580,10 @@ class BaostockDailyProvider:
             self._timing["error_code"] = "BAOSTOCK_TOTAL_TIMEOUT"
         progress = self._progress(trade_date, expected, checkpoint, resumed_count, result)
         returned_rows = [row for row in rows if not row.get("__checkpoint_no_bar")]
-        source_date_values = sorted({str(row.get("date") or "") for row in returned_rows
-                                     if row.get("date")})
-        source_dates_consistent = (bool(returned_rows) and source_date_values == [trade_date] and
-                                   all(row.get("date") == trade_date for row in returned_rows))
-        source_dates = {field: trade_date if source_dates_consistent else None
-                        for field in _SOURCE_DATE_FIELDS}
+        evidence = source_date_evidence(returned_rows, trade_date)
+        source_date_values = evidence["source_date_values"]
+        source_dates_consistent = evidence["source_dates_consistent"]
+        source_dates = evidence["source_dates"]
         result_meta = {"rows": returned_rows, "expected_count": len(expected), "missing_count": len(missing),
                 "missing_symbols": sorted(set(missing)), "suspended_count": suspended,
                 "mismatch_count": mismatch, "errors": errors,

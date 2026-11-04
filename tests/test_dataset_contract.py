@@ -407,7 +407,7 @@ def test_non_canonical_serialization_fails(clean):
 
 
 # ------------------------------------------------------------------ E: versions / latest
-def test_formal_over_lower_quality_selected_and_locate_flagged(tmp_path):
+def test_formal_over_lower_quality_selected_and_locate_flagged(tmp_path, monkeypatch):
     rows = synthetic_rows()
     build(tmp_path, rows)
     # a later-appended PROVISIONAL version of the same day (different content)
@@ -418,7 +418,18 @@ def test_formal_over_lower_quality_selected_and_locate_flagged(tmp_path):
     r = run_check(tmp_path)
     assert r.meta["source"] == "baostock"          # FORMAL chosen over the later PROVISIONAL
     assert "E1" not in failed_ids(r)
-    assert "E2" in failed_ids(r)                    # but ArtifactCatalog.locate returns the last appended
+    # ArtifactCatalog.locate itself ranks daily_kline versions by quality (C641), so E2 holds on the real locate ...
+    assert "E2" not in failed_ids(r)
+    # ... and the checker still catches a locate that returns the last appended version (the pre-C641 behaviour)
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+
+    def last_appended(self, dataset, trade_date=None):
+        versions = self.read()["datasets"][dataset]["dates"][trade_date]
+        return Path(versions[-1]["manifest"])
+
+    monkeypatch.setattr(ArtifactCatalog, "locate", last_appended)
+    assert "E2" in failed_ids(run_check(tmp_path))
+    monkeypatch.undo()
     assert r.stats["multi_version_key_overlap"]["best_keys"] == len(rows)
     low_check = run_check(tmp_path, version=next(e["version"] for e in json.loads(
         (tmp_path / "catalog.json").read_text())["datasets"]["daily_kline"]["dates"][DATE]
@@ -502,26 +513,40 @@ def test_all_bundled_specs_load_and_are_wellformed():
 
 
 # ------------------------------------------------------------------ real-partition copy mutations
+REAL_COPY_DATE = "2026-10-23"
+REAL_ARTIFACTS = REPO / "tests" / "fixtures" / "real" / "core_artifacts"
+
+
+def _fixture_rows(relative):
+    with gzip.open(REAL_ARTIFACTS / relative / "rows.jsonl.gz", "rt", encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
 def _real_copy(tmp_path):
-    cat = json.loads((REAL_ROOT / "catalog.json").read_text())["datasets"]
-    try:
-        ent = cat["daily_kline"]["dates"][DATE][-1]
-        uni = cat["symbol_universe"]["dates"][DATE][-1]
-    except KeyError:
-        pytest.skip("real 2026-10-27 partitions absent")
-    from engine_core.data_pipeline.storage import ArtifactCatalog
-    catalog = ArtifactCatalog(REAL_ROOT)
-    rows = catalog.read_rows(Path(ent["manifest"]))
-    urows = catalog.read_rows(Path(uni["manifest"]))
-    # repaired, conformant copy of the real rows in a temp root: the checker's baseline must pass
-    run = build(tmp_path, rows, universe_rows=[{"symbol": u["symbol"], "trade_status": u.get("trade_status")}
-                                               for u in urows])
+    """A recorded real Baostock partition (C522 layout) and its universe, copied into a temp root."""
+    rows = _fixture_rows("c522/daily_kline/2026-10-23/formal")
+    urows = _fixture_rows("c540/symbol_universe/2026-10-23/actual")
+    universe = [{"symbol": u["symbol"], "trade_status": u.get("trade_status")} for u in urows]
+    write_partition(tmp_path, "symbol_universe", universe, {"quality": {}, "field_units": {}},
+                    source="baostock", date=REAL_COPY_DATE)
+    active = {u["symbol"] for u in universe if u["trade_status"] != "0"}
+    present = {r["symbol"] for r in rows}
+    cover = len(active & present) / len(active)
+    quality = {"coverage": cover, "expected_basis": "universe_active", "expected_count": len(active),
+               "missing": len(active - present), "field_completeness": {}, "partial": cover < 1,
+               "dropped_outside_universe": 0, "dropped_duplicates": 0,
+               "suspended_in_universe": sum(1 for u in universe if u["trade_status"] == "0")}
+    run = write_partition(tmp_path, "daily_kline", rows, {"quality": quality}, date=REAL_COPY_DATE)
     return tmp_path, run, rows
 
 
 def test_real_partition_copy_baseline_passes_then_mutations_fail(tmp_path):
+    def check_real(root):
+        # the recorded C522 partition predates the canonical layout: it is what the legacy spec describes
+        return check_partition(root, "daily_kline", REAL_COPY_DATE, spec=load_spec("daily_kline", LEGACY_SPEC_PATH))
+
     root, run, rows = _real_copy(tmp_path)
-    base = run_check(root)
+    base = check_real(root)
     assert base.passed, base.summary()
     pristine_manifest = (run / "manifest.json").read_bytes()
     pristine_rows = (run / "rows.jsonl.gz").read_bytes()
@@ -539,7 +564,7 @@ def test_real_partition_copy_baseline_passes_then_mutations_fail(tmp_path):
     for label, (cid, mutate) in cases.items():
         reset()
         mutate()
-        assert cid in failed_ids(run_check(root)), label
+        assert cid in failed_ids(check_real(root)), label
 
     def sym():
         bad = copy.deepcopy(rows)
@@ -555,4 +580,4 @@ def test_real_partition_copy_baseline_passes_then_mutations_fail(tmp_path):
     for label, cid, mutate in (("symbol format", "B1", sym), ("0 for null", "B8", zero_for_null)):
         reset()
         mutate()
-        assert cid in failed_ids(run_check(root)), label
+        assert cid in failed_ids(check_real(root)), label

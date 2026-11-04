@@ -76,7 +76,10 @@ def _q2_hashes():
 def _baostock_partition(root):
     _seed_universe(root, DAY)
     _, rows = read_real_artifact("daily_kline", DAY, "formal")
-    chain = DailyKlineProviderChain(providers={"baostock": lambda d: {"rows": rows, "expected_count": None}},
+    # the Baostock provider measures its date evidence from the returned rows; do the same with the same function
+    from engine_core.data_pipeline.providers.baostock_daily_provider import source_date_evidence
+    evidence = source_date_evidence(rows, DAY)
+    chain = DailyKlineProviderChain(providers={"baostock": lambda d: {"rows": rows, "expected_count": None, **evidence}},
                                     artifact_root=root)
     result = chain.fetch_chain(DAY, persist=True, now=DAY + "T18:00:00+08:00")
     assert result is not None
