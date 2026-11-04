@@ -25,10 +25,14 @@ def test_prep_persists_theme_snapshot_node_and_versions_visible_inputs(tmp_path)
 
     commit("limit_up_pool", [json.loads(line) for line in
         (Path(__file__).parent / "fixtures/real_limit_up_pool_sample.jsonl").read_text().splitlines()[:2]])
-    commit("hot_plates", [{"plate_code": "801001", "name": "热板"}])
-    commit("plate_registry", [{"code": "801001", "name": "原因题材"}])
+    from real_hot_plates import real_plate_rows
+    plate = real_plate_rows(report_day + "T08:00:00+08:00", trade_date=day)[0]["plate_code"]
+    catalog.commit("hot_plates", day, real_plate_rows(report_day + "T08:00:00+08:00", trade_date=day),
+                   {"trade_date": day, "available_at": report_day + "T08:00:00+08:00",
+                    "captured_at": report_day + "T08:00:00+08:00"}, source="fixture")
+    commit("plate_registry", [{"code": plate, "name": "原因题材"}])
     commit("limit_reasons", [{"symbol": "000001", "Date": day, "Type": "0",
-                              "ZSCode": ["801001"], "Reason": "原因"}])
+                              "ZSCode": [plate], "Reason": "原因"}])
     commit("daily_kline", [{"symbol": "000001", "date": day, "close": 10}])
 
     assert _prepare_theme_snapshot_cache(catalog, report_day, day,
@@ -51,3 +55,17 @@ def test_prep_persists_theme_snapshot_node_and_versions_visible_inputs(tmp_path)
     _, hit = store.compute("theme_snapshot", report_day, "ThemeSnapshotNodeV1:algorithm-v2",
                            original, lambda: value)
     assert not hit
+
+
+def test_hot_plates_cannot_be_committed_without_a_capture_instant(tmp_path):
+    """The PIT rule behind the fixtures above: a hot-plate version must say when it was captured."""
+    import pytest
+    from real_hot_plates import real_plate_rows
+
+    catalog = ArtifactCatalog(tmp_path)
+    rows = real_plate_rows("2026-10-16T08:00:00+08:00", trade_date="2026-10-15")
+    with pytest.raises(ValueError, match="hot_plates_captured_at_missing"):
+        catalog.commit("hot_plates", "2026-10-15", rows, {"available_at": "2026-10-16T08:00:00+08:00"},
+                       source="fixture")
+    catalog.commit("hot_plates", "2026-10-15", rows, {"available_at": "2026-10-16T08:00:00+08:00",
+                                                      "captured_at": "2026-10-16T08:00:00+08:00"}, source="fixture")

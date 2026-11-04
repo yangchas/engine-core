@@ -165,6 +165,7 @@ def test_health_reports_artifact_redis_consistency_and_red_status(tmp_path):
     from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
     from engine_core.data_pipeline.storage import ArtifactCatalog
     from conftest import read_real_artifact, seed_real_symbol_universe
+    from engine_core.data_pipeline.providers.baostock_daily_provider import source_date_evidence
 
     class Redis:
         def __init__(self): self.values = {}
@@ -181,7 +182,8 @@ def test_health_reports_artifact_redis_consistency_and_red_status(tmp_path):
                fetch=lambda _: {"rows": rows, "source": "baostock", "provider": "baostock",
                                 "provider_attempts": [{"provider": "baostock", "result": "ACCEPTED",
                                     "attempted_at": "2026-10-25T17:30:00+08:00", "elapsed_ms": 1,
-                                    "reason": "real fixture replay"}]},
+                                    "reason": "real fixture replay"}],
+                                **source_date_evidence(rows, day)},     # FORMAL (hence `latest`) needs date evidence
                now="2026-10-26T10:00:00+08:00", publish=True, source="baostock")
     report = dataset_health(tmp_path, redis=redis, trade_dates=[day])
     assert report["datasets"]["daily_kline"]["artifact_redis_consistent"] is True
@@ -313,14 +315,21 @@ def test_run_daily_phase_passes_callable_adapters_for_every_phase_job(monkeypatc
                                            "row_count": 1, "version": "test",
                                            "sha256": "0" * 64})
 
+    # C618: plate_members is a latest-only TD snapshot refreshed by `run_data_jobs --job plate_members`, so it has no
+    # JobRunner adapter; the (unscheduled) premarket phase reports it FETCHER_NOT_CONFIGURED. Everything else must
+    # have a callable adapter.
+    snapshot_jobs = {"plate_members"}
+    assert "plate_members" not in adapters
     monkeypatch.setattr(ops.JobRunner, "run", capture_run)
     for phase in ops._PHASE_JOBS:
         result = run_daily_phase(phase, "2026-10-23", root=tmp_path,
             adapters=adapters, trading_dates=None, write=False,
             now="2026-10-23T18:00:00+08:00", lock=False)
-        assert result["status"] == "READY", result
+        unconfigured = {e["job"] for e in result.get("errors", []) if e["status"] == "FETCHER_NOT_CONFIGURED"}
+        assert unconfigured <= snapshot_jobs, json.dumps(result, default=str)[:3000]
+        assert result["status"] == ("FAILED" if unconfigured else "READY"), json.dumps(result, default=str)[:3000]
 
-    expected = {name for names in ops._PHASE_JOBS.values() for name in names}
+    expected = {name for names in ops._PHASE_JOBS.values() for name in names} - snapshot_jobs
     assert set(called) == expected
 
 

@@ -527,7 +527,8 @@ def test_core_catalog_and_bytes_redis_daily_pipeline_auction_and_open(tmp_path):
             {"code": "801001", "name": "通信", "strength": 1, "change_pct": 1,
              "amount_yuan": 100000, "sampled_at": f"{day}T09:20:00+08:00",
              "available_at": f"{day}T09:20:00+08:00"}],
-            {"available_at": f"{day}T09:20:00+08:00"}, source="test")
+            {"available_at": f"{day}T09:20:00+08:00",
+             "captured_at": f"{day}T09:20:00+08:00"}, source="test")      # hot_plates need a capture instant (PIT)
     catalog.commit("hot_rank", trade_date, [
         {"symbol": "600001", "rank": 1, **common}], common, source="test")
     catalog.commit("trade_calendar", trade_date, [

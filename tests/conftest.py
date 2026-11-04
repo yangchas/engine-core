@@ -57,6 +57,16 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip)
 
 
+class _OfflineKaipanBlocked:
+    def __init__(self, name):
+        self.__name__ = name
+
+    def __getattr__(self, attribute):
+        if attribute.startswith("__"):          # import machinery probes (__spec__, __path__ ...)
+            raise AttributeError(attribute)
+        raise RuntimeError(f"offline test: real {self.__name__}.{attribute} call blocked (use --live for live tests)")
+
+
 @pytest.fixture(autouse=True)
 def _isolated_slice_root(tmp_path, monkeypatch, request):
     """Per-test slice/state cache root so past-dated fake TD states never leak between tests or into ~/core-data."""
@@ -66,6 +76,10 @@ def _isolated_slice_root(tmp_path, monkeypatch, request):
     monkeypatch.setenv("CORE_PROVIDER_STATE", "memory")  # offline CLI runs keep provider throttle state in-process
     if not (request.config.getoption("--live") and request.node.get_closest_marker("live")):
         monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:1/0")  # offline tests never read real Redis
+        # nor call the real Kaipan SDK: an offline test that reaches it blocks for minutes on the network
+        # (test_postmarket_default_baostock_adapter..., via the ladder_daily live rung). Tests that need the SDK
+        # inject their own module with monkeypatch.setitem(sys.modules, ...), which replaces this guard.
+        monkeypatch.setitem(sys.modules, "pykaipan.pykaipan", _OfflineKaipanBlocked("pykaipan.pykaipan"))
 from datetime import datetime, timezone
 
 
