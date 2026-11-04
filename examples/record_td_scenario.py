@@ -36,6 +36,7 @@ class RecordingCursor:
     def __init__(self, inner, statements, inject):
         self.inner, self.statements, self.inject = inner, statements, inject
         self._last = None
+        self.description = None
 
     def execute(self, sql, *args, **kwargs):
         if not READ_ONLY.match(sql):
@@ -51,6 +52,7 @@ class RecordingCursor:
         self.statements.append({"sql": normalize(sql), "columns": columns,
                                 "rows": [[encode_value(v) for v in row] for row in rows], "row_count": len(rows)})
         self._rows = rows
+        self.description = self.inner.description
         return result
 
     def fetchall(self):
@@ -153,7 +155,17 @@ def scenario_plate_amount_other_error(statements):
             "injected": "tick statement -> real error 'table does not exist'"}
 
 
+def scenario_show_queries(statements):
+    """SHOW QUERIES as it is right now, with the real command line of each client pid (for owner classification)."""
+    from engine_core.guardian import td_resource_check as check
+    connection = RecordingConnection(check.connect(), statements, [])
+    queries = check.fetch_queries(connection.cursor())
+    owners = {str(q["pid"]): check.owner_command(q["pid"]) for q in queries}
+    return {"function": "td_resource_check.fetch_queries", "owners": owners}
+
+
 SCENARIOS = {
+    "show_queries": scenario_show_queries,
     "plate_amount_2day": scenario_plate_amount_2day,
     "plate_amount_slice_halving": scenario_plate_amount_slice_halving,
     "plate_amount_symbol_split": scenario_plate_amount_symbol_split,

@@ -4123,6 +4123,230 @@
         "backfill_depth": 20,
         "degrade": "无降级链，等待重试到 08:50 前"
       }
+    },
+    {
+      "event_id": "td_resource_check_0055",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "00:55:00",
+      "deadline": "00:57:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "td_resource_check_0825",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "08:25:00",
+      "deadline": "08:27:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "td_resource_check_0845",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "08:45:00",
+      "deadline": "08:47:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "td_resource_check_0910",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "09:10:00",
+      "deadline": "09:12:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "td_resource_check_0935",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "09:35:00",
+      "deadline": "09:37:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "td_resource_check_1455",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "14:55:00",
+      "deadline": "14:57:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "td_resource_check_1735",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "17:35:00",
+      "deadline": "17:37:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
+    },
+    {
+      "event_id": "td_resource_check_2025",
+      "handler": "boot_data_health",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "20:25:00",
+      "deadline": "20:27:00",
+      "data_date_offset": 0,
+      "on_start": null,
+      "on_deadline": "missed",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "light",
+      "phases": [
+        "any"
+      ],
+      "on_phase_mismatch": null,
+      "profile": "policy_02",
+      "catchup_mode": "skip",
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      }
     }
   ]
 }

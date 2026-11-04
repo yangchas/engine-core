@@ -1946,6 +1946,32 @@
       "timeout_seconds": 300,
       "trigger_type": "window",
       "policy": "limit_up_detail_d1"
+    },
+    "td_resource_check": {
+      "args": {
+        "td_check": {
+          "threshold_seconds": 1800
+        }
+      },
+      "calendar": "every_day",
+      "cost": "light",
+      "enabled": true,
+      "gate": "always",
+      "handler": "boot_data_health",
+      "on_deadline": "missed",
+      "on_phase_mismatch": null,
+      "on_start": null,
+      "order": null,
+      "phases": [
+        "any"
+      ],
+      "trigger_type": "window",
+      "policy": "policy_02",
+      "after": [],
+      "depends_on": [],
+      "data_date_offset": 0,
+      "catchup_mode": "skip",
+      "deadline_after_seconds": 120
     }
   },
   "timeline": [
@@ -1994,6 +2020,15 @@
           "fn": "limit_up_detail_d",
           "id": "limit_up_detail_d1",
           "deadline": "08:50:00"
+        }
+      ]
+    },
+    {
+      "at": "00:55:00",
+      "run": [
+        {
+          "fn": "td_resource_check",
+          "id": "td_resource_check_0055"
         }
       ]
     },
@@ -2082,6 +2117,15 @@
       ]
     },
     {
+      "at": "08:25:00",
+      "run": [
+        {
+          "fn": "td_resource_check",
+          "id": "td_resource_check_0825"
+        }
+      ]
+    },
+    {
       "at": "08:30:00",
       "run": [
         {
@@ -2100,6 +2144,15 @@
           "fn": "preopen_check",
           "id": "preopen_check_0835",
           "deadline": "08:44:59"
+        }
+      ]
+    },
+    {
+      "at": "08:45:00",
+      "run": [
+        {
+          "fn": "td_resource_check",
+          "id": "td_resource_check_0845"
         }
       ]
     },
@@ -2143,6 +2196,15 @@
             "daily_kline_load_defer_window_limit": 3,
             "baostock_no_progress_seconds": 300
           }
+        }
+      ]
+    },
+    {
+      "at": "09:10:00",
+      "run": [
+        {
+          "fn": "td_resource_check",
+          "id": "td_resource_check_0910"
         }
       ]
     },
@@ -2370,6 +2432,10 @@
             "daily_kline_load_defer_window_limit": 3,
             "baostock_no_progress_seconds": 300
           }
+        },
+        {
+          "fn": "td_resource_check",
+          "id": "td_resource_check_0935"
         }
       ]
     },
@@ -2753,6 +2819,15 @@
       ]
     },
     {
+      "at": "14:55:00",
+      "run": [
+        {
+          "fn": "td_resource_check",
+          "id": "td_resource_check_1455"
+        }
+      ]
+    },
+    {
       "at": "15:05:00",
       "run": [
         {
@@ -2833,6 +2908,15 @@
             "daily_kline_load_defer_window_limit": 3,
             "baostock_no_progress_seconds": 300
           }
+        }
+      ]
+    },
+    {
+      "at": "17:35:00",
+      "run": [
+        {
+          "fn": "td_resource_check",
+          "id": "td_resource_check_1735"
         }
       ]
     },
@@ -2939,6 +3023,15 @@
           "id": "baostock_retry_2000",
           "available_after": "17:30:00",
           "deadline": "20:30:00"
+        }
+      ]
+    },
+    {
+      "at": "20:25:00",
+      "run": [
+        {
+          "fn": "td_resource_check",
+          "id": "td_resource_check_2025"
         }
       ]
     },
@@ -3109,6 +3202,14 @@
     "runtime_reconcile_1930",
     "runtime_reconcile_2100",
     "daily_kline_backfill",
-    "limit_up_detail_d1"
+    "limit_up_detail_d1",
+    "td_resource_check_0055",
+    "td_resource_check_0825",
+    "td_resource_check_0845",
+    "td_resource_check_0910",
+    "td_resource_check_0935",
+    "td_resource_check_1455",
+    "td_resource_check_1735",
+    "td_resource_check_2025"
   ]
 }

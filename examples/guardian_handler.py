@@ -56,7 +56,8 @@ def _premarket_prep_lock(request):
 # Scheduled jobs that borrow the boot_data_health handler name (so the Go binary's handler list need not change) are
 # told apart by ONE args field. Interim (design 25 P4 removes the borrowing); tests tie every route to a scheduled event.
 BORROWED_JOBS = (("checks", "engine_core.guardian.preopen_check", "run"),
-                 ("chain", "engine_core.guardian.chain_sweep", "run"))
+                 ("chain", "engine_core.guardian.chain_sweep", "run"),
+                 ("td_check", "engine_core.guardian.td_resource_check", "run"))
 
 
 def _borrowed_job(handler, args):
