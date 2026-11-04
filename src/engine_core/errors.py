@@ -82,7 +82,8 @@ def declared_result(stdout: str) -> dict[str, Any] | None:
         value = json.loads(lines[-1])
     except (TypeError, ValueError):
         return None
-    return value if isinstance(value, dict) and value.get("contract") == 1 else None
+    # the job contract (contract: 1) or an older script that still just prints {"error_code": ...}
+    return value if isinstance(value, dict) and (value.get("contract") == 1 or isinstance(value.get("error_code"), str)) else None
 
 
 def command_error(returncode: int, stdout: str, stderr: str) -> CommandFailed:

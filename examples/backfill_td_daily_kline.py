@@ -9,7 +9,7 @@ import os
 from datetime import date
 from pathlib import Path
 
-from engine_core.data_pipeline.job_contract import JobResult, emit
+from engine_core.data_pipeline.job_contract import JobResult, emit, failure_from_exception
 from engine_core.data_pipeline.td_sink import TdSourceRejected, TdUnavailable, TdVerifyError
 
 
@@ -49,25 +49,16 @@ def main(argv: list[str] | None = None) -> int:
             source="baostock", dataset="daily_kline", version=target.get("version"),
             row_count=target.get("row_count"), coverage=None, error_code=None, retryable=False,
             attempts=int(result.get("attempted", 0)), elapsed_ms=0.0, detail=result))
-    except TdUnavailable as exc:
+    except TdUnavailable as exc:          # TD_UNAVAILABLE, or TD_RESOURCE_EXHAUSTED when its query pool is held (0x073a)
         return emit(JobResult(1, "daily_kline", args.date, "failed", 0, "baostock", "daily_kline", None,
-                              None, None, "TD_UNAVAILABLE", True, 1, 0.0, {"error": str(exc)[:200]}))
+                              None, None, exc.error_code, True, 1, 0.0, {"error": str(exc)[:200]}))
     except (TdVerifyError, TdSourceRejected) as exc:
         return emit(JobResult(1, "daily_kline", args.date, "failed", 0, "baostock", "daily_kline", None,
                               None, None, "TD_VERIFY_FAILED", False, 1, 0.0, {"error": str(exc)[:300]}))
-    except Exception as exc:  # provider range timeout/connection errors are retryable under the existing ladder
-        message = str(exc)
-        if "query memory exhausted" in message.lower() or "0x073a" in message.lower():
-            # TD's query pool is held by another process: a TD condition, retry later, never a final Baostock failure
-            return emit(JobResult(1, "daily_kline", args.date, "failed", 0, "baostock", "daily_kline", None,
-                                  None, None, "TD_RESOURCE_EXHAUSTED", True, 1, 0.0,
-                                  {"error": type(exc).__name__ + ":" + message[:200]}))
-        retryable = any(token in message.upper() for token in
-                        ("TIMEOUT", "CONNECTION", "UNAVAILABLE", "SOCKET", "BUDGET_EXHAUSTED",
-                         "GAP_UNRESOLVED"))
-        return emit(JobResult(1, "daily_kline", args.date, "failed", 0, "baostock", "daily_kline", None,
-                              None, None, "BAOSTOCK_RANGE_FAILED", retryable, 1, 0.0,
-                              {"error": type(exc).__name__ + ":" + message[:200]}))
+    except Exception as exc:
+        # the producers raise CoreError (BAOSTOCK_GAP_UNRESOLVED ...); anything else is classified by its type only
+        return emit(failure_from_exception(exc, job="daily_kline", trade_date=args.date, dataset="daily_kline",
+                                           source="baostock"))
 
 
 if __name__ == "__main__":

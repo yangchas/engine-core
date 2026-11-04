@@ -246,7 +246,7 @@ def test_successful_command_fails_when_postcondition_is_missing(monkeypatch):
     code, payload = guardian_handler._run(_core_request(event["event_id"]))
     assert code == 40
     assert payload["status"] == "failed"
-    assert payload["error_code"] == "DETERMINISTIC_FAILURE"
+    assert payload["error_code"] == "POSTCONDITION_FAILED"        # the real code, no longer the generic one
     assert payload["retryable"] is False
 
 
@@ -643,7 +643,7 @@ def test_prep_errors_from_late_upstream_data_or_a_td_hiccup_are_retryable(event_
     assert guardian_handler._failure_response(request, error=hiccup)[0] == 75
     # the rest of the classification is intact: timeouts retry, contract errors and missing critical steps do not
     assert guardian_handler._failure_response(request, error=TimeoutError("slow"))[0] == 75
-    assert guardian_handler._failure_response(request, error=RuntimeError("prep_critical_missing:symbol_universe"))[0] == 40
+    assert guardian_handler._failure_response(request, error=CoreError("PREP_CRITICAL_MISSING", "symbol_universe"))[0] == 40
     assert guardian_handler._failure_response(request, error=ValueError("bad config"))[0] == 40
 
 
@@ -793,17 +793,18 @@ def test_baostock_probe_budget_is_bounded_and_external_command_is_unchanged(monk
 
 
 def test_baostock_not_delivered_yet_is_retryable_even_with_a_deterministic_exit_code():
+    """The declared code wins over the exit status; with nothing declared the exit status decides (design/33)."""
     from examples import guardian_handler
+    from engine_core.errors import CommandFailed
 
-    for message in ("BAOSTOCK_GAP_UNRESOLVED:target_incomplete_without_fetch_plan:2026-10-30",
-                    "td_daily_kline_requires_provider_baostock:baostock>wencai>q2_final",
-                    "fetch_failed:RuntimeError:rate_limited:window_budget"):
+    for code in ("BAOSTOCK_GAP_UNRESOLVED", "TD_REQUIRES_BAOSTOCK", "RATE_LIMITED"):
+        failure = CommandFailed("command_exit=40", returncode=40, error_code=code, retryable=True, unclassified=False)
         for request in ({"args": {}}, _baostock_probe_request()):
-            code, payload = guardian_handler._failure_response(
-                request, error=RuntimeError(message + " command_exit=40"))
-            assert (code, payload["retryable"]) == (75, True), message
-    code, payload = guardian_handler._failure_response({"args": {}}, error=RuntimeError("boom command_exit=40"))
-    assert (code, payload["retryable"]) == (40, False)
+            status, payload = guardian_handler._failure_response(request, error=failure)
+            assert (status, payload["retryable"], payload["error_code"]) == (75, True, code), code
+    undeclared = CommandFailed("command_exit=40", returncode=40, error_code=None, retryable=None, unclassified=True)
+    status, payload = guardian_handler._failure_response({"args": {}}, error=undeclared)
+    assert (status, payload["retryable"]) == (40, False)
 
 
 @pytest.mark.parametrize("outcome,expected", [
