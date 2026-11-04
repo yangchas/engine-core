@@ -1,0 +1,4 @@
+#!/bin/sh
+# Interpreter stand-in for replayed days (C665): the handlers start job scripts with sys.executable, and some of those
+# scripts replace PYTHONPATH, which would drop the replay site hook. This wrapper installs the replay stand-ins itself.
+exec "$CORE_REPLAY_REAL_PYTHON" "$(dirname "$0")/replay_python_entry.py" "$@"
