@@ -1902,6 +1902,24 @@
    },
    "command": "examples/record_td_scenario.py reference_snapshot_plate_members_latest",
    "source": "core TD (read-only)"
+  },
+  "td/show_queries.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "show_queries",
+   "sha256": "5319a79c51085dc0fa5561422bbea7439f521239ecc0c832f112381189542e10",
+   "bytes": 564,
+   "recorded_at": "2026-11-04T10:29:24+08:00",
+   "statements": 1,
+   "rows": 1,
+   "errors": 0,
+   "command": "examples/record_td_scenario.py show_queries",
+   "call": {
+    "function": "td_resource_check.fetch_queries",
+    "owners": {
+     "3118193": "/home/exedev/services/engine-next/shared/venv/bin/python -m engine_next.app_main --environment server"
+    }
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
   }
  }
 }
