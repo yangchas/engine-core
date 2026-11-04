@@ -152,7 +152,8 @@ def test_core_single_event_failure_alert_is_formatted():
 def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
     from examples import guardian_handler
     from examples import core_guardian
-    from engine_core.guardian import daily_kline_backfill
+    from engine_core.data_pipeline import daily_kline_fill
+    from engine_core.guardian import contract
 
     events = _schedule_events()
     called = []
@@ -182,7 +183,8 @@ def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
         backfill_calls.append((backfill_root, target, args))
         return {"status": "NO_GAPS"}
 
-    monkeypatch.setattr(daily_kline_backfill, "run_daily_kline_backfill", fake_backfill)
+    # Since C630 every Baostock trigger point and the backfill event run the TD-driven per-symbol fill.
+    monkeypatch.setattr(daily_kline_fill, "run_daily_kline_fill_from_root", fake_backfill)
 
     def fake_factory(name, opts, root):
         called.append(name)
@@ -197,24 +199,37 @@ def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
         if event.get("trigger_type") == "startup" or event.get("handler") == "boot_apply_plan":
             continue
         request = _core_request(event["event_id"], trade_date=trade_date)
-        if event["handler"] == "daily_kline_backfill":
+        if event["handler"] in ("daily_kline_backfill", "baostock_probe"):
             request["args"] = event["args"]
-        _, payload = guardian_handler._run(request)
+        faked_before = len(called)
+        code, payload = guardian_handler._run(request)
+        assert contract.check_reply(code, payload) == [], (event["event_id"], payload)   # every reply obeys the matrix
         if event["handler"] == "daily_kline_close":
             # Providers come from the ladder rung's args; a bare request is refused, never defaulted (C566).
             assert payload["error_code"] == "CONFIG_ERROR", payload
-        elif event["handler"] == "daily_kline_backfill":
+        elif event["handler"] in ("daily_kline_backfill", "baostock_probe"):
             assert payload["status"] == "ok", payload
         elif event["handler"] == "close_capture":
             assert payload["status"] == "not_applicable"
-        else:
+        elif len(called) > faked_before:
             assert payload["status"] == "ok", (event["event_id"], payload)
+        else:
+            # Handlers that are not stubbed (the pool/self-check/fetch/provider runners) execute for real against the
+            # empty isolated root and an unreachable Redis: they must reach their own code and answer in the contract
+            # with a specific outcome, never an unmapped or internal one.
+            assert payload["error_code"] not in ("INTERNAL_ERROR", "NOT_IMPLEMENTED", "UNKNOWN_EVENT"), (
+                event["event_id"], payload)
     assert set(called) == {e["handler"] for e in events
                            if e.get("trigger_type") != "startup" and e.get("handler") != "boot_apply_plan"} - {
-                               "close_capture", "daily_kline_close", "daily_kline_backfill"}
+                               "close_capture", "daily_kline_close", "daily_kline_backfill",
+                               # handled by their own runners, not by the command factory:
+                               "baostock_probe", "boot_data_health", "intraday_data"}
     assert all(o.write and o.run for o in seen_opts)  # live mode writes, like the old guardian
-    assert backfill_calls == [(root, "2026-10-16", next(
-        event["args"] for event in events if event["handler"] == "daily_kline_backfill"))]
+    fills = [e for e in events if e["handler"] in ("daily_kline_backfill", "baostock_probe")]
+    assert len(backfill_calls) == len(fills) and len(fills) >= 5          # probe + retries + the post-close backfill
+    for call, event in zip(backfill_calls, fills):
+        assert call[0] == root and call[2] == event["args"], event["event_id"]
+    assert [c[1] for c, e in zip(backfill_calls, fills) if e["handler"] == "daily_kline_backfill"] == ["2026-10-16"]
 
 
 def test_successful_command_fails_when_postcondition_is_missing(monkeypatch):

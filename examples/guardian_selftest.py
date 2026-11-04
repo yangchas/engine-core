@@ -112,12 +112,21 @@ def _effective_schedule_instances(schedule: dict[str, Any]) -> list[dict[str, An
     return instances
 
 
+# C583 replaced part of the kaipan_hot sampling grid (docs/HOT_PLATES.md lists the 18 current points); these legacy v2
+# event ids no longer exist by design, so the equivalence check must not demand them.
+SUPERSEDED_LEGACY_EVENTS = frozenset({
+    "kaipan_hot_091600", "kaipan_hot_092100", "kaipan_hot_092630", "kaipan_hot_093100", "kaipan_hot_093300",
+    "kaipan_hot_094000", "kaipan_hot_140000", "kaipan_hot_150500",
+})
+
+
 def _compare_legacy_schedule(schedule: dict[str, Any]) -> tuple[int, int]:
     legacy = json.loads((ROOT / "native/guardiand/testdata/schedule_v2.json").read_text(encoding="utf-8"))
     legacy_events = legacy.get("events", legacy)
     current_events = schedule.get("events", schedule)
     current_ids = {event.get("event_id") or event.get("id") for event in current_events}
-    missing = sorted(event.get("event_id") for event in legacy_events if event.get("event_id") not in current_ids)
+    missing = sorted(event.get("event_id") for event in legacy_events
+                     if event.get("event_id") not in current_ids and event.get("event_id") not in SUPERSEDED_LEGACY_EVENTS)
     effective = _effective_schedule_instances(schedule)
     times_by_id: dict[str, set[str]] = {}
     for instance in effective:
@@ -125,6 +134,8 @@ def _compare_legacy_schedule(schedule: dict[str, Any]) -> tuple[int, int]:
     timed_legacy = [event for event in legacy_events if event.get("start")]
     mismatched = []
     for event in timed_legacy:
+        if event["event_id"] in SUPERSEDED_LEGACY_EVENTS:
+            continue
         expected = event["start"]
         try:
             parsed = next(datetime.strptime(expected, fmt) for fmt in ("%H:%M:%S", "%H:%M")

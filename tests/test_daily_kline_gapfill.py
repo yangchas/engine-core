@@ -802,6 +802,7 @@ def test_range_client_waits_before_its_single_reconnect(monkeypatch):
 
 
 def test_only_the_post_close_backfill_event_gets_the_twelve_hour_budget():
+    # C633: the fill limit is configured on every Baostock trigger point; only the post-close backfill has 12 h
     import inspect
     import json
     from pathlib import Path
@@ -814,8 +815,14 @@ def test_only_the_post_close_backfill_event_gets_the_twelve_hour_budget():
                           .read_text(encoding="utf-8"))
     events = {e["event_id"]: e for e in schedule["events"]}
     assert events["daily_kline_backfill"]["args"]["total_timeout_seconds"] == 12 * 3600
-    assert [name for name, e in events.items()
-            if "args" in e and "total_timeout_seconds" in e["args"]] == ["daily_kline_backfill"]
+    limited = {name for name, e in events.items() if "args" in e and "total_timeout_seconds" in e["args"]}
+    assert limited == {"baostock_probe_1730", "baostock_retry_1740", "baostock_retry_1830", "baostock_retry_2000",
+                       "daily_kline_backfill"}
+    for name in limited - {"daily_kline_backfill"}:      # shorter than the rung that would kill the handler
+        rung = schedule["profiles"][events[name]["profile"]]["ladder"][0]["timeout"]
+        rung_seconds = int(rung[:-1]) * {"m": 60, "h": 3600}[rung[-1]]
+        assert events[name]["args"]["total_timeout_seconds"] < rung_seconds, name
+        assert events[name]["args"]["total_timeout_seconds"] < 12 * 3600, name
     tier = schedule["profiles"]["kline_backfill"]["ladder"][0]
     # 3 attempts with exponential backoff, then give up on this time point; 12 h per attempt.
     assert (tier["attempts"], tier["backoff"], tier["timeout"], tier["budget_enabled"]) == (3, "5m*2", "12h", False)
