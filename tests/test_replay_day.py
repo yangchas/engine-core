@@ -260,3 +260,24 @@ def test_a_handler_that_breaks_the_contract_makes_the_replay_fail(tmp_path):
     code, report = _replay_slice(tmp_path, handler=mutant)
     assert code == 1 and report["verdict"] == "FAIL"
     assert any("CONTRACT_VIOLATION calendar_refresh_0005" in p for p in report["problems"]), report["problems"]
+
+
+def test_a_reply_with_an_unregistered_error_code_is_an_orchestration_defect(tmp_path):
+    run = _run(tmp_path, states={"a": {"status": "FAILED_FINAL"}},
+               replies=[("a", {"contract": 1, "status": "failed", "error_code": "SOME_NEW_CODE_NOBODY_REGISTERED",
+                               "retryable": False})],
+               unrecorded=[{"instance": "a", "source": "kaipan", "call": "getHisBans"}])
+    report = replay_day.evaluate(run)
+    assert report["verdict"] == "FAIL"
+    assert any("UNREGISTERED_CODE a: SOME_NEW_CODE_NOBODY_REGISTERED" in p for p in report["problems"])
+
+
+def test_unclassified_replies_are_listed_and_fail_only_under_strict_codes(tmp_path):
+    reply = {"contract": 1, "status": "failed", "error_code": "INTERNAL_ERROR", "retryable": True, "unclassified": True,
+             "detail": "RuntimeError:boom"}
+    run = _run(tmp_path, states={"a": {"status": "SUCCEEDED_DEGRADED"}}, replies=[("a", reply)])
+    lenient = replay_day.evaluate(run)
+    assert [u["instance"] for u in lenient["unclassified_replies"]] == ["a"]
+    assert not any(p.startswith("UNCLASSIFIED") for p in lenient["problems"])
+    strict = replay_day.evaluate(run, strict_codes=True)
+    assert any(p.startswith("UNCLASSIFIED a:") for p in strict["problems"])
