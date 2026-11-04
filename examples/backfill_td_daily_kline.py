@@ -57,6 +57,11 @@ def main(argv: list[str] | None = None) -> int:
                               None, None, "TD_VERIFY_FAILED", False, 1, 0.0, {"error": str(exc)[:300]}))
     except Exception as exc:  # provider range timeout/connection errors are retryable under the existing ladder
         message = str(exc)
+        if "query memory exhausted" in message.lower() or "0x073a" in message.lower():
+            # TD's query pool is held by another process: a TD condition, retry later, never a final Baostock failure
+            return emit(JobResult(1, "daily_kline", args.date, "failed", 0, "baostock", "daily_kline", None,
+                                  None, None, "TD_RESOURCE_EXHAUSTED", True, 1, 0.0,
+                                  {"error": type(exc).__name__ + ":" + message[:200]}))
         retryable = any(token in message.upper() for token in
                         ("TIMEOUT", "CONNECTION", "UNAVAILABLE", "SOCKET", "BUDGET_EXHAUSTED",
                          "GAP_UNRESOLVED"))
