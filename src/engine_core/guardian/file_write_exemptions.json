@@ -1,0 +1,241 @@
+{
+ "_doc": "CT-12 (C669). 'allowed' = permanent, reasoned whitelist. 'exempt' = known intermediate-file writers from design/31, each with target and expiry; expired or stale entries fail tests/test_file_write_scan.py.",
+ "allowed": [
+  {
+   "file": "src/engine_core/data_pipeline/storage.py",
+   "function": "_atomic_write",
+   "reason": "catalog commit (transitional authority store; retired by C680/D6, design/32)"
+  },
+  {
+   "file": "src/engine_core/data_pipeline/storage.py",
+   "function": "_catalog_lock",
+   "reason": "catalog commit lock (retired together with the catalog)"
+  },
+  {
+   "file": "src/engine_core/data_pipeline/trade_calendar.py",
+   "function": "_atomic",
+   "reason": "trade calendar reference file (user 2026-11-04: small reference files stay files)"
+  },
+  {
+   "file": "src/engine_core/data_pipeline/ops.py",
+   "function": "FileLock.acquire",
+   "reason": "process lock file (lock whitelist; Redis lease is the long-term target, design/31 B13)"
+  },
+  {
+   "file": "src/engine_core/execution_ledger.py",
+   "function": "ExecutionLedger.record",
+   "reason": "execution ledger (append-only audit trail)"
+  },
+  {
+   "file": "src/engine_core/guardian/scheduler.py",
+   "function": "FileInstanceLock.acquire",
+   "reason": "guardian instance lock"
+  },
+  {
+   "file": "src/engine_core/guardian/scheduler.py",
+   "function": "Guardian._load",
+   "reason": "guardian state file"
+  },
+  {
+   "file": "src/engine_core/guardian/scheduler.py",
+   "function": "Guardian._save",
+   "reason": "guardian state file"
+  },
+  {
+   "file": "src/engine_core/guardian/scheduler.py",
+   "function": "_atomic_json",
+   "reason": "guardian state/ledger atomic write"
+  },
+  {
+   "file": "src/engine_core/guardian/management.py",
+   "function": "append_record",
+   "reason": "guardian management ledger"
+  },
+  {
+   "file": "src/engine_core/guardian/management.py",
+   "function": "atomic_state",
+   "reason": "guardian management state"
+  },
+  {
+   "file": "src/engine_core/daily_pipeline.py",
+   "function": "run_daily_pipeline",
+   "reason": "report products (html/md/json) are files + email (user 2026-11-04, design/31 B11)"
+  },
+  {
+   "file": "src/engine_core/close_review.py",
+   "function": "main",
+   "reason": "report product files + email (user 2026-11-04)"
+  },
+  {
+   "file": "src/engine_core/live_pages.py",
+   "function": "write_page",
+   "reason": "report page files + email (user 2026-11-04)"
+  },
+  {
+   "file": "src/engine_core/auction_tracking.py",
+   "function": "write_outputs",
+   "reason": "report product files (user 2026-11-04)"
+  },
+  {
+   "file": "src/engine_core/auction_tracking.py",
+   "function": "_write_markdown",
+   "reason": "report product files (user 2026-11-04)"
+  },
+  {
+   "file": "src/engine_core/streak_feedback.py",
+   "function": "persist_streak_feedback",
+   "reason": "derived report products kept indefinitely (user 2026-11-04, design/31 B10)"
+  },
+  {
+   "file": "examples/core_guardian.py",
+   "function": "main",
+   "reason": "dry-run/inspection state in a temp dir removed at exit; never on the execute path"
+  }
+ ],
+ "exempt": [
+  {
+   "ref": "B1",
+   "file": "src/engine_core/data_pipeline/providers/baostock_daily_provider.py",
+   "function": "BaostockDailyProvider._save_checkpoint",
+   "reason": "resume checkpoint; progress is already in TD since C630",
+   "target": "delete the code path (C670)",
+   "expires": "2026-11-30"
+  },
+  {
+   "ref": "B2",
+   "file": "src/engine_core/data_pipeline/daily_kline_gapfill.py",
+   "function": "_save_source_universe_cache",
+   "reason": "stock-list cache",
+   "target": "derive from stock_static listing dates / TD (C670)",
+   "expires": "2026-11-30"
+  },
+  {
+   "ref": "B3",
+   "file": "src/engine_core/data_pipeline/providers/daily_kline_chain.py",
+   "function": "DailyKlineProviderChain._save_wencai_checkpoint",
+   "reason": "WenCai paging checkpoint",
+   "target": "in-memory retry (C672)",
+   "expires": "2026-11-30"
+  },
+  {
+   "ref": "B3",
+   "file": "src/engine_core/data_pipeline/providers/wencai_daily_adapter.py",
+   "function": "_Run.save_checkpoint",
+   "reason": "WenCai paging checkpoint",
+   "target": "in-memory retry (C672)",
+   "expires": "2026-11-30"
+  },
+  {
+   "ref": "B15",
+   "file": "src/engine_core/data_pipeline/providers/daily_kline_chain.py",
+   "function": "DailyKlineProviderChain._append_job_log",
+   "reason": "capture trail directory",
+   "target": "to be verified reachable, then Redis/removal (C672)",
+   "expires": "2026-12-15"
+  },
+  {
+   "ref": "B15",
+   "file": "src/engine_core/daily_kline_capture.py",
+   "function": "write_capture",
+   "reason": "capture manifest/append log",
+   "target": "to be verified reachable, then removal (C672)",
+   "expires": "2026-12-15"
+  },
+  {
+   "ref": "B5",
+   "file": "src/engine_core/live_session.py",
+   "function": "_write_checkpoint_cache",
+   "reason": "intraday session state cache",
+   "target": "Redis core: keys with TTL (C672)",
+   "expires": "2026-12-15"
+  },
+  {
+   "ref": "B5",
+   "file": "src/engine_core/live_state_cache.py",
+   "function": "write",
+   "reason": "intraday session state cache (26MB, written every trading day)",
+   "target": "Redis core: keys with TTL (C672)",
+   "expires": "2026-12-15"
+  },
+  {
+   "ref": "B6",
+   "file": "src/engine_core/slice_cache.py",
+   "function": "write_daily_history_slice",
+   "reason": "pre-market slice cache (no writes since 10-17)",
+   "target": "delete or Redis (C670)",
+   "expires": "2026-11-30"
+  },
+  {
+   "ref": "B7",
+   "file": "src/engine_core/daily_history.py",
+   "function": "_fetch_worker",
+   "reason": "history backfill checkpoint (superseded by TD progress)",
+   "target": "delete (C670)",
+   "expires": "2026-11-30"
+  },
+  {
+   "ref": "B7",
+   "file": "src/engine_core/daily_history.py",
+   "function": "backfill_daily_history",
+   "reason": "history backfill checkpoint (superseded by TD progress)",
+   "target": "delete (C670)",
+   "expires": "2026-11-30"
+  },
+  {
+   "ref": "B14",
+   "file": "src/engine_core/auction_node.py",
+   "function": "_write_node_run",
+   "reason": "auction node timer/dataset files",
+   "target": "TD/Redis with D6 auction group",
+   "expires": "2027-01-31"
+  },
+  {
+   "ref": "B14",
+   "file": "src/engine_core/auction_node.py",
+   "function": "run_auction_node",
+   "reason": "auction node directory",
+   "target": "TD/Redis with D6 auction group",
+   "expires": "2027-01-31"
+  },
+  {
+   "ref": "B14",
+   "file": "src/engine_core/auction_node.py",
+   "function": "run_auction_node.on_poll",
+   "reason": "auction node poll files",
+   "target": "TD/Redis with D6 auction group",
+   "expires": "2027-01-31"
+  },
+  {
+   "ref": "D6",
+   "file": "src/engine_core/stock_day_facts.py",
+   "function": "write_facts",
+   "reason": "derived dataset written as files under out_dir",
+   "target": "TD snapshot with D6 group B (C680 line)",
+   "expires": "2027-01-31"
+  },
+  {
+   "ref": "B17",
+   "file": "examples/core_guardian.py",
+   "function": "_calendar_alert_once",
+   "reason": "alert de-duplication marker file",
+   "target": "Redis core:alert:* with TTL",
+   "expires": "2026-12-15"
+  },
+  {
+   "ref": "B18",
+   "file": "examples/core_guardian.py",
+   "function": "_command_handler.handler",
+   "reason": "status_events.jsonl observation log",
+   "target": "guardiand ledger or Redis stream",
+   "expires": "2026-12-15"
+  },
+  {
+   "ref": "B19",
+   "file": "examples/run_wencai_fallback.py",
+   "function": "main",
+   "reason": "manual WenCai fallback tool writes result/manifest files",
+   "target": "stdout/Redis; tool is manual only",
+   "expires": "2026-12-15"
+  }
+ ]
+}
