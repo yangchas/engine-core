@@ -85,18 +85,10 @@ def failure_from_exception(exc: BaseException, *, job: str, trade_date: str = ""
     INTERNAL_ERROR (retryable, flagged unclassified) - never a code invented from the message text."""
     from ..errors import CoreError
 
-    if isinstance(exc, CoreError):
-        code, retryable, detail = exc.error_code, exc.retryable, {"error": str(exc)[:300]}
-    elif isinstance(exc, TimeoutError):
-        code, retryable = "FETCH_TIMEOUT", True
-        detail = {"unclassified": True, "error": f"{type(exc).__name__}:{str(exc)[:300]}"}
-    elif isinstance(exc, PROGRAMMING_ERRORS):
-        # a bug or a bad argument: running it again changes nothing (decided by the exception's type, not its text)
-        code, retryable = "DETERMINISTIC_FAILURE", False
-        detail = {"unclassified": True, "error": f"{type(exc).__name__}:{str(exc)[:300]}"}
-    else:
-        code, retryable = "INTERNAL_ERROR", True
-        detail = {"unclassified": True, "error": f"{type(exc).__name__}:{str(exc)[:300]}"}
+    code, retryable = exception_code(exc, source or "")
+    detail = {"error": f"{type(exc).__name__}:{str(exc)[:300]}"} if not isinstance(exc, CoreError) else {"error": str(exc)[:300]}
+    if not isinstance(exc, CoreError):
+        detail["unclassified"] = True
     return JobResult(contract=1, job=job, trade_date=trade_date, status="failed", tier=0, source=source,
                      dataset=dataset, version=None, row_count=None, coverage=None, error_code=code,
                      retryable=retryable, attempts=1, elapsed_ms=0.0, detail=detail)
@@ -187,18 +179,20 @@ def parse(stdout_text: str, returncode: int) -> JobResult:
     return result
 
 
-def _exception_code(exc: Exception, source: str) -> tuple[str, bool]:
-    message = str(exc).strip()
-    lowered = message.lower()
-    if isinstance(exc, TimeoutError) or "timeout" in lowered or "timed out" in lowered:
+def exception_code(exc: BaseException, source: str = "") -> tuple[str, bool]:
+    """(error code, retryable) of an exception: its own registered code, else its type - never its message."""
+    from ..errors import CoreError
+
+    if isinstance(exc, CoreError):
+        return exc.error_code, exc.retryable
+    if isinstance(exc, TimeoutError):
         return ("BAOSTOCK_TIMEOUT" if "baostock" in source.lower() else "FETCH_TIMEOUT"), True
-    for prefix, retryable in (("quality_invalid:", False), ("schema_invalid:", False)):
-        if lowered.startswith(prefix):
-            suffix = re.sub(r"[^A-Za-z0-9]+", "_", message[len(prefix):]).strip("_").upper()
-            return suffix or prefix[:-1].upper(), retryable
-    if re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", message):
-        return re.sub(r"[^A-Za-z0-9]+", "_", message).strip("_").upper(), True
-    return type(exc).__name__.upper(), True
+    if isinstance(exc, PROGRAMMING_ERRORS):
+        return "DETERMINISTIC_FAILURE", False
+    return "INTERNAL_ERROR", True
+
+
+_exception_code = exception_code
 
 
 def run_with_degrade(job: str, trade_date: str,

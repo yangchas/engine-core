@@ -170,7 +170,7 @@ class BaostockDailyProvider:
         code = getattr(client, "last_error_code", None) or getattr(exc, "error_code", None)
         if code and str(code) != "0":
             return str(code)
-        if isinstance(exc, TimeoutError) or "BAOSTOCK_TIMEOUT" in str(exc):
+        if isinstance(exc, TimeoutError):
             return "BAOSTOCK_TIMEOUT"
         message = str(exc).lower()
         if self._is_connection_failure(exc, client):
@@ -265,7 +265,7 @@ class BaostockDailyProvider:
 
     @staticmethod
     def _is_timeout(exc: BaseException) -> bool:
-        return isinstance(exc, TimeoutError) or "BAOSTOCK_TIMEOUT" in str(exc).upper()
+        return isinstance(exc, TimeoutError)
 
     def _progress(self, trade_date: str, expected: Sequence[str], checkpoint: Mapping[str, Any],
                   resumed_count: int, result: str) -> dict[str, Any]:

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from ..errors import CoreError
+from ..errors import CoreError, QualityInvalid, SchemaInvalid
 from .registry import DatasetSpec, get_dataset
 from .registry.daily_kline import classify_daily_kline
 from .storage import ArtifactCatalog, canonical_json
@@ -72,20 +72,20 @@ def _parse_now(value: str | None) -> datetime:
 
 def _clean_symbol(value: Any) -> str:
     if value is None:
-        raise ValueError("schema_invalid:symbol_missing")
+        raise SchemaInvalid("symbol_missing")
     raw = str(value).strip()
     if raw.endswith(".0") and raw[:-2].isdigit(): raw = raw[:-2]
     if raw.isdigit() and len(raw) <= 6: return raw.zfill(6)
     if len(raw) == 8 and raw[:2] in {"sh", "sz", "bj", "SH", "SZ", "BJ"} and raw[2:].isdigit():
         return raw[2:]
-    raise ValueError("schema_invalid:symbol_format")
+    raise SchemaInvalid("symbol_format")
 
 
 def _clean_rows(spec: DatasetSpec, raw_rows: Any) -> list[dict[str, Any]]:
     if isinstance(raw_rows, Mapping):
         raw_rows = raw_rows.get("rows", [])
     if not isinstance(raw_rows, Sequence) or isinstance(raw_rows, (str, bytes)):
-        raise ValueError("schema_invalid:rows_not_sequence")
+        raise SchemaInvalid("rows_not_sequence")
     rows: list[dict[str, Any]] = []
     for raw in raw_rows:
         if not isinstance(raw, Mapping): continue
@@ -94,11 +94,11 @@ def _clean_rows(spec: DatasetSpec, raw_rows: Any) -> list[dict[str, Any]]:
         if symbol_key:
             row["symbol"] = _clean_symbol(row[symbol_key])
         elif "symbol" in spec.required_fields:
-            raise ValueError("schema_invalid:symbol_missing")
+            raise SchemaInvalid("symbol_missing")
         for key in ("plate_code", "plateid"):
             if key in row and row[key] not in (None, ""):
                 digits = re.sub(r"\D", "", str(row[key]))
-                if not digits: raise ValueError("schema_invalid:plate_code")
+                if not digits: raise SchemaInvalid("plate_code")
                 row["plate_code"] = digits
                 break
         for key, value in tuple(row.items()):
@@ -108,12 +108,12 @@ def _clean_rows(spec: DatasetSpec, raw_rows: Any) -> list[dict[str, Any]]:
     if spec.name == "symbol_universe":
         for row in rows:
             if any(row.get(key) in (None, "") for key in spec.required_fields):
-                raise ValueError("schema_invalid:required_field_missing")
+                raise SchemaInvalid("required_field_missing")
         symbols = [row["symbol"] for row in rows]
         if len(symbols) != len(set(symbols)):
-            raise ValueError("quality_invalid:duplicate_symbol")
+            raise QualityInvalid("duplicate_symbol")
     if not rows and not spec.empty_is_valid:
-        raise ValueError("quality_invalid:empty_response")
+        raise QualityInvalid("empty_response")
     return rows
 
 
@@ -272,7 +272,7 @@ class JobRunner:
                 raise ValueError("temporal_invalid:limit_reasons_date_mismatch")
             keys = [(row.get("date"), row.get("symbol")) for row in rows]
             if len(keys) != len(set(keys)):
-                raise ValueError("quality_invalid:limit_reasons_duplicate_key")
+                raise QualityInvalid("limit_reasons_duplicate_key")
         quality = _quality(rows, fetch_meta)
         baostock_completion = None
         if (name == "daily_kline" and fetch_meta.get("provider") == "baostock" and
@@ -317,7 +317,7 @@ class JobRunner:
             quality["status"] = "PARTIAL"
         digest_payload = b"\n".join(canonical_json(row) for row in rows)
         if len(digest_payload) > self.max_payload_bytes:
-            raise ValueError("quality_invalid:artifact_payload_budget")
+            raise QualityInvalid("artifact_payload_budget")
         fetched = (clock.astimezone(ZoneInfo("Asia/Shanghai")).isoformat() if name == "daily_kline"
                    else clock.isoformat().replace("+00:00", "Z"))
         declared_available_at = available_at or fetch_meta.get("available_at")

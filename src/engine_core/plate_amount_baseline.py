@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .data_pipeline.storage import ArtifactCatalog, canonical_json
+from .data_pipeline.td_sink import td_memory_exhausted
 
 DATASET = "plate_amount_baseline"
 SCHEMA = "plate_amount_baseline_v1"
@@ -125,7 +126,7 @@ def _read_0945_slice(cursor: Any, days: Sequence[str], wanted: set[str],
                        "PARTITION BY symbol INTERVAL(15m, 1s)")
         fetched = cursor.fetchall()
     except Exception as exc:
-        if "memory" in str(exc).lower():
+        if td_memory_exhausted(exc):
             if len(days) > 1:
                 middle = len(days) // 2
                 return (_read_0945_slice(cursor, days[:middle], wanted, symbols)
@@ -161,7 +162,7 @@ def _auction_slice(cursor: Any, days: list[str]) -> list[tuple]:
                        f'WHERE trade_date IN ({quoted}) AND auction_tag="0925"')
         return list(cursor.fetchall())
     except Exception as exc:
-        if "memory" in str(exc).lower() and len(days) > 1:
+        if td_memory_exhausted(exc) and len(days) > 1:
             middle = len(days) // 2
             return _auction_slice(cursor, days[:middle]) + _auction_slice(cursor, days[middle:])
         raise RuntimeError(f"plate_amount_baseline_auction_query {days[0]}..{days[-1]}: {exc}") from exc

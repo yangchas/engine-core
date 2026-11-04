@@ -12,7 +12,7 @@ from pathlib import Path
 from engine_core.data_pipeline.ops import run_daily_phase
 from engine_core.data_pipeline.job_contract import JobResult as ContractJobResult, emit as emit_job_result
 from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
-from engine_core.data_pipeline.job_contract import contract_main, emit_failure
+from engine_core.data_pipeline.job_contract import contract_main, emit_failure, exception_code
 
 
 def _sample_probe(args, root: Path, adapters) -> int:
@@ -47,17 +47,7 @@ def _sample_probe(args, root: Path, adapters) -> int:
                             "quality": job.manifest.get("quality"),
                             "provider_attempts": job.manifest.get("provider_attempts", [])}))
     except Exception as exc:
-        message = str(exc)
-        lowered = message.lower()
-        permanent = lowered.startswith(("quality_invalid:", "schema_invalid:", "symbols_file_",
-                                        "symbol_universe_artifact_required:"))
-        retryable = not permanent
-        if lowered.startswith("quality_invalid:") or lowered.startswith("schema_invalid:"):
-            failure_code = message.split(":", 1)[1].upper()
-        elif "timeout" in lowered:
-            failure_code = "BAOSTOCK_TIMEOUT"
-        else:
-            failure_code = type(exc).__name__.upper()
+        failure_code, retryable = exception_code(exc, "baostock")
     return emit_job_result(ContractJobResult(
         contract=1, job="daily_kline", trade_date=args.date, status="failed", tier=0,
         source="baostock", dataset="daily_kline", version=None, row_count=None,

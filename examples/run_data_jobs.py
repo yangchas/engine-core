@@ -23,10 +23,11 @@ from engine_core.data_pipeline.reader import load_dataset
 from engine_core.data_pipeline.job_contract import (
     JobResult as ContractJobResult,
     emit as emit_job_result,
+    exception_code,
     run_with_degrade,
 )
 from engine_core.data_pipeline.job_contract import contract_main, emit_failure
-from engine_core.errors import CoreError
+from engine_core.errors import CoreError, QualityInvalid, SchemaInvalid
 
 
 def _load_adapter(spec: str | None) -> dict[str, Any]:
@@ -139,7 +140,7 @@ def _universe_delta(current: set[str], previous: set[str], *, reject_ratio: floa
     delta = len(current ^ previous)
     ratio = delta / max(1, len(previous))
     if ratio > reject_ratio:
-        raise RuntimeError("quality_invalid:universe_change_over_10pct")
+        raise QualityInvalid("universe_change_over_10pct")
     return delta, ratio
 
 
@@ -169,13 +170,13 @@ def _normalize_universe_rows(source_rows: list[list[str]]) -> list[dict[str, str
                "trade_status": status, "universe_asof": "", "source": "baostock_query_all_stock"}
         previous = by_symbol.get(symbol)
         if previous is not None and previous["code"] != row["code"]:
-            raise RuntimeError("quality_invalid:universe_identity_conflict")
+            raise QualityInvalid("universe_identity_conflict")
         if previous is not None and previous != row:
-            raise RuntimeError("quality_invalid:universe_duplicate_conflict")
+            raise QualityInvalid("universe_duplicate_conflict")
         by_symbol[symbol] = row
     for symbol, codes in possible_identities.items():
         if symbol in by_symbol and len(codes) > 1:
-            raise RuntimeError("quality_invalid:universe_identity_conflict")
+            raise QualityInvalid("universe_identity_conflict")
     return [by_symbol[symbol] for symbol in sorted(by_symbol)]
 
 
@@ -289,9 +290,9 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         for row in rows:
             row["universe_asof"] = asof
         symbols = [row["symbol"] for row in rows]
-        if not rows: raise RuntimeError("quality_invalid:empty_response")
+        if not rows: raise QualityInvalid("empty_response")
         if any(not row["name"] or not row["trade_status"] for row in rows):
-            raise RuntimeError("schema_invalid:required_field_missing")
+            raise SchemaInvalid("required_field_missing")
         delta_count = 0
         change = 0.0
         previous = load_dataset("symbol_universe", asof, prefer="file",
@@ -603,7 +604,7 @@ def _carried_forward_universe(artifact_root: str, trade_date: str) -> dict[str, 
                    "quality_status": "DEGRADED", "partial": True}
         if universe_asof and _universe_payload_quality(payload):
             return payload
-    raise RuntimeError("quality_invalid:no_recent_symbol_universe")
+    raise QualityInvalid("no_recent_symbol_universe")
 
 
 @contract_main("run_data_jobs")
@@ -834,18 +835,7 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
                            if payload.get("carried_forward_from") else {})})
             return emit_job_result(result)
         except Exception as exc:
-            message = str(exc)
-            normalized = message.lower()
-            if isinstance(exc, TimeoutError) or "timeout" in normalized:
-                error_code, retryable = "BAOSTOCK_TIMEOUT", True
-            elif normalized.startswith("quality_invalid:"):
-                suffix = message.split(":", 1)[1]
-                error_code, retryable = suffix.upper() or "QUALITY_INVALID", False
-            elif normalized.startswith("schema_invalid:"):
-                suffix = message.split(":", 1)[1]
-                error_code, retryable = suffix.upper() or "SCHEMA_INVALID", False
-            else:
-                error_code, retryable = "EXECUTION_FAILED", True
+            error_code, retryable = exception_code(exc, "baostock")
             failed_tier = result.tier if result is not None else 0
             failed_source = result.source if result is not None else primary_source
             failed_attempts = result.attempts if result is not None else 1

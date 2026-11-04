@@ -733,6 +733,9 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
     if dry_run is None:
         dry_run = os.environ.get("GUARDIAN_DRY_RUN") == "1"
     by_id = {item["id"]: item for item in load_registry()}
+    # a plan that could not be built is not an item to apply: report it as what it is
+    plan_errors = [row for row in plan if row.get("action") == "PLAN_ERROR"]
+    plan = [row for row in plan if row.get("action") != "PLAN_ERROR"]
     active_owners = set(active_events or [])
     if active_owners:
         plan = [action for action in plan
@@ -964,12 +967,21 @@ def boot_apply_plan(trade_date: str, plan: list[dict[str, Any]], root: str | Pat
                                   "cost": item_cost, "elapsed_ms": 0})
         results.extend(layer_results)
         action_status.update({row["id"]: row["status"] for row in layer_results})
+    results.extend({"id": row.get("id", "*"), "action": "PLAN_ERROR", "status": "failed",
+                    "error_code": "PLAN_UNAVAILABLE", "error": str(row.get("error") or ""), "elapsed_ms": 0}
+                   for row in plan_errors)
     detail = {"trade_date": trade_date, "results": results, "deferred": deferred,
               "dry_run": dry_run}
-    failures = sum(x.get("status") in {"failed", "unavailable"} for x in results)
+    failed_rows = [x for x in results if x.get("status") in {"failed", "unavailable"}]
+    failures = len(failed_rows)
     successes = len(results) - failures
     status = "failed" if failures and not successes else "degraded" if failures else "ok"
-    return _result(status, detail, retryable=bool(failures))
+    code = ""
+    if status == "failed":
+        # the first failed row that names a registered code speaks for the whole pass
+        code = next((str(x["error_code"]) for x in failed_rows if lookup(str(x.get("error_code") or ""))),
+                    "APPLY_ITEM_FAILED")
+    return _result(status, detail, error_code=code, retryable=bool(failures))
 
 
 def fetch_item(item_id: str, partition: str, root: str | Path, *,
