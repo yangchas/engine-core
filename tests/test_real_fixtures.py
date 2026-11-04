@@ -233,3 +233,17 @@ def test_live_source_contracts_match_captured_schemas(tmp_path):
         assert set(fresh["data"]["stock_list"][0]) == set(load("ths_hot_rank_")["data"]["stock_list"][0])
     else:
         pytest.skip("UPSTREAM_UNREACHABLE: ths hot_list endpoint did not answer in 4 tries")
+
+
+def test_td_recordings_have_matching_provenance():
+    """Every recorded TD result / error under fixtures/real/td is registered with its sha256 (C663)."""
+    recordings = PROVENANCE.get("_td_recordings", {})
+    root = REAL / "td"
+    files = {p.relative_to(REAL).as_posix() for p in root.rglob("*") if p.is_file()}
+    assert files == set(recordings)
+    for name, meta in recordings.items():
+        body = (REAL / name).read_bytes()
+        assert hashlib.sha256(body).hexdigest() == meta["sha256"], name
+        assert meta["kind"] in {"raw_td_result", "raw_td_error", "raw_td_function_output"} and meta["command"] and meta.get("source"), name
+        text = (gzip.decompress(body) if name.endswith(".gz") else body).decode("utf-8").lower()
+        assert not any(word in text for word in CREDENTIAL_WORDS), name

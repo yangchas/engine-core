@@ -142,11 +142,15 @@ def test_wencai_budget_is_one_request_and_redis_failure_does_not_poll(tmp_path):
     snapshot = _raw("q2_limit_up_pool_today_2026-10-28_0702.json")
     response = _wencai_response()
     calls = []
+    from engine_core.runtime_state import StateStore
+    from tests.memory_redis import MemoryRedis
+    redis = MemoryRedis()
     deps = runner.TodayDeps(
         redis_snapshot=lambda _day: snapshot,
         wencai_snapshot=lambda _day: calls.append(_day) or response,
         clock=lambda: datetime.fromisoformat("2026-10-28T15:20:01+08:00"),
-        publish_hot=lambda _manifest, _rows: {"status": "offline_replay"})
+        publish_hot=lambda _manifest, _rows: {"status": "offline_replay"},
+        state=StateStore(redis))
     request = {"data_date": DAY, "as_of": "2026-10-28T15:20:00+08:00",
                "args": {"tier": "close_confirm", "wencai_confirmation": True,
                         "wencai_min_interval_seconds": 1800, "wencai_max_requests_per_day": 1}}
@@ -156,6 +160,9 @@ def test_wencai_budget_is_one_request_and_redis_failure_does_not_poll(tmp_path):
     code, second = runner.run(request, tmp_path, deps=deps)
     assert code == 40 and second["error_code"] == "WENCAI_THROTTLED"
     assert calls == [DAY]
+    key = f"core:provider:wencai_today:{DAY}"
+    assert key in redis.values and 0 < redis.ttl(key) <= 3 * 86400            # the daily budget lives in Redis...
+    assert not (tmp_path / "control").exists()                                 # ...not in a control/ file
 
     early_calls = []
     early_deps = runner.TodayDeps(
@@ -177,7 +184,8 @@ def test_wencai_budget_is_one_request_and_redis_failure_does_not_poll(tmp_path):
     fallback_deps = runner.TodayDeps(
         redis_snapshot=lambda _day: (_ for _ in ()).throw(SourceUnavailable("offline")),
         wencai_snapshot=lambda _day: response, clock=deps.clock,
-        publish_hot=lambda _manifest, _rows: {"status": "offline_replay"})
+        publish_hot=lambda _manifest, _rows: {"status": "offline_replay"},
+        state=StateStore(MemoryRedis()))                                   # a fresh budget, like the fresh root
     code, fallback = runner.run(request, tmp_path / "configured-close-fallback", deps=fallback_deps)
     assert code == 0 and fallback["detail"]["business_status"] == "FORMAL"
 

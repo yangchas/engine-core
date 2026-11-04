@@ -221,14 +221,14 @@ class WencaiDailyProvider:
     source_dependency = "independent_wencai"
     available_at_rule = "trade_date 15:05 Asia/Shanghai"
 
-    def __init__(self, fetch: Callable[..., Any], *, state_path: str | Path | None,
+    def __init__(self, fetch: Callable[..., Any], *, state: Any | None = None,
                  max_requests: int = 15, min_interval_seconds: float = 10.0,
                  breaker_seconds: int = 3 * 60 * 60, windows: tuple[tuple[str, str], ...] = (),
                  expected_count: int | Callable[[str], int] | None = None,
                  sleep_fn: Callable[[float], None] = time.sleep,
                  clock_fn: Callable[[], float] = time.time):
         self.fetcher = fetch
-        self.state_path = Path(state_path) if state_path is not None else None
+        self.state = state  # runtime_state.ProviderState (Redis); None keeps the state in memory only
         self._memory_state: dict[str, Any] = {}
         self.max_requests = min(15, max(1, int(max_requests)))
         self.min_interval_seconds = max(10.0, float(min_interval_seconds))
@@ -238,19 +238,15 @@ class WencaiDailyProvider:
         self.sleep_fn, self.clock_fn = sleep_fn, clock_fn
 
     def _state(self) -> dict[str, Any]:
-        if self.state_path is None:
+        if self.state is None:
             return dict(self._memory_state)
-        try:
-            value = json.loads(self.state_path.read_text(encoding="utf-8"))
-            return value if isinstance(value, dict) else {}
-        except (OSError, ValueError):
-            return {}
+        return self.state.load()
 
     def _save_state(self, value: Mapping[str, Any]) -> None:
-        if self.state_path is None:
+        if self.state is None:
             self._memory_state = dict(value)
         else:
-            _atomic_write(self.state_path, canonical_json(dict(value)) + b"\n")
+            self.state.save(value)
 
     def _blocked_by_window(self, current: datetime) -> bool:
         return any(start <= current.strftime("%H:%M") < end for start, end in self.windows)

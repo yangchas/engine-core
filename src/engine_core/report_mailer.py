@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from email.message import EmailMessage
 from email.utils import getaddresses, make_msgid
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from .email_render import RENDER_VERSION, _quality_banner, render_email_html
 
@@ -297,15 +297,18 @@ def _report_digest(message: EmailMessage) -> str:
     return digest.hexdigest()
 
 
-def _state_path(state_dir: str | Path | None, message: EmailMessage, digest: str) -> Path:
-    root = Path(state_dir or os.environ.get("CORE_MAIL_STATE_DIR", "./.mail_state"))
-    date_stage = (str(message["Subject"] or "").replace("/", "_").replace(" ", "_")[-80:] or "report")
-    return root / f"{date_stage}-{digest}.json"
+MAIL_KEY_PREFIX = "core:mail:sent:"
+MAIL_SENT_TTL_SECONDS = 7 * 86400
+MAIL_CLAIM_TTL_SECONDS = 3600
+
+
+def _mail_key(digest: str) -> str:
+    return MAIL_KEY_PREFIX + digest
 
 
 def send_message(config: SmtpConfig | None, msg: EmailMessage, *, dry_run: bool = True,
                  allow_recipients: Sequence[str] | None = None,
-                 state_dir: str | Path | None = None) -> SendReceipt:
+                 state: Any | None = None) -> SendReceipt:
     started = time.monotonic()
     if not dry_run and not (os.environ.get("CORE_DATA_ROOT") and (Path(os.environ["CORE_DATA_ROOT"]).expanduser() / ".mail_enabled").is_file()):
         # fail closed: real mail needs CORE_DATA_ROOT set explicitly to a root holding this marker (production only); unset/temp/test roots never send
@@ -314,7 +317,9 @@ def send_message(config: SmtpConfig | None, msg: EmailMessage, *, dry_run: bool 
     wire = msg.as_bytes()
     recipients = [part.strip() for part in str(msg.get("To", "")).split(",") if part.strip()]
     digest = _report_digest(msg)
-    marker = _state_path(state_dir, msg, digest)
+    from .runtime_state import StateStore, StateUnavailable
+    state = state if state is not None else StateStore()
+    key = _mail_key(digest)
     if not dry_run:
         header_recipients = [address.strip().lower() for _, address in getaddresses(
             [str(msg.get(key, "")) for key in ("To", "Cc", "Bcc") if msg.get(key)])
@@ -322,13 +327,23 @@ def send_message(config: SmtpConfig | None, msg: EmailMessage, *, dry_run: bool 
         envelope = [address.strip().lower() for address in recipients]
         if header_recipients != [ALLOWED_RECIPIENT] or envelope != [ALLOWED_RECIPIENT]:
             raise ValueError("fixed recipient policy rejected message")
-    if marker.is_file():
-        return SendReceipt("skipped", len(recipients), len(wire), 0.0, msg.get("Message-ID"))
     if dry_run:
+        try:  # a dry run only reports whether the message was already sent; an unreachable Redis just means "not known"
+            already = state.get(key) is not None
+        except StateUnavailable:
+            already = False
+        if already:
+            return SendReceipt("skipped", len(recipients), len(wire), 0.0, msg.get("Message-ID"))
         return SendReceipt("dry_run", len(recipients), len(wire), round(time.monotonic() - started, 3),
                            msg.get("Message-ID"))
     if config is None:
         raise ValueError("SMTP configuration is required for sending")
+    try:  # claim before sending: a concurrent sender or a repeated event cannot send the same message twice
+        claimed = state.claim(key, "sending", MAIL_CLAIM_TTL_SECONDS)
+    except StateUnavailable as exc:
+        raise RuntimeError("mail_state_unavailable") from exc
+    if not claimed:
+        return SendReceipt("skipped", len(recipients), len(wire), 0.0, msg.get("Message-ID"))
     try:
         if config.port == 465 and not config.starttls:
             with smtplib.SMTP_SSL(config.host, config.port, context=ssl.create_default_context(), timeout=10) as client:
@@ -343,10 +358,16 @@ def send_message(config: SmtpConfig | None, msg: EmailMessage, *, dry_run: bool 
                 client.login(config.user, config.password)
                 client.send_message(msg, to_addrs=[ALLOWED_RECIPIENT])
     except Exception as exc:
+        try:
+            state.delete(key)  # nothing went out: release the claim so the retry can send
+        except StateUnavailable:
+            logger.error("mail claim could not be released; it expires in %s s", MAIL_CLAIM_TTL_SECONDS)
         logger.error("report email delivery failed (%s)", type(exc).__name__)
         raise RuntimeError(f"SMTP delivery failed ({type(exc).__name__})") from None
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(json.dumps({"sha256": digest, "status": "sent"}, separators=(",", ":")), encoding="utf-8")
+    try:
+        state.set(key, "sent", MAIL_SENT_TTL_SECONDS)
+    except StateUnavailable:
+        logger.error("mail sent but its marker could not be stored; the claim expires in %s s", MAIL_CLAIM_TTL_SECONDS)
     return SendReceipt("sent", len(recipients), len(wire), round(time.monotonic() - started, 3),
                        msg.get("Message-ID"))
 

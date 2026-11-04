@@ -170,26 +170,36 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
                     write: bool, redis: Any = None, td_adapter: Any = None,
                     td_write: bool = False, now: str | None = None,
                     baostock_policy: Mapping[str, Any] | None = None,
-                    lock: bool = True, fetch_daily_kline: bool = True) -> dict[str, Any]:
+                    lock: bool = True, fetch_daily_kline: bool = True, state: Any = None) -> dict[str, Any]:
     """``fetch_daily_kline=False``: this phase never pulls daily bars (the TD fill does, C630); it only waits for
     a published Baostock partition (coverage met) and builds the datasets that depend on it once it exists."""
     if phase not in _PHASE_JOBS:
         raise ValueError("unknown_phase")
     root = Path(root)
-    status_path = root / "daily_status.json"
+    def publish_status(result: Mapping[str, Any]) -> None:
+        """Phase status for operators: ``core:jobs:daily_status:<phase>`` (3 days), never a file. Observational only."""
+        from ..runtime_state import StateStore, StateUnavailable, redis_configured
+        store = state if state is not None else (StateStore() if redis_configured() else None)
+        if store is None:
+            return
+        try:
+            store.set(f"core:jobs:daily_status:{phase}", dict(result), 3 * 86400)
+        except StateUnavailable:
+            pass
+
     try:
         calendar = TradeCalendarStore(root)
         calendar_is_trading = calendar.is_trading_day(trade_date)
     except ValueError:
         result = {"phase": phase, "trade_date": trade_date,
                   "status": "FAILED_CALENDAR_UNAVAILABLE", "jobs": [], "errors": []}
-        if write: _atomic_write(status_path, canonical_json(result) + b"\n")
+        if write: publish_status(result)
         return result
     if not calendar_is_trading:
         result = {"phase": phase, "trade_date": trade_date, "status": "SKIPPED_NON_TRADING_DAY",
                   "jobs": []}
         if write:
-            _atomic_write(status_path, canonical_json(result) + b"\n")
+            publish_status(result)
         return result
     lock_context = FileLock(root / ".locks" / f"daily-{phase}.lock") if lock else _NullContext()
     results = []
@@ -201,7 +211,7 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
         except ValueError:
             result = {"phase": phase, "trade_date": trade_date,
                       "status": "FAILED_CALENDAR_UNAVAILABLE", "jobs": [], "errors": []}
-            if write: _atomic_write(status_path, canonical_json(result) + b"\n")
+            if write: publish_status(result)
             return result
     with lock_context:
         runner = JobRunner(artifact_root=root, redis=redis, td_adapter=td_adapter,
@@ -345,7 +355,7 @@ def run_daily_phase(phase: str, trade_date: str, *, root: str | Path,
         if baseline_append is not None:
             result["auction_baseline_append"] = baseline_append
         if write:
-            _atomic_write(status_path, canonical_json(result) + b"\n")
+            publish_status(result)
             if redis is not None:
                 key = "core:cache:data:status"
                 previous = redis.get(key)

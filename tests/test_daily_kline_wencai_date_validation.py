@@ -64,7 +64,6 @@ def _chain(tmp_path: Path, rows: list[dict], *, include_reference: bool = True,
 
     provider = WencaiDailyProvider(
         lambda _day: payload,
-        state_path=None,
         expected_count=expected_count,
         sleep_fn=lambda _seconds: None,
     )
@@ -97,7 +96,6 @@ def test_partial_timeout_precedes_date_mismatch_and_is_checkpointed(tmp_path):
     )
     provider = WencaiDailyProvider(
         lambda _day: calls.append(_day) or payload,
-        state_path=None,
         expected_count=len(rows),
         sleep_fn=lambda _seconds: None,
     )

@@ -913,6 +913,42 @@
    "source_path": "/home/exedev/core-data/stock_static/trade_date=2026-10-29/source=baostock_stock_basic/sha256-d2f57645aafb76b7/rows.jsonl.gz",
    "trade_date": "2026-10-29",
    "version": "sha256-d2f57645aafb76b7"
+  },
+  "core_artifacts/c664/catalog.json": {
+   "bytes": 400145,
+   "command": "cp /home/exedev/core-data/catalog.json tests/fixtures/real/core_artifacts/c664/catalog.json",
+   "copied_at": "2026-11-04T01:04:18+08:00",
+   "dataset": "catalog",
+   "kind": "core_catalog_snapshot",
+   "sha256": "28f4c37a83a95f8cc6c9832d3ef4c842c1d072242da5ad7a1aa04fd8efaa695c",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/catalog.json",
+   "trade_date": null,
+   "version": null
+  },
+  "core_artifacts/c664/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/manifest.json": {
+   "bytes": 1426,
+   "command": "cp /home/exedev/core-data/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/manifest.json tests/fixtures/real/core_artifacts/c664/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/manifest.json",
+   "copied_at": "2026-11-04T01:04:18+08:00",
+   "dataset": "plate_members",
+   "kind": "core_artifact_manifest",
+   "sha256": "76ba5bc4cc2b2200c57520e10ef83e712a9a480c9ef435c705f52fbd078df2e2",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/manifest.json",
+   "trade_date": "2026-10-29",
+   "version": "sha256-9a9492578bf6327b"
+  },
+  "core_artifacts/c664/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/rows.jsonl.gz": {
+   "bytes": 962156,
+   "command": "cp /home/exedev/core-data/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/rows.jsonl.gz tests/fixtures/real/core_artifacts/c664/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/rows.jsonl.gz",
+   "copied_at": "2026-11-04T01:04:18+08:00",
+   "dataset": "plate_members",
+   "kind": "core_artifact_rows",
+   "sha256": "46a13a3c642c5d7f7d3449fc97738f366877dce8ebfda7012dc2d1041c0f6398",
+   "source": "core_data",
+   "source_path": "/home/exedev/core-data/plate_members/trade_date=2026-10-29/source=kaipan_getHisPlateIds/sha256-9a9492578bf6327b/rows.jsonl.gz",
+   "trade_date": "2026-10-29",
+   "version": "sha256-9a9492578bf6327b"
   }
  },
  "kaipan_hot_plates_2026-10-23_1441.json": {
@@ -1675,5 +1711,197 @@
   },
   "request_count": 1,
   "source_date_echo": "Date"
+ },
+ "_td_recordings": {
+  "td/errors/query_memory_exhausted_0x073a.json": {
+   "kind": "raw_td_error",
+   "sha256": "c6a57b7ec7d26264a7cf729e6f9eadce0b939a8dbd6f5a2a451fc487faa8b4cf",
+   "bytes": 319,
+   "command": "examples/capture_td_error.py query_memory_exhausted_0x073a /home/exedev/core-data/guardian-native/state/ledger/2026-11-03.jsonl --seq 135",
+   "source": {
+    "ledger": "/home/exedev/core-data/guardian-native/state/ledger/2026-11-03.jsonl",
+    "seq": 135,
+    "ts": "2026-11-03T08:38:18.263732595+08:00",
+    "record_sha256": "3341c6fb997bef9780b17abde38ae61bfca57c3b1e6eedbd0dc0c5799478c341"
+   }
+  },
+  "td/plate_amount_2day.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_2day",
+   "sha256": "9739bdb99f16b7c300711f8c48918e41db9e181e8235944d984b806d18eba0d0",
+   "bytes": 231744,
+   "recorded_at": "2026-11-04T01:01:32+08:00",
+   "statements": 2,
+   "rows": 37632,
+   "errors": 0,
+   "command": "examples/record_td_scenario.py plate_amount_2day",
+   "call": {
+    "function": "plate_amount_baseline._read_td",
+    "args": [
+     "2026-11-02",
+     [
+      "2026-10-29",
+      "2026-10-30"
+     ]
+    ]
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/plate_amount_slice_halving.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_slice_halving",
+   "sha256": "6ef6b0f802627d67afdd8f1db9321f5bbece5aea97f94ee30efc1cc1a506a7ba",
+   "bytes": 147983,
+   "recorded_at": "2026-11-04T01:01:35+08:00",
+   "statements": 4,
+   "rows": 20945,
+   "errors": 1,
+   "command": "examples/record_td_scenario.py plate_amount_slice_halving",
+   "call": {
+    "function": "plate_amount_baseline._read_td",
+    "args": [
+     "2026-11-02",
+     [
+      "2026-10-29",
+      "2026-10-30"
+     ]
+    ],
+    "injected": "2-day tick slice -> real error 0x073a"
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/plate_amount_symbol_split.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_symbol_split",
+   "sha256": "6569d3e39ee733fbcc1b5e25713e4356bf160fb13b1380921b6722a0e9ced347",
+   "bytes": 90820,
+   "recorded_at": "2026-11-04T01:01:38+08:00",
+   "statements": 5,
+   "rows": 12909,
+   "errors": 1,
+   "command": "examples/record_td_scenario.py plate_amount_symbol_split",
+   "call": {
+    "function": "plate_amount_baseline._read_td",
+    "args": [
+     "2026-11-02",
+     [
+      "2026-10-30"
+     ]
+    ],
+    "injected": "unfiltered 1-day tick slice -> real error 0x073a"
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/plate_amount_auction_halving.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_auction_halving",
+   "sha256": "7e5924a04817365b2de33ad5999d5065fef62a0903d283cbb2cdb43c56fefe7e",
+   "bytes": 36271,
+   "recorded_at": "2026-11-04T01:01:39+08:00",
+   "statements": 3,
+   "rows": 5223,
+   "errors": 1,
+   "command": "examples/record_td_scenario.py plate_amount_auction_halving",
+   "call": {
+    "function": "plate_amount_baseline._read_auction_rows",
+    "args": [
+     [
+      "2026-10-29",
+      "2026-10-30"
+     ]
+    ],
+    "injected": "2-day auction slice -> real error 0x073a"
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/dde_suspended.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "dde_suspended",
+   "sha256": "0bf67375176d201a01c515eccfd45685db63e64987bbdfac04f4feb17874eb74",
+   "bytes": 286,
+   "recorded_at": "2026-11-04T01:03:44+08:00",
+   "statements": 1,
+   "rows": 1,
+   "errors": 0,
+   "command": "examples/record_td_scenario.py dde_suspended",
+   "call": {
+    "function": "TaosDdeStore.read_suspended",
+    "args": [
+     [
+      "000831"
+     ],
+     "2026-11-02"
+    ]
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/dde_not_flagged_1103.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "dde_not_flagged_1103",
+   "sha256": "e27b1e43dda3e2b44cc539d6d3190f71a96abd988d86adc0b96c72e06205c59b",
+   "bytes": 294,
+   "recorded_at": "2026-11-04T01:03:46+08:00",
+   "statements": 1,
+   "rows": 0,
+   "errors": 0,
+   "command": "examples/record_td_scenario.py dde_not_flagged_1103",
+   "call": {
+    "function": "TaosDdeStore.read_suspended",
+    "args": [
+     [
+      "000831"
+     ],
+     "2026-11-03"
+    ]
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/errors/table_does_not_exist.json": {
+   "kind": "raw_td_error",
+   "sha256": "dcc505257621b7b86914ccac5dd89af2293cac297b74815b2e210587dfc95a35",
+   "bytes": 288,
+   "command": "examples/capture_td_error.py table_does_not_exist --provoke 'SELECT ts FROM market_data1.recorded_missing_table_c663 LIMIT 1'",
+   "source": {
+    "provoked_by": "SELECT ts FROM market_data1.recorded_missing_table_c663 LIMIT 1",
+    "recorded_at": "2026-11-04T01:03:52+08:00",
+    "client_exception": "ProgrammingError"
+   }
+  },
+  "td/plate_amount_other_error.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_other_error",
+   "sha256": "b158fd3f171aeb4da4912f80bf85e7479d676340506a0f75ab7e872c5d39e1c1",
+   "bytes": 36205,
+   "recorded_at": "2026-11-04T01:03:54+08:00",
+   "statements": 2,
+   "rows": 5223,
+   "errors": 1,
+   "command": "examples/record_td_scenario.py plate_amount_other_error",
+   "call": {
+    "function": "plate_amount_baseline._read_td",
+    "args": [
+     "2026-11-02",
+     [
+      "2026-10-30"
+     ]
+    ],
+    "injected": "tick statement -> real error 'table does not exist'"
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/outputs/reference_snapshot_plate_members_latest.json": {
+   "kind": "raw_td_function_output",
+   "sha256": "0c7da35ef61a0b84a95c43796b16345deb981fa88345a31fc772622f6699ef0f",
+   "bytes": 535,
+   "recorded_at": "2026-11-04T01:04:40+08:00",
+   "call": {
+    "function": "ReferenceSnapshotStore.read_latest",
+    "args": [
+     "plate_members"
+    ]
+   },
+   "command": "examples/record_td_scenario.py reference_snapshot_plate_members_latest",
+   "source": "core TD (read-only)"
+  }
  }
 }

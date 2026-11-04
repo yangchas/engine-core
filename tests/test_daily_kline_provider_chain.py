@@ -431,7 +431,10 @@ def test_wencai_daily_provider_opens_circuit_on_first_403(tmp_path):
         calls.append(day)
         raise RuntimeError("403 Forbidden")
 
-    provider = WencaiDailyProvider(fetch, state_path=tmp_path / "state.json", sleep_fn=lambda _: None)
+    from engine_core.runtime_state import ProviderState, StateStore
+    from tests.memory_redis import MemoryRedis
+    redis = MemoryRedis()
+    provider = WencaiDailyProvider(fetch, state=ProviderState("wencai_daily", StateStore(redis)), sleep_fn=lambda _: None)
     normalized = provider._normalize_rows([{
         "股票代码": "600000", "日期": "2026-10-16", "开盘价": "10.00",
         "最高价": "11.00", "最低价": "9.90", "收盘价": "10.50",
@@ -443,6 +446,9 @@ def test_wencai_daily_provider_opens_circuit_on_first_403(tmp_path):
     assert provider.fetch("2026-10-16", now="2026-10-16T16:00:00+08:00")["status"] == "PROVIDER_UNAVAILABLE"
     assert provider.fetch("2026-10-16", now="2026-10-16T16:00:01+08:00")["status"] == "PROVIDER_UNAVAILABLE"
     assert calls == ["2026-10-16"]
+    # the breaker survives in Redis (core: key, TTL), not in a file
+    assert list(redis.values) == ["core:provider:wencai_daily:state"] and 0 < redis.ttl("core:provider:wencai_daily:state") <= 2 * 86400
+    assert not list(tmp_path.iterdir())
 
 
 def test_baostock_availability_gate_and_q2_stale_timestamp(tmp_path):

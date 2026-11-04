@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
 from engine_core.data_pipeline.registry import DATASETS, get_dataset
 from engine_core.data_pipeline.storage import ArtifactCatalog
+from engine_core.runtime_state import ProviderState, redis_configured
 from engine_core.data_pipeline.reader import load_dataset
 from engine_core.data_pipeline.job_contract import (
     JobResult as ContractJobResult,
@@ -926,7 +927,10 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
                     expected_count = sum(str(row.get("trade_status", "")).strip() != "0"
                                          for row in universe.rows)
                     configured["wencai"] = WencaiDailyProvider(
-                        wencai_fetch, state_path=Path(args.artifact_root) / ".provider_state" / "wencai.json",
+                        wencai_fetch,
+                        # Redis when the process has a Redis URL (production); without one the throttle state
+                        # stays in this process only (offline replays and tests)
+                        state=ProviderState("wencai_daily") if redis_configured() else None,
                         max_requests=args.max_requests, expected_count=expected_count,
                         min_interval_seconds=args.wencai_min_interval_seconds,
                     )

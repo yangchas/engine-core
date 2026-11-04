@@ -1,0 +1,10 @@
+{
+ "errno": "0x073a",
+ "message": "[0x073a]: Query memory exhausted",
+ "source": {
+  "ledger": "/home/exedev/core-data/guardian-native/state/ledger/2026-11-03.jsonl",
+  "record_sha256": "3341c6fb997bef9780b17abde38ae61bfca57c3b1e6eedbd0dc0c5799478c341",
+  "seq": 135,
+  "ts": "2026-11-03T08:38:18.263732595+08:00"
+ }
+}

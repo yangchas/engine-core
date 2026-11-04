@@ -1,7 +1,14 @@
+# DATA: spec (message mechanics: transport selection, recipient policy, idempotency) - report bodies are placeholders
 import json
 import pytest
 
 from engine_core import report_mailer
+from engine_core.runtime_state import StateStore
+from tests.memory_redis import MemoryRedis
+
+
+def _state(down=False):
+    return StateStore(MemoryRedis(down=down))
 
 
 @pytest.fixture(autouse=True)
@@ -16,7 +23,7 @@ def test_real_send_is_forced_to_dry_run_without_marker(tmp_path, monkeypatch):
     sent = []
     monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", lambda *a, **k: sent.append(a))
     msg = _message(tmp_path)
-    receipt = report_mailer.send_message(_config(), msg, dry_run=False, state_dir=tmp_path / "state")
+    receipt = report_mailer.send_message(_config(), msg, dry_run=False, state=_state())
     assert sent == [] and receipt.status != "sent"
 
 
@@ -42,12 +49,12 @@ def test_allowlist_rejects_before_transport(tmp_path, monkeypatch):
     monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", forbidden)
     with pytest.raises(ValueError, match="fixed recipient policy"):
         report_mailer.send_message(_config(), _message(tmp_path, "other@example.test"), dry_run=False,
-                                   allow_recipients=[report_mailer.ALLOWED_RECIPIENT], state_dir=tmp_path / "state")
+                                   allow_recipients=[report_mailer.ALLOWED_RECIPIENT], state=_state())
 
 
 def test_dry_run_does_not_touch_transport(tmp_path, monkeypatch):
     monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", lambda *a, **k: pytest.fail("SMTP touched"))
-    receipt = report_mailer.send_message(_config(), _message(tmp_path), state_dir=tmp_path / "state")
+    receipt = report_mailer.send_message(_config(), _message(tmp_path), state=_state())
     assert receipt.status == "dry_run"
 
 
@@ -98,7 +105,7 @@ def test_selects_ssl_or_starttls_transport(tmp_path, monkeypatch, port, starttls
     monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", FakeSmtp)
     monkeypatch.setattr(report_mailer.smtplib, "SMTP", FakeSmtp)
     receipt = report_mailer.send_message(_config(port, starttls), _message(tmp_path), dry_run=False,
-                                         allow_recipients=["other@example.test"], state_dir=tmp_path / "state")
+                                         allow_recipients=["other@example.test"], state=_state())
     assert receipt.status == "sent"
     assert ("starttls",) in calls if expected == "starttls" else ("starttls",) not in calls
 
@@ -117,7 +124,7 @@ def test_password_never_in_repr_or_transport_exception(tmp_path, monkeypatch, ca
     monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", BrokenSmtp)
     with pytest.raises(RuntimeError) as exc:
         report_mailer.send_message(config, _message(tmp_path), dry_run=False,
-                                   allow_recipients=[report_mailer.ALLOWED_RECIPIENT], state_dir=tmp_path / "state")
+                                   allow_recipients=[report_mailer.ALLOWED_RECIPIENT], state=_state())
     assert "super-secret" not in str(exc.value)
     assert "super-secret" not in caplog.text
 
@@ -131,7 +138,7 @@ def test_dedupe_skips_successful_repeat(tmp_path, monkeypatch):
         def send_message(self, message, **kwargs): pass
 
     monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", FakeSmtp)
-    kwargs = dict(dry_run=False, allow_recipients=["other@example.test"], state_dir=tmp_path / "state")
+    kwargs = dict(dry_run=False, allow_recipients=["other@example.test"], state=_state())
     assert report_mailer.send_message(_config(), _message(tmp_path), **kwargs).status == "sent"
     assert report_mailer.send_message(_config(), _message(tmp_path), **kwargs).status == "skipped"
 
@@ -216,11 +223,75 @@ def test_fixed_recipient_cannot_be_changed_by_caller_allowlist(tmp_path, monkeyp
         def send_message(self, message, **kwargs): pass
 
     monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", FakeSmtp)
-    state = tmp_path / "state"
+    state = _state()
     first = _message(tmp_path)
     assert report_mailer.send_message(_config(), first, dry_run=False,
-        allow_recipients=["other@example.test"], state_dir=state).status == "sent"
+        allow_recipients=["other@example.test"], state=state).status == "sent"
     second = _message(tmp_path, "other@example.test")
     with pytest.raises(ValueError, match="fixed recipient policy"):
         report_mailer.send_message(_config(), second, dry_run=False,
-            allow_recipients=["other@example.test"], state_dir=state)
+            allow_recipients=["other@example.test"], state=state)
+
+
+class _Smtp:
+    sent = 0
+
+    def __init__(self, *args, **kwargs): pass
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+    def login(self, user, password): pass
+
+    def send_message(self, message, **kwargs):
+        type(self).sent += 1
+
+
+def _smtp(monkeypatch, fail=False):
+    class Smtp(_Smtp):
+        sent = 0
+
+        def send_message(self, message, **kwargs):
+            if fail:
+                raise OSError("smtp down")
+            type(self).sent += 1
+    monkeypatch.setattr(report_mailer.smtplib, "SMTP_SSL", Smtp)
+    return Smtp
+
+
+def test_sent_marker_lives_in_redis_with_a_ttl_and_no_state_directory_is_created(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    smtp = _smtp(monkeypatch)
+    state = _state()
+    msg = _message(tmp_path)
+    assert report_mailer.send_message(_config(), msg, dry_run=False, state=state).status == "sent"
+    key = f"core:mail:sent:{report_mailer._report_digest(msg)}"
+    assert state._client.values[key] == '"sent"' and 0 < state._client.ttl(key) <= 7 * 86400
+    assert smtp.sent == 1 and not (tmp_path / ".mail_state").exists()
+
+
+def test_a_failed_send_releases_the_claim_so_the_retry_can_send(tmp_path, monkeypatch):
+    state = _state()
+    msg = _message(tmp_path)
+    _smtp(monkeypatch, fail=True)
+    with pytest.raises(RuntimeError, match="SMTP delivery failed"):
+        report_mailer.send_message(_config(), msg, dry_run=False, state=state)
+    assert state._client.values == {}
+    smtp = _smtp(monkeypatch)
+    assert report_mailer.send_message(_config(), msg, dry_run=False, state=state).status == "sent" and smtp.sent == 1
+
+
+def test_a_message_another_sender_has_claimed_is_skipped_without_touching_the_transport(tmp_path, monkeypatch):
+    state = _state()
+    msg = _message(tmp_path)
+    state._client.set(f"core:mail:sent:{report_mailer._report_digest(msg)}", '"sending"', ex=3600)
+    smtp = _smtp(monkeypatch)
+    assert report_mailer.send_message(_config(), msg, dry_run=False, state=state).status == "skipped"
+    assert smtp.sent == 0
+
+
+def test_an_unreachable_redis_stops_a_real_send_but_not_a_dry_run(tmp_path, monkeypatch):
+    smtp = _smtp(monkeypatch)
+    msg = _message(tmp_path)
+    with pytest.raises(RuntimeError, match="mail_state_unavailable"):
+        report_mailer.send_message(_config(), msg, dry_run=False, state=_state(down=True))
+    assert smtp.sent == 0
+    assert report_mailer.send_message(_config(), msg, dry_run=True, state=_state(down=True)).status == "dry_run"

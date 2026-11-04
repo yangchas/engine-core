@@ -104,6 +104,10 @@ def test_hot_plates_capture_survives_guarded_redis_publish(tmp_path, monkeypatch
                         lambda fmt, *args: "2026-10-23T14:41:16+0800"
                         if fmt == "%Y-%m-%dT%H:%M:%S%z" else real_strftime(fmt, *args))
 
+    from engine_core.data_pipeline import jobs
+    from engine_core.data_pipeline.jobs import JobState
+    job_state = JobState()                                    # in-process state shared with the runner the CLI builds
+    monkeypatch.setattr(jobs, "default_job_state", lambda: job_state)
     result = capture_kaipan_plates.main(
         ["--trade-date", "2026-10-23", "--dataset", "hot_plates",
          "--artifact-root", str(tmp_path), "--max-pages", "1", "--execute"],
@@ -113,7 +117,8 @@ def test_hot_plates_capture_survives_guarded_redis_publish(tmp_path, monkeypatch
     output = capsys.readouterr().out
     versions = ArtifactCatalog(tmp_path).read()["datasets"]["hot_plates"]["dates"]["2026-10-23"]
     manifest = json.loads(Path(versions[-1]["manifest"]).read_text(encoding="utf-8"))
-    ledger = json.loads((tmp_path / "job_state.json").read_text(encoding="utf-8"))
+    ledger = {"status": {"hot_plates": job_state.status("hot_plates")}}
+    assert not (tmp_path / "job_state.json").exists()        # job status is not kept in a file
     assert result == 0
     assert len(versions) == 1 and manifest["row_count"] == len(response["list"])
     assert ledger["status"]["hot_plates"]["cache_publish"] == "WARN"

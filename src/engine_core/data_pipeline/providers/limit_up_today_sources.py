@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 import time
-import fcntl
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -70,47 +69,24 @@ def wencai_question(trade_date: str) -> str:
     return f"{day}涨停;封单额;开板次数;首次涨停时间;最终涨停时间;去除st"
 
 
-def authorize_wencai_request(root: str | Path, trade_date: str, now: datetime, *,
+def authorize_wencai_request(state: Any, trade_date: str, now: datetime, *,
                              min_interval_seconds: int = WENCAI_MIN_INTERVAL_SECONDS,
                              max_requests_per_day: int = WENCAI_MAX_REQUESTS_PER_DAY) -> dict[str, Any]:
-    """Persist the per-date budget before an upstream request, including failed requests."""
+    """Claim the one per-date wencai request before the upstream call (failed requests count too).
+
+    The claim is a Redis ``SET NX`` on ``core:provider:wencai_today:<date>`` (TTL 3 days), so two processes cannot both
+    pass; an unreachable Redis raises ``StateUnavailable`` and no request is made (the throttle is never skipped)."""
     if type(min_interval_seconds) is not int or min_interval_seconds < WENCAI_MIN_INTERVAL_SECONDS:
         raise ValueError("wencai_min_interval_must_be_at_least_1800_seconds")
     if type(max_requests_per_day) is not int or max_requests_per_day != WENCAI_MAX_REQUESTS_PER_DAY:
         raise ValueError("wencai_max_requests_per_day_must_equal_one")
     day = date.fromisoformat(trade_date).isoformat()
     current = now.astimezone(SHANGHAI) if now.tzinfo else now.replace(tzinfo=SHANGHAI)
-    state_dir = Path(root).expanduser() / "control" / "limit_up_pool_today_wencai"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    state_path = state_dir / f"{day}.json"
-    lock_path = state_dir / f"{day}.lock"
-    with lock_path.open("a+") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            try:
-                state = json.loads(state_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                state = {"trade_date": day, "requests": []}
-            requests = state.get("requests") if isinstance(state, dict) else None
-            if not isinstance(requests, list):
-                requests = []
-            if len(requests) >= max_requests_per_day:
-                raise WencaiThrottled("wencai_daily_request_limit_reached")
-            if requests:
-                previous = datetime.fromisoformat(str(requests[-1]).replace("Z", "+00:00"))
-                if previous.tzinfo is None:
-                    previous = previous.replace(tzinfo=SHANGHAI)
-                if (current - previous.astimezone(SHANGHAI)).total_seconds() < min_interval_seconds:
-                    raise WencaiThrottled("wencai_minimum_interval_not_elapsed")
-            requests.append(current.isoformat(timespec="seconds"))
-            body = json.dumps({"trade_date": day, "requests": requests}, separators=(",", ":")) + "\n"
-            temp_path = state_path.with_suffix(".tmp")
-            temp_path.write_text(body, encoding="utf-8")
-            os.replace(temp_path, state_path)
-            return {"trade_date": day, "request_count": len(requests),
-                    "last_request_at": requests[-1], "min_interval_seconds": min_interval_seconds}
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    stamp = current.isoformat(timespec="seconds")
+    if not state.claim(f"core:provider:wencai_today:{day}", {"trade_date": day, "requests": [stamp]}, 3 * 86400):
+        raise WencaiThrottled("wencai_daily_request_limit_reached")
+    return {"trade_date": day, "request_count": 1, "last_request_at": stamp,
+            "min_interval_seconds": min_interval_seconds}
 
 
 def fetch_wencai_today(trade_date: str, *, cookie_file: str | os.PathLike[str] | None = DEFAULT_COOKIE_FILE,

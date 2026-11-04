@@ -844,8 +844,9 @@ def _run_migrate_and_make_config(binary: Path, archive_root: Path, schedule_path
     config = json.loads(config_path.read_text(encoding="utf-8"))
     for handler in (config.get("handlers") or {}).values():
         allowed = list(handler.get("env_allow") or [])
-        if "CORE_TD_DATABASE" not in allowed:
-            allowed.append("CORE_TD_DATABASE")
+        for name in ("CORE_TD_DATABASE", "CORE_PROVIDER_STATE"):
+            if name not in allowed:
+                allowed.append(name)
         handler["env_allow"] = allowed
     config["calendars"] = {"trading": {"file": str(data_root / "trade_dates.json")}}
     config["alerts"] = {"enabled": True}
@@ -876,6 +877,8 @@ def _minimal_child_environment(data_root: Path, home_root: Path, archive_root: P
         "GUARDIAN_EMAIL_SELF": "0",
         "REDIS_URL": redis_url,
         "CORE_REDIS_URL": redis_url,
+        # the guard proxy is read-only: throttle/breaker/job state (core:provider:*, core:jobs:*) stays in-process here
+        "CORE_PROVIDER_STATE": "memory",
     }
 
 
