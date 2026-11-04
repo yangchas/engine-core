@@ -246,8 +246,14 @@ def test_default_event_table_has_full_day_sampling_and_daily_sequence():
     assert {"startup_0830", "premarket_slice_0850", "auction_report_0926", "open_report_0932", "close_mark_1505",
             "baostock_probe_1730", "baostock_retry_1740", "baostock_retry_1830",
             "baostock_retry_2000", "night_recap"} <= ids
-    hot = [event for event in default_events() if event.handler == "kaipan_hot_capture"]
-    assert len(hot) == 18
+    import json
+    from pathlib import Path
+    timeline = json.loads((Path(__file__).resolve().parents[1] / "src/engine_core/guardian/timeline.json")
+                          .read_text(encoding="utf-8"))
+    sampled = {run["id"] for point in timeline["timeline"] for run in point["run"] if run["fn"] == "kaipan_hot"}
+    hot = {event.event_id for event in default_events() if event.handler == "kaipan_hot_capture"
+           and event.event_id.startswith("kaipan_hot_")}
+    assert sampled and hot == sampled            # the sampling points are defined in timeline.json, not counted here
 
 
 def test_daily_kline_available_after_gate_starts_at_1740(tmp_path):

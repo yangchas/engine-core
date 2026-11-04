@@ -59,7 +59,7 @@ def test_registry_and_contract_spec_register_pit_dataset():
     contract = load_spec("limit_up_pool_today")
     assert spec.key_fields == ("symbol", "date", "as_of")
     assert spec.source_preference == ("redis_q2", "wencai")
-    assert spec.redis_ttl_seconds == 604800
+    assert spec.redis_ttl_seconds == 4 * 86400                                # C609: per-dataset TTL, 4 days
     assert contract["primary_key"] == ["symbol", "date", "as_of"]
     assert contract["columns"]["seal_amount"]["all_null_ok"] is True
 
@@ -199,8 +199,11 @@ def test_schedule_has_redis_steps_aligned_and_one_close_wencai_event():
     today = [event for event in events if event.get("args", {}).get("dataset") == "limit_up_pool_today"]
     redis = [event for event in today if event["args"].get("tier") == "redis"]
     close = [event for event in today if event["args"].get("tier") == "close_confirm"]
-    hot_times = {event["at"] for event in events if str(event.get("event_id", "")).startswith("kaipan_hot_")}
-    assert len(redis) == 18 and {event["at"] for event in redis} == hot_times
+    timeline = json.loads((ROOT / "src/engine_core/guardian/timeline.json").read_text(encoding="utf-8"))
+    sampled = {run["id"]: point["at"] for point in timeline["timeline"] for run in point["run"]
+               if run["fn"] == "limit_up_today"}
+    # the Redis sampling points are defined in timeline.json; since C583 they are independent of the kaipan_hot ones
+    assert sampled and {event["event_id"]: event["at"] for event in redis} == sampled
     assert all(event["cost"] == "light" and event["max_attempts"] == 3 and
                event["retry_backoff"] == "1s" and event["args"]["failure_fallback"] == "none" for event in redis)
     assert all("wencai" not in json.dumps(event["args"]).lower() for event in redis)

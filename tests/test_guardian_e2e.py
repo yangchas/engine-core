@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -59,6 +60,9 @@ events = module._effective_schedule_instances(schedule)
 print(json.dumps({
     "instances": [(event["instance_id"], event["start"]) for event in events if event["source_event_id"] == "daily_kline_backfill"],
     "legacy": module._compare_legacy_schedule(schedule),
+    # config-only input (declared, no data): an `at` list expands into one named instance per time
+    "expanded": [(event["instance_id"], event["start"]) for event in module._effective_schedule_instances(
+        {"events": [{"event_id": "x", "at": ["01:00", "08:00"]}, {"event_id": "y", "at": "09:00:00"}]})],
 }, separators=(",", ":")))
 """
     process = subprocess.run(
@@ -66,4 +70,12 @@ print(json.dumps({
         capture_output=True, text=True, check=False,
     )
     assert process.returncode == 0, process.stderr
-    assert process.stdout.strip() == '{"instances":[["daily_kline_backfill@01:00","01:00:00"],["daily_kline_backfill@08:00","08:00:00"]],"legacy":[62,57]}'
+    result = json.loads(process.stdout)
+    timeline = json.loads((ROOT / "src" / "engine_core" / "guardian" / "timeline.json").read_text())
+    times = [point["at"] for point in timeline["timeline"] for run in point["run"] if run["fn"] == "daily_kline_backfill"]
+    # one trigger point -> the bare event id; several -> id@HH:MM (the trigger points are defined in timeline.json)
+    expected = [[f"daily_kline_backfill@{t[:5]}" if len(times) > 1 else "daily_kline_backfill", (t + ":00")[:8]]
+                for t in times]
+    assert result["instances"] == expected
+    assert result["legacy"] == [62, 57]
+    assert result["expanded"] == [["x@01:00", "01:00:00"], ["x@08:00", "08:00:00"], ["y", "09:00:00"]]

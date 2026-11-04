@@ -22,7 +22,7 @@ def test_all_guardian_handlers_have_explicit_core_mapping_or_not_implemented():
         "night_report", "premarket_data", "kaipan_fetch", "auction_watch",
         "kaipan_hot_capture", "snapshot_check", "auction_report", "open_report",
         "intraday_data", "postmarket_data", "baostock_probe", "close_capture", "close_report",
-        "calendar_refresh",
+        "calendar_refresh", "daily_kline_backfill",
     }
     assert set(HANDLER_IMPLEMENTATIONS) == expected
     assert all(value and value != "" for value in HANDLER_IMPLEMENTATIONS.values())

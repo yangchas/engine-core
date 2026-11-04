@@ -78,7 +78,9 @@ def test_schedule_declares_the_1505_event_and_ladder_order():
         if other["event_id"] in (event["event_id"], "limit_pool_d1"):   # C580 adopts the same rung semantics on purpose
             continue
         ladder = other.get("ladder") or schedule["profiles"].get(other.get("profile"), {}).get("ladder", [])
-        assert not any(t.get("on_timeout") or t.get("alert_on_fallback") for t in ladder), other["event_id"]
+        # rung semantics "advance to the next source + alert" belong to the close tier alone; a rung that retries
+        # in place (on_timeout="retry", e.g. daily_dde, C600) is a different thing and is allowed
+        assert not any(t.get("on_timeout") == "advance" or t.get("alert_on_fallback") for t in ladder), other["event_id"]
 
 
 def test_schedule_validator_rejects_bad_tier_flags():
