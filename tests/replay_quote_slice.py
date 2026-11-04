@@ -1,13 +1,12 @@
-"""Thin Redis/TD replayers over the frozen, raw V0 upstream exports."""
+"""Thin Redis/TD replayers over recorded raw upstream exports (examples/record_quote_slice_fixture.py, C662c)."""
 from __future__ import annotations
 
 import gzip
 import json
-import os
 from pathlib import Path
 
-V0 = Path(os.environ.get("C535_V0_ROOT", "/home/exedev/validation/s1/V0"))
-DAY = "20261023"
+V0 = Path(__file__).parent / "fixtures" / "real" / "c662"      # recorded 2026-11-03, see PROVENANCE `_c662_recordings`
+DAY = "20261103"
 
 
 def _read(name):
@@ -85,9 +84,9 @@ class ReplayTD:
 
 
 def load_v0():
-    return (_read("redis_auction_keys_20261023.json.gz"),
-            _read("redis_q2_hashes_20261023.json.gz"),
-            _read("td_auction_snapshot_v2_20261023.json.gz"))
+    return (_read(f"redis_auction_keys_{DAY}.json.gz"),
+            _read(f"redis_q2_hashes_{DAY}.json.gz"),
+            _read(f"td_auction_snapshot_v2_{DAY}.json.gz"))
 
 
 def replay_clients(raw):

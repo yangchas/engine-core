@@ -1921,5 +1921,37 @@
    },
    "source": "core TD (read-only SELECT/SHOW)"
   }
+ },
+ "_c662_recordings": {
+  "c662/redis_auction_keys_20261103.json.gz": {
+   "bytes": 28949,
+   "sha256": "3b8d4a4534243b040aad01799f5998ae39730c8f06c7e2e014520630313ea0ae",
+   "kind": "raw_upstream_recording",
+   "source": "redis_auction_keys",
+   "trade_date": "2026-11-03",
+   "fetched_at": "2026-11-04T13:21:26+08:00",
+   "command": "examples/record_quote_slice_fixture.py 2026-11-03 --tag 0925",
+   "note": "read-only recording"
+  },
+  "c662/redis_q2_hashes_20261103.json.gz": {
+   "bytes": 333691,
+   "sha256": "e3609afa6e066682a823b88e2ae372cbf6e6d18ed07c659fba9486cf2ec9b547",
+   "kind": "raw_upstream_recording",
+   "source": "redis_q2_hashes",
+   "trade_date": "2026-11-03",
+   "fetched_at": "2026-11-04T13:21:26+08:00",
+   "command": "examples/record_quote_slice_fixture.py 2026-11-03 --tag 0925",
+   "note": "q2 hashes are the state at recording time, not a point-in-time 09:25 value"
+  },
+  "c662/td_auction_snapshot_v2_20261103.json.gz": {
+   "bytes": 95023,
+   "sha256": "9ed33183afccc99a5f26640d7fb31ffc099e5437d4891b2018e195453c9d81b6",
+   "kind": "raw_upstream_recording",
+   "source": "td_auction_snapshot_v2",
+   "trade_date": "2026-11-03",
+   "fetched_at": "2026-11-04T13:21:26+08:00",
+   "command": "examples/record_quote_slice_fixture.py 2026-11-03 --tag 0925",
+   "note": "read-only recording"
+  }
  }
 }

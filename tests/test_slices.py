@@ -120,11 +120,11 @@ def test_hot_plates_and_plate_members_read_core_artifacts_before_legacy(tmp_path
 
     from conftest import use_declared_time_as_test_commit_clock
     catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
-    catalog.commit("hot_plates", "2026-10-16", [{
-        "plate_code": "801001", "name": "芯片", "strength": 100,
-        "captured_at": "2026-10-17T09:20:00+08:00",
-        "available_at": "2026-10-17T09:20:00+08:00",
-    }], {"available_at": "2026-10-17T09:20:00+08:00"}, source="kaipan_getHisPlates")
+    from real_hot_plates import real_plate_rows
+    plates = real_plate_rows("2026-10-17T09:20:00+08:00", trade_date="2026-10-16")
+    catalog.commit("hot_plates", "2026-10-16", plates, {
+        "available_at": "2026-10-17T09:20:00+08:00", "captured_at": "2026-10-17T09:20:00+08:00",
+    }, source="kaipan_getHisPlates")
     catalog.commit("plate_members", "2026-10-16", [{
         "plate_code": "801001", "symbol": "600001",
         "captured_at": "2026-10-17T09:20:00+08:00",
@@ -141,7 +141,7 @@ def test_hot_plates_and_plate_members_read_core_artifacts_before_legacy(tmp_path
     hot = reader.get("hot_plates_today", trade_date="2026-10-16", asof=asof)
     members = reader.get("plate_members", trade_date="2026-10-16", asof=asof)
     assert hot.meta["source"] == members.meta["source"] == "core_data"
-    assert [row["plate_code"] for row in hot.rows] == ["801001"]
+    assert [row["plate_code"] for row in hot.rows] == [plates[0]["plate_code"]]
     assert [row["symbol"] for row in members.rows] == ["600001"]
 
 
@@ -155,18 +155,16 @@ def test_hot_plates_today_uses_latest_dated_capture_visible_at_asof(tmp_path):
     asof = f"2026-10-22T{auction_event.args['asof']}+08:00"
     from conftest import use_declared_time_as_test_commit_clock
     catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path / "core"))
-    for captured, strength in (("2026-10-22T09:21:00+08:00", 21),
-                               ("2026-10-22T09:31:00+08:00", 31)):
-        catalog.commit("hot_plates", "2026-10-22", [{
-            "plate_code": "801001", "name": "芯片", "strength": strength,
-            "trade_date": "2026-10-22", "captured_at": captured,
-            "available_at": captured,
-        }], {"available_at": captured}, source="kaipan_hot_plates")
-    catalog.commit("hot_plates", "2026-10-21", [{
-        "plate_code": "801001", "name": "芯片", "strength": 100,
-        "trade_date": "2026-10-21", "captured_at": "2026-10-21T15:00:00+08:00",
-        "available_at": "2026-10-21T15:00:00+08:00",
-    }], {"available_at": "2026-10-21T15:00:00+08:00"}, source="kaipan_hot_plates")
+    from real_hot_plates import real_plate_rows
+    # three different recorded plates stand for three captures: the 09:21 one is visible at the as-of, the 09:31
+    # one is not yet, and the prior day's 15:00 capture is what "yesterday" shows
+    early, late, prior = (real_plate_rows(at, trade_date=day, start=index)
+                          for index, (at, day) in enumerate((("2026-10-22T09:21:00+08:00", "2026-10-22"),
+                                                              ("2026-10-22T09:31:00+08:00", "2026-10-22"),
+                                                              ("2026-10-21T15:00:00+08:00", "2026-10-21"))))
+    for rows, day in ((early, "2026-10-22"), (late, "2026-10-22"), (prior, "2026-10-21")):
+        catalog.commit("hot_plates", day, rows, {"available_at": rows[0]["captured_at"],
+                                                 "captured_at": rows[0]["captured_at"]}, source="kaipan_hot_plates")
 
     reader = SliceReader(SliceProviders(catalog=catalog, redis=None,
                                         file_fallback=False).providers())
@@ -175,9 +173,9 @@ def test_hot_plates_today_uses_latest_dated_capture_visible_at_asof(tmp_path):
     yesterday = reader.get("hot_plates_yesterday", trade_date="2026-10-22",
                            asof=asof, prior_trade_date="2026-10-21",
                            source_date="2026-10-21")
-    assert [row["strength"] for row in today.rows] == [21]
+    assert [row["plate_code"] for row in today.rows] == [early[0]["plate_code"]]
     assert today.meta["status"] == "READY"
-    assert [row["strength"] for row in yesterday.rows] == [100]
+    assert [row["plate_code"] for row in yesterday.rows] == [prior[0]["plate_code"]]
 
 
 def test_stock_theme_assignment_slice_reads_only_pit_valid_hot_product(tmp_path):
