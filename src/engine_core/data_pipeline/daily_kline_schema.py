@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from typing import Any, Mapping
+from ..errors import SchemaInvalid
 
 
 # C579: the canonical row is the compatible superset of every real partition column and every
@@ -59,7 +60,7 @@ def _amount_multiplier(unit: str) -> float:
         return 10_000.0
     if unit in {"yi_yuan", "亿元", "100m_yuan"}:
         return 100_000_000.0
-    raise ValueError("schema_invalid:amount_unit_unknown")
+    raise SchemaInvalid("amount_unit_unknown")
 
 
 def _volume_multiplier(unit: str) -> float:
@@ -71,7 +72,7 @@ def _volume_multiplier(unit: str) -> float:
         return 10_000.0
     if unit in {"wan_hands", "万手", "10k_hands"}:
         return 1_000_000.0
-    raise ValueError("schema_invalid:volume_unit_unknown")
+    raise SchemaInvalid("volume_unit_unknown")
 
 
 def _market_code(symbol: str, raw_code: Any) -> str:
@@ -90,14 +91,14 @@ def _market_code(symbol: str, raw_code: Any) -> str:
         return to_baostock_code(symbol)
     if not code:
         return to_baostock_code(symbol)
-    raise ValueError("schema_invalid:code_symbol_mismatch")
+    raise SchemaInvalid("code_symbol_mismatch")
 
 
 def canonicalize_daily_kline_row(source: str, row: Mapping[str, Any], *,
                                  field_units: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Convert one source row to the registry's shared units and keys."""
     if source not in TIER_BY_SOURCE:
-        raise ValueError("schema_invalid:unknown_daily_kline_source")
+        raise SchemaInvalid("unknown_daily_kline_source")
     units = field_units if isinstance(field_units, Mapping) else {}
     raw_symbol = row.get("symbol", row.get("code", ""))
     symbol = str(raw_symbol or "").strip()
@@ -107,7 +108,7 @@ def canonicalize_daily_kline_row(source: str, row: Mapping[str, Any], *,
     if symbol.isdigit():
         symbol = symbol.zfill(6)
     if len(symbol) != 6 or not symbol.isdigit():
-        raise ValueError("schema_invalid:symbol_invalid")
+        raise SchemaInvalid("symbol_invalid")
 
     values: dict[str, float | None] = {}
     for field in ("open", "high", "low", "close", "pre_close"):
@@ -122,11 +123,11 @@ def canonicalize_daily_kline_row(source: str, row: Mapping[str, Any], *,
         if pct_unit in {"bp", "bps"}:
             pct /= 100.0
         elif pct_unit not in {"percent", "%", "百分比"}:
-            raise ValueError("schema_invalid:pct_chg_unit_unknown")
+            raise SchemaInvalid("pct_chg_unit_unknown")
 
     turnover = _number(row.get("turnover_pct", row.get("turnover", row.get("turn"))))
     if turnover is not None and _unit(units, "turnover_pct", source) not in {"percent", "%", "百分比"}:
-        raise ValueError("schema_invalid:turnover_pct_unit_unknown")
+        raise SchemaInvalid("turnover_pct_unit_unknown")
     suspended = row.get("suspended")
     suspended = suspended if isinstance(suspended, bool) else None  # no flag from source -> null, never inferred
     raw_trade_status = row.get("source_trade_status", row.get("tradestatus", row.get("trade_status")))
@@ -169,7 +170,7 @@ def canonicalize_daily_kline_payload(source: str, payload: Mapping[str, Any]) ->
                     dict(conversion_units))
     rows = payload.get("rows", [])
     if not isinstance(rows, (list, tuple)):
-        raise ValueError("schema_invalid:rows_not_a_list")
+        raise SchemaInvalid("rows_not_a_list")
     result["rows"] = [canonicalize_daily_kline_row(source, row, field_units=conversion_units or source_units)
                       for row in rows if isinstance(row, Mapping)]
     result["source_field_units"] = source_units or dict(SOURCE_FIELD_UNITS[source])

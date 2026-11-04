@@ -273,7 +273,7 @@ def main(argv=None, *, now_fn=None) -> int:
                             print(f"GAP dataset=hot_plates event={gap['event_id']} reason={gap['gap_reason']} "
                                   f"late_policy={gap['late_policy']} fallback={gap['fallback_status']}")
                             continue
-                        raise RuntimeError(f"hot_plates_retryable_provider_failure:{type(exc).__name__}") from None
+                        raise CoreError("SOURCE_UNREADABLE", f"hot_plates_retryable_provider_failure:{type(exc).__name__}") from None
                     if dataset == "hot_plates" and trade_date < captured_at[:10]:
                         event_id, scheduled_at, deadline = _historical_gap_window(
                             trade_date, historical_sessions)

@@ -6,6 +6,11 @@
    "exit": 20,
    "meaning": "nothing to do: the result already exists (a skip, not a failure)"
   },
+  "APPLY_ITEM_FAILED": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "the start-up/reconcile plan was applied but some items failed (each failed row carries its own code); the next pass applies the remaining ones"
+  },
   "BAOSTOCK_CONNECTION_ERROR": {
    "retryable": true,
    "exit": 75,
@@ -71,6 +76,11 @@
    "exit": 40,
    "meaning": "a (exit code, reply) pair outside the contract matrix"
   },
+  "DAILY_KLINE_BUDGET_EXHAUSTED": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "the time budget of a daily-kline run ran out; progress is kept, the next attempt continues"
+  },
   "DDE_SYNC_INCOMPLETE_RETRYABLE": {
    "retryable": true,
    "exit": 30,
@@ -102,6 +112,11 @@
    "exit": 30,
    "meaning": "Kaipan plate members came back incomplete"
   },
+  "PLAN_UNAVAILABLE": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "the reconcile plan could not be built (an input it reads was unavailable); the plan is rebuilt on the next pass"
+  },
   "POSTCONDITION_FAILED": {
    "retryable": false,
    "exit": 40,
@@ -122,10 +137,20 @@
    "exit": 75,
    "meaning": "the q2 Redis snapshot cannot be read"
   },
+  "QUALITY_INVALID": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the data fails a quality rule (empty, duplicate keys, universe jump ...; reason says which); not fixed by repeating"
+  },
   "RATE_LIMITED": {
    "retryable": true,
    "exit": 75,
    "meaning": "the source or the local budget refuses another request for now"
+  },
+  "SCHEMA_INVALID": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the data has a shape the function does not accept (reason says which); fetching again returns the same shape"
   },
   "SOURCE_UNREADABLE": {
    "retryable": true,
@@ -172,6 +197,11 @@
    "exit": 30,
    "meaning": "a tier delivered only part of the day; resume on the next attempt"
   },
+  "UNKNOWN_ITEM": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the plan or request names an item the registry does not know; repeating does not help"
+  },
   "UPSTREAM_NOT_READY": {
    "retryable": true,
    "exit": 30,
@@ -192,7 +222,6 @@
    "CHAIN_FAILED",
    "CHAIN_RETRY",
    "COVERAGE_LOW",
-   "DAILY_KLINE_BUDGET_EXHAUSTED",
    "DAILY_KLINE_NOT_READY",
    "DEPENDENCY_FAILED",
    "EXECUTION_SETUP_FAILED",
@@ -212,7 +241,6 @@
    "TD_FOREIGN_LONG_QUERY",
    "TD_SYNC_ERROR",
    "TD_WRITE_FAILED",
-   "UNKNOWN_ITEM",
    "WENCAI_BLOCKED",
    "WENCAI_POOL_EMPTY_UNVERIFIED",
    "WENCAI_WINDOW_CLOSED"

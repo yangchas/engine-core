@@ -5,6 +5,7 @@ from time import strftime as real_strftime
 from types import SimpleNamespace
 
 import pytest
+from engine_core.errors import declared_result
 
 from engine_core.data_pipeline.storage import ArtifactCatalog
 from engine_core.data_pipeline.providers import kaipan_provider
@@ -181,7 +182,7 @@ def test_expired_historical_hot_plates_is_gap_only_without_provider_call(
     assert rows[0]["fallback_status"] == "MISSING"
 
 
-def test_transient_hot_capture_failure_returns_for_guardian_retry(tmp_path, monkeypatch):
+def test_transient_hot_capture_failure_returns_for_guardian_retry(tmp_path, monkeypatch, capsys):
     class FailingSdk:
         def getHisPlates(self, date, index, size):
             raise TimeoutError("temporary_timeout")
@@ -192,7 +193,9 @@ def test_transient_hot_capture_failure_returns_for_guardian_retry(tmp_path, monk
             "--scheduled-at", "09:16:10", "--deadline", "09:17:30"]
     now = lambda: __import__("datetime").datetime.fromisoformat("2026-10-23T09:16:11+08:00")
 
-    with pytest.raises(RuntimeError, match="hot_plates_retryable_provider_failure"):
-        capture_kaipan_plates.main(argv, now_fn=now)
+    code = capture_kaipan_plates.main(argv, now_fn=now)          # the command answers with a contract line, it does not crash
+    declared = declared_result(capsys.readouterr().out)
+    assert code == 30 and declared["error_code"] == "SOURCE_UNREADABLE" and declared["retryable"] is True
+    assert "hot_plates_retryable_provider_failure" in declared["detail"]["error"]
 
     assert ArtifactCatalog(tmp_path).locate("hot_plates_gaps", "2026-10-23") is None

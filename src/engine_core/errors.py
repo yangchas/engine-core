@@ -55,6 +55,27 @@ class CoreError(RuntimeError):
         self.exit_code = int(spec["exit"])
 
 
+class SchemaInvalid(CoreError, ValueError):
+    """Data of a shape a function does not accept (still a ValueError for callers that catch that)."""
+
+    def __init__(self, reason: str = ""):
+        super().__init__("SCHEMA_INVALID", reason)
+
+
+class QualityInvalid(CoreError, ValueError):
+    """Data that fails a quality rule (still a ValueError for callers that catch that)."""
+
+    def __init__(self, reason: str = ""):
+        super().__init__("QUALITY_INVALID", reason)
+
+
+class BudgetExhausted(CoreError, TimeoutError):
+    """A run's time budget ran out (a TimeoutError, so existing handlers of timeouts still see it)."""
+
+    def __init__(self, reason: str = ""):
+        super().__init__("DAILY_KLINE_BUDGET_EXHAUSTED", reason)
+
+
 # ---- the command boundary ------------------------------------------------------------------------------------------
 class CommandFailed(RuntimeError):
     """A job script that exited non-zero, seen from the process that started it.

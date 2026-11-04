@@ -91,18 +91,18 @@ def test_symbol_universe_rejects_fixture_derived_empty_duplicate_and_missing_fie
     rows = _normalize_universe_rows(source)
     for row in rows:
         row["universe_asof"] = "2026-10-16"
-    with pytest.raises(ValueError, match="quality_invalid:empty_response"):
+    with pytest.raises(ValueError, match="QUALITY_INVALID:empty_response"):
         JobRunner(artifact_root=tmp_path, budget=RequestBudget(min_interval_seconds=0)).run(
             "symbol_universe", "2026-10-16", fetch=lambda _: [], now="2026-10-16T08:30:00+08:00", dry_run=True)
     duplicate = [rows[0], rows[0]]
-    with pytest.raises(ValueError, match="quality_invalid:duplicate_symbol"):
+    with pytest.raises(ValueError, match="QUALITY_INVALID:duplicate_symbol"):
         JobRunner(artifact_root=tmp_path, budget=RequestBudget(min_interval_seconds=0)).run(
             "symbol_universe", "2026-10-16", fetch=lambda _: duplicate,
             now="2026-10-16T08:30:00+08:00", dry_run=True)
     missing = [dict(rows[0])]
     missing[0].pop("name")
     runner = JobRunner(artifact_root=tmp_path, budget=RequestBudget(min_interval_seconds=0))
-    with pytest.raises(ValueError, match="schema_invalid:required_field_missing"):
+    with pytest.raises(ValueError, match="SCHEMA_INVALID:required_field_missing"):
         runner.run("symbol_universe", "2026-10-16", fetch=lambda _: missing,
                    now="2026-10-16T08:30:00+08:00", dry_run=True)
 
@@ -113,7 +113,7 @@ def test_symbol_universe_rejects_excessive_change_from_previous_snapshot():
     actual_rows = _normalize_universe_rows(json.loads(fixture.read_text(encoding="utf-8")))
     previous = {row["symbol"] for row in actual_rows[:100]}
     current = {actual_rows[0]["symbol"]}
-    with pytest.raises(RuntimeError, match="quality_invalid:universe_change_over_10pct"):
+    with pytest.raises(RuntimeError, match="QUALITY_INVALID:universe_change_over_10pct"):
         _universe_delta(current, previous)
 
 
@@ -131,10 +131,10 @@ def test_baostock_fixture_adapter_filters_exchange_security_type_and_rejects_ide
     assert all(row["code"].startswith(("sh.60", "sh.68", "sz.00", "sz.30")) for row in converted)
     assert any(row["code"] == stock[0] for row in converted)
     sh_stock = next(row for row in rows if row[0].startswith("sh.60"))
-    with pytest.raises(RuntimeError, match="quality_invalid:universe_identity_conflict"):
+    with pytest.raises(RuntimeError, match="QUALITY_INVALID:universe_identity_conflict"):
         _normalize_universe_rows([*rows, ["sz." + sh_stock[0][3:], *sh_stock[1:]]])
     conflict = [*rows, [stock[0], stock[1], stock[2] + " conflicting identity"]]
-    with pytest.raises(RuntimeError, match="quality_invalid:universe_duplicate_conflict"):
+    with pytest.raises(RuntimeError, match="QUALITY_INVALID:universe_duplicate_conflict"):
         _normalize_universe_rows(conflict)
 
 

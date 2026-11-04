@@ -52,10 +52,29 @@ class TdResourceExhausted(TdUnavailable):
         super().__init__(reason, code="TD_RESOURCE_EXHAUSTED")
 
 
+# TD driver error numbers (low 16 bits): the foreign library names its condition with a number
+TD_ERRNO_MEMORY_EXHAUSTED = 0x073A
+TD_ERRNOS_MISSING = frozenset({0x0388, 0x2603, 0x2662})        # database / table / column does not exist
+
+
+def td_error_number(exc: BaseException) -> int:
+    return (getattr(exc, "errno", 0) or 0) & 0xFFFF
+
+
+def td_memory_exhausted(exc: BaseException) -> bool:
+    """TD's query memory pool is exhausted. The driver's error number says so; the message wording is only a fallback
+    for an exception that lost its number on the way (this is the one place where foreign text is read)."""
+    return td_error_number(exc) == TD_ERRNO_MEMORY_EXHAUSTED or "query memory exhausted" in str(exc).lower()
+
+
+def td_object_missing(exc: BaseException) -> bool:
+    """The statement named a database/table/column that does not exist (same rule: number first, wording as fallback)."""
+    return td_error_number(exc) in TD_ERRNOS_MISSING or "not exist" in str(exc).lower()
+
+
 def td_statement_error(exc: Exception, reason: str) -> TdUnavailable:
-    """Translate a driver exception at the boundary: the driver's own error number says "query memory exhausted"."""
-    errno = (getattr(exc, "errno", 0) or 0) & 0xFFFF
-    if errno == 0x073A or "query memory exhausted" in str(exc).lower():
+    """Translate a driver exception at the boundary into the code that names it."""
+    if td_memory_exhausted(exc):
         return TdResourceExhausted(reason)
     return TdUnavailable(reason)
 
@@ -317,8 +336,7 @@ class TaosStore:
 
     @staticmethod
     def _is_missing(exc: Exception) -> bool:
-        errno = (getattr(exc, "errno", 0) or 0) & 0xFFFF
-        return errno in {0x0388, 0x2603, 0x2662} or "not exist" in str(exc).lower()
+        return td_object_missing(exc)
 
     def _run(self, sql: str, *, missing_ok: bool = False) -> list[tuple]:
         cursor = self._cursor()

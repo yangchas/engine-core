@@ -10,6 +10,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Mapping
 
+from .td_sink import td_object_missing
+
 
 _TABLES = {
     "plate_members": "plate_members_latest",
@@ -232,8 +234,7 @@ class ReferenceSnapshotStore:
             )
             marker = cursor.fetchone()
         except Exception as exc:
-            code = (getattr(exc, "errno", 0) or 0) & 0xFFFF
-            if code in {0x0388, 0x2603, 0x2662} or "not exist" in str(exc).lower():
+            if td_object_missing(exc):
                 return None
             raise
         if marker is None:

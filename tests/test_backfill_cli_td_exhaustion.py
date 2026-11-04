@@ -42,7 +42,7 @@ def test_a_genuine_range_error_is_still_final(monkeypatch, capsys):
 
 def test_a_timeout_is_retryable_by_its_type(monkeypatch, capsys):
     code, reply = _run(monkeypatch, capsys, TimeoutError("no range data"))
-    assert reply["error_code"] == "FETCH_TIMEOUT" and reply["retryable"] is True and code == 30
+    assert reply["error_code"] == "BAOSTOCK_TIMEOUT" and reply["retryable"] is True and code == 30   # the Baostock command
 
 
 def test_the_fill_gap_code_is_retryable_through_the_cli(monkeypatch, capsys):

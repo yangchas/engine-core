@@ -155,9 +155,9 @@ def fetch_day(
         except Exception as exc:
             code = getattr(client, "last_error_code", None) or getattr(exc, "error_code", None)
             if code is None:
-                code = "BAOSTOCK_TIMEOUT" if "BAOSTOCK_TIMEOUT" in str(exc) else type(exc).__name__
+                code = "BAOSTOCK_TIMEOUT" if isinstance(exc, TimeoutError) else type(exc).__name__
             timing["error_code"] = str(code)
-            timing["result"] = "timeout" if "TIMEOUT" in str(code).upper() or "BAOSTOCK_TIMEOUT" in str(exc) else "error"
+            timing["result"] = "timeout" if "TIMEOUT" in str(code).upper() or isinstance(exc, TimeoutError) else "error"
             try:
                 exc.baostock_timing = dict(timing)  # type: ignore[attr-defined]
             except (AttributeError, TypeError):
@@ -184,7 +184,7 @@ def fetch_day(
                         raise ValueError(f"response identity mismatch for {symbol} on {date}")
                     rows.append(row)
             except Exception as exc:  # isolate a failed symbol from the remaining universe
-                if "BAOSTOCK_TIMEOUT" in str(exc):
+                if isinstance(exc, TimeoutError):
                     raise TimeoutError("BAOSTOCK_TIMEOUT") from None
                 if isinstance(exc, (ConnectionError, OSError)):
                     raise CoreError("BAOSTOCK_CONNECTION_ERROR") from exc
@@ -194,9 +194,9 @@ def fetch_day(
                     break
     except Exception as exc:
         if timing["result"] == "ok":
-            timing["result"] = "timeout" if "BAOSTOCK_TIMEOUT" in str(exc) else "error"
+            timing["result"] = "timeout" if isinstance(exc, TimeoutError) else "error"
             timing["error_code"] = getattr(client, "last_error_code", None) or (
-                "BAOSTOCK_TIMEOUT" if "BAOSTOCK_TIMEOUT" in str(exc) else type(exc).__name__)
+                "BAOSTOCK_TIMEOUT" if isinstance(exc, TimeoutError) else type(exc).__name__)
         try:
             exc.baostock_timing = dict(timing)  # type: ignore[attr-defined]
         except (AttributeError, TypeError):

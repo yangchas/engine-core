@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
-from ...errors import CoreError
+from ...errors import BudgetExhausted, CoreError, SchemaInvalid
 from ..storage import ArtifactCatalog, _atomic_write, canonical_json
 from ..registry.daily_kline import classify_daily_kline
 from ..daily_kline_schema import (
@@ -625,7 +625,7 @@ class DailyKlineProviderChain:
         normalized_payload = dict(payload)
         raw_rows = payload.get("rows", [])
         if not isinstance(raw_rows, (list, tuple)):
-            raise ValueError("schema_invalid:rows_not_a_list")
+            raise SchemaInvalid("rows_not_a_list")
         universe_path = self.catalog.locate("symbol_universe", trade_date)
         universe: set[str] | None = None
         if universe_path is not None:
@@ -699,7 +699,7 @@ class DailyKlineProviderChain:
     def _call_bounded(provider: Any, trade_date: str, now: datetime, timeout: float) -> Any:
         """Bound a source without an internal deadline to the chain's remaining wall time."""
         if timeout <= 0:
-            raise TimeoutError("DAILY_KLINE_BUDGET_EXHAUSTED")
+            raise BudgetExhausted()
         result: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
 
         def invoke() -> None:
@@ -712,7 +712,7 @@ class DailyKlineProviderChain:
         try:
             succeeded, value = result.get(timeout=timeout)
         except queue.Empty:
-            raise TimeoutError("DAILY_KLINE_BUDGET_EXHAUSTED") from None
+            raise BudgetExhausted() from None
         if succeeded:
             return value
         raise value
@@ -1108,7 +1108,7 @@ class DailyKlineProviderChain:
                 elapsed_ms = round((time.monotonic() - started) * 1000, 3)
                 timing = getattr(exc, "baostock_timing", {})
                 progress = getattr(exc, "baostock_progress", {})
-                is_budget_exhausted = ("DAILY_KLINE_BUDGET_EXHAUSTED" in str(exc).upper() or
+                is_budget_exhausted = (isinstance(exc, BudgetExhausted) or
                                        (source == "baostock" and time.monotonic() >= baostock_deadline))
                 is_timeout = "TIMEOUT" in str(exc).upper() or isinstance(exc, TimeoutError)
                 call_result = ("budget_exhausted" if is_budget_exhausted else
