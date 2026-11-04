@@ -240,6 +240,7 @@ def test_job_runner_dry_run_fetches_validates_and_does_not_write(tmp_path):
 
 def test_redis_publish_reports_plan_and_verifies_readback(tmp_path, capsys):
     from conftest import read_real_artifact, seed_real_symbol_universe
+    from engine_core.data_pipeline.providers.baostock_daily_provider import source_date_evidence
 
     class Redis:
         def __init__(self): self.values = {}; self.ttls = {}
@@ -257,7 +258,8 @@ def test_redis_publish_reports_plan_and_verifies_readback(tmp_path, capsys):
                fetch=lambda _: {"rows": rows, "source": "baostock", "provider": "baostock",
                                 "provider_attempts": [{"provider": "baostock", "result": "ACCEPTED",
                                     "attempted_at": "2026-10-25T17:30:00+08:00", "elapsed_ms": 1,
-                                    "reason": "real fixture replay"}]},
+                                    "reason": "real fixture replay"}],
+                                **source_date_evidence(rows, day)},   # FORMAL (hence `latest`) needs the date evidence
                now="2026-10-26T10:00:00+08:00", publish=True, source="baostock")
     assert "WRITE_PLAN" in capsys.readouterr().out
     assert redis.values["core:cache:data:daily_kline:latest"]
@@ -265,6 +267,9 @@ def test_redis_publish_reports_plan_and_verifies_readback(tmp_path, capsys):
 
 
 def test_redis_readback_failure_rolls_back_only_core_data_keys(tmp_path):
+    from conftest import read_real_artifact, seed_real_symbol_universe
+    from engine_core.data_pipeline.providers.baostock_daily_provider import source_date_evidence
+
     class Redis:
         def __init__(self): self.values = {"legacy:key": "untouched"}; self.corrupt = False; self.writes = 0
         def set(self, key, value, ex=None): self.values[key] = value; self.writes += 1
@@ -274,13 +279,22 @@ def test_redis_readback_failure_rolls_back_only_core_data_keys(tmp_path):
             return self.values.get(key)
         def delete(self, key): self.values.pop(key, None)
 
+    day = "2026-10-23"
+    seed_real_symbol_universe(ArtifactCatalog(tmp_path), day)
+    _, rows = read_real_artifact("daily_kline", day, "formal")
     redis = Redis()
     runner = JobRunner(artifact_root=tmp_path, redis=redis,
                        budget=RequestBudget(min_interval_seconds=0))
     redis.corrupt = True
-    with pytest.raises(RuntimeError, match="redis_readback_manifest_mismatch"):
-        runner.run("daily_kline", "2026-10-15", fetch=lambda _: [{"symbol": "600001"}],
-                   now="2026-10-16T10:00:00Z", publish=True)
+    result = runner.run("daily_kline", day,
+                        fetch=lambda _: {"rows": rows, "source": "baostock", "provider": "baostock",
+                                         **source_date_evidence(rows, day)},
+                        now="2026-10-26T10:00:00+08:00", publish=True, source="baostock")
+    # the artifact is the commit point and stays; a failed Redis hot view is a warning, never a job failure ...
+    assert result.manifest["cache_publish"] == "WARN"
+    assert result.manifest["cache_publish_warning"] == "redis_publish_failed:RuntimeError"
+    assert ArtifactCatalog(tmp_path).locate("daily_kline", day) is not None
+    # ... and the partially written core:cache:data keys are rolled back, leaving foreign keys alone
     assert redis.values == {"legacy:key": "untouched"}
 
 
