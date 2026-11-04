@@ -18,6 +18,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+from engine_core.errors import CoreError
 from engine_core.guardian.scheduler import EventSpec, FileInstanceLock, Guardian, default_events
 from engine_core.guardian.management import append_record, load_schedule
 from engine_core.guardian.gates import default_gates
@@ -101,15 +102,11 @@ def _module_callable(spec: str):
     return getattr(importlib.import_module(module_name), attr)
 
 
-def _command_failure(result: subprocess.CompletedProcess) -> RuntimeError:
-    # The ledger keeps only the head of this text; the exception is the LAST stderr line, so it goes first
-    # (close_recap failed for three evenings with only the start of its traceback visible).
-    lines = [line.strip() for line in str(result.stderr or "").splitlines() if line.strip()]
-    parts = [f"command_exit={result.returncode}" + (f" last_stderr_line={lines[-1][:200]}" if lines else "")]
-    for label, output in (("stdout", result.stdout), ("stderr", result.stderr)):
-        if output:
-            parts.extend((f"{label}_tail:", str(output)[-500:].rstrip()))
-    return RuntimeError("\n".join(parts))
+def _command_failure(result: subprocess.CompletedProcess):
+    # The ledger keeps only the head of the text, so the LAST stderr line goes first (close_recap failed for three
+    # evenings with only the start of its traceback visible). The error code the script declared travels with it.
+    from engine_core.errors import command_error
+    return command_error(result.returncode, result.stdout, result.stderr)
 
 
 def _build_gate_status(path: str | None):
@@ -269,7 +266,7 @@ def _command_handler(name: str, opts, root: Path):
                       "open_report", "close_report", "kaipan_hot_capture", "baostock_probe", "night_report"}:
             cmd = build_handler_command(name, event, opts, root, day, py, repo)
         else:
-            raise RuntimeError("handler_not_implemented:" + name)
+            raise CoreError("CONFIG_ERROR", "handler_not_implemented:" + name)
         result = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True,
                                 timeout=event.timeout_seconds, check=False)
         if result.returncode:
@@ -278,16 +275,16 @@ def _command_handler(name: str, opts, root: Path):
             try:
                 report = json.loads(result.stdout)
             except (ValueError, TypeError) as exc:
-                raise RuntimeError("prep_report_invalid_json") from exc
+                raise CoreError("CONTRACT_INVALID", "prep_report_invalid_json") from exc
             if not isinstance(report, dict):
-                raise RuntimeError("prep_report_invalid_shape")
+                raise CoreError("CONTRACT_INVALID", "prep_report_invalid_shape")
             errors = report.get("errors") or []
             if errors:
                 raise RuntimeError("prep_errors:" + ";".join(map(str, errors))[-400:])
             missing = [str(item.get("step")) for item in report.get("steps", [])
                        if isinstance(item, dict) and item.get("status") == "MISSING"]
             if missing:
-                raise RuntimeError("prep_critical_missing:" + ",".join(missing))
+                raise CoreError("PREP_CRITICAL_MISSING", ",".join(missing))
             if report.get("warnings"):
                 return "DEGRADED:prep_warnings:" + ";".join(map(str, report["warnings"]))[-400:]
             if report.get("status") == "PARTIAL":
@@ -295,7 +292,7 @@ def _command_handler(name: str, opts, root: Path):
                            if isinstance(item, dict) and item.get("status") == "PARTIAL"]
                 return "DEGRADED:prep_partial:" + ",".join(partial)
             if report.get("status") != "READY":
-                raise RuntimeError("prep_status_invalid:" + str(report.get("status")))
+                raise CoreError("CONTRACT_INVALID", "prep_status_invalid:" + str(report.get("status")))
         return result.stdout[-500:]
     def notifying_handler(event: EventSpec, now: datetime, context, degraded: bool):
         event_id = getattr(event, "event_id", name)

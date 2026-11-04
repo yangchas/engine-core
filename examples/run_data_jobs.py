@@ -25,6 +25,8 @@ from engine_core.data_pipeline.job_contract import (
     emit as emit_job_result,
     run_with_degrade,
 )
+from engine_core.data_pipeline.job_contract import contract_main, emit_failure
+from engine_core.errors import CoreError
 
 
 def _load_adapter(spec: str | None) -> dict[str, Any]:
@@ -604,6 +606,7 @@ def _carried_forward_universe(artifact_root: str, trade_date: str) -> dict[str, 
     raise RuntimeError("quality_invalid:no_recent_symbol_universe")
 
 
+@contract_main("run_data_jobs")
 def main(argv: list[str] | None = None, *, now_fn=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--job", required=True, choices=["all", *DATASETS.keys()])
@@ -723,7 +726,7 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
                     if day < args.date]
         hot_history_dates = sessions[-args.hot_plates_history_days:]
         if len(hot_history_dates) != args.hot_plates_history_days:
-            raise RuntimeError("hot_plates_calendar_history_unknown")
+            raise CoreError("UPSTREAM_NOT_READY", "hot_plates_calendar_history_unknown")
         if args.hot_plates_deadline:
             from datetime import datetime
             from zoneinfo import ZoneInfo
@@ -860,7 +863,8 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
         trading_dates = sorted((day for day in catalog.read().get("datasets", {})
                                 .get("daily_kline", {}).get("dates", {}) if day <= args.date), reverse=True)
         if not trading_dates:
-            parser.error(f"daily_kline has no trading date on or before {args.date}")
+            return emit_failure("UPSTREAM_NOT_READY", job="plate_members", trade_date=args.date, dataset="plate_members",
+                                detail={"error": f"daily_kline has no trading date on or before {args.date}"})
         target_date = trading_dates[0]
         started = time.monotonic()
         result = _refresh_plate_members_latest(

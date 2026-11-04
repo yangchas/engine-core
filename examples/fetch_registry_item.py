@@ -8,6 +8,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from engine_core.data_pipeline.job_contract import contract_main, emit_failure
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -148,6 +149,7 @@ def fetch_item(item: str, day: str, artifact_root: str | Path, *, execute: bool 
     return {"status": "ok", **result}
 
 
+@contract_main("fetch_registry_item")
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--item", required=True, choices=["stock_day_facts", "stock_theme_assignment"])
@@ -157,7 +159,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     result = fetch_item(args.item, args.date, args.artifact_root, execute=args.execute)
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
-    return 0 if result["status"] == "ok" else 1
+    if result["status"] == "ok":
+        return 0
+    # the item reports whether trying again can help; a missing input is the retryable case
+    code = "UPSTREAM_NOT_READY" if result.get("retryable") is True else "POSTCONDITION_FAILED"
+    return emit_failure(code, job="fetch_registry_item", trade_date=args.date, dataset=args.item,
+                        detail={"error": "fetch_item status " + str(result["status"]), "result": result})
 
 
 if __name__ == "__main__":

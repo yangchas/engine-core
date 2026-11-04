@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from .jobs import JobRunner
 from .storage import ArtifactCatalog
+from ..errors import CoreError
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -50,7 +51,7 @@ def prior_hot_plate_dates(root: str | Path, session_date: str, count: int) -> li
     prior = [value for value in TradeCalendarStore(root).all_trading_dates()
              if value < date.fromisoformat(session_date).isoformat()]
     if len(prior) < count:
-        raise RuntimeError("hot_plates_calendar_history_unknown")
+        raise CoreError("UPSTREAM_NOT_READY", "hot_plates_calendar_history_unknown")
     return prior[-count:]
 
 

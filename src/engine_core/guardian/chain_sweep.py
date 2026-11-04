@@ -24,6 +24,11 @@ def registry_runner(root: str | Path) -> Runner:
             _run_fetch_job(item, day, timeout, root)
         except FetchJobError as exc:
             code = str(getattr(exc, "error_code", ""))
+            from ..errors import lookup
+            spec = lookup(code)
+            if spec is not None and not spec.get("reserved"):
+                # a declared, registered code says it directly; the sweep's own convention is 20 satisfied / 30 retry / 40 final
+                return 20 if spec["exit"] == 20 else (30 if spec["retryable"] else 40)
             if code.startswith("FETCH_EXIT_") and code[len("FETCH_EXIT_"):].isdigit():
                 return int(code[len("FETCH_EXIT_"):])
             return 30 if code == "FETCH_TIMEOUT" else 40

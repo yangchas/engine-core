@@ -75,6 +75,64 @@ def _failure(job: str = "unknown", trade_date: str = "", *, error_code: str,
     )
 
 
+PROGRAMMING_ERRORS = (AssertionError, AttributeError, IndexError, KeyError, NameError, SyntaxError, TypeError,
+                      ValueError)
+
+
+def failure_from_exception(exc: BaseException, *, job: str, trade_date: str = "", dataset: str = "",
+                           source: str | None = None) -> JobResult:
+    """The contract result of an exception that escaped a job: its own registered code when it has one, otherwise
+    INTERNAL_ERROR (retryable, flagged unclassified) - never a code invented from the message text."""
+    from ..errors import CoreError
+
+    if isinstance(exc, CoreError):
+        code, retryable, detail = exc.error_code, exc.retryable, {"error": str(exc)[:300]}
+    elif isinstance(exc, PROGRAMMING_ERRORS):
+        # a bug or a bad argument: running it again changes nothing (decided by the exception's type, not its text)
+        code, retryable = "DETERMINISTIC_FAILURE", False
+        detail = {"unclassified": True, "error": f"{type(exc).__name__}:{str(exc)[:300]}"}
+    else:
+        code, retryable = "INTERNAL_ERROR", True
+        detail = {"unclassified": True, "error": f"{type(exc).__name__}:{str(exc)[:300]}"}
+    return JobResult(contract=1, job=job, trade_date=trade_date, status="failed", tier=0, source=source,
+                     dataset=dataset, version=None, row_count=None, coverage=None, error_code=code,
+                     retryable=retryable, attempts=1, elapsed_ms=0.0, detail=detail)
+
+
+def emit_failure(code: str, *, job: str, trade_date: str = "", dataset: str = "", retryable: bool | None = None,
+                 detail: Any = None) -> int:
+    """Print a failure contract line for a registered code and return the process exit code."""
+    from ..errors import lookup
+
+    spec = lookup(code)
+    if spec is None:
+        raise ValueError("unregistered_error_code:" + code)
+    return emit(JobResult(contract=1, job=job, trade_date=trade_date, status="failed", tier=0, source=None,
+                          dataset=dataset, version=None, row_count=None, coverage=None, error_code=code,
+                          retryable=bool(spec["retryable"]) if retryable is None else retryable, attempts=1,
+                          elapsed_ms=0.0, detail=detail))
+
+
+def contract_main(job: str, dataset: str = ""):
+    """Decorator for a command's ``main``: an exception that escapes it becomes a contract failure line instead of a
+    traceback. Normal returns, ``SystemExit`` (argparse) and output are left alone."""
+    import functools
+    import sys
+
+    def wrap(main):
+        @functools.wraps(main)
+        def inner(argv=None, *args, **kwargs):
+            try:
+                return main(argv, *args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 - reported on the contract line below
+                words = list(sys.argv[1:] if argv is None else argv)
+                day = next((words[words.index(flag) + 1] for flag in ("--date", "--trade-date")
+                            if flag in words and words.index(flag) + 1 < len(words)), "")
+                return emit(failure_from_exception(exc, job=job, trade_date=day, dataset=dataset))
+        return inner
+    return wrap
+
+
 def emit(result: JobResult) -> int:
     """Write a single JSON contract line and return its corresponding process code."""
     print(json.dumps(asdict(result), ensure_ascii=False, sort_keys=True,

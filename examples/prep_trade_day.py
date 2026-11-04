@@ -9,8 +9,10 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from engine_core.prep_trade_day import build_prep_report
+from engine_core.data_pipeline.job_contract import contract_main, emit_failure
 
 
+@contract_main("prep_trade_day")
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date", required=True, help="target trading day")
@@ -27,7 +29,10 @@ def main(argv=None) -> int:
                                theme_poll_seconds=args.theme_poll_seconds,
                                theme_on_missing=args.theme_on_missing)
     print(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2))
-    return 0 if report["status"] in {"READY", "PARTIAL"} else 1
+    if report["status"] in {"READY", "PARTIAL"}:
+        return 0
+    return emit_failure("CONTRACT_INVALID", job="prep_trade_day", trade_date=args.date,
+                        detail={"error": "prep report status is neither READY nor PARTIAL: " + str(report["status"])})
 
 if __name__ == "__main__":
     raise SystemExit(main())

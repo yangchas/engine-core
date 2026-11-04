@@ -107,6 +107,11 @@
    "exit": 40,
    "meaning": "the function reported success but its declared postcondition does not hold"
   },
+  "PREP_CRITICAL_MISSING": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "a critical pre-market step has no data and the prep run cannot make it appear (the fetch_item repair queue owns the repair); repeating the prep does not help"
+  },
   "PROBE_TIMEOUT": {
    "retryable": true,
    "exit": 75,
@@ -146,6 +151,11 @@
    "retryable": true,
    "exit": 75,
    "meaning": "TDengine cannot be reached or refused the statement"
+  },
+  "TD_VERIFY_FAILED": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the TD read-back differs from the catalog version: the day is not complete (TdVerifyError); repeating the write does not change what was written"
   },
   "TIER_DATE_MISMATCH": {
    "retryable": false,
@@ -201,7 +211,6 @@
    "SOURCE_DATE_EVIDENCE_INCOMPLETE",
    "TD_FOREIGN_LONG_QUERY",
    "TD_SYNC_ERROR",
-   "TD_VERIFY_FAILED",
    "TD_WRITE_FAILED",
    "UNKNOWN_ITEM",
    "WENCAI_BLOCKED",
