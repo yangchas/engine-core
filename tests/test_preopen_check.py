@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from engine_core.guardian import preopen_check
+from engine_core.errors import CoreError
 
 CHECK_DAY, DAY = "2026-11-02", "2026-10-30"
 
@@ -93,7 +94,7 @@ def test_min_rows_comes_from_the_schedule(tmp_path):
 
 
 @pytest.mark.parametrize("outcome,ok", [({"status": "NO_GAPS"}, True), ({"status": "COMPLETE", "written_symbols": 3}, True),
-                                        ({"status": "BUSY"}, False), (RuntimeError("BAOSTOCK_GAP_UNRESOLVED:x"), False)])
+                                        ({"status": "BUSY"}, False), (CoreError("BAOSTOCK_GAP_UNRESOLVED", "x"), False)])
 def test_daily_kline_check_is_the_fill_itself(tmp_path, outcome, ok):
     seen = {}
 

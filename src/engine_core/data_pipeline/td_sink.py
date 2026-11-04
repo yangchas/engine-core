@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 from zoneinfo import ZoneInfo
 
+from ..errors import CoreError
 from .derived_daily import STATUS_RANK, normalize_status
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -37,8 +38,26 @@ SAMPLE_ROWS = 120
 BAOSTOCK_PROGRESS_VERSION = "baostock_progress"
 
 
-class TdUnavailable(RuntimeError):
+class TdUnavailable(CoreError):
     """TD cannot be reached or a statement failed transiently: retryable, never read as "data missing"."""
+
+    def __init__(self, reason: str = "", code: str = "TD_UNAVAILABLE"):
+        super().__init__(code, reason)
+
+
+class TdResourceExhausted(TdUnavailable):
+    """TD's query memory pool is exhausted (0x073a): another process holds it, later is fine."""
+
+    def __init__(self, reason: str = ""):
+        super().__init__(reason, code="TD_RESOURCE_EXHAUSTED")
+
+
+def td_statement_error(exc: Exception, reason: str) -> TdUnavailable:
+    """Translate a driver exception at the boundary: the driver's own error number says "query memory exhausted"."""
+    errno = (getattr(exc, "errno", 0) or 0) & 0xFFFF
+    if errno == 0x073A or "query memory exhausted" in str(exc).lower():
+        return TdResourceExhausted(reason)
+    return TdUnavailable(reason)
 
 
 class TdVerifyError(RuntimeError):
@@ -49,8 +68,11 @@ class TdVerifyError(RuntimeError):
 LEGACY_CHAIN_LABELS = frozenset({"baostock>wencai>q2_final"})
 
 
-class TdSourceRejected(ValueError):
+class TdSourceRejected(CoreError, ValueError):
     """Only a partition whose actual provider is Baostock may enter daily_kline_v1."""
+
+    def __init__(self, reason: str = "", code: str = "TD_REQUIRES_BAOSTOCK"):
+        super().__init__(code, reason)
 
 
 def validate_database_name(name: str) -> str:
@@ -310,7 +332,7 @@ class TaosStore:
             if missing_ok and self._is_missing(exc):
                 return []
             self.close()
-            raise TdUnavailable("td_statement_failed:" + type(exc).__name__ + ":" + str(exc)[:200]) from exc
+            raise td_statement_error(exc, "td_statement_failed:" + type(exc).__name__ + ":" + str(exc)[:200]) from exc
         finally:
             self._release(cursor)
 
@@ -337,7 +359,7 @@ class TaosStore:
             names = {row[0] for row in cursor.fetchall()}
         except Exception as exc:
             self.close()
-            raise TdUnavailable("td_statement_failed:" + str(exc)[:200]) from exc
+            raise td_statement_error(exc, "td_statement_failed:" + str(exc)[:200]) from exc
         if self.database not in names:
             return False
         rows = self._run(f"SELECT COUNT(*) FROM {self.database}.{META_TABLE}", missing_ok=True)
@@ -717,8 +739,7 @@ class DailyKlineTdSink:
         label = str(current.get("provider") or current.get("source") or "").lower() if current is not None else ""
         legacy_chain_label = label in LEGACY_CHAIN_LABELS
         if current is not None and label != "baostock" and not legacy_chain_label:
-            raise TdSourceRejected("td_daily_kline_requires_provider_baostock:" +
-                                    str(current.get("provider") or current.get("source") or "UNKNOWN"))
+            raise TdSourceRejected(str(current.get("provider") or current.get("source") or "UNKNOWN"))
         stored = self.store.read_day_rows(trade_date)
         expected = {str(symbol).zfill(6) for symbol in expected_symbols}
         present = set(stored) & expected
@@ -770,7 +791,7 @@ class DailyKlineTdSink:
         _check_date(trade_date)
         provider = str(manifest.get("provider") or manifest.get("source") or "").lower()
         if provider != "baostock":
-            raise TdSourceRejected("td_daily_kline_requires_provider_baostock:" + (provider or "UNKNOWN"))
+            raise TdSourceRejected(provider or "UNKNOWN")
         if trade_date not in self._prepared_progress:
             raise RuntimeError("td_progress_day_not_prepared:" + trade_date)
         for row in rows:
@@ -896,7 +917,7 @@ class DailyKlineTdSink:
                       manifest: Mapping[str, Any]) -> SyncOutcome:
         """Persist the just-built Baostock partition and verify its TD version row before returning."""
         if getattr(spec, "name", None) != "daily_kline":
-            raise TdSourceRejected("td_daily_kline_sink_rejects_dataset:" + str(getattr(spec, "name", None)))
+            raise TdSourceRejected("td_daily_kline_sink_rejects_dataset:" + str(getattr(spec, "name", None)), code="CONTRACT_INVALID")
         return self.write_partition(trade_date, rows, manifest)
 
     def write_partition(self, trade_date: str, rows: Sequence[Mapping[str, Any]],
@@ -904,7 +925,7 @@ class DailyKlineTdSink:
         _check_date(trade_date)
         provider = str(manifest.get("provider") or "").lower()
         if provider != "baostock":
-            raise TdSourceRejected("td_daily_kline_requires_provider_baostock:" + (provider or "UNKNOWN"))
+            raise TdSourceRejected(provider or "UNKNOWN")
         if str(manifest.get("trade_date") or trade_date) != trade_date:
             raise TdVerifyError("td_trade_date_mismatch:" + trade_date)
         if not has_baostock_date_evidence(trade_date, manifest):
@@ -949,8 +970,7 @@ class DailyKlineTdSink:
         if best is None:
             return SyncOutcome(trade_date, "no_catalog_version")
         if str(best.get("provider") or "").lower() != "baostock":
-            raise TdSourceRejected("td_daily_kline_requires_provider_baostock:" +
-                                   str(best.get("provider") or best.get("source") or "UNKNOWN"))
+            raise TdSourceRejected(str(best.get("provider") or best.get("source") or "UNKNOWN"))
         if not has_baostock_date_evidence(trade_date, best):
             return SyncOutcome(trade_date, "incomplete_date_evidence", str(best.get("version")),
                                best.get("business_status"), int(best.get("row_count") or 0),

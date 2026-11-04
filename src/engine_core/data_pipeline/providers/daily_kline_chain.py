@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
+from ...errors import CoreError
 from ..storage import ArtifactCatalog, _atomic_write, canonical_json
 from ..registry.daily_kline import classify_daily_kline
 from ..daily_kline_schema import (
@@ -286,7 +287,7 @@ class WencaiDailyProvider:
                 entries = [float(item) for item in self._state().get("requests", []) if now_wall - float(item) < 60]
                 previous = float(self._state().get("last_request", 0))
                 if len(entries) >= self.max_requests:
-                    raise RuntimeError("rate_limited:window_budget")
+                    raise CoreError("RATE_LIMITED", "window_budget")
                 interval = self.min_interval_seconds - (now_wall - previous) if previous else 0
                 if interval > 0:
                     self.sleep_fn(interval)

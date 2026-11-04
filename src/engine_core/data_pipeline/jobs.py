@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from ..errors import CoreError
 from .registry import DatasetSpec, get_dataset
 from .registry.daily_kline import classify_daily_kline
 from .storage import ArtifactCatalog, canonical_json
@@ -38,9 +39,9 @@ class RequestBudget:
         history = self._history.setdefault(provider, [])
         history[:] = [value for value in history if at - value < self.window_seconds]
         if history and at - history[-1] < self.min_interval_seconds:
-            raise RuntimeError("rate_limited:minimum_interval")
+            raise CoreError("RATE_LIMITED", "minimum_interval")
         if len(history) >= self.max_requests:
-            raise RuntimeError("rate_limited:window_budget")
+            raise CoreError("RATE_LIMITED", "window_budget")
         history.append(at)
 
     def acquire(self, provider: str) -> None:

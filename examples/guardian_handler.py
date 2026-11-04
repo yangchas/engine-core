@@ -188,6 +188,12 @@ def _classify_failure(request, *, error=None, result=None):
     if isinstance(first, dict) and any(str(pattern).lower() in combined
                                        for pattern in first.get("message_patterns", []) if pattern):
         return "retryable"
+    # An explicit, registered error code says it directly (design/33): no list to keep in step, no text to search.
+    from engine_core.errors import is_retryable
+    for code in codes:
+        known = is_retryable(str(code).upper())
+        if known is not None:
+            return "retryable" if known else "deterministic"
     for category in ("deterministic", "retryable"):
         rules = classes.get(category)
         if not isinstance(rules, dict):
@@ -237,7 +243,7 @@ def _run_daily_kline_fill(request, root, target: str, args) -> tuple[int, dict]:
     try:
         result = run_daily_kline_fill_from_root(root, target, args=args)
     except Exception as exc:
-        if "BAOSTOCK_GAP_UNRESOLVED" in str(exc):
+        if getattr(exc, "error_code", None) == "BAOSTOCK_GAP_UNRESOLVED":
             # progress is already in TD; an incomplete day is a resumable state, never a final failure
             return 75, {"contract": 1, "status": "failed", "error_code": "TIER_PARTIAL",
                         "retryable": True, "artifacts": [], "detail": str(exc)}

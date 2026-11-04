@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from engine_core.errors import CoreError
 
 
 
@@ -809,7 +810,7 @@ def test_baostock_not_delivered_yet_is_retryable_even_with_a_deterministic_exit_
     ({"status": "COMPLETE"}, (0, "ok", False)),
     ({"status": "NO_GAPS"}, (0, "ok", False)),
     ({"status": "BUSY"}, (20, "not_applicable", False)),
-    (RuntimeError("BAOSTOCK_GAP_UNRESOLVED:consecutive_failures:attempted=5"), (75, "failed", True)),
+    (CoreError("BAOSTOCK_GAP_UNRESOLVED", "consecutive_failures:attempted=5"), (75, "failed", True)),   # what the fill raises
 ])
 def test_baostock_probe_runs_the_td_fill_for_every_trigger_point(monkeypatch, outcome, expected):
     from examples import guardian_handler
