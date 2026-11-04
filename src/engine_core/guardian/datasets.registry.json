@@ -38,7 +38,14 @@
         "clear": "move aside to timestamped .bak; restore on failure"
       },
       "notes": "calendar maintenance event exists in code; exact guardian schedule event id not visible in schedule.json.",
-      "guardian_event": null
+      "guardian_event": null,
+      "storage": [
+        {
+          "kind": "file",
+          "name": "trade_calendar/calendar.json",
+          "role": "authority"
+        }
+      ]
     },
     {
       "id": "symbol_universe",
@@ -90,7 +97,14 @@
           "--execute"
         ],
         "timeout_seconds": 300
-      }
+      },
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "symbol_universe",
+          "role": "authority"
+        }
+      ]
     },
     {
       "id": "daily_kline",
@@ -169,7 +183,30 @@
         "authority": "Baostock is the only daily_kline provider written to TD; TD watermarks decide gaps",
         "doc": "docs/DAILY_KLINE_TD.md"
       },
-      "redis_ttl_seconds": 604800
+      "redis_ttl_seconds": 604800,
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "daily_kline_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_stable",
+          "name": "daily_kline_versions",
+          "role": "marker"
+        },
+        {
+          "kind": "catalog",
+          "name": "daily_kline",
+          "role": "marker"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:daily_kline",
+          "role": "view",
+          "ttl_seconds": 604800
+        }
+      ]
     },
     {
       "id": "daily_dde",
@@ -220,7 +257,20 @@
         "ttl_seconds": 86400
       },
       "notes": "来源响应提供 Date 与 DDJE；large_net/DDX/DDY/DDZ 不存在于源响应。旧库四列恒为 0，不是数据。Redis 只写 core:cache:data:daily_dde:{date} hash，TTL 由本登记项配置。",
-      "guardian_event": "daily_dde_postclose"
+      "guardian_event": "daily_dde_postclose",
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "daily_dde_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:daily_dde",
+          "role": "view",
+          "ttl_seconds": 86400
+        }
+      ]
     },
     {
       "id": "daily_indicators",
@@ -288,7 +338,14 @@
         "recompute_on_input_change": true,
         "window_days": 120,
         "trigger": "upstream daily_kline partition present at >= min_upstream_status (gate), not a fixed clock time; a PROVISIONAL result is recomputed as a new version once daily_kline is FORMAL"
-      }
+      },
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "daily_indicators",
+          "role": "authority"
+        }
+      ]
     },
     {
       "id": "daily_report_features",
@@ -359,7 +416,20 @@
         "window_days": 120,
         "trigger": "upstream daily_kline (>= min_upstream_status) and the same-day daily_indicators version; recomputed as a new version when either changes"
       },
-      "redis_ttl_seconds": 604800
+      "redis_ttl_seconds": 604800,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "daily_report_features",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:daily_report_features",
+          "role": "view",
+          "ttl_seconds": 604800
+        }
+      ]
     },
     {
       "id": "limit_up_pool",
@@ -423,7 +493,31 @@
         "authority": "cold data -> TD; catalog partition is the transitional versioned ledger (design/24 section 2)",
         "doc": "docs/LIMIT_UP_POOL.md"
       },
-      "redis_ttl_seconds": 345600
+      "redis_ttl_seconds": 345600,
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "limit_up_pool_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_stable",
+          "name": "limit_up_pool_versions",
+          "role": "marker"
+        },
+        {
+          "kind": "catalog",
+          "name": "limit_up_pool",
+          "role": "marker",
+          "note": "transitional versioned ledger (design/24 section 2); postconditions read it"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:limit_up_pool",
+          "role": "view",
+          "ttl_seconds": 345600
+        }
+      ]
     },
     {
       "id": "limit_up_pool_today",
@@ -484,7 +578,21 @@
         "date_key": "{namespace}:{date}",
         "latest_key": "{namespace}:latest"
       },
-      "redis_ttl_seconds": 345600
+      "redis_ttl_seconds": 345600,
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:limit_up_pool_today",
+          "role": "authority",
+          "ttl_seconds": 345600
+        },
+        {
+          "kind": "catalog",
+          "name": "limit_up_pool_today",
+          "role": "legacy",
+          "note": "older runs wrote catalog partitions; user 2026-10-29: today-related data lives in Redis only"
+        }
+      ]
     },
     {
       "id": "limit_reasons",
@@ -539,7 +647,20 @@
         ],
         "timeout_seconds": 900
       },
-      "redis_ttl_seconds": 345600
+      "redis_ttl_seconds": 345600,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "limit_reasons",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:limit_reasons",
+          "role": "view",
+          "ttl_seconds": 345600
+        }
+      ]
     },
     {
       "id": "hot_plates_yesterday",
@@ -586,7 +707,20 @@
         "basis": "gap record only",
         "set_by": "C379/claude 2026-10-21"
       },
-      "redis_ttl_seconds": 345600
+      "redis_ttl_seconds": 345600,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "hot_plates",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:hot_plates",
+          "role": "view",
+          "ttl_seconds": 345600
+        }
+      ]
     },
     {
       "id": "hot_plates",
@@ -634,7 +768,20 @@
         "basis": "one bounded Kaipan snapshot; page interval >=1s",
         "set_by": "C583"
       },
-      "redis_ttl_seconds": 345600
+      "redis_ttl_seconds": 345600,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "hot_plates",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:hot_plates",
+          "role": "view",
+          "ttl_seconds": 345600
+        }
+      ]
     },
     {
       "id": "hot_plates_gaps",
@@ -682,7 +829,14 @@
         "class": "light",
         "basis": "local append only; no source request",
         "set_by": "C583"
-      }
+      },
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "hot_plates_gaps",
+          "role": "authority"
+        }
+      ]
     },
     {
       "id": "plate_members",
@@ -737,7 +891,26 @@
         ],
         "timeout_seconds": 300
       },
-      "redis_ttl_seconds": 345600
+      "redis_ttl_seconds": 345600,
+      "storage": [
+        {
+          "kind": "td_snapshot",
+          "name": "plate_members",
+          "role": "authority"
+        },
+        {
+          "kind": "catalog",
+          "name": "plate_members",
+          "role": "legacy",
+          "note": "no new partitions since C618 (last 2026-10-29)"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:plate_members",
+          "role": "view",
+          "ttl_seconds": 345600
+        }
+      ]
     },
     {
       "id": "plate_registry",
@@ -774,7 +947,15 @@
         "set_by": "C573: weekly PRE_MARKET refresh; daily new-symbol check; startup catches up in the configured window",
         "trigger_event": "static_data_refresh_0850"
       },
-      "guardian_event": "static_data_refresh_0850"
+      "guardian_event": "static_data_refresh_0850",
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "plate_registry",
+          "role": "authority",
+          "note": "td_snapshot table plate_registry_latest exists in code but is not populated (verified 2026-11-03)"
+        }
+      ]
     },
     {
       "id": "stock_static",
@@ -817,7 +998,21 @@
         "basis": "UNKNOWN",
         "set_by": "claude 2026-10-20 default"
       },
-      "redis_ttl_seconds": 3600
+      "redis_ttl_seconds": 3600,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "stock_static",
+          "role": "authority",
+          "note": "td_snapshot table stock_static_latest exists in code but is not populated (verified 2026-11-03)"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:stock_static",
+          "role": "view",
+          "ttl_seconds": 3600
+        }
+      ]
     },
     {
       "id": "auction_snapshot_v2",
@@ -842,7 +1037,15 @@
         "clear": "none"
       },
       "notes": "External TD dataset, not Core catalog; Core guardian checks readiness. TD freshness threshold UNKNOWN; ask data operator.",
-      "guardian_event": "auction_0920_check"
+      "guardian_event": "auction_0920_check",
+      "storage": [
+        {
+          "kind": "td_external",
+          "name": "market_data1.auction_snapshot_v2",
+          "role": "authority",
+          "note": "owned by t1_v2; Core only reads"
+        }
+      ]
     },
     {
       "id": "auction_baseline",
@@ -896,7 +1099,20 @@
         ],
         "timeout_seconds": 300
       },
-      "redis_ttl_seconds": 345600
+      "redis_ttl_seconds": 345600,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "auction_baseline",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:auction_baseline",
+          "role": "view",
+          "ttl_seconds": 345600
+        }
+      ]
     },
     {
       "id": "auction_stock_facts",
@@ -953,7 +1169,20 @@
         ],
         "timeout_seconds": 180
       },
-      "redis_ttl_seconds": 345600
+      "redis_ttl_seconds": 345600,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "auction_stock_facts",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:auction_stock_facts",
+          "role": "view",
+          "ttl_seconds": 345600
+        }
+      ]
     },
     {
       "id": "auction_points",
@@ -1010,7 +1239,20 @@
         ],
         "timeout_seconds": 180
       },
-      "redis_ttl_seconds": 345600
+      "redis_ttl_seconds": 345600,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "auction_points",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:auction_points",
+          "role": "view",
+          "ttl_seconds": 345600
+        }
+      ]
     },
     {
       "id": "auction_points_raw",
@@ -1040,7 +1282,15 @@
         "since": "2026-10-21",
         "reason": "raw t1_v2 Redis archive captures last written 2026-10-16 (dirs trade_date=2026-10-15/16 only); auction_points is now rebuilt from TD (C373) and nothing in the production path reads this archive",
         "set_by": "claude 2026-10-21"
-      }
+      },
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "auction_points_raw",
+          "role": "legacy",
+          "note": "retired 2026-10-21"
+        }
+      ]
     },
     {
       "id": "auction_panorama",
@@ -1097,7 +1347,20 @@
         ],
         "timeout_seconds": 180
       },
-      "redis_ttl_seconds": 345600
+      "redis_ttl_seconds": 345600,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "auction_panorama",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:auction_panorama",
+          "role": "view",
+          "ttl_seconds": 345600
+        }
+      ]
     },
     {
       "id": "ladder_daily",
@@ -1183,7 +1446,26 @@
         "table": "ladder_daily_v1",
         "version_table": "ladder_daily_versions"
       },
-      "redis_ttl_seconds": 604800
+      "redis_ttl_seconds": 604800,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "ladder_daily",
+          "role": "authority"
+        },
+        {
+          "kind": "td_stable",
+          "name": "ladder_daily_v1",
+          "role": "legacy",
+          "note": "not maintained: last row 2026-10-30; ladder_daily_v2 not built"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:ladder_daily",
+          "role": "view",
+          "ttl_seconds": 604800
+        }
+      ]
     },
     {
       "id": "hot_rank",
@@ -1243,7 +1525,20 @@
         ],
         "timeout_seconds": 120
       },
-      "redis_ttl_seconds": 172800
+      "redis_ttl_seconds": 172800,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "hot_rank",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:hot_rank",
+          "role": "view",
+          "ttl_seconds": 172800
+        }
+      ]
     },
     {
       "id": "hot_plate_minutes",
@@ -1266,7 +1561,15 @@
         "clear": "clear then rebuild"
       },
       "notes": "Catalog contains this dataset. guardian owner event not directly assigned by current schedule.",
-      "guardian_event": null
+      "guardian_event": null,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "hot_plate_minutes",
+          "role": "legacy",
+          "note": "retired; last partition 2026-10-16"
+        }
+      ]
     },
     {
       "id": "plate_amount_baseline",
@@ -1319,7 +1622,20 @@
         ],
         "timeout_seconds": 300
       },
-      "redis_ttl_seconds": 2592000
+      "redis_ttl_seconds": 2592000,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "plate_amount_baseline",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:plate_amount_baseline",
+          "role": "view",
+          "ttl_seconds": 2592000
+        }
+      ]
     },
     {
       "id": "stock_day_facts",
@@ -1378,7 +1694,20 @@
         ],
         "timeout_seconds": 300
       },
-      "redis_ttl_seconds": 604800
+      "redis_ttl_seconds": 604800,
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "stock_day_facts",
+          "role": "authority"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:cache:data:stock_day_facts",
+          "role": "view",
+          "ttl_seconds": 604800
+        }
+      ]
     },
     {
       "id": "stock_theme_assignment",
@@ -1435,7 +1764,14 @@
           "--execute"
         ],
         "timeout_seconds": 300
-      }
+      },
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "stock_theme_assignment",
+          "role": "authority"
+        }
+      ]
     },
     {
       "id": "intraday_tick_stream",
@@ -1462,7 +1798,15 @@
         "clear": "not provided"
       },
       "notes": "Checkpoint output is temporary Redis-only; no TD persistence and no catalog temporary partition.",
-      "guardian_event": "intraday_33"
+      "guardian_event": "intraday_33",
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "intraday_checkpoint",
+          "role": "authority",
+          "note": "registry artifact.catalog_dataset is null; checkpoint partitions live in catalog dataset intraday_checkpoint"
+        }
+      ]
     },
     {
       "id": "intraday_report",
@@ -1488,7 +1832,15 @@
         "clear": "not provided"
       },
       "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
-      "guardian_event": "intraday_33"
+      "guardian_event": "intraday_33",
+      "storage": [
+        {
+          "kind": "unknown",
+          "name": "unverified",
+          "role": "authority",
+          "note": "report output location not verified (only the close stage was read back on 2026-11-03)"
+        }
+      ]
     },
     {
       "id": "night_report",
@@ -1511,7 +1863,15 @@
         "clear": "not provided"
       },
       "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
-      "guardian_event": "night_recap"
+      "guardian_event": "night_recap",
+      "storage": [
+        {
+          "kind": "unknown",
+          "name": "unverified",
+          "role": "authority",
+          "note": "report output location not verified (only the close stage was read back on 2026-11-03)"
+        }
+      ]
     },
     {
       "id": "premarket_report",
@@ -1534,7 +1894,15 @@
         "clear": "not provided"
       },
       "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
-      "guardian_event": "startup_0830"
+      "guardian_event": "startup_0830",
+      "storage": [
+        {
+          "kind": "unknown",
+          "name": "unverified",
+          "role": "authority",
+          "note": "report output location not verified (only the close stage was read back on 2026-11-03)"
+        }
+      ]
     },
     {
       "id": "auction_report",
@@ -1557,7 +1925,15 @@
         "clear": "not provided"
       },
       "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
-      "guardian_event": "auction_report_0926"
+      "guardian_event": "auction_report_0926",
+      "storage": [
+        {
+          "kind": "unknown",
+          "name": "unverified",
+          "role": "authority",
+          "note": "report output location not verified (only the close stage was read back on 2026-11-03)"
+        }
+      ]
     },
     {
       "id": "open_report",
@@ -1580,7 +1956,15 @@
         "clear": "not provided"
       },
       "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
-      "guardian_event": "open_report_0932"
+      "guardian_event": "open_report_0932",
+      "storage": [
+        {
+          "kind": "unknown",
+          "name": "unverified",
+          "role": "authority",
+          "note": "report output location not verified (only the close stage was read back on 2026-11-03)"
+        }
+      ]
     },
     {
       "id": "close_report",
@@ -1603,7 +1987,16 @@
         "clear": "not provided"
       },
       "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
-      "guardian_event": "close_recap"
+      "guardian_event": "close_recap",
+      "storage": [
+        {
+          "kind": "redis_view",
+          "name": "core:cache:report",
+          "role": "authority",
+          "ttl_seconds": 172800,
+          "note": "key core:cache:report:{date}:{stage}; read back for close on 2026-11-03"
+        }
+      ]
     },
     {
       "id": "intraday_analysis",
@@ -1630,7 +2023,15 @@
         "clear": "not provided"
       },
       "notes": "Report/stream artifact is not represented as a dataset in core-data/catalog.json; confirm storage/retention with report owner.",
-      "guardian_event": "intraday_33"
+      "guardian_event": "intraday_33",
+      "storage": [
+        {
+          "kind": "unknown",
+          "name": "unverified",
+          "role": "authority",
+          "note": "report output location not verified (only the close stage was read back on 2026-11-03)"
+        }
+      ]
     },
     {
       "id": "name_map",
@@ -1672,7 +2073,15 @@
         "class": "light",
         "basis": "derived from stock_static",
         "set_by": "claude 2026-10-20 default"
-      }
+      },
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "stock_static",
+          "role": "authority",
+          "note": "shares the stock_static snapshot"
+        }
+      ]
     },
     {
       "id": "path_stats",
@@ -1695,7 +2104,15 @@
         "force": "recompute",
         "clear": "clear then rebuild"
       },
-      "notes": "No guardian event found; ask data pipeline owner."
+      "notes": "No guardian event found; ask data pipeline owner.",
+      "storage": [
+        {
+          "kind": "catalog",
+          "name": "path_stats",
+          "role": "legacy",
+          "note": "no producer event; last partition 2026-10-15"
+        }
+      ]
     },
     {
       "id": "stock_tick_v2",
@@ -1720,7 +2137,15 @@
         "force": "none",
         "clear": "none"
       },
-      "notes": "TD stores no tick after 09:45:59 (C377); since C587 the intraday gate/handler read Redis q2 first and use this table only up to args.checkpoint.td_until."
+      "notes": "TD stores no tick after 09:45:59 (C377); since C587 the intraday gate/handler read Redis q2 first and use this table only up to args.checkpoint.td_until.",
+      "storage": [
+        {
+          "kind": "td_external",
+          "name": "market_data1.stock_tick_v2",
+          "role": "authority",
+          "note": "owned by t1_v2; Core only reads; ticks stop 09:45:59"
+        }
+      ]
     },
     {
       "id": "limit_up_detail",
@@ -1778,7 +2203,25 @@
         "date_key": "core:yest_limit_detail:{trade_date}",
         "reason_key": "core:limit_up_reason:{trade_date}"
       },
-      "redis_ttl_seconds": 259200
+      "redis_ttl_seconds": 259200,
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "limit_up_detail_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_stable",
+          "name": "limit_up_detail_versions",
+          "role": "marker"
+        },
+        {
+          "kind": "redis_view",
+          "name": "core:yest_limit_detail",
+          "role": "view",
+          "ttl_seconds": 259200
+        }
+      ]
     }
   ],
   "quiet_phases_for_heavy": [

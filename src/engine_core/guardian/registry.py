@@ -202,6 +202,9 @@ def load_registry(path: str | Path | None = None) -> list[dict[str, Any]]:
         raise ValueError("registry phase_names must declare the 12 supported phases")
     items = payload.get("items")
     validate_registry(items)
+    undeclared = [item["id"] for item in items if "storage" not in item]
+    if undeclared:
+        raise ValueError(f"registry storage declaration missing: {undeclared}")
     from .scheduler import _schedule_source
     events = {event["event_id"]: event for event in _schedule_source().get("events", [])}
     for item in items:
@@ -248,7 +251,28 @@ def validate_registry(items: Any) -> int:
         for field in ("owner", "cadence", "rule", "freshness", "retry", "notes"):
             if item[field] is None and field != "owner":
                 raise ValueError(f"item {item['id']} field {field} must be explicit")
+        if "storage" in item:
+            _validate_storage(item["id"], item["storage"])
     return _count_unknown(items)
+
+
+STORAGE_KINDS = frozenset({"file", "catalog", "td_stable", "td_snapshot", "td_external", "redis_view", "unknown"})
+STORAGE_ROLES = frozenset({"authority", "marker", "view", "mirror", "legacy"})
+
+
+def _validate_storage(item_id: str, storage: Any) -> None:
+    """Where a dataset lives (design/29 CT-01): a non-empty list of {kind, name, role}; redis views carry a TTL."""
+    if not isinstance(storage, list) or not storage:
+        raise ValueError(f"item {item_id} storage must be a non-empty list")
+    for location in storage:
+        if not isinstance(location, dict) or location.get("kind") not in STORAGE_KINDS \
+                or location.get("role") not in STORAGE_ROLES or not location.get("name"):
+            raise ValueError(f"item {item_id} storage location needs kind, role and name: {location!r}")
+        ttl = location.get("ttl_seconds")
+        if location["kind"] == "redis_view" and (isinstance(ttl, bool) or not isinstance(ttl, int) or ttl <= 0):
+            raise ValueError(f"item {item_id} storage redis_view needs ttl_seconds")
+    if sum(1 for location in storage if location["role"] == "authority") > 1:
+        raise ValueError(f"item {item_id} storage declares more than one authority")
 
 
 def _count_unknown(value: Any) -> int:
