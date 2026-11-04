@@ -699,16 +699,6 @@
               "BAOSTOCK_RECEIVE_EXCEPTION",
               "FETCH_TIMEOUT",
               "RATE_LIMITED"
-            ],
-            "message_patterns": [
-              "receive exception",
-              "connection error",
-              "connection_error",
-              "rate limit",
-              "too many requests",
-              "login failed",
-              "login_error",
-              "baostock_login_failed"
             ]
           },
           "deterministic": {
@@ -736,16 +726,9 @@
               "CONTRACT_INVALID",
               "CONTRACT_VIOLATION",
               "POSTCONDITION_FAILED"
-            ],
-            "message_patterns": []
-          },
-          "default": "deterministic",
-          "retryable_first": {
-            "message_patterns": [
-              "query memory exhausted",
-              "0x073a"
             ]
-          }
+          },
+          "default": "retryable"
         },
         "baostock_no_progress_seconds": 300
       }
@@ -878,16 +861,6 @@
               "RATE_LIMITED",
               "TIER_PARTIAL",
               "BAOSTOCK_LOCAL_GAP_WAIT"
-            ],
-            "message_patterns": [
-              "receive exception",
-              "connection error",
-              "connection_error",
-              "rate limit",
-              "too many requests",
-              "login failed",
-              "login_error",
-              "baostock_login_failed"
             ]
           },
           "deterministic": {
@@ -915,24 +888,9 @@
               "CONTRACT_INVALID",
               "CONTRACT_VIOLATION",
               "POSTCONDITION_FAILED"
-            ],
-            "message_patterns": []
-          },
-          "default": "deterministic",
-          "retryable_first": {
-            "message_patterns": [
-              "baostock_gap_unresolved",
-              "td_daily_kline_requires_provider_baostock",
-              "rate_limited:",
-              "daily_kline_missing",
-              "upstream_not_ready",
-              "taos.error",
-              "programmingerror",
-              "probe_timeout",
-              "query memory exhausted",
-              "0x073a"
             ]
-          }
+          },
+          "default": "retryable"
         }
       }
     },
@@ -1322,16 +1280,6 @@
               "RATE_LIMITED",
               "TIER_PARTIAL",
               "BAOSTOCK_LOCAL_GAP_WAIT"
-            ],
-            "message_patterns": [
-              "receive exception",
-              "connection error",
-              "connection_error",
-              "rate limit",
-              "too many requests",
-              "login failed",
-              "login_error",
-              "baostock_login_failed"
             ]
           },
           "deterministic": {
@@ -1359,24 +1307,9 @@
               "CONTRACT_INVALID",
               "CONTRACT_VIOLATION",
               "POSTCONDITION_FAILED"
-            ],
-            "message_patterns": []
-          },
-          "default": "deterministic",
-          "retryable_first": {
-            "message_patterns": [
-              "baostock_gap_unresolved",
-              "td_daily_kline_requires_provider_baostock",
-              "rate_limited:",
-              "daily_kline_missing",
-              "upstream_not_ready",
-              "taos.error",
-              "programmingerror",
-              "probe_timeout",
-              "query memory exhausted",
-              "0x073a"
             ]
-          }
+          },
+          "default": "retryable"
         }
       }
     },
@@ -1474,16 +1407,6 @@
               "RATE_LIMITED",
               "TIER_PARTIAL",
               "BAOSTOCK_LOCAL_GAP_WAIT"
-            ],
-            "message_patterns": [
-              "receive exception",
-              "connection error",
-              "connection_error",
-              "rate limit",
-              "too many requests",
-              "login failed",
-              "login_error",
-              "baostock_login_failed"
             ]
           },
           "deterministic": {
@@ -1511,24 +1434,9 @@
               "CONTRACT_INVALID",
               "CONTRACT_VIOLATION",
               "POSTCONDITION_FAILED"
-            ],
-            "message_patterns": []
-          },
-          "default": "deterministic",
-          "retryable_first": {
-            "message_patterns": [
-              "baostock_gap_unresolved",
-              "td_daily_kline_requires_provider_baostock",
-              "rate_limited:",
-              "daily_kline_missing",
-              "upstream_not_ready",
-              "taos.error",
-              "programmingerror",
-              "probe_timeout",
-              "query memory exhausted",
-              "0x073a"
             ]
-          }
+          },
+          "default": "retryable"
         }
       }
     },
@@ -3260,16 +3168,6 @@
               "RATE_LIMITED",
               "TIER_PARTIAL",
               "BAOSTOCK_LOCAL_GAP_WAIT"
-            ],
-            "message_patterns": [
-              "receive exception",
-              "connection error",
-              "connection_error",
-              "rate limit",
-              "too many requests",
-              "login failed",
-              "login_error",
-              "baostock_login_failed"
             ]
           },
           "deterministic": {
@@ -3297,19 +3195,9 @@
               "CONTRACT_INVALID",
               "CONTRACT_VIOLATION",
               "POSTCONDITION_FAILED"
-            ],
-            "message_patterns": []
-          },
-          "default": "deterministic",
-          "retryable_first": {
-            "message_patterns": [
-              "baostock_gap_unresolved",
-              "td_daily_kline_requires_provider_baostock",
-              "rate_limited:",
-              "query memory exhausted",
-              "0x073a"
             ]
-          }
+          },
+          "default": "retryable"
         },
         "baostock_no_progress_seconds": 300,
         "daily_kline_policy": {
@@ -3388,16 +3276,6 @@
               "RATE_LIMITED",
               "TIER_PARTIAL",
               "BAOSTOCK_LOCAL_GAP_WAIT"
-            ],
-            "message_patterns": [
-              "receive exception",
-              "connection error",
-              "connection_error",
-              "rate limit",
-              "too many requests",
-              "login failed",
-              "login_error",
-              "baostock_login_failed"
             ]
           },
           "deterministic": {
@@ -3425,19 +3303,9 @@
               "CONTRACT_INVALID",
               "CONTRACT_VIOLATION",
               "POSTCONDITION_FAILED"
-            ],
-            "message_patterns": []
-          },
-          "default": "deterministic",
-          "retryable_first": {
-            "message_patterns": [
-              "baostock_gap_unresolved",
-              "td_daily_kline_requires_provider_baostock",
-              "rate_limited:",
-              "query memory exhausted",
-              "0x073a"
             ]
-          }
+          },
+          "default": "retryable"
         },
         "baostock_no_progress_seconds": 300,
         "daily_kline_policy": {
@@ -3579,16 +3447,6 @@
               "RATE_LIMITED",
               "TIER_PARTIAL",
               "BAOSTOCK_LOCAL_GAP_WAIT"
-            ],
-            "message_patterns": [
-              "receive exception",
-              "connection error",
-              "connection_error",
-              "rate limit",
-              "too many requests",
-              "login failed",
-              "login_error",
-              "baostock_login_failed"
             ]
           },
           "deterministic": {
@@ -3616,19 +3474,9 @@
               "CONTRACT_INVALID",
               "CONTRACT_VIOLATION",
               "POSTCONDITION_FAILED"
-            ],
-            "message_patterns": []
-          },
-          "default": "deterministic",
-          "retryable_first": {
-            "message_patterns": [
-              "baostock_gap_unresolved",
-              "td_daily_kline_requires_provider_baostock",
-              "rate_limited:",
-              "query memory exhausted",
-              "0x073a"
             ]
-          }
+          },
+          "default": "retryable"
         },
         "baostock_no_progress_seconds": 300,
         "daily_kline_policy": {
@@ -3705,16 +3553,6 @@
               "RATE_LIMITED",
               "TIER_PARTIAL",
               "BAOSTOCK_LOCAL_GAP_WAIT"
-            ],
-            "message_patterns": [
-              "receive exception",
-              "connection error",
-              "connection_error",
-              "rate limit",
-              "too many requests",
-              "login failed",
-              "login_error",
-              "baostock_login_failed"
             ]
           },
           "deterministic": {
@@ -3742,19 +3580,9 @@
               "CONTRACT_INVALID",
               "CONTRACT_VIOLATION",
               "POSTCONDITION_FAILED"
-            ],
-            "message_patterns": []
-          },
-          "default": "deterministic",
-          "retryable_first": {
-            "message_patterns": [
-              "baostock_gap_unresolved",
-              "td_daily_kline_requires_provider_baostock",
-              "rate_limited:",
-              "query memory exhausted",
-              "0x073a"
             ]
-          }
+          },
+          "default": "retryable"
         },
         "baostock_no_progress_seconds": 300,
         "daily_kline_policy": {

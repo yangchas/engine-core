@@ -103,135 +103,92 @@ def _failure_classes(request):
     if isinstance(configured, dict):
         return configured
     return {
-        "retryable": {
-            "exit_codes": [30, 75],
-            "exception_types": ["TimeoutError", "TimeoutExpired", "ConnectionError"],
-            "error_codes": ["STALL_NO_PROGRESS", "BAOSTOCK_TIMEOUT", "BAOSTOCK_CONNECTION_ERROR",
-                            "BAOSTOCK_LOGIN_FAILED", "BAOSTOCK_LOGIN_ERROR",
-                            "BAOSTOCK_RATE_LIMITED", "BAOSTOCK_RECEIVE_EXCEPTION",
-                            "FETCH_TIMEOUT", "RATE_LIMITED", "KAIPAN_PLATE_MEMBERS_INCOMPLETE"],
-            "message_patterns": ["receive exception", "connection error", "connection_error",
-                                 "rate limit", "too many requests", "login failed",
-                                 "login_error", "baostock_login_failed"],
-        },
+        "retryable": {"exit_codes": [30, 75], "exception_types": ["TimeoutError", "TimeoutExpired", "ConnectionError"]},
         "deterministic": {
             "exit_codes": [2, 40, 64],
-            "exception_types": ["AssertionError", "AttributeError", "IndexError", "KeyError",
-                                "NameError", "SyntaxError", "TypeError", "ValueError",
-                                "JSONDecodeError", "ContractError"],
-            "error_codes": ["COMMAND_ARGUMENT_ERROR", "CONFIG_ERROR", "CONTRACT_ERROR",
-                            "CONTRACT_INVALID", "CONTRACT_VIOLATION", "POSTCONDITION_FAILED"],
-            "message_patterns": [],
+            "exception_types": ["AssertionError", "AttributeError", "IndexError", "KeyError", "NameError",
+                                "SyntaxError", "TypeError", "ValueError", "JSONDecodeError", "ContractError"],
         },
-        # Baostock not having delivered yet is never a permanent failure, whatever exit code carried it.
-        # TD running out of query memory (0x073a) means another process holds the pool: retry later, never final.
-        "retryable_first": {"message_patterns": ["baostock_gap_unresolved",
-                                                 "td_daily_kline_requires_provider_baostock",
-                                                 "rate_limited:", "query memory exhausted", "0x073a"]},
-        "default": "deterministic",
+        # A failure that carries no code, no known exit status and no known exception type has not been classified by
+        # anyone: it is retried (the ladder bounds it) and flagged, never silently made final.
+        "default": "retryable",
     }
 
 
-def _classify_failure(request, *, error=None, result=None):
+def _classification(request, *, error=None, result=None):
+    """(category, basis): what the failure is and what said so. basis is code / exit / type / default - never text."""
     classes = _failure_classes(request)
-    details = result.get("detail") if isinstance(result, dict) else None
-    texts = [str(error)] if error is not None else []
-    codes = []
-    exception_types = set()
+    codes: list[str] = []
+    exit_codes: set[int] = set()
+    exception_types: set[str] = set()
     if error is not None:
         exception_types.update(cls.__name__ for cls in type(error).__mro__)
-        code = getattr(error, "error_code", None)
-        if code:
-            codes.append(str(code))
-        for line in str(error).splitlines():
-            try:
-                diagnostic = json.loads(line)
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(diagnostic, dict):
-                continue
-            code = diagnostic.get("error_code")
-            if code:
-                codes.append(str(code))
-            for key in ("error", "detail", "message", "stderr_tail"):
-                value = diagnostic.get(key)
-                if value:
-                    texts.append(str(value))
-            detail = diagnostic.get("detail")
-            if isinstance(detail, dict):
-                for key in ("error_code", "error", "stderr_tail"):
-                    value = detail.get(key)
-                    if key == "error_code" and value:
-                        codes.append(str(value))
-                    elif value:
-                        texts.append(str(value))
+        if getattr(error, "error_code", None):
+            codes.append(str(error.error_code))
+        for attribute in ("returncode", "exit_code"):
+            value = getattr(error, attribute, None)
+            if isinstance(value, int) and not isinstance(value, bool):
+                exit_codes.add(value)
     if isinstance(result, dict):
-        for key in ("error_code", "error", "detail", "stderr_tail"):
-            value = result.get(key)
-            if key == "error_code" and value:
-                codes.append(str(value))
-            elif value:
-                texts.append(str(value))
-        if isinstance(details, dict):
-            for key in ("error_code", "error", "stderr_tail"):
-                value = details.get(key)
-                if key == "error_code" and value:
-                    codes.append(str(value))
-                elif value:
-                    texts.append(str(value))
-    combined = "\n".join(texts + codes).lower()
-    exit_codes = {int(value) for value in re.findall(r"command_exit=(\d+)", combined)}
-    exit_codes.update(int(value) for value in re.findall(r"fetch_exit_(\d+)", combined))
-    normalized_codes = {value.upper() for value in codes}
-
-    first = classes.get("retryable_first")
-    if isinstance(first, dict) and any(str(pattern).lower() in combined
-                                       for pattern in first.get("message_patterns", []) if pattern):
-        return "retryable"
-    # An explicit, registered error code says it directly (design/33): no list to keep in step, no text to search.
+        if result.get("error_code"):
+            codes.append(str(result["error_code"]))
+        details = result.get("detail")
+        if isinstance(details, dict) and details.get("error_code"):
+            codes.append(str(details["error_code"]))
+    # An explicit, registered error code says it directly (design/33).
     from engine_core.errors import is_retryable
     for code in codes:
-        known = is_retryable(str(code).upper())
+        known = is_retryable(code.upper())
         if known is not None:
-            return "retryable" if known else "deterministic"
+            return ("retryable" if known else "deterministic"), "code"
     for category in ("deterministic", "retryable"):
         rules = classes.get(category)
         if not isinstance(rules, dict):
             continue
-        configured_codes = {str(value).upper() for value in rules.get("error_codes", [])}
-        configured_exceptions = {str(value) for value in rules.get("exception_types", [])}
-        configured_exits = {int(value) for value in rules.get("exit_codes", [])}
-        patterns = [str(value).lower() for value in rules.get("message_patterns", [])]
-        if (normalized_codes & configured_codes or exit_codes & configured_exits
-                or exception_types & configured_exceptions
-                or any(pattern and pattern in combined for pattern in patterns)):
-            return category
-    default = classes.get("default", "deterministic")
-    return default if default in {"deterministic", "retryable"} else "deterministic"
+        if ({value.upper() for value in codes} & {str(value).upper() for value in rules.get("error_codes", [])}):
+            return category, "code"
+        if exit_codes & {int(value) for value in rules.get("exit_codes", [])}:
+            return category, "exit"
+        if exception_types & {str(value) for value in rules.get("exception_types", [])}:
+            return category, "type"
+    default = classes.get("default", "retryable")
+    return (default if default in {"deterministic", "retryable"} else "retryable"), "default"
+
+
+def _classify_failure(request, *, error=None, result=None):
+    return _classification(request, error=error, result=result)[0]
 
 
 def _failure_response(request, *, error=None, result=None):
-    category = _classify_failure(request, error=error, result=result)
+    category, basis = _classification(request, error=error, result=result)
     payload = dict(result) if isinstance(result, dict) else {
         "contract": 1, "status": "failed", "artifacts": [],
         "detail": str(error) if error is not None else "command_failed",
     }
     payload["contract"] = 1
     payload["status"] = "failed"
-    if category == "deterministic":
-        payload["error_code"] = "DETERMINISTIC_FAILURE"
-        payload["retryable"] = False
-        return 40, payload
     code = getattr(error, "error_code", None) if error is not None else None
     if not code and isinstance(result, dict):
         code = result.get("error_code")
         details = result.get("detail")
         if not code and isinstance(details, dict):
             code = details.get("error_code")
-    if not code and error is not None:
-        match = re.search(r"command_exit=(\d+)", str(error))
-        code = "COMMAND_EXIT_" + match.group(1) if match else type(error).__name__.upper()
-    payload["error_code"] = str(code or "RETRYABLE_FAILURE")
+    from engine_core.errors import lookup
+    known = lookup(str(code or "").upper())
+    if category == "deterministic":
+        payload["error_code"] = str(code) if known and not known.get("reserved") else "DETERMINISTIC_FAILURE"
+        payload["retryable"] = False
+        if basis == "default":
+            payload["unclassified"] = True
+        return 40, payload
+    # a retryable failure keeps the code its producer gave; without a registered one it is INTERNAL_ERROR, flagged
+    if known and not known.get("reserved"):
+        payload["error_code"] = str(code)
+    elif basis == "default":
+        payload["error_code"] = "INTERNAL_ERROR"
+        payload["unclassified"] = True
+    else:
+        payload["error_code"] = str(code) if code else "RETRYABLE_FAILURE"
     payload["retryable"] = True
     return 75, payload
 

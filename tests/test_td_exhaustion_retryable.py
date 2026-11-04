@@ -15,6 +15,21 @@ REAL_ERROR = json.loads((ROOT / "tests" / "fixtures" / "real" / "td" / "errors"
 WRAPPED = "td_statement_failed:ProgrammingError:" + REAL_ERROR
 
 
+def _boundary_error():
+    """The error TaosStore raises for the real recorded 0x073a failure (errno + text of the real driver error)."""
+    from engine_core.data_pipeline.td_sink import td_statement_error
+
+    record = json.loads((ROOT / "tests" / "fixtures" / "real" / "td" / "errors"
+                         / "query_memory_exhausted_0x073a.json").read_text(encoding="utf-8"))
+
+    class ProgrammingError(Exception):
+        pass
+
+    driver = ProgrammingError(record["message"])
+    driver.errno = int(record["errno"], 16)
+    return td_statement_error(driver, WRAPPED)
+
+
 @pytest.fixture()
 def handler():
     import sys
@@ -24,8 +39,9 @@ def handler():
 
 
 def test_a_wrapped_real_memory_exhaustion_error_is_retryable(handler):
-    code, reply = handler._failure_response({"event_id": "daily_kline_backfill", "args": {}}, error=RuntimeError(WRAPPED))
+    code, reply = handler._failure_response({"event_id": "daily_kline_backfill", "args": {}}, error=_boundary_error())
     assert code == 75 and reply["retryable"] is True and reply["status"] == "failed"
+    assert reply["error_code"] == "TD_RESOURCE_EXHAUSTED"          # decided by the code, not by the text
     assert check_reply(code, reply) == []
 
 
@@ -33,7 +49,7 @@ def test_the_fill_entry_turns_it_into_a_retryable_reply_not_a_final_failure(hand
     import engine_core.data_pipeline.daily_kline_fill as fill
 
     def exhausted(root, target, args=None):
-        raise RuntimeError(WRAPPED)
+        raise _boundary_error()
 
     monkeypatch.setattr(fill, "run_daily_kline_fill_from_root", exhausted)
     code, reply = handler._run_daily_kline_fill({"event_id": "daily_kline_backfill", "args": {}}, tmp_path,

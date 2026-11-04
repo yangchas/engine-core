@@ -87,6 +87,9 @@ def failure_from_exception(exc: BaseException, *, job: str, trade_date: str = ""
 
     if isinstance(exc, CoreError):
         code, retryable, detail = exc.error_code, exc.retryable, {"error": str(exc)[:300]}
+    elif isinstance(exc, TimeoutError):
+        code, retryable = "FETCH_TIMEOUT", True
+        detail = {"unclassified": True, "error": f"{type(exc).__name__}:{str(exc)[:300]}"}
     elif isinstance(exc, PROGRAMMING_ERRORS):
         # a bug or a bad argument: running it again changes nothing (decided by the exception's type, not its text)
         code, retryable = "DETERMINISTIC_FAILURE", False

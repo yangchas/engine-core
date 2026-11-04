@@ -602,10 +602,11 @@ def _fetch_spec(item: dict[str, Any]) -> tuple[list[str], float]:
 
 
 class FetchJobError(RuntimeError):
-    def __init__(self, message: str, error_code: str, stderr: str = ""):
+    def __init__(self, message: str, error_code: str, stderr: str = "", *, returncode: int | None = None):
         super().__init__(message)
         self.error_code = error_code
         self.stderr = stderr[-300:]
+        self.returncode = returncode        # the job's exit status, as a fact (None: it timed out or never ran)
 
 
 def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | Path | None = None,
@@ -656,7 +657,7 @@ def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | P
                 error_code = marker
         raise FetchJobError(str(payload.get("error") or payload.get("error_code") or
                                 "fetch_job_failed:" + str(completed.returncode)),
-                            error_code, stderr)
+                            error_code, stderr, returncode=completed.returncode or None)
     return payload
 
 

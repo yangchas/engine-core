@@ -52,19 +52,17 @@ def test_core_error_refuses_unknown_and_reserved_codes(code):
         errors.CoreError(code, "x")
 
 
-def test_handler_default_classification_agrees_with_the_registry():
-    """The codes the handler lists as retryable/deterministic today must be registered with the same answer."""
+def test_handler_defaults_carry_no_code_lists_and_no_text_patterns():
+    """The registry is the single place that says which code is retryable; the handler's defaults only name exit
+    statuses and exception types (design/33 step 4)."""
     import sys
     sys.path.insert(0, str(ROOT / "examples"))
     import guardian_handler
 
     defaults = guardian_handler._failure_classes({})
-    for category, expected in (("retryable", True), ("deterministic", False)):
-        for code in defaults[category]["error_codes"]:
-            known = errors.is_retryable(code)
-            assert known is not None or code in errors.pending_codes(), f"{code} is neither registered nor pending"
-            if known is not None:
-                assert known is expected, (code, category)
+    for category in ("retryable", "deterministic"):
+        assert not defaults[category].get("error_codes") and not defaults[category].get("message_patterns"), category
+    assert "retryable_first" not in defaults and defaults["default"] == "retryable"
 
 
 def _literal_codes() -> dict[str, str]:

@@ -28,16 +28,25 @@ def _run(monkeypatch, capsys, error):
 
 
 def test_td_memory_exhaustion_is_a_retryable_td_failure_not_a_final_baostock_one(monkeypatch, capsys):
-    code, reply = _run(monkeypatch, capsys, RuntimeError(WRAPPED))
+    from test_td_exhaustion_retryable import _boundary_error
+
+    code, reply = _run(monkeypatch, capsys, _boundary_error())
     assert reply["retryable"] is True and code == 30
     assert reply["error_code"] == "TD_RESOURCE_EXHAUSTED"          # it is TD's pool, not a Baostock range problem
 
 
 def test_a_genuine_range_error_is_still_final(monkeypatch, capsys):
     code, reply = _run(monkeypatch, capsys, ValueError("baostock returned a malformed row"))
-    assert reply["error_code"] == "BAOSTOCK_RANGE_FAILED" and reply["retryable"] is False and code == 40
+    assert reply["error_code"] == "DETERMINISTIC_FAILURE" and reply["retryable"] is False and code == 40   # by type
 
 
-def test_a_baostock_timeout_stays_retryable_with_its_old_code(monkeypatch, capsys):
-    code, reply = _run(monkeypatch, capsys, RuntimeError("BAOSTOCK_TIMEOUT: no range data"))
-    assert reply["error_code"] == "BAOSTOCK_RANGE_FAILED" and reply["retryable"] is True and code == 30
+def test_a_timeout_is_retryable_by_its_type(monkeypatch, capsys):
+    code, reply = _run(monkeypatch, capsys, TimeoutError("no range data"))
+    assert reply["error_code"] == "FETCH_TIMEOUT" and reply["retryable"] is True and code == 30
+
+
+def test_the_fill_gap_code_is_retryable_through_the_cli(monkeypatch, capsys):
+    from engine_core.errors import CoreError
+
+    code, reply = _run(monkeypatch, capsys, CoreError("BAOSTOCK_GAP_UNRESOLVED", "consecutive_failures:attempted=5"))
+    assert reply["error_code"] == "BAOSTOCK_GAP_UNRESOLVED" and reply["retryable"] is True and code == 30
