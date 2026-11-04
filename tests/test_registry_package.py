@@ -13,6 +13,13 @@ from engine_core.data_pipeline.registry import DATASETS, get_dataset
 
 
 LEGACY_BASELINE = "078213f"
+# Fields deliberately changed after the baseline; everything else of a baseline dataset must stay identical.
+CHANGED_SINCE_BASELINE = {
+    ("hot_plates", "key_fields"): "C583 (PIT keys: plate_code, date, captured_at)",
+    ("limit_reasons", "source"): "C581 (getHisBans attribution)",
+    ("limit_reasons", "key_fields"): "C581 (date, symbol)",
+}
+PER_DATASET_TTL = "redis_ttl_seconds"       # C609 configures the Redis TTL per dataset
 
 
 def _legacy_registry():
@@ -43,10 +50,13 @@ def _legacy_registry():
 def test_registry_package_discovers_datasets_and_preserves_legacy_specs():
     legacy = _legacy_registry()
     assert list(DATASETS) == sorted(DATASETS)
-    assert set(DATASETS) == set(legacy) | {"quote_slice"}
+    # datasets added after the baseline are allowed; every baseline dataset must still be registered
+    assert (set(legacy) | {"quote_slice"}) <= set(DATASETS)
     for name, old_spec in legacy.items():
         current = DATASETS[name]
         for field in dataclasses.fields(old_spec):
+            if field.name == PER_DATASET_TTL or (name, field.name) in CHANGED_SINCE_BASELINE:
+                continue
             assert getattr(current, field.name) == getattr(old_spec, field.name), (name, field.name)
 
 

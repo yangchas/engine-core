@@ -18,6 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOTS = (ROOT / "src", ROOT)          # src/engine_core.x -> engine_core.x ; examples/x.py -> examples.x ; tests/x.py -> tests.x
 SCANNED = ("src", "examples", "tests")
+DIRECTORY_TOKENS = ("dataset_specs",)      # files in these directories are read by directory, not by file name
 ALL_TESTS_TRIGGERS = ("tests/conftest.py", "pyproject.toml", "pytest.ini", "setup.cfg", "tests/replay.py",
                       "tests/memory_redis.py")
 
@@ -138,10 +139,14 @@ def affected_tests(changed: list[str], depth: int | None = None) -> list[str]:
             name = module_name(path)
             if name in graph:
                 start.add(name)
+            if "_" in path.stem and len(path.stem) >= 10:
+                fixtures.append(path.stem)               # scripts/modules a test runs or imports by name, not by import
         elif rel.startswith("tests/fixtures/"):
             fixtures.append(rel)
         else:
             fixtures.append(rel)                          # config/data files (json, go testdata, ...) referenced by text
+            if path.parent.name in DIRECTORY_TOKENS:
+                fixtures.append(path.parent.name)
     affected = _walk(start, reverse, depth)
     selected = {p for p, name in tests.items() if name in affected}
     texts = {p: p.read_text(encoding="utf-8", errors="replace") for p in tests}

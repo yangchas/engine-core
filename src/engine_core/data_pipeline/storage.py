@@ -638,6 +638,7 @@ class ArtifactCatalog:
             if (((result.get("business_status") != "PROVISIONAL") or dataset == "daily_kline" or
                  dataset in ("limit_up_pool", "limit_up_pool_today", "ladder_daily", "stock_static",
                              "hot_plates"))
+                    and not result.get("sample_scope")          # a symbols-file sample is never the latest day
                     and not (spec is not None and spec.gate_mode == "enforce"
                              and gate is not None and gate["gate_status"] == "FAIL")
                     and self._can_advance_latest(catalog, dataset, trade_date, result)):

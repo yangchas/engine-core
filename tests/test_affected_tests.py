@@ -8,6 +8,7 @@ import pytest
 from examples import affected_tests
 
 ROOT = Path(__file__).resolve().parents[1]
+BACKTEST_TIP = "11739a9"      # fixed history tip (Merge C666) so the backtest does not move with every new commit
 
 
 def _git(*args):
@@ -16,14 +17,22 @@ def _git(*args):
 
 def _recent_commits(count=10):
     try:
-        shas = _git("log", "--no-merges", "--format=%H", "-n", "60", "--", "tests").split()
+        shas = _git("log", BACKTEST_TIP, "--no-merges", "--format=%H", "-n", "80", "--", "tests").split()
     except Exception:
         return []
     picked = []
     for sha in shas:
-        files = _git("show", "--name-only", "--format=", sha).split()
-        tests = [f for f in files if f.startswith("tests/test_") and f.endswith(".py")]
-        rest = [f for f in files if not f.startswith("tests/test_")]
+        subject = _git("show", "-s", "--format=%s", sha).strip()
+        status = {}
+        for line in _git("show", "--name-status", "--format=", sha).splitlines():
+            code, _, name = line.partition("\t")
+            status[name.strip()] = code[:1]
+        tests = [f for f, code in status.items() if f.startswith("tests/test_") and f.endswith(".py")]
+        if subject.startswith("C662"):
+            # baseline-repair commits edit tests to follow drift caused by EARLIER commits, so only the tests they
+            # add can be predicted from their own non-test changes
+            tests = [f for f in tests if status[f] == "A"]
+        rest = [f for f in status if not (f.startswith("tests/test_") and f.endswith(".py"))]
         existing = [t for t in tests if (ROOT / t).exists()]       # later deleted/renamed tests cannot be selected
         if existing and rest:
             picked.append((sha[:8], existing, rest))
