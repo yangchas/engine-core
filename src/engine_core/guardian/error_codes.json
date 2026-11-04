@@ -1,0 +1,212 @@
+{
+ "_doc": "Error code registry (C681, design/33). retryable: may be tried again later; exit: the process exit code a command reports for it (30 data not there yet, 75 source unavailable, 40 final, 64 configuration, 20 satisfied). 'pending' lists codes already in use as string literals that have not been classified yet; each needs a decision before the expiry.",
+ "codes": {
+  "ALREADY_SATISFIED": {
+   "retryable": false,
+   "exit": 20,
+   "meaning": "nothing to do: the result already exists (a skip, not a failure)"
+  },
+  "BAOSTOCK_CONNECTION_ERROR": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "Baostock connection failed or was cut"
+  },
+  "BAOSTOCK_GAP_UNRESOLVED": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "Baostock has not delivered the missing symbols yet; progress is kept, try again later"
+  },
+  "BAOSTOCK_LOCAL_GAP_WAIT": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "waiting for the local gap to close"
+  },
+  "BAOSTOCK_LOGIN_ERROR": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "Baostock login raised"
+  },
+  "BAOSTOCK_LOGIN_FAILED": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "Baostock login failed"
+  },
+  "BAOSTOCK_RATE_LIMITED": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "Baostock refuses requests for now"
+  },
+  "BAOSTOCK_RECEIVE_EXCEPTION": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "Baostock returned an unreadable response"
+  },
+  "BAOSTOCK_TIMEOUT": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "a Baostock call timed out"
+  },
+  "COMMAND_ARGUMENT_ERROR": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "a command line argument is wrong"
+  },
+  "CONFIG_ERROR": {
+   "retryable": false,
+   "exit": 64,
+   "meaning": "the configuration is wrong"
+  },
+  "CONTRACT_ERROR": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the function broke its reply contract"
+  },
+  "CONTRACT_INVALID": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the request or reply is not valid under the contract"
+  },
+  "CONTRACT_VIOLATION": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "a (exit code, reply) pair outside the contract matrix"
+  },
+  "DDE_SYNC_INCOMPLETE_RETRYABLE": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "DDE sync finished part of the symbols"
+  },
+  "DDE_SYNC_RETRYABLE": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "DDE sync could not finish for a retryable reason"
+  },
+  "DETERMINISTIC_FAILURE": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "a failure that repeating will not change"
+  },
+  "FETCH_TIMEOUT": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "a fetch exceeded its time budget"
+  },
+  "INTERNAL_ERROR": {
+   "retryable": true,
+   "exit": 1,
+   "reserved": true,
+   "meaning": "the handler's catch-all for an exception nobody classified; not a contract exit code, never raised on purpose"
+  },
+  "KAIPAN_PLATE_MEMBERS_INCOMPLETE": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "Kaipan plate members came back incomplete"
+  },
+  "POSTCONDITION_FAILED": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the function reported success but its declared postcondition does not hold"
+  },
+  "PROBE_TIMEOUT": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "a startup probe timed out"
+  },
+  "Q2_UNAVAILABLE": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "the q2 Redis snapshot cannot be read"
+  },
+  "RATE_LIMITED": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "the source or the local budget refuses another request for now"
+  },
+  "SOURCE_UNREADABLE": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "a source could not be read"
+  },
+  "STALL_NO_PROGRESS": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "the fill made no progress within its window; progress is kept"
+  },
+  "TD_REQUIRES_BAOSTOCK": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "TD daily bars only accept Baostock rows; the Baostock version is not there yet"
+  },
+  "TD_RESOURCE_EXHAUSTED": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "TDengine query memory is exhausted (another process holds the pool, 0x073a); later is fine"
+  },
+  "TD_UNAVAILABLE": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "TDengine cannot be reached or refused the statement"
+  },
+  "TIER_DATE_MISMATCH": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the data is for another day"
+  },
+  "TIER_NO_DATA": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the tier has no data for the day and never will"
+  },
+  "TIER_PARTIAL": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "a tier delivered only part of the day; resume on the next attempt"
+  },
+  "UPSTREAM_NOT_READY": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "an input this function needs is not published yet (reason carries which, e.g. DAILY_KLINE_MISSING)"
+  },
+  "UPSTREAM_TIMEOUT": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "an upstream call timed out"
+  }
+ },
+ "pending": {
+  "expires": "2026-12-15",
+  "reason": "in use as literals before the registry existed; S2 classifies each with its producer",
+  "codes": [
+   "ALL_SOURCES_FAILED",
+   "CALENDAR_UNKNOWN",
+   "CHAIN_FAILED",
+   "CHAIN_RETRY",
+   "COVERAGE_LOW",
+   "DAILY_KLINE_BUDGET_EXHAUSTED",
+   "DAILY_KLINE_NOT_READY",
+   "DEPENDENCY_FAILED",
+   "EXECUTION_SETUP_FAILED",
+   "FETCH_JOB_UNAVAILABLE",
+   "KAIPAN_LIMIT_DETAIL_WAITING",
+   "LIMIT_UP_DETAIL_FAILED",
+   "NOT_CONFIGURED",
+   "NO_CATALOG_DAYS",
+   "PREOPEN_CHECK_FAILED",
+   "PREVIOUS_TRADE_DAY_UNAVAILABLE",
+   "Q2_POOL_EMPTY_INCOMPLETE",
+   "Q2_READ_FAILED",
+   "Q2_SNAPSHOT_INVALID",
+   "SELFTEST_PERMANENT_ERROR",
+   "SELFTEST_RETRY",
+   "SOURCE_DATE_EVIDENCE_INCOMPLETE",
+   "TD_FOREIGN_LONG_QUERY",
+   "TD_SYNC_ERROR",
+   "TD_VERIFY_FAILED",
+   "TD_WRITE_FAILED",
+   "UNKNOWN_ITEM",
+   "WENCAI_BLOCKED",
+   "WENCAI_POOL_EMPTY_UNVERIFIED",
+   "WENCAI_WINDOW_CLOSED"
+  ]
+ }
+}
