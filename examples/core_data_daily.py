@@ -12,6 +12,7 @@ from pathlib import Path
 from engine_core.data_pipeline.ops import run_daily_phase
 from engine_core.data_pipeline.job_contract import JobResult as ContractJobResult, emit as emit_job_result
 from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
+from engine_core.data_pipeline.job_contract import contract_main, emit_failure
 
 
 def _sample_probe(args, root: Path, adapters) -> int:
@@ -65,6 +66,7 @@ def _sample_probe(args, root: Path, adapters) -> int:
         detail={"sample_scope": "symbols_file"}))
 
 
+@contract_main("core_data_daily")
 def main(argv=None) -> int:
     started = time.monotonic()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -192,11 +194,12 @@ def main(argv=None) -> int:
             elapsed_ms=round((time.monotonic() - started) * 1000, 3),
             detail={"waiting_for": "FORMAL baostock daily_kline from the TD fill"}))
     if result["status"] not in {"READY", "SKIPPED_NON_TRADING_DAY"}:
-        if result.get("error_code") == "TD_UNAVAILABLE":
-            return 30
-        if result.get("error_code") == "TD_VERIFY_FAILED":
-            return 40
-        return 2
+        from engine_core.errors import lookup
+        declared = result.get("error_code")
+        code = declared if isinstance(declared, str) and lookup(declared) and not lookup(declared).get("reserved") \
+            else "DETERMINISTIC_FAILURE"
+        return emit_failure(code, job="core_data_daily", trade_date=args.date,
+                            detail={"phase": args.phase, "status": result["status"], "error_code": declared})
     return 10 if args.symbols_file else 0
 
 

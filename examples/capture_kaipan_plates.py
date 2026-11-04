@@ -15,6 +15,8 @@ from engine_core.data_pipeline.jobs import JobRunner, RequestBudget  # noqa: E40
 from engine_core.data_pipeline.storage import ArtifactCatalog  # noqa: E402
 from engine_core.data_pipeline.providers.kaipan_provider import KaipanProvider  # noqa: E402
 from engine_core.data_pipeline.hot_plates_builder import build_hot_plates  # noqa: E402
+from engine_core.data_pipeline.job_contract import contract_main
+from engine_core.errors import CoreError
 from engine_core.data_pipeline.hot_plates_gaps import (  # noqa: E402
     reconcile_due_hot_plates_gaps, record_hot_plates_gap,
 )
@@ -53,12 +55,13 @@ def _kaipan_available_at(trade_date: str) -> str:
 def _historical_gap_window(trade_date: str, trading_dates: list[str]) -> tuple[str, str, str]:
     next_session = next((day for day in trading_dates if day > trade_date), None)
     if next_session is None:
-        raise RuntimeError("hot_plates_calendar_history_unknown")
+        raise CoreError("UPSTREAM_NOT_READY", "hot_plates_calendar_history_unknown")
     event_id = f"kaipan_history_{trade_date.replace('-', '')}"
     return (event_id, f"{next_session}T08:50:00+08:00",
             f"{next_session}T09:05:00+08:00")
 
 
+@contract_main("capture_kaipan_plates")
 def main(argv=None, *, now_fn=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trade-date", action="append", dest="trade_dates",
@@ -135,7 +138,7 @@ def main(argv=None, *, now_fn=None) -> int:
             calendar_root = os.environ.get("CORE_DATA_ROOT", args.artifact_root)
             historical_sessions = TradeCalendarStore(calendar_root).all_trading_dates()
             if not historical_sessions:
-                raise RuntimeError("hot_plates_calendar_history_unknown")
+                raise CoreError("UPSTREAM_NOT_READY", "hot_plates_calendar_history_unknown")
             retained_historical_dates = {
                 day for day in historical_sessions if day < captured_at[:10]
             }

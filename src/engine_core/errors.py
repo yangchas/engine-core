@@ -53,3 +53,49 @@ class CoreError(RuntimeError):
         self.reason = reason
         self.retryable = bool(spec["retryable"])
         self.exit_code = int(spec["exit"])
+
+
+# ---- the command boundary ------------------------------------------------------------------------------------------
+class CommandFailed(RuntimeError):
+    """A job script that exited non-zero, seen from the process that started it.
+
+    ``error_code`` is what the script itself declared on its last stdout line (None when it declared nothing);
+    ``unclassified`` is True when there is no declared code at all, so the caller can say so instead of guessing from the
+    text. The message keeps the ``command_exit=N last_stderr_line=...`` form that callers and ledgers already show."""
+
+    def __init__(self, message: str, *, returncode: int, error_code: str | None, retryable: bool | None,
+                 unclassified: bool, reason: str = ""):
+        super().__init__(message)
+        self.returncode = returncode
+        self.error_code = error_code
+        self.declared_retryable = retryable
+        self.unclassified = unclassified
+        self.reason = reason
+
+
+def declared_result(stdout: str) -> dict[str, Any] | None:
+    """The job contract object on the last non-empty stdout line, if the script printed one."""
+    lines = [line.strip() for line in str(stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return None
+    try:
+        value = json.loads(lines[-1])
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) and value.get("contract") == 1 else None
+
+
+def command_error(returncode: int, stdout: str, stderr: str) -> CommandFailed:
+    """What a failed job script means: its declared code when it printed one, otherwise 'unclassified'."""
+    stderr_lines = [line.strip() for line in str(stderr or "").splitlines() if line.strip()]
+    parts = [f"command_exit={returncode}" + (f" last_stderr_line={stderr_lines[-1][:200]}" if stderr_lines else "")]
+    for label, output in (("stdout", stdout), ("stderr", stderr)):
+        if output:
+            parts.extend((f"{label}_tail:", str(output)[-500:].rstrip()))
+    declared = declared_result(stdout) or {}
+    code = declared.get("error_code") if isinstance(declared.get("error_code"), str) and declared.get("error_code") else None
+    retryable = declared.get("retryable") if isinstance(declared.get("retryable"), bool) else None
+    detail = declared.get("detail")
+    reason = str(detail.get("error") if isinstance(detail, dict) and detail.get("error") else detail or "")[:200]
+    return CommandFailed("\n".join(parts), returncode=returncode, error_code=code, retryable=retryable,
+                         unclassified=code is None, reason=reason)

@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from ..errors import CoreError
+from ..errors import CoreError, lookup
 from .registry import REGISTRY_PATH, items_for_phase, load_registry, stale_items
 
 PHASES = ("NIGHT", "PRE_MARKET", "AUCTION", "AUCTION_END", "OPEN",
@@ -644,8 +644,13 @@ def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | P
     # PARTIAL_*, daily_kline prints degraded, ...).
     if completed.returncode or explicit_failure or payload.get("error"):
         stderr = completed.stderr or ""
-        error_code = "FETCH_EXIT_" + str(completed.returncode) if completed.returncode else str(
-            payload.get("error_code") or "FETCH_JOB_FAILED")
+        declared = payload.get("error_code")
+        if completed.returncode:
+            # the code the job declared wins when the registry knows it; otherwise only the exit status is known
+            error_code = declared if isinstance(declared, str) and lookup(declared) else "FETCH_EXIT_" + str(
+                completed.returncode)
+        else:
+            error_code = str(declared or "FETCH_JOB_FAILED")
         for marker in ("kaipan_hot_plates_response_date_mismatch",):
             if marker in stderr:
                 error_code = marker

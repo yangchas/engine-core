@@ -3,8 +3,10 @@
 import sys
 
 from engine_core.daily_pipeline import DailySources, main as _main
+from engine_core.data_pipeline.job_contract import contract_main
 
 
+@contract_main("run_daily_reports")
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     sources = None
