@@ -739,7 +739,13 @@
             ],
             "message_patterns": []
           },
-          "default": "deterministic"
+          "default": "deterministic",
+          "retryable_first": {
+            "message_patterns": [
+              "query memory exhausted",
+              "0x073a"
+            ]
+          }
         },
         "baostock_no_progress_seconds": 300
       }
@@ -922,7 +928,9 @@
               "upstream_not_ready",
               "taos.error",
               "programmingerror",
-              "probe_timeout"
+              "probe_timeout",
+              "query memory exhausted",
+              "0x073a"
             ]
           }
         }
@@ -1364,7 +1372,9 @@
               "upstream_not_ready",
               "taos.error",
               "programmingerror",
-              "probe_timeout"
+              "probe_timeout",
+              "query memory exhausted",
+              "0x073a"
             ]
           }
         }
@@ -1514,7 +1524,9 @@
               "upstream_not_ready",
               "taos.error",
               "programmingerror",
-              "probe_timeout"
+              "probe_timeout",
+              "query memory exhausted",
+              "0x073a"
             ]
           }
         }
@@ -3293,7 +3305,9 @@
             "message_patterns": [
               "baostock_gap_unresolved",
               "td_daily_kline_requires_provider_baostock",
-              "rate_limited:"
+              "rate_limited:",
+              "query memory exhausted",
+              "0x073a"
             ]
           }
         },
@@ -3419,7 +3433,9 @@
             "message_patterns": [
               "baostock_gap_unresolved",
               "td_daily_kline_requires_provider_baostock",
-              "rate_limited:"
+              "rate_limited:",
+              "query memory exhausted",
+              "0x073a"
             ]
           }
         },
@@ -3608,7 +3624,9 @@
             "message_patterns": [
               "baostock_gap_unresolved",
               "td_daily_kline_requires_provider_baostock",
-              "rate_limited:"
+              "rate_limited:",
+              "query memory exhausted",
+              "0x073a"
             ]
           }
         },
@@ -3732,7 +3750,9 @@
             "message_patterns": [
               "baostock_gap_unresolved",
               "td_daily_kline_requires_provider_baostock",
-              "rate_limited:"
+              "rate_limited:",
+              "query memory exhausted",
+              "0x073a"
             ]
           }
         },
