@@ -51,6 +51,21 @@
    "exit": 75,
    "meaning": "a Baostock call timed out"
   },
+  "CALENDAR_UNKNOWN": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "the trade calendar does not cover or know the date yet"
+  },
+  "CHAIN_FAILED": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "a node of a fetch chain failed for good"
+  },
+  "CHAIN_RETRY": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "a node of a fetch chain reported a retryable failure; the sweep tries again next pass"
+  },
   "COMMAND_ARGUMENT_ERROR": {
    "retryable": false,
    "exit": 40,
@@ -81,6 +96,11 @@
    "exit": 30,
    "meaning": "the time budget of a daily-kline run ran out; progress is kept, the next attempt continues"
   },
+  "DAILY_KLINE_NOT_READY": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "waiting for the FORMAL Baostock daily bars of the day"
+  },
   "DDE_SYNC_INCOMPLETE_RETRYABLE": {
    "retryable": true,
    "exit": 30,
@@ -91,10 +111,25 @@
    "exit": 30,
    "meaning": "DDE sync could not finish for a retryable reason"
   },
+  "DEPENDENCY_FAILED": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "a dependency of the fetch item failed; the item waits for it"
+  },
   "DETERMINISTIC_FAILURE": {
    "retryable": false,
    "exit": 40,
    "meaning": "a failure that repeating will not change"
+  },
+  "EXECUTION_SETUP_FAILED": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "a job could not set itself up (a source it needs before running was unavailable)"
+  },
+  "FETCH_JOB_UNAVAILABLE": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the registry names no independent fetch job for the item"
   },
   "FETCH_TIMEOUT": {
    "retryable": true,
@@ -107,10 +142,20 @@
    "reserved": true,
    "meaning": "the handler's catch-all for an exception nobody classified; not a contract exit code, never raised on purpose"
   },
+  "KAIPAN_LIMIT_DETAIL_WAITING": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "Kaipan limit-up detail is not complete yet"
+  },
   "KAIPAN_PLATE_MEMBERS_INCOMPLETE": {
    "retryable": true,
    "exit": 30,
    "meaning": "Kaipan plate members came back incomplete"
+  },
+  "LIMIT_UP_DETAIL_FAILED": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the limit-up detail build failed for a reason repeating will not change"
   },
   "PLAN_UNAVAILABLE": {
    "retryable": true,
@@ -122,15 +167,45 @@
    "exit": 40,
    "meaning": "the function reported success but its declared postcondition does not hold"
   },
+  "PREOPEN_CHECK_FAILED": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "a pre-open check found a missing input; its own producers retry"
+  },
   "PREP_CRITICAL_MISSING": {
    "retryable": false,
    "exit": 40,
    "meaning": "a critical pre-market step has no data and the prep run cannot make it appear (the fetch_item repair queue owns the repair); repeating the prep does not help"
   },
+  "PREVIOUS_TRADE_DAY_UNAVAILABLE": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "the previous trading day cannot be determined yet"
+  },
   "PROBE_TIMEOUT": {
    "retryable": true,
    "exit": 75,
    "meaning": "a startup probe timed out"
+  },
+  "PROVIDER_BLOCKED": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the provider's circuit is open (blocked); do not call it again in this window"
+  },
+  "Q2_POOL_EMPTY_INCOMPLETE": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the q2 pool is empty/incomplete in a way the snapshot cannot repair"
+  },
+  "Q2_READ_FAILED": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "the q2 snapshot could not be read this time"
+  },
+  "Q2_SNAPSHOT_INVALID": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the q2 snapshot is invalid (timestamps / shape)"
   },
   "Q2_UNAVAILABLE": {
    "retryable": true,
@@ -152,6 +227,21 @@
    "exit": 40,
    "meaning": "the data has a shape the function does not accept (reason says which); fetching again returns the same shape"
   },
+  "SELFTEST_PERMANENT_ERROR": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "guardian self-test: a permanent error"
+  },
+  "SELFTEST_RETRY": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "guardian self-test: a retryable error"
+  },
+  "SOURCE_DATE_EVIDENCE_INCOMPLETE": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "the source did not prove the date of its rows yet"
+  },
   "SOURCE_UNREADABLE": {
    "retryable": true,
    "exit": 75,
@@ -161,6 +251,12 @@
    "retryable": true,
    "exit": 30,
    "meaning": "the fill made no progress within its window; progress is kept"
+  },
+  "TD_FOREIGN_LONG_QUERY": {
+   "retryable": false,
+   "exit": 10,
+   "status": "degraded",
+   "meaning": "another process has held a TD query for a long time (reported, not an error of this function)"
   },
   "TD_REQUIRES_BAOSTOCK": {
    "retryable": true,
@@ -182,6 +278,11 @@
    "exit": 40,
    "meaning": "the TD read-back differs from the catalog version: the day is not complete (TdVerifyError); repeating the write does not change what was written"
   },
+  "TD_WRITE_FAILED": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the TD write did not complete and was not retried by the writer"
+  },
   "TIER_DATE_MISMATCH": {
    "retryable": false,
    "exit": 40,
@@ -202,6 +303,11 @@
    "exit": 40,
    "meaning": "the plan or request names an item the registry does not know; repeating does not help"
   },
+  "UPSTREAM_ERROR": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "an upstream request failed (Kaipan pool and similar); try again later"
+  },
   "UPSTREAM_NOT_READY": {
    "retryable": true,
    "exit": 30,
@@ -211,39 +317,42 @@
    "retryable": true,
    "exit": 75,
    "meaning": "an upstream call timed out"
+  },
+  "WENCAI_BLOCKED": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "WenCai refused the request (rate gate / 403 breaker); later is fine"
+  },
+  "WENCAI_POOL_EMPTY_UNVERIFIED": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "WenCai returned an empty pool that cannot be verified"
+  },
+  "WENCAI_THROTTLED": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the daily WenCai budget is spent"
+  },
+  "WENCAI_UNAVAILABLE": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "WenCai could not be reached"
+  },
+  "WENCAI_WINDOW_CLOSED": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the WenCai confirmation window is not open"
   }
  },
  "pending": {
   "expires": "2026-12-15",
-  "reason": "in use as literals before the registry existed; S2 classifies each with its producer",
+  "reason": "in use as literals before the registry existed. Still open: ALL_SOURCES_FAILED and COVERAGE_LOW (data fields whose retryability depends on the caller), NOT_CONFIGURED / NO_CATALOG_DAYS (exit 20 with a code other than ALREADY_SATISFIED: a contract question for td_sync), TD_SYNC_ERROR (a nested sink status).",
   "codes": [
    "ALL_SOURCES_FAILED",
-   "CALENDAR_UNKNOWN",
-   "CHAIN_FAILED",
-   "CHAIN_RETRY",
    "COVERAGE_LOW",
-   "DAILY_KLINE_NOT_READY",
-   "DEPENDENCY_FAILED",
-   "EXECUTION_SETUP_FAILED",
-   "FETCH_JOB_UNAVAILABLE",
-   "KAIPAN_LIMIT_DETAIL_WAITING",
-   "LIMIT_UP_DETAIL_FAILED",
    "NOT_CONFIGURED",
    "NO_CATALOG_DAYS",
-   "PREOPEN_CHECK_FAILED",
-   "PREVIOUS_TRADE_DAY_UNAVAILABLE",
-   "Q2_POOL_EMPTY_INCOMPLETE",
-   "Q2_READ_FAILED",
-   "Q2_SNAPSHOT_INVALID",
-   "SELFTEST_PERMANENT_ERROR",
-   "SELFTEST_RETRY",
-   "SOURCE_DATE_EVIDENCE_INCOMPLETE",
-   "TD_FOREIGN_LONG_QUERY",
-   "TD_SYNC_ERROR",
-   "TD_WRITE_FAILED",
-   "WENCAI_BLOCKED",
-   "WENCAI_POOL_EMPTY_UNVERIFIED",
-   "WENCAI_WINDOW_CLOSED"
+   "TD_SYNC_ERROR"
   ]
  }
 }

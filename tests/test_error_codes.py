@@ -22,12 +22,12 @@ def test_every_registered_code_is_well_formed_and_coherent_with_the_reply_contra
         assert isinstance(spec["retryable"], bool) and spec["meaning"], code
         if spec.get("reserved"):
             continue
-        status = "not_applicable" if spec["exit"] == 20 else "failed"
+        status = "not_applicable" if spec["exit"] == 20 else spec.get("status", "failed")
         reply = {"contract": 1, "status": status, "error_code": code, "retryable": spec["retryable"]}
         assert check_reply(spec["exit"], reply) == [], (code, spec)         # the exit code the registry names is legal
         if spec["retryable"]:
             assert spec["exit"] in (30, 75), code
-        elif spec["exit"] != 20:
+        elif spec["exit"] not in (10, 20):
             assert spec["exit"] in FINAL_EXITS, code
 
 
