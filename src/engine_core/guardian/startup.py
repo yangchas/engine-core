@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import math
 import os
 import subprocess
@@ -514,6 +515,8 @@ def boot_reconcile(trade_date: str, phase: str, health: dict[str, Any] | None,
         freshness = spec.get("freshness")
         if (state.get("status") == "MISSING" and isinstance(freshness, dict)
                 and freshness.get("expected_by") and phase in spec["phases"]):
+            if not re.fullmatch(r"\d{1,2}:\d{2}", str(freshness["expected_by"])):
+                continue            # event-scoped rule ("event deadline"): no catalog clock, MISSING is the normal state
             hour, minute = (int(part) for part in freshness["expected_by"].split(":"))
             if (clock.hour, clock.minute) < (hour, minute):
                 continue

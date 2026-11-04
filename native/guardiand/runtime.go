@@ -253,18 +253,24 @@ type realClock struct{}
 func (realClock) Now() time.Time { return time.Now() }
 
 type fakeClock struct {
-	mu      sync.Mutex
-	now     time.Time
-	changed chan struct{}
-	waits   int
+	mu       sync.Mutex
+	now      time.Time
+	changed  chan struct{}
+	waits    int
+	epoch    uint64            // bumped by every Advance
+	sleepers map[uint64]uint64 // sleeper id -> epoch of the clock change it is currently blocked on
+	nextID   uint64
 }
 
-func newFakeClock(t time.Time) *fakeClock { return &fakeClock{now: t, changed: make(chan struct{}, 1)} }
-func (c *fakeClock) Now() time.Time       { c.mu.Lock(); defer c.mu.Unlock(); return c.now }
+func newFakeClock(t time.Time) *fakeClock {
+	return &fakeClock{now: t, changed: make(chan struct{}, 1), sleepers: map[uint64]uint64{}}
+}
+func (c *fakeClock) Now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.now }
 func (c *fakeClock) Advance(d time.Duration) time.Time {
 	c.mu.Lock()
 	c.now = c.now.Add(d)
 	n := c.now
+	c.epoch++
 	close(c.changed)
 	c.changed = make(chan struct{})
 	c.mu.Unlock()
@@ -272,20 +278,114 @@ func (c *fakeClock) Advance(d time.Duration) time.Time {
 }
 func (c *fakeClock) changedChan() <-chan struct{} { c.mu.Lock(); defer c.mu.Unlock(); return c.changed }
 func (c *fakeClock) waitCount() int               { c.mu.Lock(); defer c.mu.Unlock(); return c.waits }
+
+// sleepOn registers a sleeper blocked on the current clock change and returns the channel to wait on.
+func (c *fakeClock) sleepOn(id uint64) <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sleepers[id] = c.epoch
+	return c.changed
+}
+func (c *fakeClock) currentEpoch() uint64 { c.mu.Lock(); defer c.mu.Unlock(); return c.epoch }
+// noteWait counts a wait that really blocks (tests use it to know a waiter is parked).
+func (c *fakeClock) noteWait() { c.mu.Lock(); c.waits++; c.mu.Unlock() }
+func (c *fakeClock) newSleeper() uint64 { c.mu.Lock(); defer c.mu.Unlock(); c.nextID++; return c.nextID }
+func (c *fakeClock) wake(id uint64)     { c.mu.Lock(); defer c.mu.Unlock(); delete(c.sleepers, id) }
+
+// settledSleepers is how many sleepers have already seen the latest clock change and gone back to sleep. A sleeper that
+// is still blocked on an older change has not yet re-evaluated its target, so it is not settled.
+func (c *fakeClock) settledSleepers() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, epoch := range c.sleepers {
+		if epoch == c.epoch {
+			n++
+		}
+	}
+	return n
+}
+
+// quiescent reports whether, under the fake clock, everything that was going to react to the latest clock change has
+// finished reacting: the scheduling loop has run under the current time, and every piece of scheduled or running work
+// is either done or asleep waiting for a later time. It is what a driver needs before it moves the clock again.
+func (r *liveRunner) quiescent() bool {
+	if r.fake == nil {
+		return false
+	}
+	settled := r.fake.settledSleepers()
+	epoch := r.fake.currentEpoch()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// before the loop's first iteration (boot chain) only the work count matters: boot work that sleeps on the clock
+	// must be able to receive the clock steps that release it
+	if r.bootDone && r.loopStarted == 0 {
+		return false // the loop has been released but has not run its first iteration yet
+	}
+	return r.loopStarted == r.tickDone && (r.loopStarted == 0 || r.loopEpoch == epoch) && r.pending <= settled
+}
+
+// settle waits (real time) until the daemon is quiescent; false means it stayed busy for the whole timeout.
+func (r *liveRunner) settle(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if r.quiescent() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// fakeStatus is the driver-facing state returned by the clock.* operations.
+func (r *liveRunner) fakeStatus(settled bool) map[string]any {
+	r.mu.Lock()
+	pending := r.pending
+	r.mu.Unlock()
+	return map[string]any{"now": r.clock.Now().In(r.loc).Format(time.RFC3339Nano), "settled": settled,
+		"pending": pending, "sleeping": r.fake.settledSleepers()}
+}
+
+// beginWork counts work that a fake-clock driver has to wait for from the moment it is scheduled (not from the moment
+// its goroutine first runs), and returns the function that ends it.
+func (r *liveRunner) beginWork() func() {
+	r.mu.Lock()
+	r.pending++
+	r.mu.Unlock()
+	return func() {
+		r.mu.Lock()
+		r.pending--
+		r.mu.Unlock()
+	}
+}
+
+// spawn runs an instance in its own goroutine and counts it as work immediately.
+func (r *liveRunner) spawn(x Instance, date string) {
+	end := r.beginWork()
+	go func() {
+		defer end()
+		r.execute(x, date)
+	}()
+}
+
 func (r *liveRunner) waitClock(d time.Duration) {
 	if d <= 0 {
 		return
 	}
 	if r.fake != nil {
 		target := r.clock.Now().Add(d)
-		for r.clock.Now().Before(target) {
-			ch := r.fake.changedChan()
-			r.fake.mu.Lock()
-			r.fake.waits++
-			r.fake.mu.Unlock()
+		id := r.fake.newSleeper()
+		defer r.fake.wake(id)
+		for {
+			ch := r.fake.sleepOn(id) // register first, then look at the time: an Advance in between closes ch
+			if !r.clock.Now().Before(target) {
+				return
+			}
+			r.fake.noteWait()
 			<-ch
 		}
-		return
 	}
 	t := time.NewTimer(d)
 	<-t.C
@@ -366,6 +466,11 @@ type liveRunner struct {
 	ledgerMu         sync.RWMutex
 	boot             string
 	tick             uint64
+	loopStarted      uint64 // loop iterations begun / finished: a fake-clock driver waits until they match
+	tickDone         uint64
+	loopEpoch        uint64 // fake clock epoch the latest loop iteration started under
+	bootDone         bool   // the boot chain is over, so the scheduling loop is about to run
+	pending          int    // scheduled or running work a fake-clock driver must wait for (see beginWork)
 	nextDue          string
 	clock            Clock
 	fake             *fakeClock
@@ -780,10 +885,11 @@ func (r *liveRunner) heavyQueueExpired(now, expires time.Time, reason string) bo
 
 func (r *liveRunner) waitForHeavyChange(ch <-chan struct{}, expires time.Time, reason string) {
 	if r.fake != nil {
-		clockChanged := r.fake.changedChan()
+		id := r.fake.newSleeper()
+		defer r.fake.wake(id)
 		select {
 		case <-ch:
-		case <-clockChanged:
+		case <-r.fake.sleepOn(id):
 		}
 		return
 	}
@@ -951,6 +1057,10 @@ func runCmd(args []string) error {
 	if err = r.ledger.append("BOOT", map[string]any{"config_version": c.ConfigVersion, "config_hash": h, "build": "dev", "boot_id": r.boot}); err != nil {
 		return err
 	}
+	// The boot chain and startup classification are work a fake-clock driver must wait for; it counts from before the
+	// control socket opens, so the first clock.step cannot slip in ahead of it.
+	endBoot := sync.OnceFunc(r.beginWork())
+	defer endBoot()
 	// Control socket first: boot events can take minutes and must stay observable (status/pause) meanwhile.
 	if err = r.listen(); err != nil {
 		return err
@@ -986,6 +1096,10 @@ func runCmd(args []string) error {
 	if err = r.startSocket(); err != nil {
 		return err
 	}
+	r.mu.Lock()
+	r.bootDone = true
+	r.mu.Unlock()
+	endBoot()
 	return r.loop()
 }
 
@@ -1034,7 +1148,9 @@ func (r *liveRunner) scheduleBootRerun(date string) {
 	attempt := r.bootReruns
 	r.bootRerunIDs = ids
 	r.mu.Unlock()
+	endRerun := r.beginWork()
 	go func() {
+		defer endRerun()
 		r.waitClock(time.Duration(60*(1<<(attempt-1))) * time.Second)
 		_, _ = r.appendLedger(date, "BOOT_RERUN", map[string]any{"attempt": attempt, "events": ids, "sequence": r.bootSequence})
 		_ = r.runBootEvents(r.clock.Now())
@@ -1198,7 +1314,7 @@ func (r *liveRunner) runBootEvents(now time.Time) error {
 			}
 			cutoff, pe := instanceWindowCutoff(date, x, r.loc)
 			if pe == nil && now.Before(cutoff) {
-				go r.execute(x, date)
+				r.spawn(x, date)
 			}
 		}
 	}
@@ -1237,7 +1353,7 @@ func (r *liveRunner) applyStartup(now time.Time, missed, active []Instance) erro
 		if st, exists := r.states[now.Format("2006-01-02")+"/"+x.ID]; exists && isTerminal(st.Status) {
 			continue
 		}
-		go r.execute(x, now.Format("2006-01-02"))
+		r.spawn(x, now.Format("2006-01-02"))
 	}
 	return nil
 }
@@ -1510,7 +1626,7 @@ func (r *liveRunner) schedulePreviousCrossDateRetries(now time.Time, date string
 		if parseErr == nil && now.Before(next) || paused {
 			continue
 		}
-		go r.execute(x, previous)
+		r.spawn(x, previous)
 	}
 }
 func (r *liveRunner) setState(x Instance, date string, s instanceState) {
@@ -2923,6 +3039,11 @@ func (r *liveRunner) loop() error {
 		var fakeChanged <-chan struct{}
 		if r.fake != nil {
 			fakeChanged = r.fake.changedChan()
+			epoch := r.fake.currentEpoch()
+			r.mu.Lock()
+			r.loopEpoch = epoch
+			r.loopStarted++
+			r.mu.Unlock()
 		}
 		wall := r.clock.Now().In(r.loc)
 		mono := time.Now()
@@ -2960,6 +3081,11 @@ func (r *liveRunner) loop() error {
 			_ = r.alert("GATE_BLOCKED", map[string]any{"events": ids, "blocks": blocks, "count": len(ids), "summary": true})
 		}
 		_ = r.heartbeat(wall)
+		if r.fake != nil {
+			r.mu.Lock()
+			r.tickDone++
+			r.mu.Unlock()
+		}
 		if r.fake != nil {
 			<-fakeChanged
 			continue
@@ -3243,7 +3369,7 @@ func (r *liveRunner) schedule(now time.Time) {
 		}
 		if !now.Before(start) && !windowExpired(now, end) && !running && !paused && retryDue {
 			x.DegradeRequested = degradeDue
-			go r.execute(x, date)
+			r.spawn(x, date)
 		}
 		if start.After(now) {
 			r.mu.Lock()
@@ -3285,7 +3411,7 @@ func (r *liveRunner) schedule(now time.Time) {
 		}
 		if phase != "NON_TRADING" && phase != "CALENDAR_UNKNOWN" && phaseAllowed(&event, phase) && !running {
 			x := Instance{ID: deferredID, EventID: event.ID, Start: "00:00:00", Deadline: "23:59:59", LateUntil: event.LateUntil, Timeout: event.Timeout, MaxAttempts: event.Retry.MaxAttempts, TriggerType: "startup"}
-			go r.execute(x, date)
+			r.spawn(x, date)
 		}
 	}
 	if event := findEvent(c, "fetch_item"); event != nil {
@@ -3350,7 +3476,7 @@ func (r *liveRunner) schedule(now time.Time) {
 			}
 			x := Instance{ID: item.id, EventID: "fetch_item", Start: "00:00:00", Deadline: "23:59:59", Timeout: itemEvent.Timeout, DataDate: item.st.DataDate,
 				MaxAttempts: event.Retry.MaxAttempts, TriggerType: "startup"}
-			go r.execute(x, date)
+			r.spawn(x, date)
 		}
 	}
 	if len(missedNow) > 0 {
@@ -3543,6 +3669,54 @@ func (r *liveRunner) serve(c net.Conn) {
 				}
 				now := r.fake.Advance(d)
 				result = map[string]any{"now": now.In(r.loc).Format(time.RFC3339Nano)}
+			case "clock.settle", "clock.step", "clock.run":
+				if r.fake == nil {
+					ok = false
+					code = "NOT_ALLOWED_IN_MODE"
+					break
+				}
+				a, _ := q["args"].(map[string]any)
+				timeout := 10 * time.Minute
+				if text, _ := a["idle_timeout"].(string); text != "" {
+					if d, err := time.ParseDuration(text); err == nil && d > 0 {
+						timeout = d
+					}
+				}
+				step := time.Second
+				if text, _ := a["step"].(string); text != "" {
+					d, err := time.ParseDuration(text)
+					if err != nil || d <= 0 {
+						ok, code = false, "BAD_REQUEST"
+						break
+					}
+					step = d
+				}
+				settled := r.settle(timeout)
+				switch op {
+				case "clock.step":
+					// one move of the clock, then wait until everything has reacted to it
+					if settled {
+						r.fake.Advance(step)
+						settled = r.settle(timeout)
+					}
+				case "clock.run":
+					until, err := time.Parse(time.RFC3339, fmt.Sprint(a["until"]))
+					if err != nil {
+						ok, code = false, "BAD_REQUEST"
+						break
+					}
+					for settled && r.clock.Now().Before(until) {
+						next := step
+						if remaining := until.Sub(r.clock.Now()); remaining < next {
+							next = remaining
+						}
+						r.fake.Advance(next)
+						settled = r.settle(timeout)
+					}
+				}
+				if ok {
+					result = r.fakeStatus(settled)
+				}
 			case "skip":
 				a, _ := q["args"].(map[string]any)
 				event, _ := a["event"].(string)
@@ -3625,7 +3799,7 @@ func (r *liveRunner) serve(c net.Conn) {
 							ok = false
 							code = "NOT_ALLOWED_IN_MODE"
 						} else {
-							go r.execute(x, date)
+							r.spawn(x, date)
 							result = map[string]any{"event": event, "instance": x.ID, "status": "QUEUED"}
 						}
 						break
