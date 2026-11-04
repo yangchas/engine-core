@@ -311,6 +311,16 @@ class TaosStore:
                 return []
             self.close()
             raise TdUnavailable("td_statement_failed:" + type(exc).__name__ + ":" + str(exc)[:200]) from exc
+        finally:
+            self._release(cursor)
+
+    @staticmethod
+    def _release(cursor) -> None:
+        """Free the statement's result handle now; TD keeps a fetched query registered until its cursor closes."""
+        try:
+            cursor.close()
+        except Exception:
+            pass
 
     def close(self) -> None:
         if self._conn is not None:

@@ -188,6 +188,8 @@ class TaosDdeStore:
         except Exception as exc:
             self.close()
             raise DdeError("td_statement_failed:" + type(exc).__name__ + ":" + str(exc)[:160]) from exc
+        finally:
+            self._release(cursor)
 
     def database_exists(self) -> bool:
         rows = self._run("SHOW DATABASES")
@@ -334,6 +336,14 @@ class TaosDdeStore:
                 different += 1
         return {"pairs": len(rows), "equal": equal, "different": different, "unmatched": unmatched,
                 "columns": columns, "reasons": reasons}
+
+    @staticmethod
+    def _release(cursor) -> None:
+        """Free the statement's result handle now; TD keeps a fetched query registered until its cursor closes."""
+        try:
+            cursor.close()
+        except Exception:
+            pass
 
     def close(self) -> None:
         if self._conn is not None:
