@@ -362,7 +362,8 @@ class TaosStore:
             if missing_ok and self._is_missing(exc):
                 return []
             self.close()
-            raise td_statement_error(exc, "td_statement_failed:" + type(exc).__name__ + ":" + str(exc)[:200]) from exc
+            raise td_statement_error(exc, "td_statement_failed:" + type(exc).__name__ + ":" + str(exc)[:200]
+                                     + " | sql=" + " ".join(sql.split())[:120]) from exc      # which statement ran out
         finally:
             self._release(cursor)
 
