@@ -131,17 +131,19 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
 def judge(outcomes: list[dict[str, Any]], gaps: dict[str, list[str]]
           ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """(summary, answers outside the contract, answers nobody classified) of one run of every function."""
+    """(summary, answers outside the contract, answers nobody classified) of one run of every function.
+
+    "Nobody classified" is INTERNAL_ERROR, the default for an exception whose type says nothing. A code the exception's
+    type gave (a timeout, a Redis error, a programming error) is a classification by type and passes."""
     summary, outside, unclassified = [], [], []
     for item in outcomes:
         reply = item["reply"] or {}
-        text = json.dumps(reply, ensure_ascii=False)
         row = {"event": item["event"], "exit": item["exit"], "status": reply.get("status"),
                "error_code": reply.get("error_code") or None, "gaps": sorted(set(gaps.get(item["event"], [])))}
         summary.append(row)
         if item["problems"] or item["reply"] is None:
             outside.append({**row, "problems": item["problems"]})
-        if reply.get("error_code") == "INTERNAL_ERROR" or '"unclassified": true' in text or '\\"unclassified\\":true' in text:
+        if reply.get("error_code") == "INTERNAL_ERROR":
             unclassified.append(row)
     return summary, outside, unclassified
 
