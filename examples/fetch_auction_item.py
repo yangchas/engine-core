@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 import sys
 sys.path.insert(0, str(ROOT / "src"))
+from engine_core.data_pipeline.job_contract import contract_main  # noqa: E402
 
 TZ = ZoneInfo("Asia/Shanghai")
 
@@ -34,10 +35,8 @@ def _query(cursor, sql):
 
 
 def _source_rows(day: str):
-    if not os.environ.get("TD_CONFIG"):
-        raise RuntimeError("TD_CONFIG_missing")
-    import taos
-    connection = taos.connect(database="market_data1", config=os.environ["TD_CONFIG"])
+    from engine_core.data_pipeline.td_sink import connect_td
+    connection = connect_td("market_data1")
     try:
         cursor = connection.cursor()
         compact = day.replace("-", "")
@@ -168,6 +167,7 @@ def _products(day: str, item: str, root: Path, snapshots, ticks, *, source_catal
     raise ValueError("unsupported_auction_item:" + item)
 
 
+@contract_main("fetch_auction_item")
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--item", required=True,

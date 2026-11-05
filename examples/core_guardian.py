@@ -109,6 +109,16 @@ def _command_failure(result: subprocess.CompletedProcess):
     return command_error(result.returncode, result.stdout, result.stderr)
 
 
+def _prep_failure(report: dict, errors) -> Exception:
+    """Failed prep steps: the registered code a step's script declared, a retryable one first; none declared stays plain."""
+    from engine_core.errors import is_retryable
+    declared = [code for code in report.get("error_codes") or [] if isinstance(code, str)]
+    text = "prep_errors:" + ";".join(map(str, errors))[-400:]
+    if not declared:
+        return RuntimeError(text)
+    return CoreError(next((code for code in declared if is_retryable(code)), declared[0]), text)
+
+
 def _build_gate_status(path: str | None):
     try:
         payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8")) if path else {}
@@ -280,7 +290,7 @@ def _command_handler(name: str, opts, root: Path):
                 raise CoreError("CONTRACT_INVALID", "prep_report_invalid_shape")
             errors = report.get("errors") or []
             if errors:
-                raise RuntimeError("prep_errors:" + ";".join(map(str, errors))[-400:])
+                raise _prep_failure(report, errors)
             missing = [str(item.get("step")) for item in report.get("steps", [])
                        if isinstance(item, dict) and item.get("status") == "MISSING"]
             if missing:

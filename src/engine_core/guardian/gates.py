@@ -33,8 +33,8 @@ class GateResult(dict):
 def _td():
     if not os.environ.get("TD_CONFIG"):
         raise RuntimeError("td_unavailable")
-    import taos
-    return taos.connect(database="market_data1", config=os.environ["TD_CONFIG"])
+    from ..data_pipeline.td_sink import connect_td
+    return connect_td("market_data1")
 
 
 def _query(sql: str):

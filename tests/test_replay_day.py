@@ -42,9 +42,11 @@ def test_unrecorded_requests_fail_and_are_listed_not_hidden(replay_dir):
 
 
 def test_baostock_and_wencai_stand_ins_refuse_instead_of_calling_out(replay_dir):
-    stand_in = replay_handler._Unreplayed("baostock", "baostock")        # used directly: install() patches the process
-    with pytest.raises(replay_handler.UnrecordedRequest):
+    stand_in = replay_handler._Unreplayed("baostock", "baostock", unreachable=True)   # used directly: install() patches the process
+    with pytest.raises(ConnectionError):   # an unreachable Baostock server fails with a connection error
         stand_in.login()
+    with pytest.raises(replay_handler.UnrecordedRequest):
+        replay_handler._Unreplayed("pywencai", "wencai").query()
     assert json.loads((replay_dir / "unrecorded.jsonl").read_text().splitlines()[0])["source"] == "baostock"
 
 
@@ -146,7 +148,7 @@ def test_child_processes_of_a_handler_are_replayed_too_and_run_on_virtual_time(t
            "PYTHONPATH": os.pathsep.join([str(ROOT / "examples" / "replay_site"), str(ROOT / "src")])}
     started = time.monotonic()
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=60)
-    assert result.returncode == 0 and result.stdout.strip() == "UnrecordedRequest", result
+    assert result.returncode == 0 and result.stdout.strip() == "_GapConnectionError", result
     assert time.monotonic() - started < 20                           # not 240 real seconds
     gap = json.loads((tmp_path / "replay" / "unrecorded.jsonl").read_text().splitlines()[0])
     assert (gap["source"], gap["instance"]) == ("baostock", "inst_x")
@@ -184,7 +186,7 @@ def test_a_child_that_replaces_pythonpath_is_still_sealed_through_the_interprete
     assert result.stdout.strip() == "sealed", result
     inline = subprocess.run([str(wrapper), "-c", "import baostock\ntry:\n    baostock.login()\nexcept Exception as e:\n"
                              "    print(type(e).__name__)"], capture_output=True, text=True, env=env, timeout=60)
-    assert inline.stdout.strip() == "UnrecordedRequest", inline
+    assert inline.stdout.strip() == "_GapConnectionError", inline
 
 
 def test_grandchildren_are_sealed_too(tmp_path):
@@ -233,6 +235,10 @@ guardian_handler._run = broken
 raise SystemExit(replay_handler.main())
 """
 
+UNREGISTERED_MUTANT = MUTANT.replace(
+    '''return 20, {{"contract": 1, "status": "not_applicable", "error_code": "", "retryable": False, "artifacts": []}}''',
+    '''return 40, {{"contract": 1, "status": "failed", "error_code": "SOME_NEW_CODE_NOBODY_REGISTERED", "retryable": False, "artifacts": []}}''')
+
 
 def _replay_slice(tmp_path, handler=None):
     command = [sys.executable, str(ROOT / "examples" / "replay_day.py"), "--date", "2026-10-23", "--from", "00:00:00",
@@ -260,3 +266,35 @@ def test_a_handler_that_breaks_the_contract_makes_the_replay_fail(tmp_path):
     code, report = _replay_slice(tmp_path, handler=mutant)
     assert code == 1 and report["verdict"] == "FAIL"
     assert any("CONTRACT_VIOLATION calendar_refresh_0005" in p for p in report["problems"]), report["problems"]
+
+
+@needs_go
+def test_a_handler_answering_with_an_unregistered_code_makes_the_replay_fail(tmp_path):
+    """Mutation check (design/33 S5): the same slice, one handler answering a code nobody registered, must FAIL."""
+    mutant = tmp_path / "unregistered_handler.py"
+    mutant.write_text(UNREGISTERED_MUTANT.format(examples=str(ROOT / "examples"), src=str(ROOT / "src"), root=str(ROOT)))
+    code, report = _replay_slice(tmp_path, handler=mutant)
+    assert code == 1 and report["verdict"] == "FAIL"
+    assert any("UNREGISTERED_CODE calendar_refresh_0005: SOME_NEW_CODE_NOBODY_REGISTERED" in p
+               for p in report["problems"]), report["problems"]
+
+
+def test_a_reply_with_an_unregistered_error_code_is_an_orchestration_defect(tmp_path):
+    run = _run(tmp_path, states={"a": {"status": "FAILED_FINAL"}},
+               replies=[("a", {"contract": 1, "status": "failed", "error_code": "SOME_NEW_CODE_NOBODY_REGISTERED",
+                               "retryable": False})],
+               unrecorded=[{"instance": "a", "source": "kaipan", "call": "getHisBans"}])
+    report = replay_day.evaluate(run)
+    assert report["verdict"] == "FAIL"
+    assert any("UNREGISTERED_CODE a: SOME_NEW_CODE_NOBODY_REGISTERED" in p for p in report["problems"])
+
+
+def test_unclassified_replies_are_listed_and_fail_only_under_strict_codes(tmp_path):
+    reply = {"contract": 1, "status": "failed", "error_code": "INTERNAL_ERROR", "retryable": True, "unclassified": True,
+             "detail": "RuntimeError:boom"}
+    run = _run(tmp_path, states={"a": {"status": "SUCCEEDED_DEGRADED"}}, replies=[("a", reply)])
+    lenient = replay_day.evaluate(run)
+    assert [u["instance"] for u in lenient["unclassified_replies"]] == ["a"]
+    assert not any(p.startswith("UNCLASSIFIED") for p in lenient["problems"])
+    strict = replay_day.evaluate(run, strict_codes=True)
+    assert any(p.startswith("UNCLASSIFIED a:") for p in strict["problems"])

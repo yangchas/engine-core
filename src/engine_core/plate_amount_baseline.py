@@ -104,13 +104,8 @@ def build_plate_amount_baseline(*, target_date: str,
 def _td_connect():
     if not os.environ.get("TD_CONFIG"):
         raise RuntimeError("TD_CONFIG_required")
-    import taos
-    options: dict[str, Any] = {"database": "market_data1", "config": os.environ["TD_CONFIG"]}
-    for env_name, option in (("TDENGINE_HOST", "host"), ("TDENGINE_PORT", "port"),
-                             ("TDENGINE_USER", "user"), ("TDENGINE_PASSWORD", "password")):
-        if os.environ.get(env_name):
-            options[option] = int(os.environ[env_name]) if option == "port" else os.environ[env_name]
-    return taos.connect(**options)
+    from .data_pipeline.td_sink import connect_td
+    return connect_td("market_data1")
 
 
 SYMBOL_SPLITS = (("000000", "300000"), ("300000", "600000"), ("600000", "999999"))

@@ -101,7 +101,7 @@ def run_close_tier(request: Mapping[str, Any], root: str | Path, *, dry_run: boo
     code = str(contract.get("error_code") or "")
     detail = {"providers": providers, "partition": day, "returncode": completed.returncode,
               "version": contract.get("version"), "source": contract.get("source"),
-              "coverage": contract.get("coverage"), "stderr_tail": str(completed.stderr or "")[-300:]}
+              "coverage": contract.get("coverage"), "stdout_tail": str(completed.stdout or "")[-300:], "stderr_tail": str(completed.stderr or "")[-300:]}
     if completed.returncode == 0:
         return _reply("ok", "", False, detail, 0)
     if completed.returncode == 10:

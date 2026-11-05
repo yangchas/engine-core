@@ -12,8 +12,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engine_core.data_pipeline.jobs import JobRunner, RequestBudget  # noqa: E402
 from engine_core.data_pipeline.providers.ths_hot_rank import ThsHotRankProvider  # noqa: E402
+from engine_core.data_pipeline.job_contract import contract_main  # noqa: E402
 
 
+@contract_main("capture_ths_hot_rank")
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trade-date", help="actual capture date; defaults to Shanghai calendar date")

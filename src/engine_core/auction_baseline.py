@@ -181,16 +181,8 @@ def build_auction_baseline(source_rows: Iterable[Mapping[str, Any]], *, target_d
 def _td_connect():
     if not os.environ.get("TD_CONFIG"):
         raise RuntimeError("TD_CONFIG_required")
-    try:
-        import taos
-    except ImportError as exc:
-        raise RuntimeError("taospy_required_for_TD_read") from exc
-    options: dict[str, Any] = {"database": "market_data1", "config": os.environ["TD_CONFIG"]}
-    for env_name, option in (("TDENGINE_HOST", "host"), ("TDENGINE_PORT", "port"),
-                             ("TDENGINE_USER", "user"), ("TDENGINE_PASSWORD", "password")):
-        if os.environ.get(env_name):
-            options[option] = int(os.environ[env_name]) if option == "port" else os.environ[env_name]
-    return taos.connect(**options)
+    from .data_pipeline.td_sink import connect_td
+    return connect_td("market_data1")
 
 
 def _read_td_window(target_date: str) -> tuple[list[str], list[dict[str, Any]]]:

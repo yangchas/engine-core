@@ -173,8 +173,8 @@ def run_checkpoint(request: Mapping[str, Any], root: Path, *, dry_run: bool = Fa
 def _td_connection():
     if not os.environ.get("TD_CONFIG"):
         raise CheckpointError("SOURCE_UNREADABLE", "td_unavailable", exit_code=30, retryable=True)
-    import taos
-    return taos.connect(database="market_data1", config=os.environ["TD_CONFIG"])
+    from ..data_pipeline.td_sink import connect_td
+    return connect_td("market_data1")
 
 
 def _reply(exit_code: int, status: str, code: str, retryable: bool, detail: Any) -> tuple[int, dict]:

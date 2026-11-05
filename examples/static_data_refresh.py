@@ -14,8 +14,10 @@ from collections import Counter
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Mapping
+
 from zoneinfo import ZoneInfo
 
+from engine_core.errors import CoreError
 from engine_core.data_pipeline.static_data import (
     build_plate_members,
     build_plate_registry,
@@ -151,7 +153,7 @@ def refresh_static_data(event, now: datetime, guardian_root: Path | None = None)
     catalog = ArtifactCatalog(core_root)
     universe = _snapshot(catalog, "symbol_universe")
     if universe is None:
-        raise RuntimeError("symbol_universe_artifact_required")
+        raise CoreError("UPSTREAM_NOT_READY", "symbol_universe_artifact_required")
     _universe_path, universe_manifest, universe_rows = universe
     universe_day = str(universe_manifest.get("trade_date") or "UNKNOWN")
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", universe_day):

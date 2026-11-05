@@ -304,6 +304,26 @@ def ddl_statements(database: str) -> list[str]:
     ]
 
 
+def connect_td(database: str | None = None) -> Any:
+    """The one way Core opens a TD connection: missing config or an unreachable server is ``TdUnavailable``."""
+    if not os.environ.get("TD_CONFIG"):
+        raise TdUnavailable("TD_CONFIG_required")
+    import taos
+    options: dict[str, Any] = {"config": os.environ["TD_CONFIG"]}
+    if database:
+        options["database"] = database
+    for env_name, option in (("TDENGINE_HOST", "host"), ("TDENGINE_PORT", "port"),
+                             ("TDENGINE_USER", "user"), ("TDENGINE_PASSWORD", "password")):
+        if os.environ.get(env_name):
+            options[option] = int(os.environ[env_name]) if option == "port" else os.environ[env_name]
+    try:
+        return taos.connect(**options)
+    except TdUnavailable:
+        raise
+    except Exception as exc:
+        raise TdUnavailable("td_connect_failed:" + type(exc).__name__ + ":" + str(exc)[:160]) from exc
+
+
 class TaosStore:
     """Real TDengine store (taos native client). Only ever touches ``<database>.*`` created by this module."""
 
@@ -314,15 +334,7 @@ class TaosStore:
 
     @staticmethod
     def _default_connect() -> Any:
-        if not os.environ.get("TD_CONFIG"):
-            raise TdUnavailable("TD_CONFIG_required")
-        import taos
-        options: dict[str, Any] = {"config": os.environ["TD_CONFIG"]}
-        for env_name, option in (("TDENGINE_HOST", "host"), ("TDENGINE_PORT", "port"),
-                                 ("TDENGINE_USER", "user"), ("TDENGINE_PASSWORD", "password")):
-            if os.environ.get(env_name):
-                options[option] = int(os.environ[env_name]) if option == "port" else os.environ[env_name]
-        return taos.connect(**options)
+        return connect_td()
 
     def _cursor(self):
         if self._conn is None:

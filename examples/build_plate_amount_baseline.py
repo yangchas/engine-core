@@ -9,8 +9,10 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from engine_core.plate_amount_baseline import build_and_store_plate_amount_baseline
+from engine_core.data_pipeline.job_contract import contract_main
 
 
+@contract_main("build_plate_amount_baseline")
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date", required=True)

@@ -161,13 +161,8 @@ class TaosDdeStore:
     def _default_connect():
         if not os.environ.get("TD_CONFIG"):
             raise DdeError("TD_CONFIG_required")
-        import taos
-        options: dict[str, Any] = {"config": os.environ["TD_CONFIG"]}
-        for env_name, option in (("TDENGINE_HOST", "host"), ("TDENGINE_PORT", "port"),
-                                 ("TDENGINE_USER", "user"), ("TDENGINE_PASSWORD", "password")):
-            if os.environ.get(env_name):
-                options[option] = int(os.environ[env_name]) if option == "port" else os.environ[env_name]
-        return taos.connect(**options)
+        from .td_sink import connect_td
+        return connect_td()
 
     def _cursor(self):
         if self._conn is None:

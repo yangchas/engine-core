@@ -75,8 +75,8 @@ def td_connect() -> Any:
     from ..td_sink import TdUnavailable
     if not os.environ.get("TD_CONFIG"):
         raise TdUnavailable("TD_CONFIG_required")
-    import taos
-    return taos.connect(config=os.environ["TD_CONFIG"])
+    from ..td_sink import connect_td
+    return connect_td()
 
 
 def read_td_bars(trade_date: str, *, lookback_calendar_days: int = 40,

@@ -2,7 +2,7 @@
 """Replay one whole trading day through a real guardiand on a fake clock (L4b, C665).
 
     replay_day.py --date 2026-10-23 [--from HH:MM:SS] [--until HH:MM:SS] [--work-dir DIR] [--report FILE]
-                  [--handler PATH] [--strict-data]
+                  [--handler PATH] [--strict-data] [--strict-codes]
 
 A temporary guardiand (fakeclock, temporary state root, alerts dry-run) runs the day's whole schedule. The daemon itself
 moves its clock: ``clock.run`` steps it one second at a time and waits after every step until all the work that step
@@ -202,7 +202,7 @@ def run_day(day: str, work: Path, *, binary: Path, handler: Path = HANDLER, sche
             "wall_seconds": round(time.monotonic() - started, 1)}
 
 
-def evaluate(run: dict[str, Any], *, strict_data: bool = False) -> dict[str, Any]:
+def evaluate(run: dict[str, Any], *, strict_data: bool = False, strict_codes: bool = False) -> dict[str, Any]:
     rows = gs._read_jsonl(run["state_root"] / "ledger" / f"{run['day']}.jsonl")
     states = final_states(rows)
     replies = [r for r in _jsonl(run["replay_dir"] / "replies.jsonl") if r.get("command") == "run"]
@@ -229,16 +229,27 @@ def evaluate(run: dict[str, Any], *, strict_data: bool = False) -> dict[str, Any
             blocked[instance] = root      # queued behind an upstream that failed for good: pending by design
         else:
             problems.append(f"NOT_TERMINAL {instance}: {status}")
-    violations, unmapped = [], []
+    from engine_core.errors import lookup, pending_codes
+
+    violations, unmapped, unregistered, unclassified = [], [], [], []
     for item in replies:
         reply = item.get("reply") or {}
         if reply.get("contract_violations"):
             violations.append({"instance": item.get("instance"), "violations": reply["contract_violations"]})
+        code = reply.get("error_code")
+        if code and lookup(str(code)) is None and str(code) not in pending_codes():
+            unregistered.append({"instance": item.get("instance"), "error_code": code})
+        if reply.get("unclassified") is True:
+            unclassified.append({"instance": item.get("instance"), "error_code": code,
+                                 "detail": str(reply.get("detail"))[:160]})
         if reply.get("error_code") in UNMAPPED:
             unmapped.append({"instance": item.get("instance"), "error_code": reply.get("error_code"),
                              "detail": str(reply.get("detail"))[:200]})
     problems += [f"CONTRACT_VIOLATION {v['instance']}: {v['violations']}" for v in violations]
     problems += [f"UNMAPPED_ERROR {u['instance']}: {u['error_code']} {u['detail']}" for u in unmapped]
+    problems += [f"UNREGISTERED_CODE {u['instance']}: {u['error_code']}" for u in unregistered]       # a code nobody classified
+    if strict_codes:
+        problems += [f"UNCLASSIFIED {u['instance']}: {u['error_code']} {u['detail']}" for u in unclassified]
     # data: a failed instance is attributable when its own attempts hit a recorded gap
     gap_sources: dict[str, Counter] = {}
     for gap in gaps:
@@ -262,6 +273,7 @@ def evaluate(run: dict[str, Any], *, strict_data: bool = False) -> dict[str, Any
             "data_verdict": data_verdict, "instances": len(run["expected"]), "states": dict(histogram),
             "replies": len(replies), "failures_attributed_to_gap": dict(attributed),
             "unattributed_failures": unattributed, "blocked_dependents": blocked,
+            "unclassified_replies": unclassified, "unregistered_codes": unregistered,
             "recorded_gaps": dict(Counter(f"{g.get('source')}.{g.get('call')}" for g in gaps)),
             "wall_seconds": run["wall_seconds"],
             "note": "handlers run on virtual time (sleep advances it at once; datetime.now is real): design/25 2.3 in-function waits"}
@@ -278,6 +290,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--from", dest="start", default="00:00:00", help="replay from this time of day (HH:MM:SS)")
     parser.add_argument("--until", default="23:59:59", help="replay up to this time of day (HH:MM:SS)")
     parser.add_argument("--strict-data", action="store_true")
+    parser.add_argument("--strict-codes", action="store_true",
+                        help="a reply flagged unclassified (no registered code, exit status or known type) fails the run")
     args = parser.parse_args(argv)
     os.chdir(ROOT)
     work = args.work_dir.resolve() / f"replay-{args.date}-{time.strftime('%H%M%S')}"
@@ -287,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     run = run_day(args.date, work, binary=binary, handler=args.handler.resolve(),
                   schedule_file=args.schedule_file.resolve(), wall_limit=args.wall_limit,
                   start=args.start, until=args.until)
-    report = evaluate(run, strict_data=args.strict_data)
+    report = evaluate(run, strict_data=args.strict_data, strict_codes=args.strict_codes)
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if args.report:
         args.report.write_text(text + "\n", encoding="utf-8")
