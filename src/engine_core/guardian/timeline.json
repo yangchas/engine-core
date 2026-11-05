@@ -1130,7 +1130,7 @@
         "PRE_MARKET"
       ],
       "trigger_type": "window",
-      "policy": "policy_05"
+      "policy": "policy_06"
     },
     "static_data_refresh": {
       "after": [],
@@ -2076,7 +2076,7 @@
           "fn": "startup",
           "id": "startup_0900",
           "on_start": "reconcile",
-          "policy": "policy_05",
+          "policy": "policy_06",
           "deadline": "09:10:00"
         },
         {
