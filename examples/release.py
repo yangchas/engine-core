@@ -5,6 +5,8 @@
   release.py accept [--date D]            run EVERY scheduled data function once, sealed, for the candidate commit
   release.py apply --go --authorized-by   switch the live checkout to the candidate (Python code: no restart)
   release.py rollback --go --authorized-by
+  release.py merge --branch B --card C### merge a branch: card exists, its tests and the Go tests pass (exit codes), no open errors
+  release.py errors add|status|close       the two-errors rule: two unreviewed errors block merge and release until reviewed
 
 Why this exists: the 2026-11-05 audit found 18 merged cards that were not live and no way to say "this is ready". The
 handlers run from the live checkout, one new process per attempt, so Python changes take effect at the next attempt and
@@ -20,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -30,6 +33,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "examples"))
 LIVE = Path("/home/exedev/repos/engine_core-live")
 EVIDENCE = Path("/home/exedev/fw/evidence/release")
+CARDS = Path("/home/exedev/fw/cards")
+ERRORS = Path("/home/exedev/fw/retros/errors.jsonl")
+ERRORS_BEFORE_REVIEW = 2          # the rule: the second unreviewed error stops new work until audit and retrospective
 BRANCH = "codex/feature-session-engine-integration"
 QUIET_BEFORE, QUIET_AFTER = 30, 120        # seconds around "now" in which no event may be due
 SMOKE_MODULES = ("engine_core.guardian.startup", "engine_core.data_pipeline.jobs", "engine_core.errors")
@@ -86,8 +92,28 @@ def acceptance(evidence_dir: Path, commit: str) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
 
 
+def load_errors(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()] \
+        if path.is_file() else []
+
+
+def open_errors(path: Path) -> list[dict[str, Any]]:
+    return [entry for entry in load_errors(path) if not entry.get("retro")]
+
+
+def run_checked(command: list[str], cwd: Path, log: Path) -> tuple[int, list[str]]:
+    """Run a test command; the exit code decides, the full output goes to ``log``, the failing lines are returned.
+    Never read a test run through ``| tail``: a FAIL line can be the last line or hide behind the last line."""
+    done = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(done.stdout + done.stderr, encoding="utf-8")
+    failing = [line for line in (done.stdout + done.stderr).splitlines()
+               if line.startswith(("FAILED", "ERROR", "--- FAIL", "FAIL\t", "panic:"))]
+    return done.returncode, failing
+
+
 def build_plan(live: Path, repo: Path, candidate: str, evidence_dir: Path, now: datetime,
-               ps_lines: list[str] | None = None) -> dict[str, Any]:
+               ps_lines: list[str] | None = None, errors_path: Path = ERRORS) -> dict[str, Any]:
     live_sha = git(live, "rev-parse", "HEAD")
     cand_sha = git(repo, "rev-parse", candidate)
     merges = git(repo, "log", "--first-parent", "--format=%h %s", f"{live_sha}..{cand_sha}").splitlines()
@@ -101,6 +127,8 @@ def build_plan(live: Path, repo: Path, candidate: str, evidence_dir: Path, now: 
         blockers.append("the live checkout has uncommitted changes")
     if not record or record.get("verdict") != "PASS":
         blockers.append("no PASS acceptance record for the candidate (run: release.py accept)")
+    if len(unreviewed := open_errors(errors_path)) >= ERRORS_BEFORE_REVIEW:
+        blockers.append(f"{len(unreviewed)} unreviewed errors: audit and retrospective first (release.py errors status)")
     if running := running_handlers(live, ps_lines):
         blockers.append(f"{len(running)} handler(s) running from the live checkout")
     if due := events_due_soon(live, now):
@@ -113,7 +141,7 @@ def build_plan(live: Path, repo: Path, candidate: str, evidence_dir: Path, now: 
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
-    plan = build_plan(args.live, ROOT, args.candidate, args.evidence_dir, datetime.now())
+    plan = build_plan(args.live, ROOT, args.candidate, args.evidence_dir, datetime.now(), errors_path=args.errors_file)
     print(f"live {plan['live']} -> candidate {plan['candidate']}: {len(plan['merges'])} merged change(s)")
     for line in plan["merges"]:
         print("  " + line)
@@ -189,7 +217,7 @@ def _record(evidence_dir: Path, name: str, payload: dict[str, Any]) -> Path:
 def cmd_apply(args: argparse.Namespace) -> int:
     if not args.go or not args.authorized_by:
         raise SystemExit("apply changes the live checkout: pass --go and --authorized-by '<what the user said>'")
-    plan = build_plan(args.live, ROOT, args.candidate, args.evidence_dir, datetime.now())
+    plan = build_plan(args.live, ROOT, args.candidate, args.evidence_dir, datetime.now(), errors_path=args.errors_file)
     if not plan["ready"]:
         for blocker in plan["blockers"]:
             print("BLOCKED:", blocker)
@@ -233,9 +261,89 @@ def cmd_rollback(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_errors(args: argparse.Namespace) -> int:
+    action = args.rest[0] if args.rest else "status"
+    entries = load_errors(args.errors_file)
+    if action == "add":
+        if not (args.kind and args.note):
+            raise SystemExit("errors add needs --kind and --note")
+        args.errors_file.parent.mkdir(parents=True, exist_ok=True)
+        entry = {"at": datetime.now().isoformat(timespec="seconds"), "kind": args.kind, "note": args.note,
+                 "impact": args.impact, "retro": None}
+        with args.errors_file.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        entries.append(entry)
+    elif action == "close":
+        if not args.retro:
+            raise SystemExit("errors close needs --retro <the retrospective's file name>")
+        for entry in entries:
+            entry["retro"] = entry.get("retro") or args.retro
+        args.errors_file.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries), encoding="utf-8")
+    elif action != "status":
+        raise SystemExit("errors: add | status | close")
+    unreviewed = [e for e in entries if not e.get("retro")]
+    print(f"{len(unreviewed)} unreviewed error(s) of {len(entries)} logged")
+    for entry in unreviewed:
+        print(f"  {entry['at']} [{entry['kind']}] {entry['note']}")
+    due = len(unreviewed) >= ERRORS_BEFORE_REVIEW
+    if due:
+        print(f"REVIEW DUE: {ERRORS_BEFORE_REVIEW} errors reached - audit and retrospective before new work, merges or releases")
+    return 1 if due else 0
+
+
+def cmd_merge(args: argparse.Namespace) -> int:
+    if not args.branch or not re.fullmatch(r"C\d+[a-z]?", args.card or ""):
+        raise SystemExit("merge needs --branch and --card C###")
+    problems = []
+    if not (args.cards_dir / f"{args.card}.md").is_file():
+        problems.append(f"no card {args.cards_dir / (args.card + '.md')} (a change without a card is not merged)")
+    if len(unreviewed := open_errors(args.errors_file)) >= ERRORS_BEFORE_REVIEW:
+        problems.append(f"{len(unreviewed)} unreviewed errors: audit and retrospective first")
+    base = args.candidate
+    files = [f for f in git(ROOT, "diff", "--name-only", f"{base}...{args.branch}").splitlines() if f]
+    log_dir = args.evidence_dir / "merge"
+    stamp = f"{args.card}-{datetime.now():%Y%m%dT%H%M%S}"
+    failing: list[str] = []
+    if files and not problems:
+        select = subprocess.run([sys.executable, str(ROOT / "examples" / "affected_tests.py"), "--files", *files, "--command"],
+                                cwd=str(ROOT), capture_output=True, text=True)
+        tests = [t for t in select.stdout.split() if t.startswith("tests/")] if select.returncode == 0 else []
+        if tests:
+            code, failing = run_checked([sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider",
+                                         *tests], ROOT, log_dir / f"{stamp}-pytest.log")
+            if code:
+                problems.append(f"affected tests failed (exit {code}): {len(failing)} failing line(s)")
+        if any(f.startswith("native/") for f in files):
+            code, go_failing = run_checked(["/bin/go", "test", "./..."], ROOT / "native" / "guardiand",
+                                           log_dir / f"{stamp}-go.log")
+            failing += go_failing
+            if code:
+                problems.append(f"go tests failed (exit {code})")
+    if problems:
+        for problem in problems:
+            print("REFUSED:", problem)
+        for line in failing[:10]:
+            print("  " + line)
+        return 1
+    git(ROOT, "merge", "--no-ff", args.branch, "-m",
+        f"Merge {args.card} ({args.message or args.branch})\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>")
+    print(f"merged {args.branch} as {git(ROOT, 'rev-parse', '--short=12', 'HEAD')}; tests ran on {len(files)} changed file(s)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["plan", "accept", "apply", "rollback"])
+    parser.add_argument("command", choices=["plan", "accept", "apply", "rollback", "merge", "errors"])
+    parser.add_argument("rest", nargs="*")
+    parser.add_argument("--branch")
+    parser.add_argument("--card")
+    parser.add_argument("--message", default="")
+    parser.add_argument("--kind")
+    parser.add_argument("--note")
+    parser.add_argument("--impact", default="")
+    parser.add_argument("--retro")
+    parser.add_argument("--errors-file", type=Path, default=ERRORS)
+    parser.add_argument("--cards-dir", type=Path, default=CARDS)
     parser.add_argument("--live", type=Path, default=LIVE)
     parser.add_argument("--candidate", default=BRANCH)
     parser.add_argument("--evidence-dir", type=Path, default=EVIDENCE)
@@ -244,7 +352,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--go", action="store_true")
     parser.add_argument("--authorized-by", default="")
     args = parser.parse_args(argv)
-    return {"plan": cmd_plan, "accept": cmd_accept, "apply": cmd_apply, "rollback": cmd_rollback}[args.command](args)
+    return {"plan": cmd_plan, "accept": cmd_accept, "apply": cmd_apply, "rollback": cmd_rollback,
+            "merge": cmd_merge, "errors": cmd_errors}[args.command](args)
 
 
 if __name__ == "__main__":
