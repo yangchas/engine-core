@@ -37,7 +37,8 @@ def repos(tmp_path, monkeypatch):
     origin.mkdir()
     _git(origin, "init", "-q", "-b", "main")
     schedule = {"events": [{"event_id": "e_noon", "at": "12:00:00"}]}
-    base = _commit(origin, {"src/engine_core/guardian/schedule.json": json.dumps(schedule), "a.py": "1\n"}, "base")
+    base = _commit(origin, {"src/engine_core/guardian/schedule.json": json.dumps(schedule), "a.py": "1\n",
+                            "examples/affected_tests.py": "print('python -m pytest -q tests/test_a.py')\n"}, "base")
     live = tmp_path / "live"                                  # like production: a detached worktree of the same repository
     _git(origin, "worktree", "add", "-q", "--detach", str(live), base)
     head = _commit(origin, {"a.py": "2\n", "tests/test_a.py": "x\n"}, "Merge C900 (a python change)")
@@ -45,8 +46,9 @@ def repos(tmp_path, monkeypatch):
     return origin, live, evidence, base, head
 
 
-def _plan(origin, live, evidence, ps=None, now=NOW):
-    return release.build_plan(live, origin, "main", evidence, now, ps if ps is not None else [])
+def _plan(origin, live, evidence, ps=None, now=NOW, errors=None):
+    return release.build_plan(live, origin, "main", evidence, now, ps if ps is not None else [],
+                              errors_path=errors or evidence / "no-errors.jsonl")
 
 
 def _accept(evidence, commit, verdict="PASS"):
@@ -109,7 +111,7 @@ def test_only_handlers_of_the_live_checkout_count():
 def _args(origin, live, evidence, **extra):
     import argparse
     values = dict(live=live, candidate="main", evidence_dir=evidence, go=True, authorized_by="部署", date="2026-11-05",
-                  work_dir=None)
+                  work_dir=None, errors_file=evidence / "no-errors.jsonl")
     values.update(extra)
     return argparse.Namespace(**values)
 
@@ -159,3 +161,99 @@ def test_judge_flags_answers_outside_the_contract_and_unclassified_ones():
     summary, outside, unclassified = release.judge(outcomes, {"d": ["redis.get", "redis.get"]})
     assert [row["event"] for row in outside] == ["b", "e"] and [row["event"] for row in unclassified] == ["c"]
     assert summary[3]["gaps"] == ["redis.get"]
+
+
+# ---- the two-errors rule and the checked merge --------------------------------------------------------------------
+def _errors(path, count, reviewed=0):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [{"at": "2026-11-06T01:00:00", "kind": "k", "note": f"n{i}", "impact": "", "retro": "r1" if i < reviewed else None}
+            for i in range(count)]
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+
+def test_two_unreviewed_errors_block_the_release(repos):
+    origin, live, evidence, base, head = repos
+    _accept(evidence, head)
+    log = evidence / "errors.jsonl"
+    _errors(log, 1)
+    assert _plan(origin, live, evidence, errors=log)["ready"]
+    _errors(log, 2)
+    plan = _plan(origin, live, evidence, errors=log)
+    assert not plan["ready"] and "2 unreviewed errors" in plan["blockers"][0]
+    _errors(log, 2, reviewed=2)                                  # a retrospective was held: they no longer count
+    assert _plan(origin, live, evidence, errors=log)["ready"]
+
+
+def _errors_args(log, *rest, **extra):
+    import argparse
+    values = dict(rest=list(rest), errors_file=log, kind=None, note=None, impact="", retro=None)
+    values.update(extra)
+    return argparse.Namespace(**values)
+
+
+def test_errors_are_logged_counted_and_closed_by_a_retrospective(tmp_path, capsys):
+    log = tmp_path / "retros" / "errors.jsonl"
+    assert release.cmd_errors(_errors_args(log, "add", kind="process", note="first")) == 0
+    assert release.cmd_errors(_errors_args(log, "add", kind="evidence", note="second")) == 1       # review due now
+    assert "REVIEW DUE" in capsys.readouterr().out
+    assert release.cmd_errors(_errors_args(log, "close", retro="2026-11-06.md")) == 0
+    assert [e["retro"] for e in release.load_errors(log)] == ["2026-11-06.md", "2026-11-06.md"]
+    with pytest.raises(SystemExit):
+        release.cmd_errors(_errors_args(log, "add", kind="only-kind"))
+
+
+@pytest.fixture
+def mergeable(repos, monkeypatch, tmp_path):
+    origin, live, evidence, base, head = repos
+    _git(origin, "checkout", "-q", "-b", "feature", base)
+    _commit(origin, {"b.py": "3\n"}, "a change")
+    _git(origin, "checkout", "-q", "main")
+    cards = tmp_path / "cards"
+    cards.mkdir()
+    monkeypatch.setattr(release, "ROOT", origin)
+    for name in ("AUTHOR", "COMMITTER"):                          # the throw-away repository has no git identity
+        monkeypatch.setenv(f"GIT_{name}_NAME", "t")
+        monkeypatch.setenv(f"GIT_{name}_EMAIL", "t@t")
+    return origin, evidence, cards
+
+
+def _merge_args(origin, evidence, cards, **extra):
+    import argparse
+    values = dict(branch="feature", card="C900", message="a change", candidate="main", evidence_dir=evidence,
+                  cards_dir=cards, errors_file=evidence / "no-errors.jsonl")
+    values.update(extra)
+    return argparse.Namespace(**values)
+
+
+def test_merge_needs_the_card_and_passing_tests_and_records_the_card_in_the_subject(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (0, []))
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 1                 # no card yet
+    (cards / "C900.md").write_text("ID: C900\n")
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 0
+    assert _git(origin, "log", "-1", "--format=%s").startswith("Merge C900 (a change)")
+
+
+def test_merge_refuses_on_a_failing_test_run_whatever_its_last_line_says(mergeable, monkeypatch, capsys):
+    origin, evidence, cards = mergeable
+    (cards / "C900.md").write_text("ID: C900\n")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (1, ["FAILED tests/test_a.py::test_x"]))
+    before = _git(origin, "rev-parse", "HEAD")
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 1
+    assert "FAILED tests/test_a.py::test_x" in capsys.readouterr().out and _git(origin, "rev-parse", "HEAD") == before
+
+
+def test_merge_refuses_while_two_errors_are_unreviewed(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    (cards / "C900.md").write_text("ID: C900\n")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (0, []))
+    log = evidence / "errors.jsonl"
+    _errors(log, 2)
+    assert release.cmd_merge(_merge_args(origin, evidence, cards, errors_file=log)) == 1
+
+
+def test_a_checked_run_reads_the_exit_code_and_keeps_the_whole_output(tmp_path):
+    code, failing = release.run_checked([sys.executable, "-c",
+                                         "print('FAILED t.py::x'); print('1 failed'); print('all done')"
+                                         "; raise SystemExit(1)"], tmp_path, tmp_path / "out.log")
+    assert code == 1 and failing == ["FAILED t.py::x"] and "all done" in (tmp_path / "out.log").read_text()
