@@ -252,6 +252,16 @@
    "exit": 30,
    "meaning": "the fill made no progress within its window; progress is kept"
   },
+  "ALL_SOURCES_FAILED": {
+   "retryable": true,
+   "exit": 30,
+   "meaning": "every provider of the dataset failed; the next attempt may find one back"
+  },
+  "TD_SYNC_ERROR": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "a TD sink raised an unexpected exception (a sink defect, reported instead of hidden); the pool ladder stops and the event retries"
+  },
   "TD_FOREIGN_LONG_QUERY": {
    "retryable": false,
    "exit": 10,
@@ -358,13 +368,11 @@
  },
  "pending": {
   "expires": "2026-12-15",
-  "reason": "in use as literals before the registry existed. Still open: ALL_SOURCES_FAILED and COVERAGE_LOW (data fields whose retryability depends on the caller), NOT_CONFIGURED / NO_CATALOG_DAYS (exit 20 with a code other than ALREADY_SATISFIED: a contract question for td_sync), TD_SYNC_ERROR (a nested sink status).",
+  "reason": "in use as literals before the registry existed. Still open: COVERAGE_LOW (an attempt label whose retryability depends on the caller) and NOT_CONFIGURED / NO_CATALOG_DAYS (emitted only by guardian/td_sync.py, whose event and handler were removed: delete the module).",
   "codes": [
-   "ALL_SOURCES_FAILED",
    "COVERAGE_LOW",
    "NOT_CONFIGURED",
-   "NO_CATALOG_DAYS",
-   "TD_SYNC_ERROR"
+   "NO_CATALOG_DAYS"
   ]
  }
 }
