@@ -101,10 +101,11 @@ def open_errors(path: Path) -> list[dict[str, Any]]:
     return [entry for entry in load_errors(path) if not entry.get("retro")]
 
 
-def run_checked(command: list[str], cwd: Path, log: Path) -> tuple[int, list[str]]:
+def run_checked(command: list[str], cwd: Path, log: Path, env: dict[str, str] | None = None) -> tuple[int, list[str]]:
     """Run a test command; the exit code decides, the full output goes to ``log``, the failing lines are returned.
     Never read a test run through ``| tail``: a FAIL line can be the last line or hide behind the last line."""
-    done = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True)
+    done = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True,
+                          env={**os.environ, **env} if env else None)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text(done.stdout + done.stderr, encoding="utf-8")
     failing = [line for line in (done.stdout + done.stderr).splitlines()
@@ -304,7 +305,17 @@ def cmd_merge(args: argparse.Namespace) -> int:
     log_dir = args.evidence_dir / "merge"
     stamp = f"{args.card}-{datetime.now():%Y%m%dT%H%M%S}"
     failing: list[str] = []
-    if files and not problems:
+    merged = False
+    if not problems:
+        # The tests must see the merged result, not the base: merge without committing, test, then commit or abort.
+        done = subprocess.run(["git", "-C", str(ROOT), "merge", "--no-ff", "--no-commit", args.branch],
+                              capture_output=True, text=True)
+        if done.returncode:
+            subprocess.run(["git", "-C", str(ROOT), "merge", "--abort"], capture_output=True)
+            problems.append("the branch does not merge cleanly: " + (done.stdout + done.stderr).strip()[-300:])
+        else:
+            merged = True
+    if merged and files:
         select = subprocess.run([sys.executable, str(ROOT / "examples" / "affected_tests.py"), "--files", *files, "--command"],
                                 cwd=str(ROOT), capture_output=True, text=True)
         tests = [t for t in select.stdout.split() if t.startswith("tests/")] if select.returncode == 0 else []
@@ -314,20 +325,24 @@ def cmd_merge(args: argparse.Namespace) -> int:
             if code:
                 problems.append(f"affected tests failed (exit {code}): {len(failing)} failing line(s)")
         if any(f.startswith("native/") for f in files):
+            # TMPDIR=/tmp: the guardiand tests open unix sockets under t.TempDir(), whose path must stay under 108 bytes
             code, go_failing = run_checked(["/bin/go", "test", "./..."], ROOT / "native" / "guardiand",
-                                           log_dir / f"{stamp}-go.log")
+                                           log_dir / f"{stamp}-go.log", env={"TMPDIR": "/tmp"})
             failing += go_failing
             if code:
                 problems.append(f"go tests failed (exit {code})")
     if problems:
+        if merged:
+            subprocess.run(["git", "-C", str(ROOT), "merge", "--abort"], capture_output=True)
         for problem in problems:
             print("REFUSED:", problem)
         for line in failing[:10]:
             print("  " + line)
         return 1
-    git(ROOT, "merge", "--no-ff", args.branch, "-m",
+    git(ROOT, "commit", "-q", "-m",
         f"Merge {args.card} ({args.message or args.branch})\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>")
-    print(f"merged {args.branch} as {git(ROOT, 'rev-parse', '--short=12', 'HEAD')}; tests ran on {len(files)} changed file(s)")
+    print(f"merged {args.branch} as {git(ROOT, 'rev-parse', '--short=12', 'HEAD')}; tests ran on the merged tree "
+          f"({len(files)} changed file(s))")
     return 0
 
 
@@ -344,6 +359,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--retro")
     parser.add_argument("--errors-file", type=Path, default=ERRORS)
     parser.add_argument("--cards-dir", type=Path, default=CARDS)
+    parser.add_argument("--repo", type=Path, help="the checkout to merge into / accept (default: this tool's own)")
     parser.add_argument("--live", type=Path, default=LIVE)
     parser.add_argument("--candidate", default=BRANCH)
     parser.add_argument("--evidence-dir", type=Path, default=EVIDENCE)
@@ -352,6 +368,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--go", action="store_true")
     parser.add_argument("--authorized-by", default="")
     args = parser.parse_args(argv)
+    if args.repo:
+        global ROOT
+        ROOT = args.repo.resolve()
+        sys.path.insert(0, str(ROOT / "examples"))
     return {"plan": cmd_plan, "accept": cmd_accept, "apply": cmd_apply, "rollback": cmd_rollback,
             "merge": cmd_merge, "errors": cmd_errors}[args.command](args)
 

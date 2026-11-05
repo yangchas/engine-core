@@ -257,3 +257,26 @@ def test_a_checked_run_reads_the_exit_code_and_keeps_the_whole_output(tmp_path):
                                          "print('FAILED t.py::x'); print('1 failed'); print('all done')"
                                          "; raise SystemExit(1)"], tmp_path, tmp_path / "out.log")
     assert code == 1 and failing == ["FAILED t.py::x"] and "all done" in (tmp_path / "out.log").read_text()
+
+
+def test_merge_tests_the_merged_tree_not_the_base_and_aborts_when_they_fail(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    (cards / "C900.md").write_text("ID: C900\n")
+    seen = {}
+
+    def fake_run(command, cwd, log):
+        seen["merge_in_progress"] = (origin / ".git" / "MERGE_HEAD").exists()
+        seen["has_branch_file"] = (origin / "b.py").exists()           # b.py exists only on the branch
+        return 1, ["FAILED tests/test_a.py::test_x"]
+
+    monkeypatch.setattr(release, "run_checked", fake_run)
+    before = _git(origin, "rev-parse", "HEAD")
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 1
+    assert seen == {"merge_in_progress": True, "has_branch_file": True}
+    assert _git(origin, "rev-parse", "HEAD") == before and not (origin / "b.py").exists()    # aborted: base untouched
+
+
+def test_a_checked_run_can_override_the_environment(tmp_path):
+    code, _ = release.run_checked([sys.executable, "-c", "import os, sys; sys.exit(0 if os.environ.get('X_C697') == '1' else 3)"],
+                                  tmp_path, tmp_path / "o.log", env={"X_C697": "1"})
+    assert code == 0

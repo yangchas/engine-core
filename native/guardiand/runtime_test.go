@@ -673,6 +673,7 @@ func TestQueuedFetchItemWaitsForItsQueuedDependency(t *testing.T) {
 	defer l.close()
 	l.now = fc.Now
 	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
+	defer waitIdle(t, r)
 	getState := func(id string) instanceState { r.mu.Lock(); defer r.mu.Unlock(); return r.states[date+"/"+id] }
 	r.execute(Instance{ID: "boot_apply_plan", EventID: "boot_apply_plan", Start: "00:00:00", Deadline: "23:59:59", TriggerType: "startup"}, date)
 	if got := getState("fetch_item:daily_indicators"); len(got.WaitFor) != 1 || got.WaitFor[0] != "fetch_item:daily_kline" {
@@ -924,7 +925,9 @@ func TestHeavySlotReleasedDuringRetryBackoff(t *testing.T) {
 	fc := newFakeClock(now)
 	marker := filepath.Join(root, "first-attempt")
 	script := filepath.Join(root, "retry.sh")
-	source := "#!/bin/sh\nif [ ! -f '" + marker + "' ]; then touch '" + marker + "'; printf '%s\\n' '{\"contract\":1,\"status\":\"failed\",\"error_code\":\"TEMP\",\"retryable\":true}'; exit 30; else printf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'; fi\n"
+	release := filepath.Join(root, "release-second-attempt")
+	// The second attempt waits for the test, so "the heavy slot is held during the attempt" is observable however slow the host is.
+	source := "#!/bin/sh\nif [ ! -f '" + marker + "' ]; then touch '" + marker + "'; printf '%s\\n' '{\"contract\":1,\"status\":\"failed\",\"error_code\":\"TEMP\",\"retryable\":true}'; exit 30; else i=0; while [ ! -e '" + release + "' ] && [ \"$i\" -lt 1000 ]; do i=$((i + 1)); sleep 0.01; done; printf '%s\\n' '{\"contract\":1,\"status\":\"ok\"}'; fi\n"
 	if err := os.WriteFile(script, []byte(source), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -937,7 +940,12 @@ func TestHeavySlotReleasedDuringRetryBackoff(t *testing.T) {
 	defer l.close()
 	l.now = fc.Now
 	r := &liveRunner{c: c, root: root, loc: loc, clock: fc, fake: fc, ledger: l, states: map[string]instanceState{}, running: map[string]bool{}, classSlots: map[string]chan struct{}{}, alertSeen: map[string]bool{}}
-	go r.execute(Instance{ID: "retry", EventID: "retry", TriggerType: "startup"}, date)
+	executed := make(chan struct{})
+	defer func() { <-executed }()          // execute must have returned before the ledger closes and TempDir is removed
+	go func() {
+		defer close(executed)
+		r.execute(Instance{ID: "retry", EventID: "retry", TriggerType: "startup"}, date)
+	}()
 	waitFor(t, func() bool { return ledgerTypeCounts(t, root, date)["ATTEMPT_END"] == 1 && fc.waitCount() > 0 })
 	r.mu.Lock()
 	backoffHeldHeavy := r.heavyRunning
@@ -952,6 +960,9 @@ func TestHeavySlotReleasedDuringRetryBackoff(t *testing.T) {
 	r.mu.Unlock()
 	if !secondAttemptHeldHeavy {
 		t.Fatal("heavy slot was not held during retry attempt")
+	}
+	if err := os.WriteFile(release, []byte("go"), 0600); err != nil {
+		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return isTerminal(runtimeTestState(r, date+"/retry").Status) })
 	r.mu.Lock()
@@ -1555,9 +1566,18 @@ func runtimeTestHeavyRunning(r *liveRunner) bool {
 	return r.heavyRunning
 }
 
+// waitIdle waits until the runner has no scheduled or running work. A test must not return - and let t.TempDir be
+// removed - while a goroutine of the runner can still write into that directory ("directory not empty" on cleanup).
+func waitIdle(t *testing.T, r *liveRunner) {
+	t.Helper()
+	waitFor(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.pending == 0 })
+}
+
 func waitFor(t *testing.T, ready func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	// A failsafe, not a timing assertion: the condition becomes true when the scheduler gets to it, and a short deadline
+	// turned a busy host into "condition did not become true" (TestKill9Restart... 2026-11-06).
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if ready() {
 			return
