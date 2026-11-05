@@ -1250,7 +1250,7 @@
         "PRE_MARKET"
       ],
       "on_phase_mismatch": "defer",
-      "profile": "policy_05",
+      "profile": "policy_06",
       "args": {
         "theme_deps": {
           "wait_seconds": 180,
@@ -1377,7 +1377,7 @@
         "PRE_MARKET"
       ],
       "on_phase_mismatch": "defer",
-      "profile": "policy_05",
+      "profile": "policy_06",
       "args": {
         "theme_deps": {
           "wait_seconds": 180,
