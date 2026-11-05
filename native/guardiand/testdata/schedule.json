@@ -504,9 +504,9 @@
       "ladder": [
         {
           "name": "primary",
-          "attempts": 3,
+          "attempts": 6,
           "backoff": "5m*2",
-          "backoff_cap": "20m",
+          "backoff_cap": "30m",
           "timeout": "12h",
           "budget_enabled": false
         }
