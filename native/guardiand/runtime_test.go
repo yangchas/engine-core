@@ -1575,7 +1575,9 @@ func waitIdle(t *testing.T, r *liveRunner) {
 
 func waitFor(t *testing.T, ready func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	// A failsafe, not a timing assertion: the condition becomes true when the scheduler gets to it, and a short deadline
+	// turned a busy host into "condition did not become true" (TestKill9Restart... 2026-11-06).
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if ready() {
 			return
