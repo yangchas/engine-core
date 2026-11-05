@@ -381,3 +381,33 @@ def test_days_older_than_the_universe_use_listing_dates_newer_days_use_the_unive
     assert expected("2026-10-16") == {"000001", "000002"}                 # a universe partition exists at or before
     assert expected("2026-05-07") == listed_symbols(rows, "2026-05-07")    # older than every partition
     assert len(expected("2026-05-07")) > 1000
+
+
+def test_publish_never_fails_with_known_missing_incomplete_for_a_day_without_a_same_day_universe(tmp_path):
+    """C687: the 2026-11-05 deep backfill loaded 110 days of rows but could not publish any completion marker.
+
+    Days older than every symbol_universe partition have no same-day universe, so the quality step judged completion
+    against an empty expected set while the ledger listed the missing symbols: ``known_missing_incomplete``."""
+    import gzip
+
+    from engine_core.data_pipeline.daily_kline_fill import publish_filled_days
+    from engine_core.data_pipeline.storage import ArtifactCatalog
+    from engine_core.data_pipeline.td_sink import map_rows
+
+    fixtures = Path(__file__).parent / "fixtures" / "real" / "core_artifacts" / "c540"
+    day = "2026-10-21"   # real Baostock rows of that day (c540 partial capture) and the real universe of 2026-10-23
+    with gzip.open(fixtures / "daily_kline" / day / "partial" / "rows.jsonl.gz", "rt", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    with gzip.open(fixtures / "symbol_universe" / "2026-10-23" / "actual" / "rows.jsonl.gz", "rt",
+                   encoding="utf-8") as handle:
+        universe = {str(json.loads(line)["symbol"]).rsplit(".", 1)[-1].zfill(6) for line in handle if line.strip()}
+    store = MemoryTdStore()
+    store.ensure_schema()
+    mapped, dropped = map_rows(rows, {"provider": "baostock"})
+    assert not dropped and set(mapped) < universe          # rows exist for part of the universe: the rest is missing
+    listed = set(mapped) | set(sorted(universe - set(mapped))[:3])   # the day's rows plus three listed symbols with none
+    store.upsert_day(day, BAOSTOCK_PROGRESS_VERSION, mapped)
+    assert ArtifactCatalog(tmp_path).locate("symbol_universe", day) is None
+
+    partitions = publish_filled_days(tmp_path, store, [day], lambda _d: set(listed), 0.995)
+    assert partitions[0]["td_publish"] == "READY" and store.versions[day][-1]["row_count"] == len(mapped)
