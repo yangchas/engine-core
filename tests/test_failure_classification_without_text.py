@@ -78,3 +78,13 @@ def test_the_schedule_configuration_no_longer_carries_text_patterns():
         assert "retryable_first" not in classes, name
         for category in ("deterministic", "retryable"):
             assert not classes.get(category, {}).get("message_patterns"), (name, category)
+
+
+def test_a_redis_client_error_is_redis_unavailable_by_its_type():
+    """C693: postmarket_publish with Redis unreachable answered INTERNAL_ERROR (unclassified). redis-py's own errors
+    are recognised by the module they come from - the real classes, not a message."""
+    import redis
+    from engine_core.data_pipeline.job_contract import exception_code
+    assert exception_code(redis.exceptions.ConnectionError("Connection refused")) == ("REDIS_UNAVAILABLE", True)
+    assert exception_code(redis.exceptions.TimeoutError("Timeout reading from socket")) == ("REDIS_UNAVAILABLE", True)
+    assert exception_code(ConnectionError("a socket error that is not Redis's")) == ("INTERNAL_ERROR", True)

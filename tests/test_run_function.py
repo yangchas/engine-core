@@ -28,6 +28,8 @@ def test_the_request_has_every_field_guardiand_sends():
     assert sent <= set(request), sorted(sent - set(request))
     assert request["asof"] == f"{DAY}T09:21:10+08:00" and request["event"] == "kaipan_hot_092110"
     assert request["args"] == _event("kaipan_hot_092110")["args"]
+    close = run_function.request_for(_event("daily_kline_close_1505"), DAY, ["2026-10-22", DAY], SCHEDULE)
+    assert close["args"]["providers"] == "wencai" and close["tier"] == "wencai"      # the ladder's first rung adds its args
 
 
 def test_the_data_date_follows_the_event_offset_over_trading_days():
@@ -52,3 +54,10 @@ def test_a_function_runs_alone_and_answers_inside_the_contract(tmp_path):
     result = run_function.run_one(run_function.request_for(event, DAY, dates, SCHEDULE), event["handler"], tmp_path)
     assert result["problems"] == [] and result["reply"]["status"] == "ok" and result["exit"] == 0
     assert result["seconds"] < 30
+
+
+def test_go_style_durations_of_the_profiles_parse():
+    assert [run_function._seconds(t) for t in ("901s", "20m", "130m", "2h10m")] == [901, 1200, 7800, 7800]
+    for profile in SCHEDULE["profiles"].values():          # every ladder timeout in the real schedule
+        for rung in profile["ladder"]:
+            assert run_function._seconds(rung["timeout"]) > 0

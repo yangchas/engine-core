@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -40,11 +41,19 @@ def _at(event: dict[str, Any]) -> str | None:
     return _clock(value) if isinstance(value, str) else None
 
 
-def _profile_rung(schedule: dict[str, Any], event: dict[str, Any]) -> tuple[str, int]:
+def _seconds(text: str) -> int:
+    """A Go-style duration: 901s, 20m, 130m, 2h10m."""
+    parts = re.findall(r"(\d+)([smh])", text)
+    if not parts or "".join(n + u for n, u in parts) != text:
+        raise ValueError("unsupported duration " + text)
+    return sum(int(n) * {"s": 1, "m": 60, "h": 3600}[u] for n, u in parts)
+
+
+def _profile_rung(schedule: dict[str, Any], event: dict[str, Any]) -> tuple[str, int, dict[str, Any]]:
+    """The first rung of the event's ladder: its name, its time budget and the args the rung adds to the request."""
     ladder = (schedule.get("profiles", {}).get(event.get("profile") or "") or {}).get("ladder") or [{}]
-    seconds = ladder[0].get("timeout") or "300s"
-    unit = {"s": 1, "m": 60, "h": 3600}.get(seconds[-1], 1)
-    return str(ladder[0].get("name") or "legacy"), int(seconds[:-1]) * unit
+    return str(ladder[0].get("name") or "legacy"), _seconds(ladder[0].get("timeout") or "300s"), \
+        dict(ladder[0].get("args") or {})
 
 
 def _data_date(day: str, offset: int, dates: list[str]) -> str:
@@ -56,14 +65,15 @@ def _data_date(day: str, offset: int, dates: list[str]) -> str:
 
 def request_for(event: dict[str, Any], day: str, dates: list[str], schedule: dict[str, Any]) -> dict[str, Any]:
     """The request guardiand sends a handler for this event on ``day`` (native/guardiand/runtime.go, buildRequest)."""
-    tier, timeout = _profile_rung(schedule, event)
+    tier, timeout, rung_args = _profile_rung(schedule, event)
     start = _at(event) or "00:00:00"
     return {"contract": 1, "event": event["event_id"], "instance": event["event_id"], "attempt": 1,
             "run_id": "function-" + event["event_id"], "idem_key": f"{day}/{event['event_id']}",
             "trade_date": day, "data_date": _data_date(day, int(event.get("data_date_offset") or 0), dates),
             "asof": f"{day}T{start}+08:00", "deadline_at": f"{day}T{_clock(event['deadline'])}+08:00",
             "degrade_requested": False, "tier": tier, "degraded": False, "skipped_tiers": [],
-            "sandbox": {"on": False, "root": ""}, "args": event.get("args") or {}, "timeout_seconds": timeout,
+            "sandbox": {"on": False, "root": ""}, "args": {**(event.get("args") or {}), **rung_args},
+            "timeout_seconds": timeout,
             "gate": {"ref": (event.get("gate") or ""), "params": {}, "probe": False}}
 
 
@@ -82,7 +92,8 @@ def select(schedule: dict[str, Any], *, event: str | None, start: str, until: st
 def run_one(request: dict[str, Any], handler: str, work: Path) -> dict[str, Any]:
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8", "HOME": str(work / "home"),
            "CORE_DATA_ROOT": str(work / "core-data"), "CORE_REPLAY_DIR": str(work / "replay"),
-           "CORE_PROVIDER_STATE": "memory", "REDIS_URL": "redis://replay.invalid:6379/0", "TD_CONFIG": "replay-no-td",
+           "CORE_PROVIDER_STATE": "memory", "REDIS_URL": "redis://replay.invalid:6379/0",
+           "CORE_REDIS_URL": "redis://replay.invalid:6379/0", "TD_CONFIG": "replay-no-td",
            "PYTHONPATH": os.pathsep.join([str(ROOT / "examples" / "replay_site"), str(ROOT / "src"), str(ROOT)])}
     started = time.monotonic()
     done = subprocess.run([sys.executable, str(HANDLER), "run", "--handler", handler], input=json.dumps(request),
