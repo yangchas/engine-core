@@ -187,6 +187,8 @@ def exception_code(exc: BaseException, source: str = "") -> tuple[str, bool]:
         return exc.error_code, exc.retryable
     if isinstance(exc, TimeoutError):
         return ("BAOSTOCK_TIMEOUT" if "baostock" in source.lower() else "FETCH_TIMEOUT"), True
+    if any(cls.__module__.split(".")[0] == "redis" for cls in type(exc).__mro__):    # the Redis client's own errors
+        return "REDIS_UNAVAILABLE", True
     if isinstance(exc, PROGRAMMING_ERRORS):
         return "DETERMINISTIC_FAILURE", False
     return "INTERNAL_ERROR", True

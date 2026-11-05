@@ -125,6 +125,12 @@ class _GapConnectionError(ConnectionError):
     """What the real client raises when its server cannot be reached; here the replay has no server."""
 
 
+class _RedisGapError(_GapConnectionError):
+    """Raised where the real redis-py client raises ``redis.exceptions.ConnectionError``; the module name is part of
+    how Core recognises the Redis client's errors."""
+    __module__ = "redis.exceptions"
+
+
 class _GapRedis:
     """Redis stand-in: every command is a recorded gap that fails like an unreachable server."""
 
@@ -143,7 +149,7 @@ class _GapRedis:
             raise AttributeError(command)
 
         def call(*_args, **_kwargs):
-            raise _GapConnectionError(str(_unrecorded("redis", command)))
+            raise _RedisGapError(str(_unrecorded("redis", command)))
         return call
 
 
@@ -216,7 +222,7 @@ def install() -> None:
     redis_module = types.ModuleType("redis")
     redis_module.Redis = _GapRedis  # type: ignore[attr-defined]
     redis_module.from_url = _GapRedis.from_url  # type: ignore[attr-defined]
-    redis_module.ConnectionError = redis_module.TimeoutError = redis_module.RedisError = _GapConnectionError  # type: ignore[attr-defined]
+    redis_module.ConnectionError = redis_module.TimeoutError = redis_module.RedisError = _RedisGapError  # type: ignore[attr-defined]
     redis_module.exceptions = redis_module  # type: ignore[attr-defined]
     sys.modules["redis"] = redis_module
     taos_module = types.ModuleType("taos")

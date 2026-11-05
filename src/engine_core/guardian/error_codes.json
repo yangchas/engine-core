@@ -262,6 +262,11 @@
    "exit": 75,
    "meaning": "a TD sink raised an unexpected exception (a sink defect, reported instead of hidden); the pool ladder stops and the event retries"
   },
+  "REDIS_UNAVAILABLE": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "the Redis client could not reach or use its server (a redis-py error); later is fine"
+  },
   "TD_FOREIGN_LONG_QUERY": {
    "retryable": false,
    "exit": 10,
