@@ -101,10 +101,11 @@ def open_errors(path: Path) -> list[dict[str, Any]]:
     return [entry for entry in load_errors(path) if not entry.get("retro")]
 
 
-def run_checked(command: list[str], cwd: Path, log: Path) -> tuple[int, list[str]]:
+def run_checked(command: list[str], cwd: Path, log: Path, env: dict[str, str] | None = None) -> tuple[int, list[str]]:
     """Run a test command; the exit code decides, the full output goes to ``log``, the failing lines are returned.
     Never read a test run through ``| tail``: a FAIL line can be the last line or hide behind the last line."""
-    done = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True)
+    done = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True,
+                          env={**os.environ, **env} if env else None)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text(done.stdout + done.stderr, encoding="utf-8")
     failing = [line for line in (done.stdout + done.stderr).splitlines()
@@ -324,8 +325,9 @@ def cmd_merge(args: argparse.Namespace) -> int:
             if code:
                 problems.append(f"affected tests failed (exit {code}): {len(failing)} failing line(s)")
         if any(f.startswith("native/") for f in files):
+            # TMPDIR=/tmp: the guardiand tests open unix sockets under t.TempDir(), whose path must stay under 108 bytes
             code, go_failing = run_checked(["/bin/go", "test", "./..."], ROOT / "native" / "guardiand",
-                                           log_dir / f"{stamp}-go.log")
+                                           log_dir / f"{stamp}-go.log", env={"TMPDIR": "/tmp"})
             failing += go_failing
             if code:
                 problems.append(f"go tests failed (exit {code})")

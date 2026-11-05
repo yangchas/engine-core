@@ -274,3 +274,9 @@ def test_merge_tests_the_merged_tree_not_the_base_and_aborts_when_they_fail(merg
     assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 1
     assert seen == {"merge_in_progress": True, "has_branch_file": True}
     assert _git(origin, "rev-parse", "HEAD") == before and not (origin / "b.py").exists()    # aborted: base untouched
+
+
+def test_a_checked_run_can_override_the_environment(tmp_path):
+    code, _ = release.run_checked([sys.executable, "-c", "import os, sys; sys.exit(0 if os.environ.get('X_C697') == '1' else 3)"],
+                                  tmp_path, tmp_path / "o.log", env={"X_C697": "1"})
+    assert code == 0
