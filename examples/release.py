@@ -48,6 +48,16 @@ def git(repo: Path, *args: str) -> str:
     return done.stdout.strip()
 
 
+def card_header(path: Path) -> tuple[str, str]:
+    """Return the first line-start ROLE and INLINE_OK values in a card."""
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^(ROLE|INLINE_OK):(.*)$", line)
+        if match:
+            values.setdefault(match.group(1), match.group(2).strip())
+    return values.get("ROLE", ""), values.get("INLINE_OK", "")
+
+
 def kind_of(path: str) -> str:
     if path.startswith(("tests/", "docs/", ".claude/")):
         return "tests_docs"
@@ -296,8 +306,20 @@ def cmd_merge(args: argparse.Namespace) -> int:
     if not args.branch or not re.fullmatch(r"C\d+[a-z]?", args.card or ""):
         raise SystemExit("merge needs --branch and --card C###")
     problems = []
-    if not (args.cards_dir / f"{args.card}.md").is_file():
-        problems.append(f"no card {args.cards_dir / (args.card + '.md')} (a change without a card is not merged)")
+    card_path = args.cards_dir / f"{args.card}.md"
+    if not card_path.is_file():
+        problems.append(f"no card {card_path} (a change without a card is not merged)")
+    else:
+        role, inline_ok = card_header(card_path)
+        code_lines = 0
+        for row in git(ROOT, "diff", "--numstat", f"{args.candidate}...{args.branch}").splitlines():
+            added, deleted, path = row.split("\t", 2)
+            if path.startswith(("src/", "examples/", "native/")):
+                code_lines += (int(added) if added.isdecimal() else 0) \
+                    + (int(deleted) if deleted.isdecimal() else 0)
+        if not role.startswith("builder") and code_lines > 5 and not inline_ok:
+            problems.append(f"card ROLE: {role!r}, {code_lines} code lines changed; "
+                            "实现卡由 Codex 运行(ROLE: builder);大脑只改 ≤5 行,或在卡里写 INLINE_OK: <理由>")
     if len(unreviewed := open_errors(args.errors_file)) >= ERRORS_BEFORE_REVIEW:
         problems.append(f"{len(unreviewed)} unreviewed errors: audit and retrospective first")
     base = args.candidate

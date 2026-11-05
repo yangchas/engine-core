@@ -225,6 +225,51 @@ def _merge_args(origin, evidence, cards, **extra):
     return argparse.Namespace(**values)
 
 
+def _add_examples_code_change(origin, lines=6):
+    _git(origin, "checkout", "-q", "feature")
+    _commit(origin, {"examples/role_gate_sample.py": "".join(f"line{i}\n" for i in range(lines))}, "large inline change")
+    _git(origin, "checkout", "-q", "main")
+
+
+def test_merge_requires_builder_for_large_inline_implementation(mergeable, monkeypatch, capsys):
+    origin, evidence, cards = mergeable
+    _add_examples_code_change(origin)
+    (cards / "C900.md").write_text("ID: C900\nROLE: inline\n")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (0, []))
+
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 1
+    output = capsys.readouterr().out
+    assert "ROLE: 'inline'" in output and "6" in output
+    assert "实现卡由 Codex 运行(ROLE: builder);大脑只改 ≤5 行,或在卡里写 INLINE_OK: <理由>" in output
+
+
+def test_merge_allows_inline_implementation_of_five_or_fewer_lines(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    _add_examples_code_change(origin, lines=5)
+    (cards / "C900.md").write_text("ID: C900\nROLE: inline\n")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (0, []))
+
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 0
+
+
+def test_merge_allows_large_builder_implementation(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    _add_examples_code_change(origin)
+    (cards / "C900.md").write_text("ID: C900\nROLE: builder (Codex)\n")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (0, []))
+
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 0
+
+
+def test_merge_allows_large_inline_implementation_with_inline_ok(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    _add_examples_code_change(origin)
+    (cards / "C900.md").write_text("ID: C900\nROLE: inline\nINLINE_OK: approved small exception\n")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (0, []))
+
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 0
+
+
 def test_merge_needs_the_card_and_passing_tests_and_records_the_card_in_the_subject(mergeable, monkeypatch):
     origin, evidence, cards = mergeable
     monkeypatch.setattr(release, "run_checked", lambda *a, **k: (0, []))
