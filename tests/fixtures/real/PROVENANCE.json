@@ -1920,6 +1920,46 @@
     }
    },
    "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/plate_amount_day_1029.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_day_1029",
+   "sha256": "50b60fdecca1ff53c6ce7c65e2060526708a4707bbcf23a0fd9e233748e2455b",
+   "bytes": 56604,
+   "recorded_at": "2026-11-05T19:25:48+08:00",
+   "statements": 2,
+   "rows": 8036,
+   "errors": 0,
+   "command": "examples/record_td_scenario.py plate_amount_day_1029",
+   "call": {
+    "function": "plate_amount_baseline._read_days",
+    "args": [
+     [
+      "2026-10-29"
+     ]
+    ]
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
+  },
+  "td/plate_amount_day_1030.json.gz": {
+   "kind": "raw_td_result",
+   "scenario": "plate_amount_day_1030",
+   "sha256": "e65378e6ca3d03440e07bdd141fde2af5246749ee413b22bb9b8d4724845f827",
+   "bytes": 91479,
+   "recorded_at": "2026-11-05T19:25:50+08:00",
+   "statements": 2,
+   "rows": 12909,
+   "errors": 0,
+   "command": "examples/record_td_scenario.py plate_amount_day_1030",
+   "call": {
+    "function": "plate_amount_baseline._read_days",
+    "args": [
+     [
+      "2026-10-30"
+     ]
+    ]
+   },
+   "source": "core TD (read-only SELECT/SHOW)"
   }
  },
  "_c662_recordings": {

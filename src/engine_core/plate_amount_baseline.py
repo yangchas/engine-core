@@ -18,6 +18,11 @@ WINDOW_DAYS = 64
 SLOT_0945_WINDOW_START = "09:30:01"
 SLICE_DAYS = 5
 SLOTS = ("0925", "0945")
+# A finished day's 09:25 and 09:45 amounts never change, so each is read from TD once and kept in Redis. Reading the
+# whole window every morning cost 262 s on an idle TD with 28 sessions and grows by ~9 s per session up to WINDOW_DAYS.
+OBS_KEY_PREFIX = "core:plate_amount_obs:v1:"
+OBS_TTL_SECONDS = 100 * 86400
+MIN_FINAL_SYMBOLS = 4000        # fewer observations in a slot: the day was not captured whole, so it is never kept
 
 
 def _day(value: Any) -> str:
@@ -163,9 +168,8 @@ def _auction_slice(cursor: Any, days: list[str]) -> list[tuple]:
         raise RuntimeError(f"plate_amount_baseline_auction_query {days[0]}..{days[-1]}: {exc}") from exc
 
 
-def _read_td(target_date: str, dates: Sequence[str]) -> list[dict[str, Any]]:
-    if not dates:
-        return []
+def _read_days(dates: Sequence[str]) -> list[dict[str, Any]]:
+    """The observations of ``dates`` straight from TD (sliced queries)."""
     connection = _td_connect()
     result: list[dict[str, Any]] = []
     try:
@@ -193,6 +197,74 @@ def _read_td(target_date: str, dates: Sequence[str]) -> list[dict[str, Any]]:
     finally:
         connection.close()
     return result
+
+
+def _obs_store():
+    from .runtime_state import StateStore, redis_configured
+    return StateStore() if redis_configured() else None
+
+
+def _cached_day(store: Any, day: str) -> list[dict[str, Any]] | None:
+    """The kept observations of ``day``, or None when there are none or they do not look like a finished day."""
+    if store is None:
+        return None
+    from .runtime_state import StateUnavailable
+    try:
+        value = store.get(OBS_KEY_PREFIX + day)
+    except StateUnavailable:
+        return None
+    if not isinstance(value, dict) or set(value) != set(SLOTS):
+        return None
+    rows: list[dict[str, Any]] = []
+    for slot in SLOTS:
+        amounts = value[slot]
+        if not isinstance(amounts, dict) or len(amounts) < MIN_FINAL_SYMBOLS or not all(
+                isinstance(amount, int) and not isinstance(amount, bool) for amount in amounts.values()):
+            return None
+        rows.extend({"trade_date": day, "slot": slot, "symbol": symbol, "amount_yuan": amount}
+                    for symbol, amount in amounts.items())
+    return rows
+
+
+def _keep_day(store: Any, day: str, rows: Sequence[Mapping[str, Any]]) -> bool:
+    """Keep ``day`` when both slots were captured whole; a thin day is read again next time, never frozen."""
+    if store is None:
+        return False
+    kept: dict[str, dict[str, int]] = {slot: {} for slot in SLOTS}
+    for row in rows:
+        if row["trade_date"] == day and row["slot"] in kept:
+            kept[row["slot"]][row["symbol"]] = int(row["amount_yuan"])
+    if any(len(amounts) < MIN_FINAL_SYMBOLS for amounts in kept.values()):
+        return False
+    from .runtime_state import StateUnavailable
+    try:
+        store.set(OBS_KEY_PREFIX + day, kept, OBS_TTL_SECONDS)
+    except StateUnavailable:
+        return False
+    return True
+
+
+def read_observations(dates: Sequence[str], *, store: Any = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Observations of ``dates``: finished days from the Redis copy, only the missing ones from TD. Returns the rows and
+    what was done: {"from_cache": n, "from_td": n, "kept": n}."""
+    rows: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for day in dates:
+        cached = _cached_day(store, day)
+        if cached is None:
+            missing.append(day)
+        else:
+            rows.extend(cached)
+    kept = 0
+    if missing:
+        fresh = _read_days(missing)
+        rows.extend(fresh)
+        kept = sum(_keep_day(store, day, fresh) for day in missing)
+    return rows, {"from_cache": len(dates) - len(missing), "from_td": len(missing), "kept": kept}
+
+
+def _read_td(target_date: str, dates: Sequence[str]) -> list[dict[str, Any]]:
+    return read_observations(list(dates), store=_obs_store())[0] if dates else []
 
 
 def _membership_inputs(catalog: ArtifactCatalog, dates: Sequence[str]):
@@ -269,8 +341,9 @@ def build_and_store_plate_amount_baseline(target_date: str, *, artifact_root: st
     dates = sorted(set(td_days))[-WINDOW_DAYS:]
     membership_by_date, versions = _membership_inputs(catalog, dates)
     available = datetime.now(timezone.utc).isoformat()
+    observations, observation_source = read_observations(dates, store=_obs_store()) if dates else ([], {})
     built = build_plate_amount_baseline(target_date=target, membership_by_date=membership_by_date,
-        observations=_read_td(target, dates), candidate_dates=dates, membership_versions=versions, available_at=available)
+        observations=observations, candidate_dates=dates, membership_versions=versions, available_at=available)
     manifest = {"schema": SCHEMA, "dataset": DATASET, "trade_date": target,
         "point_in_time_date": max(dates) if dates else None, "available_at": available,
         "source": ["market_data1.auction_snapshot_v2", "market_data1.stock_tick_v2", "plate_members"],
@@ -284,4 +357,5 @@ def build_and_store_plate_amount_baseline(target_date: str, *, artifact_root: st
     return {"status": built["status"], "reused": False, "version": committed["version"],
             "sha256": committed["sha256"], "row_count": committed["row_count"],
             "available_at": committed["available_at"], "date_count": len(dates),
-            "membership_date_count": len(membership_by_date), "redis_published": published}
+            "membership_date_count": len(membership_by_date), "observations": observation_source,
+            "redis_published": published}
