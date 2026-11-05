@@ -148,7 +148,7 @@ def test_child_processes_of_a_handler_are_replayed_too_and_run_on_virtual_time(t
            "PYTHONPATH": os.pathsep.join([str(ROOT / "examples" / "replay_site"), str(ROOT / "src")])}
     started = time.monotonic()
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=60)
-    assert result.returncode == 0 and result.stdout.strip() == "UnrecordedRequest", result
+    assert result.returncode == 0 and result.stdout.strip() == "_GapConnectionError", result
     assert time.monotonic() - started < 20                           # not 240 real seconds
     gap = json.loads((tmp_path / "replay" / "unrecorded.jsonl").read_text().splitlines()[0])
     assert (gap["source"], gap["instance"]) == ("baostock", "inst_x")
@@ -186,7 +186,7 @@ def test_a_child_that_replaces_pythonpath_is_still_sealed_through_the_interprete
     assert result.stdout.strip() == "sealed", result
     inline = subprocess.run([str(wrapper), "-c", "import baostock\ntry:\n    baostock.login()\nexcept Exception as e:\n"
                              "    print(type(e).__name__)"], capture_output=True, text=True, env=env, timeout=60)
-    assert inline.stdout.strip() == "UnrecordedRequest", inline
+    assert inline.stdout.strip() == "_GapConnectionError", inline
 
 
 def test_grandchildren_are_sealed_too(tmp_path):
