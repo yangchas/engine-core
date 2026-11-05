@@ -42,9 +42,11 @@ def test_unrecorded_requests_fail_and_are_listed_not_hidden(replay_dir):
 
 
 def test_baostock_and_wencai_stand_ins_refuse_instead_of_calling_out(replay_dir):
-    stand_in = replay_handler._Unreplayed("baostock", "baostock")        # used directly: install() patches the process
-    with pytest.raises(replay_handler.UnrecordedRequest):
+    stand_in = replay_handler._Unreplayed("baostock", "baostock", unreachable=True)   # used directly: install() patches the process
+    with pytest.raises(ConnectionError):   # an unreachable Baostock server fails with a connection error
         stand_in.login()
+    with pytest.raises(replay_handler.UnrecordedRequest):
+        replay_handler._Unreplayed("pywencai", "wencai").query()
     assert json.loads((replay_dir / "unrecorded.jsonl").read_text().splitlines()[0])["source"] == "baostock"
 
 

@@ -45,3 +45,16 @@ def test_a_missing_symbol_universe_artifact_is_upstream_not_ready_not_a_bare_run
         text = (root / "examples" / script).read_text(encoding="utf-8")
         assert not re.search(r'RuntimeError\(\s*"symbol_universe_artifact_required', text), script
         assert 'CoreError("UPSTREAM_NOT_READY", "symbol_universe_artifact_required' in text, script
+
+
+def test_a_coded_error_raised_by_a_fetch_keeps_its_code_through_the_job_runner(tmp_path):
+    """JobRunner used to wrap every fetch exception in RuntimeError('fetch_failed:...'), so the code never arrived."""
+    from engine_core.data_pipeline.jobs import JobRunner, RequestBudget
+
+    def fetch(_day):
+        raise CoreError("UPSTREAM_NOT_READY", "limit_up_pool_artifact_required:2026-10-22")
+
+    runner = JobRunner(artifact_root=tmp_path, budget=RequestBudget(max_requests=1, min_interval_seconds=0))
+    with pytest.raises(CoreError) as raised:
+        runner.run("limit_reasons", "2026-10-23", fetch=fetch, dry_run=True)
+    assert raised.value.error_code == "UPSTREAM_NOT_READY" and raised.value.retryable

@@ -655,8 +655,9 @@ def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | P
         for marker in ("kaipan_hot_plates_response_date_mismatch",):
             if marker in stderr:
                 error_code = marker
-        raise FetchJobError(str(payload.get("error") or payload.get("error_code") or
-                                "fetch_job_failed:" + str(completed.returncode)),
+        detail = payload.get("detail")
+        raise FetchJobError(str(payload.get("error") or (detail.get("error") if isinstance(detail, dict) else None) or
+                                payload.get("error_code") or "fetch_job_failed:" + str(completed.returncode)),
                             error_code, stderr, returncode=completed.returncode or None)
     return payload
 

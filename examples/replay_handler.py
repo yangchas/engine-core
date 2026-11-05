@@ -6,7 +6,7 @@ Runs the real examples/guardian_handler.py with every upstream replaced:
     request's date/level/plate/symbol; anything else raises UnrecordedRequest;
   * every internet-protocol connection is a recorded gap (network.connect / network.resolve);
   * ``baostock`` / ``pywencai`` / ``redis`` / ``taos`` are stand-ins: any use is a recorded gap and fails the way an
-    unreachable source fails (UnrecordedRequest, or ConnectionError for Redis).
+    unreachable source fails (UnrecordedRequest, or ConnectionError for Redis and Baostock).
 Every request that could not be answered is appended, with the instance that made it, to $CORE_REPLAY_DIR/unrecorded.jsonl and every reply the handler
 produced to $CORE_REPLAY_DIR/replies.jsonl, so the report can list gaps instead of hiding them.
 """
@@ -105,15 +105,18 @@ class ReplayKaipan(types.ModuleType):
 
 
 class _Unreplayed(types.ModuleType):
-    def __init__(self, name, source):
+    def __init__(self, name, source, unreachable=False):
         super().__init__(name)
         self._source = source
+        self._unreachable = unreachable   # the real client fails with a connection error when its server cannot be reached
 
     def __getattr__(self, attribute):
         if attribute.startswith("__"):
             raise AttributeError(attribute)
 
         def call(*args, **kwargs):
+            if self._unreachable:
+                raise _GapConnectionError(str(_unrecorded(self._source, attribute)))
             raise _unrecorded(self._source, attribute)
         return call
 
@@ -219,7 +222,7 @@ def install() -> None:
     taos_module = types.ModuleType("taos")
     taos_module.connect = _gap_taos_connect  # type: ignore[attr-defined]
     sys.modules["taos"] = taos_module
-    sys.modules["baostock"] = _Unreplayed("baostock", "baostock")
+    sys.modules["baostock"] = _Unreplayed("baostock", "baostock", unreachable=True)
     sys.modules["pywencai"] = _Unreplayed("pywencai", "wencai")
 
 

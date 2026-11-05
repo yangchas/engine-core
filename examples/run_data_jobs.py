@@ -421,7 +421,7 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         pool = load_dataset("limit_up_pool", day, prefer="file",
                             catalog=catalog)
         if pool is None:
-            raise RuntimeError("limit_up_pool_artifact_required:" + day)
+            raise CoreError("UPSTREAM_NOT_READY", "limit_up_pool_artifact_required:" + day)
         pool_rows = pool.rows
         symbols = sorted({str(row.get("symbol", row.get("code", ""))).zfill(6)
                           for row in pool_rows if row.get("symbol") or row.get("code")})

@@ -251,6 +251,8 @@ class JobRunner:
                     self._record_failure(name, trade_date, "provider_blocked", clock)
             elif not dry_run:
                 self._record_failure(name, trade_date, f"fetch_failed:{type(exc).__name__}", clock)
+            if isinstance(exc, CoreError):
+                raise   # a registered code survives the fetch wrapper; the text form below would drop it
             raise RuntimeError(f"fetch_failed:{type(exc).__name__}:{exc}") from None
         fetch_meta = dict(raw) if isinstance(raw, Mapping) else {}
         raw_rows = fetch_meta.get("rows", raw) if fetch_meta else raw
