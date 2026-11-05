@@ -379,8 +379,8 @@ def _timed_probe(fn, timeout: float = 5.0):
 def _td_probes() -> dict[str, Any]:
     if not os.environ.get("TD_CONFIG"):
         raise RuntimeError("TD_CONFIG_missing")
-    import taos
-    connection = taos.connect(database="market_data1", config=os.environ["TD_CONFIG"])
+    from ..data_pipeline.td_sink import connect_td
+    connection = connect_td("market_data1")
     try:
         result = {"connection": "ok"}
         for table in ("stock_tick_v2", "auction_snapshot_v2"):
@@ -396,8 +396,8 @@ def _td_probes() -> dict[str, Any]:
 def _td_count(day: str, root: Path) -> Any:
     if not os.environ.get("TD_CONFIG"):
         raise RuntimeError("TD_CONFIG_missing")
-    import taos
-    connection = taos.connect(database="market_data1", config=os.environ["TD_CONFIG"])
+    from ..data_pipeline.td_sink import connect_td
+    connection = connect_td("market_data1")
     try:
         cursor = connection.cursor()
         end = (date.fromisoformat(day) + timedelta(days=1)).isoformat()

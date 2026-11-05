@@ -34,10 +34,8 @@ def _query(cursor, sql):
 
 
 def _source_rows(day: str):
-    if not os.environ.get("TD_CONFIG"):
-        raise RuntimeError("TD_CONFIG_missing")
-    import taos
-    connection = taos.connect(database="market_data1", config=os.environ["TD_CONFIG"])
+    from engine_core.data_pipeline.td_sink import connect_td
+    connection = connect_td("market_data1")
     try:
         cursor = connection.cursor()
         compact = day.replace("-", "")

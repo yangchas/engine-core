@@ -233,6 +233,10 @@ guardian_handler._run = broken
 raise SystemExit(replay_handler.main())
 """
 
+UNREGISTERED_MUTANT = MUTANT.replace(
+    '''return 20, {{"contract": 1, "status": "not_applicable", "error_code": "", "retryable": False, "artifacts": []}}''',
+    '''return 40, {{"contract": 1, "status": "failed", "error_code": "SOME_NEW_CODE_NOBODY_REGISTERED", "retryable": False, "artifacts": []}}''')
+
 
 def _replay_slice(tmp_path, handler=None):
     command = [sys.executable, str(ROOT / "examples" / "replay_day.py"), "--date", "2026-10-23", "--from", "00:00:00",
@@ -260,6 +264,17 @@ def test_a_handler_that_breaks_the_contract_makes_the_replay_fail(tmp_path):
     code, report = _replay_slice(tmp_path, handler=mutant)
     assert code == 1 and report["verdict"] == "FAIL"
     assert any("CONTRACT_VIOLATION calendar_refresh_0005" in p for p in report["problems"]), report["problems"]
+
+
+@needs_go
+def test_a_handler_answering_with_an_unregistered_code_makes_the_replay_fail(tmp_path):
+    """Mutation check (design/33 S5): the same slice, one handler answering a code nobody registered, must FAIL."""
+    mutant = tmp_path / "unregistered_handler.py"
+    mutant.write_text(UNREGISTERED_MUTANT.format(examples=str(ROOT / "examples"), src=str(ROOT / "src"), root=str(ROOT)))
+    code, report = _replay_slice(tmp_path, handler=mutant)
+    assert code == 1 and report["verdict"] == "FAIL"
+    assert any("UNREGISTERED_CODE calendar_refresh_0005: SOME_NEW_CODE_NOBODY_REGISTERED" in p
+               for p in report["problems"]), report["problems"]
 
 
 def test_a_reply_with_an_unregistered_error_code_is_an_orchestration_defect(tmp_path):

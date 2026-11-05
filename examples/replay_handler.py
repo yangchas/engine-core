@@ -132,6 +132,9 @@ class _GapRedis:
     def __init__(self, *_args, **_kwargs):
         pass
 
+    def close(self, *_args, **_kwargs):
+        """Closing a client that never reached a server sends nothing, so it is not a gap."""
+
     def __getattr__(self, command):
         if command.startswith("__"):
             raise AttributeError(command)
