@@ -258,6 +258,18 @@
    "status": "degraded",
    "meaning": "another process has held a TD query for a long time (reported, not an error of this function)"
   },
+  "TD_CORE_LONG_QUERY": {
+   "retryable": false,
+   "exit": 10,
+   "status": "degraded",
+   "meaning": "a TD query of Core itself has been running for a long time (reported; the query is Core's own defect to fix, the check never kills it)"
+  },
+  "TD_MEMORY_HEADROOM_LOW": {
+   "retryable": false,
+   "exit": 10,
+   "status": "degraded",
+   "meaning": "the host leaves little room for TD's query memory pool (available memory minus TDengine's documented reserve, an estimate); 0x073a is likely until it grows"
+  },
   "TD_REQUIRES_BAOSTOCK": {
    "retryable": true,
    "exit": 30,

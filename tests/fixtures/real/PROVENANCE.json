@@ -1953,5 +1953,25 @@
    "command": "examples/record_quote_slice_fixture.py 2026-11-03 --tag 0925",
    "note": "read-only recording"
   }
+ },
+ "_proc_recordings": {
+  "proc/meminfo_2026-11-05_1805.txt": {
+   "bytes": 1279,
+   "command": "cp /proc/meminfo tests/fixtures/real/proc/meminfo_2026-11-05_1805.txt",
+   "fetched_at": "2026-11-05T18:11:06+08:00",
+   "kind": "raw_proc_file",
+   "note": "this host: shared 7.4 GB VM with taosd (pid 1105), redis and other tenants",
+   "sha256": "6737b21d752e0ad6409dee32d0b077632e5f3c1a87cc0a9e637d3f8172bcba02",
+   "source_path": "/proc/meminfo"
+  },
+  "proc/taosd_status_2026-11-05_1805.txt": {
+   "bytes": 1159,
+   "command": "cp /proc/1105/status tests/fixtures/real/proc/taosd_status_2026-11-05_1805.txt",
+   "fetched_at": "2026-11-05T18:11:06+08:00",
+   "kind": "raw_proc_file",
+   "note": "this host: shared 7.4 GB VM with taosd (pid 1105), redis and other tenants",
+   "sha256": "eb2b799f1a7f5d30680ae571c3e4b0e02b3062892294d475a5bb000acbdf5c0e",
+   "source_path": "/proc/1105/status"
+  }
  }
 }

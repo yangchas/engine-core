@@ -382,15 +382,11 @@ class TaosStore:
                 pass
             self._conn = None
 
+    def _database_exists(self) -> bool:
+        return self.database in {row[0] for row in self._run("SHOW DATABASES")}
+
     def schema_exists(self) -> bool:
-        cursor = self._cursor()
-        try:
-            cursor.execute("SHOW DATABASES")
-            names = {row[0] for row in cursor.fetchall()}
-        except Exception as exc:
-            self.close()
-            raise td_statement_error(exc, "td_statement_failed:" + str(exc)[:200]) from exc
-        if self.database not in names:
+        if not self._database_exists():
             return False
         rows = self._run(f"SELECT COUNT(*) FROM {self.database}.{META_TABLE}", missing_ok=True)
         return bool(rows) and self._run(f"DESCRIBE {self.database}.{SUPER_TABLE}", missing_ok=True) != []
