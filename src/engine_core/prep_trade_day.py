@@ -69,6 +69,17 @@ def _run(repo: Path, script: str, args: list[str]) -> tuple[int, str]:
     return result.returncode, output[-1200:]
 
 
+def _declared_code(output: str) -> str | None:
+    """The error code a failed job script printed in its contract line (stderr text may follow it)."""
+    from .errors import declared_result, lookup
+    for line in reversed(str(output or "").splitlines()):
+        declared = declared_result(line)
+        if declared is not None:
+            code = declared.get("error_code")
+            return code if isinstance(code, str) and lookup(code) and not lookup(code).get("reserved") else None
+    return None
+
+
 def _step(name: str, dataset: str, day: str | None, catalog: ArtifactCatalog,
           *, asof: str, reason: str | None = None) -> dict[str, Any]:
     started = time.monotonic()
@@ -416,6 +427,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
          "row_count": None, "version": None, "elapsed_ms": 0.0},
     ]
     errors: list[str] = []
+    error_codes: list[str | None] = []   # the registered code each failed job script declared (None: none declared)
     warnings: list[str] = []
     timings: dict[str, float] = {}
     symbol_contract_status: str | None = None
@@ -462,6 +474,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                 import logging
                 logging.getLogger(__name__).error("symbol_universe preparation failed: %s", out[-2000:])
                 errors.append("symbol_universe:COMMAND_FAILED")
+                error_codes.append(_declared_code(out))
             if symbol_contract_status in {"ok", "degraded"} and live_default_asof:
                 # A successful real-time fetch becomes visible at completion, never retroactively.
                 asof = datetime.now().astimezone().isoformat()
@@ -473,6 +486,7 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
             timings["previous_daily_kline"] = round((time.monotonic() - started) * 1000, 3)
             if rc:
                 errors.append("daily_kline:COMMAND_FAILED")
+                error_codes.append(_declared_code(out))
         if _manifest(catalog, "daily_kline", previous, asof=asof) and (
                 not _manifest(catalog, "daily_indicators", previous, asof=asof)
                 or not _manifest(catalog, "daily_report_features", previous, asof=asof)):
@@ -511,24 +525,28 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                              (time.monotonic() - started) * 1000, 3)
                 if rc:
                     errors.append(job + ":COMMAND_FAILED")
+                    error_codes.append(_declared_code(out))
         if not _latest_step("hot_rank", "hot_rank", trade_date, catalog, asof=asof)["trade_date"]:
             started = time.monotonic()
             rc, out = _run(repo, "capture_ths_hot_rank.py", ["--execute", "--artifact-root", str(root)])
             timings["hot_rank"] = round((time.monotonic() - started) * 1000, 3)
             if rc:
                 errors.append("hot_rank:COMMAND_FAILED")
+                error_codes.append(_declared_code(out))
         started = time.monotonic()
         rc, out = _run(repo, "build_auction_baseline.py", ["--date", trade_date, "--write",
             "--artifact-root", str(root)])
         timings["auction_baseline"] = round((time.monotonic() - started) * 1000, 3)
         if rc:
             errors.append("auction_baseline:COMMAND_FAILED:" + out[-240:])
+            error_codes.append(_declared_code(out))
         started = time.monotonic()
         rc, out = _run(repo, "build_plate_amount_baseline.py", ["--date", trade_date, "--write",
             "--artifact-root", str(root)])
         timings["plate_amount_baseline"] = round((time.monotonic() - started) * 1000, 3)
         if rc:
             errors.append("plate_amount_baseline:COMMAND_FAILED:" + out[-240:])
+            error_codes.append(_declared_code(out))
         try:
             theme_started = time.monotonic()
             budget = max(0.0, float(theme_wait_seconds))
@@ -596,5 +614,5 @@ def build_prep_report(root: str | Path, trade_date: str, *, write: bool = False,
                 item["elapsed_ms"] = timings[item["step"]]
     return {"trade_date": trade_date, "previous_trade_date": previous,
             "mode": "WRITE" if write else "DRY_RUN", "steps": steps,
-            "errors": errors, "warnings": warnings,
+            "errors": errors, "error_codes": [code for code in error_codes if code], "warnings": warnings,
             "status": "READY" if all(s["status"] == "READY" for s in steps) and not errors and not warnings else "PARTIAL"}

@@ -255,7 +255,7 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
         found = load_dataset("symbol_universe", day, prefer="file",
                              catalog=ArtifactCatalog(artifact_root))
         if found is None:
-            raise RuntimeError("symbol_universe_artifact_required:" + day)
+            raise CoreError("UPSTREAM_NOT_READY", "symbol_universe_artifact_required:" + day)
         if sample_path is not None:
             return _symbols_file(sample_path, found.rows)
         return [str(row.get("symbol", row.get("code", ""))).zfill(6) for row in found.rows]
@@ -338,7 +338,7 @@ def _default_adapters(artifact_root: str, legacy_root: str, max_requests: int,
             universe = load_dataset("symbol_universe", day, prefer="file",
                                     catalog=ArtifactCatalog(artifact_root))
             if universe is None:
-                raise RuntimeError("symbol_universe_artifact_required:" + day)
+                raise CoreError("UPSTREAM_NOT_READY", "symbol_universe_artifact_required:" + day)
             identity = {str(row.get("symbol", "")).zfill(6): row
                         for row in universe.rows if row.get("symbol")}
             result["expected_symbols"] = sorted(
@@ -917,7 +917,7 @@ def main(argv: list[str] | None = None, *, now_fn=None) -> int:
                     universe = load_dataset("symbol_universe", args.date, prefer="file",
                                             catalog=ArtifactCatalog(args.artifact_root))
                     if universe is None:
-                        raise RuntimeError("symbol_universe_artifact_required:" + args.date)
+                        raise CoreError("UPSTREAM_NOT_READY", "symbol_universe_artifact_required:" + args.date)
                     expected_count = sum(str(row.get("trade_status", "")).strip() != "0"
                                          for row in universe.rows)
                     configured["wencai"] = WencaiDailyProvider(

@@ -12,8 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from engine_core.auction_baseline import build_and_store_auction_baseline
+from engine_core.data_pipeline.job_contract import contract_main
 
 
+@contract_main("build_auction_baseline")
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date", required=True, help="target trade date; baseline uses dates strictly before it")
