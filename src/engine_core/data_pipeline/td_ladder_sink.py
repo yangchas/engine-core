@@ -58,14 +58,7 @@ class TaosLadderStore(TaosStore):
     """Real TDengine store for the ladder tables (reuses the C567 connection / statement runner)."""
 
     def schema_exists(self) -> bool:
-        cursor = self._cursor()
-        try:
-            cursor.execute("SHOW DATABASES")
-            names = {row[0] for row in cursor.fetchall()}
-        except Exception as exc:
-            self.close()
-            raise TdUnavailable("td_statement_failed:" + str(exc)[:200]) from exc
-        if self.database not in names:
+        if not self._database_exists():
             return False
         return bool(self._run(f"DESCRIBE {self.database}.{SUPER_TABLE}", missing_ok=True)) and bool(
             self._run(f"DESCRIBE {self.database}.{META_TABLE}", missing_ok=True))

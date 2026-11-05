@@ -91,14 +91,7 @@ class PoolTaosStore(TaosStore):
     """Real TDengine store for the pool tables (connection handling inherited from ``TaosStore``)."""
 
     def schema_exists(self) -> bool:
-        cursor = self._cursor()
-        try:
-            cursor.execute("SHOW DATABASES")
-            names = {row[0] for row in cursor.fetchall()}
-        except Exception as exc:
-            self.close()
-            raise TdUnavailable("td_statement_failed:" + str(exc)[:200]) from exc
-        if self.database not in names:
+        if not self._database_exists():
             return False
         return bool(self._run(f"SELECT COUNT(*) FROM {self.database}.{META_TABLE}", missing_ok=True)) and \
             self._run(f"DESCRIBE {self.database}.{SUPER_TABLE}", missing_ok=True) != []

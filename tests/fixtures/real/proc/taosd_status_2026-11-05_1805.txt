@@ -1,0 +1,59 @@
+Name:	taosd
+Umask:	0000
+State:	S (sleeping)
+Tgid:	1105
+Ngid:	0
+Pid:	1105
+PPid:	1044
+TracerPid:	0
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+FDSize:	256
+Groups:	0 
+NStgid:	1105	38
+NSpid:	1105	38
+NSpgid:	1044	7
+NSsid:	943	1
+Kthread:	0
+VmPeak:	 5850244 kB
+VmSize:	 5047308 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	 2509736 kB
+VmRSS:	 1859336 kB
+RssAnon:	 1845564 kB
+RssFile:	   13772 kB
+RssShmem:	       0 kB
+VmData:	 4737444 kB
+VmStk:	     132 kB
+VmExe:	   19348 kB
+VmLib:	    3488 kB
+VmPTE:	    6744 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	0
+untag_mask:	0xffffffffffffffff
+Threads:	125
+SigQ:	2/29506
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000001000
+SigIgn:	0000000000001000
+SigCgt:	0000000100094ee7
+CapInh:	0000000000000000
+CapPrm:	00000000a80425fb
+CapEff:	00000000a80425fb
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	2
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	always enabled
+Cpus_allowed:	3
+Cpus_allowed_list:	0-1
+Mems_allowed:	00000000,00000001
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	14066573
+nonvoluntary_ctxt_switches:	27708

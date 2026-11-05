@@ -81,6 +81,21 @@ class ReferenceSnapshotStore:
             self._conn = self._connect_fn()
         return self._conn.cursor()
 
+    def _run(self, sql: str, *, fetch: str | None = None) -> Any:
+        """One statement on its own cursor, released as soon as its rows are read: TD keeps a query registered
+        (and its memory held) until the cursor closes, and this store's connection lives for a whole refresh."""
+        cursor = self._cursor()
+        try:
+            cursor.execute(sql)
+            if fetch == "all":
+                return list(cursor.fetchall())
+            return cursor.fetchone() if fetch == "one" else None
+        finally:
+            try:
+                cursor.close()
+            except Exception:  # noqa: BLE001 - releasing must not hide the statement's own error
+                pass
+
     def close(self) -> None:
         if self._conn is not None:
             try:
@@ -95,24 +110,21 @@ class ReferenceSnapshotStore:
         self.close()
 
     def ensure_schema(self) -> None:
-        cursor = self._cursor()
-        cursor.execute(
+        self._run(
             f"CREATE TABLE IF NOT EXISTS {self.database}.{_META_TABLE} ("
             "ts TIMESTAMP,dataset VARCHAR(32),version VARCHAR(40),snapshot_state VARCHAR(16),"
             "row_count INT,sha256 VARCHAR(64),source VARCHAR(96),available_at VARCHAR(40),"
             "request_count INT,elapsed_ms BIGINT)"
         )
         for table in _TABLES.values():
-            cursor.execute(
+            self._run(
                 f"CREATE TABLE IF NOT EXISTS {self.database}.{table} ("
                 "ts TIMESTAMP,version VARCHAR(40),row_id VARCHAR(64),plate_code VARCHAR(16),"
                 "symbol VARCHAR(16),source VARCHAR(96),available_at VARCHAR(40),payload NCHAR(4096))"
             )
 
     def _next_epoch_ms(self, table: str) -> int:
-        cursor = self._cursor()
-        cursor.execute(f"SELECT ts FROM {self.database}.{table} ORDER BY ts DESC LIMIT 1")
-        row = cursor.fetchone()
+        row = self._run(f"SELECT ts FROM {self.database}.{table} ORDER BY ts DESC LIMIT 1", fetch="one")
         now = int(time.time() * 1000)
         if row and row[0] is not None:
             prior = row[0]
@@ -134,9 +146,7 @@ class ReferenceSnapshotStore:
         values = (stamp, dataset, version, state, row_count, sha256, source,
                   available_at, request_count, elapsed_ms)
         sql_values = ",".join(_literal(value) for value in values)
-        self._cursor().execute(
-            f"INSERT INTO {self.database}.{_META_TABLE} VALUES ({sql_values})"
-        )
+        self._run(f"INSERT INTO {self.database}.{_META_TABLE} VALUES ({sql_values})")
 
     def begin(self, dataset: str, *, source: str, available_at: str) -> str:
         if dataset not in _TABLES:
@@ -163,9 +173,8 @@ class ReferenceSnapshotStore:
         table = _TABLES[dataset]
         base_ms = self._next_epoch_ms(table)
         existing_ids: set[str] = set()
-        cursor = self._cursor()
-        cursor.execute(f"SELECT row_id FROM {self.database}.{table} WHERE version={_literal(version)}")
-        existing_ids.update(str(row[0]) for row in cursor.fetchall())
+        existing_ids.update(str(row[0]) for row in self._run(
+            f"SELECT row_id FROM {self.database}.{table} WHERE version={_literal(version)}", fetch="all"))
         rows_to_insert: list[tuple[Any, ...]] = []
         for index, (row, payload) in enumerate(zip(materialized, payloads)):
             row_id = f"{index:08d}{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:56]}"
@@ -177,7 +186,7 @@ class ReferenceSnapshotStore:
         for offset in range(0, len(rows_to_insert), self.batch_size):
             batch = rows_to_insert[offset:offset + self.batch_size]
             values = ",".join("(" + ",".join(_literal(value) for value in row) + ")" for row in batch)
-            cursor.execute(f"INSERT INTO {self.database}.{table} VALUES {values}")
+            self._run(f"INSERT INTO {self.database}.{table} VALUES {values}")
 
         readback = self._rows_for_version(dataset, version)
         readback_payloads = [payload_json(row["payload"]) for row in readback]
@@ -200,13 +209,10 @@ class ReferenceSnapshotStore:
 
     def _rows_for_version(self, dataset: str, version: str) -> list[dict[str, Any]]:
         table = _TABLES[dataset]
-        cursor = self._cursor()
-        cursor.execute(
-            f"SELECT row_id,payload FROM {self.database}.{table} "
-            f"WHERE version={_literal(version)} ORDER BY row_id"
-        )
+        stored = self._run(f"SELECT row_id,payload FROM {self.database}.{table} "
+                           f"WHERE version={_literal(version)} ORDER BY row_id", fetch="all")
         rows = []
-        for row_id, payload in cursor.fetchall():
+        for row_id, payload in stored:
             try:
                 parsed = json.loads(str(payload))
             except (TypeError, ValueError) as exc:
@@ -219,14 +225,11 @@ class ReferenceSnapshotStore:
     def read_latest(self, dataset: str) -> dict[str, Any] | None:
         if dataset not in _TABLES:
             raise ValueError("reference_snapshot_dataset_not_allowed")
-        cursor = self._cursor()
         try:
-            cursor.execute(
+            marker = self._run(
                 f"SELECT version,row_count,sha256,source,available_at,request_count,elapsed_ms "
                 f"FROM {self.database}.{_META_TABLE} WHERE dataset={_literal(dataset)} "
-                "AND snapshot_state='ACTIVE' ORDER BY ts DESC LIMIT 1"
-            )
-            marker = cursor.fetchone()
+                "AND snapshot_state='ACTIVE' ORDER BY ts DESC LIMIT 1", fetch="one")
         except Exception as exc:
             if td_object_missing(exc):
                 return None
