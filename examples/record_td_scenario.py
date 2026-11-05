@@ -89,6 +89,21 @@ def scenario_plate_amount_2day(statements):
     return {"function": "plate_amount_baseline._read_td", "args": ["2026-11-02", ["2026-10-29", "2026-10-30"]]}
 
 
+def _scenario_plate_amount_day(statements, day):
+    module, connection = _connect(statements, [])
+    module._td_connect = lambda: connection
+    module._read_days([day])
+    return {"function": "plate_amount_baseline._read_days", "args": [[day]]}
+
+
+def scenario_plate_amount_day_1029(statements):
+    return _scenario_plate_amount_day(statements, "2026-10-29")
+
+
+def scenario_plate_amount_day_1030(statements):
+    return _scenario_plate_amount_day(statements, "2026-10-30")
+
+
 def scenario_plate_amount_slice_halving(statements):
     """The 2-day tick slice runs out of memory (real error), so the code halves it into two 1-day slices."""
     two_day = lambda sql: "stock_tick_v2" in sql and "2026-10-29 09:30:00" in sql and "2026-10-30 09:45:00" in sql
@@ -167,6 +182,8 @@ def scenario_show_queries(statements):
 SCENARIOS = {
     "show_queries": scenario_show_queries,
     "plate_amount_2day": scenario_plate_amount_2day,
+    "plate_amount_day_1029": scenario_plate_amount_day_1029,
+    "plate_amount_day_1030": scenario_plate_amount_day_1030,
     "plate_amount_slice_halving": scenario_plate_amount_slice_halving,
     "plate_amount_symbol_split": scenario_plate_amount_symbol_split,
     "plate_amount_auction_halving": scenario_plate_amount_auction_halving,
