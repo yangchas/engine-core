@@ -295,7 +295,7 @@ def render_page(td, *, trade_date, stage, previous_day_final_yuan=None,
                 amount_baseline_json=None, auction_baseline_csv=None, kaipan_hot_json=None, kaipan_hot_rows=None,
                 strength_anchor_json=None,
                 member_snapshot_date="UNKNOWN", member_lag_trading_days=None, asof=None,
-                td_connection_factory=None, max_fetch_workers=4):
+                td_connection_factory=None, max_fetch_workers=1):
     if stage not in STAGES: raise ValueError(f"unknown stage: {stage}")
     snaps, raw_states = [], {}
     td_fetch_seconds = 0.0
