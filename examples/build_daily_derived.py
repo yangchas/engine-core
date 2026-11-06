@@ -56,6 +56,7 @@ def main(argv=None) -> int:
     parser.add_argument("--min-upstream-status", default=None, choices=("PROVISIONAL", "FORMAL"))
     parser.add_argument("--no-cascade", dest="cascade", action="store_false")
     parser.add_argument("--cascade-days", type=int, default=5)
+    parser.add_argument("--cascade-budget-seconds", type=float, default=120)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--publish-redis", action="store_true")
     args = parser.parse_args(argv)
@@ -76,6 +77,7 @@ def main(argv=None) -> int:
     try:
         out.update(_build(catalog, args.dataset, args.date, args, redis))
         cascade = []
+        cascade_cut = []
         if args.cascade:
             from engine_core.guardian.registry import derived_needs_build
             now = args.now_dt or datetime.now(timezone.utc)
@@ -85,8 +87,12 @@ def main(argv=None) -> int:
                     if derived_needs_build(catalog.read(), dataset, later, now, args.min_upstream_status):
                         if dataset == "daily_report_features" and args.dataset == "daily_indicators":
                             continue
+                        if time.monotonic() - started >= args.cascade_budget_seconds:
+                            cascade_cut.append({"trade_date": later, "dataset": dataset})
+                            continue
                         cascade.append({"trade_date": later, **_build(catalog, dataset, later, args, redis)})
         out["cascade"] = cascade
+        out["cascade_cut"] = cascade_cut
         out["elapsed_ms"] = round((time.monotonic() - started) * 1000)
         print(json.dumps(out, ensure_ascii=False, sort_keys=True, default=str))
         return 0
