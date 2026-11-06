@@ -164,17 +164,31 @@ def _read_auction_rows(cursor: Any, days: Sequence[str]) -> list[tuple]:
     return rows
 
 
-def _auction_slice(cursor: Any, days: list[str]) -> list[tuple]:
+def _auction_slice(cursor: Any, days: list[str], symbols: list[str] | None = None) -> list[tuple]:
     quoted = ",".join(f'"{day.replace("-", "")}"' for day in days)
+    symbol_filter = "" if symbols is None else " AND symbol IN (" + ",".join(
+        "'" + symbol.replace("'", "''") + "'" for symbol in symbols) + ")"
     try:
         cursor.execute("SELECT ts, symbol, trade_date, auction_tag, match_amt_yuan "
                        "FROM market_data1.auction_snapshot_v2 "
-                       f'WHERE trade_date IN ({quoted}) AND auction_tag="0925"')
+                       f'WHERE trade_date IN ({quoted}) AND auction_tag="0925"{symbol_filter}')
         return list(cursor.fetchall())
     except Exception as exc:
-        if td_memory_exhausted(exc) and len(days) > 1:
-            middle = len(days) // 2
-            return _auction_slice(cursor, days[:middle]) + _auction_slice(cursor, days[middle:])
+        if td_memory_exhausted(exc):
+            if len(days) > 1:
+                middle = len(days) // 2
+                return _auction_slice(cursor, days[:middle], symbols) + _auction_slice(cursor, days[middle:], symbols)
+            if symbols is None:
+                try:
+                    cursor.execute("SELECT DISTINCT symbol FROM market_data1.auction_snapshot_v2 "
+                                   f'WHERE trade_date IN ({quoted}) AND auction_tag="0925"')
+                    symbols = sorted({row[0] for row in cursor.fetchall() if row[0] is not None})
+                except Exception as distinct_exc:
+                    raise _query_error(distinct_exc, f"plate_amount_baseline_auction_symbols {days[0]}: "
+                                       f"{distinct_exc}") from distinct_exc
+            if len(symbols) > 1:
+                middle = len(symbols) // 2
+                return _auction_slice(cursor, days, symbols[:middle]) + _auction_slice(cursor, days, symbols[middle:])
         raise _query_error(exc, f"plate_amount_baseline_auction_query {days[0]}..{days[-1]}: {exc}") from exc
 
 
