@@ -111,12 +111,28 @@ def _command_failure(result: subprocess.CompletedProcess):
 
 def _prep_failure(report: dict, errors) -> Exception:
     """Failed prep steps: the registered code a step's script declared, a retryable one first; none declared stays plain."""
-    from engine_core.errors import is_retryable
-    declared = [code for code in report.get("error_codes") or [] if isinstance(code, str)]
-    text = "prep_errors:" + ";".join(map(str, errors))[-400:]
-    if not declared:
+    from engine_core.errors import lookup
+    steps = report.get("error_steps")
+    if steps is None:  # Compatibility with older reports which only carried declared codes.
+        codes = report.get("error_codes") or []
+        if not codes:
+            return RuntimeError("prep_errors:" + ";".join(map(str, errors))[-300:])
+        steps = [{"step": str(error).split(":", 1)[0], "code": code}
+                 for error, code in zip(errors, codes)]
+        steps.extend({"step": "?", "code": code} for code in codes[len(steps):])
+        steps.extend({"step": str(error).split(":", 1)[0], "code": None} for error in errors[len(steps):])
+    summary = ",".join(f"{item['step']}={item.get('code') or '?'}" for item in steps)
+    text = f"prep_errors[{summary}]:" + ";".join(map(str, errors))[-300:]
+    for item in steps:
+        code = item.get("code")
+        spec = lookup(code) if isinstance(code, str) else None
+        if not spec or spec.get("reserved"):
+            return RuntimeError(text)
+        if spec["retryable"]:
+            return CoreError(code, text)
+    if not steps:
         return RuntimeError(text)
-    return CoreError(next((code for code in declared if is_retryable(code)), declared[0]), text)
+    return CoreError(steps[0]["code"], text)
 
 
 def _build_gate_status(path: str | None):

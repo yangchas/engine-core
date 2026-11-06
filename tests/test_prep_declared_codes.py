@@ -36,6 +36,35 @@ def test_prep_failure_prefers_a_retryable_declared_code_and_stays_plain_without_
     assert not isinstance(plain, CoreError) and str(plain).startswith("prep_errors:")
 
 
+def test_unclassified_internal_error_makes_mixed_prep_failure_retryable():
+    from examples.core_guardian import _prep_failure
+    report = {"error_codes": ["QUALITY_INVALID", "INTERNAL_ERROR"],
+              "error_steps": [{"step": "plate_members", "code": "QUALITY_INVALID"},
+                              {"step": "plate_amount_baseline", "code": "INTERNAL_ERROR"}]}
+    err = _prep_failure(report, ["plate_members:COMMAND_FAILED", "plate_amount_baseline:COMMAND_FAILED"])
+    assert not isinstance(err, CoreError) or err.retryable
+    assert _declared_code(_script_output(RuntimeError("failure"))) == "INTERNAL_ERROR"
+
+
+def test_all_nonretryable_prep_steps_keep_the_first_code():
+    from examples.core_guardian import _prep_failure
+    err = _prep_failure({"error_steps": [{"step": "a", "code": "QUALITY_INVALID"},
+                                         {"step": "b", "code": "CONTRACT_INVALID"}]}, ["a:x", "b:y"])
+    assert isinstance(err, CoreError) and err.error_code == "QUALITY_INVALID" and not err.retryable
+
+
+def test_retryable_prep_step_wins_and_summary_keeps_early_steps():
+    from examples.core_guardian import _prep_failure
+    steps = [{"step": "plate_members", "code": "QUALITY_INVALID"},
+             {"step": "plate_amount_baseline", "code": "TD_UNAVAILABLE"}]
+    err = _prep_failure({"error_steps": steps}, ["plate_members:" + "x" * 500, "plate_amount_baseline:tail"])
+    assert isinstance(err, CoreError) and err.retryable
+    assert err.reason.startswith("prep_errors[plate_members=QUALITY_INVALID,plate_amount_baseline=TD_UNAVAILABLE]:")
+    assert err.reason.endswith("plate_amount_baseline:tail")
+    unclassified = _prep_failure({"error_steps": [steps[0], {"step": "other", "code": None}]}, ["a:x", "other:y"])
+    assert not isinstance(unclassified, CoreError) and "other=?" in str(unclassified)
+
+
 def test_a_missing_symbol_universe_artifact_is_upstream_not_ready_not_a_bare_runtime_error():
     """The entry scripts used to raise RuntimeError('symbol_universe_artifact_required:...'): unclassified in the replay."""
     import re
