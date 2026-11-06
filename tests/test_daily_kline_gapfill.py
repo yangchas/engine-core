@@ -824,6 +824,6 @@ def test_only_the_post_close_backfill_event_gets_the_twelve_hour_budget():
         assert events[name]["args"]["total_timeout_seconds"] < rung_seconds, name
         assert events[name]["args"]["total_timeout_seconds"] < 12 * 3600, name
     tier = schedule["profiles"]["kline_backfill"]["ladder"][0]
-    # 3 attempts with exponential backoff, then give up on this time point; 12 h per attempt.
-    assert (tier["attempts"], tier["backoff"], tier["timeout"], tier["budget_enabled"]) == (3, "5m*2", "12h", False)
+    # 6 attempts with exponential backoff (C695: a 30 m cap per wait), then give up on this time point; 12 h per attempt.
+    assert (tier["attempts"], tier["backoff"], tier["timeout"], tier["budget_enabled"]) == (6, "5m*2", "12h", False)
     assert "until" not in tier
