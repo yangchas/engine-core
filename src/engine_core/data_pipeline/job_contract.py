@@ -82,12 +82,12 @@ PROGRAMMING_ERRORS = (AssertionError, AttributeError, IndexError, KeyError, Name
 def failure_from_exception(exc: BaseException, *, job: str, trade_date: str = "", dataset: str = "",
                            source: str | None = None) -> JobResult:
     """The contract result of an exception that escaped a job: its own registered code when it has one, otherwise
-    INTERNAL_ERROR (retryable, flagged unclassified) - never a code invented from the message text."""
+    INTERNAL_ERROR (retryable, flagged unclassified), or a recognized TD driver error number."""
     from ..errors import CoreError
 
     code, retryable = exception_code(exc, source or "")
     detail = {"error": f"{type(exc).__name__}:{str(exc)[:300]}"} if not isinstance(exc, CoreError) else {"error": str(exc)[:300]}
-    if not isinstance(exc, CoreError):
+    if not isinstance(exc, CoreError) and code != "TD_RESOURCE_EXHAUSTED":
         detail["unclassified"] = True
     return JobResult(contract=1, job=job, trade_date=trade_date, status="failed", tier=0, source=source,
                      dataset=dataset, version=None, row_count=None, coverage=None, error_code=code,
@@ -189,6 +189,11 @@ def exception_code(exc: BaseException, source: str = "") -> tuple[str, bool]:
         return ("BAOSTOCK_TIMEOUT" if "baostock" in source.lower() else "FETCH_TIMEOUT"), True
     if any(cls.__module__.split(".")[0] == "redis" for cls in type(exc).__mro__):    # the Redis client's own errors
         return "REDIS_UNAVAILABLE", True
+    if any(cls.__module__.split(".")[0] == "taos" for cls in type(exc).__mro__):
+        from .td_sink import TD_ERRNO_MEMORY_EXHAUSTED, td_error_number
+
+        if td_error_number(exc) in {TD_ERRNO_MEMORY_EXHAUSTED, 0x0102}:
+            return "TD_RESOURCE_EXHAUSTED", True
     if isinstance(exc, PROGRAMMING_ERRORS):
         return "DETERMINISTIC_FAILURE", False
     return "INTERNAL_ERROR", True
