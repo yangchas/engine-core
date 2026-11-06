@@ -5,7 +5,7 @@ import json
 import math
 import os
 import statistics
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -347,12 +347,13 @@ def build_and_store_plate_amount_baseline(target_date: str, *, artifact_root: st
                 "version": old.get("version"), "row_count": old.get("row_count"),
                 "redis_published": _publish(target, old, catalog.read_rows(Path(old["manifest_uri"])) if old.get("manifest_uri") else [], current_codes) if publish else False}
     td_days: list[str] = []
+    lower = (date.fromisoformat(target) - timedelta(days=140)).strftime("%Y%m%d")
     connection = _td_connect()
     try:
         cursor = connection.cursor()
         cursor.execute("SELECT DISTINCT trade_date FROM market_data1.auction_snapshot_v2 "
-                       f'WHERE trade_date < "{target.replace("-", "")}" AND auction_tag="0925" '
-                       "ORDER BY trade_date DESC LIMIT 64")
+                       f'WHERE trade_date >= "{lower}" AND trade_date < "{target.replace("-", "")}" '
+                       'AND auction_tag="0925"')
         td_days = sorted({_day(row[0]) for row in cursor.fetchall()})
     except Exception as exc:
         raise _query_error(exc, f"plate_amount_baseline_day_list: {exc}") from exc

@@ -18,6 +18,7 @@ class _Failing:
         return self
 
     def execute(self, sql):
+        self.sql = sql
         raise ProgrammingError(REAL["message"], int(REAL["errno"], 16))
 
     def close(self):
@@ -25,7 +26,10 @@ class _Failing:
 
 
 def test_day_list_memory_exhaustion_is_a_coded_error(monkeypatch, tmp_path):
-    monkeypatch.setattr(module, "_td_connect", lambda: _Failing())
+    connection = _Failing()
+    monkeypatch.setattr(module, "_td_connect", lambda: connection)
     with pytest.raises(TdResourceExhausted) as raised:
         module.build_and_store_plate_amount_baseline("2026-11-06", artifact_root=tmp_path, publish=False)
     assert raised.value.error_code == "TD_RESOURCE_EXHAUSTED" and "plate_amount_baseline_day_list" in str(raised.value)
+    assert connection.sql == ('SELECT DISTINCT trade_date FROM market_data1.auction_snapshot_v2 '
+                              'WHERE trade_date >= "20260619" AND trade_date < "20261106" AND auction_tag="0925"')
