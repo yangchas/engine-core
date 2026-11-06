@@ -356,7 +356,9 @@ class TaosStore:
             cursor.execute(sql)
             try:
                 return list(cursor.fetchall())
-            except Exception:
+            except Exception as exc:
+                if td_memory_exhausted(exc):
+                    raise
                 return []
         except Exception as exc:
             if missing_ok and self._is_missing(exc):
@@ -507,8 +509,21 @@ class TaosStore:
             if not quoted:
                 return {}
             symbol_filter = f" AND symbol IN ({quoted})"
-        rows = self._run(f"SELECT symbol, {', '.join(DATA_COLUMNS)}, version FROM {self.database}.{SUPER_TABLE} "
-                         f"WHERE {self._day_filter(trade_date)}{symbol_filter}", missing_ok=True)
+        try:
+            rows = self._run(f"SELECT symbol, {', '.join(DATA_COLUMNS)}, version FROM {self.database}.{SUPER_TABLE} "
+                             f"WHERE {self._day_filter(trade_date)}{symbol_filter}", missing_ok=True)
+        except TdResourceExhausted:
+            if symbols is None:
+                found = self._run(f"SELECT DISTINCT symbol FROM {self.database}.{SUPER_TABLE} "
+                                  f"WHERE {self._day_filter(trade_date)}", missing_ok=True)
+                candidates = sorted({row[0] for row in found if row[0] and _SYMBOL.match(row[0])})
+            else:
+                candidates = sorted({s for s in symbols if _SYMBOL.match(s)})
+            if len(candidates) <= 1:
+                raise
+            middle = len(candidates) // 2
+            return {**self.read_day_rows(trade_date, candidates[:middle]),
+                    **self.read_day_rows(trade_date, candidates[middle:])}
         return {row[0]: {**dict(zip(DATA_COLUMNS, row[1:1 + len(DATA_COLUMNS)])), "version": row[-1]} for row in rows}
 
     def day_counts(self, dates: Sequence[str]) -> dict[str, int]:
