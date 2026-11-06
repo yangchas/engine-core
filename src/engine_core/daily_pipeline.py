@@ -528,7 +528,7 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
                          report_features: list[Mapping[str, Any]] | None = None,
                          path_symbols: set[str] | None = None,
                          checkpoint: str | None = None,
-                         td_connection_factory=None) -> list[dict[str, Any]]:
+                         td_connection_factory=None, max_fetch_workers: int = 1) -> list[dict[str, Any]]:
     """Build full-universe, as-of stock rows for the live A→B and ladder sections."""
     from .live_session import (OPEN_CHECKPOINTS, daily_history_context, load_daily_history_csv,
                                open_checkpoint_for_asof, states_at)
@@ -553,11 +553,11 @@ def _live_section_stocks(td: Any, *, trade_date: str, stage: str, asof: str,
             if td_connection_factory:
                 close = getattr(connection, "close", None)
                 if callable(close): close()
-    if len(fetch) > 1:
-        with ThreadPoolExecutor(max_workers=min(4, len(fetch))) as pool:
+    if len(fetch) > 1 and max_fetch_workers > 1:
+        with ThreadPoolExecutor(max_workers=min(4, max_fetch_workers, len(fetch))) as pool:
             snapshots.update(pool.map(fetch_one, fetch))
-    elif fetch:
-        snapshots.update(fetch_one(fetch[0]) for _ in (0,))
+    else:
+        snapshots.update(fetch_one(item) for item in fetch)
     if not snapshots:
         return []
     seal_paths: dict[str, list[str]] = {}
