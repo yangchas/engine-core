@@ -34,3 +34,11 @@ def test_cascade_budget(monkeypatch, tmp_path, capsys, build_seconds, expected_b
         {"trade_date": day, "dataset": "daily_report_features"} for day in expected_cut
     ]
     assert built == expected_built
+
+
+def test_the_fetch_jobs_do_not_cascade():
+    """C711: later days are stale partitions of their own that reconcile rebuilds one at a time; a cascade inside the
+    fetch job made one command several builds long (306 s against a 300 s limit under load)."""
+    from engine_core.guardian.registry import load_registry
+    jobs = [item["fetch_job"]["argv"] for item in load_registry() if "build_daily_derived.py" in str(item.get("fetch_job"))]
+    assert len(jobs) == 2 and all("--no-cascade" in argv for argv in jobs)
