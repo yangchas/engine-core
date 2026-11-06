@@ -113,9 +113,6 @@ def _td_connect():
     return connect_td("market_data1")
 
 
-SYMBOL_SPLITS = (("000000", "300000"), ("300000", "600000"), ("600000", "999999"))
-
-
 def _query_error(exc: Exception, reason: str) -> Exception:
     try:
         from taos.error import Error as TdDriverError
@@ -141,9 +138,11 @@ def _read_0945_slice(cursor: Any, days: Sequence[str], wanted: set[str],
                 middle = len(days) // 2
                 return (_read_0945_slice(cursor, days[:middle], wanted, symbols)
                         + _read_0945_slice(cursor, days[middle:], wanted, symbols))
-            if symbols is None:  # one day still too big for the shared TDengine: split the symbols
-                return [row for part in SYMBOL_SPLITS
-                        for row in _read_0945_slice(cursor, days, wanted, part)]
+            low, high = (int(symbols[0]), int(symbols[1])) if symbols else (0, 1000000)
+            if high - low > 1:
+                middle = (low + high) // 2
+                return (_read_0945_slice(cursor, days, wanted, (f"{low:06d}", f"{middle:06d}"))
+                        + _read_0945_slice(cursor, days, wanted, (f"{middle:06d}", f"{high:06d}")))
         raise _query_error(exc, f"plate_amount_baseline_tick_slice {first}..{last}"
                            f"{' ' + symbols[0] + '-' + symbols[1] if symbols else ''}: {exc}") from exc
     out = []
