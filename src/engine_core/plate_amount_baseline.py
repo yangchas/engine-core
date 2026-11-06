@@ -346,6 +346,8 @@ def build_and_store_plate_amount_baseline(target_date: str, *, artifact_root: st
                        f'WHERE trade_date < "{target.replace("-", "")}" AND auction_tag="0925" '
                        "ORDER BY trade_date DESC LIMIT 64")
         td_days = sorted({_day(row[0]) for row in cursor.fetchall()})
+    except Exception as exc:
+        raise _query_error(exc, f"plate_amount_baseline_day_list: {exc}") from exc
     finally:
         connection.close()
     dates = sorted(set(td_days))[-WINDOW_DAYS:]
