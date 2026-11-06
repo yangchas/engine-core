@@ -164,10 +164,11 @@ def _read_auction_rows(cursor: Any, days: Sequence[str]) -> list[tuple]:
     return rows
 
 
-def _auction_slice(cursor: Any, days: list[str], symbols: list[str] | None = None) -> list[tuple]:
+def _auction_slice(cursor: Any, days: list[str], symbols: tuple[int | None, int | None] | None = None) -> list[tuple]:
     quoted = ",".join(f'"{day.replace("-", "")}"' for day in days)
-    symbol_filter = "" if symbols is None else " AND symbol IN (" + ",".join(
-        "'" + symbol.replace("'", "''") + "'" for symbol in symbols) + ")"
+    lo, hi = symbols if symbols is not None else (None, None)
+    symbol_filter = (f" AND symbol >= '{lo:06d}'" if lo is not None else "")
+    symbol_filter += f" AND symbol < '{hi:06d}'" if hi is not None else ""
     try:
         cursor.execute("SELECT ts, symbol, trade_date, auction_tag, match_amt_yuan "
                        "FROM market_data1.auction_snapshot_v2 "
@@ -178,17 +179,11 @@ def _auction_slice(cursor: Any, days: list[str], symbols: list[str] | None = Non
             if len(days) > 1:
                 middle = len(days) // 2
                 return _auction_slice(cursor, days[:middle], symbols) + _auction_slice(cursor, days[middle:], symbols)
-            if symbols is None:
-                try:
-                    cursor.execute("SELECT DISTINCT symbol FROM market_data1.auction_snapshot_v2 "
-                                   f'WHERE trade_date IN ({quoted}) AND auction_tag="0925"')
-                    symbols = sorted({row[0] for row in cursor.fetchall() if row[0] is not None})
-                except Exception as distinct_exc:
-                    raise _query_error(distinct_exc, f"plate_amount_baseline_auction_symbols {days[0]}: "
-                                       f"{distinct_exc}") from distinct_exc
-            if len(symbols) > 1:
-                middle = len(symbols) // 2
-                return _auction_slice(cursor, days, symbols[:middle]) + _auction_slice(cursor, days, symbols[middle:])
+            low, high = (0 if lo is None else lo), (1000000 if hi is None else hi)
+            if high - low > 1:
+                middle = (low + high) // 2
+                return (_auction_slice(cursor, days, (lo, middle))
+                        + _auction_slice(cursor, days, (middle, hi)))
         raise _query_error(exc, f"plate_amount_baseline_auction_query {days[0]}..{days[-1]}: {exc}") from exc
 
 

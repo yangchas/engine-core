@@ -509,22 +509,22 @@ class TaosStore:
             if not quoted:
                 return {}
             symbol_filter = f" AND symbol IN ({quoted})"
-        try:
-            rows = self._run(f"SELECT symbol, {', '.join(DATA_COLUMNS)}, version FROM {self.database}.{SUPER_TABLE} "
-                             f"WHERE {self._day_filter(trade_date)}{symbol_filter}", missing_ok=True)
-        except TdResourceExhausted:
-            if symbols is None:
-                found = self._run(f"SELECT DISTINCT symbol FROM {self.database}.{SUPER_TABLE} "
-                                  f"WHERE {self._day_filter(trade_date)}", missing_ok=True)
-                candidates = sorted({row[0] for row in found if row[0] and _SYMBOL.match(row[0])})
-            else:
-                candidates = sorted({s for s in symbols if _SYMBOL.match(s)})
-            if len(candidates) <= 1:
-                raise
-            middle = len(candidates) // 2
-            return {**self.read_day_rows(trade_date, candidates[:middle]),
-                    **self.read_day_rows(trade_date, candidates[middle:])}
-        return {row[0]: {**dict(zip(DATA_COLUMNS, row[1:1 + len(DATA_COLUMNS)])), "version": row[-1]} for row in rows}
+        def read_range(lo: int | None = None, hi: int | None = None) -> dict[str, dict[str, Any]]:
+            range_filter = (f" AND symbol >= '{lo:06d}'" if lo is not None else "")
+            range_filter += f" AND symbol < '{hi:06d}'" if hi is not None else ""
+            try:
+                rows = self._run(f"SELECT symbol, {', '.join(DATA_COLUMNS)}, version FROM {self.database}.{SUPER_TABLE} "
+                                 f"WHERE {self._day_filter(trade_date)}{symbol_filter}{range_filter}", missing_ok=True)
+            except TdResourceExhausted:
+                low, high = (0 if lo is None else lo), (1000000 if hi is None else hi)
+                if high - low <= 1:
+                    raise
+                middle = (low + high) // 2
+                return {**read_range(lo, middle), **read_range(middle, hi)}
+            return {row[0]: {**dict(zip(DATA_COLUMNS, row[1:1 + len(DATA_COLUMNS)])), "version": row[-1]}
+                    for row in rows}
+
+        return read_range()
 
     def day_counts(self, dates: Sequence[str]) -> dict[str, int]:
         ordered = list(dict.fromkeys(dates))
