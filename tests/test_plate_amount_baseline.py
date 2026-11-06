@@ -138,3 +138,20 @@ def test_no_dates_means_no_td_connection(monkeypatch):
     # DATA: spec (no data involved: asserts that no connection is attempted)
     monkeypatch.setattr(module, "_td_connect", lambda: pytest.fail("must not connect without dates"))
     assert module._read_td("2026-11-02", []) == []
+
+
+def test_recorded_td_memory_exhaustion_surfaces_with_its_code():
+    from taos.error import ProgrammingError
+    from engine_core.data_pipeline.td_sink import TdResourceExhausted
+    record = json.loads((Path(__file__).parent / "fixtures" / "real" / "td" / "errors" /
+                         "query_memory_exhausted_0x073a.json").read_text(encoding="utf-8"))
+
+    class Cursor:
+        def execute(self, sql):
+            raise ProgrammingError(record["message"], int(record["errno"], 16))
+
+    for query in (lambda: module._auction_slice(Cursor(), [DAYS[0]]),
+                  lambda: module._read_0945_slice(Cursor(), [DAYS[0]], set(DAYS), ("000000", "300000"))):
+        with pytest.raises(TdResourceExhausted) as caught:
+            query()
+        assert caught.value.error_code == "TD_RESOURCE_EXHAUSTED"

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .data_pipeline.storage import ArtifactCatalog, canonical_json
-from .data_pipeline.td_sink import td_memory_exhausted
+from .data_pipeline.td_sink import td_memory_exhausted, td_statement_error
 
 DATASET = "plate_amount_baseline"
 SCHEMA = "plate_amount_baseline_v1"
@@ -116,6 +116,16 @@ def _td_connect():
 SYMBOL_SPLITS = (("000000", "300000"), ("300000", "600000"), ("600000", "999999"))
 
 
+def _query_error(exc: Exception, reason: str) -> Exception:
+    try:
+        from taos.error import Error as TdDriverError
+    except ImportError:
+        TdDriverError = ()
+    if isinstance(exc, TdDriverError):
+        return td_statement_error(exc, reason)
+    return RuntimeError(reason)
+
+
 def _read_0945_slice(cursor: Any, days: Sequence[str], wanted: set[str],
                      symbols: tuple[str, str] | None = None) -> list[dict[str, Any]]:
     first, last = min(days), max(days)
@@ -134,7 +144,7 @@ def _read_0945_slice(cursor: Any, days: Sequence[str], wanted: set[str],
             if symbols is None:  # one day still too big for the shared TDengine: split the symbols
                 return [row for part in SYMBOL_SPLITS
                         for row in _read_0945_slice(cursor, days, wanted, part)]
-        raise RuntimeError(f"plate_amount_baseline_tick_slice {first}..{last}"
+        raise _query_error(exc, f"plate_amount_baseline_tick_slice {first}..{last}"
                            f"{' ' + symbols[0] + '-' + symbols[1] if symbols else ''}: {exc}") from exc
     out = []
     for window_start, symbol, amount in fetched:
@@ -165,7 +175,7 @@ def _auction_slice(cursor: Any, days: list[str]) -> list[tuple]:
         if td_memory_exhausted(exc) and len(days) > 1:
             middle = len(days) // 2
             return _auction_slice(cursor, days[:middle]) + _auction_slice(cursor, days[middle:])
-        raise RuntimeError(f"plate_amount_baseline_auction_query {days[0]}..{days[-1]}: {exc}") from exc
+        raise _query_error(exc, f"plate_amount_baseline_auction_query {days[0]}..{days[-1]}: {exc}") from exc
 
 
 def _read_days(dates: Sequence[str]) -> list[dict[str, Any]]:
