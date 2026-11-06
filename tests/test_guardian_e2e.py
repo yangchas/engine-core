@@ -14,12 +14,16 @@ GO_ROOT = ROOT / "native" / "guardiand"
 
 
 def test_guardian_wall_clock_selftest_fast_suite():
+    with tempfile.TemporaryDirectory(prefix="guardian-selftest-pytest-") as work_dir:
+        _run_guardian_wall_clock_selftest(Path(work_dir))
+
+
+def _run_guardian_wall_clock_selftest(work_dir):
     go = Path("/bin/go")
     if not go.is_file():
         pytest.fail("/bin/go is missing; guardian self-test must not silently skip")
     if not (GO_ROOT / "go.mod").is_file():
         pytest.fail(f"{GO_ROOT}/go.mod is missing; guardian self-test must not silently skip")
-    work_dir = Path(tempfile.mkdtemp(prefix="guardian-selftest-pytest-"))
     process = subprocess.Popen(
         [sys.executable, str(DRIVER), "--mode", "fast", "--work-dir", str(work_dir)],
         cwd=ROOT,

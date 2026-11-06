@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -290,12 +291,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--from", dest="start", default="00:00:00", help="replay from this time of day (HH:MM:SS)")
     parser.add_argument("--until", default="23:59:59", help="replay up to this time of day (HH:MM:SS)")
     parser.add_argument("--strict-data", action="store_true")
+    parser.add_argument("--keep-work", action="store_true", help="keep the build directory after a successful replay")
     parser.add_argument("--strict-codes", action="store_true",
                         help="a reply flagged unclassified (no registered code, exit status or known type) fails the run")
     args = parser.parse_args(argv)
     os.chdir(ROOT)
     work = args.work_dir.resolve() / f"replay-{args.date}-{time.strftime('%H%M%S')}"
-    build_dir = args.work_dir.resolve() / "build"
+    build_dir = work / "build"
     build_dir.mkdir(parents=True, exist_ok=True)
     binary = gs._build_binary(build_dir)
     run = run_day(args.date, work, binary=binary, handler=args.handler.resolve(),
@@ -306,6 +308,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.report:
         args.report.write_text(text + "\n", encoding="utf-8")
     print(text)
+    if report["verdict"] == "PASS" and not args.keep_work:
+        shutil.rmtree(build_dir)
     return 0 if report["verdict"] == "PASS" else 1
 
 

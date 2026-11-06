@@ -544,7 +544,7 @@ def _build_binary(work: Path, fault: str = "") -> Path:
         "GOTOOLCHAIN": "local",
         "GOPROXY": "off",
         "GOSUMDB": "off",
-        "GOCACHE": str(work / "go-cache"),
+        "GOCACHE": os.environ.get("GOCACHE") or str(Path.home() / ".cache" / "go-build"),
     }
     command = [str(GO), "build", "-o", str(binary)]
     if fault == "retry-no-data":
