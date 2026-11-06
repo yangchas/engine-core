@@ -23,7 +23,7 @@ CHAINS_PATH = Path(__file__).resolve().parents[1] / "guardian" / "chains.json"
 Snapshot = Mapping[str, Any]
 ManifestReader = Callable[[Mapping[str, Any]], Mapping[str, Any] | None]
 StatusFn = Callable[[Snapshot, str, str], tuple[str, str]]
-Runner = Callable[[str, str], int]
+Runner = Callable[[str, str], int | tuple[int, str]]
 
 
 class ChainConfigError(ValueError):
@@ -207,8 +207,11 @@ def sweep(snapshot_fn: Callable[[], Snapshot], config: ChainConfig, *, today: st
             if lease is not None and not lease.renew():
                 retry.append({**item.as_dict(), "code": 30, "reason": "lease_lost"})
                 break
-            code = runner(item.dataset, item.day)
+            outcome = runner(item.dataset, item.day)
+            code, note = outcome if isinstance(outcome, tuple) else (outcome, "")
             record = {**item.as_dict(), "code": code}
+            if code != 0 and note:
+                record["error"] = note
             if code == 0:
                 built.append(record)
             elif code in (20, 30):
@@ -224,10 +227,9 @@ def sweep(snapshot_fn: Callable[[], Snapshot], config: ChainConfig, *, today: st
         remaining = [item.as_dict() for item in items]
         waiting = [item.as_dict() for item in items if item.key not in done
                    and any((need, item.day) in not_built for need in config.nodes[item.dataset])]
-        return {"status": "DONE", "days": days, "built": built, "retry": retry, "failed": failed,
-                "not_converged": not_converged, "remaining": remaining, "waiting_on_failed_upstream": waiting,
-                "blocked": blocked, "capped": capped,
-                "elapsed_seconds": round(clock() - started, 3)}
+        return {"status": "DONE", "retry": retry, "failed": failed, "built": built, "blocked": blocked,
+                "not_converged": not_converged, "waiting_on_failed_upstream": waiting, "remaining": remaining,
+                "capped": capped, "elapsed_seconds": round(clock() - started, 3), "days": days}
     finally:
         if lease is not None:
             lease.release()

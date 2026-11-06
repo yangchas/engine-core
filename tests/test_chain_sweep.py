@@ -89,6 +89,24 @@ def test_a_deterministic_failure_is_recorded_other_nodes_continue_and_the_code_i
     assert world.calls.count(("ladder_daily", TODAY)) == 1                                # not retried inside the run
 
 
+def test_runner_failure_note_is_recorded_in_retry():
+    result = World(codes={("ladder_daily", TODAY): (30, "FETCH_TIMEOUT: x")}).run()
+    assert result["retry"][0]["error"] == "FETCH_TIMEOUT: x"
+    assert list(result) == ["status", "retry", "failed", "built", "blocked", "not_converged",
+                            "waiting_on_failed_upstream", "remaining", "capped", "elapsed_seconds", "days"]
+
+
+def test_integer_runner_failure_keeps_its_original_record_shape():
+    result = World(codes={("ladder_daily", TODAY): 30}).run()
+    assert result["retry"][0]["code"] == 30
+    assert "error" not in result["retry"][0]
+
+
+def test_runner_failure_note_is_recorded_in_failed():
+    result = World(codes={("ladder_daily", TODAY): (40, "failure")}).run()
+    assert result["failed"][0]["error"] == "failure"
+
+
 def test_a_build_that_exits_zero_but_leaves_the_node_unfresh_is_not_repeated_and_is_reported():
     world = World(builds_nothing={("stock_day_facts", TODAY)})
     result = world.run()

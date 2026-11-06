@@ -11,13 +11,13 @@ DEFAULT_BUDGET_SECONDS = 1200.0
 
 
 def registry_runner(root: str | Path) -> Runner:
-    """Build one dataset/day with its registry ``fetch_job``; the answer is the job's exit code, nothing else."""
+    """Build one dataset/day with its registry ``fetch_job`` and preserve failure details."""
     from .registry import load_registry
     from .startup import FetchJobError, _fetch_spec, _run_fetch_job
 
     items = {entry["id"]: entry for entry in load_registry()}
 
-    def run(dataset: str, day: str) -> int:
+    def run(dataset: str, day: str) -> int | tuple[int, str]:
         item = items[dataset]
         timeout = _fetch_spec(item)[1]
         try:
@@ -28,10 +28,15 @@ def registry_runner(root: str | Path) -> Runner:
             spec = lookup(code)
             if spec is not None and not spec.get("reserved"):
                 # a declared, registered code says it directly; the sweep's own convention is 20 satisfied / 30 retry / 40 final
-                return 20 if spec["exit"] == 20 else (30 if spec["retryable"] else 40)
-            if code.startswith("FETCH_EXIT_") and code[len("FETCH_EXIT_"):].isdigit():
-                return int(code[len("FETCH_EXIT_"):])
-            return 30 if code == "FETCH_TIMEOUT" else 40
+                result = 20 if spec["exit"] == 20 else (30 if spec["retryable"] else 40)
+            elif code.startswith("FETCH_EXIT_") and code[len("FETCH_EXIT_"):].isdigit():
+                result = int(code[len("FETCH_EXIT_"):])
+            else:
+                result = 30 if code == "FETCH_TIMEOUT" else 40
+            note = f"{code}: {exc}"
+            if exc.stderr.splitlines():
+                note += f"; {exc.stderr.splitlines()[-1]}"
+            return result, note[:300]
         return 0
     return run
 

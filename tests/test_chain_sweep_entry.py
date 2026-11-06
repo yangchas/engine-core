@@ -60,17 +60,18 @@ def test_unknown_chain_or_missing_name_is_a_config_error_not_a_crash():
 
 @pytest.mark.parametrize("raised,expected", [("FETCH_EXIT_30", 30), ("FETCH_EXIT_20", 20), ("FETCH_EXIT_40", 40),
                                              ("FETCH_TIMEOUT", 30), ("FETCH_JOB_FAILED", 40), (None, 0)])
-def test_the_registry_runner_answers_with_an_exit_code_only(monkeypatch, raised, expected):
+def test_the_registry_runner_preserves_exit_code_and_failure_details(monkeypatch, raised, expected):
     from engine_core.guardian import startup
 
     def fake(item, day, timeout, root=None, schedule_args=None):
         assert item["id"] == "ladder_daily" and day == TODAY          # the registry fetch_job of the node, for that day
         if raised:
-            raise startup.FetchJobError("x", raised)
+            raise startup.FetchJobError("x", raised, "first line\nlast line")
         return {}
 
     monkeypatch.setattr(startup, "_run_fetch_job", fake)
-    assert chain_sweep.registry_runner(ROOT)("ladder_daily", TODAY) == expected
+    result = chain_sweep.registry_runner(ROOT)("ladder_daily", TODAY)
+    assert result == ((expected, f"{raised}: x; last line") if raised else expected)
 
 
 def test_every_borrowed_job_route_has_a_scheduled_event_and_the_chain_events_reach_the_sweep():
