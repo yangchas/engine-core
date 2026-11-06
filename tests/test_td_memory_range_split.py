@@ -3,7 +3,7 @@ import re
 import pytest
 
 from engine_core.data_pipeline.td_sink import DATA_COLUMNS, TD_ERRNO_MEMORY_EXHAUSTED, TaosStore
-from engine_core.plate_amount_baseline import _auction_slice
+from engine_core.plate_amount_baseline import _auction_slice, _read_0945_slice
 
 
 class MemoryExhausted(Exception):
@@ -47,4 +47,13 @@ def test_memory_exhaustion_splits_fixed_code_ranges():
     assert sorted(_auction_slice(cursor, ['2026-11-06'])) == sorted(row for rows in auction.values() for row in rows)
     with pytest.raises(Exception) as failure:
         _auction_slice(RangeCursor(auction, 0), ['2026-11-06'])
+    assert isinstance(failure.value.__cause__, MemoryExhausted)
+    ticks = {s: [('2026-11-06 09:30:01', s, i)] for i, s in enumerate(symbols)}
+    cursor = RangeCursor(ticks, 125000)
+    expected_ticks = [{'trade_date': '2026-11-06', 'slot': '0945', 'symbol': s, 'amount_yuan': i}
+                      for i, s in enumerate(symbols)]
+    assert sorted(_read_0945_slice(cursor, ['2026-11-06'], {'2026-11-06'}),
+                  key=lambda row: row['symbol']) == expected_ticks
+    with pytest.raises(Exception) as failure:
+        _read_0945_slice(RangeCursor(ticks, 0), ['2026-11-06'], {'2026-11-06'})
     assert isinstance(failure.value.__cause__, MemoryExhausted)

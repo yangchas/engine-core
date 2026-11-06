@@ -1,4 +1,4 @@
-# DATA: real:core_artifacts/c664/plate_members/trade_date=2026-10-29 rows, td/plate_amount_2day, td/plate_amount_slice_halving, td/plate_amount_symbol_split, td/plate_amount_auction_halving, td/plate_amount_other_error (+ td/errors/*)
+# DATA: real:core_artifacts/c664/plate_members/trade_date=2026-10-29 rows, td/plate_amount_2day, td/plate_amount_slice_halving, td/plate_amount_auction_halving, td/plate_amount_other_error (+ td/errors/*)
 """plate_amount_baseline over RECORDED TD answers (tests/replay.py): the 09:25 auction snapshots and 09:45 tick
 amounts are what the real TD returned for the statements the code really issues; failures are real recorded errors."""
 import gzip
@@ -108,16 +108,6 @@ def test_a_tick_slice_that_runs_out_of_query_memory_is_halved(monkeypatch):
     assert connection.statements == [entry["sql"] for entry in recorded]            # auction, failing 2-day, two 1-day
     assert {(r["trade_date"], r["symbol"], r["amount_yuan"]) for r in rows if r["slot"] == "0945"} == \
         _oracle_ticks(recorded, DAYS)
-
-
-def test_a_single_day_that_still_runs_out_of_memory_is_split_by_symbol_range(monkeypatch):
-    connection = _replayed(monkeypatch, "plate_amount_symbol_split")
-    rows = module._read_td("2026-11-02", ["2026-10-30"])
-    recorded = load_recording("plate_amount_symbol_split")["statements"]
-    assert connection.statements == [entry["sql"] for entry in recorded]            # auction, failing day, 3 ranges
-    assert sum(1 for entry in recorded if "symbol >=" in entry["sql"]) == 3
-    assert {(r["trade_date"], r["symbol"], r["amount_yuan"]) for r in rows if r["slot"] == "0945"} == \
-        _oracle_ticks(recorded, ["2026-10-30"])
 
 
 def test_an_auction_slice_that_runs_out_of_query_memory_is_halved(monkeypatch):

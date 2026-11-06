@@ -5,7 +5,7 @@ import json
 import math
 import os
 import statistics
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -113,9 +113,6 @@ def _td_connect():
     return connect_td("market_data1")
 
 
-SYMBOL_SPLITS = (("000000", "300000"), ("300000", "600000"), ("600000", "999999"))
-
-
 def _query_error(exc: Exception, reason: str) -> Exception:
     try:
         from taos.error import Error as TdDriverError
@@ -141,9 +138,11 @@ def _read_0945_slice(cursor: Any, days: Sequence[str], wanted: set[str],
                 middle = len(days) // 2
                 return (_read_0945_slice(cursor, days[:middle], wanted, symbols)
                         + _read_0945_slice(cursor, days[middle:], wanted, symbols))
-            if symbols is None:  # one day still too big for the shared TDengine: split the symbols
-                return [row for part in SYMBOL_SPLITS
-                        for row in _read_0945_slice(cursor, days, wanted, part)]
+            low, high = (int(symbols[0]), int(symbols[1])) if symbols else (0, 1000000)
+            if high - low > 1:
+                middle = (low + high) // 2
+                return (_read_0945_slice(cursor, days, wanted, (f"{low:06d}", f"{middle:06d}"))
+                        + _read_0945_slice(cursor, days, wanted, (f"{middle:06d}", f"{high:06d}")))
         raise _query_error(exc, f"plate_amount_baseline_tick_slice {first}..{last}"
                            f"{' ' + symbols[0] + '-' + symbols[1] if symbols else ''}: {exc}") from exc
     out = []
@@ -348,12 +347,13 @@ def build_and_store_plate_amount_baseline(target_date: str, *, artifact_root: st
                 "version": old.get("version"), "row_count": old.get("row_count"),
                 "redis_published": _publish(target, old, catalog.read_rows(Path(old["manifest_uri"])) if old.get("manifest_uri") else [], current_codes) if publish else False}
     td_days: list[str] = []
+    lower = (date.fromisoformat(target) - timedelta(days=140)).strftime("%Y%m%d")
     connection = _td_connect()
     try:
         cursor = connection.cursor()
         cursor.execute("SELECT DISTINCT trade_date FROM market_data1.auction_snapshot_v2 "
-                       f'WHERE trade_date < "{target.replace("-", "")}" AND auction_tag="0925" '
-                       "ORDER BY trade_date DESC LIMIT 64")
+                       f'WHERE trade_date >= "{lower}" AND trade_date < "{target.replace("-", "")}" '
+                       'AND auction_tag="0925"')
         td_days = sorted({_day(row[0]) for row in cursor.fetchall()})
     except Exception as exc:
         raise _query_error(exc, f"plate_amount_baseline_day_list: {exc}") from exc
