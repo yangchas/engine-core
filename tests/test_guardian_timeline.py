@@ -177,3 +177,23 @@ def test_plate_amount_baseline_event_and_policy_are_scheduled_independently():
     assert (tier["attempts"], tier["timeout"], tier["backoff"]) == (1, "540s", "")
     for event_id in ("startup_0830", "premarket_slice_0850", "startup_0900"):
         assert "plate_amount_baseline" in events[event_id]["args"]["prep_degradable_steps"]
+
+
+def test_auction_amount_facts_daily_schedule_and_policy():
+    events = {event["event_id"]: event for event in SCHEDULE["events"]}
+    event = events["auction_amount_facts_0530"]
+    assert (event["at"], event["deadline"], event["calendar"], event["gate"]) == (
+        "05:30:00", "07:30:00", "every_day", "always")
+    assert event["handler"] == "postmarket_data"
+    assert event["cost"] == "heavy"
+    assert event["args"] == {"dataset": "auction_amount_facts", "window": 64, "max_days": 64}
+    assert event["profile"] == "policy_13"
+    policy = SCHEDULE["profiles"]["policy_13"]
+    assert policy["retry_until_late"] is True
+    tier, = policy["ladder"]
+    assert (tier["attempts"], tier["backoff"], tier["backoff_cap"], tier["timeout"], tier["until"]) == (
+        3, "10m*2", "20m", "3600s", "late_until")
+    for event_id in ("startup_0830", "startup_0900", "premarket_slice_0850"):
+        assert events[event_id]["args"]["prep_degradable_steps"] == ["plate_amount_baseline"]
+    assert (events["plate_amount_baseline_0815"]["at"], events["plate_amount_baseline_0815"]["deadline"],
+            events["plate_amount_baseline_0815"]["profile"]) == ("08:15:00", "08:25:00", "policy_12")

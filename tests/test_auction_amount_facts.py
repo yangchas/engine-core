@@ -130,10 +130,20 @@ def test_run_resumes_after_resource_exhaustion(tmp_path):
             raise ProgrammingError('[0x073a]: Query memory exhausted')
         return amounts
     code, reply = run({'days': ['2026-11-03', '2026-11-04', '2026-11-05'], 'max_days': 2}, tmp_path, reader=reader, store=facts, lease_factory=fake_lease_factory)
-    assert code == 30 and reply['reason'] == 'TD_RESOURCE_EXHAUSTED'
+    assert code == 75 and reply['reason'] == 'TD_RESOURCE_EXHAUSTED'
     assert facts.complete_days(['2026-11-05'], '0925') == {'2026-11-05'}
     assert reply['detail']['completed'] == ['2026-11-05']
     assert reply['detail']['remaining'] == ['2026-11-04', '2026-11-03']
+    from engine_core.data_pipeline.td_sink import TdUnavailable
+    from engine_core.guardian.contract import check_reply
+    def unavailable(day, slot):
+        raise TdUnavailable('unavailable')
+    code, reply = run({'days': ['2026-11-04']}, tmp_path, reader=unavailable, store=facts, lease_factory=fake_lease_factory)
+    assert code == 75 and reply['error_code'] == 'TD_UNAVAILABLE' and not check_reply(code, reply)
+    class BrokenLease:
+        def acquire(self): raise ConnectionError('unavailable')
+    code, reply = run({'days': ['2026-11-04']}, tmp_path, store=facts, lease_factory=lambda day, slot: BrokenLease())
+    assert code == 75 and reply['error_code'] == 'REDIS_UNAVAILABLE' and not check_reply(code, reply)
 
 
 def test_run_latest_first_and_already_satisfied(tmp_path):

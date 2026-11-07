@@ -118,3 +118,13 @@ def test_plate_amount_baseline_registry_matches_scheduled_event():
     assert event["event_id"] == item["late_policy"]["trigger_event"] == "plate_amount_baseline_0815"
     assert event["args"]["item_id"] == item["id"] and event["phases"] == item["phases"]
     assert "DATE_FALLBACK" in item["degrade"][0] and "PARTIAL" in item["degrade"][0]
+
+
+def test_auction_amount_facts_registry_matches_scheduled_event():
+    schedule = json.loads((Path(__file__).resolve().parents[1] / "src/engine_core/guardian/schedule.json").read_text())
+    item = next(item for item in REGISTRY if item["id"] == "auction_amount_facts")
+    event = next(event for event in schedule["events"] if event["event_id"] == item["guardian_event"])
+    assert event["args"]["dataset"] == item["id"] and event["phases"] == item["phases"]
+    assert item["requires"] == [] and item["produces"] == ["auction_amount", "slot0945_amount"]
+    assert {(loc["name"], loc["role"]) for loc in item["storage"]} == {
+        ("core_data.auction_amount_facts_v1", "authority"), ("core_data.auction_amount_facts_days", "marker")}

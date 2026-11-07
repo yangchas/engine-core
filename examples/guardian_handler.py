@@ -8,7 +8,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -401,6 +401,11 @@ def _run_event(request):
         if request.get("asof") or request.get("now"):
             today_request["as_of"] = request.get("asof") or request.get("now")
         return run_limit_up_today(today_request, root, dry_run=dry)
+    if name == "postmarket_data" and args.get("dataset") == "auction_amount_facts":
+        from engine_core.data_pipeline.auction_amount_facts import run as run_auction_amount_facts
+        end_date = (date.fromisoformat(str(trade_date)) - timedelta(days=1)).isoformat()
+        return run_auction_amount_facts({"end_date": end_date, "window": args["window"],
+                                         "max_days": args["max_days"]}, root, dry_run=dry)
     if name == "daily_kline_close":
         from engine_core.guardian.daily_kline_close import run_close_tier
         return run_close_tier(request, root, dry_run=dry)

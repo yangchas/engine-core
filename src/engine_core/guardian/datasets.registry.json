@@ -1574,6 +1574,57 @@
       ]
     },
     {
+      "id": "auction_amount_facts",
+      "owner": "postmarket_data",
+      "artifact": {
+        "date_basis": "closed trade days through yesterday"
+      },
+      "phases": [
+        "NIGHT"
+      ],
+      "cadence": "每个日历日 05:30",
+      "rule": "逐时点补齐最近交易日的竞价和 09:45 金额事实，优先最近日。",
+      "freshness": {
+        "partition": "trade_date",
+        "expected_by": "07:30",
+        "basis": "trading_day",
+        "set_by": "C803"
+      },
+      "retry": "event=auction_amount_facts_0530 profile=policy_13 rungs=legacy; legacy attempts=3 backoff=10m*2 timeout=3600s cap=20m until=07:30; exit 75 retryable, 10 and 20 non-retryable",
+      "degrade": [
+        "未齐全的时点不发布完整日标记；已完成事实保留。"
+      ],
+      "lifecycle": {
+        "init": "incrementally backfill missing days",
+        "force": "not supported",
+        "clear": "not supported"
+      },
+      "notes": "无上游数据集依赖；每次最多补 64 个交易日。",
+      "guardian_event": "auction_amount_facts_0530",
+      "requires": [],
+      "produces": [
+        "auction_amount",
+        "slot0945_amount"
+      ],
+      "cost": {
+        "class": "heavy",
+        "basis": "C803: 64 日窗口逐日读取 TD，使用重型槽串行执行。",
+        "set_by": "C803"
+      },
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "core_data.auction_amount_facts_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_stable",
+          "name": "core_data.auction_amount_facts_days",
+          "role": "marker"
+        }
+      ]
+    },
+    {
       "id": "plate_amount_baseline",
       "owner": "premarket_data",
       "artifact": {

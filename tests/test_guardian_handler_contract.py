@@ -848,3 +848,19 @@ def test_fetch_item_uses_scheduled_args_item_id(monkeypatch, tmp_path):
     assert code == 0
     assert calls[0][0][:2] == ("plate_amount_baseline", "2026-10-19")
     assert calls[0][1]["schedule_args"] == request["args"]
+
+
+def test_auction_amount_facts_routes_window_and_max_days(monkeypatch, tmp_path):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import auction_amount_facts
+
+    calls = []
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("GUARDIAN_DRY_RUN", "1")
+    monkeypatch.setattr(auction_amount_facts, "run", lambda request, root, **kwargs:
+                        calls.append((request, root, kwargs)) or (20, {"status": "not_applicable"}))
+    request = _core_request("auction_amount_facts_0530", "2026-11-09")
+    request.update(handler="postmarket_data", args={"dataset": "auction_amount_facts", "window": 64, "max_days": 64})
+    assert guardian_handler._run_event(request)[0] == 20
+    assert calls == [({"end_date": "2026-11-08", "window": 64, "max_days": 64},
+                      tmp_path, {"dry_run": True})]
