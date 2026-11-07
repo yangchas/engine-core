@@ -59,7 +59,7 @@ def test_td_errors_are_read_by_number_first():
 
 
 def test_plate_amount_query_splits_its_range_only_for_the_real_memory_error():
-    from engine_core import plate_amount_baseline as baseline
+    from engine_core.data_pipeline import auction_amount_facts as baseline
 
     class Cursor:
         def __init__(self, error):

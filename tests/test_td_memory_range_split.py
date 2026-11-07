@@ -3,7 +3,7 @@ import re
 import pytest
 
 from engine_core.data_pipeline.td_sink import DATA_COLUMNS, TD_ERRNO_MEMORY_EXHAUSTED, TaosStore
-from engine_core.plate_amount_baseline import _auction_slice, _read_0945_slice
+from engine_core.data_pipeline.auction_amount_facts import _auction_slice, _read_0945_slice
 
 
 class MemoryExhausted(Exception):

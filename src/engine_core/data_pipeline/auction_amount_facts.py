@@ -3,7 +3,96 @@
 import re
 from collections.abc import Mapping
 
-from ..plate_amount_baseline import MIN_FINAL_SYMBOLS
+from ..plate_amount_baseline import _day, _symbol
+from .td_sink import td_memory_exhausted, td_statement_error
+import os
+from typing import Any, Sequence
+
+MIN_FINAL_SYMBOLS = 4000
+SLOT_0945_WINDOW_START = "09:30:01"
+SLICE_DAYS = 5
+
+def _td_connect():
+    if not os.environ.get("TD_CONFIG"):
+        raise RuntimeError("TD_CONFIG_required")
+    from .td_sink import connect_td
+    return connect_td("market_data1")
+
+
+def _query_error(exc: Exception, reason: str) -> Exception:
+    try:
+        from taos.error import Error as TdDriverError
+    except ImportError:
+        TdDriverError = ()
+    if isinstance(exc, TdDriverError):
+        return td_statement_error(exc, reason)
+    return RuntimeError(reason)
+
+
+def _read_0945_slice(cursor: Any, days: Sequence[str], wanted: set[str],
+                     symbols: tuple[str, str] | None = None, td_split_retry_depth: int = 0) -> list[dict[str, Any]]:
+    first, last = min(days), max(days)
+    symbol_filter = f' AND symbol >= "{symbols[0]}" AND symbol < "{symbols[1]}"' if symbols else ""
+    try:
+        cursor.execute("SELECT _wstart, symbol, LAST(amt_yuan) FROM market_data1.stock_tick_v2 "
+                       f'WHERE ts >= "{first} 09:30:00" AND ts <= "{last} 09:45:00"{symbol_filter} '
+                       "PARTITION BY symbol INTERVAL(15m, 1s)")
+        fetched = cursor.fetchall()
+    except Exception as exc:
+        if td_split_retry_depth > 0 and td_memory_exhausted(exc):
+            if len(days) > 1:
+                middle = len(days) // 2
+                return (_read_0945_slice(cursor, days[:middle], wanted, symbols, td_split_retry_depth - 1)
+                        + _read_0945_slice(cursor, days[middle:], wanted, symbols, td_split_retry_depth - 1))
+            low, high = (int(symbols[0]), int(symbols[1])) if symbols else (0, 1000000)
+            if high - low > 1:
+                middle = (low + high) // 2
+                return (_read_0945_slice(cursor, days, wanted, (f"{low:06d}", f"{middle:06d}"), td_split_retry_depth - 1)
+                        + _read_0945_slice(cursor, days, wanted, (f"{middle:06d}", f"{high:06d}"), td_split_retry_depth - 1))
+        raise _query_error(exc, f"plate_amount_baseline_tick_slice {first}..{last}"
+                           f"{' ' + symbols[0] + '-' + symbols[1] if symbols else ''}: {exc}") from exc
+    out = []
+    for window_start, symbol, amount in fetched:
+        stamp = str(window_start)
+        if stamp[11:19] != SLOT_0945_WINDOW_START or stamp[:10] not in wanted or amount is None:
+            continue
+        out.append({"trade_date": stamp[:10], "slot": "0945", "symbol": _symbol(symbol), "amount_yuan": amount})
+    return out
+
+
+def _read_auction_rows(cursor: Any, days: Sequence[str], td_split_retry_depth: int = 0) -> list[tuple]:
+    """09:25 auction snapshots of ``days``; SLICE_DAYS per query, with optional bounded splitting.
+    No ORDER BY: the caller keeps the latest snapshot per (day, symbol) itself, and sorting is what costs memory."""
+    rows: list[tuple] = []
+    for index in range(0, len(days), SLICE_DAYS):
+        rows.extend(_auction_slice(cursor, list(days[index:index + SLICE_DAYS]), td_split_retry_depth=td_split_retry_depth))
+    return rows
+
+
+def _auction_slice(cursor: Any, days: list[str], symbols: tuple[int | None, int | None] | None = None, td_split_retry_depth: int = 0) -> list[tuple]:
+    quoted = ",".join(f'"{day.replace("-", "")}"' for day in days)
+    lo, hi = symbols if symbols is not None else (None, None)
+    symbol_filter = (f" AND symbol >= '{lo:06d}'" if lo is not None else "")
+    symbol_filter += f" AND symbol < '{hi:06d}'" if hi is not None else ""
+    try:
+        cursor.execute("SELECT ts, symbol, trade_date, auction_tag, match_amt_yuan "
+                       "FROM market_data1.auction_snapshot_v2 "
+                       f'WHERE trade_date IN ({quoted}) AND auction_tag="0925"{symbol_filter}')
+        return list(cursor.fetchall())
+    except Exception as exc:
+        if td_split_retry_depth > 0 and td_memory_exhausted(exc):
+            if len(days) > 1:
+                middle = len(days) // 2
+                return _auction_slice(cursor, days[:middle], symbols, td_split_retry_depth - 1) + _auction_slice(cursor, days[middle:], symbols, td_split_retry_depth - 1)
+            low, high = (0 if lo is None else lo), (1000000 if hi is None else hi)
+            if high - low > 1:
+                middle = (low + high) // 2
+                return (_auction_slice(cursor, days, (lo, middle), td_split_retry_depth - 1)
+                        + _auction_slice(cursor, days, (middle, hi), td_split_retry_depth - 1))
+        raise _query_error(exc, f"plate_amount_baseline_auction_query {days[0]}..{days[-1]}: {exc}") from exc
+
+
+
 from .td_sink import INSERT_CHUNK_ROWS, _check_date, _literal, trade_day_ts_us, validate_database_name
 
 SUPER_TABLE = 'auction_amount_facts_v1'
@@ -34,26 +123,28 @@ class AuctionAmountFacts:
         ts = trade_day_ts_us(day)
         return ts, ts + (1 if slot == '0945' else 0)
 
+    def _marker_count(self, day, slot):
+        _, marker_ts = self._key(day, slot)
+        rows = self.store._run(f'SELECT row_count FROM {self.database}.{META_TABLE} '
+                               f'WHERE ts = {marker_ts}', missing_ok=True, strict=True)
+        return int(rows[0][0]) if rows and rows[0][0] is not None else None
+
     def complete_days(self, days, slot):
-        result = set()
-        for day in days:
-            _, marker_ts = self._key(day, slot)
-            rows = self.store._run(f'SELECT row_count FROM {self.database}.{META_TABLE} '
-                                   f'WHERE ts = {marker_ts}', missing_ok=True, strict=True)
-            if rows and rows[0][0] is not None and int(rows[0][0]) >= MIN_FINAL_SYMBOLS:
-                result.add(day)
-        return result
+        return {day for day in days if (count := self._marker_count(day, slot)) is not None
+                and count >= MIN_FINAL_SYMBOLS}
 
     def read_days(self, days, slot):
         result = {}
         for day in days:
             ts, _ = self._key(day, slot)
-            if day not in self.complete_days([day], slot):
+            before = self._marker_count(day, slot)
+            if before is None or before < MIN_FINAL_SYMBOLS:
                 continue
             rows = self.store._run(f'SELECT symbol, amount_yuan FROM {self.database}.{SUPER_TABLE} '
                                    f"WHERE ts = {ts} AND slot = '{slot}'", strict=True)
-            if day in self.complete_days([day], slot):
-                result[day] = {symbol: int(amount) for symbol, amount in rows}
+            if self._marker_count(day, slot) != before:
+                raise RuntimeError(f'AUCTION_FACTS_CHANGED_DURING_READ:{day}:{slot}')
+            result[day] = {symbol: int(amount) for symbol, amount in rows}
         return result
 
     def write_day(self, day, slot, amounts: Mapping[str, int], source_note: str):
@@ -102,7 +193,6 @@ def _query_description(day, slot):
 
 
 def _read_source(day, slot):
-    from ..plate_amount_baseline import _td_connect, _read_auction_rows, _read_0945_slice, _day, _symbol
     conn = _td_connect()
     try:
         cursor = conn.cursor()

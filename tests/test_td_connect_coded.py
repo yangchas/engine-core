@@ -22,7 +22,7 @@ def unreachable_td(monkeypatch):
 
 ENTRY_POINTS = [
     ("engine_core.data_pipeline.td_sink", lambda m: m.connect_td()),
-    ("engine_core.plate_amount_baseline", lambda m: m._td_connect()),
+    ("engine_core.plate_amount_baseline", None),
     ("engine_core.auction_baseline", lambda m: m._td_connect()),
     ("engine_core.guardian.td_resource_check", lambda m: m.connect()),
     ("engine_core.guardian.gates", lambda m: m._td()),
@@ -33,9 +33,14 @@ ENTRY_POINTS = [
 
 
 @pytest.mark.parametrize("module_name,call", ENTRY_POINTS, ids=[name for name, _ in ENTRY_POINTS])
-def test_unreachable_td_is_td_unavailable_at_every_entry_point(unreachable_td, module_name, call):
+def test_unreachable_td_is_td_unavailable_at_every_entry_point(unreachable_td, monkeypatch, tmp_path, module_name, call):
+    module = importlib.import_module(module_name)
+    if call is None:
+        from engine_core import ladder_daily_adapter
+        monkeypatch.setattr(ladder_daily_adapter, "trading_days", lambda *_: ["2026-11-05"])
+        call = lambda m: m.build_and_store_plate_amount_baseline("2026-11-06", artifact_root=tmp_path, publish=False)
     with pytest.raises(TdUnavailable) as raised:
-        call(importlib.import_module(module_name))
+        call(module)
     assert raised.value.error_code == "TD_UNAVAILABLE" and raised.value.retryable and is_retryable("TD_UNAVAILABLE")
 
 
