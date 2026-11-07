@@ -82,9 +82,26 @@ def read_memory(*, meminfo: Path = Path("/proc/meminfo"), proc: Path = Path("/pr
             taosd = {"pid": int(status.parent.name), "rss_mb": values.get("VmRSS", 0) // 1024,
                      "peak_rss_mb": values.get("VmHWM", 0) // 1024}
             break
+    processes = []
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        entries = []
+    for entry in entries:
+        if not entry.name.isascii() or not entry.name.isdigit():
+            continue
+        try:
+            name = (entry / "comm").read_text(encoding="utf-8").strip()
+            values = parse_meminfo((entry / "status").read_text(encoding="utf-8"))
+            if "VmRSS" in values:
+                processes.append({"pid": int(entry.name), "name": name, "rss_mb": values["VmRSS"] // 1024})
+        except (OSError, UnicodeError, ValueError):
+            continue
+    top_processes = sorted(processes, key=lambda process: process["rss_mb"], reverse=True)[:8]
     return {"total_mb": total_mb, "available_mb": available_mb, "committed_mb": fields.get("Committed_AS", 0) // 1024,
             "commit_limit_mb": fields.get("CommitLimit", 0) // 1024, "swap_total_mb": fields.get("SwapTotal", 0) // 1024,
-            "reserve_estimate_mb": reserve_mb, "pool_headroom_estimate_mb": available_mb - reserve_mb, "taosd": taosd}
+            "reserve_estimate_mb": reserve_mb, "pool_headroom_estimate_mb": available_mb - reserve_mb, "taosd": taosd,
+            "top_processes": top_processes}
 
 
 def running_queries(queries: list[dict[str, Any]], *,

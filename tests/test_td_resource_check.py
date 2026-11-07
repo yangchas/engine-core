@@ -35,6 +35,20 @@ def _read_recorded(meminfo, proc):
 RECORDED_READ = check.read_memory
 
 
+# DATA: real:/proc of the test host
+def test_top_processes_from_real_proc():
+    memory = RECORDED_READ()
+    processes = memory["top_processes"]
+    assert 0 < len(processes) <= 8
+    assert all(set(p) == {"pid", "name", "rss_mb"} for p in processes)
+    assert [p["rss_mb"] for p in processes] == sorted((p["rss_mb"] for p in processes), reverse=True)
+    assert all(isinstance(p["name"], str) and p["name"] for p in processes)
+    assert all(isinstance(p["pid"], int) and p["pid"] > 0 for p in processes)
+    assert all(p["rss_mb"] <= memory["total_mb"] for p in processes)
+    own_rss_mb = check.parse_meminfo(Path("/proc/self/status").read_text())["VmRSS"] // 1024
+    assert processes[0]["rss_mb"] >= own_rss_mb - 1
+
+
 def owner_of(pid):
     return OWNERS.get(str(pid), "")
 
