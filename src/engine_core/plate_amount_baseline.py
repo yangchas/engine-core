@@ -102,7 +102,11 @@ def build_plate_amount_baseline(*, target_date: str,
                 "membership_versions": {day: (membership_versions or {}).get(day) for day, _ in values},
                 "available_at": available_at,
             })
-    return {"status": "READY" if result_rows and all(not row["missing_dates"] for row in result_rows) else "PARTIAL",
+    refs = ([{"dataset": dataset, "trade_date": day, "version": None}
+             for dataset in ("auction_snapshot_v2", "stock_tick_v2") for day in dates] +
+            [{"dataset": "plate_members", "trade_date": day, "version": version}
+             for day, version in sorted((membership_versions or {}).items())])
+    return {"input_refs": refs, "status": "READY" if result_rows and all(not row["missing_dates"] for row in result_rows) else "PARTIAL",
             "target_date": target, "window_dates": dates, "rows": result_rows}
 
 
@@ -124,7 +128,7 @@ def _query_error(exc: Exception, reason: str) -> Exception:
 
 
 def _read_0945_slice(cursor: Any, days: Sequence[str], wanted: set[str],
-                     symbols: tuple[str, str] | None = None) -> list[dict[str, Any]]:
+                     symbols: tuple[str, str] | None = None, td_split_retry_depth: int = 0) -> list[dict[str, Any]]:
     first, last = min(days), max(days)
     symbol_filter = f' AND symbol >= "{symbols[0]}" AND symbol < "{symbols[1]}"' if symbols else ""
     try:
@@ -133,16 +137,16 @@ def _read_0945_slice(cursor: Any, days: Sequence[str], wanted: set[str],
                        "PARTITION BY symbol INTERVAL(15m, 1s)")
         fetched = cursor.fetchall()
     except Exception as exc:
-        if td_memory_exhausted(exc):
+        if td_split_retry_depth > 0 and td_memory_exhausted(exc):
             if len(days) > 1:
                 middle = len(days) // 2
-                return (_read_0945_slice(cursor, days[:middle], wanted, symbols)
-                        + _read_0945_slice(cursor, days[middle:], wanted, symbols))
+                return (_read_0945_slice(cursor, days[:middle], wanted, symbols, td_split_retry_depth - 1)
+                        + _read_0945_slice(cursor, days[middle:], wanted, symbols, td_split_retry_depth - 1))
             low, high = (int(symbols[0]), int(symbols[1])) if symbols else (0, 1000000)
             if high - low > 1:
                 middle = (low + high) // 2
-                return (_read_0945_slice(cursor, days, wanted, (f"{low:06d}", f"{middle:06d}"))
-                        + _read_0945_slice(cursor, days, wanted, (f"{middle:06d}", f"{high:06d}")))
+                return (_read_0945_slice(cursor, days, wanted, (f"{low:06d}", f"{middle:06d}"), td_split_retry_depth - 1)
+                        + _read_0945_slice(cursor, days, wanted, (f"{middle:06d}", f"{high:06d}"), td_split_retry_depth - 1))
         raise _query_error(exc, f"plate_amount_baseline_tick_slice {first}..{last}"
                            f"{' ' + symbols[0] + '-' + symbols[1] if symbols else ''}: {exc}") from exc
     out = []
@@ -154,16 +158,16 @@ def _read_0945_slice(cursor: Any, days: Sequence[str], wanted: set[str],
     return out
 
 
-def _read_auction_rows(cursor: Any, days: Sequence[str]) -> list[tuple]:
-    """09:25 auction snapshots of ``days``; SLICE_DAYS per query, a slice that runs out of query memory is halved.
+def _read_auction_rows(cursor: Any, days: Sequence[str], td_split_retry_depth: int = 0) -> list[tuple]:
+    """09:25 auction snapshots of ``days``; SLICE_DAYS per query, with optional bounded splitting.
     No ORDER BY: the caller keeps the latest snapshot per (day, symbol) itself, and sorting is what costs memory."""
     rows: list[tuple] = []
     for index in range(0, len(days), SLICE_DAYS):
-        rows.extend(_auction_slice(cursor, list(days[index:index + SLICE_DAYS])))
+        rows.extend(_auction_slice(cursor, list(days[index:index + SLICE_DAYS]), td_split_retry_depth=td_split_retry_depth))
     return rows
 
 
-def _auction_slice(cursor: Any, days: list[str], symbols: tuple[int | None, int | None] | None = None) -> list[tuple]:
+def _auction_slice(cursor: Any, days: list[str], symbols: tuple[int | None, int | None] | None = None, td_split_retry_depth: int = 0) -> list[tuple]:
     quoted = ",".join(f'"{day.replace("-", "")}"' for day in days)
     lo, hi = symbols if symbols is not None else (None, None)
     symbol_filter = (f" AND symbol >= '{lo:06d}'" if lo is not None else "")
@@ -174,25 +178,25 @@ def _auction_slice(cursor: Any, days: list[str], symbols: tuple[int | None, int 
                        f'WHERE trade_date IN ({quoted}) AND auction_tag="0925"{symbol_filter}')
         return list(cursor.fetchall())
     except Exception as exc:
-        if td_memory_exhausted(exc):
+        if td_split_retry_depth > 0 and td_memory_exhausted(exc):
             if len(days) > 1:
                 middle = len(days) // 2
-                return _auction_slice(cursor, days[:middle], symbols) + _auction_slice(cursor, days[middle:], symbols)
+                return _auction_slice(cursor, days[:middle], symbols, td_split_retry_depth - 1) + _auction_slice(cursor, days[middle:], symbols, td_split_retry_depth - 1)
             low, high = (0 if lo is None else lo), (1000000 if hi is None else hi)
             if high - low > 1:
                 middle = (low + high) // 2
-                return (_auction_slice(cursor, days, (lo, middle))
-                        + _auction_slice(cursor, days, (middle, hi)))
+                return (_auction_slice(cursor, days, (lo, middle), td_split_retry_depth - 1)
+                        + _auction_slice(cursor, days, (middle, hi), td_split_retry_depth - 1))
         raise _query_error(exc, f"plate_amount_baseline_auction_query {days[0]}..{days[-1]}: {exc}") from exc
 
 
-def _read_days(dates: Sequence[str]) -> list[dict[str, Any]]:
+def _read_days(dates: Sequence[str], td_split_retry_depth: int = 0) -> list[dict[str, Any]]:
     """The observations of ``dates`` straight from TD (sliced queries)."""
     connection = _td_connect()
     result: list[dict[str, Any]] = []
     try:
         cursor = connection.cursor()
-        auction_rows = _read_auction_rows(cursor, list(dates))
+        auction_rows = _read_auction_rows(cursor, list(dates), td_split_retry_depth)
         latest: dict[tuple[str, str], tuple[str, Any]] = {}
         for ts, symbol, day, _tag, amount in auction_rows:
             key = (_day(day), _symbol(symbol))
@@ -207,11 +211,11 @@ def _read_days(dates: Sequence[str]) -> list[dict[str, Any]]:
         # the value the old "ts <= 09:45:00" query returned (identical for every symbol on all 24 days checked
         # 2026-11-02). Memory grows with symbols x windows, so a slice covers SLICE_DAYS trading days (about 5 s for
         # 5 days on 2026-11-02 15:29); the whole 25-day window in one query ran out of query memory on the shared
-        # TDengine (0x073a) and took over 160 s. A slice that still runs out of memory is split in half and retried.
+        # TDengine (0x073a) and took over 160 s. Optional bounded splitting can retry a slice that runs out of memory.
         # For an interval amount, subtract the cumulative value of the earlier slice end.
         wanted = set(dates)
         for index in range(0, len(dates), SLICE_DAYS):
-            result.extend(_read_0945_slice(cursor, list(dates[index:index + SLICE_DAYS]), wanted))
+            result.extend(_read_0945_slice(cursor, list(dates[index:index + SLICE_DAYS]), wanted, td_split_retry_depth=td_split_retry_depth))
     finally:
         connection.close()
     return result
@@ -262,7 +266,7 @@ def _keep_day(store: Any, day: str, rows: Sequence[Mapping[str, Any]]) -> bool:
     return True
 
 
-def read_observations(dates: Sequence[str], *, store: Any = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def read_observations(dates: Sequence[str], *, store: Any = None, td_split_retry_depth: int = 0) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Observations of ``dates``: finished days from the Redis copy, only the missing ones from TD. Returns the rows and
     what was done: {"from_cache": n, "from_td": n, "kept": n}."""
     rows: list[dict[str, Any]] = []
@@ -275,14 +279,14 @@ def read_observations(dates: Sequence[str], *, store: Any = None) -> tuple[list[
             rows.extend(cached)
     kept = 0
     if missing:
-        fresh = _read_days(missing)
+        fresh = _read_days(missing, td_split_retry_depth)
         rows.extend(fresh)
         kept = sum(_keep_day(store, day, fresh) for day in missing)
     return rows, {"from_cache": len(dates) - len(missing), "from_td": len(missing), "kept": kept}
 
 
-def _read_td(target_date: str, dates: Sequence[str]) -> list[dict[str, Any]]:
-    return read_observations(list(dates), store=_obs_store())[0] if dates else []
+def _read_td(target_date: str, dates: Sequence[str], td_split_retry_depth: int = 0) -> list[dict[str, Any]]:
+    return read_observations(list(dates), store=_obs_store(), td_split_retry_depth=td_split_retry_depth)[0] if dates else []
 
 
 def _membership_inputs(catalog: ArtifactCatalog, dates: Sequence[str]):
@@ -336,7 +340,10 @@ def _publish(target: str, manifest: Mapping[str, Any], rows: Sequence[Mapping[st
 
 
 def build_and_store_plate_amount_baseline(target_date: str, *, artifact_root: str | Path,
-                                          publish: bool = True) -> dict[str, Any]:
+                                          publish: bool = True, available_at: str | None = None,
+                                          td_split_retry_depth: int = 0) -> dict[str, Any]:
+    if type(td_split_retry_depth) is not int or td_split_retry_depth < 0:
+        raise ValueError("td_split_retry_depth_must_be_nonnegative")
     target = _day(target_date)
     catalog = ArtifactCatalog(artifact_root)
     old = _existing(catalog, target)
@@ -361,15 +368,16 @@ def build_and_store_plate_amount_baseline(target_date: str, *, artifact_root: st
         connection.close()
     dates = sorted(set(td_days))[-WINDOW_DAYS:]
     membership_by_date, versions = _membership_inputs(catalog, dates)
-    available = datetime.now(timezone.utc).isoformat()
-    observations, observation_source = read_observations(dates, store=_obs_store()) if dates else ([], {})
+    available = available_at if available_at is not None else datetime.now(timezone.utc).isoformat()
+    observations, observation_source = read_observations(dates, store=_obs_store(), td_split_retry_depth=td_split_retry_depth) if dates else ([], {})
     built = build_plate_amount_baseline(target_date=target, membership_by_date=membership_by_date,
         observations=observations, candidate_dates=dates, membership_versions=versions, available_at=available)
     manifest = {"schema": SCHEMA, "dataset": DATASET, "trade_date": target,
         "point_in_time_date": max(dates) if dates else None, "available_at": available,
         "source": ["market_data1.auction_snapshot_v2", "market_data1.stock_tick_v2", "plate_members"],
         "business_status": built["status"], "window": {"sessions": WINDOW_DAYS,
-        "excludes_target_date": True, "dates": dates}, "membership_versions": versions}
+        "excludes_target_date": True, "dates": dates}, "membership_versions": versions,
+        "input_refs": built["input_refs"]}
     committed = catalog.commit(DATASET, target, built["rows"], manifest, source="core_td_plate_amount")
     current_path = catalog.locate("plate_members", target)
     current_members = catalog.read_rows(current_path) if current_path else []
