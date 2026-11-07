@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import multiprocessing
 import re
 import time
@@ -170,7 +171,19 @@ def _save_source_universe_cache(path: Path, target: str,
     return value
 
 
-def _baostock_gapfill_worker(tasks: list[dict[str, Any]], read_timeout: float, events: Any) -> None:
+def _wait_for_range_start(last_start: float | None, interval: float, deadline: float,
+                          clock: Any, sleep: Any) -> float:
+    now = clock()
+    if last_start is not None:
+        delay = max(0.0, last_start + interval - now)
+        if delay:
+            sleep(min(delay, max(0.0, deadline - now)))
+            now = clock()
+    return now
+
+
+def _baostock_gapfill_worker(tasks: list[dict[str, Any]], read_timeout: float, events: Any,
+                             interval: float, deadline: float) -> None:
     """Run an isolated, serial Baostock stream for one bounded share of gap symbols."""
     from ..daily_history import BaostockRangeClient
     import baostock as bs
@@ -178,9 +191,14 @@ def _baostock_gapfill_worker(tasks: list[dict[str, Any]], read_timeout: float, e
     client = BaostockRangeClient(bs, read_timeout=read_timeout)
     try:
         client.login()
+        last_start = None
         for item in tasks:
+            last_start = _wait_for_range_start(last_start, interval, deadline, time.monotonic, time.sleep)
+            if last_start >= deadline:
+                raise TimeoutError("BAOSTOCK_TOTAL_BUDGET_EXHAUSTED")
             symbol, start, end = item["symbol"], item["start_date"], item["end_date"]
             events.put({"kind": "requested", "symbol": symbol})
+            last_start = time.monotonic()
             rows = client.query(symbol, start, end)
             events.put({"kind": "result", "symbol": symbol, "rows": rows,
                         "row_count": len(rows)})
@@ -197,13 +215,13 @@ def _baostock_gapfill_worker(tasks: list[dict[str, Any]], read_timeout: float, e
 def _fetch_gap_ranges_parallel(gap_plan: list[dict[str, Any]], *,
                                concurrency: int, read_timeout: float, deadline: float,
                                no_progress_timeout: float, last_progress_at: float,
-                               on_rows: Any) -> tuple[int, float]:
+                               on_rows: Any, interval: float = 0.0) -> tuple[int, float]:
     """Fetch sorted per-symbol ranges in at most two private sessions, honoring both budgets."""
     context = multiprocessing.get_context("spawn")
     events = context.Queue()
     shares = [gap_plan[index::concurrency] for index in range(concurrency)]
     processes = [context.Process(target=_baostock_gapfill_worker,
-                                 args=(share, read_timeout, events), daemon=True)
+                                 args=(share, read_timeout, events, interval, deadline), daemon=True)
                  for share in shares if share]
     requested = 0
     error = None
@@ -279,7 +297,8 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                                client: Any = None, only_source_empty: bool = False,
                                minimum_coverage: float = 0.90,
                                completion_policy: Mapping[str, Any] | None = None,
-                               watermark_mode: str = "window") -> dict[str, Any]:
+                               watermark_mode: str = "window",
+                               baostock_min_request_interval_seconds: float = 0.0) -> dict[str, Any]:
     """Use local symbol partitions for gaps; query Baostock's source list only for C594 classification."""
     from ..daily_history import BaostockRangeClient
     from ..guardian.daily_kline_coverage import build_gap_fill_plan
@@ -289,6 +308,8 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
 
     if total_timeout_seconds <= 0:
         raise ValueError("total_timeout_seconds_must_be_positive")
+    if not math.isfinite(baostock_min_request_interval_seconds) or baostock_min_request_interval_seconds < 0:
+        raise ValueError("baostock_min_request_interval_seconds_must_be_nonnegative")
     if no_progress_timeout_seconds <= 0:
         raise ValueError("no_progress_timeout_seconds_must_be_positive")
     if source_universe_timeout_seconds <= 0:
@@ -590,6 +611,7 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
             logged_in = True
         actual_queries = 0
         last_progress_at = time.monotonic()
+        last_request_at = None
         if range_concurrency == 1:
             for item in gap_plan or []:  # already sorted by newest start date first
                 if time.monotonic() >= deadline:
@@ -600,6 +622,13 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                 missing_days = [day for day in item["trade_dates"] if symbol not in td_symbols(day)]
                 if not missing_days:
                     continue
+                last_request_at = _wait_for_range_start(last_request_at, baostock_min_request_interval_seconds,
+                                                        deadline, time.monotonic, time.sleep)
+                if last_request_at >= deadline:
+                    raise TimeoutError("BAOSTOCK_TOTAL_BUDGET_EXHAUSTED")
+                if last_request_at - last_progress_at >= no_progress_timeout_seconds:
+                    raise TimeoutError("BAOSTOCK_NO_PROGRESS_TIMEOUT")
+                last_request_at = time.monotonic()
                 rows = range_client.query(symbol, start, end)
                 actual_queries += 1
                 if rows:
@@ -621,7 +650,8 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                     parallel_tasks, concurrency=range_concurrency,
                     read_timeout=min(30.0, float(no_progress_timeout_seconds)), deadline=deadline,
                     no_progress_timeout=float(no_progress_timeout_seconds),
-                    last_progress_at=last_progress_at, on_rows=persist_range_rows)
+                    last_progress_at=last_progress_at, on_rows=persist_range_rows,
+                    interval=baostock_min_request_interval_seconds)
     finally:
         module = getattr(range_client, "module", None)
         if not logged_in:

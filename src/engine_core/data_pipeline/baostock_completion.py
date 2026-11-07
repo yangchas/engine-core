@@ -5,6 +5,13 @@ import math
 from collections.abc import Mapping, Sequence, Set
 from typing import Any
 
+from ..errors import CoreError
+
+
+class KnownMissingIncomplete(CoreError, ValueError):
+    def __init__(self):
+        super().__init__("known_missing_incomplete")
+
 
 CATEGORIES = frozenset({"SOURCE_UNAVAILABLE", "SOURCE_EMPTY", "UNEXPECTED"})
 
@@ -50,7 +57,7 @@ def evaluate_baostock_completion(expected_symbols: Sequence[Any] | Set[Any],
     normalized = {_symbol(key): value for key, value in known_missing.items()}
     missing = expected - present
     if set(normalized) != missing:
-        raise ValueError("known_missing_incomplete")
+        raise KnownMissingIncomplete()
     if any(value not in CATEGORIES for value in normalized.values()):
         raise ValueError("known_missing_category_invalid")
     if isinstance(coverage_threshold, bool) or not isinstance(coverage_threshold, (int, float)) or \

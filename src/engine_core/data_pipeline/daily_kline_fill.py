@@ -47,7 +47,14 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
                          no_progress_timeout_seconds: float = 300.0,
                          on_complete: Callable[[dict[str, Any]], None] | None = None,
                          needs_publish: Callable[[str], bool] | None = None,
-                         clock: Callable[[], float] = time.monotonic, watermark_mode: str = "window") -> dict[str, Any]:
+                         clock: Callable[[], float] = time.monotonic, watermark_mode: str = "window",
+                         sleep: Callable[[float], None] = time.sleep,
+                         baostock_min_request_interval_seconds: float = 0.0) -> dict[str, Any]:
+    import math
+    from .daily_kline_gapfill import _wait_for_range_start
+
+    if not math.isfinite(baostock_min_request_interval_seconds) or baostock_min_request_interval_seconds < 0:
+        raise ValueError("baostock_min_request_interval_seconds_must_be_nonnegative")
     if not 0 < coverage_threshold <= 1:
         raise ValueError("coverage_threshold_must_be_in_0_1")
     sessions = sorted(day for day in trading_dates if day <= target)
@@ -113,6 +120,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
             client.login()
             logged_in = True
         last_progress = clock()
+        last_request = None
         for symbol in order:
             if done():
                 break
@@ -123,8 +131,15 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
             if lease is not None and not lease.renew():
                 raise _abort("lease_lost", stats)
             wanted = sorted(missing[symbol])
+            last_request = _wait_for_range_start(last_request, baostock_min_request_interval_seconds,
+                                                 started + total_timeout_seconds, clock, sleep)
+            if last_request - started >= total_timeout_seconds:
+                raise _abort("total_budget_exhausted", stats)
+            if last_request - last_progress >= no_progress_timeout_seconds:
+                raise _abort("no_progress", stats)
             stats["attempted"] += 1
             try:
+                last_request = clock()
                 rows = client.query(symbol, wanted[0], target)
             except Exception as exc:
                 stats["failed"] += 1
@@ -302,6 +317,7 @@ def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str,
             max_consecutive_empty=int(options.get("fill_max_consecutive_empty", 30)),
             total_timeout_seconds=float(options.get("total_timeout_seconds", 43200)),
             no_progress_timeout_seconds=no_progress,
+            baostock_min_request_interval_seconds=float(options.get("baostock_min_request_interval_seconds", 0.0)),
             needs_publish=lambda day: find_published_baostock_manifest(catalog, day, threshold) is None,
             on_complete=lambda done: done.__setitem__(
                 "partitions", publish_filled_days(base, store, done["publish_days"], expected_symbols, threshold)))

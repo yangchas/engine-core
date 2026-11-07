@@ -23,6 +23,7 @@ def run_daily_kline_backfill(root: str | Path, target: str, *, args: Mapping[str
             no_progress_timeout_seconds=float(options.get("baostock_no_progress_seconds", 300)),
             source_universe_timeout_seconds=float(options.get("baostock_source_universe_seconds", 300)),
             range_concurrency=int(options.get("baostock_range_concurrency", 1)),
+            baostock_min_request_interval_seconds=float(options.get("baostock_min_request_interval_seconds", 0.0)),
             prefetch_source_universe=bool(options.get("prefetch_baostock_universe", False)),
             only_source_empty=only_source_empty,
             minimum_coverage=float(options.get("minimum_coverage", 0.90)),
