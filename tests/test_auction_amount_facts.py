@@ -12,6 +12,18 @@ def rows(name):
         return [json.loads(line) for line in source]
 
 
+class FakeLease:
+    def __init__(self):
+        self.released = False
+    def acquire(self): return True
+    def renew(self): return True
+    def release(self): self.released = True
+
+
+def fake_lease_factory(day, slot):
+    return FakeLease()
+
+
 def test_real_auction_roundtrip():
     store = FakeStore()
     facts = AuctionAmountFacts(store)
@@ -100,6 +112,7 @@ def test_replace_and_failure_invalidate_marker():
     with pytest.raises(RuntimeError, match='write failed'):
         facts.write_day('2026-11-05', '0925', replacement, 'failed')
     assert facts.complete_days(['2026-11-05'], '0925') == set()
+    store.markers[facts._key('2026-11-05', '0925')[1]] = len(replacement)
     store.fail_read = True
     with pytest.raises(RuntimeError, match='read failed'):
         facts.read_days(['2026-11-05'], '0925')
@@ -116,7 +129,7 @@ def test_run_resumes_after_resource_exhaustion(tmp_path):
         if day == '2026-11-04':
             raise ProgrammingError('[0x073a]: Query memory exhausted')
         return amounts
-    code, reply = run({'days': ['2026-11-03', '2026-11-04', '2026-11-05'], 'max_days': 2}, tmp_path, reader=reader, store=facts)
+    code, reply = run({'days': ['2026-11-03', '2026-11-04', '2026-11-05'], 'max_days': 2}, tmp_path, reader=reader, store=facts, lease_factory=fake_lease_factory)
     assert code == 30 and reply['reason'] == 'TD_RESOURCE_EXHAUSTED'
     assert facts.complete_days(['2026-11-05'], '0925') == {'2026-11-05'}
     assert reply['detail']['completed'] == ['2026-11-05']
@@ -133,11 +146,11 @@ def test_run_latest_first_and_already_satisfied(tmp_path):
         calls.append((day, slot))
         return amounts
     days = ['2026-11-03', '2026-11-04', '2026-11-05']
-    code, reply = run({'days': days, 'max_days': 2}, tmp_path, reader=reader, store=facts)
+    code, reply = run({'days': days, 'max_days': 2}, tmp_path, reader=reader, store=facts, lease_factory=fake_lease_factory)
     assert code == 0 and not check_reply(code, reply)
     assert calls == [(day, slot) for day in days[:0:-1] for slot in ('0925', '0945')]
     assert reply['detail']['remaining'] == ['2026-11-03']
-    code, reply = run({'days': days[1:]}, tmp_path, reader=reader, store=facts)
+    code, reply = run({'days': days[1:]}, tmp_path, reader=reader, store=facts, lease_factory=fake_lease_factory)
     assert code == 20 and not check_reply(code, reply)
     assert len(calls) == 4
 
@@ -148,7 +161,7 @@ def test_run_incomplete_real_tick_slice(tmp_path):
     auction = {symbol: amount for _, symbol, day, _, amount in rows('td_inputs_auction.jsonl.gz') if day == '20261105'}
     tick = {symbol: amount for _, symbol, amount in rows('td_inputs_0945.jsonl.gz')}
     facts = AuctionAmountFacts(FakeStore())
-    code, reply = run({'days': ['2026-11-05']}, tmp_path, reader=lambda day, slot: auction if slot == '0925' else tick, store=facts)
+    code, reply = run({'days': ['2026-11-05']}, tmp_path, reader=lambda day, slot: auction if slot == '0925' else tick, store=facts, lease_factory=fake_lease_factory)
     assert code == 10 and not check_reply(code, reply)
     assert reply['detail']['incomplete']['2026-11-05']['0945'] == len(tick) < 4000
     assert facts.complete_days(['2026-11-05'], '0925') == {'2026-11-05'}
@@ -164,6 +177,58 @@ def test_run_expired_does_not_read_source(tmp_path):
     facts = AuctionAmountFacts(FakeStore())
     def reader(day, slot):
         raise AssertionError('expired source queried')
-    code, reply = run({'days': [day]}, tmp_path, reader=reader, store=facts)
+    code, reply = run({'days': [day]}, tmp_path, reader=reader, store=facts, lease_factory=fake_lease_factory)
     assert code == 0 and not check_reply(code, reply)
     assert reply['detail']['expired'] == [{'day': day, 'reason': 'SOURCE_EXPIRED'}]
+
+
+def test_run_skips_locked_slot_without_reading(tmp_path):
+    from engine_core.data_pipeline.auction_amount_facts import run
+    class Locked:
+        def acquire(self): return False
+    facts = AuctionAmountFacts(FakeStore())
+    def reader(day, slot):
+        raise AssertionError('locked source queried')
+    code, reply = run({'days': ['2026-11-05']}, tmp_path, reader=reader, store=facts,
+                      lease_factory=lambda day, slot: Locked())
+    assert code in (10, 20)
+    assert reply['detail']['skipped_locked'] == [
+        {'day': '2026-11-05', 'slot': '0925'}, {'day': '2026-11-05', 'slot': '0945'}]
+    assert not facts.store.data and not facts.store.markers
+
+
+
+def test_replacement_failure_hides_day_during_write():
+    import pytest
+    amounts = {symbol: amount for _, symbol, day, _, amount in rows('td_inputs_auction.jsonl.gz') if day == '20261105'}
+    class InterruptedStore(FakeStore):
+        interrupt = False
+        def _run(self, sql, **kwargs):
+            if self.interrupt and sql.startswith('INSERT INTO core_data.auction_amount_0925_'):
+                assert not facts.complete_days(['2026-11-05'], '0925')
+                assert facts.read_days(['2026-11-05'], '0925') == {}
+                raise RuntimeError('interrupted')
+            return super()._run(sql, **kwargs)
+    store = InterruptedStore()
+    facts = AuctionAmountFacts(store)
+    facts.write_day('2026-11-05', '0925', amounts, 'first')
+    store.interrupt = True
+    with pytest.raises(RuntimeError, match='interrupted'):
+        facts.write_day('2026-11-05', '0925', amounts, 'replacement')
+    assert not facts.complete_days(['2026-11-05'], '0925')
+
+
+def test_successful_acquisition_releases_lease(tmp_path):
+    from engine_core.data_pipeline.auction_amount_facts import run
+    amounts = {symbol: amount for _, symbol, day, _, amount in rows('td_inputs_auction.jsonl.gz') if day == '20261105'}
+    facts = AuctionAmountFacts(FakeStore())
+    leases = []
+    def factory(day, slot):
+        lease = FakeLease()
+        leases.append(lease)
+        return lease
+    code, reply = run({'days': ['2026-11-05']}, tmp_path, reader=lambda day, slot: amounts,
+                      store=facts, lease_factory=factory)
+    assert code == 0 and all(lease.released for lease in leases)
+    assert facts.complete_days(['2026-11-05'], '0925') == {'2026-11-05'}
+    assert facts.read_days(['2026-11-05'], '0925')['2026-11-05'] == amounts
