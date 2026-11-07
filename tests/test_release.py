@@ -231,6 +231,32 @@ def _add_examples_code_change(origin, lines=6):
     _git(origin, "checkout", "-q", "main")
 
 
+def test_merge_runs_global_invariants_for_unrelated_changes(mergeable, monkeypatch):
+    origin, evidence, cards = mergeable
+    _git(origin, "checkout", "-q", "-b", "docs-only", _git(origin, "merge-base", "main", "feature"))
+    _commit(origin, {"README.md": "documentation\n"}, "docs")
+    _git(origin, "checkout", "-q", "main")
+    (cards / "C900.md").write_text("ID: C900\n")
+    commands = []
+    monkeypatch.setattr(release, "run_checked", lambda command, *a, **k: (commands.append(command) or 0, []))
+
+    assert release.cmd_merge(_merge_args(origin, evidence, cards, branch="docs-only")) == 0
+    assert any(command.count("tests/test_real_fixtures.py") == 1 for command in commands)
+    assert all(any(command.count(test) == 1 for command in commands) for test in release.GLOBAL_INVARIANT_TESTS)
+
+
+def test_merge_refuses_when_global_invariant_fails(mergeable, monkeypatch, capsys):
+    origin, evidence, cards = mergeable
+    (cards / "C900.md").write_text("ID: C900\n")
+    monkeypatch.setattr(release, "run_checked", lambda *a, **k: (1, []))
+    before = _git(origin, "rev-parse", "HEAD")
+
+    assert release.cmd_merge(_merge_args(origin, evidence, cards)) == 1
+    assert "REFUSED:" in (output := capsys.readouterr().out)
+    assert "tests/test_real_fixtures.py" in output
+    assert _git(origin, "rev-parse", "HEAD") == before
+
+
 def test_merge_requires_builder_for_large_inline_implementation(mergeable, monkeypatch, capsys):
     origin, evidence, cards = mergeable
     _add_examples_code_change(origin)

@@ -39,6 +39,7 @@ ERRORS_BEFORE_REVIEW = 2          # the rule: the second unreviewed error stops 
 BRANCH = "codex/feature-session-engine-integration"
 QUIET_BEFORE, QUIET_AFTER = 30, 120        # seconds around "now" in which no event may be due
 SMOKE_MODULES = ("engine_core.guardian.startup", "engine_core.data_pipeline.jobs", "engine_core.errors")
+GLOBAL_INVARIANT_TESTS = ("tests/test_real_fixtures.py",)
 
 
 def git(repo: Path, *args: str) -> str:
@@ -337,15 +338,18 @@ def cmd_merge(args: argparse.Namespace) -> int:
             problems.append("the branch does not merge cleanly: " + (done.stdout + done.stderr).strip()[-300:])
         else:
             merged = True
-    if merged and files:
-        select = subprocess.run([sys.executable, str(ROOT / "examples" / "affected_tests.py"), "--files", *files, "--command"],
-                                cwd=str(ROOT), capture_output=True, text=True)
-        tests = [t for t in select.stdout.split() if t.startswith("tests/")] if select.returncode == 0 else []
+    if merged:
+        tests = []
+        if files:
+            select = subprocess.run([sys.executable, str(ROOT / "examples" / "affected_tests.py"), "--files", *files, "--command"],
+                                    cwd=str(ROOT), capture_output=True, text=True)
+            tests = [t for t in select.stdout.split() if t.startswith("tests/")] if select.returncode == 0 else []
+        tests = list(dict.fromkeys([*tests, *GLOBAL_INVARIANT_TESTS]))
         if tests:
             code, failing = run_checked([sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider",
                                          *tests], ROOT, log_dir / f"{stamp}-pytest.log")
             if code:
-                problems.append(f"affected tests failed (exit {code}): {len(failing)} failing line(s)")
+                problems.append(f"tests failed (exit {code}): {', '.join(tests)}; {len(failing)} failing line(s)")
         if any(f.startswith("native/") for f in files):
             # TMPDIR=/tmp: the guardiand tests open unix sockets under t.TempDir(), whose path must stay under 108 bytes
             code, go_failing = run_checked(["/bin/go", "test", "./..."], ROOT / "native" / "guardiand",
