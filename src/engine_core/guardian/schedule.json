@@ -1156,7 +1156,7 @@
       "order": null,
       "cost": "medium",
       "phases": [
-        "NIGHT"
+        "any"
       ],
       "on_phase_mismatch": "defer",
       "profile": "chain_sweep",

@@ -97,3 +97,35 @@ def test_the_chain_events_sit_after_the_producers_and_before_the_consumers_of_th
     assert events["chain_sweep_2030"]["late_until"] <= events["daily_dde_postclose"]["at"]
     assert events["chain_sweep_0820"]["late_until"] < events["preopen_check_0835"]["at"]
     assert events["chain_sweep_0130"]["at"] > events["daily_kline_backfill"]["at"]                # after the 01:00 fill
+
+
+def test_chain_sweep_runs_in_saturday_window(tmp_path):
+    from datetime import datetime
+    import time
+    from examples import guardian_selftest as selftest
+
+    event = next(e for e in SCHEDULE["events"] if e["event_id"] == "chain_sweep_0130")
+    source = {**SCHEDULE, "events": [event]}
+    scenario = selftest.Scenario("C717", [], [event["event_id"]], "SUCCEEDED",
+                                 datetime.fromisoformat("2026-11-07T01:30:00+08:00"),
+                                 10, tmp_path, "2026-11-07", fake_clock=True,
+                                 schedule_source=source)
+    scenario.binary = selftest._build_binary(tmp_path)
+    selftest._write_captured_trade_dates(tmp_path / "captured.json")
+    dates = json.loads((tmp_path / "captured.json").read_text())
+    assert "2026-11-07" not in dates
+    scenario.write_config(dates)
+    config = json.loads(scenario.config_path.read_text())
+    config["events"][0].pop("gate", None)
+    scenario.config_path.write_text(json.dumps(config))
+    scenario.launch()
+    try:
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline and not scenario.terminal():
+            if scenario.process.poll() is not None:
+                break
+            time.sleep(0.05)
+        assert scenario.states().get(event["event_id"], {}).get("status") == "SUCCEEDED"
+        assert len(scenario.calls_for(event["event_id"])) == 1
+    finally:
+        scenario.stop()
