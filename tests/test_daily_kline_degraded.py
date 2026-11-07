@@ -1,6 +1,7 @@
 from engine_core.daily_kline_degraded import compose_degraded_rows
 
 
+# DATA: spec (field-level gaps and partial coverage require controlled provider responses).
 def test_degraded_rows_keep_field_provenance_and_partial_coverage():
     # Synthetic provider responses exercise merge semantics; this is not a historical fixture.
     rows, quality = compose_degraded_rows(

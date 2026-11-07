@@ -1,4 +1,6 @@
 import hashlib
+import json
+from pathlib import Path
 import pytest
 
 from engine_core.daily_kline_capture import (
@@ -10,6 +12,14 @@ from engine_core.daily_kline_capture import (
     write_capture,
 )
 
+
+def _real_row():
+    path = Path(__file__).parent / "fixtures/real/daily_kline_c755/baostock_raw.jsonl"
+    call = json.loads(path.read_text().splitlines()[1])
+    return dict(zip(call["fields"], call["rows"][0]))
+
+
+# DATA: spec (missing and zero fields exercise null and suspension semantics).
 
 def test_code_mapping_and_row_nulls_are_preserved():
     assert to_baostock_code("688001") == "sh.688001"
@@ -30,19 +40,20 @@ def test_fetch_continues_after_symbol_error_and_stops_after_error_limit():
             return None
 
         def query(self, code, date):
-            if code.endswith("000002"):
+            if code.endswith("600539"):
                 raise RuntimeError("source error")
-            return [{"code": code, "date": date, "close": "10", "preclose": "9", "volume": "1", "amount": "100"}]
+            return [_real_row()]
 
         def logout(self):
             return None
 
-    rows, report = fetch_day(Client(), ["000001", "000002", "000003"], "2026-10-14", max_errors=0)
-    assert [row["symbol"] for row in rows] == ["000001"]
+    rows, report = fetch_day(Client(), ["605258", "600539", "301358"], "2026-11-02", max_errors=0)
+    assert [row["symbol"] for row in rows] == ["605258"]
     assert report["partial"] is True
-    assert report["errors"][0]["symbol"] == "000002"
+    assert report["errors"][0]["symbol"] == "600539"
 
 
+# DATA: spec (deliberately inconsistent prices test mismatch detection).
 def test_validate_reports_previous_close_and_percent_mismatches():
     row = parse_row({"code": "600000", "date": "2026-10-14", "close": "11", "preclose": "10", "volume": "1", "amount": "100", "pctChg": "2"})
     report = validate([row], prev_close_by_symbol={"600000": 9.0})
@@ -51,13 +62,13 @@ def test_validate_reports_previous_close_and_percent_mismatches():
 
 
 def test_capture_is_exclusive_and_loader_checks_digest(tmp_path):
-    row = parse_row({"code": "600000", "date": "2026-10-14", "close": "10", "preclose": "9", "volume": "1", "amount": "100"})
+    row = parse_row(_real_row())
     output = tmp_path / "capture"
     output.mkdir()
-    manifest = write_capture(output, [row], {"date": "2026-10-14", "valid": 1, "suspended": 0, "missing": 0, "error_count": 0, "mismatch_count": 0, "partial": False})
+    manifest = write_capture(output, [row], {"date": "2026-11-02", "valid": 1, "suspended": 0, "missing": 0, "error_count": 0, "mismatch_count": 0, "partial": False})
     payload = (output / "daily_kline.jsonl").read_bytes()
     assert manifest["sha256"] == hashlib.sha256(payload).hexdigest()
-    assert load_capture(output)["600000"] == row
+    assert load_capture(output)["605258"] == row
     with pytest.raises(FileExistsError):
         write_capture(output, [row], {})
     (output / "daily_kline.jsonl").write_text("{}\n", encoding="utf-8")

@@ -1,0 +1,39 @@
+{
+  "dataset": "Baostock daily kline raw interval responses",
+  "source": "Baostock public service",
+  "client": "engine_core.daily_history.BaostockRangeClient.login/query",
+  "capture_code": "capture.py",
+  "capture_code_sha256": "85a81bea805f7f16d85ff4024e2fe534ae68110150568414d6e543b626826250",
+  "raw_file": "baostock_raw.jsonl",
+  "raw_sha256": "c7d2c2021cb709b7620553fb04c78fac96746e4decd118add4169d6eebcd243d",
+  "captured_at": "2026-11-07T17:54:58.527+08:00",
+  "days": [
+    "2026-11-02",
+    "2026-11-03",
+    "2026-11-04",
+    "2026-11-05",
+    "2026-11-06"
+  ],
+  "symbols": [
+    "605258",
+    "600539",
+    "301358",
+    "301051",
+    "001914",
+    "301010",
+    "688353",
+    "600199"
+  ],
+  "parameters": {
+    "frequency": "d",
+    "adjustflag": "3",
+    "start": "2026-11-02",
+    "end": "2026-11-06"
+  },
+  "calls": 9,
+  "request_spacing": "at least 1.05 seconds after preceding network method returned",
+  "td_source": "core_data.daily_kline_v1 read-only",
+  "comparison": "canonicalize_daily_kline_row and td_sink COLUMN_MAP; relative tolerance 1e-8; missing is distinct from zero",
+  "elapsed_seconds": 13.512,
+  "note": "No logout request; stop after first error to avoid retry/reconnect. Candidate sparsity alone does not establish suspension or recent listing."
+}

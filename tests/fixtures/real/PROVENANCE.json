@@ -2053,5 +2053,23 @@
    "source": "tdengine",
    "source_path": "/home/exedev/validation/realdata/daily_kline_20261107/c756/PROVENANCE.json"
   }
+ },
+ "_daily_kline_c755": {
+  "daily_kline_c755/baostock_raw.jsonl": {
+   "bytes": 8605,
+   "sha256": "c7d2c2021cb709b7620553fb04c78fac96746e4decd118add4169d6eebcd243d",
+   "command": "cp /home/exedev/validation/realdata/daily_kline_20261107/c755/baostock_raw.jsonl tests/fixtures/real/daily_kline_c755/baostock_raw.jsonl",
+   "source_path": "/home/exedev/validation/realdata/daily_kline_20261107/c755/baostock_raw.jsonl",
+   "source": "Baostock public service",
+   "kind": "raw_baostock_recording"
+  },
+  "daily_kline_c755/PROVENANCE.json": {
+   "bytes": 1289,
+   "sha256": "b2945274e35fb353538adeb50102683ee25080a2120633415e1efce7174b8b48",
+   "command": "cp /home/exedev/validation/realdata/daily_kline_20261107/c755/PROVENANCE.json tests/fixtures/real/daily_kline_c755/PROVENANCE.json",
+   "source_path": "/home/exedev/validation/realdata/daily_kline_20261107/c755/PROVENANCE.json",
+   "source": "Baostock public service",
+   "kind": "raw_baostock_provenance"
+  }
  }
 }
