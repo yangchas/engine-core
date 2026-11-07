@@ -36,7 +36,9 @@ def load(prefix: str) -> dict:
 
 
 def test_every_real_fixture_has_matching_provenance():
-    files = {p.name for p in REAL.glob("*.json") if p.name != "PROVENANCE.json"}
+    # These files describe fixtures rather than containing raw upstream responses.
+    files = {p.name for p in REAL.glob("*.json")
+             if p.name != "PROVENANCE.json" and not p.name.endswith("_PROVENANCE.json")}
     assert files == set(INDEX), "fixture files and PROVENANCE.json must list the same files"
     for name, meta in INDEX.items():
         body = (REAL / name).read_bytes()

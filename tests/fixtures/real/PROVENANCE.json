@@ -2013,5 +2013,45 @@
    "sha256": "eb2b799f1a7f5d30680ae571c3e4b0e02b3062892294d475a5bb000acbdf5c0e",
    "source_path": "/proc/1105/status"
   }
+ },
+ "_ledger_instance_state_c751": {
+  "ledger_instance_state_20261106.jsonl": {
+   "bytes": 1136,
+   "command": "rg '\"event_id\":\"td_resource_check_0825\"' /home/exedev/core-data/guardian-native/state/ledger/2026-11-06.jsonl | head -n 3",
+   "dataset": "guardian_ledger",
+   "kind": "ledger_excerpt",
+   "sha256": "d885ce647a7f503ef3bd4dff392b7c88670206d7053a5b86d80533f83e869243",
+   "source_path": "/home/exedev/core-data/guardian-native/state/ledger/2026-11-06.jsonl"
+  },
+  "ledger_instance_state_PROVENANCE.json": {
+   "bytes": 368,
+   "command": "UNKNOWN: provenance metadata created in C751",
+   "dataset": "guardian_ledger",
+   "kind": "ledger_excerpt_provenance",
+   "sha256": "c79e84e4bfa48a40ed08c7841aefbf299565e8d837af0ce87b29982316c18419",
+   "source_path": "/home/exedev/core-data/guardian-native/state/ledger/2026-11-06.jsonl"
+  }
+ },
+ "_daily_kline_c756": {
+  "daily_kline_c756/td_symbols_by_day.jsonl.gz": {
+   "bytes": 1202840,
+   "command": "gzip -n -c /home/exedev/validation/realdata/daily_kline_20261107/c756/td_symbols_by_day.jsonl > tests/fixtures/real/daily_kline_c756/td_symbols_by_day.jsonl.gz",
+   "copied_at": "2026-11-07T18:15:32+08:00",
+   "dataset": "daily_kline",
+   "kind": "td_daily_symbols_recording",
+   "sha256": "f186a611df86ecad3494f13135988085fdfdff2a720dfac24dd2ed299d59ee20",
+   "source": "tdengine",
+   "source_path": "/home/exedev/validation/realdata/daily_kline_20261107/c756/td_symbols_by_day.jsonl"
+  },
+  "daily_kline_c756/PROVENANCE.json": {
+   "bytes": 2395,
+   "command": "cp /home/exedev/validation/realdata/daily_kline_20261107/c756/PROVENANCE.json tests/fixtures/real/daily_kline_c756/PROVENANCE.json",
+   "copied_at": "2026-11-07T18:15:32+08:00",
+   "dataset": "daily_kline",
+   "kind": "td_daily_symbols_provenance",
+   "sha256": "2e0e7c1a9bdd272ee4b4fe5392714f9a1d26343b8d501513f74c2d4424c91482",
+   "source": "tdengine",
+   "source_path": "/home/exedev/validation/realdata/daily_kline_20261107/c756/PROVENANCE.json"
+  }
  }
 }

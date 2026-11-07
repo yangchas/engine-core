@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import gzip
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +12,67 @@ from td_sink_support import commit_day
 
 DAYS = ["2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23"]
 NOW = datetime.fromisoformat("2026-10-23T20:00:00+08:00")
+
+
+def test_real_window_coverage_uses_daily_reads():
+    from engine_core.data_pipeline.td_sink import TaosStore
+    from engine_core.guardian.daily_kline_coverage import TdCoverageSource, resolve_coverage
+
+    fixture = Path(__file__).parent / "fixtures/real/daily_kline_c756/td_symbols_by_day.jsonl.gz"
+    with gzip.open(fixture, "rt") as stream:
+        rows = [json.loads(line) for line in stream]
+    by_day = {row["date"]: set(row["symbols"]) for row in rows
+              if "2026-10-26" <= row["date"] <= "2026-11-06"}
+    dates = sorted(by_day)
+
+    class RecordedStore:
+        def __init__(self):
+            self.calls = []
+
+        def schema_exists(self):
+            return True
+
+        def symbols_on_day(self, day):
+            self.calls.append(day)
+            return by_day[day]
+
+        def window_watermarks(self, days):
+            return TaosStore.window_watermarks(self, days)
+
+        def latest_watermarks(self):
+            raise AssertionError("full table aggregation called")
+
+        def day_counts(self, days):
+            return {day: len(by_day[day]) for day in days}
+
+        def read_versions(self, day):
+            return []
+
+    store = RecordedStore()
+    result = resolve_coverage([dates[-1]], TdCoverageSource(store), dates)
+    assert store.calls == list(reversed(dates))
+    assert result.watermarks["688796"] == "2026-10-30"
+    assert next(row for row in result.gap_fill_plan if row["symbol"] == "688796")["start_date"] == "2026-11-02"
+    assert "2026-11-04" in next(row for row in result.gap_fill_plan if row["symbol"] == "000972")["gap_dates"]
+    watermarks, gaps = store.window_watermarks(dates)
+    assert watermarks["688796"] == "2026-10-30"
+    assert "2026-11-04" in gaps["000972"]
+
+
+def test_full_mode_and_legacy_store_fallback(env):
+    from engine_core.guardian.daily_kline_coverage import TdCoverageSource, resolve_coverage
+
+    root, store = env
+    _seed_baostock_catalog_and_td(root, store)
+    source = TdCoverageSource(store)
+    store.calls.clear()
+    fallback = resolve_coverage([DAYS[-1]], source, DAYS)
+    assert store.calls.count("latest_watermarks") == 1
+    store.window_watermarks = lambda days: pytest.fail("window mode called")
+    store.calls.clear()
+    full = resolve_coverage([DAYS[-1]], source, DAYS, watermark_mode="full")
+    assert store.calls.count("latest_watermarks") == 1
+    assert full.watermarks == fallback.watermarks
 
 
 def _calendar(root):
