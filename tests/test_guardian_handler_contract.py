@@ -1,3 +1,4 @@
+# DATA: spec (guardian timeline/schedule config)
 import pytest
 import json
 import os
@@ -154,8 +155,9 @@ def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
     from examples import guardian_handler
     from examples import core_guardian
     from engine_core.data_pipeline import daily_kline_fill
-    from engine_core.guardian import contract
+    from engine_core.guardian import contract, startup
 
+    monkeypatch.setattr(startup, "fetch_item", lambda *args, **kwargs: {"contract": 1, "status": "ok", "error_code": "", "retryable": False, "artifacts": [], "detail": {}})
     events = _schedule_events()
     called = []
     seen_opts = []
@@ -200,7 +202,7 @@ def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
         if event.get("trigger_type") == "startup" or event.get("handler") == "boot_apply_plan":
             continue
         request = _core_request(event["event_id"], trade_date=trade_date)
-        if event["handler"] in ("daily_kline_backfill", "baostock_probe"):
+        if event["handler"] in ("daily_kline_backfill", "baostock_probe", "fetch_item"):
             request["args"] = event["args"]
         faked_before = len(called)
         code, payload = guardian_handler._run(request)
@@ -208,7 +210,7 @@ def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
         if event["handler"] == "daily_kline_close":
             # Providers come from the ladder rung's args; a bare request is refused, never defaulted (C566).
             assert payload["error_code"] == "CONFIG_ERROR", payload
-        elif event["handler"] in ("daily_kline_backfill", "baostock_probe"):
+        elif event["handler"] in ("daily_kline_backfill", "baostock_probe", "fetch_item"):
             assert payload["status"] == "ok", payload
         elif event["handler"] == "close_capture":
             assert payload["status"] == "not_applicable"
@@ -224,7 +226,7 @@ def test_every_schedule_event_dispatches_to_its_handler(monkeypatch):
                            if e.get("trigger_type") != "startup" and e.get("handler") != "boot_apply_plan"} - {
                                "close_capture", "daily_kline_close", "daily_kline_backfill",
                                # handled by their own runners, not by the command factory:
-                               "baostock_probe", "boot_data_health", "intraday_data"}
+                               "baostock_probe", "boot_data_health", "intraday_data", "fetch_item"}
     assert all(o.write and o.run for o in seen_opts)  # live mode writes, like the old guardian
     fills = [e for e in events if e["handler"] in ("daily_kline_backfill", "baostock_probe")]
     assert len(backfill_calls) == len(fills) and len(fills) >= 5          # probe + retries + the post-close backfill
@@ -831,3 +833,18 @@ def test_baostock_probe_runs_the_td_fill_for_every_trigger_point(monkeypatch, ou
     code, payload = guardian_handler._run(request)
     assert (code, payload["status"], payload["retryable"]) == expected
     assert seen["target"] == (request.get("data_date") or request["trade_date"])
+
+
+def test_fetch_item_uses_scheduled_args_item_id(monkeypatch, tmp_path):
+    from examples import guardian_handler
+    from engine_core.guardian import startup
+
+    calls = []
+    monkeypatch.setenv("CORE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(startup, "fetch_item", lambda *args, **kwargs: calls.append((args, kwargs)) or {"status": "ok", "detail": {}})
+    request = _core_request("plate_amount_baseline_0815")
+    request.update(handler="fetch_item", args={"item_id": "plate_amount_baseline"})
+    code, _ = guardian_handler._run_event(request)
+    assert code == 0
+    assert calls[0][0][:2] == ("plate_amount_baseline", "2026-10-19")
+    assert calls[0][1]["schedule_args"] == request["args"]

@@ -161,3 +161,19 @@ def test_premarket_prep_degradation_is_scoped_to_startup_and_slice():
         assert events[event_id]["args"]["prep_degradable_steps"] == ["plate_amount_baseline"]
     for event_id in ("static_data_refresh_0850", "kaipan_refresh_0850"):
         assert "prep_degradable_steps" not in events[event_id].get("args", {})
+
+
+def test_plate_amount_baseline_event_and_policy_are_scheduled_independently():
+    events = {event["event_id"]: event for event in SCHEDULE["events"]}
+    event = events["plate_amount_baseline_0815"]
+    assert (event["at"], event["deadline"], event["handler"]) == ("08:15:00", "08:25:00", "fetch_item")
+    assert event["args"]["item_id"] == "plate_amount_baseline"
+    assert event["calendar"] == "trading_day" and event["gate"] == "calendar_ready"
+    assert event["phases"] == ["NIGHT", "PRE_MARKET"] and event["on_deadline"] == "degrade"
+    assert event["profile"] == "policy_12"
+    policy = SCHEDULE["profiles"]["policy_12"]
+    assert policy["retry_backoff"] == "" and len(policy["ladder"]) == 1
+    tier = policy["ladder"][0]
+    assert (tier["attempts"], tier["timeout"], tier["backoff"]) == (1, "540s", "")
+    for event_id in ("startup_0830", "premarket_slice_0850", "startup_0900"):
+        assert "plate_amount_baseline" in events[event_id]["args"]["prep_degradable_steps"]
