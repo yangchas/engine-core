@@ -17,6 +17,65 @@ from examples.run_data_jobs import _plate_codes
 from engine_core.data_pipeline.storage import ArtifactCatalog
 
 
+# DATA: spec (prep report shape per prep_trade_day / core_guardian._prep_failure)
+def test_prep_configured_step_error_degrades(tmp_path, monkeypatch):
+    from datetime import datetime
+    from types import SimpleNamespace
+    from examples import core_guardian
+
+    report = {"status": "PARTIAL", "errors": ["plate_amount_baseline:TD_RESOURCE_EXHAUSTED"],
+              "error_steps": [{"step": "plate_amount_baseline", "code": "TD_RESOURCE_EXHAUSTED"}],
+              "steps": [{"step": "plate_amount_baseline", "status": "MISSING"}],
+              "warnings": ["baseline unavailable"]}
+    monkeypatch.setattr(core_guardian.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json.dumps(report), stderr=""))
+    handler = core_guardian._command_handler("premarket_data", SimpleNamespace(write=True), tmp_path)
+    event = SimpleNamespace(data_date_offset=0, timeout_seconds=10,
+                            args={"prep_degradable_steps": ["plate_amount_baseline"]})
+    result = handler(event, datetime.fromisoformat("2026-10-19T08:50:00+08:00"), {}, False)
+    assert result.startswith("DEGRADED:prep_degraded_steps:plate_amount_baseline=TD_RESOURCE_EXHAUSTED")
+    assert "baseline unavailable" in result
+    report["errors"] = []
+    report["error_steps"] = []
+    assert handler(event, datetime.fromisoformat("2026-10-19T08:50:00+08:00"), {}, False).startswith(
+        "DEGRADED:prep_degraded_steps:plate_amount_baseline=?")
+
+
+# DATA: spec (prep report shape per prep_trade_day / core_guardian._prep_failure)
+def test_prep_unconfigured_and_blocking_errors_still_fail(tmp_path, monkeypatch):
+    from datetime import datetime
+    from types import SimpleNamespace
+    import pytest
+    from examples import core_guardian
+
+    report = {"status": "PARTIAL", "errors": ["plate_amount_baseline:TD_RESOURCE_EXHAUSTED"],
+              "error_steps": [{"step": "plate_amount_baseline", "code": "TD_RESOURCE_EXHAUSTED"}],
+              "steps": [{"step": "plate_amount_baseline", "status": "MISSING"}]}
+    monkeypatch.setattr(core_guardian.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=json.dumps(report), stderr=""))
+    handler = core_guardian._command_handler("premarket_data", SimpleNamespace(write=True), tmp_path)
+    event = SimpleNamespace(data_date_offset=0, timeout_seconds=10, args={})
+    now = datetime.fromisoformat("2026-10-19T08:50:00+08:00")
+    with pytest.raises(Exception, match="plate_amount_baseline"):
+        handler(event, now, {}, False)
+    event.args = {"prep_degradable_steps": "plate_amount_baseline"}
+    with pytest.raises(Exception, match="plate_amount_baseline"):
+        handler(event, now, {}, False)
+    report["errors"].append("theme_snapshot:COMMAND_FAILED")
+    report["error_steps"].append({"step": "theme_snapshot", "code": "COMMAND_FAILED"})
+    event.args = {"prep_degradable_steps": ["plate_amount_baseline"]}
+    with pytest.raises(Exception) as exc:
+        handler(event, now, {}, False)
+    assert "theme_snapshot" in str(exc.value)
+    assert "plate_amount_baseline" not in str(exc.value)
+    report.pop("error_steps")
+    report["error_codes"] = ["TD_RESOURCE_EXHAUSTED", "COMMAND_FAILED"]
+    with pytest.raises(Exception) as exc:
+        handler(event, now, {}, False)
+    assert "theme_snapshot=COMMAND_FAILED" in str(exc.value)
+    assert "plate_amount_baseline" not in str(exc.value)
+
+
 def test_all_guardian_handlers_have_explicit_core_mapping_or_not_implemented():
     expected = {
         "night_report", "premarket_data", "kaipan_fetch", "auction_watch",

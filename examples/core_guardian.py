@@ -305,12 +305,38 @@ def _command_handler(name: str, opts, root: Path):
             if not isinstance(report, dict):
                 raise CoreError("CONTRACT_INVALID", "prep_report_invalid_shape")
             errors = report.get("errors") or []
-            if errors:
-                raise _prep_failure(report, errors)
+            configured = event_args.get("prep_degradable_steps")
+            degradable = {step for step in configured if isinstance(step, str)} if isinstance(configured, list) else set()
+            degraded_steps = list(dict.fromkeys(str(error).split(":", 1)[0] for error in errors
+                                                if str(error).split(":", 1)[0] in degradable))
+            blocking = [error for error in errors if str(error).split(":", 1)[0] not in degradable]
+            if blocking:
+                filtered_report = report
+                if degraded_steps:
+                    filtered_report = dict(report)
+                    if report.get("error_steps") is not None:
+                        filtered_report["error_steps"] = [item for item in report["error_steps"]
+                                                          if item.get("step") not in degradable]
+                    else:
+                        codes = report.get("error_codes") or []
+                        filtered_report["error_codes"] = [code for error, code in zip(errors, codes)
+                                                          if str(error).split(":", 1)[0] not in degradable]
+                        filtered_report["error_codes"].extend(codes[len(errors):])
+                raise _prep_failure(filtered_report, blocking)
             missing = [str(item.get("step")) for item in report.get("steps", [])
                        if isinstance(item, dict) and item.get("status") == "MISSING"]
-            if missing:
-                raise CoreError("PREP_CRITICAL_MISSING", ",".join(missing))
+            for step in missing:
+                if step in degradable and step not in degraded_steps:
+                    degraded_steps.append(step)
+            blocking_missing = [step for step in missing if step not in degradable]
+            if blocking_missing:
+                raise CoreError("PREP_CRITICAL_MISSING", ",".join(blocking_missing))
+            if degraded_steps:
+                codes = {item.get("step"): item.get("code") for item in (report.get("error_steps") or [])}
+                detail = ",".join(f"{step}={codes.get(step) or '?'}" for step in degraded_steps)
+                suffix = (";prep_warnings:" + ";".join(map(str, report["warnings"]))[-400:]
+                          if report.get("warnings") else "")
+                return "DEGRADED:prep_degraded_steps:" + detail + suffix
             if report.get("warnings"):
                 return "DEGRADED:prep_warnings:" + ";".join(map(str, report["warnings"]))[-400:]
             if report.get("status") == "PARTIAL":
