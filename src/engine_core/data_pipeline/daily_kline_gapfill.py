@@ -278,13 +278,14 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
                                prefetch_source_universe: bool = False,
                                client: Any = None, only_source_empty: bool = False,
                                minimum_coverage: float = 0.90,
-                               completion_policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                               completion_policy: Mapping[str, Any] | None = None,
+                               watermark_mode: str = "window") -> dict[str, Any]:
     """Use local symbol partitions for gaps; query Baostock's source list only for C594 classification."""
     from ..daily_history import BaostockRangeClient
     from ..guardian.daily_kline_coverage import build_gap_fill_plan
     from .trade_calendar import TradeCalendarStore
     from .jobs import JobRunner, RequestBudget
-    from .td_sink import DailyKlineTdSink, TdUnavailable
+    from .td_sink import DailyKlineTdSink, TdUnavailable, read_watermarks
 
     if total_timeout_seconds <= 0:
         raise ValueError("total_timeout_seconds_must_be_positive")
@@ -306,8 +307,7 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
     dates = sessions[-depth:]
     if not store.schema_exists():
         store.ensure_schema()
-    # Exactly one stable-level aggregation supplies every current watermark.
-    watermarks = store.latest_watermarks()
+    watermarks = read_watermarks(store, dates, watermark_mode)
     from ..guardian.daily_kline_coverage import TdCoverageSource
     from .storage import ArtifactCatalog
     catalog = ArtifactCatalog(base)

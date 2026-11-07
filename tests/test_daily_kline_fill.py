@@ -411,3 +411,53 @@ def test_publish_never_fails_with_known_missing_incomplete_for_a_day_without_a_s
 
     partitions = publish_filled_days(tmp_path, store, [day], lambda _d: set(listed), 0.995)
     assert partitions[0]["td_publish"] == "READY" and store.versions[day][-1]["row_count"] == len(mapped)
+
+
+def test_window_watermarks_default_and_full_fallback_use_real_symbols(tmp_path):
+    import gzip
+    from engine_core.data_pipeline.td_sink import DailyKlineTdSink, TaosStore
+
+    fixture = Path(__file__).parent / "fixtures" / "real" / "daily_kline_c756" / "td_symbols_by_day.jsonl.gz"
+    with gzip.open(fixture, "rt", encoding="utf-8") as handle:
+        captured = [json.loads(line) for line in handle]
+    by_day = {item["date"]: set(item["symbols"]) for item in captured[-5:]}
+    days = sorted(by_day)
+
+    class Store(MemoryTdStore):
+        window_watermarks = TaosStore.window_watermarks
+
+        def __init__(self):
+            super().__init__()
+            self.queried = []
+            self.full_calls = 0
+            self.allow_full = False
+
+        def symbols_on_day(self, day):
+            self.queried.append(day)
+            return by_day[day]
+
+        def latest_watermarks(self):
+            assert self.allow_full, "unexpected full-table watermark query"
+            self.full_calls += 1
+            return {}
+
+    store = Store()
+    symbol = next(iter(by_day[days[-1]]))
+    sink = DailyKlineTdSink(store, tmp_path)
+    sink.prepare_progress(days[-1], [symbol])
+    assert store.queried == [days[-1]]
+    store.queried.clear()
+    from tests.test_daily_kline_gapfill import _seed_td_day
+    from td_sink_support import load_real
+    _, rows = load_real("formal")
+    row = next(row for row in rows if row["symbol"] in set.intersection(*by_day.values()))
+    for day in days:
+        _seed_td_day(store, day, [{**row, "date": day}])
+    kwargs = dict(store=store, client=FixtureClient(), trading_dates=days,
+                  expected_symbols=lambda day: {row["symbol"]}, depth=len(days))
+    assert run_daily_kline_fill(days[-1], **kwargs)["status"] == "NO_GAPS"
+    assert len(store.queried) <= len(days)
+    store.allow_full = True
+    run_daily_kline_fill(days[-1], **kwargs, watermark_mode="full")
+    DailyKlineTdSink(store, tmp_path).prepare_progress(days[-1], [symbol], watermark_mode="full")
+    assert store.full_calls == 2

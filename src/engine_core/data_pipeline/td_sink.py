@@ -715,6 +715,17 @@ class MemoryTdStore:
         pass
 
 
+def read_watermarks(store: TdStore, dates: Sequence[str], watermark_mode: str = "window") -> dict[str, str]:
+    """Read bounded watermarks when available, retaining the full-table fallback."""
+    if watermark_mode not in {"window", "full"}:
+        raise ValueError("invalid_watermark_mode:" + watermark_mode)
+    window = getattr(store, "window_watermarks", None)
+    if watermark_mode == "window" and callable(window):
+        watermarks, _ = window(dates)
+        return watermarks
+    return store.latest_watermarks()
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # Sink
 # ---------------------------------------------------------------------------------------------------------------------
@@ -793,12 +804,12 @@ class DailyKlineTdSink:
 
     def prepare_progress(self, trade_date: str, expected_symbols: Sequence[str], *,
                          latest_watermarks: Mapping[str, str] | None = None,
-                         day_count: int | None = None) -> dict[str, dict[str, Any]]:
+                         day_count: int | None = None, watermark_mode: str = "window") -> dict[str, dict[str, Any]]:
         """Load date progress once from TD and remove a stale complete marker before filling a gap."""
         _check_date(trade_date)
         self._ensure_schema()
         if latest_watermarks is None:
-            latest_watermarks = self.store.latest_watermarks()
+            latest_watermarks = read_watermarks(self.store, [trade_date], watermark_mode)
         if day_count is None:
             day_count = self.store.day_counts([trade_date]).get(trade_date, 0)
         versions = self.store.read_versions(trade_date)
