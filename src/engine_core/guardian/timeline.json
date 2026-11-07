@@ -1954,7 +1954,7 @@
           "available_after": "01:30:00",
           "late_until": "02:30:00",
           "phases": [
-            "NIGHT"
+            "any"
           ],
           "calendar": "every_day",
           "args": {
