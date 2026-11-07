@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Mechanically audit a builder card against a committed branch."""
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
+
+
+def check_scope(changed_files: list[str], scope_write: list[str], worktree: str) -> list[str]:
+    root = Path(worktree).resolve()
+    allowed = [Path(p).resolve() for p in scope_write]
+    return [name for name in changed_files if not any((root / name).resolve() == p or p in (root / name).resolve().parents for p in allowed)]
+
+
+def count_new_tests(base_text_by_file: dict[str, str], branch_text_by_file: dict[str, str]) -> int:
+    def names(text: str) -> set[str]:
+        tree = ast.parse(text)
+        return {node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith('test_')}
+    return sum(len(names(text) - names(base_text_by_file.get(path, ''))) for path, text in branch_text_by_file.items() if path.startswith('tests/') and path.endswith('.py'))
+
+
+def verdict(problems: list[str]) -> dict:
+    return {'verdict': 'FAIL' if problems else 'PASS', 'problems': problems}
+
+
+def _git(repo, *args, check=True):
+    return subprocess.run(['git', '-C', str(repo), *args], check=check, capture_output=True, text=True)
+
+
+def _test_env():
+    env = os.environ.copy()
+    env.pop('TD_CONFIG', None)
+    env.pop('REDIS_URL', None)
+    env.update(TMPDIR='/tmp', PYTHONPATH='src:.', PYTHONDONTWRITEBYTECODE='1')
+    return env
+
+
+def _pytest(directory, test_files, python):
+    return subprocess.run([python, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', *test_files], cwd=directory, env=_test_env(), capture_output=True, text=True)
+
+
+def fail_first(repo, base, branch, test_files, python) -> tuple[bool, str]:
+    if not test_files or any(not p.startswith('tests/') or '..' in Path(p).parts for p in test_files):
+        raise ValueError('test files must be nonempty paths under tests/')
+    tmp = tempfile.mkdtemp(prefix='audit-card-')
+    added = False
+    try:
+        _git(repo, 'worktree', 'add', '--detach', tmp, base)
+        added = True
+        for path in test_files:
+            content = _git(repo, 'show', f'{branch}:{path}').stdout
+            target = Path(tmp) / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding='utf-8')
+        result = _pytest(tmp, test_files, python)
+        return result.returncode != 0, '\n'.join((result.stdout + result.stderr).splitlines()[-20:])
+    finally:
+        if added:
+            _git(repo, 'worktree', 'remove', '--force', tmp, check=False)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--card', required=True)
+    parser.add_argument('--branch', required=True)
+    parser.add_argument('--base', default='codex/feature-session-engine-integration')
+    parser.add_argument('--repo', default='/home/exedev/repos/engine_core')
+    parser.add_argument('--cards-dir', default='/home/exedev/fw/cards')
+    parser.add_argument('--python', default='/home/exedev/services/engine-next/shared/venv/bin/python')
+    args = parser.parse_args()
+    problems = []
+    output = ''
+    try:
+        if not re.fullmatch(r'C\d+', args.card):
+            raise ValueError('invalid card ID')
+        header = {}
+        for line in (Path(args.cards_dir) / f'{args.card}.md').read_text(encoding='utf-8').splitlines():
+            match = re.match(r'^(ROLE|SCOPE_WRITE|MAX_NEW_TESTS):\s*(.*)$', line)
+            if match:
+                header.setdefault(match.group(1), match.group(2).strip())
+        if not header.get('ROLE', '').lower().startswith('builder'):
+            problems.append('ROLE is not builder')
+        scope = [p.strip() for p in header['SCOPE_WRITE'].split(',') if p.strip()]
+        if not scope or not all(Path(p).is_absolute() for p in scope):
+            raise ValueError('SCOPE_WRITE must contain absolute paths')
+        maximum = int(header['MAX_NEW_TESTS'])
+        if maximum < 0:
+            raise ValueError('MAX_NEW_TESTS must be nonnegative')
+        worktrees = _git(args.repo, 'worktree', 'list', '--porcelain').stdout.split('\n\n')
+        roots = [block.splitlines()[0][9:] for block in worktrees if f'branch refs/heads/{args.branch}' in block.splitlines()]
+        if len(roots) != 1:
+            raise ValueError('branch must have exactly one checked-out worktree')
+        files = _git(args.repo, 'diff', '--name-only', '-z', f'{args.base}...{args.branch}').stdout.split('\0')
+        files = [p for p in files if p]
+        problems.extend(f'outside scope: {p}' for p in check_scope(files, scope, roots[0]))
+        test_files = [p for p in files if p.startswith('tests/') and p.endswith('.py') and _git(args.repo, 'cat-file', '-e', f'{args.branch}:{p}', check=False).returncode == 0]
+        def contents(ref):
+            result = {}
+            for p in test_files:
+                item = _git(args.repo, 'show', f'{ref}:{p}', check=False)
+                if item.returncode == 0:
+                    result[p] = item.stdout
+            return result
+        count = count_new_tests(contents(args.base), contents(args.branch))
+        if count > maximum:
+            problems.append(f'new tests {count} exceed maximum {maximum}')
+        failed, output = fail_first(args.repo, args.base, args.branch, test_files, args.python)
+        if not failed:
+            problems.append('tests did not fail on base')
+        tmp = tempfile.mkdtemp(prefix='audit-card-branch-')
+        added = False
+        try:
+            _git(args.repo, 'worktree', 'add', '--detach', tmp, args.branch)
+            added = True
+            result = _pytest(tmp, test_files, args.python)
+            if result.returncode != 0:
+                problems.append('tests failed on branch: ' + '\n'.join((result.stdout + result.stderr).splitlines()[-20:]))
+        finally:
+            if added:
+                _git(args.repo, 'worktree', 'remove', '--force', tmp, check=False)
+            shutil.rmtree(tmp, ignore_errors=True)
+    except (OSError, ValueError, KeyError, SyntaxError, subprocess.SubprocessError) as exc:
+        problems.append(str(exc))
+    result = verdict(problems)
+    result['fail_first_output'] = output
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if result['verdict'] == 'PASS' else 3
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
