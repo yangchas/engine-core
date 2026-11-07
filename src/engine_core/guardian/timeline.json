@@ -773,6 +773,9 @@
     "startup": {
       "after": [],
       "args": {
+        "prep_degradable_steps": [
+          "plate_amount_baseline"
+        ],
         "theme_deps": {
           "wait_seconds": 180,
           "poll_seconds": 30,
@@ -1052,6 +1055,9 @@
     "premarket_slice": {
       "after": [],
       "args": {
+        "prep_degradable_steps": [
+          "plate_amount_baseline"
+        ],
         "theme_deps": {
           "wait_seconds": 180,
           "poll_seconds": 30,
