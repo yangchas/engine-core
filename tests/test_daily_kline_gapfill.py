@@ -9,6 +9,42 @@ import pytest
 from td_sink_support import load_real
 
 
+@pytest.mark.parametrize("interval", [0.2, 0.0])
+def test_fill_spaces_range_requests_with_real_fixture(interval):
+    from test_daily_kline_fill import FixtureClient, fill
+    from engine_core.data_pipeline.td_sink import MemoryTdStore
+
+    now = [0.0]
+    starts, sleeps = [], []
+    class Client(FixtureClient):
+        def query(self, *args):
+            starts.append(now[0])
+            return super().query(*args)
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+    fill(MemoryTdStore(), Client(), clock=lambda: now[0], sleep=sleep,
+         baostock_min_request_interval_seconds=interval)
+    assert len(starts) == 3
+    assert all(b - a >= interval - 1e-9 for a, b in zip(starts, starts[1:]))
+    assert len(sleeps) == (2 if interval else 0)
+
+
+def test_fill_wait_is_bounded_by_budget():
+    from test_daily_kline_fill import FixtureClient, fill
+    from engine_core.data_pipeline.td_sink import MemoryTdStore
+
+    now, sleeps = [0.0], []
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+    client = FixtureClient()
+    with pytest.raises(RuntimeError, match="total_budget_exhausted"):
+        fill(MemoryTdStore(), client, clock=lambda: now[0], sleep=sleep,
+             total_timeout_seconds=0.1, baostock_min_request_interval_seconds=0.2)
+    assert sleeps == [0.1] and len(client.queries) == 1
+
+
 def _seed_td_day(store, day, rows):
     from engine_core.data_pipeline.td_sink import map_rows
 

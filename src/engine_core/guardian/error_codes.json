@@ -1,6 +1,21 @@
 {
  "_doc": "Error code registry (C681, design/33). retryable: may be tried again later; exit: the process exit code a command reports for it (30 data not there yet, 75 source unavailable, 40 final, 64 configuration, 20 satisfied). 'pending' lists codes already in use as string literals that have not been classified yet; each needs a decision before the expiry.",
  "codes": {
+  "BAOSTOCK_RANGE_FAILED": {
+   "retryable": true,
+   "exit": 75,
+   "meaning": "a Baostock range request failed; the upstream may recover"
+  },
+  "TIER_ATTEMPTS_EXHAUSTED": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the tier has exhausted its configured attempts"
+  },
+  "KNOWN_MISSING_INCOMPLETE": {
+   "retryable": false,
+   "exit": 40,
+   "meaning": "the known missing ledger disagrees with the expected missing symbols"
+  },
   "ALREADY_SATISFIED": {
    "retryable": false,
    "exit": 20,
