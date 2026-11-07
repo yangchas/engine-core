@@ -75,12 +75,16 @@ def test_plate_amount_query_splits_its_range_only_for_the_real_memory_error():
 
     days = ["2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23"]
     split = Cursor(_driver_error("query_memory_exhausted_0x073a"))
-    baseline._read_0945_slice(split, days, set(days), None)
+    baseline._read_0945_slice(split, days, set(days), None, td_split_retry_depth=1)
     assert len(split.calls) == 3                                           # failed once, then two halves
     other = Cursor(_driver_error("table_does_not_exist"))
     with pytest.raises(Exception):
-        baseline._read_0945_slice(other, days, set(days), None)
+        baseline._read_0945_slice(other, days, set(days), None, td_split_retry_depth=1)
     assert len(other.calls) == 1                                           # not a memory problem: no splitting
+    default = Cursor(_driver_error("query_memory_exhausted_0x073a"))
+    with pytest.raises(Exception):
+        baseline._read_0945_slice(default, days, set(days), None)
+    assert len(default.calls) == 1
 
 
 def test_the_daily_kline_chain_tells_budget_exhaustion_by_type():
