@@ -561,6 +561,23 @@
           "budget_enabled": false
         }
       ]
+    },
+    "policy_13": {
+      "catchup": "run_in_window",
+      "retry_backoff": "10m",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 3,
+          "backoff": "10m*2",
+          "backoff_cap": "20m",
+          "timeout": "1800s",
+          "budget_enabled": false,
+          "until": "late_until"
+        }
+      ]
     }
   },
   "events": [
@@ -801,6 +818,34 @@
       ],
       "on_phase_mismatch": "defer",
       "profile": "policy_05"
+    },
+    {
+      "event_id": "auction_amount_facts_0530",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "every_day",
+      "trigger_type": "window",
+      "at": "05:30:00",
+      "available_after": null,
+      "deadline": "07:30:00",
+      "data_date_offset": 0,
+      "on_deadline": "missed",
+      "late_until": "07:30:00",
+      "gate": "always",
+      "depends_on": [],
+      "after": [],
+      "order": null,
+      "cost": "medium",
+      "phases": [
+        "NIGHT"
+      ],
+      "on_phase_mismatch": "defer",
+      "profile": "policy_13",
+      "args": {
+        "dataset": "auction_amount_facts",
+        "window": 64,
+        "max_days": 10
+      }
     },
     {
       "event_id": "calendar_refresh_0800",

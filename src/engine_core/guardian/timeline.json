@@ -564,6 +564,23 @@
           "budget_enabled": false
         }
       ]
+    },
+    "policy_13": {
+      "catchup": "run_in_window",
+      "retry_backoff": "10m",
+      "retry_until_late": true,
+      "silent_until_last": true,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 3,
+          "backoff": "10m*2",
+          "backoff_cap": "20m",
+          "timeout": "1800s",
+          "budget_enabled": false,
+          "until": "late_until"
+        }
+      ]
     }
   },
   "functions": {
@@ -1911,6 +1928,31 @@
       ],
       "trigger_type": "window",
       "policy": "policy_12"
+    },
+    "auction_amount_facts": {
+      "after": [],
+      "args": {
+        "dataset": "auction_amount_facts",
+        "window": 64,
+        "max_days": 10
+      },
+      "available_after": null,
+      "calendar": "every_day",
+      "cost": "medium",
+      "data_date_offset": 0,
+      "depends_on": [],
+      "enabled": true,
+      "gate": "always",
+      "handler": "postmarket_data",
+      "late_until": "07:30:00",
+      "on_deadline": "missed",
+      "on_phase_mismatch": "defer",
+      "order": null,
+      "phases": [
+        "NIGHT"
+      ],
+      "trigger_type": "window",
+      "policy": "policy_13"
     }
   },
   "timeline": [
@@ -2010,6 +2052,16 @@
               "lease_ttl_seconds": 300
             }
           }
+        }
+      ]
+    },
+    {
+      "at": "05:30:00",
+      "run": [
+        {
+          "fn": "auction_amount_facts",
+          "id": "auction_amount_facts_0530",
+          "deadline": "07:30:00"
         }
       ]
     },
@@ -3058,6 +3110,7 @@
     "fetch_item",
     "calendar_refresh_0005",
     "night_recap",
+    "auction_amount_facts_0530",
     "calendar_refresh_0800",
     "startup_0830",
     "limit_pool_d1",
