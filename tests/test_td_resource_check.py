@@ -2,6 +2,7 @@
 """The check names whoever holds TD's query memory: a long query of another process is 'degraded', never silent."""
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,15 @@ def _read_recorded(meminfo, proc):
 
 
 RECORDED_READ = check.read_memory
+
+
+# DATA: real:/proc of the test host
+def test_top_processes_from_real_proc():
+    processes = RECORDED_READ()["top_processes"]
+    assert 0 < len(processes) <= 8
+    assert all(set(p) == {"pid", "name", "rss_mb"} for p in processes)
+    assert [p["rss_mb"] for p in processes] == sorted((p["rss_mb"] for p in processes), reverse=True)
+    assert any(p["pid"] == os.getpid() for p in processes)
 
 
 def owner_of(pid):
