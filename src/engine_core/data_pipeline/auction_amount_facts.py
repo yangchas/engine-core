@@ -260,9 +260,17 @@ def acquire_day(day, *, reader, store, slots=('0925', '0945'), lease_factory=Non
 
 
 def _reply(code, error_code='', detail=None):
-    status = {0: 'ok', 10: 'degraded', 20: 'not_applicable', 30: 'failed', 40: 'failed', 64: 'failed'}[code]
+    status = {0: 'ok', 10: 'degraded', 20: 'not_applicable', 30: 'failed', 40: 'failed', 64: 'failed', 75: 'failed'}[code]
     return code, {'contract': 1, 'status': status, 'error_code': error_code,
-                  'reason': error_code, 'retryable': code == 30, 'detail': detail or {}}
+                  'reason': error_code, 'retryable': code in (30, 75), 'detail': detail or {}}
+
+
+def _registered_failure(error_code, detail):
+    import json
+    from pathlib import Path
+    codes = json.loads((Path(__file__).resolve().parents[1] / 'guardian' / 'error_codes.json').read_text())
+    entry = codes['codes'][error_code]
+    return _reply(entry['exit'], error_code, detail)
 
 
 def run(request, root, *, reader=None, store=None, dry_run=False, lease_factory=None):
@@ -332,9 +340,9 @@ def run(request, root, *, reader=None, store=None, dry_run=False, lease_factory=
     except Exception as exc:
         if isinstance(exc, LeaseUnavailable):
             detail['lease_error'] = str(exc)
-            return _reply(30, 'LEASE_UNAVAILABLE', detail)
+            return _registered_failure('REDIS_UNAVAILABLE', detail)
         if isinstance(exc, TdResourceExhausted) or td_memory_exhausted(exc):
-            return _reply(30, 'TD_RESOURCE_EXHAUSTED', detail)
+            return _registered_failure('TD_RESOURCE_EXHAUSTED', detail)
         if isinstance(exc, TdUnavailable):
-            return _reply(30, exc.error_code, detail)
+            return _registered_failure(exc.error_code, detail)
         raise

@@ -573,7 +573,7 @@
           "attempts": 3,
           "backoff": "10m*2",
           "backoff_cap": "20m",
-          "timeout": "1800s",
+          "timeout": "3600s",
           "budget_enabled": false,
           "until": "late_until"
         }
@@ -835,7 +835,7 @@
       "depends_on": [],
       "after": [],
       "order": null,
-      "cost": "medium",
+      "cost": "heavy",
       "phases": [
         "NIGHT"
       ],
@@ -844,7 +844,7 @@
       "args": {
         "dataset": "auction_amount_facts",
         "window": 64,
-        "max_days": 10
+        "max_days": 64
       }
     },
     {

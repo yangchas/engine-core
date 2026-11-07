@@ -860,7 +860,7 @@ def test_auction_amount_facts_routes_window_and_max_days(monkeypatch, tmp_path):
     monkeypatch.setattr(auction_amount_facts, "run", lambda request, root, **kwargs:
                         calls.append((request, root, kwargs)) or (20, {"status": "not_applicable"}))
     request = _core_request("auction_amount_facts_0530", "2026-11-09")
-    request.update(handler="postmarket_data", args={"dataset": "auction_amount_facts", "window": 64, "max_days": 10})
+    request.update(handler="postmarket_data", args={"dataset": "auction_amount_facts", "window": 64, "max_days": 64})
     assert guardian_handler._run_event(request)[0] == 20
-    assert calls == [({"end_date": "2026-11-08", "window": 64, "max_days": 10},
+    assert calls == [({"end_date": "2026-11-08", "window": 64, "max_days": 64},
                       tmp_path, {"dry_run": True})]

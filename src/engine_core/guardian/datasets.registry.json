@@ -1590,7 +1590,7 @@
         "basis": "trading_day",
         "set_by": "C803"
       },
-      "retry": "event=auction_amount_facts_0530 profile=policy_13 rungs=legacy; legacy attempts=3 backoff=10m*2 timeout=1800s cap=20m until=07:30; exit 30 retryable, 10 and 20 non-retryable",
+      "retry": "event=auction_amount_facts_0530 profile=policy_13 rungs=legacy; legacy attempts=3 backoff=10m*2 timeout=3600s cap=20m until=07:30; exit 75 retryable, 10 and 20 non-retryable",
       "degrade": [
         "未齐全的时点不发布完整日标记；已完成事实保留。"
       ],
@@ -1599,13 +1599,18 @@
         "force": "not supported",
         "clear": "not supported"
       },
-      "notes": "无上游数据集依赖；每次最多补 10 个交易日。",
+      "notes": "无上游数据集依赖；每次最多补 64 个交易日。",
       "guardian_event": "auction_amount_facts_0530",
       "requires": [],
       "produces": [
         "auction_amount",
         "slot0945_amount"
       ],
+      "cost": {
+        "class": "heavy",
+        "basis": "C803: 64 日窗口逐日读取 TD，使用重型槽串行执行。",
+        "set_by": "C803"
+      },
       "storage": [
         {
           "kind": "td_stable",

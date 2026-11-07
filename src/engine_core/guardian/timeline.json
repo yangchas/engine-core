@@ -576,7 +576,7 @@
           "attempts": 3,
           "backoff": "10m*2",
           "backoff_cap": "20m",
-          "timeout": "1800s",
+          "timeout": "3600s",
           "budget_enabled": false,
           "until": "late_until"
         }
@@ -1934,11 +1934,11 @@
       "args": {
         "dataset": "auction_amount_facts",
         "window": 64,
-        "max_days": 10
+        "max_days": 64
       },
       "available_after": null,
       "calendar": "every_day",
-      "cost": "medium",
+      "cost": "heavy",
       "data_date_offset": 0,
       "depends_on": [],
       "enabled": true,
