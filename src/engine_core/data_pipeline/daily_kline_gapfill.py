@@ -354,7 +354,6 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
             td_symbols_by_day[day] = set(store.read_day_rows(day))
         return td_symbols_by_day[day]
 
-    coverage = TdCoverageSource(store).coverage(dates, watermarks, known_missing)
     if client is None:
         import baostock as bs
         range_client = BaostockRangeClient(bs, read_timeout=min(30.0, float(no_progress_timeout_seconds)))
@@ -477,6 +476,10 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
             source_universe_error = "BAOSTOCK_TIMEOUT" if isinstance(exc, TimeoutError) else type(exc).__name__
             return None
 
+    target_universe = active_symbols_for_day(target, fetch=False)
+    coverage = TdCoverageSource(store).coverage(
+        dates, watermarks, known_missing, target_universe if watermark_mode == "window" else None)
+
     # Explicit night prefetch is opt-in. Daytime runs make this request only when classification is needed.
     now_local = datetime.now(SHANGHAI)
     in_night_window = ((now_local.hour, now_local.minute) >= (22, 30) or now_local.hour < 8)
@@ -486,7 +489,6 @@ def run_td_daily_kline_gapfill(root: str | Path, target: str, *, store: Any,
 
     gap_plan: list[dict[str, Any]] = []
     eligibility_status = "NO_GAPS"
-    target_universe = active_symbols_for_day(target, fetch=False)
     target_universe_date = universe_source_day_by_day.get(target)
     universe_fallback_from = target_universe_date if target_universe_date != target else None
     target_missing_categories: dict[str, str] = {}
