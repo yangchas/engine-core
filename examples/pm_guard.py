@@ -88,6 +88,8 @@ def _bash(command, env):
     for words in segments:
         if any(ASSIGN.match(w) and w.split('=', 1)[0] in ('TD_CONFIG', 'REDIS_URL') for w in words):
             return False, 'protected_assignment: TD_CONFIG or REDIS_URL'
+        if all(ASSIGN.match(w) for w in words):
+            continue
         args = []
         i = 0
         while i < len(words):
@@ -151,7 +153,9 @@ def _bash(command, env):
                 return False, 'sed_in_place: forbidden'
             if '-n' not in rest or any(x in rest for x in ('-e', '--expression', '-f', '--file')):
                 return False, 'sed: only simple -n allowed'
-            if any(re.search(r'(^|[;{}])\s*[ewr]', x) for x in rest):
+            if (len(rest) < 2 or rest[0] != '-n'
+                    or not re.fullmatch(r'(?:[0-9]+(?:,(?:[0-9]+|\$))?p|/[^/\n]*/p)', rest[1])
+                    or any(x.startswith('-') for x in rest[2:])):
                 return False, 'sed: unsafe script'
         elif cmd == 'git':
             gitargs = rest[:]

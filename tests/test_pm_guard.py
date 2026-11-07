@@ -28,6 +28,18 @@ def test_deny_samples():
         assert not allowed and reason, data
 
 
+def test_sed_and_assignment_boundaries():
+    for command in ('sed -n 1p x', "sed -n '1,$p' x", "sed -n '/word/p' x",
+                    'X=1; date +%H:%M:%S',
+                    'python3 /home/exedev/repos/engine_core/examples/pm.py wait --ledger-event x'):
+        assert decide('Bash', {'command': command}, False)[0], command
+    for command in ("sed -n '1p;1w /tmp/x' x", "sed -n '1e touch /tmp/x' x",
+                    'sed -n 1p --in-place x', 'TD_CONFIG=x; date', 'REDIS_URL=x; date',
+                    'PY=x; $PY examples/run_function.py', 'X=1 > /tmp/x'):
+        allowed, reason = decide('Bash', {'command': command}, False)
+        assert not allowed and reason, command
+
+
 def test_permit():
     for tool, data in cases('bash_deny') + cases('file_deny'):
         assert decide(tool, data, True)[0]
