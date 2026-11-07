@@ -9,11 +9,22 @@ producers are migrated.
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 REGISTRY_PATH = Path(__file__).resolve().parent / "guardian" / "error_codes.json"
+FAILURE_DETAIL_MAX_CHARS = 2000
+
+_SECRET = re.compile(
+    r"(?i)(\b(?:TD_CONFIG|REDIS_URL|[\w-]*(?:token|password|cookie)[\w-]*)"
+    r"[\"']?\s*(?:=|:)\s*)(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s,;]+)"
+)
+
+
+def _redact(text: str) -> str:
+    return _SECRET.sub(r"\1***", text)
 
 
 @lru_cache(maxsize=1)
@@ -109,15 +120,28 @@ def declared_result(stdout: str) -> dict[str, Any] | None:
 
 def command_error(returncode: int, stdout: str, stderr: str) -> CommandFailed:
     """What a failed job script means: its declared code when it printed one, otherwise 'unclassified'."""
-    stderr_lines = [line.strip() for line in str(stderr or "").splitlines() if line.strip()]
-    parts = [f"command_exit={returncode}" + (f" last_stderr_line={stderr_lines[-1][:200]}" if stderr_lines else "")]
-    for label, output in (("stdout", stdout), ("stderr", stderr)):
-        if output:
-            parts.extend((f"{label}_tail:", str(output)[-500:].rstrip()))
+    safe_stderr = _redact(str(stderr or "")).rstrip()
+    safe_stdout = _redact(str(stdout or "")).rstrip()
+    stderr_lines = [line.strip() for line in safe_stderr.splitlines() if line.strip()]
+    root = ("last_stderr_line=" + stderr_lines[-1][:FAILURE_DETAIL_MAX_CHARS // 2]) if stderr_lines else ""
+    tail = ("stderr_tail:\n" + safe_stderr) if safe_stderr else (("stdout_tail:\n" + safe_stdout) if safe_stdout else "")
+    detail = root + ("\n" if root and tail else "")
+    available = max(0, FAILURE_DETAIL_MAX_CHARS - len(detail))
+    if len(tail) > available:
+        omitted = len(tail) - available
+        while True:
+            marker = f"…[truncated {omitted} chars]"
+            new_omitted = len(tail) - max(0, available - len(marker))
+            if new_omitted <= omitted:
+                break
+            omitted = new_omitted
+        tail = (marker + tail[omitted:]) if available > len(marker) else marker[:available]
+    detail += tail
+    message = f"command_exit={returncode}" + (" " + detail if detail else "")
     declared = declared_result(stdout) or {}
     code = declared.get("error_code") if isinstance(declared.get("error_code"), str) and declared.get("error_code") else None
     retryable = declared.get("retryable") if isinstance(declared.get("retryable"), bool) else None
     detail = declared.get("detail")
     reason = str(detail.get("error") if isinstance(detail, dict) and detail.get("error") else detail or "")[:200]
-    return CommandFailed("\n".join(parts), returncode=returncode, error_code=code, retryable=retryable,
+    return CommandFailed(message, returncode=returncode, error_code=code, retryable=retryable,
                          unclassified=code is None, reason=reason)
