@@ -1590,6 +1590,10 @@ def run_rehearsal(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    def handle_sigterm(signum: int, frame: Any) -> None:
+        raise SystemExit(143)
+
+    signal.signal(signal.SIGTERM, handle_sigterm)
     parser = _parser()
     args = parser.parse_args(argv)
     if args.minutes < 1:
