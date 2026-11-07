@@ -10,7 +10,7 @@ def test_cli_runs_with_injected_fake_client(tmp_path, capsys):
     spec.loader.exec_module(module)
 
     symbols_path = tmp_path / "symbols.json"
-    symbols_path.write_text(json.dumps(["600000"]), encoding="utf-8")
+    symbols_path.write_text(json.dumps(["605258"]), encoding="utf-8")
     output = tmp_path / "daily"
 
     class Client:
@@ -18,12 +18,14 @@ def test_cli_runs_with_injected_fake_client(tmp_path, capsys):
             pass
 
         def query(self, code, date):
-            return [{"code": code, "date": date, "open": "9", "high": "11", "low": "9", "close": "10", "preclose": "9", "volume": "2", "amount": "200", "turn": "1", "pctChg": "11.11"}]
+            fixture = Path(__file__).parent / "fixtures/real/daily_kline_c755/baostock_raw.jsonl"
+            call = json.loads(fixture.read_text().splitlines()[1])
+            return [dict(zip(call["fields"], call["rows"][0]))]
 
         def logout(self):
             pass
 
-    status = module.main(["--date", "2026-10-14", "--symbols-json", str(symbols_path), "--out-dir", str(output)], client=Client())
+    status = module.main(["--date", "2026-11-02", "--symbols-json", str(symbols_path), "--out-dir", str(output)], client=Client())
     assert status == 0
     assert json.loads((output / "manifest.json").read_text(encoding="utf-8"))["symbol_count"] == 1
     assert '"source": "baostock"' in capsys.readouterr().out

@@ -63,6 +63,7 @@ def _install_fake_td_coverage(startup, monkeypatch):
                         lambda _root, candidates, catalog, _now: _fake_td_coverage(catalog, candidates))
 
 
+# DATA: spec (guardian retry and scheduling scenarios require controlled state and timing).
 def test_sa_window_budget_throttles_eight_minutes_and_exhausts_at_three(tmp_path, monkeypatch):
     from engine_core.guardian import startup
 
@@ -93,6 +94,7 @@ def test_sa_window_budget_throttles_eight_minutes_and_exhausts_at_three(tmp_path
     assert gap["next_retry_window"] == "2026-10-27:PRE_MARKET"
 
 
+# DATA: spec (guardian retry and scheduling scenarios require controlled state and timing).
 def test_legacy_exhausted_without_window_does_not_block_next_quiet_window(tmp_path, monkeypatch):
     from engine_core.guardian import startup
 
@@ -120,6 +122,7 @@ def test_legacy_exhausted_without_window_does_not_block_next_quiet_window(tmp_pa
     assert deferred["partition"] == "2026-10-26"
 
 
+# DATA: spec (guardian retry and scheduling scenarios require controlled state and timing).
 def test_sb_next_premarket_requeues_old_exhausted_partition_and_success_resolves(tmp_path, monkeypatch):
     from engine_core.guardian import startup
     from engine_core.guardian.reconcile_plan import reconcile_plan
@@ -164,6 +167,7 @@ def test_sb_next_premarket_requeues_old_exhausted_partition_and_success_resolves
     assert gap["status"] == "RESOLVED"
 
 
+# DATA: spec (guardian retry and scheduling scenarios require controlled state and timing).
 def test_sc_three_failed_trading_day_windows_alert_once_and_keep_retrying(tmp_path, monkeypatch):
     from examples import guardian_handler
     from engine_core.guardian import startup
@@ -200,6 +204,7 @@ def test_sc_three_failed_trading_day_windows_alert_once_and_keep_retrying(tmp_pa
     assert state["status"] == "GAP_ESCALATED" and state["escalation_alerted"] is True
 
 
+# DATA: spec (guardian retry and scheduling scenarios require controlled state and timing).
 def test_sd_recent_missing_partitions_are_fetched_oldest_first_one_at_a_time():
     from engine_core.guardian.reconcile_plan import reconcile_plan
 
@@ -229,6 +234,7 @@ def test_sd_recent_missing_partitions_are_fetched_oldest_first_one_at_a_time():
         ("daily_kline", "2026-10-21")]
 
 
+# DATA: spec (guardian retry and scheduling scenarios require controlled state and timing).
 def test_se_heavy_daily_kline_is_deferred_during_intraday(tmp_path, monkeypatch):
     from engine_core.guardian import startup
 
@@ -242,6 +248,7 @@ def test_se_heavy_daily_kline_is_deferred_during_intraday(tmp_path, monkeypatch)
     assert result["detail"]["deferred"][0]["run_in_phases"] == ["MIDDAY_BREAK"]
 
 
+# DATA: spec (guardian retry and scheduling scenarios require controlled state and timing).
 def test_sf_live_exhausted_state_is_requeued_next_premarket(tmp_path, monkeypatch):
     import pytest
     from engine_core.guardian import startup
@@ -276,6 +283,7 @@ def test_sf_live_exhausted_state_is_requeued_next_premarket(tmp_path, monkeypatc
     assert deferred["run_in_phases"] == ["PRE_MARKET"]
 
 
+# DATA: spec (guardian retry and scheduling scenarios require controlled state and timing).
 def test_sg_load_deferrals_alert_after_three_windows_then_queue_once_under_load(tmp_path, monkeypatch):
     from examples import guardian_handler
     from engine_core.guardian import startup
@@ -322,6 +330,7 @@ def test_sg_load_deferrals_alert_after_three_windows_then_queue_once_under_load(
     assert state["load_override_queued_window"] == f"{trade_date}:CLOSE"
 
 
+# DATA: spec (guardian retry and scheduling scenarios require controlled state and timing).
 def test_sh_low_load_reconcile_queues_daily_kline_normally(tmp_path, monkeypatch):
     from examples import guardian_handler
     from engine_core.guardian import startup

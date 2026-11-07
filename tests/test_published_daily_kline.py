@@ -25,6 +25,7 @@ def _manifest(provider="baostock", status="FORMAL", coverage=1.0):
     return {"provider": provider, "business_status": status, "quality": {"coverage": coverage}}
 
 
+# DATA: spec (publication thresholds and provider combinations require controlled manifests).
 @pytest.mark.parametrize("manifests,expected", [
     ([_manifest()], True),
     ([_manifest(status="PROVISIONAL", coverage=0.9954)], True),
