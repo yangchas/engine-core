@@ -44,16 +44,16 @@ def test_memory_exhaustion_splits_fixed_code_ranges():
     assert TaosStore('core_data', connect=lambda: cursor).read_day_rows('2026-11-06') == expected
     auction = {s: [('2026-11-06 09:25:00', s, '20261106', '0925', i)] for i, s in enumerate(symbols)}
     cursor = RangeCursor(auction, 125000)
-    assert sorted(_auction_slice(cursor, ['2026-11-06'])) == sorted(row for rows in auction.values() for row in rows)
+    assert sorted(_auction_slice(cursor, ['2026-11-06'], td_split_retry_depth=20)) == sorted(row for rows in auction.values() for row in rows)
     with pytest.raises(Exception) as failure:
-        _auction_slice(RangeCursor(auction, 0), ['2026-11-06'])
+        _auction_slice(RangeCursor(auction, 0), ['2026-11-06'], td_split_retry_depth=20)
     assert isinstance(failure.value.__cause__, MemoryExhausted)
     ticks = {s: [('2026-11-06 09:30:01', s, i)] for i, s in enumerate(symbols)}
     cursor = RangeCursor(ticks, 125000)
     expected_ticks = [{'trade_date': '2026-11-06', 'slot': '0945', 'symbol': s, 'amount_yuan': i}
                       for i, s in enumerate(symbols)]
-    assert sorted(_read_0945_slice(cursor, ['2026-11-06'], {'2026-11-06'}),
+    assert sorted(_read_0945_slice(cursor, ['2026-11-06'], {'2026-11-06'}, td_split_retry_depth=20),
                   key=lambda row: row['symbol']) == expected_ticks
     with pytest.raises(Exception) as failure:
-        _read_0945_slice(RangeCursor(ticks, 0), ['2026-11-06'], {'2026-11-06'})
+        _read_0945_slice(RangeCursor(ticks, 0), ['2026-11-06'], {'2026-11-06'}, td_split_retry_depth=20)
     assert isinstance(failure.value.__cause__, MemoryExhausted)
