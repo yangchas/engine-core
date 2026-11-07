@@ -103,7 +103,7 @@ def test_amounts_come_from_two_recorded_statements_not_one_per_day(monkeypatch):
 
 def test_a_tick_slice_that_runs_out_of_query_memory_is_halved(monkeypatch):
     connection = _replayed(monkeypatch, "plate_amount_slice_halving")
-    rows = module._read_td("2026-11-02", DAYS)
+    rows = module._read_td("2026-11-02", DAYS, td_split_retry_depth=1)
     recorded = load_recording("plate_amount_slice_halving")["statements"]
     assert connection.statements == [entry["sql"] for entry in recorded]            # auction, failing 2-day, two 1-day
     assert {(r["trade_date"], r["symbol"], r["amount_yuan"]) for r in rows if r["slot"] == "0945"} == \
@@ -112,7 +112,7 @@ def test_a_tick_slice_that_runs_out_of_query_memory_is_halved(monkeypatch):
 
 def test_an_auction_slice_that_runs_out_of_query_memory_is_halved(monkeypatch):
     connection = _replayed(monkeypatch, "plate_amount_auction_halving")
-    rows = module._read_auction_rows(connection.cursor(), DAYS)
+    rows = module._read_auction_rows(connection.cursor(), DAYS, td_split_retry_depth=1)
     recorded = load_recording("plate_amount_auction_halving")["statements"]
     assert connection.statements == [entry["sql"] for entry in recorded]            # failing 2-day, then each day alone
     assert len(rows) == sum(entry["row_count"] for entry in recorded if "rows" in entry) == 5223
@@ -145,3 +145,106 @@ def test_recorded_td_memory_exhaustion_surfaces_with_its_code():
         with pytest.raises(TdResourceExhausted) as caught:
             query()
         assert caught.value.error_code == "TD_RESOURCE_EXHAUSTED"
+
+
+def test_resource_exhaustion_stops_after_one_query_and_cli_reports_retry(monkeypatch, capsys, tmp_path):
+    from taos.error import ProgrammingError
+    from engine_core.data_pipeline.td_sink import TdResourceExhausted
+    from examples import build_plate_amount_baseline as cli
+    record = json.loads((Path(__file__).parent / 'fixtures/real/td/errors/query_memory_exhausted_0x073a.json').read_text())
+
+    class Cursor:
+        calls = 0
+        def execute(self, sql):
+            self.calls += 1
+            raise ProgrammingError(record['message'], int(record['errno'], 16))
+
+    cursor = Cursor()
+    with pytest.raises(TdResourceExhausted):
+        module._read_auction_rows(cursor, DAYS)
+    assert cursor.calls == 1
+    tick = Cursor()
+    with pytest.raises(TdResourceExhausted):
+        module._read_0945_slice(tick, DAYS, set(DAYS))
+    assert tick.calls == 1
+
+    class Connection:
+        def __init__(self, cursor): self._cursor = cursor
+        def cursor(self): return self._cursor
+        def close(self): pass
+
+    class DayCursor:
+        def execute(self, sql): pass
+        def fetchall(self): return [(day,) for day in DAYS]
+
+    failing = Cursor()
+    connections = iter([Connection(DayCursor()), Connection(failing)])
+    monkeypatch.setattr(module, '_td_connect', lambda: next(connections))
+    monkeypatch.setattr(module, '_obs_store', lambda: None)
+    assert cli.main(['--date', '2026-11-02', '--write', '--artifact-root', str(tmp_path)]) == 30
+    assert failing.calls == 1
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])['error_code'] == 'TD_RESOURCE_EXHAUSTED'
+
+
+def test_cli_contract_success_outcomes(monkeypatch, capsys):
+    from examples import build_plate_amount_baseline as cli
+    from engine_core.guardian.contract import check_reply
+    for status, reused, expected in [('READY', False, 0), ('PARTIAL', False, 10), ('READY', True, 20)]:
+        result = {'status': status, 'reused': reused, 'version': 'v1', 'row_count': 1,
+                  'date_count': 2, 'membership_date_count': 1}
+        monkeypatch.setattr(cli, 'build_and_store_plate_amount_baseline', lambda *a, **kw: result)
+        code = cli.main(['--date', '2026-11-02', '--write', '--available-at', '2026-11-02T00:00:00Z', '--td-split-retry-depth', '2'])
+        lines = capsys.readouterr().out.splitlines()
+        assert json.loads(lines[0]) == result
+        reply = json.loads(lines[-1])
+        assert code == expected and not check_reply(code, reply)
+        assert reply['error_code'] == ('ALREADY_SATISFIED' if reused else '')
+        if status == 'PARTIAL':
+            assert reply['detail']['membership_date_count'] == 1
+
+
+def test_c731_real_input_rows_and_provenance(monkeypatch, tmp_path):
+    import hashlib
+    root = Path(__file__).parent / 'fixtures/real'
+    index = json.loads((root / 'PROVENANCE.json').read_text())['_plate_amount_baseline_c731']
+    inputs = {}
+    for name, meta in index.items():
+        path = root / name
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == meta['sha256']
+        with gzip.open(path, 'rt', encoding='utf-8') as handle:
+            inputs[path.name] = [json.loads(line) for line in handle]
+        assert len(inputs[path.name]) == meta['rows']
+    auction = inputs['td_inputs_auction.jsonl.gz']
+    ticks = inputs['td_inputs_0945.jsonl.gz']
+    observations = [{'trade_date': str(day), 'slot': '0925', 'symbol': symbol, 'amount_yuan': amount}
+                    for _, symbol, day, _, amount in auction if amount is not None]
+    observations += [{'trade_date': str(stamp)[:10], 'slot': '0945', 'symbol': symbol, 'amount_yuan': amount}
+                     for stamp, symbol, amount in ticks if str(stamp)[11:19] == '09:30:01' and amount is not None]
+    dates = sorted({module._day(row[2]) for row in auction})
+    members = _members()
+    versions = {day: 'sha256-9a9492578bf6327b' for day in dates}
+    result = build_plate_amount_baseline(target_date='2026-11-06', membership_by_date={day: members for day in dates},
+                                         observations=observations, candidate_dates=dates, membership_versions=versions,
+                                         available_at='2026-11-06T00:00:00Z')
+    assert result['status'] == 'PARTIAL' and result['rows'] and len(ticks) == 5796
+    assert any(row['slot'] == '0945' and row['missing_dates'] for row in result['rows'])
+    assert {ref['dataset'] for ref in result['input_refs']} == {'plate_members', 'auction_snapshot_v2', 'stock_tick_v2'}
+    assert all(ref['version'] == versions[ref['trade_date']] for ref in result['input_refs'] if ref['dataset'] == 'plate_members')
+
+    class Connection:
+        def cursor(self): return self
+        def execute(self, sql): pass
+        def fetchall(self): return [(day,) for day in dates]
+        def close(self): pass
+    monkeypatch.setattr(module, '_td_connect', lambda: Connection())
+    monkeypatch.setattr(module, '_membership_inputs', lambda catalog, days: ({day: members for day in days}, versions))
+    monkeypatch.setattr(module, '_obs_store', lambda: None)
+    monkeypatch.setattr(module, 'read_observations', lambda days, **kwargs: (observations, {}))
+    saved = module.build_and_store_plate_amount_baseline('2026-11-06', artifact_root=tmp_path, publish=False,
+                                                         available_at='2026-11-06T00:00:00Z')
+    catalog = module.ArtifactCatalog(tmp_path)
+    manifest = json.loads(catalog.locate(module.DATASET, '2026-11-06').read_text())
+    assert saved['status'] == 'PARTIAL'
+    assert manifest['input_refs'] == result['input_refs'] and manifest['membership_versions'] == versions
+    assert manifest['declared_available_at'] == '2026-11-06T00:00:00Z'
+    assert all(row['available_at'] == '2026-11-06T00:00:00Z' for row in catalog.read_rows(catalog.locate(module.DATASET, '2026-11-06')))

@@ -2071,5 +2071,43 @@
    "source": "Baostock public service",
    "kind": "raw_baostock_provenance"
   }
+ },
+ "_plate_amount_baseline_c731": {
+  "plate_amount_baseline_c731/td_inputs_auction.jsonl.gz": {
+   "kind": "raw_td_result",
+   "source": "TDengine market_data1, read-only, TD_CONFIG environment",
+   "captured_at": "2026-11-07T15:26:30.084267+08:00",
+   "source_path": "/home/exedev/validation/realdata/plate_amount_baseline_20261106/td_inputs_auction.jsonl.gz",
+   "command": "cp /home/exedev/validation/realdata/plate_amount_baseline_20261106/td_inputs_auction.jsonl.gz tests/fixtures/real/plate_amount_baseline_c731/td_inputs_auction.jsonl.gz",
+   "sha256": "98363f4ce851532d7e24171778f3cd167bee5bcf0630c9f0578f987f403ac853",
+   "bytes": 962963,
+   "rows": 146247,
+   "columns": [
+    "ts",
+    "symbol",
+    "trade_date",
+    "auction_tag",
+    "match_amt_yuan"
+   ],
+   "capture_command": "/home/exedev/validation/realdata/plate_amount_baseline_20261106/capture_inputs.py",
+   "note": "Only successful SELECTs observed before CLI failure; 0945 inputs are incomplete and must not be used as a full-window fixture"
+  },
+  "plate_amount_baseline_c731/td_inputs_0945.jsonl.gz": {
+   "kind": "raw_td_result",
+   "source": "TDengine market_data1, read-only, TD_CONFIG environment",
+   "captured_at": "2026-11-07T15:26:30.084267+08:00",
+   "source_path": "/home/exedev/validation/realdata/plate_amount_baseline_20261106/td_inputs_0945.jsonl.gz",
+   "command": "cp /home/exedev/validation/realdata/plate_amount_baseline_20261106/td_inputs_0945.jsonl.gz tests/fixtures/real/plate_amount_baseline_c731/td_inputs_0945.jsonl.gz",
+   "sha256": "65fba7a33a2cbd836c53e821aa7d2d03beb85181709c63b18e548b69c14ce4ef",
+   "bytes": 35858,
+   "rows": 5796,
+   "columns": [
+    "_wstart",
+    "symbol",
+    "LAST(amt_yuan)"
+   ],
+   "capture_command": "/home/exedev/validation/realdata/plate_amount_baseline_20261106/capture_inputs.py",
+   "note": "Only successful SELECTs observed before CLI failure; 0945 inputs are incomplete and must not be used as a full-window fixture"
+  }
  }
 }
