@@ -179,11 +179,21 @@ def test_plate_amount_baseline_event_and_policy_are_scheduled_independently():
         assert "plate_amount_baseline" in events[event_id]["args"]["prep_degradable_steps"]
 
 
+def test_auction_amount_facts_uses_trading_day_calendar():
+    events = {event["event_id"]: event for event in SCHEDULE["events"]}
+    event = events["auction_amount_facts_0530"]
+    baseline = events["plate_amount_baseline_0815"]
+    assert (event["calendar"], event["trigger_type"], event["gate"]) == (
+        baseline["calendar"], baseline["trigger_type"], baseline["gate"])
+    assert event["calendar"] == "trading_day"
+    assert "NIGHT" in event["phases"] and "NON_TRADING" not in event["phases"]
+
+
 def test_auction_amount_facts_daily_schedule_and_policy():
     events = {event["event_id"]: event for event in SCHEDULE["events"]}
     event = events["auction_amount_facts_0530"]
     assert (event["at"], event["deadline"], event["calendar"], event["gate"]) == (
-        "05:30:00", "07:30:00", "every_day", "always")
+        "05:30:00", "07:30:00", "trading_day", "calendar_ready")
     assert event["handler"] == "postmarket_data"
     assert event["cost"] == "heavy"
     assert event["args"] == {"dataset": "auction_amount_facts", "window": 64, "max_days": 64}
