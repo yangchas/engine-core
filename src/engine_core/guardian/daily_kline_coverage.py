@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 OK = "OK"
 MISSING = "MISSING"          # no usable version at all
@@ -62,7 +62,8 @@ class TdCoverageSource:
         return self.store.window_watermarks(days)
 
     def coverage(self, dates: Sequence[str], watermarks: Mapping[str, str] | None = None,
-                 known_missing: Mapping[str, str] | None = None) -> dict[str, DayCoverage]:
+                 known_missing: Mapping[str, str] | None = None,
+                 active_symbols: Iterable[str] | None = None) -> dict[str, DayCoverage]:
         from ..data_pipeline.td_sink import has_baostock_date_evidence, pick_best
         result: dict[str, DayCoverage] = {}
         if not self.store.schema_exists():
@@ -71,6 +72,9 @@ class TdCoverageSource:
         watermarks = watermarks or {}
         ignored_watermarks = {str(symbol).zfill(6) for symbol, category in (known_missing or {}).items()
                               if category == "SOURCE_UNAVAILABLE"}
+        missing_active = ({str(symbol).zfill(6) for symbol in active_symbols} -
+                          {str(symbol).zfill(6) for symbol in watermarks} - ignored_watermarks
+                          if active_symbols is not None else set())
         latest_day = max(dates, default="")
         for day in dates:
             current = pick_best(self.store.read_versions(day))
@@ -94,8 +98,8 @@ class TdCoverageSource:
             elif not has_baostock_date_evidence(day, current):
                 result[day] = DayCoverage(day, INCOMPLETE, self.origin,
                                           reason="source_date_evidence_incomplete", **base)
-            elif day == latest_day and any(value < day for symbol, value in watermarks.items()
-                                           if str(symbol).zfill(6) not in ignored_watermarks):
+            elif day == latest_day and (missing_active or any(value < day for symbol, value in watermarks.items()
+                                           if str(symbol).zfill(6) not in ignored_watermarks)):
                 result[day] = DayCoverage(day, INCOMPLETE, self.origin, reason="symbol_watermark_behind_target",
                                           **base)
             elif base["needs_upgrade"]:

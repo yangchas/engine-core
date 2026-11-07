@@ -352,18 +352,20 @@ class TaosStore:
     def _is_missing(exc: Exception) -> bool:
         return td_object_missing(exc)
 
-    def _run(self, sql: str, *, missing_ok: bool = False) -> list[tuple]:
+    def _run(self, sql: str, *, missing_ok: bool = False, strict: bool = False) -> list[tuple]:
         cursor = self._cursor()
+        fetch_failed = False
         try:
             cursor.execute(sql)
             try:
                 return list(cursor.fetchall())
             except Exception as exc:
-                if td_memory_exhausted(exc):
+                if strict or td_memory_exhausted(exc):
+                    fetch_failed = True
                     raise
                 return []
         except Exception as exc:
-            if missing_ok and self._is_missing(exc):
+            if missing_ok and not (strict and fetch_failed) and self._is_missing(exc):
                 return []
             self.close()
             raise td_statement_error(exc, "td_statement_failed:" + type(exc).__name__ + ":" + str(exc)[:200]
@@ -555,24 +557,27 @@ class TaosStore:
     def symbols_on_day(self, day: str) -> set[str]:
         _check_date(day)
         rows = self._run(f"SELECT symbol FROM {self.database}.{SUPER_TABLE} "
-                         f"WHERE ts = {trade_day_ts_us(day)}", missing_ok=True)
+                         f"WHERE ts = {trade_day_ts_us(day)}", missing_ok=True, strict=True)
         return {str(row[0]) for row in rows}
 
     def window_watermarks(self, days: Sequence[str]) -> tuple[dict[str, str], dict[str, list[str]]]:
         """Read each trading day once; report only absences between observed bars."""
         ordered = list(days)
         by_day = {day: self.symbols_on_day(day) for day in reversed(ordered)}
+        max_count = max((len(symbols) for symbols in by_day.values()), default=0)
+        eligible_days = {day for day, symbols in by_day.items() if len(symbols) * 2 >= max_count}
         watermarks: dict[str, str] = {}
         first: dict[str, int] = {}
         last: dict[str, int] = {}
         for index, day in enumerate(ordered):
             for symbol in by_day[day]:
-                first.setdefault(symbol, index)
-                last[symbol] = index
                 watermarks[symbol] = day
-        gaps = {symbol: missing for symbol in watermarks
+                if day in eligible_days:
+                    first.setdefault(symbol, index)
+                    last[symbol] = index
+        gaps = {symbol: missing for symbol in first
                 if (missing := [ordered[index] for index in range(first[symbol] + 1, last[symbol])
-                                if symbol not in by_day[ordered[index]]])}
+                                if ordered[index] in eligible_days and symbol not in by_day[ordered[index]]])}
         return watermarks, gaps
 
     def latest_watermarks(self) -> dict[str, str]:

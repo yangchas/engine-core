@@ -14,6 +14,30 @@ DAYS = ["2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23"]
 NOW = datetime.fromisoformat("2026-10-23T20:00:00+08:00")
 
 
+def test_symbols_on_day_propagates_fetch_failure():
+    from engine_core.data_pipeline.td_sink import TaosStore, TdUnavailable
+
+    class Cursor:
+        def execute(self, sql):
+            pass
+
+        def fetchall(self):
+            raise RuntimeError("read failed")
+
+        def close(self):
+            pass
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            pass
+
+    with pytest.raises(TdUnavailable):
+        TaosStore("core_dev_c775", connect=Connection).symbols_on_day(DAYS[-1])
+
+
 def test_real_window_coverage_uses_daily_reads():
     from engine_core.data_pipeline.td_sink import TaosStore
     from engine_core.guardian.daily_kline_coverage import TdCoverageSource, resolve_coverage
@@ -57,6 +81,47 @@ def test_real_window_coverage_uses_daily_reads():
     watermarks, gaps = store.window_watermarks(dates)
     assert watermarks["688796"] == "2026-10-30"
     assert "2026-11-04" in gaps["000972"]
+
+
+def test_real_window_whole_day_gap_does_not_create_symbol_gaps():
+    from engine_core.data_pipeline.td_sink import TaosStore
+
+    fixture = Path(__file__).parent / "fixtures/real/daily_kline_c756/td_symbols_by_day.jsonl.gz"
+    with gzip.open(fixture, "rt") as stream:
+        by_day = {row["date"]: set(row["symbols"]) for row in map(json.loads, stream)
+                  if "2026-10-26" <= row["date"] <= "2026-11-06"}
+    dates = sorted(by_day)
+
+    class Store:
+        def symbols_on_day(self, day):
+            return by_day[day]
+
+    store = Store()
+    _, baseline = TaosStore.window_watermarks(store, dates)
+    # Simulate a whole missing day by replacing only this real fixture input.
+    missing_day = dates[len(dates) // 2]
+    by_day[missing_day] = set()
+    _, gaps = TaosStore.window_watermarks(store, dates)
+    assert {(symbol, day) for symbol, days in gaps.items() for day in days} <= {
+        (symbol, day) for symbol, days in baseline.items() for day in days if day != missing_day}
+
+
+def test_coverage_accounts_for_active_symbols_outside_window(env):
+    from engine_core.guardian.daily_kline_coverage import TdCoverageSource
+
+    root, store = env
+    _seed_baostock_catalog_and_td(root, store)
+    source = TdCoverageSource(store)
+    watermarks = store.latest_watermarks()
+    fixture = Path(__file__).parent / "fixtures/real/daily_kline_c756/td_symbols_by_day.jsonl.gz"
+    with gzip.open(fixture, "rt") as stream:
+        symbols = json.loads(next(stream))["symbols"]
+    missing = next(symbol for symbol in symbols if symbol not in watermarks)
+    assert source.coverage([DAYS[-1]], watermarks)[DAYS[-1]].state == "OK"
+    result = source.coverage([DAYS[-1]], watermarks, active_symbols=[missing])[DAYS[-1]]
+    assert (result.state, result.reason) == ("INCOMPLETE", "symbol_watermark_behind_target")
+    assert source.coverage([DAYS[-1]], watermarks, {missing: "SOURCE_UNAVAILABLE"},
+                           [missing])[DAYS[-1]].state == "OK"
 
 
 def test_full_mode_and_legacy_store_fallback(env):
