@@ -11,7 +11,7 @@
    "exit": 40,
    "meaning": "the tier has exhausted its configured attempts"
   },
-  "known_missing_incomplete": {
+  "KNOWN_MISSING_INCOMPLETE": {
    "retryable": false,
    "exit": 40,
    "meaning": "the known missing ledger disagrees with the expected missing symbols"

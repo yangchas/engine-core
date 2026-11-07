@@ -10,7 +10,7 @@ from ..errors import CoreError
 
 class KnownMissingIncomplete(CoreError, ValueError):
     def __init__(self):
-        super().__init__("known_missing_incomplete")
+        super().__init__("KNOWN_MISSING_INCOMPLETE", "known_missing_incomplete")
 
 
 CATEGORIES = frozenset({"SOURCE_UNAVAILABLE", "SOURCE_EMPTY", "UNEXPECTED"})
