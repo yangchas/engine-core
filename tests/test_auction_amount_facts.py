@@ -232,3 +232,26 @@ def test_successful_acquisition_releases_lease(tmp_path):
     assert code == 0 and all(lease.released for lease in leases)
     assert facts.complete_days(['2026-11-05'], '0925') == {'2026-11-05'}
     assert facts.read_days(['2026-11-05'], '0925')['2026-11-05'] == amounts
+
+
+def test_read_rejects_changed_or_deleted_marker():
+    import pytest
+    amounts = {symbol: amount for _, symbol, day, _, amount in rows('td_inputs_auction.jsonl.gz') if day == '20261105'}
+    for replacement in (None, len(amounts) + 1):
+        class ChangingStore(FakeStore):
+            def _run(self, sql, **kwargs):
+                result = super()._run(sql, **kwargs)
+                if sql.startswith('SELECT symbol') and self.change:
+                    marker = facts._key('2026-11-05', '0925')[1]
+                    if replacement is None:
+                        self.markers.pop(marker)
+                    else:
+                        self.markers[marker] = replacement
+                return result
+        store = ChangingStore()
+        store.change = False
+        facts = AuctionAmountFacts(store)
+        facts.write_day('2026-11-05', '0925', amounts, 'C731')
+        store.change = True
+        with pytest.raises(RuntimeError, match='AUCTION_FACTS_CHANGED_DURING_READ:2026-11-05:0925'):
+            facts.read_days(['2026-11-05'], '0925')

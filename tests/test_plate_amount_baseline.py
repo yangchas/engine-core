@@ -21,28 +21,19 @@ def _members():
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def _replayed(monkeypatch, *names):
-    connection = ReplayTd(*names)
-    monkeypatch.setattr(module, "_td_connect", lambda: connection)
-    return connection
-
-
-def _oracle_ticks(statements, days):
-    """Independent re-statement of what the code must keep from the recorded tick rows."""
-    keep = set()
-    for entry in statements:
-        if "stock_tick_v2" not in entry["sql"] or "rows" not in entry:
-            continue
-        for window_start, symbol, amount in entry["rows"]:
-            stamp = window_start["$dt"]
-            if stamp[11:19] == "09:30:01" and stamp[:10] in days and amount is not None:
-                keep.add((stamp[:10], str(symbol).zfill(6), amount))
-    return keep
-
-
 def _observations(monkeypatch):
-    _replayed(monkeypatch, "plate_amount_2day")
-    return module._read_td("2026-11-02", DAYS)
+    from engine_core.data_pipeline import auction_amount_facts as facts
+    connection = ReplayTd("plate_amount_2day")
+    cursor = connection.cursor()
+    auction = facts._read_auction_rows(cursor, DAYS)
+    latest = {}
+    for stamp, symbol, day, _, amount in auction:
+        key = (module._day(day), module._symbol(symbol))
+        if key not in latest or str(stamp) >= latest[key][0]:
+            latest[key] = (str(stamp), amount)
+    result = [{'trade_date': day, 'slot': '0925', 'symbol': symbol, 'amount_yuan': value}
+              for (day, symbol), (_, value) in latest.items() if value is not None]
+    return result + facts._read_0945_slice(cursor, DAYS, set(DAYS))
 
 
 def _plate_with_every_member_observed(rows, observations, slot):
@@ -90,99 +81,21 @@ def test_a_date_without_membership_is_missing(monkeypatch):
     assert row["missing_dates"] == [DAYS[0]] and row["sample_days"] == 1
 
 
-def test_amounts_come_from_two_recorded_statements_not_one_per_day(monkeypatch):
-    connection = _replayed(monkeypatch, "plate_amount_2day")
-    rows = module._read_td("2026-11-02", DAYS)
-    recorded = load_recording("plate_amount_2day")["statements"]
-    assert connection.statements == [entry["sql"] for entry in recorded]            # auction + ONE 2-day tick slice
-    tick = {(r["trade_date"], r["symbol"], r["amount_yuan"]) for r in rows if r["slot"] == "0945"}
-    assert tick == _oracle_ticks(recorded, DAYS) and tick
-    auction = [r for r in rows if r["slot"] == "0925"]
-    assert {r["trade_date"] for r in auction} == {"2026-10-30"}                    # the real 10-29 snapshots are empty
-
-
-def test_a_tick_slice_that_runs_out_of_query_memory_is_halved(monkeypatch):
-    connection = _replayed(monkeypatch, "plate_amount_slice_halving")
-    rows = module._read_td("2026-11-02", DAYS, td_split_retry_depth=1)
-    recorded = load_recording("plate_amount_slice_halving")["statements"]
-    assert connection.statements == [entry["sql"] for entry in recorded]            # auction, failing 2-day, two 1-day
-    assert {(r["trade_date"], r["symbol"], r["amount_yuan"]) for r in rows if r["slot"] == "0945"} == \
-        _oracle_ticks(recorded, DAYS)
-
-
-def test_an_auction_slice_that_runs_out_of_query_memory_is_halved(monkeypatch):
-    connection = _replayed(monkeypatch, "plate_amount_auction_halving")
-    rows = module._read_auction_rows(connection.cursor(), DAYS, td_split_retry_depth=1)
-    recorded = load_recording("plate_amount_auction_halving")["statements"]
-    assert connection.statements == [entry["sql"] for entry in recorded]            # failing 2-day, then each day alone
-    assert len(rows) == sum(entry["row_count"] for entry in recorded if "rows" in entry) == 5223
-
-
-def test_a_failure_that_is_not_memory_exhaustion_surfaces_with_its_stage_and_range(monkeypatch):
-    _replayed(monkeypatch, "plate_amount_other_error")
-    with pytest.raises(RuntimeError, match=r"plate_amount_baseline_tick_slice 2026-10-30\.\.2026-10-30.*Table does not exist"):
-        module._read_td("2026-11-02", ["2026-10-30"])
-
-
-def test_no_dates_means_no_td_connection(monkeypatch):
-    # DATA: spec (no data involved: asserts that no connection is attempted)
-    monkeypatch.setattr(module, "_td_connect", lambda: pytest.fail("must not connect without dates"))
-    assert module._read_td("2026-11-02", []) == []
-
-
-def test_recorded_td_memory_exhaustion_surfaces_with_its_code():
-    from taos.error import ProgrammingError
-    from engine_core.data_pipeline.td_sink import TdResourceExhausted
-    record = json.loads((Path(__file__).parent / "fixtures" / "real" / "td" / "errors" /
-                         "query_memory_exhausted_0x073a.json").read_text(encoding="utf-8"))
-
-    class Cursor:
-        def execute(self, sql):
-            raise ProgrammingError(record["message"], int(record["errno"], 16))
-
-    for query in (lambda: module._auction_slice(Cursor(), [DAYS[0]]),
-                  lambda: module._read_0945_slice(Cursor(), [DAYS[0]], set(DAYS), ("000000", "300000"))):
-        with pytest.raises(TdResourceExhausted) as caught:
-            query()
-        assert caught.value.error_code == "TD_RESOURCE_EXHAUSTED"
-
-
 def test_resource_exhaustion_stops_after_one_query_and_cli_reports_retry(monkeypatch, capsys, tmp_path):
-    from taos.error import ProgrammingError
+    from engine_core import ladder_daily_adapter
+    from engine_core.data_pipeline import auction_amount_facts
     from engine_core.data_pipeline.td_sink import TdResourceExhausted
     from examples import build_plate_amount_baseline as cli
-    record = json.loads((Path(__file__).parent / 'fixtures/real/td/errors/query_memory_exhausted_0x073a.json').read_text())
-
-    class Cursor:
-        calls = 0
-        def execute(self, sql):
-            self.calls += 1
-            raise ProgrammingError(record['message'], int(record['errno'], 16))
-
-    cursor = Cursor()
-    with pytest.raises(TdResourceExhausted):
-        module._read_auction_rows(cursor, DAYS)
-    assert cursor.calls == 1
-    tick = Cursor()
-    with pytest.raises(TdResourceExhausted):
-        module._read_0945_slice(tick, DAYS, set(DAYS))
-    assert tick.calls == 1
-
-    class Connection:
-        def __init__(self, cursor): self._cursor = cursor
-        def cursor(self): return self._cursor
-        def close(self): pass
-
-    class DayCursor:
-        def execute(self, sql): pass
-        def fetchall(self): return [(day,) for day in DAYS]
-
-    failing = Cursor()
-    connections = iter([Connection(DayCursor()), Connection(failing)])
-    monkeypatch.setattr(module, '_td_connect', lambda: next(connections))
-    monkeypatch.setattr(module, '_obs_store', lambda: None)
+    calls = []
+    class Facts:
+        def __init__(self, store): pass
+        def complete_days(self, dates, slot):
+            calls.append(slot)
+            raise TdResourceExhausted('recorded 0x073a')
+    monkeypatch.setattr(ladder_daily_adapter, 'trading_days', lambda root, upto: DAYS)
+    monkeypatch.setattr(auction_amount_facts, 'AuctionAmountFacts', Facts)
     assert cli.main(['--date', '2026-11-02', '--write', '--artifact-root', str(tmp_path)]) == 30
-    assert failing.calls == 1
+    assert calls == ['0925']
     assert json.loads(capsys.readouterr().out.splitlines()[-1])['error_code'] == 'TD_RESOURCE_EXHAUSTED'
 
 
@@ -193,7 +106,7 @@ def test_cli_contract_success_outcomes(monkeypatch, capsys):
         result = {'status': status, 'reused': reused, 'version': 'v1', 'row_count': 1,
                   'date_count': 2, 'membership_date_count': 1}
         monkeypatch.setattr(cli, 'build_and_store_plate_amount_baseline', lambda *a, **kw: result)
-        code = cli.main(['--date', '2026-11-02', '--write', '--available-at', '2026-11-02T00:00:00Z', '--td-split-retry-depth', '2'])
+        code = cli.main(['--date', '2026-11-02', '--write', '--available-at', '2026-11-02T00:00:00Z'])
         lines = capsys.readouterr().out.splitlines()
         assert json.loads(lines[0]) == result
         reply = json.loads(lines[-1])
@@ -231,20 +144,80 @@ def test_c731_real_input_rows_and_provenance(monkeypatch, tmp_path):
     assert {ref['dataset'] for ref in result['input_refs']} == {'plate_members', 'auction_snapshot_v2', 'stock_tick_v2'}
     assert all(ref['version'] == versions[ref['trade_date']] for ref in result['input_refs'] if ref['dataset'] == 'plate_members')
 
-    class Connection:
-        def cursor(self): return self
-        def execute(self, sql): pass
-        def fetchall(self): return [(day,) for day in dates]
-        def close(self): pass
-    monkeypatch.setattr(module, '_td_connect', lambda: Connection())
-    monkeypatch.setattr(module, '_membership_inputs', lambda catalog, days: ({day: members for day in days}, versions))
-    monkeypatch.setattr(module, '_obs_store', lambda: None)
-    monkeypatch.setattr(module, 'read_observations', lambda days, **kwargs: (observations, {}))
-    saved = module.build_and_store_plate_amount_baseline('2026-11-06', artifact_root=tmp_path, publish=False,
-                                                         available_at='2026-11-06T00:00:00Z')
-    catalog = module.ArtifactCatalog(tmp_path)
-    manifest = json.loads(catalog.locate(module.DATASET, '2026-11-06').read_text())
-    assert saved['status'] == 'PARTIAL'
-    assert manifest['input_refs'] == result['input_refs'] and manifest['membership_versions'] == versions
-    assert manifest['declared_available_at'] == '2026-11-06T00:00:00Z'
-    assert all(row['available_at'] == '2026-11-06T00:00:00Z' for row in catalog.read_rows(catalog.locate(module.DATASET, '2026-11-06')))
+
+
+def test_facts_only_partial_window(monkeypatch, tmp_path):
+    from datetime import date, timedelta
+    from engine_core import ladder_daily_adapter
+    from engine_core.data_pipeline import auction_amount_facts
+    dates = [(date(2026, 8, 1) + timedelta(days=i)).isoformat() for i in range(64)]
+    members = _members()
+    symbol = members[0]['symbol']
+    plate = members[0]['plate_code']
+    members = [r for r in members if r['symbol'] == symbol and r['plate_code'] == plate]
+    with gzip.open(Path(__file__).parent / 'fixtures/real/auction_amount_facts_c731/td_inputs_auction.jsonl.gz', 'rt') as f:
+        amounts = {row[1]: row[4] for row in map(json.loads, f) if row[4] is not None}
+    with gzip.open(Path(__file__).parent / 'fixtures/real/auction_amount_facts_c731/td_inputs_0945.jsonl.gz', 'rt') as f:
+        ticks = {row[1]: row[2] for row in map(json.loads, f) if row[2] is not None}
+    symbol = next(r['symbol'] for r in _members() if r['symbol'] in amounts and r['symbol'] in ticks)
+    members = [r for r in _members() if r['symbol'] == symbol][:1]
+    class Facts:
+        def __init__(self, store): pass
+        def complete_days(self, days, slot): return set(dates[:3])
+        def read_days(self, days, slot): return {day: {symbol: (amounts if slot == '0925' else ticks)[symbol]} for day in days}
+    monkeypatch.setattr(ladder_daily_adapter, 'trading_days', lambda root, upto: dates)
+    monkeypatch.setattr(auction_amount_facts, 'AuctionAmountFacts', Facts)
+    monkeypatch.setattr(module, '_membership_inputs', lambda catalog, days: ({day: members for day in days}, {}))
+    calls = []
+    monkeypatch.setattr(module, '_td_connect', lambda: calls.append('market_data1') or pytest.fail('market_data1 read'), raising=False)
+    result = module.build_and_store_plate_amount_baseline('2026-11-06', artifact_root=tmp_path, publish=False)
+    rows = module.ArtifactCatalog(tmp_path).read_rows(module.ArtifactCatalog(tmp_path).locate(module.DATASET, '2026-11-06'))
+    assert result['status'] == 'PARTIAL' and all(row['sample_days'] == 3 for row in rows)
+    assert calls == []
+
+
+def test_no_complete_days_reports_missing_dependencies(monkeypatch, tmp_path, capsys):
+    from engine_core import ladder_daily_adapter
+    from engine_core.data_pipeline import auction_amount_facts
+    from examples import build_plate_amount_baseline as cli
+    days = ['2026-11-04', '2026-11-05']
+    class Facts:
+        def __init__(self, store): pass
+        def complete_days(self, dates, slot): return set()
+    monkeypatch.setattr(ladder_daily_adapter, 'trading_days', lambda root, upto: days)
+    monkeypatch.setattr(auction_amount_facts, 'AuctionAmountFacts', Facts)
+    assert cli.main(['--date', '2026-11-06', '--write', '--artifact-root', str(tmp_path)]) == 30
+    reply = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert reply['error_code'] == 'NOT_YET_AVAILABLE' and reply['retryable']
+    assert {(item['dataset'], item['trade_date']) for item in reply['detail']['missing']} == {
+        (dataset, day) for dataset in ('auction_amount', 'slot0945_amount') for day in days}
+
+
+def test_pull_upstream_rechecks_facts(monkeypatch, tmp_path):
+    from engine_core import ladder_daily_adapter
+    from engine_core.data_pipeline import auction_amount_facts
+    from examples import build_plate_amount_baseline as cli
+    day = '2026-11-05'
+    with gzip.open(Path(__file__).parent / 'fixtures/real/auction_amount_facts_c731/td_inputs_auction.jsonl.gz', 'rt') as f:
+        amounts = {row[1]: row[4] for row in map(json.loads, f) if row[2] == '20261105' and row[4] is not None}
+    with gzip.open(Path(__file__).parent / 'fixtures/real/auction_amount_facts_c731/td_inputs_0945.jsonl.gz', 'rt') as f:
+        ticks = {row[1]: row[2] for row in map(json.loads, f) if row[2] is not None}
+    member = next(row for row in _members() if row['symbol'] in amounts and row['symbol'] in ticks)
+    class Facts:
+        ready = False
+        def __init__(self, store): pass
+        def complete_days(self, dates, slot): return {day} if self.ready else set()
+        def read_days(self, dates, slot): return {day: amounts if slot == '0925' else ticks}
+    calls = []
+    def run(request, root, *, store):
+        calls.append(request)
+        store.ready = True
+        return 0, {'error_code': '', 'detail': {}}
+    monkeypatch.setattr(ladder_daily_adapter, 'trading_days', lambda root, upto: [day])
+    monkeypatch.setattr(auction_amount_facts, 'AuctionAmountFacts', Facts)
+    monkeypatch.setattr(auction_amount_facts, 'run', run)
+    monkeypatch.setattr(module, '_membership_inputs', lambda catalog, days: ({day: [member]}, {}))
+    monkeypatch.setattr(module, '_publish', lambda *args: False)
+    assert cli.main(['--date', '2026-11-06', '--write', '--artifact-root', str(tmp_path), '--pull-upstream']) == 10
+    rows = module.ArtifactCatalog(tmp_path).read_rows(module.ArtifactCatalog(tmp_path).locate(module.DATASET, '2026-11-06'))
+    assert calls == [{'days': [day]}] and all(row['dates_used'] == [day] for row in rows)
