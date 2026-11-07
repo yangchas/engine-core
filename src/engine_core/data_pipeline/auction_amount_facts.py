@@ -15,7 +15,7 @@ SLICE_DAYS = 5
 def _td_connect():
     if not os.environ.get("TD_CONFIG"):
         raise RuntimeError("TD_CONFIG_required")
-    from .data_pipeline.td_sink import connect_td
+    from .td_sink import connect_td
     return connect_td("market_data1")
 
 
