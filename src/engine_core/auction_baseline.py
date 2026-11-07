@@ -331,7 +331,7 @@ def build_and_store_auction_baseline(target_date: str, *, artifact_root: str | P
         "business_status": result["status"], "quality": {"status": result["status"],
             "missing": "INCOMPLETE_64_SESSION_WINDOW" if result["status"] == "PARTIAL" else None,
             "missing_market_dates": result["market_summary"]["missing_dates"],
-            "observed_source_dates": len(result["window_dates"])},
+            "observed_source_dates": result["market_summary"]["sample_days"]},
         "window": {"sessions": WINDOW_DAYS, "from": result["market_summary"]["window_start"],
                    "through": result["market_summary"]["window_end"],
                    "excludes_target_date": True, "percentiles": "linear interpolation"},
