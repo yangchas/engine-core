@@ -56,6 +56,11 @@ class TdCoverageSource:
             return {}
         return self.store.latest_watermarks()
 
+    def window_watermarks(self, days: Sequence[str]) -> tuple[dict[str, str], dict[str, list[str]]]:
+        if not self.store.schema_exists():
+            return {}, {}
+        return self.store.window_watermarks(days)
+
     def coverage(self, dates: Sequence[str], watermarks: Mapping[str, str] | None = None,
                  known_missing: Mapping[str, str] | None = None) -> dict[str, DayCoverage]:
         from ..data_pipeline.td_sink import has_baostock_date_evidence, pick_best
@@ -164,18 +169,29 @@ class CoverageResult:
 
 def resolve_coverage(dates: Sequence[str], primary: CoverageSource | None,
                      trading_dates: Sequence[str], history_min_trading_days: int = 10,
-                     known_missing: Mapping[str, str] | None = None) -> CoverageResult:
-    """Read TD once for all-symbol watermarks. A TD outage stays UNKNOWN and never starts a mass fetch."""
+                     known_missing: Mapping[str, str] | None = None,
+                     watermark_mode: str = "window") -> CoverageResult:
+    """Read TD watermarks; an outage stays UNKNOWN and never starts a mass fetch."""
     from ..data_pipeline.td_sink import TdUnavailable
+    if watermark_mode not in {"window", "full"}:
+        raise ValueError("invalid_watermark_mode:" + watermark_mode)
     if primary is None:
         return CoverageResult({day: DayCoverage(day, UNKNOWN, "unknown", reason="td_not_configured")
                                for day in dates}, "unknown", "td_not_configured")
     try:
-        watermarks = primary.latest_watermarks() if isinstance(primary, TdCoverageSource) else {}
+        symbol_gaps: dict[str, list[str]] = {}
+        watermarks: dict[str, str] = {}
+        if isinstance(primary, TdCoverageSource):
+            if watermark_mode == "window" and callable(getattr(primary.store, "window_watermarks", None)):
+                target = max(dates, default="")
+                window = sorted({day for day in trading_dates if day <= target})[-max(1, int(history_min_trading_days)):]
+                watermarks, symbol_gaps = primary.window_watermarks(window)
+            else:
+                watermarks = primary.latest_watermarks()
         days = (primary.coverage(dates, watermarks, known_missing)
                 if isinstance(primary, TdCoverageSource) else primary.coverage(dates))
         plan = (build_gap_fill_plan(watermarks, max(dates, default=""), trading_dates,
-                                    history_min_trading_days, day_states=days)
+                                    history_min_trading_days, day_states=days, symbol_gap_dates=symbol_gaps)
                 if dates else [])
         return CoverageResult(days, primary.origin, watermarks=watermarks, gap_fill_plan=plan)
     except TdUnavailable as exc:

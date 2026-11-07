@@ -275,6 +275,8 @@ class TdStore(Protocol):
     def read_day_rows(self, trade_date: str, symbols: Sequence[str] | None = None) -> dict[str, dict[str, Any]]: ...
     def day_counts(self, dates: Sequence[str]) -> dict[str, int]: ...
     def latest_watermarks(self) -> dict[str, str]: ...
+    def symbols_on_day(self, day: str) -> set[str]: ...
+    def window_watermarks(self, days: Sequence[str]) -> tuple[dict[str, str], dict[str, list[str]]]: ...
     def close(self) -> None: ...
 
 
@@ -549,6 +551,29 @@ class TaosStore:
             if day in out:
                 out[day] = int(count or 0)
         return out
+
+    def symbols_on_day(self, day: str) -> set[str]:
+        _check_date(day)
+        rows = self._run(f"SELECT symbol FROM {self.database}.{SUPER_TABLE} "
+                         f"WHERE ts = {trade_day_ts_us(day)}", missing_ok=True)
+        return {str(row[0]) for row in rows}
+
+    def window_watermarks(self, days: Sequence[str]) -> tuple[dict[str, str], dict[str, list[str]]]:
+        """Read each trading day once; report only absences between observed bars."""
+        ordered = list(days)
+        by_day = {day: self.symbols_on_day(day) for day in reversed(ordered)}
+        watermarks: dict[str, str] = {}
+        first: dict[str, int] = {}
+        last: dict[str, int] = {}
+        for index, day in enumerate(ordered):
+            for symbol in by_day[day]:
+                first.setdefault(symbol, index)
+                last[symbol] = index
+                watermarks[symbol] = day
+        gaps = {symbol: missing for symbol in watermarks
+                if (missing := [ordered[index] for index in range(first[symbol] + 1, last[symbol])
+                                if symbol not in by_day[ordered[index]]])}
+        return watermarks, gaps
 
     def latest_watermarks(self) -> dict[str, str]:
         """Fetch every symbol's latest daily-bar date in one stable-level aggregation."""
