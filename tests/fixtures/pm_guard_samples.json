@@ -1,0 +1,48 @@
+{
+ "_doc": "C732 spec: commands/paths observed or required in the 2026-11-07 PM session. allow = must pass pm_guard.decide; deny = must be rejected (reason names the rule). VENV=/home/exedev/services/engine-next/shared/venv/bin/python, REPO=/home/exedev/repos/engine_core, FW=/home/exedev/fw",
+ "bash_allow": [
+  "cd /home/exedev/fw && python3 bin/ops_state",
+  "cd /home/exedev/repos/engine_core && TMPDIR=/tmp /home/exedev/services/engine-next/shared/venv/bin/python examples/release.py merge --branch C1-x --card C1 > $CLAUDE_JOB_DIR/tmp/m.out 2>&1; echo exit=$?; tail -2 $CLAUDE_JOB_DIR/tmp/m.out",
+  "cd /home/exedev/repos/engine_core && TMPDIR=/tmp /home/exedev/services/engine-next/shared/venv/bin/python examples/release.py errors add --kind process --note \"role drift: captured data instead of dispatching a runner card\" --impact \"PM time\"",
+  "cd /home/exedev/fw && bin/runcard C731 2>&1 | head -8",
+  "cd /home/exedev/fw && bin/card_callback --ack C730",
+  "cd /home/exedev/fw && bin/preflight_card cards/C731.md; echo preflight=$?",
+  "cd /home/exedev/repos/engine_core && git worktree add -b C9-x /home/exedev/repos/engine_core-wt-C9 4406757",
+  "git -C /home/exedev/repos/engine_core log --oneline -3",
+  "grep -n \"def \" /home/exedev/repos/engine_core/src/engine_core/auction_baseline.py | head",
+  "cd /home/exedev/repos/engine_core && TMPDIR=/tmp /home/exedev/services/engine-next/shared/venv/bin/python examples/audit_card.py --card C730 --branch C730-x --base 8cf4e07 --repo /home/exedev/repos/engine_core",
+  "mkdir -p /home/exedev/validation/realdata/x/work",
+  "python3 /home/exedev/fw/bin/ops_state --inline \"reason\"",
+  "python3 /home/exedev/fw/bin/ops_state --board",
+  "ls /home/exedev/fw/cards | tail -3",
+  "sed -n 1,40p /home/exedev/fw/design/35-PM-MODE.md"
+ ],
+ "bash_deny": [
+  "TD_CONFIG=/home/exedev/validation/operator-runs/taos-cfg REDIS_URL=redis://127.0.0.1:6380/0 timeout 300 /home/exedev/services/engine-next/shared/venv/bin/python /home/exedev/.claude/jobs/8015506a/tmp/real_ab.py",
+  "python3 - <<'E'\nimport taos\nE",
+  "redis-cli -p 6380 get x",
+  "/home/exedev/services/engine-next/shared/venv/bin/python examples/run_function.py --date 2026-10-23 --event x",
+  "/home/exedev/services/engine-next/shared/venv/bin/python examples/build_auction_baseline.py --date 2026-11-06 --write",
+  "/home/exedev/services/engine-next/shared/venv/bin/python examples/rehearse_event.py --event premarket_slice_0850",
+  "sed -i 's/ready/DONE/' /home/exedev/fw/cards/C722.md",
+  "cat >> /home/exedev/fw/design/34.md <<'EOF'\nx\nEOF",
+  "cp a.py /home/exedev/repos/engine_core/src/x.py",
+  "curl https://example.com/api",
+  "git push",
+  "git reset --hard HEAD~1",
+  "rm -rf /home/exedev/validation/x",
+  "kill -TERM 123",
+  "python3 -c \"import sys; sys.path.insert(0,'/home/exedev/repos/engine_core/src'); from engine_core import auction_baseline\""
+ ],
+ "file_allow": [
+  "/home/exedev/fw/cards/C740.md",
+  "/home/exedev/fw/design/35-PM-MODE.md",
+  "/home/exedev/fw/FUNCTION-SHEET.md",
+  "/home/exedev/.claude/projects/-home-exedev-repos/memory/x.md"
+ ],
+ "file_deny": [
+  "/home/exedev/repos/engine_core/examples/x.py",
+  "/home/exedev/.claude/jobs/8015506a/tmp/x.py",
+  "/home/exedev/fw/bin/role_guard"
+ ]
+}
