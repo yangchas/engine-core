@@ -103,3 +103,67 @@ def test_replace_and_failure_invalidate_marker():
     store.fail_read = True
     with pytest.raises(RuntimeError, match='read failed'):
         facts.read_days(['2026-11-05'], '0925')
+
+
+def test_run_resumes_after_resource_exhaustion(tmp_path):
+    from engine_core.data_pipeline.auction_amount_facts import run
+    from taos.error import ProgrammingError
+    amounts = {symbol: amount for _, symbol, day, _, amount in rows('td_inputs_auction.jsonl.gz') if day == '20261105'}
+    facts = AuctionAmountFacts(FakeStore())
+    calls = []
+    def reader(day, slot):
+        calls.append((day, slot))
+        if day == '2026-11-04':
+            raise ProgrammingError('[0x073a]: Query memory exhausted')
+        return amounts
+    code, reply = run({'days': ['2026-11-03', '2026-11-04', '2026-11-05'], 'max_days': 2}, tmp_path, reader=reader, store=facts)
+    assert code == 30 and reply['reason'] == 'TD_RESOURCE_EXHAUSTED'
+    assert facts.complete_days(['2026-11-05'], '0925') == {'2026-11-05'}
+    assert reply['detail']['completed'] == ['2026-11-05']
+    assert reply['detail']['remaining'] == ['2026-11-04', '2026-11-03']
+
+
+def test_run_latest_first_and_already_satisfied(tmp_path):
+    from engine_core.data_pipeline.auction_amount_facts import run
+    from engine_core.guardian.contract import check_reply
+    amounts = {symbol: amount for _, symbol, day, _, amount in rows('td_inputs_auction.jsonl.gz') if day == '20261105'}
+    facts = AuctionAmountFacts(FakeStore())
+    calls = []
+    def reader(day, slot):
+        calls.append((day, slot))
+        return amounts
+    days = ['2026-11-03', '2026-11-04', '2026-11-05']
+    code, reply = run({'days': days, 'max_days': 2}, tmp_path, reader=reader, store=facts)
+    assert code == 0 and not check_reply(code, reply)
+    assert calls == [(day, slot) for day in days[:0:-1] for slot in ('0925', '0945')]
+    assert reply['detail']['remaining'] == ['2026-11-03']
+    code, reply = run({'days': days[1:]}, tmp_path, reader=reader, store=facts)
+    assert code == 20 and not check_reply(code, reply)
+    assert len(calls) == 4
+
+
+def test_run_incomplete_real_tick_slice(tmp_path):
+    from engine_core.data_pipeline.auction_amount_facts import run
+    from engine_core.guardian.contract import check_reply
+    auction = {symbol: amount for _, symbol, day, _, amount in rows('td_inputs_auction.jsonl.gz') if day == '20261105'}
+    tick = {symbol: amount for _, symbol, amount in rows('td_inputs_0945.jsonl.gz')}
+    facts = AuctionAmountFacts(FakeStore())
+    code, reply = run({'days': ['2026-11-05']}, tmp_path, reader=lambda day, slot: auction if slot == '0925' else tick, store=facts)
+    assert code == 10 and not check_reply(code, reply)
+    assert reply['detail']['incomplete']['2026-11-05']['0945'] == len(tick) < 4000
+    assert facts.complete_days(['2026-11-05'], '0925') == {'2026-11-05'}
+    assert not facts.complete_days(['2026-11-05'], '0945')
+
+
+def test_run_expired_does_not_read_source(tmp_path):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from engine_core.data_pipeline.auction_amount_facts import run
+    from engine_core.guardian.contract import check_reply
+    day = (datetime.now(ZoneInfo('Asia/Shanghai')).date() - timedelta(days=61)).isoformat()
+    facts = AuctionAmountFacts(FakeStore())
+    def reader(day, slot):
+        raise AssertionError('expired source queried')
+    code, reply = run({'days': [day]}, tmp_path, reader=reader, store=facts)
+    assert code == 0 and not check_reply(code, reply)
+    assert reply['detail']['expired'] == [{'day': day, 'reason': 'SOURCE_EXPIRED'}]
