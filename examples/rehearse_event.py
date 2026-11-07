@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any, BinaryIO, Mapping
@@ -1195,6 +1195,7 @@ def _write_reports(root: Path, summary: dict[str, Any]) -> tuple[Path, Path]:
         f"# Guardian rehearsal: {summary.get('event', 'unknown')}",
         "",
         f"- Commit: `{summary.get('commit', 'UNKNOWN')}`",
+        f"- As-of date: `{summary.get('as_of_date') or 'none'}`",
         f"- Tracked event/instance ID: `{summary.get('temporary_event_id', 'UNKNOWN')}`",
         f"- Trigger: `{summary.get('trigger_at', 'UNKNOWN')}`; deadline: `{summary.get('deadline_at', 'UNKNOWN')}`",
         f"- Final status: `{state.get('status', 'NO_STATE')}`; last error: `{state.get('last_error', '') or 'none'}`",
@@ -1224,6 +1225,7 @@ def _write_reports(root: Path, summary: dict[str, Any]) -> tuple[Path, Path]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--event", required=True, help="event_id from the archived schedule.json")
+    parser.add_argument("--as-of-date", help="historical trading date to rehearse (YYYY-MM-DD)")
     parser.add_argument("--data-date", help="target partition date when --event is fetch_item:<id>")
     parser.add_argument("--minutes", type=int, default=3, help="trigger lead time; default 3 minutes")
     parser.add_argument("--commit", default="HEAD", help="git commit to archive; default HEAD")
@@ -1261,6 +1263,39 @@ def parse_event_args(value: str | None) -> dict[str, Any]:
     return parsed
 
 
+def resolve_as_of_date(value: str | None, today: date, trade_dates: list[str]) -> str:
+    if value is None:
+        return today.isoformat()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise ValueError("as_of_date_must_be_YYYY-MM-DD")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        raise ValueError("as_of_date_must_be_YYYY-MM-DD") from None
+    if parsed >= today:
+        raise ValueError("as_of_date_must_be_before_today")
+    if value not in trade_dates:
+        raise ValueError("as_of_date_must_be_a_trading_date")
+    return value
+
+
+def advance_rehearsal_clock(state_root: Path, seconds: int) -> None:
+    request = {"t": "req", "id": "rehearsal-advance", "op": "clock.advance",
+               "args": {"seconds": seconds}}
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(3)
+        client.connect(str(state_root / "guardiand.sock"))
+        client.sendall((json.dumps(request) + "\n").encode())
+        response = bytearray()
+        while b"\n" not in response:
+            chunk = client.recv(4096)
+            if not chunk:
+                raise RuntimeError("fakeclock_socket_closed")
+            response.extend(chunk)
+    if json.loads(bytes(response).splitlines()[0]).get("ok") is not True:
+        raise RuntimeError("fakeclock_advance_failed")
+
+
 def run_rehearsal(args: argparse.Namespace) -> int:
     disk_free_before = _require_disk_headroom()
     root = Path(tempfile.mkdtemp(prefix="rh", dir="/tmp"))
@@ -1286,13 +1321,14 @@ def run_rehearsal(args: argparse.Namespace) -> int:
     td_before: dict[str, Any] | None = None
     td_config = os.environ.get("TD_CONFIG") or DEFAULT_TD_CONFIG
     td_database = _validate_td_database(args.td_database)
-    today = datetime.now(TZ).date().isoformat()
+    wall_today = datetime.now(TZ).date()
+    today = wall_today.isoformat()
     summary: dict[str, Any] = {
         "event": args.event, "with_events": [item for group in args.with_events for item in group],
         "isolated_target_dependencies": bool(args.isolate_target),
         "root": str(root), "state_root": str(state_root), "state_root_chars": len(str(state_root)),
         "temporary_directory_retained": True, "keep_flag": bool(args.keep), "td_database": td_database,
-        "trade_date": today, "started_at": datetime.now(TZ).isoformat(timespec="seconds"),
+        "trade_date": today, "as_of_date": args.as_of_date, "started_at": datetime.now(TZ).isoformat(timespec="seconds"),
         "root_free_bytes_before": disk_free_before,
         "safety_checks": [], "event_ledger_rows": [], "stderr_tail": [],
     }
@@ -1322,6 +1358,14 @@ def run_rehearsal(args: argparse.Namespace) -> int:
         staged_data = stage_core_data(LIVE_DATA_ROOT, data_root)
         summary["staged_data"] = staged_data
         summary["core_data_bytes"] = staged_data["bytes"]
+        if args.as_of_date is not None:
+            trade_dates = json.loads((data_root / "trade_dates.json").read_text(encoding="utf-8"))
+            if isinstance(trade_dates, dict):
+                trade_dates = trade_dates.get("trading_dates")
+            if not isinstance(trade_dates, list) or not all(isinstance(day, str) for day in trade_dates):
+                raise ValueError("invalid_trade_dates_metadata")
+            today = resolve_as_of_date(args.as_of_date, wall_today, trade_dates)
+            summary["trade_date"] = today
         home_root.mkdir()
         (home_root / "core-data").symlink_to(data_root, target_is_directory=True)
 
@@ -1345,6 +1389,10 @@ def run_rehearsal(args: argparse.Namespace) -> int:
             summary["data_date"] = target_data_date
         now = datetime.now(TZ)
         trigger = now + timedelta(minutes=args.minutes)
+        if args.as_of_date is not None:
+            trigger = trigger.replace(year=int(today[:4]), month=int(today[5:7]), day=int(today[8:10]))
+            if (trigger - timedelta(minutes=1)).date() != trigger.date():
+                raise ValueError("as_of_date_trigger_too_close_to_midnight")
         trigger_at = trigger.isoformat(timespec="seconds")
         deadline_at = (trigger + timedelta(minutes=args.window_minutes)).isoformat(timespec="seconds")
         event_args_overrides = parse_event_args(args.event_args_json)
@@ -1390,7 +1438,7 @@ def run_rehearsal(args: argparse.Namespace) -> int:
         child_env = _minimal_child_environment(data_root, home_root, archive_root, td_config, td_database, proxy.url)
         summary["email_self_env"] = child_env["GUARDIAN_EMAIL_SELF"]
 
-        live_ledger_path = LIVE_DATA_ROOT / "guardian-native/state/ledger" / f"{today}.jsonl"
+        live_ledger_path = LIVE_DATA_ROOT / "guardian-native/state/ledger" / f"{wall_today.isoformat()}.jsonl"
         live_ledger_before = _read_ledger(live_ledger_path)
         live_catalog_sha_before = _sha256_file(live_catalog_path)
         live_catalog_snapshot_before = catalog_snapshot(live_catalog_path)
@@ -1403,12 +1451,19 @@ def run_rehearsal(args: argparse.Namespace) -> int:
         stderr_stream = stderr_path.open("wb")
         command = [str(binary), "run", "--config", config_result["config_path"], "--state-root", str(state_root),
                    "--mode", "live"]
+        if args.as_of_date is not None:
+            command[-1] = "fakeclock"
+            command.extend(["--clock-start", (trigger - timedelta(minutes=1)).isoformat(timespec="seconds")])
         summary["runtime_command"] = command
         proc = subprocess.Popen(command, cwd=str(archive_root), env=child_env, stdout=subprocess.DEVNULL,
                                 stderr=stderr_stream, start_new_session=True)
         local_ledger = state_root / "ledger" / f"{today}.jsonl"
         wait_until = time.monotonic() + max(1, args.timeout_minutes) * 60
         final_state: dict[str, Any] = {}
+        # Start one simulated minute before the trigger, then advance in real time
+        # after the requested wall-clock lead time so retries and deadlines progress.
+        fake_trigger_at = time.monotonic() + max(0, (now + timedelta(minutes=args.minutes) - datetime.now(TZ)).total_seconds())
+        fake_advanced = 0
         while time.monotonic() < wait_until:
             temp_bytes = _tree_size_bytes(root)
             summary["temporary_directory_bytes_peak"] = max(
@@ -1422,6 +1477,11 @@ def run_rehearsal(args: argparse.Namespace) -> int:
             if proc.poll() is not None:
                 summary["process_exit_before_terminal"] = proc.returncode
                 break
+            if args.as_of_date is not None and time.monotonic() >= fake_trigger_at:
+                target_advance = 60 + int(time.monotonic() - fake_trigger_at)
+                if target_advance > fake_advanced:
+                    advance_rehearsal_clock(state_root, target_advance - fake_advanced)
+                    fake_advanced = target_advance
             rows, final_state = _ledger_event_rows(_read_ledger(local_ledger), tracked_event_id,
                                                   tracked_instance_ids)
             if final_state.get("status") in TERMINAL_STATES:
