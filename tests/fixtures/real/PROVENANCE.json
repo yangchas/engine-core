@@ -2109,5 +2109,25 @@
    "capture_command": "/home/exedev/validation/realdata/plate_amount_baseline_20261106/capture_inputs.py",
    "note": "Only successful SELECTs observed before CLI failure; 0945 inputs are incomplete and must not be used as a full-window fixture"
   }
+ },
+ "_c778_excerpts": {
+  "auction_amount_facts_c731/td_inputs_auction.jsonl.gz": {
+   "source_path": "/home/exedev/validation/realdata/plate_amount_baseline_20261106/td_inputs_auction.jsonl.gz",
+   "source_sha256": "98363f4ce851532d7e24171778f3cd167bee5bcf0630c9f0578f987f403ac853",
+   "sha256": "d04d55a0c18596b52f764ba72f578e83c7dd058858ab441b53c5770e3f40947c",
+   "rows": 15671,
+   "selection": "trade_date 20261103, 20261104, 20261105",
+   "command": "python - <<'PY'\nimport gzip,json,hashlib,pathlib\nroot=pathlib.Path('tests/fixtures/real'); out=root/'auction_amount_facts_c731'; src=pathlib.Path('/home/exedev/validation/realdata/plate_amount_baseline_20261106'); prov=json.loads((root/'PROVENANCE.json').read_text()); entries={}\nfor filename in ('td_inputs_auction.jsonl.gz','td_inputs_0945.jsonl.gz'):\n with gzip.open(src/filename,'rt') as f: lines=[line for line in f if (json.loads(line)[2] in ('20261103','20261104','20261105') if 'auction' in filename else json.loads(line)[0].endswith('09:30:01'))]\n dest=out/filename\n with dest.open('wb') as raw:\n  with gzip.GzipFile(filename='',mode='wb',fileobj=raw,mtime=0) as z: z.write(''.join(lines).encode())\n entries[str(dest.relative_to(root))]={'source_path':str(src/filename),'source_sha256':hashlib.sha256((src/filename).read_bytes()).hexdigest(),'sha256':hashlib.sha256(dest.read_bytes()).hexdigest(),'rows':len(lines),'selection':'trade_date 20261103, 20261104, 20261105' if 'auction' in filename else '_wstart 2026-09-18 09:30:01','command':\"python gzip JSONL filter: \"+(\"row[2] in {20261103,20261104,20261105}\" if 'auction' in filename else \"row[0] == 2026-09-18 09:30:01\"),'source':'C731 TD read-only capture'}\nprov['_c778_excerpts']=entries\n(root/'PROVENANCE.json').write_text(json.dumps(prov,ensure_ascii=False,indent=1)+'\\n')\nprint([(x,y['rows']) for x,y in entries.items()])\nPY",
+   "source": "C731 TD read-only capture"
+  },
+  "auction_amount_facts_c731/td_inputs_0945.jsonl.gz": {
+   "source_path": "/home/exedev/validation/realdata/plate_amount_baseline_20261106/td_inputs_0945.jsonl.gz",
+   "source_sha256": "65fba7a33a2cbd836c53e821aa7d2d03beb85181709c63b18e548b69c14ce4ef",
+   "sha256": "65b8546776a36c3861526ec046c6d347c85b3281bd705b4e1232823b9cc599f4",
+   "rows": 2898,
+   "selection": "_wstart 2026-09-18 09:30:01",
+   "command": "python - <<'PY'\nimport gzip,json,hashlib,pathlib\nroot=pathlib.Path('tests/fixtures/real'); out=root/'auction_amount_facts_c731'; src=pathlib.Path('/home/exedev/validation/realdata/plate_amount_baseline_20261106'); prov=json.loads((root/'PROVENANCE.json').read_text()); entries={}\nfor filename in ('td_inputs_auction.jsonl.gz','td_inputs_0945.jsonl.gz'):\n with gzip.open(src/filename,'rt') as f: lines=[line for line in f if (json.loads(line)[2] in ('20261103','20261104','20261105') if 'auction' in filename else json.loads(line)[0].endswith('09:30:01'))]\n dest=out/filename\n with dest.open('wb') as raw:\n  with gzip.GzipFile(filename='',mode='wb',fileobj=raw,mtime=0) as z: z.write(''.join(lines).encode())\n entries[str(dest.relative_to(root))]={'source_path':str(src/filename),'source_sha256':hashlib.sha256((src/filename).read_bytes()).hexdigest(),'sha256':hashlib.sha256(dest.read_bytes()).hexdigest(),'rows':len(lines),'selection':'trade_date 20261103, 20261104, 20261105' if 'auction' in filename else '_wstart 2026-09-18 09:30:01','command':\"python gzip JSONL filter: \"+(\"row[2] in {20261103,20261104,20261105}\" if 'auction' in filename else \"row[0] == 2026-09-18 09:30:01\"),'source':'C731 TD read-only capture'}\nprov['_c778_excerpts']=entries\n(root/'PROVENANCE.json').write_text(json.dumps(prov,ensure_ascii=False,indent=1)+'\\n')\nprint([(x,y['rows']) for x,y in entries.items()])\nPY",
+   "source": "C731 TD read-only capture"
+  }
  }
 }
