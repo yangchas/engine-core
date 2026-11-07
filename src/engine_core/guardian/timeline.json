@@ -548,6 +548,22 @@
           "until": "late_until"
         }
       ]
+    },
+    "policy_12": {
+      "catchup": "run_in_window",
+      "retry_backoff": "",
+      "retry_until_late": false,
+      "silent_until_last": false,
+      "ladder": [
+        {
+          "name": "legacy",
+          "attempts": 1,
+          "backoff": "",
+          "backoff_cap": "5m",
+          "timeout": "540s",
+          "budget_enabled": false
+        }
+      ]
     }
   },
   "functions": {
@@ -1871,6 +1887,30 @@
       "data_date_offset": 0,
       "catchup_mode": "skip",
       "deadline_after_seconds": 120
+    },
+    "plate_amount_baseline": {
+      "after": [],
+      "args": {
+        "item_id": "plate_amount_baseline"
+      },
+      "available_after": null,
+      "calendar": "trading_day",
+      "cost": "medium",
+      "data_date_offset": 0,
+      "depends_on": [],
+      "enabled": true,
+      "gate": "calendar_ready",
+      "handler": "fetch_item",
+      "late_until": "08:25:00",
+      "on_deadline": "degrade",
+      "on_phase_mismatch": "defer",
+      "order": null,
+      "phases": [
+        "NIGHT",
+        "PRE_MARKET"
+      ],
+      "trigger_type": "window",
+      "policy": "policy_12"
     }
   },
   "timeline": [
@@ -1990,6 +2030,11 @@
           "fn": "hot_plates_history",
           "id": "hot_plates_history_0815",
           "deadline": "08:30:00"
+        },
+        {
+          "fn": "plate_amount_baseline",
+          "id": "plate_amount_baseline_0815",
+          "deadline": "08:25:00"
         }
       ]
     },
@@ -3019,6 +3064,7 @@
     "d1_refs_0045",
     "limit_reasons_d1",
     "hot_plates_history_0815",
+    "plate_amount_baseline_0815",
     "preopen_check_0835",
     "chain_sweep_1830",
     "chain_sweep_2030",

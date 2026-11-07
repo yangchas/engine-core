@@ -1,3 +1,4 @@
+# DATA: spec (guardian timeline/schedule config)
 """CT-01 (design/29 §5): where a dataset lives is declared once in the registry; checks and readers follow the declaration."""
 import copy
 import json
@@ -108,3 +109,12 @@ def test_every_dataset_a_postcondition_checks_is_stored_where_the_check_looks():
             continue
         assert any(loc["kind"] == "catalog" and loc["role"] in ("authority", "marker") for loc in locations), (
             f"{dataset}: the postcondition reads catalog partitions but the declaration has none that are current")
+
+
+def test_plate_amount_baseline_registry_matches_scheduled_event():
+    schedule = json.loads((Path(__file__).resolve().parents[1] / "src/engine_core/guardian/schedule.json").read_text())
+    item = next(item for item in REGISTRY if item["id"] == "plate_amount_baseline")
+    event = next(event for event in schedule["events"] if event["event_id"] == item["guardian_event"])
+    assert event["event_id"] == item["late_policy"]["trigger_event"] == "plate_amount_baseline_0815"
+    assert event["args"]["item_id"] == item["id"] and event["phases"] == item["phases"]
+    assert "DATE_FALLBACK" in item["degrade"][0] and "PARTIAL" in item["degrade"][0]

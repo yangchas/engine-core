@@ -337,7 +337,7 @@ def _run_event(request):
             _send_load_defer_alert(request, result, dry)
             _send_td_coverage_alert(request, result, dry)
         else:
-            result = fetch_item(str(request.get("item_id") or ""), str(request.get("data_date") or trade_date),
+            result = fetch_item(str(request.get("item_id") or args.get("item_id") or ""), str(request.get("data_date") or trade_date),
                                 root, dry_run=dry, now=now,
                                 phase=str(request.get("phase") or "") or None,
                                 schedule_args=args)

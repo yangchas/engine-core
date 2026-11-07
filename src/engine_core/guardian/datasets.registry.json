@@ -1581,6 +1581,7 @@
         "date_basis": "target trade_date D"
       },
       "phases": [
+        "NIGHT",
         "PRE_MARKET"
       ],
       "cadence": "每日盘前构建",
@@ -1591,15 +1592,17 @@
         "basis": "trading_day",
         "set_by": "claude 2026-10-20 default; adjust after data-operator confirmation"
       },
-      "retry": "per guardian_event (until_late/backoff, see C350)",
-      "degrade": [],
+      "retry": "event=plate_amount_baseline_0815 policy=policy_12 attempts=1 timeout=540s no backoff",
+      "degrade": [
+        "读取遵循 slices/__init__.py：沿用不晚于请求日期且 available_at ≤ asof 的最新合格版本 DATE_FALLBACK，标 PARTIAL"
+      ],
       "lifecycle": {
         "init": "rebuild from retained source/artifacts",
         "force": "recompute",
         "clear": "clear then rebuild"
       },
-      "notes": "Catalog contains this dataset. Exact freshness cutoff and retry behavior UNKNOWN; ask data operator/guardian owner.",
-      "guardian_event": "premarket_slice_0850",
+      "notes": "Independent premarket event; date fallback is applied by the slice reader.",
+      "guardian_event": "plate_amount_baseline_0815",
       "late_policy": {
         "mode": "fetch_now",
         "valid_until": null,
@@ -1607,7 +1610,7 @@
           "daily_kline"
         ],
         "set_by": "claude 2026-10-20 default; auction_* rebuild assumes TD keeps auction_snapshot_v2 rows (retention UNVERIFIED)",
-        "trigger_event": "premarket_slice_0850"
+        "trigger_event": "plate_amount_baseline_0815"
       },
       "cost": {
         "class": "light",
