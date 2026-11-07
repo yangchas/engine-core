@@ -827,3 +827,50 @@ def test_only_the_post_close_backfill_event_gets_the_twelve_hour_budget():
     # 6 attempts with exponential backoff (C695: a 30 m cap per wait), then give up on this time point; 12 h per attempt.
     assert (tier["attempts"], tier["backoff"], tier["timeout"], tier["budget_enabled"]) == (6, "5m*2", "12h", False)
     assert "until" not in tier
+
+
+def test_gapfill_window_and_full_watermark_modes_with_real_symbols(tmp_path):
+    import gzip
+    from pathlib import Path
+    from engine_core.data_pipeline.daily_kline_gapfill import run_td_daily_kline_gapfill
+    from engine_core.data_pipeline.td_sink import MemoryTdStore, TaosStore
+
+    fixture = Path(__file__).parent / "fixtures" / "real" / "daily_kline_c756" / "td_symbols_by_day.jsonl.gz"
+    with gzip.open(fixture, "rt", encoding="utf-8") as handle:
+        records = [json.loads(line) for line in handle][-3:]
+    by_day = {record["date"]: set(record["symbols"]) for record in records}
+    days = sorted(by_day)
+    calendar = tmp_path / "trade_calendar" / "calendar.json"
+    calendar.parent.mkdir(parents=True)
+    calendar.write_text(json.dumps({"schema": "CoreTradeCalendarMatrixV1", "lit_from": days[0],
+                                    "lit_to": days[-1], "days": [{"d": day, "t": 1} for day in days]}))
+
+    class Store(MemoryTdStore):
+        window_watermarks = TaosStore.window_watermarks
+        def __init__(self):
+            super().__init__()
+            self.queried = []
+            self.full_calls = 0
+            self.allow_full = False
+        def symbols_on_day(self, day):
+            self.queried.append(day)
+            return by_day[day]
+        def latest_watermarks(self):
+            assert self.allow_full, "unexpected full-table watermark query"
+            self.full_calls += 1
+            return {}
+
+    store = Store()
+    _, rows = load_real("formal")
+    row = next(row for row in rows if row["symbol"] in set.intersection(*by_day.values()))
+    for day in days:
+        _seed_td_day(store, day, [{**row, "date": day}])
+    _seed_real_symbol_universe(tmp_path, days[0], [row["symbol"]])
+    kwargs = dict(store=store, history_min_trading_days=len(days), client=object(), only_source_empty=True,
+                  completion_policy={"formal_coverage_threshold": 0.98, "source_empty_max": 0})
+    run_td_daily_kline_gapfill(tmp_path, days[-1], **kwargs)
+    assert len(store.queried) <= len(days)
+    assert set(store.queried) == set(days)
+    store.allow_full = True
+    run_td_daily_kline_gapfill(tmp_path, days[-1], watermark_mode="full", **kwargs)
+    assert store.full_calls == 1

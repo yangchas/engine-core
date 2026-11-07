@@ -12,7 +12,7 @@ from typing import Any, Callable, Mapping, Sequence
 from ..errors import CoreError
 from .published_daily_kline import find_published_baostock_manifest
 from .td_sink import (BAOSTOCK_PROGRESS_VERSION, DailyKlineTdSink, has_baostock_date_evidence, map_rows,
-                      pick_best)
+                      pick_best, read_watermarks)
 
 MIN_FORMAL_COVERAGE = 0.98  # the floor hard-coded in registry.daily_kline.classify_daily_kline
 _MANIFEST = {"provider": "baostock", "source": "baostock", "field_units": {"volume": "shares"}}
@@ -47,7 +47,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
                          no_progress_timeout_seconds: float = 300.0,
                          on_complete: Callable[[dict[str, Any]], None] | None = None,
                          needs_publish: Callable[[str], bool] | None = None,
-                         clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+                         clock: Callable[[], float] = time.monotonic, watermark_mode: str = "window") -> dict[str, Any]:
     if not 0 < coverage_threshold <= 1:
         raise ValueError("coverage_threshold_must_be_in_0_1")
     sessions = sorted(day for day in trading_dates if day <= target)
@@ -67,7 +67,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
         if not store.schema_exists():
             store.ensure_schema()
         sink = DailyKlineTdSink(store, ".")
-        watermarks = store.latest_watermarks()
+        watermarks = read_watermarks(store, days, watermark_mode)
         expected = {day: set(expected_symbols(day)) for day in days}
         present: dict[str, set[str]] = {}
         work: list[str] = []
