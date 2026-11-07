@@ -112,14 +112,21 @@ def _bash(command, env):
             i += 1
         while args and ASSIGN.match(args[0]):
             args.pop(0)
+        unset_vars = set()
         while args and args[0] in ('env', 'timeout'):
             wrapper = args.pop(0)
             if wrapper == 'timeout':
                 if not args or not re.fullmatch(r'\d+(?:\.\d+)?[smhd]?', args.pop(0)):
                     return False, 'wrapper: invalid timeout'
             else:
-                while args and ASSIGN.match(args[0]):
-                    args.pop(0)
+                while args and (args[0] == '-u' or ASSIGN.match(args[0])):
+                    if args[0] == '-u':
+                        args.pop(0)
+                        if not args or not re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*', args[0]):
+                            return False, 'wrapper: invalid env unset'
+                        unset_vars.add(args.pop(0))
+                    else:
+                        args.pop(0)
         if not args:
             return False, 'parse: missing command'
         cmd, rest = args[0], args[1:]
@@ -134,6 +141,11 @@ def _bash(command, env):
             # find and similar tools may execute commands or write files.
             if cmd == 'find' and any(x in rest for x in ('-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprint0', '-fprintf', '-fls')):
                 return False, 'find_action: unsafe action'
+        elif cmd in ('cut', 'sort', 'uniq', 'tr'):
+            if cmd == 'sort' and any((x.startswith('-') and not x.startswith('--') and 'o' in x[1:]) or x.startswith('--o') or x.startswith('--c') for x in rest):
+                return False, 'sort: output or execution not allowed'
+            if cmd == 'uniq' and ('--' in rest or sum(not x.startswith('-') for x in rest) > 1):
+                return False, 'uniq: output not allowed'
         elif cmd == 'sed':
             if any(x.startswith('-i') or x.startswith('--in-place') for x in rest):
                 return False, 'sed_in_place: forbidden'
@@ -156,6 +168,11 @@ def _bash(command, env):
         elif name in ('python', 'python3') and (cmd == 'python3' or (cmd.startswith('/') and '/bin/python' in cmd)):
             if not rest:
                 return False, 'python_script: missing script'
+            if (cmd in ('python3', '/home/exedev/services/engine-next/shared/venv/bin/python')
+                    and rest[:2] == ['-m', 'pytest']
+                    and {'TD_CONFIG', 'REDIS_URL'} <= unset_vars
+                    and not any(x == '--live' or x.startswith('--live=') for x in rest[2:])):
+                continue
             script = rest[0]
             if script in ('-c', '-'):
                 text = ' '.join(rest[1:] + bodies)
