@@ -833,6 +833,9 @@
       "on_phase_mismatch": "defer",
       "profile": "policy_06",
       "args": {
+        "prep_degradable_steps": [
+          "plate_amount_baseline"
+        ],
         "theme_deps": {
           "wait_seconds": 180,
           "poll_seconds": 30,
@@ -1252,6 +1255,9 @@
       "on_phase_mismatch": "defer",
       "profile": "policy_06",
       "args": {
+        "prep_degradable_steps": [
+          "plate_amount_baseline"
+        ],
         "theme_deps": {
           "wait_seconds": 180,
           "poll_seconds": 30,
@@ -1379,6 +1385,9 @@
       "on_phase_mismatch": "defer",
       "profile": "policy_06",
       "args": {
+        "prep_degradable_steps": [
+          "plate_amount_baseline"
+        ],
         "theme_deps": {
           "wait_seconds": 180,
           "poll_seconds": 30,

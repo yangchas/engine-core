@@ -1,3 +1,4 @@
+# DATA: spec (guardian timeline/schedule config)
 import copy
 import json
 from pathlib import Path
@@ -152,3 +153,11 @@ def test_each_class_of_broken_timeline_is_rejected(break_it, expected):
     doc = _doc()
     break_it(doc)
     assert any(expected in problem for problem in validate_timeline(doc)), validate_timeline(doc)
+
+
+def test_premarket_prep_degradation_is_scoped_to_startup_and_slice():
+    events = {event["event_id"]: event for event in SCHEDULE["events"]}
+    for event_id in ("startup_0830", "startup_0900", "premarket_slice_0850"):
+        assert events[event_id]["args"]["prep_degradable_steps"] == ["plate_amount_baseline"]
+    for event_id in ("static_data_refresh_0850", "kaipan_refresh_0850"):
+        assert "prep_degradable_steps" not in events[event_id].get("args", {})
