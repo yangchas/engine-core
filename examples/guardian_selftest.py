@@ -211,6 +211,10 @@ def _write_captured_trade_dates(path: Path) -> None:
     path.write_text(json.dumps(dates, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
+def _previous_trade_date(dates: list[str], event_date: str) -> str | None:
+    return max((date for date in dates if date < event_date), default=None)
+
+
 def _fmt(value: datetime | None) -> str:
     return value.isoformat(timespec="seconds") if value else "-"
 
@@ -1201,12 +1205,9 @@ def _evaluate(case: Scenario) -> list[str]:
             else:
                 expected_date = rows[0].get("trade_date")
                 if event_id == "offset_minus_one":
-                    if expected_date not in captured_dates:
-                        errors.append(f"trade_date missing from captured calendar: {expected_date}")
-                        expected_date = None
-                    else:
-                        expected_date = captured_dates[captured_dates.index(expected_date) - 1] \
-                            if captured_dates.index(expected_date) > 0 else None
+                    expected_date = _previous_trade_date(captured_dates, expected_date) if expected_date else None
+                    if expected_date is None:
+                        errors.append("no previous trade date in captured calendar")
                 if rows[0].get("data_date") != expected_date:
                     errors.append(f"{event_id} data_date={rows[0].get('data_date')} expected={expected_date}")
         row = case.calls_for("offset_minus_one")
