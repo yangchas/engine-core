@@ -93,6 +93,70 @@ def test_readonly_redis_proxy_handles_client_setinfo_locally() -> None:
         proxy.close()
 
 
+
+def test_readonly_proxy_simulates_leases_without_upstream(monkeypatch) -> None:
+    import redis
+    from engine_core.data_pipeline.lease import RedisLease
+
+    received = []
+
+    class Upstream(rehearsal.socketserver.StreamRequestHandler):
+        def handle(self):
+            try:
+                while True:
+                    _, _, command = rehearsal._read_resp(self.rfile)
+                    received.append(command)
+                    self.wfile.write(b"$-1\r\n")
+                    self.wfile.flush()
+            except (EOFError, OSError):
+                pass
+
+    upstream = rehearsal.socketserver.ThreadingTCPServer(("127.0.0.1", 0), Upstream)
+    upstream.daemon_threads = True
+    thread = rehearsal.threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    proxy = rehearsal.ReadOnlyRedisProxy("redis://127.0.0.1:6380/0")
+    proxy._server.upstream_port = upstream.server_address[1]
+    clock = [100.0]
+    monkeypatch.setattr(rehearsal.time, "monotonic", lambda: clock[0])
+    client = redis.Redis.from_url(proxy.url, protocol=2)
+    key = "core:lease:fact:test"
+    try:
+        assert client.set(key, "owner", nx=True, px=1000)
+        assert client.set(key, "other", nx=True, px=1000) is None
+        other = RedisLease(client, key, owner="other", ttl_seconds=5)
+        other.held = True
+        other.release()
+        assert client.get(key) == b"owner"
+        owner = RedisLease(client, key, owner="owner", ttl_seconds=5)
+        owner.held = True
+        assert owner.renew()
+        owner.release()
+        assert client.set(key, "other", nx=True, px=1000)
+        clock[0] += 1.1
+        assert client.get(key) is None
+        assert client.set(key, "owner", nx=True, ex=5)
+        assert proxy.blocked_snapshot() == {}
+        assert received == []
+    finally:
+        client.close()
+        proxy.close()
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join()
+
+
+def test_readonly_proxy_blocks_non_simulated_writes() -> None:
+    proxy = rehearsal.ReadOnlyRedisProxy("redis://127.0.0.1:6380/0")
+    try:
+        command = [b"SET", b"core:other:x", b"value"]
+        assert proxy.execute_local(command) is None
+        assert not rehearsal._redis_command_allowed(command)
+        proxy.record_blocked("SET")
+        assert proxy.blocked_snapshot() == {"SET": 1}
+    finally:
+        proxy.close()
+
 def test_state_root_length_limit() -> None:
     rehearsal.validate_state_root_path(Path("/tmp/rh123abc/s"))
 
