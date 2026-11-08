@@ -13,30 +13,30 @@ def test_factor_for_event_boundaries():
     assert factor_for(events, '2000-01-01') == (None, 'BEFORE_FIRST_EVENT')
 
 
-def test_store_replaces_before_deleting_stale_dates():
+def test_store_snapshot_single_insert_roundtrip():
     from engine_core.data_pipeline.adjust_factor import AdjustFactorStore
     records = json.loads((Path(__file__).parent / 'fixtures/adjust_factor_c846/events.json').read_text())
     record = next(r for r in records if r['code'] == 'sh.600519')
     rows = [dict(zip(record['fields'], r)) for r in record['rows']]
-
     class TD:
         database = 'core_data'
-        def __init__(self):
-            self.sql = []
+        def __init__(self): self.sql = []
         def _run(self, sql, **kwargs):
             self.sql.append(sql)
-            if sql.startswith('SELECT'):
-                row = rows[0]
-                return [(row['dividOperateDate'], row['foreAdjustFactor'], row['backAdjustFactor'], row['adjustFactor'], '20260101000000-aaaaaaaa')]
             return []
     td = TD()
     store = AdjustFactorStore(td)
-    store.replace_snapshot('600519', rows[1:3], '20261108000000-bbbbbbbb')
+    store.replace_snapshot('600519', rows, '20261108000000-bbbbbbbb')
     writes = [s for s in td.sql if s.startswith(('INSERT', 'DELETE'))]
-    assert writes[0].startswith('INSERT')
-    assert writes[-1].startswith('DELETE')
-    assert rows[0]['dividOperateDate'] not in [r['dividOperateDate'] for r in rows[1:3]]
-
+    assert len(writes) == 1
+    assert 'events_json' in writes[0]
+    payload = writes[0].rsplit("'", 2)[1]
+    data = json.loads(payload)
+    assert [item['date'] for item in data] == sorted(row['dividOperateDate'] for row in rows)
+    td._run = lambda sql, **kwargs: [('20261108000000-bbbbbbbb', len(rows), __import__('engine_core.data_pipeline.adjust_factor', fromlist=['_snapshot_digest'])._snapshot_digest(rows), payload)]
+    actual, quality = store.read_events('600519')
+    assert quality == 'FORMAL'
+    assert [(x['dividOperateDate'], x['foreAdjustFactor']) for x in actual] == [(x['dividOperateDate'], x['foreAdjustFactor']) for x in sorted(rows, key=lambda x: x['dividOperateDate'])]
 
 def test_detect_suspected_real_adjacent_days():
     import gzip
@@ -49,6 +49,10 @@ def test_detect_suspected_real_adjacent_days():
     current = next(row for row in raw if row['code'] == '600519')
     assert detect_suspected({'600519': {'pre_close': current['前收盘价:不复权[20261026]']}},
                             {'600519': previous}) == set()
+    from decimal import Decimal
+    close = Decimal(str(previous['close']))
+    assert detect_suspected({'600519': {'pre_close': close * Decimal('1.000001')}}, {'600519': previous}) == set()
+    assert detect_suspected({'600519': {'pre_close': close * Decimal('1.0000011')}}, {'600519': previous}) == {'600519'}
 
 
 def test_incremental_keeps_completed_on_upstream_failure(monkeypatch):
@@ -109,7 +113,7 @@ def test_incremental_spacing_and_unchanged(monkeypatch):
                              store=store, fetcher=fetch, sleep=sleep, clock=lambda: now[0], lease_factory=lambda *_: Lease())
     assert code == 0
     assert times[1] - times[0] >= 1.0
-    assert store.writes == ['invalidate', '000001', '600519', 'marker']
+    assert store.writes == ['invalidate', 'marker']
     assert reply['detail']['unchanged'] == 2
     assert all(sample['old_sha256'] == sample['new_sha256'] for sample in reply['detail']['samples'])
 
@@ -120,13 +124,11 @@ def test_bootstrap_resumes_empty_and_completed():
     record = next(r for r in records if r['code'] == 'sh.600519')
     events = [dict(zip(record['fields'], row)) for row in record['rows']]
     class Store:
-        def __init__(self): self.states = {'000001': 'EMPTY'}; self.markers = []
+        def __init__(self): self.states = {'000001': []}; self.markers = []
         def ensure_schema(self): pass
         def listing_symbols(self, day): return {'000001', '600519'}, 'stock_listing'
-        def read_status(self, symbol): return {'state': self.states[symbol]} if symbol in self.states else None
-        def read_events(self, symbol): return [], 'NO_EVENTS'
-        def replace_snapshot(self, symbol, rows, version): pass
-        def write_status(self, symbol, state, version, count, processed): self.states[symbol] = state
+        def read_events(self, symbol): return (self.states[symbol], 'FORMAL' if self.states[symbol] else 'NO_EVENTS') if symbol in self.states else ([], 'UNPROCESSED')
+        def replace_snapshot(self, symbol, rows, version): self.states[symbol] = rows
         def invalidate_day_marker(self, day): pass
         def write_day_marker(self, *args): self.markers.append(args)
     class Lease:
@@ -140,5 +142,47 @@ def test_bootstrap_resumes_empty_and_completed():
                                  store=store, fetcher=fetch, lease_factory=lambda *_: Lease())
         assert code == 0
     assert calls == ['600519']
-    assert store.states['600519'] == 'OK'
+    assert store.states['600519'] == events
+    assert factor_for(store.states['000001'], '2026-11-06') == (None, 'NO_EVENTS')
     assert len(store.markers) == 2
+
+
+def test_many_batches_and_resource_sharding():
+    from engine_core.data_pipeline.adjust_factor import AdjustFactorStore, _snapshot_digest
+    from engine_core.data_pipeline.td_sink import TaosStore, TdResourceExhausted
+    records = json.loads((Path(__file__).parent / 'fixtures/adjust_factor_c846/events.json').read_text())
+    record = next(r for r in records if r['code'] == 'sh.600519')
+    rows = [dict(zip(record['fields'], r)) for r in record['rows']]
+    entries = [{'date': r['dividOperateDate'], 'fore': r['foreAdjustFactor'], 'back': r['backAdjustFactor'], 'adjust': r['adjustFactor']} for r in rows]
+    payload = json.dumps(entries)
+    class TD:
+        database = 'core_data'
+        _day_scan = TaosStore._day_scan
+        def __init__(self): self.calls = []; self.shard_events = []; self.failed = False
+        def _run(self, sql, **kwargs):
+            self.calls.append(sql)
+            if not self.failed:
+                self.failed = True
+                raise TdResourceExhausted('0x073a')
+            if "symbol >= '5'" in sql and "symbol < '7'" in sql:
+                return [('600519', '20261108000000-bbbbbbbb', len(rows), _snapshot_digest(rows), payload)]
+            return []
+    td = TD()
+    result = AdjustFactorStore(td).read_events_many([f'{n:06d}' for n in range(201)] + ['600519'])
+    assert result['600519'][1] == 'FORMAL'
+    assert td.shard_events == [{'segments': 4}]
+    assert len(td.calls) == 6
+
+
+def test_snapshot_rejects_oversize():
+    import pytest
+    from engine_core.data_pipeline.adjust_factor import AdjustFactorStore
+    records = json.loads((Path(__file__).parent / 'fixtures/adjust_factor_c846/events.json').read_text())
+    record = next(r for r in records if r['code'] == 'sh.600519')
+    rows = [dict(zip(record['fields'], r)) for r in record['rows']]
+    rows[0]['foreAdjustFactor'] += '0' * 60000
+    class TD:
+        database = 'core_data'
+        def _run(self, sql, **kwargs): raise AssertionError('unexpected TD access')
+    with pytest.raises(ValueError, match='exceeds_60000_bytes'):
+        AdjustFactorStore(TD()).replace_snapshot('600519', rows, '20261108000000-bbbbbbbb')

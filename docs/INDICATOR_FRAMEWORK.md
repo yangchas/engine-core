@@ -17,7 +17,7 @@ L0 是有来源、时点和版本的市场事实，不是策略结论；L1 是�
 
 ## §2 L0 事实清单
 
-以下每节的 1–11 顺序固定：名称、含义、获取方/接口、时点频率、增量/水位、TD/DDL、日标记、Redis、真实样例、代码、差距。字段来源以小节括号内来源统一标注，拟新增字段另注明。日标记设计复用 `daily_kline_versions` 的 `trade_date/version/business_status/row_count/sha256/available_at`（`td_sink.py:302`）；日K按 active_symbols 覆盖率≥0.995；0925 和 0945 分别有效标的≥4000（plate_amount_baseline.py 的 MIN_FINAL_SYMBOLS）；其余阈值 UNKNOWN-U1。停牌、退市、未上市、源空使用带原因白名单，不记零（DECISION-4）。日标记在数据写完、核对行数与摘要后最后发布；缺行或未知阈值不得标完整。所有拟新增表须单独经过 DDL 审批；下列 DDL 是设计文本，不是已执行事实。`ts` 为交易日上海时区零点转换的时间戳；事件事实以事件日为 ts。新增事实热视图键与 TTL UNKNOWN-U4，须逐事实设计；现行 daily_dde 键保持不变（DECISION-5）。数据修订不得覆盖已有可见版本：物理隔离方式见 UNKNOWN-U2。
+以下每节的 1–11 顺序固定：名称、含义、获取方/接口、时点频率、增量/水位、TD/DDL、日标记、Redis、真实样例、代码、差距。字段来源以小节括号内来源统一标注，拟新增字段另注明。日标记设计复用 `daily_kline_versions` 的 `trade_date/version/business_status/row_count/sha256/available_at`（`td_sink.py:302`）；日K按 active_symbols 覆盖率≥0.995；0925 和 0945 分别有效标的≥4000（plate_amount_baseline.py 的 MIN_FINAL_SYMBOLS）；其余阈值 UNKNOWN-U1。停牌、退市、未上市、源空使用带原因白名单，不记零（DECISION-4）。日标记在数据写完、核对行数与摘要后最后发布；缺行或未知阈值不得标完整。所有拟新增表须单独经过 DDL 审批；下列 DDL 是设计文本，不是已执行事实。`ts` 为交易日上海时区零点转换的时间戳；事件事实一般以事件日为 ts；adjust_factor 快照以处理时刻为 ts。新增事实热视图键与 TTL UNKNOWN-U4，须逐事实设计；现行 daily_dde 键保持不变（DECISION-5）。数据修订不得覆盖已有可见版本：物理隔离方式见 UNKNOWN-U2。
 
 ### 2.1 daily_kline（来源 C784；`src/engine_core/daily_history.py:23,536`；`src/engine_core/data_pipeline/td_sink.py:147,295`）
 
@@ -29,7 +29,7 @@ CREATE STABLE IF NOT EXISTS core_data.daily_kline_v1 (ts TIMESTAMP, open DOUBLE,
 
 ### 2.2 adjust_factor（来源 C784）
 
-1. `adjust_factor`。2. 除权事件因子快照。3. Baostock `query_adjust_factor`，响应 `code,dividOperateDate,foreAdjustFactor,backAdjustFactor,adjustFactor` 均字符串（C786）；获取方新增。4. 收盘后用 pre_close 与前一交易日 close 不等发现迹象并仅对疑似股拉取，阈值和误报 UNKNOWN。5. 整股快照版本替换，旧可见版本隔离见 U2。6. 目标 DDL 见 §2.9，原字符串以 Decimal 解析，存 DOUBLE 为设计选择，精度验收由实施卡验证（C786）。7. 日标记见 §2.9，完整性阈值 UNKNOWN-U1。8. 事实热视图键及 TTL UNKNOWN-U4。9. 600519 的 2025-06-26 foreAdjustFactor=0.960527，前一日所用旧因子 0.942063（C786）；完整事件行其他值 UNKNOWN-U5。10. 获取方新增。11. 最早事件前不补 1，标 PARTIAL；新事件前后整股快照重发待实证（DECISION-3）。
+1. `adjust_factor`。2. 除权事件因子快照。3. Baostock `query_adjust_factor`，响应 `code,dividOperateDate,foreAdjustFactor,backAdjustFactor,adjustFactor` 均字符串（C786）；获取方新增。4. 收盘后用 pre_close 与前一交易日 close 不等发现迹象并仅对疑似股拉取，阈值和误报 UNKNOWN。5. 每股单行 JSON 快照，单次 INSERT 原子替换；U2 对本事实不再成立。6. DDL 见 §2.9，因子原字符串保留并在读取时以 Decimal 解析。7. 日标记见 §2.9，完整性阈值 UNKNOWN-U1。8. 事实热视图键及 TTL UNKNOWN-U4。9. 600519 的 2025-06-26 foreAdjustFactor=0.960527，前一日所用旧因子 0.942063（C786）；完整事件行其他值 UNKNOWN-U5。10. 获取方新增。11. 最早事件前不补 1，标 PARTIAL；新事件前后整股快照重发待实证（DECISION-3）。
 
 ### 2.3 daily_dde（来源 C784；`src/engine_core/data_pipeline/daily_dde.py:78,196,424`；`src/engine_core/guardian/datasets.registry.json:212`）
 
@@ -227,14 +227,14 @@ return 0
 
 ```sql
 CREATE TABLE IF NOT EXISTS core_data.daily_kline_versions (ts TIMESTAMP, trade_date VARCHAR(10), version VARCHAR(24), business_status VARCHAR(16), rank_level INT, needs_upgrade BOOL, source VARCHAR(96), provider VARCHAR(32), degraded BOOL, quality VARCHAR(4000), row_count INT, sha256 VARCHAR(64), available_at VARCHAR(40), synced_at VARCHAR(40), schema_version INT);
-CREATE STABLE IF NOT EXISTS core_data.adjust_factor_v1 (ts TIMESTAMP, fore_adjust_factor DOUBLE, back_adjust_factor DOUBLE, adjust_factor DOUBLE, version VARCHAR(24)) TAGS (symbol VARCHAR(8));
+CREATE STABLE IF NOT EXISTS core_data.adjust_factor_v1 (ts TIMESTAMP, version VARCHAR(24), event_count INT, sha256 VARCHAR(64), events_json VARCHAR(60000)) TAGS (symbol VARCHAR(8));
 CREATE STABLE IF NOT EXISTS core_data.auction_amount_facts_v1 (ts TIMESTAMP, amount_yuan BIGINT) TAGS (symbol VARCHAR(8), slot VARCHAR(4));
 CREATE TABLE IF NOT EXISTS core_data.auction_amount_facts_days (ts TIMESTAMP, trade_date VARCHAR(10), slot VARCHAR(4), row_count INT, source_note VARCHAR(1024), written_at TIMESTAMP);
 CREATE STABLE IF NOT EXISTS core_data.slot0945_amount_v1 (ts TIMESTAMP, amt_yuan BIGINT, version VARCHAR(24)) TAGS (symbol VARCHAR(20));
 CREATE TABLE IF NOT EXISTS core_data.fact_days_v1 (ts TIMESTAMP, trade_date VARCHAR(10), version VARCHAR(24), business_status VARCHAR(16), row_count INT, sha256 VARCHAR(64), available_at VARCHAR(40), quality VARCHAR(4000), missing_whitelist VARCHAR(4000));
 ```
 
-日标记每事实独立物理表，`fact_days_v1` 为列模板，避免多个事实同 ts 冲突；`missing_whitelist` 为 JSON 数组，元素的 symbol 和 reason 按 DECISION-4，长度不足则拒绝提交，不截断。标记最后发布，未知阈值不标完整；按日K现行表迁移白名单须新增列或另表，物理隔离和原子性 U2 待 TD 负责人验证。`adjust_factor_v1` 的 ts 是事件日，整股快照的版本必须物理隔离；当前设计 DDL 本身不实现版本隔离。来源原字符串保留及 DOUBLE 精度可否无损 UNKNOWN（需复权实现卡验证）。
+日标记每事实独立物理表，`fact_days_v1` 为列模板，避免多个事实同 ts 冲突；`missing_whitelist` 为 JSON 数组，元素的 symbol 和 reason 按 DECISION-4，长度不足则拒绝提交，不截断。标记最后发布，未知阈值不标完整；按日K现行表迁移白名单须新增列或另表，物理隔离和原子性 U2 待 TD 负责人验证。`adjust_factor_v1` 每股一行保存全部事件的 JSON 数组，ts 为处理时刻，取最新行；空数组为已处理但因子不可得，无行为未处理。事件日超出 TD KEEP 时间范围且会自然过期，故使用单行原子替换；U2 对此事实不再成立。超过 KEEP 未刷新的股票仍会消失，需未来定期全量刷新。部署前 DDL 已由大脑审批。
 
 C778 分支接口合同：`ensure_schema()` 建表；`complete_days(days, slot)` 返回 row_count≥4000 的日期集合；`write_day(day, slot, amounts, source_note)` 在少于4000时抛 `AUCTION_FACTS_INCOMPLETE:<day>:<slot>:<n>` 且不写；校验六位 symbol 和整数后写数据、最后写标记，返回行数；`read_days(days, slot)` 返回日期到 symbol→金额映射，读失败严格抛错，禁止当空。slot 为 `0925`/`0945`。分支实际采用共表并覆盖旧行、先删标记，不能满足 U2 版本隔离；迁移需先实现隔离，再核对同日替换和故障恢复，再切换消费者。`auction_amount_v1` 与 `slot0945_amount_v1` 是逻辑分视图，需确定与 C778 共表的唯一权威关系，不能双写形成两个真相源（UNKNOWN，数据负责人）。源时间和精确选点 UNKNOWN-U8，不得把交易日零点误当采集时间。
 
