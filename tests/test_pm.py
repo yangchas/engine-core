@@ -50,10 +50,14 @@ def test_accept_dry_run(tmp_path, monkeypatch, capsys):
     (repo / 'tracked').write_text('original\n')
     git('add', 'tracked')
     git('commit', '-qm', 'initial')
+    worktree = tmp_path / 'engine_core-wt-C998'
+    git('worktree', 'add', '-qb', 'builder', str(worktree))
+    (worktree / 'tracked').write_text('changed\n')
+    subprocess.run(['git', '-C', str(worktree), 'commit', '-qam', 'builder change'], check=True)
     cards = tmp_path / 'cards'
     cards.mkdir()
     card = cards / 'C999.md'
-    contents = f'STATUS: ready\nSCOPE_WRITE: {repo}/tracked\n'
+    contents = f'STATUS: ready\nSCOPE_WRITE: {worktree}/tracked\n'
     card.write_text(contents)
     monkeypatch.setattr(pm, 'ROOT', repo)
     monkeypatch.setattr(pm, 'CARDS', cards)
@@ -64,3 +68,59 @@ def test_accept_dry_run(tmp_path, monkeypatch, capsys):
     assert card.read_text() == contents
     assert (repo / 'tracked').read_text() == 'original\n'
     assert git('status', '--porcelain') == before
+
+
+def test_accept_committed_branch_uses_main_worktree_base(tmp_path, monkeypatch, capsys):
+    import subprocess
+    import examples.pm as pm
+
+    repo = tmp_path / 'main'
+    repo.mkdir()
+    def git(repo_path, *args):
+        return subprocess.run(['git', '-C', str(repo_path), *args], check=True,
+                              capture_output=True, text=True).stdout.strip()
+    git(repo, 'init', '-q')
+    git(repo, 'config', 'user.name', 'Test')
+    git(repo, 'config', 'user.email', 'test@example.invalid')
+    (repo / 'tracked').write_text('original\n')
+    git(repo, 'add', 'tracked')
+    git(repo, 'commit', '-qm', 'initial')
+    base = git(repo, 'rev-parse', 'HEAD')
+    worktree = tmp_path / 'engine_core-wt-C999'
+    git(repo, 'worktree', 'add', '-qb', 'builder', str(worktree))
+    (worktree / 'tracked').write_text('changed\n')
+    git(worktree, 'commit', '-qam', 'builder change')
+    cards = tmp_path / 'cards'
+    cards.mkdir()
+    (cards / 'C999.md').write_text(f'STATUS: ready\nSCOPE_WRITE: {worktree}/tracked\n')
+    monkeypatch.setattr(pm, 'ROOT', worktree)
+    monkeypatch.setattr(pm, 'CARDS', cards)
+    assert pm.main(['accept', 'C999', '--dry-run']) == 0
+    assert f' base {base}\n' in capsys.readouterr().out
+
+
+def test_accept_refuses_empty_diff(tmp_path, monkeypatch, capsys):
+    import subprocess
+    import examples.pm as pm
+
+    repo = tmp_path / 'main'
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(['git', '-C', str(repo), *args], check=True,
+                              capture_output=True, text=True).stdout.strip()
+    git('init', '-q')
+    git('config', 'user.name', 'Test')
+    git('config', 'user.email', 'test@example.invalid')
+    (repo / 'tracked').write_text('original\n')
+    git('add', 'tracked')
+    git('commit', '-qm', 'initial')
+    base = git('rev-parse', 'HEAD')
+    worktree = tmp_path / 'engine_core-wt-C999'
+    git('worktree', 'add', '-qb', 'builder', str(worktree))
+    cards = tmp_path / 'cards'
+    cards.mkdir()
+    (cards / 'C999.md').write_text(f'STATUS: ready\nSCOPE_WRITE: {worktree}/tracked\n')
+    monkeypatch.setattr(pm, 'ROOT', repo)
+    monkeypatch.setattr(pm, 'CARDS', cards)
+    assert pm.main(['accept', 'C999', '--dry-run']) == 2
+    assert capsys.readouterr().out == f'ACCEPT C999 REFUSED setup: empty diff vs base {base}\n'
