@@ -309,3 +309,63 @@ def test_append_auction_amount_baseline_preserves_missing_and_adds_observed_valu
                                              available_at="2026-10-15T17:40:00+08:00")
     assert updated[-1]["sum_yi"] == 2.5
     assert updated[-1]["source"] == "postmarket_auction_summary"
+
+
+def test_open_states_splits_resource_exhausted_query():
+    class Exhausted(Exception):
+        errno = 0x073a
+
+    class TD:
+        def __init__(self): self.queries = []
+        def execute(self, query):
+            self.queries.append(query)
+            if len(self.queries) == 1: raise Exhausted('query memory exhausted')
+        def fetchall(self): return []
+
+    td = TD()
+    assert states_at(td, datetime(2026, 10, 15, 9, 32)) == {}
+    assert len(td.queries) == 5
+
+
+def test_open_states_errors_retain_type_and_query_context():
+    from taos.error import ProgrammingError
+    for errno, expected_calls in ((0x073a, 4), (0x0102, 4), (7, 1)):
+        failure = ProgrammingError("driver failure", errno)
+        class TD:
+            def __init__(self): self.calls = 0
+            def execute(self, query):
+                self.calls += 1
+                raise failure
+        td = TD()
+        with pytest.raises(ProgrammingError) as caught:
+            states_at(td, datetime(2026, 10, 15, 9, 32))
+        assert caught.value is failure
+        assert "OPEN_QUERY[states_at] select last(ts)" in str(failure)
+        assert td.calls == expected_calls
+
+
+def test_open_checkpoint_splits_resource_exhaustion():
+    class Exhausted(Exception): errno = 0x0102
+    class TD:
+        def __init__(self): self.calls = 0
+        def execute(self, query):
+            self.calls += 1
+            if self.calls == 1: raise Exhausted("failed")
+        def fetchall(self): return []
+    td = TD()
+    assert not checkpoint_ready(td, datetime(2026, 10, 15, 9, 32))
+    assert td.calls == 5
+
+
+def test_open_pool_splits_resource_exhaustion():
+    from engine_core.daily_pipeline import _observed_seal_paths
+    class Exhausted(Exception): errno = 0x073a
+    class TD:
+        def __init__(self): self.calls = 0
+        def execute(self, query):
+            self.calls += 1
+            if self.calls == 1: raise Exhausted("failed")
+        def fetchall(self): return []
+    td = TD()
+    assert _observed_seal_paths(td, "2026-10-15", "09:32:00", {"000001", "600000"}) == {}
+    assert td.calls == 3
