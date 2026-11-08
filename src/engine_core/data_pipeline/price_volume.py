@@ -191,7 +191,7 @@ class PriceVolumeStore:
                         f'({trade_day_ts_us(day)}, ' + ', '.join(map(_literal, values)) + ')')
 
 
-def run(request, root, *, store=None, clock=None):
+def run(request, root, *, store=None, clock=None, dry_run=False):
     """Calculate one day from batch reads and publish the day marker last."""
     import hashlib
     import json
@@ -211,6 +211,8 @@ def run(request, root, *, store=None, clock=None):
     except (KeyError, TypeError, ValueError) as exc:
         detail['message'] = str(exc)
         return _reply(64, 'CONFIG_ERROR', detail)
+    if dry_run:
+        return _reply(0, detail=detail)
     owned = store is None
     facts = store if store is not None else PriceVolumeStore(TaosStore(core_td_database()))
     try:

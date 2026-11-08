@@ -247,3 +247,16 @@ def test_gap_uses_listing_and_observed_bars():
     expected, _ = calculate_bar(bars[32], events, state)
     assert code == 0 and reply['detail']['listing_source'] == 'snapshot'
     assert store.rows['600519']['ma5'] == pytest.approx(expected['ma5'])
+
+
+def test_cli_dry_run_is_service_free():
+    import os
+    import subprocess
+    import sys
+    env = dict(os.environ, GUARDIAN_DRY_RUN='1')
+    env.pop('TD_CONFIG', None)
+    env.pop('REDIS_URL', None)
+    result = subprocess.run([sys.executable, 'examples/build_price_volume.py', '--date', '2026-11-06'],
+                            env=env, text=True, capture_output=True)
+    assert result.returncode == 0
+    assert json.loads(result.stdout)['status'] == 'ok'
