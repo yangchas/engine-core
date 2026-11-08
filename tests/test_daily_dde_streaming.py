@@ -25,6 +25,12 @@ class RecordingDdeStore:
     def ensure_schema(self):
         return "recording-store"
 
+    def invalidate_days(self, days):
+        pass
+
+    def publish_day_marker(self, day, candidates, rows, known_missing):
+        pass
+
     def latest_watermarks(self):
         return dict(self.watermarks)
 

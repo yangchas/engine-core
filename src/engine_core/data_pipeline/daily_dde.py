@@ -198,7 +198,28 @@ class TaosDdeStore:
         ddl = (f"CREATE STABLE IF NOT EXISTS {self.database}.{SUPER_TABLE} "
                "(ts TIMESTAMP, ddje DOUBLE, version VARCHAR(24)) TAGS (symbol VARCHAR(8))")
         self._run(ddl)
+        self._run(f"CREATE TABLE IF NOT EXISTS {self.database}.daily_dde_days "
+                  "(ts TIMESTAMP, trade_date VARCHAR(10), version VARCHAR(24), business_status VARCHAR(16), "
+                  "quality VARCHAR(16), expected_count INT, row_count INT, exempt_count INT, "
+                  "unresolved_count INT, universe_ref VARCHAR(256), missing_whitelist VARCHAR(16384), "
+                  "sha256 VARCHAR(64), available_at VARCHAR(40))")
         return ddl
+
+    def invalidate_days(self, days: Sequence[str]) -> None:
+        for day in sorted(set(days)):
+            self._run(f"DELETE FROM {self.database}.daily_dde_days WHERE ts = {_ts_us(day)}")
+
+    def publish_day_marker(self, day: str, candidates: Sequence[str], rows: Mapping[str, Mapping[str, Any]],
+                           known_missing: Mapping[str, str]) -> None:
+        # A caller's symbol list is not a versioned universe or a whitelist with evidence.
+        # Record the counts as PARTIAL/UNKNOWN until those inputs exist.
+        valid = {symbol: row for symbol, row in rows.items() if row.get("ddje") is not None}
+        digest = hashlib.sha256(json.dumps(valid, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        available_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        values = [_ts_us(day), _sql(day), _sql(digest[:24]), _sql("PARTIAL"), _sql("UNKNOWN"),
+                  len(candidates), len(valid), 0, len(candidates) - len(valid), _sql(""), _sql("[]"),
+                  _sql(digest), _sql(available_at)]
+        self._run(f"INSERT INTO {self.database}.daily_dde_days VALUES (" + ", ".join(map(str, values)) + ")")
 
     def latest_watermarks(self) -> dict[str, str]:
         rows = self._run(f"SELECT symbol, LAST(ts) FROM {self.database}.{SUPER_TABLE} GROUP BY symbol")
@@ -496,6 +517,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
             except Exception:
                 # Explicit-symbol callers may use an isolated root without a catalog.
                 known_symbols = set()
+        store.invalidate_days([target])
+        invalidated_days = {target}
         requested = list(candidates)
         skipped_completed = 0
         failed: dict[str, str] = {}
@@ -575,6 +598,10 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                                 if revisions:
                                     revised_symbols.add(symbol)
                                 rows = changed
+                            days_to_invalidate = {row["date"] for row in rows} - invalidated_days
+                            if days_to_invalidate:
+                                store.invalidate_days(sorted(days_to_invalidate))
+                                invalidated_days.update(days_to_invalidate)
                             count = store.write_and_verify(symbol, rows, partition.manifest["version"]) if rows else 0
                             if count != len(rows):
                                 raise DdeError("td_readback_row_count_mismatch")
@@ -657,6 +684,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                   f"known_missing={len(known_missing)} remaining={len(missing_target_rows)} "
                   f"error_code=DDE_SYNC_INCOMPLETE_RETRYABLE", flush=True)
             raise DdeSyncRetryableError(summary)
+
+        store.publish_day_marker(target, candidates, target_rows_by_symbol, known_missing)
 
         redis_result: dict[str, Any] = {"written": False, "readback_verified": False, "key": None, "ttl": None}
         if skip_redis:
