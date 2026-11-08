@@ -123,22 +123,28 @@ def core_history_rows(catalog: ArtifactCatalog, *, through_date: str, asof: str,
     unknown_availability = False
     max_available: datetime | None = None
     included_dates: list[str] = []
+    superseded_versions_skipped = 0
     for day in available_dates:
         versions = date_versions.get(day, [])
-        path = Path(versions[-1]["manifest"]) if versions else None
-        if path is None or not path.is_file():
-            continue
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-        available_text = manifest.get("available_at")
-        try:
-            available = datetime.fromisoformat(str(available_text).replace("Z", "+00:00"))
-            if available.tzinfo is None:
+        for version in reversed(versions):
+            path = Path(version["manifest"])
+            if not path.is_file():
+                continue
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            available_text = manifest.get("available_at")
+            try:
+                available = datetime.fromisoformat(str(available_text).replace("Z", "+00:00"))
+                if available.tzinfo is None:
+                    unknown_availability = True
+                    continue
+            except (TypeError, ValueError):
                 unknown_availability = True
                 continue
-        except (TypeError, ValueError):
-            unknown_availability = True
-            continue
-        if available > cutoff:
+            if available > cutoff:
+                superseded_versions_skipped += 1
+                continue
+            break
+        else:
             continue
         if max_available is None or available > max_available:
             max_available = available
@@ -163,6 +169,7 @@ def core_history_rows(catalog: ArtifactCatalog, *, through_date: str, asof: str,
                 "source": "core_data" if rows else "core_data", "sources": sorted(sources),
                 "history_trade_dates": len(included_dates), "row_count": len(rows),
                 "unknown_availability": unknown_availability,
+                "superseded_versions_skipped": superseded_versions_skipped,
                 "field_units": {"turnover_pct": "UNVERIFIED"}}
     return rows, metadata
 

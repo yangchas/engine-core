@@ -3,6 +3,50 @@ from engine_core.slices import SliceProviders, SliceReader
 from conftest import use_declared_time_as_test_commit_clock
 
 
+def test_daily_history_selects_latest_version_visible_at_asof(tmp_path):
+    from conftest import read_real_artifact
+    from engine_core.daily_history import core_history_rows
+
+    day = "2026-10-23"
+    _, real_rows = read_real_artifact("daily_kline", day, "formal")
+    old_row, new_row = real_rows[:2]
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path))
+    old_time = "2026-10-23T17:30:00+08:00"
+    new_time = "2026-10-25T17:30:00+08:00"
+    for row, available in ((old_row, old_time), (new_row, new_time)):
+        catalog.commit("daily_kline", day, [row],
+                       {"trade_date": day, "available_at": available, "source": "baostock"},
+                       source="baostock")
+
+    rows, meta = core_history_rows(catalog, through_date=day, asof="2026-10-24T12:00:00+08:00")
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == old_row["symbol"]
+    assert rows[0]["available_at"] == meta["available_at"] == old_time
+    assert meta["superseded_versions_skipped"] == 1
+
+    rows, meta = core_history_rows(catalog, through_date=day, asof="2026-10-26T12:00:00+08:00")
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == new_row["symbol"]
+    assert rows[0]["available_at"] == meta["available_at"] == new_time
+    assert meta["superseded_versions_skipped"] == 0
+
+
+def test_daily_history_excludes_only_future_version(tmp_path):
+    from conftest import read_real_artifact
+    from engine_core.daily_history import core_history_rows
+
+    day = "2026-10-23"
+    _, real_rows = read_real_artifact("daily_kline", day, "formal")
+    catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path))
+    catalog.commit("daily_kline", day, real_rows[:1],
+                   {"trade_date": day, "available_at": "2026-10-25T17:30:00+08:00",
+                    "source": "baostock"}, source="baostock")
+    rows, meta = core_history_rows(catalog, through_date=day, asof="2026-10-24T12:00:00+08:00")
+    assert rows == []
+    assert meta["available_at"] is None
+    assert meta["history_trade_dates"] == 0
+
+
 def test_daily_history_reads_pit_eligible_core_days_before_legacy(tmp_path):
     catalog = use_declared_time_as_test_commit_clock(ArtifactCatalog(tmp_path))
     for day, close, available_at in (
