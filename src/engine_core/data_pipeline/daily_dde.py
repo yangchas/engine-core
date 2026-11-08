@@ -428,6 +428,7 @@ def _configure_kaipan_request_timeout(client: Any) -> None:
 def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, database: str | None = None,
                        root: str | Path | None = None, max_workers: int = DEFAULT_MAX_WORKERS, attempts: int = 3,
                        history_trading_days: int = DEFAULT_HISTORY_TRADING_DAYS,
+                       consecutive_failure_limit: int = 5,
                        redis_ttl_seconds: int | None = None, write_redis: bool = True,
                        skip_redis: bool = False, store: TaosDdeStore | None = None,
                        fetcher: Callable[[str, str], Any] | None = None,
@@ -442,6 +443,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
         raise ValueError("dde_attempts_must_be_1_to_5")
     if isinstance(history_trading_days, bool) or not 1 <= int(history_trading_days) <= 5000:
         raise ValueError("history_trading_days_must_be_1_to_5000")
+    if isinstance(consecutive_failure_limit, bool) or int(consecutive_failure_limit) < 1:
+        raise ValueError("dde_consecutive_failure_limit_must_be_positive")
     started_at = clock()
     requested_workers = int(max_workers)
     max_workers = 1
@@ -490,6 +493,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
         failed: dict[str, str] = {}
         known_missing: dict[str, str] = {}
         unknown_missing: dict[str, str] = {}
+        consecutive_failures = 0
+        aborted = None
         request_count = 0
         written_rows = 0
         written_symbols = 0
@@ -538,6 +543,12 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                     except Exception as exc:
                         partition, error, used, source_empty = None, type(exc).__name__ + ":" + str(exc)[:180], 1, False
                     request_count += used
+                    if partition is None and not source_empty and not (error or "").startswith("DdeStaleResponse:"):
+                        consecutive_failures += 1
+                    else:
+                        consecutive_failures = 0
+                    if consecutive_failures >= int(consecutive_failure_limit):
+                        aborted = "consecutive_failures"
                     if source_empty:
                         known_missing[symbol] = "kaipan_confirmed_empty_response"
                     elif partition is None:
@@ -566,7 +577,7 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                               f"remaining={remaining} skipped_completed={skipped_completed} "
                               f"requests={request_count}", flush=True)
                         last_progress_at = now
-                    next_symbol = next(iterator, None)
+                    next_symbol = None if aborted else next(iterator, None)
                     if next_symbol is not None:
                         pending[pool.submit(_fetch_with_retry, fetcher, next_symbol, target,
                                             int(history_trading_days), int(attempts), sleep,
@@ -604,7 +615,7 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                    "watermarks_after": {symbol: after.get(symbol) for symbol in candidates[:20]},
                    "watermark_counts": {"before": len(before), "after": len(after)},
                    "legacy_comparison": comparison,
-                   "elapsed_seconds": round(clock() - started_at, 3)}
+                   "elapsed_seconds": round(clock() - started_at, 3), "aborted": aborted}
         if failed:
             summary["status"] = "failed"
             summary["error_code"] = "DDE_SYNC_INCOMPLETE_RETRYABLE"

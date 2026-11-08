@@ -21,6 +21,7 @@ def run(request: Mapping[str, Any], root: Path, *, dry_run: bool = False) -> tup
             target_date, database=str(args.get("database") or "") or None, root=root,
             max_workers=int(args.get("max_workers", 2)), attempts=int(args.get("attempts", 3)),
             history_trading_days=int(args.get("history_trading_days", 250)),
+            consecutive_failure_limit=int(args.get("consecutive_failure_limit", 5)),
             redis_ttl_seconds=(int(args["redis_ttl_seconds"])
                                if args.get("redis_ttl_seconds") is not None else None),
             write_redis=bool(args.get("write_redis", True)), skip_redis=bool(args.get("skip_redis", False)))

@@ -44,3 +44,19 @@ def test_missing_suspension_table_degrades_and_guardian_maps_exit(monkeypatch):
     monkeypatch.setattr('engine_core.data_pipeline.daily_dde.run_daily_dde_sync', lambda *a, **kw: result)
     code, reply = daily_dde_sync.run({'trade_date': '2026-11-03'}, Path('.'))
     assert (code, reply['status'], reply['retryable']) == (10, 'degraded', False)
+
+
+def test_consecutive_fetch_failures_abort():
+    import pytest
+    from engine_core.data_pipeline.daily_dde import DdeSyncRetryableError
+    calls = []
+    def fetch(symbol, target):
+        calls.append(symbol)
+        raise RuntimeError('upstream unavailable')
+    with pytest.raises(DdeSyncRetryableError) as caught:
+        run_daily_dde_sync(['000001', '000002', '000003'], '2026-11-06',
+                           store=RecordingDdeStore(), fetcher=fetch, attempts=1,
+                           consecutive_failure_limit=2, skip_redis=True, sleep=lambda _: None)
+    assert calls == ['000001', '000002']
+    assert caught.value.summary['aborted'] == 'consecutive_failures'
+    assert caught.value.summary['error_code'] == 'DDE_SYNC_INCOMPLETE_RETRYABLE'
