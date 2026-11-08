@@ -4289,17 +4289,13 @@
       "enabled": true,
       "calendar": "trading_day",
       "trigger_type": "window",
-      "at": "15:20:00",
-      "deadline": "20:59:00",
+      "at": "17:10:00",
+      "deadline": "20:30:00",
       "data_date_offset": 0,
       "on_deadline": "missed",
-      "late_until": "20:59:00",
-      "depends_on": [
-        "daily_kline_close_1505"
-      ],
-      "after": [
-        "daily_kline_close_1505"
-      ],
+      "late_until": "20:30:00",
+      "depends_on": [],
+      "after": [],
       "cost": "medium",
       "phases": [
         "any"
@@ -4318,13 +4314,11 @@
       "calendar": "every_day",
       "trigger_type": "window",
       "at": "01:15:00",
-      "deadline": "01:59:00",
+      "deadline": "05:00:00",
       "data_date_offset": 0,
       "on_deadline": "missed",
-      "late_until": "01:59:00",
-      "depends_on": [
-        "daily_kline_backfill"
-      ],
+      "late_until": "05:00:00",
+      "depends_on": [],
       "after": [],
       "cost": "medium",
       "phases": [

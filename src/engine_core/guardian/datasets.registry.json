@@ -2325,7 +2325,7 @@
         "POST_MARKET",
         "NIGHT"
       ],
-      "cadence": "交易日 15:20 收盘日K后及每日 01:15 夜间补数后；日K完成即查疑似除权并整股替换快照",
+      "cadence": "交易日 17:10 收盘日K后及每日 01:15 夜间补数后；检查疑似除权并整股替换快照；窗口依赖对降级成功会 SKIPPED_DEP，故使用时间槽",
       "rule": "incremental 检查疑似除权股票的完整因子快照",
       "freshness": "UNKNOWN",
       "retry": "使用 kline_backfill 策略，缺失标 PARTIAL",

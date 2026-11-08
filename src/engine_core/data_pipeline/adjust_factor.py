@@ -32,6 +32,10 @@ def factor_for(events, day):
         return None, 'INVALID_FACTOR'
 
 
+# Reject obviously incomplete day coverage; fewer than half of expected symbols is insufficient.
+MIN_DAY_ROWS_FRACTION = 0.5
+
+
 class AdjustFactorStore:
     """One atomic snapshot row per symbol, timestamped at processing time."""
     def __init__(self, store):
@@ -280,7 +284,18 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
                 read_day = facts.read_day_rows
             current, previous = read_day(day), read_day(previous_day)
             if not current or not previous:
-                raise RuntimeError('daily_kline_missing')
+                detail['reason'] = 'NO_DAY_ROWS'
+                return _reply(10, 'INCOMPLETE', detail)
+            expected, detail['listing_source'] = facts.listing_symbols(day)
+            # A missing listing snapshot falls back to the previous day, not the
+            # potentially incomplete target day returned by listing_symbols.
+            if detail['listing_source'] == 'fallback':
+                expected = set(previous)
+            detail['day_rows'] = len(set(current) & expected)
+            detail['expected_symbols'] = len(expected)
+            if not expected or detail['day_rows'] < len(expected) * MIN_DAY_ROWS_FRACTION:
+                detail['reason'] = 'DAY_ROWS_INCOMPLETE'
+                return _reply(10, 'INCOMPLETE', detail)
             symbols = sorted(detect_suspected(current, previous))
             detail['suspected_total'] = len(symbols)
         else:

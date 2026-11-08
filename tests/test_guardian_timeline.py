@@ -244,11 +244,10 @@ def test_adjust_factor_events_follow_kline_windows():
     events = {event['event_id']: event for event in SCHEDULE['events']}
     post = events['adjust_factor_postclose']
     night = events['adjust_factor_0115']
-    assert post['after'] == ['daily_kline_close_1505']
-    assert post['depends_on'] == ['daily_kline_close_1505']
-    assert night['depends_on'] == ['daily_kline_backfill']
-    assert post['at'] == '15:20:00' and post['late_until'] < '21:00:00'
+    assert not post.get('after') and not post.get('depends_on')
+    assert not night.get('after') and not night.get('depends_on')
+    assert post['at'] == '17:10:00' and post['late_until'] == '20:30:00'
     assert post['calendar'] == 'trading_day' and post['data_date_offset'] == 0
-    assert night['at'] == '01:15:00' and night['late_until'] < '02:00:00'
+    assert night['at'] == '01:15:00' and night['late_until'] == '05:00:00'
     assert night['calendar'] == 'every_day' and night['args']['target'] == 'prev_trade_day'
     assert all(event['cost'] != 'heavy' and not event.get('gate') for event in (post, night))

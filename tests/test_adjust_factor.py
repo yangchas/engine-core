@@ -64,6 +64,7 @@ def test_incremental_keeps_completed_on_upstream_failure(monkeypatch):
         def __init__(self): self.writes = []
         def ensure_schema(self): pass
         def read_day_rows(self, day): return {'600519': {}}
+        def listing_symbols(self, day): return {'600519'}, 'stock_listing'
         def previous_day(self, day): return '2026-11-05'
         def read_events(self, symbol): return [], 'NO_EVENTS'
         def replace_snapshot(self, symbol, events, version): self.writes.append(symbol)
@@ -94,6 +95,7 @@ def test_incremental_spacing_and_unchanged(monkeypatch):
         def __init__(self): self.writes = []
         def ensure_schema(self): pass
         def read_day_rows(self, day): return {'600519': {}}
+        def listing_symbols(self, day): return {'600519'}, 'stock_listing'
         def previous_day(self, day): return '2026-11-05'
         def read_events(self, symbol): return rows_by_symbol[symbol], 'FORMAL'
         def replace_snapshot(self, symbol, events, version): self.writes.append(symbol)
@@ -187,3 +189,26 @@ def test_snapshot_rejects_oversize():
         def _run(self, sql, **kwargs): raise AssertionError('unexpected TD access')
     with pytest.raises(ValueError, match='exceeds_60000_bytes'):
         AdjustFactorStore(TD()).replace_snapshot('600519', rows, '20261108000000-bbbbbbbb')
+
+
+def test_incremental_rejects_missing_or_incomplete_day_rows(monkeypatch):
+    from engine_core.data_pipeline import adjust_factor as module
+    records = json.loads((Path(__file__).parent / 'fixtures/adjust_factor_c846/events.json').read_text())
+    symbols = [r['code'][-6:] for r in records]
+    assert len(symbols) >= 3
+    class Store:
+        def __init__(self, rows): self.rows = rows
+        def ensure_schema(self): pass
+        def previous_day(self, day): return '2026-11-05'
+        def read_day_rows(self, day): return self.rows
+        def listing_symbols(self, day): return set(symbols), 'stock_listing'
+        def invalidate_day_marker(self, day): raise AssertionError('marker invalidated')
+    class Lease:
+        def acquire(self): return True
+        def release(self): pass
+    monkeypatch.setattr(module, 'detect_suspected', lambda *_: (_ for _ in ()).throw(AssertionError('discovery called')))
+    for rows, reason in (({}, 'NO_DAY_ROWS'), ({symbols[0]: {}}, 'DAY_ROWS_INCOMPLETE')):
+        code, reply = module.run({'trade_date': '2026-11-06', 'args': {'mode': 'incremental'}}, '.',
+                                 store=Store(rows), lease_factory=lambda *_: Lease())
+        assert code == 10
+        assert reply['detail']['reason'] == reason

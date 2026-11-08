@@ -1962,9 +1962,7 @@
       "policy": "daily_dde"
     },
     "adjust_factor_postclose": {
-      "after": [
-        "daily_kline_close_1505"
-      ],
+      "after": [],
       "args": {
         "dataset": "adjust_factor"
       },
@@ -1972,12 +1970,10 @@
       "catchup_mode": "run_in_window",
       "cost": "medium",
       "data_date_offset": 0,
-      "depends_on": [
-        "daily_kline_close_1505"
-      ],
+      "depends_on": [],
       "enabled": true,
       "handler": "postmarket_data",
-      "late_until": "20:59:00",
+      "late_until": "20:30:00",
       "on_deadline": "missed",
       "on_phase_mismatch": "defer",
       "phases": [
@@ -1996,12 +1992,10 @@
       "catchup_mode": "run_in_window",
       "cost": "medium",
       "data_date_offset": 0,
-      "depends_on": [
-        "daily_kline_backfill"
-      ],
+      "depends_on": [],
       "enabled": true,
       "handler": "postmarket_data",
-      "late_until": "01:59:00",
+      "late_until": "05:00:00",
       "on_deadline": "missed",
       "on_phase_mismatch": "defer",
       "phases": [
@@ -2100,7 +2094,7 @@
         {
           "fn": "adjust_factor_0115",
           "id": "adjust_factor_0115",
-          "deadline": "01:59:00"
+          "deadline": "05:00:00"
         }
       ]
     },
@@ -2969,11 +2963,6 @@
             "daily_kline_load_defer_window_limit": 3,
             "baostock_no_progress_seconds": 300
           }
-        },
-        {
-          "fn": "adjust_factor_postclose",
-          "id": "adjust_factor_postclose",
-          "deadline": "20:59:00"
         }
       ]
     },
@@ -2990,6 +2979,16 @@
             "daily_kline_load_defer_window_limit": 3,
             "baostock_no_progress_seconds": 300
           }
+        }
+      ]
+    },
+    {
+      "at": "17:10:00",
+      "run": [
+        {
+          "fn": "adjust_factor_postclose",
+          "id": "adjust_factor_postclose",
+          "deadline": "20:30:00"
         }
       ]
     },
