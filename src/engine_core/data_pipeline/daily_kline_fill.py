@@ -84,6 +84,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
         present: dict[str, set[str]] = {}
         work: list[str] = []
         unpublished: list[str] = []
+        deferred: set[str] = set()
         for day in days:
             if not expected[day]:
                 raise _abort("symbol_universe_missing", {"day": day})
@@ -96,6 +97,9 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
             present[day] = set() if untrusted else stored
             if untrusted or len(stored) / len(expected[day]) < (1.0 if require_all else coverage_threshold):
                 work.append(day)
+                if (_marker_is_current(current, label, day, len(all_rows)) and
+                        needs_publish is not None and not needs_publish(day)):
+                    deferred.add(day)
             elif not _marker_is_current(current, label, day, len(all_rows)) or \
                     (needs_publish is not None and needs_publish(day)):
                 # Enough rows but no usable completion marker (a run killed before publishing, or a manifest that
@@ -107,8 +111,10 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
                     "elapsed_seconds": round(clock() - started, 3),
                     "planned_days": 0, "planned_symbols": 0, "requested": 0, "empty_returns": 0,
                     "rows_written": 0, "incomplete_total": 0, "incomplete": [],
-                    "upstream_empty_total": 0, "upstream_empty": []}
-        for day in work:  # drops a stale completion marker / untrusted legacy rows, keeps TD-owned progress
+                    "upstream_empty_total": 0, "upstream_empty": [],
+                    "published_partitions": 0, "publish_skipped": True}
+        prepared = set(work) - deferred
+        for day in prepared:  # invalidate markers that cannot be safely retained
             present[day] = set(sink.prepare_progress(day, sorted(expected[day]), latest_watermarks=watermarks))
 
         def coverage(day: str) -> float:
@@ -180,6 +186,10 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
                 if consecutive_empty >= max_consecutive_empty and stats["written_symbols"] == 0:
                     raise _abort("source_not_delivered", stats)
                 continue
+            for day in by_day.keys() & deferred:
+                present[day] = set(sink.prepare_progress(day, sorted(expected[day]), latest_watermarks=watermarks))
+                deferred.remove(day)
+                prepared.add(day)
             store.upsert_symbol(symbol, BAOSTOCK_PROGRESS_VERSION, by_day)
             rows_written += len(by_day)
             for day in by_day:
@@ -203,7 +213,8 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
         status = ("INCOMPLETE" if incomplete else "COMPLETE") if require_all else (
             "COMPLETE" if done() else "INCOMPLETE")
         result = {"status": status, "target": target, "days": days,
-                  "work_days": work, "publish_days": sorted(set(work) | set(unpublished)), **stats,
+                  "work_days": work, "publish_days": sorted(prepared | set(unpublished)), **stats,
+                  "published_partitions": 0, "publish_skipped": False,
                   "planned_days": planned_days, "planned_symbols": planned_symbols,
                   "requested": stats["attempted"], "empty_returns": stats["empty"],
                   "rows_written": rows_written, "incomplete_total": len(incomplete),
@@ -216,8 +227,11 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
         if result["status"] == "INCOMPLETE":
             raise _abort("coverage_below_threshold",
                          {**stats, "coverage": result["coverage"], "threshold": coverage_threshold})
-        if on_complete is not None:  # runs while the lease is still held, so no other trigger can interleave
+        if on_complete is not None and result["publish_days"]:  # lease remains held
             on_complete(result)
+            result["published_partitions"] = len(result.get("partitions", result["publish_days"]))
+        else:
+            result["publish_skipped"] = not result["publish_days"]
         return result
     except Exception as exc:
         if require_all:
@@ -397,6 +411,12 @@ def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str,
     threshold = float((options.get("daily_kline_policy") or {}).get("formal_coverage_threshold", 0.995))
     if threshold < MIN_FORMAL_COVERAGE:
         raise ValueError(f"coverage_threshold_below_formal_floor:{MIN_FORMAL_COVERAGE}")
+    def needs_publish(day: str) -> bool:
+        manifest = find_published_baostock_manifest(catalog, day, threshold)
+        current = pick_best(store.read_versions(day))
+        return (manifest is None or current is None or not manifest.get("version") or
+                manifest.get("version") != current.get("version"))
+
     try:
         result = run_daily_kline_fill(
             target, store=store, client=client, trading_dates=trading_dates, expected_symbols=expected_symbols,
@@ -409,7 +429,7 @@ def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str,
             no_progress_timeout_seconds=no_progress,
             baostock_min_request_interval_seconds=float(options.get("baostock_min_request_interval_seconds", 0.0)),
             require_all=True,
-            needs_publish=lambda day: find_published_baostock_manifest(catalog, day, threshold) is None,
+            needs_publish=needs_publish,
             on_complete=lambda done: done.__setitem__(
                 "partitions", publish_filled_days(base, store, done["publish_days"], expected_symbols, threshold)))
         result.update(detail)
