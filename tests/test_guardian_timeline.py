@@ -218,3 +218,23 @@ def test_stock_listing_precedes_backfill_on_trading_days():
     assert listing["args"]["target"] == backfill["args"]["target"] == "prev_trade_day"
     assert listing["at"] < backfill["at"]
     assert listing.get("cost") != "heavy"
+
+
+def test_daily_dde_runs_at_0200_for_previous_trade_day():
+    events = {event["event_id"]: event for event in SCHEDULE["events"]}
+    event = events["daily_dde_0200"]
+    backfill = events["daily_kline_backfill"]
+    assert (event["at"], event["deadline"]) == ("02:00:00", "06:30:00")
+    assert (event["calendar"], event["trigger_type"]) == (backfill["calendar"], backfill["trigger_type"])
+    assert event["args"]["target"] == backfill["args"]["target"] == "prev_trade_day"
+    assert event["phases"] == backfill["phases"] == ["any"]
+    assert event["args"]["max_workers"] == 1
+    assert not event.get("gate") and not event.get("after")
+    assert "daily_dde_postclose" not in events
+
+
+def test_daily_dde_registry_uses_new_event():
+    registry = json.loads((ROOT / 'src/engine_core/guardian/datasets.registry.json').read_text())
+    entry = next(item for item in registry['items'] if item['id'] == 'daily_dde')
+    assert 'daily_dde_postclose' not in entry['cadence'] + entry['retry']
+    assert entry['guardian_event'] == 'daily_dde_0200'

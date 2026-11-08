@@ -115,3 +115,15 @@ def test_detail_has_fixed_fields_and_worker_clamp():
     assert result['max_workers'] == 1 and result['requested_max_workers'] == 100
     assert {'requested', 'written_symbols', 'rows_written', 'skipped_complete', 'failed_total',
             'unknown_missing_total', 'revised_days', 'revised_symbols', 'elapsed_seconds', 'aborted'} <= result.keys()
+
+
+def test_new_dde_event_and_rehearsal_route_by_event_id(monkeypatch, tmp_path):
+    from examples import guardian_handler
+    from engine_core.guardian import daily_dde_sync
+
+    monkeypatch.setenv('CORE_DATA_ROOT', str(tmp_path))
+    monkeypatch.setattr(guardian_handler, '_event_from_request', lambda request: (None, request['event']))
+    monkeypatch.setattr(daily_dde_sync, 'run', lambda request, root, dry_run: (0, {'routed': request['event']}))
+    for event_id in ('daily_dde_0200', 'daily_dde_0200_rh1'):
+        request = {'event': event_id, 'handler': 'postmarket_data', 'trade_date': '2026-11-09', 'args': {}}
+        assert guardian_handler._run(request) == (0, {'routed': event_id})

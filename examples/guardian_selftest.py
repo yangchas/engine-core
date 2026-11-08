@@ -550,7 +550,7 @@ def _build_binary(work: Path, fault: str = "") -> Path:
         "GOSUMDB": "off",
         "GOCACHE": os.environ.get("GOCACHE") or str(Path.home() / ".cache" / "go-build"),
     }
-    command = [str(GO), "build", "-o", str(binary)]
+    command = [str(GO), "build", "-buildvcs=false", "-o", str(binary)]
     if fault == "retry-no-data":
         runtime_source = GO_ROOT / "runtime.go"
         injected = work / "runtime-fault-retry-no-data.go"

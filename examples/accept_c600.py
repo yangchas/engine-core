@@ -287,7 +287,7 @@ def main(argv=None) -> int:
             raise RuntimeError("history_window_limit_failed")
         redis_result = _redis_readback(redis_view, target_date, partitions, redis_ttl)
 
-        guardian = _rehearse("daily_dde_postclose", symbols[0], args.database, target_date,
+        guardian = _rehearse("daily_dde_0200", symbols[0], args.database, target_date,
                              args.minutes, args.history_trading_days)
 
         core_store = TaosDdeStore(args.core_database)

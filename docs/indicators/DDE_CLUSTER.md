@@ -8,13 +8,13 @@ F1 `daily_dde` 是独立的开盘啦获取函数，输出 L0 `daily_dde_v1` 的�
 
 ## §2 F1 获取合同
 
-调用 `getHisStockDDE(symbol, target_date)`，symbol 为六位股票代码、日期 `YYYY-MM-DD`；单股一次请求返回多日历史，并非批量多股或逐日请求。C784 三次串行请求分别 1543.602、1756.324、805.645 ms，采集请求间至少间隔 1.1 秒；此样本不能推导服务端配额。现行默认有界并发 2、请求连接/读取超时 5/15 秒，无固定每秒限速；供应商安全限速 UNKNOWN-D1（runner 查）。响应 `Date` 为 YYYYMMDD 字符串数组、`DDJE` 整数数组、`ttag` 浮点、`errcode` 字符串；按索引对齐，只保留目标日及以前的有效日期，缺值/非有限值为 NULL。现行接受 errcode 缺省、空、0、None，其余抛错；新合同应记录原始错误码并重试，缺省是否可视作成功 UNKNOWN-D2（runner 查）。最新返回日期早于目标日为 stale，不把历史响应当目标日成功。
+调用 `getHisStockDDE(symbol, target_date)`，symbol 为六位股票代码、日期 `YYYY-MM-DD`；单股一次请求返回多日历史，并非批量多股或逐日请求。C784 三次串行请求分别 1543.602、1756.324、805.645 ms，采集请求间至少间隔 1.1 秒；此样本不能推导服务端配额。现行串行限速获取，已完成股票每日用 size=5 复核最近五个交易日；请求连接/读取超时 5/15 秒。供应商安全限速 UNKNOWN-D1（runner 查）。响应 `Date` 为 YYYYMMDD 字符串数组、`DDJE` 整数数组、`ttag` 浮点、`errcode` 字符串；按索引对齐，只保留目标日及以前的有效日期，缺值/非有限值为 NULL。现行接受 errcode 缺省、空、0、None，其余抛错；新合同应记录原始错误码并重试，缺省是否可视作成功 UNKNOWN-D2（runner 查）。最新返回日期早于目标日为 stale，不把历史响应当目标日成功。
 
 现行聚合 `LAST(ts)` 得到每股水位，仅对水位早于目标日的股票请求，默认取返回的最近 250 个交易日，逐股写入并读回；现行会重写返回窗口而非仅写水位之后，也无法发现水位之前的洞。目标实现按日历和已存在股日集合补缺，只写缺失日期，单独处理历史洞；修订走 §7 失效流程。允许停牌 `suspended_no_same_day_dde`、已确认空响应 `kaipan_confirmed_empty_response`、上市前 `pre_listing` 三类候选白名单；每条必须带可信证据、日期、symbol 和原因，上市后新股无数据不能自动归为上市前。停牌证据应独立于日K依赖，来源 UNKNOWN-D3（runner 查）；空响应是否足以证明业务上可豁免 UNKNOWN-D4（runner 查）。未知失败绝不能自动白名单。
 
 日完整的严格候选定义：目标日冻结的合格股票集合中，每股有有效 DDJE 行或经证据确认的白名单，且无未解决缺口；记录 expected、有效行数、豁免和未解决集合，去重及防止重复计数。没有经验证的覆盖阈值或权威股票集合/白名单合同，数值阈值 UNKNOWN-D5（runner 查）；在确认前不发布 FORMAL，不能拿 90/90 样本或单纯总行数证明全市场完整。单股请求默认最多 3 次，退避 0.5、1 秒，指数增长上限 30 秒；逐股失败不阻塞其他股，持久化已成功进度后整体返回可重试失败。F1 唯一写 `daily_dde_v1`；F2 和读取方只读。旧完整版本可作为明确标记 PARTIAL/STALE 的降级视图，保留原日期、版本与 available_at，不冒充当日 FORMAL，也不能满足 F2 的 FORMAL 依赖。
 
-现 registry 写 15:12、依赖日K，expected_by 20:30；timeline 为 21:00，gate 却为 daily_kline_ready。建议统一 21:00、calendar_ready，消除日K数据依赖，避开收盘链及 Baostock 窗口，依据是现行调度而非供应商稳定性证明。当日 DDE 最早稳定时刻 UNKNOWN-D6（runner 分时连续采样并查供应商）；验证前不得把 21:00 当稳定保证，expected_by 亦须编排负责人重定。
+DDE 为历史数据；F1 事件 `daily_dde_0200` 每个日历日 02:00 触发，目标为前一交易日，截止 06:30，无日K gate。
 
 ## §3 F1 存储与日标记
 
@@ -77,10 +77,8 @@ python -m engine_core.dde_derived --date 2026-11-06 --pull-upstream
 
 ## §6 编排与降级
 
-以下为完整拟议 timeline 片段，`daily_kline_close_1505` 是既有事件名，F2 的 after 是调度顺序，不代替日K FORMAL 和 F1 日完整检查；依赖就绪后触发，21:30 为兜底，跨日和最终失败语义须实现卡验证。F1 最晚 23:59:59 可能晚于 F2，F2 必须等待重试，不假设 21:30 已完成。`on_deadline=degrade` 不证明实际最终降级生效（框架 U13）。
-```json
-{"functions":{"daily_dde_postclose":{"after":[],"args":{"dataset":"daily_dde","max_workers":2,"attempts":3,"history_trading_days":250,"write_redis":true},"calendar":"trading_day","cost":"heavy","data_date_offset":0,"depends_on":[],"enabled":true,"gate":"calendar_ready","handler":"postmarket_data","late_until":"23:59:59","on_deadline":"missed","on_phase_mismatch":"defer","phases":["NIGHT"],"trigger_type":"window","policy":"daily_dde"},"dde_derived":{"after":["daily_dde_postclose","daily_kline_close_1505"],"args":{"item_id":"dde_indicators"},"available_after":null,"calendar":"trading_day","cost":"medium","data_date_offset":0,"depends_on":[],"enabled":true,"gate":"calendar_ready","handler":"fetch_item","late_until":"23:59:59","on_deadline":"degrade","on_phase_mismatch":"defer","phases":["NIGHT"],"trigger_type":"window","policy":"dde_derived"}},"timeline":[{"at":"21:00:00","run":[{"fn":"daily_dde_postclose","id":"daily_dde_postclose","deadline":"23:59:59"}]},{"at":"21:30:00","run":[{"fn":"dde_derived","id":"dde_derived_2130","deadline":"23:59:59"}]}],"policies":{"daily_dde":{"catchup":"run_in_window","retry_backoff":"5m","retry_until_late":true,"silent_until_last":false,"ladder":[{"name":"kaipan","attempts":5,"backoff":"5m*2","backoff_cap":"30m","timeout":"2h10m","budget_enabled":false,"on_timeout":"retry","until":"late_until"}]},"dde_derived":{"catchup":"run_in_window","retry_backoff":"5m","retry_until_late":true,"silent_until_last":false,"ladder":[{"name":"derived","attempts":5,"backoff":"5m","backoff_cap":"30m","timeout":"540s","budget_enabled":false}]}}}
-```
+F1 `daily_dde_0200` 每日 02:00 执行至 06:30，串行限速并以 size=5 复核近期数据；目标为前一交易日，失败在窗口内重试。F2 编排另卡实施，须等待 F1 与日K正式依赖就绪。
+
 对应 registry 项见 §5；F1 唯一来源开盘啦，失败后保留进度并重试，旧完整结果仅以 PARTIAL/STALE 降级展示；F2 缺任一正式依赖不计算正式结果，旧派生结果同样标旧日期、血缘及 PARTIAL。无替代来源，不把降级语义当成同日事实。
 
 ## §7 增量、失效与回填

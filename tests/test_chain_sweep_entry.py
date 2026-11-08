@@ -94,7 +94,6 @@ def test_the_chain_events_sit_after_the_producers_and_before_the_consumers_of_th
         assert event["deadline"] > event["at"] and event["late_until"] > event["deadline"]   # a real start window
         ladder = SCHEDULE["profiles"][event["profile"]]["ladder"][0]
         assert event["args"]["chain"]["budget_seconds"] < int(ladder["timeout"].rstrip("m")) * 60   # never killed mid-build
-    assert events["chain_sweep_2030"]["late_until"] <= events["daily_dde_postclose"]["at"]
     assert events["chain_sweep_0820"]["late_until"] < events["preopen_check_0835"]["at"]
     assert events["chain_sweep_0130"]["at"] > events["daily_kline_backfill"]["at"]                # after the 01:00 fill
 
