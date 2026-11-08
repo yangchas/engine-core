@@ -249,3 +249,26 @@ def test_td_recordings_have_matching_provenance():
         assert meta["kind"] in {"raw_td_result", "raw_td_error", "raw_td_function_output"} and meta["command"] and meta.get("source"), name
         text = (gzip.decompress(body) if name.endswith(".gz") else body).decode("utf-8").lower()
         assert not any(word in text for word in CREDENTIAL_WORDS), name
+
+
+def test_c852_fixture_manifest_integrity():
+    root = Path(__file__).parent / 'fixtures' / 'price_volume_c852'
+    assert not list(root.rglob('*.py'))
+    manifest = json.loads((root / 'MANIFEST.json').read_text(encoding='utf-8'))
+    assert manifest['id'] == 'C852'
+    assert '不是上游数据' in (root / 'PROVENANCE.md').read_text(encoding='utf-8')
+    for name, meta in manifest['files'].items():
+        body = (root / name).read_bytes()
+        assert len(body) == meta['bytes'], name
+        assert hashlib.sha256(body).hexdigest() == meta['sha256'], name
+
+
+def test_c860_reference_provenance_integrity():
+    root = Path(__file__).parent / 'fixtures' / 'price_volume_c852'
+    hashes = {
+        'expected_skip_suspended.jsonl': 'bc40f9ad82dcf33b1e42c2f9d3e7e1fcd28f5d957129d3890699b8acfb92a6e5',
+        'PROVENANCE_skip_suspended.md': 'b529a882f9a27982abb28b9a4a6df59b5fae4008f493d653093e88217ef51a0a',
+    }
+    for name, digest in hashes.items():
+        assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
+    assert '不是上游数据' in (root / 'PROVENANCE_skip_suspended.md').read_text()

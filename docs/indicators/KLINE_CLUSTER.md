@@ -10,7 +10,7 @@ PLAN: D8 数据层欠账（PLAN-MASTER §11.2；GOAL-datalayer G5）。状态：
 
 只读已发布 L0 `daily_kline` 与 `adjust_factor`（框架 §2.1–2.2、§4）；不直接读 market_data1 或网络。日K字段（C784）：`open/high/low/close/pre_close` 元，`pct_chg` 百分点，`volume_shares` 股 BIGINT，`amount_yuan` 元 DOUBLE，`turnover_pct` 百分比，`suspended` BOOL；`ts` 交易日、`symbol` tag、`version`。因子事件原始 `dividOperateDate/foreAdjustFactor` 字符串（C786），目标表每股一行 `ts/version/event_count/sha256/events_json`，ts 为处理时刻，JSON 保存全部事件及原始因子字符串（框架 §2.9）；TD KEEP 与事件日范围限制促成单行原子替换，U2 对该事实不再成立，部署前 DDL 已由大脑审批。`pct_chg` 使用源百分比而非重新混用复权价；volume 不复权。金额、换手只在对应指标使用，不因无成交补零。
 
-对每股取 as-of 可见完整因子快照；事件按日排序，对日 d 找 `event_date <= d` 最近事件，以 Decimal 解析 `foreAdjustFactor`，前复权 OHLC = 原 OHLC × 该因子，事件日使用新因子（C786；五股实测范围，不推为普遍市场规则）。无此前事件或覆盖、版本未证明则价格相关结果 NULL/PARTIAL，不填 1；跨除权计算前日收盘使用该日自身复权 close，ATR 不使用原始 `pre_close`。C786 的样本不证明新事件前后重发行为。停牌日和上市首日的源语义 UNKNOWN-K1；本合同暂不把停牌零行情当有效K，保留有原因的缺失并阻止递推跨未知缺口，恢复需明确重算；除权日因子选择已在样本验证，其他事件类型 UNKNOWN-K2。缺失日与已确认非交易日不能等同。
+对每股取 as-of 可见完整因子快照；事件按日排序，对日 d 找 `event_date <= d` 最近事件，以 Decimal 解析 `foreAdjustFactor`，前复权 OHLC = 原 OHLC × 该因子，事件日使用新因子（C786；五股实测范围，不推为普遍市场规则）。无此前事件或覆盖、版本未证明则价格相关结果 NULL/PARTIAL，不填 1；跨除权计算前日收盘使用该日自身复权 close，ATR 不使用原始 `pre_close`。C786 的样本不证明新事件前后重发行为。停牌日不产出行，递推状态与窗口保留：停牌日无成交，不是交易 bar，与行情软件一致。上市首日的源语义仍为 UNKNOWN-K1；除权日因子选择已在样本验证，其他事件类型 UNKNOWN-K2。缺失日与已确认非交易日不能等同。
 
 默认请求最近120个交易日分区与窗口起点之前最近事件；不是120根可交易K的保证。120日回填起点由交易日历从目标日含当日向前数第120个交易日，实际日期依目标日和日历确定；个股不足时如实 PARTIAL。递推要从最早合格历史开始或使用血缘匹配的前一检查点，120根不是收敛保证；历史缺失不能伪称全历史稳定。FORMAL 覆盖、时点与白名单按框架 §2、§4，因子是事件快照而非逐日要求有行。
 
@@ -188,7 +188,7 @@ registry 项为 §7 声明，须与现行 registry 必填字段及运行时 sche
 
 ## §12 UNKNOWN 与待 runner 查证项
 
-- UNKNOWN-K1：停牌、上市首日源行、首日 pre_close 与缺失原因；runner 真实样本卡按日K与交易日历核对。
+- UNKNOWN-K1：上市首日源行、首日 pre_close 与缺失原因；runner 真实样本卡按日K与交易日历核对。
 - UNKNOWN-K2：其他除权事件类型、首事件前因子和新事件前后快照重发；复权 runner/实现卡以事件前后多次采集查证。
 - UNKNOWN-K3：5514股×120日的实测耗时、峰值内存和存储；实现后 runner 真实数据性能卡测量。
 - UNKNOWN-K4：稳定方差舍入阈值、逐指标绝对/相对容差和递推收敛要求；指标实现/研究卡对照真实数据及高精度参考确定。
