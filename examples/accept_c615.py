@@ -230,7 +230,7 @@ def _schedule_contract() -> dict[str, Any]:
     schedule = json.loads((ROOT / "src/engine_core/guardian/schedule.json").read_text(encoding="utf-8"))
     events = {str(item.get("event_id")): item for item in schedule.get("events", [])
               if isinstance(item, dict) and item.get("event_id")}
-    target = events["daily_dde_postclose"]
+    target = events["daily_dde_0200"]
     expected_after = ["daily_kline_close_1505", "baostock_probe_1730", "close_recap", "postmarket_publish"]
     profile = schedule["profiles"]["daily_dde"]
     rung = profile["ladder"][0]
@@ -254,7 +254,7 @@ def _rehearse(database: str, trade_date: str, symbol: str) -> dict[str, Any]:
     event_args = json.dumps({"symbols": [symbol], "target_date": trade_date, "database": database,
                              "history_trading_days": HISTORY_TRADING_DAYS, "max_workers": MAX_WORKERS,
                              "write_redis": False, "skip_redis": True}, separators=(",", ":"))
-    command = [sys.executable, str(ROOT / "examples/rehearse_event.py"), "--event", "daily_dde_postclose",
+    command = [sys.executable, str(ROOT / "examples/rehearse_event.py"), "--event", "daily_dde_0200",
                "--isolate-target", "--minutes", "1", "--td-database", database, "--timeout-minutes", "180",
                "--isolation-heavy-max-load5", "100",
                "--event-args-json", event_args]
