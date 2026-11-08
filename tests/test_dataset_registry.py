@@ -71,3 +71,9 @@ def test_adjust_factor_registry_entry():
 def test_price_volume_registry_entry():
     item = next(item for item in load_registry() if item['id'] == 'price_volume')
     assert item['cadence'] and item['td_sink']['stable'] == 'price_volume_indicators_v1'
+
+
+def test_chip_and_dde_registry_entries():
+    items = {item['id']: item for item in load_registry()}
+    for name, stable in [('chip_peak', 'chip_indicators_v1'), ('dde_derived', 'dde_indicators_v1')]:
+        assert items[name]['cadence'] and items[name]['td_sink']['stable'] == stable

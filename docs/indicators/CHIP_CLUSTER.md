@@ -116,11 +116,7 @@ python -m engine_core.chip_cluster --date 2026-11-06 --window 120 --pull-upstrea
 
 ## §8 编排
 
-拟新增 timeline 完整片段，与价量簇同一 21:30 sweep/兜底事件，避开 17:30–18:30 Baostock 窗口。`after` 空不表示依赖已经满足；两个簇各自检查 L0，日K FORMAL 后 chain_sweep 触发是待实施接线，夜间事件兜底。`on_deadline=degrade` 不等于最终失败自动降级，框架 U13 未解决前不可假设。
-```json
-{"functions":{"chip_indicators":{"after":[],"args":{"item_id":"chip_indicators"},"available_after":null,"calendar":"trading_day","cost":"medium","data_date_offset":0,"depends_on":[],"enabled":true,"gate":"calendar_ready","handler":"fetch_item","late_until":"23:30:00","on_deadline":"degrade","on_phase_mismatch":"defer","order":null,"phases":["NIGHT"],"trigger_type":"window","policy":"policy_12"}},"timeline":[{"at":"21:30:00","run":[{"fn":"chip_indicators","id":"chip_indicators_2130","deadline":"23:30:00"}]}],"policies":{"policy_12":{"catchup":"run_in_window","retry_backoff":"","retry_until_late":false,"silent_until_last":false,"ladder":[{"name":"legacy","attempts":1,"backoff":"","backoff_cap":"5m","timeout":"540s","budget_enabled":false}]}}}
-```
-registry `items` 数组加入 §7 JSON；requires/produces 当前运行时不识别，须实现 schema、handler、sweep 和 native 校验，不可声称已有能力。
+`chip_peak_postclose` 在交易日 17:40–20:50 处理当日，`chip_peak_0145` 每日 01:45–05:30 处理前一交易日，均为增量运行。使用时间槽而不设 `depends_on`：该依赖只接受上游 SUCCEEDED，日K降级成功会使下游跳过；窗口事件的 `after` 也不等待上游。首次部署须手动执行全市场 rebuild；空状态增量返回 NEEDS_REBUILD 降级。
 
 ## §9 验证与验收
 

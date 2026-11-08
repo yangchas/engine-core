@@ -408,6 +408,32 @@ def _run_event(request):
         if request.get("asof") or request.get("now"):
             today_request["as_of"] = request.get("asof") or request.get("now")
         return run_limit_up_today(today_request, root, dry_run=dry)
+    if name == "postmarket_data" and (args.get("dataset") == "chip_peak"
+                                       or event_id in ("chip_peak_postclose", "chip_peak_0145")
+                                       or event_id.startswith(("chip_peak_postclose_rh", "chip_peak_0145_rh"))):
+        from engine_core.data_pipeline.chip_peak import run as run_chip_peak
+        if not request.get("data_date"):
+            return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                        "retryable": False, "detail": "chip_peak_target_unavailable"}
+        from engine_core.data_pipeline.td_sink import TdUnavailable
+        from engine_core.data_pipeline.auction_amount_facts import _registered_failure
+        try:
+            return run_chip_peak({"trade_date": target_day, "args": {"mode": "incremental"}}, root, dry_run=dry)
+        except TdUnavailable as exc:
+            return _registered_failure(exc.error_code, {"message": str(exc)})
+    if name == "postmarket_data" and (args.get("dataset") == "dde_derived"
+                                       or event_id == "dde_derived_0445"
+                                       or event_id.startswith("dde_derived_0445_rh")):
+        from engine_core.data_pipeline.dde_derived import run as run_dde_derived
+        if not request.get("data_date"):
+            return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                        "retryable": False, "detail": "dde_derived_target_unavailable"}
+        from engine_core.data_pipeline.td_sink import TdUnavailable
+        from engine_core.data_pipeline.auction_amount_facts import _registered_failure
+        try:
+            return run_dde_derived({"trade_date": target_day}, root, dry_run=dry)
+        except TdUnavailable as exc:
+            return _registered_failure(exc.error_code, {"message": str(exc)})
     if name == "postmarket_data" and (args.get("dataset") == "price_volume"
                                        or event_id in ("price_volume_postclose", "price_volume_0130")
                                        or event_id.startswith(("price_volume_postclose_rh", "price_volume_0130_rh"))):
