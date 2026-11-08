@@ -20,9 +20,51 @@ _FIELDS = ('ma5', 'ma10', 'ma20', 'ma60', 'ema12', 'ema26', 'dif', 'dea',
            'limit_up_days_5', 'vol_ratio')
 
 
+def _update_wilder(state, close, high, low):
+    result = {}
+    if None in (close, high, low):
+        for key in ('wilder_prev_close', 'rsi6', 'rsi12', 'rsi24', 'atr14'):
+            state.pop(key, None)
+    else:
+        previous = state.get('wilder_prev_close')
+        tr = high - low if previous is None else max(high - low, abs(high - previous), abs(low - previous))
+        atr = state.setdefault('atr14', {'count': 0, 'sum': 0.0})
+        if atr['count'] < 14:
+            atr['count'] += 1
+            atr['sum'] += tr
+            if atr['count'] == 14:
+                atr['value'] = atr['sum'] / 14
+        else:
+            atr['value'] = (13 * atr['value'] + tr) / 14
+        result['atr14'] = atr.get('value')
+        if previous is not None:
+            delta = close - previous
+            gain, loss = max(delta, 0), max(-delta, 0)
+            for period in (6, 12, 24):
+                item = state.setdefault(f'rsi{period}', {'count': 0, 'gain': 0.0, 'loss': 0.0})
+                if item['count'] < period:
+                    item['count'] += 1
+                    item['gain'] += gain
+                    item['loss'] += loss
+                    if item['count'] == period:
+                        item['gain'] /= period
+                        item['loss'] /= period
+                else:
+                    item['gain'] = (item['gain'] * (period - 1) + gain) / period
+                    item['loss'] = (item['loss'] * (period - 1) + loss) / period
+                if item['count'] == period:
+                    total = item['gain'] + item['loss']
+                    result[f'rsi{period}'] = 100 * item['gain'] / total if total else 0.0
+        state['wilder_prev_close'] = close
+    return result
+
+
 def calculate_bar(bar, events, state=None, *, gap_before=False, factor_quality=None):
     """Return (indicators, JSON-serializable checkpoint) for one observed bar."""
     state = dict(state or {})
+    for key in ('rsi6', 'rsi12', 'rsi24', 'atr14'):
+        if key in state:
+            state[key] = dict(state[key])
     if bar is None or bar.get('suspended') or events is None or factor_quality == 'UNPROCESSED':
         return None, state
     if gap_before:
@@ -97,39 +139,22 @@ def calculate_bar(bar, events, state=None, *, gap_before=False, factor_quality=N
     if len(window) >= 6 and close is not None and window[-6][0] not in (None, 0):
         result['change_pct_5d'] = 100 * (close / window[-6][0] - 1)
     if None in (close, high, low):
+        state.pop('wilder_seed_bars', None)
+        _update_wilder(state, close, high, low)
+    elif 'wilder_seed_bars' in state or 'wilder_prev_close' not in state:
+        seed_bars = list(state.get('wilder_seed_bars', []))
+        seed_bars.append([close, high, low])
         for key in ('wilder_prev_close', 'rsi6', 'rsi12', 'rsi24', 'atr14'):
             state.pop(key, None)
-    else:
-        previous = state.get('wilder_prev_close')
-        tr = high - low if previous is None else max(high - low, abs(high - previous), abs(low - previous))
-        atr = state.setdefault('atr14', {'count': 0, 'sum': 0.0})
-        if atr['count'] < 14:
-            atr['count'] += 1
-            atr['sum'] += tr
-            if atr['count'] == 14:
-                atr['value'] = atr['sum'] / 14
+        for seed_close, seed_high, seed_low in seed_bars:
+            recursive = _update_wilder(state, seed_close, seed_high, seed_low)
+        result.update(recursive)
+        if len(seed_bars) >= 60:
+            state.pop('wilder_seed_bars', None)
         else:
-            atr['value'] = (13 * atr['value'] + tr) / 14
-        result['atr14'] = atr.get('value')
-        if previous is not None:
-            delta = close - previous
-            gain, loss = max(delta, 0), max(-delta, 0)
-            for period in (6, 12, 24):
-                item = state.setdefault(f'rsi{period}', {'count': 0, 'gain': 0.0, 'loss': 0.0})
-                if item['count'] < period:
-                    item['count'] += 1
-                    item['gain'] += gain
-                    item['loss'] += loss
-                    if item['count'] == period:
-                        item['gain'] /= period
-                        item['loss'] /= period
-                else:
-                    item['gain'] = (item['gain'] * (period - 1) + gain) / period
-                    item['loss'] = (item['loss'] * (period - 1) + loss) / period
-                if item['count'] == period:
-                    total = item['gain'] + item['loss']
-                    result[f'rsi{period}'] = 100 * item['gain'] / total if total else 0.0
-        state['wilder_prev_close'] = close
+            state['wilder_seed_bars'] = seed_bars
+    else:
+        result.update(_update_wilder(state, close, high, low))
     result['rsi_6'] = result['rsi6']
     if close is None:
         for key in ('ema12', 'ema26', 'dea'):
@@ -172,7 +197,7 @@ def calculate_bar(bar, events, state=None, *, gap_before=False, factor_quality=N
         state.pop('k', None)
         state.pop('d', None)
     if any(result[name] is None for name in _FIELDS):
-        result['partial_reasons'].append('WARMUP_SHORT' if len(window) < 60 else 'INDICATOR_UNAVAILABLE')
+        result['partial_reasons'].append('WARMUP_SHORT' if len(window) < 60 or 'wilder_seed_bars' in state else 'INDICATOR_UNAVAILABLE')
     result['quality'] = 'PARTIAL' if result['partial_reasons'] else 'FORMAL'
     return result, state
 
@@ -191,6 +216,18 @@ _RESULT_COLUMNS = (
     'state_rsi6_gain', 'state_rsi6_loss', 'state_rsi12_gain', 'state_rsi12_loss',
     'state_rsi24_gain', 'state_rsi24_loss', 'state_atr14', 'state_prev_close', 'state_count',
 )
+
+
+def _attach_state_columns(result, state):
+    for key in ('ema12', 'ema26', 'dea', 'k', 'd'):
+        result['state_' + key] = state.get(key)
+    for period in (6, 12, 24):
+        item = state.get(f'rsi{period}', {})
+        for side in ('gain', 'loss'):
+            result[f'state_rsi{period}_{side}'] = item.get(side) if item.get('count') == period else None
+    result['state_atr14'] = state.get('atr14', {}).get('value')
+    result['state_prev_close'] = state.get('wilder_prev_close')
+    result['state_count'] = state.get('atr14', {}).get('count', 0)
 
 
 class PriceVolumeStore:
@@ -401,8 +438,7 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
             result.update(version=version, algo_version='price_volume_v1',
                           input_refs=json.dumps({'daily_kline': bar.get('version'), 'partial_reasons': result['partial_reasons']}, separators=(',', ':')),
                           available_at=available_at, warm=result['quality'] == 'FORMAL')
-            for key in ('ema12', 'ema26', 'dea', 'k', 'd'):
-                result['state_' + key] = state.get(key)
+            _attach_state_columns(result, state)
             rows[symbol], new_states[symbol] = result, state
             if result['quality'] == 'PARTIAL':
                 detail['partial_total'] += 1
@@ -515,8 +551,7 @@ def _rebuild(facts, owned, root, day, from_day, started, clock):
             result.update(version=version, algo_version='price_volume_v1',
                           input_refs=json.dumps({'daily_kline': bar.get('version'), 'partial_reasons': result['partial_reasons']}, separators=(',', ':')),
                           available_at=available_at, warm=result['quality'] == 'FORMAL')
-            for key in ('ema12', 'ema26', 'dea', 'k', 'd'):
-                result['state_' + key] = state.get(key)
+            _attach_state_columns(result, state)
             rows[symbol] = result
         if current_day >= from_day:
             facts.write_results(current_day, rows)
