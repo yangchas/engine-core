@@ -60,3 +60,28 @@ def test_consecutive_fetch_failures_abort():
     assert calls == ['000001', '000002']
     assert caught.value.summary['aborted'] == 'consecutive_failures'
     assert caught.value.summary['error_code'] == 'DDE_SYNC_INCOMPLETE_RETRYABLE'
+
+
+def test_completed_symbol_rechecks_and_writes_only_changed_rows():
+    from engine_core.data_pipeline.daily_dde import build_daily_dde
+    raw = json.loads((Path(__file__).parent / 'fixtures/dde_c841/000001.json').read_text())
+    rows = build_daily_dde(raw, symbol='000001', target_date='2026-11-06', history_trading_days=5).rows
+    class PriorStore(RecordingDdeStore):
+        def __init__(self):
+            super().__init__()
+            self.watermarks['000001'] = '2026-11-06'
+            self.rows = {r['date']: dict(r) for r in rows}
+            self.rows[rows[1]['date']]['ddje'] += 1
+            self.saved = []
+        def read_symbol_rows(self, symbol, dates):
+            return {day: self.rows[day] for day in dates if day in self.rows}
+        def write_and_verify(self, symbol, changed, version):
+            self.saved.extend(changed)
+            self.rows.update({row['date']: dict(row) for row in changed})
+            return len(changed)
+    store = PriorStore()
+    result = run_daily_dde_sync(['000001'], '2026-11-06', store=store,
+                                fetcher=lambda *_: raw, attempts=1, skip_redis=True)
+    assert [r['date'] for r in store.saved] == [rows[1]['date']]
+    assert result['revised_days'] == 1
+    assert result['revised_symbols'] == 1

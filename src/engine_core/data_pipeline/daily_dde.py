@@ -225,6 +225,14 @@ class TaosDdeStore:
                     found[code] = {"symbol": code, "date": day, "ddje": _number(ddje)}
         return found
 
+    def read_symbol_rows(self, symbol: str, dates: Sequence[str]) -> dict[str, dict[str, Any]]:
+        if not _SYMBOL_RE.fullmatch(symbol) or not dates:
+            return {}
+        stamps = ",".join(str(_ts_us(day)) for day in dates)
+        rows = self._run(f"SELECT ts, ddje FROM {self.database}.{SUPER_TABLE}_{symbol} WHERE ts IN ({stamps})")
+        return {day: {"symbol": symbol, "date": day, "ddje": _number(value)}
+                for ts, value in rows if (day := _date_text(ts))}
+
     def read_suspended(self, symbols: Sequence[str], target_date: str) -> set[str]:
         """Symbols whose daily_kline row of ``target_date`` says suspended: Kaipan has no same-day DDE for them."""
         stamp = _ts_us(target_date)
@@ -488,8 +496,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
             except Exception:
                 # Explicit-symbol callers may use an isolated root without a catalog.
                 known_symbols = set()
-        requested = [symbol for symbol in candidates if before.get(symbol, "") < target]
-        skipped_completed = len(candidates) - len(requested)
+        requested = list(candidates)
+        skipped_completed = 0
         failed: dict[str, str] = {}
         known_missing: dict[str, str] = {}
         unknown_missing: dict[str, str] = {}
@@ -498,6 +506,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
         request_count = 0
         written_rows = 0
         written_symbols = 0
+        revised_days: set[str] = set()
+        revised_symbols: set[str] = set()
         comparison = {"pairs": 0, "equal": 0, "different": 0, "unmatched": 0,
                       "columns": {}, "reasons": {}}
         comparison_symbols: list[str] = []
@@ -555,10 +565,20 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                         failed[symbol] = error or "fetch_failed"
                     else:
                         try:
-                            count = store.write_and_verify(symbol, partition.rows, partition.manifest["version"])
-                            if count != len(partition.rows):
+                            rows = partition.rows[:INCREMENTAL_FETCH_SIZE] if symbol in before else partition.rows
+                            if symbol in before:
+                                previous = store.read_symbol_rows(symbol, [row["date"] for row in rows])
+                                changed = [row for row in rows if row["date"] not in previous or
+                                           previous[row["date"]]["ddje"] != row["ddje"]]
+                                revisions = [row for row in changed if row["date"] in previous]
+                                revised_days.update(row["date"] for row in revisions)
+                                if revisions:
+                                    revised_symbols.add(symbol)
+                                rows = changed
+                            count = store.write_and_verify(symbol, rows, partition.manifest["version"]) if rows else 0
+                            if count != len(rows):
                                 raise DdeError("td_readback_row_count_mismatch")
-                            written_symbols += 1
+                            written_symbols += bool(rows)
                             written_rows += count
                             latest = max(row["date"] for row in partition.rows)
                             after[symbol] = max(after.get(symbol, ""), latest)
@@ -605,7 +625,8 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                    "skipped_completed_symbols": skipped_completed,
                    "request_count": request_count, "history_trading_days": int(history_trading_days),
                    "max_workers": int(max_workers), "requested_max_workers": requested_workers, "written_symbols": written_symbols,
-                   "rows_written": written_rows, "known_missing": [
+                   "rows_written": written_rows, "revised_days": len(revised_days),
+                   "revised_symbols": len(revised_symbols), "known_missing": [
                        {"symbol": symbol, "reason": reason} for symbol, reason in sorted(known_missing.items())],
                    "unknown_missing": [{"symbol": symbol, "reason": reason} for symbol, reason in sorted(unknown_missing.items())],
                    "unknown_missing_total": len(unknown_missing),
