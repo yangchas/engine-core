@@ -16,6 +16,10 @@ DATASET = 'stock_listing'
 SOURCE = 'baostock'
 
 
+class BaostockLoginError(Exception):
+    """The Baostock login call raised an exception."""
+
+
 def fetch(client):
     """Read one complete stock-basic response from an already logged-in client."""
     observed_at = datetime.now(timezone.utc).isoformat()
@@ -41,7 +45,10 @@ def fetch(client):
 def _fetch_live():
     import baostock
     with contextlib.redirect_stdout(io.StringIO()):
-        login = baostock.login()
+        try:
+            login = baostock.login()
+        except Exception as exc:
+            raise BaostockLoginError(str(exc)) from exc
         if login.error_code != '0':
             raise RuntimeError('baostock_login_failed')
         try:
@@ -109,6 +116,8 @@ def run(trade_date, *, store=None, fetcher=None, min_rows=3000):
     except Exception as exc:
         detail['elapsed'] = round(time.monotonic() - started, 3)
         detail['message'] = f'{type(exc).__name__}: {str(exc)[:200]}'
+        if isinstance(exc, BaostockLoginError):
+            return _registered_failure('BAOSTOCK_LOGIN_ERROR', detail)
         if isinstance(exc, TdResourceExhausted) or td_memory_exhausted(exc):
             return _registered_failure('TD_RESOURCE_EXHAUSTED', detail)
         if isinstance(exc, RuntimeError):

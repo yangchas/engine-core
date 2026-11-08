@@ -86,3 +86,15 @@ def test_run_maps_baostock_failures(message, error_code):
 
     code, reply = run('2026-11-08', store=Store(), fetcher=fail)
     assert code == 75 and reply['error_code'] == error_code
+
+
+def test_run_maps_baostock_login_exception(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    def fail():
+        raise ConnectionError('baostock.login unavailable')
+
+    monkeypatch.setitem(sys.modules, 'baostock', SimpleNamespace(login=fail))
+    code, reply = run('2026-11-06', store=Store())
+    assert code == 75 and reply['error_code'] == 'BAOSTOCK_LOGIN_ERROR'
