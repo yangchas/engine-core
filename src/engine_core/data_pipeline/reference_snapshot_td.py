@@ -17,6 +17,7 @@ _TABLES = {
     "plate_members": "plate_members_latest",
     "plate_registry": "plate_registry_latest",
     "stock_static": "stock_static_latest",
+    "stock_listing": "stock_listing_latest",
 }
 _META_TABLE = "reference_snapshot_versions"
 _DB_RE = re.compile(r"^(?:core_data|core_dev_[a-z0-9_]{1,24})$")
