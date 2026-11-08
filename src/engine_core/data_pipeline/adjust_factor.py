@@ -33,7 +33,7 @@ def factor_for(events, day):
 
 
 class AdjustFactorStore:
-    """TD event storage; U2 is unresolved, so replacement is temporary and non-atomic."""
+    """One atomic snapshot row per symbol, timestamped at processing time."""
     def __init__(self, store):
         from .td_sink import validate_database_name
         self.store = store
@@ -42,12 +42,11 @@ class AdjustFactorStore:
     def ensure_schema(self):
         db = self.database
         self.store._run(f'CREATE STABLE IF NOT EXISTS {db}.adjust_factor_v1 '
-                        '(ts TIMESTAMP, fore_adjust_factor DOUBLE, back_adjust_factor DOUBLE, '
-                        'adjust_factor DOUBLE, version VARCHAR(24)) TAGS (symbol VARCHAR(8))')
-        # Proposed DDL requires approval before deployment.
-        self.store._run(f'CREATE TABLE IF NOT EXISTS {db}.adjust_factor_status_v1 '
-                        '(ts TIMESTAMP, symbol VARCHAR(8), state VARCHAR(8), version VARCHAR(24), '
-                        'row_count INT, processed_at VARCHAR(40))')
+                        '(ts TIMESTAMP, version VARCHAR(24), event_count INT, sha256 VARCHAR(64), '
+                        'events_json VARCHAR(60000)) TAGS (symbol VARCHAR(8))')
+        schema = self.store._run(f'DESCRIBE {db}.adjust_factor_v1', strict=True)
+        if [str(row[0]).lower() for row in schema] != ['ts', 'version', 'event_count', 'sha256', 'events_json', 'symbol']:
+            raise ValueError('adjust_factor_v1_incompatible_schema')
         self.store._run(f'CREATE TABLE IF NOT EXISTS {db}.adjust_factor_days '
                         '(ts TIMESTAMP, trade_date VARCHAR(10), version VARCHAR(24), '
                         'business_status VARCHAR(16), row_count INT, sha256 VARCHAR(64), '
@@ -70,22 +69,6 @@ class AdjustFactorStore:
                 symbols.add(self._symbol(symbol))
         return symbols, 'stock_listing'
 
-    def read_status(self, symbol):
-        from .td_sink import _literal
-        symbol = self._symbol(symbol)
-        rows = self.store._run(f"SELECT state, version, row_count, processed_at FROM {self.database}.adjust_factor_status_v1 WHERE symbol={_literal(symbol)}", missing_ok=True, strict=True)
-        return dict(zip(('state', 'version', 'row_count', 'processed_at'), rows[0])) if rows else None
-
-    def write_status(self, symbol, state, version, row_count, processed_at):
-        from .td_sink import _literal
-        symbol = self._symbol(symbol)
-        if state not in ('OK', 'EMPTY', 'ERROR'):
-            raise ValueError('invalid_status')
-        # A stable, distinct microsecond timestamp per six-digit symbol allows upserts.
-        ts = 1794096000000000 + int(symbol)
-        fields = (symbol, state, version if state == 'OK' else '', row_count, processed_at)
-        self.store._run(f"INSERT INTO {self.database}.adjust_factor_status_v1 VALUES ({ts}, " + ', '.join(_literal(v) for v in fields) + ')')
-
     @staticmethod
     def _symbol(symbol):
         import re
@@ -93,46 +76,70 @@ class AdjustFactorStore:
             raise ValueError('bad_symbol:' + str(symbol))
         return symbol
 
-    def _all_events(self, symbol):
-        symbol = self._symbol(symbol)
-        rows = self.store._run(f'SELECT ts, fore_adjust_factor, back_adjust_factor, adjust_factor, version '
-                               f'FROM {self.database}.adjust_factor_{symbol} ORDER BY ts', missing_ok=True, strict=True)
-        return [{'dividOperateDate': str(ts)[:10], 'foreAdjustFactor': str(fore),
-                 'backAdjustFactor': str(back), 'adjustFactor': str(adjust), 'version': str(version)}
-                for ts, fore, back, adjust, version in rows]
+    @staticmethod
+    def _decode(snapshot):
+        import json
+        version, count, digest, payload = snapshot
+        entries = json.loads(payload)
+        if len(entries) != count:
+            raise ValueError('adjust_factor_event_count_mismatch')
+        rows = [{'dividOperateDate': x['date'], 'foreAdjustFactor': x['fore'],
+                 'backAdjustFactor': x['back'], 'adjustFactor': x['adjust']} for x in entries]
+        if _snapshot_digest(rows) != digest:
+            raise ValueError('adjust_factor_sha256_mismatch')
+        return rows, 'FORMAL' if rows else 'NO_EVENTS'
 
     def read_events(self, symbol):
-        rows = self._all_events(symbol)
-        versions = {row['version'] for row in rows}
-        if not versions:
-            return [], 'NO_EVENTS'
-        latest = max(versions)
-        return [row for row in rows if row['version'] == latest], ('MIXED_VERSION' if len(versions) > 1 else 'FORMAL')
+        symbol = self._symbol(symbol)
+        rows = self.store._run(f'SELECT version, event_count, sha256, events_json '
+                               f'FROM {self.database}.adjust_factor_{symbol} ORDER BY ts DESC LIMIT 1',
+                               missing_ok=True, strict=True)
+        return self._decode(rows[0]) if rows else ([], 'UNPROCESSED')
+
+    def read_events_many(self, symbols):
+        from .td_sink import _literal
+        result = {}
+        symbols = sorted({self._symbol(s) for s in symbols})
+        for start in range(0, len(symbols), 200):
+            batch = symbols[start:start + 200]
+            sql = (f'SELECT symbol, LAST_ROW(version), LAST_ROW(event_count), LAST_ROW(sha256), '
+                   f'LAST_ROW(events_json) FROM {self.database}.adjust_factor_v1 WHERE symbol IN ('
+                   + ', '.join(_literal(s) for s in batch) + ')')
+            rows, _ = self.store._day_scan(sql, suffix=' GROUP BY tbname, symbol', strict=True)
+            for symbol, *snapshot in rows:
+                result[str(symbol)] = self._decode(snapshot)
+        return result
 
     def replace_snapshot(self, symbol, rows, version):
-        from .td_sink import _literal, trade_day_ts_us
-        import re
+        from .td_sink import _literal
+        import json, re, time
         symbol = self._symbol(symbol)
         if not re.fullmatch(r'\d{14}-[0-9a-f]{8}', version):
             raise ValueError('bad_version')
-        old = self._all_events(symbol)
-        values = []
-        days = set()
+        entries = []
         for row in rows:
             day = date.fromisoformat(row['dividOperateDate']).isoformat()
-            if day in days:
-                raise ValueError('duplicate_event_date')
-            days.add(day)
-            factors = [Decimal(str(row[key])) for key in ('foreAdjustFactor', 'backAdjustFactor', 'adjustFactor')]
-            if any(not value.is_finite() or value <= 0 for value in factors):
+            factors = [str(row[key]) for key in ('foreAdjustFactor', 'backAdjustFactor', 'adjustFactor')]
+            if any(not Decimal(v).is_finite() or Decimal(v) <= 0 for v in factors):
                 raise ValueError('invalid_factor')
-            values.append(f"({trade_day_ts_us(day)}, {', '.join(str(value) for value in factors)}, {_literal(version)})")
-        db = self.database
-        if values:
-            self.store._run(f"INSERT INTO {db}.adjust_factor_{symbol} USING {db}.adjust_factor_v1 "
-                            f"TAGS('{symbol}') VALUES " + ' '.join(values))
-        for day in sorted({row['dividOperateDate'] for row in old} - days):
-            self.store._run(f'DELETE FROM {db}.adjust_factor_{symbol} WHERE ts = {trade_day_ts_us(day)}', missing_ok=True)
+            entries.append(dict(zip(('date', 'fore', 'back', 'adjust'), [day] + factors)))
+        entries.sort(key=lambda x: x['date'])
+        if len({x['date'] for x in entries}) != len(entries):
+            raise ValueError('duplicate_event_date')
+        payload = json.dumps(entries, ensure_ascii=False, separators=(',', ':'))
+        if len(payload.encode('utf-8')) > 60000:
+            raise ValueError('adjust_factor_events_json_exceeds_60000_bytes')
+        old = self.store._run(f'SELECT ts FROM {self.database}.adjust_factor_{symbol} ORDER BY ts DESC LIMIT 1', missing_ok=True, strict=True)
+        ts = time.time_ns() // 1000
+        if old:
+            previous = old[0][0]
+            if hasattr(previous, 'timestamp'):
+                previous = int(previous.timestamp() * 1000000)
+            ts = max(ts, int(previous) + 1)
+        # KEEP eventually expires even the latest row; schedule periodic full refresh later.
+        self.store._run(f'INSERT INTO {self.database}.adjust_factor_{symbol} USING {self.database}.adjust_factor_v1 '
+                        f"TAGS('{symbol}') (ts, version, event_count, sha256, events_json) VALUES "
+                        f'({ts}, {_literal(version)}, {len(entries)}, {_literal(_snapshot_digest(rows))}, {_literal(payload)})')
 
     def read_day_marker(self, day):
         from .td_sink import trade_day_ts_us
@@ -207,7 +214,7 @@ def _snapshot_digest(rows):
     import json
     normalized = []
     for row in rows:
-        normalized.append([row['dividOperateDate']] + [str(Decimal(str(row[key])).normalize())
+        normalized.append([row['dividOperateDate']] + [str(row[key])
                           for key in ('foreAdjustFactor', 'backAdjustFactor', 'adjustFactor')])
     payload = json.dumps(sorted(normalized), separators=(',', ':')).encode()
     return hashlib.sha256(payload).hexdigest()
@@ -280,8 +287,8 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
             universe, detail['listing_source'] = facts.listing_symbols(day)
             symbols = []
             for symbol in sorted(universe):
-                status = facts.read_status(symbol)
-                if not status or status['state'] not in ('OK', 'EMPTY'):
+                _, quality = facts.read_events(symbol)
+                if quality == 'UNPROCESSED':
                     symbols.append(symbol)
             detail['bootstrap_remaining'] = len(symbols)
             detail['bootstrap_processed'] = 0
@@ -295,12 +302,8 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
                     sleep(delay)
             last_request = clock()
             detail['requested'] += 1
-            old, _quality = facts.read_events(symbol)
-            try:
-                rows = list((fetcher or _fetch_live)(symbol))
-            except Exception:
-                facts.write_status(symbol, 'ERROR', '', 0, datetime.now(timezone.utc).isoformat())
-                raise
+            old, old_quality = facts.read_events(symbol)
+            rows = list((fetcher or _fetch_live)(symbol))
             try:
                 if not lease.renew():
                     raise LeaseUnavailable('lease_lost')
@@ -310,12 +313,12 @@ def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_
                 raise LeaseUnavailable(type(exc).__name__) from exc
             old_hash, new_hash = _snapshot_digest(old), _snapshot_digest(rows)
             snapshot_hashes.append(symbol + ':' + new_hash)
-            if old_hash == new_hash:
+            if old_quality != 'UNPROCESSED' and old_hash == new_hash:
                 detail['unchanged'] += 1
-            version = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S') + '-' + new_hash[:8]
-            facts.replace_snapshot(symbol, rows, version)
-            facts.write_status(symbol, 'OK' if rows else 'EMPTY', version, len(rows), datetime.now(timezone.utc).isoformat())
-            detail['snapshots_replaced'] += 1
+            else:
+                version = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S') + '-' + new_hash[:8]
+                facts.replace_snapshot(symbol, rows, version)
+                detail['snapshots_replaced'] += 1
             if mode == 'bootstrap':
                 detail['bootstrap_processed'] += 1
                 if detail['bootstrap_processed'] % 100 == 0:
