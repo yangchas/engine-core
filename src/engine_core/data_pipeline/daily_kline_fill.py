@@ -74,6 +74,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
     days: list[str] = []
     missing: dict[str, list[str]] = {}
     empty_symbols: dict[str, list[str]] = {}
+    progress: dict[str, Any] = {"completed_days": 0, "published_days": 0, "current_day": None}
     try:
         days = sessions[-max(1, int(depth)):]
         if not store.schema_exists():
@@ -228,7 +229,9 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
             raise _abort("coverage_below_threshold",
                          {**stats, "coverage": result["coverage"], "threshold": coverage_threshold})
         if on_complete is not None and result["publish_days"]:  # lease remains held
+            result["_progress"] = progress
             on_complete(result)
+            result.pop("_progress", None)
             result["published_partitions"] = len(result.get("partitions", result["publish_days"]))
         else:
             result["publish_skipped"] = not result["publish_days"]
@@ -243,7 +246,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
             except Exception:
                 unresolved, total = [], None
             exc.daily_kline_detail = {
-                "planned_days": planned_days, "planned_symbols": planned_symbols,
+                **progress, "planned_days": planned_days, "planned_symbols": planned_symbols,
                 "requested": stats["attempted"], "empty_returns": stats["empty"],
                 "rows_written": rows_written, "incomplete_total": total,
                 "incomplete": unresolved[:20], "upstream_empty_total": 0, "upstream_empty": []}
@@ -259,7 +262,7 @@ def run_daily_kline_fill(target: str, *, store: Any, client: Any, trading_dates:
 
 
 def publish_filled_days(root: Any, store: Any, days: Sequence[str], expected_symbols: Callable[[str], set[str]],
-                        coverage_threshold: float) -> list[dict[str, Any]]:
+                        coverage_threshold: float, progress: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Write the completion marker (TD version + catalog manifest) for days whose rows reached the threshold.
 
     Completion is judged on coverage alone: every missing symbol counts as source-empty and the allowed
@@ -282,6 +285,8 @@ def publish_filled_days(root: Any, store: Any, days: Sequence[str], expected_sym
     quality_fields = ("open", "high", "low", "close", "pre_close", "pct_chg", "amount_yuan", "volume")
     outcomes = []
     for day in days:
+        if progress is not None:
+            progress["current_day"] = day
         expected = set(expected_symbols(day))
         rows = sorted(sink.read_progress_rows(day, sorted(expected)).values(), key=lambda row: row["symbol"])
         completeness = {field: ("COMPLETE" if all(row.get(field) is not None for row in rows)
@@ -304,6 +309,9 @@ def publish_filled_days(root: Any, store: Any, days: Sequence[str], expected_sym
                          "business_status": result.manifest.get("business_status"),
                          "mode": result.manifest.get("mode"), "td_publish": result.manifest.get("td_publish"),
                          "error_code": result.manifest.get("error_code")})
+        if progress is not None and outcomes[-1]["td_publish"] == "READY" and outcomes[-1]["mode"] != "RETRYABLE_INCOMPLETE":
+            progress["completed_days"] += 1
+            progress["published_days"] += 1
     bad = [item for item in outcomes if item["td_publish"] != "READY" or item["mode"] == "RETRYABLE_INCOMPLETE"]
     if bad:
         raise _abort("publish_incomplete", {"days": ",".join(item["trade_date"] for item in bad)})
@@ -431,7 +439,7 @@ def run_daily_kline_fill_from_root(root: Any, target: str, *, args: Mapping[str,
             require_all=True,
             needs_publish=needs_publish,
             on_complete=lambda done: done.__setitem__(
-                "partitions", publish_filled_days(base, store, done["publish_days"], expected_symbols, threshold)))
+                "partitions", publish_filled_days(base, store, done["publish_days"], expected_symbols, threshold, done["_progress"])))
         result.update(detail)
         if result.get("status") == "INCOMPLETE":
             exc = _abort("planned_gaps_remain", {"incomplete_total": result["incomplete_total"]})
