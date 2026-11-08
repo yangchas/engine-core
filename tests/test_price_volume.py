@@ -383,3 +383,25 @@ def test_incremental_repeated_and_earlier_days_preserve_checkpoint():
         assert not store.writes[-1]
         assert reply['detail']['skipped_already_processed'] == 1
         assert reply['detail']['recompute_registered']['count'] == 0
+
+
+def test_partial_warmup_reason_is_persisted_and_counted():
+    from engine_core.data_pipeline.price_volume import run
+    bar = next(json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
+               if json.loads(x)['symbol'] == '600519')
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    class Store:
+        def ensure_schema(self): pass
+        def read_day_rows(self, day): return {'600519': bar}
+        def read_states(self, symbols): return {}
+        def read_events_many(self, symbols): return {'600519': (events, 'FORMAL')}
+        def write_results(self, day, rows): self.rows = rows
+        def write_states(self, states): pass
+        def write_day_marker(self, *args): pass
+    store = Store()
+    _, reply = run({'trade_date': str(bar['ts'])[:10]}, '.', store=store)
+    row = store.rows['600519']
+    assert row['quality'] == 'PARTIAL'
+    assert 'WARMUP_SHORT' in row['partial_reasons']
+    assert 'WARMUP_SHORT' in json.loads(row['input_refs'])['partial_reasons']
+    assert reply['detail']['partial_reasons']['WARMUP_SHORT'] == 1

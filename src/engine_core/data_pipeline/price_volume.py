@@ -88,7 +88,9 @@ def calculate_bar(bar, events, state=None, *, gap_before=False, factor_quality=N
     if result['k'] is None:
         state.pop('k', None)
         state.pop('d', None)
-    result['quality'] = 'FORMAL' if not result['partial_reasons'] and all(result[name] is not None for name in _FIELDS) else 'PARTIAL'
+    if any(result[name] is None for name in _FIELDS):
+        result['partial_reasons'].append('WARMUP_SHORT' if len(window) < 60 else 'INDICATOR_UNAVAILABLE')
+    result['quality'] = 'PARTIAL' if result['partial_reasons'] else 'FORMAL'
     return result, state
 
 
@@ -314,7 +316,7 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
             state['last_trade_date'] = day
             state['previous_close'] = bar.get('close')
             result.update(version=version, algo_version='price_volume_v1',
-                          input_refs=json.dumps({'daily_kline': bar.get('version')}, separators=(',', ':')),
+                          input_refs=json.dumps({'daily_kline': bar.get('version'), 'partial_reasons': result['partial_reasons']}, separators=(',', ':')),
                           available_at=available_at, warm=result['quality'] == 'FORMAL')
             for key in ('ema12', 'ema26', 'dea', 'k', 'd'):
                 result['state_' + key] = state.get(key)
@@ -428,7 +430,7 @@ def _rebuild(facts, owned, root, day, from_day, started, clock):
             states[symbol] = state
             gaps.discard(symbol)
             result.update(version=version, algo_version='price_volume_v1',
-                          input_refs=json.dumps({'daily_kline': bar.get('version')}, separators=(',', ':')),
+                          input_refs=json.dumps({'daily_kline': bar.get('version'), 'partial_reasons': result['partial_reasons']}, separators=(',', ':')),
                           available_at=available_at, warm=result['quality'] == 'FORMAL')
             for key in ('ema12', 'ema26', 'dea', 'k', 'd'):
                 result['state_' + key] = state.get(key)
