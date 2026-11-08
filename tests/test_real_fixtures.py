@@ -283,3 +283,18 @@ def test_c861_reference_provenance_integrity():
     for name, digest in hashes.items():
         assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
     assert '不是上游数据' in (root / 'PROVENANCE_batch2.md').read_text()
+
+
+def test_c879_reference_provenance_integrity():
+    root = Path(__file__).parent / 'fixtures' / 'chip_peak_c879'
+    hashes = {
+        'MANIFEST.json': '18934b5cdd1d9766dc078a9184f0d2107563119fc679238fc32cf60b8f6015bb',
+        'PROVENANCE_chip.md': '43c306a24586f9496855f25a0230750e4acaf1d8e88839b1c47ce435dfd72377',
+        'boundary_cases.jsonl': '226a4d56aadac9c1ba9d116dd59804c055579d0a269598ec62b12ee930cb7dc4',
+        'expected_chip.jsonl': 'caff56141e194daaa2535d60de1abb80c7ae1cec8af391659e59496f2dae6376',
+        'expected_chip_legacy.jsonl': 'dd5078438a9c9bd19c85916a04d94b6943e65cce30ae9b8ba500b1720daa295b',
+    }
+    assert {p.name for p in root.iterdir()} == set(hashes) | {'SHA256SUMS'}
+    assert not list(root.rglob('*.py'))
+    for name, digest in hashes.items():
+        assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
