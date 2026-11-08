@@ -189,3 +189,80 @@ class PriceVolumeStore:
         values = [day, version, business_status, row_count, sha256, available_at, quality, missing_whitelist]
         self.store._run(f'INSERT INTO {self.database}.price_volume_days VALUES '
                         f'({trade_day_ts_us(day)}, ' + ', '.join(map(_literal, values)) + ')')
+
+
+def run(request, root, *, store=None, clock=None):
+    """Calculate one day from batch reads and publish the day marker last."""
+    import hashlib
+    import json
+    import time
+    from datetime import date, datetime, timezone
+    from .auction_amount_facts import _reply, _registered_failure, core_td_database
+    from .td_sink import TaosStore, TdResourceExhausted, td_memory_exhausted
+    clock = clock or time.monotonic
+    started = clock()
+    detail = {'computed': 0, 'skipped_no_bar': 0, 'skipped_factor_unprocessed': 0,
+              'partial_total': 0, 'partial_reasons': {}, 'recompute_registered': {'count': 0, 'samples': []},
+              'elapsed_seconds': 0, 'aborted': False}
+    try:
+        day = request['trade_date']
+        if date.fromisoformat(day).isoformat() != day:
+            raise ValueError('invalid trade date')
+    except (KeyError, TypeError, ValueError) as exc:
+        detail['message'] = str(exc)
+        return _reply(64, 'CONFIG_ERROR', detail)
+    owned = store is None
+    facts = store if store is not None else PriceVolumeStore(TaosStore(core_td_database()))
+    try:
+        facts.ensure_schema()
+        if owned:
+            from .adjust_factor import AdjustFactorStore
+            bars = facts.store.read_day_rows(day)
+            factors = AdjustFactorStore(facts.store).read_events_many(bars)
+        else:
+            bars = facts.read_day_rows(day)
+            factors = facts.read_events_many(bars)
+        states = facts.read_states(bars)
+        now = datetime.now(timezone.utc)
+        available_at = now.isoformat()
+        version = now.strftime('%Y%m%d%H%M%S%f')[:20]
+        rows, new_states = {}, {}
+        for symbol, source in sorted(bars.items()):
+            bar = dict(source, ts=day)
+            events, quality = factors.get(symbol, (None, 'UNPROCESSED'))
+            if quality == 'UNPROCESSED':
+                detail['skipped_factor_unprocessed'] += 1
+                continue
+            result, state = calculate_bar(bar, events, states.get(symbol), factor_quality=quality)
+            if result is None:
+                detail['skipped_no_bar'] += 1
+                continue
+            state['last_trade_date'] = day
+            state['previous_close'] = bar.get('close')
+            result.update(version=version, algo_version='price_volume_v1',
+                          input_refs=json.dumps({'daily_kline': bar.get('version')}, separators=(',', ':')),
+                          available_at=available_at, warm=result['quality'] == 'FORMAL')
+            for key in ('ema12', 'ema26', 'dea', 'k', 'd'):
+                result['state_' + key] = state.get(key)
+            rows[symbol], new_states[symbol] = result, state
+            if result['quality'] == 'PARTIAL':
+                detail['partial_total'] += 1
+                for reason in result['partial_reasons']:
+                    detail['partial_reasons'][reason] = detail['partial_reasons'].get(reason, 0) + 1
+        facts.write_results(day, rows)
+        facts.write_states(new_states)
+        digest = hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+        detail['computed'] = len(rows)
+        detail['elapsed_seconds'] = round(clock() - started, 3)
+        facts.write_day_marker(day, version, 'PARTIAL' if detail['partial_total'] else 'FORMAL', len(rows),
+                               digest, available_at, json.dumps(detail, separators=(',', ':')))
+        return _reply(0, detail=detail)
+    except Exception as exc:
+        detail['aborted'] = True
+        detail['elapsed_seconds'] = round(clock() - started, 3)
+        if isinstance(exc, TdResourceExhausted) or td_memory_exhausted(exc):
+            return _registered_failure('TD_RESOURCE_EXHAUSTED', detail)
+        raise
+    finally:
+        if owned:
+            facts.store.close()

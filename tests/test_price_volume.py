@@ -108,3 +108,31 @@ def test_state_snapshot_capacity_and_fixed_timestamp():
     assert recorder.sql[0] == recorder.sql[1]
     assert 'price_volume_state_600519' in recorder.sql[0]
 
+
+
+def test_run_incremental_real_bar_matches_full_calculation():
+    from engine_core.data_pipeline.price_volume import run
+
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
+            if json.loads(x)['symbol'] == '600519']
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    state = None
+    for bar in bars[:-1]:
+        _, state = calculate_bar(bar, events, state)
+    expected, _ = calculate_bar(bars[-1], events, state)
+
+    class Store:
+        def ensure_schema(self): pass
+        def read_day_rows(self, day): return {'600519': bars[-1]}
+        def read_states(self, symbols): return {'600519': state}
+        def read_events_many(self, symbols): return {'600519': (events, 'FORMAL')}
+        def write_results(self, day, rows): self.rows = rows
+        def write_states(self, states): self.states = states
+        def write_day_marker(self, *args): self.marker = args
+
+    store = Store()
+    code, reply = run({'trade_date': str(bars[-1]['ts'])[:10]}, '.', store=store)
+    assert code == 0 and reply['status'] == 'ok'
+    for name in ('ma5', 'ema12', 'macd', 'k', 'boll_upper'):
+        assert store.rows['600519'][name] == pytest.approx(expected[name])
+    assert store.marker[3] == 1
