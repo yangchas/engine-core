@@ -138,7 +138,7 @@ def test_run_incremental_real_bar_matches_full_calculation():
     assert store.marker[3] == 1
 
 
-def test_run_resets_only_for_missing_not_suspended_real_bars():
+def test_run_resets_after_missing_real_bars():
     from datetime import date
     from engine_core.data_pipeline.price_volume import run
 
