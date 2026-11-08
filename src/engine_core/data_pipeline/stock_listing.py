@@ -111,8 +111,12 @@ def run(trade_date, *, store=None, fetcher=None, min_rows=3000):
         detail['message'] = f'{type(exc).__name__}: {str(exc)[:200]}'
         if isinstance(exc, TdResourceExhausted) or td_memory_exhausted(exc):
             return _registered_failure('TD_RESOURCE_EXHAUSTED', detail)
-        return 1, {'contract': 1, 'status': 'failed', 'error_code': 'INTERNAL_ERROR',
-                   'reason': 'INTERNAL_ERROR', 'retryable': True, 'detail': detail}
+        if isinstance(exc, RuntimeError):
+            code = {'baostock_login_failed': 'BAOSTOCK_LOGIN_FAILED',
+                    'baostock_stock_basic_failed': 'BAOSTOCK_RANGE_FAILED'}.get(str(exc))
+            if code:
+                return _registered_failure(code, detail)
+        raise
     finally:
         if owned and store is not None:
             store.close()
