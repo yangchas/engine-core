@@ -105,6 +105,11 @@ class AdjustFactorStore:
         return dict(zip(('trade_date', 'version', 'business_status', 'row_count', 'sha256',
                          'available_at', 'quality', 'missing_whitelist'), rows[0])) if rows else None
 
+    def invalidate_day_marker(self, day):
+        from .td_sink import trade_day_ts_us
+        self.store._run(f'DELETE FROM {self.database}.adjust_factor_days WHERE ts = {trade_day_ts_us(day)}',
+                        missing_ok=True)
+
     def write_day_marker(self, day, version, business_status, row_count, sha256, available_at, quality, missing_whitelist='[]'):
         from .td_sink import _literal, trade_day_ts_us
         if len(quality) > 4000 or len(missing_whitelist) > 4000:
@@ -127,3 +132,134 @@ def detect_suspected(day_rows, prev_rows):
         except (KeyError, TypeError, ValueError, InvalidOperation):
             continue
     return result
+
+
+def _fetch_live(symbol):
+    import contextlib
+    import io
+    import baostock
+    from .stock_listing import BaostockLoginError
+    with contextlib.redirect_stdout(io.StringIO()):
+        try:
+            login = baostock.login()
+        except Exception as exc:
+            raise BaostockLoginError(str(exc)) from exc
+        if login.error_code != '0':
+            raise RuntimeError('baostock_login_failed')
+        try:
+            code = ('sh.' if symbol.startswith(('5', '6', '9')) else 'sz.') + symbol
+            result = baostock.query_adjust_factor(code=code, start_date='1990-01-01', end_date=date.today().isoformat())
+            if result.error_code != '0':
+                raise RuntimeError('baostock_range_failed')
+            fields = list(result.fields)
+            required = {'code', 'dividOperateDate', 'foreAdjustFactor', 'backAdjustFactor', 'adjustFactor'}
+            if not required.issubset(fields):
+                raise ValueError('adjust_factor_fields_missing')
+            rows = []
+            while result.next():
+                rows.append(dict(zip(fields, result.get_row_data())))
+            if result.error_code != '0':
+                raise RuntimeError('baostock_range_failed')
+            return rows
+        finally:
+            baostock.logout()
+
+
+def _snapshot_digest(rows):
+    import hashlib
+    import json
+    normalized = []
+    for row in rows:
+        normalized.append([row['dividOperateDate']] + [str(Decimal(str(row[key])).normalize())
+                          for key in ('foreAdjustFactor', 'backAdjustFactor', 'adjustFactor')])
+    payload = json.dumps(sorted(normalized), separators=(',', ':')).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def run(request, root, *, store=None, fetcher=None, sleep=None, clock=None, dry_run=False):
+    import time
+    from datetime import datetime, timezone
+    from .auction_amount_facts import _reply, _registered_failure, core_td_database
+    from .stock_listing import BaostockLoginError
+    from .td_sink import TaosStore, TdResourceExhausted, td_memory_exhausted
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    started = clock()
+    detail = {'mode': None, 'suspected_total': 0, 'requested': 0, 'snapshots_replaced': 0,
+              'unchanged': 0, 'failed_total': 0, 'aborted': False, 'elapsed_seconds': 0,
+              'listing_source': None, 'samples': []}
+    try:
+        day = request['trade_date']
+        if date.fromisoformat(day).isoformat() != day:
+            raise ValueError('invalid trade date')
+        mode = request['args']['mode']
+        if mode != 'incremental':
+            raise ValueError('unsupported mode')
+        detail['mode'] = mode
+    except (KeyError, TypeError, ValueError) as exc:
+        detail['message'] = str(exc)
+        return _reply(64, 'CONFIG_ERROR', detail)
+    if dry_run:
+        return _reply(0, detail=detail)
+    owned = store is None
+    facts = store if store is not None else AdjustFactorStore(TaosStore(core_td_database()))
+    try:
+        facts.ensure_schema()
+        if owned:
+            from .trade_calendar import TradeCalendarStore
+            previous_day = TradeCalendarStore(root).previous_trade_date(day).isoformat()
+            read_day = facts.store.read_day_rows
+        else:
+            previous_day = facts.previous_day(day)
+            read_day = facts.read_day_rows
+        current, previous = read_day(day), read_day(previous_day)
+        if not current or not previous:
+            raise RuntimeError('daily_kline_missing')
+        symbols = sorted(detect_suspected(current, previous))
+        detail['suspected_total'] = len(symbols)
+        facts.invalidate_day_marker(day)
+        last_request = None
+        snapshot_hashes = []
+        for symbol in symbols:
+            if last_request is not None:
+                delay = 1.0 - (clock() - last_request)
+                if delay > 0:
+                    sleep(delay)
+            last_request = clock()
+            detail['requested'] += 1
+            old, _quality = facts.read_events(symbol)
+            rows = list((fetcher or _fetch_live)(symbol))
+            old_hash, new_hash = _snapshot_digest(old), _snapshot_digest(rows)
+            snapshot_hashes.append(symbol + ':' + new_hash)
+            if old_hash == new_hash:
+                detail['unchanged'] += 1
+            version = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S') + '-' + new_hash[:8]
+            facts.replace_snapshot(symbol, rows, version)
+            detail['snapshots_replaced'] += 1
+            if len(detail['samples']) < 20:
+                detail['samples'].append({'symbol': symbol, 'old_rows': len(old), 'new_rows': len(rows),
+                                          'old_sha256': old_hash, 'new_sha256': new_hash})
+        import hashlib
+        digest = hashlib.sha256('\n'.join(snapshot_hashes).encode()).hexdigest()
+        version = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S') + '-' + digest[:8]
+        facts.write_day_marker(day, version, 'PARTIAL', detail['snapshots_replaced'], digest,
+                               datetime.now(timezone.utc).isoformat(), 'PARTIAL')
+        detail['elapsed_seconds'] = round(clock() - started, 3)
+        return _reply(0, detail=detail)
+    except Exception as exc:
+        detail['failed_total'] += 1
+        detail['aborted'] = True
+        detail['elapsed_seconds'] = round(clock() - started, 3)
+        if isinstance(exc, BaostockLoginError):
+            return _registered_failure('BAOSTOCK_LOGIN_ERROR', detail)
+        if isinstance(exc, TdResourceExhausted) or td_memory_exhausted(exc):
+            return _registered_failure('TD_RESOURCE_EXHAUSTED', detail)
+        if isinstance(exc, RuntimeError):
+            code = {'baostock_login_failed': 'BAOSTOCK_LOGIN_FAILED',
+                    'baostock_range_failed': 'BAOSTOCK_RANGE_FAILED'}.get(str(exc))
+            if code:
+                return _registered_failure(code, detail)
+        raise
+    finally:
+        if owned:
+            facts.store.close()

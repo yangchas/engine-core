@@ -49,3 +49,56 @@ def test_detect_suspected_real_adjacent_days():
     current = next(row for row in raw if row['code'] == '600519')
     assert detect_suspected({'600519': {'pre_close': current['前收盘价:不复权[20261026]']}},
                             {'600519': previous}) == set()
+
+
+def test_incremental_keeps_completed_on_upstream_failure(monkeypatch):
+    from engine_core.data_pipeline import adjust_factor as module
+    records = json.loads((Path(__file__).parent / 'fixtures/adjust_factor_c846/events.json').read_text())
+    rows_by_symbol = {r['code'][-6:]: [dict(zip(r['fields'], row)) for row in r['rows']] for r in records}
+    monkeypatch.setattr(module, 'detect_suspected', lambda *_: {'000001', '600519'})
+    class Store:
+        def __init__(self): self.writes = []
+        def ensure_schema(self): pass
+        def read_day_rows(self, day): return {'600519': {}}
+        def previous_day(self, day): return '2026-11-05'
+        def read_events(self, symbol): return [], 'NO_EVENTS'
+        def replace_snapshot(self, symbol, events, version): self.writes.append(symbol)
+        def invalidate_day_marker(self, day): pass
+        def write_day_marker(self, *args): self.writes.append('marker')
+    store = Store()
+    def fetch(symbol):
+        if symbol == '600519': raise RuntimeError('baostock_range_failed')
+        return rows_by_symbol[symbol]
+    code, reply = module.run({'trade_date': '2026-11-06', 'args': {'mode': 'incremental'}}, '.',
+                             store=store, fetcher=fetch, sleep=lambda _: None)
+    assert code == 75
+    assert reply['detail']['aborted'] is True
+    assert store.writes == ['000001']
+
+
+def test_incremental_spacing_and_unchanged(monkeypatch):
+    from engine_core.data_pipeline import adjust_factor as module
+    records = json.loads((Path(__file__).parent / 'fixtures/adjust_factor_c846/events.json').read_text())
+    rows_by_symbol = {r['code'][-6:]: [dict(zip(r['fields'], row)) for row in r['rows']] for r in records}
+    monkeypatch.setattr(module, 'detect_suspected', lambda *_: {'000001', '600519'})
+    class Store:
+        def __init__(self): self.writes = []
+        def ensure_schema(self): pass
+        def read_day_rows(self, day): return {'600519': {}}
+        def previous_day(self, day): return '2026-11-05'
+        def read_events(self, symbol): return rows_by_symbol[symbol], 'FORMAL'
+        def replace_snapshot(self, symbol, events, version): self.writes.append(symbol)
+        def invalidate_day_marker(self, day): self.writes.append('invalidate')
+        def write_day_marker(self, *args): self.writes.append('marker')
+    store, times, now = Store(), [], [0.0]
+    def fetch(symbol):
+        times.append(now[0])
+        return rows_by_symbol[symbol]
+    def sleep(seconds): now[0] += seconds
+    code, reply = module.run({'trade_date': '2026-11-06', 'args': {'mode': 'incremental'}}, '.',
+                             store=store, fetcher=fetch, sleep=sleep, clock=lambda: now[0])
+    assert code == 0
+    assert times[1] - times[0] >= 1.0
+    assert store.writes == ['invalidate', '000001', '600519', 'marker']
+    assert reply['detail']['unchanged'] == 2
+    assert all(sample['old_sha256'] == sample['new_sha256'] for sample in reply['detail']['samples'])
