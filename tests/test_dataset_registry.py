@@ -66,3 +66,8 @@ def test_event_scoped_freshness_rule_is_unknown_not_a_crash():
 def test_adjust_factor_registry_entry():
     item = next(item for item in load_registry() if item['id'] == 'adjust_factor')
     assert item['cadence'] and item['td_sink']['stable'] == 'adjust_factor_v1'
+
+
+def test_price_volume_registry_entry():
+    item = next(item for item in load_registry() if item['id'] == 'price_volume')
+    assert item['cadence'] and item['td_sink']['stable'] == 'price_volume_indicators_v1'
