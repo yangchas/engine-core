@@ -36,9 +36,9 @@ C784 快照 DDE 为 1,320,530 行、331 日、5,223 股；迁移只读逐日按 
 
 ## §4 F2 派生合同
 
-按相同 symbol、交易日和 as-of 对齐两份完整 L0：`ddje_ratio = ddje / amount_yuan`，DDJE 暂按元、中等置信度；amount_yuan 为元，分母为 0 或 NULL、DDJE 为 NULL 或任一输入非有限时输出 NULL、质量 PARTIAL，不补零。比值无量纲，不称作旧 DDX。C788 20 股 × 60 日 1,200 对，绝对比中位数 0.0491233、P99 0.202047、最大 0.401812、无大于 1；依据净额为成交额子集的假设，仅支持中等置信度，不是权威单位证明。
+已实现独立数据函数 `dde_derived`，按相同 symbol、交易日对齐可用的 L0：`ddje_ratio = ddje / amount_yuan`，DDJE 暂按元、中等置信度；amount_yuan 为元，分母为 0 或 NULL、DDJE 为 NULL 或任一输入非有限时输出 NULL、质量 PARTIAL，不补零。比值无量纲，不称作旧 DDX。C788 20 股 × 60 日 1,200 对，绝对比中位数 0.0491233、P99 0.202047、最大 0.401812、无大于 1；依据净额为成交额子集的假设，仅支持中等置信度，不是权威单位证明。
 
-逐日独立，无窗口、递推、预热或跨日状态。目标 DDL：
+逐日独立，无窗口、递推、预热或跨日状态；每次整日重算，同时间戳覆盖，重复运行幂等。缺依赖不设门禁：缺失股票输出 NULL+PARTIAL 并记录原因，两边均无行返回 degraded，不发布日标记。DDL：
 ```sql
 CREATE STABLE core_data.dde_indicators_v1 (ts TIMESTAMP, ddje_ratio DOUBLE, version VARCHAR(24), algo_version VARCHAR(32), input_refs VARCHAR(4096), available_at VARCHAR(40), quality VARCHAR(16)) TAGS (symbol VARCHAR(8));
 ```
@@ -77,9 +77,9 @@ python -m engine_core.dde_derived --date 2026-11-06 --pull-upstream
 
 ## §6 编排与降级
 
-F1 `daily_dde_0200` 每日 02:00 执行至 06:30，串行限速并以 size=5 复核近期数据；目标为前一交易日，失败在窗口内重试。F2 编排另卡实施，须等待 F1 与日K正式依赖就绪。
+F1 `daily_dde_0200` 每日 02:00 执行至 06:30，串行限速并以 size=5 复核近期数据；目标为前一交易日，失败在窗口内重试。F2 触发由 F1 之后的时间槽决定，接入驱动器另卡实施。
 
-对应 registry 项见 §5；F1 唯一来源开盘啦，失败后保留进度并重试，旧完整结果仅以 PARTIAL/STALE 降级展示；F2 缺任一正式依赖不计算正式结果，旧派生结果同样标旧日期、血缘及 PARTIAL。无替代来源，不把降级语义当成同日事实。
+对应 registry 项见 §5；F1 唯一来源开盘啦，失败后保留进度并重试，旧完整结果仅以 PARTIAL/STALE 降级展示；F2 按已有输入计算；缺失股票输出 NULL+PARTIAL，两边均无行返回 degraded。无替代来源，不把降级语义当成同日事实。
 
 ## §7 增量、失效与回填
 
