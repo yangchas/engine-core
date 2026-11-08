@@ -95,7 +95,7 @@ def _go_config(schedule_text: str, workdir: Path, name: str) -> dict:
     source = workdir / f"{name}.schedule.json"
     source.write_text(schedule_text, encoding="utf-8")
     target = workdir / f"{name}.config.json"
-    done = subprocess.run(["go", "run", ".", "migrate", "--from", str(source), "--to", str(target)],
+    done = subprocess.run(["go", "run", "-buildvcs=false", ".", "migrate", "--from", str(source), "--to", str(target)],
                           cwd=ROOT / "native" / "guardiand", capture_output=True, text=True, timeout=300)
     assert done.returncode == 0, done.stderr[-400:]
     return json.loads(target.read_text(encoding="utf-8"))
@@ -251,3 +251,14 @@ def test_adjust_factor_events_follow_kline_windows():
     assert night['at'] == '01:15:00' and night['late_until'] == '05:00:00'
     assert night['calendar'] == 'every_day' and night['args']['target'] == 'prev_trade_day'
     assert all(event['cost'] != 'heavy' and not event.get('gate') for event in (post, night))
+
+
+def test_price_volume_events_follow_kline_windows():
+    events = {event['event_id']: event for event in SCHEDULE['events']}
+    post = events['price_volume_postclose']
+    night = events['price_volume_0130']
+    assert post['at'] == '17:25:00' and post['late_until'] == '20:45:00'
+    assert post['calendar'] == 'trading_day' and post['data_date_offset'] == 0
+    assert night['at'] == '01:30:00' and night['late_until'] == '05:30:00'
+    assert night['calendar'] == 'every_day' and night['args']['target'] == 'prev_trade_day'
+    assert all(event['cost'] != 'heavy' and not event.get('gate') and not event.get('after') and not event.get('depends_on') for event in (post, night))

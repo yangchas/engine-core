@@ -2366,6 +2366,61 @@
           "role": "marker"
         }
       ]
+    },
+    {
+      "id": "price_volume",
+      "owner": "postmarket_data",
+      "artifact": {
+        "date_basis": "daily_kline trade_date"
+      },
+      "phases": [
+        "CLOSE",
+        "POST_MARKET",
+        "NIGHT"
+      ],
+      "cadence": "交易日 17:25 收盘日K后及每日 01:30 夜间补数后，增量计算目标日指标",
+      "rule": "incremental 计算日K价量指标",
+      "freshness": "UNKNOWN",
+      "retry": "使用 kline_backfill 策略；日K缺失或不全时重试；空状态 NEEDS_REBUILD，需手动 rebuild",
+      "degrade": [
+        "缺失只标 PARTIAL；因子未处理的股票跳过；空状态提示 NEEDS_REBUILD。"
+      ],
+      "td_sink": {
+        "database": "core_data",
+        "stable": "price_volume_indicators_v1",
+        "columns": [
+          "version",
+          "algo_version",
+          "input_refs",
+          "available_at",
+          "quality",
+          "warm"
+        ],
+        "tags": [
+          "symbol"
+        ],
+        "timestamp": "ts"
+      },
+      "lifecycle": {
+        "init": "整股快照",
+        "force": "不支持",
+        "clear": "不支持"
+      },
+      "notes": "首次部署需手动 rebuild；日标记记录本次处理结果。",
+      "guardian_event": "price_volume_postclose",
+      "requires": [],
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "price_volume_indicators_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_external",
+          "name": "core_data.price_volume_days",
+          "role": "marker"
+        }
+      ]
     }
   ],
   "quiet_phases_for_heavy": [

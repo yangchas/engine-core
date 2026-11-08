@@ -2003,6 +2003,49 @@
       ],
       "trigger_type": "window",
       "policy": "kline_backfill"
+    },
+    "price_volume_postclose": {
+      "after": [],
+      "args": {
+        "dataset": "price_volume"
+      },
+      "calendar": "trading_day",
+      "catchup_mode": "run_in_window",
+      "cost": "medium",
+      "data_date_offset": 0,
+      "depends_on": [],
+      "enabled": true,
+      "handler": "postmarket_data",
+      "late_until": "20:45:00",
+      "on_deadline": "missed",
+      "on_phase_mismatch": "defer",
+      "phases": [
+        "any"
+      ],
+      "trigger_type": "window",
+      "policy": "kline_backfill"
+    },
+    "price_volume_0130": {
+      "after": [],
+      "args": {
+        "dataset": "price_volume",
+        "target": "prev_trade_day"
+      },
+      "calendar": "every_day",
+      "catchup_mode": "run_in_window",
+      "cost": "medium",
+      "data_date_offset": 0,
+      "depends_on": [],
+      "enabled": true,
+      "handler": "postmarket_data",
+      "late_until": "05:30:00",
+      "on_deadline": "missed",
+      "on_phase_mismatch": "defer",
+      "phases": [
+        "any"
+      ],
+      "trigger_type": "window",
+      "policy": "kline_backfill"
     }
   },
   "timeline": [
@@ -2117,6 +2160,11 @@
               "lease_ttl_seconds": 300
             }
           }
+        },
+        {
+          "fn": "price_volume_0130",
+          "id": "price_volume_0130",
+          "deadline": "05:30:00"
         }
       ]
     },
@@ -2993,6 +3041,16 @@
       ]
     },
     {
+      "at": "17:25:00",
+      "run": [
+        {
+          "fn": "price_volume_postclose",
+          "id": "price_volume_postclose",
+          "deadline": "20:45:00"
+        }
+      ]
+    },
+    {
       "at": "17:35:00",
       "run": [
         {
@@ -3291,6 +3349,8 @@
     "td_resource_check_1735",
     "td_resource_check_2025",
     "adjust_factor_postclose",
-    "adjust_factor_0115"
+    "adjust_factor_0115",
+    "price_volume_postclose",
+    "price_volume_0130"
   ]
 }

@@ -668,3 +668,35 @@ def test_batch2_rebuild_then_incremental_equals_full_rebuild():
     for day in days[59:]:
         for name in names:
             assert incremental.results[day]['600519'][name] == rebuilt.results[day]['600519'][name], (day, name)
+
+
+def test_incremental_missing_or_incomplete_day_does_not_publish():
+    from engine_core.data_pipeline.price_volume import run
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()]
+    symbols = {bar['symbol'] for bar in bars}
+    assert len(symbols) >= 3
+    bar = bars[-1]
+    class Store:
+        def __init__(self, rows): self.rows = rows; self.writes = []
+        def ensure_schema(self): pass
+        def read_day_rows(self, day): return self.rows
+        def listing_symbols(self, day): return symbols, 'stock_listing'
+        def write_results(self, *args): self.writes.append('results')
+        def write_states(self, *args): self.writes.append('states')
+        def write_day_marker(self, *args): self.writes.append('marker')
+    for rows, reason in (({}, 'NO_DAY_ROWS'), ({bar['symbol']: bar}, 'DAY_ROWS_INCOMPLETE')):
+        store = Store(rows)
+        code, reply = run({'trade_date': str(bar['ts'])[:10]}, '.', store=store)
+        assert code == 10 and reply['detail']['reason'] == reason
+        assert not store.writes
+
+
+def test_incremental_td_connection_failure_is_registered(monkeypatch):
+    from engine_core.data_pipeline import price_volume, td_sink
+    from engine_core.guardian.contract import check_reply
+    def unavailable(*args, **kwargs):
+        raise td_sink.TdUnavailable('connection failed')
+    monkeypatch.setattr(td_sink, 'TaosStore', unavailable)
+    code, reply = price_volume.run({'trade_date': '2026-11-09'}, '.')
+    assert reply['error_code'] == 'TD_UNAVAILABLE'
+    assert check_reply(code, reply) == []

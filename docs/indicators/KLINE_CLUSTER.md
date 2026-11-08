@@ -149,13 +149,7 @@ python -m engine_core.kline_cluster --date 2026-11-06 --window 120 --pull-upstre
 
 ## §8 编排
 
-价量簇拟由日K完成事件驱动：15:05 收盘日K后及 01:00 夜间补数后，分别由 `adjust_factor_postclose`（17:10）和 `adjust_factor_0115`（01:15，至 05:00）先刷新因子；驱动器对降级成功的窗口依赖会 SKIPPED_DEP，故使用时间槽；疑似除权股票因子刷新后再计算，刷新失败使用旧因子并标 PARTIAL。价量簇 handler、事件与 requires 仍待接线；以下为原设计片段。
-
-```json
-{"functions":{"price_volume_indicators":{"after":[],"args":{"item_id":"price_volume_indicators"},"available_after":null,"calendar":"trading_day","cost":"medium","data_date_offset":0,"depends_on":[],"enabled":true,"gate":"calendar_ready","handler":"fetch_item","late_until":"23:30:00","on_deadline":"degrade","on_phase_mismatch":"defer","order":null,"phases":["NIGHT"],"trigger_type":"window","policy":"policy_12"}},"timeline":[{"at":"21:30:00","run":[{"fn":"price_volume_indicators","id":"price_volume_indicators_2130","deadline":"23:30:00"}]}],"policies":{"policy_12":{"catchup":"run_in_window","retry_backoff":"","retry_until_late":false,"silent_until_last":false,"ladder":[{"name":"legacy","attempts":1,"backoff":"","backoff_cap":"5m","timeout":"540s","budget_enabled":false}]}}}
-```
-
-registry 项为 §7 声明，须与现行 registry 必填字段及运行时 schema 合并，requires/produces 仍待实现。降级链：依赖就绪→计算；缺依赖重试；最终失败时只能选 `available_at <= as-of` 且日期不晚于目标日的最新合格版本，标 PARTIAL、记录来源日期版本，不伪装为当日完成；没有合格旧版则缺失。`on_deadline=degrade` 不证明最终失败自动降级；配置与 native 解码 UNKNOWN-U13（Guardian 负责人）。
+日K收盘获取后，`adjust_factor_postclose` 在 17:10–20:30 刷新因子，`price_volume_postclose` 在交易日 17:25–20:45 增量计算当天指标。夜间补数后，`adjust_factor_0115` 在 01:15–05:00 刷新因子，`price_volume_0130` 每日 01:30–05:30 增量计算上一交易日指标。两组使用时间槽；驱动器的窗口依赖对降级成功只接受 SUCCEEDED，会产生 SKIPPED_DEP，因此不使用 depends_on。目标日日K缺失或明显不全时降级且不写日标记或状态，后续时间槽可重试。因子未处理的股票跳过，缺失指标标 PARTIAL。首次部署须手动全市场 rebuild；空状态增量返回 NEEDS_REBUILD。
 
 ## §9 验证
 

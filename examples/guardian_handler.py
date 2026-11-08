@@ -408,6 +408,14 @@ def _run_event(request):
         if request.get("asof") or request.get("now"):
             today_request["as_of"] = request.get("asof") or request.get("now")
         return run_limit_up_today(today_request, root, dry_run=dry)
+    if name == "postmarket_data" and (args.get("dataset") == "price_volume"
+                                       or event_id in ("price_volume_postclose", "price_volume_0130")
+                                       or event_id.startswith(("price_volume_postclose_rh", "price_volume_0130_rh"))):
+        from engine_core.data_pipeline.price_volume import run as run_price_volume
+        if not request.get("data_date"):
+            return 64, {"contract": 1, "status": "failed", "error_code": "CONFIG_ERROR",
+                        "retryable": False, "detail": "price_volume_target_unavailable"}
+        return run_price_volume({"trade_date": target_day, "args": {"mode": "incremental"}}, root, dry_run=dry)
     if name == "postmarket_data" and (args.get("dataset") == "adjust_factor"
                                        or event_id in ("adjust_factor_postclose", "adjust_factor_0115")
                                        or event_id.startswith(("adjust_factor_postclose_rh", "adjust_factor_0115_rh"))):

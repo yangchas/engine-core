@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 
-from .adjust_factor import factor_for
+from .adjust_factor import MIN_DAY_ROWS_FRACTION, factor_for
 
 
 _FIELDS = ('ma5', 'ma10', 'ma20', 'ma60', 'ema12', 'ema26', 'dif', 'dea',
@@ -337,7 +337,7 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
     import time
     from datetime import date, datetime, timezone
     from .auction_amount_facts import _reply, _registered_failure, core_td_database
-    from .td_sink import TaosStore, TdResourceExhausted, td_memory_exhausted
+    from .td_sink import TaosStore, TdResourceExhausted, TdUnavailable, td_memory_exhausted
     clock = clock or time.monotonic
     started = clock()
     detail = {'computed': 0, 'skipped_no_bar': 0, 'skipped_factor_unprocessed': 0, 'skipped_already_processed': 0,
@@ -360,17 +360,39 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
     if dry_run:
         return _reply(0, detail=detail)
     owned = store is None
-    facts = store if store is not None else PriceVolumeStore(TaosStore(core_td_database()))
+    facts = None
     try:
+        facts = store if store is not None else PriceVolumeStore(TaosStore(core_td_database()))
         facts.ensure_schema()
         if mode == 'rebuild':
             return _rebuild(facts, owned, root, day, from_day, started, clock)
         if owned:
             from .adjust_factor import AdjustFactorStore
             bars = facts.store.read_day_rows(day)
-            factors = AdjustFactorStore(facts.store).read_events_many(bars)
         else:
             bars = facts.read_day_rows(day)
+        if not bars:
+            detail['reason'] = 'NO_DAY_ROWS'
+            return _reply(10, 'INCOMPLETE', detail)
+        if owned:
+            factor_store = AdjustFactorStore(facts.store)
+            expected, detail['listing_source'] = factor_store.listing_symbols(day)
+            if detail['listing_source'] == 'fallback':
+                from .trade_calendar import TradeCalendarStore
+                previous = TradeCalendarStore(root).previous_trade_date(day)
+                expected = set(facts.store.read_day_rows(str(previous)[:10]))
+        elif hasattr(facts, 'listing_symbols'):
+            expected, detail['listing_source'] = facts.listing_symbols(day)
+        else:
+            expected = set(bars)
+        detail['day_rows'] = len(set(bars) & expected)
+        detail['expected_symbols'] = len(expected)
+        if not expected or detail['day_rows'] < len(expected) * MIN_DAY_ROWS_FRACTION:
+            detail['reason'] = 'DAY_ROWS_INCOMPLETE'
+            return _reply(10, 'INCOMPLETE', detail)
+        if owned:
+            factors = factor_store.read_events_many(bars)
+        else:
             factors = facts.read_events_many(bars)
         states = facts.read_states(None)
         if not states:
@@ -478,9 +500,11 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
         detail['elapsed_seconds'] = round(clock() - started, 3)
         if isinstance(exc, TdResourceExhausted) or td_memory_exhausted(exc):
             return _registered_failure('TD_RESOURCE_EXHAUSTED', detail)
+        if isinstance(exc, TdUnavailable):
+            return _registered_failure('TD_UNAVAILABLE', detail)
         raise
     finally:
-        if owned:
+        if owned and facts is not None:
             facts.store.close()
 
 
