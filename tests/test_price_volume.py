@@ -8,6 +8,11 @@ from engine_core.data_pipeline.price_volume import calculate_bar
 FIXTURES = Path(__file__).parent / 'fixtures' / 'price_volume_c852'
 
 
+class _MarkerStore:
+    def read_day_marker(self, day): return None
+    def count_day_results(self, day): return len(getattr(self, 'rows', {}))
+
+
 def test_real_reference_first_symbol():
     bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()]
     expected = [json.loads(x) for x in (FIXTURES / 'expected.jsonl').read_text().splitlines()]
@@ -149,7 +154,7 @@ def test_run_incremental_real_bar_matches_full_calculation():
         _, state = calculate_bar(bar, events, state)
     expected, _ = calculate_bar(bars[-1], events, state)
 
-    class Store:
+    class Store(_MarkerStore):
         def ensure_schema(self): pass
         def read_day_rows(self, day): return {'600519': bars[-1]}
         def read_states(self, symbols): return {'600519': state}
@@ -180,7 +185,7 @@ def test_run_resets_after_missing_real_bars():
     days = [str(b['ts'])[:10] for b in bars[29:34]]
     expected, _ = calculate_bar(bars[33], events)
 
-    class Store:
+    class Store(_MarkerStore):
         def ensure_schema(self): pass
         def previous_day(self, day): return date.fromisoformat(days[days.index(day) - 1])
         def read_day_rows(self, day):
@@ -207,7 +212,7 @@ def test_run_batches_reads_and_skips_unprocessed_factor():
     events = json.loads((FIXTURES / 'factor_events.json').read_text())
     skipped = sorted(selected)[0]
 
-    class Store:
+    class Store(_MarkerStore):
         def __init__(self): self.calls = []
         def ensure_schema(self): pass
         def read_day_rows(self, day): self.calls.append('bars'); return selected
@@ -233,7 +238,7 @@ def test_run_registers_stale_factor_from_real_bars():
     bar = bars[-1]
     day = str(bar['ts'])[:10]
     events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
-    class Store:
+    class Store(_MarkerStore):
         def ensure_schema(self): pass
         def read_day_rows(self, day): return {'600519': bar}
         def read_states(self, symbols): return {'600519': {'previous_close': bars[0]['close']}}
@@ -260,7 +265,7 @@ def test_gap_uses_listing_and_observed_bars():
         _, state = calculate_bar(bar, events, state)
     days = [str(b['ts'])[:10] for b in bars[29:33]]
     state['last_trade_date'] = days[0]
-    class Store:
+    class Store(_MarkerStore):
         def ensure_schema(self): pass
         def previous_day(self, day): return date.fromisoformat(days[days.index(day) - 1])
         def read_day_rows(self, day): return {'600519': bars[32]} if day == days[-1] else {}
@@ -290,13 +295,87 @@ def test_cli_dry_run_is_service_free():
     assert json.loads(result.stdout)['status'] == 'ok'
 
 
+def test_incremental_preserves_rebuild_marker_when_all_skipped():
+    from engine_core.data_pipeline.price_volume import run
+
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
+            if json.loads(x)['symbol'] == '600519'][:2]
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
+    days = [str(bar['ts'])[:10] for bar in bars]
+
+    class Store(_MarkerStore):
+        def __init__(self): self.states = {}; self.markers = {}; self.results = {}
+        def ensure_schema(self): pass
+        def trading_dates(self, day): return days
+        def read_day_rows(self, day): return {'600519': bars[days.index(day)]}
+        def read_events_many(self, symbols): return {'600519': (events, 'FORMAL')}
+        def read_states(self, symbols): return self.states
+        def write_results(self, day, rows): self.results.setdefault(day, {}).update(rows)
+        def write_states(self, states): self.states.update(states)
+        def write_day_marker(self, *args): self.markers[args[0]] = args
+        def read_day_marker(self, day): return self.markers.get(day)
+        def count_day_results(self, day): return len(self.results.get(day, {}))
+
+    store = Store()
+    assert run({'trade_date': days[-1], 'args': {'mode': 'rebuild'}}, '.', store=store)[0] == 0
+    marker = store.markers[days[-1]]
+    code, reply = run({'trade_date': days[-1]}, '.', store=store)
+    assert code == 0
+    assert store.markers[days[-1]] == marker
+    assert reply['detail']['marker_preserved'] is True
+
+
+def test_incremental_marker_counts_existing_and_new_results():
+    from engine_core.data_pipeline.price_volume import run
+
+    bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()]
+    day = str(bars[-1]['ts'])[:10]
+    selected = {b['symbol']: b for b in bars if str(b['ts'])[:10] == day}
+    events = json.loads((FIXTURES / 'factor_events.json').read_text())
+    class Store(_MarkerStore):
+        def __init__(self): self.rows = {'600519': {'existing': True}}
+        def ensure_schema(self): pass
+        def read_day_rows(self, day): return {s: selected[s] for s in ('600519', '000815')}
+        def read_events_many(self, symbols): return {s: (events[s], 'FORMAL') for s in symbols}
+        def read_states(self, symbols): return {'600519': {'last_trade_date': day}}
+        def write_results(self, day, rows): self.rows.update(rows)
+        def write_states(self, states): pass
+        def write_day_marker(self, *args): self.marker = args
+    store = Store()
+    code, reply = run({'trade_date': day}, '.', store=store)
+    assert code == 0 and reply['detail']['computed'] == 1
+    assert reply['detail']['skipped_already_processed'] == 1
+    assert store.marker[3] == len(store.rows) == 2
+
+
+def test_incremental_all_skipped_without_marker_writes_marker():
+    from engine_core.data_pipeline.price_volume import run
+
+    bar = json.loads((FIXTURES / 'daily_kline.jsonl').read_text().splitlines()[0])
+    day = str(bar['ts'])[:10]
+    class Store(_MarkerStore):
+        def ensure_schema(self): pass
+        def read_day_rows(self, day): return {bar['symbol']: bar}
+        def read_events_many(self, symbols): return {}
+        def read_states(self, symbols): return {bar['symbol']: {'last_trade_date': day}}
+        def write_results(self, day, rows): assert not rows
+        def write_states(self, states): assert not states
+        def count_day_results(self, day): return 1
+        def write_day_marker(self, *args): self.marker = args
+    store = Store()
+    code, reply = run({'trade_date': day}, '.', store=store)
+    assert code == 0 and reply['detail']['computed'] == 0
+    assert 'marker_preserved' not in reply['detail']
+    assert store.marker[2:4] == ('FORMAL', 1)
+
+
 def test_rebuild_replays_history_and_preserves_earlier_results():
     from engine_core.data_pipeline.price_volume import run
     bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
             if json.loads(x)['symbol'] == '600519'][:25]
     events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
     days = [str(b['ts'])[:10] for b in bars]
-    class Store:
+    class Store(_MarkerStore):
         def __init__(self): self.results = {days[0]: {'sentinel': True}}; self.markers = []
         def ensure_schema(self): pass
         def trading_dates(self, day): return days
@@ -324,7 +403,7 @@ def test_incremental_empty_state_requires_rebuild():
     from engine_core.data_pipeline.price_volume import run
     bar = json.loads((FIXTURES / 'daily_kline.jsonl').read_text().splitlines()[0])
     events = json.loads((FIXTURES / 'factor_events.json').read_text())[bar['symbol']]
-    class Store:
+    class Store(_MarkerStore):
         def ensure_schema(self): pass
         def read_day_rows(self, day): return {bar['symbol']: bar}
         def read_events_many(self, symbols): return {bar['symbol']: (events, 'FORMAL')}
@@ -343,7 +422,7 @@ def test_rebuild_state_matches_incremental_replay():
             if json.loads(x)['symbol'] == '600519'][:20]
     days = [str(bar['ts'])[:10] for bar in bars]
     events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
-    class Store:
+    class Store(_MarkerStore):
         def __init__(self): self.states = {}
         def ensure_schema(self): pass
         def trading_dates(self, day): return days
@@ -367,7 +446,7 @@ def test_incremental_repeated_and_earlier_days_preserve_checkpoint():
     bars = [json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
             if json.loads(x)['symbol'] == '600519']
     events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
-    class Store:
+    class Store(_MarkerStore):
         def __init__(self): self.states, self.writes = {}, []
         def ensure_schema(self): pass
         def read_day_rows(self, day): return {'600519': next(b for b in bars if str(b['ts'])[:10] == day)}
@@ -393,7 +472,7 @@ def test_partial_warmup_reason_is_persisted_and_counted():
     bar = next(json.loads(x) for x in (FIXTURES / 'daily_kline.jsonl').read_text().splitlines()
                if json.loads(x)['symbol'] == '600519')
     events = json.loads((FIXTURES / 'factor_events.json').read_text())['600519']
-    class Store:
+    class Store(_MarkerStore):
         def ensure_schema(self): pass
         def read_day_rows(self, day): return {'600519': bar}
         def read_states(self, symbols): return {}
@@ -548,7 +627,7 @@ def test_batch2_rebuild_then_incremental_equals_full_rebuild():
     names = ('rsi6', 'rsi12', 'rsi24', 'atr14', 'pct_chg_volatility20', 'volume_ma5',
              'volume_ma10', 'volume_ma20', 'volume_ratio', 'bias_20', 'change_pct_5d',
              'avg_turnover_5d', 'limit_up_days_5', 'vol_ratio', 'rsi_6')
-    class Store:
+    class Store(_MarkerStore):
         def __init__(self): self.states, self.results = {}, {}
         def ensure_schema(self): pass
         def trading_dates(self, day): return days[:days.index(day) + 1]

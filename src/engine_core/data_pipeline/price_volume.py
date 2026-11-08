@@ -307,6 +307,19 @@ class PriceVolumeStore:
             if parts:
                 self.store._run('INSERT INTO ' + ' '.join(parts))
 
+    def read_day_marker(self, day):
+        from .td_sink import trade_day_ts_us
+        rows = self.store._run(f'SELECT trade_date, version, business_status, row_count, sha256, '
+                               f'available_at, quality, missing_whitelist FROM {self.database}.price_volume_days '
+                               f'WHERE ts = {trade_day_ts_us(day)}', missing_ok=True, strict=True)
+        return rows[0] if rows else None
+
+    def count_day_results(self, day):
+        from .td_sink import trade_day_ts_us
+        rows = self.store._run(f'SELECT COUNT(*) FROM {self.database}.price_volume_indicators_v1 '
+                               f'WHERE ts = {trade_day_ts_us(day)}', strict=True)
+        return int(rows[0][0])
+
     def write_day_marker(self, day, version, business_status, row_count, sha256, available_at, quality,
                          missing_whitelist='[]'):
         from .td_sink import _literal, trade_day_ts_us
@@ -449,8 +462,12 @@ def run(request, root, *, store=None, clock=None, dry_run=False):
         digest = hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
         detail['computed'] = len(rows)
         detail['elapsed_seconds'] = round(clock() - started, 3)
-        facts.write_day_marker(day, version, 'PARTIAL' if detail['partial_total'] or 'hint' in detail else 'FORMAL', len(rows),
-                               digest, available_at, json.dumps(detail, separators=(',', ':')))
+        if not rows and facts.read_day_marker(day) is not None:
+            detail['marker_preserved'] = True
+        else:
+            row_count = facts.count_day_results(day)
+            facts.write_day_marker(day, version, 'PARTIAL' if detail['partial_total'] or 'hint' in detail else 'FORMAL', row_count,
+                                   digest, available_at, json.dumps(detail, separators=(',', ':')))
         return _reply(10 if 'hint' in detail else 0, detail=detail)
     except Exception as exc:
         detail['aborted'] = True
