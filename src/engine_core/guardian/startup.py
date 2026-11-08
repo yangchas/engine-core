@@ -609,6 +609,10 @@ class FetchJobError(RuntimeError):
         self.returncode = returncode        # the job's exit status, as a fact (None: it timed out or never ran)
 
 
+class _DegradedFetchResult(dict):
+    """A committed job that exited with the degraded contract code."""
+
+
 def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | Path | None = None,
                    schedule_args: Mapping[str, Any] | None = None) -> dict[str, Any]:
     argv, configured_timeout = _fetch_spec(item)
@@ -643,7 +647,8 @@ def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | P
     # Exit status and explicit failure markers decide failure; success is then PROVEN by the catalog postcondition
     # (_verify_partition), not by guessing each job's stdout dialect (reindex prints no status, ladder prints
     # PARTIAL_*, daily_kline prints degraded, ...).
-    if completed.returncode or explicit_failure or payload.get("error"):
+    degraded_commit = completed.returncode == 10 and payload.get("status") == "degraded" and has_committed_artifact
+    if (completed.returncode and not degraded_commit) or explicit_failure or payload.get("error"):
         stderr = completed.stderr or ""
         declared = payload.get("error_code")
         if completed.returncode:
@@ -659,7 +664,7 @@ def _run_fetch_job(item: dict[str, Any], day: str, timeout: float, root: str | P
         raise FetchJobError(str(payload.get("error") or (detail.get("error") if isinstance(detail, dict) else None) or
                                 payload.get("error_code") or "fetch_job_failed:" + str(completed.returncode)),
                             error_code, stderr, returncode=completed.returncode or None)
-    return payload
+    return _DegradedFetchResult(payload) if degraded_commit else payload
 
 
 def _quiet_targets(item: dict[str, Any], phase: str, now: datetime) -> list[str]:
@@ -1026,7 +1031,8 @@ def fetch_item(item_id: str, partition: str, root: str | Path, *,
             if state and state.get("status") != "resolved":
                 return _result("degraded", {"id": item_id, "partition": partition, "result": result,
                                               "upgrade": state})
-        return _result("ok", {"id": item_id, "partition": partition, "result": result})
+        return _result("degraded" if isinstance(result, _DegradedFetchResult) else "ok",
+                       {"id": item_id, "partition": partition, "result": result})
     except Exception as exc:
         upgrade_state = (_record_daily_kline_upgrade(root, partition, succeeded=False,
                                                      now=clock, phase=phase) if upgrade else None)
