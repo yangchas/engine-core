@@ -3987,6 +3987,24 @@
       }
     },
     {
+      "event_id": "stock_listing_0045",
+      "handler": "postmarket_data",
+      "enabled": true,
+      "calendar": "trading_day",
+      "trigger_type": "window",
+      "at": "00:45:00",
+      "deadline": "00:59:00",
+      "late_until": "00:59:00",
+      "phases": [
+        "any"
+      ],
+      "profile": "kline_backfill",
+      "args": {
+        "dataset": "stock_listing",
+        "target": "prev_trade_day"
+      }
+    },
+    {
       "event_id": "daily_kline_backfill",
       "handler": "daily_kline_backfill",
       "enabled": true,

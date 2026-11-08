@@ -2278,6 +2278,41 @@
           "ttl_seconds": 259200
         }
       ]
+    },
+    {
+      "id": "stock_listing",
+      "owner": "postmarket_data",
+      "artifact": {
+        "date_basis": "prev_trade_day"
+      },
+      "phases": [
+        "NIGHT"
+      ],
+      "cadence": "交易日 00:45",
+      "rule": "Baostock 股票上市信息快照。",
+      "freshness": "UNKNOWN",
+      "retry": "event=stock_listing_0045 profile=kline_backfill rungs=primary; attempts=6 backoff=5m*2 timeout=12h cap=30m; deadline=00:59",
+      "degrade": [],
+      "lifecycle": {
+        "init": "fetch snapshot",
+        "force": "not supported",
+        "clear": "not supported"
+      },
+      "notes": "不依赖其他数据集或新鲜度门禁。",
+      "guardian_event": "stock_listing_0045",
+      "requires": [],
+      "storage": [
+        {
+          "kind": "td_external",
+          "name": "core_data.stock_listing_latest",
+          "role": "authority"
+        },
+        {
+          "kind": "td_external",
+          "name": "core_data.reference_snapshot_versions",
+          "role": "marker"
+        }
+      ]
     }
   ],
   "quiet_phases_for_heavy": [
