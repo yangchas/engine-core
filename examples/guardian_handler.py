@@ -204,7 +204,9 @@ def _run_daily_kline_fill(request, root, target: str, args) -> tuple[int, dict]:
         if getattr(exc, "error_code", None) == "BAOSTOCK_GAP_UNRESOLVED":
             # progress is already in TD; an incomplete day is a resumable state, never a final failure
             return 75, {"contract": 1, "status": "failed", "error_code": "TIER_PARTIAL",
-                        "retryable": True, "artifacts": [], "detail": str(exc)}
+                        "retryable": True, "artifacts": [],
+                        "detail": {**getattr(exc, "daily_kline_detail", {}), "message": str(exc)[:300],
+                                   "raw_error_code": "BAOSTOCK_GAP_UNRESOLVED"}}
         return _failure_response(request, error=exc)
     if result.get("status") == "BUSY":
         return 20, {"contract": 1, "status": "not_applicable", "error_code": "ALREADY_SATISFIED", "retryable": False,
