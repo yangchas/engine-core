@@ -1,0 +1,90 @@
+{
+  "started_at_utc": "2026-11-08T11:48:48.053390+00:00",
+  "calendar_source": "/home/exedev/core-data/trade_calendar/calendar.json",
+  "queries": [
+    "SELECT * FROM core_data.daily_kline_v1 WHERE symbol = '600519' ORDER BY ts",
+    "SELECT * FROM core_data.adjust_factor_v1 WHERE symbol = '600519' ORDER BY ts DESC LIMIT 1",
+    "SELECT * FROM core_data.daily_kline_v1 WHERE symbol = '000815' ORDER BY ts",
+    "SELECT * FROM core_data.adjust_factor_v1 WHERE symbol = '000815' ORDER BY ts DESC LIMIT 1",
+    "SELECT * FROM core_data.daily_kline_v1 WHERE symbol = '300750' ORDER BY ts",
+    "SELECT * FROM core_data.adjust_factor_v1 WHERE symbol = '300750' ORDER BY ts DESC LIMIT 1",
+    "SELECT * FROM core_data.daily_kline_v1 WHERE symbol = '688796' ORDER BY ts",
+    "SELECT * FROM core_data.adjust_factor_v1 WHERE symbol = '688796' ORDER BY ts DESC LIMIT 1",
+    "SELECT * FROM core_data.daily_kline_v1 WHERE symbol = '001381' ORDER BY ts",
+    "SELECT * FROM core_data.adjust_factor_v1 WHERE symbol = '001381' ORDER BY ts DESC LIMIT 1",
+    "SELECT * FROM core_data.daily_kline_v1 WHERE symbol = '002623' ORDER BY ts",
+    "SELECT * FROM core_data.adjust_factor_v1 WHERE symbol = '002623' ORDER BY ts DESC LIMIT 1",
+    "SELECT * FROM core_data.daily_kline_v1 WHERE symbol = '301139' ORDER BY ts",
+    "SELECT * FROM core_data.adjust_factor_v1 WHERE symbol = '301139' ORDER BY ts DESC LIMIT 1",
+    "SELECT * FROM core_data.daily_kline_v1 WHERE symbol = '000001' ORDER BY ts",
+    "SELECT * FROM core_data.adjust_factor_v1 WHERE symbol = '000001' ORDER BY ts DESC LIMIT 1",
+    "SELECT * FROM core_data.adjust_factor_days"
+  ],
+  "summary": {
+    "600519": {
+      "rows": 122,
+      "start": "2026-05-12",
+      "end": "2026-11-06",
+      "suspended": 0,
+      "factor_source": "/home/exedev/validation/acceptance/3380b2e/c846/baostock_raw.json",
+      "event_count": 31
+    },
+    "000815": {
+      "rows": 122,
+      "start": "2026-05-12",
+      "end": "2026-11-06",
+      "suspended": 0,
+      "factor_source": "/home/exedev/validation/acceptance/289f271/c851/baostock_000815.json",
+      "event_count": 9
+    },
+    "300750": {
+      "rows": 122,
+      "start": "2026-05-12",
+      "end": "2026-11-06",
+      "suspended": 0,
+      "factor_source": "/home/exedev/validation/acceptance/3380b2e/c846/baostock_raw.json",
+      "event_count": 12
+    },
+    "688796": {
+      "rows": 120,
+      "start": "2026-05-13",
+      "end": "2026-11-05",
+      "suspended": 0,
+      "factor_source": "C852 Baostock query_adjust_factor 1990-01-01..2026-11-08",
+      "event_count": 1
+    },
+    "001381": {
+      "rows": 4,
+      "start": "2026-11-03",
+      "end": "2026-11-06",
+      "suspended": 0,
+      "factor_source": "/home/exedev/validation/acceptance/3380b2e/c846/baostock_extra_raw.json",
+      "event_count": 1
+    },
+    "002623": {
+      "rows": 121,
+      "start": "2026-05-12",
+      "end": "2026-11-05",
+      "suspended": 3,
+      "factor_source": "C852 Baostock query_adjust_factor 1990-01-01..2026-11-08",
+      "event_count": 12
+    },
+    "301139": {
+      "rows": 114,
+      "start": "2026-05-12",
+      "end": "2026-10-27",
+      "suspended": 21,
+      "factor_source": "C852 Baostock query_adjust_factor 1990-01-01..2026-11-08",
+      "event_count": 4
+    },
+    "000001": {
+      "rows": 122,
+      "start": "2026-05-12",
+      "end": "2026-11-06",
+      "suspended": 0,
+      "factor_source": "/home/exedev/validation/acceptance/3380b2e/c846/baostock_raw.json",
+      "event_count": 42
+    }
+  },
+  "elapsed_seconds": 5.703
+}

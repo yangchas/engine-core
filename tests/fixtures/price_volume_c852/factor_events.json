@@ -1,0 +1,802 @@
+{
+  "600519": [
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2001-08-27",
+      "foreAdjustFactor": "0.130391",
+      "backAdjustFactor": "1.000000",
+      "adjustFactor": "1.000000"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2002-07-25",
+      "foreAdjustFactor": "0.145813",
+      "backAdjustFactor": "1.118280",
+      "adjustFactor": "1.118280"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2003-07-14",
+      "foreAdjustFactor": "0.161665",
+      "backAdjustFactor": "1.239853",
+      "adjustFactor": "1.239853"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2004-07-01",
+      "foreAdjustFactor": "0.212025",
+      "backAdjustFactor": "1.626076",
+      "adjustFactor": "1.626076"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2005-08-05",
+      "foreAdjustFactor": "0.256752",
+      "backAdjustFactor": "1.969098",
+      "adjustFactor": "1.969098"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2006-05-25",
+      "foreAdjustFactor": "0.521897",
+      "backAdjustFactor": "4.002563",
+      "adjustFactor": "4.002563"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2007-07-13",
+      "foreAdjustFactor": "0.525111",
+      "backAdjustFactor": "4.027212",
+      "adjustFactor": "4.027212"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2008-06-16",
+      "foreAdjustFactor": "0.528078",
+      "backAdjustFactor": "4.049969",
+      "adjustFactor": "4.049969"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2009-07-01",
+      "foreAdjustFactor": "0.532250",
+      "backAdjustFactor": "4.081960",
+      "adjustFactor": "4.081960"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2010-07-05",
+      "foreAdjustFactor": "0.537215",
+      "backAdjustFactor": "4.120037",
+      "adjustFactor": "4.120037"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2011-07-01",
+      "foreAdjustFactor": "0.597395",
+      "backAdjustFactor": "4.581578",
+      "adjustFactor": "4.581578"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2012-07-05",
+      "foreAdjustFactor": "0.606779",
+      "backAdjustFactor": "4.653542",
+      "adjustFactor": "4.653542"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2013-06-07",
+      "foreAdjustFactor": "0.626731",
+      "backAdjustFactor": "4.806562",
+      "adjustFactor": "4.806562"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2014-06-25",
+      "foreAdjustFactor": "0.708364",
+      "backAdjustFactor": "5.432624",
+      "adjustFactor": "5.432624"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2015-07-17",
+      "foreAdjustFactor": "0.792993",
+      "backAdjustFactor": "6.081667",
+      "adjustFactor": "6.081667"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2016-07-01",
+      "foreAdjustFactor": "0.810116",
+      "backAdjustFactor": "6.212985",
+      "adjustFactor": "6.212985"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2017-07-07",
+      "foreAdjustFactor": "0.822361",
+      "backAdjustFactor": "6.306901",
+      "adjustFactor": "6.306901"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2018-06-15",
+      "foreAdjustFactor": "0.834032",
+      "backAdjustFactor": "6.396403",
+      "adjustFactor": "6.396403"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2019-06-28",
+      "foreAdjustFactor": "0.846383",
+      "backAdjustFactor": "6.491130",
+      "adjustFactor": "6.491130"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2020-06-24",
+      "foreAdjustFactor": "0.856267",
+      "backAdjustFactor": "6.566931",
+      "adjustFactor": "6.566931"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2021-06-25",
+      "foreAdjustFactor": "0.864329",
+      "backAdjustFactor": "6.628762",
+      "adjustFactor": "6.628762"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2022-06-30",
+      "foreAdjustFactor": "0.873655",
+      "backAdjustFactor": "6.700286",
+      "adjustFactor": "6.700286"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2022-12-27",
+      "foreAdjustFactor": "0.884783",
+      "backAdjustFactor": "6.785630",
+      "adjustFactor": "6.785630"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2023-06-30",
+      "foreAdjustFactor": "0.898366",
+      "backAdjustFactor": "6.889798",
+      "adjustFactor": "0.988591"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2023-07-03",
+      "foreAdjustFactor": "0.898366",
+      "backAdjustFactor": "6.889798",
+      "adjustFactor": "6.889798"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2023-12-20",
+      "foreAdjustFactor": "0.908734",
+      "backAdjustFactor": "6.969311",
+      "adjustFactor": "6.969311"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2024-06-19",
+      "foreAdjustFactor": "0.927559",
+      "backAdjustFactor": "7.113689",
+      "adjustFactor": "7.113689"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2024-12-20",
+      "foreAdjustFactor": "0.942063",
+      "backAdjustFactor": "7.224927",
+      "adjustFactor": "7.224927"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2025-06-26",
+      "foreAdjustFactor": "0.960527",
+      "backAdjustFactor": "7.366525",
+      "adjustFactor": "7.366525"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2025-12-19",
+      "foreAdjustFactor": "0.976883",
+      "backAdjustFactor": "7.491968",
+      "adjustFactor": "7.491968"
+    },
+    {
+      "code": "sh.600519",
+      "dividOperateDate": "2026-06-26",
+      "foreAdjustFactor": "1.000000",
+      "backAdjustFactor": "7.669257",
+      "adjustFactor": "7.669257"
+    }
+  ],
+  "000815": [
+    {
+      "code": "sz.000815",
+      "dividOperateDate": "1998-06-09",
+      "foreAdjustFactor": "0.382198",
+      "backAdjustFactor": "1.000000",
+      "adjustFactor": "1.000000"
+    },
+    {
+      "code": "sz.000815",
+      "dividOperateDate": "2000-06-16",
+      "foreAdjustFactor": "0.385621",
+      "backAdjustFactor": "1.008955",
+      "adjustFactor": "1.008955"
+    },
+    {
+      "code": "sz.000815",
+      "dividOperateDate": "2000-11-10",
+      "foreAdjustFactor": "0.403711",
+      "backAdjustFactor": "1.056287",
+      "adjustFactor": "1.056287"
+    },
+    {
+      "code": "sz.000815",
+      "dividOperateDate": "2001-06-11",
+      "foreAdjustFactor": "0.404862",
+      "backAdjustFactor": "1.059300",
+      "adjustFactor": "1.059300"
+    },
+    {
+      "code": "sz.000815",
+      "dividOperateDate": "2002-08-06",
+      "foreAdjustFactor": "0.408839",
+      "backAdjustFactor": "1.069705",
+      "adjustFactor": "1.069705"
+    },
+    {
+      "code": "sz.000815",
+      "dividOperateDate": "2003-06-19",
+      "foreAdjustFactor": "0.410851",
+      "backAdjustFactor": "1.074968",
+      "adjustFactor": "1.074968"
+    },
+    {
+      "code": "sz.000815",
+      "dividOperateDate": "2005-06-27",
+      "foreAdjustFactor": "0.494990",
+      "backAdjustFactor": "1.295115",
+      "adjustFactor": "1.295115"
+    },
+    {
+      "code": "sz.000815",
+      "dividOperateDate": "2010-06-04",
+      "foreAdjustFactor": "0.997849",
+      "backAdjustFactor": "2.610819",
+      "adjustFactor": "2.610819"
+    },
+    {
+      "code": "sz.000815",
+      "dividOperateDate": "2026-11-06",
+      "foreAdjustFactor": "1.000000",
+      "backAdjustFactor": "2.616446",
+      "adjustFactor": "2.616446"
+    }
+  ],
+  "300750": [
+    {
+      "code": "sz.300750",
+      "dividOperateDate": "2018-06-11",
+      "foreAdjustFactor": "0.511044",
+      "backAdjustFactor": "1.000000",
+      "adjustFactor": "1.000000"
+    },
+    {
+      "code": "sz.300750",
+      "dividOperateDate": "2019-07-22",
+      "foreAdjustFactor": "0.512033",
+      "backAdjustFactor": "1.001935",
+      "adjustFactor": "1.001935"
+    },
+    {
+      "code": "sz.300750",
+      "dividOperateDate": "2020-06-04",
+      "foreAdjustFactor": "0.512792",
+      "backAdjustFactor": "1.003421",
+      "adjustFactor": "1.003421"
+    },
+    {
+      "code": "sz.300750",
+      "dividOperateDate": "2021-07-05",
+      "foreAdjustFactor": "0.513029",
+      "backAdjustFactor": "1.003885",
+      "adjustFactor": "1.003885"
+    },
+    {
+      "code": "sz.300750",
+      "dividOperateDate": "2022-09-28",
+      "foreAdjustFactor": "0.513807",
+      "backAdjustFactor": "1.005407",
+      "adjustFactor": "1.005407"
+    },
+    {
+      "code": "sz.300750",
+      "dividOperateDate": "2023-04-26",
+      "foreAdjustFactor": "0.930927",
+      "backAdjustFactor": "1.821618",
+      "adjustFactor": "1.821618"
+    },
+    {
+      "code": "sz.300750",
+      "dividOperateDate": "2024-04-30",
+      "foreAdjustFactor": "0.953720",
+      "backAdjustFactor": "1.866219",
+      "adjustFactor": "1.866219"
+    },
+    {
+      "code": "sz.300750",
+      "dividOperateDate": "2025-01-24",
+      "foreAdjustFactor": "0.958298",
+      "backAdjustFactor": "1.875176",
+      "adjustFactor": "1.875176"
+    },
+    {
+      "code": "sz.300750",
+      "dividOperateDate": "2025-04-22",
+      "foreAdjustFactor": "0.977479",
+      "backAdjustFactor": "1.912710",
+      "adjustFactor": "1.912710"
+    },
+    {
+      "code": "sz.300750",
+      "dividOperateDate": "2025-08-20",
+      "foreAdjustFactor": "0.981010",
+      "backAdjustFactor": "1.919620",
+      "adjustFactor": "1.919620"
+    },
+    {
+      "code": "sz.300750",
+      "dividOperateDate": "2026-04-22",
+      "foreAdjustFactor": "0.996392",
+      "backAdjustFactor": "1.949719",
+      "adjustFactor": "1.949719"
+    },
+    {
+      "code": "sz.300750",
+      "dividOperateDate": "2026-08-10",
+      "foreAdjustFactor": "1.000000",
+      "backAdjustFactor": "1.956779",
+      "adjustFactor": "1.956779"
+    }
+  ],
+  "688796": [
+    {
+      "code": "sh.688796",
+      "dividOperateDate": "2025-12-10",
+      "foreAdjustFactor": "1.000000",
+      "backAdjustFactor": "1.000000",
+      "adjustFactor": "1.000000"
+    }
+  ],
+  "001381": [
+    {
+      "code": "sz.001381",
+      "dividOperateDate": "2026-11-03",
+      "foreAdjustFactor": "1.000000",
+      "backAdjustFactor": "1.000000",
+      "adjustFactor": "1.000000"
+    }
+  ],
+  "002623": [
+    {
+      "code": "sz.002623",
+      "dividOperateDate": "2011-10-13",
+      "foreAdjustFactor": "0.895889",
+      "backAdjustFactor": "1.000000",
+      "adjustFactor": "1.000000"
+    },
+    {
+      "code": "sz.002623",
+      "dividOperateDate": "2012-07-06",
+      "foreAdjustFactor": "0.908367",
+      "backAdjustFactor": "1.013928",
+      "adjustFactor": "1.013928"
+    },
+    {
+      "code": "sz.002623",
+      "dividOperateDate": "2013-06-04",
+      "foreAdjustFactor": "0.910787",
+      "backAdjustFactor": "1.016628",
+      "adjustFactor": "1.016628"
+    },
+    {
+      "code": "sz.002623",
+      "dividOperateDate": "2014-07-08",
+      "foreAdjustFactor": "0.912577",
+      "backAdjustFactor": "1.018627",
+      "adjustFactor": "1.018627"
+    },
+    {
+      "code": "sz.002623",
+      "dividOperateDate": "2015-06-16",
+      "foreAdjustFactor": "0.913112",
+      "backAdjustFactor": "1.019224",
+      "adjustFactor": "1.019224"
+    },
+    {
+      "code": "sz.002623",
+      "dividOperateDate": "2016-06-21",
+      "foreAdjustFactor": "0.914198",
+      "backAdjustFactor": "1.020436",
+      "adjustFactor": "1.020436"
+    },
+    {
+      "code": "sz.002623",
+      "dividOperateDate": "2017-06-20",
+      "foreAdjustFactor": "0.914518",
+      "backAdjustFactor": "1.020793",
+      "adjustFactor": "1.020793"
+    },
+    {
+      "code": "sz.002623",
+      "dividOperateDate": "2022-05-17",
+      "foreAdjustFactor": "0.917209",
+      "backAdjustFactor": "1.023797",
+      "adjustFactor": "1.023797"
+    },
+    {
+      "code": "sz.002623",
+      "dividOperateDate": "2023-05-30",
+      "foreAdjustFactor": "0.923699",
+      "backAdjustFactor": "1.031041",
+      "adjustFactor": "1.031041"
+    },
+    {
+      "code": "sz.002623",
+      "dividOperateDate": "2024-05-28",
+      "foreAdjustFactor": "0.946864",
+      "backAdjustFactor": "1.056898",
+      "adjustFactor": "1.056898"
+    },
+    {
+      "code": "sz.002623",
+      "dividOperateDate": "2025-05-28",
+      "foreAdjustFactor": "0.978536",
+      "backAdjustFactor": "1.092251",
+      "adjustFactor": "1.092251"
+    },
+    {
+      "code": "sz.002623",
+      "dividOperateDate": "2026-06-04",
+      "foreAdjustFactor": "1.000000",
+      "backAdjustFactor": "1.116209",
+      "adjustFactor": "1.116209"
+    }
+  ],
+  "301139": [
+    {
+      "code": "sz.301139",
+      "dividOperateDate": "2022-07-08",
+      "foreAdjustFactor": "0.992553",
+      "backAdjustFactor": "1.000000",
+      "adjustFactor": "1.000000"
+    },
+    {
+      "code": "sz.301139",
+      "dividOperateDate": "2023-07-04",
+      "foreAdjustFactor": "0.996075",
+      "backAdjustFactor": "1.003549",
+      "adjustFactor": "1.003549"
+    },
+    {
+      "code": "sz.301139",
+      "dividOperateDate": "2024-06-28",
+      "foreAdjustFactor": "0.998873",
+      "backAdjustFactor": "1.006368",
+      "adjustFactor": "1.006368"
+    },
+    {
+      "code": "sz.301139",
+      "dividOperateDate": "2025-07-09",
+      "foreAdjustFactor": "1.000000",
+      "backAdjustFactor": "1.007503",
+      "adjustFactor": "1.007503"
+    }
+  ],
+  "000001": [
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1991-04-03",
+      "foreAdjustFactor": "0.007833",
+      "backAdjustFactor": "1.000000",
+      "adjustFactor": "1.000000"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1991-04-16",
+      "foreAdjustFactor": "0.007794",
+      "backAdjustFactor": "1.004935",
+      "adjustFactor": "1.004935"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1991-04-23",
+      "foreAdjustFactor": "0.007755",
+      "backAdjustFactor": "1.010045",
+      "adjustFactor": "1.010045"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1991-06-06",
+      "foreAdjustFactor": "0.010714",
+      "backAdjustFactor": "1.430843",
+      "adjustFactor": "1.430843"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1991-07-04",
+      "foreAdjustFactor": "0.010552",
+      "backAdjustFactor": "1.438145",
+      "adjustFactor": "1.438145"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1991-07-10",
+      "foreAdjustFactor": "0.010501",
+      "backAdjustFactor": "1.445227",
+      "adjustFactor": "1.445227"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1991-07-24",
+      "foreAdjustFactor": "0.010447",
+      "backAdjustFactor": "1.459401",
+      "adjustFactor": "1.459401"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1992-03-23",
+      "foreAdjustFactor": "0.012378",
+      "backAdjustFactor": "2.202677",
+      "adjustFactor": "2.202677"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1993-01-04",
+      "foreAdjustFactor": "0.013513",
+      "backAdjustFactor": "2.202677",
+      "adjustFactor": "2.202677"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1993-05-24",
+      "foreAdjustFactor": "0.024861",
+      "backAdjustFactor": "4.197045",
+      "adjustFactor": "4.197045"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1993-07-05",
+      "foreAdjustFactor": "0.024861",
+      "backAdjustFactor": "4.197045",
+      "adjustFactor": "4.197045"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1993-07-19",
+      "foreAdjustFactor": "0.024861",
+      "backAdjustFactor": "4.197045",
+      "adjustFactor": "4.197045"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1994-07-11",
+      "foreAdjustFactor": "0.039755",
+      "backAdjustFactor": "6.711381",
+      "adjustFactor": "6.711381"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1995-09-25",
+      "foreAdjustFactor": "0.049171",
+      "backAdjustFactor": "8.300920",
+      "adjustFactor": "8.300920"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1996-05-27",
+      "foreAdjustFactor": "0.098341",
+      "backAdjustFactor": "16.601839",
+      "adjustFactor": "16.601839"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1997-08-25",
+      "foreAdjustFactor": "0.148476",
+      "backAdjustFactor": "25.065521",
+      "adjustFactor": "25.065521"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "1999-10-18",
+      "foreAdjustFactor": "0.152513",
+      "backAdjustFactor": "25.746958",
+      "adjustFactor": "25.746958"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2000-11-06",
+      "foreAdjustFactor": "0.171504",
+      "backAdjustFactor": "28.953063",
+      "adjustFactor": "28.953063"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2002-07-23",
+      "foreAdjustFactor": "0.173297",
+      "backAdjustFactor": "29.255703",
+      "adjustFactor": "29.255703"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2003-09-29",
+      "foreAdjustFactor": "0.176125",
+      "backAdjustFactor": "29.733216",
+      "adjustFactor": "29.733216"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2008-10-31",
+      "foreAdjustFactor": "0.252731",
+      "backAdjustFactor": "38.786931",
+      "adjustFactor": "38.786931"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2012-10-19",
+      "foreAdjustFactor": "0.254616",
+      "backAdjustFactor": "39.076177",
+      "adjustFactor": "39.076177"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2013-06-20",
+      "foreAdjustFactor": "0.410973",
+      "backAdjustFactor": "63.072621",
+      "adjustFactor": "63.072621"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2014-06-12",
+      "foreAdjustFactor": "0.500131",
+      "backAdjustFactor": "76.755749",
+      "adjustFactor": "76.755749"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2015-04-13",
+      "foreAdjustFactor": "0.605293",
+      "backAdjustFactor": "92.895104",
+      "adjustFactor": "92.895104"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2016-06-16",
+      "foreAdjustFactor": "0.737370",
+      "backAdjustFactor": "113.165057",
+      "adjustFactor": "113.165057"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2017-07-21",
+      "foreAdjustFactor": "0.748283",
+      "backAdjustFactor": "114.839965",
+      "adjustFactor": "114.839965"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2018-07-12",
+      "foreAdjustFactor": "0.760408",
+      "backAdjustFactor": "116.700821",
+      "adjustFactor": "116.700821"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2019-04-15",
+      "foreAdjustFactor": "0.760408",
+      "backAdjustFactor": "116.700821",
+      "adjustFactor": "116.700821"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2019-06-26",
+      "foreAdjustFactor": "0.768419",
+      "backAdjustFactor": "117.930230",
+      "adjustFactor": "117.930230"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2019-07-19",
+      "foreAdjustFactor": "0.768419",
+      "backAdjustFactor": "117.930230",
+      "adjustFactor": "117.930230"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2020-05-28",
+      "foreAdjustFactor": "0.781647",
+      "backAdjustFactor": "119.960317",
+      "adjustFactor": "119.960317"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2020-12-31",
+      "foreAdjustFactor": "0.781647",
+      "backAdjustFactor": "99.787353",
+      "adjustFactor": "99.787353"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2021-05-14",
+      "foreAdjustFactor": "0.787793",
+      "backAdjustFactor": "100.572054",
+      "adjustFactor": "100.572054"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2022-07-22",
+      "foreAdjustFactor": "0.801971",
+      "backAdjustFactor": "102.382020",
+      "adjustFactor": "102.382020"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2023-06-14",
+      "foreAdjustFactor": "0.821514",
+      "backAdjustFactor": "104.876880",
+      "adjustFactor": "104.876880"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2024-06-14",
+      "foreAdjustFactor": "0.880194",
+      "backAdjustFactor": "112.368136",
+      "adjustFactor": "112.368136"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2024-10-10",
+      "foreAdjustFactor": "0.899446",
+      "backAdjustFactor": "114.825855",
+      "adjustFactor": "114.825855"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2025-06-12",
+      "foreAdjustFactor": "0.927627",
+      "backAdjustFactor": "118.423499",
+      "adjustFactor": "118.423499"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2025-10-15",
+      "foreAdjustFactor": "0.947276",
+      "backAdjustFactor": "120.932145",
+      "adjustFactor": "120.932145"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2026-06-12",
+      "foreAdjustFactor": "0.978448",
+      "backAdjustFactor": "124.911625",
+      "adjustFactor": "124.911625"
+    },
+    {
+      "code": "sz.000001",
+      "dividOperateDate": "2026-09-24",
+      "foreAdjustFactor": "1.000000",
+      "backAdjustFactor": "127.662888",
+      "adjustFactor": "127.662888"
+    }
+  ]
+}

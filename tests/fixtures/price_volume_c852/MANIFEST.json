@@ -1,0 +1,148 @@
+{
+  "id": "C852",
+  "plan": "D8",
+  "capture_started_at_utc": "2026-11-08T11:48:48.053390+00:00",
+  "files": {
+    "baostock_responses.json": {
+      "sha256": "1247ce528fdb8d7fe4b147aa46ff3c2cf6488d2cb9bc93e0a2e650dbb2447744",
+      "bytes": 16080,
+      "lines": 875
+    },
+    "capture_metadata.json": {
+      "sha256": "8ecd0a09ca14e03813add94582f462462ba34ed604ca9448f6eef3eaf76b01ca",
+      "bytes": 3548,
+      "lines": 90
+    },
+    "checks.json": {
+      "sha256": "c7cd2d0bfd578444540ce99aafd8e3565d18919c1954042dbfa78aa5341c749a",
+      "bytes": 279,
+      "lines": 16
+    },
+    "daily_kline.jsonl": {
+      "sha256": "202eb2034de2c71843fb7f8dbac480ed080f298d798a75b7ae5d01c61a7d9e8f",
+      "bytes": 243500,
+      "lines": 847
+    },
+    "document.py": {
+      "sha256": "6bccb973d8cc9dafca73f1eaf39814627dff54fe30afc4bbcff4a7198d772f3c",
+      "bytes": 3774,
+      "lines": 16
+    },
+    "expected.jsonl": {
+      "sha256": "3ddb27d779d49445224680092d32a44a1862377252bd1b631f6c7bee2eea63d9",
+      "bytes": 431709,
+      "lines": 847
+    },
+    "export.py": {
+      "sha256": "34e5070f96378d0db7c0ec987fede8a6816660a256403d96a7e3d2f7325bea58",
+      "bytes": 6647,
+      "lines": 88
+    },
+    "factor_days.json": {
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "bytes": 3,
+      "lines": 1
+    },
+    "factor_events.json": {
+      "sha256": "0b4e7fc3ebab9d640f670dfac124b8eaad348598f756076fc06e44d449b95350",
+      "bytes": 21403,
+      "lines": 802
+    },
+    "factor_snapshots.json": {
+      "sha256": "c340618e1661fe2027009540236d07237d5a14ad38b9fdcd2f7e002ec5d657c8",
+      "bytes": 5390,
+      "lines": 18
+    },
+    "request_log.json": {
+      "sha256": "ec10d064fe587007f1ee2b06a966ad197d7dd9979ce41242b375ae2fe6c2cfe2",
+      "bytes": 493,
+      "lines": 25
+    },
+    "schema.json": {
+      "sha256": "e9b49371d201c168ab08449ee24938ec7c16f1b97c02af43c43f4ade9a3457f6",
+      "bytes": 2081,
+      "lines": 119
+    },
+    "verify.py": {
+      "sha256": "02b9938706ee5dddc4a60998d29ee2b562ca45bbb65fe8945962aefa14ed5e2f",
+      "bytes": 1111,
+      "lines": 11
+    },
+    "verify.txt": {
+      "sha256": "031cc8f0ca9abb1aacdcc2175a1b10001e5a5604751787a4996a260ac8347b86",
+      "bytes": 159,
+      "lines": 4
+    }
+  },
+  "samples": {
+    "600519": {
+      "rows": 122,
+      "start": "2026-05-12",
+      "end": "2026-11-06",
+      "suspended": 0,
+      "factor_source": "/home/exedev/validation/acceptance/3380b2e/c846/baostock_raw.json",
+      "event_count": 31
+    },
+    "000815": {
+      "rows": 122,
+      "start": "2026-05-12",
+      "end": "2026-11-06",
+      "suspended": 0,
+      "factor_source": "/home/exedev/validation/acceptance/289f271/c851/baostock_000815.json",
+      "event_count": 9
+    },
+    "300750": {
+      "rows": 122,
+      "start": "2026-05-12",
+      "end": "2026-11-06",
+      "suspended": 0,
+      "factor_source": "/home/exedev/validation/acceptance/3380b2e/c846/baostock_raw.json",
+      "event_count": 12
+    },
+    "688796": {
+      "rows": 120,
+      "start": "2026-05-13",
+      "end": "2026-11-05",
+      "suspended": 0,
+      "factor_source": "C852 Baostock query_adjust_factor 1990-01-01..2026-11-08",
+      "event_count": 1
+    },
+    "001381": {
+      "rows": 4,
+      "start": "2026-11-03",
+      "end": "2026-11-06",
+      "suspended": 0,
+      "factor_source": "/home/exedev/validation/acceptance/3380b2e/c846/baostock_extra_raw.json",
+      "event_count": 1
+    },
+    "002623": {
+      "rows": 121,
+      "start": "2026-05-12",
+      "end": "2026-11-05",
+      "suspended": 3,
+      "factor_source": "C852 Baostock query_adjust_factor 1990-01-01..2026-11-08",
+      "event_count": 12
+    },
+    "301139": {
+      "rows": 114,
+      "start": "2026-05-12",
+      "end": "2026-10-27",
+      "suspended": 21,
+      "factor_source": "C852 Baostock query_adjust_factor 1990-01-01..2026-11-08",
+      "event_count": 4
+    },
+    "000001": {
+      "rows": 122,
+      "start": "2026-05-12",
+      "end": "2026-11-06",
+      "suspended": 0,
+      "factor_source": "/home/exedev/validation/acceptance/3380b2e/c846/baostock_raw.json",
+      "event_count": 42
+    }
+  },
+  "limits": [
+    "No 2025 daily kline available for 600519 in authorized TD table.",
+    "No internal missing trading date found in scanned TD symbols; 000001 is a substitute, not a gap example.",
+    "No snapshot as-of historical trade dates is established."
+  ]
+}

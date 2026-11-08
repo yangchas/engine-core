@@ -1,0 +1,25 @@
+[
+  {
+    "action": "login",
+    "error_code": "0",
+    "error_msg": "success"
+  },
+  {
+    "code": "sh.688796",
+    "error_code": "0",
+    "error_msg": "success",
+    "time_utc": "2026-11-08T11:48:51.048118+00:00"
+  },
+  {
+    "code": "sz.002623",
+    "error_code": "0",
+    "error_msg": "success",
+    "time_utc": "2026-11-08T11:48:52.292392+00:00"
+  },
+  {
+    "code": "sz.301139",
+    "error_code": "0",
+    "error_msg": "success",
+    "time_utc": "2026-11-08T11:48:53.531660+00:00"
+  }
+]
