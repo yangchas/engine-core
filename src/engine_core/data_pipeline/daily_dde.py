@@ -589,14 +589,12 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                     else:
                         try:
                             rows = partition.rows[:INCREMENTAL_FETCH_SIZE] if symbol in before else partition.rows
+                            revisions = []
                             if symbol in before:
                                 previous = store.read_symbol_rows(symbol, [row["date"] for row in rows])
                                 changed = [row for row in rows if row["date"] not in previous or
                                            previous[row["date"]]["ddje"] != row["ddje"]]
                                 revisions = [row for row in changed if row["date"] in previous]
-                                revised_days.update(row["date"] for row in revisions)
-                                if revisions:
-                                    revised_symbols.add(symbol)
                                 rows = changed
                             days_to_invalidate = {row["date"] for row in rows} - invalidated_days
                             if days_to_invalidate:
@@ -605,6 +603,9 @@ def run_daily_dde_sync(symbols: Sequence[str] | None, target_date: str, *, datab
                             count = store.write_and_verify(symbol, rows, partition.manifest["version"]) if rows else 0
                             if count != len(rows):
                                 raise DdeError("td_readback_row_count_mismatch")
+                            revised_days.update(row["date"] for row in revisions)
+                            if revisions:
+                                revised_symbols.add(symbol)
                             written_symbols += bool(rows)
                             written_rows += count
                             latest = max(row["date"] for row in partition.rows)
