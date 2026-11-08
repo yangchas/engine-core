@@ -262,3 +262,18 @@ def test_price_volume_events_follow_kline_windows():
     assert night['at'] == '01:30:00' and night['late_until'] == '05:30:00'
     assert night['calendar'] == 'every_day' and night['args']['target'] == 'prev_trade_day'
     assert all(event['cost'] != 'heavy' and not event.get('gate') and not event.get('after') and not event.get('depends_on') for event in (post, night))
+
+
+def test_chip_and_dde_events_use_independent_time_windows():
+    events = {event['event_id']: event for event in SCHEDULE['events']}
+    for name, at, late, calendar in (
+        ('chip_peak_postclose', '17:40:00', '20:50:00', 'trading_day'),
+        ('chip_peak_0145', '01:45:00', '05:30:00', 'every_day'),
+        ('dde_derived_0445', '04:45:00', '08:00:00', 'every_day'),
+    ):
+        event = events[name]
+        assert (event['at'], event['late_until'], event['calendar']) == (at, late, calendar)
+        assert event['data_date_offset'] == 0
+        if calendar == 'every_day':
+            assert event['args']['target'] == 'prev_trade_day'
+        assert event['cost'] != 'heavy' and not any(event.get(k) for k in ('gate', 'after', 'depends_on'))

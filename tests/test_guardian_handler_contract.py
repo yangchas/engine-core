@@ -940,3 +940,62 @@ def test_price_volume_handler_routes_and_dry_run(monkeypatch):
         assert code == 0 and check_reply(code, reply) == []
     assert len(seen) == 4
     assert all(req == {'trade_date': '2026-10-16', 'args': {'mode': 'incremental'}} and kw['dry_run'] for req, kw in seen)
+
+
+def test_chip_and_dde_handler_routes_and_dry_run(monkeypatch):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import chip_peak, dde_derived, td_sink
+    from engine_core.guardian.contract import check_reply
+    seen = []
+    for module in (chip_peak, dde_derived):
+        original = module.run
+        def wrapped(request, root, _original=original, _module=module, **kwargs):
+            seen.append((_module.__name__, request, kwargs))
+            return _original(request, root, **kwargs)
+        monkeypatch.setattr(module, 'run', wrapped)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('dry run connected to a service')
+    monkeypatch.setenv('GUARDIAN_DRY_RUN', '1')
+    monkeypatch.setattr(td_sink, 'TaosStore', forbidden)
+    monkeypatch.setattr(dde_derived, 'TaosStore', forbidden)
+    for event in ('chip_peak_postclose', 'chip_peak_0145', 'dde_derived_0445'):
+        for suffix in ('', '_rh1'):
+            request = _core_request(event + suffix)
+            request.update(handler='postmarket_data', data_date='2026-10-16')
+            code, reply = guardian_handler._run(request)
+            assert code == 0 and check_reply(code, reply) == []
+    assert len(seen) == 6
+    for module, request, kwargs in seen:
+        expected = {'trade_date': '2026-10-16'}
+        if module.endswith('chip_peak'):
+            expected['args'] = {'mode': 'incremental'}
+        assert request == expected and kwargs['dry_run']
+
+
+def test_chip_and_dde_run_dry_reply_contract(tmp_path, monkeypatch):
+    from engine_core.data_pipeline import chip_peak, dde_derived, td_sink
+    from engine_core.guardian.contract import check_reply
+    def forbidden(*args, **kwargs):
+        raise AssertionError('dry run connected to a service')
+    monkeypatch.setattr(td_sink, 'TaosStore', forbidden)
+    monkeypatch.setattr(dde_derived, 'TaosStore', forbidden)
+    for module in (chip_peak, dde_derived):
+        code, reply = module.run({'trade_date': '2026-10-16'}, tmp_path, dry_run=True)
+        assert code == 0 and check_reply(code, reply) == []
+
+
+def test_chip_and_dde_handler_reports_unavailable_td(monkeypatch):
+    from examples import guardian_handler
+    from engine_core.data_pipeline import chip_peak, dde_derived
+    from engine_core.data_pipeline.td_sink import TdUnavailable
+    from engine_core.guardian.contract import check_reply
+    def unavailable(*args, **kwargs):
+        raise TdUnavailable('connection failed')
+    monkeypatch.setattr(chip_peak, 'run', unavailable)
+    monkeypatch.setattr(dde_derived, 'run', unavailable)
+    for event in ('chip_peak_postclose', 'chip_peak_0145', 'dde_derived_0445'):
+        request = _core_request(event)
+        request.update(handler='postmarket_data', data_date='2026-10-16')
+        code, reply = guardian_handler._run(request)
+        assert code == 75 and reply['error_code'] == 'TD_UNAVAILABLE'
+        assert check_reply(code, reply) == []

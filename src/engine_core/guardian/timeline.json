@@ -2046,6 +2046,71 @@
       ],
       "trigger_type": "window",
       "policy": "kline_backfill"
+    },
+    "chip_peak_postclose": {
+      "after": [],
+      "args": {
+        "dataset": "chip_peak"
+      },
+      "calendar": "trading_day",
+      "catchup_mode": "run_in_window",
+      "cost": "medium",
+      "data_date_offset": 0,
+      "depends_on": [],
+      "enabled": true,
+      "handler": "postmarket_data",
+      "late_until": "20:50:00",
+      "on_deadline": "missed",
+      "on_phase_mismatch": "defer",
+      "phases": [
+        "any"
+      ],
+      "trigger_type": "window",
+      "policy": "kline_backfill"
+    },
+    "chip_peak_0145": {
+      "after": [],
+      "args": {
+        "dataset": "chip_peak",
+        "target": "prev_trade_day"
+      },
+      "calendar": "every_day",
+      "catchup_mode": "run_in_window",
+      "cost": "medium",
+      "data_date_offset": 0,
+      "depends_on": [],
+      "enabled": true,
+      "handler": "postmarket_data",
+      "late_until": "05:30:00",
+      "on_deadline": "missed",
+      "on_phase_mismatch": "defer",
+      "phases": [
+        "any"
+      ],
+      "trigger_type": "window",
+      "policy": "kline_backfill"
+    },
+    "dde_derived_0445": {
+      "after": [],
+      "args": {
+        "dataset": "dde_derived",
+        "target": "prev_trade_day"
+      },
+      "calendar": "every_day",
+      "catchup_mode": "run_in_window",
+      "cost": "medium",
+      "data_date_offset": 0,
+      "depends_on": [],
+      "enabled": true,
+      "handler": "postmarket_data",
+      "late_until": "08:00:00",
+      "on_deadline": "missed",
+      "on_phase_mismatch": "defer",
+      "phases": [
+        "any"
+      ],
+      "trigger_type": "window",
+      "policy": "kline_backfill"
     }
   },
   "timeline": [
@@ -2169,12 +2234,32 @@
       ]
     },
     {
+      "at": "01:45:00",
+      "run": [
+        {
+          "fn": "chip_peak_0145",
+          "id": "chip_peak_0145",
+          "deadline": "05:30:00"
+        }
+      ]
+    },
+    {
       "at": "02:00:00",
       "run": [
         {
           "fn": "daily_dde_0200",
           "id": "daily_dde_0200",
           "deadline": "06:30:00"
+        }
+      ]
+    },
+    {
+      "at": "04:45:00",
+      "run": [
+        {
+          "fn": "dde_derived_0445",
+          "id": "dde_derived_0445",
+          "deadline": "08:00:00"
         }
       ]
     },
@@ -3076,6 +3161,11 @@
           "fn": "postmarket_publish",
           "id": "postmarket_publish",
           "deadline": "20:30:00"
+        },
+        {
+          "fn": "chip_peak_postclose",
+          "id": "chip_peak_postclose",
+          "deadline": "20:50:00"
         }
       ]
     },
@@ -3351,6 +3441,9 @@
     "adjust_factor_postclose",
     "adjust_factor_0115",
     "price_volume_postclose",
-    "price_volume_0130"
+    "price_volume_0130",
+    "chip_peak_postclose",
+    "chip_peak_0145",
+    "dde_derived_0445"
   ]
 }

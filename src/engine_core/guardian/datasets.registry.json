@@ -2421,6 +2421,116 @@
           "role": "marker"
         }
       ]
+    },
+    {
+      "id": "chip_peak",
+      "owner": "postmarket_data",
+      "artifact": {
+        "date_basis": "daily_kline trade_date"
+      },
+      "phases": [
+        "CLOSE",
+        "POST_MARKET",
+        "NIGHT"
+      ],
+      "cadence": "交易日 17:40 和每日 01:45 增量计算目标日筹码峰",
+      "rule": "增量计算筹码峰",
+      "freshness": "UNKNOWN",
+      "retry": "使用 kline_backfill 策略；空状态 NEEDS_REBUILD，需手动 rebuild",
+      "degrade": [
+        "缺失只标 PARTIAL；因子未处理的股票跳过；空状态返回 NEEDS_REBUILD，首次部署需手动 rebuild。"
+      ],
+      "td_sink": {
+        "database": "core_data",
+        "stable": "chip_indicators_v1",
+        "columns": [
+          "version",
+          "algo_version",
+          "input_refs",
+          "available_at",
+          "quality",
+          "warm"
+        ],
+        "tags": [
+          "symbol"
+        ],
+        "timestamp": "ts"
+      },
+      "lifecycle": {
+        "init": "整股快照",
+        "force": "不支持",
+        "clear": "不支持"
+      },
+      "notes": "首次部署需手动 rebuild；日标记记录本次处理结果。",
+      "guardian_event": "chip_peak_postclose",
+      "requires": [],
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "chip_indicators_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_external",
+          "name": "core_data.chip_peak_days",
+          "role": "marker"
+        }
+      ]
+    },
+    {
+      "id": "dde_derived",
+      "owner": "postmarket_data",
+      "artifact": {
+        "date_basis": "daily_kline trade_date"
+      },
+      "phases": [
+        "CLOSE",
+        "POST_MARKET",
+        "NIGHT"
+      ],
+      "cadence": "每日 04:45 重算前一交易日 DDE 比率",
+      "rule": "整日重算 DDE 比率",
+      "freshness": "UNKNOWN",
+      "retry": "使用 kline_backfill 策略；窗口内可重试并覆盖 PARTIAL 结果",
+      "degrade": [
+        "任一输入缺失输出 NULL+PARTIAL；两边均无行才降级。"
+      ],
+      "td_sink": {
+        "database": "core_data",
+        "stable": "dde_indicators_v1",
+        "columns": [
+          "ddje_ratio",
+          "version",
+          "algo_version",
+          "input_refs",
+          "available_at",
+          "quality"
+        ],
+        "tags": [
+          "symbol"
+        ],
+        "timestamp": "ts"
+      },
+      "lifecycle": {
+        "init": "整股快照",
+        "force": "不支持",
+        "clear": "不支持"
+      },
+      "notes": "无状态，按目标日整日重算。",
+      "guardian_event": "dde_derived_0445",
+      "requires": [],
+      "storage": [
+        {
+          "kind": "td_stable",
+          "name": "dde_indicators_v1",
+          "role": "authority"
+        },
+        {
+          "kind": "td_external",
+          "name": "core_data.dde_indicators_days",
+          "role": "marker"
+        }
+      ]
     }
   ],
   "quiet_phases_for_heavy": [
