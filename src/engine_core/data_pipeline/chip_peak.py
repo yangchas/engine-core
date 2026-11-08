@@ -79,3 +79,33 @@ def calculate_windows(prices, turnovers):
         if len(pp) == 120:
             out.update(quality='FORMAL', warm=True)
     return results
+
+
+def prepare_window(bar, events, state=None, *, factor_quality=None):
+    """Append a raw bar and adjust the entire checkpoint with the current snapshot."""
+    from decimal import Decimal, InvalidOperation
+    from .adjust_factor import factor_for
+
+    state = dict(state or {})
+    if bar is None or bar.get('suspended') or events is None or factor_quality == 'UNPROCESSED':
+        return None, state
+    window = (list(state.get('window', [])) + [[str(bar['ts'])[:10], bar.get('close'),
+                                                bar.get('turnover_pct')]])[-120:]
+    adjusted, reasons = [], set()
+    for day, close, _ in window:
+        factor, quality = factor_for(events, day)
+        if quality == 'NO_EVENTS':
+            factor = 1.0
+        elif quality == 'BEFORE_FIRST_EVENT':
+            first = min(events, key=lambda item: item['dividOperateDate'])
+            factor, _ = factor_for([first], first['dividOperateDate'])
+        if quality != 'FORMAL':
+            reasons.add('FACTOR_' + quality)
+        if factor is None:
+            return None, state
+        try:
+            adjusted.append(float(Decimal(str(close)) * Decimal(str(factor))))
+        except (InvalidOperation, TypeError, ValueError, OverflowError):
+            adjusted.append(None)
+    return {'prices': adjusted, 'turnovers': [row[2] for row in window],
+            'bars_used': len(window), 'factor_reasons': sorted(reasons)}, {'window': window}

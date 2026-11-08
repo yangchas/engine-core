@@ -46,3 +46,27 @@ def test_all_c879_reference_values():
                 assert out[key] == value, (symbol, day, key)
         comparisons += 1
     assert comparisons == 823
+
+
+def test_window_state_and_factor_quality():
+    from engine_core.data_pipeline.chip_peak import prepare_window
+    root = Path(__file__).parent / 'fixtures' / 'price_volume_c852'
+    bars = [json.loads(line) for line in (root / 'daily_kline.jsonl').read_text().splitlines()]
+    bars = [bar for bar in bars if bar['symbol'] == '600519' and not bar['suspended']]
+    events = json.loads((root / 'factor_events.json').read_text())['600519']
+    state = None
+    for bar in bars[:120]:
+        prepared, state = prepare_window(bar, events, state)
+    assert len(state['window']) == 120
+    assert prepared['bars_used'] == 120 and prepared['factor_reasons'] == []
+    previous = state.copy()
+    assert prepare_window(None, events, state) == (None, previous)
+    suspended = dict(bars[-1], suspended=True)
+    assert prepare_window(suspended, events, state) == (None, previous)
+    assert prepare_window(bars[-1], events, state, factor_quality='UNPROCESSED') == (None, previous)
+    prepared, newer = prepare_window(bars[-1], [], state)
+    assert len(newer['window']) == 120 and prepared['factor_reasons'] == ['FACTOR_NO_EVENTS']
+    assert newer['window'][0] == state['window'][1]
+    future = [dict(events[-1], dividOperateDate='2099-01-01')]
+    prepared, _ = prepare_window(bars[0], future)
+    assert prepared['factor_reasons'] == ['FACTOR_BEFORE_FIRST_EVENT']

@@ -8,9 +8,9 @@ PLAN: D8 数据层欠账（PLAN-MASTER §11.2；GOAL-datalayer G5）。状态：
 
 ## §2 输入与质量
 
-读取已发布 L0 `daily_kline`（日期、symbol、close、turnover_pct，换手单位百分数）和 `adjust_factor` 完整快照，以 as-of 选可见版本；请求截至目标日含当日最近 120 个交易日分区，按日期升序每股取最多 120 根，至少 5 根。不是向前无限补齐 120 根；缺日、停牌与确认非交易日不可混同。检查每个日期、实体、白名单、完整标记、版本和因子覆盖；因子须含窗口起点前最近事件。
+读取已发布 L0 `daily_kline`（日期、symbol、close、turnover_pct，换手单位百分数）和 `adjust_factor` 完整快照，以 as-of 选可见版本；按日期升序每股取截至目标日最近最多 120 根非停牌 K 线，至少 5 根。停牌日不是 bar，与价量簇口径一致；缺日、停牌与确认非交易日不可混同。检查每个日期、实体、白名单、完整标记、版本和因子覆盖；因子须含窗口起点前最近事件。
 
-C786 样本口径：每根找 event_date ≤ 当日的最近事件，Decimal 解析 `foreAdjustFactor`，前复权 close = 原 close × 该因子，事件日使用新因子；非事件日期不要求有因子行。无可证明因子或 close 为 NULL/非有限，相关结果 NULL、quality=PARTIAL；不得默认因子 1。换手 NULL 的窗口十列全 NULL、quality=PARTIAL，不跳过该行、不补 0；上游整个依赖未就绪时按 §7 返回 30。少于 5 根十列 NULL、warm=false、PARTIAL；5–119 根可算但 PARTIAL、warm=false，120 根且输入完整有效方 warm=true、可 FORMAL；`bars_used` 为窗口实际根数，不把缺失填成有效根。负换手视为非法输入，整窗口十列 NULL、PARTIAL，记录原因；不截到 0 或沿用旧负权重，避免制造负筹码分布。停牌行能否作为有效 K 的源语义 UNKNOWN-C1（runner 取证卡）；未证明时不把停牌零行情当有效 K。
+C786 样本口径：每根找 event_date ≤ 当日的最近事件，Decimal 解析 `foreAdjustFactor`，前复权 close = 原 close × 该因子，事件日使用新因子；非事件日期不要求有因子行。因子 UNPROCESSED 时不计算、不产出且保留状态；NO_EVENTS 使用因子 1.0 并标记 PARTIAL（FACTOR_NO_EVENTS）；BEFORE_FIRST_EVENT 使用首个事件因子并标记 PARTIAL。无效因子不可计算；close 为 NULL/非有限时结果 NULL、quality=PARTIAL。换手 NULL 的窗口十列全 NULL、quality=PARTIAL，不跳过该行、不补 0；上游整个依赖未就绪时按 §7 返回 30。少于 5 根十列 NULL、warm=false、PARTIAL；5–119 根可算但 PARTIAL、warm=false，120 根且输入完整有效方 warm=true、可 FORMAL；`bars_used` 为窗口实际根数，不把缺失填成有效根。负换手视为非法输入，整窗口十列 NULL、PARTIAL，记录原因；不截到 0 或沿用旧负权重，避免制造负筹码分布。停牌行不计入窗口，跨停牌保留原窗口。
 
 ## §3 逐步算法与输出
 
