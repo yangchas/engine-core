@@ -197,7 +197,7 @@ func TestC566ProductionEventShape(t *testing.T) {
 	}
 	// no other production event gained the new semantics
 	for _, e := range c.Events {
-		if e.ID == event.ID || e.ID == "limit_pool_d1" || e.ID == "daily_dde_postclose" || e.ID == "limit_up_detail_d1" { // C580/C615 deliberately adopt on_timeout/alert_on_fallback
+		if e.ID == event.ID || e.ID == "limit_pool_d1" || e.ID == "daily_dde_0200" || e.ID == "limit_up_detail_d1" { // C580/C615 deliberately adopt on_timeout/alert_on_fallback
 			continue
 		}
 		for _, tier := range e.Ladder {
