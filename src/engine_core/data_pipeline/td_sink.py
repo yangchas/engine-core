@@ -489,8 +489,9 @@ class TaosStore:
     def _day_filter(self, trade_date: str) -> str:
         return f"ts = {trade_day_ts_us(trade_date)}"
 
-    def _day_scan(self, sql: str, *, suffix: str = "", strict: bool = False) -> tuple[list[tuple], bool]:
-        """Retry a day-filtered stable scan over disjoint, exhaustive symbol ranges."""
+    def _day_scan(self, sql: str, *, suffix: str = "", strict: bool = False,
+                  has_where: bool = True) -> tuple[list[tuple], bool]:
+        """Retry a stable scan over disjoint, exhaustive symbol ranges."""
         try:
             return self._run(sql + suffix, missing_ok=True, strict=strict), False
         except TdResourceExhausted:
@@ -503,6 +504,8 @@ class TaosStore:
                 for index in range(segments):
                     where = (f" AND symbol >= '{bounds[index - 1]}'" if index else "")
                     where += (f" AND symbol < '{bounds[index]}'" if index < len(bounds) else "")
+                    if not has_where:
+                        where = " WHERE" + where[4:]
                     rows.extend(self._run(sql + where + suffix, missing_ok=True, strict=strict))
                 return rows, True
             except TdResourceExhausted:
@@ -581,8 +584,8 @@ class TaosStore:
 
     def symbols_on_day(self, day: str) -> set[str]:
         _check_date(day)
-        rows = self._run(f"SELECT symbol FROM {self.database}.{SUPER_TABLE} "
-                         f"WHERE ts = {trade_day_ts_us(day)}", missing_ok=True, strict=True)
+        rows, _ = self._day_scan(f"SELECT symbol FROM {self.database}.{SUPER_TABLE} "
+                                 f"WHERE ts = {trade_day_ts_us(day)}", strict=True)
         return {str(row[0]) for row in rows}
 
     def window_watermarks(self, days: Sequence[str]) -> tuple[dict[str, str], dict[str, list[str]]]:
@@ -607,8 +610,8 @@ class TaosStore:
 
     def latest_watermarks(self) -> dict[str, str]:
         """Fetch every symbol's latest daily-bar date in one stable-level aggregation."""
-        rows = self._run(f"SELECT symbol, LAST(ts) FROM {self.database}.{SUPER_TABLE} GROUP BY symbol",
-                         missing_ok=True)
+        rows, _ = self._day_scan(f"SELECT symbol, LAST(ts) FROM {self.database}.{SUPER_TABLE}",
+                                 suffix=" GROUP BY symbol", has_where=False)
         result: dict[str, str] = {}
         for symbol, value in rows:
             if isinstance(value, datetime):
