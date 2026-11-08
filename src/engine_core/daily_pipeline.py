@@ -496,13 +496,26 @@ def _observed_seal_paths(td: Any, trade_date: str, asof: str,
         return {}
     from .limit_price import is_limit_up
     cursor = td.cursor() if callable(getattr(td, "cursor", None)) else td
-    clauses = ",".join("'" + symbol + "'" for symbol in sorted(symbols))
+    from .live_session import _open_memory_exhausted, _open_query
     end = str(asof)[-8:]
-    cursor.execute(
-        "select ts,px_milli,pc_milli,bp1_milli,bv2,symbol from stock_tick_v2 "
-        f"where ts>='{trade_date} 09:30:00' and ts<='{trade_date} {end}' "
-        f"and symbol in ({clauses}) order by ts,symbol")
-    rows = cursor.fetchall()
+
+    def fetch(batch):
+        clauses = ",".join("'" + symbol + "'" for symbol in batch)
+        query = ("select ts,px_milli,pc_milli,bp1_milli,bv2,symbol from stock_tick_v2 "
+                 f"where ts>='{trade_date} 09:30:00' and ts<='{trade_date} {end}' "
+                 f"and symbol in ({clauses}) order by ts,symbol")
+        try:
+            return _open_query(cursor, query, "yest_limit_pool")
+        except Exception as exc:
+            if not _open_memory_exhausted(exc) or len(batch) <= 1:
+                raise
+            middle = len(batch) // 2
+            return fetch(batch[:middle]) + fetch(batch[middle:])
+
+    rows = fetch(sorted(symbols))
+    def order_key(row):
+        return (row.get("ts"), row.get("symbol")) if isinstance(row, Mapping) else (row[0], row[5])
+    rows.sort(key=order_key)
     columns = ("ts", "px_milli", "pc_milli", "bp1_milli", "bv2", "symbol")
     sealed: dict[str, list[str]] = {}
     for raw in rows:

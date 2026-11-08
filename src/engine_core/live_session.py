@@ -429,6 +429,46 @@ def _as_datetime(value: datetime | str) -> datetime:
     return value if isinstance(value, datetime) else datetime.fromisoformat(value)
 
 
+def _open_memory_exhausted(exc: Exception) -> bool:
+    from .data_pipeline.td_sink import TdResourceExhausted, td_memory_exhausted, td_error_number
+    return (isinstance(exc, TdResourceExhausted) or td_memory_exhausted(exc)
+            or td_error_number(exc) == 0x0102
+            or any(code in str(exc).lower() for code in ("0x073a", "0x0102")))
+
+
+def _open_query(cursor: Any, query: str, label: str) -> list:
+    try:
+        cursor.execute(query)
+        return list(cursor.fetchall())
+    except Exception as exc:
+        message = f"OPEN_QUERY[{label}] {query[:200]}: {exc}"
+        exc.args = (message,)
+        if hasattr(exc, "_full_msg"):
+            exc._full_msg = message
+        raise
+
+
+def _open_range_scan(cursor: Any, query: str, label: str, suffix: str = "") -> list:
+    try:
+        return _open_query(cursor, query + suffix, label)
+    except Exception as exc:
+        if not _open_memory_exhausted(exc):
+            raise
+    for segments in (4, 8, 16):
+        bounds = {4: list("257"), 8: list("1234567"), 16: list("123456789ABCDEF")}[segments]
+        rows = []
+        try:
+            for index in range(segments):
+                where = (f" AND symbol >= '{bounds[index - 1]}'" if index else "")
+                where += (f" AND symbol < '{bounds[index]}'" if index < len(bounds) else "")
+                rows.extend(_open_query(cursor, query + where + suffix, label))
+            return rows
+        except Exception as exc:
+            if not _open_memory_exhausted(exc) or segments == 16:
+                raise
+    raise AssertionError("unreachable")
+
+
 def _sql_states(td: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
     # TD's last() aggregation is bounded to the current session; it avoids exporting tick history.
     cursor = td.cursor() if callable(getattr(td, "cursor", None)) else td
@@ -436,14 +476,14 @@ def _sql_states(td: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
     query = ("select last(ts),last(px_milli),last(pc_milli),last(bp1_milli),last(ap1_milli),"
              "last(bv1),last(av1),last(bp2_milli),last(ap2_milli),last(bv2),last(av2),"
              "last(amt_yuan),last(vol_units),last(h_milli),last(l_milli),symbol from stock_tick_v2 "
-             f"where ts>='{start:%Y-%m-%d %H:%M:%S}' and ts<='{cutoff:%Y-%m-%d %H:%M:%S}' group by symbol")
-    cursor.execute(query)
+             f"where ts>='{start:%Y-%m-%d %H:%M:%S}' and ts<='{cutoff:%Y-%m-%d %H:%M:%S}'")
+    rows = _open_range_scan(cursor, query, "states_at", " group by symbol")
     result = {}
     columns = ("ts", "px_milli", "pc_milli", "bp1_milli", "ap1_milli", "bv1", "av1",
                "bp2_milli", "ap2_milli", "bv2", "av2", "amt_yuan", "vol_units",
                "h_milli", "l_milli", "symbol")
     legacy_columns = columns[:13] + ("symbol",)
-    for raw in cursor.fetchall():
+    for raw in rows:
         row = raw if isinstance(raw, Mapping) else dict(zip(columns if len(raw) >= len(columns) else legacy_columns, raw))
         symbol, pc, ts = row.get("symbol"), row.get("pc_milli"), row.get("ts")
         if symbol is None or not pc or not ts:
@@ -576,12 +616,12 @@ def _latest_tick(td: Any, cutoff: datetime) -> datetime | None:
         return value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
     cursor = td.cursor() if callable(getattr(td, "cursor", None)) else td
     start = cutoff.replace(hour=9, minute=14, second=0, microsecond=0)
-    cursor.execute("select last(ts) from stock_tick_v2 "
-                   f"where ts>='{start:%Y-%m-%d %H:%M:%S}' and ts<='{cutoff:%Y-%m-%d %H:%M:%S}'")
-    rows = cursor.fetchall()
-    value = rows[0][0] if rows and rows[0] else None
-    if value is None: return None
-    return value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    query = ("select last(ts) from stock_tick_v2 "
+             f"where ts>='{start:%Y-%m-%d %H:%M:%S}' and ts<='{cutoff:%Y-%m-%d %H:%M:%S}'")
+    rows = _open_range_scan(cursor, query, "ready_last_ts")
+    values = [row[0] for row in rows if row and row[0] is not None]
+    values = [value if isinstance(value, datetime) else datetime.fromisoformat(str(value)) for value in values]
+    return max(values, default=None)
 
 
 def checkpoint_ready(td: Any, ts: datetime | str) -> bool:
